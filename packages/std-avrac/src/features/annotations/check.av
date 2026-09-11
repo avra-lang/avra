@@ -69,7 +69,7 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
         computed_argument(cx, a)
         return
     }
-    if act is .Derives && derive_provider_law(cx, a) { return }
+    if act is .Derives && derive_law(cx, a) { return }
     match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
         .Ok(crossed) -> {
             match act {
@@ -228,22 +228,45 @@ fn same_file_annotation(mut cx: TypeCx, a: Annotation) {
 /// associated `derive` must stand in ANOTHER file, for the same reason
 /// a Declares annotation's fn must — expanding needs this file's
 /// names, which are still being made. Answers whether it spoke.
-fn derive_provider_law(mut cx: TypeCx, a: Annotation) -> bool {
+fn derive_law(mut cx: TypeCx, a: Annotation) -> bool {
     for e in a.args {
         let tr: DeclId? = cx.bound_decl(e)
         if tr != null {
             let trait_id = tr!
+            let named = cx.view.decls.decl(trait_id)
+            if !(named.kind is .Trait) {
+                not_a_trait(cx, a, e, named.name)
+                return true
+            }
             let member: DeclId? = cx.view.decls.trait_derive(trait_id)
-            if member != null {
-                let m = member!
-                if same_file(cx.view.decls.decl(m).file, cx.view.file) {
-                    derived_same_file(cx, a)
-                    return true
-                }
+            if member == null {
+                no_derive(cx, e, named.name)
+                return true
+            }
+            let m = member!
+            if same_file(cx.view.decls.decl(m).file, cx.view.file) {
+                derived_same_file(cx, a)
+                return true
             }
         }
     }
     false
+}
+
+/// A `@derive` argument that names something other than a trait.
+fn not_a_trait(mut cx: TypeCx, a: Annotation, e: ExprId, name: string) {
+    let _ = cx.spoken(refusal("annotation.derive", cx.loc_of(e),
+                       derive_law_words(),
+                       "`${name}` is not a trait",
+                       "`@${a.name}` names a trait — `trait ${name} { static fn derive(t: Type) -> List<Directive> }`"))
+}
+
+/// A trait named by `@derive` that ships no associated `derive`.
+fn no_derive(mut cx: TypeCx, e: ExprId, name: string) {
+    let _ = cx.spoken(refusal("annotation.derive", cx.loc_of(e),
+                       derive_law_words(),
+                       "`${name}` declares no `derive`",
+                       "add `static fn derive(t: Type) -> List<Directive>` to the trait"))
 }
 
 /// A `@derive` trait's associated `derive` must stand in another
@@ -301,5 +324,6 @@ fn unsettled(mut cx: TypeCx, a: Annotation, why: Unsettled) {
                        "an annotation runs at compile time from pure computation alone"))
 }
 
+fn derive_law_words() -> string { "an annotation derives through a trait that declares `derive`" }
 fn receiver_law() -> string { "an annotation's first seat says what it takes" }
 fn seats_law() -> string { "an annotation's arguments fill its seats" }

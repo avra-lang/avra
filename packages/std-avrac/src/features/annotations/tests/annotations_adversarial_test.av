@@ -28,7 +28,7 @@ fn packaged(source: string) -> Program {
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
         "/w/src/main.av": source,
         "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc?, warning: bool = false }\nexport type Named = { name: string, at: Loc? }\nexport type Trait = { name: string, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport type Directive = { twin: string, name: string, at: Loc? }\nexport fn warn(message: string) -> Diagnostic { Diagnostic { message: message, help: null, at: null, warning: true } }\nexport fn deprecated(what: Named, note: string) -> List<Diagnostic> { [warn(\"`\${what.name}` is deprecated — \${note}\" )] }\n/// Makes a traced sibling.\n/// The signature declares the effect.\nexport fn traced(f: Fn, label: string) -> List<Directive> { [Directive { twin: \"\${f.name}_traced\", name: f.name, at: null }] }\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n",
+        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc?, warning: bool = false }\nexport type Named = { name: string, at: Loc? }\nexport type Trait = { name: string, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport type Directive = { twin: string, name: string, at: Loc?, code: string? = null }\nexport type Derived = { made: List<Directive> }\nexport fn derive(what: Named, tr: Trait) -> Derived { Derived { made: [] } }\nexport trait Show {\n    static fn derive(what: Named) -> List<Directive> { [Directive { twin: \"gen_\" + what.name, name: what.name, at: what.at }] }\n}\nexport trait Empty {\n    fn mark() -> int\n}\nexport fn warn(message: string) -> Diagnostic { Diagnostic { message: message, help: null, at: null, warning: true } }\nexport fn deprecated(what: Named, note: string) -> List<Diagnostic> { [warn(\"`\${what.name}` is deprecated — \${note}\" )] }\n/// Makes a traced sibling.\n/// The signature declares the effect.\nexport fn traced(f: Fn, label: string) -> List<Directive> { [Directive { twin: \"\${f.name}_traced\", name: f.name, at: null }] }\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n",
     }
     mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av"]), "/w", avra())
     ws.program("/w/src/main.av")
@@ -195,6 +195,17 @@ spec "features/annotations — the compile-time call's laws" {
                       "fn mark(f: Fn, n: int) { }\n" +
                       "@mark(boom())\nfn answer() -> int { 1 }\nanswer()"
             refused(src, "division by zero")
+        }
+    }
+    given "@derive" {
+        then "a trait's associated derive runs and its twin exists" {
+            packaged("use @std.meta.{derive, Show}\n@derive(Show)\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2) + gen_sum(1, 2)").clean()
+        }
+        then "an argument that is not a trait refuses" {
+            refused("use @std.meta.{derive}\n@derive(Point)\ntype Point = { x: int }\n1", "`Point` is not a trait")
+        }
+        then "a trait that declares no derive refuses" {
+            refused("use @std.meta.{derive, Empty}\n@derive(Empty)\nfn f() -> int { 1 }\nf()", "declares no `derive`")
         }
     }
 }
