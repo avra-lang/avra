@@ -777,7 +777,9 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       over the annotated declaration and materializes the directives
       it answers (stack `@derive` for more traits; a list seat is a
       follow-up). A trait's `derive` stands in ANOTHER file — the
-      provider law — and a same-file one speaks. S4d LANDED — the
+      provider law — and a same-file one speaks; F2072 refuses a name
+      that is not a trait and a trait that declares no `derive`. S4d
+      LANDED — the
       TEMPLATE PRIMITIVE: a `Directive` may carry `code`, generated
       SOURCE; the compiler parses it INTO the annotated file's store
       (`parse_into`, no cross-store copy), admits its declarations,
