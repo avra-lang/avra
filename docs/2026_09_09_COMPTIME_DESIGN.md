@@ -796,11 +796,11 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       that program's. THE CROSSING IS PARSE-ONLY (fixed with S4f): a
       `Type` receiver's fields and variants are read from the PARSE
       tree, never the signature — asking a sig re-entered the resolve
-      being served. A `derive` now runs over a `Type` and generates a
-      REAL `Show`: `packages/std-avrac/src/features/annotations/tests/
-      derive` prints `Point { x: 1, y: hi }` (eval == native ==
-      expected). NEXT: the `Code<T>` claim + origin hygiene, then
-      `@derive(Show, Eq)` shipped in std.
+      being served. S4's acceptance is PROVEN with `Show`: the same
+      derive generates an impl on a STRUCT (fields interpolated) and
+      on an ENUM (one arm per variant) — `Point { x: 1, y: hi } /
+      Color.Green`, eval == native == expected. NEXT: the `Code<T>`
+      claim + origin hygiene, then `Show`/`Eq` shipped in std.
 - [ ] **S1 leftovers (small, fold in).** The reach refusal's full
       call chain (names each link, not just row+body) — the one
       "world" voice annotations share; and `export const` (waits on
