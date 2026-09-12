@@ -943,10 +943,25 @@ plus the big dispatch tables). The classes, and HONESTLY which the
   `un_symbol`, `kind_word`, `answer_word`, `mark_word`, `length_word`
   (`TypeRegistry` methods), `count_word`, `seat_word`.
 
+AND THE VOCABULARY-NAME COLLISION, found trying to derive `Expr`'s
+value protocol (the canonical core family): a provider must name its
+seat types `@std.meta.Type`/`@std.meta.Variant`, and `core` ALREADY
+HAS `Type` (core/types.av) and `Variant` (core/nodes.av) — F3018
+"`Type` is imported, but this module already has it". The S4 `DeclSig`
+derive landed only because `features` happens to import NEITHER name.
+Most modules import `core.Type`, so the collision is broad. It lifts
+when ONE of these lands: (a) the meta vocabulary takes distinct names
+(`MetaType`/`MetaVariant` — a user-facing rename), (b) option (b), a
+`CORE`-OWNED derive vocabulary with its own seat names that the
+crossing accepts, or (c) qualified type references / a type alias
+(both in CLAUDE.md's subset). Until then, only a module that imports
+neither `Type` nor `Variant` can annotate an enum.
+
 THE SEQUENCE the inventory implies:
 1. `Val`'s 3 accessors and `Captured`'s 8 (A) — the same
    `Projections` treatment; the `Captured` provider emits a nested
-   pattern, proving the provider can write any body shape.
+   pattern, proving the provider can write any body shape. (BLOCKED
+   on the collision where the module imports `Type`/`Variant`.)
 2. The `Expr` value protocol (B) once `pairs_of` has a
    record-projection arm, or split (5 derived, 1 kept).
 3. The `Stmt` projections (C) as a separate, larger sweep.
