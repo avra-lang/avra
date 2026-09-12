@@ -6,7 +6,7 @@
 //! records, `List<Diagnostic>` validates. The law
 //! satisfied, the call runs, and what it said is spoken here.
 use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt, is_literal, same_file}
-use features.{TypeCx, fn_sig_of, FnSig, Said, Unsettled, nothing}
+use features.{TypeCx, fn_sig_of, kind_word, FnSig, Said, Unsettled, nothing}
 use diagnostics.{refusal, loc_at}
 use @std.errors.{Loc}
 
@@ -169,7 +169,7 @@ fn takes_no_declaration(mut cx: TypeCx, a: Annotation) {
 
 fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) {
     let took = cx.view.types.name_of(seat)
-    let this = if kind == null { "not a declaration" } else { "a ${kind_shown(kind!)}" }
+    let this = if kind == null { "not a declaration" } else { "a ${kind_word(kind!)}" }
     let found = if ["Fn", "Type", "Named"].contains(took) && !cx.view.decls.meta_type(seat, took) {
         "`${a.name}` takes `${took}` from another module, not `@std.meta.${took}`"
     } else {
@@ -179,15 +179,6 @@ fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) 
                        receiver_law(),
                        found,
                        "`Fn` crosses a fn, `Type` a record or an enum, `Named` any declaration"))
-}
-
-fn kind_shown(k: DeclKind) -> string {
-    match k {
-        .Fn -> "fn",
-        .Record -> "type",
-        .Enum -> "enum",
-        rest -> "declaration",
-    }
 }
 
 fn wrong_count(mut cx: TypeCx, a: Annotation, wanted: int) {

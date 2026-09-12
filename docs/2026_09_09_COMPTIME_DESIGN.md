@@ -880,6 +880,27 @@ to start cold; the size is the design's estimate.
       with `exported_decls`/`surface`/`imported_line` gaining
       generated variants. Size: the home ½ day; the widening 1–2
       days; each family's derive a day.
+
+      THE ATTEMPT WAS MADE AND IS BLOCKED, with receipts (2026-09-11).
+      `@derive(Projections)` on `DeclSig` + the three accessors swept
+      to methods compiles to `defect: memo family 5 reused missing key
+      79` during the compiler's self-compile. lldb: `derive_directives`
+      -> `trait_directives` -> `lifted_directives` -> `settlement` ->
+      `lowered` -> `analysis(provider)` -> `analyzed` ->
+      `method_diagnostics` -> `methods(t)` -> `sig(impl)` ->
+      `type_cx_for` -> `resolved(FILE)` while FILE's resolve is in
+      flight. RECEIPTS: (1) the trait must answer the compiler's OWN
+      `Directive` — importing `@std.meta.Directive` into `features`
+      collides with `features/worklist.av`'s (F3018); (2) guarding
+      `methods` to skip a `sig` whose file's `Resolved` family is
+      active was NOT enough (the defect persists), so the re-enter is
+      another path — instrument `methods`/`method_diagnostics` with
+      `core.debug` to find it; (3) `make seed` must land FIRST: the
+      committed seed predates `.Derives`, so a cold `make bootstrap`
+      cannot compile an `@derive` in the compiler's own source. FIX
+      FIRST: `method_diagnostics` fans out to EVERY record/enum
+      (`typed_decls`) and must not force another file's resolve during
+      a lifted call.
 - [ ] **Later list, unstarted.** Static aggregate data (§4.5); a JIT
       engine behind `run_call`; type operators (`Type -> Type`, needs
       aliases); typed sublanguage holes (`sql { }`); manifest read

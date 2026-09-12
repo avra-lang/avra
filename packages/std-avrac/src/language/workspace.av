@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal, Annotation, Binding, named_ref, spelled}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -873,7 +873,7 @@ impl Workspace {
     /// is the very resolve the two-tier miss is serving: a cycle),
     /// anything else through the isolated evaluator.
     fn crossed_arg(f: FileId, e: ExprId, want: TypeId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
-        let named: DeclId? = if self.decls.takes_a_decl(want) { self.arg_decl(f, e) } else { null }
+        let named: DeclId? = if self.decls.takes_a_decl(want) { bound_decl_of(self.resolved(f), e) } else { null }
         if named != null { return .Ok(self.crossed_decl_of(named!, want, heap)) }
         let p = self.parsed(f)
         let raw = p.store.expr(e)
@@ -886,16 +886,6 @@ impl Workspace {
         let bits: int? = bits_of(raw)
         if bits != null { return .Ok(MetaVal.Float(bits!)) }
         self.crossed_expr(f, e, heap)
-    }
-
-    /// The declaration an annotation argument names, or none.
-    fn arg_decl(f: FileId, e: ExprId) -> DeclId? {
-        let b: Binding? = self.resolved(f).binding(e)
-        if b == null { return null }
-        match b! {
-            .Decl(d) -> d,
-            .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
-        }
     }
 
     /// A file's GENERATED declarations: every Declares-annotated
