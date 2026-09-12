@@ -18,7 +18,7 @@ RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-meta packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite
 
-.PHONY: census traps test tested clean seed-check gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed bootstrap \
+.PHONY: census traps test tested clean seed-check gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed recover bootstrap \
         check run ir emit build-native native-check avra
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
@@ -45,12 +45,21 @@ seed: $(RUNTIME_OBJS)
 # So the object list is named ONCE: a prerequisite and a link line
 # spelling it twice were two definitions nothing kept in step, and the
 # gap opens silently the instant the variable grows.
-bootstrap: $(RUNTIME_OBJS)
+#
+# AND RECOVERY STOPS HERE. `make bootstrap` continues into `make avra`,
+# which overwrites this clean compiler with one built from the CURRENT
+# source — so a source that traps while compiling itself (a probe in an
+# analysis path, a broken pass) has no way back: every rebuild traps
+# again. `make recover` is that way back.
+recover: $(RUNTIME_OBJS)
 	@mkdir -p build
 	@clang -w -O1 bootstrap/seed.ll $(RUNTIME_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
-	@echo "bootstrap: build/avra from the seed — rebuilding from source"
+	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
+
+bootstrap: recover
+	@echo "bootstrap: rebuilding build/avra from source"
 	@$(MAKE) -s avra
 
 # A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler

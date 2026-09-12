@@ -6968,7 +6968,8 @@ PROCESS 4.
   and several false "the fix did not work" reads. CONFIRMS the
   `cp build/avra build/avra.pre` doctrine; THE ASK: a `make recover`
   that links `bootstrap/seed.ll` and STOPS (no `make avra`), so a
-  clean compiler is one command.
+  clean compiler is one command. **LANDED** in this slice: `make
+  recover` is that target, and `make bootstrap` now depends on it.
 - **A DEBUG TRAP IN AN ANALYSIS PATH IS A TRAP ON EVERY BUILD.** The
   compiler walks its own passes while compiling itself, so
   `avra_trap("marker")` placed in `computed_marks` aborted the build.
