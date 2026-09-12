@@ -800,9 +800,11 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       derive generates an impl on a STRUCT (fields interpolated) and
       on an ENUM (one arm per variant) — `Point { x: 1, y: hi } /
       Color.Green`, eval == native == expected. NEXT: the `Code<T>`
-      claim + origin hygiene, then `Show`/`Eq` shipped in std. A
-      `@derive(Show)` and `@derive(Eq)` STACKED on one struct, plus
-      `Show` on an enum, all run in the `derive` program test.
+      claim + origin hygiene. `Show` and `Eq` now SHIP in `@std/derive`
+      (`packages/std-derive`); the `derive` program test stacks
+      `@derive(Show)` and `@derive(Eq)` on a struct and derives `Show`
+      on an enum — `Point { x: 1, y: hi } / Color.Green / true`, eval
+      == native == expected.
 - [ ] **S1 leftovers (small, fold in).** The reach refusal's full
       call chain (names each link, not just row+body) — the one
       "world" voice annotations share; and `export const` (waits on
