@@ -10,9 +10,9 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, rt_index, hosted_symbol, fp, fp_str}
+use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, reversed, rt_index, hosted_symbol, fp, fp_str}
 use @std.path.{joined_path}
-use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted}
+use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing}
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -195,9 +195,62 @@ export fn run_crossed(l: Lowered, steps: int, base: string) -> Result<Lifted, Un
 /// crosses back into compiler-owned data.
 fn world_reached(l: Lowered, permits_embed: bool) -> string? {
     let rows = rt_index()
-    let hit: Body? = l.fns.concat([l.entry]).find((b: Body) -> world_in(rows, b, permits_embed) != null)
-    if hit == null { return null }
-    world_in(rows, hit!, permits_embed)
+    for b in l.fns.concat([l.entry]) {
+        let hit: string? = world_in(rows, b, permits_embed)
+        // The refusal names each CALL LINK, not only the body the
+        // world row stands in: `f` called from `g` called from the
+        // const's entry reads as the chain the reader wrote.
+        if hit != null {
+            let said = hit!
+            return "${said}${callers_from(l, b.name)}"
+        }
+    }
+    null
+}
+
+/// The callers between the entry and `offender`, nearest first, as
+/// prose — `, called from `f`, called from `X``. "" at the entry.
+fn callers_from(l: Lowered, offender: string) -> string {
+    let path: List<string>? = call_path(l, offender)
+    if path == null { return "" }
+    let p = path!
+    if p.length <= 1 { return "" }
+    let callers = reversed([p[i] for i in 0..p.length - 1])
+    ", " + joined(["called from `${c}`" for c in callers], ", ")
+}
+
+/// The bodies by name, the entry included.
+fn body_index(l: Lowered) -> Map<string, Body> {
+    mut by: Map<string, Body> = {}
+    for b in l.fns { by.set(b.name, b) }
+    by.set(l.entry.name, l.entry)
+    by
+}
+
+/// The call path from the entry to `offender`, `[entry, …, offender]`,
+/// or null when no direct-call path reaches it.
+fn call_path(l: Lowered, offender: string) -> List<string>? {
+    let by = body_index(l)
+    if l.entry.name == offender { return [offender] }
+    walk_calls(by, l.entry.name, offender, [l.entry.name])
+}
+
+fn walk_calls(by: Map<string, Body>, from: string, to: string, seen: List<string>) -> List<string>? {
+    let b: Body? = by.get(from)
+    if b == null { return null }
+    for i in b!.ins {
+        match i {
+            .Call(_, callee, _) -> {
+                if callee == to { return [from, to] }
+                if !seen.contains(callee) {
+                    let sub: List<string>? = walk_calls(by, callee, to, seen.concat([callee]))
+                    if sub != null { return [from].concat(sub!) }
+                }
+            },
+            rest -> nothing(),
+        }
+    }
+    null
 }
 
 fn world_in(rows: Map<string, RtSig>, b: Body, permits_embed: bool) -> string? {

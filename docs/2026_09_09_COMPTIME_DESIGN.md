@@ -805,10 +805,12 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       `@derive(Show)` and `@derive(Eq)` on a struct and derives `Show`
       on an enum — `Point { x: 1, y: hi } / Color.Green / true`, eval
       == native == expected.
-- [ ] **S1 leftovers (small, fold in).** The reach refusal's full
-      call chain (names each link, not just row+body) — the one
-      "world" voice annotations share; and `export const` (waits on
-      the module-constant sugar, ROADMAP:7175).
+- [~] **S1 leftovers (small, fold in).** The reach refusal's full
+      call chain LANDED: `world_reached` walks the lowered bodies from
+      the entry (`call_path`) and the label reads `reaches `row` in
+      `leaf`, called from `caller`, …` — the one "world" voice
+      annotations share. REMAINING: `export const` (waits on the
+      module-constant sugar, ROADMAP:7175).
 - Then **S4** (quotes + `${}` + `@derive`: `@derive(Show, Eq)` on a
   struct and an enum, `fingerprint_stmt`'s arms erased), then **S5**
   (const seats: `matches(const pattern, s)`), then the later list
