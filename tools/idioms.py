@@ -293,9 +293,11 @@ def unused_import(lines):
         m = re.match(r"^use [a-z@][\w.@]*\.\{(.+)\}$", l.strip())
         if not m:
             continue
-        for name in (n.strip() for n in m.group(1).split(",")):
-            if not name:
+        for item in (n.strip() for n in m.group(1).split(",")):
+            if not item:
                 continue
+            # `use a.{X as Y}` binds Y: the LOCAL name is what must be read.
+            name = item.split(" as ")[-1].strip()
             if expands and name in GRAMMAR_BLOCK_NAMES:
                 continue
             if not re.search(rf"\b{re.escape(name)}\b", MODULE_BODY["text"]):

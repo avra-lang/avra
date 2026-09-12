@@ -7,6 +7,8 @@
 //! Ids are opaque: compared or looked up, never inspected. All
 //! allocation goes through the one `alloc_*` seam per arena, so
 //! interning can arrive without call-site churn.
+use @std.meta.{derive}
+
 
 /// Typed index into the expression arena. A single-field struct, not
 /// an int newtype — see the subset note on newtypes in generic flows.
@@ -172,6 +174,7 @@ export fn all_binops() -> List<BinOp> {
     ops
 }
 
+@derive(ValueProtocol)
 export enum Expr {
     IntLit(value: int)
     /// A REAL literal, carried as its IEEE-754 BIT PATTERN rather than
@@ -279,67 +282,15 @@ export enum Expr {
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
-
-/// The VALUE PROTOCOL: a literal node's payload, one projection per
-/// value category — what features read instead of matching a
-/// variant, their own included.
-export fn bool_of(e: Expr) -> bool? {
-    match e {
-        .BoolLit(v) -> v,
-        _ -> null,
-    }
-}
-
-/// An int literal's value. The second reader earns the projection:
-/// a const's use emits what the literal holds without dispatching
-/// on the node itself.
-export fn int_of(e: Expr) -> int? {
-    match e {
-        .IntLit(v) -> v,
-        _ -> null,
-    }
-}
-
-/// A float literal's IEEE-754 bits.
-export fn bits_of(e: Expr) -> int? {
-    match e {
-        .FloatLit(bits) -> bits,
-        _ -> null,
-    }
-}
-
-export fn text_of(e: Expr) -> string? {
-    match e {
-        .StrLit(v) -> v,
-        _ -> null,
-    }
-}
-
 /// Whether the parse tree already HOLDS this value — an int, float,
 /// bool or string literal. A computed expression is not a literal:
 /// reading it needs typed answers that do not exist before analysis.
 export fn is_literal(e: Expr) -> bool {
-    int_of(e) != null || bits_of(e) != null || bool_of(e) != null || text_of(e) != null
+    (e).int_of() != null || (e).bits_of() != null || (e).bool_of() != null || (e).text_of() != null
 }
 
 /// A map literal's keys and values, in written order.
 export type MapPairs = { keys: List<ExprId>, values: List<ExprId> }
-
-/// The map-literal projection of the value protocol.
-export fn pairs_of(e: Expr) -> MapPairs? {
-    match e {
-        .MapLit(keys, values) -> MapPairs { keys: keys, values: values },
-        _ -> null,
-    }
-}
-
-export fn elems_of(e: Expr) -> List<ExprId>? {
-    match e {
-        .ListLit(elems) -> elems,
-        _ -> null,
-    }
-}
-
 /// A WRITTEN type: its name, its arguments (`List<int>`), and
 /// whether it was written nullable (`int?`). An annotation is DATA,
 /// not a node — no pass walks one — so its span rides here rather
