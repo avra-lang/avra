@@ -9,7 +9,7 @@
 //! learn it. Asked through the declaration table's hook, remembered
 //! by the kernel (ROADMAP: the inout receiver).
 use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, Binding, MethodParts, AppliedParts, PlaceStep, fp, touch, filled, flatten, marked}
-use features.{NameFacts, Decls, Decl, StructSig, bound_decl_of, row_writes, fn_sig_of, FnSig, nothing, property_row}
+use features.{NameFacts, Decls, Decl, StructSig, bound_decl_of, row_writes, FnSig, nothing, property_row}
 
 /// One fn's own evidence: which of its seats the body writes
 /// directly, and the flows from its seats into other fns' seats —
@@ -89,7 +89,7 @@ impl Workspace {
         let n = self.decls.seat_count(d)
         if x.root == null { return Summary { own: filled(n, false), edges: [] } }
         let receiver: TypeId? = self.receiver_type(x)
-        let seats: List<TypeId> = fn_sig_of(self.decls.sig(d))?.params ?? []
+        let seats: List<TypeId> = (self.decls.sig(d))?.fn_sig()?.params ?? []
         mut cx = Survey { ws: self, decls: self.decls, store: self.decls.store(d), names: self.resolved(x.file), receiver: receiver, seats: seats, lo: x.lo, hi: x.hi, own: filled(n, false), edges: [] }
         cx.assigns()
         for i in x.lo..x.hi { cx.site_evidence(ExprId { index: i }) }
@@ -381,17 +381,17 @@ impl Survey {
         let placed: TypeId? = self.place_type(value)
         if placed != null { return placed }
         let callee: DeclId? = bound_decl_of(self.names, value)
-        if callee != null { return fn_sig_of(self.decls.sig(callee!))?.ret }
+        if callee != null { return (self.decls.sig(callee!))?.fn_sig()?.ret }
         let mp: MethodParts? = self.store.method_parts(value)
         if mp == null { return self.constructed_type(value) }
         let m = mp!
         let subject: TypeId? = self.place_type(m.subject)
         if subject == null { return null }
         match self.callee_of(subject!, m.name) {
-            .Method(d) -> fn_sig_of(self.decls.sig(d))?.ret,
-            .Static(d) -> fn_sig_of(self.decls.sig(d))?.ret,
+            .Method(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
+            .Static(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
             .FnSeats(held) -> held.answer,
-            .Contract(d) -> fn_sig_of(self.decls.sig(d))?.ret,
+            .Contract(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
             .Row(_) or .None -> null,
         }
     }

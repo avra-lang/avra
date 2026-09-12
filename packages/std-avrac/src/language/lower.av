@@ -9,7 +9,7 @@
 //! the statement list.
 use core.{StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_row, inout_row, no_marks, ExternParts, Param, TypeRef}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
-use features.{LowerCx, FnSig, fn_sig_of, Sub, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled}
+use features.{LowerCx, FnSig, Sub, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled}
 
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
@@ -55,7 +55,7 @@ impl Decls {
     /// width: a width is a property of a SEAT, and the store is where
     /// the seats are.
     fn extern_row_of(d: Decl) -> RtSig {
-        let sig: FnSig? = fn_sig_of(self.sig(d.id))
+        let sig: FnSig? = (self.sig(d.id))?.fn_sig()
         let host: ExternParts? = self.store(d.id).extern_parts(d.stmt)
         let params: List<TypeId> = sig?.params ?? []
         inout_row(self.symbol(d.id),
@@ -308,7 +308,7 @@ type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
 /// the scope settles.
 fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> LoweredBody {
     let root: ExprId = x.root!
-    let sig: FnSig? = fn_sig_of(a.view.decls.sig(x.id))
+    let sig: FnSig? = (a.view.decls.sig(x.id))?.fn_sig()
     let raw: List<TypeId> = sig?.params ?? []
     let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
     let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]

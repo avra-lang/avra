@@ -11,8 +11,8 @@ impl Decls {
     /// A record's fields, the declaration's or the instantiation's.
     fn fields_of_type(ty: TypeId) -> StructSig? {
         match self.types.shape_of(ty) {
-            .Struct(decl, _) -> record_sig_of(self.sig(decl)),
-            .App(decl, _, args) -> subbed_fields(self.types, record_sig_of(self.sig(decl)), decl, args),
+            .Struct(decl, _) -> (self.sig(decl))?.record_sig(),
+            .App(decl, _, args) -> subbed_fields(self.types, (self.sig(decl))?.record_sig(), decl, args),
             .Ptr or .Int or .Float or .Str or .Bool or .List(_) or .Cell(_) or .Enum(_, _) or .Res(_, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or
             .Error or .Void or .Map(_, _) or .EmptyMap -> null,
@@ -33,9 +33,9 @@ impl Decls {
     /// instantiation's.
     fn variants_of_type(ty: TypeId) -> EnumSig? {
         match self.types.shape_of(ty) {
-            .Enum(decl, _) -> variant_sig_of(self.sig(decl)),
+            .Enum(decl, _) -> (self.sig(decl))?.enum_sig(),
             .Res(ok, err) -> res_enum_sig(ok, err),
-            .App(decl, _, args) -> subbed_variants(self.types, variant_sig_of(self.sig(decl)), decl, args),
+            .App(decl, _, args) -> subbed_variants(self.types, (self.sig(decl))?.enum_sig(), decl, args),
             .Ptr or .Int or .Float or .Str or .Bool or .List(_) or .Cell(_) or .Struct(_, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or
             .Error or .Void or .Map(_, _) or .EmptyMap -> null,
@@ -53,7 +53,7 @@ impl Decls {
     fn method_sig_of(target: DeclId, mname: string) -> FnSig? {
         let m: DeclId? = self.method(target, mname)
         if m == null { return null }
-        fn_sig_of(self.sig(m!))
+        (self.sig(m!))?.fn_sig()
     }
 
     /// A trait method's sig — `Self` at seat 0, like every method — or
@@ -69,7 +69,7 @@ impl Decls {
     fn trait_sig_under(tdecl: DeclId, mname: string) -> FnSig? {
         let f: DeclId? = self.trait_member(tdecl, mname)
         if f == null { return null }
-        fn_sig_of(self.sig(f!))
+        (self.sig(f!))?.fn_sig()
     }
 
     /// A trait's member DECLARATION by name — the contract's own word
@@ -87,7 +87,7 @@ impl Decls {
             voices.speak(self.not_a_value(d))
             return error_type
         }
-        let sig: FnSig? = fn_sig_of(self.sig(d))
+        let sig: FnSig? = (self.sig(d))?.fn_sig()
         if sig == null { return error_type }
         // A NAMED FN AS A VALUE CARRIES ITS SEATS' CONTRACT: the marks
         // its declaration wrote travel with the type, so a writing fn
@@ -115,7 +115,7 @@ export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
 export fn sig_of_at(names: NameFacts, decls: Decls, e: ExprId) -> FnSig? {
     let d: DeclId? = bound_decl_of(names, e)
     if d == null { return null }
-    fn_sig_of(decls.sig(d!))
+    (decls.sig(d!))?.fn_sig()
 }
 
 /// The seats a fn declares: its written params minus a BARE
@@ -295,7 +295,7 @@ impl TypeCx {
     fn stmt_sig(s: StmtId) -> FnSig? {
         let d: DeclId? = self.view.decls.decl_of(self.view.file, s)
         if d == null { return null }
-        fn_sig_of(self.view.decls.sig(d!))
+        (self.view.decls.sig(d!))?.fn_sig()
     }
     fn bound_decl(e: ExprId) -> DeclId? { bound_decl_of(self.names, e) }
     fn tparams(d: DeclId) -> List<string> { self.view.decls.tparams(d) }

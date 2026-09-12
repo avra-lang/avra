@@ -5,7 +5,7 @@
 //! Bodies never walk here; a sig may name any file's declaration.
 use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, TypeRegistry, ExternParts, no_marks, widthless, width_named, width_words}
 use diagnostics.{refusal}
-use features.{TypeCx, FnSig, StructSig, EnumSig, DeclSig, record_sig_of, variant_sig_of, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats, declared_decl}
+use features.{TypeCx, FnSig, StructSig, EnumSig, DeclSig, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats, declared_decl}
 use @std.errors.{Loc}
 
 impl TypeCx {
@@ -34,7 +34,7 @@ impl TypeCx {
             names: [v.name for v in variants],
             payloads: [self.payload_types(s, v) for v in variants],
         }
-        self.declare(s, DeclSig.Variants(sig))
+        self.declare(s, DeclSig.Enum(sig))
     }
 
     /// What a variant carries, in order — each payload judged by the
@@ -93,7 +93,7 @@ impl TypeCx {
     /// answering the field's declared type — every literal that
     /// omits the field calls it.
     fn declare_default(x: Decl) {
-        let rs: StructSig? = record_sig_of(self.view.decls.sig(x.parent!))
+        let rs: StructSig? = (self.view.decls.sig(x.parent!))?.record_sig()
         let slot: int? = rs?.slot_of(x.name)
         let ret: TypeId = if slot == null { self.error_type } else { rs!.types[slot!] }
         self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [], ret: ret }))
@@ -408,9 +408,9 @@ impl TypeCx {
 
     /// A declaration's slot types, whichever kind declares.
     fn declared_slots(decl: DeclId) -> List<TypeId> {
-        let rs: StructSig? = record_sig_of(self.view.decls.sig(decl))
+        let rs: StructSig? = (self.view.decls.sig(decl))?.record_sig()
         if rs != null { return rs!.types }
-        let vs: EnumSig? = variant_sig_of(self.view.decls.sig(decl))
+        let vs: EnumSig? = (self.view.decls.sig(decl))?.enum_sig()
         if vs == null { return [] }
         flatten(vs!.payloads)
     }

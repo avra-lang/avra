@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, int_of, text_of, bool_of, bits_of, is_literal, Annotation, Binding, named_ref, spelled}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, fn_sig_of, record_sig_of, variant_sig_of, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -332,7 +332,7 @@ impl Workspace {
     fn annotation_warnings(x: Decl, p: Parsed, vis: Namespace, a: Annotation) -> List<Said> {
         let found: DeclId? = self.named_arg(p, vis, a.callee)
         if found == null { return [] }
-        let sig: FnSig? = fn_sig_of(self.decls.sig(found!))
+        let sig: FnSig? = (self.decls.sig(found!))?.fn_sig()
         if sig == null { return [] }
         let s = sig!
         if s.params.is_empty() { return [] }
@@ -449,9 +449,13 @@ impl Workspace {
         self.visibles.finish(f.index, out, self.db.revision())
     }
 
-    /// A file's names resolved.
+    /// A file's names resolved. RECURSIVE: a whole-program pass asks
+    /// for a signature from inside typing (the receiver pass), which
+    /// asks for a resolve, and a re-entry is a SMALLER view of the file
+    /// in flight — the acyclic `start` answers a cycle with a defect,
+    /// and one file's resolve may be demanded while another is served.
     fn resolved(f: FileId) -> NameFacts {
-        match self.name_facts.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        match self.name_facts.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         touch(self.items(f))
         // THE ARENA IS COMPLETE BEFORE ANY TABLE IS SIZED. An
         // expansion MINTS the twin's nodes, and the resolver's
@@ -522,9 +526,12 @@ impl Workspace {
     /// answers what stands.
     fn methods(target: DeclId) -> List<DeclId> {
         let blocks = self.decls.children_of(target).concat(self.decls.impls_named(self.decls.decl(target).name))
-        // asked while one of its impls registers: the table so far,
-        // remembered by nobody
+        // A table that cannot be COMPLETED is not the table, and must
+        // not be memoized: an impl still registering, or an impl in a
+        // file whose resolve is in flight (a lifted call runs inside
+        // one, and the generated impl it is minting is not signed yet).
         if blocks.any((b) -> self.registering(b)) { return self.decls.methods_of(target) }
+        if blocks.any((b) -> self.db.active(key(Family.Resolved, self.decls.decl(b).file.index))) { return self.decls.methods_of(target) }
         let k = key(Family.Methods, target.index)
         if !(self.db.ask(k) is .Compute) { return self.decls.methods_of(target) }
         self.db.begin(k)
@@ -619,11 +626,11 @@ fn program_hash(p: Parsed) -> int {
 /// so an unchanged sig cuts the wave at every caller.
 fn sig_hash(s: DeclSig?) -> int {
     if s == null { return 0 }
-    let f: FnSig? = fn_sig_of(s)
+    let f: FnSig? = (s)?.fn_sig()
     if f != null { return fp(11, [t.index for t in [f!.ret].concat(f!.params)]) }
-    let r: StructSig? = record_sig_of(s)
+    let r: StructSig? = (s)?.record_sig()
     if r != null { return fp(13, [t.index for t in r!.types].concat([fp_str(joined(r!.names, ","))])) }
-    let v: EnumSig? = variant_sig_of(s)
+    let v: EnumSig? = (s)?.enum_sig()
     if v == null { return 1 }
     fp(5, [t.index for t in flatten(v!.payloads)].concat([fp_str(joined(v!.names, ","))]))
 }
@@ -644,6 +651,11 @@ impl Workspace {
     /// The method-table clashes spoken in a file: every type's table
     /// asked, the clashes whose later declaration lives here.
     fn method_diagnostics(f: FileId) -> List<Diag> {
+        // A LIFTED CALL RUNS INSIDE A RESOLVE: computing the provider's
+        // analysis must not force ANOTHER file's resolve (a re-entrant
+        // `resolved` is a defect, not a smaller view). The provider's
+        // real diagnostics come from the normal analyze pass.
+        if self.db.family_active(ordinal(Family.Resolved)) { return [] }
         mut out: List<Diag> = []
         for t in self.typed_decls() {
             touch(self.methods(t))
@@ -850,7 +862,7 @@ impl Workspace {
         let ws = self
         let l = memory(self.decls.settlement(Wanted { file: x.file, decl: d, name: self.decls.symbol(d), sub: null }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        let sig = fn_sig_of(self.decls.sig(d))
+        let sig = (self.decls.sig(d))?.fn_sig()
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
         let shape = sig!
         if shape.params.is_empty() { return .Err(Unsettled.Trap("`${x.name}` takes no declaration to lift")) }
@@ -957,7 +969,7 @@ impl Workspace {
                     // annotations (std-meta's `traced`), whose sig lives
                     // in another, computable file.
                     if !same_file(self.decls.decl(ann_decl).file, f) {
-                        let asig: FnSig? = fn_sig_of(self.decls.sig(ann_decl))
+                        let asig: FnSig? = (self.decls.sig(ann_decl))?.fn_sig()
                         if asig != null {
                             let sig = asig!
                             if self.is_declares(sig.ret) || self.is_derived(sig.ret) {
@@ -995,10 +1007,9 @@ impl Workspace {
         let lo = store.exprs.count()
         let p = parse_into(self.lang, store, new_source_file("<generated>", code))
         if !p.voices.list.is_empty() { return [] }
-        let hi = p.store.exprs.count()
         // The tag is the SOURCE's fingerprint, so two derives that answer
         // different impls mint two, and a re-run of one mints nothing new.
-        self.decls.mint_generated_code(f, p.store, p.stmts, lo, hi, "${fp_str(code)}", ann, at)
+        self.decls.mint_generated_code(f, p.store, p.stmts, lo, "${fp_str(code)}", ann, at)
     }
 
     /// A lifted call's directives, or none when it refused — the ONE
@@ -1035,7 +1046,7 @@ impl Workspace {
         // The provider guard: a same-file derive would need this file's
         // names while they are still being made. `check_annotation` speaks.
         if same_file(self.decls.decl(m).file, f) { return [] }
-        let msig: FnSig? = fn_sig_of(self.decls.sig(m))
+        let msig: FnSig? = (self.decls.sig(m))?.fn_sig()
         if msig == null { return [] }
         self.lifted_directives(m, f, w.stmt, w.callee, [], msig!.ret)
     }
@@ -1549,7 +1560,7 @@ impl Program {
         let hit = decls.decls.find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null)
         if hit == null { return null }
         let decl = hit!
-        let sig: FnSig? = fn_sig_of(decls.sig(decl.id))
+        let sig: FnSig? = (decls.sig(decl.id))?.fn_sig()
         if sig == null { return null }
         let holes = [decls.types.name_of(pt) for pt in sig!.params]
         let signature = "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig!.ret)}"

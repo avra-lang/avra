@@ -3,7 +3,7 @@
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
 use core.{ExprId, TypeId, Arrow, DeclId}
-use features.{TypeCx, FnSig, this_is, MethodCall, fn_sig_of}
+use features.{TypeCx, FnSig, this_is, MethodCall}
 use diagnostics.{refusal}
 
 fn method_call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -56,7 +56,7 @@ fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, targe
 /// receiver rides a seat, so every argument judges against the sig
 /// exactly as written and the seats are numbered from zero.
 fn static_call(mut cx: TypeCx, e: ExprId, m: DeclId, target: string, name: string, args: List<ExprId>) -> TypeId {
-    let found: FnSig? = fn_sig_of(cx.view.decls.sig(m))
+    let found: FnSig? = (cx.view.decls.sig(m))?.fn_sig()
     if found == null { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
     let sig = found!
     if args.length != sig.params.length { return wrong_static_arity(cx, e, target, name, sig.params.length, args.length) }
@@ -196,7 +196,7 @@ fn dyn_call(mut cx: TypeCx, e: ExprId, subject: ExprId, tdecl: DeclId, tname: st
 /// The contract's own laws, then its judgment: the member's word
 /// decides the receiver and the seats for every signatory.
 fn contract_judged(mut cx: TypeCx, e: ExprId, subject: ExprId, trait_name: string, name: string, args: List<ExprId>, member: DeclId) -> TypeId {
-    let found: FnSig? = fn_sig_of(cx.view.decls.sig(member))
+    let found: FnSig? = (cx.view.decls.sig(member))?.fn_sig()
     if found == null { return cx.error_type }
     let writes = cx.view.decls.declares_writing(member)
     cx.receiver_law(e, subject, name, writes)

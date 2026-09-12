@@ -5,7 +5,9 @@
 > the `quote { … }` literal with `${}` holes, generated source parsed
 > into the asking file's own store, and `@derive` with `Show`/`Eq`
 > shipped in `@std/derive` (a struct and an enum, eval == native ==
-> expected). S1's `export const` and S5 (`const` seats) remain. **See
+> expected), and **the compiler DERIVES ITS OWN accessors**
+> (`@derive(Projections)` on `DeclSig`; `BEYOND` below). S1's
+> `export const` and S5 (`const` seats) remain. **See
 > the LANE HANDOFF at the top of §6** for the laws pinned, the seams,
 > and where to pick up.
 
@@ -854,90 +856,46 @@ to start cold; the size is the design's estimate.
       keyed by the spliced node, and a resolve that reads it. Proof: a
       derive's unqualified private helper is found, and cannot capture
       a user name.
-- [ ] **BEYOND — derive the compiler's own accessors (the payday).**
-      `_of` families are ONE-ARM PROJECTIONS: `DeclSig`'s `fn_sig_of`/
-      `record_sig_of`/`variant_sig_of` (`features/contract.av`), the
-      `Expr` VALUE PROTOCOL (`bool_of`/`int_of`/`text_of`/…,
-      `core/nodes.av`), the `Ins` readers (`dst_of`/`reads_of`).
-      MEASURED on this tree (2026-09-11): 133 `*_of` fns and 73
-      one-arm `_ -> null` projections, most of them this shape.
-      A METHOD-shaped `@derive` erases each family and needs NO
-      call-site change — the ORDER question is already answered:
-      `Workspace.methods(target)` forces `sig(impl)` for every impl of
-      the target, so the generated impl's methods register on first
-      ask, whichever file types first. THE HOME IS THE OPEN
-      QUESTION: the `.Derives` effect is keyed on `@std.meta.Derived`
-      and the provider trait must stand in another file, but
-      `std-avrac` does not depend on `@std/meta` (the boundary is a
-      USER package). Two ways: (a) `std-avrac` gains the dependency —
-      one manifest line, the boundary as the compiler's own library;
-      or (b) `derive`/`Directive`/`Derived` move to a `core`-level
-      module the compiler owns and `@std/meta` re-exports. (b) keeps
-      the layering. A FREE-FN derivation (the projections as free fns,
-      no call-site change) additionally owes the namespace widening:
-      `namespace_written(m)` (used by `expanded`/`declared_work`)
-      beside `namespace(m)` (written + generated, used by `resolve`),
-      with `exported_decls`/`surface`/`imported_line` gaining
-      generated variants. Size: the home ½ day; the widening 1–2
-      days; each family's derive a day.
+- [x] **BEYOND — the compiler derives its own accessors. LANDED
+      (2026-09-11).** `@derive(Projections)` (`features/projections.av`,
+      a `std-avrac` trait) generates `impl DeclSig { fn fn_sig() ->
+      FnSig? { match self { .Fn(s) -> s, _ -> null } } … }`; the three
+      `*_sig_of` free fns are DELETED and every call site reads
+      `d.fn_sig()` / `d.record_sig()` / `d.enum_sig()`. `std-avrac`
+      gained the `@std/meta` dependency (the derive vocabulary), and
+      the committed seed was refreshed (`make seed`) so a cold `make
+      bootstrap` understands `.Derives`. The other `_of` families
+      (`Expr`'s value protocol, `Ins`'s readers) are the SAME shape and
+      now a mechanical repeat: annotate the enum, add its provider
+      trait, sweep the call sites.
 
-      THE ATTEMPT WAS MADE AND IS BLOCKED, with receipts (2026-09-11).
-      `@derive(Projections)` on `DeclSig` + the three accessors swept
-      to methods compiles to `defect: memo family 5 reused missing key
-      79` during the compiler's self-compile. lldb: `derive_directives`
-      -> `trait_directives` -> `lifted_directives` -> `settlement` ->
-      `lowered` -> `analysis(provider)` -> `analyzed` ->
-      `method_diagnostics` -> `methods(t)` -> `sig(impl)` ->
-      `type_cx_for` -> `resolved(FILE)` while FILE's resolve is in
-      flight. RECEIPTS: (1) the trait must answer the compiler's OWN
-      `Directive` — importing `@std.meta.Directive` into `features`
-      collides with `features/worklist.av`'s (F3018); (2) guarding
-      `methods` to skip a `sig` whose file's `Resolved` family is
-      active was NOT enough (the defect persists), so the re-enter is
-      another path — instrument `methods`/`method_diagnostics` with
-      `core.debug` to find it; (3) `make seed` must land FIRST: the
-      committed seed predates `.Derives`, so a cold `make bootstrap`
-      cannot compile an `@derive` in the compiler's own source. FIX
-      FIRST: `method_diagnostics` fans out to EVERY record/enum
-      (`typed_decls`) and must not force another file's resolve during
-      a lifted call.
+      THE THREE LAWS THIS SLICE PINNED, each worth a keeper:
+      - AN INCOMPLETE QUERY RESULT MUST NOT BE MEMOIZED. `methods(target)`
+        must return the table-so-far WITHOUT `settle` when an impl's
+        file is resolving; the draft that settled it cached an EMPTY
+        method set for the very type a derive was mid-minting, and
+        every call site then refused.
+      - A WHOLE-PROGRAM PASS MUST NOT RUN INSIDE A RESOLVE. A lifted
+        call runs inside `resolved`; computing the provider's analysis
+        fanned out (`method_diagnostics` over EVERY record/enum, the
+        receiver pass forcing signatures) and re-entered the resolve
+        being served. `method_diagnostics` returns early while any
+        `Resolved` query is open (`Db.family_active`), and `methods`
+        consults the same.
+      - `resolved` IS A RECURSIVE QUERY. It used the acyclic `start`,
+        whose cycle answer is a DEFECT (`memo family 5 reused missing
+        key 79`); `start_recursive` answers a re-entry with a smaller
+        view — which is exactly what the two-tier expansion always
+        claimed. Found by integrating the derive: typing a generated
+        method asks the receiver pass for a signature, which asks for a
+        resolve.
+      AND A REFUSED GENERATED SOURCE IS SILENT TODAY: `admit_code`
+      drops a parse-refused generation. It should speak (a
+      `defect`/diagnostic) — that silence is how the `" "` vs `"
+"`
+      method-join bug hid. Also: generated decls carry their OWN
+      `[lo, hi)` range now, not the whole block's.
 
-      THE SECOND ATTEMPT GOT THREE LAYERS DEEP (2026-09-11), all
-      recorded so the next run starts here:
-      1. THE RE-ENTRANCY IS CURED by two guards, both needed:
-         `Db.family_active(family)` + a `method_diagnostics` early
-         return while a `Resolved` query is open (its provider's clash
-         scan has nothing to add mid-lift), AND `methods(target)`
-         returning the table-so-far WITHOUT `settle` when any impl's
-         file is resolving — an INCOMPLETE table memoized is worse than
-         no table (it cached an empty `DeclSig` method set and every
-         call site then refused). With both, the defect is gone.
-      2. A GENERATED IMPL'S METHODS NEED NEWLINES: `methods.join(" ")`
-         emits `} fn ...` on one line and the parser wants a BREAK
-         between fn declarations in an impl (`expected BREAK while
-         parsing stmt`). Join with `"\n"`. (The compiler's own
-         `admit_code` DROPS a refused generated source silently; give
-         it a `defect`/diagnostic on refusal — that is how this was
-         found.)
-      3. THE REMAINING WALL: the generated method bodies now PARSE and
-         MINT, but lowering defects: `a variant pattern without its
-         enum survived typing` and `an unresolved name survived a
-         clean analysis`. The generated `impl DeclSig { fn fn_sig() ->
-         FnSig? { match self { .Fn(s) -> s, _ -> null } } … }` is
-         admitted, yet its bodies are not resolved/typed as a written
-         impl's are. Prime suspect: `mint_generated_code` gives EVERY
-         generated decl the WHOLE block's `[lo, hi)` range (overlapping
-         siblings), where a written impl's methods get per-SPAN ranges
-         from `range_bodies` — and the generated code's spans are
-         0-based in the SYNTHETIC source, colliding with the real
-         file's. Fix the generated ranges (an offset base for synthetic
-         spans, or per-stmt arena ranges), then this should land.
-      4. THE BOOTSTRAP RECIPE, since a compiler-source `@derive` cannot
-         be built by a compiler that predates it: build a GUARD-ONLY
-         compiler (no `@derive`, hand-written accessors) from the
-         current binary, save it, re-add the `@derive`, build with the
-         saved binary. This was done four times here (`/tmp/avra.guardN`
-         pattern); make the seed refresh part of it.
 - [ ] **Later list, unstarted.** Static aggregate data (§4.5); a JIT
       engine behind `run_call`; type operators (`Type -> Type`, needs
       aliases); typed sublanguage holes (`sql { }`); manifest read

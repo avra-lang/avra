@@ -5,7 +5,7 @@
 //! rule, and the voices these laws speak.
 use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type, filled, same_decl}
 use diagnostics.{refusal, warning}
-use features.{TypeCx, FnSig, DeclSig, fn_sig_of, Decl, written_seats, EnumSig, variant_sig_of}
+use features.{TypeCx, FnSig, DeclSig, Decl, written_seats, EnumSig}
 
 impl TypeCx {
     /// A trait member's sig: `Self` at seat 0 — the trait's own
@@ -128,7 +128,7 @@ impl TypeCx {
         if name == null { return }
         // the DECLARATION answers, never an interned type: a record
         // target would mint a bogus `Type.Enum` the registry keeps
-        let sig: EnumSig? = variant_sig_of(self.view.decls.sig(target))
+        let sig: EnumSig? = (self.view.decls.sig(target))?.enum_sig()
         if sig == null || sig!.tag_of(name!) == null { return }
         self.static_names_a_variant(f, tname, name!)
     }
@@ -211,11 +211,11 @@ impl TypeCx {
     /// the trait's DEFAULT — which agrees with itself.
     fn check_trait_member(s: StmtId, of: string, target: DeclId, tname: string, m: DeclId) {
         let mn = self.view.decls.fn_name(m) ?? ""
-        let want: FnSig? = fn_sig_of(self.view.decls.sig(m))
+        let want: FnSig? = (self.view.decls.sig(m))?.fn_sig()
         let answered: DeclId? = self.view.decls.method(target, mn)
         if answered == null { return self.unanswered(s, of, tname, mn) }
         if same_decl(answered!, m) { return }
-        let got: FnSig? = fn_sig_of(self.view.decls.sig(answered!))
+        let got: FnSig? = (self.view.decls.sig(answered!))?.fn_sig()
         if want != null && got != null && !sigs_agree(want!, got!) { self.sig_unworn(s, of, tname, mn) }
     }
 
