@@ -3,7 +3,7 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, marked}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, SeatMark, mut_mark, settled_mark}
 use diagnostics.{Diag, refusal, warning}
 
 impl TypeCx {
@@ -64,10 +64,11 @@ impl TypeCx {
     }
 
     /// A FN VALUE FITS A FN SEAT when its seats and its answer are the
-    /// seat's and it writes through NO seat the seat withheld. The
-    /// asymmetry IS the law: a seat that permits writing accepts a
-    /// callee that does not write, and a seat that promised not to
-    /// write refuses one that does. Nothing else about a type widens.
+    /// seat's and it demands through NO seat the seat withheld. The
+    /// asymmetry IS the law: a seat that permits writing (or promises
+    /// settlement) accepts a callee that asks for less, and a seat
+    /// that promised neither refuses one that asks for more. Nothing
+    /// else about a type widens.
     fn fn_fits(got: TypeId, want: TypeId) -> bool {
         let seat: Arrow? = self.view.types.arrow_parts(want)
         let value: Arrow? = self.view.types.arrow_parts(got)
@@ -82,7 +83,8 @@ impl TypeCx {
         for j, ws in w.seats {
             // LICENSED I9: type identity — interned ids ARE the agreement
             if ws.index != g.seats[j].index { fits = false }
-            if marked(g.muts, j) && !marked(w.muts, j) { fits = false }
+            if mut_mark(g.marks, j) && !mut_mark(w.marks, j) { fits = false }
+            if settled_mark(g.marks, j) && !settled_mark(w.marks, j) { fits = false }
         }
         fits
     }
@@ -225,7 +227,7 @@ impl TypeCx {
     /// judges the real type.
     mut fn heard(e: ExprId, want: TypeId) {
         let arrow: Arrow? = self.view.types.arrow_parts(want)
-        if arrow != null { let _ = self.retype_seated(e, arrow!.seats, arrow!.muts) }
+        if arrow != null { let _ = self.retype_seated(e, arrow!.seats, arrow!.marks) }
         self.feed(e, want)
     }
 
@@ -400,12 +402,12 @@ impl TypeCx {
     /// A FN VALUE's seats judge a call — the one law the indirect
     /// call, the fn-field call, and the lambda share, refusing in the
     /// same words every call does.
-    mut fn seats_judged(e: ExprId, callee: string, ps: List<TypeId>, muts: List<bool>, ret: TypeId, args: List<ExprId>) -> TypeId {
+    mut fn seats_judged(e: ExprId, callee: string, ps: List<TypeId>, marks: List<SeatMark>, ret: TypeId, args: List<ExprId>) -> TypeId {
         if !self.seats_fit(e, callee, args, ps) { return self.error_type }
         // A FN TYPE CARRIES ITS SEATS' CONTRACT, so an INDIRECT call is
         // judged by the same law a direct one is: a marked seat is
         // filled by a `mut` place, and no two seats share a root.
-        self.mut_seats_law(e, callee, muts, args, null)
+        self.mut_seats_law(e, callee, marks, args, null)
         ret
     }
 
@@ -577,10 +579,10 @@ impl TypeCx {
     /// place, and no two `mut` seats (the receiver counted) share a
     /// root — the exclusivity law. Seats are numbered from `base` (1
     /// past a method's receiver seat).
-    mut fn mut_seats_law(e: ExprId, callee: string, muts: List<bool>, args: List<ExprId>, receiver: ExprId?) {
+    mut fn mut_seats_law(e: ExprId, callee: string, marks: List<SeatMark>, args: List<ExprId>, receiver: ExprId?) {
         mut roots: List<ExprId> = if receiver == null { [] } else { [receiver!] }
         for j, a in args {
-            if marked(muts, j) { roots = self.judged_seat(e, callee, a, j, roots) }
+            if mut_mark(marks, j) { roots = self.judged_seat(e, callee, a, j, roots) }
         }
     }
 
@@ -588,11 +590,11 @@ impl TypeCx {
     /// `base`, which is 1 past a method's own receiver. The law itself
     /// reads MARKS, so a declared callee and a fn-typed value are one
     /// rule and not two.
-    fn declared_marks(decl: DeclId, base: int, n: int) -> List<bool> {
-        mut out: List<bool> = []
+    fn declared_marks(decl: DeclId, base: int, n: int) -> List<SeatMark> {
+        mut out: List<SeatMark> = []
         mut j = 0
         while j < n {
-            out.push(self.view.decls.mut_seat(decl, base + j))
+            out.push(self.view.decls.seat_mark(decl, base + j))
             j = j + 1
         }
         out

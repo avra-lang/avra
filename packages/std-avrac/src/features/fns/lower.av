@@ -1,6 +1,6 @@
 //! The call's lowering rule: argument registers, then one Call —
 //! the memory pass owns the retains the ABI demands.
-use core.{ExprId, Reg, Ins, StmtId, DeclId, marked}
+use core.{ExprId, Reg, Ins, StmtId, DeclId, SeatMark, mut_mark}
 use features.{LowerCx, bound_decl_of}
 
 fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -27,7 +27,7 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
 /// LOCAL binding, so the cell is there.
 fn host_regs(mut cx: LowerCx, e: ExprId, args: List<ExprId>) -> List<Reg> {
     let marks = host_marks(cx, e, args.length)
-    [seat_reg(cx, a, marked(marks, j)) for j, a in args]
+    [seat_reg(cx, a, mut_mark(marks, j)) for j, a in args]
 }
 
 /// The register a seat is handed. An inout seat takes the CELL, and
@@ -42,10 +42,10 @@ fn seat_reg(mut cx: LowerCx, a: ExprId, inout: bool) -> Reg {
 }
 
 /// The callee's declared marks for this call's seats.
-fn host_marks(cx: LowerCx, e: ExprId, n: int) -> List<bool> {
+fn host_marks(cx: LowerCx, e: ExprId, n: int) -> List<SeatMark> {
     let d: DeclId? = bound_decl_of(cx.names, e)
     if d == null { return [] }
-    [cx.view.decls.mut_seat(d!, j) for j in 0..n]
+    cx.view.decls.marks_of(d!, n)
 }
 
 /// The indirect path: through the box, which rides seat 0 —

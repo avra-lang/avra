@@ -1,6 +1,6 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, flatten, some_list}
+use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, flatten, some_list, SeatMark, plain_mark}
 use grammar.{Captured, Token}
 
 /// One build call's world: the store, the captured arguments in
@@ -286,7 +286,7 @@ impl Builder {
         if fs.length != ft.length {
             return .Err(zip_defect_of("field names and types"))
         }
-        .Ok([Param { name: f.text, ty: ft[j], default: self.default_before(fs, fds, j), mutable: false, span: f.span } for j, f in fs])
+        .Ok([Param { name: f.text, ty: ft[j], default: self.default_before(fs, fds, j), mark: plain_mark(), span: f.span } for j, f in fs])
     }
 
     /// The default whose position falls between field `j`'s name and
@@ -318,7 +318,13 @@ export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
 /// Seats with their `mut` marks: a mark token between the previous
 /// name (or `from`, before the first) and a name marks that seat.
 export fn marked_seats(ps: List<Token>, tys: List<TypeRef?>, marks: List<Token>, from: int) -> List<Param> {
-    [Param { name: p.text, ty: tys[j], default: null, mutable: marks.any(mark_within(it, seat_since(ps, j, from), p.span.lo)), span: p.span } for j, p in ps]
+    [Param { name: p.text, ty: tys[j], default: null, mark: seat_mark_of(marks, seat_since(ps, j, from), p.span.lo), span: p.span } for j, p in ps]
+}
+
+/// A seat's mark: the `mut` token written in its window. The `const`
+/// mark is the settled seat's twin, read at the same window.
+fn seat_mark_of(marks: List<Token>, after: int, before: int) -> SeatMark {
+    SeatMark { mutable: marks.any(mark_within(it, after, before)), settled: false }
 }
 
 /// Where seat `j`'s mark may start: after the previous name, or `from`.

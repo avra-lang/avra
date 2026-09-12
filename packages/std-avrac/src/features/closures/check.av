@@ -2,7 +2,7 @@
 //! rides the recorded expected-type channel), the body typed under
 //! the params behind the return barrier, the whole wearing
 //! `fn(params) -> body`.
-use core.{ExprId, Type, TypeId, Arrow, Param, LambdaParts, marked}
+use core.{ExprId, Type, TypeId, Arrow, Param, LambdaParts, SeatMark, mut_mark, settled_mark}
 use features.{TypeCx, this_is, slot_worthy, slice_promise, Cap}
 use diagnostics.{refusal}
 
@@ -55,16 +55,19 @@ fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> Typ
 /// it — the body's lift recorded like any seat's. A body that
 /// disagrees keeps the lambda's own type, and the SEAT speaks: an
 /// `accepts` miss is silent by contract.
-fn answered(mut cx: TypeCx, body: ExprId, ptys: List<TypeId>, marks: List<bool>, ret: TypeId, a: TypeId) -> TypeId {
+fn answered(mut cx: TypeCx, body: ExprId, ptys: List<TypeId>, marks: List<SeatMark>, ret: TypeId, a: TypeId) -> TypeId {
     cx.view.types.intern(Type.Fn(ptys, marks, if cx.accepts(body, a) { a } else { ret }))
 }
 
-/// The marks a lambda's seats wear: a written `mut` speaks for
-/// itself; an UNANNOTATED seat hears the want's mark as it hears
+/// The marks a lambda's seats wear: a written mark speaks for
+/// itself; an UNANNOTATED seat hears the want's marks as it hears
 /// the want's type — the slot's whole contract, not half of it.
-fn heard_marks(cx: TypeCx, e: ExprId, params: List<Param>) -> List<bool> {
+fn heard_marks(cx: TypeCx, e: ExprId, params: List<Param>) -> List<SeatMark> {
     let arrow: Arrow? = wanted_arrow(cx, e, params.length)
-    [pp.mutable || (pp.ty == null && arrow != null && marked(arrow!.muts, j)) for j, pp in params]
+    [SeatMark {
+        mutable: pp.mark.mutable || (pp.ty == null && arrow != null && mut_mark(arrow!.marks, j)),
+        settled: pp.mark.settled || (pp.ty == null && arrow != null && settled_mark(arrow!.marks, j)),
+    } for j, pp in params]
 }
 
 /// What the seat's arrow says the body answers, when a seat spoke.
@@ -128,7 +131,7 @@ fn valued(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> Typ
     let held: Arrow? = cx.view.types.arrow_parts(cx.type_at(subject))
     if held != null {
         let arrow = held!
-        return cx.seats_judged(e, cx.name_at(subject), arrow.seats, arrow.muts, arrow.answer, args)
+        return cx.seats_judged(e, cx.name_at(subject), arrow.seats, arrow.marks, arrow.answer, args)
     }
     if cx.errored(subject) { return cx.error_type }
     uncallable(cx, e, subject)

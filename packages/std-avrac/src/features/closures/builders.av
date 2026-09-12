@@ -2,7 +2,7 @@
 //! TYPE. A param's annotation is optional in the PARSE (the typing
 //! law demands it until the expected-type channel lands); spans
 //! re-align them, the same window law fns use.
-use core.{Expr, TypeRef}
+use core.{Expr, TypeRef, SeatMark}
 use grammar.{Token}
 use features.{LangNode, Builder, aligned_param_types, within, marked_seats}
 
@@ -26,16 +26,16 @@ fn build_fn_type(b: Builder) -> Result<LangNode, string> {
     let ps = b.type_refs(1)?
     let r = b.answer(2)
     let from: int = b.span?.lo ?? 0
-    b.make_type(TypeRef { name: "fn", args: ps.concat([r]), optional: false, dynamic: false, arrow: true, span: b.span, muts: seat_marks(marks, ps, from) })
+    b.make_type(TypeRef { name: "fn", args: ps.concat([r]), optional: false, dynamic: false, arrow: true, span: b.span, marks: seat_marks(marks, ps, from) })
 }
 
 /// Each written seat's mark: a `mut` between the seat before it (or
 /// the `fn` word, for the first) and the seat's own start.
-fn seat_marks(marks: List<Token>, ps: List<TypeRef>, from: int) -> List<bool> {
-    mut out: List<bool> = []
+fn seat_marks(marks: List<Token>, ps: List<TypeRef>, from: int) -> List<SeatMark> {
+    mut out: List<SeatMark> = []
     for j, p in ps {
         let after = if j == 0 { from } else { ps[j - 1].span?.lo ?? from }
-        out.push(marks.any(within(it.span.lo, after, p.span?.lo ?? after)))
+        out.push(SeatMark { mutable: marks.any(within(it.span.lo, after, p.span?.lo ?? after)), settled: false })
     }
     out
 }

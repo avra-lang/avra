@@ -62,11 +62,12 @@ export enum Type {
     /// A FN VALUE — `fn(int) -> bool`: what a lambda or a named fn
     /// wears. The runtime shape is a box `[code address,
     /// captures…]`; a call rides CallPtr with the box at seat 0.
-    /// A fn as a VALUE. `muts` marks the seats the callee WRITES
-    /// THROUGH, seat by seat — a fn's contract travels with its
-    /// type, so a writing fn cannot sit in a seat that promised not
-    /// to write.
-    Fn(params: List<TypeId>, muts: List<bool>, ret: TypeId)
+    /// A fn as a VALUE. `marks` carries each seat's CONTRACT — the
+    /// seats the callee writes through, and the seats it demands be
+    /// settled at compile time. A fn's contract travels with its
+    /// type, so a writing or const-demanding fn cannot sit in a seat
+    /// that promised neither.
+    Fn(params: List<TypeId>, marks: List<SeatMark>, ret: TypeId)
     /// The answer of a mutation — a value that is nothing. Spec 4.2.
     Void
 
@@ -117,7 +118,10 @@ export enum TypeLit {
     Cell(inner: TypeLit)
     Map(key: TypeLit, value: TypeLit)
     Res(ok: TypeLit, err: TypeLit)
-    Fn(params: List<TypeLit>, muts: List<bool>, ret: TypeLit)
+    /// The spelling keeps the grammar's two marks apart — they are
+    /// written as separate words — and `interned` zips them into the
+    /// one `SeatMark` currency. A spelling, never an identity.
+    Fn(params: List<TypeLit>, muts: List<bool>, consts: List<bool>, ret: TypeLit)
     /// A hole: an id already in hand, named in the literal.
     Id(id: TypeId)
 }
@@ -179,7 +183,7 @@ impl TypeRegistry {
             .Var(decl, ordinal, _) -> "11:${decl.index}.${ordinal}",
             .App(decl, _, args) -> "12:${decl.index}.${joined(["${a.index}" for a in args], ".")}",
             .Dyn(decl, _) -> "14:${decl.index}",
-            .Fn(params, muts, ret) -> "15:${joined(["${a.index}" for a in params], ".")}:${mark_word(muts)}:${ret.index}",
+            .Fn(params, marks, ret) -> "15:${joined(["${a.index}" for a in params], ".")}:${mark_words(marks)}:${ret.index}",
             .Void -> "16",
         }
     }
@@ -188,7 +192,7 @@ impl TypeRegistry {
     fn intern(raw: Type) -> TypeId {
         // A FN TYPE'S MARKS ARE NORMALIZED HERE, so `fn(T)` interns
         // as one type however it was built: an unmarked seat list is
-        // empty, and `marked` reads absence as unwritten.
+        // empty, and `mark_at` reads absence as plain.
         let t = trimmed_marks(raw)
         self.keep_seats_boxed(t)
         let key = self.canon(t)
@@ -219,7 +223,7 @@ impl TypeRegistry {
             .Cell(inner) -> self.intern(Type.Cell(self.interned(inner))),
             .Map(k, v) -> self.intern(Type.Map(self.interned(k), self.interned(v))),
             .Res(ok, err) -> self.intern(Type.Res(self.interned(ok), self.interned(err))),
-            .Fn(ps, muts, ret) -> self.intern(Type.Fn([self.interned(p) for p in ps], muts, self.interned(ret))),
+            .Fn(ps, muts, consts, ret) -> self.intern(Type.Fn([self.interned(p) for p in ps], zip_marks(muts, consts), self.interned(ret))),
             .Id(id) -> id,
         }
     }
@@ -249,9 +253,9 @@ impl TypeRegistry {
     /// is the same law at the type's seam.
     fn keep_seats_boxed(t: Type) {
         match t {
-            .Fn(params, muts, _) -> {
+            .Fn(params, marks, _) -> {
                 for j, p in params {
-                    if marked(muts, j) { self.unflatten(p) }
+                    if mut_mark(marks, j) { self.unflatten(p) }
                 }
             }
             _ -> nothing_sealed(),
@@ -314,7 +318,7 @@ impl TypeRegistry {
     /// A fn type's seats and answer — res_parts' twin.
     fn arrow_parts(id: TypeId) -> Arrow? {
         match self.shape_of(id) {
-            .Fn(params, muts, ret) -> Arrow { seats: params, muts: muts, answer: ret },
+            .Fn(params, marks, ret) -> Arrow { seats: params, marks: marks, answer: ret },
             _ -> null,
         }
     }
@@ -361,8 +365,8 @@ impl TypeRegistry {
                                                   self.substituted(err, target, args))),
             .App(decl, name, aa) ->
                 self.intern(Type.App(decl, name, [self.substituted(a, target, args) for a in aa])),
-            .Fn(ps, muts, ret) ->
-                self.intern(Type.Fn([self.substituted(a, target, args) for a in ps], muts,
+            .Fn(ps, marks, ret) ->
+                self.intern(Type.Fn([self.substituted(a, target, args) for a in ps], marks,
                                     self.substituted(ret, target, args))),
             .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
             .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> ty,
@@ -381,7 +385,7 @@ impl TypeRegistry {
             .Cell(inner) -> "Cell<${self.name_of(inner)}>",
             .Struct(_, name) -> name,
             .Dyn(_, name) -> "dyn ${name}",
-            .Fn(params, muts, ret) -> "fn(${joined(self.seat_words(params, muts), ", ")})${self.answer_word(ret)}",
+            .Fn(params, marks, ret) -> "fn(${joined(self.seat_words(params, marks), ", ")})${self.answer_word(ret)}",
             .Void -> "void",
             .Enum(_, name) -> name,
             .TypeName(_, name) -> "type ${name}",
@@ -413,14 +417,12 @@ impl TypeRegistry {
     }
 
     /// A fn type's written answer — nothing when it answers `void`.
-    /// Each seat spelled, its `mut` in front when the callee writes
-    /// through it.
-    fn seat_words(params: List<TypeId>, muts: List<bool>) -> List<string> {
+    /// Each seat spelled, its marks in front when it carries any.
+    fn seat_words(params: List<TypeId>, marks: List<SeatMark>) -> List<string> {
         mut out: List<string> = []
         // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(j, p) for j, p in ps]` does not parse
         for j, p in params {
-            let word = self.name_of(p)
-            out.push(if marked(muts, j) { "mut ${word}" } else { word })
+            out.push(mark_prefixed(mark_at(marks, j), self.name_of(p)))
         }
         out
     }
@@ -435,43 +437,98 @@ impl TypeRegistry {
 export type ResSides = { ok: TypeId, err: TypeId }
 
 /// What a fn type promises — arrow_parts' answer.
-export type Arrow = { seats: List<TypeId>, muts: List<bool>, answer: TypeId }
+export type Arrow = { seats: List<TypeId>, marks: List<SeatMark>, answer: TypeId }
 
-/// A fn type's seats, spelled — a written seat wears its `mut`.
-fn mark_word(muts: List<bool>) -> string {
-    joined([if m { "m" } else { "p" } for m in muts], "")
+/// A fn seat's contract, ONE value per seat. `mutable` lets the
+/// callee write through the seat; `settled` demands the caller
+/// settle the seat's value at compile time. Both ride the fn type's
+/// identity, so a writing or const-demanding callee cannot sit in a
+/// seat that promised neither — and a new promise is a field here,
+/// never a parallel list at every mark site.
+export type SeatMark = { mutable: bool, settled: bool }
+
+/// The unmarked seat — a lambda's, a wrapper's, a trailing seat's.
+export fn plain_mark() -> SeatMark {
+    SeatMark { mutable: false, settled: false }
 }
 
-/// A fn type with its trailing unwritten marks dropped — the ONE
-/// normal form, so `fn(T, U)` built with no marks and with two
-/// false ones are the same type.
+/// A flag list's seat, absent read false — the spelling's list may
+/// be shorter than its seats.
+fn flag_at(flags: List<bool>, j: int) -> bool {
+    j < flags.length && flags[j]
+}
+
+/// The spelling's two mark lists, zipped into the one currency —
+/// the ONLY place the two representations meet.
+fn zip_marks(muts: List<bool>, consts: List<bool>) -> List<SeatMark> {
+    [SeatMark { mutable: flag_at(muts, j), settled: flag_at(consts, j) } for j in 0..muts.length]
+}
+
+/// Seat `j`'s mark — absent marks read plain, so a fn type built
+/// before the marks existed is a plain one.
+export fn mark_at(marks: List<SeatMark>, j: int) -> SeatMark {
+    if j < marks.length { return marks[j] }
+    plain_mark()
+}
+
+/// Whether seat `j` is written through.
+export fn mut_mark(marks: List<SeatMark>, j: int) -> bool {
+    mark_at(marks, j).mutable
+}
+
+/// Whether seat `j` demands compile-time settlement.
+export fn settled_mark(marks: List<SeatMark>, j: int) -> bool {
+    mark_at(marks, j).settled
+}
+
+/// A seat's written prefix — `const`, `mut`, or both.
+export fn mark_prefixed(m: SeatMark, word: string) -> string {
+    if m.settled { return if m.mutable { "const mut ${word}" } else { "const ${word}" } }
+    if m.mutable { return "mut ${word}" }
+    word
+}
+
+/// The canonical word for a mark set — ONE spelling in the
+/// interner's key, so two mark sets are one type exactly when their
+/// words agree.
+fn mark_words(marks: List<SeatMark>) -> string {
+    joined([mark_word(m) for m in marks], "")
+}
+
+fn mark_word(m: SeatMark) -> string {
+    if m.mutable { if m.settled { "b" } else { "m" } }
+    else if m.settled { "c" }
+    else { "p" }
+}
+
+/// A fn type with its trailing PLAIN marks dropped — the ONE normal
+/// form, so `fn(T, U)` built with no marks and with two plain ones
+/// are the same type.
 fn trimmed_marks(t: Type) -> Type {
     match t {
-        .Fn(ps, muts, ret) -> Type.Fn(ps, trimmed(muts), ret),
+        .Fn(ps, marks, ret) -> Type.Fn(ps, trimmed(marks), ret),
         _ -> t,
     }
 }
 
-fn trimmed(muts: List<bool>) -> List<bool> {
-    mut last = muts.length
-    while last > 0 && !muts[last - 1] {
+fn is_plain(m: SeatMark) -> bool {
+    !m.mutable && !m.settled
+}
+
+fn trimmed(marks: List<SeatMark>) -> List<SeatMark> {
+    mut last = marks.length
+    while last > 0 && is_plain(marks[last - 1]) {
         last = last - 1
     }
-    muts.slice(0, last)
+    marks.slice(0, last)
 }
 
-/// Seat `j`'s mark — absent marks read as unwritten, so a fn type
-/// built before the marks existed is a plain one.
-export fn marked(muts: List<bool>, j: int) -> bool {
-    j < muts.length && muts[j]
-}
-
-/// Marks for a seat count, all unwritten — a lambda's, a wrapper's.
-export fn no_marks(n: int) -> List<bool> {
-    mut out: List<bool> = []
+/// Marks for a seat count, all plain — a lambda's, a wrapper's.
+export fn no_marks(n: int) -> List<SeatMark> {
+    mut out: List<SeatMark> = []
     mut j = 0
     while j < n {
-        out.push(false)
+        out.push(plain_mark())
         j = j + 1
     }
     out

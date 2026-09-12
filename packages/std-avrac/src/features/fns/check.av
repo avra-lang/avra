@@ -6,7 +6,7 @@
 //! generic call INSTANTIATES: pins pre-fill, arguments unify, a
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
-use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, marked}
+use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, SeatMark, mut_mark}
 use features.{no_pins, Pins, TypeCx, FnSig, nothing, this_is, tparams_refused, unpinned_of, slice_promise}
 use diagnostics.{refusal}
 
@@ -26,7 +26,7 @@ export fn check_fn(mut cx: TypeCx, s: StmtId) {
 /// the top half stale, which is B3's defect wearing the other hat.
 fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
     for j, pp in hparams {
-        if pp.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
+        if pp.mark.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
     }
 }
 
@@ -76,7 +76,7 @@ fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, a
     let held: Arrow? = cx.view.types.arrow_parts(bound)
     if held != null {
         let arrow = held!
-        return cx.seats_judged(e, callee, arrow.seats, arrow.muts, arrow.answer, args)
+        return cx.seats_judged(e, callee, arrow.seats, arrow.marks, arrow.answer, args)
     }
     if cx.errored_ty(bound) { return cx.error_type }
     not_callable(cx, e, callee, bound)
@@ -234,9 +234,9 @@ fn bounds_hold(mut cx: TypeCx, e: ExprId, decl: DeclId, concrete: List<TypeId>) 
 /// a capture, a pattern bind and a receiver are registers with
 /// nothing behind them, so handing one over would pass the VALUE and
 /// the callee's write would land in a copy nobody reads.
-fn inout_args_law(mut cx: TypeCx, callee: string, marks: List<bool>, args: List<ExprId>) {
+fn inout_args_law(mut cx: TypeCx, callee: string, marks: List<SeatMark>, args: List<ExprId>) {
     for j, a in args {
-        if marked(marks, j) && cellless_place(cx, a) { seat_wants_a_local(cx, a, callee, j) }
+        if mut_mark(marks, j) && cellless_place(cx, a) { seat_wants_a_local(cx, a, callee, j) }
     }
 }
 

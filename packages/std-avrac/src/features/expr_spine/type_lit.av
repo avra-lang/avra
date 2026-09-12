@@ -7,7 +7,7 @@
 //! NAME is a hole — a `TypeId` binding in scope
 //! (`cx.type(Map<string, want>)`). A declared type has no spelling
 //! here: its id is a binding, so the hole is how it is named.
-use core.{Expr, ExprId, TypeRef, plain, marked}
+use core.{Expr, ExprId, TypeRef, plain, mut_mark, settled_mark}
 use features.{Builder, chained_binder}
 
 /// A word that spells a shape of its own.
@@ -87,14 +87,16 @@ fn spelling(mut b: Builder, t: TypeRef) -> Result<ExprId, string> {
 fn fn_spelling(mut b: Builder, t: TypeRef) -> Result<ExprId, string> {
     let seats = t.args.length - 1
     mut params: List<ExprId> = []
-    mut marks: List<ExprId> = []
+    mut muts: List<ExprId> = []
+    mut consts: List<ExprId> = []
     // LICENSED I3: the body allocates through `b.store`, which a comprehension element does not
     for j in 0..seats {
         params.push(spelling(b, t.args[j])?)
-        marks.push(b.store.alloc_expr(Expr.BoolLit(marked(t.muts, j)), t.span))
+        muts.push(b.store.alloc_expr(Expr.BoolLit(mut_mark(t.marks, j)), t.span))
+        consts.push(b.store.alloc_expr(Expr.BoolLit(settled_mark(t.marks, j)), t.span))
     }
     let ret = spelling(b, t.args[seats])?
-    variant(b, t, "Fn", [b.store.alloc_expr(Expr.ListLit(params), t.span), b.store.alloc_expr(Expr.ListLit(marks), t.span), ret])
+    variant(b, t, "Fn", [b.store.alloc_expr(Expr.ListLit(params), t.span), b.store.alloc_expr(Expr.ListLit(muts), t.span), b.store.alloc_expr(Expr.ListLit(consts), t.span), ret])
 }
 
 fn variant(mut b: Builder, t: TypeRef, name: string, args: List<ExprId>) -> Result<ExprId, string> {

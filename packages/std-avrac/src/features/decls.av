@@ -9,6 +9,7 @@
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
 use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr}
+use core.{SeatMark, mark_at, plain_mark}
 use @std.path.{stem_of}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
@@ -71,11 +72,11 @@ export type Decls = {
     // an impl block's target type, once typing found it — dense by
     // DeclId; a method's instantiation is its target's
     targets: List<DeclId?>,
-    // THE INOUT SEATS, dense by DeclId: which seats a fn declared
-    // `mut` (a method's receiver seat included), whether a method
-    // DECLARED `mut fn`, and whether the receivers pass found it
-    // WRITING through `self` — asked through the armed hook
-    seat_muts: List<List<bool>>,
+    // THE INOUT SEATS, dense by DeclId: each seat's CONTRACT a fn
+    // declared (`mut`, `const`), whether a method DECLARED `mut fn`,
+    // and whether the receivers pass found it WRITING through `self`
+    // — asked through the armed hook
+    seat_marks: List<List<SeatMark>>,
     declared_writes: List<bool>,
     written_seats: List<List<bool>>,
     ensure_writes: List<fn(DeclId)>,
@@ -101,7 +102,7 @@ export fn new_decls() -> Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
         stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
         ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
-        seat_muts: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
+        seat_marks: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
         lifter: [no_lifter],
     }
 }
@@ -376,7 +377,7 @@ impl Decls {
             self.provenance.push(null)
             self.marks.push(null)
             self.targets.push(null)
-            self.seat_muts.push([])
+            self.seat_marks.push([])
             self.declared_writes.push(false)
             self.written_seats.push([])
             self.children.push([])
@@ -761,36 +762,35 @@ impl Decls {
 
     // ── the inout seats ──
 
-    /// A declaration's `mut` seats, as declared — a method's seat 0
-    /// is its receiver and is never declared here. The written bits
+    /// A declaration's seat CONTRACTS, as declared — a method's seat
+    /// 0 is its receiver and is never declared here. The written bits
     /// take the same shape, all false until the pass runs.
-    fn record_seats(d: DeclId, muts: List<bool>) {
-        self.seat_muts.set(d.index, muts)
-        self.written_seats.set(d.index, filled(muts.length, false))
+    fn record_seats(d: DeclId, marks: List<SeatMark>) {
+        self.seat_marks.set(d.index, marks)
+        self.written_seats.set(d.index, filled(marks.length, false))
     }
 
     /// How many seats a declaration has — the receiver's included.
-    fn seat_count(d: DeclId) -> int { self.seat_muts[d.index].length }
+    fn seat_count(d: DeclId) -> int { self.seat_marks[d.index].length }
 
     /// Asking IS the query: the sig hook declares `d` first, so a
     /// callee named before its own declaration answers truly.
     /// A declaration's seats' marks, sized to its seats — the
     /// contract a fn VALUE of it carries.
-    fn seat_marks(d: DeclId, n: int) -> List<bool> {
-        mut out: List<bool> = []
+    fn marks_of(d: DeclId, n: int) -> List<SeatMark> {
+        mut out: List<SeatMark> = []
         mut j = 0
         while j < n {
-            out.push(self.mut_seat(d, j))
+            out.push(self.seat_mark(d, j))
             j = j + 1
         }
         out
     }
 
-    fn mut_seat(d: DeclId, i: int) -> bool {
+    fn seat_mark(d: DeclId, i: int) -> SeatMark {
         let ensure = self.ensure[0]
         ensure(d)
-        let muts = self.seat_muts[d.index]
-        i < muts.length && muts[i]
+        mark_at(self.seat_marks[d.index], i)
     }
 
     /// `mut fn` — the method (or trait sig) declared its receiver
@@ -875,7 +875,7 @@ impl Decls {
         if x.kind is .Builtin { return [] }
         // `Self` is bounded by the trait itself: inside a default,
         // `self` answers the trait's own members
-        if x.kind is .Trait { return [Param { name: self_word(), ty: named_ref(x.name), default: null, mutable: false, span: null }] }
+        if x.kind is .Trait { return [Param { name: self_word(), ty: named_ref(x.name), default: null, mark: plain_mark(), span: null }] }
         self.store(d).decl_tbounds(x.stmt)
     }
 

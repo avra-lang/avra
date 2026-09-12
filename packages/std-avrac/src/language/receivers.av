@@ -8,7 +8,7 @@
 //! has a declared type along its whole path, so no body is typed to
 //! learn it. Asked through the declaration table's hook, remembered
 //! by the kernel (ROADMAP: the inout receiver).
-use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, Binding, MethodParts, AppliedParts, PlaceStep, fp, touch, filled, flatten, marked}
+use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, Binding, MethodParts, AppliedParts, PlaceStep, fp, touch, filled, flatten, SeatMark, mut_mark}
 use features.{NameFacts, Decls, Decl, StructSig, bound_decl_of, row_writes, FnSig, nothing, property_row}
 
 /// One fn's own evidence: which of its seats the body writes
@@ -158,11 +158,11 @@ impl Survey {
     /// fn-typed field's do.
     mut fn valued_evidence(e: ExprId) {
         let seat: int? = self.called_seat(e)
-        if seat != null && seat! < self.seats.length { return self.feed_marks(self.arrow_muts(self.seats[seat!]), self.call_args(e)) }
+        if seat != null && seat! < self.seats.length { return self.feed_marks(self.arrow_marks(self.seats[seat!]), self.call_args(e)) }
         let ap: AppliedParts? = self.store.applied_parts(e)
         if ap == null { return }
         let ty: TypeId? = self.place_type(ap!.subject)
-        if ty != null { self.feed_marks(self.arrow_muts(ty!), ap!.args) }
+        if ty != null { self.feed_marks(self.arrow_marks(ty!), ap!.args) }
     }
 
     /// The seat a named call reads its callee from, when the name is a
@@ -178,10 +178,10 @@ impl Survey {
     }
 
     /// A fn type's marks — none for any other type.
-    fn arrow_muts(ty: TypeId) -> List<bool> {
+    fn arrow_marks(ty: TypeId) -> List<SeatMark> {
         let held: Arrow? = self.decls.types.arrow_parts(ty)
         if held == null { return [] }
-        held!.muts
+        held!.marks
     }
 
     /// A named call's arguments; empty for every other node.
@@ -212,7 +212,7 @@ impl Survey {
                 self.feed(d, mp.args, 1)
             }
             .Static(d) -> self.feed(d, mp.args, 0),
-            .FnSeats(held) -> self.feed_marks(held.muts, mp.args),
+            .FnSeats(held) -> self.feed_marks(held.marks, mp.args),
             .Contract(d) -> {
                 if self.decls.declares_writing(d) { self.mark(seat) }
                 self.feed(d, mp.args, 1)
@@ -257,7 +257,7 @@ impl Survey {
     mut fn feed(callee: DeclId, args: List<ExprId>, base: int) {
         let contract = self.under_trait(callee)
         for j, a in args {
-            if self.decls.mut_seat(callee, base + j) {
+            if self.decls.seat_mark(callee, base + j).mutable {
                 let seat: int? = self.seat_of(a)
                 if contract { self.mark(seat) } else { self.flow(seat, callee, base + j) }
             }
@@ -268,9 +268,9 @@ impl Survey {
     /// VALUE names no callee to flow into, so a marked seat MARKS its
     /// argument — the conservative answer, and the right one, since any
     /// fn of that type may fill the field.
-    mut fn feed_marks(muts: List<bool>, args: List<ExprId>) {
+    mut fn feed_marks(marks: List<SeatMark>, args: List<ExprId>) {
         for j, a in args {
-            if marked(muts, j) { self.mark(self.seat_of(a)) }
+            if mut_mark(marks, j) { self.mark(self.seat_of(a)) }
         }
     }
 

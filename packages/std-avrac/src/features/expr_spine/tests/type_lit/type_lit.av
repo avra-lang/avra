@@ -10,7 +10,7 @@ enum Spelling {
     List(elem: Spelling)
     Map(key: Spelling, value: Spelling)
     Res(ok: Spelling, err: Spelling)
-    Fn(params: List<Spelling>, muts: List<bool>, ret: Spelling)
+    Fn(params: List<Spelling>, muts: List<bool>, consts: List<bool>, ret: Spelling)
     Id(id: int)
 }
 type Names = { held: List<string> }
@@ -27,12 +27,15 @@ impl Names {
             .List(elem) -> "List<${self.interned(elem)}>",
             .Map(k, v) -> "Map<${self.interned(k)}, ${self.interned(v)}>",
             .Res(ok, err) -> "Result<${self.interned(ok)}, ${self.interned(err)}>",
-            .Fn(ps, muts, ret) -> "fn(${[self.seat(p, muts[j]) for j, p in ps].join(", ")}) -> ${self.interned(ret)}",
+            .Fn(ps, muts, consts, ret) -> "fn(${[self.seat(p, muts[j], consts[j]) for j, p in ps].join(", ")}) -> ${self.interned(ret)}",
             .Id(id) -> self.held[id],
         }
     }
-    fn seat(p: Spelling, written: bool) -> string {
-        if written { "mut ${self.interned(p)}" } else { self.interned(p) }
+    fn seat(p: Spelling, written: bool, settled: bool) -> string {
+        let w = self.interned(p)
+        if settled { return "const ${w}" }
+        if written { return "mut ${w}" }
+        w
     }
 }
 fn seat_of(x: Names, i: int) -> string { x.type(List<i>) }

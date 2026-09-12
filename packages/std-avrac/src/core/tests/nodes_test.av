@@ -1,6 +1,6 @@
 // The arena contract: sequential opaque ids, spans in side tables,
 // and content identity that sees structure only — never spans.
-use @std.avrac.core.{Span, new_node_store, Expr, Stmt, Pat, Arm, BinOp, Param, TypeRef, Variant, plain, named_ref, spelled}
+use @std.avrac.core.{Span, new_node_store, Expr, Stmt, Pat, Arm, BinOp, Param, TypeRef, Variant, SeatMark, plain_mark, plain, named_ref, spelled}
 
 fn at(lo: int, hi: int) -> Span? { Span { lo: lo, hi: hi } }
 
@@ -11,7 +11,7 @@ fn ty(name: string, optional: bool) -> TypeRef {
 
 /// One param carrying a written type.
 fn param(name: string, t: TypeRef?) -> Param {
-    Param { name: name, ty: t, default: null, mutable: false }
+    Param { name: name, ty: t, default: null, mark: plain_mark() }
 }
 
 /// One variant: unit when `t` is absent, else carrying one payload.
@@ -178,13 +178,13 @@ spec "core/nodes" {
             s.expr_fingerprint(wide) != s.expr_fingerprint(split)
         }
         then "dropping a `?` KEEPS every other field — a fn type's seat marks survive it" {
-            let marked = TypeRef { name: "fn", args: [ty("int", false), ty("int", false)], optional: true, dynamic: false, arrow: true, span: null, muts: [true, false] }
+            let marked = TypeRef { name: "fn", args: [ty("int", false), ty("int", false)], optional: true, dynamic: false, arrow: true, span: null, marks: [SeatMark { mutable: true, settled: false }, plain_mark()] }
             let dropped = plain(marked)
-            dropped.muts.length == 2 && dropped.muts[0] && !dropped.muts[1] && !dropped.optional && dropped.arrow && dropped.args.length == 2
+            dropped.marks.length == 2 && dropped.marks[0].mutable && !dropped.marks[1].mutable && !dropped.optional && dropped.arrow && dropped.args.length == 2
         }
         then "written types spell every part of their source" {
             let dynamic = named_ref("Show") with { dynamic: true, optional: true }
-            let arrow = TypeRef { name: "fn", args: [ty("int", false), dynamic, ty("bool", false)], optional: false, dynamic: false, arrow: true, span: null, muts: [true, false] }
+            let arrow = TypeRef { name: "fn", args: [ty("int", false), dynamic, ty("bool", false)], optional: false, dynamic: false, arrow: true, span: null, marks: [SeatMark { mutable: true, settled: false }, plain_mark()] }
             spelled(arrow) == "fn(mut int, dyn Show?) -> bool"
         }
         then "two spellings of one type still agree — spans never count" {

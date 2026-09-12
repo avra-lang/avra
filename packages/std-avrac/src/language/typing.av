@@ -7,7 +7,8 @@
 //! never an option and never an Unknown — a hole or unresolved
 //! name types as the interned Error, which ABSORBS: the causing
 //! pass already spoke, so no diagnostic cascades from it.
-use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId, FnParts, Binding, same_expr, flatten, LambdaParts, marked, Annotation}
+use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId, FnParts, Binding, same_expr, flatten, LambdaParts, mut_mark, Annotation}
+use core.{SeatMark}
 use diagnostics.{Diag, loc_at, refusal}
 use features.{TypeCx, NarrowFrame, Dispatch, semantics_of, stmt_semantics_of, post_order, FnSig, DeclSig, TypeRow, type_row, Decls, Decl, Cap, new_type_facts, def_type_of, type_named, TypeFacts, NameFacts, FileView, nothing, scalar_named}
 use features.structs.{fits_default}
@@ -195,7 +196,7 @@ impl TypeCx {
     /// A lambda's body typed under its params, behind the BARRIER —
     /// `return`/`?`/`fail` inside see no enclosing fn. Params and
     /// captures register FIRST so the body's reads answer.
-    mut fn lambda_body(lam: ExprId, ptys: List<TypeId>, marks: List<bool>, body: ExprId) -> TypeId {
+    mut fn lambda_body(lam: ExprId, ptys: List<TypeId>, marks: List<SeatMark>, body: ExprId) -> TypeId {
         self.facts.seat_lambda(lam, ptys, marks)
         self.facts.seat_captures(lam, self.capture_seats(lam))
         // LICENSED I15: this IS the bracket
@@ -217,14 +218,14 @@ impl TypeCx {
     /// in — the judging boundary hands them over, the body walks
     /// once, and every fact (of_expr, lambda_params) converges as if
     /// the annotations had been written.
-    mut fn retype_seated(a: ExprId, seats: List<TypeId>, muts: List<bool>) -> TypeId? {
+    mut fn retype_seated(a: ExprId, seats: List<TypeId>, marks: List<SeatMark>) -> TypeId? {
         if !self.facts.hungry_at(a) { return null }
         let parts: LambdaParts? = self.view.store.lambda_parts(a)
         if parts == null { return null }
         if parts!.params.length != seats.length { return null }
         self.facts.absorb_hunger(a)
-        let ret = self.lambda_body(a, seats, muts, parts!.body)
-        let ty = self.view.types.intern(Type.Fn(seats, muts, ret))
+        let ret = self.lambda_body(a, seats, marks, parts!.body)
+        let ty = self.view.types.intern(Type.Fn(seats, marks, ret))
         self.facts.set_type(a, ty)
         ty
     }
@@ -433,7 +434,7 @@ impl TypeCx {
     /// Whether a lambda's seat HEARD a `mut` mark from its slot — the
     /// half of `is_mut` only typing can answer.
     fn heard_mut(l: ExprId, i: int) -> bool {
-        marked(self.facts.lambda_marks(l) ?? [], i)
+        mut_mark(self.facts.heard_marks(l) ?? [], i)
     }
 
     /// A lambda param's declared type, by seat.

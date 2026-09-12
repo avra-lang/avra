@@ -9,6 +9,7 @@
 //! earlier one; `fn` names are program-wide, so recursion and mutual
 //! recursion are free. Inside a body, params bind innermost.
 use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore, LambdaParts, Annotation}
+use core.{SeatMark}
 use diagnostics.{Diag, error_at, loc_at, pointed, refusal, Voices, no_voices}
 use features.modules.{module_laws}
 use features.{ResolveCx, Def, LFrame, Dispatch, self_word, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats, nothing, semantics_of, stmt_semantics_of, post_order}
@@ -36,7 +37,7 @@ export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, sc
             names: scope, voices: no_voices(),
         },
         def_names: [d.name for d in defs],
-        visible: {}, overlays: [], lframes: [], floors: [], receivers: [], muts: [],
+        visible: {}, overlays: [], lframes: [], floors: [], receivers: [], marks: [],
         walked: filled(view.store.exprs.count(), false),
         scoped: filled(view.store.stmts.count(), false),
         scope: [], in_block: false, miss: miss,
@@ -185,11 +186,11 @@ impl ResolveCx {
         let outer = self.scope
         // LICENSED I15: this IS the bracket
         self.floors.push(self.overlays.length)
-        self.muts.push([pp.mutable for pp in seats])
+        self.marks.push([pp.mark for pp in seats])
         self.scope = [pp.name for pp in seats]
         self.walk(body)
         self.scope = outer
-        let _ = self.muts.pop()
+        let _ = self.marks.pop()
         let _ = self.floors.pop()
     }
 }
@@ -409,14 +410,14 @@ impl ResolveCx {
     fn lambda_seat_mut(l: ExprId, i: int) -> bool {
         let parts: LambdaParts? = self.view.store.lambda_parts(l)
         if parts == null { return false }
-        parts!.params[i].mutable
+        parts!.params[i].mark.mutable
     }
 
     fn seat_is_mut(i: int) -> bool {
-        let open: List<bool>? = self.muts.last()
+        let open: List<SeatMark>? = self.marks.last()
         if open == null { return false }
         let at = i - self.seat_base()
-        at >= 0 && at < open!.length && open![at]
+        at >= 0 && at < open!.length && open![at].mutable
     }
 
     /// A name resolves ONCE — the first walk wins, diagnostics

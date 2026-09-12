@@ -301,17 +301,17 @@ export type MapPairs = { keys: List<ExprId>, values: List<ExprId> }
 /// expression — no second name law.
 export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, span: Span? }
 
-export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, muts: List<bool> = [] }
+export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [] }
 
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
-/// field rides across: a fn type's `muts` are part of its identity
+/// field rides across: a fn type's `marks` are part of its identity
 /// (`fn(mut Cx)` is not `fn(Cx)`), so dropping them here would hand
 /// the seat law a type that had quietly lost its contract.
 /// A RECONSTRUCTION NAMES WHAT CHANGES, never the rest — spelling
 /// the others out drops the NEXT field silently, and a field with a
-/// DEFAULT drops without even a compile error. `muts` was lost here
-/// exactly so, from the day it was added.
+/// DEFAULT drops without even a compile error. `marks` was lost here
+/// exactly so, from the day `mut` was added.
 /// A written type naming a declaration, bare — THE ONE PLACE the
 /// seven fields are spelled. Every other shape is this `with` what
 /// differs, so a field added to `TypeRef` reaches every site through
@@ -337,13 +337,13 @@ export fn spelled(t: TypeRef) -> string {
 fn spelled_arrow(t: TypeRef) -> string {
     let n = t.args.length
     if n == 0 { return "fn()" }
-    let seats = ["${if marked(t.muts, j) { "mut " } else { "" }}${spelled(a)}" for j, a in t.args.slice(0, n - 1)]
+    let seats = [mark_prefixed(mark_at(t.marks, j), spelled(a)) for j, a in t.args.slice(0, n - 1)]
     "fn(${joined(seats, ", ")}) -> ${spelled(t.args[n - 1])}"
 }
 
 /// The pronoun's own seat — what an implicit `it` lambda declares.
 export fn pronoun_param() -> Param {
-    Param { name: "it", ty: null, default: null, mutable: false, span: null }
+    Param { name: "it", ty: null, default: null, mark: plain_mark(), span: null }
 }
 
 /// One declared parameter: its name and its written type. An ABSENT
@@ -351,7 +351,7 @@ export fn pronoun_param() -> Param {
 /// has to ask which kind it is.
 /// A declared seat — a fn's param, a lambda's, a struct's field, an
 /// enum variant's payload — with the DEFAULT a field may declare.
-export type Param = { name: string, ty: TypeRef?, default: ExprId?, mutable: bool, span: Span? = null }
+export type Param = { name: string, ty: TypeRef?, default: ExprId?, mark: SeatMark, span: Span? = null }
 
 /// A pattern's identity in the store's pattern table.
 export type PatId = { index: int }
