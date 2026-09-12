@@ -896,6 +896,63 @@ to start cold; the size is the design's estimate.
       method-join bug hid. Also: generated decls carry their OWN
       `[lo, hi)` range now, not the whole block's.
 
+### THE MECHANICAL-CLASS INVENTORY (2026-09-11)
+
+A tree-wide sweep (functions whose body is a one-variant projection,
+plus the big dispatch tables). The classes, and HONESTLY which the
+`Projections` treatment reaches:
+
+- **A. UNIFORM PAYLOAD PROJECTIONS — the clean ones.** The body is
+  `match x { .V(s) -> s, _ -> null }`, so a provider DERIVES the body
+  from the variant metadata; nothing is spelled twice.
+  - `DeclSig` (features/contract.av): DONE (`@derive(Projections)`).
+  - `Val` (language/interp.av): `array_id(.A)`, `map_id(.M)`,
+    `call_ptr_val(.I)` — 3 fns, clean, would become `v.array_id()`.
+  - `Captured` over `GrammarNode` (grammar/builders.av): 8 fns,
+    UNIFORM-NESTED (`match v { .Node(.NAlt(a)) -> a, _ -> null }`); a
+    provider that writes `.Node(.<inner>(s)) -> s` derives them.
+  - `features/builder.av` `*_at` (6): `.Node(n)` then a CAST — NOT a
+    plain payload; needs the provider to spell the cast.
+- **B. THE `Expr` VALUE PROTOCOL (core/nodes.av): 6 fns.** 5 are the
+  clean shape (`bool_of`, `int_of`, `bits_of`, `text_of`, `elems_of`);
+  `pairs_of` builds a `MapPairs` from TWO payloads, so it needs a
+  RECORD-PROJECTION arm (or stays hand-written). ~37 call sites.
+  `is_literal` composes four of them.
+- **C. `NodeStore` STMT PROJECTIONS (core/parts.av): 14 fns**
+  (`fn_parts` 24 uses, `const_value` 9, `impl_parts` 8, …). They are
+  STORE METHODS (project a `StmtId`), so the derive — which emits an
+  `impl` on the ENUM — does not fit as-is; the treatment would move
+  them to `Stmt` methods (`store.stmt(s).fn_parts()`), a 14 × ~5-site
+  sweep. They also build `TParts` records by FIELD, so several need
+  the record-projection arm.
+- **D. EXHAUSTIVE DISPATCH — DO NOT DERIVE.** `fingerprint_stmt` (23),
+  `dst_of` (21), `reads_of` (23), `hosted_symbol` (12),
+  `fingerprint_expr` (~40), `pat_fingerprint` (3), `emit_ins`,
+  `interp.step`, `memory_ins`, `body_lines`, `give`. Their VALUE is
+  that every variant is spelled; a derive would defeat the vocabulary
+  guarantee (CLAUDE.md's IR growth protocol). Some ARMS could delegate
+  to derived per-variant helpers, but the dispatch stays.
+- **E. PER-VARIANT COMPUTATION — S4's job, not A's.**
+  `fingerprint_expr`'s arms are `fp(tag, [child fps])` with per-arm
+  variation (a list vs a string vs a conditional tag), and multi-
+  payload variants need BINDER NAMES (the meta `Variant` carries only
+  payload TYPE spellings today). Erasing these is `@derive` with
+  quotes/templates + binder names in `@std/meta.Variant` — the S4
+  slice, not `Projections`.
+- **F. ENUM→WORD MAPS — exhaustive by design.** `op_symbol`,
+  `un_symbol`, `kind_word`, `answer_word`, `mark_word`, `length_word`
+  (`TypeRegistry` methods), `count_word`, `seat_word`.
+
+THE SEQUENCE the inventory implies:
+1. `Val`'s 3 accessors and `Captured`'s 8 (A) — the same
+   `Projections` treatment; the `Captured` provider emits a nested
+   pattern, proving the provider can write any body shape.
+2. The `Expr` value protocol (B) once `pairs_of` has a
+   record-projection arm, or split (5 derived, 1 kept).
+3. The `Stmt` projections (C) as a separate, larger sweep.
+4. `fingerprint_*` (D/E) stays until S4's quotes + `Variant.payload`
+   binder names.
+
 - [ ] **Later list, unstarted.** Static aggregate data (§4.5); a JIT
       engine behind `run_call`; type operators (`Type -> Type`, needs
       aliases); typed sublanguage holes (`sql { }`); manifest read
