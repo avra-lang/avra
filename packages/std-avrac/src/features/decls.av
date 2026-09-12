@@ -406,8 +406,8 @@ impl Decls {
     /// Generated SOURCE admitted beside the declaration that asked for
     /// it: the code was parsed INTO this file's store (no copy), so the
     /// declarations mint from the same arena every pass already reads.
-    fn mint_generated_code(f: FileId, store: NodeStore, stmts: List<StmtId>, lo: int, hi: int, ann: string, at: Span?) -> List<DeclId> {
-        let made = flatten([self.mint_code_stmt(f, store, s, ann, at) for s in stmts])
+    fn mint_generated_code(f: FileId, store: NodeStore, stmts: List<StmtId>, lo: int, hi: int, tag: string, ann: string, at: Span?) -> List<DeclId> {
+        let made = flatten([self.mint_code_stmt(f, store, s, tag, ann, at) for s in stmts])
         // EVERY generated declaration wears the generated RANGE: the
         // block's nodes are contiguous and already past the written
         // ones, so typing and lowering read them exactly as written.
@@ -418,19 +418,19 @@ impl Decls {
 
     /// One generated statement: its declaration and members, or its
     /// impl block and methods.
-    fn mint_code_stmt(f: FileId, store: NodeStore, s: StmtId, ann: string, at: Span?) -> List<DeclId> {
+    fn mint_code_stmt(f: FileId, store: NodeStore, s: StmtId, tag: string, ann: string, at: Span?) -> List<DeclId> {
         let kind: DeclKind? = store.declared_kind(s)
-        if kind != null { return self.mint_code_decl(f, store, s, kind!, ann, at) }
+        if kind != null { return self.mint_code_decl(f, store, s, kind!, tag, ann, at) }
         let ip: ImplParts? = store.impl_parts(s)
-        if ip != null { return self.mint_code_impl(f, store, s, ip!, ann, at) }
+        if ip != null { return self.mint_code_impl(f, store, s, ip!, tag, ann, at) }
         []
     }
 
     /// A generated declaration, under the key no written name can take,
     /// with its trait members beside it.
-    fn mint_code_decl(f: FileId, store: NodeStore, s: StmtId, kind: DeclKind, ann: string, at: Span?) -> List<DeclId> {
+    fn mint_code_decl(f: FileId, store: NodeStore, s: StmtId, kind: DeclKind, tag: string, ann: string, at: Span?) -> List<DeclId> {
         let name = store.declared_name(s) ?? ""
-        let key = generated_key(f, name)
+        let key = generated_key(f, "${tag}$${name}")
         let d = self.mint(key, f, s, name, kind, false, "", null, false, store.fn_parts(s)?.body)
         self.note_provenance(d, ann, name, at)
         let fns: List<StmtId> = store.trait_parts(s)?.fns ?? []
@@ -438,8 +438,8 @@ impl Decls {
     }
 
     /// A generated impl block, with its methods under it.
-    fn mint_code_impl(f: FileId, store: NodeStore, s: StmtId, block: ImplParts, ann: string, at: Span?) -> List<DeclId> {
-        let key = generated_key(f, "${block.target}$$impl")
+    fn mint_code_impl(f: FileId, store: NodeStore, s: StmtId, block: ImplParts, tag: string, ann: string, at: Span?) -> List<DeclId> {
+        let key = generated_key(f, "${tag}$${block.target}$$impl")
         let block_decl = self.mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
         self.note_provenance(block_decl, ann, block.target, at)
         [block_decl].concat([self.mint_method(key, f, store, m, block.target, block_decl, store.fn_parts(m)?.body) for m in block.fns])
