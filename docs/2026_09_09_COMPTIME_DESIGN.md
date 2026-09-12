@@ -901,6 +901,43 @@ to start cold; the size is the design's estimate.
       FIRST: `method_diagnostics` fans out to EVERY record/enum
       (`typed_decls`) and must not force another file's resolve during
       a lifted call.
+
+      THE SECOND ATTEMPT GOT THREE LAYERS DEEP (2026-09-11), all
+      recorded so the next run starts here:
+      1. THE RE-ENTRANCY IS CURED by two guards, both needed:
+         `Db.family_active(family)` + a `method_diagnostics` early
+         return while a `Resolved` query is open (its provider's clash
+         scan has nothing to add mid-lift), AND `methods(target)`
+         returning the table-so-far WITHOUT `settle` when any impl's
+         file is resolving — an INCOMPLETE table memoized is worse than
+         no table (it cached an empty `DeclSig` method set and every
+         call site then refused). With both, the defect is gone.
+      2. A GENERATED IMPL'S METHODS NEED NEWLINES: `methods.join(" ")`
+         emits `} fn ...` on one line and the parser wants a BREAK
+         between fn declarations in an impl (`expected BREAK while
+         parsing stmt`). Join with `"\n"`. (The compiler's own
+         `admit_code` DROPS a refused generated source silently; give
+         it a `defect`/diagnostic on refusal — that is how this was
+         found.)
+      3. THE REMAINING WALL: the generated method bodies now PARSE and
+         MINT, but lowering defects: `a variant pattern without its
+         enum survived typing` and `an unresolved name survived a
+         clean analysis`. The generated `impl DeclSig { fn fn_sig() ->
+         FnSig? { match self { .Fn(s) -> s, _ -> null } } … }` is
+         admitted, yet its bodies are not resolved/typed as a written
+         impl's are. Prime suspect: `mint_generated_code` gives EVERY
+         generated decl the WHOLE block's `[lo, hi)` range (overlapping
+         siblings), where a written impl's methods get per-SPAN ranges
+         from `range_bodies` — and the generated code's spans are
+         0-based in the SYNTHETIC source, colliding with the real
+         file's. Fix the generated ranges (an offset base for synthetic
+         spans, or per-stmt arena ranges), then this should land.
+      4. THE BOOTSTRAP RECIPE, since a compiler-source `@derive` cannot
+         be built by a compiler that predates it: build a GUARD-ONLY
+         compiler (no `@derive`, hand-written accessors) from the
+         current binary, save it, re-add the `@derive`, build with the
+         saved binary. This was done four times here (`/tmp/avra.guardN`
+         pattern); make the seed refresh part of it.
 - [ ] **Later list, unstarted.** Static aggregate data (§4.5); a JIT
       engine behind `run_call`; type operators (`Type -> Type`, needs
       aliases); typed sublanguage holes (`sql { }`); manifest read
