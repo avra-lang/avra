@@ -12,7 +12,7 @@
 //! answers beside it. A trait's `derive` must stand in another file than
 //! the type — expanding needs the type's file while its names are still
 //! being made — which `@std/derive` satisfies.
-use @std.meta.{Type, Directive}
+use @std.meta.{Type, Variant, Directive}
 
 /// `@derive(Show)` gives a type `fn show() -> string` — a struct
 /// interpolates its fields, an enum names its variant.
@@ -30,12 +30,29 @@ export trait Show {
     }
 }
 
-/// `@derive(Eq)` gives a record `fn eq(other: T) -> bool` — every
-/// field equal. (A payload-carrying enum waits on arm binding.)
+/// `@derive(Eq)` gives a type `fn eq(other: T) -> bool` — every field
+/// equal, or the same variant with equal payloads.
 export trait Eq {
     static fn derive(t: Type) -> List<Directive> {
+        if !t.variants.is_empty() {
+            let arms = [eq_arm(v) for v in t.variants]
+            return [Directive { twin: "", name: t.name, at: t.at,
+                code: quote { impl ${t.name} { fn eq(other: ${t.name}) -> bool { match self { ${arms.join(", ")} } } } } }]
+        }
         let checks = ["self.${f.name} == other.${f.name}" for f in t.fields]
         [Directive { twin: "", name: t.name, at: t.at,
                      code: quote { impl ${t.name} { fn eq(other: ${t.name}) -> bool { ${checks.join(" && ")} } } } }]
     }
+}
+
+/// One enum arm of `eq`: the same variant, its payloads compared
+/// position by position.
+fn eq_arm(v: Variant) -> string {
+    if v.payload.is_empty() {
+        return ".${v.name} -> match other { .${v.name} -> true, _ -> false }"
+    }
+    let left = ["l${i}" for i in 0..v.payload.length]
+    let right = ["r${i}" for i in 0..v.payload.length]
+    let same = ["${left[i]} == ${right[i]}" for i in 0..v.payload.length]
+    ".${v.name}(${left.join(", ")}) -> match other { .${v.name}(${right.join(", ")}) -> ${same.join(" && ")}, _ -> false }"
 }
