@@ -1099,12 +1099,18 @@ impl Workspace {
         typed_meta(self.decls.types, v.store.fn_parts(s)?.ret)
     }
 
+    /// The element record's shape of a `List<…>` meta seat, or null —
+    /// every crossing that fills a list of meta rows asks this once.
+    fn meta_elem(want: TypeId) -> StructSig? {
+        let item: TypeId? = elem_of(self.decls.types, want)
+        if item == null { return null }
+        self.decls.fields_of_type(item!)
+    }
+
     /// A fn's parameters as `Param` values: name, the type's spelling,
     /// its `mut` mark — built by the `List<Param>` seat's element type.
     fn crossed_params(v: FileView, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
-        let item: TypeId? = elem_of(self.decls.types, want)
-        if item == null { return heap.node([]) }
-        let elem: StructSig? = self.decls.fields_of_type(item!)
+        let elem: StructSig? = self.meta_elem(want)
         if elem == null { return heap.node([]) }
         let shape = elem!
         let params = declared_params(v.store, self.decls.decl(d).stmt)
@@ -1119,9 +1125,7 @@ impl Workspace {
     /// A record's fields as `Field` values.
     fn crossed_fields(v: FileView, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let x = self.decls.decl(d)
-        let item: TypeId? = elem_of(self.decls.types, want)
-        if item == null { return heap.node([]) }
-        let elem: StructSig? = self.decls.fields_of_type(item!)
+        let elem: StructSig? = self.meta_elem(want)
         if elem == null { return heap.node([]) }
         let shape = elem!
         heap.node([meta_row(heap, shape, {
@@ -1134,9 +1138,7 @@ impl Workspace {
     /// An enum's variants as `Variant` values: name and payload spellings.
     fn crossed_variants(v: FileView, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let x = self.decls.decl(d)
-        let item: TypeId? = elem_of(self.decls.types, want)
-        if item == null { return heap.node([]) }
-        let elem: StructSig? = self.decls.fields_of_type(item!)
+        let elem: StructSig? = self.meta_elem(want)
         if elem == null { return heap.node([]) }
         let shape = elem!
         heap.node([meta_row(heap, shape, {

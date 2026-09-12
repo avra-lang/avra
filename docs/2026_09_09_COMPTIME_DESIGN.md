@@ -811,11 +811,70 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       `leaf`, called from `caller`, …` — the one "world" voice
       annotations share. REMAINING: `export const` (waits on the
       module-constant sugar, ROADMAP:7175).
-- Then **S4** (quotes + `${}` + `@derive`: `@derive(Show, Eq)` on a
-  struct and an enum, `fingerprint_stmt`'s arms erased), then **S5**
-  (const seats: `matches(const pattern, s)`), then the later list
-  (static aggregate data, JIT, type operators, sublanguage holes,
-  manifest read grants, parallel settlement, `@total`).
+### THE REMAINING QUEUE — one slice per bullet
+
+S1, S3f, S3g, S3h and S4 are DONE. Each bullet below is whole enough
+to start cold; the size is the design's estimate.
+
+- [ ] **S5a — the `const` seat MARK (1 day).** `fn(const pattern:
+      string, s: string) -> bool`: a `const` mark rides a fn type
+      beside `mut`. Land: `consts: List<bool>` on `Type.Fn`,
+      `TypeLit.Fn` and `Arrow`, interned and NORMALIZED like `muts`
+      (a trailing unwritten mark drops); printed in `seat_words`;
+      carried by `record_seats`/`declared_marks`; read by `fn_fits`;
+      a grammar `( "const" )?` mark before a param. Proof: a spec
+      that `fn(const string) -> bool` is a distinct type, and a plain
+      seat refuses a `const`-demanding callee.
+- [ ] **S5b — settled seats widen `Sub` (1–2 days).** `Sub { target,
+      args }` gains its const arguments' VALUE fingerprints; one
+      lowered unit per distinct pattern, mangled `name$ids$fp`. Proof:
+      two distinct literal patterns at one call site lower two units
+      (count via `avra ir`).
+- [ ] **S5c — per-instantiation folding (1–2 days).** Inside a unit a
+      const seat IS a const, so `const prog = compile(pattern)` folds
+      and a read of it is its settled value. Proof: `matches(const
+      pattern, s)` folds; eval == native.
+- [ ] **S1 — `export const` (½ day).** A module's `const` is ALREADY
+      accepted (re-probe CLAUDE.md: a module const is not F0902
+      today); the ask is `export` on it and a cross-module read — a
+      const as a DECLARATION (a settled value whose read is its
+      value), not a fn. Proof: a library's `export const PIPE_IN: int
+      = 1` read by its entry.
+- [ ] **S4r — the `Code<T>` claim (1 day).** A quote's value is typed
+      by its position and checked at splice; today a quote is a
+      `string`. Land: a `Code` meta type whose parameter is the claim,
+      the hole's position types it, and a mismatch blames the
+      annotation AND the template line. Proof: a wrong-shape hole
+      refuses at the hole; a right one splices.
+- [ ] **S4r — origin hygiene (1–2 days).** A template's own names
+      resolve in the module that wrote the quote; a hole's at the
+      splice site. Today generated source is parsed wholesale in the
+      target, so a derive's private helper must be qualified and a
+      `let tmp` could capture. Land: a template-origin side table
+      keyed by the spliced node, and a resolve that reads it. Proof: a
+      derive's unqualified private helper is found, and cannot capture
+      a user name.
+- [ ] **BEYOND — derive the compiler's own accessors (the payday).**
+      `_of` families are ONE-ARM PROJECTIONS: `DeclSig`'s `fn_sig_of`/
+      `record_sig_of`/`variant_sig_of` (`features/contract.av`), the
+      `Expr` VALUE PROTOCOL (`bool_of`/`int_of`/`text_of`/…,
+      `core/nodes.av`), the `Ins` readers (`dst_of`/`reads_of`). MEASURED on this tree
+      (2026-09-11): 133 `*_of` fns and 73 one-arm `_ -> null`
+      projections, most of them this shape. A
+      METHOD-shaped `@derive` can erase each family, and methods ride
+      `Decls.methods` program-wide, so it needs no widening and no
+      call-site change. The widening is owed only for FREE-FN
+      derivations: a derive that emits module-level `fn`s cannot
+      cross files, because the two-tier namespace is PER FILE. The
+      enabling slice: `namespace_written(m)` (used by
+      `expanded`/`declared_work`) beside `namespace(m)` (written +
+      generated, used by `resolve`), with `exported_decls`/`surface`/
+      `imported_line` gaining generated variants. Size: widening 1–2
+      days; each family's derive a day.
+- [ ] **Later list, unstarted.** Static aggregate data (§4.5); a JIT
+      engine behind `run_call`; type operators (`Type -> Type`, needs
+      aliases); typed sublanguage holes (`sql { }`); manifest read
+      grants; parallel settlement; `@total`.
 - RECORDED TRIGGER (S3e): **PAID by S3f** — the `Declares` effect is
   back in the census, `@std/meta`'s `Directive`/`traced` are consumed
   by `expanded`, and the twin's name is spellable (`sum_traced`). The
