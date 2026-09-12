@@ -1,10 +1,16 @@
 // A trait ships its own derive: the compiler runs this over the
 // annotated type and admits the SOURCE it answers beside it. This is
-// a real `Show`: the body interpolates each field.
+// a real `Show` — a struct interpolates its fields, an enum its
+// variant.
 use @std.meta.{Type, Directive}
 
 trait Show {
     static fn derive(t: Type) -> List<Directive> {
+        if !t.variants.is_empty() {
+            let arms = [".${v.name} -> \"${t.name}.${v.name}\"" for v in t.variants]
+            return [Directive { twin: "", name: t.name, at: t.at,
+                code: quote { impl ${t.name} { fn show() -> string { match self { ${arms.join(", ")} } } } } }]
+        }
         let fields = ["${f.name}: \${self.${f.name}}" for f in t.fields]
         let body = "\"" + t.name + " { " + fields.join(", ") + " }\""
         [Directive { twin: "", name: t.name, at: t.at,
