@@ -1783,6 +1783,13 @@ void avra_eputs(const char* s) {
     fputc('\n', stderr);
 }
 
+// A DEBUG LINE, only under AVRA_DEBUG — the compiler's own instrument.
+// A no-op otherwise, so a probe can stand in any pass without breaking
+// the self-compile, whose environment has no such flag.
+void avra_debug(const char* s) {
+    if (s && getenv("AVRA_DEBUG")) fputs(s, stderr);
+}
+
 // What stands at the path: 0 nothing, 1 a file, 2 a directory, 3
 // something else; -errno when the host will not say.
 int64_t avra_io_kind(const char* path) {

@@ -6976,7 +6976,10 @@ PROCESS 4.
   THE ASK (the prior survey's "a debug print needs no declaration
   dance", trap variant): a `core`-level debug verb that is a no-op
   unless an env flag is set, so instrumenting a pass never breaks
-  `make avra`.
+  `make avra`. **LANDED** in this slice: `core.debug` (`core/debug.av`)
+  over the runtime's `avra_debug`, live only under `AVRA_DEBUG`
+  (verified: a probe at `built` printed under `AVRA_DEBUG=1` and was
+  silent without).
 - **THE IDIOM BASELINE IS BY SITE, SO ANY NEARBY EDIT RE-FILES OLD
   DEBT.** Refactoring `declared_work` moved a pre-existing I26
   violation and `make idioms` reported it as NEW
