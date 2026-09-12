@@ -6943,6 +6943,177 @@ PERFORMANCE 1, PROCESS 2.
   a comment takes no value, so "every slot, every wrong type" has no
   seats.
 
+## Feedback survey — 2026-09-11 #2 (lane/comptime, S3h–S4f)
+
+The second `/feedback` run: the slice that took `@deprecated` through a
+working `@derive(Show, Eq)` — quote literals, `${}` holes, generated
+source parsed into the asking file, and two shipped traits. Every row
+carries its evidence; the base is `c451cb0` plus this lane's commits
+unless noted. Counts: FRICTION 4, SUGAR 2 (+3 confirms), FEATURES 3,
+DEFECTS 4 (all fixed in the slice), DOCTRINE 4, PERFORMANCE 0 (empty),
+PROCESS 4.
+
+### FRICTION — what cost time
+
+- **A POISONED PRODUCT CANNOT REBUILD ITSELF, AND `make bootstrap` IS
+  NOT A CLEAN-BINARY TARGET.** A probe (`avra_trap`) left in an
+  analysis path fired during the compiler's SELF-compile, so `make
+  avra` aborted and left `build/avra` holding the probe; every retry
+  then aborted the same way. `make bootstrap` links the seed and THEN
+  runs `make avra`, so it too produced the probe binary. The only way
+  back was to link the seed by hand and keep it: `clang -w -O1
+  bootstrap/seed.ll build/llvm_wrapper.o build/avra_runtime.o
+  -L$LLVM_PREFIX/lib -lLLVM -o build/avra.clean`, then `cp
+  build/avra.clean build/avra` before each build. Cost: ~20 minutes
+  and several false "the fix did not work" reads. CONFIRMS the
+  `cp build/avra build/avra.pre` doctrine; THE ASK: a `make recover`
+  that links `bootstrap/seed.ll` and STOPS (no `make avra`), so a
+  clean compiler is one command.
+- **A DEBUG TRAP IN AN ANALYSIS PATH IS A TRAP ON EVERY BUILD.** The
+  compiler walks its own passes while compiling itself, so
+  `avra_trap("marker")` placed in `computed_marks` aborted the build.
+  THE ASK (the prior survey's "a debug print needs no declaration
+  dance", trap variant): a `core`-level debug verb that is a no-op
+  unless an env flag is set, so instrumenting a pass never breaks
+  `make avra`.
+- **THE IDIOM BASELINE IS BY SITE, SO ANY NEARBY EDIT RE-FILES OLD
+  DEBT.** Refactoring `declared_work` moved a pre-existing I26
+  violation and `make idioms` reported it as NEW
+  (`workspace.av:948`, later `check.av:13`); no violation had
+  changed. CONFIRMS the baseline's design (CLAUDE.md: "sites, never
+  counts"); THE ASK: key a baseline entry by a stable identity (fn
+  name + the offending expression's text) so a line shift is not a
+  new debt.
+- **A KERNEL DEFECT NAMES NEITHER FAMILY NOR KEY.** Hit again this
+  slice: `defect: memo family 5 reused missing key 0`. It cost a
+  hand-built mental model until `lldb -o 'breakpoint set -n
+  avra_trap' -o bt build/avra` named the path (`crossed_fields` ->
+  `fields_of_type` -> `sig` -> `type_cx_for` -> `resolved`).
+  CONFIRMS the prior survey's row; the family was `Resolved`, key
+  file 0, and neither word appeared.
+
+### SUGAR — a construct the language should have
+
+- **A LIST SEAT FILLED BY MANY ARGUMENTS.** `@derive(Show, Eq)` should
+  hand one list seat two traits, but an annotation is arity-exact, so
+  `@std/meta.derive` takes ONE `Trait` and stacks. Wanting site:
+  `packages/std-meta/src/meta.av` (`derive(what: Named, tr: Trait)`).
+  FILED in the sugar backlog below; confirms.
+- **ESCAPING A LITERAL `${` IN A GENERATED STRING MISDIRECTS.** A
+  derive that wants the GENERATED code to interpolate writes
+  `"\${self.${f.name}}"`; forgetting the `\` is F3000 "`self.` is not
+  defined" pointing at the derive, not at the stray `${`. Wanting
+  sites: `packages/std-derive/src/derive.av`,
+  `packages/std-meta/src/meta.av`. THE ASK: a diagnostic at a `${`
+  with no binding that names the escape (`\${`), or a quote-aware
+  string. FILED in the sugar backlog below.
+- **TYPE ALIASES** would let `Named` and `Trait` share one shape
+  (`packages/std-meta/src/meta.av:73,76`). CONFIRMS the subset entry;
+  no new evidence.
+- **A GUARD THAT STILL COUNTS ARMS.** CONFIRMS the prior survey's row
+  (`act is .Derives` beside a two-arm `match`); no new evidence.
+
+### FEATURES — a capability
+
+- **A LONE-FILE ANNOTATION PROBE.** `use @std.meta.{derive}` in a loose
+  file is F3015 "this file is not in a package", so a probe of the
+  derive machinery built a package and, for the spec harness, a COPY
+  of `@std.meta` (`annotations_adversarial_test.av`'s `packaged`
+  vendor string). CONFIRMS the prior survey's ask; adds the
+  wanting site and the copy-the-dependency smell.
+- **A `TRAIT` META VERB.** S4a makes a trait's associated fn callable
+  through a TYPE (`P.derive(3)`), but not through the trait itself
+  (`Show.derive(t)`); `@derive` dispatch was landed as a compiler
+  `.Derives` effect instead. THE ASK: if the design keeps `tr.derive(t)`
+  as a meta verb, a way to call a trait's associated fn on a meta
+  value; otherwise the effect is the seam and the design should say so.
+- **`avra expand` SHOWS THE DERIVED SOURCE — TRUE BY CONSTRUCTION.**
+  Because generated code is parsed INTO the asking file's store, the
+  landed source printer shows it with no new work. No ask; recorded
+  as a win for the parse-into-store choice.
+
+### DEFECTS — the compiler blaming itself (all fixed in the slice)
+
+- **THE CROSSING ASKED A SIGNATURE DURING RESOLVE.** `crossed_fields`
+  / `crossed_variants` used `fields_of_type`/`variants_of_type`
+  (a signature) to read a type's members; a `Type`-receiver derive
+  runs inside the resolve it serves, so this re-entered the file's
+  own resolve: `defect: memo family 5 reused missing key 0`. Fixed by
+  reading `declared_fields`/`declared_variants` and the written
+  `TypeRef` spellings — which is what the crossing's own doc claimed.
+  Reproduction: `@derive(Show)` with a `Type`-receiver trait on a
+  struct, `./avra check` of the derive test package.
+- **TWO DERIVES ON ONE TYPE MINTED ONE IMPL.** The generated key for an
+  impl was `generated$<file>$Point$$impl` for BOTH `Show` and `Eq`, so
+  the second reused the first's DeclId and `eq` never registered —
+  `@derive(Show) @derive(Eq)` silently produced only `show`. Fixed by
+  carrying the generated source's fingerprint in the key.
+  Reproduction: the `derive` program test before the fix
+  (`Point has no method eq`).
+- **`@derive` WAS A SILENT NO-OP** for an argument that is not a trait
+  and for a trait that declares no `derive`. Fixed as F2072.
+  Reproduction: `@derive(Point)` (a record) compiled clean before the
+  law.
+- **A BUILTIN HAS NO STATEMENT RECORD.** `computed_marks` read
+  `p.store.annotations_of(x.stmt)` for a builtin/synthetic
+  declaration, trapping `index 0 is out of bounds (length 0)` during
+  the self-compile. Fixed with a `stmt.index` guard; a builtin is
+  unannotated by construction.
+
+### DOCTRINE
+
+- **A DOC THAT WAS RIGHT AND CODE THAT DRIFTED.** `crossed_decl`'s doc
+  said "Reads the PARSE store only: an expanded sibling is generated
+  before this file's typed facts exist", while the body asked the
+  signature. The doc was the law; the code was the defect. THE LESSON
+  (CLAUDE.md-shaped): a crossing that runs INSIDE resolve must read
+  the parse tree, never a signature — encode it as a review question.
+- **A GENERATED DECLARATION IS KEYED BY ITS SOURCE, NOT ITS TARGET.**
+  Two derivations on one type are two declarations; a target-keyed
+  generated key silently drops one. Adjacent to CLAUDE.md's
+  flat-concatenation/arity law: the key must carry the discriminating
+  value.
+- **THE PROVIDER LAW GENERALIZES.** "A Declares annotation's fn stands
+  in another file" became "a `@derive` trait's `derive` stands in
+  another file" (F2072 covers the trait half; the same-file half
+  speaks). Filed in the design doc's S4 status.
+- **A SILENT NO-OP IS WORSE THAN A REFUSAL.** `@derive(NonTrait)` and
+  `@derive(NoDerive)` both did nothing; the boundary must speak
+  (F2072). This is the annotation-level instance of "a check that
+  examined nothing is not a check that passed".
+
+### PERFORMANCE
+
+- EMPTY. No new measurement this session; `make gate` peaked 556–688
+  MB across runs (instrument `tools/watch.sh`), already recorded.
+
+### PROCESS
+
+- **THE RECOVERY PROTOCOL NEEDS A CLEAN-BINARY TARGET.** See FRICTION
+  row one: `cp build/avra build/avra.pre` works only if a clean
+  `build/avra` WAS saved; a source that traps at self-compile has no
+  such binary on a cold tree. `make recover` (seed link, stop) is the
+  missing rung.
+- **PROBE-FIRST PAID, AGAIN.** `./avra check`/`./avra run` on a scratch
+  file confirmed `P.derive(3)` (S4a), `@uses(Show)` (S4b), and
+  `quote { a${n}b }` (S4f) in seconds each, before any test package
+  existed. Confirms.
+- **THE IDIOM KEEPER IS THE CHEAPEST REVIEWER.** `make idioms` (24–25
+  MB peak, sub-second source scan) caught every nullable-local and
+  unused-parameter drift this slice; each fix was a guard-once
+  rewrite. Confirms.
+- **A COMMIT MESSAGE WITH BACKTICKS NEEDS `-F`.** `git commit -m
+  "...`Decls.marks`..."` ran the backticks through the shell and
+  mangled the message; `git commit --amend -F - <<'MSG'` is the
+  safe form. (Agent-tooling, not the tree — recorded once.)
+
+### NOT SURVEYED
+
+No runtime, backend, LLVM, ownership, or performance work happened
+this slice; the std packages other than `@std/meta`/`@std/derive`, the
+sqlite/process/http lanes, and S5 (`const` seats) were not opened. The
+survey is bounded to the comptime lane, `c451cb0..877bf6c`.
+
 ## Sugar backlog — dogfooding asks
 
 FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and
@@ -6958,6 +7129,13 @@ evidence under "Feedback survey — 2026-09-11"):
   instead. Wanting site: `@std/meta.derive` (`packages/std-meta/src/
   meta.av`); the shape is a REST/LIST seat any call may fill with
   several written arguments.
+- A STRAY `${` IN A STRING NAMES ITS ESCAPE — a derive whose GENERATED
+  code interpolates writes `"\\${self.${f.name}}"`, and forgetting the
+  `\\` is F3000 "`self.` is not defined" pointing at the derive, never
+  at the interpolation. Wanting sites: `packages/std-derive/src/
+  derive.av`, `packages/std-meta/src/meta.av`. The ask: at a `${` with
+  no binding, name the escape (`\${`) in the help. Survey
+  2026-09-11 #2, SUGAR.
 - A GUARD THAT STILL COUNTS ARMS — `effect! is .Declares` was the
   obvious draft but violates the registry law, so a two-arm `match`
   stands (features/annotations/check.av). Wants a guard spelling the
