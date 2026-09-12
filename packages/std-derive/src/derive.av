@@ -20,13 +20,11 @@ export trait Show {
     static fn derive(t: Type) -> List<Directive> {
         if !t.variants.is_empty() {
             let arms = [".${v.name} -> \"${t.name}.${v.name}\"" for v in t.variants]
-            return [Directive { twin: "", name: t.name, at: t.at,
-                code: quote { impl ${t.name} { fn show() -> string { match self { ${arms.join(", ")} } } } } }]
+            return [directive(t, quote { impl ${t.name} { fn show() -> string { match self { ${arms.join(", ")} } } } })]
         }
         let fields = ["${f.name}: \${self.${f.name}}" for f in t.fields]
         let body = "\"" + t.name + " { " + fields.join(", ") + " }\""
-        [Directive { twin: "", name: t.name, at: t.at,
-                     code: quote { impl ${t.name} { fn show() -> string { ${body} } } } }]
+        [directive(t, quote { impl ${t.name} { fn show() -> string { ${body} } } })]
     }
 }
 
@@ -36,13 +34,17 @@ export trait Eq {
     static fn derive(t: Type) -> List<Directive> {
         if !t.variants.is_empty() {
             let arms = [eq_arm(v) for v in t.variants]
-            return [Directive { twin: "", name: t.name, at: t.at,
-                code: quote { impl ${t.name} { fn eq(other: ${t.name}) -> bool { match self { ${arms.join(", ")} } } } } }]
+            return [directive(t, quote { impl ${t.name} { fn eq(other: ${t.name}) -> bool { match self { ${arms.join(", ")} } } } })]
         }
         let checks = ["self.${f.name} == other.${f.name}" for f in t.fields]
-        [Directive { twin: "", name: t.name, at: t.at,
-                     code: quote { impl ${t.name} { fn eq(other: ${t.name}) -> bool { ${checks.join(" && ")} } } } }]
+        [directive(t, quote { impl ${t.name} { fn eq(other: ${t.name}) -> bool { ${checks.join(" && ")} } } })]
     }
+}
+
+/// A generated impl the compiler admits beside the type — the one
+/// shape both traits answer.
+fn directive(t: Type, code: string) -> Directive {
+    Directive { twin: "", name: t.name, at: t.at, code: code }
 }
 
 /// One enum arm of `eq`: the same variant, its payloads compared

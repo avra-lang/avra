@@ -858,18 +858,27 @@ to start cold; the size is the design's estimate.
       `_of` families are ONE-ARM PROJECTIONS: `DeclSig`'s `fn_sig_of`/
       `record_sig_of`/`variant_sig_of` (`features/contract.av`), the
       `Expr` VALUE PROTOCOL (`bool_of`/`int_of`/`text_of`/…,
-      `core/nodes.av`), the `Ins` readers (`dst_of`/`reads_of`). MEASURED on this tree
-      (2026-09-11): 133 `*_of` fns and 73 one-arm `_ -> null`
-      projections, most of them this shape. A
-      METHOD-shaped `@derive` can erase each family, and methods ride
-      `Decls.methods` program-wide, so it needs no widening and no
-      call-site change. The widening is owed only for FREE-FN
-      derivations: a derive that emits module-level `fn`s cannot
-      cross files, because the two-tier namespace is PER FILE. The
-      enabling slice: `namespace_written(m)` (used by
-      `expanded`/`declared_work`) beside `namespace(m)` (written +
-      generated, used by `resolve`), with `exported_decls`/`surface`/
-      `imported_line` gaining generated variants. Size: widening 1–2
+      `core/nodes.av`), the `Ins` readers (`dst_of`/`reads_of`).
+      MEASURED on this tree (2026-09-11): 133 `*_of` fns and 73
+      one-arm `_ -> null` projections, most of them this shape.
+      A METHOD-shaped `@derive` erases each family and needs NO
+      call-site change — the ORDER question is already answered:
+      `Workspace.methods(target)` forces `sig(impl)` for every impl of
+      the target, so the generated impl's methods register on first
+      ask, whichever file types first. THE HOME IS THE OPEN
+      QUESTION: the `.Derives` effect is keyed on `@std.meta.Derived`
+      and the provider trait must stand in another file, but
+      `std-avrac` does not depend on `@std/meta` (the boundary is a
+      USER package). Two ways: (a) `std-avrac` gains the dependency —
+      one manifest line, the boundary as the compiler's own library;
+      or (b) `derive`/`Directive`/`Derived` move to a `core`-level
+      module the compiler owns and `@std/meta` re-exports. (b) keeps
+      the layering. A FREE-FN derivation (the projections as free fns,
+      no call-site change) additionally owes the namespace widening:
+      `namespace_written(m)` (used by `expanded`/`declared_work`)
+      beside `namespace(m)` (written + generated, used by `resolve`),
+      with `exported_decls`/`surface`/`imported_line` gaining
+      generated variants. Size: the home ½ day; the widening 1–2
       days; each family's derive a day.
 - [ ] **Later list, unstarted.** Static aggregate data (§4.5); a JIT
       engine behind `run_call`; type operators (`Type -> Type`, needs
