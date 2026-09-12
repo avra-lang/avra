@@ -991,7 +991,7 @@ impl Workspace {
     fn is_declares(ret: TypeId) -> bool {
         let elem: TypeId? = elem_of(self.decls.types, ret)
         if elem == null { return false }
-        match self.decls.types.shape_of(elem!) { .Struct(_, declared) -> declared == "Directive", rest -> false }
+        match self.decls.types.shape_of(elem!) { .Struct(d, _) -> self.decls.decl(d).name == "Directive", rest -> false }
     }
 
     /// Whether a return type is `@std.meta.Derived` — the `@derive`
@@ -1291,14 +1291,15 @@ impl Workspace {
         mut imports: List<Import> = []
         mut diags: List<Diag> = []
         mut listed: List<string> = []
-        for item in u.items {
+        for j, item in u.items {
+            let alias = if j < u.aliases.length { u.aliases[j] } else { "" }
             let id: DeclId? = surf.get(item)
             if listed.contains(item) {
                 diags.push(listed_twice(at, item))
             } else if id == null {
                 diags.push(not_exported(at, m, item, self.exported_names(m)))
             } else {
-                imports.push(Import { decl: id!, at: at })
+                imports.push(Import { decl: id!, at: at, alias: alias })
             }
             listed.push(item)
         }

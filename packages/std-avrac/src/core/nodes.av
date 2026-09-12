@@ -440,7 +440,7 @@ export enum PlaceStep {
 export type MethodParts = { subject: ExprId, name: string, args: List<ExprId> }
 
 /// A `use` statement's projection: the path, the items, the site.
-export type UseParts = { path: List<string>, items: List<string>, stmt: StmtId }
+export type UseParts = { path: List<string>, items: List<string>, aliases: List<string>, stmt: StmtId }
 
 export enum Stmt {
     /// `let name = v`, optionally `let name: T = v` — the written
@@ -508,7 +508,7 @@ export enum Stmt {
     For(name: string, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>)
     /// `use a.b.{x, y}` — the path's segments (a `@pkg` head kept
     /// as written) and the items brought into scope.
-    Use(path: List<string>, items: List<string>)
+    Use(path: List<string>, items: List<string>, aliases: List<string>)
     /// `for x in xs` — or `for i, x in xs`, the index beside the
     /// element, the loop's own counter with a name.
     ForEach(index: string?, name: string, subject: ExprId, stmts: List<StmtId>)
@@ -648,7 +648,7 @@ impl NodeStore {
             .ExprStmt(v) -> v,
             .Discard(_) -> null,
             .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or
             .LetElse(_, _, _) or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or
             .TraitDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> null,
@@ -862,7 +862,7 @@ impl NodeStore {
     /// A `use` statement's parts, when the statement is one.
     fn use_parts(s: StmtId) -> UseParts? {
         match self.stmt(s) {
-            .Use(path, items) -> UseParts { path: path, items: items, stmt: s },
+            .Use(path, items, aliases) -> UseParts { path: path, items: items, aliases: aliases, stmt: s },
             _ -> null,
         }
     }
@@ -1001,7 +1001,7 @@ impl NodeStore {
             .For(_, from, to, _, _, stmts) -> self.pronoun_rides(from) || self.pronoun_rides(to) || self.any_stmt_rides(stmts),
             .ForEach(_, _, subject, stmts) -> self.pronoun_rides(subject) || self.any_stmt_rides(stmts),
             .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or
-            .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) or .Use(_, _) or .Error -> false,
+            .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) or .Use(_, _, _) or .Error -> false,
         }
     }
 
@@ -1124,7 +1124,7 @@ impl NodeStore {
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Discard(value) -> fp(57, [self.expr_fingerprint(value)]),
             .Defer(body, on_error) -> fp(if on_error { 107 } else { 106 }, [self.expr_fingerprint(body)]),
-            .Use(path, items) -> fp(108, [fp_list(str_fps(path)), fp_list(str_fps(items))]),
+            .Use(path, items, aliases) -> fp(108, [fp_list(str_fps(path)), fp_list(str_fps(items)), fp_list(str_fps(aliases))]),
             .ForEach(index, name, subject, stmts) ->
                 fp(42, [fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
             .Error -> fp(7, []),

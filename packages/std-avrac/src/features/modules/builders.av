@@ -1,13 +1,30 @@
 //! Parse-time lowering: a `use` line -> the Use node; `export` marks
 //! the declaration it heads and answers that same node.
 use core.{Stmt}
-use features.{LangNode, Builder}
+use grammar.{Token}
+use features.{LangNode, Builder, within}
 
 fn build_use(mut b: Builder) -> Result<LangNode, string> {
     let head = b.token(0)?
     let rest = b.tokens(1)?
     let items = b.tokens(2)?
-    b.make_stmt(Stmt.Use([head.text].concat([t.text for t in rest]), [t.text for t in items]))
+    let aliases = b.tokens(3)?
+    let end = b.span_end() ?? 0
+    b.make_stmt(Stmt.Use([head.text].concat([t.text for t in rest]), [t.text for t in items],
+                         [alias_between(aliases, items, j, end) for j in 0..items.length]))
+}
+
+/// The `as` alias an item wrote, by SPAN: the alias sits between the
+/// item's name and the next item's (or the closing brace). Optional
+/// captures do not zip, so the window restores the truth — the same
+/// rule enum payloads follow.
+fn alias_between(aliases: List<Token>, items: List<Token>, j: int, end: int) -> string {
+    let lo = items[j].span.hi
+    let hi = if j + 1 < items.length { items[j + 1].span.lo } else { end }
+    for a in aliases {
+        if within(a.span.lo, lo, hi) { return a.text }
+    }
+    ""
 }
 
 fn build_export(mut b: Builder) -> Result<LangNode, string> {
