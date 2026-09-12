@@ -908,6 +908,9 @@ plus the big dispatch tables). The classes, and HONESTLY which the
   - `DeclSig` (features/contract.av): DONE (`@derive(Projections)`).
   - `Val` (language/interp.av): `array_id(.A)`, `map_id(.M)`,
     `call_ptr_val(.I)` — 3 fns, clean, would become `v.array_id()`.
+  - `Expr` value protocol (core/nodes.av): DONE — `@derive(ValueProtocol)`
+    in `core/protocol.av`; the six free fns are gone, call sites read
+    `e.bool_of()`.
   - `Captured` over `GrammarNode` (grammar/builders.av): 8 fns,
     UNIFORM-NESTED (`match v { .Node(.NAlt(a)) -> a, _ -> null }`); a
     provider that writes `.Node(.<inner>(s)) -> s` derives them.
@@ -943,19 +946,15 @@ plus the big dispatch tables). The classes, and HONESTLY which the
   `un_symbol`, `kind_word`, `answer_word`, `mark_word`, `length_word`
   (`TypeRegistry` methods), `count_word`, `seat_word`.
 
-AND THE VOCABULARY-NAME COLLISION, found trying to derive `Expr`'s
-value protocol (the canonical core family): a provider must name its
-seat types `@std.meta.Type`/`@std.meta.Variant`, and `core` ALREADY
-HAS `Type` (core/types.av) and `Variant` (core/nodes.av) — F3018
-"`Type` is imported, but this module already has it". The S4 `DeclSig`
-derive landed only because `features` happens to import NEITHER name.
-Most modules import `core.Type`, so the collision is broad. It lifts
-when ONE of these lands: (a) the meta vocabulary takes distinct names
-(`MetaType`/`MetaVariant` — a user-facing rename), (b) option (b), a
-`CORE`-OWNED derive vocabulary with its own seat names that the
-crossing accepts, or (c) qualified type references / a type alias
-(both in CLAUDE.md's subset). Until then, only a module that imports
-neither `Type` nor `Variant` can annotate an enum.
+AND THE VOCABULARY-NAME COLLISION, SOLVED DRY: the provider must
+name its seat types `@std.meta.Type`/`Variant`, and `core` already has
+both (F3018). The fix is NOT a second vocabulary (option (b) would
+maintain two) but **IMPORT ALIASES** — `use @std.meta.{Type as
+MetaType, Variant as MetaVariant}`: one declaration, renamed at the
+import site. LANDED, with `Decls.meta_type`/`is_declares` reading the
+DECLARATION's name rather than the written spelling. Option (b) is
+REFUSED as not DRY. This unblocked `Expr`'s value protocol, which is
+now `@derive(ValueProtocol)` in `core` (5 accessors + `pairs_of`).
 
 THE SEQUENCE the inventory implies:
 1. `Val`'s 3 accessors and `Captured`'s 8 (A) — the same
