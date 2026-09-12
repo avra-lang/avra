@@ -1,13 +1,13 @@
 # Comptime — `const`, annotations, quotes
 
-> **STATUS 2026-09-11 (lane/comptime):** S1, S3f, S3g and S3h's
-> `@deprecated` DONE (warnings reach a use; `@traced` generates and
-> runs; stored doc comments, `avra explain @name`, provenance, the
-> exhaustive node source printer, and full-file `avra expand` all
-> landed); S3h's compiler derive BLOCKED on the per-file generated
-> namespace (see the handoff); S4/S5 not started. **See the LANE
-> HANDOFF at the top of §6** for the laws pinned, the seams, and
-> where to pick up.
+> **STATUS 2026-09-11 (lane/comptime):** S1 (the reach refusal's full
+> call chain included), S3f, S3g, S3h (`@deprecated`) and **S4** DONE —
+> the `quote { … }` literal with `${}` holes, generated source parsed
+> into the asking file's own store, and `@derive` with `Show`/`Eq`
+> shipped in `@std/derive` (a struct and an enum, eval == native ==
+> expected). S1's `export const` and S5 (`const` seats) remain. **See
+> the LANE HANDOFF at the top of §6** for the laws pinned, the seams,
+> and where to pick up.
 
 Designed 2026-09-09, from first principles, for ratification.
 
@@ -655,7 +655,7 @@ goldens, F-codes, `make gate` green, and its idiom entries.
 | **S3** | **annotations + `@std/meta` + expansion** | `@name(args)` grammar (`@` already lexes as `Pkg`, `lexer.av:374`); first-seat law; answer-type effects; meta values in (crossing 1); `expanded` family; two-tier namespace; provenance table; annotation side table; `explain @name` | `@deprecated`, a `Diagnostics` lint, and `Fn -> Fn` `@traced` written in a test package; a derive built from meta values directly (no quotes yet) erasing one `_of` accessor family in the compiler | 5–6 days |
 | **S4** | **`quote` + `${}`** | the quote literal (Avra as a sublanguage of the assembled grammar); hole typing by position; template store + splice copy; origin-hygiene table; `Code<T>` claim check; quote/template provenance through the landed source printer; trait associated fns + `Trait.derive`; `@derive` in std | `@derive(Show, Eq)` on a struct and an enum, in std, tested by `spec` + `expand` golden; `fingerprint_stmt`'s arms erased by `@derive` in the compiler's own source | 5–7 days |
 | **S5** | **`const` seats** | the seat mark in fn types; `Sub` widened by settled values; per-instantiation folding | `matches(const pattern, s)` compiles one unit per pattern; the regex body folds | 3 days |
-| later | static data for aggregates; JIT engine behind `run_call`; type operators (`Type -> Type`, needs aliases); typed sublanguage holes (`sql { }`); manifest read grants; parallel settlement; `@total` | | |
+| later | the `Code<T>` claim and origin hygiene (S4 refinements); static data for aggregates; JIT engine behind `run_call`; type operators (`Type -> Type`, needs aliases); typed sublanguage holes (`sql { }`); manifest read grants; parallel settlement; `@total` | | |
 
 S1 STATUS (lane/comptime, 2026-09-09): LANDED for scalars and text.
 `run_settle` (interp.av) + `Machine.budget`; `reach` column on
@@ -763,7 +763,7 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       dodges), and an impl-shaped derive rides `Decls.methods`
       instead, so the proof moves into S4 with the first real
       `@derive`.
-- [~] **S4 — quotes + `${}` + `@derive`.** STARTED (lane/comptime):
+- [x] **S4 — quotes + `${}` + `@derive`.** LANDED (lane/comptime; the `Code<T>` claim and origin hygiene are refinements on the later list):
       S4a LANDED — a trait's `static fn` is an ASSOCIATED fn: no
       receiver seat, `Self` out of scope (a signature naming it
       refuses F2001), answered exactly by each impl-for and called
