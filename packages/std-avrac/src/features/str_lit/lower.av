@@ -2,8 +2,8 @@
 //! (part or stringified hole) pushes into an array, and ONE
 //! str_join answers — zero new instructions, the escape hatch
 //! carrying the feature again.
-use core.{ExprId, Reg, Ins, Type, BinOp}
-use features.{LowerCx, MethodCall, length_word}
+use core.{ExprId, Reg, Ins}
+use features.{LowerCx, MethodCall}
 
 fn interp_reg(mut cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
     mut pieces = [part_reg(cx, e, parts[0])]
@@ -58,15 +58,7 @@ export fn lower_trim(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, 
 /// The subject lowers FIRST: `reg_of` may mint, and the answer is
 /// minted last (I29).
 export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
-    let s = cx.reg_of(mc.subject)
-    let word: string? = length_word(cx.view.types.shape_of(cx.type_at(mc.subject)))
-    if word == null { return cx.lower_defect(mc.e, "an emptiness test on an unmeasurable shape survived typing") }
-    let len = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(len, word!, [s]))
-    let zero = cx.const_int(0)
-    let dst = cx.result(mc.e)
-    cx.emit(Ins.Bin(dst, BinOp.Eq, len, zero))
-    dst
+    cx.measured_zero(mc.e, mc.subject)
 }
 
 /// `s.char_code()` reads the start; `s.char_code(i)` the byte at `i`.

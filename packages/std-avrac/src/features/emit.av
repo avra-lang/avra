@@ -26,6 +26,15 @@ impl LowerCx {
         r
     }
 
+    /// The node's ANSWER register set to integer zero — a void word's
+    /// answer, a null niche's, an API's "wrote nothing" answer. The
+    /// answer is the only register, written by the constant.
+    mut fn zero(e: ExprId) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.ConstInt(dst, 0))
+        dst
+    }
+
     // ── Regions ─────────────────────────────────────────────────────
     // `cond.open_region()`, one `value.arm_end()` per arm but the last,
     // then `last.close_region()` — the region's value is the arm taken.
@@ -191,6 +200,17 @@ impl LowerCx {
 
     mut fn unmeasurable(e: ExprId) -> Reg {
         self.lower_defect(e, "a length on an unmeasurable shape survived typing")
+    }
+
+    /// Whether a measured subject (a `List`, `Map` or string) is
+    /// EMPTY — its length against zero. The subject lowers FIRST, the
+    /// answer mints last (I29), as every measure does.
+    mut fn measured_zero(e: ExprId, subject: ExprId) -> Reg {
+        let len = self.measure_of(subject, self.reg_of(subject), self.type_at(subject))
+        let zero = self.const_int(0)
+        let dst = self.result(e)
+        self.emit(Ins.Bin(dst, BinOp.Eq, len, zero))
+        dst
     }
 }
 
