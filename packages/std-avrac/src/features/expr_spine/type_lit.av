@@ -16,25 +16,21 @@ type Word = { name: string, variant: string }
 /// A constructor: the shape it spells and the types it takes.
 type Applied = { name: string, variant: string, arity: int }
 
-fn words() -> List<Word> {
-    table<Word> {
-        name     | variant
-        "int"    | "Int"
-        "float"  | "Float"
-        "bool"   | "Bool"
-        "string" | "Str"
-        "ptr"    | "Ptr"
-        "void"   | "Void"
-    }
+export const words: List<Word> = table<Word> {
+    name     | variant
+    "int"    | "Int"
+    "float"  | "Float"
+    "bool"   | "Bool"
+    "string" | "Str"
+    "ptr"    | "Ptr"
+    "void"   | "Void"
 }
 
-fn applieds() -> List<Applied> {
-    table<Applied> {
-        name     | variant | arity
-        "List"   | "List"  | 1
-        "Map"    | "Map"   | 2
-        "Result" | "Res"   | 2
-    }
+export const applieds: List<Applied> = table<Applied> {
+    name     | variant | arity
+    "List"   | "List"  | 1
+    "Map"    | "Map"   | 2
+    "Result" | "Res"   | 2
 }
 
 /// The literal's call: the receiver's `interned` over the spelling,
@@ -62,12 +58,12 @@ fn spelling(mut b: Builder, t: TypeRef) -> Result<ExprId, string> {
     if t.optional { return variant(b, t, "Opt", [spelling(b, plain(t))?]) }
     if t.dynamic { return .Err(no_spelling("`dyn ${t.name}`")) }
     if t.arrow { return fn_spelling(b, t) }
-    let word: Word? = words().find(it.name == t.name)
+    let word: Word? = words.find(it.name == t.name)
     if word != null {
         if !t.args.is_empty() { return .Err("`${t.name}` takes no type arguments") }
         return variant(b, t, word!.variant, [])
     }
-    let found: Applied? = applieds().find(it.name == t.name)
+    let found: Applied? = applieds.find(it.name == t.name)
     if found == null {
         if !t.args.is_empty() { return .Err(no_spelling("`${t.name}<…>`")) }
         let hole = b.store.alloc_expr(Expr.Ident(t.name), t.span)
