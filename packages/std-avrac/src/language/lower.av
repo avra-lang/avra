@@ -212,7 +212,7 @@ fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit) -> Drained {
     mut spoken: List<Diag> = []
     mut seen: Map<string, bool> = {}
     mut minted = 0
-    while !wants.is_empty() && minted < unit_ceiling() {
+    while !wants.is_empty() && minted < unit_ceiling {
         let w = wants.pop()
         if seen.get(w.name) == null {
             seen.set(w.name, true)
@@ -224,7 +224,7 @@ fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit) -> Drained {
         }
     }
     if !wants.is_empty() {
-        spoken.push(defect_at(null, "specializations exploded past ${unit_ceiling()} — polymorphic recursion is not supported"))
+        spoken.push(defect_at(null, "specializations exploded past ${unit_ceiling} — polymorphic recursion is not supported"))
     }
     Drained { fns: fns, spoken: spoken }
 }
@@ -260,7 +260,7 @@ fn pointer_constant(name: string) -> Diag {
 /// The ceiling on DISTINCT bodies one program mints. A source
 /// bounds its own count; only polymorphic recursion — each turn a
 /// wider substitution, none ever repeated — climbs forever.
-fn unit_ceiling() -> int { 100000 }
+export const unit_ceiling: int = 100000
 
 /// A file's declared bodies to ask for, plain — a generic one waits
 /// for an instantiation to want it.
@@ -298,13 +298,9 @@ fn entry_only(a: Analysis, entry: Analysis) -> List<Diag> {
 }
 
 fn runs_at_top(store: NodeStore, s: StmtId) -> bool {
-    !store.is_declaration(s) && !is_exported_const(store, s)
-}
-
-/// An EXPORTED `const` is a declaration; a plain one is a file-local
-/// value the entry lowers as ever.
-fn is_exported_const(store: NodeStore, s: StmtId) -> bool {
-    store.is_exported(s) && store.const_value(s) != null
+    // a `const` never RUNS — it is a settled value, so a module file
+    // may hold a private one (the entry-only rule is about effects)
+    !store.is_declaration(s) && store.const_value(s) == null
 }
 
 type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }

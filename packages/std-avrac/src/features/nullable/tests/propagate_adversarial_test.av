@@ -8,13 +8,13 @@ use @std.avrac.testing.{shown, refused_with, refusals, makers}
 spec "features/nullable/propagate" {
     given "degenerate shapes" {
         then "identity propagation — the whole body is `v?`" {
-            shown("fn f(v: int?) -> int? { v? }\n${makers()}f(41) ?? 0 - 1") == "41"
+            shown("fn f(v: int?) -> int? { v? }\n${makers}f(41) ?? 0 - 1") == "41"
         }
         then "a second grouped `?` has nothing left — ONE refusal, no cascade" {
             refusals("fn f(v: int?) -> int? { (v?)? }\nf(1) ?? 0") == 1
         }
         then "the top level refuses from inside a loop too" {
-            refused_with("${makers()}mut t = 0\nfor x in 0..2 {\n    t = t + (some(x)? )\n}\nt",
+            refused_with("${makers}mut t = 0\nfor x in 0..2 {\n    t = t + (some(x)? )\n}\nt",
                          "the top level has none")
         }
     }
@@ -42,7 +42,7 @@ spec "features/nullable/propagate" {
             refused_with("fn f(v: int?) -> int? { v? ?? 3 }\nf(1) ?? 0", "`??` never fires — a `int` is never absent")
         }
         then "whitespace does not unbind it — `v ?` still propagates" {
-            shown("fn f(v: int?) -> int? { v ? }\n${makers()}f(7) ?? 0 - 1") == "7"
+            shown("fn f(v: int?) -> int? { v ? }\n${makers}f(7) ?? 0 - 1") == "7"
         }
         then "a match subject EATS the `?` — the arms then ask a guarantee" {
             refused_with("fn f(v: int?) -> int? {\n    match v? {\n        w? -> w\n        null -> 0\n    }\n}\nf(1) ?? 0",
@@ -51,19 +51,19 @@ spec "features/nullable/propagate" {
     }
     given "crossing every other feature" {
         then "in a match ARM — the exit leaves the switch region" {
-            shown("enum E {\n    a\n    b\n}\nfn f(e: E, v: int?) -> int? {\n    match e {\n        .a -> v? * 10\n        .b -> 5\n    }\n}\n${makers()}f(E.a, none()) ?? 0 - 1") == "-1"
+            shown("enum E {\n    a\n    b\n}\nfn f(e: E, v: int?) -> int? {\n    match e {\n        .a -> v? * 10\n        .b -> 5\n    }\n}\n${makers}f(E.a, none()) ?? 0 - 1") == "-1"
         }
         then "in a WHILE body — the exit leaves the loop" {
-            shown("fn stepper(v: int?) -> int? {\n    mut t = 0\n    mut i = 0\n    while i < 3 {\n        t = t + v?\n        i = i + 1\n    }\n    t\n}\n${makers()}stepper(7) ?? 0 - 1") == "21"
+            shown("fn stepper(v: int?) -> int? {\n    mut t = 0\n    mut i = 0\n    while i < 3 {\n        t = t + v?\n        i = i + 1\n    }\n    t\n}\n${makers}stepper(7) ?? 0 - 1") == "21"
         }
         then "in a FOR body, absent — the counter's scope settles" {
-            shown("fn total(v: int?) -> int? {\n    mut t = 0\n    for x in 1..4 {\n        t = t + x * v?\n    }\n    t\n}\n${makers()}total(none()) ?? 0 - 1") == "-1"
+            shown("fn total(v: int?) -> int? {\n    mut t = 0\n    for x in 1..4 {\n        t = t + x * v?\n    }\n    t\n}\n${makers}total(none()) ?? 0 - 1") == "-1"
         }
         then "on `??`'s RIGHT side — still lazy, still exiting" {
-            shown("fn f(a: int?, b: int?) -> int? { a ?? b? }\n${makers()}(f(none(), 2) ?? 0 - 1) * 10 + (f(none(), none()) ?? 0 - 1)") == "19"
+            shown("fn f(a: int?, b: int?) -> int? { a ?? b? }\n${makers}(f(none(), 2) ?? 0 - 1) * 10 + (f(none(), none()) ?? 0 - 1)") == "19"
         }
         then "beside `return` — the two exits share one body" {
-            shown("fn f(v: int?, flip: bool) -> int? {\n    if flip {\n        return 99\n    }\n    v? + 1\n}\n${makers()}f(none(), true) ?? 0 - 1") == "99"
+            shown("fn f(v: int?, flip: bool) -> int? {\n    if flip {\n        return 99\n    }\n    v? + 1\n}\n${makers}f(none(), true) ?? 0 - 1") == "99"
         }
         then "an `if let` subject eats the `?` — the bind then asks a guarantee" {
             refused_with("fn find(id: int) -> int? { if id == 7 { 36 } else { null } }\nfn f(id: int) -> int? {\n    if let u? = find(id)? {\n        u\n    } else {\n        0\n    }\n}\nf(7) ?? 0",
@@ -72,10 +72,10 @@ spec "features/nullable/propagate" {
     }
     given "ownership at the exits" {
         then "an owned string held ACROSS the exit is settled" {
-            shown("fn f(v: int?) -> int? {\n    let held = \"owned\"\n    v? + held.length\n}\n${makers()}(f(5) ?? 0 - 1) * 10 + (f(none()) ?? 0 - 1)") == "99"
+            shown("fn f(v: int?) -> int? {\n    let held = \"owned\"\n    v? + held.length\n}\n${makers}(f(5) ?? 0 - 1) * 10 + (f(none()) ?? 0 - 1)") == "99"
         }
         then "two open scopes both settle at a depth-two exit" {
-            shown("fn f(v: int?, w: int?) -> int? {\n    let outer = \"outer hold\"\n    let a = v? + outer.length\n    if a > 10 {\n        let inner = \"inner\"\n        let b = w? + inner.length\n        b\n    } else {\n        a\n    }\n}\n${makers()}f(5, none()) ?? 0 - 1") == "-1"
+            shown("fn f(v: int?, w: int?) -> int? {\n    let outer = \"outer hold\"\n    let a = v? + outer.length\n    if a > 10 {\n        let inner = \"inner\"\n        let b = w? + inner.length\n        b\n    } else {\n        a\n    }\n}\n${makers}f(5, none()) ?? 0 - 1") == "-1"
         }
         then "the propagated string itself escapes intact" {
             shown("fn word(b: bool) -> string? { if b { \"hey\" } else { null } }\nfn shout(b: bool) -> string? {\n    let w = word(b)?\n    w\n}\nshout(true) ?? \"quiet\"") == "hey"

@@ -44,7 +44,7 @@ spec "features/nullable (representation, adversarial)" {
                   "mut total = 0\nmut i = 0\nwhile i < 500 {\n    total = total + (f(i) ?? \"-\").length\n    i = i + 1\n}\ntotal") == "1195"
         }
         then "a PLAIN `.` on a nullable subject offers the chain, not a property list" {
-            let a = analyze_source("${finder()}find_user(7).age")
+            let a = analyze_source("${finder}find_user(7).age")
             a.diagnostics.length == 1 &&
                 a.report().contains("`.age` reads a guarantee, this is `User?`") &&
                 a.report().contains("`?.age` reaches through the absence")
@@ -56,7 +56,7 @@ spec "features/nullable (representation, adversarial)" {
     }
     given "the narrow under attack — shadows, frames, every subject kind" {
         then "a SHADOW inside the branch is a fresh binding, not the narrow" {
-            shown("${halver()}fn f(v: int?) -> int {\n    if v != null {\n        let v = half(3)\n        v ?? 9\n    } else {\n        0\n    }\n}\nf(4)") == "9"
+            shown("${halver}fn f(v: int?) -> int {\n    if v != null {\n        let v = half(3)\n        v ?? 9\n    } else {\n        0\n    }\n}\nf(4)") == "9"
         }
         then "TWO frames nest — each name narrowed exactly where proven" {
             shown("fn f(a: int?, b: int?) -> int {\n    if a != null {\n        if b != null { a + b } else { a }\n    } else {\n        0\n    }\n}\nf(4, 6) + f(4, null) + f(null, 6)") == "14"
@@ -66,7 +66,7 @@ spec "features/nullable (representation, adversarial)" {
                          "`+` needs `int` operands, found `int?`")
         }
         then "a PATTERN bind is already the carried value — asking again refuses" {
-            refused_with("${halver()}match half(4) {\n    v? -> if v != null { 1 } else { 0 }\n    null -> 9\n}",
+            refused_with("${halver}match half(4) {\n    v? -> if v != null { 1 } else { 0 }\n    null -> 9\n}",
                          "`!= null` asks a nullable, this is `int`")
         }
         then "RE-ASKING a narrowed name is told the question is answered" {
@@ -83,7 +83,7 @@ spec "features/nullable (representation, adversarial)" {
     }
     given "`?.` under attack — links, subjects, composition" {
         then "the chain FEEDS `match` — one nullable currency end to end" {
-            shown("${finder()}match find_user(7)?.age {\n    v? -> v * 2\n    null -> 0 - 1\n}") == "60"
+            shown("${finder}match find_user(7)?.age {\n    v? -> v * 2\n    null -> 0 - 1\n}") == "60"
         }
         then "a field named `length` WINS over measuring" {
             shown("type Odd = { length: int }\nfn mk(b: bool) -> Odd? { if b { Odd { length: 99 } } else { null } }\nmk(true)?.length ?? 0") == "99"
@@ -92,7 +92,7 @@ spec "features/nullable (representation, adversarial)" {
             shown("${greet()}g(true)?. length ?? 0") == "1"
         }
         then "two real mistakes speak twice — the chain never cascades one" {
-            refusals("${finder()}(find_user(1)?.nope ?? 0) + (find_user(2)?.nope ?? 0)") == 2
+            refusals("${finder}(find_user(1)?.nope ?? 0) + (find_user(2)?.nope ?? 0)") == 2
         }
         then "`??.` is the coalesce token plus a dot, refused as such" {
             refusals("${greet()}g(true)??.length") == 1

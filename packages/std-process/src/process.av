@@ -36,27 +36,27 @@ extern fn avra_puts(s: string)
 // The substrate's spawn flags — one bit each, summed — and the events
 // read back from a finished handle. Fns, because a module file holds
 // declarations only.
-fn pipe_in() -> int { 1 }
-fn pipe_out() -> int { 2 }
-fn pipe_err() -> int { 4 }
-fn null_in() -> int { 16 }
-fn inherit_in() -> int { 128 }
-fn inherit_out() -> int { 256 }
-fn inherit_err() -> int { 512 }
-fn new_pgroup() -> int { 1024 }
-fn inherit_env() -> int { 8192 }
-fn ev_exited() -> int { 64 }
-fn ev_timeout() -> int { 128 }
-fn ev_capped_out() -> int { 256 }
-fn ev_capped_err() -> int { 512 }
-fn ev_truncated() -> int { 4096 }
+export const pipe_in: int = 1
+export const pipe_out: int = 2
+export const pipe_err: int = 4
+export const null_in: int = 16
+export const inherit_in: int = 128
+export const inherit_out: int = 256
+export const inherit_err: int = 512
+export const new_pgroup: int = 1024
+export const inherit_env: int = 8192
+export const ev_exited: int = 64
+export const ev_timeout: int = 128
+export const ev_capped_out: int = 256
+export const ev_capped_err: int = 512
+export const ev_truncated: int = 4096
 /// The status word's tag lives above the low 32 bits.
-fn tag_base() -> int { 4294967296 }
-fn enoent() -> int { 2 }
-fn eacces() -> int { 13 }
-fn enotdir() -> int { 20 }
-fn sigterm() -> int { 15 }
-fn sigkill() -> int { 9 }
+export const tag_base: int = 4294967296
+export const enoent: int = 2
+export const eacces: int = 13
+export const enotdir: int = 20
+export const sigterm: int = 15
+export const sigkill: int = 9
 
 // ── The types ───────────────────────────────────────────────────
 
@@ -455,12 +455,12 @@ impl Command {
         let h = avra_proc_run(self.tool.path, self.args, self.env.words(), self.cwd ?? "", self.flags(), stdin_text(self.stdin), timeout_ms(self.timeout), self.drain_grace.ms, self.max_capture)
         if h < 0 { fail spawn_error(self.tool, self.cwd ?? "", 0 - h) }
         let ev = avra_proc_poll(h, 0)
-        let out = Output { stdout: avra_proc_take(h, 1), stderr: avra_proc_take(h, 2), truncated: has_bit(ev, ev_truncated()) }
+        let out = Output { stdout: avra_proc_take(h, 1), stderr: avra_proc_take(h, 2), truncated: has_bit(ev, ev_truncated) }
         let word = avra_proc_status(h)
         avra_proc_close(h)
-        if has_bit(ev, ev_timeout()) { fail ProcessError.TimedOut(timeout_ms(self.timeout), out) }
-        if has_bit(ev, ev_capped_out()) { fail ProcessError.TooMuch(Stream.Stdout, self.max_capture, out) }
-        if has_bit(ev, ev_capped_err()) { fail ProcessError.TooMuch(Stream.Stderr, self.max_capture, out) }
+        if has_bit(ev, ev_timeout) { fail ProcessError.TimedOut(timeout_ms(self.timeout), out) }
+        if has_bit(ev, ev_capped_out) { fail ProcessError.TooMuch(Stream.Stdout, self.max_capture, out) }
+        if has_bit(ev, ev_capped_err) { fail ProcessError.TooMuch(Stream.Stderr, self.max_capture, out) }
         Outcome { exit: exit_of(word), out: out, took_ms: now_ms() - started }
     }
 
@@ -475,18 +475,18 @@ impl Command {
 
     /// The substrate's flags for this wiring.
     fn flags() -> int {
-        let group = if self.own_group { new_pgroup() } else { 0 }
-        let world = if self.env is .Inherit { inherit_env() } else { 0 }
-        let out = if self.streams is .Inherited { inherit_out() + inherit_err() } else { pipe_out() + pipe_err() }
+        let group = if self.own_group { new_pgroup } else { 0 }
+        let world = if self.env is .Inherit { inherit_env } else { 0 }
+        let out = if self.streams is .Inherited { inherit_out + inherit_err } else { pipe_out + pipe_err }
         stdin_flag(self.stdin) + out + group + world
     }
 }
 
 fn stdin_flag(s: Stdin) -> int {
     match s {
-        .Closed -> null_in(),
-        .Inherit -> inherit_in(),
-        .Open or .Text(_) or .Lines(_) -> pipe_in(),
+        .Closed -> null_in,
+        .Inherit -> inherit_in,
+        .Open or .Text(_) or .Lines(_) -> pipe_in,
     }
 }
 
@@ -519,17 +519,17 @@ fn has_bit(word: int, bit: int) -> bool {
 /// The status word decoded once: the tag above (1 exited, 2 signalled),
 /// the payload below. A signal's payload carries the core-dump bit at 256.
 fn exit_of(word: int) -> Exit {
-    let tag = word / tag_base()
-    let payload = word - tag * tag_base()
+    let tag = word / tag_base
+    let payload = word - tag * tag_base
     if tag == 2 { return Exit.Signal(payload % 256, (payload / 256) % 2 == 1) }
     if payload == 0 { return Exit.Clean }
     Exit.Code(payload)
 }
 
 fn spawn_error(t: Tool, cwd: string, errno: int) -> ProcessError {
-    if errno == enotdir() { return ProcessError.NoCwd(cwd) }
-    if errno == enoent() { return ProcessError.NotFound(t.name, t.path) }
-    if errno == eacces() { return ProcessError.Denied(t.name, t.path) }
+    if errno == enotdir { return ProcessError.NoCwd(cwd) }
+    if errno == enoent { return ProcessError.NotFound(t.name, t.path) }
+    if errno == eacces { return ProcessError.Denied(t.name, t.path) }
     ProcessError.Host(errno, "posix_spawn")
 }
 
@@ -574,7 +574,7 @@ impl Command {
 
 /// A tick's events read as "the child is gone and every end is at EOF".
 fn finished(ev: int) -> bool {
-    has_bit(ev, ev_exited()) && has_bit(ev, 4) && has_bit(ev, 8)
+    has_bit(ev, ev_exited) && has_bit(ev, 4) && has_bit(ev, 8)
 }
 
 impl Child {
@@ -582,7 +582,7 @@ impl Child {
     /// the host no longer knows reads as finished.
     fn pump(ms: int) -> int {
         let t = ticked(self.stage, ms)
-        if t.ev < 0 { return ev_exited() + 4 + 8 }
+        if t.ev < 0 { return ev_exited + 4 + 8 }
         self.stage = t.stage
         t.ev
     }
@@ -606,7 +606,7 @@ impl Child {
         while true {
             let ev = self.pump(100)
             if self.satisfied(ready) { return now_ms() - began }
-            let gone = has_bit(ev, ev_exited())
+            let gone = has_bit(ev, ev_exited)
             waited = now_ms() - began
             if (gone && !(ready is .Exit)) || now_ms() >= deadline {
                 let partial = gathered(self.stage)
@@ -686,10 +686,10 @@ impl Child {
     fn stop() -> Exit {
         if self.ended != null { return self.ended!.exit }
         let began = now_ms()
-        avra_proc_signal(self.stage.h, sigterm(), 1)
+        avra_proc_signal(self.stage.h, sigterm, 1)
         self.until_gone(self.command.stop_grace.ms)
         if avra_proc_status(self.stage.h) == 0 {
-            avra_proc_signal(self.stage.h, sigkill(), 1)
+            avra_proc_signal(self.stage.h, sigkill, 1)
             self.until_gone(self.command.stop_grace.ms)
         }
         self.ended_with(began).exit
@@ -699,7 +699,7 @@ impl Child {
     fn until_gone(ms: int) {
         let deadline = now_ms() + ms
         mut ev = self.pump(0)
-        while !has_bit(ev, ev_exited()) && now_ms() < deadline {
+        while !has_bit(ev, ev_exited) && now_ms() < deadline {
             ev = self.pump(50)
         }
     }
@@ -783,11 +783,11 @@ fn ticked(s: Stage, ms: int) -> Ticked {
 
 /// Past its deadline and still running.
 fn overdue(s: Stage, ev: int) -> bool {
-    s.deadline >= 0 && now_ms() >= s.deadline && !has_bit(ev, ev_exited())
+    s.deadline >= 0 && now_ms() >= s.deadline && !has_bit(ev, ev_exited)
 }
 
 fn capped(ev: int) -> bool {
-    has_bit(ev, ev_capped_out()) || has_bit(ev, ev_capped_err())
+    has_bit(ev, ev_capped_out) || has_bit(ev, ev_capped_err)
 }
 
 /// What a stage has captured so far, both streams, untruncated.
@@ -799,7 +799,7 @@ fn gathered(s: Stage) -> Output {
 fn broken(c: Command, s: Stage, ev: int) -> ProcessError {
     let partial = gathered(s)
     if overdue(s, ev) { return ProcessError.TimedOut(timeout_ms(c.timeout), partial) }
-    ProcessError.TooMuch(if has_bit(ev, ev_capped_out()) { Stream.Stdout } else { Stream.Stderr }, c.max_capture, partial)
+    ProcessError.TooMuch(if has_bit(ev, ev_capped_out) { Stream.Stdout } else { Stream.Stderr }, c.max_capture, partial)
 }
 
 fn is_sigpipe(e: Exit) -> bool {
@@ -814,13 +814,13 @@ fn is_sigpipe(e: Exit) -> bool {
 fn collected(s: Stage, began: int) -> Outcome {
     let word = avra_proc_status(s.h)
     avra_proc_close(s.h)
-    Outcome { exit: if word <= 0 { Exit.Signal(sigkill(), false) } else { exit_of(word) }, out: gathered(s), took_ms: now_ms() - began }
+    Outcome { exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) }, out: gathered(s), took_ms: now_ms() - began }
 }
 
 /// Every stage still running killed with its tree and released.
 fn abandoned(live: List<Stage>) {
     for s in live {
-        if !s.stopped { avra_proc_signal(s.h, sigkill(), 1) }
+        if !s.stopped { avra_proc_signal(s.h, sigkill, 1) }
         avra_proc_close(s.h)
     }
 }
@@ -888,7 +888,7 @@ impl Pipeline {
                 } else {
                     let t = ticked(s, 10)
                     if overdue(t.stage, t.ev) || capped(t.ev) {
-                        avra_proc_signal(s.h, sigkill(), 1)
+                        avra_proc_signal(s.h, sigkill, 1)
                         if failure == null { failure = broken(self.stages[i], t.stage, t.ev) }
                     }
                     grown.push(t.stage)

@@ -808,7 +808,7 @@ impl Workspace {
         // order choose which body survives.
         let l = self.isolated(f, root, "settling$${name}", seats)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        run_settle(l, settle_steps(), dir_of(self.decls.file(f).path))
+        run_settle(l, settle_steps, dir_of(self.decls.file(f).path))
     }
 
     /// One expression lowered as a program of its own, while every
@@ -823,7 +823,7 @@ impl Workspace {
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
         let l = self.isolated(f, e, expr_symbol(f, e), [])
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        match run_crossed(l, settle_steps(), dir_of(self.decls.file(f).path)) {
+        match run_crossed(l, settle_steps, dir_of(self.decls.file(f).path)) {
             .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)),
             .Err(why) -> .Err(why),
         }
@@ -885,7 +885,7 @@ impl Workspace {
                 .Err(why) -> { return .Err(why) },
             }
         }
-        match run_lifted(l, self.decls.symbol(d), vals, heap, settle_steps()) {
+        match run_lifted(l, self.decls.symbol(d), vals, heap, settle_steps) {
             .Ok(r2) -> .Ok(r2),
             .Err(why) -> .Err(why),
         }
@@ -1927,7 +1927,7 @@ fn unpackaged_use(at: Loc?) -> Diag {
 }
 
 /// The instructions one settlement may run before it is refused.
-fn settle_steps() -> int { 10000000 }
+export const settle_steps: int = 10000000
 
 /// An annotation answer's structural fingerprint for early cutoff.
 fn lift_hash(r: LiftResult) -> int {
