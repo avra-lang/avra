@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, is_literal, Annotation, Binding, named_ref, spelled}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -110,7 +110,7 @@ type LiftAsk = { decl: DeclId, file: FileId, stmt: StmtId, args: List<ExprId> }
 
 /// A const site's stable inputs. The dense list position is the
 /// `Settled` family's key; its initializer is read inside the query.
-type SettleAsk = { file: FileId, stmt: StmtId, name: string }
+type SettleAsk = { file: FileId, stmt: StmtId, name: string, seats: List<SeatValue> }
 
 fn lift_ask(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> LiftAsk {
     LiftAsk { decl: d, file: f, stmt: s, args: args }
@@ -301,7 +301,7 @@ impl Workspace {
         let _ = self.methods(d)
     }
 
-    fn const_type_ensured(f: FileId, s: StmtId) { let _ = self.const_type_at(self.settle_id(f, s)) }
+    fn const_type_ensured(f: FileId, s: StmtId) { let _ = self.const_type_at(self.settle_id(f, s, [])) }
 
     fn writes_ensured() {
         let _ = self.receivers()
@@ -723,7 +723,7 @@ impl Workspace {
         match self.units.start_recursive(id) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let w = self.asks[id]
         let ws = self
-        let settle: fn(FileId, StmtId) -> Result<Settled, Unsettled> = (f: FileId, s: StmtId) -> ws.settled(f, s)
+        let settle: fn(FileId, StmtId, List<SeatValue>) -> Result<Settled, Unsettled> = (f: FileId, s: StmtId, seats: List<SeatValue>) -> ws.settled(f, s, seats)
         let out = lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle)
         self.units.finish(id, out, self.db.revision())
     }
@@ -732,18 +732,25 @@ impl Workspace {
     /// lowered as a program of its own — the units it reaches are the
     /// program's, memoized — then run in the evaluator. A const whose
     /// value asks for itself is refused as the cycle it is.
-    fn settled(f: FileId, s: StmtId) -> Result<Settled, Unsettled> {
-        self.settled_at(self.settle_id(f, s))
+    fn settled(f: FileId, s: StmtId, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
+        self.settled_at(self.settle_id(f, s, seats))
     }
 
-    fn settle_id(f: FileId, s: StmtId) -> int {
-        let name = const_symbol(f, s)
+    fn settle_id(f: FileId, s: StmtId, seats: List<SeatValue>) -> int {
+        let name = self.settle_symbol(f, s, seats)
         let known: int? = self.settle_specs.get(name)
         if known != null { return known! }
         let id = self.settle_asks.length
         self.settle_specs.set(name, id)
-        self.settle_asks.push(SettleAsk { file: f, stmt: s, name: name })
+        self.settle_asks.push(SettleAsk { file: f, stmt: s, name: name, seats: seats })
         id
+    }
+
+    /// A settlement's key: the const's statement, plus the settled
+    /// seats' fingerprints when a unit fixes them — so two units of
+    /// one body settle their own values.
+    fn settle_symbol(f: FileId, s: StmtId, seats: List<SeatValue>) -> string {
+        settled_symbol(const_symbol(f, s), seats)
     }
 
     /// A const's inferred type is a program fact, like a signature:
@@ -772,7 +779,7 @@ impl Workspace {
         }
         let ask = self.settle_asks[id]
         let root = self.analysis(ask.file).view.store.const_value(ask.stmt)!
-        let r = self.settlement_of(ask.file, root, ask.name)
+        let r = self.settlement_of(ask.file, root, ask.name, ask.seats)
         // `embed` is the one permitted build-world read. Make every
         // file it opened a source input dependency before this query
         // closes, so its content participates in revalidation.
@@ -790,27 +797,27 @@ impl Workspace {
 
     /// One settlement run: the initializer lowered as a program, its
     /// laws checked, its value spelled when the type spells one.
-    fn settlement_of(f: FileId, root: ExprId, name: string) -> Result<Settled, Unsettled> {
+    fn settlement_of(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
         // The evaluator's source unit and the program's materialized
         // const unit are different IR under different symbols. The
         // Lowered memo keys by symbol, so sharing one would make query
         // order choose which body survives.
-        let l = self.isolated(f, root, "settling$${name}")
+        let l = self.isolated(f, root, "settling$${name}", seats)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         run_settle(l, settle_steps(), dir_of(self.decls.file(f).path))
     }
 
     /// One expression lowered as a program of its own, while every
     /// body it reaches remains a shared `Lowered` query.
-    fn isolated(f: FileId, root: ExprId, name: string) -> Lowered {
+    fn isolated(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Lowered {
         let ws = self
-        memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, root: root }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
+        memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
     }
 
     /// An annotation argument evaluated directly into the crossing
     /// transport, including every nested aggregate.
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
-        let l = self.isolated(f, e, expr_symbol(f, e))
+        let l = self.isolated(f, e, expr_symbol(f, e), [])
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         match run_crossed(l, settle_steps(), dir_of(self.decls.file(f).path)) {
             .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)),
@@ -1952,6 +1959,7 @@ fn unsettled_hash(why: Unsettled) -> int {
         .Reach(words) -> fp(59, [fp_str(words)]),
         .Budget(words) -> fp(61, [fp_str(words)]),
         .Trap(words) -> fp(67, [fp_str(words)]),
+        .Param(words) -> fp(84, [fp_str(words)]),
         .Spoken -> fp(71, []),
     }
 }

@@ -7,9 +7,9 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_row, inout_row, no_marks, ExternParts, Param, TypeRef}
+use core.{StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_row, inout_row, no_marks, ExternParts, Param, TypeRef, SeatMark}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
-use features.{LowerCx, FnSig, Sub, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled}
+use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled}
 
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
@@ -92,12 +92,12 @@ fn seat_written(host: ExternParts?, j: int) -> TypeRef? {
 /// (null for main) and `sub` its instantiation (null when the body
 /// is not a specialization), which is why they are fields, not
 /// stacks.
-fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> LowerCx {
+fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, seats: List<SeatValue>, seat_marks: List<SeatMark>, jobs: Jobs) -> LowerCx {
     LowerCx {
         view: a.view, names: a.names, facts: a.facts, dispatch: a.lang.dispatch,
         out: new_emitter(jobs.externs),
         body: new_body_regs(a.view.store.exprs.count(), a.view.store.stmts.count(), a.view.store.pats.length),
-        sub: sub, fn_ret: fn_ret, jobs: jobs, deferred: [], depth: 0,
+        sub: sub, seats: seats, seat_marks: seat_marks, fn_ret: fn_ret, jobs: jobs, deferred: [], depth: 0,
     }
 }
 
@@ -120,13 +120,13 @@ export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices }
 /// program's extern symbols, gathered once per program by the
 /// workspace: every body's emitter refuses a callee it does not
 /// know against it.
-export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> Unit {
+export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(FileId, StmtId, List<SeatValue>) -> Result<Settled, Unsettled>) -> Unit {
     if w.decl != null && !a.view.decls.has_body(w.decl!) {
         mut out = new_emitter(externs)
         out.defect("a unit without a body was asked for — `${w.name}`")
         return Unit { bodies: [], wants: [], voices: out.voices }
     }
-    let first = if w.root != null { lower_root(a, w.root!, w.name, w.settled, w.answer, externs, settle) } else if w.decl == null { lower_main(a, w.name, externs, settle) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, externs, settle) }
+    let first = if w.root != null { lower_root(a, w.root!, w.name, w.settled, w.answer, w.seats, externs, settle) } else if w.decl == null { lower_main(a, w.name, externs, settle) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle) }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
     mut wants: List<Wanted> = first.jobs.pending
@@ -306,13 +306,14 @@ type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
 /// One body — a fn's, a method's, a default's: params pre-minted as
 /// registers 0..N-1, the body inside one scope, the answer after
 /// the scope settles.
-fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> LoweredBody {
+fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, StmtId, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
     let root: ExprId = x.root!
     let sig: FnSig? = (a.view.decls.sig(x.id))?.fn_sig()
     let raw: List<TypeId> = sig?.params ?? []
     let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
     let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
-    mut lo = new_lower_cx(a, rt, sub, new_jobs(externs, settle))
+    let seat_marks: List<SeatMark> = a.view.decls.marks_of(x.id, raw.length)
+    mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle))
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.out.mint_ty(pt) }
     lo.out.seeded()
@@ -330,13 +331,13 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, externs: List<string
 /// lambda's own fn type — a pointer, managed, released by the
 /// callee per the ABI), registers 1..N its params; the body reads
 /// captures through slot 1+j of the env.
-fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> LoweredBody {
+fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId, StmtId, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
     let lam_ty = viewed(a.view.decls.types, lj.sub, a.facts.type_at(lj.lam))
     let held: Arrow? = a.view.decls.types.arrow_parts(lam_ty)
     let seats: List<TypeId> = held?.seats ?? []
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
-    mut lo = new_lower_cx(a, rt, lj.sub, new_jobs(externs, settle))
+    mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle))
     // register 0 is the env box, 1..N the seats
     let _ = lo.out.mint_ty(lam_ty)
     for pt in seats { let _ = lo.out.mint_ty(pt) }
@@ -382,10 +383,14 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
 /// bracket, the answer after it settles. The evaluator runs it to
 /// settle the value; a program calls it only for a value no literal
 /// spells, which it answers once.
-fn lower_root(a: Analysis, root: ExprId, name: string, settled: Settled?, answer: TypeId?, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> LoweredBody {
+fn lower_root(a: Analysis, root: ExprId, name: string, settled: Settled?, answer: TypeId?, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, StmtId, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
     let rt: TypeId = answer ?? a.facts.type_at(root)
-    mut lo = new_lower_cx(a, rt, null, new_jobs(externs, settle))
+    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle))
     lo.out.seeded()
+    // THE SETTLED SEATS ARE CONSTANTS HERE: the initializer reads a
+    // `const` seat as its called value, so the settlement computes on
+    // the value the unit was made for.
+    lo.seed_seats()
     lo.seats_enter()
     // a value no literal spells is answered ONCE per process, as a
     // `once fn` is; a scalar or text is spelled at its uses, never called
@@ -402,12 +407,12 @@ fn lower_root(a: Analysis, root: ExprId, name: string, settled: Settled?, answer
 
 /// Where no workspace stands behind the lowering, no const settles.
 // LICENSED I23: a fn VALUE filling the settle seat — its parameters are the seat's contract, and the answer needs none of them
-fn no_settle(f: FileId, s: StmtId) -> Result<Settled, Unsettled> {
+fn no_settle(f: FileId, s: StmtId, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
     .Err(Unsettled.Trap("nothing here evaluates a const"))
 }
 
-fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> LoweredBody {
-    mut lo = new_lower_cx(a, null, null, new_jobs(externs, settle))
+fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileId, StmtId, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
+    mut lo = new_lower_cx(a, null, null, [], [], new_jobs(externs, settle))
     lo.scope_enter()
     lo.lower_stmts(a.view.stmts)
     let shown: ExprId? = program_answer(a)

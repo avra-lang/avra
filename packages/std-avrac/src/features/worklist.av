@@ -4,22 +4,36 @@
 //! worklist (a fresh value in its context, handed back with the
 //! body), so an enqueue is a write in place, never through a shared
 //! box; `seen` keys by mangled name, once per body.
-use core.{ExprId, TypeId, DeclId, FileId, StmtId, TypeRef, Param, Span}
+use core.{ExprId, TypeId, Expr, DeclId, FileId, StmtId, TypeRef, Param, Span, joined}
 use @std.errors.{Loc}
+
+/// A settled (`const`) seat's VALUE carried into the unit it selects:
+/// the seat's index (past a method's receiver), its fingerprint (the
+/// settlement key), and the literal value the unit's own consts read.
+export type SeatValue = { index: int, fp: string, ty: TypeId, value: Expr }
 
 /// One body WANTED — the unit of lowering: a declaration's body (or
 /// a file's main, when `decl` is absent), under concrete Vars when
 /// it is generic, named by its symbol or mangling, in its file.
-export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, root: ExprId? = null, settled: Settled? = null, answer: TypeId? = null }
+export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, seats: List<SeatValue> = [], root: ExprId? = null, settled: Settled? = null, answer: TypeId? = null }
 
 /// Why a const did not SETTLE — three laws, each its own voice: the
 /// value reached the world, ran past its budget, or trapped. And
 /// `Spoken`: an earlier read already said so, and this one is silent.
-export enum Unsettled { Reach(string), Budget(string), Trap(string), Spoken }
+export enum Unsettled { Reach(string), Budget(string), Trap(string), Param(string), Spoken }
 
 /// The unit a const's initializer lowers as, named for its statement.
 export fn const_symbol(f: FileId, s: StmtId) -> string {
     "const$${f.index}$${s.index}"
+}
+
+/// A const's PER-UNIT name: its plain symbol, plus the settled seats'
+/// fingerprints when a unit fixes them. The settlement key AND the
+/// materialized unit's name — so one unit's settled value never serves
+/// another.
+export fn settled_symbol(base: string, seats: List<SeatValue>) -> string {
+    if seats.is_empty() { return base }
+    "${base}@${joined([sv.fp for sv in seats], "_")}"
 }
 
 /// A generated declaration's table key — under no WRITTEN name can
@@ -115,11 +129,11 @@ export type DeclareWork = { ann: DeclId, stmt: StmtId, callee: ExprId, args: Lis
 
 /// One body's worklist: the bodies it wants, the lambdas it lifted,
 /// the wrappers it minted, and the names it has already asked for.
-export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled> }
+export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, externs: List<string>, settle: fn(FileId, StmtId, List<SeatValue>) -> Result<Settled, Unsettled> }
 
 /// A fresh worklist over the program's extern symbols — what every
 /// body's emitter refuses an unknown callee against.
-export fn new_jobs(externs: List<string>, settle: fn(FileId, StmtId) -> Result<Settled, Unsettled>) -> Jobs {
+export fn new_jobs(externs: List<string>, settle: fn(FileId, StmtId, List<SeatValue>) -> Result<Settled, Unsettled>) -> Jobs {
     Jobs { pending: [], seen: {}, lifts: [], wraps: [], externs: externs, settle: settle }
 }
 

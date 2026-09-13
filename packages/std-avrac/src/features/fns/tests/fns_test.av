@@ -257,6 +257,15 @@ ret 0"""
             refused_with("fn inner(const x: int) -> int {\n    x\n}\nfn outer(const y: int) -> int {\n    inner(y)\n}\nouter(3)",
                          "`x` is a `const` seat")
         }
+        then "a `const` in the body folds to the settled seat's value" {
+            shown("fn compile(p: string) -> string {\n    p + \"!\"\n}\nfn matches(const pattern: string, s: string) -> string {\n    const prog = compile(pattern)\n    prog + s\n}\nmatches(\"x\", \"y\")") == "x!y"
+        }
+        then "two units fold to THEIR OWN value — the materialized const is per-unit" {
+            shown("fn compile(p: string) -> string {\n    p + \"!\"\n}\nfn matches(const pattern: string, s: string) -> string {\n    const prog = compile(pattern)\n    prog + s\n}\nmatches(\"x\", \"a\") + matches(\"y\", \"b\")") == "x!ay!b"
+        }
+        then "a const that reads a RUN-TIME parameter refuses — the value only exists while running" {
+            refused_at_run("fn f(x: int) -> int {\n    const y = x + 1\n    y\n}\nf(3)", "a const cannot read a run-time parameter")
+        }
     }
 }
 

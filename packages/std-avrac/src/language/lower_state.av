@@ -2,9 +2,9 @@
 //! instruction order, slots and cells, bindings read, fn values and
 //! their wrappers, lambdas lifted, captures packed, callee symbols
 //! and the mono worklist's enqueue — the verbs the walk speaks.
-use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, is_literal}
+use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, SeatMark, is_literal, settled_mark}
 use diagnostics.{loc_at, refusal, Diag}
-use features.{LowerCx, capture_lane, Sub, Cap, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, const_symbol}
+use features.{LowerCx, capture_lane, Sub, Cap, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, const_symbol, settled_symbol, post_order, nothing}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -24,9 +24,10 @@ impl LowerCx {
     /// own view. Wanted either way.
     fn symbol_at(d: DeclId, e: ExprId) -> string {
         let held: Sub? = self.facts.subst_at(e)
-        if held == null { return self.wanted(d, null) }
+        if held == null { return self.wanted(d, null, []) }
         let sub = held!
-        self.wanted(d, Sub { target: sub.target, args: [self.concrete(t) for t in sub.args], consts: sub.consts })
+        let seats: List<SeatValue> = self.call_seats(d, e, sub.consts)
+        self.wanted(d, Sub { target: sub.target, args: [self.concrete(t) for t in sub.args], consts: sub.consts }, seats)
     }
 
     /// A METHOD's body as this receiver instantiates it: a trait's
@@ -36,23 +37,87 @@ impl LowerCx {
     fn method_symbol(m: DeclId, at: ExprId?, recv: TypeId) -> string {
         let parent: DeclId? = self.view.decls.decl(m).parent
         if parent != null && self.view.decls.is_trait(parent!) {
-            let held: Sub? = if at == null { null } else { self.facts.subst_at(at!) }
-            return self.wanted(m, Sub { target: parent!, args: [recv], consts: held?.consts ?? [] })
+            let contract = parent!
+            if at == null { return self.wanted(m, Sub { target: contract, args: [recv] }, []) }
+            let call = at!
+            let held: Sub? = self.facts.subst_at(call)
+            let consts: List<string> = held?.consts ?? []
+            let seats: List<SeatValue> = self.call_seats(m, call, consts)
+            return self.wanted(m, Sub { target: contract, args: [recv], consts: consts }, seats)
         }
-        if at == null { return self.wanted(m, null) }
+        if at == null { return self.wanted(m, null, []) }
         self.symbol_at(m, at!)
     }
 
     /// A declaration's body under an instantiation, as the symbol a
     /// call or an address names — enqueued on first sight, so the
     /// program lowers exactly what it reaches.
-    fn wanted(d: DeclId, sub: Sub?) -> string {
+    fn wanted(d: DeclId, sub: Sub?, seats: List<SeatValue>) -> string {
         let sym = self.view.decls.symbol(d)
         let name = if sub == null { sym } else { mangle(sym, sub!) }
         if self.unseen(name) {
-            self.jobs.pending.push(Wanted { file: self.view.decls.decl(d).file, decl: d, name: name, sub: sub })
+            self.jobs.pending.push(Wanted { file: self.view.decls.decl(d).file, decl: d, name: name, sub: sub, seats: seats })
         }
         name
+    }
+
+    /// The settled seats a call carries into its unit: the literal
+    /// value each `const` seat was filled with, keyed by its seat
+    /// index. A seat whose value no literal spells carries nothing.
+    fn call_seats(d: DeclId, e: ExprId, fps: List<string>) -> List<SeatValue> {
+        let args: List<ExprId> = self.call_args(e)
+        let base: int = self.call_base(e)
+        let marks: List<SeatMark> = self.view.decls.marks_of(d, base + args.length)
+        mut out: List<SeatValue> = []
+        mut k = 0
+        for j, a in args {
+            if settled_mark(marks, j) {
+                let value: Expr? = self.literal_value(a)
+                if value != null && k < fps.length {
+                    out.push(SeatValue { index: base + j, fp: fps[k], ty: self.facts.type_at(a), value: value! })
+                }
+                k = k + 1
+            }
+        }
+        out
+    }
+
+    /// A call node's arguments.
+    fn call_args(e: ExprId) -> List<ExprId> {
+        match self.view.store.expr(e) {
+            .Call(_, _, args) -> args,
+            .MethodCall(_, _, args) -> args,
+            rest -> [],
+        }
+    }
+
+    /// A call node's first written seat — 0 for a free fn, 1 past a
+    /// method's receiver.
+    fn call_base(e: ExprId) -> int {
+        match self.view.store.expr(e) {
+            .MethodCall(_, _, _) -> 1,
+            _ -> 0,
+        }
+    }
+
+    /// A settled seat's argument as a LITERAL value — the literal
+    /// itself, or a `const` name whose value is one. Null for a value
+    /// no literal spells.
+    fn literal_value(a: ExprId) -> Expr? {
+        let ex: Expr = self.view.store.expr(a)
+        if is_literal(ex) { return ex }
+        let b: Binding? = self.names.binding(a)
+        if b == null { return null }
+        match b! {
+            .Def(s) -> {
+                let v: ExprId? = self.view.store.const_value(s)
+                if v == null { return null }
+                let lit: Expr = self.view.store.expr(v!)
+                if is_literal(lit) { return lit }
+                null
+            }
+            rest -> null,
+        }
     }
 
     /// A worklist name's FIRST sighting — true exactly once; the
@@ -94,7 +159,7 @@ impl LowerCx {
             .LambdaParam(_, i) -> Reg { index: i + 1 },
             .Capture(_, j) -> self.env_read(j, ty),
             .Index(s) -> self.body.index_reg(s),
-            .Decl(d) -> if self.view.decls.fn_name(d) != null { self.fn_value_reg(e, self.wanted(d, null)) } else { null },
+            .Decl(d) -> if self.view.decls.fn_name(d) != null { self.fn_value_reg(e, self.wanted(d, null, [])) } else { null },
         }
     }
 
@@ -105,9 +170,20 @@ impl LowerCx {
     fn defined_reg(e: ExprId, s: StmtId, ty: TypeId) -> Reg? {
         let value: ExprId? = self.view.store.const_value(s)
         if value == null { return self.slot_reg(s, ty) }
-        let written: Expr = self.view.store.expr(value!)
+        let init = value!
+        let written: Expr = self.view.store.expr(init)
         if is_literal(written) { return self.settled_reg(e, written) }
-        match self.jobs.settle(self.view.file, s) {
+        if self.sub == null && self.reads_settled_seat(init) {
+            // a TEMPLATE body, not a unit: its `const` seats have no
+            // value here — the specialized units fold them
+            return self.zero_of(ty)
+        }
+        let runtime: string? = self.runtime_read(init)
+        if runtime != null {
+            self.unsettled(s, Unsettled.Param(runtime!))
+            return self.zero_of(ty)
+        }
+        match self.jobs.settle(self.view.file, s, self.seats) {
             .Ok(x) -> if !self.view.types.rides_pointer(ty) { self.materialized(x.answer, x.heap, ty) }
                       else { self.const_call(s, ty, x) },
             .Err(why) -> {
@@ -115,6 +191,81 @@ impl LowerCx {
                 self.zero_of(ty)
             },
         }
+    }
+
+    /// The run-time parameter an initializer reads, when it reads one
+    /// its unit did not settle — a const cannot depend on a value that
+    /// only exists while running. A DECLARED `const` seat is legal in a
+    /// template body; in a real unit its value must be carried.
+    fn runtime_read(root: ExprId) -> string? {
+        for node in post_order(self.dispatch, self.view.store, root) {
+            let b: Binding? = self.names.binding(node)
+            if b != null {
+                match b! {
+                    .Param(i) -> {
+                        if !settled_mark(self.seat_marks, i) { return "parameter ${i + 1}" }
+                        if self.sub != null && !self.seats.any((s: SeatValue) -> s.index == i) { return "parameter ${i + 1}" } // LICENSED I9: a seat's ordinal, not a type identity
+                    }
+                    rest -> nothing(),
+                }
+            }
+        }
+        null
+    }
+
+    /// Whether an initializer reads a DECLARED `const` seat — the
+    /// signal that a body is a template with no unit to fold it.
+    fn reads_settled_seat(root: ExprId) -> bool {
+        for node in post_order(self.dispatch, self.view.store, root) {
+            let b: Binding? = self.names.binding(node)
+            if b != null {
+                match b! {
+                    .Param(i) -> {
+                        if settled_mark(self.seat_marks, i) { return true }
+                    }
+                    rest -> nothing(),
+                }
+            }
+        }
+        false
+    }
+
+    /// The unit's settled seats, seeded as constants before the body
+    /// (or a const initializer) lowers. `read_binding` answers a
+    /// `Param(i)` read with `Reg{i}`, so a seeded register IS the
+    /// value; a gap (a seat nothing settled) is minted as a zero, and
+    /// no const may read it (`runtime_read` refused first).
+    fn seed_seats() {
+        for j in 0..self.seat_span() {
+            let dst = self.out.mint_ty(self.seat_ty(j))
+            let held: Expr? = self.seat_value(j)
+            if held == null {
+                // a gap: nothing settled this seat, and no const may read it
+                self.out.give(Ins.ConstInt(dst, 0))
+            } else {
+                let ins: Ins? = seed_ins(dst, held!)
+                if ins == null { self.out.defect("a settled seat held a value no literal spells") }
+                else { self.out.give(ins!) }
+            }
+        }
+    }
+
+    fn seat_span() -> int {
+        mut top = 0
+        for sv in self.seats {
+            if sv.index + 1 > top { top = sv.index + 1 }
+        }
+        top
+    }
+
+    fn seat_value(j: int) -> Expr? {
+        let held: SeatValue? = self.seats.find((s: SeatValue) -> s.index == j) // LICENSED I9: a seat's ordinal, not a type identity
+        held?.value
+    }
+
+    fn seat_ty(j: int) -> TypeId {
+        let held: SeatValue? = self.seats.find((s: SeatValue) -> s.index == j) // LICENSED I9: a seat's ordinal, not a type identity
+        held?.ty ?? self.shaped_ty(Type.Error)
     }
 
     /// The settled value as an instruction — a literal as written,
@@ -316,12 +467,27 @@ fn first_seat() -> Reg {
     Reg { index: 0 }
 }
 
+/// A settled seat's value as the constant instruction that defines
+/// its register — null for a value no literal spells (a DEFECT, since
+/// `literal_value` admitted it as a literal).
+fn seed_ins(dst: Reg, value: Expr) -> Ins? {
+    let n: int? = (value).int_of()
+    if n != null { return Ins.ConstInt(dst, n!) }
+    let t: string? = (value).text_of()
+    if t != null { return Ins.ConstStr(dst, t!) }
+    let b: bool? = (value).bool_of()
+    if b != null { return Ins.ConstBool(dst, b!) }
+    let bits: int? = (value).bits_of()
+    if bits == null { return null }
+    Ins.ConstFloat(dst, bits!)
+}
+
 impl LowerCx {
     /// A const no literal spells is CALLED: its unit answers the value
     /// once per process and the same box after — one unit, wanted on
     /// first sight like any body.
     fn const_call(s: StmtId, ty: TypeId, settled: Settled) -> Reg? {
-        let name = const_symbol(self.view.file, s)
+        let name = settled_symbol(const_symbol(self.view.file, s), self.seats)
         if self.unseen(name) {
             self.jobs.pending.push(Wanted { file: self.view.file, decl: null, name: name, sub: null, root: self.view.store.const_value(s), settled: settled, answer: ty })
         }
@@ -352,6 +518,7 @@ impl LowerCx {
             .Reach(label) -> refusal("const.reach", at, "a const cannot read the world", "`${name}` ${label}", "a const settles at compile time from pure computation alone — read the world at run time, under `let`"),
             .Budget(label) -> refusal("const.budget", at, "a const ran past its budget", "`${name}` ${label}", "compute less here, or settle it at run time under `let`"),
             .Trap(words) -> refusal("const.trap", at, "a const trapped while settling", "`${name}` ${words}", "the initializer runs at compile time, so what traps there is refused here"),
+            .Param(runtime) -> refusal("const.param", at, "a const cannot read a run-time parameter", "`${name}` reads `${runtime}`", "make `${runtime}` a `const` seat — `fn f(const ${runtime}: …)` — or compute this at run time under `let`"),
             .Spoken -> null,
         }
         if d != null { self.out.voices.speak(d!) }
