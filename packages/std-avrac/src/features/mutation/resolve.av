@@ -46,9 +46,7 @@ fn mut_or_refused(mut cx: ResolveCx, s: StmtId, n: string, at: Loc?) {
 // ── The voices ──
 
 /// Every refusal here labels the assignment itself.
-fn assigned_here() -> string {
-    "assigned here"
-}
+export const assigned_here: string = "assigned here"
 
 /// The remedy for a name that is read-only by nature: copy it.
 fn mut_copy_help(n: string) -> string {
@@ -56,40 +54,40 @@ fn mut_copy_help(n: string) -> string {
 }
 
 fn not_a_place(mut cx: ResolveCx, at: Loc?) {
-    cx.emit(refusal("resolve.place", at, "a mutation lands on a place — a name, a field, or an index", assigned_here(), "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding"))
+    cx.emit(refusal("resolve.place", at, "a mutation lands on a place — a name, a field, or an index", assigned_here, "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding"))
 }
 
 /// RECORDED TRIGGER: a `mut` seat assigned WHOLE lands with the
 /// inout ABI, where the seat is the caller's cell (ROADMAP: the
 /// inout receiver, S2); until then a seat is written along a path.
 fn seat_whole(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx.emit(refusal("resolve.immutable", at, "`${n}` is a `mut` seat — assigning it whole arrives with the inout ABI", assigned_here(), "write a path under it (`${n}.field = …`), or answer the new value"))
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is a `mut` seat — assigning it whole arrives with the inout ABI", assigned_here, "write a path under it (`${n}.field = …`), or answer the new value"))
 }
 
 fn immutable_receiver(mut cx: ResolveCx, at: Loc?) {
-    cx.emit(refusal("resolve.immutable", at, "`self` is the receiver — it is not assigned", assigned_here(), "assign a field of it — `self.<field> = …`"))
+    cx.emit(refusal("resolve.immutable", at, "`self` is the receiver — it is not assigned", assigned_here, "assign a field of it — `self.<field> = …`"))
 }
 
 fn immutable_param(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx.emit(refusal("resolve.immutable", at, "`${n}` is a parameter — parameters are immutable", assigned_here(), "declare the seat `mut ${n}: …` to write through it; the caller then hands a `mut` place"))
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is a parameter — parameters are immutable", assigned_here, "declare the seat `mut ${n}: …` to write through it; the caller then hands a `mut` place"))
 }
 
 fn immutable_bind(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx.emit(refusal("resolve.immutable", at, "`${n}` is a pattern's bind — it names the matched value, it is not assigned", assigned_here(), mut_copy_help(n)))
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is a pattern's bind — it names the matched value, it is not assigned", assigned_here, mut_copy_help(n)))
 }
 
 fn captured_copy(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx.emit(refusal("resolve.immutable", at, "`${n}` is captured by value — a lambda cannot assign to it", assigned_here(), "a capture is a copy: bind a `mut` inside the lambda, or answer the new value and let the caller keep it"))
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is captured by value — a lambda cannot assign to it", assigned_here, "a capture is a copy: bind a `mut` inside the lambda, or answer the new value and let the caller keep it"))
 }
 
 fn not_a_fn_place(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx.emit(refusal("resolve.immutable", at, "`${n}` is a fn — it is not assigned", assigned_here(), "bind a fn value to change it — `mut g = ${n}`"))
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is a fn — it is not assigned", assigned_here, "bind a fn value to change it — `mut g = ${n}`"))
 }
 
 fn immutable_index(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx.emit(refusal("resolve.immutable", at, "`${n}` is a loop index — it counts, it is not assigned", assigned_here(), mut_copy_help(n)))
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is a loop index — it counts, it is not assigned", assigned_here, mut_copy_help(n)))
 }
 
 fn not_mut(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx.emit(refusal("resolve.immutable", at, "`${n}` is not `mut`", assigned_here(), "declare it `mut ${n} = ...` to mutate it — or build a changed copy with `with`"))
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is not `mut`", assigned_here, "declare it `mut ${n} = ...` to mutate it — or build a changed copy with `with`"))
 }
