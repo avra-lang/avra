@@ -2,7 +2,7 @@
 // params, returns. Every program here was written to BREAK the
 // feature, not to use it.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{refused_with, shown, refusals, halver}
+use @std.avrac.testing.{refused_with, shown, refusals, ir_of, halver}
 
 spec "features/fns (adversarial)" {
     given "`return` under attack — depths, tails, boundaries" {
@@ -162,6 +162,16 @@ spec "features/fns (adversarial)" {
         }
         then "a settled mark inside a type argument is a parse error, as `mut` is" {
             refusals("let x: List<const int> = []\n0") == 1
+        }
+        then "a settled seat keys on THE VALUE alone — other arguments do not split it" {
+            let src = "fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet a = pick(\"x\", \"1\")\nlet b = pick(\"x\", \"2\")\na + b"
+            ir_of(src).fns.filter(it.name.starts_with("pick$@")).length == 1
+        }
+        then "an aggregate literal inline is not settled yet — it wants a `const`" {
+            refused_with("type P = { x: int }\nfn take(const p: P) -> int {\n    p.x\n}\ntake(P { x: 3 })", "`p` is a `const` seat")
+        }
+        then "a dyn method's settled seat is enforced too" {
+            refused_with("trait T { fn val(const x: int) -> int }\ntype A = { n: int }\nimpl T for A {\n    fn val(const x: int) -> int {\n        x + self.n\n    }\n}\nlet xs: List<dyn T> = [A { n: 1 }]\nlet v = 5\nxs[0].val(v)", "`x` is a `const` seat")
         }
     }
 }

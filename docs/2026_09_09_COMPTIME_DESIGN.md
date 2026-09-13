@@ -6,10 +6,12 @@
 > into the asking file's own store, and `@derive` with `Show`/`Eq`
 > shipped in `@std/derive` (a struct and an enum, eval == native ==
 > expected), and **the compiler DERIVES ITS OWN accessors**
-> (`@derive(Projections)` on `DeclSig`; `BEYOND` below). **S5a DONE**
-> — a fn seat's contracts are ONE `SeatMark` channel (`mutable`,
-> `settled`), a `const` mark parses on every param list and rides the
-> fn type's key. S5b/S5c and S1's `export const` remain. **See
+> (`@derive(Projections)` on `DeclSig`; `BEYOND` below). **S5a and
+> S5b DONE** — a fn seat's contracts are ONE `SeatMark` channel
+> (`mutable`, `settled`), a `const` mark parses on every param list,
+> and a settled seat's VALUE fingerprint rides the call's `Sub`, so
+> mono lowers one unit per distinct value. S5c (per-unit folding) and
+> S1's `export const` remain. **See
 > the LANE HANDOFF at the top of §6** for the laws pinned, the seams,
 > and where to pick up.
 
@@ -845,30 +847,40 @@ to start cold; the size is the design's estimate.
       `param` rule the declaration fragments reference, its builder
       answering `List<Param>` so the window alignment dies with it.
 
-- [ ] **S5b/S5c PICK-UP MAP (lane/comptime, 2026-09-12).** S5a landed
-      on a green gate; the settlement half is untouched and its seams
-      are here so they need no re-derivation. `Sub { target, args }`
-      (`features/contract.av`) is the instantiation key; typing records
-      it at a call (`features/facts.av:192` `record_subst`, reached from
-      `features/fns/check.av:87` `dispatched_call` and its
-      `generic_call` sibling). Lowering names a body through
-      `LowerCx.symbol_at`/`wanted`/`mangle`
-      (`language/lower_state.av:37-56`, `language/lower.av:448`), and
-      `viewed` (`features/contexts.av:275`) is the one substitution
-      view the body reads. S5b adds each settled-seat argument's VALUE
-      fingerprint to `Sub` (and to `mangle`), recorded where the seat
-      marks are already read (`declared_marks`, `checks.av:591`); a
-      non-generic callee needs the same record, so `dispatched_call`
-      grows the const branch. S5c binds the seat's value in the unit
-      (a `const` in the body reads it, so `const prog = compile(pattern)`
-      folds) — the natural home is the body's const table beside
-      `lower_state.av`'s `defined_reg`. The call-site law (a const seat
-      must be filled by a settled value) is the new refusal S5b owes.
-- [ ] **S5b — settled seats widen `Sub` (1–2 days).** `Sub { target,
-      args }` gains its const arguments' VALUE fingerprints; one
-      lowered unit per distinct pattern, mangled `name$ids$fp`. Proof:
-      two distinct literal patterns at one call site lower two units
-      (count via `avra ir`).
+- [ ] **S5c PICK-UP MAP (lane/comptime, 2026-09-12).** S5a and S5b
+      landed on a green gate; only the per-unit FOLDING is left. The
+      seams: `Sub` now carries `consts` (`features/contract.av`), and
+      the body is lowered with its `sub` (`language/lower_state.av`'s
+      `self.sub`); `viewed` (`features/contexts.av:275`) is the one
+      substitution view, and `defined_reg` (`language/lower_state.av`)
+      is where a `const` read already lowers a literal or a settled
+      value. S5c binds each settled seat's VALUE in the unit — so a
+      `const` in the body (`const prog = compile(pattern)`) folds to
+      that value — and that binding is what lifts the two pinned
+      S5b boundaries: a settled seat FORWARDED to another fn, and a
+      direct aggregate literal at a settled seat. A `dyn` method's
+      settled seat stays enforced-but-unspecialized by construction.
+- [x] **S5b — settled seats widen `Sub`. LANDED (2026-09-12).**
+      `Sub` gains `consts: List<string>`, the settled seats' VALUE
+      fingerprints; `mangle` appends them after `@` (`name$ids@fps`),
+      which keeps every existing generic name unchanged and the name
+      injective (`$`, `@` are unwritable; the backend escapes both).
+      Typing computes the fingerprints where the marks are already
+      read — free fns, static fns, instance methods and contract
+      methods — and records them on the call's `Sub`; mono lowers ONE
+      unit per distinct settled value. F2073 is the call-site law: a
+      `const` seat takes a literal or a `const` (computed ones
+      included); a `let`, a call result or a field read refuses.
+      Proof: `pick("x")`/`pick("y")` lower two units and a repeated
+      `"x"` shares one; two settled seats keep their order; the
+      `const_seat` program is eval == native == expected across int,
+      const, string and plain-fn-into-const-seat calls.
+      BOUNDARIES, pinned by test, all S5c's: a settled seat cannot be
+      FORWARDED to another (`outer(const y) { inner(y) }` refuses — the
+      value is per-unit), and a direct aggregate literal
+      (`take(P { x: 3 })`) wants a `const` binding. A `dyn` method's
+      settled seat is enforced but not specialized (dynamic dispatch
+      has no static unit).
 - [ ] **S5c — per-instantiation folding (1–2 days).** Inside a unit a
       const seat IS a const, so `const prog = compile(pattern)` folds
       and a read of it is its settled value. Proof: `matches(const
