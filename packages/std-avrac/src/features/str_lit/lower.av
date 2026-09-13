@@ -6,41 +6,18 @@ use core.{ExprId, Reg, Ins}
 use features.{LowerCx, MethodCall}
 
 fn interp_reg(mut cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
-    mut pieces = [part_reg(cx, e, parts[0])]
+    mut pieces = [cx.const_str(parts[0])]
     for j, h in holes {
-        pieces.push(hole_reg(cx, e, h))
-        pieces.push(part_reg(cx, e, parts[j + 1]))
+        pieces.push(cx.texted(h))
+        pieces.push(cx.const_str(parts[j + 1]))
     }
     let size = cx.box_size(pieces.length)
     let arr = cx.mint_ty(cx.type_at(e))
     cx.grown_box(arr, size, pieces)
-    let sep = part_reg(cx, e, "")
+    let sep = cx.const_str("")
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, "avra_str_join", [arr, sep]))
     dst
-}
-
-/// A literal piece as a fresh Str register.
-fn part_reg(mut cx: LowerCx, e: ExprId, text: string) -> Reg {
-    let r = cx.mint_ty(cx.type_at(e))
-    cx.emit(Ins.ConstStr(r, text))
-    r
-}
-
-/// A hole's value as a string register, by its shape. Only the
-/// scalars and strings pass typing; every other arm stands on the
-/// raw register.
-fn hole_reg(mut cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
-    let v = cx.reg_of(h)
-    match cx.shape_at(h) {
-        .Str -> v,
-        .Int -> rt1(cx, e, "avra_int_text", v),
-        .Float -> rt1(cx, e, "avra_float_text", v),
-        .Bool -> rt1(cx, e, "avra_bool_text", v),
-        .Ptr or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or
-        .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or
-        .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> v,
-    }
 }
 
 // ── The method rows' rules: one runtime call each ──

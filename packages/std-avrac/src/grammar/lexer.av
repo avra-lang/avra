@@ -115,6 +115,30 @@ fn emit(t: Token, next: int) -> ScanStep {
     ScanStep { token: t, err: null, opens_hole: false, next: next }
 }
 
+/// Whether a raw body's scan ended at its closing brace — not at a
+/// hole, and not ragged.
+fn body_closed(s: ScanStep) -> bool {
+    s.token != null && s.err == null && !s.opens_hole
+}
+
+/// The closing brace a raw body's scan consumed, as its own token.
+fn brace_at(next: int) -> Token {
+    token(TokenKind.Op, "}", next - 1, next)
+}
+
+/// A raw body closed INSIDE a hole: its opener was counted against
+/// the enclosing hole's depth when it was emitted, and its closer
+/// never passes through that count — so the count is paid here.
+fn balanced(holes: List<int>) -> List<int> {
+    if holes.is_empty() { return holes }
+    holes.slice(0, holes.length - 1).concat([holes.last()! - 1])
+}
+
+/// Whether a `//` line comment starts at `j`.
+fn line_comment_at(src: string, n: int, j: int) -> bool {
+    j + 1 < n && src.char_code(j) == 47 && src.char_code(j + 1) == 47
+}
+
 /// A step that produced nothing (whitespace).
 fn skip(next: int) -> ScanStep {
     ScanStep { token: null, err: null, opens_hole: false, next: next }
@@ -194,6 +218,8 @@ fn scan_raw_block(src: string, n: int, from: int, word: string) -> ScanStep {
         if quoted {
             if c == 92 { i = i + 1 }
             else if c == 34 { quoted = false }
+        } else if line_comment_at(src, n, i) {
+            i = line_end(src, n, i)
         } else if c == 34 {
             quoted = true
         } else if c == 123 {
@@ -334,6 +360,8 @@ fn scan_quote_part(src: string, from: int, start: int) -> StrPart {
         if quoted {
             if c == 92 { j = j + 1 }
             else if c == 34 { quoted = false }
+        } else if line_comment_at(src, n, j) {
+            j = line_end(src, n, j)
         } else if c == 34 {
             quoted = true
         } else if c == 36 && j + 1 < n && src.char_code(j + 1) == 123 {
@@ -589,7 +617,7 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
     mut i = 0
     let n = src.length
     while i < n {
-        let comment = src.char_code(i) == 47 && i + 1 < n && src.char_code(i + 1) == 47
+        let comment = line_comment_at(src, n, i)
         if comment {
             // Any comment marks its line; only a `///` at line start
             // is a doc line, and only a blank line detaches a group.
@@ -600,6 +628,13 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
         }
         opened_quote = false
         mut s = scan_step(src, n, i, interpolate)
+        // THE BODY'S CLOSING BRACE IS A TOKEN: a `quote {` or
+        // `grammar {` opener was emitted as one, so the brace that
+        // ends the raw body is emitted too — the stream stays
+        // balanced, and the line law's bracket stack never holds a
+        // brace nothing closes.
+        // LICENSED I4: the brace is a SECOND token one step yields, never a scan's find
+        mut closer: Token? = null
         if in_hole(holes, s.token) {
             let t = s.token!
             if t.text == "{" { holes.set(holes.length - 1, holes.last()! + 1) }
@@ -610,6 +645,10 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
                     if was_quote {
                         opened_quote = true
                         s = scan_quote(src, s.next, false, quote_depths.pop())
+                        if body_closed(s) {
+                            closer = brace_at(s.next)
+                            holes = balanced(holes)
+                        }
                     } else {
                         s = scan_string(src, s.next, false, interpolate)
                     }
@@ -643,6 +682,7 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
                 line_comment = false
             }
             raw.push(t)
+            if closer != null { raw.push(closer!) }
         }
         if s.err != null { errors.push(s.err!) }
         if s.opens_hole {
@@ -658,12 +698,20 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
         if opens_grammar(raw, s.token) {
             let body = scan_raw_block(src, n, i, "grammar")
             if body.token != null { raw.push(body.token!) }
+            if body_closed(body) {
+                raw.push(brace_at(body.next))
+                holes = balanced(holes)
+            }
             if body.err != null { errors.push(body.err!) }
             i = body.next
         }
         if opens_quote(raw, s.token) {
             let first = scan_quote(src, i, true, 0)
             if first.token != null { raw.push(first.token!) }
+            if body_closed(first) {
+                raw.push(brace_at(first.next))
+                holes = balanced(holes)
+            }
             if first.err != null { errors.push(first.err!) }
             if first.opens_hole {
                 holes.push(0)

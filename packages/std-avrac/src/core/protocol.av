@@ -1,6 +1,6 @@
 //! THE VALUE PROTOCOL, derived — `Expr`'s literal payload projections.
-//! Five categories take the variant's one payload; the map takes two
-//! and builds its `MapPairs` record. A feature reads a payload through
+//! Five categories take the variant's one payload; the map and the
+//! quote take two and build their record. A feature reads a payload through
 //! these methods instead of matching a variant.
 use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive}
 
@@ -20,9 +20,9 @@ fn accessor(name: string) -> string? {
 trait ValueProtocol {
     static fn derive(t: MetaType) -> List<Directive> {
         let methods = [projection_of(v) for v in t.variants if accessor(v.name) != null]
-        [Directive { twin: "", name: t.name, at: t.at,
-                     code: quote { impl ${t.name} {
-${methods.concat([pairs_of_method]).join("\n")}
+        let body = methods.concat([pairs_of_method, quote_of_method]).join("\n")
+        [Directive { twin: "", name: t.name, at: t.at, source: quote { impl ${t} {
+${body}
 } } }]
     }
 }
@@ -32,5 +32,6 @@ fn projection_of(v: MetaVariant) -> string {
     "fn ${accessor(v.name)!}() -> ${v.payload[0]}? { match self { .${v.name}(s) -> s, _ -> null } }"
 }
 
-/// The one category with TWO payloads — a record, not a payload.
+/// The two categories with TWO payloads — a record each, not a payload.
 export const pairs_of_method: string = "fn pairs_of() -> MapPairs? { match self { .MapLit(keys, values) -> MapPairs { keys: keys, values: values }, _ -> null } }"
+export const quote_of_method: string = "fn quote_of() -> QuoteParts? { match self { .Quote(parts, holes) -> QuoteParts { parts: parts, holes: holes }, _ -> null } }"

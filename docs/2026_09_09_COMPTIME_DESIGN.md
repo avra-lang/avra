@@ -23,7 +23,16 @@
 > backlog). **THE S5 REFINEMENTS LANDED** — a settled seat FORWARDS
 > to another fn, and a direct AGGREGATE literal settles a seat; both
 > ride the ONE S5c channel, widened to the crossing tree every
-> compile-time value already travels as. **See
+> compile-time value already travels as. **S4r LANDED (2026-09-13)**:
+> a quote is a `Code` VALUE whose runs remember the file that wrote
+> them (`@std.meta.Code`, `Piece`, `joined`, `spliced`); the resolver
+> keys a generated node's binders and reads by that origin and looks
+> a template's module names up in the writing file — ORIGIN HYGIENE,
+> proven by a derive calling its own private helper unqualified and a
+> template `let tmp` that cannot capture the user's; every diagnostic
+> inside generated code is HOMED at the template line (or the asking
+> annotation), and a generated source that does not parse now SPEAKS
+> there. `Code<T>` is decided: untyped `Code` (§7 question 2). **See
 > the LANE HANDOFF at the top of §6** for the laws pinned, the seams,
 > and where to pick up.
 
@@ -936,20 +945,101 @@ to start cold; the size is the design's estimate.
       unchanged). Proof: the `export_const` program test — int,
       string and computed consts imported and read, eval == native ==
       expected.
-- [ ] **S4r — the `Code<T>` claim (1 day).** A quote's value is typed
-      by its position and checked at splice; today a quote is a
-      `string`. Land: a `Code` meta type whose parameter is the claim,
-      the hole's position types it, and a mismatch blames the
-      annotation AND the template line. Proof: a wrong-shape hole
-      refuses at the hole; a right one splices.
-- [ ] **S4r — origin hygiene (1–2 days).** A template's own names
-      resolve in the module that wrote the quote; a hole's at the
-      splice site. Today generated source is parsed wholesale in the
-      target, so a derive's private helper must be qualified and a
-      `let tmp` could capture. Land: a template-origin side table
-      keyed by the spliced node, and a resolve that reads it. Proof: a
-      derive's unqualified private helper is found, and cannot capture
-      a user name.
+- [x] **S4r — the `Code` value and the claim. LANDED (2026-09-13),
+      DECIDED as UNTYPED `Code`.** A quote answers `@std.meta.Code`:
+      `{ pieces: List<Piece> }`, each `Piece { text, origin, at }` a
+      run of source and the FILE that wrote it (absent for a hole's
+      text). `Expr.Quote(parts, holes)` is the node (where each run
+      starts is a store fact, `quote_starts_of`); typing answers the
+      meta `Code` (F2076 when the program loads no `@std/meta`) and
+      holds each hole to TEXT, a scalar, a NAMED meta value (`${t}`,
+      `${f}` splice their names) or `Code` (F2075); lowering is three
+      meta calls — `quoted` per run, `spliced` per text hole, one
+      `joined` — no new instruction. `Directive.source: Code?` carries
+      it; the compiler's own derives (`ValueProtocol`, `Projections`)
+      write quotes too, and the `code: string?` bridge the seed ladder
+      needed for one build is gone. A hole-less quote is a LITERAL (`is_literal`),
+      so `@wrapped(quote { … })` crosses a user's code into an
+      annotation (`quote_meta`). WHY NO `Code<T>`: under text
+      templates a hole's position is unknown until the splice parses,
+      so a claim on the quote could only be checked where typing the
+      generated code already checks it — the claim would be a promise
+      the compiler cannot test earlier than it already does. What the
+      claim was FOR — blaming the template line — is paid instead by
+      HOMING: every diagnostic inside generated code points into the
+      quote that wrote the run (file, byte, column), a hole's text at
+      the asking annotation, and a generated source that does not
+      PARSE speaks the same way (`Decls.expansion_voices`, spoken by
+      the file's resolve). Re-open `Code<T>` only if templates are
+      ever parsed at the quote (§3.5's tree model).
+- [x] **S4r — origin hygiene. LANDED (2026-09-13).** A GENERATION is
+      recorded per admitted source (`Decls.generations`: the arena
+      ranges its nodes took, the text's `Segment`s with their origin
+      file and offset, the asking annotation's span). The resolver
+      KEYS every binder and read by the origin of the node's own text
+      (`keyed(name, origin)` — `name@<file>`, `@` being unwritable)
+      and looks a template's module names up in the WRITING file's
+      namespace (`Elsewhere.written_in`, beside the two-tier
+      `generated` look); an arm's binders wear their own pattern's
+      origin (`Bound`), because a generated pattern and its arm value
+      can come from different runs. THE RULE FOR A NAME THAT STRADDLES
+      RUNS: its origin is its FIRST BYTE's — so spell a manufactured
+      binder and its read the same way (`@std/derive`'s `eq_arm`
+      splices both). Proof: `quote/tests/hygiene` (a private `shout`
+      found unqualified; `@wrapped(quote { tmp })` where the template
+      binds `tmp` and the user's `tmp` is a fn — answers `Point! 11`,
+      eval == native == expected) and `quote/tests/quote_test.av` (10
+      cases: the hole law, the printer, hygiene both ways, homed
+      refusals). `@std/derive` is rewritten over quotes: `${t}`,
+      `${f}`, `${v}` name holes, `joined(arms, ", ")`.
+      THE LAWS THIS SLICE PINNED, each found by the derive breaking:
+      - A WHOLE-PROGRAM PASS MUST NOT RUN INSIDE A RESOLVE — its third
+        instance. The RECEIVERS pass (`receivers()`) asks every fn's
+        sig; asked from a lifted derive it signed nodes.av's decls
+        from a smaller view and KEPT them (`ExprId` lost `index`,
+        `Expr` lost `int_of`). It returns unsettled while any Resolved
+        query is open, as `method_diagnostics` does; declared bits
+        answer until the resolve closes. Cost: a body typed inside a
+        lifted chain may miss an F2047 WARNING (errors read declared
+        marks).
+      - A NAME-KEYED TABLE CROSSES MODULES. `impls_by_name` files every
+        `impl` under its NAME, so `methods(target)` signed the
+        compiler's own `impl Code` while asking about
+        `@std.meta.Code` — dragging `features` into the derive's
+        resolve. `aims_at` keeps only impls whose FILE can name the
+        target (`visible(file).types`), no resolve needed.
+      - A RAW BODY'S CLOSING BRACE IS A TOKEN. `quote {`/`grammar {`
+        emitted their `{` and swallowed the `}`, so the line law's
+        bracket stack held a brace nothing closed and `[quote { … }
+        for x in xs]` dropped the break after the line. The lexer
+        emits the `}` and both grammars consume it.
+      - THE PER-FILE REPORT RENDERS OVER EVERY LOADED SOURCE
+        (`Program.rendered`): a homed Loc names a DEPENDENCY's file,
+        and rendering it against the target's text tripped the
+        span trap.
+      - A FAILED TRAIT DERIVE SPEAKS: `derive_law` re-asks the memoized
+        lifted call and voices its `Unsettled` — silence was how the
+        derive's own refusal hid behind "no method `show`".
+      RED-TEAMED (2026-09-13, 50 programs over the eight classes; eval
+      == native on all 17 accepted): FOUR more, each pinned in
+      `quote_adversarial_test.av`. A raw body opened INSIDE a hole
+      (`"${quote { x }}"`, `quote { ${quote { y }} }`) never closed —
+      its `{` was counted against the enclosing hole and its `}` never
+      passed the count (`balanced`). A `}` inside a `//` comment in a
+      quote or grammar body ended the body — both raw scans skip line
+      comments now. A hole-less quote claimed `is_literal`, and the
+      const path's literal fast-path (`settled_reg`) then read a
+      register that was never minted — `is_literal` is the value
+      protocol's again and the annotation gates ask `source_spelled`.
+      And a generated fn the file ALREADY declares lost to the written
+      one in silence (the two-tier lookup asks the written names
+      first) — F2077 speaks at the asking annotation. SURVIVED: every
+      wrong hole type (12) refuses with F2075; degenerate quotes (empty
+      body, hole-only, adjacent holes, empty `joined`, a derive
+      answering nothing) all run; 200 quotes joined twice run clean
+      under `AVRA_RC_GUARD`. Poor but honest: an empty hole `${}` and
+      an unclosed quote cascade into "expected `}` to close the
+      trailing block" (the parser's nearest @expect).
 - [x] **BEYOND — the compiler derives its own accessors. LANDED
       (2026-09-11).** `@derive(Projections)` (`features/projections.av`,
       a `std-avrac` trait) generates `impl DeclSig { fn fn_sig() ->
@@ -983,12 +1073,12 @@ to start cold; the size is the design's estimate.
         claimed. Found by integrating the derive: typing a generated
         method asks the receiver pass for a signature, which asks for a
         resolve.
-      AND A REFUSED GENERATED SOURCE IS SILENT TODAY: `admit_code`
-      drops a parse-refused generation. It should speak (a
-      `defect`/diagnostic) — that silence is how the `" "` vs `"
-"`
-      method-join bug hid. Also: generated decls carry their OWN
-      `[lo, hi)` range now, not the whole block's.
+      AND A REFUSED GENERATED SOURCE WAS SILENT until S4r (2026-09-13):
+      `admit_code` dropped a parse-refused generation — that silence
+      is how the `" "` vs `"\n"` method-join bug hid. It speaks now,
+      homed at the template line (`Decls.expansion_voices`). Also:
+      generated decls carry their OWN `[lo, hi)` range, not the whole
+      block's.
 
 ### THE MECHANICAL-CLASS INVENTORY (2026-09-11)
 
@@ -1088,9 +1178,12 @@ quotes keeps the two hard problems apart.
    it is `v.type(T)` (sugar 2). In an annotation's argument list a
    bare name is its meta value (§3.3). Is a bare `type(User)`
    elsewhere wanted, or is the annotation position enough?
-2. **`Code<T>` vs untyped `Code`.** The claim is checked only at
-   splice. Keep `T` for intent and the two-frame error, or drop it
-   until stage typing is worth its cost?
+2. **`Code<T>` vs untyped `Code`.** DECIDED 2026-09-13: untyped
+   `Code`. A text template's hole has no position until the splice
+   parses, so the claim could only be checked where typing the
+   generated code checks it already; the two-frame error is paid by
+   HOMING instead (S4r in §6). Re-open only with a tree-template
+   model.
 3. **Arms as a quote kind.** `quote { .A(x) -> f(x) }` is what the
    compiler's own enum derives write; it is neither statement nor
    expression. Ordered choice in the quote body (arm first) is the

@@ -23,16 +23,16 @@
 | BEYOND compiler self-derive (`@derive(Projections)`, `@derive(ValueProtocol)`) | LANDED | **DONE** |
 | `export const` dogfooding | — | **DONE**: 87 `export const`, 368 call sites, 5 commits; F0902 relaxed |
 | S5 refinements (forwarding, aggregate literal) | **DONE** | 2026-09-13: `SeatValue` carries the crossing tree; `const_seat` program test (eval == native) |
-| S4r `Code<T>` claim | **OPEN** | today a quote is `string` |
-| S4r origin hygiene | **OPEN** | generated source resolves wholesale at the splice |
+| S4r the `Code` value | **DONE** 2026-09-13 | a quote answers `@std.meta.Code`; `Code<T>` decided UNTYPED, homing pays the two-frame error |
+| S4r origin hygiene | **DONE** 2026-09-13 | generations + origin-keyed resolve; private helpers found, `let tmp` cannot capture; refusals speak at the template line |
 | shared `param` grammar rule | leave-alone, trigger named | not forced yet |
 | private top-level `const` module scope | **NEW ASK** (dogfooding) | today file-local + order-sensitive |
 | later list | open | static aggregate data, JIT, type operators, typed holes, manifest grants, parallel settlement, `@total` |
 
 **Working state:** branch `lane/comptime`, worktree
 `/Users/tristan/projects/tristanMatthias/avra-lane-comptime`, gate
-green (compiler 2,292/2,292 spec + 88 programs; sqlite 414/414;
-process 95/95; io 47/47), `make idioms` debt 0, tree clean.
+green (compiler 2,303/2,303 spec + 88 + 8 programs; sqlite 414/414),
+`make idioms` debt 0, seed refreshed 2026-09-13.
 
 ---
 
@@ -71,22 +71,15 @@ the owner says otherwise:
    inventing a second channel. A `dyn` method's settled seat stays
    enforced-but-unspecialized by construction: do not try to fold it.
 
-2. S4r ORIGIN HYGIENE (~1–2 days, the higher-value S4 refinement). A
-   template's own names must resolve in the module that WROTE the
-   quote; a hole's at the splice site. Today generated source is
-   parsed wholesale in the target, so a derive's private helper must
-   be qualified and a `let tmp` could capture. Land a template-origin
-   side table keyed by the spliced node plus a resolve that reads it.
-   Proof: a derive's UNQUALIFIED private helper is found, and it
-   cannot capture a user name.
+2. (done 2026-09-13) `Directive.code` bridge removed; the compiler's
+   own derives write `source: quote { … }`; seed refreshed.
 
-3. S4r THE `Code<T>` CLAIM (~1 day). A quote's value is typed by its
-   position and checked at splice; today it is a plain `string`.
-   Land a `Code` meta type whose parameter is the claim, the hole's
-   position types it, and a mismatch blames the annotation AND the
-   template line. Proof: a wrong-shape hole refuses at the hole; a
-   right one splices. (Design §3.5/§7 question 2 weighs `Code<T>`
-   vs untyped `Code` — decide it and write the reason down.)
+3. PARSED TEMPLATES (a campaign, not a slice — only if the owner wants
+   §3.5's tree model). Today a template is TEXT parsed at the splice,
+   which is why `Code<T>` was decided untyped (§7 q2). A template
+   parsed at the quote would type holes by position; the origin
+   machinery (generations, segments, keyed binders) is what it would
+   sit on.
 
 4. THE PRIVATE-CONST ASK (a language migration, not a patch). A
    private `fn` is module-visible and order-free; a private top-level

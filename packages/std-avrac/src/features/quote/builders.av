@@ -1,8 +1,24 @@
-//! The raw block's text -> the string literal it stands for.
+//! The raw block's runs and hole expressions -> the Quote node, with
+//! where each run starts kept as a store fact.
 use core.{Expr}
-use features.{LangNode, Builder}
+use features.{LangNode, Builder, zip_defect_of}
 
 fn build_quote(mut b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
-    b.make_expr(Expr.StrLit(t.text))
+    let e = b.store.alloc_expr(Expr.Quote([t.text], []), b.span)
+    b.store.mark_quote_starts(e, [t.span.lo])
+    .Ok(LangNode.NExpr(e))
+}
+
+fn build_quote_interp(mut b: Builder) -> Result<LangNode, string> {
+    let head = b.token(0)?
+    let first = b.expr(1)?
+    let mids = b.tokens(2)?
+    let rest = b.exprs(3)?
+    let tail = b.token(4)?
+    if mids.length != rest.length { return .Err(zip_defect_of("quote pieces")) }
+    let runs = [head].concat(mids).concat([tail])
+    let e = b.store.alloc_expr(Expr.Quote([r.text for r in runs], [first].concat(rest)), b.span)
+    b.store.mark_quote_starts(e, [r.span.lo for r in runs])
+    .Ok(LangNode.NExpr(e))
 }

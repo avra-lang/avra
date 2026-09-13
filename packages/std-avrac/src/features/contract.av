@@ -20,7 +20,7 @@
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
 use @std.meta.{derive}
-use core.{Expr, ExprId, StmtId, PatId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
+use core.{Expr, ExprId, StmtId, PatId, FileId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
 use core.{SeatMark}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
@@ -63,15 +63,25 @@ export type ResolveCx = {
     // the statement in hand stands inside a block
     scope: List<string>,
     in_block: bool,
-    // THE TWO-TIER LOOKUP's second tier: a written name resolves at
-    // once; a MISS asks the workspace's generated declarations, which
-    // materialize on demand and answer the name if an expansion
-    // declared it.
-    miss: fn(string) -> DeclId?,
+    // the two looks past the written file
+    elsewhere: Elsewhere,
 }
+
+/// The resolver's two looks PAST the written file. A name the
+/// written namespace lacks may be a GENERATED declaration of this
+/// file, materialized on demand (the two-tier lookup's second tier);
+/// and a template's own name lives in the namespace of the file that
+/// WROTE the quote — origin hygiene.
+export type Elsewhere = { generated: fn(string) -> DeclId?, written_in: fn(FileId) -> Namespace }
+
 
 /// One `let` definition of the program, in order.
 export type Def = { name: string, stmt: StmtId }
+
+/// A binder an arm opens, with the file that WROTE its text — a
+/// generated pattern's name and its arm's value may come from
+/// different runs, and the binder wears its own.
+export type Bound = { name: string, origin: FileId? }
 
 /// One OPEN lambda during the walk: its params, and the overlay
 /// depth at entry — an overlay at or above the floor is

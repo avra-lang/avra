@@ -1,0 +1,26 @@
+//! Templates that name this file's OWN private helper unqualified,
+//! and bind a local that must never capture the user's.
+use @std.meta.{Type, Fn, Directive, Code, literal}
+
+/// Private — a template calls it by its bare name.
+fn shout(s: string) -> string { "${s}!" }
+
+/// `@derive(Loud)` gives a type `fn loud() -> string`, spelled
+/// through this file's private `shout`.
+export trait Loud {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: quote { impl ${t} { fn loud() -> string { shout(${literal(t.name)}) } } } }]
+    }
+}
+
+/// `@wrapped(quote { … })` on `fn f` generates `f_wrapped`, whose
+/// body binds `tmp` and splices the user's code beside it.
+export fn wrapped(f: Fn, body: Code) -> List<Directive> {
+    [Directive { twin: "", name: f.name, at: f.at, source: quote {
+        fn ${f}_wrapped() -> int {
+            let tmp = 1
+            let picked = ${body}
+            picked() + tmp
+        }
+    } }]
+}

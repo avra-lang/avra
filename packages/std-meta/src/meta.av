@@ -21,7 +21,9 @@
 //! for its USES), `void` records, `List<Directive>` generates
 //! declarations beside the annotated one, and `Derived` runs a named
 //! trait's associated `derive` (`@derive(Show)`). A `quote { … }` is
-//! generated source as one string literal.
+//! generated source as a `Code` value: each run remembers the file
+//! that wrote it, so a template's names resolve there and a hole's
+//! where the code is spliced.
 
 use @std.errors.{Loc}
 
@@ -89,14 +91,61 @@ export fn embed(path: string) -> string {
     avra_embed(path)
 }
 
+/// One run of generated source and the file that WROTE it. A quote's
+/// own text wears its file, so the compiler resolves the template's
+/// names there; a hole's text wears none, so its names resolve where
+/// the code is spliced. `at` is the run's offset in the writing file.
+export type Piece = { text: string, origin: string?, at: int }
+
+/// Generated SOURCE that remembers who wrote each run — what a
+/// `quote { … }` answers, and what a `Directive` carries.
+export type Code = { pieces: List<Piece> }
+
+impl Code {
+    /// The source, origins forgotten.
+    fn text() -> string { [p.text for p in self.pieces].join("") }
+}
+
+/// A quote's own text: one run from the file at `origin`. The
+/// compiler's lowering of `quote { … }` calls this for each run.
+export fn quoted(text: string, origin: string, at: int) -> Code {
+    Code { pieces: [Piece { text: text, origin: origin, at: at }] }
+}
+
+/// Text resolved where it is spliced — a name the derive was handed,
+/// a fragment it built. What a `${}` hole holding a string answers.
+export fn spliced(text: string) -> Code {
+    Code { pieces: [Piece { text: text, origin: null, at: 0 }] }
+}
+
+/// Text as a STRING LITERAL of the generated program — quoted and
+/// escaped, so a derive writes `${literal(t.name)}` where the
+/// program must read `"Point"`.
+export fn literal(text: string) -> Code {
+    spliced("\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
+}
+
+/// Runs of code side by side, `sep` between each pair — the `join`
+/// of a `List<Code>`: `joined(arms, ", ")`.
+export fn joined(parts: List<Code>, sep: string) -> Code {
+    mut pieces: List<Piece> = []
+    for j, p in parts {
+        if j > 0 && !sep.is_empty() { pieces.push(Piece { text: sep, origin: null, at: 0 }) }
+        pieces = pieces.concat(p.pieces)
+    }
+    Code { pieces: pieces }
+}
+
 /// A DIRECTIVE the COMPILER is asked to fulfil. A `twin` mints a fn
 /// beside the original under a name no written binding can take
-/// (`@traced("sum")` makes `sum_traced`); a `code` is generated
-/// SOURCE the compiler parses into this file's store and admits
-/// (`@derive`). A twin's name must be SPELLABLE — never a
-/// `$`-mangle. (NOT `Decl`: that name is the compiler's own
-/// declaration — a collision would arm a counterfeit.)
-export type Directive = { twin: string, name: string, at: Loc?, code: string? = null }
+/// (`@traced("sum")` makes `sum_traced`); a `source` is generated
+/// CODE the compiler parses into this file's store and admits
+/// (`@derive`), each run resolved in the file that wrote it. A twin's
+/// name must be SPELLABLE — never a `$`-mangle. (NOT `Decl`: that
+/// name is the compiler's own declaration — a collision would arm a
+/// counterfeit.)
+export type Directive = { twin: string, name: string, at: Loc?, source: Code? = null }
+
 
 /// The trace directive's decoder: `@traced("label")` on `fn sum`
 /// asks for a sibling named `sum_traced`.

@@ -633,6 +633,23 @@ engine's spec, written by dogfooding.
   lists adjacently; `>>` is TWO tokens the grammar joins, both
   branches capturing ONE token into the same label so the run stays
   aligned. The next `>=`-shaped operator faces the same question.
+- Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `quote {`
+  and `grammar {` emit their `{` as a token, so the lexer emits the
+  `}` that ends the raw body too, and the rule consumes it
+  (`"quote" "{" t:STRING "}"`). Swallowing it left the line law's
+  bracket stack holding a brace nothing closed, and `[quote { … } for
+  x in xs]` dropped the break after its line. AND A RAW BODY OPENED
+  INSIDE A HOLE pays the hole's count too (`balanced`): the opener was
+  counted against the enclosing hole when it was emitted, and the
+  closer never passes through that count. Line comments inside a raw
+  body are the generated program's — a `}` in one ends nothing.
+- A NAME-KEYED TABLE CROSSES MODULES. `impls_by_name` files every
+  `impl` under its NAME, so asking `@std.meta.Code`'s methods signed
+  the compiler's own `impl Code` and dragged `features` into a
+  derive's resolve. A consumer of such a table filters by what the
+  impl's FILE can name (`aims_at`: `visible(file).types`), which
+  needs no resolve. And the RECEIVERS pass is the third whole-program
+  pass guarded against running inside a resolve (design doc, S4r).
 - Grammar authoring: a greedy star cannot be told to stop early. An
   arm that could also START the star's required tail (`_` is a
   NAME; a keyword is a NAME) must be an ordered choice INSIDE the
@@ -1000,6 +1017,10 @@ Syntax the grammar lacks:
           2  | "b"
       }
 - The pipe `|>`: "expected BREAK while parsing `stmt`".
+- A SEMICOLON between statements (`let a = 1; a + 1`): F0001
+  "unexpected character" at the `;` — a statement ends at a line
+  break, and a one-line body is `{ a }` with one statement. A
+  TEMPLATE that spells `;` is refused at its own line (S4r homing).
 - A RANGE TAKES NO METHODS: `(0..n).any(it == 2)` is "expected `)`
   to close the group", AT the `..`. A range is a `for`-head and a
   comprehension's iterable, nothing more — so the idiom bar's "scan

@@ -1,25 +1,33 @@
-//! `quote { … }` — generated SOURCE taken whole, a string literal with
-//! no escaping. The lexer hands the body over as one literal (like a
-//! `grammar` block); the parser makes it a string, so a derive feeds
-//! it straight to a `Directive`'s `code`.
+//! `quote { … }` — generated SOURCE as a value. The lexer hands the
+//! body over whole (like a `grammar` block), so braces, quotes and
+//! newlines inside need no escaping, and `${e}` is a hole. The value
+//! is `@std.meta.Code`: each run of the template remembers this file,
+//! so its names resolve here; a hole's text resolves where the code
+//! is spliced.
 use features.{LanguageFeature, BuilderRow}
-use features.str_lit.{build_interp}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
 
 export fn quote_lit() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name    | build
-        "quote" | build_quote
-        "quote_interp" | build_interp
+        name           | build
+        "quote"        | build_quote
+        "quote_interp" | build_quote_interp
+    }
+    let codes = table<DiagCode> {
+        kind              | id      | summary
+        "type.quote_hole" | "F2075" | "a quote's hole splices text, a scalar, a named meta value or `Code`"
+        "type.quote_meta" | "F2076" | "a `quote` answers `@std.meta.Code`, which this program does not load"
     }
     component LanguageFeature f {
         name = "quote"
-        docs = "`quote { … }` — generated source as one string literal, no escaping; \${e} is a hole."
+        docs = "`quote { … }` — generated source as a `Code` value, no escaping; \${e} is a hole."
         gram = grammar {
-            primary = "quote" "{" t:STRING -> quote(t)
-                    | "quote" "{" b:ISTR_BEGIN e:expression ( m:ISTR_MID e2:expression )* t:ISTR_END -> quote_interp(b, e, m, e2, t)
+            primary = "quote" "{" t:STRING "}" -> quote(t)
+                    | "quote" "{" b:ISTR_BEGIN e:expression ( m:ISTR_MID e2:expression )* t:ISTR_END "}" -> quote_interp(b, e, m, e2, t)
         }
         builders = rows
+        diags = codes
     }
     f
 }

@@ -14,11 +14,12 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, is_literal, Annotation, Binding, named_ref, spelled}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Code, Generation, Segment, ArenaMarks, quote_meta, Elsewhere}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
+use core.{debug}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
 use @std.testing.{CaseRef, words}
 
@@ -465,14 +466,21 @@ impl Workspace {
         // happens on a miss, below.)
         let made = if self.has_declares(f) { self.expanded(f) } else { [] }
         let p = self.parsed(f)
-        // THE TWO-TIER SECOND LOOK: a name missing from the written
+        // THE TWO LOOKS PAST THE FILE: a name missing from the written
         // namespace asks the file's generated declarations, which
-        // materialize on demand through `expanded`.
-        let miss = (name: string) -> self.generated_named(f, name)
+        // materialize on demand through `expanded`; a template's own
+        // name asks the namespace of the file that wrote the quote.
+        let elsewhere = Elsewhere {
+            generated: (name: string) -> self.generated_named(f, name),
+            written_in: (origin: FileId) -> self.visible(origin),
+        }
         // A generated body's statement stands in the arena, never in
         // the parse tree — resolve it after the written bodies.
         let generated = [self.decls.decl(d).stmt for d in made]
-        let out = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f), miss, generated)
+        let resolved = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f), elsewhere, generated)
+        // What the expansions REFUSED speaks with the file's names:
+        // generated source that did not parse, homed at its template.
+        let out = resolved with { voices: Voices { list: resolved.voices.list.concat(self.decls.expansion_voices[f.index]) } }
         self.name_facts.finish(f.index, out, self.db.revision())
     }
 
@@ -511,6 +519,10 @@ impl Workspace {
             return self.decls.sigs[d.index]
         }
         self.db.begin(k)
+        // A sig signed WHILE ITS FILE RESOLVES is signed from a smaller
+        // view — legitimate for the two-tier re-entry, and the first
+        // thing to look at when a generated impl's methods go missing.
+        if self.db.active(key(Family.Resolved, x.file.index)) { debug("sig mid-resolve: ${x.name} in ${self.decls.file(x.file).path}") }
         mut t = self.type_cx_for(x)
         t.declare_one(x)
         self.sig_voices.keep(d.index, t.facts.voices)
@@ -525,7 +537,7 @@ impl Workspace {
     /// again from inside one of those impls' own registration, it
     /// answers what stands.
     fn methods(target: DeclId) -> List<DeclId> {
-        let blocks = self.decls.children_of(target).concat(self.decls.impls_named(self.decls.decl(target).name))
+        let blocks = self.decls.children_of(target).concat([b for b in self.decls.impls_named(self.decls.decl(target).name) if self.aims_at(b, target)])
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a
         // file whose resolve is in flight (a lifted call runs inside
@@ -540,6 +552,17 @@ impl Workspace {
         self.method_clashes.keep(target.index, self.decls.method_clashes(target))
         self.db.settle(k, fp_str(joined([self.decls.decl(m).name for m in out], ",")))
         out
+    }
+
+    /// Whether an impl block written under the target's NAME can mean
+    /// the target: its file's namespace must name that declaration. A
+    /// like-named type in another module is not this one, and signing
+    /// its impl would drag that module's files into whatever resolve
+    /// is asking — `@std.meta.Code` and the compiler's own `Code` met
+    /// so, inside a derive, and poisoned a sig computed mid-resolve.
+    fn aims_at(b: DeclId, target: DeclId) -> bool {
+        let seen: DeclId? = self.visible(self.decls.decl(b).file).types.get(self.decls.decl(target).name)
+        seen != null && same_decl(seen!, target)
     }
 
     /// Whether a declaration's signature is being computed right now.
@@ -908,6 +931,8 @@ impl Workspace {
         if b != null { return .Ok(MetaVal.Bool(b!)) }
         let bits: int? = (raw).bits_of()
         if bits != null { return .Ok(MetaVal.Float(bits!)) }
+        let code: MetaVal? = quote_meta(p.store, self.decls, self.decls.file(f).path, e, heap)
+        if code != null { return .Ok(code!) }
         self.crossed_expr(f, e, heap)
     }
 
@@ -923,6 +948,7 @@ impl Workspace {
         // recursion guard makes the re-entry a SMALLER view (an empty
         // expansion for the resolve in flight), never a trap.
         match self.generated.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        self.decls.hush_expansion(f)
         let p = self.parsed(f)
         let vis = self.visible(f)
         mut made: List<DeclId> = []
@@ -941,16 +967,16 @@ impl Workspace {
     /// name — never a computed value that needs this file's typed
     /// answers, which do not exist yet.
     fn materialized(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace) -> List<DeclId> {
-        if !w.args.all((e: ExprId) -> is_literal(p.store.expr(e)) || p.store.ident_name(e) != null) { return [] }
+        if !w.args.all((e: ExprId) -> source_spelled(p.store.expr(e)) || p.store.ident_name(e) != null) { return [] }
         let directives = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.ret) }
-        flatten([self.materialized_directive(f, w, directive) for directive in directives])
+        flatten([self.materialized_directive(f, w, directive, vis) for directive in directives])
     }
 
-    /// One directive: a `code` is generated SOURCE parsed and admitted
+    /// One directive: a `source` is generated CODE parsed and admitted
     /// beside the original, a `twin` mints a fn beside it.
-    fn materialized_directive(f: FileId, w: DeclareWork, directive: Directive) -> List<DeclId> {
+    fn materialized_directive(f: FileId, w: DeclareWork, directive: Directive, vis: Namespace) -> List<DeclId> {
         let ann = self.decls.decl(w.ann).name
-        if directive.code != null { return self.admit_code(f, directive.code!, ann, w.at) }
+        if directive.source != null { return self.admit_code(f, directive.source!, ann, w.at, vis) }
         if directive.twin.is_empty() { return [] }
         [self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, ann, w.at)]
     }
@@ -1009,18 +1035,59 @@ impl Workspace {
     /// cue: the compiler runs each named trait's associated `derive`.
     fn is_derived(ret: TypeId) -> bool { self.decls.meta_type(ret, "Derived") }
 
-    /// A directive's generated SOURCE parsed into this file's store —
+    /// A directive's generated CODE parsed into this file's store —
     /// no copy: the declarations mint from the same arena every pass
-    /// already reads. Refused source is dropped (its voices are the
-    /// template author's to fix; a later slice speaks them).
-    fn admit_code(f: FileId, code: string, ann: string, at: Span?) -> List<DeclId> {
+    /// already reads — and its GENERATION recorded: the arena ranges
+    /// the nodes took and the file each run of text was written in,
+    /// which is how a generated node resolves and reports its home.
+    /// Refused source SPEAKS, homed at the template that wrote it.
+    fn admit_code(f: FileId, code: Code, ann: string, at: Span?, vis: Namespace) -> List<DeclId> {
         mut store = self.decls.store_of(f)
-        let lo = store.exprs.count()
-        let p = parse_into(self.lang, store, new_source_file("<generated>", code))
-        if !p.voices.list.is_empty() { return [] }
+        let before = arena_marks(store)
+        let text = code.text()
+        let p = parse_into(self.lang, store, new_source_file("<generated>", text))
+        let took = before.until(arena_marks(store))
+        let g = Generation { exprs: took[0], stmts: took[1], pats: took[2], segments: self.segments_of(f, code), at: at }
+        // The parse's words carry generated offsets; the generation
+        // homes each one.
+        if !p.voices.list.is_empty() {
+            self.decls.speak_expansion(f, [self.decls.homed_diag(f, g, d) for d in p.voices.list])
+            return []
+        }
+        // A GENERATED NAME THE FILE ALREADY DECLARES would lose to the
+        // written one in silence — the two-tier lookup asks the written
+        // namespace first. It speaks at the asking annotation instead.
+        let taken = [n for n in [store.declared_name(s) ?? "" for s in p.stmts] if vis.names(n)]
+        if !taken.is_empty() {
+            self.decls.speak_expansion(f, [generated_taken(ann, n, loc_at(self.decls.file(f).path, at)) for n in taken])
+            return []
+        }
+        self.decls.note_generation(f, g)
         // The tag is the SOURCE's fingerprint, so two derives that answer
         // different impls mint two, and a re-run of one mints nothing new.
-        self.decls.mint_generated_code(f, p.store, p.stmts, lo, "${fp_str(code)}", ann, at)
+        self.decls.mint_generated_code(f, p.store, p.stmts, before.exprs, "${fp_str(text)}", ann, at)
+    }
+
+    /// A code's runs as segments of its text: each piece's byte range
+    /// and the file it was written in — this file's own runs, like a
+    /// hole's text, resolve here and wear no origin.
+    fn segments_of(f: FileId, code: Code) -> List<Segment> {
+        mut out: List<Segment> = []
+        mut lo = 0
+        for p in code.pieces {
+            out.push(Segment { lo: lo, hi: lo + p.text.length, origin: self.origin_file(f, p.origin), at: p.at })
+            lo = lo + p.text.length
+        }
+        out
+    }
+
+    /// The file a piece names as its origin, when it is another
+    /// loaded file than the one being generated into.
+    fn origin_file(f: FileId, origin: string?) -> FileId? {
+        if origin == null { return null }
+        let found: FileId? = self.decls.paths.get(origin!)
+        if found == null || same_file(found!, f) { return null }
+        found
     }
 
     /// A lifted call's directives, or none when it refused — the ONE
@@ -1644,16 +1711,17 @@ impl Program {
     /// the rest), then every file's diagnostics, the workspace's
     /// defects last; "" means clean.
     fn report() -> string {
-        let files = [a.report() for a in self.files if unclean(a)]
+        let files = [self.rendered(a.diagnostics) for a in self.files if unclean(a)]
         let heads: List<string> = if self.voices.is_empty() { [] } else { [self.rendered(self.voices)] }
         let tails: List<string> = if self.defects.is_empty() { [] } else { [self.rendered(self.defects)] }
         joined(heads.concat(files).concat(tails), "\n\n")
     }
 
-    /// Diagnostics rendered over every source — a frame's window
-    /// comes from the file its Loc names, manifests included.
+    /// Diagnostics rendered over EVERY loaded source — a frame's
+    /// window comes from the file its Loc names: a manifest, a file
+    /// of this package, or the dependency file that wrote a template.
     fn rendered(ds: List<Diag>) -> string {
-        let sources = self.manifests.concat([a.view.source for a in self.files])
+        let sources = self.manifests.concat([self.ws.source(f.id) for f in self.ws.decls.files])
         joined([render_among(d, self.ws.lang.rows.codes, sources) for d in ds], "\n\n")
     }
 
@@ -1968,14 +2036,6 @@ fn unsettled_hash(why: Unsettled) -> int {
     }
 }
 
-/// A record under a seat: one slot per field, in the seat's own
-/// order, filled by NAME from a keyed map — the one WRITE across the
-/// meta boundary; absence for a name the map does not carry. The
-/// reader (`field_of`) agrees by the name, never by a position.
-fn meta_row(heap: MetaHeap, shape: StructSig, filled: Map<string, MetaVal>) -> MetaVal {
-    heap.node([filled.get(n) ?? MetaVal.Absent for n in shape.names])
-}
-
 /// A declared TypeRef as the crossing's text value — parsed from the
 /// STORE alone, absent when the word names a type only the namespace
 /// knows. The same read `crossed_answer` makes.
@@ -2014,4 +2074,15 @@ fn elem_of(types: TypeRegistry, ty: TypeId) -> TypeId? {
         .List(e) -> e,
         _ -> null,
     }
+}
+
+/// The arenas' counts now.
+fn arena_marks(store: NodeStore) -> ArenaMarks {
+    ArenaMarks { exprs: store.exprs.count(), stmts: store.stmts.count(), pats: store.pats.length }
+}
+
+/// A generated declaration's name is already the file's — the
+/// annotation is asked to choose another.
+fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
+    refusal("annotation.generated_taken", at, "`@${ann}` generates `${name}`, which this file already declares", "asked here", "rename the written declaration, or the generated one")
 }

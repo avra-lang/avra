@@ -1,0 +1,42 @@
+//! The hole law: a hole splices text (a name, a fragment), a scalar
+//! (its spelling), a named meta value (its name) or `Code` (runs with
+//! their own origins); the answer is always `Code`.
+use core.{ExprId, TypeId, DeclId, QuoteParts}
+use features.{TypeCx, this_is}
+use diagnostics.{refusal, Diag}
+use @std.errors.{Loc}
+
+fn quote_type(mut cx: TypeCx, e: ExprId) -> TypeId {
+    let code: DeclId? = cx.view.decls.meta_named("Code")
+    if code == null { return cx.spoken(no_meta(cx.loc_of(e))) }
+    let answer = cx.view.decls.self_type_of(code!)
+    let q: QuoteParts? = (cx.view.store.expr(e)).quote_of()
+    for h in q?.holes ?? [] {
+        if !fills_hole(cx, h) { return cx.spoken(hole_refused(cx.loc_of(h), cx.name_at(h))) }
+    }
+    answer
+}
+
+/// WHAT A HOLE CAN SPLICE — a REGISTRY, not a question about one
+/// variant: a new value category must say whether it splices.
+fn fills_hole(cx: TypeCx, h: ExprId) -> bool {
+    let ty = cx.type_at(h)
+    match cx.shape_at(h) {
+        .Int or .Float or .Bool or .Str or .Error -> true,
+        .Struct(_, _) -> cx.view.decls.meta_type(ty, "Code") || cx.view.decls.meta_names_one(ty),
+        .Ptr or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or
+        .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or
+        .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or
+        .Var(_, _, _) -> false,
+    }
+}
+
+// ── voices ──
+
+fn no_meta(at: Loc?) -> Diag {
+    refusal("type.quote_meta", at, "a `quote` answers `@std.meta.Code`, and this program does not load `@std/meta`", "the quote", "add `\"@std/meta\"` to the package's dependencies")
+}
+
+fn hole_refused(at: Loc?, n: string) -> Diag {
+    refusal("type.quote_hole", at, "a quote's hole splices text, a scalar, a named meta value or `Code`, found `${n}`", this_is(n), "splice the value's name or spelling, or a `quote { … }` of it")
+}

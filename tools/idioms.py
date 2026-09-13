@@ -136,7 +136,7 @@ def index_walk(lines):
 
 # A REAL count pins a number: `== n`, or the testing verbs that pin
 # it for you. `>= 1` is not a count — it is I30's smell.
-COUNTED = re.compile(r"diagnostics\.length ==|voices\.length ==|refusals\(.*\) ==|refused_with\(")
+COUNTED = re.compile(r"diagnostics\.length ==|voices\.length ==|refusals\(.*\) ==|refused_with\(|refused_n\(")
 
 def uncounted_refusal(lines):
     """A refusal test asserting only `contains` — the shape that lets
@@ -463,7 +463,7 @@ RULES = {
             "a refusal test with no diagnostics COUNT — a cascade can hide behind it"),
     "I30": (line_rx(AT_LEAST_ONE.pattern),
             "a refusal asserted as `>= 1` — a cascade of five passes it; pin the "
-            "count (`refused_with`, or `== n`)"),
+            "count (`refused_with`, `refused_n`, or `== n`)"),
     "I21": (unmutated_mut,
             "a `mut` nothing mutates — say `let`"),
     "I38": (comma_list_open,

@@ -24,6 +24,12 @@ impl Workspace {
     /// state. Declared bits (`mut fn`, a `mut` seat, a trait's word)
     /// are recorded at declare; this pass adds the INFERRED ones.
     fn receivers() -> int {
+        // A WHOLE-PROGRAM PASS MUST NOT RUN INSIDE A RESOLVE: a lifted
+        // call runs inside one, and every sig this pass asks of the
+        // file in flight would be computed from a smaller view and
+        // kept. The declared bits answer until the resolve closes;
+        // the pass runs whole at the first ask after.
+        if self.db.family_active(ordinal(Family.Resolved)) { return 0 }
         let k = key(Family.Receivers, 0)
         if !(self.db.ask(k) is .Compute) { return 0 }
         self.db.begin(k)

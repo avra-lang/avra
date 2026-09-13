@@ -7497,6 +7497,57 @@ internal constant had to be `export`ed.
 
 ---
 
+## Feedback survey — 2026-09-13 #7 (lane/comptime, S4r origin hygiene)
+
+The `/feedback` run for the slice that made a quote a `Code` VALUE with origins, keyed the resolver by them, homed every generated diagnostic, and red-teamed the result (base `693d8f5` -> this tree; 50 attack programs). Counts: FRICTION 5, SUGAR 2, FEATURES 2, DEFECTS 6 (all FIXED and pinned), DOCTRINE 3, PERFORMANCE 1, PROCESS 3. The headline: a META SHAPE CHANGE broke the compiler's own derives in the standing binary through two WHOLE-PROGRAM leaks into a resolve, and nothing in the tree could say so — eight blind builds before a one-line trace named the chain.
+
+### FRICTION — what cost time
+
+- **A WHOLE-PROGRAM PASS LEAKED INTO A RESOLVE, AND NOTHING SPOKE.** Adding `source: Code? = null` to `@std.meta.Directive` made the cli build refuse "`Expr` has no method `int_of`" and "no property `index` on `ExprId`" — the derive had RUN, its generated impl was there under `avra expand`, and the package alone checked clean. The receivers pass (`receivers()`) asked every fn's sig from inside the lifted derive and signed `nodes.av`'s decls from a smaller view; `impls_by_name["Code"]` dragged `features/worklist.av` into the same resolve. Eight builds bisecting the diff found nothing; one `debug("sig mid-resolve …")` line in `sig()` printed the open-query chain (`6/1954 5/64 17/64 14/0 13/1 11/232 10/232 8/4280 16/0`) and named it in one run. ASK: a KEEPER — a whole-program family (`Receivers`, `Methods` over all decls, `method_diagnostics`) beginning while a `Resolved` key is open is a defect the kernel can assert (`Db.begin` knows both). The three guards today are hand-placed. (lane/comptime, 2026-09-13)
+- **A FAILED TRAIT DERIVE WAS SILENT.** `trait_directives` answered `[]` on `.Err` and the user read "no method `show`". FIXED: `derive_law` re-asks the memoized lifted call and voices its `Unsettled`. Confirmation of survey #3's silence finding, one seam over.
+- **`;` IS NOT A STATEMENT SEPARATOR, AND THE FIRST TEMPLATE SPELLED ONE.** `let tmp = 1; let picked = ${body}` was refused as "unexpected character" — at the time SILENTLY (generated source did not speak), so the symptom was "no `fn go_wrapped` is defined". Filed in "The subset today"; the refusal speaks at the template line now. Probe `fn f() -> int { let a = 1; a + 1 }`, base this tree.
+- **TEST FILES IN ONE DIRECTORY ARE ONE MODULE, EVEN IN A SINGLE-FILE RUN.** `quote_adversarial_test.av` duplicating `quote_test.av`'s `packaged`/`clean` helpers refused F3017 "declared twice in this module" when run ALONE. The fixtures had to be shared by name across the two files. ASK: say so in DOGFOODING's test section, and give `@std.avrac.testing` a Program-level `packaged(files)` so the in-memory `@std/meta` mock (now in TWO test files: annotations_adversarial, quote_test) has one home before a third copies it.
+- **THE STANDING BINARY DOES NOT READ THE NEW META, SO A META CHANGE IS A TWO-COMMIT LADDER.** `Directive.code: string?` had to stay one build as a bridge so the seed could compile HEAD; S2 removed it. Confirmation of the four-generation-ladder rule (sugar1 memory) for META types, not just syntax.
+
+### SUGAR — a construct the language should have
+
+- **`join` OVER `List<Code>`.** `joined(arms, ", ")` is a free fn because `join` is a `List<string>` row (`str_lit`'s method table). A derive reads `arms.join(", ")` more naturally. Wanting sites: `packages/std-derive/src/derive.av:25,38,43`. ASK: method rows keyed by a TRAIT (`Joinable`) rather than by one element type — the same door `Show`-typed printing would use.
+- **A HOLE IN NAME POSITION COMPLETES THE NAME.** `quote { l${i} }` makes ONE identifier `l0` whose origin is its first byte's (the template's), while `${spliced("l${i}")}` makes a hole-origin one — the same name, two colours, and a derive that mixes them binds a name it cannot read. Today's rule ("a name's origin is its first byte") is pinned in the design doc; the honest fix is a parsed template where a hole IN a name is one token. Wanting site: `derive.av`'s `eq_arm` (spliced both ends). Recorded under the parsed-templates trigger.
+
+### FEATURES — a capability, more than sugar
+
+- **`avra expand` NAMES WHERE A GENERATED RUN WAS WRITTEN.** Diagnostics are homed now; `expand` still prints a generated declaration with only `// from @derive on Point`. ASK: a second line per generated declaration naming the template's file and line (the `Generation`'s first origin segment), so a reader of the expansion can open the quote that wrote it. P7.
+- **PARSED TEMPLATES (the campaign).** Typed holes by position, `Code<T>`, and a hole completing a name all wait on parsing a quote where it is written (design §3.5). Every origin mechanism landed here (generations, segments, keyed binders) is what it sits on. Recorded trigger in the handoff.
+
+### DEFECTS — the compiler blaming itself (all FIXED this slice, each pinned)
+
+- **A SIG SIGNED MID-RESOLVE, KEPT.** "no property `index` on `ExprId`" from `features/worklist.av:51` under a clean tree — the receivers-pass leak above. Guard in `receivers.av`; pinned by the cli build itself (`make gate`'s seed-check).
+- **`const C: Code = quote { k }` — TWO DEFECTS** ("an unresolved name survived a clean analysis", "register r1 defines out of mint order"): a hole-less quote claimed `is_literal`, and the const fast-path (`lower_state.av:238`) read it through the value protocol. `is_literal` is the protocol's again; annotation gates ask `source_spelled`. Pinned: `quote_adversarial_test` "a `const` holds a quote".
+- **A SPAN TRAP ON A DEPENDENCY'S LOC.** "a span reaches outside its own text — offset 252 of 135 in main.av": a homed Loc named the provider's file and `Analysis.report` rendered it against the target's source (`source_named` fell back to `sources[0]`). `Program.rendered` now renders every file over EVERY loaded source. Pinned: the homed-refusal cases in `quote_test`.
+- **A RAW BODY INSIDE A HOLE NEVER CLOSED** (`"${quote { x }}"`, `quote { ${quote { y }} }`): "unterminated string" / "a `quote` block is never closed". `balanced` pays the enclosing hole's count. Pinned: `quote_adversarial_test` "the raw body inside a hole".
+- **A `}` IN A `//` COMMENT ENDED A QUOTE OR GRAMMAR BODY.** Both raw scans skip line comments. Pinned.
+- **A GENERATED FN LOST TO A WRITTEN ONE IN SILENCE** (`fn go_wrapped` written + `@wrapped` generating it answered the written 5). F2077 at the annotation. Pinned.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **A PREDICATE OVER THE VALUE PROTOCOL IS A REGISTRY CONSUMER.** `is_literal` was widened to quotes for one consumer (the annotation gate) and broke another (the const fast-path) that dispatches on what `is_literal` promises. The law: a predicate that says "the protocol answers this" may not be widened past the protocol; a wider question gets its own name (`source_spelled`). Filed here; CLAUDE.md's registry law covers the match half, not the predicate half.
+- **A NAME-KEYED TABLE CROSSES MODULES** — pinned in CLAUDE.md (`impls_by_name`, `aims_at`).
+- **A RAW BODY'S CLOSING BRACE IS A TOKEN**, and a raw body inside a hole pays the hole's count — pinned in CLAUDE.md's grammar-authoring rules.
+
+### PERFORMANCE — a measured cost
+
+- **THE GATE'S PEAK MOVED 706 -> 694-749 MB** across the slice's three gate runs (`tools/watch.sh`), inside the run-to-run swing; the compiler's spec count went 2294 -> 2309. No census was run: the quote lowering is three `Ins.Call`s per template run (`quoted`, `spliced`, one `joined`), and `meta_named` was found rescanning `@std/meta`'s declarations on every call by the review round and memoized (`Decls.meta_ids`). NOT MEASURED: a derive-heavy package; the cost of `visible(origin)` per template name read (memoized, one map lookup).
+
+### PROCESS — the working discipline itself
+
+- **KEEP: PROFILE, DON'T REASON, extended to QUERY CHAINS.** Eight bisecting builds explained nothing; one inert trace line did. The line is permanent now (`AVRA_DEBUG=1` prints "sig mid-resolve: <name> in <file>"), because "a generated impl's methods went missing" will recur and this is the first thing to look at.
+- **CHANGE: A WORKTREE TWO SESSIONS WRITE TO NEEDS A LOCK ON TEST FILES.** `quote_test.av` changed on disk mid-slice (a `spoken` helper appeared, `refused_n` vanished, 16:00) while this session was editing it; the merge was by hand. The gate's watchdog serialises builds, not edits.
+- **CHANGE: THE HARNESS SCRATCHPAD CAN VANISH MID-SESSION** ("no longer available"); probes moved to `build/scratch/` (gitignored). A lane's probe harness belongs under `build/`, never under a session temp.
+
+NOT SURVEYED: the private-const ask (item 4 of the handoff, unchanged), `@std/derive` beyond `Show`/`Eq`, and any package outside std-avrac/std-meta/std-derive.
+
+---
+
 ## Feedback survey — 2026-09-13 #6 (lane/comptime, S5 refinements)
 
 The `/feedback` run for the slice that lifted the two S5b boundaries: a settled seat FORWARDED to another fn, and a direct AGGREGATE literal at a settled seat (base `6134110`; the S5c mechanism extended, not a second channel). Counts: FRICTION 2, SUGAR 2, FEATURES 1, DEFECTS 0, DOCTRINE 3, PERFORMANCE 0 (compile-time only), PROCESS 1. The headline is a WORKFLOW GAP the slice fell into: `avra run` and `avra build` lower only REACHED units, while `avra test` lowers EVERY declared body — and the two disagreed.
@@ -7528,6 +7579,11 @@ The `/feedback` run for the slice that lifted the two S5b boundaries: a settled 
 ---
 
 ## Sugar backlog — dogfooding asks
+
+FROM THE 2026-09-13 #7 FEEDBACK SURVEY (lane/comptime): `join` over
+`List<Code>` (a trait-keyed method row; sites `std-derive/src/derive.av`),
+and a hole in NAME position completing the name (waits on parsed
+templates; site `derive.av`'s `eq_arm`).
 
 FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and
 evidence under "Feedback survey — 2026-09-11"):

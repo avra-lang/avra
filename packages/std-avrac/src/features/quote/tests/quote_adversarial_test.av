@@ -1,0 +1,31 @@
+// Attacks on the quote value and origin hygiene: the shapes that
+// broke, each pinned so a rerun proves the fix. The fixtures are
+// `quote_test.av`'s — one module, one provider under attack.
+use @std.avrac.language.{Program}
+
+spec "features/quote — adversarial" {
+    given "the raw body inside a hole" {
+        then "a quote inside a quote's hole closes both" {
+            clean(packaged("use @std.meta.{Code}\nlet n = 2\nlet c: Code = quote { outer \${quote { inner \${n} }} done }\nc.text()", provider()))
+        }
+        then "a quote inside a string's hole reaches typing, which refuses it as unprintable" {
+            refused_n(packaged("use @std.meta.{Code}\n\"\${quote { x }}\"", provider()), "an interpolation hole prints as a scalar or string, found `Code`", 1)
+        }
+        then "a `}` inside a line comment in the body is the generated program's" {
+            clean(packaged("use @std.meta.{Code}\nlet c: Code = quote { x // }\n}\nc.text()", provider()))
+        }
+    }
+
+    given "a quote where a literal is expected" {
+        then "a `const` holds a quote as a managed value, no defect" {
+            clean(packaged("use @std.meta.{Code}\nconst C: Code = quote { k }\nC.text()", provider()))
+        }
+    }
+
+    given "names against names" {
+        then "a generated name the file already declares speaks at the annotation" {
+            let p = packaged("use @std.meta.{derive}\nuse @x.prov.{wrapped}\nfn tmp() -> int { 10 }\nfn go_wrapped() -> int { 5 }\n@wrapped(quote { tmp })\nfn go() -> int { 0 }\ngo_wrapped()", provider())
+            refused_n(p, "`@wrapped` generates `go_wrapped`, which this file already declares", 1) && p.report().contains("main.av:5")
+        }
+    }
+}

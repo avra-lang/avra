@@ -234,6 +234,7 @@ impl SourceText {
             .Index(subject, index) -> grouped("${self.expression(subject, 11, depth)}[${self.expression(index, 0, depth)}]", 11, parent),
             .Prop(subject, name) -> grouped("${self.expression(subject, 11, depth)}.${source_name(name)}", 11, parent),
             .Interp(parts, holes) -> grouped(self.interpolation(parts, holes, depth), 12, parent),
+            .Quote(parts, holes) -> grouped(self.quotation(parts, holes, depth), 12, parent),
             .If(cond, yes, no) -> grouped("if ${self.expression(cond, 0, depth)} ${self.block(yes, depth)} else ${self.block(no, depth)}", 12, parent),
             .When(conds, values, fallback) -> grouped(self.when_expr(conds, values, fallback, depth), 12, parent),
             .Block(stmts, value) -> grouped(self.braced(stmts, value, depth), 12, parent),
@@ -283,6 +284,21 @@ impl SourceText {
         let range = if hi == null { self.expression(source, 0, depth) } else { "${self.expression(source, 0, depth)}..${self.expression(hi!, 0, depth)}" }
         let guard = if cond == null { "" } else { " if ${self.expression(cond!, 0, depth)}" }
         grouped("[${self.expression(elem, 0, depth)} for ${binds} in ${range}${guard}]", 12, parent)
+    }
+
+    /// `quote { … }` — the runs as written, the holes re-spelled.
+    fn quotation(parts: List<string>, holes: List<ExprId>, depth: int) -> string {
+        mut out: Text = builder()
+        out.push("quote {")
+        out.push(parts[0])
+        for j, hole in holes {
+            out.push("\${")
+            out.push(self.expression(hole, 0, depth))
+            out.push("}")
+            out.push(parts[j + 1])
+        }
+        out.push("}")
+        out.built()
     }
 
     fn interpolation(parts: List<string>, holes: List<ExprId>, depth: int) -> string {

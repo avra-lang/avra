@@ -5,7 +5,7 @@
 //! like a const's value; and what it ANSWERS is its effect — `void`
 //! records, `List<Diagnostic>` validates. The law
 //! satisfied, the call runs, and what it said is spoken here.
-use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt, is_literal, same_file}
+use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt, source_spelled, same_file}
 use features.{TypeCx, kind_word, FnSig, Said, Unsettled, nothing}
 use diagnostics.{refusal, loc_at}
 use @std.errors.{Loc}
@@ -65,11 +65,11 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     }
     // A declaration's NAME is source-known too: `@derive(Show)` must
     // reach the trait while the file's names are still being made.
-    if declares && a.args.any((e: ExprId) -> !is_literal(cx.view.store.expr(e)) && cx.bound_decl(e) == null) {
+    if declares && a.args.any((e: ExprId) -> !source_spelled(cx.view.store.expr(e)) && cx.bound_decl(e) == null) {
         computed_argument(cx, a)
         return
     }
-    if act is .Derives && derive_law(cx, a) { return }
+    if act is .Derives && derive_law(cx, a, s) { return }
     match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
         .Ok(crossed) -> {
             match act {
@@ -217,7 +217,7 @@ fn same_file_annotation(mut cx: TypeCx, a: Annotation) {
 /// associated `derive` must stand in ANOTHER file, for the same reason
 /// a Declares annotation's fn must — expanding needs this file's
 /// names, which are still being made. Answers whether it spoke.
-fn derive_law(mut cx: TypeCx, a: Annotation) -> bool {
+fn derive_law(mut cx: TypeCx, a: Annotation, s: StmtId) -> bool {
     for e in a.args {
         let tr: DeclId? = cx.bound_decl(e)
         if tr != null {
@@ -236,6 +236,16 @@ fn derive_law(mut cx: TypeCx, a: Annotation) -> bool {
             if same_file(cx.view.decls.decl(m).file, cx.view.file) {
                 derived_same_file(cx, a)
                 return true
+            }
+            // THE TRAIT'S OWN `derive` RAN during this file's resolve;
+            // asking again hits the memo, and a run that failed is
+            // spoken here — silence would leave "no method `show`".
+            match cx.view.decls.lifted(m, cx.view.file, s, a.callee, []) {
+                .Ok(_) -> nothing(),
+                .Err(why) -> {
+                    unsettled(cx, a, why)
+                    return true
+                },
             }
         }
     }

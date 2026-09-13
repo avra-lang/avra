@@ -1,0 +1,51 @@
+//! A quote lowers as its runs: each part is `quoted` from this file,
+//! each hole `spliced` as text or taken as the `Code` it is, and ONE
+//! `joined` answers — three `@std/meta` calls, no new instruction.
+use core.{ExprId, Reg, Ins, DeclId, QuoteParts}
+use features.{LowerCx}
+
+fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    let held: QuoteParts? = (cx.view.store.expr(e)).quote_of()
+    if held == null { return cx.lower_defect(e, "a quote without its runs") }
+    let q = held!
+    let starts = cx.view.store.quote_starts_of(e)
+    let origin = cx.const_str(cx.view.source.file)
+    mut runs = [run_reg(cx, e, q.parts[0], starts[0], origin)]
+    for j, h in q.holes {
+        runs.push(hole_reg(cx, e, h))
+        runs.push(run_reg(cx, e, q.parts[j + 1], starts[j + 1], origin))
+    }
+    let size = cx.box_size(runs.length)
+    let code = cx.type_at(e)
+    let arr = cx.mint_ty(cx.type(List<code>))
+    cx.grown_box(arr, size, runs)
+    let sep = cx.const_str("")
+    meta_call(cx, e, "joined", [arr, sep])
+}
+
+/// One of the template's own runs, wearing this file and its offset.
+fn run_reg(mut cx: LowerCx, e: ExprId, text: string, at: int, origin: Reg) -> Reg {
+    let t = cx.const_str(text)
+    let a = cx.const_int(at)
+    meta_call(cx, e, "quoted", [t, origin, a])
+}
+
+/// A hole's value as code: `Code` as it is; a named meta value by
+/// its name; anything else by its text — spliced, so its names
+/// resolve where the code lands.
+fn hole_reg(mut cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
+    let ty = cx.type_at(h)
+    if cx.view.decls.meta_type(ty, "Code") { return cx.reg_of(h) }
+    let named: int? = if cx.view.decls.meta_names_one(ty) { cx.view.decls.fields_of_type(ty)?.slot_of("name") } else { null }
+    let text = if named != null { cx.field_read(cx.reg_of(h), ty, named!, cx.type(string)) } else { cx.texted(h) }
+    meta_call(cx, e, "spliced", [text])
+}
+
+/// A `@std/meta` verb called by the compiler — answering `Code`.
+fn meta_call(mut cx: LowerCx, e: ExprId, verb: string, args: List<Reg>) -> Reg {
+    let d: DeclId? = cx.view.decls.meta_named(verb)
+    if d == null { return cx.lower_defect(e, "`@std.meta.${verb}` is not declared") }
+    let dst = cx.mint_ty(cx.type_at(e))
+    cx.emit(Ins.Call(dst, cx.wanted(d!, null, []), args))
+    dst
+}

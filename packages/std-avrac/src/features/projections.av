@@ -5,17 +5,19 @@
 //! It is the S4 payday: a METHOD-shaped derive rides `Decls.methods`
 //! program-wide, so a generated accessor crosses files with no
 //! namespace widening and no call-site shape but `d.fn_sig()`.
-use @std.meta.{Type, Variant}
+use @std.meta.{Type, Variant, Directive as MetaDirective}
 use @std.text.{from_codepoints}
 
 /// The compiler's own derive: the accessors of the annotated enum,
 /// one method per variant, answering the variant's payload or null.
+/// The meta `Directive` wears an alias here: `features` holds the
+/// compiler's own mirror of that name.
 trait Projections {
-    static fn derive(t: Type) -> List<Directive> {
+    static fn derive(t: Type) -> List<MetaDirective> {
         let methods = [projection_of(v) for v in t.variants]
-        [Directive { twin: "", name: t.name, at: t.at,
-                     code: quote { impl ${t.name} {
-${methods.join("\n")}
+        let body = methods.join("\n")
+        [MetaDirective { twin: "", name: t.name, at: t.at, source: quote { impl ${t} {
+${body}
 } } }]
     }
 }
