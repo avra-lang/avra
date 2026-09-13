@@ -1,6 +1,6 @@
 # Comptime — `const`, annotations, quotes
 
-> **STATUS 2026-09-12 (lane/comptime):** S1 (the reach refusal's full
+> **STATUS 2026-09-13 (lane/comptime):** S1 (the reach refusal's full
 > call chain included), S3f, S3g, S3h (`@deprecated`) and **S4** DONE —
 > the `quote { … }` literal with `${}` holes, generated source parsed
 > into the asking file's own store, and `@derive` with `Show`/`Eq`
@@ -20,7 +20,10 @@
 > may hold a private `const` (F0902 was about effects, not values).
 > The sweep exposed the one gap left: a PRIVATE top-level `const` is
 > file-local and order-sensitive, unlike a private `fn` (sugar
-> backlog). The S5 refinements remain. **See
+> backlog). **THE S5 REFINEMENTS LANDED** — a settled seat FORWARDS
+> to another fn, and a direct AGGREGATE literal settles a seat; both
+> ride the ONE S5c channel, widened to the crossing tree every
+> compile-time value already travels as. **See
 > the LANE HANDOFF at the top of §6** for the laws pinned, the seams,
 > and where to pick up.
 
@@ -890,13 +893,36 @@ to start cold; the size is the design's estimate.
       (`take(P { x: 3 })`) wants a `const` binding. A `dyn` method's
       settled seat is enforced but not specialized (dynamic dispatch
       has no static unit).
-- [ ] **S5 REFINEMENTS — the two boundaries folding did not lift.**
-      A settled seat FORWARDED to another fn (`outer(const y) {
-      inner(y) }`) and a direct AGGREGATE literal at a settled seat
-      (`take(P { x: 3 })`) still refuse; both want the value carried
-      through the OUTER unit's template, which types once and has no
-      per-unit value. A `dyn` method's settled seat stays
-      enforced-but-unspecialized by construction.
+- [x] **S5 REFINEMENTS — the two boundaries, LIFTED (2026-09-13).**
+      Both now work: a settled seat FORWARDED to another fn
+      (`outer(const y) { inner(y) }`), and a direct AGGREGATE literal
+      at a settled seat (`take(P { x: 3 })`). THE MECHANISM, one
+      channel extended: `SeatValue.value` is now the CROSSING TREE
+      (`MetaVal` + `MetaHeap`) the whole compiler already moves values
+      as, built by `literal_meta` (features/values.av) — a source
+      value's spelling checked by the SAME test at typing and at
+      lowering. `test` — `call_seats` resolves each fill: a
+      source-spelled value, a `const` name (settled if computed,
+      keyed `v`), or a settled seat of the ENCLOSING unit (forwarded —
+      keyed by the OUTER seat's value, so the unit is per value, not
+      per read site); the fingerprint carries its KIND (`e` source,
+      `v` settled) so the `_` join can never swap a seat's role.
+      `seed_seats` materializes with `materialized` and records the
+      register in `LowerCtx.seat_regs` (a scalar is its seat's index;
+      an aggregate spans several), which `read_wearing` consults. A
+      TEMPLATE body cannot resolve a forwarded seat, so it falls back
+      to the plain callee (its consts are already skipped); a computed
+      `const` at a seat settles on the enclosing unit's seats. An
+      AGGREGATE must be FULLY written — an omitted default is a body
+      the evaluator runs, not source-spelled. A `dyn` method's settled
+      seat stays enforced-but-unspecialized by construction. Proof:
+      `fns_test`'s forwarding cases, `fns_adversarial_test`'s
+      aggregate cases, and the `const_seat` program test (forwarded
+      scalar, forwarded computed `const`, aggregate literal, method
+      forward, forwarded-into-a-const-body) eval == native == expected.
+      REMEMBER: `avra run`/`build` lower REACHED units only; `avra
+      test` lowers EVERY declared body (every-mode) — a template-body
+      change must be proved with `test`.
 - [x] **S1 — `export const`. LANDED (2026-09-12).** An EXPORTED
       top-level `const` is a DECLARATION: `DeclKind.Const` is admitted
       (only when exported), it binds in the module's value namespace

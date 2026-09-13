@@ -22,7 +22,7 @@
 | S5c per-instantiation folding | LANDED | **DONE** (also fixed a P1 wrong answer: a `const` reading a plain param) |
 | BEYOND compiler self-derive (`@derive(Projections)`, `@derive(ValueProtocol)`) | LANDED | **DONE** |
 | `export const` dogfooding | — | **DONE**: 87 `export const`, 368 call sites, 5 commits; F0902 relaxed |
-| S5 refinements (forwarding, aggregate literal) | **OPEN** | pinned by failing-until-fixed tests |
+| S5 refinements (forwarding, aggregate literal) | **DONE** | 2026-09-13: `SeatValue` carries the crossing tree; `const_seat` program test (eval == native) |
 | S4r `Code<T>` claim | **OPEN** | today a quote is `string` |
 | S4r origin hygiene | **OPEN** | generated source resolves wholesale at the splice |
 | shared `param` grammar rule | leave-alone, trigger named | not forced yet |

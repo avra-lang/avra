@@ -7497,6 +7497,36 @@ internal constant had to be `export`ed.
 
 ---
 
+## Feedback survey — 2026-09-13 #6 (lane/comptime, S5 refinements)
+
+The `/feedback` run for the slice that lifted the two S5b boundaries: a settled seat FORWARDED to another fn, and a direct AGGREGATE literal at a settled seat (base `6134110`; the S5c mechanism extended, not a second channel). Counts: FRICTION 2, SUGAR 2, FEATURES 1, DEFECTS 0, DOCTRINE 3, PERFORMANCE 0 (compile-time only), PROCESS 1. The headline is a WORKFLOW GAP the slice fell into: `avra run` and `avra build` lower only REACHED units, while `avra test` lowers EVERY declared body — and the two disagreed.
+
+### FRICTION — what cost time
+
+- **`run`/`build` GREEN, `test` RED — `every`-mode lowers TEMPLATES.** `programs_checked`/`cases_checked` call `lowered_as(entry, every=true, programs=true)` (workspace.av:1674-1693), so EVERY declared body lowers; `run`/`build` use `lowered_checked` (`every=false`) and lower only what the entry REACHES. A forwarded seat cannot resolve in a TEMPLATE body, so a call there enqueued a specialization with EMPTY seats, and the callee's const refused F2074 — a message that pointed at the callee, never at the template. Two rebuild cycles to find. A probe over `run`/`build` does NOT cover `test`.
+- **THE `./avra` SHIM CHANGES DIRECTORY, so a RELATIVE `.av` PATH FAILS** (`avra: no such file`) with no clue it is a cwd effect. A whole eval-vs-native sweep first read as "all diffs" until every path was made absolute. Probes should pass absolute paths.
+
+### SUGAR — a construct the language should have
+
+- **A `const` NESTED IN AN AGGREGATE LITERAL AT A SETTLED SEAT.** `const N: int = 5; take(P { x: N })` refuses F2073 because `literal_meta` (the source-spelling check) has no bindings table, so a NAME inside an aggregate is not source-spelled. The top-level name itself settles (`take(N)` works, via the `const` branch); only the nested one does not. Wanting site: `features/values.av`'s `literal_record`. Either `literal_meta` takes `NameFacts` and resolves a `const` ident, or the aggregate crosses through the evaluator.
+- **AN INLINE VARIANT LITERAL AT A SETTLED SEAT.** `take(.B)` refuses F2073 with the misleading "computed at run time" — `.B`'s enum type is only known AFTER the call's seat WANTS are fed, and the const-seat check runs BEFORE `seats_fit`/`accepts` feeds them (`dispatched_call`, features/fns/check.av:93 -> features/checks.av:615). The real fix is an ORDER change: feed the seats before judging the settled fills. A struct literal works only because its type name is explicit. Wanting site: `take(.B)`, probed 2026-09-13.
+
+### FEATURES — a capability, more than sugar
+
+- **AN `every`-MODE PROBE.** A command that lowers EVERY declared body the way `avra test` does (`avra check --every`, or have `check` lower every body when no entry runs) would let a lane catch template-body defects without a package test. The gap cost the F2074 detour above.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **THE S5b NOTE UNDER-SPECIFIED THE FILL.** It said "a literal or a `const` (computed ones included)"; it did not say a SETTLED SEAT of the ENCLOSING fn may be FORWARDED, nor that an AGGREGATE must be fully written (an omitted default is a body the evaluator runs, so it is not source-spelled). Both are now pinned in the design doc's queue.
+- **A TEMPLATE BODY FALLS BACK TO THE PLAIN CALLEE.** A forwarded seat is per-unit; a template has none, so it calls the plain body (whose consts are already skipped). That is now a comment at `seats_complete` (language/lower_state.av).
+- **A SEAT FINGERPRINT CARRIES ITS KIND.** A source-spelled fill `e`s and a settled fill `v`s the hash, so the `_` join of a call's seats can never read one seat's role as another's — the flat-concatenation law applied to `settled_symbol`'s join.
+
+### PROCESS — the working discipline itself
+
+- **KEEP:** the S5c mechanism carried BOTH boundaries with no second channel — `SeatValue` widened to the crossing tree, `lower_root` seeding, per-unit keys. A refactor that reuses the existing seam is cheaper than a parallel one, three times now.
+
+---
+
 ## Sugar backlog — dogfooding asks
 
 FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and
