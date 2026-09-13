@@ -136,6 +136,7 @@ export fn kind_word(k: DeclKind) -> string {
         .Impl -> "impl",
         .Main -> "main",
         .Case -> "case",
+        .Const -> "const",
         .Builtin -> "builtin",
     }
 }
@@ -217,6 +218,19 @@ impl Decls {
                 for fd in fields {
                     if fd.default != null { made.push(self.mint_default(key, f, s, fd, name, d)) }
                 }
+            }
+            // an EXPORTED top-level `const` is a declaration too —
+            // exportable, namespaced, read cross-file. A plain one
+            // stays a file-local value, as it always was.
+            if store.declared_kind(s) == null && store.is_exported(s) && store.const_value(s) != null {
+                let name = store.let_name(s) ?? ""
+                let key = fresh_key("${path}::const::${name}", s, seen)
+                seen.push(key)
+                let d = self.mint(key, f, s, name, DeclKind.Const, store.is_exported(s), "", null, false, null)
+                by_stmt.set(s.index, d)
+                out.push(d)
+                made.push(d)
+                self.orphan(d)
             }
             let sp: SpecParts? = store.spec_parts(s)
             if sp != null {
@@ -927,7 +941,7 @@ impl Decls {
         match x.kind {
             .Record or .Enum -> x.name,
             .Builtin -> x.name,
-            .Fn or .Trait or .Method or .Default or .Impl or .Main or .Case -> null,
+            .Fn or .Trait or .Method or .Default or .Impl or .Main or .Case or .Const -> null,
         }
     }
 
@@ -936,7 +950,7 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Fn or .Method -> x.name,
-            .Record or .Enum or .Trait or .Default or .Impl or .Main or .Case or .Builtin -> null,
+            .Record or .Enum or .Trait or .Default or .Impl or .Main or .Case or .Builtin or .Const -> null,
         }
     }
 
@@ -981,7 +995,7 @@ impl Decls {
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
             .Case -> "spec$${x.id.index}",
-            .Fn or .Record or .Enum or .Trait or .Impl or .Main or .Builtin -> x.name,
+            .Fn or .Const or .Record or .Enum or .Trait or .Impl or .Main or .Builtin -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
     }

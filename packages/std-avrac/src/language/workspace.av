@@ -642,7 +642,7 @@ impl Decls {
             .Method -> if x.parent != null && self.decl(x.parent!).kind is .Trait { 1 } else { 3 },
             .Fn -> 2,
             .Impl -> 3,
-            .Trait or .Default or .Main or .Case -> 4,
+            .Trait or .Default or .Main or .Case or .Const -> 4,
         }
     }
 }
@@ -765,6 +765,10 @@ impl Workspace {
         }
         let ask = self.settle_asks[id]
         touch(self.items(ask.file))
+        // a const is a DECLARATION of its own now: type it, so
+        // `check_const` records the value's type
+        let d: DeclId? = self.decls.decl_of(ask.file, ask.stmt)
+        if d != null { touch(self.typed(d!)) }
         let main: DeclId? = self.decls.main_of(ask.file)
         if main != null { touch(self.typed(main!)) }
         let ty = self.decls.held_const_type(ask.file, ask.stmt) ?? error

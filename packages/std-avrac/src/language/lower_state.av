@@ -2,7 +2,7 @@
 //! instruction order, slots and cells, bindings read, fn values and
 //! their wrappers, lambdas lifted, captures packed, callee symbols
 //! and the mono worklist's enqueue — the verbs the walk speaks.
-use core.{StmtId, ExprId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, SeatMark, is_literal, settled_mark}
+use core.{StmtId, ExprId, FileId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, NodeStore, SeatMark, is_literal, settled_mark}
 use diagnostics.{loc_at, refusal, Diag}
 use features.{LowerCx, capture_lane, Sub, Cap, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, const_symbol, settled_symbol, post_order, nothing}
 use @std.errors.{Loc}
@@ -160,7 +160,9 @@ impl LowerCx {
             .LambdaParam(_, i) -> Reg { index: i + 1 },
             .Capture(_, j) -> self.env_read(j, ty),
             .Index(s) -> self.body.index_reg(s),
-            .Decl(d) -> if self.view.decls.fn_name(d) != null { self.fn_value_reg(e, self.wanted(d, null, [])) } else { null },
+            .Decl(d) -> if self.view.decls.fn_name(d) != null { self.fn_value_reg(e, self.wanted(d, null, [])) }
+                        else if self.view.decls.decl(d).kind is .Const { self.const_decl_reg(e, d, ty) }
+                        else { null },
         }
     }
 
@@ -181,14 +183,33 @@ impl LowerCx {
         }
         let runtime: string? = self.runtime_read(init)
         if runtime != null {
-            self.unsettled(s, Unsettled.Param(runtime!))
+            self.unsettled(self.view.store, self.view.source.file, s, Unsettled.Param(runtime!))
             return self.zero_of(ty)
         }
         match self.jobs.settle(self.view.file, s, self.seats) {
             .Ok(x) -> if !self.view.types.rides_pointer(ty) { self.materialized(x.answer, x.heap, ty) }
-                      else { self.const_call(s, ty, x) },
+                      else { self.const_call(self.view.file, s, ty, x, self.seats) },
             .Err(why) -> {
-                self.unsettled(s, why)
+                self.unsettled(self.view.store, self.view.source.file, s, why)
+                self.zero_of(ty)
+            },
+        }
+    }
+
+    /// A CROSS-FILE const read: settle the declaration's value in its
+    /// OWN file, then materialize it here.
+    fn const_decl_reg(e: ExprId, d: DeclId, ty: TypeId) -> Reg? {
+        let x = self.view.decls.decl(d)
+        let store: NodeStore = self.view.decls.store(d)
+        let value: ExprId? = store.const_value(x.stmt)
+        if value == null { return null }
+        let written: Expr = store.expr(value!)
+        if is_literal(written) { return self.settled_reg(e, written) }
+        match self.jobs.settle(x.file, x.stmt, []) {
+            .Ok(x2) -> if !self.view.types.rides_pointer(ty) { self.materialized(x2.answer, x2.heap, ty) }
+                       else { self.const_call(x.file, x.stmt, ty, x2, []) },
+            .Err(why) -> {
+                self.unsettled(store, self.view.decls.file(x.file).path, x.stmt, why)
                 self.zero_of(ty)
             },
         }
@@ -487,10 +508,10 @@ impl LowerCx {
     /// A const no literal spells is CALLED: its unit answers the value
     /// once per process and the same box after — one unit, wanted on
     /// first sight like any body.
-    fn const_call(s: StmtId, ty: TypeId, settled: Settled) -> Reg? {
-        let name = settled_symbol(const_symbol(self.view.file, s), self.seats)
+    fn const_call(f: FileId, s: StmtId, ty: TypeId, settled: Settled, seats: List<SeatValue>) -> Reg? {
+        let name = settled_symbol(const_symbol(f, s), seats)
         if self.unseen(name) {
-            self.jobs.pending.push(Wanted { file: self.view.file, decl: null, name: name, sub: null, root: self.view.store.const_value(s), settled: settled, answer: ty })
+            self.jobs.pending.push(Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: self.view.decls.store_of(f).const_value(s), settled: settled, answer: ty })
         }
         let dst = self.out.mint_ty(ty)
         self.out.give(Ins.Call(dst, name, []))
@@ -510,11 +531,11 @@ impl LowerCx {
 
 impl LowerCx {
     /// The three laws a settlement can break, each in its own words.
-    fn unsettled(s: StmtId, why: Unsettled) {
-        let name = self.view.store.let_name(s) ?? "this const"
+    fn unsettled(store: NodeStore, path: string?, s: StmtId, why: Unsettled) {
+        let name = store.let_name(s) ?? "this const"
         // AT THE DECLARATION'S VALUE, not the use that asked — a const
         // that reached here has one
-        let at = self.view.loc_of(self.view.store.const_value(s)!)
+        let at = loc_at(path, store.expr_span(store.const_value(s)!))
         let d: Diag? = match why {
             .Reach(label) -> refusal("const.reach", at, "a const cannot read the world", "`${name}` ${label}", "a const settles at compile time from pure computation alone — read the world at run time, under `let`"),
             .Budget(label) -> refusal("const.budget", at, "a const ran past its budget", "`${name}` ${label}", "compute less here, or settle it at run time under `let`"),
