@@ -834,6 +834,16 @@ to start cold; the size is the design's estimate.
       takes `( "const" )?`. Proof: `fns_test.av`'s four `const` cases —
       a distinct type, a plain seat refuses a settled callee, a
       settled seat accepts a plain one, and a method demands it.
+
+- [ ] **LATER — the shared `param` grammar rule (leave-alone).**
+      S5a made every param list spell `( ck:"const" )? ( mk:"mut" )?`
+      (fn, extern, once, trait sig, static fn, mut fn, lambda,
+      trailing block, fn type). The LOGIC is one place
+      (`marked_seats`/`seat_marks`); the grammar TEXT is not, because
+      the DSL has no reusable parameter rule. TRIGGER: a THIRD seat
+      mark, or a new param-taking declaration form — then extract a
+      `param` rule the declaration fragments reference, its builder
+      answering `List<Param>` so the window alignment dies with it.
 - [ ] **S5b — settled seats widen `Sub` (1–2 days).** `Sub { target,
       args }` gains its const arguments' VALUE fingerprints; one
       lowered unit per distinct pattern, mangled `name$ids$fp`. Proof:
