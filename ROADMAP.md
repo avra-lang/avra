@@ -7118,6 +7118,119 @@ this slice; the std packages other than `@std/meta`/`@std/derive`, the
 sqlite/process/http lanes, and S5 (`const` seats) were not opened. The
 survey is bounded to the comptime lane, `c451cb0..877bf6c`.
 
+## Feedback survey — 2026-09-12 (lane/comptime, S5a)
+
+The `/feedback` run for the seat-mark slice: the `const` seat mark, and
+the unified `SeatMark` channel it landed on. Base `f33e64e` plus this
+lane's four commits (`01e03f4`, `c3dc862`, `2cd3dff`, `a0e6686`);
+every row quotes its command. Counts: FRICTION 3, SUGAR 1 (+1 confirm),
+FEATURES 2, DEFECTS 0 (empty), DOCTRINE 2, PERFORMANCE 0 (empty),
+PROCESS 2. Top three by cost: the front-end generation ordering (one
+wasted gate cycle + a confusing refusal), full-suite granularity when
+only four cases were new, and the param-grammar repetition (design
+debt, filed).
+
+### FRICTION — what cost time
+
+- **A FRONT-END ARITY CHANGE FAILS ON THE NEXT GATE, IN A USER'S
+  FIXTURE.** `TypeLit.Fn` gained a fourth field (`consts`), so the
+  `.type(…)` desugaring emits `.Fn(params, muts, consts, ret)`; the
+  gate then refused `fns`/`type_lit` with "`.Fn` takes 3 arguments,
+  found 4" — a correct refusal, but its SITE was the test's own
+  `Spelling` enum, not the contract that moved. Cost: one gate cycle
+  and a re-read to find it was the desugaring. CONFIRMS CLAUDE.md's
+  generation law; THE ASK: the `interned` receiver's variant SHAPES
+  (today the 3-arg `Fn`, and now 4) are an undocumented contract — see
+  DOCTRINE below.
+- **THE LANE BRIEF NAMES `./avra test <dir>`, SO A SINGLE SPEC RUN WAS
+  NOT KNOWN.** Four new `const` cases cost a full `std-avrac` run
+  (2275 cases, ~40s) each iteration; `./avra test
+  packages/std-avrac/src/features/fns/tests/fns_test.av` runs 57/57 in
+  a moment. Probe (base `c3dc862`): the file form exists and works.
+  THE ASK: name the file form beside the directory form in the brief
+  and in CLAUDE.md's test recipe.
+- **A FRONT-END CHANGE RESTRICTED TO TESTS NEEDS NO GUARD COMPILER.**
+  The `const` params appeared only in `*_test.av` files, and `make avra`
+  does NOT compile test files, so the standing binary built the new
+  grammar with no `guardN` dance; the tests then ran under the fresh
+  binary. THE ASK: state the carve-out in the brief's gotcha list (see
+  PROCESS).
+
+### SUGAR — a construct the language should have
+
+- **A REUSABLE `param` GRAMMAR RULE.** Every param list spells
+  `( "const" )? ( "mut" )?` by hand — 10 sites
+  (`fns/mod.av:33-35`, `impls/mod.av:50-52`, `closures/mod.av:24-25`,
+  `expr_spine/mod.av:36`) — while the LOGIC is one place
+  (`marked_seats`). The DSL has no parameter rule the fragments can
+  reference. Filed in the design doc's queue as a leave-alone with its
+  trigger (a THIRD mark or a new param-taking form); re-filed here per
+  the routing rule, wanting site named. THE ASK: a `param` rule whose
+  builder answers `List<Param>`, so the window alignment dies with it.
+
+### FEATURES — a capability, larger than sugar
+
+- **S5b + S5c — settled seats widen `Sub`, and fold per instantiation.**
+  Today a `const` seat is a TYPE contract with no call-site
+  enforcement: `matches(compute(), s)` is accepted, because the
+  settlement law is not landed. The seams, mapped so the next lane
+  does not re-derive: `Sub` (`features/contract.av`), its record
+  `record_subst` (`features/facts.av:192`), the name/mangle
+  `symbol_at`/`wanted`/`mangle` (`language/lower_state.av:45`,
+  `language/lower.av:448`), the call entry `dispatched_call`
+  (`features/fns/check.av:87`), the view `viewed`
+  (`features/contexts.av:275`). S5b widens `Sub` and the mangling; S5c
+  binds the seat's value in the unit so `const prog = compile(pattern)`
+  folds. Queued in the design doc.
+- **A SINGLE-SPEC test filter.** The file form covers one FILE; there
+  is no way to run one `given`/`then` (the `fns_test.av` run is 57
+  cases). Low cost, real loop value for a red team iterating one
+  class. THE ASK: `avra test <file> --filter <substring>`.
+
+### DEFECTS — the compiler blaming itself
+
+EMPTY. No `defect:`, `avra_trap`, wrong answer, or engine divergence
+in the slice: `./avra check` refused in its own words, the differential
+`const_seat` program read eval == native == expected, and the red team's
+~20 programs produced no crash.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **THE `.type(…)` RECEIVER'S VARIANT SHAPES ARE AN UNDOCUMENTED
+  CONTRACT.** A user `interned` receiver matches the compiler's
+  desugaring by variant name and arity (`Fn`, `Map`, …); S5a changed
+  `Fn` from 3 to 4 payloads, and the only place that records the
+  contract is `features/expr_spine/type_lit.av`'s builder. THE ASK:
+  document the surface (the variant names and their arities) beside
+  the type-literal docs, so the next shape change is not archaeology.
+- **CONFIRM: CLAUDE.md's "`const` in a MODULE file … F0902" is stale.**
+  The design doc's S5 queue says a module's `const` is already accepted
+  and names that entry. UNVERIFIED here (needs a two-file package
+  probe); filed as a question, not a finding.
+
+### PERFORMANCE — a measured cost
+
+EMPTY / NOT MEASURED. The slice is representation-neutral (a `List<bool>`
+became a `List<SeatMark>`; no algorithm changed), so no `census` was
+run. The gate's peak stayed in its established band (671-807 MB across
+the four runs). A `census` of the seat-mark readers would be measuring
+the instrument, not the change.
+
+### PROCESS — the working discipline itself
+
+- **`make avra` EXCLUDES TEST FILES.** The front-end generation gotcha
+  ("a new syntax the compiler reads cannot be built by a binary that
+  predates it") has a carve-out: syntax used ONLY in `*_test.av` does
+  not block the build, because tests are compiled later by `make test`.
+  Evidence: `make avra` green at `c3dc862` with `const` params present
+  only in tests. THE ASK: add the carve-out to the brief's gotcha list,
+  so a lane does not reach for the `guardN` protocol needlessly.
+- **KEEP: the committed-seed + `make recover` backstop was not needed.**
+  Every build was green; `cp build/avra build/avra.pre` was taken once
+  as insurance and never used. A clean slice is a real result.
+
+---
+
 ## Sugar backlog — dogfooding asks
 
 FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and

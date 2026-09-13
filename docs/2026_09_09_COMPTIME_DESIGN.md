@@ -844,6 +844,26 @@ to start cold; the size is the design's estimate.
       mark, or a new param-taking declaration form — then extract a
       `param` rule the declaration fragments reference, its builder
       answering `List<Param>` so the window alignment dies with it.
+
+- [ ] **S5b/S5c PICK-UP MAP (lane/comptime, 2026-09-12).** S5a landed
+      on a green gate; the settlement half is untouched and its seams
+      are here so they need no re-derivation. `Sub { target, args }`
+      (`features/contract.av`) is the instantiation key; typing records
+      it at a call (`features/facts.av:192` `record_subst`, reached from
+      `features/fns/check.av:87` `dispatched_call` and its
+      `generic_call` sibling). Lowering names a body through
+      `LowerCx.symbol_at`/`wanted`/`mangle`
+      (`language/lower_state.av:37-56`, `language/lower.av:448`), and
+      `viewed` (`features/contexts.av:275`) is the one substitution
+      view the body reads. S5b adds each settled-seat argument's VALUE
+      fingerprint to `Sub` (and to `mangle`), recorded where the seat
+      marks are already read (`declared_marks`, `checks.av:591`); a
+      non-generic callee needs the same record, so `dispatched_call`
+      grows the const branch. S5c binds the seat's value in the unit
+      (a `const` in the body reads it, so `const prog = compile(pattern)`
+      folds) — the natural home is the body's const table beside
+      `lower_state.av`'s `defined_reg`. The call-site law (a const seat
+      must be filled by a settled value) is the new refusal S5b owes.
 - [ ] **S5b — settled seats widen `Sub` (1–2 days).** `Sub { target,
       args }` gains its const arguments' VALUE fingerprints; one
       lowered unit per distinct pattern, mangled `name$ids$fp`. Proof:
