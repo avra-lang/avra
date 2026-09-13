@@ -31,9 +31,7 @@ type FirstSet = { lits: List<string>, terms: List<string>, nullable: bool }
 type FirstCx = { g: Grammar, visiting: List<string>, firsts: Map<string, FirstSet>, defects: List<Diagnostic> }
 
 /// The empty first set — nothing matchable, nothing skippable.
-fn no_first() -> FirstSet {
-    FirstSet { lits: [], terms: [], nullable: false }
-}
+export const no_first: FirstSet = FirstSet { lits: [], terms: [], nullable: false }
 
 impl FirstCx {
     fn note(d: Diagnostic) {
@@ -45,11 +43,11 @@ impl FirstCx {
         if known != null { return known! }
         if self.visiting.contains(name) {
             self.note(defect(name, "rule is left-recursive — no first token can ever commit"))
-            return no_first()
+            return no_first
         }
         // An undefined ref is validate's defect, not a first set.
         let body: Alt? = self.g.rules.find(it.name == name)?.body
-        if body == null { return no_first() }
+        if body == null { return no_first }
         // LICENSED I15: one call site; a bracket earns itself at the second
         self.visiting.push(name)
         let f = self.alt_first(body!)
@@ -59,7 +57,7 @@ impl FirstCx {
     }
 
     fn alt_first(a: Alt) -> FirstSet {
-        mut out = no_first()
+        mut out = no_first
         for s in a.branches { out = first_union(out, self.seq_first(s)) }
         out
     }
@@ -68,7 +66,7 @@ impl FirstCx {
     /// set and the walk continues; the first required item ends it.
     /// All items skippable means the branch can match nothing.
     fn seq_first(s: Seq) -> FirstSet {
-        mut out = no_first()
+        mut out = no_first
         for m in s.items {
             let f = self.prim_first(m.prim)
             out = FirstSet {

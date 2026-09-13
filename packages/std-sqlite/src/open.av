@@ -161,11 +161,11 @@ fn follow_bit(c: OpenConfig) -> int { if c.no_follow { open_nofollow() } else { 
 /// would answer two arms out of twenty-eight and need a catch-all, which
 /// is a registry with a hole. Each guard names its own refusal instead.
 export fn path_fault(c: OpenConfig) -> SqlError? {
-    if c.path.is_empty() { return spent_empty() }
-    if has_nul(c.path) { return path_holds_a_nul() }
-    if c.path == ":memory:" { return spent_empty() }
+    if c.path.is_empty() { return spent_empty }
+    if has_nul(c.path) { return path_holds_a_nul }
+    if c.path == ":memory:" { return spent_empty }
     if !c.uri && c.path.starts_with("file:") { return reads_as_uri(c.path) }
-    if c.uri && empty_uri_path(c.path) { return spent_empty() }
+    if c.uri && empty_uri_path(c.path) { return spent_empty }
     null
 }
 
@@ -204,10 +204,7 @@ fn past_authority(s: string) -> string {
 //
 // A refusal carries no SQLite code, because SQLite never saw the call.
 
-fn spent_empty() -> SqlError {
-    refused(Cause.EmptyPath,
-        "a database path is a FILE — `\"\"` and `:memory:` are SQLite's two temporary databases, and each has its own verb")
-}
+export const spent_empty: SqlError = refused(Cause.EmptyPath, "a database path is a FILE — `\"\"` and `:memory:` are SQLite's two temporary databases, and each has its own verb")
 
 /// MEASURED, and the reason this guard exists: a path whose first byte
 /// is a NUL reaches SQLite as the EMPTY STRING, because C stops there —
@@ -215,10 +212,7 @@ fn spent_empty() -> SqlError {
 /// database deleted at close. The door's own `.length` said 2. So the
 /// empty-path trap walks straight through a door built to stop it, and
 /// a mid-NUL path opens a file the caller did not name.
-fn path_holds_a_nul() -> SqlError {
-    refused(Cause.HoldsNul,
-        "a database path holds a NUL, and C reads only the bytes before it — the path SQLite would open is not the path you wrote")
-}
+export const path_holds_a_nul: SqlError = refused(Cause.HoldsNul, "a database path holds a NUL, and C reads only the bytes before it — the path SQLite would open is not the path you wrote")
 
 fn reads_as_uri(path: string) -> SqlError {
     refused(Cause.UriPath,
@@ -369,10 +363,8 @@ export fn close(mut db: Db) -> int {
 /// otherwise report the caller's own sequence as SQLite's opinion asks
 /// here first.
 export fn closed_fault(db: Db) -> SqlError? {
-    if db.raw == null { return connection_closed() }
+    if db.raw == null { return connection_closed }
     null
 }
 
-fn connection_closed() -> SqlError {
-    refused(Cause.Closed, "this connection was closed — open it again")
-}
+export const connection_closed: SqlError = refused(Cause.Closed, "this connection was closed — open it again")
