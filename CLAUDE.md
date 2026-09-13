@@ -583,6 +583,15 @@ engine's spec, written by dogfooding.
   everything — that re-runs typing on a blank line — it is a cutoff
   PER CONSUMER: what a dependent READ decides which fingerprint may
   cut it off. Latent only while compiles are one-shot.
+- AND THE KEY A REMEMBERED VALUE SETTLES ON AND THE NAME ITS RESULT IS
+  STORED UNDER ARE ONE DERIVATION. A specialized `const`'s settlement
+  was keyed per unit (the settled seats' fingerprints) while the
+  MATERIALIZED const unit was named by the plain statement — so the
+  first unit's folded value served every other unit, and
+  `matches("x", …) + matches("y", …)` answered with one value twice.
+  When a computation is keyed AND its artifact is NAMED, derive both
+  from ONE value (`settled_symbol`); two spellings of the identity a
+  cache depends on is a wrong answer waiting for a second caller.
 - Every diagnostic names a registered kind (its F-code is the
   registry's projection), carries help or a structured fix where
   expressible, and has a golden rendering test.

@@ -6,12 +6,14 @@
 > into the asking file's own store, and `@derive` with `Show`/`Eq`
 > shipped in `@std/derive` (a struct and an enum, eval == native ==
 > expected), and **the compiler DERIVES ITS OWN accessors**
-> (`@derive(Projections)` on `DeclSig`; `BEYOND` below). **S5a and
-> S5b DONE** — a fn seat's contracts are ONE `SeatMark` channel
+> (`@derive(Projections)` on `DeclSig`; `BEYOND` below). **S5a, S5b
+> and S5c DONE** — a fn seat's contracts are ONE `SeatMark` channel
 > (`mutable`, `settled`), a `const` mark parses on every param list,
-> and a settled seat's VALUE fingerprint rides the call's `Sub`, so
-> mono lowers one unit per distinct value. S5c (per-unit folding) and
-> S1's `export const` remain. **See
+> a settled seat's VALUE fingerprint rides the call's `Sub` (one unit
+> per distinct value), and a `const` in a unit FOLDS to that value.
+> The folding slice also fixed a P1 wrong answer at HEAD (a `const`
+> reading a plain parameter was silently mis-settled). S1's
+> `export const` and the S5 refinements remain. **See
 > the LANE HANDOFF at the top of §6** for the laws pinned, the seams,
 > and where to pick up.
 
@@ -847,26 +849,22 @@ to start cold; the size is the design's estimate.
       `param` rule the declaration fragments reference, its builder
       answering `List<Param>` so the window alignment dies with it.
 
-- [ ] **S5c PICK-UP MAP (lane/comptime, 2026-09-12).** S5a and S5b
-      landed on a green gate; only the per-unit FOLDING is left. The
-      seams: `Sub` now carries `consts` (`features/contract.av`), and
-      the body is lowered with its `sub` (`language/lower_state.av`'s
-      `self.sub`); `viewed` (`features/contexts.av:275`) is the one
-      substitution view, and `defined_reg` (`language/lower_state.av`)
-      is where a `const` read already lowers a literal or a settled
-      value. S5c binds each settled seat's VALUE in the unit — so a
-      `const` in the body (`const prog = compile(pattern)`) folds to
-      that value — and that binding is what lifts the two pinned
-      S5b boundaries: a settled seat FORWARDED to another fn, and a
-      direct aggregate literal at a settled seat. THE CONCRETE
-      MECHANISM (mapped, not built): `Wanted.sub` carries the settled
-      VALUES beside the fingerprints, and `lower_root`/
-      `settlement_of` SEED each const-seat parameter's register with a
-      constant BEFORE lowering the initializer — `read_binding`
-      already answers a `Param(i)` read with `Reg{i}`, so a seeded
-      register makes the isolated settlement compute on the value.
-      A `dyn` method's settled seat stays enforced-but-unspecialized
-      by construction.
+- [x] **S5c — per-instantiation folding. LANDED (2026-09-12).** A
+      `const` in a specialized body folds to its unit's settled seat
+      value: `SeatValue { index, fp, ty, value }` rides `Wanted` and
+      `LowerCx`, `lower_root` SEEDS each seat's register with a
+      constant before the isolated settlement lowers, and the
+      settlement AND the materialized const unit are keyed per unit
+      (`settled_symbol`), so two calls fold to their OWN values. The
+      law landed WITH it: a `const` may depend only on its fn's
+      `const` seats, and `runtime_read` (a `post_order` walk of the
+      initializer) refuses any other parameter with F2074. This also
+      FIXED A P1 WRONG ANSWER at HEAD — a `const` reading a plain
+      parameter was silently mis-settled and cached
+      (`fn f(x) { const y = x + 1; y }` answered `2` for `f(10)`).
+      Proof: the fold, two-unit, method, static-method and refusal
+      cases, plus the `const_seat` program (eval == native ==
+      expected).
 - [x] **S5b — settled seats widen `Sub`. LANDED (2026-09-12).**
       `Sub` gains `consts: List<string>`, the settled seats' VALUE
       fingerprints; `mangle` appends them after `@` (`name$ids@fps`),
@@ -888,10 +886,13 @@ to start cold; the size is the design's estimate.
       (`take(P { x: 3 })`) wants a `const` binding. A `dyn` method's
       settled seat is enforced but not specialized (dynamic dispatch
       has no static unit).
-- [ ] **S5c — per-instantiation folding (1–2 days).** Inside a unit a
-      const seat IS a const, so `const prog = compile(pattern)` folds
-      and a read of it is its settled value. Proof: `matches(const
-      pattern, s)` folds; eval == native.
+- [ ] **S5 REFINEMENTS — the two boundaries folding did not lift.**
+      A settled seat FORWARDED to another fn (`outer(const y) {
+      inner(y) }`) and a direct AGGREGATE literal at a settled seat
+      (`take(P { x: 3 })`) still refuse; both want the value carried
+      through the OUTER unit's template, which types once and has no
+      per-unit value. A `dyn` method's settled seat stays
+      enforced-but-unspecialized by construction.
 - [ ] **S1 — `export const` (½ day).** A module's `const` is ALREADY
       accepted (re-probe CLAUDE.md: a module const is not F0902
       today); the ask is `export` on it and a cross-module read — a

@@ -7292,6 +7292,77 @@ idiom gate's first-draft catch (the gate working).
 
 ---
 
+## Feedback survey — 2026-09-12 #3 (lane/comptime, S5c)
+
+The `/feedback` run for the per-unit folding slice (base `0179e9f`
+plus `8c487e7`, `419d29a`). Counts: FRICTION 3, SUGAR 0 (empty),
+FEATURES 1, DEFECTS 1 (a P1 wrong answer, fixed), DOCTRINE 1,
+PERFORMANCE 0 (not measured), PROCESS 2. The top finding is the
+DEFECT: a `const` that read a PLAIN parameter was silently
+mis-settled and cached.
+
+### DEFECTS — the compiler blaming itself
+
+- **A CONST THAT READ A RUN-TIME PARAMETER ANSWERED A WRONG VALUE,**
+  SILENTLY. `fn f(x: int) -> int { const y = x + 1; y }` settled `y`
+  from an uninitialized register and cached it: `f(10)` answered `2`,
+  `f(3) + f(5)` answered `4`, `f(1)+f(2)+f(3)` with `x + 10` answered
+  `60`. No diagnostic, both engines agreeing on the wrong number. The
+  settlement had no notion of which parameters it could read, so it
+  read `Reg{i}` for a param that was never a register in a params-less
+  root. FIXED in S5c: a const may depend only on its fn's `const`
+  seats, and any other parameter refuses F2074 "a const cannot read a
+  run-time parameter". THE LESSON: an isolated computation over a
+  subtree must know its FREE VARIABLES — "the initializer lowers as a
+  program" said nothing about which of the body's names exist in it.
+
+### FRICTION — what cost time
+
+- **A SILENT OFF-BY-ONE SURVIVED ONE RED-TEAM ROUND.** `call_seats`
+  tested `settled_mark(marks, j)` where the argument fills `base + j`,
+  so every free-fn case passed and every METHOD case carried no value
+  (and a gap would have folded). It surfaced only through the debug
+  instrument (`core.debug`, S4) printing `subnull`/`seats`/`marks`:
+  the F2074 refusal looked like a law failure, not an index bug. THE
+  ASK: none — it is the red team's second round, doing its job.
+- **THE IDIOM KEEPER READS A `quote { }` BODY AS CODE.** Confirmed
+  again: converting one test to `quote` produced 11 false I23s. Filed
+  in the sugar backlog with the two asks; the tests keep escaped
+  strings until the keeper learns quote bodies.
+- **A MEMO KEY AND THE ARTIFACT IT NAMES DESYNCED.** The settlement
+  was keyed per unit while the materialized const unit was named by
+  the plain statement, so the first unit's folded value served every
+  other (`x!ay!b` came back `y!ay!b`). Fixed by one `settled_symbol`
+  for both; the law is pinned in CLAUDE.md.
+
+### FEATURES — a capability, larger than sugar
+
+- **S5 REFINEMENTS.** Forwarding a settled seat to another fn, and a
+  direct aggregate literal at a settled seat, still refuse; both want
+  the value carried through the OUTER unit's template. Queued in the
+  design doc.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **AN ISOLATED COMPUTATION OWES ITS FREE-VARIABLE LAW.** S1's "a
+  const's initializer lowered as a program of its own" was silent on
+  parameters, and silence became a wrong answer. Recorded as the
+  CLAUDE.md memo-key law's sibling paragraph and in the design doc.
+
+### PROCESS — the working discipline itself
+
+- **`core.debug` (S4) EARNED ITS KEEP.** The receiver off-by-one was
+  invisible from the source; one temporary `debug` line plus
+  `AVRA_DEBUG=1` named it in a single build. KEEP: the debug verb
+  reaches any module, is inert without the flag, and never breaks the
+  self-compile.
+- **THE COMMITTED `build/avra.pre` RECOVERY WAS READY, NOT USED.** The
+  S5c slice had a poisoned-binary scare earlier (the eager `seat_names`
+  cross-file crash in the S5b review) and recovered cleanly; S5c
+  itself never needed it. A clean slice, again.
+
+---
+
 ## Sugar backlog — dogfooding asks
 
 FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and
