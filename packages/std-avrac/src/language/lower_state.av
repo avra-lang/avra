@@ -66,12 +66,12 @@ impl LowerCx {
     /// index. A seat whose value no literal spells carries nothing.
     fn call_seats(d: DeclId, e: ExprId, fps: List<string>) -> List<SeatValue> {
         let args: List<ExprId> = self.call_args(e)
-        let base: int = self.call_base(e)
+        let base: int = self.call_base(d, e)
         let marks: List<SeatMark> = self.view.decls.marks_of(d, base + args.length)
         mut out: List<SeatValue> = []
         mut k = 0
         for j, a in args {
-            if settled_mark(marks, j) {
+            if settled_mark(marks, base + j) {
                 let value: Expr? = self.literal_value(a)
                 if value != null && k < fps.length {
                     out.push(SeatValue { index: base + j, fp: fps[k], ty: self.facts.type_at(a), value: value! })
@@ -92,11 +92,12 @@ impl LowerCx {
     }
 
     /// A call node's first written seat — 0 for a free fn, 1 past a
-    /// method's receiver.
-    fn call_base(e: ExprId) -> int {
+    /// method's receiver. A STATIC method has NO receiver, so it stays
+    /// 0 even though its call node is dotted.
+    fn call_base(d: DeclId, e: ExprId) -> int {
         match self.view.store.expr(e) {
-            .MethodCall(_, _, _) -> 1,
-            _ -> 0,
+            .MethodCall(_, _, _) -> if self.view.decls.store(d).is_static(self.view.decls.decl(d).stmt) { 0 } else { 1 },
+            rest -> 0,
         }
     }
 
