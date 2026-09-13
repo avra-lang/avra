@@ -93,19 +93,23 @@ fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef
     let marks = cx.declared_marks(d, 0, args.length)
     cx.mut_seats_law(e, callee, marks, args, null)
     if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, marks, args) }
+    let fps: List<string>? = cx.const_seats(callee, d, marks, args)
+    if fps == null { return cx.error_type }
+    let settled = fps!
     let tp: List<string> = cx.tparams(d)
     if tp.is_empty() {
         if !pins.is_empty() { takes_no_pins(cx, e, callee) }
+        if !settled.is_empty() { cx.record_subst(e, d, [], settled) }
         return cx.seats_judged(e, callee, s.params, [], s.ret, args)
     }
-    generic_call(cx, e, callee, pins, args, s, d, tp)
+    generic_call(cx, e, callee, pins, args, s, d, tp, settled)
 }
 
 /// The instantiation: pins pre-fill by position, arguments unify
 /// the rest, every Var must land, and the answer is the return with
 /// the bindings applied. Recorded for mono.
 fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
-                args: List<ExprId>, s: FnSig, decl: DeclId, tp: List<string>) -> TypeId {
+                args: List<ExprId>, s: FnSig, decl: DeclId, tp: List<string>, fps: List<string>) -> TypeId {
     if tparams_refused(tp) { return cx.error_type }
     if args.length != s.params.length {
         cx.wrong_arity(e, callee, s.params.length, args.length)
@@ -127,7 +131,7 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
     let concrete = cx.bound_closed(bound)
     if !bounds_hold(cx, e, decl, concrete) { return cx.error_type }
     if !lawful_instantiation(cx, e, s, decl, concrete) { return cx.error_type }
-    cx.record_subst(e, decl, concrete)
+    cx.record_subst(e, decl, concrete, fps)
     cx.view.types.substituted(s.ret, decl, concrete)
 }
 

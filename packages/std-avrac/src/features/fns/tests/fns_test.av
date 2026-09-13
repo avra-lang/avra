@@ -230,6 +230,33 @@ ret 0"""
         then "a method may demand settlement" {
             shown("type C = { n: int }\nimpl C {\n    fn m(const x: int) -> int {\n        x + self.n\n    }\n}\nlet c = C { n: 4 }\nc.m(3)") == "7"
         }
+        then "two distinct settled values lower TWO units; a repeated one shares" {
+            let src = "fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet a = pick(\"x\", \"1\")\nlet b = pick(\"y\", \"2\")\nlet c = pick(\"x\", \"3\")\na + b + c"
+            ir_of(src).fns.filter(it.name.starts_with("pick$@")).length == 2
+        }
+        then "a settled seat refuses a value computed at run time" {
+            refused_with("fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet p = \"x\"\npick(p, \"1\")",
+                         "`pattern` is a `const` seat")
+        }
+        then "a settled seat accepts a `const` — computed or written" {
+            shown("fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nconst P: string = \"a\" + \"b\"\npick(P, \"1\")") == "ab1"
+        }
+        then "a METHOD's settled seat obeys the same law" {
+            refused_with("type C = { n: int }\nimpl C {\n    fn m(const x: int) -> int {\n        x + self.n\n    }\n}\nlet c = C { n: 1 }\nlet v = 5\nc.m(v)",
+                         "`x` is a `const` seat")
+        }
+        then "a generic fn's settled seat specializes like a plain one" {
+            let src = "fn first<T>(const x: T, y: T) -> T {\n    x\n}\nlet a = first(1, 2)\nlet b = first(1, 3)\nlet c = first(2, 4)\na + b + c"
+            ir_of(src).fns.filter(it.name.starts_with("first$")).length == 2
+        }
+        then "two settled seats keep their ORDER — (1,2) and (2,1) are distinct units" {
+            let src = "fn pair(const a: int, const b: int) -> int {\n    a * 10 + b\n}\npair(1, 2) + pair(2, 1)"
+            ir_of(src).fns.filter(it.name.starts_with("pair$@")).length == 2
+        }
+        then "a settled seat is NOT yet forwardable — its value is per-unit (S5c)" {
+            refused_with("fn inner(const x: int) -> int {\n    x\n}\nfn outer(const y: int) -> int {\n    inner(y)\n}\nouter(3)",
+                         "`x` is a `const` seat")
+        }
     }
 }
 

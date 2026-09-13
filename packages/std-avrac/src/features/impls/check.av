@@ -48,7 +48,7 @@ fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, targe
     for j, a in args {
         if !cx.accepts(a, sig.params[j + 1]) { wrong_method_argument(cx, target, name, j, sig.params[j + 1], a) }
     }
-    if m != null { seat_laws(cx, e, subject, "${target}.${name}", name, m!, args, 1) }
+    if m != null && !seat_laws(cx, e, subject, "${target}.${name}", name, m!, args, 1) { return cx.error_type }
     sig.ret
 }
 
@@ -63,7 +63,11 @@ fn static_call(mut cx: TypeCx, e: ExprId, m: DeclId, target: string, name: strin
     for j, a in args {
         if !cx.accepts(a, sig.params[j]) { wrong_method_argument(cx, target, name, j, sig.params[j], a) }
     }
-    cx.mut_seats_law(e, "${target}.${name}", cx.declared_marks(m, 0, args.length), args, null)
+    let marks = cx.declared_marks(m, 0, args.length)
+    cx.mut_seats_law(e, "${target}.${name}", marks, args, null)
+    let fps: List<string>? = cx.const_seats("${target}.${name}", m, marks, args)
+    if fps == null { return cx.error_type }
+    if !fps!.is_empty() { cx.record_subst(e, m, [], fps!) }
     sig.ret
 }
 
@@ -86,10 +90,15 @@ fn selfed_sig(mut cx: TypeCx, subject: ExprId, m: DeclId?, sig: FnSig) -> FnSig 
 /// THE INOUT LAWS at a call: a writing callee needs a `mut` place
 /// receiver, and its `mut` seats need `mut` places, no two on one
 /// root. Seats count from `base` (1 past a method's own receiver).
-fn seat_laws(mut cx: TypeCx, e: ExprId, subject: ExprId, callee: string, name: string, m: DeclId, args: List<ExprId>, base: int) {
+fn seat_laws(mut cx: TypeCx, e: ExprId, subject: ExprId, callee: string, name: string, m: DeclId, args: List<ExprId>, base: int) -> bool {
     let writes = cx.view.decls.writes_receiver(m)
     cx.receiver_law(e, subject, name, writes)
-    cx.mut_seats_law(e, callee, cx.declared_marks(m, base, args.length), args, if writes { subject } else { null })
+    let marks = cx.declared_marks(m, base, args.length)
+    cx.mut_seats_law(e, callee, marks, args, if writes { subject } else { null })
+    let fps: List<string>? = cx.const_seats(callee, m, marks, args)
+    if fps == null { return false }
+    if !fps!.is_empty() { cx.record_subst(e, m, [], fps!) }
+    true
 }
 
 /// The declared type a receiver answers to, or absence. Generic
@@ -100,7 +109,7 @@ fn seat_laws(mut cx: TypeCx, e: ExprId, subject: ExprId, callee: string, name: s
 fn instantiated_sig(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, sig: FnSig) -> FnSig {
     let args = cx.view.types.args_of(cx.type_at(subject))
     if args.is_empty() { return sig }
-    cx.record_subst(e, decl, args)
+    cx.record_subst(e, decl, args, [])
     FnSig {
         params: [cx.view.types.substituted(p, decl, args) for p in sig.params],
         ret: cx.view.types.substituted(sig.ret, decl, args),
@@ -199,8 +208,12 @@ fn contract_judged(mut cx: TypeCx, e: ExprId, subject: ExprId, trait_name: strin
     let found: FnSig? = (cx.view.decls.sig(member))?.fn_sig()
     if found == null { return cx.error_type }
     let writes = cx.view.decls.declares_writing(member)
+    let marks = cx.declared_marks(member, 1, args.length)
     cx.receiver_law(e, subject, name, writes)
-    cx.mut_seats_law(e, "${trait_name}.${name}", cx.declared_marks(member, 1, args.length), args, if writes { subject } else { null })
+    cx.mut_seats_law(e, "${trait_name}.${name}", marks, args, if writes { subject } else { null })
+    let fps: List<string>? = cx.const_seats("${trait_name}.${name}", member, marks, args)
+    if fps == null { return cx.error_type }
+    if !fps!.is_empty() { cx.record_subst(e, member, [], fps!) }
     sig_judged(cx, e, trait_name, name, args, seats_of(selfed_sig(cx, subject, member, found!)))
 }
 

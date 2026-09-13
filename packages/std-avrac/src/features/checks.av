@@ -3,7 +3,7 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, SeatMark, mut_mark, settled_mark}
+use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, Param, FnParts, is_literal, SeatMark, mut_mark, settled_mark}
 use diagnostics.{Diag, refusal, warning}
 
 impl TypeCx {
@@ -598,6 +598,60 @@ impl TypeCx {
             j = j + 1
         }
         out
+    }
+
+    // ── THE `const` SEATS ──
+    /// A call's settled (`const`) seats, as VALUE fingerprints — or
+    /// null, with the refusal spoken, when one is filled by a value
+    /// computed at run time. The fingerprints ride the call's `Sub`,
+    /// so mono lowers one unit per distinct settled value.
+    mut fn const_seats(callee: string, d: DeclId, marks: List<SeatMark>, args: List<ExprId>) -> List<string>? {
+        mut out: List<string> = []
+        mut ok = true
+        for j, a in args {
+            if settled_mark(marks, j) {
+                let fp: string? = self.settled_fp(a)
+                if fp == null {
+                    self.const_seat_unsettled(a, callee, self.seat_name(d, j))
+                    ok = false
+                } else {
+                    out.push(fp!)
+                }
+            }
+        }
+        if ok { return out }
+        null
+    }
+
+    /// A `const` seat's argument VALUE: a literal, or a name bound to
+    /// a `const` (fingerprinted by the value expression it settled
+    /// from). Anything else is computed at run time — a `let`, a call,
+    /// a field read.
+    fn settled_fp(e: ExprId) -> string? {
+        if is_literal(self.view.store.expr(e)) { return "${self.view.store.expr_fingerprint(e)}" }
+        let b: Binding? = self.names.binding(e)
+        if b == null { return null }
+        match b! {
+            .Def(s) -> {
+                let v: ExprId? = self.view.store.const_value(s)
+                if v == null { return null }
+                "${self.view.store.expr_fingerprint(v!)}"
+            }
+            .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
+        }
+    }
+
+    /// A declared seat's written name, for a voice — `seat N` when the
+    /// declaration exposes none.
+    fn seat_name(d: DeclId, i: int) -> string {
+        let parts: FnParts? = self.view.store.fn_parts(self.view.decls.decl(d).stmt)
+        let ps: List<Param> = parts?.params ?? []
+        if i < ps.length { return ps[i].name }
+        "seat ${i + 1}"
+    }
+
+    mut fn const_seat_unsettled(a: ExprId, callee: string, name: string) {
+        self.emit(refusal("type.const_seat", self.loc_of(a), "`${name}` is a `const` seat — `${callee}` settles it at compile time, and this is computed at run time", "computed here", "fill it with a literal or a `const` — a value that settles at compile time"))
     }
 
     /// One `mut` seat judged; the roots handed so far, grown by this
