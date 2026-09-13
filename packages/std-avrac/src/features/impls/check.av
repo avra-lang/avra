@@ -63,11 +63,7 @@ fn static_call(mut cx: TypeCx, e: ExprId, m: DeclId, target: string, name: strin
     for j, a in args {
         if !cx.accepts(a, sig.params[j]) { wrong_method_argument(cx, target, name, j, sig.params[j], a) }
     }
-    let marks = cx.declared_marks(m, 0, args.length)
-    cx.mut_seats_law(e, "${target}.${name}", marks, args, null)
-    let fps: List<string>? = cx.const_seats("${target}.${name}", m, marks, args)
-    if fps == null { return cx.error_type }
-    if !fps!.is_empty() { cx.record_subst(e, m, [], fps!) }
+    if !cx.seat_contracts(e, "${target}.${name}", m, 0, args, null) { return cx.error_type }
     sig.ret
 }
 
@@ -93,12 +89,7 @@ fn selfed_sig(mut cx: TypeCx, subject: ExprId, m: DeclId?, sig: FnSig) -> FnSig 
 fn seat_laws(mut cx: TypeCx, e: ExprId, subject: ExprId, callee: string, name: string, m: DeclId, args: List<ExprId>, base: int) -> bool {
     let writes = cx.view.decls.writes_receiver(m)
     cx.receiver_law(e, subject, name, writes)
-    let marks = cx.declared_marks(m, base, args.length)
-    cx.mut_seats_law(e, callee, marks, args, if writes { subject } else { null })
-    let fps: List<string>? = cx.const_seats(callee, m, marks, args)
-    if fps == null { return false }
-    if !fps!.is_empty() { cx.record_subst(e, m, [], fps!) }
-    true
+    cx.seat_contracts(e, callee, m, base, args, if writes { subject } else { null })
 }
 
 /// The declared type a receiver answers to, or absence. Generic
@@ -208,12 +199,8 @@ fn contract_judged(mut cx: TypeCx, e: ExprId, subject: ExprId, trait_name: strin
     let found: FnSig? = (cx.view.decls.sig(member))?.fn_sig()
     if found == null { return cx.error_type }
     let writes = cx.view.decls.declares_writing(member)
-    let marks = cx.declared_marks(member, 1, args.length)
     cx.receiver_law(e, subject, name, writes)
-    cx.mut_seats_law(e, "${trait_name}.${name}", marks, args, if writes { subject } else { null })
-    let fps: List<string>? = cx.const_seats("${trait_name}.${name}", member, marks, args)
-    if fps == null { return cx.error_type }
-    if !fps!.is_empty() { cx.record_subst(e, member, [], fps!) }
+    if !cx.seat_contracts(e, "${trait_name}.${name}", member, 1, args, if writes { subject } else { null }) { return cx.error_type }
     sig_judged(cx, e, trait_name, name, args, seats_of(selfed_sig(cx, subject, member, found!)))
 }
 

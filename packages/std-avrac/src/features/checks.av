@@ -3,7 +3,7 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, Param, FnParts, is_literal, SeatMark, mut_mark, settled_mark}
+use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, NodeStore, FnParts, is_literal, SeatMark, mut_mark, settled_mark}
 use diagnostics.{Diag, refusal, warning}
 
 impl TypeCx {
@@ -406,8 +406,12 @@ impl TypeCx {
         if !self.seats_fit(e, callee, args, ps) { return self.error_type }
         // A FN TYPE CARRIES ITS SEATS' CONTRACT, so an INDIRECT call is
         // judged by the same law a direct one is: a marked seat is
-        // filled by a `mut` place, and no two seats share a root.
+        // filled by a `mut` place, and a settled seat by a value that
+        // settles at compile time. No declaration stands behind a fn
+        // VALUE, so the fingerprints are judged and dropped — a call
+        // through a box does not specialize.
         self.mut_seats_law(e, callee, marks, args, null)
+        if self.const_seats(callee, [], marks, args) == null { return self.error_type }
         ret
     }
 
@@ -600,19 +604,36 @@ impl TypeCx {
         out
     }
 
+    // ── THE SEAT CONTRACTS ──
+    /// A call's seat contracts, in ONE place: the callee's marks for
+    /// the seats `args` fill (from `base`), the `mut` places judged,
+    /// and the settled (`const`) seats' fingerprints recorded on the
+    /// call's `Sub`. False means a seat broke its contract — the
+    /// refusal was already spoken — so every call shape returns its
+    /// error type. `receiver` is the subject a writing method judged
+    /// for exclusivity, or null.
+    mut fn seat_contracts(e: ExprId, callee: string, d: DeclId, base: int, args: List<ExprId>, receiver: ExprId?) -> bool {
+        let marks = self.declared_marks(d, base, args.length)
+        self.mut_seats_law(e, callee, marks, args, receiver)
+        let fps: List<string>? = self.const_seats(callee, self.seat_names(d), marks, args)
+        if fps == null { return false }
+        if !fps!.is_empty() { self.record_subst(e, d, [], fps!) }
+        true
+    }
+
     // ── THE `const` SEATS ──
     /// A call's settled (`const`) seats, as VALUE fingerprints — or
     /// null, with the refusal spoken, when one is filled by a value
     /// computed at run time. The fingerprints ride the call's `Sub`,
     /// so mono lowers one unit per distinct settled value.
-    mut fn const_seats(callee: string, d: DeclId, marks: List<SeatMark>, args: List<ExprId>) -> List<string>? {
+    mut fn const_seats(callee: string, names: List<string>, marks: List<SeatMark>, args: List<ExprId>) -> List<string>? {
         mut out: List<string> = []
         mut ok = true
         for j, a in args {
             if settled_mark(marks, j) {
                 let fp: string? = self.settled_fp(a)
                 if fp == null {
-                    self.const_seat_unsettled(a, callee, self.seat_name(d, j))
+                    self.const_seat_unsettled(a, callee, seat_word(names, j))
                     ok = false
                 } else {
                     out.push(fp!)
@@ -641,13 +662,13 @@ impl TypeCx {
         }
     }
 
-    /// A declared seat's written name, for a voice — `seat N` when the
-    /// declaration exposes none.
-    fn seat_name(d: DeclId, i: int) -> string {
-        let parts: FnParts? = self.view.store.fn_parts(self.view.decls.decl(d).stmt)
-        let ps: List<Param> = parts?.params ?? []
-        if i < ps.length { return ps[i].name }
-        "seat ${i + 1}"
+    /// A declaration's written seat names, for a voice — read from
+    /// the DECLARATION's own store, since a callee may live in another
+    /// file than the call.
+    fn seat_names(d: DeclId) -> List<string> {
+        let store: NodeStore = self.view.decls.store(d)
+        let parts: FnParts? = store.fn_parts(self.view.decls.decl(d).stmt)
+        [p.name for p in parts?.params ?? []]
     }
 
     mut fn const_seat_unsettled(a: ExprId, callee: string, name: string) {
@@ -718,6 +739,12 @@ impl TypeCx {
     mut fn unmeasurable_empty(e: ExprId, lit: string, example: string) -> TypeId {
         self.spoken(refusal("type.mismatch", self.loc_of(e), "`${lit}` has no length yet — a declared type gives it one", "measured here", "bind it first — `let xs: ${example} = ${lit}`"))
     }
+}
+
+/// A settled seat's word for a voice — its written name, or `seat N`.
+fn seat_word(names: List<string>, i: int) -> string {
+    if i < names.length { return names[i] }
+    "seat ${i + 1}"
 }
 
 /// The binder a chained call (`a?.m(args)`) reads its subject
