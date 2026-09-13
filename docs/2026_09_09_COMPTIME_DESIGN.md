@@ -12,8 +12,9 @@
 > a settled seat's VALUE fingerprint rides the call's `Sub` (one unit
 > per distinct value), and a `const` in a unit FOLDS to that value.
 > The folding slice also fixed a P1 wrong answer at HEAD (a `const`
-> reading a plain parameter was silently mis-settled). S1's
-> `export const` and the S5 refinements remain. **See
+> reading a plain parameter was silently mis-settled). **S1's `export
+> const` LANDED** too — an exported top-level `const` is a declaration
+> and crosses a module. The S5 refinements remain. **See
 > the LANE HANDOFF at the top of §6** for the laws pinned, the seams,
 > and where to pick up.
 
@@ -893,12 +894,19 @@ to start cold; the size is the design's estimate.
       through the OUTER unit's template, which types once and has no
       per-unit value. A `dyn` method's settled seat stays
       enforced-but-unspecialized by construction.
-- [ ] **S1 — `export const` (½ day).** A module's `const` is ALREADY
-      accepted (re-probe CLAUDE.md: a module const is not F0902
-      today); the ask is `export` on it and a cross-module read — a
-      const as a DECLARATION (a settled value whose read is its
-      value), not a fn. Proof: a library's `export const PIPE_IN: int
-      = 1` read by its entry.
+- [x] **S1 — `export const`. LANDED (2026-09-12).** An EXPORTED
+      top-level `const` is a DECLARATION: `DeclKind.Const` is admitted
+      (only when exported), it binds in the module's value namespace
+      with fns, `use util.{K}` imports it, and a cross-file read
+      settles the value in the DECLARATION's own file. The design's
+      premise was WRONG and is corrected here: a PLAIN module `const`
+      IS F0902 today (the entry-only rule), so a module const must be
+      `export const` to be a declaration — which is also why the
+      scoping is `is_exported`, keeping a plain top-level const's
+      file-local shadowing semantics (the const adversarial suite is
+      unchanged). Proof: the `export_const` program test — int,
+      string and computed consts imported and read, eval == native ==
+      expected.
 - [ ] **S4r — the `Code<T>` claim (1 day).** A quote's value is typed
       by its position and checked at splice; today a quote is a
       `string`. Land: a `Code` meta type whose parameter is the claim,

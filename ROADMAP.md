@@ -7363,6 +7363,47 @@ mis-settled and cached.
 
 ---
 
+## Feedback survey — 2026-09-12 #4 (lane/comptime, S1 `export const`)
+
+A short survey for the slice that made an exported top-level `const`
+a declaration (base `bea9e9f` plus `93eff83`). Counts: FRICTION 2,
+SUGAR 0, FEATURES 0, DEFECTS 0, DOCTRINE 1, PERFORMANCE 0,
+PROCESS 0.
+
+### FRICTION — what cost time
+
+- **A DECLARATION-KIND WIDENING IS A WHOLE-TREE SEMANTIC MOVE.**
+  Adding `DeclKind.Const` broke every exhaustive `DeclKind` match (8
+  sites, by design) AND — the expensive half — changed
+  `declared_kind`/`is_declaration` for EVERY `const`, including
+  NESTED ones, so a fn body's `const prog = compile(pattern)` became
+  a "declaration" its own walk skipped (`index 0 out of bounds
+  (length 0)`). The fix: admit a const Decl ONLY for an EXPORTED
+  top-level const, and leave `declared_kind` a projection over the
+  STATEMENT (it has no top-level context) — `admit`, `runtime_stmts`
+  and `runs_at_top` apply the position test. THE LESSON: a store
+  projection asked "is this a declaration" cannot know WHERE the
+  statement stands; the admit and run walks can, so the position test
+  lives there.
+- **THE CONST TYPE IS ASKED AND ENSURED, NOT STORED LOCALLY.** A
+  cross-file read needed `decl_type_of` to answer a Const declaration
+  from the shared const-type query, and that query had to type the
+  const's OWN declaration (a const left Main's statement list, so
+  touching Main no longer ran `check_const`). Two queries, one value.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **"RE-PROBE X" WRITTEN AS A CONCLUSION IS A CLAIM, NOT A PROBE.**
+  The design doc's S1 bullet read "A module's `const` is ALREADY
+  accepted (re-probe CLAUDE.md: a module const is not F0902 today)" —
+  the parenthetical names a probe nobody ran, and the claim is FALSE:
+  a plain module const IS F0902, which is why the scoping is
+  `is_exported` and why CLAUDE.md's own subset entry was right all
+  along. The doc now records the correction. THE ASK: a "re-probe" in
+  a design doc is a TODO, not evidence — run it or drop it.
+
+---
+
 ## Sugar backlog — dogfooding asks
 
 FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and
