@@ -858,8 +858,15 @@ to start cold; the size is the design's estimate.
       `const` in the body (`const prog = compile(pattern)`) folds to
       that value — and that binding is what lifts the two pinned
       S5b boundaries: a settled seat FORWARDED to another fn, and a
-      direct aggregate literal at a settled seat. A `dyn` method's
-      settled seat stays enforced-but-unspecialized by construction.
+      direct aggregate literal at a settled seat. THE CONCRETE
+      MECHANISM (mapped, not built): `Wanted.sub` carries the settled
+      VALUES beside the fingerprints, and `lower_root`/
+      `settlement_of` SEED each const-seat parameter's register with a
+      constant BEFORE lowering the initializer — `read_binding`
+      already answers a `Param(i)` read with `Reg{i}`, so a seeded
+      register makes the isolated settlement compute on the value.
+      A `dyn` method's settled seat stays enforced-but-unspecialized
+      by construction.
 - [x] **S5b — settled seats widen `Sub`. LANDED (2026-09-12).**
       `Sub` gains `consts: List<string>`, the settled seats' VALUE
       fingerprints; `mangle` appends them after `@` (`name$ids@fps`),
