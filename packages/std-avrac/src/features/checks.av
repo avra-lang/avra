@@ -3,7 +3,7 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, NodeStore, FnParts, is_literal, SeatMark, mut_mark, settled_mark}
+use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, NodeStore, FnParts, SeatMark, mut_mark, settled_mark}
 use diagnostics.{Diag, refusal, warning}
 
 impl TypeCx {
@@ -644,12 +644,13 @@ impl TypeCx {
         null
     }
 
-    /// A `const` seat's argument VALUE: a literal, or a name bound to
-    /// a `const` (fingerprinted by the value expression it settled
-    /// from). Anything else is computed at run time — a `let`, a call,
-    /// a field read.
+    /// A `const` seat's argument VALUE: a value the SOURCE alone
+    /// spells (a scalar, or a fully-written aggregate), a name bound to
+    /// such a `const`, or a settled seat FORWARDED from the enclosing
+    /// fn. Anything else is computed at run time — a `let`, a call, a
+    /// field read.
     fn settled_fp(e: ExprId) -> string? {
-        if is_literal(self.view.store.expr(e)) { return "${self.view.store.expr_fingerprint(e)}" }
+        if self.source_spelled(e) { return "${self.view.store.expr_fingerprint(e)}" }
         let b: Binding? = self.names.binding(e)
         if b == null { return null }
         match b! {
@@ -658,8 +659,21 @@ impl TypeCx {
                 if v == null { return null }
                 "${self.view.store.expr_fingerprint(v!)}"
             }
-            .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
+            // A FORWARDED seat: legal, because the enclosing unit
+            // settles it. Its value is per-unit, so this key is a
+            // placeholder — lowering rebuilds it from the unit's own
+            // seat (one unit per distinct value, not per read site).
+            .Param(_) -> if self.names.reads_settled_seat(e) { "${self.view.store.expr_fingerprint(e)}" } else { null },
+            .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
         }
+    }
+
+    /// Whether the source alone spells the value at `e` — the SAME
+    /// test lowering runs, so typing's verdict and the unit's value
+    /// never disagree.
+    fn source_spelled(e: ExprId) -> bool {
+        mut heap = new_meta_heap()
+        literal_meta(self.view.store, self.view.decls, self.facts, e, heap) != null
     }
 
     /// A declaration's written seat names, for a voice — read from

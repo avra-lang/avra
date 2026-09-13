@@ -45,7 +45,7 @@ export type Cap = { names: List<string>, sources: List<Binding> }
 /// A file's names: what each expression's name resolves to, each
 /// lambda's captures, the namespace they were resolved in, and the
 /// voices resolving earned.
-export type NameFacts = { bindings: List<Binding?>, captures: List<Cap?>, mut_reads: List<bool>, names: Namespace, voices: Voices }
+export type NameFacts = { bindings: List<Binding?>, captures: List<Cap?>, mut_reads: List<bool>, settled_reads: List<bool>, names: Namespace, voices: Voices }
 
 impl NameFacts {
     fn binding(e: ExprId) -> Binding? {
@@ -59,6 +59,14 @@ impl NameFacts {
 
     fn mark_mut_read(e: ExprId) {
         self.mut_reads.set(e.index, true)
+    }
+
+    /// Whether this parameter read names a `const` (settled) seat —
+    /// the resolver marks it as it binds, the way it marks `mut`.
+    fn reads_settled_seat(e: ExprId) -> bool { self.settled_reads[e.index] }
+
+    fn mark_settled_read(e: ExprId) {
+        self.settled_reads.set(e.index, true)
     }
 
     fn capture(lam: ExprId) -> Cap? {

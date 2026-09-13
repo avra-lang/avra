@@ -11,8 +11,109 @@
 //! `repr_of`, and every consumer asks the verbs below instead of
 //! knowing. A new value CATEGORY joins here, beside the readers
 //! that make its layout nobody else's business.
-use core.{Reg, Ins, BinOp, Type, TypeId, ExprId}
-use features.{MetaVal, MetaHeap}
+use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, Expr, NodeStore, filled}
+use features.{MetaVal, MetaHeap, TypeFacts, Decls, StructSig, EnumSig}
+
+// ── The source-spelled value ────────────────────────────────────
+// A `const` seat is filled from the SOURCE alone, so its value has a
+// form that never needs the evaluator: scalars, and aggregates whose
+// every part is spelled. That form IS the crossing tree, built here
+// once for typing (does it settle?) and lowering (what is it?).
+
+/// The value the source alone spells at `e`, as the crossing tree
+/// every compile-time value already travels as. Null the moment a
+/// part needs the evaluator — an omitted default, a call, a name.
+export fn literal_meta(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
+    let raw: Expr = store.expr(e)
+    let n: int? = (raw).int_of()
+    if n != null { return MetaVal.Int(n!) }
+    let bits: int? = (raw).bits_of()
+    if bits != null { return MetaVal.Float(bits!) }
+    let t: string? = (raw).text_of()
+    if t != null { return MetaVal.Text(t!) }
+    let b: bool? = (raw).bool_of()
+    if b != null { return MetaVal.Bool(b!) }
+    match raw {
+        .NullLit -> MetaVal.Absent,
+        .ListLit(elems) -> {
+            let slots: List<MetaVal>? = spelled_all(store, decls, facts, elems, heap)
+            if slots == null { return null }
+            heap.node(slots!)
+        },
+        .MapLit(keys, values) -> literal_map(store, decls, facts, keys, values, heap),
+        .StructLit(_, fields, values) -> literal_record(store, decls, facts, e, fields, values, heap),
+        .VariantLit(name, args) -> literal_variant(store, decls, facts, e, name, args, heap),
+        rest -> null,
+    }
+}
+
+/// Every element spelled, in order — null when any one is not.
+fn spelled_all(store: NodeStore, decls: Decls, facts: TypeFacts, es: List<ExprId>, mut heap: MetaHeap) -> List<MetaVal>? {
+    mut out: List<MetaVal> = []
+    for e in es {
+        let v: MetaVal? = literal_meta(store, decls, facts, e, heap)
+        if v == null { return null }
+        out.push(v!)
+    }
+    out
+}
+
+/// A map literal's ordered key/value rows — keys are text, always.
+fn literal_map(store: NodeStore, decls: Decls, facts: TypeFacts, keys: List<ExprId>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+    mut ks: List<string> = []
+    mut vs: List<MetaVal> = []
+    for j, k in keys {
+        let kv: MetaVal? = literal_meta(store, decls, facts, k, heap)
+        if kv == null { return null }
+        let key: string? = match kv! { .Text(s) -> s, rest -> null }
+        if key == null { return null }
+        let vv: MetaVal? = literal_meta(store, decls, facts, values[j], heap)
+        if vv == null { return null }
+        ks.push(key!)
+        vs.push(vv!)
+    }
+    heap.map(ks, vs)
+}
+
+/// A record literal, slots in DECLARATION order. Every field must be
+/// written: an omitted one carries a default, and a default is a body
+/// the evaluator runs — not something the source alone spells.
+fn literal_record(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, fields: List<string>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+    let ty = facts.type_at(e)
+    let sig: StructSig? = decls.fields_of_type(ty)
+    if sig == null { return null }
+    let s = sig!
+    if fields.length != s.names.length { return null }
+    mut by_slot: List<MetaVal?> = filled<MetaVal?>(s.names.length, null)
+    for j, f in fields {
+        let slot: int? = s.slot_of(f)
+        if slot == null { return null }
+        let v: MetaVal? = literal_meta(store, decls, facts, values[j], heap)
+        if v == null { return null }
+        by_slot.set(slot!, v!)
+    }
+    mut slots: List<MetaVal> = []
+    for x in by_slot {
+        if x == null { return null }
+        slots.push(x!)
+    }
+    // A FLAT record travels as its one field — the crossing shape
+    // `materialized` rebuilds a Pack from.
+    if decls.types.is_flat(ty) { return slots[0] }
+    heap.node(slots)
+}
+
+/// A variant literal: the tag first, the payloads after — the tagged
+/// slot array both engines already read.
+fn literal_variant(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, name: string, args: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+    let sig: EnumSig? = decls.variants_of_type(facts.type_at(e))
+    if sig == null { return null }
+    let tag: int = sig!.names.index_of(name)
+    if tag < 0 { return null }
+    let payloads: List<MetaVal>? = spelled_all(store, decls, facts, args, heap)
+    if payloads == null { return null }
+    heap.node([MetaVal.Int(tag)].concat(payloads!))
+}
 
 // ── The slot array, behind its verbs ────────────────────────────
 // Every aggregate — a struct, an enum's box, a list, a dyn box, a

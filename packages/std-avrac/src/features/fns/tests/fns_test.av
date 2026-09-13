@@ -253,9 +253,12 @@ ret 0"""
             let src = "fn pair(const a: int, const b: int) -> int {\n    a * 10 + b\n}\npair(1, 2) + pair(2, 1)"
             ir_of(src).fns.filter(it.name.starts_with("pair$@")).length == 2
         }
-        then "a settled seat is NOT yet forwardable — its value is per-unit (S5c)" {
-            refused_with("fn inner(const x: int) -> int {\n    x\n}\nfn outer(const y: int) -> int {\n    inner(y)\n}\nouter(3)",
-                         "`x` is a `const` seat")
+        then "a settled seat FORWARDS — the inner unit keys on the outer's value" {
+            shown("fn inner(const x: int) -> int {\n    x + 1\n}\nfn outer(const y: int) -> int {\n    inner(y)\n}\nouter(3) + outer(4)") == "9"
+        }
+        then "forwarded units split PER VALUE — inner is lowered once per outer value" {
+            let src = "fn inner(const x: int) -> int {\n    x + 1\n}\nfn outer(const y: int) -> int {\n    inner(y)\n}\nouter(3) + outer(4)"
+            ir_of(src).fns.filter(it.name.starts_with("inner$@")).length == 2
         }
         then "a `const` in the body folds to the settled seat's value" {
             shown("fn compile(p: string) -> string {\n    p + \"!\"\n}\nfn matches(const pattern: string, s: string) -> string {\n    const prog = compile(pattern)\n    prog + s\n}\nmatches(\"x\", \"y\")") == "x!y"

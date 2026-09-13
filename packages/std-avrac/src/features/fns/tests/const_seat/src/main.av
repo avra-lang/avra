@@ -31,4 +31,52 @@ fn matches(const pattern: string, s: string) -> string {
 
 const K: int = 7
 
-"${scaled(21, 2)} ${scaled(20, 2)} ${scaled(21, 2)} ${scaled(K, 3)} ${tagged("hi")} ${apply(twice)} ${matches("x", "y")} ${matches("z", "w")}"
+// a settled seat FORWARDED through another fn — per outer value
+fn forward_inner(const x: int) -> int {
+    x + 1
+}
+
+fn forward_outer(const y: int) -> int {
+    forward_inner(y)
+}
+
+// a computed `const` forwarded — the unit keys on its SETTLED value
+type Pt = { x: int, y: int }
+
+fn take_point(const p: Pt) -> int {
+    p.x + p.y
+}
+
+// a forwarded seat read by a `const` inside the callee — the unit's
+// value must seed the isolated settlement, not just the call site
+fn fold_inner(const x: int) -> int {
+    const z = x + 1
+    z
+}
+
+fn fold_outer(const n: int) -> int {
+    fold_inner(n)
+}
+
+// a LITERAL seat inside an ordinary fn — the template body must still
+// specialize it, never fall back to the plain body
+fn wrapped(x: int) -> int {
+    scaled(3, x)
+}
+
+// a forwarded seat into a METHOD's const seat — the receiver offset
+// rides the same forwarding law
+type Ctr = { base: int }
+
+impl Ctr {
+    fn mul(const p: int) -> int {
+        p * self.base
+    }
+}
+
+fn ctr_outer(const y: int) -> int {
+    let c = Ctr { base: 2 }
+    c.mul(y)
+}
+
+"${scaled(21, 2)} ${scaled(20, 2)} ${scaled(21, 2)} ${scaled(K, 3)} ${tagged("hi")} ${apply(twice)} ${matches("x", "y")} ${matches("z", "w")} ${forward_outer(3)} ${forward_outer(4)} ${take_point(Pt { x: 3, y: 4 })} ${fold_outer(3)} ${wrapped(5)} ${ctr_outer(4)}"

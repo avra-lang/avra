@@ -30,6 +30,7 @@ export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, sc
             bindings: filled<Binding?>(view.store.exprs.count(), null),
             captures: filled<Cap?>(view.store.exprs.count(), null),
             mut_reads: filled(view.store.exprs.count(), false),
+            settled_reads: filled(view.store.exprs.count(), false),
             names: scope, voices: no_voices(),
         },
         def_names: [d.name for d in defs],
@@ -335,8 +336,10 @@ impl ResolveCx {
         if self.refused_name(name, self.loc_of(e)) { return }
         let found: Binding? = self.value_binding(name)
         if found != null {
-            self.bind_use(e, found!)
-            self.note_mut_seat(e, found!)
+            let b = found!
+            self.bind_use(e, b)
+            self.note_mut_seat(e, b)
+            self.note_settled_seat(e, b)
             return
         }
         let at = self.loc_of(e)
@@ -391,6 +394,18 @@ impl ResolveCx {
         if self.seat_written_mut(b) { self.facts.mark_mut_read(e) }
     }
 
+    /// A parameter read of a `const` seat is marked too — the settled
+    /// seat's value is per-unit, so the type pass accepts the read and
+    /// lowering supplies the fingerprint.
+    fn note_settled_seat(e: ExprId, b: Binding) {
+        match b {
+            .Param(i) -> {
+                if self.seat_is_settled(i) { self.facts.mark_settled_read(e) }
+            },
+            rest -> nothing(),
+        }
+    }
+
     /// Whether a binding is a seat WRITTEN `mut` — a fn's, by the open
     /// body's marks; a lambda's, by its own declaration.
     fn seat_written_mut(b: Binding) -> bool {
@@ -408,10 +423,20 @@ impl ResolveCx {
     }
 
     fn seat_is_mut(i: int) -> bool {
+        self.at_seat(i, (m: SeatMark) -> m.mutable)
+    }
+
+    fn seat_is_settled(i: int) -> bool {
+        self.at_seat(i, (m: SeatMark) -> m.settled)
+    }
+
+    /// The mark of the enclosing body's seat `i`, past the receiver
+    /// offset — a lambda's seats are its own declaration's.
+    fn at_seat(i: int, asks: fn(SeatMark) -> bool) -> bool {
         let open: List<SeatMark>? = self.marks.last()
         if open == null { return false }
         let at = i - self.seat_base()
-        at >= 0 && at < open!.length && open![at].mutable
+        at >= 0 && at < open!.length && asks(open![at])
     }
 
     /// A name resolves ONCE — the first walk wins, diagnostics

@@ -4,7 +4,7 @@
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, FileId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, NodeStore, SeatMark, is_literal, settled_mark}
 use diagnostics.{loc_at, refusal, Diag}
-use features.{LowerCx, capture_lane, Sub, Cap, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, const_symbol, settled_symbol, post_order, nothing}
+use features.{LowerCx, capture_lane, Sub, Cap, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, const_symbol, settled_symbol, post_order, nothing, MetaVal, MetaHeap, new_meta_heap, literal_meta}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -21,13 +21,34 @@ impl LowerCx {
     /// A declaration's body as instantiated at a site: its plain
     /// symbol, or — when typing recorded an instantiation there —
     /// the mangling of that instantiation COMPOSED with this body's
-    /// own view. Wanted either way.
+    /// own view. Wanted either way. The fingerprints come from the
+    /// seats THEMSELVES: a FORWARDED seat's value is per-unit, so
+    /// only the caller's unit can key it.
     fn symbol_at(d: DeclId, e: ExprId) -> string {
         let held: Sub? = self.facts.subst_at(e)
         if held == null { return self.wanted(d, null, []) }
         let sub = held!
-        let seats: List<SeatValue> = self.call_seats(d, e, sub.consts)
-        self.wanted(d, Sub { target: sub.target, args: [self.concrete(t) for t in sub.args], consts: sub.consts }, seats)
+        let seats: List<SeatValue> = self.call_seats(d, e)
+        if !self.seats_complete(d, e, seats) { return self.wanted(d, null, []) }
+        self.wanted(d, Sub { target: sub.target, args: [self.concrete(t) for t in sub.args], consts: [sv.fp for sv in seats] }, seats)
+    }
+
+    /// Whether every `const` seat resolved. A TEMPLATE body has no unit
+    /// value, so a FORWARDED seat is unresolvable there; only the
+    /// specialized units key it, and the template falls back to the
+    /// plain body (whose consts are skipped anyway).
+    fn seats_complete(d: DeclId, e: ExprId, seats: List<SeatValue>) -> bool {
+        if self.sub != null { return true }
+        seats.length == self.settled_count(d, e)
+    }
+
+    /// The call's `const` seats, by count.
+    fn settled_count(d: DeclId, e: ExprId) -> int {
+        let args: List<ExprId> = self.call_args(e)
+        let base: int = self.call_base(d, e)
+        let marks: List<SeatMark> = self.view.decls.marks_of(d, base + args.length)
+        let settled = [settled_mark(marks, base + j) for j in 0..args.length]
+        settled.filter((on: bool) -> on).length
     }
 
     /// A METHOD's body as this receiver instantiates it: a trait's
@@ -40,10 +61,9 @@ impl LowerCx {
             let contract = parent!
             if at == null { return self.wanted(m, Sub { target: contract, args: [recv] }, []) }
             let call = at!
-            let held: Sub? = self.facts.subst_at(call)
-            let consts: List<string> = held?.consts ?? []
-            let seats: List<SeatValue> = self.call_seats(m, call, consts)
-            return self.wanted(m, Sub { target: contract, args: [recv], consts: consts }, seats)
+            let seats: List<SeatValue> = self.call_seats(m, call)
+            if !self.seats_complete(m, call, seats) { return self.wanted(m, null, []) }
+            return self.wanted(m, Sub { target: contract, args: [recv], consts: [sv.fp for sv in seats] }, seats)
         }
         if at == null { return self.wanted(m, null, []) }
         self.symbol_at(m, at!)
@@ -61,25 +81,85 @@ impl LowerCx {
         name
     }
 
-    /// The settled seats a call carries into its unit: the literal
-    /// value each `const` seat was filled with, keyed by its seat
-    /// index. A seat whose value no literal spells carries nothing.
-    fn call_seats(d: DeclId, e: ExprId, fps: List<string>) -> List<SeatValue> {
+    /// The settled seats a call carries into its unit: each `const`
+    /// seat's value, keyed by its seat index — a source literal, a
+    /// `const`'s value, or a settled seat forwarded from the enclosing
+    /// unit. A seat the source alone does not spell carries nothing
+    /// (typing refused it).
+    fn call_seats(d: DeclId, e: ExprId) -> List<SeatValue> {
         let args: List<ExprId> = self.call_args(e)
         let base: int = self.call_base(d, e)
         let marks: List<SeatMark> = self.view.decls.marks_of(d, base + args.length)
         mut out: List<SeatValue> = []
-        mut k = 0
         for j, a in args {
             if settled_mark(marks, base + j) {
-                let value: Expr? = self.literal_value(a)
-                if value != null && k < fps.length {
-                    out.push(SeatValue { index: base + j, fp: fps[k], ty: self.facts.type_at(a), value: value! })
-                }
-                k = k + 1
+                let held: SeatValue? = self.seat_fill(a, base + j)
+                if held != null { out.push(held!) }
             }
         }
         out
+    }
+
+    /// What an argument supplies a `const` seat: a settled seat of the
+    /// ENCLOSING unit forwarded (its value — and so its key — is
+    /// per-unit), or a value the source alone spells.
+    fn seat_fill(a: ExprId, index: int) -> SeatValue? {
+        let found: Binding? = self.names.binding(a)
+        if found == null { return self.spelled_seat(a, index) }
+        let b = found!
+        match b {
+            .Param(_) -> self.forwarded_seat(b, index),
+            // a computed `const`: its SETTLED value IS the seat's
+            .Def(s) -> self.spelled_seat(a, index) ?? self.settled_seat(s, index, self.facts.type_at(a)),
+            rest -> self.spelled_seat(a, index),
+        }
+    }
+
+    /// A `const`-seat value the source alone spells — the argument
+    /// itself, or a `const` name's initializer. Its fingerprint carries
+    /// its KIND (`e`): a spelled seat and a SETTLED one (`v`) may hash
+    /// alike, and a bare join of the two would make one call's seats
+    /// read as another's.
+    fn spelled_seat(a: ExprId, index: int) -> SeatValue? {
+        let src: ExprId? = self.spelled_source(a)
+        if src == null { return null }
+        let e = src!
+        mut heap = new_meta_heap()
+        let value: MetaVal? = literal_meta(self.view.store, self.view.decls, self.facts, e, heap)
+        if value == null { return null }
+        SeatValue { index: index, fp: "e${self.view.store.expr_fingerprint(e)}", ty: self.facts.type_at(a), value: value!, heap: heap }
+    }
+
+    /// A `const`-seat argument that is a computed `const`: settle it —
+    /// on the enclosing unit's seats — and key the unit on the value
+    /// itself, so two spellings of one value share one unit.
+    fn settled_seat(s: StmtId, index: int, ty: TypeId) -> SeatValue? {
+        match self.jobs.settle(self.view.file, s, self.seats) {
+            .Ok(x) -> SeatValue { index: index, fp: "v${x.fingerprint}", ty: ty, value: x.answer, heap: x.heap },
+            .Err(_) -> null,
+        }
+    }
+
+    /// The enclosing unit's settled seat a forwarded read carries —
+    /// null outside a unit, where the seat has no value.
+    fn forwarded_seat(b: Binding, index: int) -> SeatValue? {
+        let i: int = match b { .Param(x) -> x, rest -> 0 }
+        let outer: SeatValue? = self.seat_at(i)
+        if outer == null { return null }
+        let held = outer!
+        SeatValue { index: index, fp: held.fp, ty: held.ty, value: held.value, heap: held.heap }
+    }
+
+    /// The expression whose value a `const`-seat argument spells: the
+    /// argument itself, or a `const` name's initializer. Null for a
+    /// run-time value.
+    fn spelled_source(a: ExprId) -> ExprId? {
+        let b: Binding? = self.names.binding(a)
+        if b == null { return a }
+        match b! {
+            .Def(s) -> self.view.store.const_value(s),
+            rest -> a,
+        }
     }
 
     /// A call node's arguments.
@@ -98,26 +178,6 @@ impl LowerCx {
         match self.view.store.expr(e) {
             .MethodCall(_, _, _) -> if self.view.decls.store(d).is_static(self.view.decls.decl(d).stmt) { 0 } else { 1 },
             rest -> 0,
-        }
-    }
-
-    /// A settled seat's argument as a LITERAL value — the literal
-    /// itself, or a `const` name whose value is one. Null for a value
-    /// no literal spells.
-    fn literal_value(a: ExprId) -> Expr? {
-        let ex: Expr = self.view.store.expr(a)
-        if is_literal(ex) { return ex }
-        let b: Binding? = self.names.binding(a)
-        if b == null { return null }
-        match b! {
-            .Def(s) -> {
-                let v: ExprId? = self.view.store.const_value(s)
-                if v == null { return null }
-                let lit: Expr = self.view.store.expr(v!)
-                if is_literal(lit) { return lit }
-                null
-            }
-            rest -> null,
         }
     }
 
@@ -152,7 +212,7 @@ impl LowerCx {
     /// the read mints — a boxed slot's load, a capture lane.
     fn read_wearing(e: ExprId, b: Binding, ty: TypeId) -> Reg? {
         match b {
-            .Param(i) -> Reg { index: i },
+            .Param(i) -> if i < self.seat_regs.length { self.seat_regs[i] } else { Reg { index: i } },
             .Receiver -> first_seat,
             .Def(s) -> self.defined_reg(e, s, ty),
             .Pattern(v, j) -> self.body.pattern_reg(v, j),
@@ -252,23 +312,24 @@ impl LowerCx {
         false
     }
 
-    /// The unit's settled seats, seeded as constants before the body
-    /// (or a const initializer) lowers. `read_binding` answers a
-    /// `Param(i)` read with `Reg{i}`, so a seeded register IS the
-    /// value; a gap (a seat nothing settled) is minted as a zero, and
-    /// no const may read it (`runtime_read` refused first).
+    /// The unit's settled seats, seeded as values before the body (or
+    /// a const initializer) lowers. `read_binding` answers a `Param(i)`
+    /// read with the register recorded here, so a seeded register IS
+    /// the value; a gap (a seat nothing settled) is minted as a zero,
+    /// and no const may read it (`runtime_read` refused first).
     fn seed_seats() {
         for j in 0..self.seat_span() {
-            let dst = self.out.mint_ty(self.seat_ty(j))
-            let held: Expr? = self.seat_value(j)
-            if held == null {
+            let ty = self.seat_ty(j)
+            let held: MetaVal? = self.seat_value(j)
+            let r: Reg = if held == null {
                 // a gap: nothing settled this seat, and no const may read it
+                let dst = self.out.mint_ty(ty)
                 self.out.give(Ins.ConstInt(dst, 0))
+                dst
             } else {
-                let ins: Ins? = seed_ins(dst, held!)
-                if ins == null { self.out.defect("a settled seat held a value no literal spells") }
-                else { self.out.give(ins!) }
+                self.materialized(held!, self.seat_heap(j), ty)
             }
+            self.seat_regs.push(r)
         }
     }
 
@@ -280,14 +341,20 @@ impl LowerCx {
         top
     }
 
-    fn seat_value(j: int) -> Expr? {
-        let held: SeatValue? = self.seats.find((s: SeatValue) -> s.index == j) // LICENSED I9: a seat's ordinal, not a type identity
-        held?.value
+    fn seat_at(j: int) -> SeatValue? {
+        self.seats.find((s: SeatValue) -> s.index == j) // LICENSED I9: a seat's ordinal, not a type identity
+    }
+
+    fn seat_value(j: int) -> MetaVal? {
+        self.seat_at(j)?.value
+    }
+
+    fn seat_heap(j: int) -> MetaHeap {
+        self.seat_at(j)?.heap ?? new_meta_heap()
     }
 
     fn seat_ty(j: int) -> TypeId {
-        let held: SeatValue? = self.seats.find((s: SeatValue) -> s.index == j) // LICENSED I9: a seat's ordinal, not a type identity
-        held?.ty ?? self.shaped_ty(Type.Error)
+        self.seat_at(j)?.ty ?? self.shaped_ty(Type.Error)
     }
 
     /// The settled value as an instruction — a literal as written,
@@ -486,21 +553,6 @@ impl LowerCx {
 /// Register 0 — a body's first seat: a method's receiver, or the
 /// env box a lifted lambda's captures ride in.
 export const first_seat: Reg = Reg { index: 0 }
-
-/// A settled seat's value as the constant instruction that defines
-/// its register — null for a value no literal spells (a DEFECT, since
-/// `literal_value` admitted it as a literal).
-fn seed_ins(dst: Reg, value: Expr) -> Ins? {
-    let n: int? = (value).int_of()
-    if n != null { return Ins.ConstInt(dst, n!) }
-    let t: string? = (value).text_of()
-    if t != null { return Ins.ConstStr(dst, t!) }
-    let b: bool? = (value).bool_of()
-    if b != null { return Ins.ConstBool(dst, b!) }
-    let bits: int? = (value).bits_of()
-    if bits == null { return null }
-    Ins.ConstFloat(dst, bits!)
-}
 
 impl LowerCx {
     /// A const no literal spells is CALLED: its unit answers the value
