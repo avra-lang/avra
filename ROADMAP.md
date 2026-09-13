@@ -8044,6 +8044,60 @@ recorded here so the wanting sites are named.
   the green (2026-09-10, lane/comptime). A review-round item: for
   each via-the-machine case, say which runtime row it actually trips.
 
+FROM THE 2026-09-12 COMPTIME S5 SLICES (lane/comptime; wanting sites
+and probes in the same commit):
+
+- A REUSABLE `param` GRAMMAR RULE. Every param list spells
+  `( "const" )? ( "mut" )?` by hand — TEN sites (`fns/mod.av:33-35`,
+  `impls/mod.av:50-52`, `closures/mod.av:24-25`,
+  `expr_spine/mod.av:36`) — while the LOGIC is one place
+  (`marked_seats`). The DSL has no parameter rule a fragment can
+  reference, so a third mark is 10 more spellings. THE ASK: a `param`
+  rule the declaration fragments reference, its builder answering
+  `List<Param>` so the span-window alignment dies with it.
+
+- `quote { }` FOR TEST SOURCES, AND A KEEPER THAT KNOWS A QUOTE BODY IS
+  TEXT. Every spec case spells Avra source as an escaped `"…"` with
+  `\n` and `\"` (e.g. `features/fns/tests/fns_test.av`). Probe: one
+  const-seat case rewritten as a `quote { … }` block compiled and
+  passed (64/64) — then `make idioms` flagged ELEVEN false I23s,
+  because the line-based scanner reads the quote body as real code.
+  Two asks: teach `tools/idioms.py` brace-depth-aware quote skipping
+  (and the same for any `grammar { }`/`table { }` body it scans), then
+  spell test sources as quote blocks. The readability win is large.
+
+- A `Seat` RECORD — NEVER PARALLEL `params`/`marks`. S5a made seat
+  promises ONE `SeatMark` currency, but the marks still travel as a
+  list PARALLEL to `List<TypeId> params`, zipped by index at every
+  reader (`core/types.av` `seat_words`, `features/checks.av`
+  `declared_marks`, the `for j, p in params { mark_at(marks, j) }`
+  shape). That is CLAUDE.md's moving-boundary hazard living in the
+  type currency. THE ASK: `Fn(seats: List<Seat>, ret)` with
+  `Seat = { ty: TypeId, mark: SeatMark }`, so an off-by-one is
+  unspellable. (Wanting site: `core/types.av`, `Arrow`, `Type.Fn`.)
+
+- `continue`, OR A GUARDED ITERATION. `const_seats` wanted "skip the
+  unmarked seats" and had to nest an `if` around the whole body
+  (`features/checks.av`), because `continue` is not a statement. THE
+  ASK: `continue` in a `for` (the comprehension bar still prefers a
+  filter; this is for a fold with a skip), or a `for x in xs if
+  <cond>` head.
+
+- FLAGS, OR A SET OF AN ENUM. `SeatMark { mutable, settled }` is a
+  two-bit flag set; building and reading it is a struct literal and
+  nested `if`s (`core/types.av` `mark_prefixed`/`mark_word`). THE ASK:
+  a combinable enum value (`SeatMark.mutable | .settled`, `.has(…)`)
+  or a `Set<E>` — the honest shape for "some of these hold".
+
+- ONE DECLARATION-PARAM READ. A declaration's parameters are read
+  three ways: `store.fn_parts(stmt)?.params` (`features/checks.av`
+  `seat_names`), `declared_params(store, stmt)`
+  (`language/workspace.av:1977`), and `written_seats(keywords, params)`
+  (`features/contexts.av:125`, a filter). THE ASK: one
+  `Decls.params(d)` verb (reading the DECLARATION's own store — the
+  cross-file read that crashed S5b), with the receiver-implicit truth
+  stated once.
+
 ## The error spine (rung 10 — designed 2026-08-31, from the epic)
 
 Source: `../forge-crafting-intepreters/docs/2026_06_08_ERROR_HANDLING_EPIC.md`
