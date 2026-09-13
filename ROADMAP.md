@@ -7231,6 +7231,67 @@ the instrument, not the change.
 
 ---
 
+## Feedback survey — 2026-09-12 #2 (lane/comptime, S5b)
+
+The `/feedback` run for the settled-seat slice. Base `6ff814b` plus
+this lane's two commits (`001259c`, `572456c`). Counts: FRICTION 2,
+SUGAR 0 (empty), FEATURES 1, DEFECTS 0 (empty), DOCTRINE 1,
+PERFORMANCE 0 (not measured), PROCESS 1. Top by cost: the per-unit
+settlement input S5c needs (found, not filed anywhere), then the
+idiom gate's first-draft catch (the gate working).
+
+### FRICTION — what cost time
+
+- **THE SETTLEMENT MACHINERY IS SINGLE-UNIT BY CONSTRUCTION, WHICH IS
+  S5c'S WHOLE PROBLEM.** `settlement_of`/`isolated`
+  (`language/workspace.av:793`) lower a const's initializer as a
+  standalone program with `Wanted { sub: null, root }`, so a `const`
+  inside a specialized body (`const prog = compile(pattern)`) is
+  lowered WITHOUT the unit's settled-seat values: the parameter has no
+  binding in a params-less root, and `run_settle` has nothing to read.
+  Cost: mapping S5c to the mechanism took reading three layers
+  (`defined_reg` → `jobs.settle` → `isolated`), and the design doc's
+  queue did not name this seam. THE ASK: S5c threads the unit's
+  settled values into the isolation — `Wanted` gains a settled-seat
+  environment (the values, not only `Sub.consts` fingerprints), and
+  the substituted initializer is what gets isolated. Filed in the
+  design doc's S5c pick-up map.
+- **THE IDIOM RATCHET CAUGHT THE FIRST DRAFT.** `const_seats` shipped
+  with an unread `e` param (I23) and `symbol_at`/`dispatched_call`
+  with a nullable local forced open 3+ times (I26); `make gate`
+  refused all three and named the lines. CONFIRMS the gate's value —
+  no user-visible cost, one build cycle. No ask.
+
+### FEATURES — a capability, larger than sugar
+
+- **S5c — per-unit folding.** The last S5 piece: inside a unit a
+  settled seat IS a const, so its dependents fold and both pinned S5b
+  boundaries (forwarding a settled seat; an aggregate literal inline)
+  lift. Depends on the per-unit settlement input above; queued in the
+  design doc with its seams.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **A RECORD FIELD ADDED WITH A DEFAULT IS THE BREAK-FREE WAY INTO AN
+  EXISTING CURRENCY.** `Sub` gained `consts: List<string> = []`, so
+  every existing `Sub { target, args }` construction compiled
+  untouched, and only the sites that READ the new field changed. Worth
+  recording beside the `TypeRef` default-field hazard: a default can
+  drop silently on RECONSTRUCTION, but it lets a new field land without
+  a 5-site sweep when the field is genuinely additive. (No file: it is
+  a note for the next currency change.)
+
+### PROCESS — the working discipline itself
+
+- **KEEP: a call-site law (F2073) landed in the SAME slice as the
+  mechanism it guards.** S5b keys units by VALUE, so a runtime value at
+  a settled seat had to refuse at once; deferring the refusal would have
+  made the stored fingerprint a lie. The staged slices did NOT force a
+  staged law here — worth keeping as the default when a mechanism makes
+  a value meaningful.
+
+---
+
 ## Sugar backlog — dogfooding asks
 
 FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and
