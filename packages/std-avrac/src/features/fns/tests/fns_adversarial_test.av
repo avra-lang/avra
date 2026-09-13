@@ -134,4 +134,34 @@ spec "features/fns (adversarial)" {
             shown("once fn t() -> string? {\n    null\n}\nt() ?? \"absent\"") == "absent"
         }
     }
+    given "the `const` seat under attack" {
+        then "N=0 — `fn(const)` marks no name, and refuses" {
+            refusals("fn f(const) -> int {\n    0\n}") == 2
+        }
+        then "a settled seat with NO type is the ordinary missing-type law" {
+            refused_with("fn f(const x) -> int {\n    0\n}", "parameter `x` declares no type")
+        }
+        then "the marks have ONE order — `mut const` is not `const mut`" {
+            refusals("fn f(mut const x: int) -> int {\n    x\n}") == 2
+        }
+        then "`const` is not a TYPE — it cannot stand where one belongs" {
+            refused_with("fn f(x: const) -> int {\n    0\n}", "`const` names no type")
+        }
+        then "a `const mut` seat is a mark AND a write — both laws still speak" {
+            refusals("fn f(const mut x: int) -> int {\n    x\n}\nf(1)") == 2
+        }
+        then "a plain seat refuses a settled callee in a CALL argument too" {
+            refused_with("fn takes(f: fn(int) -> int) -> int {\n    f(1)\n}\nfn needs(const x: int) -> int {\n    x\n}\ntakes(needs)",
+                         "argument 1 of `takes` wants `fn(int) -> int`, found `fn(const int) -> int`")
+        }
+        then "a `once fn` with a settled seat meets the arity law, not a parse error" {
+            refused_with("once fn f(const x: int) -> int {\n    x\n}\n1", "takes arguments")
+        }
+        then "an extern `const` seat is no INOUT — the ABI stays a plain width" {
+            extern_shape("extern fn c_abs(const n: i32) -> i32\nc_abs(1)", "c_abs") == "i32 -> i32"
+        }
+        then "a settled mark inside a type argument is a parse error, as `mut` is" {
+            refusals("let x: List<const int> = []\n0") == 1
+        }
+    }
 }
