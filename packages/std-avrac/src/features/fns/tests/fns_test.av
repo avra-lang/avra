@@ -215,6 +215,22 @@ ret 0"""
             shown("once fn tag() -> string {\n    \"x\"\n}\nfn twice() -> string {\n    \"\${tag()}\${tag()}\"\n}\ntwice()") == "xx"
         }
     }
+    given "a `const` seat — settled at compile time" {
+        then "a plain seat refuses a settled callee — the two fn types differ" {
+            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(int) -> int = takes\n0",
+                         "`bad` declares `fn(int) -> int`, this is `fn(const int) -> int`")
+        }
+        then "a settled seat refuses a writing callee — `const` is not `mut`" {
+            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(mut int) -> int = takes\n0",
+                         "`bad` declares `fn(mut int) -> int`, this is `fn(const int) -> int`")
+        }
+        then "a settled seat accepts a callee that settles nothing — the sound direction" {
+            shown("fn plain(x: int) -> int {\n    x\n}\nlet good: fn(const int) -> int = plain\ngood(2)") == "2"
+        }
+        then "a method may demand settlement" {
+            shown("type C = { n: int }\nimpl C {\n    fn m(const x: int) -> int {\n        x + self.n\n    }\n}\nlet c = C { n: 4 }\nc.m(3)") == "7"
+        }
+    }
 }
 
 /// An extern's declared row read back from the program that wrote

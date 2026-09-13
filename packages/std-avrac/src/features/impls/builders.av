@@ -25,13 +25,14 @@ fn build_receiver(mut b: Builder) -> Result<LangNode, string> {
 fn marked_fn(mut b: Builder) -> Result<StmtId, string> {
     let n = b.token(0)?
     let tparams = [Param { name: t.text, ty: null, default: null, mark: plain_mark(), span: t.span } for t in b.tokens(1)?]
-    let marks = b.tokens(2)?
-    let ps = b.tokens(3)?
-    let r = b.answer(5)
-    let body = b.expr(6)?
+    let consts = b.tokens(2)?
+    let muts = b.tokens(3)?
+    let ps = b.tokens(4)?
+    let r = b.answer(6)
+    let body = b.expr(7)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: a fn declaration without a span — the arena and the grammar disagree") }
-    let params = marked_seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends!), marks, n.span.lo)
+    let params = marked_seats(ps, aligned_param_types(ps, b.type_refs(5)?, ends!), muts, consts, n.span.lo)
     .Ok(b.store.alloc_stmt(Stmt.FnDecl(n.text, tparams, params, r, body), b.span))
 }
 
@@ -78,17 +79,18 @@ fn build_trait(mut b: Builder) -> Result<LangNode, string> {
     let statics = b.tokens(1)?
     let muts = b.tokens(2)?
     let mn = b.tokens(3)?
-    let seat_marks = b.tokens(4)?
-    let ps = b.tokens(5)?
-    let tys = b.type_refs(6)?
-    let rets = b.type_refs(7)?
-    let bodies = b.exprs(8)?
+    let consts = b.tokens(4)?
+    let seat_marks = b.tokens(5)?
+    let ps = b.tokens(6)?
+    let tys = b.type_refs(7)?
+    let rets = b.type_refs(8)?
+    let bodies = b.exprs(9)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: a trait declaration without a span — the arena and the grammar disagree") }
     mut fns: List<StmtId> = []
     for j, m in mn {
         let upto = window_end(mn, j, ends!)
-        let sig = member_stmt(b, m, params_between(ps, tys, seat_marks, m.span.lo, upto), ret_between(rets, m.span.lo, upto), body_between(b.store, bodies, m.span.lo, upto))
+        let sig = member_stmt(b, m, params_between(ps, tys, seat_marks, consts, m.span.lo, upto), ret_between(rets, m.span.lo, upto), body_between(b.store, bodies, m.span.lo, upto))
         // a `mut` between the previous sig and this name is this sig's
         let since = if j == 0 { n.span.lo } else { mn[j - 1].span.lo }
         if muts.any(within(it.span.lo, since, m.span.lo)) { b.store.mark_mutating(sig) }
@@ -100,9 +102,9 @@ fn build_trait(mut b: Builder) -> Result<LangNode, string> {
 
 /// One sig's params — the names inside the window, each typed by
 /// its own inner window, marked `mut` by the marks inside it.
-fn params_between(ps: List<Token>, tys: List<TypeRef>, marks: List<Token>, after: int, before: int) -> List<Param> {
+fn params_between(ps: List<Token>, tys: List<TypeRef>, muts: List<Token>, consts: List<Token>, after: int, before: int) -> List<Param> {
     let mine = [p for p in ps if within(p.span.lo, after, before)]
-    marked_seats(mine, aligned_param_types(mine, tys, before), marks, after)
+    marked_seats(mine, aligned_param_types(mine, tys, before), muts, consts, after)
 }
 
 /// A trait's member: a sig with a HOLE body, or a DEFAULT with the

@@ -312,19 +312,24 @@ export fn within(at: int, after: int, before: int) -> bool {
 /// types they aligned to — with no defaults: what every fn-shaped
 /// declaration zips.
 export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
-    marked_seats(ps, tys, [], 0)
+    marked_seats(ps, tys, [], [], 0)
 }
 
-/// Seats with their `mut` marks: a mark token between the previous
-/// name (or `from`, before the first) and a name marks that seat.
-export fn marked_seats(ps: List<Token>, tys: List<TypeRef?>, marks: List<Token>, from: int) -> List<Param> {
-    [Param { name: p.text, ty: tys[j], default: null, mark: seat_mark_of(marks, seat_since(ps, j, from), p.span.lo), span: p.span } for j, p in ps]
+/// Seats with their marks: a `mut` or `const` token between the
+/// previous name (or `from`, before the first) and a name marks that
+/// seat. ONE window law, so every param list — a fn's, a method's, a
+/// lambda's, a fn type's — reads the same marks the same way.
+export fn marked_seats(ps: List<Token>, tys: List<TypeRef?>, muts: List<Token>, consts: List<Token>, from: int) -> List<Param> {
+    [Param { name: p.text, ty: tys[j], default: null, mark: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo), span: p.span } for j, p in ps]
 }
 
-/// A seat's mark: the `mut` token written in its window. The `const`
-/// mark is the settled seat's twin, read at the same window.
-fn seat_mark_of(marks: List<Token>, after: int, before: int) -> SeatMark {
-    SeatMark { mutable: marks.any(mark_within(it, after, before)), settled: false }
+/// One seat's contract: the `mut` and `const` tokens written in its
+/// window — the window a mark shares with the name it precedes.
+fn seat_mark_of(muts: List<Token>, consts: List<Token>, after: int, before: int) -> SeatMark {
+    SeatMark {
+        mutable: muts.any(mark_within(it, after, before)),
+        settled: consts.any(mark_within(it, after, before)),
+    }
 }
 
 /// Where seat `j`'s mark may start: after the previous name, or `from`.

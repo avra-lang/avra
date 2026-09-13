@@ -1,13 +1,15 @@
 # Comptime — `const`, annotations, quotes
 
-> **STATUS 2026-09-11 (lane/comptime):** S1 (the reach refusal's full
+> **STATUS 2026-09-12 (lane/comptime):** S1 (the reach refusal's full
 > call chain included), S3f, S3g, S3h (`@deprecated`) and **S4** DONE —
 > the `quote { … }` literal with `${}` holes, generated source parsed
 > into the asking file's own store, and `@derive` with `Show`/`Eq`
 > shipped in `@std/derive` (a struct and an enum, eval == native ==
 > expected), and **the compiler DERIVES ITS OWN accessors**
-> (`@derive(Projections)` on `DeclSig`; `BEYOND` below). S1's
-> `export const` and S5 (`const` seats) remain. **See
+> (`@derive(Projections)` on `DeclSig`; `BEYOND` below). **S5a DONE**
+> — a fn seat's contracts are ONE `SeatMark` channel (`mutable`,
+> `settled`), a `const` mark parses on every param list and rides the
+> fn type's key. S5b/S5c and S1's `export const` remain. **See
 > the LANE HANDOFF at the top of §6** for the laws pinned, the seams,
 > and where to pick up.
 
@@ -818,15 +820,20 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
 S1, S3f, S3g, S3h and S4 are DONE. Each bullet below is whole enough
 to start cold; the size is the design's estimate.
 
-- [ ] **S5a — the `const` seat MARK (1 day).** `fn(const pattern:
-      string, s: string) -> bool`: a `const` mark rides a fn type
-      beside `mut`. Land: `consts: List<bool>` on `Type.Fn`,
-      `TypeLit.Fn` and `Arrow`, interned and NORMALIZED like `muts`
-      (a trailing unwritten mark drops); printed in `seat_words`;
-      carried by `record_seats`/`declared_marks`; read by `fn_fits`;
-      a grammar `( "const" )?` mark before a param. Proof: a spec
-      that `fn(const string) -> bool` is a distinct type, and a plain
-      seat refuses a `const`-demanding callee.
+- [x] **S5a — the `const` seat MARK. LANDED (2026-09-12).** `fn(const
+      pattern: string, s: string) -> bool`. The landing DEVIATED from
+      the plan's parallel `consts: List<bool>`: a fn seat's promises
+      are ONE `SeatMark { mutable, settled }` channel on `Type.Fn`,
+      `Arrow`, `TypeRef` and `Param` — so a third promise is a field,
+      never a third list at ~90 sites — and `TypeLit.Fn` keeps the
+      grammar's two spelling lists, zipped once in `interned`.
+      `intern` normalizes trailing plain marks, `mark_at` reads
+      absence as plain, `fn_fits` gained the settled half of the seat
+      law, `@std/meta.Param` gained `settled`, and every param list
+      (fn, method, trait sig, extern, lambda, trailing block, fn type)
+      takes `( "const" )?`. Proof: `fns_test.av`'s four `const` cases —
+      a distinct type, a plain seat refuses a settled callee, a
+      settled seat accepts a plain one, and a method demands it.
 - [ ] **S5b — settled seats widen `Sub` (1–2 days).** `Sub { target,
       args }` gains its const arguments' VALUE fingerprints; one
       lowered unit per distinct pattern, mangled `name$ids$fp`. Proof:

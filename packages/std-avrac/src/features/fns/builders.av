@@ -8,10 +8,11 @@ use features.{LangNode, Builder, aligned_binds, aligned_param_types, expr_id_at,
 fn build_fn(mut b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
-    let marks = b.tokens(3)?
-    let ps = b.tokens(4)?
-    let r = b.answer(6)
-    let body = b.expr(7)?
+    let consts = b.tokens(3)?
+    let muts = b.tokens(4)?
+    let ps = b.tokens(5)?
+    let r = b.answer(7)
+    let body = b.expr(8)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: a fn declaration without a span — the arena and the grammar disagree") }
     // a tparam's BOUND and a param's TYPE are optional in the
@@ -19,7 +20,7 @@ fn build_fn(mut b: Builder) -> Result<LangNode, string> {
     // declare law enforces it).
     let bounds = aligned_binds(tp, b.tokens(2)?, ends!)
     let tparams = [Param { name: t.text, ty: bound_ref(bounds[j], t), default: null, mark: plain_mark(), span: t.span } for j, t in tp]
-    b.make_stmt(Stmt.FnDecl(n.text, tparams, marked_seats(ps, aligned_param_types(ps, b.type_refs(5)?, ends!), marks, n.span.lo), r, body))
+    b.make_stmt(Stmt.FnDecl(n.text, tparams, marked_seats(ps, aligned_param_types(ps, b.type_refs(6)?, ends!), muts, consts, n.span.lo), r, body))
 }
 
 /// `once fn` — a fn plus the mark. Its laws (no arguments, an
@@ -27,14 +28,14 @@ fn build_fn(mut b: Builder) -> Result<LangNode, string> {
 /// guarded body is lowering's.
 fn build_once_fn(mut b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    // a `mut` mark parses so the LAW may speak: a `once` fn takes no
+    // a mark parses so the LAW may speak: a `once` fn takes no
     // parameters at all, marked or plain, and F2055 says which
-    let ps = b.tokens(2)?
-    let r = b.answer(4)
-    let body = b.expr(5)?
+    let ps = b.tokens(3)?
+    let r = b.answer(5)
+    let body = b.expr(6)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: a once declaration without a span — the arena and the grammar disagree") }
-    let s = b.store.alloc_stmt(Stmt.FnDecl(n.text, [], seats(ps, aligned_param_types(ps, b.type_refs(3)?, ends!)), r, body), b.span)
+    let s = b.store.alloc_stmt(Stmt.FnDecl(n.text, [], seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends!)), r, body), b.span)
     b.store.mark_once(s)
     .Ok(LangNode.NStmt(s))
 }
@@ -71,9 +72,10 @@ fn build_return(mut b: Builder) -> Result<LangNode, string> {
 /// which is the only way a callee with no box can write back.
 fn build_extern(mut b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    let marks = b.tokens(1)?
-    let ps = b.tokens(2)?
+    let consts = b.tokens(1)?
+    let muts = b.tokens(2)?
+    let ps = b.tokens(3)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: an extern declaration without a span — the arena and the grammar disagree") }
-    b.make_stmt(Stmt.ExternFn(n.text, marked_seats(ps, aligned_param_types(ps, b.type_refs(3)?, ends!), marks, n.span.lo), b.answer(4)))
+    b.make_stmt(Stmt.ExternFn(n.text, marked_seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends!), muts, consts, n.span.lo), b.answer(5)))
 }
