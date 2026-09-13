@@ -7404,6 +7404,99 @@ PROCESS 0.
 
 ---
 
+## Feedback survey — 2026-09-12 #5 (lane/comptime, const dogfooding)
+
+The `/feedback` run for the sweep that turned the compiler's own
+constant-shaped functions into `export const` (base `c34254d` plus
+`e3762a4`..`548289a`). Counts: FRICTION 4, SUGAR 1, FEATURES 2,
+DEFECTS 0, DOCTRINE 2, PERFORMANCE 1 (measured effect named), PROCESS
+2. The headline is a LANGUAGE GAP the sweep exposed: a private
+top-level `const` is file-local and ORDER-SENSITIVE, so every
+internal constant had to be `export`ed.
+
+### SUGAR — a construct the language should have
+
+- **A PRIVATE TOP-LEVEL `const` SHOULD BE MODULE-SCOPED, LIKE A FN.**
+  A `fn` in a module file is visible to every file of that module and
+  may be called before its textual definition; a non-exported `const`
+  is FILE-LOCAL and F3001 "used before its definition" (probed:
+  `receiver_law` at `features/annotations/check.av:163`). The sweep
+  converted 86 functions; ~60 of them were PRIVATE and only compiled
+  once every one was written `export const`, widening `@std.avrac`'s
+  public API with `unit_ceiling`, `settle_steps`, `open_readonly` and
+  kin. THE ASK: a non-exported top-level `const` is a module
+  DECLARATION (visible within its module, not importable outside),
+  exactly as a private `fn` is — so order does not matter and no
+  `export` is owed. THE TRADE the ask settles: admitting EVERY
+  top-level const as a module Decl (private included) changes
+  same-name shadowing (`const N = 1; let N = 2; fn f { N }` now reads
+  the const; two `const N` clash), which the const adversarial suite
+  pins the other way — so this is a deliberate semantic migration, not
+  a one-line fix, and it is WHY the sweep exported instead.
+
+### FRICTION — what cost time
+
+- **THE TRANSFORM IS ABOUT SCOPES, NOT NAMES.** A global `NAME()` →
+  `NAME` replace hit three innocent DEFINITIONS: a test's own
+  `fn halver`, `sqlite_open_adversarial_test`'s own `fn words`, and
+  `@std.process`'s `fn words` METHOD. A rename must respect the scope
+  the name resolves in; a finder that reports "0 fn-value uses" is
+  silent about a SAME-NAME definition elsewhere.
+- **A SINGLE-LINE COLLAPSE EATS `//` COMMENTS.** Converting
+  `grammar_of_grammars` by collapsing its 140-line body to one line
+  put every `// rule = …` comment before the rest of the grammar, so
+  the const ended at the first comment and the whole 150-rule grammar
+  vanished — 326 cascading "no `fn seq`/`item`/`named` is defined".
+  The fix: keep the body MULTI-LINE after `=` (`=` continues the
+  line). A mechanical collapse must know what a `//` does.
+- **USING NEW SYNTAX IN THE COMPILER'S OWN SOURCE STALES THE SEED.**
+  `seed-check` refuses the moment `export const` appears in the
+  source, because the committed seed predates the feature (`F3014`,
+  plus a `text_of` cascade from the broken module). `make seed`
+  refreshed in the same commit, as the lane brief requires.
+
+### FEATURES — a capability, more than sugar
+
+- **THE MODULE-SCOPED PRIVATE CONST** (above) is the language change
+  the dogfooding asks for; it is filed in the sugar backlog with its
+  wanting sites.
+- **AN `avra consts` INSTRUMENT.** The finder used here is a throwaway
+  Python script; a compiler command that lists zero-arg single-value
+  fns (`avra consts`) would make the next sweep one command and catch
+  new candidates at review time.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **F0902 WAS ABOUT EFFECTS, NOT VALUES.** A module file may now hold
+  a private top-level `const`: it never runs, so the entry-only rule
+  did not reach it. `runs_at_top` excludes every const.
+- **"A CONST IS A DECLARATION" HAS A HOLE AT PRIVATE SCOPE.** The
+  model is complete for EXPORTED consts (module namespace, cross-file
+  reads, the const-type query) and incomplete for private ones. The
+  sweep is the evidence; the sugar ask is the repair.
+
+### PERFORMANCE — a measured effect
+
+- **THE GRAMMAR IS BUILT ONCE.** `grammar_of_grammars` was rebuilt on
+  every `ready(...)` call (150 `rule(...)` constructions); it is a
+  settled constant now. Not timed in isolation, so the claim is
+  shape-level: the rebuild is gone from the parse path.
+
+### PROCESS — the working discipline itself
+
+- **AN INDEPENDENT AUDIT FOUND WHAT A GREP MISSED.** The finder
+  could not judge MUTATION or FN-VALUE use; a subagent that read every
+  use site classified all 114 candidates and its KEEP list (fresh
+  `new_*`/`empty_*` accumulators, `dyn`-carrying values, every world
+  reader) is what kept the sweep safe. Delegate the CLASSIFICATION,
+  keep the TRANSFORM — the two need different tools.
+- **RECOVERY WAS ONE `git checkout`.** The grammar collapse and two
+  bad renames were reverted cleanly because each conversion round was
+  its own commit; the seed refresh rode the same commit as the source
+  that needed it.
+
+---
+
 ## Sugar backlog — dogfooding asks
 
 FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and
@@ -8209,6 +8302,25 @@ and probes in the same commit):
   `Decls.params(d)` verb (reading the DECLARATION's own store — the
   cross-file read that crashed S5b), with the receiver-implicit truth
   stated once.
+
+- A PRIVATE TOP-LEVEL `const` IS MODULE-SCOPED. A private `fn` in a
+  module file is visible to every file of that module and callable
+  before its textual definition; a private `const` is FILE-LOCAL and
+  F3001 "used before its definition". The const-dogfooding sweep
+  (survey 2026-09-12 #5) converted 86 fns and had to export ~60
+  PRIVATE ones to compile at all, widening `@std.avrac`'s API with
+  `unit_ceiling`, `settle_steps`, `open_readonly` and kin. WANTING
+  SITES: `features/annotations/check.av` (`receiver_law`, read at
+  :163), `std-sqlite/src/script.av` (`semicolon`, read at :37),
+  `std-io/src/io.av` (`enoent`, read at :72). THE ASK: a non-exported
+  top-level `const` is a module DECLARATION (module-visible, not
+  importable outside), exactly as a private `fn` is — order-free, no
+  `export` owed. NOTE: admitting EVERY top-level const as a Decl
+  changes same-name shadowing (`const N = 1; let N = 2; fn f { N }`)
+  and turns two `const N` into a clash, so the migration must update
+  `features/consts/tests/consts_adversarial_test.av` deliberately —
+  which is why the sweep exported instead of doing it inside the
+  dogfooding.
 
 ## The error spine (rung 10 — designed 2026-08-31, from the epic)
 

@@ -14,7 +14,13 @@
 > The folding slice also fixed a P1 wrong answer at HEAD (a `const`
 > reading a plain parameter was silently mis-settled). **S1's `export
 > const` LANDED** too — an exported top-level `const` is a declaration
-> and crosses a module. The S5 refinements remain. **See
+> and crosses a module. **DOGFOODED on the compiler itself**: 86
+> zero-arg constant fns became `export const` (368 call sites), the
+> grammar and the diagnostic registry now settle once, and a module
+> may hold a private `const` (F0902 was about effects, not values).
+> The sweep exposed the one gap left: a PRIVATE top-level `const` is
+> file-local and order-sensitive, unlike a private `fn` (sugar
+> backlog). The S5 refinements remain. **See
 > the LANE HANDOFF at the top of §6** for the laws pinned, the seams,
 > and where to pick up.
 
