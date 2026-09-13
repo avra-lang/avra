@@ -316,6 +316,16 @@ engine's spec, written by dogfooding.
   The seat law then reads MARKS, never a DeclId, so a declared
   callee and a fn-typed value are one rule: `declared_marks`
   projects a declaration into the same currency.
+  AND A SEAT'S PROMISES ARE ONE CHANNEL: `SeatMark { mutable,
+  settled }`, carried as a `List<SeatMark>` on `Type.Fn`, `Arrow`,
+  `TypeRef` and `Param` — never a parallel `List<bool>` per promise.
+  A promise added as a second list doubles every mark site and drops
+  silently wherever a site forgets it (the `TypeRef` default-field
+  bug, twice); added as a FIELD it reaches every reader through the
+  one `mark_at`, and `intern` normalizes one shape. The spelling
+  boundary is the one exception: `TypeLit.Fn` keeps the grammar's
+  two written lists and `interned` zips them once, so the currency
+  never leaks into a user's `interned` receiver.
 - A TYPE MIGRATION CAN MOVE WHO HOLDS A VALUE, AND A LIFETIME PROMISE
   IS A PROMISE ABOUT THE HOLDER. Changing a seat's type is arithmetic
   on signatures until the value's PROVENANCE changes — then a
