@@ -756,11 +756,12 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       stand in ANOTHER file (F2067) — the provider guard refuses a
       same-file annotation fn instead of silently skipping it. The
       splice PROVENANCE landed with S3g.
-- [~] **S3g — visible magic.** LANDED (lane/comptime):
+- [x] **S3g — visible magic.** LANDED (lane/comptime):
       `avra explain @name` (`Program.explain_annotation`) prints the
       declared fn's signature, which IS its effect — `avra explain
-      @traced` answers `fn traced(Fn, string) -> List<Directive>`;
-      and PROVENANCE (S3f's other half): `mint_generated` records
+      @traced` answers `fn traced(Fn, string) -> List<Directive>` —
+      and its stored DOC COMMENT (`f868c2f`); and PROVENANCE (S3f's
+      other half): `mint_generated` records
       `Provenance { ann, original, at }` per generated declaration, and
       `avra expand <file>` now prints the whole canonical file and
       inlines each generated declaration after its annotated origin.
@@ -768,8 +769,6 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       Pat nodes; source quoting protects interpolation openers, types
       preserve `dyn`, fn arrows and `mut` seats, and the test suite
       proves parse/print fixed points plus statement fingerprints.
-      REMAINING: doc comments are not stored, so `explain @name`
-      prints the signature alone.
 - [x] **S3h — the proof.** LANDED: a `Diagnostics` lint in a test
       package, Fn→Fn `@traced`, and `@deprecated` (warning channel +
       call-site provenance; see the handoff). The compiler derive's
@@ -820,12 +819,10 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       `@derive(Show)` and `@derive(Eq)` on a struct and derives `Show`
       on an enum — `Point { x: 1, y: hi } / Color.Green / true`, eval
       == native == expected.
-- [~] **S1 leftovers (small, fold in).** The reach refusal's full
-      call chain LANDED: `world_reached` walks the lowered bodies from
-      the entry (`call_path`) and the label reads `reaches `row` in
-      `leaf`, called from `caller`, …` — the one "world" voice
-      annotations share. REMAINING: `export const` (waits on the
-      module-constant sugar, ROADMAP:7175).
+- [x] **S1 leftovers (small).** DONE: the reach refusal's full call
+      chain (`world_reached` walks the lowered bodies from the entry,
+      and the label reads `reaches `row` in `leaf`, called from
+      `caller`, …`), and `export const` (landed 2026-09-12).
 ### THE REMAINING QUEUE — one slice per bullet
 
 S1, S3f, S3g, S3h and S4 are DONE. Each bullet below is whole enough
