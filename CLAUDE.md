@@ -249,6 +249,27 @@ engine's spec, written by dogfooding.
   `binding_of(name)`, a LOCALS table, so a fn's name walked
   through as a place — the walk had already recorded the root's
   binding; ask that.
+- A BODY IS TYPED UNDER ITS SIGNATURE, so a declaration whose
+  SIGNATURE WAS REFUSED has no scope for its body to be typed in —
+  and the empty list that stands in for the missing one is read as
+  a real scope by every seat. `walk_under` sets `self.scope =
+  sig?.params ?? []`, the plausible default the protocol law
+  refuses, and `target_type`'s `.Param(i) -> self.scope[i]` then
+  indexed past the end: a generic METHOD is refused whole (F2031,
+  no sig recorded) and its body still walks, so `fn f<T: Tr>(x: T)
+  { x.m() }` inside an `impl` CRASHED THE COMPILER while the same
+  fn at the top level was fine. The tell was a SIBLING PAIR
+  disagreeing in one match — `.Receiver -> self.scope.first() ??
+  self.error_type` was total and `.Param(i)` was not, four lines
+  apart, so one seat kind had the guard and the other did not.
+  SEVERAL SPELLINGS OF ONE QUESTION IS THE DEFECT, not the missing
+  bound: every one asks "what type does seat i wear", and one file
+  held five — two receiver reads, total, and three parameter reads,
+  none of them. The split was invisible because each pair sat
+  inside ONE match, arms apart, so a reader checking either arm saw
+  a guard right beside it. There is one reader now (`seat_type`),
+  and the refusal was already spoken before the body ran, which is
+  what makes Error the honest answer rather than a defect voice.
 - A READ WEARS THE TYPE OF WHAT IS READ, never the type of the node
   doing the reading. This bit THREE times in one slice: a captured
   callee took the CALL's type (a call's type is its answer, never its
@@ -1453,6 +1474,18 @@ Wants the typer does not carry yet:
 - A trait impl over a GENERIC type (`impl Show for Box<T>`): F2031
   "`Box` is generic — a trait impl over a generic type is recorded,
   not landed". Inherent generic impls (`impl Box<T>`) land.
+- A BOUND LANDS ON A FREE FN'S PARAMETERS AND NOWHERE ELSE, so a
+  GENERIC TYPE CANNOT READ ITS KEY. `type T<K: Tr, V> = { … }` and
+  `impl T<K: Tr, V> {` are both F0100 AT the `<` ("expected `=`" /
+  "expected `{`"), a generic METHOD is F2031 "generic methods are
+  recorded, not landed" with or without a bound, and the body then
+  refuses with F2030 "`K` has no known methods". `fn f<T: Tr>(v: T)`
+  is the one form that works. So a generic CONTAINER keyed by a
+  typed id has no spelling: key by the slot and keep the typed door
+  on the owner (core's `SideTable`, and its accessors). Worth
+  stating because F2030's help named the type/impl form until phase
+  H — A REMEDY THAT NAMES AN UNPARSEABLE FORM sends the reader at
+  the grammar, and the reader tries it, twice.
 - Variant arms on a NULLABLE enum (`match k { .A -> …, null -> …
   }` over `K?`): F2013 "`match` chooses over an enum, found `K?`"
   — unwrap first (a `k?` arm), then match variants.
