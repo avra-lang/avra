@@ -1022,80 +1022,27 @@ impl NodeStore {
     }
 
     /// Does the PRONOUN ride this subtree unbound? `it` belongs to
-    /// the nearest enclosing METHOD call or trailing block: a lambda
-    /// binds its own scope (false), a nested method call's arguments
-    /// started fresh scopes at their own build (subject only), and
-    /// every other node asks its children — a block its statements
-    /// and its value. Exhaustive: a new expression must answer.
+    /// the nearest enclosing METHOD call or trailing block, so six
+    /// nodes answer for themselves and every other asks the children
+    /// the walk already names: a bare name IS the pronoun; a lambda
+    /// binds its own scope; a method call and a call by name started
+    /// fresh scopes for their arguments at their own build; and a
+    /// template's body belongs to the code it generates, so only its
+    /// holes are read here.
     fn pronoun_rides(id: ExprId) -> bool {
         match self.expr(id) {
             .Ident(name) -> name == "it",
             .Lambda(_, _) -> false,
             .MethodCall(subject, _, _) -> self.pronoun_rides(subject),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Receiver -> false,
-            .Binary(_, left, right) -> self.pronoun_rides(left) || self.pronoun_rides(right),
-            .Not(v) -> self.pronoun_rides(v),
-            .Force(v) -> self.pronoun_rides(v),
-            .Is(v, _) -> self.pronoun_rides(v),
-            .VariantLit(_, args) -> self.any_rides(args),
-            .Comp(elem, _, _, source, hi, cond) -> self.pronoun_rides(elem) || self.pronoun_rides(source) || (hi != null && self.pronoun_rides(hi!)) || (cond != null && self.pronoun_rides(cond!)),
-            .Propagate(v) -> self.pronoun_rides(v),
-            .ListLit(elems) -> self.any_rides(elems),
-            .MapLit(keys, values) -> self.any_rides(keys) || self.any_rides(values),
-            .Index(subject, index) -> self.pronoun_rides(subject) || self.pronoun_rides(index),
-            .Prop(subject, _) -> self.pronoun_rides(subject),
-            .Chain(subject, _) -> self.pronoun_rides(subject),
-            .Interp(_, holes) -> self.any_rides(holes),
+            .Call(callee, _, args) -> callee == "it" || self.any_rides(args),
             .Quote(_, _, _, holes) -> self.any_rides(holes),
             .Sublang(_, _, holes, _) -> self.any_rides(holes),
-            .If(cond, on_true, on_false) ->
-                self.pronoun_rides(cond) || self.pronoun_rides(on_true) || self.pronoun_rides(on_false),
-            .Call(callee, _, args) -> callee == "it" || self.any_rides(args),
-            .CallValue(subject, cargs) -> self.pronoun_rides(subject) || self.any_rides(cargs),
-            .When(conds, values, fallback) ->
-                self.any_rides(conds) || self.any_rides(values) || self.pronoun_rides(fallback),
-            .Block(stmts, value) -> self.any_stmt_rides(stmts) || (value != null && self.pronoun_rides(value!)),
-            .StructLit(_, _, values) -> self.any_rides(values),
-            .With(subject, _, values) -> self.pronoun_rides(subject) || self.any_rides(values),
-            .Match(subject, arms) -> self.pronoun_rides(subject) || self.any_rides([a.value for a in arms]),
-            .Catch(subject, _, _, values) -> self.pronoun_rides(subject) || self.any_rides(values),
-            .MatchOpt(subject, _, present, absent) ->
-                self.pronoun_rides(subject) || self.pronoun_rides(present) || self.pronoun_rides(absent),
-            .Coalesce(l, r) -> self.pronoun_rides(l) || self.pronoun_rides(r),
+            rest -> self.any_rides(self.expr_children(id)),
         }
     }
 
     fn any_rides(ids: List<ExprId>) -> bool {
         ids.any((k) -> self.pronoun_rides(k))
-    }
-
-    fn any_stmt_rides(ids: List<StmtId>) -> bool {
-        ids.any((s) -> self.stmt_rides(s))
-    }
-
-    /// Does the pronoun ride a STATEMENT unbound? A declaration
-    /// opens its own world and carries none; every other statement
-    /// asks its expressions and its bodies. Exhaustive: a new
-    /// statement must answer.
-    fn stmt_rides(s: StmtId) -> bool {
-        match self.stmt(s) {
-            .Let(_, _, v) -> self.pronoun_rides(v),
-            .MutLet(_, _, v) -> self.pronoun_rides(v),
-            .ConstDecl(_, _, v) -> self.pronoun_rides(v),
-            .ExprStmt(v) -> self.pronoun_rides(v),
-            .Discard(v) -> self.pronoun_rides(v),
-            .Fail(v) -> self.pronoun_rides(v),
-            .Defer(v, _) -> self.pronoun_rides(v),
-            .Assign(t, v) -> self.pronoun_rides(t) || self.pronoun_rides(v),
-            .Return(v) -> v != null && self.pronoun_rides(v!),
-            .While(c, stmts) -> self.pronoun_rides(c) || self.any_stmt_rides(stmts),
-            .IfStmt(c, t, e) -> self.pronoun_rides(c) || self.any_stmt_rides(t) || self.any_stmt_rides(e),
-            .LetElse(_, subject, stmts) -> self.pronoun_rides(subject) || self.any_stmt_rides(stmts),
-            .For(_, from, to, _, _, stmts) -> self.pronoun_rides(from) || self.pronoun_rides(to) || self.any_stmt_rides(stmts),
-            .ForEach(_, _, subject, stmts) -> self.pronoun_rides(subject) || self.any_stmt_rides(stmts),
-            .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or
-            .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) or .Use(_, _, _) or .Error -> false,
-        }
     }
 
     /// Content identity: a stable variant tag folded with payloads
@@ -1185,6 +1132,9 @@ impl NodeStore {
     // (does it read a run-time parameter; which kinds does it spell)
     // walks here, where every variant names all its children and a
     // statement its expressions — a registry, like the fingerprints.
+    // IT IS ALSO THE ONE PLACE THE FACT LIVES: a second walk states
+    // only where it DIFFERS and delegates the rest here, so no two
+    // registries can disagree about which payloads are children.
 
     /// Every expression at and under `root`, children before owners,
     /// hidden branches and statement bodies included.

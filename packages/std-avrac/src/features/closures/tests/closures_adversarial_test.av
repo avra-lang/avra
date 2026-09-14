@@ -11,6 +11,12 @@ fn users() -> string {
     "type U = { name: string, age: int }\nlet us = [U { name: \"ada\", age: 36 }, U { name: \"bo\", age: 7 }]\n"
 }
 
+/// A nullable answer and an always-absent one — what the absence
+/// operators read.
+fn maybes() -> string {
+    "fn some(n: int) -> int? {\n    n\n}\nfn none() -> int? {\n    null\n}\n"
+}
+
 /// A struct with an int-seated method — the seat no pronoun fits.
 fn scaled() -> string {
     "type P = { x: int }\nimpl P {\n    fn scaled(k: int) -> int {\n        self.x * k\n    }\n}\n"
@@ -148,6 +154,38 @@ spec "features/closures/adversarial" {
         then "`?` behind the lambda barrier names the lambda, not the top level" {
             refused_with("type U = { n: int }\nfn g(u: U) -> U? {\n    u\n}\nfn f(us: List<U>) -> U? {\n    us.map(g(it)?)[0]\n}\nf([U { n: 1 }])",
                          "a lambda promises none")
+        }
+    }
+    given "the pronoun through the shared child walk" {
+        then "inside an interpolation" {
+            shown("[1].map(\"n=\${it}\")[0]") == "n=1"
+        }
+        then "inside a map literal" {
+            shown("[1].map({ \"k\": it }.get(\"k\") ?? 0)[0]") == "1"
+        }
+        then "on the right of `??`" {
+            shown("${maybes()}[5].map(none() ?? it)[0]") == "5"
+        }
+        then "under `!`" {
+            shown("${maybes()}[5].map(some(it)!)[0]") == "5"
+        }
+        then "under `is`" {
+            shown("enum K {\n    a\n    b\n}\n[K.a].map(it is .a)[0]") == "true"
+        }
+        then "through a `?.` chain" {
+            shown("type P = { n: int }\nfn held(n: int) -> P? {\n    P { n: n }\n}\n[5].map(held(it)?.n ?? 0)[0]") == "5"
+        }
+        then "in a comprehension's guard" {
+            shown("[2].map([x for x in [1, 2, 3] if x > it].length)[0]") == "1"
+        }
+        then "in a `catch` recovery" {
+            shown("enum E {\n    boom\n}\nfn boom(n: int) -> Result<int, E> {\n    fail E.boom\n}\n[7].map(boom(it) catch it)[0]") == "7"
+        }
+        then "in an absent arm" {
+            shown("${maybes()}[5].map(match none() {\n    v? -> v\n    null -> it\n})[0]") == "5"
+        }
+        then "in a variant literal's payload" {
+            shown("enum K {\n    b(n: int)\n}\nfn cost(k: K) -> int {\n    match k {\n        .b(n) -> n\n    }\n}\n[5].map(cost(.b(it)))[0]") == "5"
         }
     }
     given "names against names" {
