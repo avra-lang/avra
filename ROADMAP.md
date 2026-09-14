@@ -12841,3 +12841,130 @@ local could shadow.
 
 Update this file whenever a slice lands or the plan changes — the
 roadmap lives HERE, not in conversation.
+
+---
+
+## Feedback survey — 2026-09-13 #7 (comptime/const, the private const and survey #6's leftovers)
+
+The `/feedback` run for the lane that made a top-level `const` a
+module declaration (c0e5cb8), made a `const` seat take what the source
+spells (d92cda0) and landed `avra check --every` (300de49). Counts:
+FRICTION 5, SUGAR 2 (both confirmations), FEATURES 1 (confirmation),
+DEFECTS 4 (all fixed in-lane), DOCTRINE 4, PERFORMANCE 0 (one
+unmeasured note), PROCESS 3. Top three by cost: the cross-family
+cycle (one build cycle and a design), the F0900 on assigning a const
+(a defect users would have read), and the two one-run stalls (a
+keeper's false positive, a test string's own interpolation). NOT
+SURVEYED: the std packages beyond the 58-export sweep, the docs
+campaign's files, and the templates lane's regions of workspace.av.
+
+### FRICTION — what cost time
+
+- **A CYCLE ACROSS TWO QUERY FAMILIES IS SEEN BY WHICHEVER IS ENTERED
+  FIRST.** `const X = X`: asked from Main, the const-type family
+  cycled and spoke; asked by the report typing the const's own
+  declaration first, the TYPED family re-entered itself through
+  `start_recursive`, answered a smaller view in silence, and the
+  const-type ask never cycled — the first fix worked in one ordering
+  and not the other. One build cycle. THE ASK, PAID: `Memo.open(arg)`
+  — a family asks whether the OTHER family's query is in flight before
+  touching it (workspace.av `const_type_at`). Attributed:
+  comptime/const c0e5cb8.
+- **THE I18 MATCHER FLAGS ANY `_of(` FOLLOWED BY `??`.**
+  `settled_type(self.store_of(f), …) ?? known_const_type(…)` was
+  named "a payload the dispatch GUARANTEES, papered over with a
+  default" — `store_of` is a table read, not the value protocol. One
+  gate run; the site was reshaped into two statements. THE ASK: the
+  matcher names the protocol's verbs (`int_of`, `text_of`, `bool_of`,
+  `bits_of`, `pairs_of`, `elems_of`, `quote_of`), not the suffix —
+  its true-positive rate is its spec (CLAUDE.md, "A LINT COUNTS WHAT
+  ITS DOCTRINE COUNTS"). tools/idioms.py:445.
+- **A `${}` INSIDE A TEST'S SOURCE STRING IS THE TEST FILE'S OWN
+  HOLE.** `shown("…\"${f()} ${N}\"")` interpolated `f()` in the
+  test module — F3000 "no `fn f` is defined" AT THE TEST'S LINE, which
+  read as the feature being broken. One suite run. The spelling is
+  `\${…}` (the const adversarial suite already does it once). No ask:
+  a fact worth one line where tests are written.
+- **A CHECK-TIME HELPER ASSERTS NOTHING ABOUT A LOWERING-TIME
+  REFUSAL.** Two cycle cases were written with `refused_with` (analysis
+  only) for a settlement trap that speaks at lowering; both failed
+  until rewritten as `refused_at_run`. Minor; the names say it.
+- **A GREP FILTER MANUFACTURED A DIVERGENCE.** A red-team harness
+  filtered eval output with a character class that excluded spaces, so
+  `4 6` vanished and read as eval=[] against native=[4 6] — the most
+  serious finding available, for one probe, false. Compare RAW outputs
+  and filter after; the differential harness in `tools/` should own
+  this rather than each lane's shell.
+
+### SUGAR — a construct the language should have
+
+- **A TEMPLATE CANNOT NAME WHAT IT GENERATES** — filed above under
+  survey #5's section this lane extended; routed to COMPTIME
+  TEMPLATES by the task master. Confirmation only.
+- **`it` BINDS TO THE NEAREST CALL** — `all_defs.any(it.name == name
+  && store.const_value(it.stmt) == null)` refused F2033 inside the
+  nested call; the lambda was written out. Already in CLAUDE.md's
+  subset ("`it` through a self-method wrapper"). Confirmation only.
+
+### FEATURES — a capability, more than sugar
+
+- **`avra check --every`** — survey #6's ask, LANDED 300de49.
+  Confirmation only.
+
+### DEFECTS — the compiler blaming itself, or silent
+
+- **`const X = X` COMPILED CLEAN AND ANSWERED NOTHING** (found on
+  c0e5cb8's first build, latent before it only because a plain const's
+  own name did not resolve inside its value). The type cycle was
+  swallowed as an Error type; `check_const` treated Error as "already
+  spoken". FIXED: F2078 at the const, both orderings.
+- **ASSIGNING A CONST WAS F0900** "defect: an assignment to a
+  non-place survived a clean analysis" — the assignment law's `Decl`
+  arm answered nothing for a const. Found by the red team (class 2).
+  FIXED: F3005 in the const's words.
+- **A GENERATED TOP-LEVEL `const` WAS NEVER ADMITTED** (pre-existing:
+  `mint_code_stmt` minted fns, types and impls). FIXED:
+  `mint_code_const`; consts/tests/generated_const.
+- **`take(K.B(5))` REFUSED AS "COMPUTED AT RUN TIME"** — a qualified
+  payload variant is a method-call node on the enum's name. FIXED in
+  d92cda0's source walk.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **CLAUDE.md's "`const` in a MODULE file … F0902" WAS STALE TWICE
+  OVER** — F0902 had been relaxed for consts, then the migration made
+  a const a declaration. REWRITTEN as the top-level-const law.
+- **THE DESIGN DOC'S "ONLY WHEN EXPORTED" SCOPING** (S1 `export
+  const`) is SUPERSEDED; marked at the entry.
+- **A CROSS-FAMILY CYCLE NEEDS THE OPEN CHECK** (the friction row
+  above, as a law): a query that touches another family's query must
+  ask `open` first when the two can re-enter each other, because
+  `start_recursive` on the other side answers a smaller view rather
+  than a cycle. Worth a keeper the day a third family joins the
+  const/typed pair.
+- **THE SEAT LAW READS THE SOURCE, NOT THE FACTS** — survey #6's
+  proposed ORDER change was a fix to a symptom; a law about what the
+  source spells must not consult typing facts at all. Pinned in the
+  design doc's queue.
+
+### PERFORMANCE — a measured cost
+
+- None measured. UNMEASURED NOTE: a `const`-seat argument that is not
+  a bare literal now costs one isolated lowering plus an evaluator run
+  per distinct argument expression per unit (memoized under
+  `expr$<file>$<expr>` plus the seats). `make census` over a program
+  dense in such calls would size it; none exists in the tree today.
+
+### PROCESS — the working discipline itself
+
+- **THE WATCHDOG LOCK SERIALIZED TWO LANES' BUILDS** without anyone
+  coordinating ("waiting for the build lock (held by pid …)" four
+  times this lane). Keep.
+- **A FAILING TEST MUST FAIL FOR THE RIGHT REASON** before the fix: the
+  `check_every` spec first failed on a fixture typo (`unreached` vs
+  `unused`) — a test that fails for a typo proves nothing about the
+  law. Read the failure's words, not its colour.
+- **"ONE COMMIT EACH" BENT WHERE ONE MECHANISM PAID TWO ASKS**: the
+  nested-const and inline-variant leftovers were one law (the source
+  walk) and landed as one commit, reported as such rather than split
+  into a commit whose second half changes nothing.
