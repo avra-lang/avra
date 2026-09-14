@@ -726,6 +726,27 @@ reintroducing I3's blind spot names the two spellings it lost.
       `named_adversarial_test.av` reaches every vocabulary a name
       can stand over.
 
+- I43 (ratcheted) A FACT COLUMN SIZED BY HAND — `filled(store.
+      exprs.count(), null)` beside its siblings, a `- self.lo` at
+      every read, and a `concat(filled(n - xs.length, null))` where
+      the arena grew. Four things live in that shape and NONE of
+      them is stated: the STORAGE, the WINDOW the column covers, the
+      GROWTH when new ids arrive, and what a read OUTSIDE the window
+      means. `SideTable<V>` (core/side_table.av) states all four —
+      `side_table(name, lo, hi, seed)` is born total, `get`/`set`
+      take the id and never an offset, `grow_to` is the one door,
+      and a read outside the window traps naming the TABLE and the
+      ID rather than "index 1 is out of bounds (length 0)". THE
+      SMELL: `filled(` with an arena `count()` in its first
+      argument, and `.index - ` anywhere. NOT the smell: a
+      fn-local scratch list keyed by a seat, a field or a type
+      parameter (`Pins.slots`, `range_bodies`'s `lo`/`hi`) — those
+      have no window and no life past the call. The KEY is a slot
+      `int`, not the typed id, because a bound is spellable on a
+      free fn's parameters and nowhere else; the typed door stays
+      on the owner (`type_at(e: ExprId)`), which is where every
+      reader already goes.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is
