@@ -5,7 +5,7 @@
 //! like a const's value; and what it ANSWERS is its effect — `void`
 //! records, `List<Diagnostic>` validates. The law
 //! satisfied, the call runs, and what it said is spoken here.
-use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt, source_spelled, same_file}
+use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt, source_spelled, same_file, user_kind, is_kind_word}
 use features.{TypeCx, kind_word, FnSig, Said, Unsettled, nothing}
 use diagnostics.{refusal, loc_at}
 use @std.errors.{Loc}
@@ -73,7 +73,7 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
     match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
         .Ok(crossed) -> {
             match act {
-                .Records or .Validates -> { for x in cx.view.decls.saids(crossed, sig.ret) { if !x.warning { spoken_said(cx, a, s, x) } } },
+                .Records or .Validates -> { for x in cx.view.decls.saids(crossed, sig.ret) { if !x.warning { spoken_said(cx, a, d, s, x) } } },
                 .Declares or .Derives -> nothing(),
             }
         },
@@ -303,10 +303,20 @@ fn effect_words(e: Effect) -> string {
 /// What the annotation SAID about the declaration itself, at the
 /// place it named — the declaration when it named none. A WARNING is
 /// the declaration's word for its users, kept and spoken at each use
-/// (`warn_use`), never here.
-fn spoken_said(mut cx: TypeCx, a: Annotation, s: StmtId, x: Said) {
+/// (`warn_use`), never here. A kind the annotation NAMED wears its
+/// package's namespace; a kind-less refusal wears this feature's.
+fn spoken_said(mut cx: TypeCx, a: Annotation, d: DeclId, s: StmtId, x: Said) {
+    if x.kind != null && !is_kind_word(x.kind!) { return bad_kind(cx, a, x) }
     let here: Loc? = x.at ?? cx.view.stmt_loc(s)
-    let _ = cx.spoken(refusal("annotation.said", here, x.message, "refused by `@${a.name}`", x.help))
+    // LICENSED I18: a kind the annotation did not name is not a missing payload — the refusal wears this feature's own code
+    let kind = user_kind(cx.view.decls.package_of(d), x.kind) ?? "annotation.said"
+    let _ = cx.spoken(refusal(kind, here, x.message, "refused by `@${a.name}`", x.help))
+}
+
+/// A kind that is not a word is the ANNOTATION's mistake, spoken in
+/// place of the verdict it carried — one message for one mistake.
+fn bad_kind(mut cx: TypeCx, a: Annotation, x: Said) {
+    let _ = cx.spoken(refusal("annotation.kind", at_annotation(cx, a), "an annotation's kind is a word", "`@${a.name}` named `${x.kind!}`, saying: ${x.message}", "spell the kind `[A-Za-z0-9_-]+`, like `E1`"))
 }
 
 fn unsettled(mut cx: TypeCx, a: Annotation, why: Unsettled) {

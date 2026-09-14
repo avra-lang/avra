@@ -6694,6 +6694,167 @@ additions get siblings, nothing changes shape:
       to localize, or at the next pass added, whichever comes first.
       Evidence: ROADMAP "Feedback survey — 2026-09-11".
 
+## Feedback survey — 2026-09-13 (COMPTIME STATIC, comptime/static)
+
+Three slices on acb3a93: static data for aggregate consts (025366f),
+budgets from measurement (7846d89), package-namespaced diagnostic
+kinds (uncommitted at survey time). Each red-teamed and reviewed;
+probes name the base `comptime/static` unless said otherwise. NOT
+SURVEYED: the templates lane's files, the sqlite packages beyond
+their gated suite, any lane but this one.
+
+### FRICTION — what cost time
+
+- A `mut`-SEAT WRITE-THROUGH SURFACED AS A NUMBER, NOT A CHANNEL.
+  The law-correct fix (open every `mut`-seat argument unique) trapped
+  the product's own `check` with "index 304 is out of bounds (length
+  303)" — an hour to learn the compiler's source rides that channel.
+  EVIDENCE: H3b (this ledger); the pre-fix product checking the same
+  source clean was the tell. THE ASK: a trap in the compiler's own
+  body names the BODY it trapped in (a symbol beside the index), so a
+  second-generation trap reads as "this body" rather than "the tree".
+- `./avra test <subdir>` RUNS THE WHOLE PACKAGE SUITE. A measurement
+  loop over 26 test subdirs ran the std-avrac suite 26 times and was
+  killed by the low-memory guard (10 GB swap). EVIDENCE: 165 identical
+  `settle:` lines per subdir in the measurement log. THE ASK: a subdir
+  argument runs that module's cases alone, or the runner says at the
+  top which suite it is about to run.
+- A PACKAGE-ROOT TEST RUN DROPS ITS CHILDREN'S STDERR: `./avra test
+  packages/std-avrac` printed no `settle:` line while a subdir run
+  printed 165 — the sharded runner does not forward a child's stderr.
+  THE ASK: forward it, or say the run is sharded.
+- A PROGRAM TEST INSIDE A PACKAGE CANNOT BE BUILT ALONE: `./avra build
+  <pkg>/src/…/tests/nested/nested.av` refused "move it into the entry"
+  (the file reads as a module of the package); a copy in scratch
+  built. THE ASK: `build` of a program-test file builds that program.
+- `avra explain @name` AND `explain process` NEVER SAW THE CALLER'S
+  PACKAGE: the `avra` shim `cd`s to the tree's root and `root_program
+  (".")` analysed the tree, so `explain @deprecated` from
+  packages/std-meta answered "no fn `deprecated` is declared in this
+  package" on the old product too. FIXED with task 3: the shim exports
+  `AVRA_CWD`, commands root at `here()`. Cost: two rebuilds and a
+  debug line to see `files=0`. THE ASK: a command's "here" is a
+  library verb, never a `.`.
+- `Cell` IS A BUILT-IN TYPE NAME (F3008), so the static slot enum was
+  renamed `Slot` after a full patch; F3008 fires only at check, not at
+  the declaration. Cost: a rename sweep. THE ASK: none — the refusal
+  was right; noting the name is reserved.
+
+### SUGAR — a construct the language should have
+
+- A NULLABLE SCALAR STRUCT FIELD (`{ steps: int? }`): F2008 "a struct
+  field cannot hold this yet". WANTING SITES: language/manifest.av's
+  `[lifted]` rows (resolved to defaults at read time instead), the
+  static-data red team's `optfield` fixture. CLAUDE.md "The subset
+  today" now carries the refusal. THE ASK: the pair repr in a slot (a
+  two-cell layout, or a boxed pair) so a record can carry `int?`.
+- UNARY MINUS ON A FLOAT LITERAL: `[1.5, -2.25]` is F2000 "`-` needs
+  `int` operands, found `float`". WANTING SITE: consts/tests/
+  static_shapes (spelled `0.0 - 2.25`). Base comptime/static.
+- A FOLD THAT READS ITS OWN ACCUMULATOR (`built.push(box_val(b,
+  built))`) has no comprehension form and is LICENSED I3 at
+  interp.av's `static_val`. THE ASK: a `fold`/`scan` verb over lists.
+
+### FEATURES — a capability, larger than sugar
+
+- (LANDED 2026-09-14, `every_expr` in core/nodes.av) ONE COMPLETE
+  EXPRESSION WALK. `post_order` walks
+  `kids`, and `if`/`match`/`catch`/nullable arms/lambda bodies hide
+  theirs; three consumers want the whole body: `runtime_read` (the
+  F0900 defect below), `reads_settled_seat`, and the package-kind
+  registry (`Program.kind_rows`, which therefore registers a
+  conditional `refuse_as` only by being spoken). Recorded trigger in
+  this ledger (the walk entry beside H3b). Owner unconfirmed.
+- A KINDED WARNING CONSTRUCTOR: `refuse_as`/`refuse_as_at` exist; a
+  warning with a kind is spelled as a literal `Diagnostic { …,
+  warning: true, kind: "W1" }` today. THE ASK: `warn_as(kind,
+  message)` in @std/meta — one line, when a warning wants a kind.
+- `avra explain` OVER A PACKAGE KIND analyzes the package it stands in
+  (a full analysis for one lookup). Fine today; the ask is the
+  registry cached per workspace revision when explain runs inside an
+  LSP.
+
+### DEFECTS — the compiler blaming itself
+
+- A CONST READING A RUN-TIME PARAMETER INSIDE A HIDDEN BRANCH:
+  `fn g(n: int) -> int { const C = if true { n } else { 0 }  C }` is
+  not refused F2074 and `./avra check` prints `error[F0900]: defect:
+  a compile-time value did not cross as `int`` (F0900). Pre-existing on
+  acb3a93; reproduced on comptime/static 2026-09-13. Fix: the
+  complete walk above.
+- H3b: A `mut` SEAT'S ARGUMENT IS NEVER OPENED (this ledger, beside
+  H3): a const's box and another binding's list written through a
+  `mut` local on BOTH engines; under static data the runtime now moves
+  a laid-out buffer's cells out rather than freeing the binary's
+  memory. Reproducer pinned in the entry.
+- THE ROOT PACKAGE HAD NO NAME IN THE DECLARATION TABLE: `package_of`
+  answered "" for a root module while the manifest named it, so a
+  kind spoken by a root package's annotation stood bare, and giving
+  the root its name in one read and not the other made the orphan-impl
+  law refuse every impl in the compiler's own cli (a second-generation
+  build refusing its own source). FIXED with task 3: `Decls.
+  package_named` is the one read; `impls_test` and the cli build pin
+  it.
+- A SETTLED STRING HOLDING A NUL WAS TRUNCATED NATIVELY (eval 3,
+  native 1): the string-constant seam measured with `strlen`. FIXED
+  025366f — the length crosses the seam (`avra_llvm_build_text`);
+  consts/tests/static_nul pins it on both engines.
+- A STATIC MAP PAST 11 KEYS HUNG NATIVELY: the lazy index was sized 16
+  regardless of keys. FIXED 025366f; consts/tests/static_map pins it.
+- `[lifted] memory = 9223372036854775807` WRAPPED NEGATIVE and refused
+  every settlement. FIXED 7846d89 (saturating MiB); manifest_test pins
+  it.
+- AN EMPTY OR NON-WORD KIND RENDERED `error[@acme/audit: ]`. FIXED
+  (task 3): a kind is a word, F2079 speaks in place of the verdict.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- CLAUDE.md gained: static data's law and the second-generation-trap
+  diagnostic step; the nullable-scalar-field subset entry. Design §4.4
+  carries the measured budgets and the run; §4.5 the static-data
+  landing; §7 q4/q5 decided.
+- "A COPY IS A COPY" IS STATED FOR PLACES AND NOT FOR SEATS: the
+  places doctrine (a write through a shared value clones) does not
+  say that a `mut` SEAT's argument is handed as read, so a copy of a
+  const handed to a `mut` seat writes the const. H3b names it; the
+  doctrine line belongs beside the borrow law once H3 closes.
+
+### PERFORMANCE — a measured cost
+
+- STATIC DATA (`make census CMD="check packages/std-avrac"`, task 1's
+  tree vs acb3a93): once reads 296,938 → 182,033; retains
+  4,675,242,720 → 4,650,927,372; releases 4,844,261,186 →
+  4,820,834,453. `AVRA_MEM_STATS=1` on a const program: every category
+  0 MB (nothing allocated for the consts; the `.ll` holds the globals).
+- THE ALWAYS-ON LIVE-BYTE COUNT (`avra_mem_live`, one add per alloc
+  and free): `check packages/std-avrac` under the watchdog 34.29 /
+  33.83 / 34.18 s with it on, 34.89 / 35.48 / 34.36 s with it gated —
+  inside the noise; `objdump` shows no leaf grew a prologue (the add
+  sits in bodies that already call malloc/free).
+- BUDGET MEASUREMENT: 164 distinct successful settlements across the
+  compiler's own checks and every package's test module; max 60,027
+  steps and 445,314 bytes (a 5,000-element const list); the compiler's
+  largest derive 3,824 steps (`Eq`), largest const 4,339 steps /
+  120,517 bytes (`builtin_codes`). Defaults set at ×10.
+
+### PROCESS — the working discipline itself
+
+- KEEP: `cp build/avra build/avra.pre` before every risky build — it
+  was the way back twice (the seat-fix trap; an accidental `git
+  checkout` of the runtime while timing).
+- KEEP: the pre-fix product checking the same source before reading a
+  second-generation trap as the tree's (now in CLAUDE.md).
+- CHANGE: `git checkout HEAD -- <file>` as a "restore" step in a
+  measurement script reverted a whole slice's runtime changes; a
+  measurement toggle is a patch and its inverse, never a checkout.
+- CHANGE: the two-commit split of one tree by hunk (task 1 vs task 2
+  shared six files) was done by inverting the second slice's patches
+  by hand; commit each slice before starting the next when the task
+  master allows.
+- NOTED: a lane's loop that runs a package suite per subdir is the
+  same bypass as three concurrent gates — it was serialized under the
+  lock and still took the machine to the low-memory guard.
+
 ## Feedback survey — 2026-09-11 (lane/comptime)
 
 The first run of `/feedback` (`.claude/skills/feedback`): a survey of
@@ -10135,6 +10296,27 @@ by meaning; each is a slice for lane D unless a lane is named.
   local is invisible to it, so 100 is what the lint reaches and not
   what the law covers.
 
+- PAID 2026-09-14 (comptime/static): `NodeStore.every_expr` in
+  core/nodes.av, a registry beside the fingerprints; `runtime_read`,
+  `reads_settled_seat` and `Program.kind_rows` walk it; the F0900
+  below is F2074 in consts_adversarial. THE EXPRESSION WALK STOPS AT
+  HIDDEN BRANCHES, and two consumers want the whole body (found
+  2026-09-13 by the COMPTIME STATIC red team). `post_order` walks `kids`, and `if`, `match`, `catch`, the
+  nullable arms and a lambda's body hide theirs (each types under its
+  own narrowing), so a walk written for "every expression a body
+  holds" sees the unconditional ones only. (1) A DEFECT SHOWN TO A
+  USER: `fn g(n: int) -> int { const C = if true { n } else { 0 }  C }`
+  is not refused F2074 (`runtime_read` never sees `n` inside the
+  branch), settles, and `./avra check` prints `error[F0900]: defect: a
+  compile-time value did not cross as `int``. (2) The package-kind
+  registry (`Program.kind_rows`) registers `refuse_as("E1", …)` only
+  where the walk reaches, so a conditional kind — most kinded
+  refusals — registers by being spoken and `avra explain` misses an
+  unspoken one; its miss says so. RECORDED TRIGGER: land ONE complete
+  walk (`every_expr`: kids plus each feature's hidden children, and a
+  statement list's expressions) and point `runtime_read`,
+  `reads_settled_seat` and `kind_rows_in` at it — the third consumer
+  names the concept, and the first fixes (1). Owner unconfirmed.
 - H3b. A `mut` SEAT'S ARGUMENT IS NEVER OPENED (found 2026-09-13 by
   the COMPTIME STATIC red team, both engines, native and evaluated).
   A `mut` local handed whole to a `mut` seat is LOADED, not opened
