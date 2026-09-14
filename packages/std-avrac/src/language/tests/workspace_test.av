@@ -1,7 +1,7 @@
 // The workspace over an in-memory host: a module is a directory or a
 // file, siblings see each other, `use` reaches a module's exports,
 // and every failed `use` speaks in its own words.
-use @std.avrac.language.{avra, new_workspace, memory_host, lone_workspace}
+use @std.avrac.language.{avra, new_workspace, memory_host, memory_host_at, lone_workspace}
 use language.{Workspace, sig_hash}
 use @std.avrac.core.{TypeId, DeclId}
 use @std.avrac.features.{DeclSig, EnumSig, StructSig, NamedSig}
@@ -265,6 +265,110 @@ spec "cases known from parsing" {
             let over_int = DeclSig.Named(NamedSig { of: TypeId { index: 1 } })
             let over_text = DeclSig.Named(NamedSig { of: TypeId { index: 2 } })
             sig_hash(over_int) != sig_hash(over_text)
+        }
+    }
+}
+
+// ── The toolchain's std root ──
+
+/// A toolchain at `/tc` carrying `@std/text` and `@std/io` (io reads
+/// text by a manifest row), and a program at `/w` that declares
+/// nothing.
+fn toolchain_files() -> Map<string, string> {
+    {
+        "/tc/std-text/avra.toml": "[package]\nname = \"@std/text\"\nversion = \"0.0.1\"\n",
+        "/tc/std-text/src/text.av": "export fn shout(s: string) -> string {\n    s + \"!\"\n}\n",
+        "/tc/std-io/avra.toml": "[package]\nname = \"@std/io\"\nversion = \"0.0.1\"\n",
+        "/tc/std-io/src/io.av": "use @std.text.{shout}\nexport fn shouted(s: string) -> string {\n    shout(s)\n}\n",
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+    }
+}
+
+fn toolchain_names() -> List<string> {
+    ["/tc/std-text/avra.toml", "/tc/std-text/src/text.av", "/tc/std-io/avra.toml", "/tc/std-io/src/io.av", "/w/avra.toml", "/w/src/main.av"]
+}
+
+/// The program's root file, under a host whose std root is `/tc`.
+fn toolchain_app(main: string) -> Workspace {
+    mut fs = toolchain_files()
+    fs.set("/w/src/main.av", main)
+    new_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w", avra())
+}
+
+/// The same program with a manifest of its own: a declared row for
+/// `@std/text` pointing at a copy under the app.
+fn pinned_app(main: string) -> Workspace {
+    mut fs = toolchain_files()
+    fs.set("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"vendor/text\" }\n")
+    fs.set("/w/vendor/text/avra.toml", "[package]\nname = \"@std/text\"\nversion = \"9.9.9\"\n")
+    fs.set("/w/vendor/text/src/text.av", "export fn shout(s: string) -> string {\n    s + \"?\"\n}\n")
+    fs.set("/w/src/main.av", main)
+    let names = toolchain_names().concat(["/w/vendor/text/avra.toml", "/w/vendor/text/src/text.av"])
+    new_workspace(memory_host(fs, names) with { std_root: "/tc" }, "/w", avra())
+}
+
+fn toolchain_report(ws: Workspace) -> string {
+    ws.analyze_file("/w/src/main.av").report()
+}
+
+fn toolchain_clean(ws: Workspace) -> bool {
+    ws.analyze_file("/w/src/main.av").diagnostics.is_empty()
+}
+
+spec "the toolchain's std packages" {
+    given "a program that declares no dependency" {
+        then "a std package resolves from the std root" {
+            toolchain_clean(toolchain_app("use @std.text.{shout}\nshout(\"hi\")\n"))
+        }
+        then "a std package's own dependencies come with it" {
+            toolchain_clean(toolchain_app("use @std.io.{shouted}\nshouted(\"hi\")\n"))
+        }
+        then "the program runs through the toolchain's code" {
+            ran_as(toolchain_app("use @std.io.{shouted}\nshouted(\"hi\")\n").program("/w/src/main.av").run(), "hi!")
+        }
+        then "a package the toolchain does not carry is still not a dependency" {
+            let a = toolchain_app("use @std.net.{fetch}\n1\n").analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 && a.report().contains("`@std/net` is not a dependency of this package")
+        }
+        then "a key outside @std is never the toolchain's" {
+            let a = toolchain_app("use @acme.text.{shout}\n1\n").analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 && a.report().contains("`@acme/text` is not a dependency of this package")
+        }
+        then "a host with no std root refuses as before" {
+            let a = with_main("use @std.text.{shout}\n1\n").analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 && a.report().contains("`@std/text` is not a dependency of this package")
+        }
+    }
+    given "a manifest row for a std package" {
+        then "the declared copy is the one read" {
+            ran_as(pinned_app("use @std.text.{shout}\nshout(\"hi\")\n").program("/w/src/main.av").run(), "hi?")
+        }
+        then "the pin holds for every package in the graph" {
+            ran_as(pinned_app("use @std.io.{shouted}\nshouted(\"hi\")\n").program("/w/src/main.av").run(), "hi?")
+        }
+        then "a dependency's own row disagreeing with the pin is two directories" {
+            mut fs = toolchain_files()
+            fs.set("/tc/std-io/avra.toml", "[package]\nname = \"@std/io\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@std/text\" = { path = \"../std-text\" }\n")
+            fs.set("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"vendor/text\" }\n")
+            fs.set("/w/vendor/text/avra.toml", "[package]\nname = \"@std/text\"\nversion = \"9.9.9\"\n")
+            fs.set("/w/vendor/text/src/text.av", "export fn shout(s: string) -> string {\n    s\n}\n")
+            fs.set("/w/src/main.av", "use @std.io.{shouted}\nshouted(\"hi\")\n")
+            let names = toolchain_names().concat(["/w/vendor/text/avra.toml", "/w/vendor/text/src/text.av"])
+            package_voice(new_workspace(memory_host(fs, names) with { std_root: "/tc" }, "/w", avra()), "`@std/text` is claimed by two directories")
+        }
+    }
+}
+
+spec "one directory, one spelling" {
+    given "a root opened by a relative path under a host with a cwd" {
+        then "a declared relative path and the toolchain's absolute one are one package" {
+            mut fs = toolchain_files()
+            fs.set("/tc/std-io/avra.toml", "[package]\nname = \"@std/io\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@std/text\" = { path = \"../std-text\" }\n")
+            fs.set("w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/text\" = { path = \"../tc/std-text\" }\n")
+            fs.set("w/src/main.av", "use @std.io.{shouted}\nshouted(\"hi\")\n")
+            let names = ["/tc/std-text/avra.toml", "/tc/std-text/src/text.av", "/tc/std-io/avra.toml", "/tc/std-io/src/io.av", "w/avra.toml", "w/src/main.av"]
+            let ws = new_workspace(memory_host_at(fs, names, "/") with { std_root: "/tc" }, "w", avra())
+            ws.analyze_file("w/src/main.av").diagnostics.is_empty()
         }
     }
 }
