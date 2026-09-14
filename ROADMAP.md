@@ -13569,3 +13569,44 @@ lanes' trees; this tree at the merge points only.
   name the CONTRACT it protects; two spec assertions changed because
   the mechanism moved (a refusal's seat words, a parse error now at
   the library) and were reported, not hidden.
+
+## Feedback survey — 2026-09-14 #10 (TOOLCHAIN, the suites derived — PR #9)
+
+Counted per axis: friction 1, defects 2 (the tool's own, found by its
+red team, fixed), doctrine 1, process 1; sugar, features and
+performance empty. Not surveyed: any tree but ../avra-lane-a.
+
+### FRICTION — what cost time
+
+- **A GATE KILLED FROM OUTSIDE THE WATCHDOG.** The harness stopped a
+  running `make gate` "because the system is running low on memory"
+  while the watchdog's own floor (20%) had admitted it; the tree was
+  left clean (the `tested` trap removed the scaffold) and the gate
+  was re-queued by hand, ~25 minutes. THE ASK: none the tree can
+  pay — the harness's floor is not the watchdog's; a lane reads a
+  killed gate as "re-run", never as a verdict.
+
+### DEFECTS — silent shapes in a keeper written that morning
+
+- **A DIRECTORY HOLDING TESTS WITH NO MANIFEST WAS QUIETLY NO SUITE.**
+  The first draft skipped it, which is the exact disease the tool
+  exists to kill. Refuses now ("holds tests and no avra.toml —
+  nothing would ever run them"), fixture pinned.
+- **A SYMLINKED PACKAGE WAS TWO SUITES.** `packages/alias -> a` listed
+  both and would have run one suite twice; refuses now, fixture
+  pinned. Both found by building the hostile tree, not by reading.
+
+### DOCTRINE
+
+- **A DEV EDGE ORDERS NOTHING.** Ordering by every dependency row
+  found a cycle on the first run (`std-io -> std-text -> std-io`,
+  through text's dev edge to io); the order reads `[dependencies]`
+  alone, which is the workspace's own law (`dep_chain`: a dev edge
+  starts its own chain). Written into the tool's doc.
+
+### PROCESS
+
+- **A TOOL'S RED TEAM IS A HOSTILE TREE.** Nine trees built in a
+  scratch script found two silent shapes in a tool whose five
+  fixtures were all green; the fixtures were the shapes the author
+  imagined. Keep: build the trees before calling a keeper done.
