@@ -255,12 +255,17 @@ library's own check:
 |---|---|
 | wrong shape in a position | "a hole in type position takes a `Type` or a name — this is `Code`" (one line per kind, the accepted shapes named) |
 | a string in expression position | "a string in expression position is ambiguous — `literal(s)` spells a string literal, `name(s)` a name" |
-| a list where one is wanted | "a hole in name position takes one name — this is `List<string>`" |
+| a value no seat takes, in a body of holes | "a hole takes a template, a number, a name, a list of names or of templates, found `List<int>`" |
+| a mix of kinds in a body of holes | "a quote of nothing but holes takes ONE kind — its first hole's — and these disagree" |
+| an empty hole | "a hole is empty — `${e}` takes an expression" (the builder's word) |
 | a quote without `@std/meta` | F2076, unchanged |
-| an arm without `->` | "an arm answers with `->` — only a hole stands alone" |
 
-Today's F2075 ("splices text, a scalar, a named meta value or Code")
-is replaced by the per-position voices; its tests move.
+All under F2075 ("a hole takes what its seat takes"), each pinned in
+`quote_adversarial_test.av` with its count; two are pinned by their
+RENDERING (law, label, remedy). A body that does not parse speaks
+ONCE, at the library: the generated fn's "body answers `void`" is
+silenced for any body holding a parse recovery (`fns/check.av`'s
+`holds_error`), written fns included.
 
 ## 9. `Code<T>` — §7 question 2, decided again
 
