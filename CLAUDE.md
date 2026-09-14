@@ -925,6 +925,13 @@ engine's spec, written by dogfooding.
   hole when emitted, and the closer never passes through it. Line
   comments inside a raw body are the generated program's — a `}` in
   one ends nothing.
+- A BOUNDARY CHECK MAKES ITS SHAPES UNMOVABLE IN ONE GENERATION.
+  `features/crossing.av` holds `@std/meta`'s shapes as rows the
+  compiler was built against and refuses a loaded package that
+  disagrees; so the STANDING binary refuses a new package while
+  compiling the source that changes it. A change to a checked shape
+  is two commits: one that stops the door refusing, one that moves
+  the shape and restores it.
 - A NAME-KEYED TABLE CROSSES MODULES. `impls_by_name` files every
   `impl` under its NAME, so asking `@std.meta.Code`'s methods signed
   the compiler's own `impl Code` and dragged `features` into a
