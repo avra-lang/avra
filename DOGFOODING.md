@@ -620,6 +620,19 @@ reintroducing I3's blind spot names the two spellings it lost.
       EXPRESSION rather than a name (`Type.Opt(seat!.elem)`): a hole
       is a NAME, so those four sites bind a name first or stay.
 
+- I41 (unratcheted) AN UNWRITABLE SPELLING IS A KEY — a name or a
+      key that must never collide with what a program writes is
+      spelled with a character the lexer refuses in that position,
+      and the reader tests that one character. Three instances name
+      the concept: the resolver's scope keys (`name@<file>`, `@`),
+      generated declaration keys (`$`), and a template's hole
+      placeholders (`${k}`, `l${2}` — `core/holes.av`, read by
+      `hole_name`, whose test is `contains("$")`). THE SMELL: an
+      in-band tag a program COULD write (a `__gen_` prefix, a
+      numbered suffix) or a parallel side table asked "is this
+      synthetic". Not ratcheted: the smell is a naming choice, not a
+      shape a grep can see.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is

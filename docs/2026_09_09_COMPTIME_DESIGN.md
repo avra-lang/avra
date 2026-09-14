@@ -326,8 +326,10 @@ quote { impl Show for ${t} { fn show(self) -> string { ${body} } } }
   string builds the string outside and splices it as a literal.
 - **A hole is typed by its position.** A name position takes a
   `string` or a `Field`/`Variant`/`Type` (its name); a type position
-  takes a `Type`; an expression position takes `Code<T>` or a settled
-  scalar/string/list (lifted to a literal); an arm-list position
+  takes a `Type`; an expression position takes `Code` or a settled
+  number/bool (lifted to a literal) — a bare STRING there is refused,
+  naming `literal(s)` and `name(s)`, since either reading is a silent
+  wrong program half the time (the two-hats law); an arm-list position
   takes `List<Code<Arm>>`; a declaration position takes `Decl` or
   `Decls`. Wrong shape: *"a hole in type position takes a `Type` —
   this is `Code<int>`"*, at the hole.
@@ -369,8 +371,8 @@ learn in one read:
 | `Fn` | `name`, `params: List<Param>`, `answer: Type`, `body: Code<T>?`, `span`, `is_method` |
 | `Trait` | `name`, `methods: List<Sig>`, and the verb `derive(t)` |
 | `Impl` | `trait: Trait?`, `target: Type`, `methods` |
-| `Decl` / `Decls` | a declaration template / a list of them |
-| `Code<T>` | an expression or statement template answering `T`; `Arm` for match arms |
+| `Code` / `Stmts` / `Arms` / `Decls` | a template by what its body PARSED as: one expression, statements, one or more match arms, one or more declarations — the kind is the type, and a hole checks it at the quote (`docs/2026_09_13_PARSED_TEMPLATES.md`) |
+| `Node` | the tree a template value carries: `Template(file, at, parts, fills)` naming the quote and its fills, `Name`, `Text`, `Int`, `Float`, `Bool`, `Interp`, `Many(items)` — several in one seat, the seat decided at the splice |
 | `Diagnostic`, `Diagnostics` | `@std/errors`'s shape: `kind`, `span`, `message`, `help`, `suggestions` |
 
 Verbs: `embed(path) -> string` (§3.7), `target() -> Target` (os, arch,
@@ -1041,18 +1043,12 @@ to start cold; the size is the design's estimate.
       write quotes too, and the `code: string?` bridge the seed ladder
       needed for one build is gone. A hole-less quote is a LITERAL (`is_literal`),
       so `@wrapped(quote { … })` crosses a user's code into an
-      annotation (`quote_meta`). WHY NO `Code<T>`: under text
-      templates a hole's position is unknown until the splice parses,
-      so a claim on the quote could only be checked where typing the
-      generated code already checks it — the claim would be a promise
-      the compiler cannot test earlier than it already does. What the
-      claim was FOR — blaming the template line — is paid instead by
-      HOMING: every diagnostic inside generated code points into the
-      quote that wrote the run (file, byte, column), a hole's text at
-      the asking annotation, and a generated source that does not
-      PARSE speaks the same way (`Decls.expansion_voices`, spoken by
-      the file's resolve). Re-open `Code<T>` only if templates are
-      ever parsed at the quote (§3.5's tree model).
+      annotation (`quote_meta`). SUPERSEDED by the parsed-templates
+      campaign (below): a quote is a TREE parsed where it is written,
+      typed by KIND (`Code`/`Stmts`/`Arms`/`Decls`) and untyped by T
+      — the text model's "a hole has no position until the splice"
+      no longer holds, and the two-frame error is still paid by
+      HOMING, now by the copied node's own span in its origin file.
 - [x] **S4r — origin hygiene. LANDED (2026-09-13).** A GENERATION is
       recorded per admitted source (`Decls.generations`: the arena
       ranges its nodes took, the text's `Segment`s with their origin
@@ -1063,10 +1059,10 @@ to start cold; the size is the design's estimate.
       namespace (`Elsewhere.written_in`, beside the two-tier
       `generated` look); an arm's binders wear their own pattern's
       origin (`Bound`), because a generated pattern and its arm value
-      can come from different runs. THE RULE FOR A NAME THAT STRADDLES
-      RUNS: its origin is its FIRST BYTE's — so spell a manufactured
-      binder and its read the same way (`@std/derive`'s `eq_arm`
-      splices both). Proof: `quote/tests/hygiene` (a private `shout`
+      can come from different runs. (The text model's "a name that
+      straddles runs wears its FIRST BYTE's origin" is RETIRED by the
+      parsed-templates campaign: a hole-bearing name is ONE node, and
+      it wears the target's origin.) Proof: `quote/tests/hygiene` (a private `shout`
       found unqualified; `@wrapped(quote { tmp })` where the template
       binds `tmp` and the user's `tmp` is a fn — answers `Point! 11`,
       eval == native == expected) and `quote/tests/quote_test.av` (10
@@ -1121,6 +1117,45 @@ to start cold; the size is the design's estimate.
       under `AVRA_RC_GUARD`. Poor but honest: an empty hole `${}` and
       an unclosed quote cascade into "expected `}` to close the
       trailing block" (the parser's nearest @expect).
+- [x] **PARSED TEMPLATES (a) — the tree. LANDED (2026-09-13,
+      lane comptime/templates; design: `docs/2026_09_13_PARSED_TEMPLATES.md`).**
+      A quote body is TOKENIZED and parsed by the ordinary grammar
+      into the writing file's store; a hole is a `Hole` token whose
+      text is a name no program writes (`${k}`, `l${2}`), matching
+      any NAME prim, so every builder mints its ordinary node with a
+      placeholder name — no builder changed; the hole expressions are
+      DEFERRED by the lexer to after the quote's `}` as
+      `HOLE_BEGIN … HOLE_END` groups. A hole's KIND is its seat
+      (`core/holes.av`: expression / name / binder / type / statement
+      / arm), classified by ONE exhaustive walk (`core/rebuild.av`'s
+      `Rebuilder`) that also COPIES the body at the splice. The value
+      is `@std.meta.Node` (`Template(file, at, parts, fills)`, `Name`,
+      `Text`, `Int`, `Float`, `Bool`, `Interp`, `Many`) under four
+      nominal kinds; `Piece`/`quoted`/`spliced`/`joined` are gone,
+      `name`/`literal`/`interpolated` arrived. Origins are per NODE
+      (`Decls.origins`): a copied template node wears the writing
+      file, a hole-named node the target's; `Segment`, `segments_of`
+      and `quote_starts` are deleted; `Generation` keeps ranges and
+      the asking span for homing, and a copied node is homed by its
+      OWN span in its origin file. A generated source can no longer
+      fail to parse; a template's mistakes refuse at the LIBRARY's
+      own compile. Receipt: 15 quote tests, hygiene (`Point! 11`),
+      the derive program test, std-derive, annotations (35), consts'
+      private_const — all eval == native; `avra expand` byte-identical
+      over contract.av and the derive test, and over nodes.av except
+      the `quote_of` accessor whose payload this campaign widened.
+      ONE TEXT SEAM REMAINS, named: a type hole filled from a
+      SPELLING (`-> ${payload}?` in the compiler's own ValueProtocol
+      derive) reads it with the language's `type` rule
+      (`parse_type_ref`), because `Variant.payload`/`Field.ty` ARE
+      spellings in today's meta contract; retires when `Type` carries
+      `Kind`. THE LADDER, twice in one day: a lexer change compiles
+      under the standing binary and is READ by the product, and the
+      compiler's own two derives cannot be built by a binary that
+      predates the tree model — so each build across the boundary
+      (mine, and the merge of CONST's order-free consts) hand-wrote
+      the accessors, built, restored the derives, built twice to the
+      fixed point.
 - [x] **BEYOND — the compiler derives its own accessors. LANDED
       (2026-09-11).** `@derive(Projections)` (`features/projections.av`,
       a `std-avrac` trait) generates `impl DeclSig { fn fn_sig() ->
@@ -1259,12 +1294,18 @@ quotes keeps the two hard problems apart.
    it is `v.type(T)` (sugar 2). In an annotation's argument list a
    bare name is its meta value (§3.3). Is a bare `type(User)`
    elsewhere wanted, or is the annotation position enough?
-2. **`Code<T>` vs untyped `Code`.** DECIDED 2026-09-13: untyped
-   `Code`. A text template's hole has no position until the splice
-   parses, so the claim could only be checked where typing the
-   generated code checks it already; the two-frame error is paid by
-   HOMING instead (S4r in §6). Re-open only with a tree-template
-   model.
+2. **`Code<T>` vs untyped `Code`.** DECIDED 2026-09-13, twice.
+   Under text templates: untyped, since a hole had no position until
+   the splice parsed. Under PARSED templates (the same day, the
+   `2026_09_13_PARSED_TEMPLATES` campaign): typed by KIND, untyped by
+   T. What parsed decides the kind at the quote — `Code` (one
+   expression), `Stmts`, `Arms`, `Decls` — so it is a nominal type
+   and a hole checks it statically; the expression's T is not typed
+   at the quote (a template body has no types until its holes are
+   filled, and a type hole makes them unknowable), so `Code<int>`
+   would be a claim checked only where the generated code is typed
+   anyway. Homing pays the two-frame error. Re-open only if template
+   bodies are ever typed before splicing (typed holes).
 3. **Arms as a quote kind.** `quote { .A(x) -> f(x) }` is what the
    compiler's own enum derives write; it is neither statement nor
    expression. Ordered choice in the quote body (arm first) is the

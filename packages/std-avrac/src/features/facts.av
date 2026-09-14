@@ -28,25 +28,20 @@ impl FileView {
     /// forwards here. A GENERATED node is homed: a template's run
     /// points into the file that wrote the quote, a hole's at the
     /// annotation that asked for the code.
-    fn loc_of(e: ExprId) -> Loc? { self.decls.homed(self.file, self.decls.generation_of(self.file, e), self.store.expr_span(e)) }
+    fn loc_of(e: ExprId) -> Loc? { self.decls.homed(self.file, self.origin_of(e), self.decls.generation_of(self.file, e), self.store.expr_span(e)) }
 
-    fn pat_loc(p: PatId) -> Loc? { self.decls.homed(self.file, self.decls.generation_of_pat(self.file, p), self.store.pat_span(p)) }
+    fn pat_loc(p: PatId) -> Loc? { self.decls.homed(self.file, self.origin_of_pat(p), self.decls.generation_of_pat(self.file, p), self.store.pat_span(p)) }
 
-    fn stmt_loc(s: StmtId) -> Loc? { self.decls.homed(self.file, self.decls.generation_of_stmt(self.file, s), self.store.stmt_span(s)) }
+    fn stmt_loc(s: StmtId) -> Loc? { self.decls.homed(self.file, self.origin_of_stmt(s), self.decls.generation_of_stmt(self.file, s), self.store.stmt_span(s)) }
 
-    /// The file a generated expression's text was WRITTEN in, when it
-    /// is another than this one — a template's own run. Null for a
-    /// written node and for a hole's text: both resolve here.
-    fn origin_of(e: ExprId) -> FileId? { self.written_in(self.decls.generation_of(self.file, e), self.store.expr_span(e)) }
+    /// The file a generated node was WRITTEN in, when it is another
+    /// than this one — a template's own node. Null for a written node
+    /// and for one whose name came through a hole: both resolve here.
+    fn origin_of(e: ExprId) -> FileId? { self.decls.origin_of_expr(self.file, e) }
 
-    fn origin_of_stmt(s: StmtId) -> FileId? { self.written_in(self.decls.generation_of_stmt(self.file, s), self.store.stmt_span(s)) }
+    fn origin_of_stmt(s: StmtId) -> FileId? { self.decls.origin_of_stmt(self.file, s) }
 
-    fn origin_of_pat(p: PatId) -> FileId? { self.written_in(self.decls.generation_of_pat(self.file, p), self.store.pat_span(p)) }
-
-    fn written_in(g: Generation?, sp: Span?) -> FileId? {
-        if g == null || sp == null { return null }
-        g!.segment_at(sp!.lo)?.origin
-    }
+    fn origin_of_pat(p: PatId) -> FileId? { self.decls.origin_of_pat(self.file, p) }
 
     /// The module this file belongs to.
     fn module() -> string { self.decls.module_name(self.decls.file(self.file).module_id) }

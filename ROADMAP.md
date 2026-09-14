@@ -7607,6 +7607,15 @@ The `/feedback` run for the slice that lifted the two S5b boundaries: a settled 
 
 ## Sugar backlog — dogfooding asks
 
+FROM THE 2026-09-13 #8 FEEDBACK SURVEY (comptime/templates; rows and
+evidence under "Feedback survey — 2026-09-13 #8"): a hole in a
+STRING's literal run (site `std-derive`'s `Show`); a PARAMETER-LIST
+hole (no site yet); a FLOAT in a hole (`quote/lower.av`'s
+`fill_reg`); PEG lookahead in the grammar DSL (`quote/mod.av`).
+PAID by that campaign: "a hole in NAME position completing the name"
+from survey #7 (`l${i}` is one `Hole` token now); `join` over
+`List<Code>` is moot — a list fills a seat directly.
+
 FROM THE 2026-09-13 #7 FEEDBACK SURVEY (lane/comptime): `join` over
 `List<Code>` (a trait-keyed method row; sites `std-derive/src/derive.av`),
 and a hole in NAME position completing the name (waits on parsed
@@ -12968,3 +12977,109 @@ campaign's files, and the templates lane's regions of workspace.av.
   nested-const and inline-variant leftovers were one law (the source
   walk) and landed as one commit, reported as such rather than split
   into a commit whose second half changes nothing.
+
+## Feedback survey — 2026-09-13 #8 (comptime/templates, parsed templates slice a)
+
+Counted per axis: friction 4, sugar 4, features 2, defects 3 (mine,
+found by the red team, fixed), doctrine 2, performance 0, process 3.
+The top three by cost: the two-binary ladder (each boundary crossed
+by hand-writing the compiler's own derived accessors), the `it`
+pronoun binding to the nearest call, and the arm-vs-statement
+ordered choice with no lookahead. Not surveyed: the sqlite and http
+lanes' trees; this tree at the merge points only.
+
+### FRICTION — what cost time
+
+- **THE LADDER HAS NO TOOL.** Crossing a syntax boundary in the
+  compiler's own source (twice today: mine, then CONST's order-free
+  consts against my lexer) is: strip the two `@derive`s to
+  hand-written accessors, build, restore, build twice, `make seed`.
+  Four edits and five builds, by hand, each time. EVIDENCE: this
+  lane's session, `protocol.av`/`projections.av`/`nodes.av`/
+  `contract.av` edited twice. THE ASK: `make ladder` — a target that
+  builds with the derives stubbed from a checked-in stub file, then
+  restores and builds to the fixed point.
+- **`it` BINDS TO THE NEAREST CALL.** `xs.all(store.hole_stmt(it) !=
+  null)` is F2033 at the inner call; seven sites wrote the lambda
+  instead. EVIDENCE: `core/rebuild.av:59`, `quote/check.av:38`,
+  `quote/lower.av:31`. Already in "The subset today"; CONFIRMS.
+- **NO STATEMENT SEPARATOR.** `if x { a(); return s }` is F0001
+  "unexpected character" at the `;`, three lines each. EVIDENCE:
+  `grammar/lexer.av`'s `routed`. THE ASK: none — the line law is the
+  design; a subset-today row so the next writer knows.
+- **A SPEC ASSERTION'S LINE ANCHOR IS FRAGILE.** The quote spec pins
+  `prov.av:7`; adding a doc line to the vendored provider moved every
+  anchor. EVIDENCE: `quote_test.av`'s `provider()`. THE ASK: assert
+  the LINE by a marker search of the vendored text, not a number.
+
+### SUGAR — a construct the language should have
+
+- **A HOLE IN A STRING'S LITERAL RUN.** `"${f.name}: …"` as generated
+  text has no spelling; `interpolated(parts, holes)` builds it.
+  Wanting site: `std-derive/src/derive.av`'s `Show` (`shown_parts`).
+- **A PARAMETER-LIST HOLE.** `fn f(${params})` is not a seat; a
+  derive that forwards a fn's seats has no spelling. Wanting site:
+  none yet in tree — the `@traced` twin would want it.
+- **A FLOAT IN A HOLE.** No `float_node` row: a `float` in an
+  expression seat is refused. Wanting site: `quote/lower.av`'s
+  `fill_reg` (`rest ->`).
+- **PEG LOOKAHEAD IN THE GRAMMAR DSL.** `( a:arm | s:stmt | BREAK )*`
+  tries the arm first, so every statement-shaped line of a quote body
+  leaks one pattern node from the failed attempt. `&`/`!` would let
+  the arm branch require its `->` before committing a node. Wanting
+  site: `features/quote/mod.av`'s grammar.
+
+### FEATURES — a capability, larger than sugar
+
+- **`Type` CARRIES `Kind`.** A type hole filled from a SPELLING parses
+  the text with the `type` rule (`program.av`'s `parse_type_ref`) —
+  the one text the splice still reads, because `Variant.payload` and
+  `Field.ty` are strings. Retires with §3.6's `Kind`.
+- **A REBUILDER-SHAPED DERIVE.** `core/rebuild.av` is 420 lines of
+  exhaustive arms that a `@derive(Walk)` could write from the enums —
+  the inventory's class D/E, now with a real consumer.
+
+### DEFECTS — the compiler blaming itself (all fixed in the slice)
+
+- **A HOLE-ONLY QUOTE TYPED BY ITS FIRST HOLE'S NAME.** `quote {
+  ${parts} }` with `parts: List<Decls>` answered `Code`; a scalar in
+  it lowered as a NAME. Found by the red team's `twice`; fixed by
+  `seat_of`/`kind_word` in `quote/check.av`.
+- **TWO IMPLS OF ONE TARGET IN ONE GENERATION MINTED ONE.** The
+  generated key was the whole generation's tag plus the target, so
+  the second `impl P` took the first's slot. Found by `two_impls`;
+  fixed by keying per statement (`mint_generated_code`).
+- **A TEMPLATE'S OWN DECLARATION WAS INVISIBLE TO ITS OWN READS**
+  (CONST's finding, left for this lane): `fn plain_base` generated
+  from a template, `plain_base()` in the same template was F3000.
+  Fixed: `generated_named` answers a template-origin read with the
+  generated declarations its template wrote (`resolve.av`). Pinned:
+  `quote/tests/self_read`.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **"A HOLE HAS NO POSITION UNTIL THE SPLICE PARSES" WAS A PROPERTY
+  OF THE TEXT MODEL, WRITTEN AS A LAW.** §7 q2 decided `Code`
+  untyped on it; the tree model retired it the same day. Amended in
+  the design doc with the by-kind answer.
+- **"THE NEXT BUILD IS `make bootstrap`" ASSUMES THE SEED KNOWS YOUR
+  SYNTAX.** After a lexer change, the committed seed predates it and
+  bootstrap builds a compiler that cannot read the compiler's own
+  templates; the way through was `make seed` from the fixed point
+  FIRST, then bootstrap as the receipt. Recorded in the design doc's
+  ladder.
+
+### PROCESS — the working discipline itself
+
+- **KEEP:** the red team's on-disk attack packages — 19 programs in
+  the scratchpad, 10 promoted to `quote/tests/*` as eval == native
+  program tests; the two real defects came from `twice` and
+  `selfread_plain`, neither of which the spec suite had a shape for.
+- **KEEP:** the expand byte-identity receipt — `avra expand` over the
+  derive test and the compiler's own two derives, diffed against
+  lane/comptime's binary; it caught the right-fold `&&` (semantically
+  equal, textually not) before it shipped.
+- **CHANGE:** a guard that says "no expected text may change" should
+  name the CONTRACT it protects; two spec assertions changed because
+  the mechanism moved (a refusal's seat words, a parse error now at
+  the library) and were reported, not hidden.
