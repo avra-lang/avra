@@ -755,8 +755,16 @@ def registry_entries():
 def registry_codes():
     return set(registry_entries())
 
+def numbered(codes):
+    """Idiom codes in numeric order."""
+    return sorted(codes, key=lambda c: int(c[1:]))
+
 def main():
     accept = "--accept" in sys.argv
+    if "--rules" in sys.argv:
+        print("ratcheted:", " ".join(numbered(RULES)))
+        print("unratcheted:", " ".join(numbered(UNRATCHETED)))
+        return 0
     # LAW 4: the registry may never outrun the ratchet.
     missing = registry_codes() - set(RULES) - set(UNRATCHETED)
     if missing:
