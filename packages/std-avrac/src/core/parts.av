@@ -22,7 +22,7 @@ impl NodeStore {
             .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _)
                 or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
                 or .Fail(_) or .StructDecl(_, _, _) or .EnumDecl(_, _, _)
-                or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> null,
+                or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> null,
         }
     }
 
@@ -46,7 +46,7 @@ impl NodeStore {
             .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _)
                 or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _)
                 or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _)
-                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _)
+                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _)
                 or .Spec(_, _) or .Defer(_, _) or .Error -> null,
         }
     }
@@ -112,7 +112,7 @@ impl NodeStore {
             .Defer(v, _) -> v,
             .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _)
                 or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Use(_, _, _)
-                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Error -> null,
+                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Error -> null,
         }
     }
 
@@ -126,7 +126,7 @@ impl NodeStore {
             .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or
             .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or
-            .ExternFn(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> [],
+            .ExternFn(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> [],
         }
     }
 
@@ -159,7 +159,7 @@ impl NodeStore {
             .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or
             .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .LetElse(_, _, _) or
-            .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> false,
+            .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> false,
         }
     }
 
@@ -182,6 +182,14 @@ impl NodeStore {
     fn trait_parts(s: StmtId) -> TraitParts? {
         match self.stmt(s) {
             .TraitDecl(name, fns) -> TraitParts { name: name, fns: fns },
+            _ -> null,
+        }
+    }
+
+    /// A sublanguage declaration's pieces, when the statement is one.
+    fn syntax_parts(s: StmtId) -> SyntaxParts? {
+        match self.stmt(s) {
+            .SyntaxDecl(name, text) -> SyntaxParts { name: name, text: text },
             _ -> null,
         }
     }
@@ -213,7 +221,7 @@ impl NodeStore {
             .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or
             .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or
-            .LetElse(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> null,
+            .LetElse(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> null,
         }
     }
 
@@ -240,12 +248,13 @@ impl NodeStore {
         if self.enum_parts(s) != null { return DeclKind.Enum }
         if self.struct_parts(s) != null { return DeclKind.Record }
         if self.trait_parts(s) != null { return DeclKind.Trait }
+        if self.syntax_parts(s) != null { return DeclKind.Syntax }
         null
     }
 
     /// A declaring statement's name.
     fn declared_name(s: StmtId) -> string? {
-        self.fn_parts(s)?.name ?? self.extern_parts(s)?.name ?? self.type_decl_name(s) ?? self.trait_parts(s)?.name
+        self.fn_parts(s)?.name ?? self.extern_parts(s)?.name ?? self.type_decl_name(s) ?? self.trait_parts(s)?.name ?? self.syntax_parts(s)?.name
     }
 
     /// A statement that declares rather than runs: a declaration,
@@ -284,6 +293,9 @@ export type AppliedParts = { subject: ExprId, args: List<ExprId> }
 
 /// What a trait declaration carries, projected once.
 export type TraitParts = { name: string, fns: List<StmtId> }
+
+/// A sublanguage declaration: its block word and its grammar's text.
+export type SyntaxParts = { name: string, text: string }
 
 /// What an impl block carries, projected once.
 export type ImplParts = { of: string?, target: string, fns: List<StmtId> }

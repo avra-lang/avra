@@ -1,0 +1,36 @@
+//! A toy SQL: a named grammar whose actions are this module's fns and
+//! whose AST is this module's types. A user's block becomes calls of
+//! `query`/`eq` with the user's holes as arguments.
+export type Select = { cols: List<string>, relation: string, cond: Where? }
+export type Where = { col: string, value: int }
+
+export fn query(cols: List<string>, relation: string, cond: Where?) -> Select {
+    Select { cols: cols, relation: relation, cond: cond }
+}
+
+export fn eq(col: string, value: int) -> Where { Where { col: col, value: value } }
+
+impl Select {
+    fn shown() -> string {
+        let w: string = match self.cond {
+            null -> ""
+            h? -> " WHERE ${h.col} = ${h.value}"
+        }
+        "SELECT ${self.cols.join(", ")} FROM ${self.relation}${w}"
+    }
+}
+
+export grammar sql {
+    select = "SELECT" c:NAME ( "," c:NAME )* "FROM" t:NAME ( "WHERE" w:where )? -> query(c, t, w)
+    where = c:NAME "=" v:NAME -> eq(c, v)
+}
+
+/// A second sublanguage in the same module — `kv { a = 1, b = 2 }`.
+export type Pair = { key: string, value: int }
+export fn pair(key: string, value: int) -> Pair { Pair { key: key, value: value } }
+export fn pairs(ps: List<Pair>) -> List<Pair> { ps }
+
+export grammar kv {
+    pairs = p:pair ( "," p:pair )* -> pairs(p)
+    pair = k:NAME "=" v:NUMBER -> pair(k, v)
+}

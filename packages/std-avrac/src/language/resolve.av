@@ -126,7 +126,7 @@ impl ResolveCx {
 
     mut fn arm_body(binds: List<Bound>, value: ExprId) {
         for j, b in binds {
-            if !self.refused_name(b.name, self.loc_of(value)) { self.bind(keyed(b.name, b.origin), Binding.Pattern(value, j)) }
+            if !self.refused_binder(b.name, self.loc_of(value)) { self.bind(keyed(b.name, b.origin), Binding.Pattern(value, j)) }
         }
         self.walk(value)
     }
@@ -149,7 +149,7 @@ impl ResolveCx {
         // a refused param name still BINDS (declare the wreckage) — the
         // body resolves quietly and the one refusal stands alone
         for pp in params {
-            let _ = self.refused_name(pp.name, self.loc_of(lam))
+            let _ = self.refused_binder(pp.name, self.loc_of(lam))
         }
         let origin: FileId? = self.view.origin_of(lam)
         // LICENSED I15: this IS the bracket
@@ -290,7 +290,7 @@ impl ResolveCx {
     fn name_laws() {
         for s in self.view.stmts {
             let fname: string? = self.view.store.fn_parts(s)?.name
-            if fname != null { let _ = self.refused_name(fname!, self.stmt_loc(s)) }
+            if fname != null { let _ = self.refused_binder(fname!, self.stmt_loc(s)) }
             let tname: string? = self.view.store.type_decl_name(s)
             if tname != null { self.type_name_law(tname!, s) }
         }
@@ -298,7 +298,7 @@ impl ResolveCx {
 
     fn type_name_law(name: string, s: StmtId) {
         let at = self.stmt_loc(s)
-        if self.refused_name(name, at) { return }
+        if self.refused_binder(name, at) { return }
         if builtin_type_name(self.view.lang.types, name) {
             self.emit(refusal("resolve.builtin_type", at, "`${name}` is a built-in type", "declared here", "choose another name — `int`, `string` and `bool` are the language's"))
         }
@@ -307,6 +307,19 @@ impl ResolveCx {
     /// The naming law, in one place: keywords and reserved words
     /// refuse as names. True means refused — the site keeps its
     /// hands off the name.
+    /// THE BLOCK WORD IS THE FILE'S ALONE: `w {` is also a struct
+    /// literal and a name before a block, so no binder or declaration
+    /// of the file may wear a sublanguage's word. A READ is not a
+    /// binder: `sql` alone is the unresolved name it always was.
+    fn refused_binder(name: string, at: Loc?) -> bool {
+        if self.refused_name(name, at) { return true }
+        if self.facts.names.syntaxes.get(name) != null {
+            self.emit(refusal("resolve.block_word", at, "`${name}` is a sublanguage's block word here, and nothing else in this file may wear it", "this name", "rename it, or import the sublanguage under another name"))
+            return true
+        }
+        false
+    }
+
     fn refused_name(name: string, at: Loc?) -> bool {
         if self.keywords.contains(name) {
             self.refuse_keyword(name, at, null)
@@ -332,7 +345,7 @@ impl ResolveCx {
             if self.keywords.contains(pp.name) {
                 self.refuse_keyword(pp.name, at, remedy_for(self.view.lang, pp.name))
             } else {
-                let _ = self.refused_name(pp.name, at)
+                let _ = self.refused_binder(pp.name, at)
             }
         }
     }
@@ -682,7 +695,7 @@ impl ResolveCx {
         let ix: string? = self.view.store.loop_index(s)
         if ix == null { return }
         let name = ix!
-        if self.refused_name(name, self.stmt_loc(s)) { return }
+        if self.refused_binder(name, self.stmt_loc(s)) { return }
         if name == (self.view.store.let_name(s) ?? "") { return self.paired_alike(s, name) }
         self.bind(keyed(name, self.view.origin_of_stmt(s)), Binding.Index(s))
     }
@@ -696,7 +709,7 @@ impl ResolveCx {
     fn bind_checked(s: StmtId) {
         let binds: string? = self.view.store.let_name(s)
         if binds == null { return }
-        if self.refused_name(binds!, self.stmt_loc(s)) { return }
+        if self.refused_binder(binds!, self.stmt_loc(s)) { return }
         // a DECLARED statement (a top-level `const`) is the namespace's:
         // order-free and module-wide, it binds nowhere in the sequence
         if self.view.decls.decl_of(self.view.file, s) != null { return }

@@ -31,6 +31,10 @@ export type Rebuilder = {
     // minted: the nodes that wear the TEMPLATE's origin — every node
     // but one whose binder or read came through a hole
     made_exprs: List<ExprId>,
+    // the source node each made expression was copied from, aligned
+    // with `made_exprs` — a copied node may itself have been minted
+    // by a sublanguage of another file
+    made_from: List<ExprId>,
     made_stmts: List<StmtId>,
     made_pats: List<PatId>,
     // the holes whose fill did not fit their seat — a defect the
@@ -43,12 +47,12 @@ export type Rebuilder = {
 
 /// A classifying walk over a store's quote body of `count` holes.
 export fn classifier(store: NodeStore, count: int) -> Rebuilder {
-    Rebuilder { src: store, dst: store, fills: [], copying: false, verbatim: false, kinds: [HoleKind.Name for i in 0..count], made_exprs: [], made_stmts: [], made_pats: [], misfits: [], holed: [] }
+    Rebuilder { src: store, dst: store, fills: [], copying: false, verbatim: false, kinds: [HoleKind.Name for i in 0..count], made_exprs: [], made_from: [], made_stmts: [], made_pats: [], misfits: [], holed: [] }
 }
 
 /// A copying walk from `src` into `dst`, the holes filled.
 export fn copier(src: NodeStore, dst: NodeStore, fills: List<fn(HoleKind) -> Filled>) -> Rebuilder {
-    Rebuilder { src: src, dst: dst, fills: fills, copying: true, verbatim: false, kinds: [], made_exprs: [], made_stmts: [], made_pats: [], misfits: [], holed: [] }
+    Rebuilder { src: src, dst: dst, fills: fills, copying: true, verbatim: false, kinds: [], made_exprs: [], made_from: [], made_stmts: [], made_pats: [], misfits: [], holed: [] }
 }
 
 /// A quote's holes classified — the kind of each, by its index.
@@ -261,6 +265,7 @@ impl Rebuilder {
             .Prop(subject, name) -> Expr.Prop(self.expr(subject), self.plain_name(name)),
             .Interp(parts, holes) -> Expr.Interp(parts, self.exprs(holes)),
             .Quote(parts, stmts, arms, holes) -> self.nested_quote(parts, stmts, arms, holes),
+            .Sublang(word, body, holes, x) -> if x == null { Expr.Sublang(word, body, self.exprs(holes), null) } else { Expr.Sublang(word, body, [], self.expr_opt(x)) },
             .If(c, t, f) -> Expr.If(self.expr(c), self.expr(t), self.expr(f)),
             .When(conds, values, fallback) -> Expr.When(self.exprs(conds), self.exprs(values), self.expr(fallback)),
             .Block(stmts, value) -> Expr.Block(self.stmts(stmts), self.expr_opt(value)),
@@ -291,6 +296,7 @@ impl Rebuilder {
         let ss = sub.stmts(stmts)
         let inner = sub.arms(arms)
         self.made_exprs = self.made_exprs.concat(sub.made_exprs)
+        self.made_from = self.made_from.concat(sub.made_from)
         self.made_stmts = self.made_stmts.concat(sub.made_stmts)
         self.made_pats = self.made_pats.concat(sub.made_pats)
         Expr.Quote(parts, ss, inner, self.exprs(holes))
@@ -313,6 +319,7 @@ impl Rebuilder {
             .Fail(v) -> Stmt.Fail(self.expr(v)),
             .ImplDecl(of, target, fns) -> Stmt.ImplDecl(self.type_name_opt(of), self.type_name(target), self.stmts(fns)),
             .TraitDecl(name, fns) -> Stmt.TraitDecl(self.name(name), self.stmts(fns)),
+            .SyntaxDecl(name, text) -> Stmt.SyntaxDecl(self.name(name), text),
             .LetElse(name, subject, stmts) -> Stmt.LetElse(self.name(name), self.expr(subject), self.stmts(stmts)),
             .For(name, from, to, cond, step, stmts) ->
                 Stmt.For(self.name(name), self.expr(from), self.expr(to), self.expr(cond), self.expr(step), self.stmts(stmts)),
@@ -344,7 +351,11 @@ impl Rebuilder {
         if self.src.is_type_lit(e) { self.dst.mark_type_lit(id) }
         if self.src.is_hole(e) { self.dst.mark_hole(id) }
         if x is .Quote { self.dst.mark_quote_at(id) }
-        if !holed { self.made_exprs.push(id) }
+        if x is .Sublang { self.dst.mark_sublang(id, self.src.body_start(e)) }
+        if !holed {
+            self.made_exprs.push(id)
+            self.made_from.push(e)
+        }
         id
     }
 

@@ -1,0 +1,35 @@
+//! Sublanguages — a library declares a block word with a NAMED grammar
+//! (`export grammar sql { … }`), and a user who imports the word writes
+//! that language inline: `sql { SELECT name FROM users WHERE id =
+//! ${uid} }`. The block is PURE SUGAR: the grammar runs at compile
+//! time over the body's tokens and its ACTIONS become ordinary calls
+//! into the library's fns, wearing the library's origin; a hole is an
+//! argument, so the seat law is the call law. The lexer takes the
+//! body whole under the file's imported words (`docs/2026_09_14_SUBLANGUAGES.md`).
+use features.{LanguageFeature, BuilderRow}
+use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn sublang() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name          | build
+        "syntax_decl" | build_syntax_decl
+        "sublang"     | build_sublang
+    }
+    let codes = table<DiagCode> {
+        kind                    | id      | summary
+        "type.syntax_action"    | "F2080" | "a named grammar's action names a fn of its own module, with its arity"
+        "resolve.block_word"    | "F2081" | "a sublanguage's word is the file's alone — no type, fn or binding may wear it"
+    }
+    component LanguageFeature f {
+        name = "sublang"
+        docs = "`export grammar w { <notation> }` declares a sublanguage; `w { … \${x} … }` in an importing file is its block — the grammar's actions become calls."
+        gram = grammar {
+            stmt = "grammar" n:NAME "{" t:STRING "}" END -> syntax_decl(n, t)
+            primary = w:BLOCK "{" b:BODY "}" ( hb:HOLE_BEGIN ( h:expression )? he:HOLE_END )* -> sublang(w, b, hb, h, he)
+        }
+        builders = rows
+        diags = codes
+    }
+    f
+}

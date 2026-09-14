@@ -60,6 +60,7 @@ impl SourceText {
             .Fail(value) -> [source_line(depth, "fail ${self.expression(value, 0, depth)}")],
             .ImplDecl(of, target, fns) -> [self.impl_decl(exported, of, target, fns, depth)],
             .TraitDecl(name, fns) -> [self.trait_decl(exported, name, fns, depth)],
+            .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name)} {${text}}")],
             .LetElse(name, subject, stmts) -> [self.statement_block("let ${source_name(name)}? = ${self.expression(subject, 0, depth)} else", stmts, depth)],
             .For(name, from, to, _, _, stmts) -> [self.statement_block("for ${source_name(name)} in ${self.expression(from, 0, depth)}..${self.expression(to, 0, depth)}", stmts, depth)],
             .Use(path, items, aliases) -> [source_line(depth, "use ${joined(path, ".")}.{${joined([import_item(items[j], aliases[j]) for j in 0..items.length], ", ")}}")],
@@ -235,6 +236,7 @@ impl SourceText {
             .Prop(subject, name) -> grouped("${self.expression(subject, 11, depth)}.${source_name(name)}", 11, parent),
             .Interp(parts, holes) -> grouped(self.interpolation(parts, holes, depth), 12, parent),
             .Quote(parts, _, _, holes) -> grouped(self.quotation(parts, holes, depth), 12, parent),
+            .Sublang(word, body, holes, _) -> grouped("${word} {${self.filled_body(body, holes, depth)}}", 12, parent),
             .If(cond, yes, no) -> grouped("if ${self.expression(cond, 0, depth)} ${self.block(yes, depth)} else ${self.block(no, depth)}", 12, parent),
             .When(conds, values, fallback) -> grouped(self.when_expr(conds, values, fallback, depth), 12, parent),
             .Block(stmts, value) -> grouped(self.braced(stmts, value, depth), 12, parent),
@@ -287,6 +289,14 @@ impl SourceText {
     }
 
     /// `quote { … }` — the runs as written, the holes re-spelled.
+    /// A block's body with each `${k}` placeholder shown as the hole it
+    /// names.
+    fn filled_body(body: string, holes: List<ExprId>, depth: int) -> string {
+        mut out = body
+        for k, h in holes { out = out.replace("\${${k}}", "\${${self.expression(h, 0, depth)}}") }
+        out
+    }
+
     fn quotation(parts: List<string>, holes: List<ExprId>, depth: int) -> string {
         mut out: Text = builder()
         out.push("quote {")

@@ -1,12 +1,13 @@
 //! One parsed program: the tree, its source, and the owner map —
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
-use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, Variant, Case, TypeRef, flatten}
-use grammar.{Captured, RunOutcome, DocComment, run_grammar, run_from, lex_source, lex_diagnostic, TokenKind}
-use features.{LangNode, NodeSemantics, StmtSemantics, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at}
+use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, Variant, Case, TypeRef, flatten, BlockVoice}
+use grammar.{Captured, RunOutcome, DocComment, run_grammar, run_from, lex_source, lex_blocks, lex_diagnostic, TokenKind, Diagnostic, Cause}
+use features.{LangNode, NodeSemantics, StmtSemantics, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at, BlockGrammar}
 use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
 use features.quote.{QuoteSemantics}
+use features.sublang.{SublangSemantics, SyntaxSemantics}
 use features.bool_lit.{BoolSemantics}
 use features.if_expr.{IfSemantics, IfStmtSemantics}
 use features.when_expr.{WhenSemantics}
@@ -46,7 +47,7 @@ export fn new_dispatch() -> Dispatch {
     Dispatch {
         spine: SpineSemantics { }, strs: StrSemantics { }, bools: BoolSemantics { }, ifs: IfSemantics { }, whens: WhenSemantics { },
         blocks: BlockSemantics { }, calls: FnsSemantics { }, aggs: ListSemantics { }, structs: StructsSemantics { }, enums: EnumsSemantics { },
-        nullables: NullableSemantics { }, catches: CatchSemantics { }, quotes: QuoteSemantics { },
+        nullables: NullableSemantics { }, catches: CatchSemantics { }, quotes: QuoteSemantics { }, sublangs: SublangSemantics { }, syntaxes: SyntaxSemantics { },
         lets: LetStmtSemantics { }, exprs: ExprStmtSemantics { }, decls: FnStmtSemantics { }, holes: HoleSemantics { },
         mutlets: MutLetSemantics { }, consts: ConstSemantics { }, assigns: AssignSemantics { }, whiles: WhileSemantics { }, fors: ForSemantics { },
         structdecls: StructDeclSemantics { }, enumdecls: EnumDeclSemantics { },
@@ -58,30 +59,39 @@ export fn new_dispatch() -> Dispatch {
     }
 }
 
-/// Parse a source into a FRESH store — the whole-file entry.
-export fn parse_program(lang: Language, src: SourceFile) -> Parsed {
+/// Parse a source into a FRESH store — the whole-file entry — under
+/// the sublanguage words the file imports (none for a file that
+/// imports none).
+export fn parse_program(lang: Language, src: SourceFile, blocks: List<BlockGrammar>) -> Parsed {
     mut store = new_node_store()
-    parse_into(lang, store, src)
+    parse_into(lang, store, src, blocks)
 }
 
 /// Parse into a store ALREADY standing — the target file's, when a
 /// generated declaration's source is admitted beside the one that
 /// asked for it. The returned statements are the newly minted ones.
-export fn parse_into(lang: Language, mut store: NodeStore, src: SourceFile) -> Parsed {
+export fn parse_into(lang: Language, mut store: NodeStore, src: SourceFile, blocks: List<BlockGrammar>) -> Parsed {
     if lang.syntax == null {
         return Parsed { store: store, stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
     }
-    let lexed = lex_source(src.text)
-    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, src.text)
+    let lexed = lex_blocks(src.text, [b.word for b in blocks])
+    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, src.text, blocks)
     let o = run_grammar<LangNode>(lang.syntax!, lexed.tokens, build)
     attach_docs(store, lexed.docs)
-    let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics)
+    // what a block's grammar refused speaks with the parse, at the block
+    let blocked = [block_diagnostic(v) for v in store.block_voices]
+    let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics).concat(blocked)
     Parsed {
         store: store,
         stmts: program_stmts(store, o),
         source: src,
         voices: Voices { list: project_all(engine, src.file, lang.rows.codes) },
     }
+}
+
+/// A block grammar's refusal as the engine's diagnostic it was.
+fn block_diagnostic(v: BlockVoice) -> Diagnostic {
+    Diagnostic { cause: Cause.Block, message: v.message, span: Span { lo: v.lo, hi: v.hi }, expected: v.expected, in_rule: v.in_rule }
 }
 
 /// A type SPELLING (`List<ExprId>?`) as the written type it spells —
@@ -93,7 +103,7 @@ export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
     mut store = new_node_store()
     let lexed = lex_source(text)
     if !lexed.errors.is_empty() { return null }
-    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, text)
+    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, text, [])
     let o = run_from<LangNode>(lang.syntax!, "type", [t for t in lexed.tokens if t.kind != TokenKind.Break], build)
     if o.result == null || !o.diagnostics.is_empty() { return null }
     type_ref_at([o.result!], 0)
