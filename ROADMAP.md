@@ -13288,6 +13288,42 @@ lanes' trees; this tree at the merge points only.
   FIRST, then bootstrap as the receipt. Recorded in the design doc's
   ladder.
 
+### SUBLANGUAGES (2026-09-14, the same lane's second campaign) — appended rows
+
+- **DEFECT, FIXED: AN EXPANSION AFTER ADMISSION CANNOT BE TYPED.** The
+  first draft expanded a block inside `resolved`; the typer's
+  per-declaration table, sized from the declaration's range at
+  admission, could not reach the nodes ("index 22 is out of bounds
+  (length 20)", `TypeCx.type_node` via `checked_fn`). Moved to the
+  PARSE, where `table<R>` expands. The general law: a node minted
+  after admission belongs to no declaration's range — mint at the
+  parse, or mint a declaration.
+- **DOCTRINE: A FEATURE'S GRAMMAR FRAGMENT IS ITS KEYWORD CLAIM, AND
+  THE CLAIM LANDS ON THE COMPILER'S OWN NAMES.** `stmt = "syntax" …`
+  made `syntax` a keyword and refused `Language.syntax` in the
+  product's second build — the build that succeeded was the build
+  that lied, again. Check `grep -rn "\b<word>\b" packages` before
+  claiming a word; the declaration is `grammar <word> { … }` for that
+  reason.
+- **DEFECT, FILED: THE GRAMMAR DSL SWALLOWS AN UNCLOSED GROUP AND AN
+  UNCLOSED ACTION.** `where = ( c:NAME` and `-> eq(c, v` both parse
+  with no word and ready with no defect (`sublang_test.av` probes;
+  `where: c:NAME` is what refuses). EVIDENCE: `./avra check` of a
+  library declaring them, 2026-09-14. THE ASK: `parse_grammar` refuses
+  an unclosed `(` and an action missing its `)`.
+- **FRICTION: `table` IS A KEYWORD.** A `Select { table: string }`
+  field refused F3002 three lines down; `relation` instead. Already
+  in "The subset today" as a reserved word; CONFIRMS.
+- **FRICTION: A PRESENT-BIND ARM AFTER A COMMA-ENDED ARM**, twice in
+  one afternoon (`null -> "", h? -> …`, `null -> [], b? -> …`) — each
+  read as "expected `}` to close the match" and cost a build.
+  CONFIRMS the subset row; the ask stands.
+- **SUGAR: A LEXER MODE PER SUBLANGUAGE.** A body's lexing is Avra's;
+  `'x'` in an SQL block refuses as two unexpected characters at the
+  block (pinned). Wanting site: `sublang_adversarial_test.av`'s
+  lexing-limit case. THE ASK: a `tokens { }` layer beside a named
+  grammar.
+
 ### PROCESS — the working discipline itself
 
 - **KEEP:** the red team's on-disk attack packages — 19 programs in

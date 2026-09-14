@@ -15,6 +15,9 @@ use @std.errors.{Loc}
 export type Namespace = {
     fns: Map<string, DeclId>,
     types: Map<string, DeclId>,
+    // the sublanguage words in scope — a block word before `{`
+    syntaxes: Map<string, DeclId>,
+    syntax_names: List<string>,
     fn_names: List<string>,
     type_names: List<string>,
     voices: Voices,
@@ -29,7 +32,7 @@ impl Namespace {
 }
 
 export fn no_names() -> Namespace {
-    Namespace { fns: {}, types: {}, fn_names: [], type_names: [], voices: no_voices() }
+    Namespace { fns: {}, types: {}, syntaxes: {}, syntax_names: [], fn_names: [], type_names: [], voices: no_voices() }
 }
 
 /// A module's names, bound once: the declarations that won, in
@@ -133,6 +136,7 @@ impl Binder {
         match kind {
             .Fn or .Const -> as_fn,
             .Record or .Enum or .Trait or .Builtin -> as_type,
+            .Syntax -> self.names.syntaxes.get(name),
             .Method or .Default or .Impl or .Main or .Case -> null,
         }
     }
@@ -141,6 +145,7 @@ impl Binder {
         match kind {
             .Fn or .Const -> self.bind_fn(name, d),
             .Record or .Enum or .Trait or .Builtin -> self.bind_type(name, d),
+            .Syntax -> self.bind_syntax(name, d),
             .Method or .Default or .Impl or .Main or .Case -> not_bound(),
         }
     }
@@ -148,6 +153,11 @@ impl Binder {
     fn bind_fn(name: string, d: DeclId) {
         self.names.fns.set(name, d)
         self.names.fn_names.push(name)
+    }
+
+    fn bind_syntax(name: string, d: DeclId) {
+        self.names.syntaxes.set(name, d)
+        self.names.syntax_names.push(name)
     }
 
     fn bind_type(name: string, d: DeclId) {
@@ -216,7 +226,7 @@ fn method_taken(at: Loc?, target: string, name: string) -> Diag {
 fn defined_twice(at: Loc?, kind: DeclKind, name: string) -> Diag {
     match kind {
         .Fn or .Const -> refusal("resolve.duplicate_fn", at, "`${name}` is defined more than once", "redefined here", "rename one of them"),
-        .Record or .Enum or .Trait or .Method or .Default or .Impl or .Main or .Case or .Builtin ->
+        .Record or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Builtin ->
             refusal("resolve.duplicate_type", at, "`${name}` is declared more than once", "redeclared here", "rename one of them"),
     }
 }
@@ -228,3 +238,4 @@ fn declared_twice(at: Loc?, name: string, other: string) -> Diag {
 fn import_clash(at: Loc?, item: string, holder: string) -> Diag {
     refusal("resolve.import_clash", at, "`${item}` is imported, but ${holder} already has it", "in this use", "drop the import, or rename the local declaration")
 }
+
