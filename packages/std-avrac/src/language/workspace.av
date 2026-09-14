@@ -16,7 +16,9 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Code, Generation, Segment, ArenaMarks, quote_meta, Elsewhere, SettleRoot}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Node, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot}
+use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, copier, hole_kinds, quote_kind, all_codes, is_name_cont}
+use diagnostics.{defect_at}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use core.{debug}
@@ -1061,59 +1063,142 @@ impl Workspace {
     /// cue: the compiler runs each named trait's associated `derive`.
     fn is_derived(ret: TypeId) -> bool { self.decls.meta_type(ret, "Derived") }
 
-    /// A directive's generated CODE parsed into this file's store —
-    /// no copy: the declarations mint from the same arena every pass
-    /// already reads — and its GENERATION recorded: the arena ranges
-    /// the nodes took and the file each run of text was written in,
-    /// which is how a generated node resolves and reports its home.
-    /// Refused source SPEAKS, homed at the template that wrote it.
-    fn admit_code(f: FileId, code: Code, ann: string, at: Span?, vis: Namespace) -> List<DeclId> {
-        mut store = self.decls.store_of(f)
+    /// A directive's generated DECLARATIONS spliced into this file's
+    /// store — every template copied from the store that parsed it,
+    /// its holes filled, each copied node wearing the file that wrote
+    /// it — and their GENERATION recorded: the arena ranges the nodes
+    /// took and the annotation that asked.
+    fn admit_code(f: FileId, code: Node, ann: string, at: Span?, vis: Namespace) -> List<DeclId> {
+        let store = self.decls.store_of(f)
         let before = arena_marks(store)
-        let text = code.text()
-        let p = parse_into(self.lang, store, new_source_file("<generated>", text))
+        let stmts = self.spliced_stmts(f, code)
         let took = before.until(arena_marks(store))
-        let g = Generation { exprs: took[0], stmts: took[1], pats: took[2], segments: self.segments_of(f, code), at: at }
-        // The parse's words carry generated offsets; the generation
-        // homes each one.
-        if !p.voices.list.is_empty() {
-            self.decls.speak_expansion(f, [self.decls.homed_diag(f, g, d) for d in p.voices.list])
-            return []
-        }
         // A GENERATED NAME THE FILE ALREADY DECLARES would lose to the
         // written one in silence — the two-tier lookup asks the written
         // namespace first. It speaks at the asking annotation instead.
-        let taken = [n for n in [store.declared_name(s) ?? "" for s in p.stmts] if vis.names(n)]
+        let taken = [n for n in [store.declared_name(s) ?? "" for s in stmts] if vis.names(n)]
         if !taken.is_empty() {
             self.decls.speak_expansion(f, [generated_taken(ann, n, loc_at(self.decls.file(f).path, at)) for n in taken])
             return []
         }
-        self.decls.note_generation(f, g)
-        // The tag is the SOURCE's fingerprint, so two derives that answer
-        // different impls mint two, and a re-run of one mints nothing new.
-        self.decls.mint_generated_code(f, p.store, p.stmts, before.exprs, "${fp_str(text)}", ann, at)
+        self.decls.note_generation(f, Generation { exprs: took[0], stmts: took[1], pats: took[2], at: at })
+        // The tag is the declarations' fingerprint, so two derives that
+        // answer different impls mint two, and a re-run of one mints
+        // nothing new.
+        let tag = fp(117, [store.stmt_fingerprint(s) for s in stmts])
+        self.decls.mint_generated_code(f, store, stmts, before.exprs, "${tag}", ann, at)
     }
 
-    /// A code's runs as segments of its text: each piece's byte range
-    /// and the file it was written in — this file's own runs, like a
-    /// hole's text, resolve here and wear no origin.
-    fn segments_of(f: FileId, code: Code) -> List<Segment> {
-        mut out: List<Segment> = []
-        mut lo = 0
-        for p in code.pieces {
-            out.push(Segment { lo: lo, hi: lo + p.text.length, origin: self.origin_file(f, p.origin), at: p.at })
-            lo = lo + p.text.length
+    // ── The splice: a Node materialized in a SEAT of file f's store.
+    // A template is copied from the store that parsed it; the other
+    // shapes are minted. ──
+
+    fn spliced(f: FileId, node: Node, kind: HoleKind) -> Filled {
+        match kind {
+            .Expression -> Filled.Expr(self.spliced_expr(f, node)),
+            .Name -> Filled.Name(self.spliced_names(node).first() ?? ""),
+            .Binder -> Filled.Names(self.spliced_names(node)),
+            .Type -> Filled.Type(self.spliced_type(node)),
+            .Statement -> Filled.Stmts(self.spliced_stmts(f, node)),
+            .Arm -> Filled.Arms(self.spliced_arms(f, node)),
         }
-        out
     }
 
-    /// The file a piece names as its origin, when it is another
-    /// loaded file than the one being generated into.
-    fn origin_file(f: FileId, origin: string?) -> FileId? {
-        if origin == null { return null }
-        let found: FileId? = self.decls.paths.get(origin!)
-        if found == null || same_file(found!, f) { return null }
-        found
+    fn spliced_stmts(f: FileId, node: Node) -> List<StmtId> {
+        match node {
+            .Template(file, at, _, fills) -> self.copied(f, file, at, fills, HoleKind.Statement).stmts,
+            .Many(items) -> flatten([self.spliced_stmts(f, i) for i in items]),
+            .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> {
+                let e = self.spliced_expr(f, node)
+                mut store = self.decls.store_of(f)
+                [store.alloc_stmt(Stmt.ExprStmt(e), null)]
+            },
+        }
+    }
+
+    fn spliced_expr(f: FileId, node: Node) -> ExprId {
+        mut store = self.decls.store_of(f)
+        match node {
+            .Template(file, at, _, fills) -> self.copied_expr(f, file, at, fills),
+            .Name(t) -> store.alloc_expr(Expr.Ident(t), null),
+            .Text(t) -> store.alloc_expr(Expr.StrLit(t), null),
+            .Int(v) -> store.alloc_expr(Expr.IntLit(v), null),
+            .Float(bits) -> store.alloc_expr(Expr.FloatLit(bits), null),
+            .Bool(b) -> store.alloc_expr(Expr.BoolLit(b), null),
+            .Interp(parts, holes) -> {
+                let hs = [self.spliced_expr(f, h) for h in holes]
+                store.alloc_expr(Expr.Interp(parts, hs), null)
+            },
+            .Many(_) -> store.alloc_expr(Expr.Error, null),
+        }
+    }
+
+    fn spliced_arms(f: FileId, node: Node) -> List<Arm> {
+        match node {
+            .Template(file, at, _, fills) -> self.copied(f, file, at, fills, HoleKind.Arm).arms,
+            .Many(items) -> flatten([self.spliced_arms(f, i) for i in items]),
+            .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> [],
+        }
+    }
+
+    /// The names a fill spells: one, or several for a binder list.
+    fn spliced_names(node: Node) -> List<string> {
+        match node {
+            .Name(t) -> [t],
+            .Text(t) -> [t],
+            .Int(v) -> ["${v}"],
+            .Many(items) -> flatten([self.spliced_names(i) for i in items]),
+            .Template(_, _, _, _) or .Float(_) or .Bool(_) or .Interp(_, _) -> [],
+        }
+    }
+
+    /// A type fill: a name as the type it names, a SPELLING read with
+    /// the language's `type` rule — the meta contract carries types as
+    /// their spellings until a type value carries its own shape.
+    fn spliced_type(node: Node) -> TypeRef {
+        let text = self.spliced_names(node).first() ?? ""
+        if all_codes(text, is_name_cont) { return named_ref(text) }
+        parse_type_ref(self.lang, text) ?? named_ref(text)
+    }
+
+    /// A template as an expression: its one statement's value, or a
+    /// block of its statements around the last one's.
+    fn copied_expr(f: FileId, file: string, at: int, fills: List<Node>) -> ExprId {
+        let stmts = self.copied(f, file, at, fills, HoleKind.Expression).stmts
+        mut store = self.decls.store_of(f)
+        let last: StmtId? = stmts.last()
+        if last == null { return store.alloc_expr(Expr.Error, null) }
+        let value: ExprId? = store.answer_of(last!)
+        if value == null { return store.alloc_expr(Expr.Block(stmts, null), null) }
+        if stmts.length == 1 { return value! }
+        store.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value!), null)
+    }
+
+    /// A template's body copied into file f's store, its holes filled
+    /// by their kinds — a body of nothing but holes takes the SEAT's
+    /// kind for every one. Each copied node records the file that
+    /// wrote it, unless that is f itself.
+    fn copied(f: FileId, file: string, at: int, fills: List<Node>, seat: HoleKind) -> Copied {
+        let held: FileId? = self.decls.paths.get(file)
+        if held == null { return nothing_copied() }
+        let origin = held!
+        let src = self.decls.store_of(origin)
+        let q: ExprId? = src.quote_at(at)
+        if q == null { return nothing_copied() }
+        let parts: QuoteParts? = (src.expr(q!)).quote_of()
+        if parts == null { return nothing_copied() }
+        let body = parts!
+        let kinds = hole_kinds(src, body)
+        let whole = quote_kind(src, body)
+        let filled = [self.spliced(f, fill, if whole is .Holes { seat } else { kinds[k] }) for k, fill in fills]
+        mut rb = copier(src, self.decls.store_of(f), filled)
+        let stmts = rb.stmts(body.stmts)
+        let arms = rb.arms(body.arms)
+        if !same_file(origin, f) { self.decls.note_origins(f, rb.made_exprs, rb.made_stmts, rb.made_pats, origin) }
+        // A fill that did not fit its seat is the compiler's own
+        // disagreement with its typing — spoken, never spliced quietly.
+        self.decls.speak_expansion(f, [misfit_defect(self.decls.file(origin).path, at, k) for k in rb.misfits])
+        Copied { stmts: stmts, arms: arms }
     }
 
     /// A lifted call's directives, or none when it refused — the ONE
@@ -2109,6 +2194,17 @@ fn elem_of(types: TypeRegistry, ty: TypeId) -> TypeId? {
 }
 
 /// The arenas' counts now.
+/// A template's body copied: its statements, or its arms.
+type Copied = { stmts: List<StmtId>, arms: List<Arm> }
+
+fn nothing_copied() -> Copied { Copied { stmts: [], arms: [] } }
+
+/// The splice's own disagreement with typing: hole `k` of the template
+/// at `at` was filled with a shape its seat does not take.
+fn misfit_defect(template: string, at: int, k: int) -> Diag {
+    defect_at(Loc { file: template, lo: at, hi: at }, "defect: hole ${k} of the template at offset ${at} was filled with a shape its seat does not take")
+}
+
 fn arena_marks(store: NodeStore) -> ArenaMarks {
     ArenaMarks { exprs: store.exprs.count(), stmts: store.stmts.count(), pats: store.pats.length }
 }

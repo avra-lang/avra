@@ -3,10 +3,16 @@
 // `quote_test.av`'s — one module, one provider under attack.
 use @std.avrac.language.{Program}
 
+/// The wrong-slot fixtures: a bool, a list, a code value and a string
+/// in scope, and the attack's line after them.
+fn slotted(line: string) -> Program {
+    packaged("use @std.meta.{Code}\nlet b = true\nlet xs = [1, 2]\nlet c: Code = quote { 1 }\nlet s = \"n\"\n${line}\n1", provider())
+}
+
 spec "features/quote — adversarial" {
     given "the raw body inside a hole" {
         then "a quote inside a quote's hole closes both" {
-            clean(packaged("use @std.meta.{Code}\nlet n = 2\nlet c: Code = quote { outer \${quote { inner \${n} }} done }\nc.text()", provider()))
+            clean(packaged("use @std.meta.{Code}\nlet n = 2\nlet c: Code = quote { outer(\${quote { inner(\${n}) }}) }\nc.text()", provider()))
         }
         then "a quote inside a string's hole reaches typing, which refuses it as unprintable" {
             refused_n(packaged("use @std.meta.{Code}\n\"\${quote { x }}\"", provider()), "an interpolation hole prints as a scalar or string, found `Code`", 1)
@@ -19,6 +25,45 @@ spec "features/quote — adversarial" {
     given "a quote where a literal is expected" {
         then "a `const` holds a quote as a managed value, no defect" {
             clean(packaged("use @std.meta.{Code}\nconst C: Code = quote { k }\nC.text()", provider()))
+        }
+    }
+
+    given "malformed surface" {
+        then "an empty hole is one refusal in its own words" {
+            refused_n(packaged("use @std.meta.{Code}\nlet c: Code = quote { \${ } }\n1", provider()), "a hole is empty", 1)
+        }
+        then "a body that does not parse speaks once — its kind is not a second word" {
+            refused_n(packaged("use @std.meta.{Code}\nlet c: Code = quote { fn f( }\n1", provider()), "expected `)`", 1)
+        }
+        then "a hole inside a hole is refused at the lexer, and the brace it leaves unbalanced is the one other word" {
+            refused_n(packaged("use @std.meta.{Code}\nlet c: Code = quote { \${\${1}} }\n1", provider()), "a hole inside a hole", 2)
+        }
+    }
+
+    given "wrong types in every seat" {
+        then "a name seat refuses a bool" {
+            refused_n(slotted("let w = quote { fn \${b}() -> int { 1 } }"), "a hole in name position takes a `string`, an `int` or a named meta value, found `bool`", 1)
+        }
+        then "a name seat refuses code" {
+            refused_n(slotted("let w = quote { fn \${c}() -> int { 1 } }"), "a hole in name position takes a `string`, an `int` or a named meta value, found `Code`", 1)
+        }
+        then "a type seat refuses a list" {
+            refused_n(slotted("let w = quote { fn f(x: \${xs}) -> int { 1 } }"), "a hole in type position takes a `Type`, a `Field`'s or a `string` spelling, found `List<int>`", 1)
+        }
+        then "an expression seat refuses a string, naming both spellings" {
+            refused_n(slotted("let w = quote { fn f() -> int { \${s} } }"), "a string in expression position is ambiguous — `literal(s)` spells a string literal, `name(s)` a name", 1)
+        }
+        then "an expression seat refuses a list" {
+            refused_n(slotted("let w = quote { fn f() -> int { \${xs} } }"), "a hole in expression position takes `Code`, an `int` or a `bool`, found `List<int>`", 1)
+        }
+        then "an arm seat refuses code" {
+            refused_n(slotted("let w = quote { match 1 { \${c} } }"), "a hole in arm position takes `Arms` or a `List<Arms>`, found `Code`", 1)
+        }
+        then "a statement seat refuses a bool" {
+            refused_n(slotted("let w = quote { impl T { \${b} } }"), "a hole in statement position takes `Code`, `Stmts` or `Decls`, or a list of them, found `bool`", 1)
+        }
+        then "a binder seat refuses code" {
+            refused_n(slotted("let w = quote { .A(\${c}) -> 1 }"), "a hole in binder position takes a name, or a `List<string>` of them, found `Code`", 1)
         }
     }
 

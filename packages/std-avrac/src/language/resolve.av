@@ -12,7 +12,7 @@
 //! the file that wrote its text, so a template's `let tmp` and a
 //! hole's `tmp` never meet, and a template's module names resolve in
 //! the namespace of the file that wrote the quote.
-use core.{StmtId, ExprId, FileId, PatId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore, LambdaParts, Annotation}
+use core.{StmtId, ExprId, FileId, PatId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore, LambdaParts, Annotation, same_file}
 use core.{SeatMark}
 use diagnostics.{Diag, error_at, pointed, refusal, Voices, no_voices}
 use features.modules.{module_laws}
@@ -521,12 +521,16 @@ impl ResolveCx {
         written_in(origin!)
     }
 
-    /// A generated declaration of THIS file by name — never asked for
-    /// a template's own name, which lives in another file.
+    /// A generated declaration of THIS file by name. A read of the
+    /// file's own text sees every generated name; a template's read
+    /// sees the declarations ITS template wrote — the declaration's
+    /// identity is the template's, not the target's.
     fn generated_named(name: string, origin: FileId?) -> DeclId? {
-        if origin != null { return null }
         let generated = self.elsewhere.generated
-        generated(name)
+        let found: DeclId? = generated(name)
+        if found == null || origin == null { return found }
+        let wrote: FileId? = self.view.origin_of_stmt(self.view.decls.decl(found!).stmt)
+        if wrote != null && same_file(wrote!, origin!) { found } else { null }
     }
 
     /// One use's resolved binding lands in the fact table.

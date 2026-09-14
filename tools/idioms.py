@@ -495,6 +495,9 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "I41": "an unwritable spelling as a key is a NAMING choice — the smell is\n"
+           "           an in-band tag a program could write, which no grep tells from\n"
+           "           an honest name; the review round hunts it",
     "I27": "RETIRED: a string's `.length` is a load — the header carries the\n"
            "           length — so a re-measure in a loop condition costs nothing and\n"
            "           the hoists that stand are harmless",

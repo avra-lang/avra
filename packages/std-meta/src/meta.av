@@ -21,9 +21,11 @@
 //! for its USES), `void` records, `List<Directive>` generates
 //! declarations beside the annotated one, and `Derived` runs a named
 //! trait's associated `derive` (`@derive(Show)`). A `quote { … }` is
-//! generated source as a `Code` value: each run remembers the file
-//! that wrote it, so a template's names resolve there and a hole's
-//! where the code is spliced.
+//! a TEMPLATE, parsed where it is written: it answers `Code` (an
+//! expression), `Stmts`, `Arms` or `Decls` by what its body is, and
+//! `${e}` is a hole typed by the seat it stands in — a name, a type,
+//! an expression, a statement, an arm. A template's names resolve
+//! where it was written; a hole's where the code is spliced.
 
 use @std.errors.{Loc}
 
@@ -91,60 +93,108 @@ export fn embed(path: string) -> string {
     avra_embed(path)
 }
 
-/// One run of generated source and the file that WROTE it. A quote's
-/// own text wears its file, so the compiler resolves the template's
-/// names there; a hole's text wears none, so its names resolve where
-/// the code is spliced. `at` is the run's offset in the writing file.
-export type Piece = { text: string, origin: string?, at: int }
-
-/// Generated SOURCE that remembers who wrote each run — what a
-/// `quote { … }` answers, and what a `Directive` carries.
-export type Code = { pieces: List<Piece> }
-
-impl Code {
-    /// The source, origins forgotten.
-    fn text() -> string { [p.text for p in self.pieces].join("") }
+/// Generated code as a TREE. A `quote { … }` names its own template
+/// — the file that wrote it and where — and carries what fills its
+/// holes; the compiler splices the template's parsed body, so a
+/// template's names resolve where it was written and a hole's where
+/// the code lands. The other shapes are what a hole may be filled
+/// with besides another template.
+export enum Node {
+    Template(file: string, at: int, parts: List<string>, fills: List<Node>)
+    /// an identifier
+    Name(text: string)
+    /// a string literal
+    Text(text: string)
+    Int(value: int)
+    Float(bits: int)
+    Bool(value: bool)
+    /// a generated interpolation: its literal runs and the code in
+    /// its holes
+    Interp(parts: List<string>, holes: List<Node>)
+    /// several in one seat — arms, declarations, statements, binders
+    Many(items: List<Node>)
 }
 
-/// A quote's own text: one run from the file at `origin`. The
-/// compiler's lowering of `quote { … }` calls this for each run.
-export fn quoted(text: string, origin: string, at: int) -> Code {
-    Code { pieces: [Piece { text: text, origin: origin, at: at }] }
-}
-
-/// Text resolved where it is spliced — a name the derive was handed,
-/// a fragment it built. What a `${}` hole holding a string answers.
-export fn spliced(text: string) -> Code {
-    Code { pieces: [Piece { text: text, origin: null, at: 0 }] }
-}
-
-/// Text as a STRING LITERAL of the generated program — quoted and
-/// escaped, so a derive writes `${literal(t.name)}` where the
-/// program must read `"Point"`.
-export fn literal(text: string) -> Code {
-    spliced("\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\"")
-}
-
-/// Runs of code side by side, `sep` between each pair — the `join`
-/// of a `List<Code>`: `joined(arms, ", ")`.
-export fn joined(parts: List<Code>, sep: string) -> Code {
-    mut pieces: List<Piece> = []
-    for j, p in parts {
-        if j > 0 && !sep.is_empty() { pieces.push(Piece { text: sep, origin: null, at: 0 }) }
-        pieces = pieces.concat(p.pieces)
+impl Node {
+    /// The source as text — a projection for printing, never what
+    /// the compiler reads: several in one seat print one per line,
+    /// whatever seat the splice puts them in.
+    fn text() -> string {
+        match self {
+            .Template(_, _, parts, fills) -> woven(parts, [f.text() for f in fills]),
+            .Name(t) -> t,
+            .Text(t) -> "\"${t.replace("\\", "\\\\").replace("\"", "\\\"")}\"",
+            .Int(v) -> "${v}",
+            .Float(bits) -> "${bits}",
+            .Bool(b) -> "${b}",
+            .Interp(parts, holes) -> "\"${woven(parts, ["\${${h.text()}}" for h in holes])}\"",
+            .Many(items) -> [i.text() for i in items].join("\n"),
+        }
     }
-    Code { pieces: pieces }
 }
+
+/// Runs with a fill between each pair — the parts are one longer.
+fn woven(parts: List<string>, fills: List<string>) -> string {
+    [parts[j] + f for j, f in fills].join("") + parts[fills.length]
+}
+
+/// An EXPRESSION template — what `quote { a + b }` answers.
+export type Code = { node: Node }
+/// A STATEMENT template — `quote { let a = 1 }`.
+export type Stmts = { node: Node }
+/// One or more MATCH ARMS — `quote { .A(x) -> x }`.
+export type Arms = { node: Node }
+/// One or more DECLARATIONS — `quote { impl T { … } }`; what a
+/// `Directive` carries.
+export type Decls = { node: Node }
+
+impl Code { fn text() -> string { self.node.text() } }
+impl Stmts { fn text() -> string { self.node.text() } }
+impl Arms { fn text() -> string { self.node.text() } }
+impl Decls { fn text() -> string { self.node.text() } }
+
+/// An identifier as code — a read of the name, where a bare string
+/// would be ambiguous.
+export fn name(text: string) -> Code { Code { node: Node.Name(text) } }
+
+/// Text as a STRING LITERAL of the generated program.
+export fn literal(text: string) -> Code { Code { node: Node.Text(text) } }
+
+/// A generated interpolation: `interpolated(["x: ", ""], [quote { self.x }])`
+/// reads `"x: ${self.x}"` in the generated program.
+export fn interpolated(parts: List<string>, holes: List<Code>) -> Code {
+    Code { node: Node.Interp(parts, [h.node for h in holes]) }
+}
+
+// ── What the compiler's lowering of a quote calls — one row per
+// seat and fill shape; never spelled by a program. ──
+
+export fn template(file: string, at: int, parts: List<string>, fills: List<Node>) -> Node {
+    Node.Template(file, at, parts, fills)
+}
+export fn as_code(n: Node) -> Code { Code { node: n } }
+export fn as_stmts(n: Node) -> Stmts { Stmts { node: n } }
+export fn as_arms(n: Node) -> Arms { Arms { node: n } }
+export fn as_decls(n: Node) -> Decls { Decls { node: n } }
+export fn int_node(v: int) -> Node { Node.Int(v) }
+export fn bool_node(b: bool) -> Node { Node.Bool(b) }
+export fn name_node(text: string) -> Node { Node.Name(text) }
+export fn int_name(v: int) -> Node { Node.Name("${v}") }
+export fn names_node(texts: List<string>) -> Node { Node.Many([Node.Name(t) for t in texts]) }
+export fn code_nodes(xs: List<Code>) -> Node { Node.Many([x.node for x in xs]) }
+export fn stmts_nodes(xs: List<Stmts>) -> Node { Node.Many([x.node for x in xs]) }
+export fn arms_nodes(xs: List<Arms>) -> Node { Node.Many([x.node for x in xs]) }
+export fn decls_nodes(xs: List<Decls>) -> Node { Node.Many([x.node for x in xs]) }
 
 /// A DIRECTIVE the COMPILER is asked to fulfil. A `twin` mints a fn
 /// beside the original under a name no written binding can take
 /// (`@traced("sum")` makes `sum_traced`); a `source` is generated
-/// CODE the compiler parses into this file's store and admits
-/// (`@derive`), each run resolved in the file that wrote it. A twin's
-/// name must be SPELLABLE — never a `$`-mangle. (NOT `Decl`: that
-/// name is the compiler's own declaration — a collision would arm a
-/// counterfeit.)
-export type Directive = { twin: string, name: string, at: Loc?, source: Code? = null }
+/// DECLARATIONS the compiler splices into this file's store and
+/// admits (`@derive`), each template resolved in the file that wrote
+/// it. A twin's name must be SPELLABLE — never a `$`-mangle. (NOT
+/// `Decl`: that name is the compiler's own declaration — a collision
+/// would arm a counterfeit.)
+export type Directive = { twin: string, name: string, at: Loc?, source: Decls? = null }
 
 
 /// The trace directive's decoder: `@traced("label")` on `fn sum`

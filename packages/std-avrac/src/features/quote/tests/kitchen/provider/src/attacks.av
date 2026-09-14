@@ -1,0 +1,109 @@
+//! The red team's templates: every node shape the copier must
+//! carry, and the seats a derive fills.
+use @std.meta.{Type, Fn, Variant, Directive, Code, Decls, Arms, Stmts, name, literal}
+
+/// A template exercising many node shapes at once.
+export trait Kitchen {
+    static fn derive(t: Type) -> List<Directive> {
+        let n = t.fields.length
+        let body = quote {
+            impl ${t} {
+                fn kitchen() -> string {
+                    let xs = [${n}, 2, 3]
+                    mut total = 0
+                    for x in xs { total = total + x }
+                    let doubled = [x * 2 for x in xs if x > 1]
+                    let k = if total > 3 { "big" } else { "small" }
+                    let m = match xs.length { 3 -> "three", _ -> "other" }
+                    let f = (a: int) -> a + total
+                    let opt: int? = null
+                    let o = opt ?? 7
+                    mut i = 0
+                    while i < 2 { i = i + 1 }
+                    let l = xs.any(it > 2)
+                    let s = xs.find { it > 1 } ?? 0
+                    let g = helper(total)
+                    "${k}-${m}-${f(1)}-${o}-${i}-${l}-${s}-${doubled.length}-${g}-${${n}}"
+                }
+            }
+        }
+        [Directive { twin: "", name: t.name, at: t.at, source: body }]
+    }
+}
+
+/// Private — reached from the template by its bare name.
+fn helper(x: int) -> int { x * 10 }
+
+/// `@run_with(quote { … })` on `fn f` generates `f_run`, splicing the
+/// user's STATEMENTS before a tail of its own.
+export fn run_with(f: Fn, stmts: Stmts) -> List<Directive> {
+    [Directive { twin: "", name: f.name, at: f.at, source: quote {
+        fn ${f}_run() -> int {
+            let acc = 100
+            ${stmts}
+            acc + ${f}()
+        }
+    } }]
+}
+
+/// Two impls from one directive — a `Many` of declarations.
+export trait Twice {
+    static fn derive(t: Type) -> List<Directive> {
+        let parts: List<Decls> = [quote { impl ${t} { fn one() -> int { 1 } } }, quote { impl ${t} { fn two() -> int { 2 } } }]
+        [Directive { twin: "", name: t.name, at: t.at, source: quote { ${parts} } }]
+    }
+}
+
+/// An enum's arms with `or` alternatives, a wildcard and a payload.
+export trait Armed {
+    static fn derive(t: Type) -> List<Directive> {
+        let arms = [arm_of(v) for v in t.variants]
+        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+            impl ${t} {
+                fn tag() -> string { match self { ${arms} } }
+            }
+        } }]
+    }
+}
+
+fn arm_of(v: Variant) -> Arms {
+    if v.payload.is_empty() { return quote { .${v} -> ${literal(v.name)} } }
+    let ps = ["p${i}" for i in 0..v.payload.length]
+    let first = name(ps[0])
+    quote { .${v}(${ps}) -> "${${literal(v.name)}}:${${first}}" }
+}
+
+/// A generated fn that itself answers a template.
+export trait Nested {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+            impl ${t} {
+                fn q() -> Code { quote { 1 + 1 } }
+            }
+        } }]
+    }
+}
+
+/// A template that DECLARES a name and READS it.
+export trait SelfRead {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+            fn ${t}_base() -> int { 40 }
+            impl ${t} {
+                fn read() -> int { ${t}_base() + 2 }
+            }
+        } }]
+    }
+}
+
+/// A template that DECLARES a name of its own and READS it.
+export trait SelfReadPlain {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+            fn plain_base() -> int { 40 }
+            impl ${t} {
+                fn read() -> int { plain_base() + 2 }
+            }
+        } }]
+    }
+}
