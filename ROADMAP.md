@@ -13775,3 +13775,70 @@ No Avra was written, so the empty axes are empty by scope.
 - **KEEP: land the label fix before the law that cites it.** Two
   hats before the receipts law, or the receipts law names a label
   still standing in the same commit. One PR, ordered hunks.
+
+## Feedback survey — 2026-09-14 #12 (lane/d, the subset re-probe; the audit's last slice)
+
+Counted per axis: friction 2, sugar 0, features 0, defects 3 (the
+compiler's, filed), doctrine 3, performance 0, process 2. The top
+three by cost: three compiler defects found by re-running the file's
+own examples; a probe harness that rewrote `\u` into U+FFFD and
+reported a holding entry as accepted; an entry that contradicted its
+neighbour eleven lines down. Not surveyed: the two entries a loose
+file cannot reach (a declares-annotation needs a second module; a
+minted NUL needs `@std/text`) — cited from source, not probed. No
+Avra was written beyond scratch probes.
+
+### FRICTION — what cost time
+
+- **THE PROBE HARNESS REWRITES `\u`.** A heredoc and the editor's
+  Write both turned `"�"` into a real U+FFFD, so entry 26's
+  probe first read ACCEPTED where it HOLDS (length 6, a backslash and
+  a `u`). `printf '\134u'` writes the byte. EVIDENCE: sub2's report.
+  THE ASK: none for the tree — write probe files with printf and
+  octal escapes; a probe's file is checked with `od -c` before its
+  result is believed.
+- **`$?` AFTER A PIPE IS THE PIPE'S.** Four exit-0 readings were
+  `tee`'s status. Read the compiler's status before piping.
+
+### DEFECTS — the compiler's, filed under avra-8sb5.5
+
+- **A `null ->` ARM OVER A NULLABLE ENUM CASCADES F3002** ("`null` is
+  a keyword — pick another name") beside the true F2013, and carets
+  the arm's body. Filed avra-ismf.
+- **AN ANNOTATION ON A FN'S TAIL EXPRESSION IS SILENT**: `@no_such`
+  before the tail `1` checks and runs clean; on a statement or a
+  declaration it is F3000. Filed avra-mtrh.
+- **A USER `fn main` CALLED FROM THE TOP LEVEL RECURSES** into the
+  program's own entry ("recursion too deep — 400 nested calls"), no
+  annotation involved. Filed avra-ewei.
+
+### DOCTRINE — the cache moved under nine entries
+
+- **A CACHE ENTRY NAMES ITS BASE OR IT CANNOT BE RE-CHECKED.** 58
+  entries re-probed at f178c17: 46 held verbatim; 8 refuse with a
+  different code or different words today (`ident` unpinned now
+  SPEAKS F2033; the two-`for` comprehension now names the
+  comprehension first; a parse error no longer stops typing for the
+  file); `@comptime` parses now (F3000, a speaking law, deleted);
+  `export const` compiles (the guard spares a `const_value`, the
+  clause retired). Every rewording quotes the output it was
+  re-probed with.
+- **TWO ENTRIES CONTRADICTED EACH OTHER ELEVEN LINES APART.** The
+  `export const` refusal and the top-level-`const` entry ("exported
+  only when it says `export`") both stood; one was stale. CONFIRMS
+  the duplicate-prose law's premise that prose has no gate; a
+  cross-entry contradiction needs a reader, and this audit was one.
+- **AN EXAMPLE THAT TRIPS A SECOND LAW HIDES THE ONE IT SHOWS.**
+  Entry 22's comprehension example named a parameter `as`, a
+  keyword, so its probe drew F3002 beside the refusal it exists to
+  demonstrate. Re-spelled.
+
+### PROCESS — the working discipline
+
+- **KEEP: the refuter re-runs every probe.** Told that a verdict it
+  had not reproduced was not a verdict, it refuted one of eleven
+  (entry 27's "stops there": the whole file goes untyped, earlier
+  declarations included) and narrowed two others.
+- **RECORDED TRIGGER, unchanged:** when `lang/subset/*.av` lands as
+  gate-verified program tests, this section becomes a pointer. Its
+  first two members are the entries a loose file cannot reach.

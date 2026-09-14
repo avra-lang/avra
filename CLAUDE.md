@@ -1108,17 +1108,17 @@ Syntax the grammar lacks:
   in lo..hi]` counts.
 - A GENERIC STRUCT LITERAL WITH EXPLICIT TYPE ARGUMENTS (`Box<float>
   { held: 1.25 }`): F0100 "expected BREAK while parsing `stmt`", at
-  the `<`. A TYPED LET carries it instead — `let b: Box<float> = Box
+  the `>`. A TYPED LET carries it instead — `let b: Box<float> = Box
   { held: 1.25 }` — and INFERENCE IS FINE without any pin: a generic
   fn over a generic struct resolves from its argument
   (`unwrap(bf)` where `bf: Box<float>`, probed at 5575a2e, both
   engines). Worth stating because the literal's refusal cascades into
   a "write the type explicitly" further down, and the pin that
   silences it is not the thing that was wrong.
-- A DOUBLE `?` on a type (`int??`): F0100 "expected `)` while parsing
-  `stmt`" at the second `?` — the type grammar takes one `?` per name,
-  so a doubly-nullable value has no spelling, in an annotation or a
-  type literal alike.
+- A DOUBLE `?` on a type (`int??`): F0100 at the FIRST `?`, wording
+  by position ("expected `)`" in a parameter seat, "expected `=`"
+  under a `let`, "expected BREAK" under a `type` alias) — the type
+  grammar takes one `?` per name, so it has no spelling anywhere.
 - A `table` literal without its row type: a bare `table { id: 1 }`
   reads as a STRUCT LITERAL of a type named `table` — F3000 "no `type
   table` is declared", with no hint that the row type is missing. The
@@ -1169,12 +1169,12 @@ Syntax the grammar lacks:
   to a match — the block goes in the parentheses), and `(f(a)) { … }`
   widens `f(a)` (a paren group mints no node) where `f(a)() { … }`
   applies the answer.
-- A GENERIC FN AS A VALUE (`let f: fn(int) -> int = ident<int>`, the
-  pinned call unapplied): "expected BREAK while parsing `stmt`" — a
-  pinned call is a CALL in the grammar, so a generic fn cannot be
-  stored, and a generic `mut`-seat fn cannot fill a fn-typed seat.
-- `@comptime`: refuses at the `@` ("expected `mod`, `use`, … while
-  parsing `stmt`").
+- A GENERIC FN AS A VALUE: the PINNED spelling (`let f: fn(int) -> int
+  = ident<int>`) is F0100 "expected BREAK while parsing `stmt`" — a
+  pinned call is a CALL, so it wants arguments. The BARE spelling
+  SPEAKS: F2033 "a generic fn is not a value — no single signature to
+  wear", whose help writes the wrapper. Genericity is all of it — a
+  non-generic `mut`-seat fn fills `fn(mut Cx) -> int` clean.
 - The bare component form (`Cfg d { depth = 8 }`): "expected BREAK
   while parsing `stmt`" — `component Cfg d { … }` is the form.
   Instantiation is a STATEMENT: as a fn's tail it answers `void`
@@ -1189,16 +1189,18 @@ Syntax the grammar lacks:
 - A MAP'S KEYS ARE STRINGS ONLY: `Map<int, int>` is F2019 "a map's
   keys are strings, not `int`", help "other key types are recorded".
   It kills the obvious trie-node shape; key by the text.
-- `++` IS NOT A LIST OPERATOR: `xs ++ ys` is "expected BREAK while
-  parsing `stmt`" AT the `++`, and the fn then reads as answering
-  `void`, so the real refusal arrives as a type error about the
-  body. `xs.concat(ys)` is the spelling.
+- `++` IS NOT A LIST OPERATOR: `xs ++ ys` is F0100 "expected BREAK
+  while parsing `stmt`" AT the `++`, and that is the WHOLE refusal —
+  the fn draws no type complaint of its own, and typing is not
+  suppressed here (a sibling fn's error reports in the same run).
+  `xs.concat(ys)` is the spelling.
 - `List` HAS `all`, NOT `every`: `.every(it > 0)` is F2030, `.all(it
   > 0)` compiles — which retires the double negative `![…].any(!it)`.
-- A COMPREHENSION TAKES ONE `for` HEAD: `[a + b for a in as for b in
-  bs]` does not parse, and the SYMPTOM MISDIRECTS — the binding is
-  reported UNDEFINED AT ITS USE SITE (F3000) with nothing said at the
-  comprehension. A nested sweep is a named helper per outer element.
+- A COMPREHENSION TAKES ONE `for` HEAD: `[a + b for a in ps for b in
+  qs]` is F0100 "expected `]` to close the comprehension" AT the
+  second `for`. The let's own binding still reads UNDEFINED at its use
+  site (F3000) behind it, but the comprehension is named FIRST now. A
+  nested sweep is a named helper per outer element.
 - A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
   when another arm follows (found by the HTTP lane, probed here).
   `match v { .R(o) -> o` with `.S -> "s"` on the next line is
@@ -1219,16 +1221,18 @@ Syntax the grammar lacks:
   holds a backslash and a `u`. Spell a code point with `@std/text`'s
   `from_codepoint(65533)` (sugar backlog: `\u{…}` escapes).
 - A match arm whose body is a bare STATEMENT (`.Unknown(t) -> fail
-  E.Bad(t),`): "expected `}` to close the `match`", and every later
-  declaration cascades. An arm's body is an expression — brace it:
-  `.Unknown(t) -> { fail E.Bad(t) },` (a block that leaves joins the
-  other arms).
+  E.Bad(t),`): F0100 "expected `}` to close the `match`" at the
+  `fail`'s payload, then "expected EOF while parsing `program`" — and
+  the whole file goes UNTYPED, earlier declarations included. An arm's
+  body is an expression — brace it: `.Unknown(t) -> { fail E.Bad(t) },`
+  (a block that leaves joins the other arms).
 - `?` then a field on a Result (`get(i)?.name`): lexes as `?.` —
   F2023 "`?.` reaches into a nullable, this is `Result<P, E>`".
   `(get(i)?).name` says it, in a comprehension element too.
-- `export let` / `export const`: F3014 "`export` marks a fn, type,
-  enum or trait — not this statement" — a constant crosses modules
-  as a fn.
+- `export let`: F3014 "`export` marks a fn, type, enum or trait — not
+  this statement", help "drop the `export`, or declare the value as a
+  fn". `export const` LANDED — a constant crosses as a const, and the
+  help's "as a fn" reaches a `let` alone.
 - `is` with a PAYLOAD pattern (`p is .Bind(_)`): "expected BREAK
   while parsing `stmt`" — `is` takes a BARE variant. A one-arm
   match is the projection (`.Bind(_) -> true, _ -> false`).
@@ -1250,11 +1254,12 @@ Syntax the grammar lacks:
   not its shape. Parenthesise the propagation — `(shell(line)?).run()`
   — or bind it first. The field twin (`x()?.out`) is the same
   refusal; its help says "write `.out`", wrong for propagate-then-read.
-- `fail` inside a `catch` ARM's block (`x catch e -> { cleanup(); fail
-  e }`): F2029 "a `catch` arm answers the ok side: `T`, this is
-  `Result<…>`" — the arm's block is not read as diverging. Write the
-  statement `match` (`.Err(e) -> { cleanup(); fail e }, .Ok(v) -> …`),
-  which is (@std/process's three drivers).
+- `fail` inside a `catch` ARM's block (`x catch e -> { … fail e }`,
+  the block's statements on their own lines — a `;` is F0001): F2029
+  "a `catch` arm answers the ok side: `T`, this is `Result<…>`" — the
+  arm's block is not read as diverging. Write the statement `match`
+  (`.Err(e) -> { … fail e }, .Ok(v) -> …`), as @std/process's three
+  drivers do.
 - A NULLABLE LIST ELEMENT, and the boundary moved — the old entries
   (a `null` literal under `List<T?>`, and `List<T>` refusing a
   `List<T?>` want) are RETIRED, both now compile. What refuses today,
@@ -1303,7 +1308,7 @@ Wants the typer does not carry yet:
   and a `ProcessError` in hand checks and dispatches (probed at
   `8519ae9`, answering `proc 2`); that clause is retired.
 - A trait impl over a GENERIC type (`impl Show for Box<T>`): F2031
-  "`P` is generic — a trait impl over a generic type is recorded,
+  "`Box` is generic — a trait impl over a generic type is recorded,
   not landed". Inherent generic impls (`impl Box<T>`) land.
 - Variant arms on a NULLABLE enum (`match k { .A -> …, null -> …
   }` over `K?`): F2013 "`match` chooses over an enum, found `K?`"
@@ -1352,8 +1357,8 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   `Map<string, int>`" — `.get(k)`, which answers `T?`.
 - An EMPTY LITERAL does not adopt a NULLABLE aggregate want: `let
   xs: List<int>? = []` is F2024 "`xs` declares `List<int>?`, this is
-  `[]`", `{}` under a `Map<K, V>?` reads alike, and a fn tail says
-  "the body answers `[]?` but … declares `List<int>?`". Bind the
+  `[]`", `{}` under a `Map<K, V>?` reads alike, and a fn tail is
+  F2000 "the body answers `[]` but `f` declares `List<int>?`". Bind the
   empty at its own type first (`let none: List<int> = []`). An
   empty STRING adopts `string?` fine.
 - A struct-literal FIELD seat does not plant a want on its value
