@@ -36,6 +36,24 @@ green (compiler 2,303/2,303 spec + 88 + 8 programs; sqlite 414/414),
 
 ---
 
+## Completion ledger (task master, 2026-09-14)
+
+What "comptime complete" means, one row per remaining item, with its
+owner. Done rows stay for the record.
+
+| item | owner | status |
+|---|---|---|
+| S1–S5, S4r, private const, const seats, `check --every` | lane/comptime | DONE (`2d4663e`) |
+| parsed templates (a)–(e): holes typed by position, name holes, S4r text machinery gone, expand provenance | COMPTIME TEMPLATES | (a) gated, awaiting three fixes + the commit word |
+| typed sublanguage holes (`sql { … }`) | COMPTIME TEMPLATES, after (e) | queued |
+| §4.5 static data for aggregate consts (a read is an address) | COMPTIME STATIC | queued |
+| §7 q4 budgets: measured defaults, `[lifted]` manifest rows | COMPTIME STATIC | queued |
+| §7 q5 package-namespaced diagnostic kinds for user annotations | COMPTIME STATIC | queued |
+| §7 q1 type-as-value spelling | task master | DECIDED: the annotation position is enough until a use outside one appears |
+| `@total` (spec 14.4) | owner's word on scope | asked 2026-09-14 |
+| type operators (`Type -> Type`) | needs type aliases — owner's language decision | asked 2026-09-14 |
+| JIT behind `run_call`, parallel settlement, manifest read grants | recorded triggers, not blockers | a settlement over budget / a measured wall-clock / the first `embed` outside the package root |
+
 ## Prompt for the next session
 
 ```
