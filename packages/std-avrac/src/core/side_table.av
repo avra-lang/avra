@@ -1,0 +1,100 @@
+//! A DENSE SIDE TABLE over an arena's ids — the storage every pass's
+//! fact columns share. Node facts live beside the nodes, keyed by id,
+//! and a pass owns its own columns.
+//!
+//! ITS SIBLING IS `Table<T>` AND THE DIFFERENCE IS TOTALITY. A
+//! `Table` is SPARSE: absence is a value, a write grows it, and a
+//! read past the end answers Missing. A `SideTable` is TOTAL over a
+//! WINDOW: every id in [lo, hi) holds a value from birth, and a read
+//! outside the window is a DEFECT — the id was never minted, or the
+//! arena grew after the table was born. `grow_to` is the one door
+//! that admits new ids, so a table sized before its arena grew is
+//! REPAIRED rather than reported.
+//!
+//! THE WINDOW IS THE TABLE'S, NOT EVERY READER'S. A body's columns
+//! run over that body's expression range alone; subtracting `lo` at
+//! each of thirty reading sites is thirty chances to subtract the
+//! wrong one.
+//!
+//! The key is a SLOT. A typed id cannot be a type parameter here —
+//! a bound is spellable on a free fn's parameters and nowhere else
+//! (CLAUDE.md, "The subset today") — so the typed door stays on the
+//! owner, where it already is and where it is read: `type_at(e:
+//! ExprId)` calls `get(e.index)` and nothing else touches a slot.
+
+/// The trap a defective read ends at — its words name the table and
+/// the id, where a bare index read names neither.
+extern fn avra_trap(s: string)
+
+/// Values for the ids in [lo, lo + cells.length), plus the value a
+/// new id arrives holding.
+export type SideTable<V> = { name: string, lo: int, cells: List<V>, seed: V }
+
+/// Born TOTAL over [lo, hi): every id already holds `seed`.
+export fn side_table<V>(name: string, lo: int, hi: int, seed: V) -> SideTable<V> {
+    SideTable { name: name, lo: lo, cells: filled(hi - lo, seed), seed: seed }
+}
+
+/// A window over cells the caller already built — for an element
+/// type a generic fill must not seed (a list of lists; the compiler's
+/// own `empty_lists_*` say why).
+export fn side_table_of<V>(name: string, lo: int, cells: List<V>, seed: V) -> SideTable<V> {
+    SideTable { name: name, lo: lo, cells: cells, seed: seed }
+}
+
+impl SideTable<V> {
+    fn get(k: int) -> V {
+        if !self.holds(k) { self.outside(k) }
+        self.cells[k - self.lo]
+    }
+
+    fn set(k: int, v: V) {
+        if !self.holds(k) { self.outside(k) }
+        self.cells.set(k - self.lo, v)
+    }
+
+    /// Whether the window holds this id.
+    fn holds(k: int) -> bool { k >= self.lo && k - self.lo < self.cells.length }
+
+    /// The first id past the window.
+    fn hi() -> int { self.lo + self.cells.length }
+
+    /// How many ids the window holds.
+    fn length() -> int { self.cells.length }
+
+    /// THE ONE DOOR FOR AN ARENA THAT GREW: every id below `count`
+    /// joins the window holding the seed. Never shrinks.
+    fn grow_to(count: int) {
+        let want = count - self.lo
+        while self.cells.length < want { self.cells.push(self.seed) }
+    }
+
+    /// Another window's values laid into this one, at their own ids —
+    /// the per-file fold of a body's columns. THE FOLD GROWS FIRST:
+    /// a declaration generated after this table was born carries ids
+    /// past its end, and that is the one thing `grow_to` exists for.
+    fn lay(other: SideTable<V>) {
+        self.grow_to(other.hi())
+        let at = other.lo - self.lo
+        for j, v in other.cells { self.cells.set(at + j, v) }
+    }
+
+    /// Another window's values laid in where the predicate names
+    /// them — a fold that leaves the rest of this window standing.
+    fn lay_named(other: SideTable<V>, p: fn(V) -> bool) {
+        self.grow_to(other.hi())
+        let at = other.lo - self.lo
+        for j, v in other.cells {
+            if p(v) { self.cells.set(at + j, v) }
+        }
+    }
+
+    /// The ids whose value the predicate names, in window order.
+    fn ids(p: fn(V) -> bool) -> List<int> {
+        [self.lo + j for j, v in self.cells if p(v)]
+    }
+
+    fn outside(k: int) {
+        avra_trap("side table `${self.name}` holds [${self.lo}, ${self.hi()}) — id ${k} is outside it")
+    }
+}

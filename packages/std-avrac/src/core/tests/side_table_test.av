@@ -1,0 +1,107 @@
+// The dense side table — the storage every pass's fact columns
+// share. Written adversarially: the WINDOW is attacked at both
+// edges, the GROW is attacked from a table born empty, and the FOLD
+// is attacked with a window that reaches past the one it lands in,
+// which is the "a table sized before the arena grew" defect this
+// type exists to make impossible.
+use @std.avrac.core.{SideTable, side_table, side_table_of, joined}
+
+/// A window's cells, comma-joined — content and order together.
+fn window(t: SideTable<int>) -> string {
+    joined(["${t.get(i)}" for i in t.lo..t.hi()], ",")
+}
+
+fn positive_cell(v: int) -> bool { v > 0 }
+
+spec "core/side_table" {
+    given "a table is born TOTAL over its window" {
+        then "every id already holds the seed" {
+            window(side_table("t", 0, 3, 9)) == "9,9,9"
+        }
+        then "an empty window holds nothing and ends where it starts" {
+            let t = side_table("t", 4, 4, 0)
+            t.length() == 0 && t.hi() == 4 && !t.holds(4)
+        }
+        then "a window that is not at zero holds its own ids" {
+            let t = side_table("t", 10, 13, 0)
+            t.holds(10) && t.holds(12) && !t.holds(9) && !t.holds(13)
+        }
+    }
+    given "the window is the table's, not the reader's" {
+        then "a write and a read name the same id, never an offset" {
+            mut t = side_table("t", 10, 13, 0)
+            t.set(11, 7)
+            t.get(11) == 7 && t.get(10) == 0 && t.get(12) == 0
+        }
+        then "the first and last ids of the window are reachable" {
+            mut t = side_table("t", 10, 13, 0)
+            t.set(10, 1)
+            t.set(12, 3)
+            window(t) == "1,0,3"
+        }
+    }
+    given "grow_to is the one door for an arena that grew" {
+        then "the new ids arrive holding the seed" {
+            mut t = side_table("t", 0, 2, 5)
+            t.grow_to(4)
+            window(t) == "5,5,5,5"
+        }
+        then "growing to a count the window already covers changes nothing" {
+            mut t = side_table("t", 0, 3, 5)
+            t.grow_to(2)
+            t.length() == 3
+        }
+        then "a table born EMPTY grows from nothing" {
+            mut t = side_table("t", 0, 0, 1)
+            t.grow_to(2)
+            window(t) == "1,1"
+        }
+        then "growing preserves what was already written" {
+            mut t = side_table("t", 0, 2, 0)
+            t.set(1, 8)
+            t.grow_to(4)
+            window(t) == "0,8,0,0"
+        }
+    }
+    given "a fold lays one window into another" {
+        then "the values land at their own ids" {
+            mut whole = side_table("whole", 0, 4, 0)
+            mut part = side_table("part", 2, 4, 0)
+            part.set(2, 7)
+            part.set(3, 8)
+            whole.lay(part)
+            window(whole) == "0,0,7,8"
+        }
+        then "A WINDOW PAST THE FOLD'S END GROWS IT — the defect this type retires" {
+            mut whole = side_table("whole", 0, 2, 0)
+            mut late = side_table("late", 3, 5, 0)
+            late.set(4, 6)
+            whole.lay(late)
+            window(whole) == "0,0,0,0,6"
+        }
+        then "a named fold leaves the unnamed cells standing" {
+            mut whole = side_table("whole", 0, 3, 4)
+            mut part = side_table("part", 0, 3, 0)
+            part.set(1, 9)
+            whole.lay_named(part, positive_cell)
+            window(whole) == "4,9,4"
+        }
+    }
+    given "the ids a predicate names" {
+        then "they are the window's own ids, not offsets" {
+            mut t = side_table("t", 10, 13, 0)
+            t.set(12, 1)
+            let found = t.ids(positive_cell)
+            found.length == 1 && found[0] == 12
+        }
+        then "nothing named is no ids" {
+            side_table("t", 0, 3, 0).ids(positive_cell).is_empty()
+        }
+    }
+    given "a window over cells already built" {
+        then "it wears the cells it was handed" {
+            let cells: List<int> = [1, 2, 3]
+            window(side_table_of("t", 5, cells, 0)) == "1,2,3"
+        }
+    }
+}
