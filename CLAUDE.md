@@ -196,6 +196,14 @@ engine's spec, written by dogfooding.
   EVER GUARDED A STATIC ENUM IS UNTESTED — the first widening is its
   first real test, and that is the worst moment to learn it was only
   ever looking for one shape.
+  AND THE OBLIGATION CROSSES A PACKAGE BOUNDARY TOO, not only into C.
+  A registry keyed on ANOTHER PACKAGE'S enum is spelled over NAMES —
+  `node_value` matches `@std.meta.Node`'s variant names, because a
+  foreign enum has no typed id here — so no compiler law and no grep
+  sees it, and its `_ -> null` forgot the next variant the way every
+  registry hole does: a template generated nothing and nobody was
+  told. The keeper cannot follow across the seam; spell the arms and
+  make the unknown SPEAK.
 - THE EXEMPTION LAW, which the above is one instance of: a doctrine
   exemption that is not written AT THE SITE is an unbounded amnesty.
   Prose exemptions are invisible to tooling and to the next reader,
@@ -458,6 +466,14 @@ engine's spec, written by dogfooding.
   discipline: for every representation you add or consume, the empty
   case is the first case you write, and a diff shows whether you
   did.
+  AND THE SPARE VALUE IS SPENT TWICE INSIDE THE LANGUAGE AS WELL.
+  `Directive.source: Node?` answered null for a directive that
+  declares NO source and for one whose source the crossing could not
+  read — the second generated nothing, quietly, three lines from the
+  sibling law that says a fill the compiler cannot place is spoken
+  and never spliced. The tell is a `T?` whose absence has TWO causes;
+  the fix is the enum that names them (`Generated.None` /
+  `.Made` / `.Foreign`), never a flag beside the null.
 - ITS SIBLING AT THE OTHER END: A FLAT CONCATENATION OF TWO
   SEQUENCES HAS A BOUNDARY THAT MOVES. Splice two variable-length
   runs into one list and the split between them is not recorded, so

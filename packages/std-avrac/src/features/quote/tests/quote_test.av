@@ -2,7 +2,7 @@
 // hole's text resolves where it is spliced, and a template's own
 // names resolve in the file that wrote the quote — origin hygiene.
 use @std.avrac.language.{avra, new_workspace, memory_host, parse_source, render_source, Program}
-use @std.avrac.testing.{vendored_meta, vendored_meta_paths, said, refused_n, refused_in}
+use @std.avrac.testing.{vendored_meta, vendored_meta_as, vendored_meta_paths, real_meta_source, said, refused_n, refused_in}
 
 /// A program with `@std/meta` and a PROVIDER package (`@x/prov`) whose
 /// templates the program's annotations run.
@@ -15,6 +15,27 @@ fn packaged(main: string, prov: string) -> Program {
     })
     mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/prov/avra.toml", "/w/vendor/prov/src/prov.av"].concat(vendored_meta_paths())), "/w", avra())
     ws.program("/w/src/main.av")
+}
+
+/// The same program under an `@std/meta` THIS COMPILER WAS NOT BUILT
+/// AGAINST: every template wrapper names its node field `blob`, so a
+/// crossed `Directive`'s source is a shape the compiler cannot read.
+/// Built from the real source, one thing changed.
+fn packaged_under(main: string, prov: string, meta: string) -> Program {
+    let files = vendored_meta_as({
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
+        "/w/src/main.av": main,
+        "/w/vendor/prov/avra.toml": "[package]\nname = \"@x/prov\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+        "/w/vendor/prov/src/prov.av": prov,
+    }, meta)
+    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/prov/avra.toml", "/w/vendor/prov/src/prov.av"].concat(vendored_meta_paths())), "/w", avra())
+    ws.program("/w/src/main.av")
+}
+
+/// `@std/meta` with the template wrappers' one field RENAMED — the
+/// crossing looks for `node` and this package has none.
+fn renamed_node_field() -> string {
+    real_meta_source().replace("node: ", "blob: ").replace(".node", ".blob")
 }
 
 /// A program WITHOUT `@std/meta` — where a quote has no `Code` to answer.

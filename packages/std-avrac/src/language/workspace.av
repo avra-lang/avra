@@ -1088,12 +1088,30 @@ impl Workspace {
     }
 
     /// One directive: a `source` is generated CODE parsed and admitted
-    /// beside the original, a `twin` mints a fn beside it.
+    /// beside the original, a `twin` mints a fn beside it, and source
+    /// this compiler cannot read is spoken rather than dropped.
     fn materialized_directive(f: FileId, w: DeclareWork, directive: Directive, vis: Namespace) -> List<DeclId> {
         let ann = self.decls.decl(w.ann).name
-        if directive.source != null { return self.admit_code(f, directive.source!, ann, w.at, vis) }
+        match directive.source {
+            .Made(node) -> self.admit_code(f, node, ann, w.at, vis),
+            .Foreign -> self.unmirrored(f, ann, w.at),
+            .None -> self.twinned(f, w, directive, ann),
+        }
+    }
+
+    /// The fn a directive asks for beside the original, when it asks.
+    fn twinned(f: FileId, w: DeclareWork, directive: Directive, ann: string) -> List<DeclId> {
         if directive.twin.is_empty() { return [] }
         [self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, ann, w.at)]
+    }
+
+    /// Generated source the compiler cannot read: the crossing and
+    /// `@std.meta.Node` agree by the VARIANT'S NAME, and a name the
+    /// compiler does not mirror would otherwise generate nothing
+    /// while the annotation said it would generate something.
+    fn unmirrored(f: FileId, ann: string, at: Span?) -> List<DeclId> {
+        self.decls.speak_expansion(f, [unmirrored_defect(self.decls.file(f).path, ann, at)])
+        []
     }
 
     /// A written fn's Declares annotation, as the materializer's
@@ -2452,6 +2470,10 @@ fn nothing_copied() -> Copied { Copied { stmts: [], arms: [] } }
 
 /// The splice's own disagreement with typing: hole `k` of the template
 /// at `at` was filled with a shape its seat does not take.
+fn unmirrored_defect(path: string, ann: string, at: Span?) -> Diag {
+    defect_at(loc_at(path, at), "defect: `@${ann}` generated source naming a `@std.meta.Node` variant this compiler does not mirror")
+}
+
 fn misfit_defect(template: string, at: int, k: int) -> Diag {
     defect_at(Loc { file: template, lo: at, hi: at }, "defect: hole ${k} of the template at offset ${at} was filled with a shape its seat does not take")
 }

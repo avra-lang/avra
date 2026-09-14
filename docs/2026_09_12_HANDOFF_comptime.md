@@ -52,7 +52,8 @@ owner. Done rows stay for the record.
 | §7 q1 type-as-value spelling | task master | DECIDED: the annotation position is enough until a use outside one appears |
 | `@total` (spec 14.4) | owner | LEFT for now (2026-09-14); the step budget is the belt |
 | type operators (`Type -> Type`) | needs named types — DECIDED `type` always distinct, no alias (`837bac7`); the language slice is on the sugar backlog | waits on that slice |
-| JIT behind `run_call`, parallel settlement, manifest read grants | recorded triggers, not blockers | a settlement over budget / a measured wall-clock / the first `embed` outside the package root |
+| JIT behind `run_call`, parallel settlement | recorded triggers, not blockers | a settlement over budget / a measured wall-clock |
+| manifest read grants | **TRIGGER FIRED** 2026-09-14 (`comptime/polish`) | the first `embed` outside a package root is `packages/std-avrac/src/testing/mod.av`'s `embed("../../../std-meta/src/meta.av")` (and the `@std/errors` twin beside it): the test vendor reads two SIBLING packages' own sources so a fixture cannot drift from the contract it stands for. It compiles and is the right use; the GRANT is what would let a manifest say so instead of a relative path reaching past the root. The design now owes it to a real site. |
 
 ## Prompt for the next session
 
@@ -164,3 +165,69 @@ doc's queue/status).
 - Test-file constant fns (the audit found many) were deliberately NOT
   swept: a converted const is shared across spec cases and each would
   need `export`, for little gain.
+
+---
+
+## The polish round's leave-alones (2026-09-14, `comptime/polish`)
+
+Each was weighed against "does removing it shrink the surface without
+hiding a decision", and each stays for the reason beside it. A trigger
+is what would reopen the question.
+
+- **A derive over the CHILD WALK** (`@derive(Children)` for
+  `expr_children` / `stmt_exprs`). Twenty-eight of thirty arms are
+  mechanical and TWO are semantic — a `Quote`'s body belongs to the
+  code it generates, a `Sublang`'s expansion REPLACES its holes — and a
+  payload-spelling derive cannot tell them apart, so it would answer
+  silently for the next Quote-shaped variant while removing the
+  exhaustive match that today refuses the build until someone decides.
+  The duplicate registries were collapsed onto the one definition
+  instead. TRIGGER: a payload MARK that says which children are
+  semantic (an annotation on the variant) would make the derive honest.
+- **The 16 per-feature `kids()`.** Semantic by construction: each HIDES
+  the children it types under its own narrowing, and each already
+  carries its one-line reason. Not mechanical, never derivable.
+- **`rebuilt_expr` / `rebuilt_stmt`** (core/rebuild.av). Not mechanical
+  either: a `string` payload is a BINDER (`self.name`, which marks the
+  open node as holed) or a plain name (`self.plain_name`), and the type
+  spelling is `string` for both. TRIGGER: typed name shapes
+  (`type Binder = string`, now spellable since `type Name = Shape`)
+  would put the distinction in the payload where a derive can read it.
+- **The IR's eight consumers** (`dst_of`, `body_symbol`,
+  `hosted_symbol`, `step`, `memory_ins`, `body_lines`, `emit_ins`,
+  `give`). They must stay exhaustive matches — that IS the vocabulary's
+  guarantee, and turning any into a projection over a table would let a
+  variant ship half-implemented. `make vocab` guards them. No trigger:
+  this is the design.
+- **`semantics_of` and the `Dispatch` record.** A per-variant OWNER
+  annotation on the enum would let a feature claim its variants where
+  they are declared, but the ONE exhaustive map is what makes
+  "features never import features" checkable at compile time, and the
+  annotation would move that guarantee into a derive. TRIGGER: a
+  measured cost — today the map is one match nobody has had to edit
+  twice.
+- **The five `*_of_meta` scalar projections** (`int_of_meta`,
+  `bits_of_meta`, `bool_of_meta`, `optional_text`, `text_of_meta`).
+  They look like core's derived value protocol, but their default is
+  DELIBERATE where the protocol's absence is a defect: a crossed value
+  of the wrong kind is a user program's mistake and `""`/`0` is the
+  tolerant answer. Deriving them would answer `T?` and every site
+  would then spell `?? ""`, which the protocol law forbids on sight.
+- **`NodeStore.quotes_at` and `body_starts`, `Map<string, int>` keyed
+  by a stringified id.** A map's keys are strings only (F2019), so the
+  string IS the key's spelling — I41's shape, not a tag. `body_starts`
+  could be a dense `List<int>` like the five side tables beside it;
+  measured worth ~nothing (one write per sublang block) and the `?? 0`
+  default it hides would survive the move. TRIGGER: an int-keyed map,
+  or a second dense fact wanting the same table.
+- **The lexer's two raw-body scanners** (`scan_raw_block`, `raw_step`).
+  They differ on LINE COMMENTS and the difference is correct: `//` is
+  Avra's comment inside a `grammar {` body and an ordinary character
+  inside a sublanguage block, whose comment syntax is its own. Two
+  copies may wait; a third names the concept.
+- **`source_text.av`'s precedence scale.** It mirrors the spine's rule
+  ladder and stays a second spelling — the grammar states precedence as
+  rule NESTING, which carries no number to compare, and reading it off
+  the grammar would make `language` depend on `features`' rule names.
+  The tiers are named now (`loosest_tier` … `atom_tier`) and the reason
+  is at the site.

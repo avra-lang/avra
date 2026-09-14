@@ -89,12 +89,25 @@ const errors_real: string = embed("../../../std-errors/src/errors.av")
 /// The real `@std/meta` and the `@std/errors` it rests on, added to a
 /// memory host's files. The paths are `vendored_meta_paths()`.
 export fn vendored_meta(files: Map<string, string>) -> Map<string, string> {
+    vendored_meta_as(files, meta_real)
+}
+
+/// `vendored_meta` with the meta source REPLACED — for a fixture that
+/// attacks the crossing by shipping an `@std/meta` the compiler was
+/// not built against. Start from `real_meta_source()` and change the
+/// one thing under attack, so the rest of the package stays honest.
+export fn vendored_meta_as(files: Map<string, string>, meta: string) -> Map<string, string> {
     mut out = files
     out.set("/w/vendor/meta/avra.toml", "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/errors\" = { path = \"../errors\" }\n")
-    out.set("/w/vendor/meta/src/meta.av", meta_real)
+    out.set("/w/vendor/meta/src/meta.av", meta)
     out.set("/w/vendor/errors/avra.toml", "[package]\nname = \"@std/errors\"\nversion = \"0.1.0\"\n")
     out.set("/w/vendor/errors/src/errors.av", errors_real)
     out
+}
+
+/// The `@std/meta` a fixture starts from.
+export fn real_meta_source() -> string {
+    meta_real
 }
 
 /// What `vendored_meta` adds, for the host's path list.

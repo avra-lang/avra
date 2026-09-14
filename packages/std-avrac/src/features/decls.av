@@ -13,7 +13,7 @@ use core.{SeatMark, mark_at, plain_mark}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
-use features.{TypeRow, TypeArgs, Said, Unsettled, Lifted, MetaHeap, MetaVal, StructSig, EnumSig, generated_key, Decl, Node, Origin, Origins, no_origins}
+use features.{TypeRow, TypeArgs, Said, Unsettled, Lifted, MetaHeap, MetaVal, StructSig, EnumSig, generated_key, Decl, Node, Generated, Origin, Origins, no_origins}
 
 /// A file's path facts — known at first mention, before its parse.
 export type FileInfo = { id: FileId, path: string, module_id: ModuleId }
@@ -832,11 +832,19 @@ impl Decls {
         }
     }
 
-    /// A directive's generated declarations, when it carries some.
-    fn source_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Node? {
+    /// What a directive's `source` crossed as. THE TWO ABSENCES ARE
+    /// DIFFERENT: a directive declaring none, and one whose value is
+    /// there and does not cross — which used to answer null and
+    /// generate nothing quietly, beside a sibling law that says a
+    /// fill the compiler cannot place is spoken, never spliced.
+    fn source_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Generated {
         let at = sig.names.index_of("source")
-        if at < 0 { return null }
-        self.node_of_meta(heap, sig.types[at], self.field_of(heap, sig, item, "source"))
+        if at < 0 { return Generated.None }
+        let held = self.field_of(heap, sig, item, "source")
+        if held is .Absent { return Generated.None }
+        let made: Node? = self.node_of_meta(heap, sig.types[at], held)
+        if made == null { return Generated.Foreign }
+        Generated.Made(made!)
     }
 
     /// A list type's element, or null for any other shape.
