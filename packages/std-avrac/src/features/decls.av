@@ -13,7 +13,8 @@ use core.{SeatMark, mark_at, plain_mark}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
-use features.{TypeRow, TypeArgs, Said, Unsettled, Lifted, MetaHeap, MetaVal, StructSig, EnumSig, generated_key, Decl, Node, Generated, Origin, Origins, no_origins}
+use features.{TypeRow, TypeArgs, Unsettled, Lifted, MetaHeap, MetaVal, StructSig, EnumSig, generated_key, Decl, Origin, Origins, no_origins}
+use @std.meta.{Diagnostic}
 
 /// A file's path facts — known at first mention, before its parse.
 export type FileInfo = { id: FileId, path: string, module_id: ModuleId }
@@ -61,7 +62,7 @@ export type Decls = {
     meta_ids: Map<string, DeclId>,
     // a declaration's WARNINGS: the words it keeps for its users,
     // computed on first ask through `ensure_marks` (null = unasked)
-    marks: List<List<Said>?>,
+    marks: List<List<Diagnostic>?>,
     ensure_marks: List<fn(DeclId)>,
     // the ROOT package's manifest name — its modules carry no package
     // prefix, and a kind spoken there still wears the package
@@ -666,14 +667,6 @@ impl Decls {
     /// The root package's manifest name, kept in the dotted spelling.
     fn name_root(name: string) { self.root_name.set(0, name.replace("/", ".")) }
 
-    /// Whether a meta seat takes a declaration WHOLE — the three
-    /// receiver kinds and the metadata-only `Named`. The annotation
-    /// boundary's ONE spelling, read by typing and by the crossing.
-    fn takes_a_decl(ty: TypeId) -> bool {
-        self.meta_type(ty, "Type") || self.meta_type(ty, "Trait") ||
-            self.meta_type(ty, "Fn") || self.meta_type(ty, "Named")
-    }
-
     /// Whether a meta value CARRIES A NAME — a declaration's, a
     /// field's, a variant's, a parameter's — which is what a quote's
     /// hole splices of it.
@@ -682,27 +675,25 @@ impl Decls {
     }
 
     /// A declaration of `@std/meta` by name — the compiler's own door
-    /// to the meta vocabulary (`Code`, `quoted`, `joined`); null when
-    /// the program does not load the package.
+    /// to the meta vocabulary (`Node`, `template`, `as_decls`); null
+    /// when the program does not load the package.
     fn meta_named(name: string) -> DeclId? {
-        let known: DeclId? = self.meta_ids.get(name)
+        self.package_decl("@std.meta", name)
+    }
+
+    /// A declaration a PACKAGE exports, by name — the door to a
+    /// vocabulary the compiler shares with the programs it compiles;
+    /// null when the program does not load the package.
+    fn package_decl(pkg: string, name: string) -> DeclId? {
+        let key = "${pkg}.${name}"
+        let known: DeclId? = self.meta_ids.get(key)
         if known != null { return known }
-        let ms = [ModuleId { index: j } for j, m in self.modules if package_of_module(m) == "@std.meta"]
+        let ms = [ModuleId { index: j } for j, m in self.modules if package_of_module(m) == pkg]
         if ms.is_empty() { return null }
         let ds: List<DeclId> = flatten([self.file_decls[f.index] for f in self.module_files[ms[0].index]])
         let found: DeclId? = ds.find((d: DeclId) -> self.decl(d).name == name)
-        if found != null { self.meta_ids.set(name, found!) }
+        if found != null { self.meta_ids.set(key, found!) }
         found
-    }
-
-    /// A `@std/meta` record crossed, filled by NAME — null when the
-    /// program does not load the package.
-    fn meta_record(name: string, heap: MetaHeap, filled: Map<string, MetaVal>) -> MetaVal? {
-        let d: DeclId? = self.meta_named(name)
-        if d == null { return null }
-        let sig: StructSig? = self.fields_of_type(self.self_type_of(d!))
-        if sig == null { return null }
-        meta_row(heap, sig!, filled)
     }
 
     /// Whether a type is one declaration exported by `@std/meta`.
@@ -776,14 +767,14 @@ impl Decls {
 
     /// A declaration's warnings, asked at a use. Asking IS the
     /// computation; the table only holds.
-    fn marks(d: DeclId) -> List<Said> {
+    fn marks(d: DeclId) -> List<Diagnostic> {
         let ensure = self.ensure_marks[0]
         ensure(d)
-        let held: List<Said>? = self.marks[d.index]
+        let held: List<Diagnostic>? = self.marks[d.index]
         held ?? []
     }
 
-    fn record_marks(d: DeclId, xs: List<Said>) {
+    fn record_marks(d: DeclId, xs: List<Diagnostic>) {
         self.marks.set(d.index, xs)
     }
 
@@ -794,167 +785,11 @@ impl Decls {
         lift(d, f, s, call, args)
     }
 
-    /// What a lifted call SAID: each `Diagnostic` of its answer, read
-    /// by the element record's field names.
-    fn saids(r: Lifted, ret: TypeId) -> List<Said> {
-        let sig: StructSig? = self.elem_sig(ret)
-        if sig == null { return [] }
-        [self.said_of(r.heap, sig!, item) for item in r.heap.slots(r.answer)]
-    }
-
-    /// A Declares answer's rows: each `Directive` of the crossed list,
-    /// read by its field names — the same field protocol `said_of` uses.
-    fn directives_of(r: Lifted, ret: TypeId) -> List<Directive> {
-        let sig: StructSig? = self.elem_sig(ret)
-        if sig == null { return [] }
-        [self.directive_of(r.heap, sig!, item) for item in r.heap.slots(r.answer)]
-    }
-
-    /// The element record's sig of a list answer, or null for none.
-    fn elem_sig(ret: TypeId) -> StructSig? {
-        let elem: TypeId? = self.elem_of(ret)
-        if elem == null { return null }
-        self.fields_of_type(elem!)
-    }
-
-    /// A crossed `Directive` row: the twin's name, the original's, and
-    /// the site — the three fields the materializer mints from.
-    fn directive_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Directive {
-        Directive {
-            twin: self.text_of_meta(self.field_of(heap, sig, item, "twin")),
-            name: self.text_of_meta(self.field_of(heap, sig, item, "name")),
-            at: self.loc_of_meta(heap, self.field_of(heap, sig, item, "at")),
-            source: self.source_of(heap, sig, item),
-        }
-    }
-
-    /// What a directive's `source` crossed as. THE TWO ABSENCES ARE
-    /// DIFFERENT: a directive declaring none, and one whose value is
-    /// there and does not cross — which used to answer null and
-    /// generate nothing quietly, beside a sibling law that says a
-    /// fill the compiler cannot place is spoken, never spliced.
-    fn source_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Generated {
-        let at = sig.names.index_of("source")
-        if at < 0 { return Generated.None }
-        let held = self.field_of(heap, sig, item, "source")
-        if held is .Absent { return Generated.None }
-        let made: Node? = self.node_of_meta(heap, sig.types[at], held)
-        if made == null { return Generated.Foreign }
-        Generated.Made(made!)
-    }
-
     /// A list type's element, or null for any other shape.
     fn elem_of(ty: TypeId) -> TypeId? {
         match self.types.shape_of(ty) {
             .List(e) -> e,
             _ -> null,
-        }
-    }
-
-    fn said_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Said {
-        Said {
-            message: self.text_of_meta(self.field_of(heap, sig, item, "message")),
-            help: self.optional_text(self.field_of(heap, sig, item, "help")),
-            at: self.loc_of_meta(heap, self.field_of(heap, sig, item, "at")),
-            warning: self.bool_of_meta(self.field_of(heap, sig, item, "warning")),
-            kind: self.optional_text(self.field_of(heap, sig, item, "kind")),
-        }
-    }
-
-    /// A crossed row's slot by its seat's field name — the ONE read
-    /// across the meta boundary; absence for a name the seat lacks.
-    fn field_of(heap: MetaHeap, sig: StructSig, item: MetaVal, name: string) -> MetaVal {
-        let i = sig.names.index_of(name)
-        if i < 0 { return MetaVal.Absent }
-        heap.slots(item)[i]
-    }
-
-    fn int_of_meta(v: MetaVal) -> int {
-        match v {
-            .Int(n) -> n,
-            .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> 0,
-        }
-    }
-
-    /// A crossed template value (`Code`, `Stmts`, `Arms`, `Decls`):
-    /// its one field, the node.
-    fn node_of_meta(heap: MetaHeap, ty: TypeId, v: MetaVal) -> Node? {
-        if v is .Absent { return null }
-        let held: StructSig? = self.fields_of_type(self.types.carried(ty) ?? ty)
-        if held == null { return null }
-        let sig = held!
-        let at = sig.names.index_of("node")
-        if at < 0 { return null }
-        self.node_value(heap, sig.types[at], self.field_of(heap, sig, v, "node"))
-    }
-
-    /// A crossed `@std.meta.Node`: the tag names the variant, the
-    /// slots after it are the payloads — the meta enum and the
-    /// compiler's mirror agree by the VARIANT'S NAME, never a position.
-    fn node_value(heap: MetaHeap, ty: TypeId, v: MetaVal) -> Node? {
-        let sig: EnumSig? = self.variants_of_type(ty)
-        let slots = heap.slots(v)
-        if sig == null || slots.is_empty() { return null }
-        let tag = self.int_of_meta(slots[0])
-        if tag < 0 || tag >= sig!.names.length { return null }
-        match sig!.names[tag] {
-            "Template" -> Node.Template(self.text_of_meta(slots[1]), self.int_of_meta(slots[2]), self.texts_of_meta(heap, slots[3]), self.nodes_of_meta(heap, ty, slots[4])),
-            "Name" -> Node.Name(self.text_of_meta(slots[1])),
-            "Text" -> Node.Text(self.text_of_meta(slots[1])),
-            "Int" -> Node.Int(self.int_of_meta(slots[1])),
-            "Float" -> Node.Float(self.bits_of_meta(slots[1])),
-            "Bool" -> Node.Bool(self.bool_of_meta(slots[1])),
-            "Interp" -> Node.Interp(self.texts_of_meta(heap, slots[1]), self.nodes_of_meta(heap, ty, slots[2])),
-            "Many" -> Node.Many(self.nodes_of_meta(heap, ty, slots[1])),
-            _ -> null,
-        }
-    }
-
-    fn texts_of_meta(heap: MetaHeap, v: MetaVal) -> List<string> {
-        [self.text_of_meta(x) for x in heap.slots(v)]
-    }
-
-    fn nodes_of_meta(heap: MetaHeap, ty: TypeId, v: MetaVal) -> List<Node> {
-        flatten([some_list(self.node_value(heap, ty, x)) for x in heap.slots(v)])
-    }
-
-    fn bits_of_meta(v: MetaVal) -> int {
-        match v {
-            .Float(bits) -> bits,
-            .Int(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> 0,
-        }
-    }
-
-    fn bool_of_meta(v: MetaVal) -> bool {
-        match v {
-            .Bool(b) -> b,
-            .Int(_) or .Float(_) or .Text(_) or .Absent or .Node(_) or .Map(_) -> false,
-        }
-    }
-
-    fn optional_text(v: MetaVal) -> string? {
-        match v {
-            .Text(s) -> s,
-            .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
-        }
-    }
-
-    fn text_of_meta(v: MetaVal) -> string {
-        match v {
-            .Text(s) -> s,
-            .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> "",
-        }
-    }
-
-    fn loc_of_meta(heap: MetaHeap, v: MetaVal) -> Loc? {
-        let slots = heap.slots(v)
-        if slots.length < 3 { return null }
-        match slots[1] {
-            .Int(lo) -> match slots[2] {
-                .Int(hi) -> Loc { file: if slots[0] is .Absent { null } else { self.text_of_meta(slots[0]) }, lo: lo, hi: hi },
-                .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
-            },
-            .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
         }
     }
 

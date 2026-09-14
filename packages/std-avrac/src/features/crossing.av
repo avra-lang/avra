@@ -1,0 +1,350 @@
+//! THE META BOUNDARY — one vocabulary, one crossing each way. The
+//! compiler holds `@std/meta`'s records NATIVELY, so a value crosses
+//! by SLOT ORDER — the declaration both sides were compiled from —
+//! and never by a field's name. `meta_disagreement` is the one door:
+//! it holds the LOADED package to the shapes this compiler was built
+//! against, and past it the exhaustive matches are the guarantee.
+//! THE PRICE OF THE GUARANTEE: a crossed shape cannot move in one
+//! generation. The standing binary carries the OLD rows and refuses
+//! the new package while compiling it, so a change here lands in two
+//! commits — one that stops this door refusing, one that moves the
+//! shape and restores it.
+use core.{TypeId, DeclId, flatten, some_list}
+use @std.errors.{Loc}
+use @std.meta.{Param as MetaParam, Fn as MetaFn, Field as MetaField, Variant as MetaVariant, Type as MetaType, Diagnostic, Named, Trait as MetaTrait, Node, Decls as MetaDecls, Directive}
+use features.{MetaVal, MetaHeap, Decls, Lifted, StructSig, EnumSig}
+
+// ── The shapes this compiler was built against ──────────────────
+
+/// One declaration the crossing reads or writes: the package that
+/// exports it, its name, and its fields IN ORDER.
+type MetaShape = { pkg: string, name: string, fields: List<string> }
+
+/// Every RECORD that crosses. A row here is a slot law: the reader
+/// and the writer below count from it.
+fn meta_records() -> List<MetaShape> {
+    [
+        MetaShape { pkg: "@std.errors", name: "Loc", fields: ["file", "lo", "hi"] },
+        MetaShape { pkg: "@std.meta", name: "Param", fields: ["name", "ty", "mutable", "settled", "at"] },
+        MetaShape { pkg: "@std.meta", name: "Fn", fields: ["name", "params", "answer", "at"] },
+        MetaShape { pkg: "@std.meta", name: "Field", fields: ["name", "ty", "at"] },
+        MetaShape { pkg: "@std.meta", name: "Variant", fields: ["name", "payload", "at"] },
+        MetaShape { pkg: "@std.meta", name: "Type", fields: ["name", "fields", "variants", "at"] },
+        MetaShape { pkg: "@std.meta", name: "Diagnostic", fields: ["message", "help", "at", "warning", "kind"] },
+        MetaShape { pkg: "@std.meta", name: "Named", fields: ["name", "at"] },
+        MetaShape { pkg: "@std.meta", name: "Trait", fields: ["name", "at"] },
+        MetaShape { pkg: "@std.meta", name: "Directive", fields: ["twin", "name", "at", "source"] },
+        MetaShape { pkg: "@std.meta", name: "Code", fields: ["node"] },
+        MetaShape { pkg: "@std.meta", name: "Stmts", fields: ["node"] },
+        MetaShape { pkg: "@std.meta", name: "Arms", fields: ["node"] },
+        MetaShape { pkg: "@std.meta", name: "Decls", fields: ["node"] },
+    ]
+}
+
+/// `@std.meta.Node` — the one ENUM that crosses — variant by variant
+/// IN ITS DECLARED ORDER. A crossed tag indexes this list, so the
+/// variant's NAME, its payload count and how it reads are ONE row and
+/// cannot drift apart.
+type NodeReader = { name: string, arity: int, read: fn(Crossed) -> Node }
+
+fn node_readers() -> List<NodeReader> {
+    [
+        NodeReader { name: "Template", arity: 4, read: read_template },
+        NodeReader { name: "Name", arity: 1, read: read_name },
+        NodeReader { name: "Text", arity: 1, read: read_text },
+        NodeReader { name: "Int", arity: 1, read: read_int },
+        NodeReader { name: "Float", arity: 1, read: read_float },
+        NodeReader { name: "Bool", arity: 1, read: read_bool },
+        NodeReader { name: "Interp", arity: 2, read: read_interp },
+        NodeReader { name: "Many", arity: 1, read: read_many },
+    ]
+}
+
+impl Decls {
+    /// Why the LOADED `@std/meta` is not the one this compiler was
+    /// built against — the first shape that moved, or null when every
+    /// row agrees. A package the program does not load crosses
+    /// nothing, and is no disagreement.
+    fn meta_disagreement() -> string? {
+        let moved: string? = flatten([some_list(self.record_disagreement(row)) for row in meta_records()]).first()
+        moved ?? self.node_disagreement()
+    }
+
+    /// A record's fields, in order, against the row.
+    fn record_disagreement(row: MetaShape) -> string? {
+        let d: DeclId? = self.package_decl(row.pkg, row.name)
+        if d == null { return null }
+        let sig: StructSig? = self.fields_of_type(self.self_type_of(d!))
+        if sig == null { return null }
+        first_difference(row.name, sig!.names, row.fields)
+    }
+
+    /// `Node`'s variants, in order and by payload count.
+    fn node_disagreement() -> string? {
+        let d: DeclId? = self.package_decl("@std.meta", "Node")
+        if d == null { return null }
+        let sig: EnumSig? = self.variants_of_type(self.self_type_of(d!))
+        if sig == null { return null }
+        let rows = node_readers()
+        let named: string? = first_difference("Node", sig!.names, [r.name for r in rows])
+        named ?? first_arity_difference(sig!.payloads, rows)
+    }
+}
+
+/// The first place two orders part, in the words the boundary voice
+/// carries — null when they are the same.
+fn first_difference(name: string, loaded: List<string>, built: List<string>) -> string? {
+    let parted: int? = [j for j, x in built if j >= loaded.length || loaded[j] != x].first()
+    if parted == null { return longer_than_read(name, loaded, built) }
+    let at = parted!
+    let found = if at >= loaded.length { "nothing" } else { "`${loaded[at]}`" }
+    "`${name}` declares ${found} where the crossing reads `${built[at]}`"
+}
+
+/// A loaded shape that declares MORE than the crossing reads is a
+/// different package too: the slot it added is one this compiler
+/// never fills, and the value it holds there is nobody's.
+fn longer_than_read(name: string, loaded: List<string>, built: List<string>) -> string? {
+    if loaded.length <= built.length { return null }
+    "`${name}` declares `${loaded[built.length]}`, which the crossing does not read"
+}
+
+/// The first variant whose payload count moved — asked only once the
+/// names agree, so the two runs are the same length.
+fn first_arity_difference(loaded: List<List<TypeId>>, rows: List<NodeReader>) -> string? {
+    let parted: int? = [j for j, r in rows if loaded[j].length != r.arity].first()
+    if parted == null { return null }
+    let at = parted!
+    "`Node.${rows[at].name}` carries ${loaded[at].length} payloads where the crossing reads ${rows[at].arity}"
+}
+
+// ── Inbound: the evaluator's tree as a native value ──────────────
+
+impl Lifted {
+    /// Each `Diagnostic` the annotation answered.
+    fn saids() -> List<Diagnostic> {
+        [crossed_diagnostic(self.heap, item) for item in self.heap.slots(self.answer)]
+    }
+
+    /// Each `Directive` the annotation answered.
+    fn directives() -> List<Directive> {
+        [crossed_directive(self.heap, item) for item in self.heap.slots(self.answer)]
+    }
+}
+
+/// A crossed `Diagnostic`, field by field in the declaration's order.
+fn crossed_diagnostic(heap: MetaHeap, v: MetaVal) -> Diagnostic {
+    let c = crossed(heap, v)
+    Diagnostic { message: c.text(0), help: c.opt_text(1), at: c.loc(2), warning: c.flag(3), kind: c.opt_text(4) }
+}
+
+/// A crossed `Directive`: the twin's name, the original's, the site,
+/// and the declarations it generates.
+fn crossed_directive(heap: MetaHeap, v: MetaVal) -> Directive {
+    let c = crossed(heap, v)
+    Directive { twin: c.text(0), name: c.text(1), at: c.loc(2), source: crossed_decls(heap, c.at(3)) }
+}
+
+/// A crossed template record — its one field, the node.
+fn crossed_decls(heap: MetaHeap, v: MetaVal) -> MetaDecls? {
+    if v is .Absent { return null }
+    let made: Node? = crossed_node(heap, crossed(heap, v).at(0))
+    if made == null { return null }
+    MetaDecls { node: made! }
+}
+
+/// A crossed `Node`: its tag chooses the reader, and the slots after
+/// it are that variant's payloads.
+fn crossed_node(heap: MetaHeap, v: MetaVal) -> Node? {
+    let rows = node_readers()
+    let c = crossed(heap, v)
+    if c.slots.is_empty() { return null }
+    let tag = c.int_at(0)
+    if tag < 0 || tag >= rows.length { return null }
+    let read = rows[tag].read
+    read(c)
+}
+
+fn read_template(c: Crossed) -> Node { Node.Template(c.text(1), c.int_at(2), c.texts(3), c.nodes(4)) }
+fn read_name(c: Crossed) -> Node { Node.Name(c.text(1)) }
+fn read_text(c: Crossed) -> Node { Node.Text(c.text(1)) }
+fn read_int(c: Crossed) -> Node { Node.Int(c.int_at(1)) }
+fn read_float(c: Crossed) -> Node { Node.Float(c.bits(1)) }
+fn read_bool(c: Crossed) -> Node { Node.Bool(c.flag(1)) }
+fn read_interp(c: Crossed) -> Node { Node.Interp(c.texts(1), c.nodes(2)) }
+fn read_many(c: Crossed) -> Node { Node.Many(c.nodes(1)) }
+
+/// A crossed row under the cursor that reads it: the heap the value
+/// lives in, and the row's slots.
+type Crossed = { heap: MetaHeap, slots: List<MetaVal> }
+
+fn crossed(heap: MetaHeap, v: MetaVal) -> Crossed { Crossed { heap: heap, slots: heap.slots(v) } }
+
+impl Crossed {
+    /// A slot by position — absence past the row's end, which the
+    /// boundary check makes unreachable and a defect leaves visible.
+    fn at(i: int) -> MetaVal {
+        if i >= self.slots.length { return MetaVal.Absent }
+        self.slots[i]
+    }
+
+    fn text(i: int) -> string { crossed_text(self.at(i)) }
+    fn opt_text(i: int) -> string? { crossed_opt_text(self.at(i)) }
+    fn int_at(i: int) -> int { crossed_int(self.at(i)) }
+    fn bits(i: int) -> int { crossed_bits(self.at(i)) }
+    fn flag(i: int) -> bool { crossed_bool(self.at(i)) }
+    fn loc(i: int) -> Loc? { crossed_loc(self.heap, self.at(i)) }
+    fn texts(i: int) -> List<string> { [crossed_text(x) for x in self.heap.slots(self.at(i))] }
+    fn nodes(i: int) -> List<Node> { flatten([some_list(crossed_node(self.heap, x)) for x in self.heap.slots(self.at(i))]) }
+}
+
+/// A crossed `Loc` — absent, or file, lo, hi.
+fn crossed_loc(heap: MetaHeap, v: MetaVal) -> Loc? {
+    if v is .Absent { return null }
+    let c = crossed(heap, v)
+    if c.slots.length < 3 { return null }
+    Loc { file: c.opt_text(0), lo: c.int_at(1), hi: c.int_at(2) }
+}
+
+fn crossed_int(v: MetaVal) -> int {
+    match v {
+        .Int(n) -> n,
+        .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> 0,
+    }
+}
+
+fn crossed_bits(v: MetaVal) -> int {
+    match v {
+        .Float(bits) -> bits,
+        .Int(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> 0,
+    }
+}
+
+fn crossed_bool(v: MetaVal) -> bool {
+    match v {
+        .Bool(b) -> b,
+        .Int(_) or .Float(_) or .Text(_) or .Absent or .Node(_) or .Map(_) -> false,
+    }
+}
+
+fn crossed_text(v: MetaVal) -> string {
+    match v {
+        .Text(s) -> s,
+        .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> "",
+    }
+}
+
+fn crossed_opt_text(v: MetaVal) -> string? {
+    match v {
+        .Text(s) -> s,
+        .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
+    }
+}
+
+// ── Outbound: a native value as the evaluator's tree ─────────────
+
+/// A declaration as the seat asks for it — the four shapes an
+/// annotation's first parameter may take.
+export fn meta_of_fn(x: MetaFn, mut heap: MetaHeap) -> MetaVal {
+    heap.node([MetaVal.Text(x.name), heap.node([meta_of_param(p, heap) for p in x.params]), MetaVal.Text(x.answer), meta_of_loc(x.at, heap)])
+}
+
+export fn meta_of_type(x: MetaType, mut heap: MetaHeap) -> MetaVal {
+    heap.node([MetaVal.Text(x.name), heap.node([meta_of_field(f, heap) for f in x.fields]), heap.node([meta_of_variant(v, heap) for v in x.variants]), meta_of_loc(x.at, heap)])
+}
+
+export fn meta_of_named(x: Named, mut heap: MetaHeap) -> MetaVal {
+    heap.node([MetaVal.Text(x.name), meta_of_loc(x.at, heap)])
+}
+
+export fn meta_of_trait(x: MetaTrait, mut heap: MetaHeap) -> MetaVal {
+    heap.node([MetaVal.Text(x.name), meta_of_loc(x.at, heap)])
+}
+
+fn meta_of_param(x: MetaParam, mut heap: MetaHeap) -> MetaVal {
+    heap.node([MetaVal.Text(x.name), MetaVal.Text(x.ty), MetaVal.Bool(x.mutable), MetaVal.Bool(x.settled), meta_of_loc(x.at, heap)])
+}
+
+fn meta_of_field(x: MetaField, mut heap: MetaHeap) -> MetaVal {
+    heap.node([MetaVal.Text(x.name), MetaVal.Text(x.ty), meta_of_loc(x.at, heap)])
+}
+
+fn meta_of_variant(x: MetaVariant, mut heap: MetaHeap) -> MetaVal {
+    heap.node([MetaVal.Text(x.name), heap.node([MetaVal.Text(p) for p in x.payload]), meta_of_loc(x.at, heap)])
+}
+
+/// A `Loc` as the evaluator holds it — absence for no place.
+fn meta_of_loc(at: Loc?, mut heap: MetaHeap) -> MetaVal {
+    if at == null { return MetaVal.Absent }
+    let place = at!
+    heap.node([meta_of_opt_text(place.file), MetaVal.Int(place.lo), MetaVal.Int(place.hi)])
+}
+
+/// A TEMPLATE record — `Code`, `Stmts`, `Arms` and `Decls` are ONE
+/// record holding one node, and which of the four it is is the
+/// value's TYPE, which the slots do not carry.
+export fn meta_of_template(n: Node, mut heap: MetaHeap) -> MetaVal {
+    heap.node([meta_of_node(n, heap)])
+}
+
+/// A `Node` as the evaluator holds it: its tag, then its payloads.
+fn meta_of_node(n: Node, mut heap: MetaHeap) -> MetaVal {
+    match n {
+        .Template(file, at, parts, fills) -> heap.node([node_tag("Template"), MetaVal.Text(file), MetaVal.Int(at), meta_of_texts(parts, heap), meta_of_nodes(fills, heap)]),
+        .Name(t) -> heap.node([node_tag("Name"), MetaVal.Text(t)]),
+        .Text(t) -> heap.node([node_tag("Text"), MetaVal.Text(t)]),
+        .Int(v) -> heap.node([node_tag("Int"), MetaVal.Int(v)]),
+        .Float(bits) -> heap.node([node_tag("Float"), MetaVal.Float(bits)]),
+        .Bool(b) -> heap.node([node_tag("Bool"), MetaVal.Bool(b)]),
+        .Interp(parts, holes) -> heap.node([node_tag("Interp"), meta_of_texts(parts, heap), meta_of_nodes(holes, heap)]),
+        .Many(items) -> heap.node([node_tag("Many"), meta_of_nodes(items, heap)]),
+    }
+}
+
+/// A variant's tag: its place in the ONE order `node_readers`
+/// declares, so the writer cannot number a variant the reader will
+/// read as another.
+fn node_tag(name: string) -> MetaVal {
+    MetaVal.Int([r.name for r in node_readers()].index_of(name))
+}
+
+fn meta_of_nodes(ns: List<Node>, mut heap: MetaHeap) -> MetaVal {
+    heap.node([meta_of_node(n, heap) for n in ns])
+}
+
+fn meta_of_texts(xs: List<string>, mut heap: MetaHeap) -> MetaVal {
+    heap.node([MetaVal.Text(x) for x in xs])
+}
+
+fn meta_of_opt_text(x: string?) -> MetaVal {
+    if x == null { return MetaVal.Absent }
+    MetaVal.Text(x!)
+}
+
+// ── The seat ────────────────────────────────────────────────────
+
+/// Which `@std/meta` record a seat names — the four an annotation's
+/// first parameter may take, and everything else.
+export enum MetaSeat { Fn, Type, Named, Trait, Other }
+
+impl Decls {
+    /// The seat a type names. The DeclId is the identity; the package
+    /// and export name locate it without accepting a user record of
+    /// the same shape.
+    fn meta_seat(ty: TypeId) -> MetaSeat {
+        if self.meta_type(ty, "Fn") { return MetaSeat.Fn }
+        if self.meta_type(ty, "Type") { return MetaSeat.Type }
+        if self.meta_type(ty, "Named") { return MetaSeat.Named }
+        if self.meta_type(ty, "Trait") { return MetaSeat.Trait }
+        MetaSeat.Other
+    }
+
+    /// Whether a meta seat takes a declaration WHOLE — the annotation
+    /// boundary's ONE spelling, read by typing and by the crossing.
+    fn takes_a_decl(ty: TypeId) -> bool {
+        match self.meta_seat(ty) {
+            .Fn or .Type or .Named or .Trait -> true,
+            .Other -> false,
+        }
+    }
+}

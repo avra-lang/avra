@@ -1,0 +1,46 @@
+//! The crossing under load: a declaration's NESTED lists coming in, a
+//! string holding a NUL going out, and lists at a size no hand-written
+//! answer reaches, both ways.
+use @std.meta.{Type, Fn, Variant, Directive, literal}
+use @std.text.{from_codepoint}
+
+/// `shape()` spells the crossed declaration: every field's name and
+/// type spelling, every variant's name and its payload spellings —
+/// lists inside lists inside a record.
+export trait Shape {
+    static fn derive(t: Type) -> List<Directive> {
+        let parts = ["${f.name}:${f.ty}" for f in t.fields].concat([variant_text(v) for v in t.variants])
+        [Directive { twin: "", name: t.name, at: t.at, source: quote { impl ${t} { fn shape() -> string { ${literal(joined(parts))} } } } }]
+    }
+}
+
+fn variant_text(v: Variant) -> string { "${v.name}(${joined(v.payload)})" }
+
+fn joined(xs: List<string>) -> string { xs.join(",") }
+
+/// A generated string carrying a NUL: it crosses BACK as `Node.Text`
+/// and is spliced as a literal, so the program holds a NUL no source
+/// could have written. The other direction cannot carry one — a name
+/// and a type's spelling are what cross out, and no source writes a
+/// NUL into either.
+export fn holed(f: Fn) -> List<Directive> {
+    [Directive { twin: "", name: f.name, at: f.at, source: quote {
+        fn nul_len() -> int { ${literal("a" + from_codepoint(0) + "b")}.length }
+    } }]
+}
+
+/// FIVE THOUSAND directives crossing IN, every one of them declaring
+/// nothing — the inbound list at a size no hand-written answer reaches.
+export fn many(f: Fn) -> List<Directive> {
+    [Directive { twin: "", name: f.name, at: f.at } for i in 0..5000]
+}
+
+/// The OUTBOUND list at size: a wide record's fields cross out of the
+/// compiler one `Field` each, and what arrived comes back as code.
+export fn counted(t: Type) -> List<Directive> {
+    [Directive { twin: "", name: t.name, at: t.at, source: quote {
+        fn wide_read() -> string { ${literal(width_of(t))} }
+    } }]
+}
+
+fn width_of(t: Type) -> string { "${t.fields.length}/${t.fields.last()!.name}" }
