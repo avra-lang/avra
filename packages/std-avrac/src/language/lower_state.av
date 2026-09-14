@@ -4,7 +4,7 @@
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, FileId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, NodeStore, SeatMark, is_literal, settled_mark, Static, StaticBox}
 use diagnostics.{loc_at, refusal, Diag}
-use features.{LowerCx, capture_lane, Sub, Cap, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, post_order, nothing, MetaVal, MetaHeap, new_meta_heap, literal_meta}
+use features.{LowerCx, capture_lane, Sub, Cap, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, MetaHeap, new_meta_heap, literal_meta}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -303,7 +303,7 @@ impl LowerCx {
     /// only exists while running. A DECLARED `const` seat is legal in a
     /// template body; in a real unit its value must be carried.
     fn runtime_read(root: ExprId) -> string? {
-        for node in post_order(self.dispatch, self.view.store, root) {
+        for node in self.view.store.every_expr(root) {
             let b: Binding? = self.names.binding(node)
             if b != null {
                 match b! {
@@ -321,7 +321,7 @@ impl LowerCx {
     /// Whether an initializer reads a DECLARED `const` seat — the
     /// signal that a body is a template with no unit to fold it.
     fn reads_settled_seat(root: ExprId) -> bool {
-        for node in post_order(self.dispatch, self.view.store, root) {
+        for node in self.view.store.every_expr(root) {
             let b: Binding? = self.names.binding(node)
             if b != null {
                 match b! {

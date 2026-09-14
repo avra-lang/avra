@@ -7,7 +7,7 @@ use @std.path.{dir_of, under_dir, joined_path}
 use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit_text, exit}
 use @std.time.{now_ns}
 use @std.errors.{Error}
-use @std.io.{println, eprintln, read_text, write_text, exists, is_dir, list_dir}
+use @std.io.{println, eprintln, read_text, write_text, exists, is_dir, list_dir, env}
 
 // THE ONE TRUE EXTERN: no std package owns "re-exec this image".
 extern fn avra_exec_self(args: List<string>) -> int
@@ -76,6 +76,13 @@ fn file_workspace(path: string) -> Workspace {
 /// A file outside any package: a package of one holding just it.
 fn lone(path: string) -> Workspace {
     lone_workspace(path, read_or_die(path), avra())
+}
+
+/// The package the command stands in: the CALLER's directory, which
+/// the `avra` shim records before moving to the tree's root — a bare
+/// `.` would be the tree.
+fn here() -> string {
+    env("AVRA_CWD") ?? env("PWD") ?? "."
 }
 
 /// A package root as a program entered at its `[bin]` when it has

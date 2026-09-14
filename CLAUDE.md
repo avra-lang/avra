@@ -364,6 +364,21 @@ engine's spec, written by dogfooding.
   was the pre-fix product checking the SAME source clean. When a
   second-generation product traps, run the first generation over the
   same source before reading the trap as the tree's.
+- THE `avra` SHIM MOVES TO THE TREE'S ROOT, so "." inside a command is
+  the TREE and `PWD` follows the move: `explain @name` and `explain
+  process` rooted at "." analysed nothing from the day they landed,
+  and read as "no fn declared in this package" for a fn declared
+  right there. The caller's directory is `AVRA_CWD`, exported by the
+  shim before it moves; a command that reads the package it stands in
+  roots at `here()` (cli/commands/shared.av), never at ".". AND A
+  PACKAGE IS NAMED BY ONE VERB: a root module carries no package
+  prefix, so `package_of_module` answered "" for the root while the
+  manifest named it — `Decls.package_named` answers the root's
+  manifest name (dotted) for both the declaration read and the file
+  view's, and the orphan-impl law, which compares the two, refused
+  every impl in the compiler's own cli the moment only one side knew.
+  A second-generation build that REFUSES its own source is this law's
+  symptom as much as a trap is.
 - A RUNTIME ROW BORROWS ITS ARGUMENTS — callee-cleans is the AVRA
   call's convention, not the registry's. `retained_args` retains for
   `.Call` and `.CallPtr` alone; a `CallRt`/`CallRtVoid` argument

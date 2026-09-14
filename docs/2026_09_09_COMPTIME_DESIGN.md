@@ -373,7 +373,7 @@ learn in one read:
 | `Impl` | `trait: Trait?`, `target: Type`, `methods` |
 | `Code` / `Stmts` / `Arms` / `Decls` | a template by what its body PARSED as: one expression, statements, one or more match arms, one or more declarations — the kind is the type, and a hole checks it at the quote (`docs/2026_09_13_PARSED_TEMPLATES.md`) |
 | `Node` | the tree a template value carries: `Template(file, at, parts, fills)` naming the quote and its fills, `Name`, `Text`, `Int`, `Float`, `Bool`, `Interp`, `Many(items)` — several in one seat, the seat decided at the splice |
-| `Diagnostic`, `Diagnostics` | `@std/errors`'s shape: `kind`, `span`, `message`, `help`, `suggestions` |
+| `Diagnostic`, `Diagnostics` | `message`, `help`, `at`, `warning`, and `kind` — a word the annotation's PACKAGE namespaces (`refuse_as("E1", …)` renders `error[@scope/name: E1]`; §7 q5) |
 
 Verbs: `embed(path) -> string` (§3.7), `target() -> Target` (os, arch,
 for conditional declarations), `fresh(hint) -> string` (a name that
@@ -1358,7 +1358,14 @@ quotes keeps the two hard problems apart.
 4. **Budget defaults.** MEASURED 2026-09-13 (§4.4): 600,000 steps
    and 5 MiB, ten times the largest gated settlement; `[lifted]`
    raises either per package.
-5. **Where diagnostics kinds for user annotations register.** Every
-   diagnostic names a registered kind; a package's annotation needs a
-   package-namespaced kind (`@myorg/audited: E1`). The registry is
-   per-feature today (`code_registry`, `language/mod.av:113`).
+5. **Where diagnostics kinds for user annotations register.** LANDED
+   2026-09-13 (comptime/static): `Diagnostic.kind` (`refuse_as("E1",
+   …)`, `refuse_as_at`) wears the annotation fn's PACKAGE —
+   `error[@acme/audit: E1]` — and a kind-less refusal stays F2069.
+   The language registry stays per feature; a package's kinds are the
+   PROGRAM's: `Program.kind_rows` is every `refuse_as` with a literal
+   kind in the annotation fns the workspace holds (the complete walk,
+   `every_expr`, branches included) plus every kind an annotation in
+   the program SPOKE — the registry `avra explain @acme/audit:E1`
+   walks; a report renders a spoken kind's row by being spoken. A kind
+   computed at run time registers by being spoken; the miss says so.

@@ -63,6 +63,9 @@ export type Decls = {
     // computed on first ask through `ensure_marks` (null = unasked)
     marks: List<List<Said>?>,
     ensure_marks: List<fn(DeclId)>,
+    // the ROOT package's manifest name — its modules carry no package
+    // prefix, and a kind spoken there still wears the package
+    root_name: List<string>,
     const_types: Map<string, TypeId>,
     children: List<List<DeclId>>,
     methods: List<List<DeclId>>,
@@ -123,7 +126,7 @@ fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
-        stores: [], decl_ids: [], file_decls: [], generations: [], origins: [], expansion_voices: [], meta_ids: {}, decls: [], keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
+        stores: [], decl_ids: [], file_decls: [], generations: [], origins: [], expansion_voices: [], meta_ids: {}, decls: [], keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], root_name: [""], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
         ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
         seat_marks: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
         lifter: [no_lifter],
@@ -651,7 +654,20 @@ impl Decls {
     fn store(d: DeclId) -> NodeStore { self.store_of(self.decl(d).file) }
 
     fn module_of(d: DeclId) -> string { self.module_name(self.file(self.decl(d).file).module_id) }
-    fn package_of(d: DeclId) -> string { package_of_module(self.module_of(d)) }
+    /// A declaration's package — its module's, by `package_named`.
+    fn package_of(d: DeclId) -> string { self.package_named(self.module_of(d)) }
+
+    /// A module's package in the DOTTED spelling every package read
+    /// compares (`@std.meta`): the prefix a dependency's module carries,
+    /// or the root's manifest name for a root module, which none
+    /// prefixes — "" for a lone file, which has no package.
+    fn package_named(module: string) -> string {
+        let named = package_of_module(module)
+        if named.is_empty() { self.root_name[0] } else { named }
+    }
+
+    /// The root package's manifest name, kept in the dotted spelling.
+    fn name_root(name: string) { self.root_name.set(0, name.replace("/", ".")) }
 
     /// Whether a meta seat takes a declaration WHOLE — the three
     /// receiver kinds and the metadata-only `Named`. The annotation
@@ -836,6 +852,7 @@ impl Decls {
             help: self.optional_text(self.field_of(heap, sig, item, "help")),
             at: self.loc_of_meta(heap, self.field_of(heap, sig, item, "at")),
             warning: self.bool_of_meta(self.field_of(heap, sig, item, "warning")),
+            kind: self.optional_text(self.field_of(heap, sig, item, "kind")),
         }
     }
 
