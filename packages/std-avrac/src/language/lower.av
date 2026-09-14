@@ -7,7 +7,7 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_row, inout_row, no_marks, ExternParts, Param, TypeRef, SeatMark}
+use core.{StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_row, inout_row, no_marks, ExternParts, Param, TypeRef, SeatMark, Static}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot}
 
@@ -34,6 +34,8 @@ export type Lowered = {
     // the host fns the program declares `extern` — rows the backend
     // declares and the evaluator refuses
     externs: List<RtSig>,
+    // the settled aggregates its bodies read by address, each once
+    statics: List<Static>,
 }
 
 impl Decls {
@@ -111,7 +113,7 @@ export fn lower(a: Analysis) -> Lowered {
 /// wrappers it minted (they never escape it), the bodies of OTHER
 /// declarations it wants — the program asks for those, and asking
 /// twice reuses — and every voice lowering earned.
-export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices }
+export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static> }
 
 /// A unit lowered in its file's analysis: the body, then its own
 /// lifts and wrappers drained locally — a lambda's body may mint
@@ -124,14 +126,15 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(F
     if w.decl != null && !a.view.decls.has_body(w.decl!) {
         mut out = new_emitter(externs)
         out.defect("a unit without a body was asked for — `${w.name}`")
-        return Unit { bodies: [], wants: [], voices: out.voices }
+        return Unit { bodies: [], wants: [], voices: out.voices, statics: [] }
     }
-    let first = if w.root != null { lower_root(a, w.root!, w.name, w.settled, w.answer, w.seats, externs, settle) } else if w.decl == null { lower_main(a, w.name, externs, settle) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle) }
+    let first = if w.root != null { lower_root(a, w.root!, w.name, w.seats, externs, settle) } else if w.decl == null { lower_main(a, w.name, externs, settle) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle) }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
     mut wants: List<Wanted> = first.jobs.pending
     mut lifts: List<Lift> = first.jobs.lifts
     mut wraps: List<Wrap> = first.jobs.wraps
+    mut statics: List<Static> = first.jobs.statics
     // a wrapper may be wanted by several of the unit's bodies — once
     mut wrapped: Map<string, bool> = {}
     while !lifts.is_empty() || !wraps.is_empty() {
@@ -148,9 +151,10 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(F
             wants = wants.concat(lf.jobs.pending)
             lifts = lifts.concat(lf.jobs.lifts)
             wraps = wraps.concat(lf.jobs.wraps)
+            statics = statics.concat(lf.jobs.statics)
         }
     }
-    Unit { bodies: bodies, wants: wants, voices: Voices { list: spoken } }
+    Unit { bodies: bodies, wants: wants, voices: Voices { list: spoken }, statics: statics }
 }
 
 impl Decls {
@@ -175,18 +179,20 @@ impl Decls {
         }
         let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: "main", sub: null }) }
         mut entry_body: Body = empty_main(self.types).body
+        mut statics: List<Static> = []
         if main_unit != null {
             let mu = main_unit!
             entry_body = mu.bodies.first() ?? entry_body
             fns = fns.concat(mu.bodies.slice(1, mu.bodies.length))
             spoken = spoken.concat(mu.voices.list)
             wants = wants.concat(mu.wants)
+            statics = mu.statics
         }
         let d = drained(wants, unit_of)
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
         spoken = spoken.concat(minted_pointers(self.types, fns.concat([entry_body])))
-        Lowered { fns: fns, entry: entry_body, types: self.types, diagnostics: spoken, externs: self.extern_rows() }
+        Lowered { fns: fns, entry: entry_body, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(statics.concat(d.statics)) }
     }
 
     /// A const's initializer as a program of its own: the root unit's
@@ -199,17 +205,19 @@ impl Decls {
         let entry = ru.bodies.first() ?? empty_main(self.types).body
         let fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
         let spoken = ru.voices.list.concat(d.spoken).concat(minted_pointers(self.types, fns.concat([entry])))
-        Lowered { fns: fns, entry: entry, types: self.types, diagnostics: spoken, externs: self.extern_rows() }
+        Lowered { fns: fns, entry: entry, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(ru.statics.concat(d.statics)) }
     }
 }
 
-/// The bodies a worklist reaches, each name once, and what they spoke.
-type Drained = { fns: List<Body>, spoken: List<Diag> }
+/// The bodies a worklist reaches, each name once, the statics they
+/// read, and what they spoke.
+type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static> }
 
 fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit) -> Drained {
     mut wants = pending
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
+    mut statics: List<Static> = []
     mut seen: Map<string, bool> = {}
     mut minted = 0
     while !wants.is_empty() && minted < unit_ceiling {
@@ -221,12 +229,27 @@ fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit) -> Drained {
             fns = fns.concat(u.bodies)
             spoken = spoken.concat(u.voices.list)
             wants = wants.concat(u.wants)
+            statics = statics.concat(u.statics)
         }
     }
     if !wants.is_empty() {
         spoken.push(defect_at(null, "specializations exploded past ${unit_ceiling} — polymorphic recursion is not supported"))
     }
-    Drained { fns: fns, spoken: spoken }
+    Drained { fns: fns, spoken: spoken, statics: statics }
+}
+
+/// Each static once: units read one const independently and each
+/// lays it out, so the program keeps the first of a name.
+fn distinct_statics(xs: List<Static>) -> List<Static> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<Static> = []
+    for s in xs {
+        if seen.get(s.name) == null {
+            seen.set(s.name, true)
+            out.push(s)
+        }
+    }
+    out
 }
 
 /// THE POINTER-CONSTANT LAW. A `ConstInt` aimed at a pointer-riding
@@ -318,7 +341,7 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValu
     for pt in ptypes { let _ = lo.out.mint_ty(pt) }
     lo.out.seeded()
     lo.seats_enter()
-    let r = if a.view.store.is_once(x.stmt) { lo.once_body(fname, root, rt, null) } else { lo.reg_of(root) }
+    let r = if a.view.store.is_once(x.stmt) { lo.once_body(fname, root, rt) } else { lo.reg_of(root) }
     lo.seats_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
@@ -381,10 +404,10 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
 /// An EXPRESSION as a body of its own — a const's initializer, an
 /// annotation's argument: no params, the value inside the seats'
 /// bracket, the answer after it settles. The evaluator runs it to
-/// settle the value; a program calls it only for a value no literal
-/// spells, which it answers once.
-fn lower_root(a: Analysis, root: ExprId, name: string, settled: Settled?, answer: TypeId?, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
-    let rt: TypeId = answer ?? a.facts.type_at(root)
+/// settle the value; a program never calls it — a settled value is
+/// spelled or laid out at its reads.
+fn lower_root(a: Analysis, root: ExprId, name: string, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
+    let rt: TypeId = a.facts.type_at(root)
     mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle))
     lo.out.seeded()
     // THE SETTLED SEATS ARE CONSTANTS HERE: the initializer reads a
@@ -392,11 +415,9 @@ fn lower_root(a: Analysis, root: ExprId, name: string, settled: Settled?, answer
     // the value the unit was made for.
     lo.seed_seats()
     lo.seats_enter()
-    // a value no literal spells is answered ONCE per process, as a
-    // `once fn` is; a scalar or text is spelled at its uses, never called
-    let r = if settled != null { lo.once_body(name, root, rt, settled) }
-            else if a.view.decls.types.spells(rt) { lo.reg_of(root) }
-            else { lo.once_body(name, root, rt, null) }
+    // a value no literal spells is answered ONCE per run, as a
+    // `once fn` is; a scalar or text is spelled at its uses
+    let r = if a.view.decls.types.spells(rt) { lo.reg_of(root) } else { lo.once_body(name, root, rt) }
     lo.seats_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {

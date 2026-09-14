@@ -11,6 +11,8 @@
 void avra_trap(const char* msg);
 #include <stdio.h>
 #include <unistd.h>
+#include <stddef.h>
+#include "../runtime/avra_box.h"
 
 // ── Context / Module / Builder ──
 
@@ -506,37 +508,136 @@ LLVMValueRef avra_llvm_build_store(LLVMBuilderRef b, LLVMValueRef val, LLVMValue
     return r;
 }
 
-// A string constant WITH THE RUNTIME'S HEADER before it: every
-// pointer a program holds carries one (runtime/avra_runtime.c), and
-// a literal is no exception. The header says STATIC — retain and
-// release read it and never write — so the global stays constant.
-// Layout and tag mirror the runtime's Header exactly — tag, kind,
-// count, LENGTH — so `.length` on a constant is a load; sixteen-byte
-// alignment is what lets the runtime refuse an unaligned scalar
-// before reading anything.
-LLVMValueRef avra_llvm_build_global_string_ptr(LLVMBuilderRef b, const char* s, const char* name) {
-    LLVMModuleRef m = LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(b)));
-    LLVMContextRef ctx = LLVMGetModuleContext(m);
-    LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx);
+// ── Static data ──
+// Every pointer a program holds carries the runtime's header
+// (runtime/avra_box.h), and data laid out here is no exception: a
+// string constant, a settled list, record, enum or map. Each is a
+// private global whose first sixteen bytes ARE the header, kind
+// immortal — retain and release read it and never write, so a
+// string stays constant; an array's marks are read at clone and its
+// index built at first lookup, so those globals are writable. The
+// layouts mirror avra_box.h's structs field for field, which the
+// asserts pin: a field added there fails here rather than shifting
+// what the runtime reads.
+_Static_assert(sizeof(Header) == 16, "the header is sixteen bytes before every payload");
+_Static_assert(offsetof(AvraArray, cap) == 0 && offsetof(AvraArray, len) == 8 && offsetof(AvraArray, data) == 16 &&
+               offsetof(AvraArray, owned) == 24 && offsetof(AvraArray, site) == 32 && sizeof(AvraArray) == 40,
+               "the static array layout mirrors AvraArray");
+_Static_assert(offsetof(AvraMap, keys) == 0 && offsetof(AvraMap, vals) == 8 && offsetof(AvraMap, index) == 16 &&
+               offsetof(AvraMap, icap) == 24 && sizeof(AvraMap) == 32,
+               "the static map layout mirrors AvraMap");
+
+// The header as constant fields: tag, kind, count, length.
+static LLVMValueRef header_const(LLVMContextRef ctx, int32_t kind, uint32_t len) {
     LLVMTypeRef i32 = LLVMInt32TypeInContext(ctx);
-    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
-    unsigned len = (unsigned)strlen(s);
-    LLVMValueRef fields[5] = {
-        LLVMConstInt(i32, 0x41565241u, 0),
-        LLVMConstInt(i32, (unsigned long long)(int32_t)-1, 1),
+    LLVMValueRef fields[4] = {
+        LLVMConstInt(i32, AVRA_TAG, 0),
+        LLVMConstInt(i32, (unsigned long long)kind, 1),
         LLVMConstInt(i32, 0, 0),
         LLVMConstInt(i32, len, 0),
-        LLVMConstStringInContext(ctx, s, len, 0),
     };
-    LLVMValueRef init = LLVMConstStructInContext(ctx, fields, 5, 0);
+    return LLVMConstStructInContext(ctx, fields, 4, 0);
+}
+
+// A headered global, sixteen-aligned so the payload is too — what
+// lets the runtime refuse an unaligned scalar before reading
+// anything. Answers the PAYLOAD's address, sixteen bytes in.
+static LLVMValueRef headered_global(LLVMModuleRef m, LLVMValueRef init, const char* name, int constant) {
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMValueRef g = LLVMAddGlobal(m, LLVMTypeOf(init), name);
     LLVMSetInitializer(g, init);
-    LLVMSetGlobalConstant(g, 1);
+    LLVMSetGlobalConstant(g, constant);
     LLVMSetLinkage(g, LLVMPrivateLinkage);
     LLVMSetUnnamedAddress(g, LLVMGlobalUnnamedAddr);
     LLVMSetAlignment(g, 16);
+    LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(ctx), 16, 0);
+    return LLVMConstInBoundsGEP2(LLVMInt8TypeInContext(ctx), g, &offset, 1);
+}
+
+// A text constant: the header says STATIC and carries the LENGTH,
+// so `.length` on a literal is a load. THE LENGTH IS HANDED IN, never
+// measured: a settled string holds a NUL all the way, and `strlen`
+// would end the constant at it while the evaluator kept the rest.
+LLVMValueRef avra_llvm_global_text(LLVMModuleRef m, const char* s, int64_t len, const char* name) {
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMValueRef fields[2] = { header_const(ctx, KIND_STATIC, (uint32_t)len), LLVMConstStringInContext(ctx, s, (unsigned)len, 0) };
+    return headered_global(m, LLVMConstStructInContext(ctx, fields, 2, 0), name, 1);
+}
+
+LLVMValueRef avra_llvm_build_text(LLVMBuilderRef b, const char* s, int64_t len, const char* name) {
+    return avra_llvm_global_text(LLVMGetGlobalParent(LLVMGetBasicBlockParent(LLVMGetInsertBlock(b))), s, len, name);
+}
+
+// A slot array laid out whole: the header, the AvraArray, then its
+// cells and their owned marks in one buffer, the way the runtime
+// allocates one. A cell arrives as an i64 or as a POINTER constant
+// (a string, another static box): a pointer is stored as its word
+// and marked owned, exactly what a pack at run time would do. The
+// buffer is addressed from the global itself, so one global is the
+// whole box.
+LLVMValueRef avra_llvm_static_array(LLVMModuleRef m, const char* name, LLVMValueRef* cells, int n) {
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
+    LLVMValueRef* words = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * (size_t)(n > 0 ? n : 1));
+    LLVMValueRef* marks = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * (size_t)(n > 0 ? n : 1));
+    for (int i = 0; i < n; i++) {
+        int owned = LLVMGetTypeKind(LLVMTypeOf(cells[i])) == LLVMPointerTypeKind;
+        words[i] = owned ? LLVMConstPtrToInt(cells[i], i64) : cells[i];
+        marks[i] = LLVMConstInt(i8, (unsigned long long)owned, 0);
+    }
+    LLVMTypeRef cells_ty = LLVMArrayType2(i64, (uint64_t)n);
+    LLVMTypeRef marks_ty = LLVMArrayType2(i8, (uint64_t)n);
+    LLVMTypeRef box_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ i64, i64, ptr, ptr, ptr }, 5, 0);
+    LLVMTypeRef whole_ty = LLVMStructTypeInContext(ctx, (LLVMTypeRef[]){ LLVMTypeOf(header_const(ctx, 0, 0)), box_ty, cells_ty, marks_ty }, 4, 0);
+    LLVMValueRef g = LLVMAddGlobal(m, whole_ty, name);
+    LLVMValueRef zero = LLVMConstInt(LLVMInt32TypeInContext(ctx), 0, 0);
+    LLVMValueRef at_cells[2] = { zero, LLVMConstInt(LLVMInt32TypeInContext(ctx), 2, 0) };
+    LLVMValueRef at_marks[2] = { zero, LLVMConstInt(LLVMInt32TypeInContext(ctx), 3, 0) };
+    LLVMValueRef box_fields[5] = {
+        LLVMConstInt(i64, (unsigned long long)n, 0),
+        LLVMConstInt(i64, (unsigned long long)n, 0),
+        LLVMConstInBoundsGEP2(whole_ty, g, at_cells, 2),
+        LLVMConstInBoundsGEP2(whole_ty, g, at_marks, 2),
+        LLVMConstPointerNull(ptr),
+    };
+    LLVMValueRef fields[4] = {
+        header_const(ctx, KIND_IMMORTAL(KIND_ARRAY), (uint32_t)sizeof(AvraArray)),
+        LLVMConstStructInContext(ctx, box_fields, 5, 0),
+        LLVMConstArray2(i64, words, (uint64_t)n),
+        LLVMConstArray2(i8, marks, (uint64_t)n),
+    };
+    LLVMSetInitializer(g, LLVMConstStructInContext(ctx, fields, 4, 0));
+    LLVMSetLinkage(g, LLVMPrivateLinkage);
+    LLVMSetAlignment(g, 16);
+    free(words);
+    free(marks);
     LLVMValueRef offset = LLVMConstInt(i64, 16, 0);
     return LLVMConstInBoundsGEP2(i8, g, &offset, 1);
+}
+
+// A map laid out whole over its two static arrays; the index is
+// left UNBUILT (capacity zero) for the runtime to hash on first use.
+LLVMValueRef avra_llvm_static_map(LLVMModuleRef m, const char* name, LLVMValueRef keys, LLVMValueRef vals) {
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
+    LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
+    LLVMValueRef map_fields[4] = { keys, vals, LLVMConstPointerNull(ptr), LLVMConstInt(i64, 0, 0) };
+    LLVMValueRef fields[2] = {
+        header_const(ctx, KIND_IMMORTAL(KIND_MAP), (uint32_t)sizeof(AvraMap)),
+        LLVMConstStructInContext(ctx, map_fields, 4, 0),
+    };
+    return headered_global(m, LLVMConstStructInContext(ctx, fields, 2, 0), name, 0);
+}
+
+// The payload address of a headered global already laid out.
+LLVMValueRef avra_llvm_global_payload(LLVMModuleRef m, const char* name) {
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMValueRef g = LLVMGetNamedGlobal(m, name);
+    if (!g) { avra_trap("compiler defect: a static read names no data"); }
+    LLVMValueRef offset = LLVMConstInt(LLVMInt64TypeInContext(ctx), 16, 0);
+    return LLVMConstInBoundsGEP2(LLVMInt8TypeInContext(ctx), g, &offset, 1);
 }
 
 // ── Calls ──

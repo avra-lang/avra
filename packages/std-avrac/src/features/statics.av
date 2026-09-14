@@ -1,0 +1,112 @@
+//! THE STATIC FOLD: a value that crossed out of the evaluator, laid
+//! out as boxes of slots under its static TYPE. This is the one
+//! type-directed reading of a crossing tree — a flat record IS its
+//! field, a boxed nullable a one-slot box, an enum its tag before
+//! its payloads — so a register (`materialized`) and a `Static` are
+//! both made from it and never disagree on a layout.
+use core.{TypeId, Slot, StaticBox, Static, filled}
+
+/// A static under construction: its boxes so far, child-first, so
+/// the box a slot names is always laid out before the slot.
+export type StaticBuild = { decls: Decls, boxes: List<StaticBox> = [] }
+
+impl StaticBuild {
+    /// A crossing value as ONE slot under `ty`: a scalar its word, a
+    /// flat record its field's slot, an aggregate the address of the
+    /// box pushed here. Null when the value does not fit the type —
+    /// or when the type is a scalar PAIR, which no slot holds.
+    mut fn slot_of(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Slot? {
+        match self.decls.types.shape_of(ty) {
+            .Int -> match v { .Int(n) -> Slot.Int(n), rest -> null },
+            .Float -> match v { .Float(bits) -> Slot.Float(bits), rest -> null },
+            .Bool -> match v { .Bool(b) -> Slot.Bool(b), rest -> null },
+            .Str -> match v { .Text(s) -> Slot.Text(s), rest -> null },
+            .Opt(inner) -> self.optional_slot(v, heap, inner),
+            .List(inner) -> self.list_slot(v, heap, inner),
+            .Map(_, value) -> self.table_slot(v, heap, value),
+            .Struct(_, _) -> self.record_slot(v, heap, ty),
+            .Enum(_, _) or .Res(_, _) -> self.variant_slot(v, heap, ty),
+            .App(_, _, _) -> if self.decls.fields_of_type(ty) != null { self.record_slot(v, heap, ty) } else { self.variant_slot(v, heap, ty) },
+            .Ptr or .Cell(_) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or
+            .Null or .EmptyList or .Error or .Void or .EmptyMap -> null,
+        }
+    }
+
+    /// A nullable: absence is the null pointer for a niche and a box
+    /// alike; a flat record's presence is its one-slot box, a
+    /// pointer's is the value itself. A scalar pair has no slot.
+    mut fn optional_slot(v: MetaVal, heap: MetaHeap, inner: TypeId) -> Slot? {
+        if v is .Absent { return Slot.Null }
+        if self.decls.types.is_flat(inner) { return self.array_slot(heap.slots(v), heap, [inner]) }
+        if self.decls.types.rides_pointer(inner) { return self.slot_of(v, heap, inner) }
+        null
+    }
+
+    /// A list: its elements, each under the one element type.
+    mut fn list_slot(v: MetaVal, heap: MetaHeap, inner: TypeId) -> Slot? {
+        let slots = heap.slots(v)
+        self.array_slot(slots, heap, filled<TypeId>(slots.length, inner))
+    }
+
+    /// A record: a flat one IS its field; a boxed one is its fields in
+    /// declaration order.
+    mut fn record_slot(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Slot? {
+        let sig: StructSig? = self.decls.fields_of_type(ty)
+        if sig == null { return null }
+        if self.decls.types.is_flat(ty) { return self.slot_of(v, heap, sig!.types[0]) }
+        self.array_slot(heap.slots(v), heap, sig!.types)
+    }
+
+    /// A variant: its tag at slot 0, its payloads after — the tagged
+    /// value both engines read.
+    mut fn variant_slot(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Slot? {
+        let held: EnumSig? = self.decls.variants_of_type(ty)
+        let slots = heap.slots(v)
+        if held == null || slots.is_empty() { return null }
+        let sig = held!
+        let raw: int? = match slots[0] { .Int(n) -> n, rest -> null }
+        if raw == null { return null }
+        let tag = raw!
+        if tag < 0 || tag >= sig.payloads.length { return null }
+        let payloads: List<Slot>? = self.slots_of(slots.slice(1, slots.length), heap, sig.payloads[tag])
+        if payloads == null { return null }
+        self.pushed(StaticBox.Slots([Slot.Int(tag)].concat(payloads!)))
+    }
+
+    /// A slot array of `slots`, each under its type — a list's
+    /// elements, a record's fields.
+    mut fn array_slot(slots: List<MetaVal>, heap: MetaHeap, types: List<TypeId>) -> Slot? {
+        let cells: List<Slot>? = self.slots_of(slots, heap, types)
+        if cells == null { return null }
+        self.pushed(StaticBox.Slots(cells!))
+    }
+
+    /// A map: its keys in written order beside its values, each under
+    /// the map's value type.
+    mut fn table_slot(v: MetaVal, heap: MetaHeap, value_ty: TypeId) -> Slot? {
+        let id: int? = match v { .Map(i) -> i, rest -> null }
+        if id == null { return null }
+        let row = heap.maps[id!]
+        let cells: List<Slot>? = self.slots_of(row.values, heap, filled<TypeId>(row.values.length, value_ty))
+        if cells == null { return null }
+        self.pushed(StaticBox.Table(row.keys, cells!))
+    }
+
+    /// Each value as its slot, or null at the first that does not fit.
+    mut fn slots_of(slots: List<MetaVal>, heap: MetaHeap, types: List<TypeId>) -> List<Slot>? {
+        if slots.length != types.length { return null }
+        mut cells: List<Slot> = []
+        for j, x in slots {
+            let c: Slot? = self.slot_of(x, heap, types[j])
+            if c == null { return null }
+            cells.push(c!)
+        }
+        cells
+    }
+
+    /// One more box, child-first: its address is its index.
+    mut fn pushed(b: StaticBox) -> Slot? {
+        self.boxes.push(b)
+        Slot.Box(self.boxes.length - 1)
+    }
+}

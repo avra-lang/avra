@@ -10,9 +10,11 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, reversed, rt_index, hosted_symbol, fp, fp_str}
+use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, reversed, rt_index, hosted_symbol, fp, fp_str, Static, StaticBox, Slot, debug}
 use @std.path.{joined_path}
-use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing}
+use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing, Budgets}
+
+extern fn avra_mem_live() -> int
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -49,10 +51,21 @@ type Machine = {
     cells: List<Val>,
     // a `once fn`'s answer, settled for this run under its symbol
     onces: Map<string, Val>,
+    // a static's value, built once per run under its name
+    statics: Map<string, Val>,
     out: List<string>,
     failures: List<string>,
     // instructions this run may still execute; below zero it traps
     budget: int,
+    // the instruction budget as asked, for the refusal's words
+    asked: int,
+    // bytes of the compiler's heap this run may hold beyond what
+    // stood when it began, the live bytes then, and the most it held
+    bytes: int,
+    mem_base: int,
+    mem_peak: int,
+    // the ceiling crossed, in the refusal's words — null while within
+    exhausted: string?,
     // a settlement's own directory, which `embed` reads beside — and
     // the files it read; null outside a settlement, where embed traps
     base: string?,
@@ -61,7 +74,7 @@ type Machine = {
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [], budget: unbudgeted, base: null, embeds: [] }
+    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], failures: [], budget: unbudgeted, asked: unbudgeted, bytes: unbudgeted, mem_base: avra_mem_live(), mem_peak: 0, exhausted: null, base: null, embeds: [] }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -121,6 +134,44 @@ fn truth_of(symbol: string, v: Val) -> Result<bool, string> {
     }
 }
 
+/// How often the memory ceiling is read, in steps: a read is a load,
+/// and a settlement's heap moves by whole boxes.
+const memory_stride: int = 1024
+
+impl Machine {
+    /// The memory the run holds beyond its start, against the ceiling.
+    fn held_within() {
+        let held = avra_mem_live() - self.mem_base
+        if held > self.mem_peak { self.mem_peak = held }
+        if held > self.bytes { self.spent_out(over_memory(self.bytes)) }
+    }
+
+    /// A ceiling crossed: the run stops, and the refusal knows which.
+    fn spent_out(label: string) {
+        if self.exhausted == null { self.exhausted = label }
+        self.trapped("ran past its budget")
+    }
+
+    /// What the run spent, on the debug channel: the measurement the
+    /// defaults are set from (`AVRA_DEBUG=1`, grep `settle:`).
+    fn spent(name: string, budgets: Budgets) {
+        self.held_within()
+        debug("settle: ${name} steps=${budgets.steps - self.budget} bytes=${self.mem_peak}\n")
+    }
+}
+
+/// A slot's value — a box's by the handle already built for it.
+fn slot_val(c: Slot, built: List<Val>) -> Val {
+    match c {
+        .Int(n) -> Val.I(n),
+        .Float(bits) -> Val.F(bits),
+        .Bool(b) -> Val.B(b),
+        .Text(s) -> Val.S(s),
+        .Box(at) -> built[at],
+        .Null -> Val.N,
+    }
+}
+
 /// A run nobody budgets: a program runs to its end.
 const unbudgeted: int = 1000000000000000
 
@@ -128,16 +179,16 @@ const unbudgeted: int = 1000000000000000
 /// Refused BEFORE running when any body reaches the world, DURING
 /// it when the budget runs out or a body traps, and AFTER it when
 /// the body answers nothing.
-export fn run_settle(l: Lowered, steps: int, base: string) -> Result<Settled, Unsettled> {
+export fn run_settle(l: Lowered, budgets: Budgets, base: string) -> Result<Settled, Unsettled> {
     // Every answer crosses into compiler-owned data now, so embed is
     // safe for aggregates as well as values with a source literal.
     let world: string? = world_reached(l, true)
     if world != null { return .Err(Unsettled.Reach(world!)) }
-    mut m = fresh_machine(l)
-    m.budget = steps
+    mut m = budgeted_machine(l, budgets)
     m.base = base
     let answer: Val? = m.run_body(l.entry, [])
-    if m.budget < 0 { return .Err(Unsettled.Budget(over_budget(steps))) }
+    m.spent(l.entry.name, budgets)
+    if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
     let fingerprint = m.value_hash(answer)
     if answer == null { return .Err(Unsettled.Trap("answered nothing")) }
@@ -155,16 +206,16 @@ fn crossed_answer(answer: MetaVal, heap: MetaHeap) -> Lifted {
 /// A fn run at compile time over crossing values: the body under its
 /// arguments, its answer crossed back. The reach law holds here — no
 /// world, no embed.
-export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: MetaHeap, steps: int) -> Result<Lifted, Unsettled> {
+export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: MetaHeap, budgets: Budgets) -> Result<Lifted, Unsettled> {
     let world: string? = world_reached(l, false)
     if world != null { return .Err(Unsettled.Reach(world!)) }
     let target: Body? = body_named(l, symbol)
     if target == null { return .Err(Unsettled.Trap(no_body_named(symbol))) }
-    mut m = fresh_machine(l)
-    m.budget = steps
+    mut m = budgeted_machine(l, budgets)
     let vals = [m.val_of(heap, a) for a in args]
     let answer: Val? = m.run_body(target!, vals)
-    if m.budget < 0 { return .Err(Unsettled.Budget(over_budget(steps))) }
+    m.spent(symbol, budgets)
+    if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
     mut out = new_meta_heap()
     let crossed = m.meta_of(answer ?? Val.I(0), out)
@@ -175,19 +226,24 @@ export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: Meta
 /// Unlike scalar const settlement, no source literal is synthesized:
 /// nested records, lists and maps remain values. Embed is permitted
 /// because the result exists only while the compiler call runs.
-export fn run_crossed(l: Lowered, steps: int, base: string) -> Result<Lifted, Unsettled> {
+export fn run_crossed(l: Lowered, budgets: Budgets, base: string) -> Result<Lifted, Unsettled> {
     let world: string? = world_reached(l, true)
     if world != null { return .Err(Unsettled.Reach(world!)) }
-    mut m = fresh_machine(l)
-    m.budget = steps
+    mut m = budgeted_machine(l, budgets)
     m.base = base
     let answer: Val? = m.run_body(l.entry, [])
-    if m.budget < 0 { return .Err(Unsettled.Budget(over_budget(steps))) }
+    m.spent(l.entry.name, budgets)
+    if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
     if answer == null { return .Err(Unsettled.Trap("answered nothing")) }
     mut out = new_meta_heap()
     let crossed = m.meta_of(answer!, out)
     .Ok(crossed_answer(crossed, out))
+}
+
+/// A machine under a settlement's budgets.
+fn budgeted_machine(l: Lowered, budgets: Budgets) -> Machine {
+    fresh_machine(l) with { budget: budgets.steps, asked: budgets.steps, bytes: budgets.bytes }
 }
 
 /// The first row a compile-time call reaches that it may not, with
@@ -317,7 +373,8 @@ impl Machine {
         mut pc = 0
         while pc < b.ins.length && self.failures.is_empty() {
             self.budget = self.budget - 1
-            if self.budget < 0 { self.trapped("ran past its budget") }
+            if self.budget % memory_stride == 0 { self.held_within() }
+            if self.budget < 0 { self.spent_out(over_budget(self.asked)) }
             // everything else DELEGATES to `step`, which is exhaustive
             else { match b.ins[pc] {
                 .RetVal(r) -> {
@@ -354,6 +411,7 @@ impl Machine {
             .CallRtVoid(callee, args) -> self.rt_void(callee, args, pc),
             .Call(d, callee, args) -> self.put_at(d, self.call_val(callee, args), pc),
             .FnAddr(d, sym) -> self.put_at(d, self.fn_addr_val(sym), pc),
+            .StaticAddr(d, sym) -> self.put_at(d, self.static_val(sym), pc),
             .CallPtr(d, f, args) -> self.put_at(d, self.call_ptr_val(f, args), pc),
             .IfStart(c) -> if self.truth(c) { pc + 1 } else { b.past_else(pc) },
             .SwitchStart(sel, cases) -> b.arm_start(pc, self.chosen_arm(sel, cases)),
@@ -664,6 +722,33 @@ impl Machine {
             if b.name == sym { return Val.I(j) }
         }
         self.defect_val("a fn address without a body survived lowering")
+    }
+
+    /// A static's value: built from its boxes on first read, child-
+    /// first so every slot's box already stands, and the same handle
+    /// on every read after — the evaluator's copy of what the backend
+    /// lays out.
+    fn static_val(sym: string) -> Val {
+        let held: Val? = self.statics.get(sym)
+        if held != null { return held! }
+        let st: Static? = self.l.statics.find((s: Static) -> s.name == sym)
+        if st == null { return self.defect_val("a static read names no data") }
+        mut built: List<Val> = []
+        // LICENSED I3: a fold — each box reads the ones built before it
+        for b in st!.boxes { built.push(self.box_val(b, built)) }
+        let v = built.last() ?? Val.N
+        self.statics.set(sym, v)
+        v
+    }
+
+    fn box_val(b: StaticBox, built: List<Val>) -> Val {
+        match b {
+            .Slots(cells) -> self.fresh_array([slot_val(c, built) for c in cells]),
+            .Table(keys, values) -> {
+                self.maps.push(MapVal { keys: keys, vals: [slot_val(c, built) for c in values] })
+                Val.M(self.maps.length - 1)
+            },
+        }
     }
 
     fn call_ptr_val(f: Reg, args: List<Reg>) -> Val {
@@ -1101,6 +1186,7 @@ impl Machine {
 
 fn no_body_named(symbol: string) -> string { "no body named `${symbol}`" }
 fn over_budget(steps: int) -> string { "took more than ${steps} steps" }
+fn over_memory(bytes: int) -> string { "held more than ${bytes} bytes" }
 // ── The host seam the evaluator reaches through ─────────────────
 // The process substrate, the io rows and the clock are the runtime's
 // own C; the evaluator calls the same functions the native program

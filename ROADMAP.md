@@ -10135,6 +10135,36 @@ by meaning; each is a slice for lane D unless a lane is named.
   local is invisible to it, so 100 is what the lint reaches and not
   what the law covers.
 
+- H3b. A `mut` SEAT'S ARGUMENT IS NEVER OPENED (found 2026-09-13 by
+  the COMPTIME STATIC red team, both engines, native and evaluated).
+  A `mut` local handed whole to a `mut` seat is LOADED, not opened
+  unique, so the callee writes the box the local still shares:
+    fn big() -> List<int> { [i for i in 0..40] }
+    const BIG = big()
+    fn grow(mut xs: List<int>) -> int { xs.push(9)  xs.length }
+    mut ys = BIG
+    let g1 = grow(ys)
+    let shared = [1, 2]
+    mut alias = shared
+    let g3 = grow(alias)
+    "${g1} ${BIG.length} ${g3} ${shared.length}"
+  answers `41 41 3 3` on both engines where a copy is a copy demands
+  `41 40 3 2` — the const's own data and the `let`'s list are written.
+  Under static data (comptime/static) BIG is a laid-out global, so the
+  write grows a static buffer; the runtime's `array_grow` moves the
+  cells out (`laid_out`) rather than freeing or reallocating memory
+  that is the binary's, which keeps the hole exactly the once path's
+  and no worse. THE FIX IS ONE VERB AND IT IS BLOCKED: opening every
+  `mut`-seat argument unique at the call (`seated_regs`, probed in
+  places.av — a `.Root` cell through `unique_box`, a path through
+  `slot_opened`) TRAPS THE COMPILER'S OWN `check` ("index 304 is out
+  of bounds (length 303)"), and so does the narrower form that opens
+  only handed LOCALS: the compiler's source hands `mut` locals whose
+  box another holder shares and relies on the write reaching both.
+  So H3b closes with H3 — after the sites that ride the channel are
+  converted — and not before; the reproducer above is its test, and
+  the F2048 law (a `mut` seat wants a `mut` place) already names the
+  seats to audit.
 - H3. THE BORROW CHANNEL IS SILENT — H2'S SIBLING WITH NO WARNING AT
   ALL (found 2026-09-05 by lane C; verified here). H2 at least warns.
   Borrow the field into a local first and there is NO diagnostic:

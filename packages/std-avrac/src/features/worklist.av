@@ -4,7 +4,7 @@
 //! worklist (a fresh value in its context, handed back with the
 //! body), so an enqueue is a write in place, never through a shared
 //! box; `seen` keys by mangled name, once per body.
-use core.{ExprId, TypeId, DeclId, FileId, StmtId, TypeRef, Param, Span, joined, filled}
+use core.{ExprId, TypeId, DeclId, FileId, StmtId, TypeRef, Param, Span, joined, filled, Static}
 use @std.errors.{Loc}
 
 /// A settled (`const`) seat's VALUE carried into the unit it selects:
@@ -17,7 +17,31 @@ export type SeatValue = { index: int, fp: string, ty: TypeId, value: MetaVal, he
 /// One body WANTED — the unit of lowering: a declaration's body (or
 /// a file's main, when `decl` is absent), under concrete Vars when
 /// it is generic, named by its symbol or mangling, in its file.
-export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, seats: List<SeatValue> = [], root: ExprId? = null, settled: Settled? = null, answer: TypeId? = null }
+export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, seats: List<SeatValue> = [], root: ExprId? = null }
+
+/// What a settlement may spend: instructions, and bytes of the
+/// compiler's own heap it holds. The defaults are MEASURED — the
+/// largest settlement in the compiler's derives and every gated
+/// program, times ten (design §4.4 names the run) — and a package
+/// raises either under `[lifted]` in its manifest.
+export type Budgets = { steps: int, bytes: int }
+
+export const default_steps: int = 600000
+export const default_memory_mib: int = 5
+
+export fn budgets_of(steps: int?, memory_mib: int?) -> Budgets {
+    Budgets { steps: steps ?? default_steps, bytes: bytes_of_mib(memory_mib ?? default_memory_mib) }
+}
+
+/// MiB as bytes, SATURATING: a count past what bytes can hold means
+/// no ceiling, never a wrapped one that refuses everything.
+fn bytes_of_mib(mib: int) -> int {
+    if mib > mib_ceiling { return mib_ceiling * 1048576 }
+    mib * 1048576
+}
+
+/// The most MiB a byte count holds.
+const mib_ceiling: int = 8796093022207
 
 /// Why a const did not SETTLE — three laws, each its own voice: the
 /// value reached the world, ran past its budget, or trapped. And
@@ -57,6 +81,13 @@ export fn const_symbol(f: FileId, s: StmtId) -> string {
 export fn settled_symbol(base: string, seats: List<SeatValue>) -> string {
     if seats.is_empty() { return base }
     "${base}@${joined([sv.fp for sv in seats], "_")}"
+}
+
+/// A settled SEAT's static data, named by the seat's type and its
+/// value's fingerprint — one layout per value, however many units
+/// read it.
+export fn seat_symbol(ty: TypeId, fp: string) -> string {
+    "seat$${ty.index}$${fp}"
 }
 
 /// A generated declaration's table key — under no WRITTEN name can
@@ -227,12 +258,12 @@ export type DeclareWork = { ann: DeclId, stmt: StmtId, callee: ExprId, args: Lis
 
 /// One body's worklist: the bodies it wants, the lambdas it lifted,
 /// the wrappers it minted, and the names it has already asked for.
-export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> }
+export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, statics: List<Static>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> }
 
 /// A fresh worklist over the program's extern symbols — what every
 /// body's emitter refuses an unknown callee against.
 export fn new_jobs(externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> Jobs {
-    Jobs { pending: [], seen: {}, lifts: [], wraps: [], externs: externs, settle: settle }
+    Jobs { pending: [], seen: {}, lifts: [], wraps: [], statics: [], externs: externs, settle: settle }
 }
 
 /// A NAMED fn boxed as a value calls through a generated WRAPPER

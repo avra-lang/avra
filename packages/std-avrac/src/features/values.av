@@ -11,7 +11,7 @@
 //! `repr_of`, and every consumer asks the verbs below instead of
 //! knowing. A new value CATEGORY joins here, beside the readers
 //! that make its layout nobody else's business.
-use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, Expr, NodeStore, filled, QuoteParts, quote_kind}
+use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, Expr, NodeStore, filled, QuoteParts, quote_kind, Slot, StaticBox}
 use features.{MetaVal, MetaHeap, TypeFacts, Decls, StructSig, EnumSig}
 
 // ── The source-spelled value ────────────────────────────────────
@@ -151,147 +151,49 @@ export fn quote_meta(store: NodeStore, decls: Decls, path: string, e: ExprId, mu
 use features.{MethodCall}
 
 impl LowerCx {
-    /// A value that crossed out of the compile-time evaluator, rebuilt
-    /// directly in IR under its static type. This is the ONE outbound
-    /// value codec for consts; lifted calls use the same MetaVal tree.
-    mut fn materialized(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Reg {
-        match self.view.types.shape_of(ty) {
-            .Int -> self.meta_int(v, ty),
-            .Float -> self.meta_float(v, ty),
-            .Bool -> self.meta_bool(v, ty),
-            .Str -> self.meta_text(v, ty),
-            .Opt(inner) -> self.meta_optional(v, heap, ty, inner),
-            .List(inner) -> self.meta_slots(v, heap, ty, [inner]),
-            .Map(_, value) -> self.meta_map(v, heap, ty, value),
-            .Struct(_, _) -> self.meta_record(v, heap, ty),
-            .Enum(_, _) or .Res(_, _) -> self.meta_enum(v, heap, ty),
-            .App(_, _, _) -> if self.fields_of(ty) != null { self.meta_record(v, heap, ty) } else { self.meta_enum(v, heap, ty) },
-            .Ptr or .Cell(_) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or
-            .Null or .EmptyList or .Error or .Void or .EmptyMap -> self.meta_defect(ty),
-        }
+    /// A value that crossed out of the compile-time evaluator, as a
+    /// REGISTER under its static type: a scalar pair packed here, every
+    /// other value one slot of the static fold — a word emitted, or the
+    /// address of data laid out under `name`. This is the ONE outbound
+    /// value codec for consts and settled seats.
+    mut fn materialized(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
+        if self.pair_shaped(ty) { return self.meta_pair(v, heap, ty, name) }
+        mut build = StaticBuild { decls: self.view.decls }
+        let slot: Slot? = build.slot_of(v, heap, ty)
+        if slot == null { return self.meta_defect(ty) }
+        self.crossed_reg(slot!, ty, name, build.boxes)
     }
 
-    mut fn meta_int(v: MetaVal, ty: TypeId) -> Reg {
-        match v {
-            .Int(n) -> {
-                let r = self.mint_ty(ty)
-                self.emit(Ins.ConstInt(r, n))
-                r
-            },
-            rest -> self.meta_defect(ty),
-        }
+    /// A scalar nullable lives in registers as its flag beside its
+    /// value — the one crossing shape that is not a slot.
+    fn pair_shaped(ty: TypeId) -> bool {
+        self.view.types.shape_of(ty) is .Opt && self.repr_of(ty) is .Pair
     }
 
-    mut fn meta_float(v: MetaVal, ty: TypeId) -> Reg {
-        match v {
-            .Float(bits) -> {
-                let r = self.mint_ty(ty)
-                self.emit(Ins.ConstFloat(r, bits))
-                r
-            },
-            rest -> self.meta_defect(ty),
-        }
-    }
-
-    mut fn meta_bool(v: MetaVal, ty: TypeId) -> Reg {
-        match v {
-            .Bool(b) -> {
-                let r = self.mint_ty(ty)
-                self.emit(Ins.ConstBool(r, b))
-                r
-            },
-            rest -> self.meta_defect(ty),
-        }
-    }
-
-    mut fn meta_text(v: MetaVal, ty: TypeId) -> Reg {
-        match v {
-            .Text(s) -> {
-                let r = self.mint_ty(ty)
-                self.emit(Ins.ConstStr(r, s))
-                r
-            },
-            rest -> self.meta_defect(ty),
-        }
-    }
-
-    mut fn meta_optional(v: MetaVal, heap: MetaHeap, ty: TypeId, inner: TypeId) -> Reg {
+    mut fn meta_pair(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
         if v is .Absent { return self.absent_of(ty) }
         let slots = heap.slots(v)
-        if self.view.types.is_flat(inner) {
-            if slots.is_empty() { return self.meta_defect(ty) }
-            return self.adopted(ty, false, self.materialized(slots[0], heap, inner))
-        }
-        if self.view.types.rides_pointer(inner) { return self.materialized(v, heap, inner) }
         if slots.length != 2 { return self.meta_defect(ty) }
         match slots[0] {
             .Bool(false) -> self.absent_of(ty),
-            .Bool(true) -> self.adopted(ty, false, self.materialized(slots[1], heap, inner)),
+            .Bool(true) -> self.adopted(ty, false, self.materialized(slots[1], heap, self.carried_type(ty), name)),
             rest -> self.meta_defect(ty),
         }
     }
 
-    mut fn meta_record(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Reg {
-        let held = self.fields_of(ty)
-        if held == null { return self.meta_defect(ty) }
-        let sig = held!
-        if self.view.types.is_flat(ty) {
-            if sig.types.length != 1 { return self.meta_defect(ty) }
-            let field = self.materialized(v, heap, sig.types[0])
-            let dst = self.mint_ty(ty)
-            self.emit(Ins.Pack(dst, [field]))
-            return dst
+    /// A slot as a register of `ty`: a word is its constant, a box the
+    /// address of the static its boxes make.
+    mut fn crossed_reg(c: Slot, ty: TypeId, name: string, boxes: List<StaticBox>) -> Reg {
+        let r = self.mint_ty(ty)
+        match c {
+            .Int(n) -> self.emit(Ins.ConstInt(r, n)),
+            .Float(bits) -> self.emit(Ins.ConstFloat(r, bits)),
+            .Bool(b) -> self.emit(Ins.ConstBool(r, b)),
+            .Text(s) -> self.emit(Ins.ConstStr(r, s)),
+            .Null -> self.emit(Ins.ConstInt(r, 0)),
+            .Box(_) -> self.static_read(r, name, boxes),
         }
-        let slots = heap.slots(v)
-        if slots.length != sig.types.length { return self.meta_defect(ty) }
-        let values = [self.materialized(x, heap, sig.types[j]) for j, x in slots]
-        let size = self.box_size(values.length)
-        let dst = self.mint_ty(ty)
-        self.grown_box(dst, size, values)
-        dst
-    }
-
-    mut fn meta_slots(v: MetaVal, heap: MetaHeap, ty: TypeId, element: List<TypeId>) -> Reg {
-        let slots = heap.slots(v)
-        if element.is_empty() { return self.meta_defect(ty) }
-        let values = [self.materialized(x, heap, element[0]) for x in slots]
-        let size = self.box_size(values.length)
-        let dst = self.mint_ty(ty)
-        self.grown_box(dst, size, values)
-        dst
-    }
-
-    mut fn meta_map(v: MetaVal, heap: MetaHeap, ty: TypeId, value_ty: TypeId) -> Reg {
-        let id: int? = match v { .Map(i) -> i, rest -> null }
-        if id == null { return self.meta_defect(ty) }
-        let row = heap.maps[id!]
-        let dst = self.mint_ty(ty)
-        self.emit(Ins.CallRt(dst, "avra_map_new", []))
-        for j, key in row.keys {
-            let k = self.mint_shape(Type.Str)
-            self.emit(Ins.ConstStr(k, key))
-            self.emit(Ins.CallRtVoid("avra_map_set", [dst, k, self.materialized(row.values[j], heap, value_ty)]))
-        }
-        dst
-    }
-
-    mut fn meta_enum(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Reg {
-        let held = self.variants_of(ty)
-        if held == null { return self.meta_defect(ty) }
-        let sig = held!
-        let slots = heap.slots(v)
-        if slots.is_empty() { return self.meta_defect(ty) }
-        let raw: int? = match slots[0] { .Int(n) -> n, rest -> null }
-        if raw == null { return self.meta_defect(ty) }
-        let tag = raw!
-        if tag < 0 || tag >= sig.payloads.length { return self.meta_defect(ty) }
-        let payload_types = sig.payloads[tag]
-        if slots.length != payload_types.length + 1 { return self.meta_defect(ty) }
-        let payloads = [self.materialized(slots[j + 1], heap, pt) for j, pt in payload_types]
-        let size = self.box_size(1 + payloads.length)
-        let dst = self.mint_ty(ty)
-        self.tagged_value(dst, size, tag, payloads)
-        dst
+        r
     }
 
     mut fn meta_defect(ty: TypeId) -> Reg {
