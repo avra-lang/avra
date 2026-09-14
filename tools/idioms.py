@@ -547,6 +547,19 @@ UNRATCHETED = {
 # forever. Every matcher must catch its own specimen, checked on every
 # run — this caught I18 shipping with a regex that could not span a
 # nested call.
+# A KEEPER HAS TWO SURFACES: what it refuses and what it accepts. Each
+# honest spelling a matcher permits is exercised here, or a dead
+# alternative can widen the rule unseen (`refused_n(` was one).
+ACCEPTED = {
+    "I20": [
+        ['        then "k" {', '            a.report().contains("x") && a.diagnostics.length == 1'],
+        ['        then "k" {', '            a.report().contains("x") && a.voices.length == 1'],
+        ['        then "k" {', '            a.report().contains("x") && refusals(src) == 1'],
+        ['        then "k" {', '            a.report().contains("x") && refused_with(src, "x")'],
+        ['        then "k" {', '            a.report().contains("x") && refused_n(p, "x", 1)'],
+    ],
+}
+
 SPECIMENS = {
     "I3":  [["for x in xs {", "    out.push(x)", "}"],
             ["    for x in xs { out.push(x) }"],
@@ -673,6 +686,9 @@ def selftest():
         for spec in specimens:
             if not list(matcher(spec)):
                 dead.append(f"{code}'s matcher misses `{' / '.join(spec)[:52]}`")
+        for spec in ACCEPTED.get(code, []):
+            if list(matcher(spec)):
+                dead.append(f"{code}'s matcher refuses the honest `{' / '.join(spec)[-52:]}`")
     return dead
 
 def sources():
