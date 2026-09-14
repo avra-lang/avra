@@ -182,7 +182,7 @@ impl Rebuilder {
             if t.args.is_empty() { return f with { optional: f.optional || t.optional, span: t.span } }
             return t with { name: f.name, args: self.trefs(t.args) }
         }
-        t with { name: self.plain_name(t.name), args: self.trefs(t.args) }
+        t with { name: self.rewritten(t.name), args: self.trefs(t.args) }
     }
 
     mut fn trefs(ts: List<TypeRef>) -> List<TypeRef> { [self.tref(t) for t in ts] }
@@ -193,33 +193,51 @@ impl Rebuilder {
     }
 
     /// A type's NAME where no written type stands (an impl target).
-    mut fn type_name(text: string) -> string {
-        let k: int? = self.lone_hole(text)
-        if k == null { return self.plain_name(text) }
+    mut fn type_name(text: Nominal) -> Nominal {
+        let k: int? = self.lone_hole(text.of)
+        if k == null { return Nominal(self.rewritten(text.of)) }
         self.classify(k!, HoleKind.Type)
         if !self.copying { return text }
-        self.fill_type(k!).name
+        Nominal(self.fill_type(k!).name)
     }
 
-    mut fn type_name_opt(text: string?) -> string? {
+    mut fn type_name_opt(text: Nominal?) -> Nominal? {
         if text == null { return null }
         self.type_name(text!)
     }
 
-    /// A binder or a read: a hole in it marks the open node as
-    /// wearing the target's origin.
-    mut fn name(text: string) -> string {
-        if !self.verbatim && hole_name(text) != null && !self.holed.is_empty() { self.holed.set(self.holed.length - 1, true) }
-        self.plain_name(text)
+    /// A name that KEYS A SCOPE: a hole in it marks the open node as
+    /// wearing the target's origin, since the filled name resolves
+    /// where the code lands.
+    mut fn scoped_name(text: Scoped) -> Scoped {
+        if !self.verbatim && hole_name(text.of) != null && !self.holed.is_empty() { self.holed.set(self.holed.length - 1, true) }
+        Scoped(self.rewritten(text.of))
     }
 
-    mut fn name_opt(text: string?) -> string? {
+    mut fn scoped_name_opt(text: Scoped?) -> Scoped? {
         if text == null { return null }
-        self.name(text!)
+        self.scoped_name(text!)
     }
 
-    /// A name that keys no scope — a type's, a field's, a variant's.
-    mut fn plain_name(text: string) -> string {
+    mut fn scoped_names(texts: List<Scoped>) -> List<Scoped> { [self.scoped_name(t) for t in texts] }
+
+    /// A name that keys no scope — a field's, a variant's, a
+    /// method's, a type parameter's.
+    mut fn plain_name(text: Plain) -> Plain { Plain(self.rewritten(text.of)) }
+
+    mut fn plain_names(texts: List<Plain>) -> List<Plain> { [self.plain_name(t) for t in texts] }
+
+    /// TEXT a template never rewrites — a spec's title, an
+    /// interpolation's runs, a `use` path, a grammar's notation. The
+    /// derive spells it, so an expansion SHOWS that nothing happens
+    /// here rather than leaving a name unaccounted for.
+    fn copied(text: string) -> string { text }
+
+    fn copied_texts(texts: List<string>) -> List<string> { texts }
+
+    /// THE HOLE SUBSTITUTION, once: the runs of a name around its
+    /// holes, each hole's fill woven in.
+    mut fn rewritten(text: string) -> string {
         if self.verbatim { return text }
         let held: HoleName? = hole_name(text)
         if held == null { return text }
@@ -230,10 +248,12 @@ impl Rebuilder {
     }
 
     mut fn param(p: Param) -> Param {
-        Param { name: self.name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default), mark: p.mark, span: p.span }
+        Param { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default), mark: p.mark, span: p.span }
     }
 
     mut fn params(ps: List<Param>) -> List<Param> { [self.param(p) for p in ps] }
+
+    mut fn variants(vs: List<Variant>) -> List<Variant> { [self.variant(v) for v in vs] }
 
     mut fn variant(v: Variant) -> Variant {
         Variant { name: self.plain_name(v.name), payloads: self.params(v.payloads), span: v.span }
@@ -242,6 +262,8 @@ impl Rebuilder {
     mut fn case(c: Case) -> Case {
         Case { group: c.group, name: c.name, body: self.expr(c.body) }
     }
+
+    mut fn cases(cs: List<Case>) -> List<Case> { [self.case(c) for c in cs] }
 
     // ── the registry ──
 
@@ -254,12 +276,12 @@ impl Rebuilder {
             .NullLit -> Expr.NullLit,
             .Receiver -> Expr.Receiver,
             .Error -> Expr.Error,
-            .Ident(name) -> Expr.Ident(self.name(name)),
+            .Ident(name) -> Expr.Ident(self.scoped_name(name)),
             .Binary(op, l, r) -> Expr.Binary(op, self.expr(l), self.expr(r)),
             .Not(v) -> Expr.Not(self.expr(v)),
             .ListLit(elems) -> Expr.ListLit(self.exprs(elems)),
             .Comp(elem, index, name, source, hi, cond) ->
-                Expr.Comp(self.expr(elem), self.name_opt(index), self.name(name), self.expr(source), self.expr_opt(hi), self.expr_opt(cond)),
+                Expr.Comp(self.expr(elem), self.scoped_name_opt(index), self.scoped_name(name), self.expr(source), self.expr_opt(hi), self.expr_opt(cond)),
             .MapLit(keys, values) -> Expr.MapLit(self.exprs(keys), self.exprs(values)),
             .Index(subject, index) -> Expr.Index(self.expr(subject), self.expr(index)),
             .Prop(subject, name) -> Expr.Prop(self.expr(subject), self.plain_name(name)),
@@ -269,12 +291,12 @@ impl Rebuilder {
             .If(c, t, f) -> Expr.If(self.expr(c), self.expr(t), self.expr(f)),
             .When(conds, values, fallback) -> Expr.When(self.exprs(conds), self.exprs(values), self.expr(fallback)),
             .Block(stmts, value) -> Expr.Block(self.stmts(stmts), self.expr_opt(value)),
-            .Call(callee, pins, args) -> Expr.Call(self.name(callee), self.trefs(pins), self.exprs(args)),
-            .StructLit(name, fields, values) -> Expr.StructLit(self.type_name(name), [self.plain_name(f) for f in fields], self.exprs(values)),
-            .With(subject, fields, values) -> Expr.With(self.expr(subject), [self.plain_name(f) for f in fields], self.exprs(values)),
+            .Call(callee, pins, args) -> Expr.Call(self.scoped_name(callee), self.trefs(pins), self.exprs(args)),
+            .StructLit(name, fields, values) -> Expr.StructLit(self.type_name(name), self.plain_names(fields), self.exprs(values)),
+            .With(subject, fields, values) -> Expr.With(self.expr(subject), self.plain_names(fields), self.exprs(values)),
             .Match(subject, arms) -> Expr.Match(self.expr(subject), self.arms(arms)),
             .Coalesce(l, r) -> Expr.Coalesce(self.expr(l), self.expr(r)),
-            .MatchOpt(subject, bind, present, absent) -> Expr.MatchOpt(self.expr(subject), self.name(bind), self.expr(present), self.expr(absent)),
+            .MatchOpt(subject, bind, present, absent) -> Expr.MatchOpt(self.expr(subject), self.scoped_name(bind), self.expr(present), self.expr(absent)),
             .Lambda(params, body) -> Expr.Lambda(self.params(params), self.expr(body)),
             .CallValue(subject, args) -> Expr.CallValue(self.expr(subject), self.exprs(args)),
             .Chain(subject, name) -> Expr.Chain(self.expr(subject), self.plain_name(name)),
@@ -283,7 +305,7 @@ impl Rebuilder {
             .VariantLit(name, args) -> Expr.VariantLit(self.plain_name(name), self.exprs(args)),
             .Propagate(v) -> Expr.Propagate(self.expr(v)),
             .Catch(subject, variants, binds, values) ->
-                Expr.Catch(self.expr(subject), [self.plain_name(v) for v in variants], [self.name(b) for b in binds], self.exprs(values)),
+                Expr.Catch(self.expr(subject), self.plain_names(variants), self.scoped_names(binds), self.exprs(values)),
             .MethodCall(subject, name, args) -> Expr.MethodCall(self.expr(subject), self.plain_name(name), self.exprs(args)),
         }
     }
@@ -304,31 +326,31 @@ impl Rebuilder {
 
     mut fn rebuilt_stmt(x: Stmt) -> Stmt {
         match x {
-            .Let(name, ty, value) -> Stmt.Let(self.name(name), self.tref_opt(ty), self.expr(value)),
-            .MutLet(name, ty, value) -> Stmt.MutLet(self.name(name), self.tref_opt(ty), self.expr(value)),
-            .ConstDecl(name, ty, value) -> Stmt.ConstDecl(self.name(name), self.tref_opt(ty), self.expr(value)),
+            .Let(name, ty, value) -> Stmt.Let(self.scoped_name(name), self.tref_opt(ty), self.expr(value)),
+            .MutLet(name, ty, value) -> Stmt.MutLet(self.scoped_name(name), self.tref_opt(ty), self.expr(value)),
+            .ConstDecl(name, ty, value) -> Stmt.ConstDecl(self.scoped_name(name), self.tref_opt(ty), self.expr(value)),
             .Assign(target, value) -> Stmt.Assign(self.expr(target), self.expr(value)),
             .ExprStmt(v) -> Stmt.ExprStmt(self.expr(v)),
             .Discard(v) -> Stmt.Discard(self.expr(v)),
             .FnDecl(name, tparams, params, ret, body) ->
-                Stmt.FnDecl(self.name(name), self.params(tparams), self.params(params), self.tref(ret), self.expr(body)),
-            .ExternFn(name, params, ret) -> Stmt.ExternFn(self.name(name), self.params(params), self.tref(ret)),
+                Stmt.FnDecl(self.scoped_name(name), self.params(tparams), self.params(params), self.tref(ret), self.expr(body)),
+            .ExternFn(name, params, ret) -> Stmt.ExternFn(self.scoped_name(name), self.params(params), self.tref(ret)),
             .While(c, stmts) -> Stmt.While(self.expr(c), self.stmts(stmts)),
             .IfStmt(c, t, e) -> Stmt.IfStmt(self.expr(c), self.stmts(t), self.stmts(e)),
             .Return(v) -> Stmt.Return(self.expr_opt(v)),
             .Fail(v) -> Stmt.Fail(self.expr(v)),
             .ImplDecl(of, target, fns) -> Stmt.ImplDecl(self.type_name_opt(of), self.type_name(target), self.stmts(fns)),
-            .TraitDecl(name, fns) -> Stmt.TraitDecl(self.name(name), self.stmts(fns)),
-            .SyntaxDecl(name, text) -> Stmt.SyntaxDecl(self.name(name), text),
-            .LetElse(name, subject, stmts) -> Stmt.LetElse(self.name(name), self.expr(subject), self.stmts(stmts)),
+            .TraitDecl(name, fns) -> Stmt.TraitDecl(self.scoped_name(name), self.stmts(fns)),
+            .SyntaxDecl(name, text) -> Stmt.SyntaxDecl(self.scoped_name(name), text),
+            .LetElse(name, subject, stmts) -> Stmt.LetElse(self.scoped_name(name), self.expr(subject), self.stmts(stmts)),
             .For(name, from, to, cond, step, stmts) ->
-                Stmt.For(self.name(name), self.expr(from), self.expr(to), self.expr(cond), self.expr(step), self.stmts(stmts)),
+                Stmt.For(self.scoped_name(name), self.expr(from), self.expr(to), self.expr(cond), self.expr(step), self.stmts(stmts)),
             .Use(path, items, aliases) -> Stmt.Use(path, items, aliases),
-            .ForEach(index, name, subject, stmts) -> Stmt.ForEach(self.name_opt(index), self.name(name), self.expr(subject), self.stmts(stmts)),
-            .StructDecl(name, tparams, fields) -> Stmt.StructDecl(self.name(name), [self.plain_name(t) for t in tparams], self.params(fields)),
-            .NamedType(name, tparams, of) -> Stmt.NamedType(self.name(name), [self.plain_name(t) for t in tparams], self.tref(of)),
-            .EnumDecl(name, tparams, variants) -> Stmt.EnumDecl(self.name(name), [self.plain_name(t) for t in tparams], [self.variant(v) for v in variants]),
-            .Spec(name, cases) -> Stmt.Spec(name, [self.case(c) for c in cases]),
+            .ForEach(index, name, subject, stmts) -> Stmt.ForEach(self.scoped_name_opt(index), self.scoped_name(name), self.expr(subject), self.stmts(stmts)),
+            .StructDecl(name, tparams, fields) -> Stmt.StructDecl(self.scoped_name(name), self.plain_names(tparams), self.params(fields)),
+            .NamedType(name, tparams, of) -> Stmt.NamedType(self.scoped_name(name), self.plain_names(tparams), self.tref(of)),
+            .EnumDecl(name, tparams, variants) -> Stmt.EnumDecl(self.scoped_name(name), self.plain_names(tparams), self.variants(variants)),
+            .Spec(name, cases) -> Stmt.Spec(name, self.cases(cases)),
             .Defer(body, on_error) -> Stmt.Defer(self.expr(body), on_error),
             .Error -> Stmt.Error,
         }
@@ -338,7 +360,7 @@ impl Rebuilder {
         match x {
             .Wild -> Pat.Wild,
             .Rest -> Pat.Rest,
-            .Bind(name) -> Pat.Bind(self.name(name)),
+            .Bind(name) -> Pat.Bind(self.scoped_name(name)),
             .Variant(name, args) -> Pat.Variant(self.plain_name(name), self.pats(args)),
             .Lit(v) -> Pat.Lit(self.expr(v)),
         }
