@@ -3,7 +3,7 @@
 //! declarations; a trait's SIGS mint as BODYLESS FnDecls (the body
 //! is a hole no pass walks), so declare and totality reuse the fn
 //! machinery whole.
-use core.{Expr, Stmt, StmtId, Param, TypeRef, Span, ExprId, NodeStore, plain_mark}
+use core.{Expr, Stmt, StmtId, Param, TypeRef, Span, ExprId, NodeStore, plain_mark, Nominal, Scoped}
 use features.{LangNode, Builder, window_end, aligned_param_types, void_ref, marked_seats, within, ref_within}
 use grammar.{Token}
 
@@ -24,7 +24,7 @@ fn build_receiver(mut b: Builder) -> Result<LangNode, string> {
 /// the method before a bound could matter.
 fn marked_fn(mut b: Builder) -> Result<StmtId, string> {
     let n = b.token(0)?
-    let tparams = [Param { name: t.text, ty: null, default: null, mark: plain_mark, span: t.span } for t in b.tokens(1)?]
+    let tparams = [Param { name: Scoped(t.text), ty: null, default: null, mark: plain_mark, span: t.span } for t in b.tokens(1)?]
     let consts = b.tokens(2)?
     let muts = b.tokens(3)?
     let ps = b.tokens(4)?
@@ -33,7 +33,7 @@ fn marked_fn(mut b: Builder) -> Result<StmtId, string> {
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: a fn declaration without a span — the arena and the grammar disagree") }
     let params = marked_seats(ps, aligned_param_types(ps, b.type_refs(5)?, ends!), muts, consts, n.span.lo)
-    .Ok(b.store.alloc_stmt(Stmt.FnDecl(n.text, tparams, params, r, body), b.span))
+    .Ok(b.store.alloc_stmt(Stmt.FnDecl(Scoped(n.text), tparams, params, r, body), b.span))
 }
 
 /// `mut fn` — a method declaring that it writes its receiver.
@@ -64,8 +64,8 @@ fn build_impl(mut b: Builder) -> Result<LangNode, string> {
     // with a `for`, the FIRST name is the trait and the for-name
     // is the target; without one, the first name IS the target.
     let forred: Token? = ib.first()
-    if forred == null { return b.make_stmt(Stmt.ImplDecl(null, t.text, fns)) }
-    b.make_stmt(Stmt.ImplDecl(t.text, forred!.text, fns))
+    if forred == null { return b.make_stmt(Stmt.ImplDecl(null, Nominal(t.text), fns)) }
+    b.make_stmt(Stmt.ImplDecl(Nominal(t.text), Nominal(forred!.text), fns))
 }
 
 fn is_fn(b: Builder, s: StmtId) -> bool {
@@ -97,7 +97,7 @@ fn build_trait(mut b: Builder) -> Result<LangNode, string> {
         if statics.any(within(it.span.lo, since, m.span.lo)) { b.store.mark_static(sig) }
         fns.push(sig)
     }
-    b.make_stmt(Stmt.TraitDecl(n.text, fns))
+    b.make_stmt(Stmt.TraitDecl(Scoped(n.text), fns))
 }
 
 /// One sig's params — the names inside the window, each typed by
@@ -114,14 +114,14 @@ fn member_stmt(mut b: Builder, name: Token, params: List<Param>, ret: TypeRef, b
     if body == null { return sig_stmt(b, name, params, ret) }
     let bsp: Span? = b.store.expr_span(body!)
     let whole = Span { lo: name.span.lo, hi: bsp?.hi ?? name.span.hi }
-    b.store.alloc_stmt(Stmt.FnDecl(name.text, [], params, ret, body!), whole)
+    b.store.alloc_stmt(Stmt.FnDecl(Scoped(name.text), [], params, ret, body!), whole)
 }
 
 /// A bodyless fn: the body is a HOLE no pass walks. The sig wears
 /// its name's span, so a refusal at it lands on the line.
 fn sig_stmt(mut b: Builder, name: Token, params: List<Param>, ret: TypeRef) -> StmtId {
     let hollow = b.store.alloc_expr(Expr.Error, null)
-    b.store.alloc_stmt(Stmt.FnDecl(name.text, [], params, ret, hollow), name.span)
+    b.store.alloc_stmt(Stmt.FnDecl(Scoped(name.text), [], params, ret, hollow), name.span)
 }
 
 /// The block written inside one sig's window — the member's

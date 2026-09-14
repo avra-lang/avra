@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Node, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
 use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, copier, quote_kind, all_codes, is_name_cont, SyntaxParts, ForeignRange}
@@ -1227,7 +1227,7 @@ impl Workspace {
         mut store = self.decls.store_of(f)
         match node {
             .Template(file, at, _, fills) -> self.copied_expr(f, file, at, fills),
-            .Name(t) -> store.alloc_expr(Expr.Ident(t), null),
+            .Name(t) -> store.alloc_expr(Expr.Ident(Scoped(t)), null),
             .Text(t) -> store.alloc_expr(Expr.StrLit(t), null),
             .Int(v) -> store.alloc_expr(Expr.IntLit(v), null),
             .Float(bits) -> store.alloc_expr(Expr.FloatLit(bits), null),
@@ -1418,7 +1418,7 @@ impl Workspace {
         let shape = elem!
         let params = declared_params(v.store, self.decls.decl(d).stmt)
         heap.node([meta_row(heap, shape, {
-            "name": MetaVal.Text(params[i].name),
+            "name": MetaVal.Text(params[i].name.of),
             "ty": typed_meta(self.decls.types, params[i].ty),
             "mutable": MetaVal.Bool(params[i].mark.mutable),
             "settled": MetaVal.Bool(params[i].mark.settled),
@@ -1433,7 +1433,7 @@ impl Workspace {
         if elem == null { return heap.node([]) }
         let shape = elem!
         heap.node([meta_row(heap, shape, {
-            "name": MetaVal.Text(f.name),
+            "name": MetaVal.Text(f.name.of),
             "ty": MetaVal.Text(self.spelling(f.ty)),
             "at": self.crossed_loc(v, f.span, heap),
         }) for f in declared_fields(v.store, x.stmt)])
@@ -1446,7 +1446,7 @@ impl Workspace {
         if elem == null { return heap.node([]) }
         let shape = elem!
         heap.node([meta_row(heap, shape, {
-            "name": MetaVal.Text(va.name),
+            "name": MetaVal.Text(va.name.of),
             "payload": heap.node([MetaVal.Text(self.spelling(p.ty)) for p in va.payloads]),
             "at": self.crossed_loc(v, va.span, heap),
         }) for va in declared_variants(v.store, x.stmt)])

@@ -126,3 +126,47 @@ export trait Names {
         } }]
     }
 }
+
+/// What a payload pattern needs, declared HERE: a template's names
+/// resolve in the file that wrote the quote.
+export enum Held { One(v: int) Two }
+
+/// THE BINDER SWEEP: every name payload the node model marks as
+/// SCOPE-KEYING, bound through a hole and read through a hole. A
+/// copier that carried one of these as a PLAIN name would leave the
+/// binder unfilled and the read undefined, or fill one and not the
+/// other.
+export trait Binders {
+    static fn derive(t: Type) -> List<Directive> {
+        let q = "q"
+        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+            fn ${q}free() -> int { 100 }
+
+            impl ${t} {
+                fn binders() -> int {
+                    let ${q}let = 1
+                    mut ${q}mut = 2
+                    ${q}mut = ${q}mut + ${name("${q}let")}
+                    const ${q}const = 4
+                    mut total = ${name("${q}mut")} + ${name("${q}const")}
+                    for ${q}range in 0..3 { total = total + ${name("${q}range")} }
+                    for ${q}at, ${q}elem in [10, 20] { total = total + ${name("${q}at")} + ${name("${q}elem")} }
+                    let ${q}lam = (${q}seat: int) -> ${name("${q}seat")} * 10
+                    total = total + ${q}lam(3)
+                    total = total + [${name("${q}comp")} for ${q}comp in [1, 2, 3]].length
+                    let held: int? = 7
+                    total = total + match held {
+                        null -> 0
+                        ${q}bind? -> ${name("${q}bind")}
+                    }
+                    let ${q}else? = held else { return 0 - 1 }
+                    total = total + ${name("${q}else")}
+                    total = total + match Held.One(5) { .One(${q}pat) -> ${name("${q}pat")}, .Two -> 0 }
+                    total + self.${q}method() + ${q}free()
+                }
+
+                fn ${q}method() -> int { 1000 }
+            }
+        } }]
+    }
+}

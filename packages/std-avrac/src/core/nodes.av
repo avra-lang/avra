@@ -175,7 +175,32 @@ export const all_binops: List<BinOp> = [BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.D
      BinOp.And, BinOp.Or,
      BinOp.BitAnd, BinOp.BitOr, BinOp.BitXor, BinOp.Shl, BinOp.Shr]
 
+/// THE THREE KINDS OF NAME A NODE CARRIES. Every name in the tree
+/// is text; what differs is WHAT IT KEYS, and until now that fact
+/// lived only in the walks that read it. It is the payload's TYPE
+/// now, so the enum states it and a derive can read it.
+///
+/// A name is FREE at runtime — each is its own type over `string`,
+/// which travels as the string it is; `n.of` reads the text back.
+
+/// A name that KEYS A SCOPE — a binder (`let x`, a parameter, a
+/// pattern's bind, a fn's own name) or a READ of one (`x`, a call's
+/// callee). The resolver walks the scope chain for it, so a
+/// TEMPLATE filling one hands the node to the splice site's scope.
+export type Scoped = string
+
+/// A name that keys NO scope — a field, a method, a property, a
+/// variant, a type parameter. It is answered by a shape the
+/// compiler already knows, so filling one changes nothing about
+/// where the node resolves.
+export type Plain = string
+
+/// A name in the TYPE namespace — a literal's type, an impl's
+/// target. A template's hole in one is filled by a written TYPE.
+export type Nominal = string
+
 @derive(ValueProtocol)
+@derive(Rebuild)
 export enum Expr {
     IntLit(value: int)
     /// A REAL literal, carried as its IEEE-754 BIT PATTERN rather than
@@ -186,7 +211,7 @@ export enum Expr {
     FloatLit(bits: int)
     StrLit(value: string)
     BoolLit(value: bool)
-    Ident(name: string)
+    Ident(name: Scoped)
     /// `self` — the enclosing method's receiver. A keyword, so it
     /// carries no name: the binding says what it is.
     Receiver
@@ -199,14 +224,14 @@ export enum Expr {
     /// another, or counting `source..hi` when `hi` is present;
     /// `index` names the position when written as `index, name`,
     /// null otherwise. The binders hold for `elem` and `cond` alone.
-    Comp(elem: ExprId, index: string?, name: string, source: ExprId, hi: ExprId?, cond: ExprId?)
+    Comp(elem: ExprId, index: Scoped?, name: Scoped, source: ExprId, hi: ExprId?, cond: ExprId?)
     /// `{ "k": v, … }` — keys and values in written order.
     MapLit(keys: List<ExprId>, values: List<ExprId>)
     /// `subject[index]` — element access.
     Index(subject: ExprId, index: ExprId)
     /// `subject.name` — a property read; TYPING refuses unknown
     /// names, so the parse stays generous.
-    Prop(subject: ExprId, name: string)
+    Prop(subject: ExprId, name: Plain)
     /// `"a ${x} b"` — parts always one longer than holes.
     Interp(parts: List<string>, holes: List<ExprId>)
     /// `quote { a ${x} b }` — a TEMPLATE: its body parsed here, into
@@ -231,13 +256,13 @@ export enum Expr {
     Block(stmts: List<StmtId>, value: ExprId?)
     /// A direct call by name; fn values arrive later. `pins` are
     /// explicit type arguments (`f<int>(x)`) — empty when inferred.
-    Call(callee: string, pins: List<TypeRef>, args: List<ExprId>)
+    Call(callee: Scoped, pins: List<TypeRef>, args: List<ExprId>)
     /// `Name { field: value, ... }` — fields in WRITTEN order
     /// (evaluation order); lowering reorders to declaration slots.
-    StructLit(name: string, fields: List<string>, values: List<ExprId>)
+    StructLit(name: Nominal, fields: List<Plain>, values: List<ExprId>)
     /// `subject with { field: value, ... }` — a modified COPY; the
     /// unwritten fields carry over.
-    With(subject: ExprId, fields: List<string>, values: List<ExprId>)
+    With(subject: ExprId, fields: List<Plain>, values: List<ExprId>)
     /// `match subject { pattern -> value, ... }` — the first arm
     /// whose pattern accepts the subject answers; typing proves the
     /// arms cover the subject (every variant, or a catch-all).
@@ -251,7 +276,7 @@ export enum Expr {
     /// `match v { b? -> present, null -> absent }` — the absence
     /// answered by ASKING. Exactly two arms, and `bind` names what
     /// the present arm receives, so no arm needs a string tag.
-    MatchOpt(subject: ExprId, bind: string, present: ExprId, absent: ExprId)
+    MatchOpt(subject: ExprId, bind: Scoped, present: ExprId, absent: ExprId)
     /// `(params) -> body` — a CLOSURE: the body may read outer
     /// names, captured BY VALUE into the closure's box at
     /// creation (value semantics makes by-value capture silent).
@@ -265,17 +290,17 @@ export enum Expr {
     /// `subject?.name` — the member of what a nullable CARRIES,
     /// nullable again: an absent subject answers absence, and the
     /// whole chain short-circuits on the first one.
-    Chain(subject: ExprId, name: string)
+    Chain(subject: ExprId, name: Plain)
     /// `value!` — the absence answered by INSISTING. The type loses
     /// its `?`; a value that is absent anyway refuses at runtime,
     /// which is the whole cost of writing it.
     Force(value: ExprId)
     /// `subject is .variant` — the tag test; typing demands an enum
     /// subject that names the variant, and answers bool.
-    Is(subject: ExprId, variant: string)
+    Is(subject: ExprId, variant: Plain)
     /// `.name(args)` — a variant of the enum the site EXPECTS; the
     /// want names the enum, the literal names the variant.
-    VariantLit(name: string, args: List<ExprId>)
+    VariantLit(name: Plain, args: List<ExprId>)
     /// `value?` — the absence answered by PASSING IT ON: a present
     /// value unwraps; an absent one makes the ENCLOSING fn answer
     /// `null` right here, so the fn must promise a nullable.
@@ -286,12 +311,12 @@ export enum Expr {
     /// `binds[j]` what it receives ("" is nothing). COVERAGE
     /// decides the type: a total catch recovers to the ok side; a
     /// selective one stays the Result, the unmatched propagating.
-    Catch(subject: ExprId, variants: List<string>, binds: List<string>, values: List<ExprId>)
+    Catch(subject: ExprId, variants: List<Plain>, binds: List<Scoped>, values: List<ExprId>)
     /// `subject.name(args)` — a METHOD call: the impl the
     /// receiver's TYPE names supplies the fn; `subject` rides as
     /// its first argument. Resolution is provable at typing —
     /// never a runtime lookup.
-    MethodCall(subject: ExprId, name: string, args: List<ExprId>)
+    MethodCall(subject: ExprId, name: Plain, args: List<ExprId>)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
@@ -410,7 +435,7 @@ export const pronoun_param: Param = Param { name: "it", ty: null, default: null,
 /// has to ask which kind it is.
 /// A declared seat — a fn's param, a lambda's, a struct's field, an
 /// enum variant's payload — with the DEFAULT a field may declare.
-export type Param = { name: string, ty: TypeRef?, default: ExprId?, mark: SeatMark, span: Span? = null }
+export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, mark: SeatMark, span: Span? = null }
 
 /// A pattern's identity in the store's pattern table.
 export type PatId = { index: int }
@@ -420,11 +445,12 @@ export type PatId = { index: int }
 /// equal, a name that binds the value at its path, or the hole —
 /// `_` (which the lint watches) and `rest` (the deliberate
 /// remainder, exempt).
+@derive(Rebuild)
 export enum Pat {
     Wild
     Rest
-    Bind(name: string)
-    Variant(name: string, args: List<PatId>)
+    Bind(name: Scoped)
+    Variant(name: Plain, args: List<PatId>)
     Lit(value: ExprId)
 }
 
@@ -433,7 +459,7 @@ export type Arm = { pats: List<PatId>, value: ExprId }
 
 /// One declared variant: its name and what it carries, in order —
 /// a single positional payload, or named fields.
-export type Variant = { name: string, payloads: List<Param>, span: Span? = null }
+export type Variant = { name: Plain, payloads: List<Param>, span: Span? = null }
 
 /// One test case: its `given` group's name, its own name (the
 /// `then`'s), and its body — a block answering a bool.
@@ -441,8 +467,8 @@ export type Case = { group: string, name: string, body: ExprId }
 
 /// One step of a PLACE — where a mutation lands.
 export enum PlaceStep {
-    Root(name: string)
-    Field(subject: ExprId, name: string)
+    Root(name: Scoped)
+    Field(subject: ExprId, name: Plain)
     At(subject: ExprId, index: ExprId)
 }
 
@@ -452,21 +478,22 @@ export type MethodParts = { subject: ExprId, name: string, args: List<ExprId> }
 /// A `use` statement's projection: the path, the items, the site.
 export type UseParts = { path: List<string>, items: List<string>, aliases: List<string>, stmt: StmtId }
 
+@derive(Rebuild)
 export enum Stmt {
     /// `let name = v`, optionally `let name: T = v` — the written
     /// type, when declared, is what the binding HOLDS; the value
     /// must be accepted by it.
-    Let(name: string, ty: TypeRef?, value: ExprId)
+    Let(name: Scoped, ty: TypeRef?, value: ExprId)
     /// A reassignable binding — unmanaged values only, until
     /// ownership analysis; optionally annotated, holding what it
     /// declares exactly as `let` does.
-    MutLet(name: string, ty: TypeRef?, value: ExprId)
+    MutLet(name: Scoped, ty: TypeRef?, value: ExprId)
     /// `const name = v` — a value the COMPILER computes, so every
     /// use is that value and the program never computes it. Its
     /// initializer is evaluated at compile time, which is also the
     /// law it must satisfy: nothing the host answers, nothing that
     /// does not settle.
-    ConstDecl(name: string, ty: TypeRef?, value: ExprId)
+    ConstDecl(name: Scoped, ty: TypeRef?, value: ExprId)
     /// Reassignment of a `mut` binding, by name.
     Assign(target: ExprId, value: ExprId)
     /// An expression at statement position.
@@ -476,10 +503,10 @@ export enum Stmt {
     /// `tparams` are the declared type parameters, in order — the
     /// ordinal IS the Var identity; a tparam's `ty` names its
     /// BOUND (`<T: Show>`), absent when unconstrained.
-    FnDecl(name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId)
+    FnDecl(name: Scoped, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId)
     /// `extern fn name(params) -> ret` — a fn the host provides: a
     /// signature with no body, called by its bare symbol.
-    ExternFn(name: string, params: List<Param>, ret: TypeRef)
+    ExternFn(name: Scoped, params: List<Param>, ret: TypeRef)
     /// Condition re-evaluated each turn; the body is a scope.
     While(cond: ExprId, stmts: List<StmtId>)
     /// `if c { … }` (optionally `else { … }`) at STATEMENT
@@ -500,46 +527,46 @@ export enum Stmt {
     /// fn lowers under a QUALIFIED name (`Target.method`). `of`
     /// names the TRAIT being implemented — null for an inherent impl
     /// — and an impl-for must answer every trait method.
-    ImplDecl(of: string?, target: string, fns: List<StmtId>)
+    ImplDecl(of: Nominal?, target: Nominal, fns: List<StmtId>)
     /// `trait Name { fn sigs… }` — a nominal behavior contract.
     /// The sigs ride as BODYLESS fn declarations (body = a hole no
     /// pass walks), so declare and totality reuse fn machinery.
-    TraitDecl(name: string, fns: List<StmtId>)
+    TraitDecl(name: Scoped, fns: List<StmtId>)
     /// `let name? = subject else { stmts }` — the bind-fresh form
     /// that KEEPS GOING: a present subject binds its carried value
     /// in the enclosing scope; an absent one runs the else, which
     /// must leave. Parsed by `let_stmt`; nullability gives it
     /// meaning.
-    LetElse(name: string, subject: ExprId, stmts: List<StmtId>)
+    LetElse(name: Scoped, subject: ExprId, stmts: List<StmtId>)
     /// `for name in from..to` — binds `name` over the body. `cond`
     /// and `step` are parse-time desugar (`name < to`, `name + 1`):
     /// real nodes every pass walks, so the loop is mut+while in
     /// costume.
-    For(name: string, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>)
+    For(name: Scoped, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>)
     /// `use a.b.{x, y}` — the path's segments (a `@pkg` head kept
     /// as written) and the items brought into scope.
     Use(path: List<string>, items: List<string>, aliases: List<string>)
     /// `for x in xs` — or `for i, x in xs`, the index beside the
     /// element, the loop's own counter with a name.
-    ForEach(index: string?, name: string, subject: ExprId, stmts: List<StmtId>)
+    ForEach(index: Scoped?, name: Scoped, subject: ExprId, stmts: List<StmtId>)
     /// `type Name = { field: ty, ... }` — a nominal record; the
     /// name lives in the TYPE namespace, program-wide like fns.
-    StructDecl(name: string, tparams: List<string>, fields: List<Param>)
+    StructDecl(name: Scoped, tparams: List<Plain>, fields: List<Param>)
     /// `type Name = <type>` — a DISTINCT type over a written shape,
     /// never an alias: the name counts at every seat and the shape
     /// answers every read. It travels AS its shape (a flat record
     /// of one anonymous field), so the name is free at runtime.
-    NamedType(name: string, tparams: List<string>, of: TypeRef)
+    NamedType(name: Scoped, tparams: List<Plain>, of: TypeRef)
     /// `enum Name { A B(payload: int) }` — a nominal closed set
     /// sharing the TYPE namespace with records. A variant is a
     /// Param: an ABSENT `ty` IS a unit variant.
-    EnumDecl(name: string, tparams: List<string>, variants: List<Variant>)
+    EnumDecl(name: Scoped, tparams: List<Plain>, variants: List<Variant>)
     /// `spec "name" { given "…" { then "…" { … } } }` — a test
     /// suite; each case is a declaration of its own.
     Spec(name: string, cases: List<Case>)
     /// `syntax sql { … }` — a sublanguage declared: the block word and
     /// the grammar notation, kept as text; the workspace readies it.
-    SyntaxDecl(name: string, text: string)
+    SyntaxDecl(name: Scoped, text: string)
     /// `defer e` — the body runs when the enclosing scope ends or
     /// the fn exits early, last-registered first; `on_error` marks
     /// an `errdefer`, which runs only when the fn exits through its
@@ -805,7 +832,7 @@ impl NodeStore {
     /// A binding pattern's name; absence for any other pattern.
     fn bind_name(id: PatId) -> string? {
         match self.pat(id) {
-            .Bind(name) -> name,
+            .Bind(name) -> name.of,
             _ -> null,
         }
     }
@@ -824,8 +851,8 @@ impl NodeStore {
         match p {
             .Wild -> fp(50, []),
             .Rest -> fp(51, []),
-            .Bind(name) -> fp(52, [fp_str(name)]),
-            .Variant(name, args) -> fp(53, [fp_str(name), fp_list([self.pat_fingerprint(a) for a in args])]),
+            .Bind(name) -> fp(52, [fp_str(name.of)]),
+            .Variant(name, args) -> fp(53, [fp_str(name.of), fp_list([self.pat_fingerprint(a) for a in args])]),
             .Lit(v) -> fp(54, [self.expr_fingerprint(v)]),
         }
     }
@@ -1010,7 +1037,7 @@ impl NodeStore {
     /// statement, and for a loop that names only its element.
     fn loop_index(s: StmtId) -> string? {
         match self.stmt(s) {
-            .ForEach(index, _, _, _) -> index,
+            .ForEach(index, _, _, _) -> index?.of,
             _ -> null,
         }
     }
@@ -1018,7 +1045,7 @@ impl NodeStore {
     /// A bare name's text; null for every other expression.
     fn ident_name(e: ExprId) -> string? {
         match self.expr(e) {
-            .Ident(name) -> name,
+            .Ident(name) -> name.of,
             _ -> null,
         }
     }
@@ -1060,7 +1087,7 @@ impl NodeStore {
         match e {
             .IntLit(value) -> fp(1, [value]),
             .FloatLit(bits) -> fp(60, [bits]),
-            .Ident(name) -> fp(2, [fp_str(name)]),
+            .Ident(name) -> fp(2, [fp_str(name.of)]),
             .Receiver -> fp(102, []),
             .Binary(op, left, right) ->
                 fp(3, [fp_binop(op), self.expr_fingerprint(left), self.expr_fingerprint(right)]),
@@ -1071,7 +1098,7 @@ impl NodeStore {
             .Index(subject, index) ->
                 fp(21, [self.expr_fingerprint(subject), self.expr_fingerprint(index)]),
             .Prop(subject, name) ->
-                fp(22, [self.expr_fingerprint(subject), fp_str(name)]),
+                fp(22, [self.expr_fingerprint(subject), fp_str(name.of)]),
             .Interp(parts, holes) ->
                 fp(23, [fp_list(str_fps(parts)), fp_list(self.expr_fps(holes))]),
             .Quote(parts, stmts, arms, holes) ->
@@ -1083,7 +1110,7 @@ impl NodeStore {
                 fp(10, [self.expr_fingerprint(cond), self.expr_fingerprint(on_true),
                         self.expr_fingerprint(on_false)]),
             .Call(callee, pins, args) ->
-                fp(11, [fp_str(callee), fp_list([type_fp(p) for p in pins]),
+                fp(11, [fp_str(callee.of), fp_list([type_fp(p) for p in pins]),
                         fp_list(self.expr_fps(args))]),
             .When(conds, values, fallback) ->
                 fp(13, [fp_list(self.expr_fps(conds)), fp_list(self.expr_fps(values)),
@@ -1091,29 +1118,29 @@ impl NodeStore {
             .Block(stmts, value) ->
                 fp(14, [fp_list(self.stmt_fps(stmts)), self.opt_fp(value)]),
             .StructLit(name, fields, values) ->
-                fp(24, [fp_str(name), fp_list(str_fps(fields)),
+                fp(24, [fp_str(name.of), fp_list(plain_fps(fields)),
                         fp_list(self.expr_fps(values))]),
             .With(subject, fields, values) ->
                 fp(26, [self.expr_fingerprint(subject),
-                        fp_list(str_fps(fields)), fp_list(self.expr_fps(values))]),
+                        fp_list(plain_fps(fields)), fp_list(self.expr_fps(values))]),
             .Match(subject, arms) ->
                 fp(28, [self.expr_fingerprint(subject), fp_list(self.arm_fps(arms))]),
             .NullLit -> fp(30, []),
             .Coalesce(l, r) ->
                 fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
-            .Is(v, variant) -> fp(49, [self.expr_fingerprint(v), fp_str(variant)]),
-            .VariantLit(name, args) -> fp(58, [fp_str(name), fp_list(self.expr_fps(args))]),
+            .Is(v, variant) -> fp(49, [self.expr_fingerprint(v), fp_str(variant.of)]),
+            .VariantLit(name, args) -> fp(58, [fp_str(name.of), fp_list(self.expr_fps(args))]),
             // both ends are OPTIONAL and each folds as one: an absent
             // guard fingerprinted as the element gave `[x for x in xs]`
             // and `[x for x in xs if x]` one identity, and the range's
             // end was told apart by a second tag (61, retired here)
             // where absence is a value the payload can carry.
             .Comp(elem, index, name, source, hi, cond) ->
-                fp(55, [self.expr_fingerprint(elem), fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(source), self.opt_fp(hi), self.opt_fp(cond)]),
+                fp(55, [self.expr_fingerprint(elem), fp_str(index?.of ?? ""), fp_str(name.of), self.expr_fingerprint(source), self.opt_fp(hi), self.opt_fp(cond)]),
             .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
             .MethodCall(subject, name, margs) ->
-                fp(43, [self.expr_fingerprint(subject), fp_str(name),
+                fp(43, [self.expr_fingerprint(subject), fp_str(name.of),
                         fp_list(self.expr_fps(margs))]),
             .Lambda(params, body) ->
                 fp(46, [fp_list(self.param_fps(params)), self.expr_fingerprint(body)]),
@@ -1121,14 +1148,14 @@ impl NodeStore {
                 fp(47, [self.expr_fingerprint(subject), fp_list(self.expr_fps(cargs))]),
             .Catch(subject, variants, binds, values) ->
                 fp(40, [self.expr_fingerprint(subject),
-                        fp_list(str_fps(variants)),
-                        fp_list(str_fps(binds)),
+                        fp_list(plain_fps(variants)),
+                        fp_list(scoped_fps(binds)),
                         fp_list(self.expr_fps(values))]),
             .MatchOpt(subject, bind, present, absent) ->
-                fp(33, [self.expr_fingerprint(subject), fp_str(bind),
+                fp(33, [self.expr_fingerprint(subject), fp_str(bind.of),
                         self.expr_fingerprint(present), self.expr_fingerprint(absent)]),
             .Chain(subject, name) ->
-                fp(34, [self.expr_fingerprint(subject), fp_str(name)]),
+                fp(34, [self.expr_fingerprint(subject), fp_str(name.of)]),
         }
     }
 
@@ -1236,9 +1263,9 @@ impl NodeStore {
 
     fn fingerprint_stmt(s: Stmt) -> int {
         match s {
-            .Let(name, ty, value) -> fp(5, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
-            .MutLet(name, ty, value) -> fp(15, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
-            .ConstDecl(name, ty, value) -> fp(109, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
+            .Let(name, ty, value) -> fp(5, [fp_str(name.of), type_fp(ty), self.expr_fingerprint(value)]),
+            .MutLet(name, ty, value) -> fp(15, [fp_str(name.of), type_fp(ty), self.expr_fingerprint(value)]),
+            .ConstDecl(name, ty, value) -> fp(109, [fp_str(name.of), type_fp(ty), self.expr_fingerprint(value)]),
             .Assign(target, value) -> fp(16, [self.expr_fingerprint(target), self.expr_fingerprint(value)]),
             .While(cond, stmts) ->
                 fp(17, [self.expr_fingerprint(cond), fp_list(self.stmt_fps(stmts))]),
@@ -1249,35 +1276,35 @@ impl NodeStore {
             .Return(value) -> fp(36, [self.opt_fp(value)]),
             .Fail(value) -> fp(39, [self.expr_fingerprint(value)]),
             .ImplDecl(of, target, fns) ->
-                fp(44, [fp_str(of ?? ""), fp_str(target), fp_list(self.stmt_fps(fns))]),
+                fp(44, [fp_str(of?.of ?? ""), fp_str(target.of), fp_list(self.stmt_fps(fns))]),
             .TraitDecl(name, fns) ->
-                fp(45, [fp_str(name), fp_list(self.stmt_fps(fns))]),
-            .SyntaxDecl(name, text) -> fp(119, [fp_str(name), fp_str(text)]),
+                fp(45, [fp_str(name.of), fp_list(self.stmt_fps(fns))]),
+            .SyntaxDecl(name, text) -> fp(119, [fp_str(name.of), fp_str(text)]),
             .LetElse(name, subject, stmts) ->
-                fp(38, [fp_str(name), self.expr_fingerprint(subject), fp_list(self.stmt_fps(stmts))]),
+                fp(38, [fp_str(name.of), self.expr_fingerprint(subject), fp_list(self.stmt_fps(stmts))]),
             // For's cond and step derive from name/from/to — the
             // identity needs only the sources.
             .For(name, from, to, _, _, stmts) ->
-                fp(18, [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to), fp_list(self.stmt_fps(stmts))]),
+                fp(18, [fp_str(name.of), self.expr_fingerprint(from), self.expr_fingerprint(to), fp_list(self.stmt_fps(stmts))]),
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Discard(value) -> fp(57, [self.expr_fingerprint(value)]),
             .Defer(body, on_error) -> fp(if on_error { 107 } else { 106 }, [self.expr_fingerprint(body)]),
             .Use(path, items, aliases) -> fp(108, [fp_list(str_fps(path)), fp_list(str_fps(items)), fp_list(str_fps(aliases))]),
             .ForEach(index, name, subject, stmts) ->
-                fp(42, [fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(subject), fp_list(self.stmt_fps(stmts))]),
+                fp(42, [fp_str(index?.of ?? ""), fp_str(name.of), self.expr_fingerprint(subject), fp_list(self.stmt_fps(stmts))]),
             .Error -> fp(7, []),
-            .ExternFn(name, params, ret) -> fp(59, [fp_str(name), fp_list(self.param_fps(params)), type_fp(ret)]),
+            .ExternFn(name, params, ret) -> fp(59, [fp_str(name.of), fp_list(self.param_fps(params)), type_fp(ret)]),
             .FnDecl(name, tparams, params, ret, body) ->
-                fp(12, [fp_str(name), fp_list(self.param_fps(tparams)),
+                fp(12, [fp_str(name.of), fp_list(self.param_fps(tparams)),
                         fp_list(self.param_fps(params)),
                         type_fp(ret), self.expr_fingerprint(body)]),
             .StructDecl(name, tparams, fields) ->
-                fp(25, [fp_str(name), fp_list(str_fps(tparams)),
+                fp(25, [fp_str(name.of), fp_list(plain_fps(tparams)),
                         fp_list(self.param_fps(fields))]),
             .NamedType(name, tparams, of) ->
-                fp(122, [fp_str(name), fp_list(str_fps(tparams)), type_fp(of)]),
+                fp(122, [fp_str(name.of), fp_list(plain_fps(tparams)), type_fp(of)]),
             .EnumDecl(name, tparams, variants) ->
-                fp(27, [fp_str(name), fp_list(str_fps(tparams)),
+                fp(27, [fp_str(name.of), fp_list(plain_fps(tparams)),
                         fp_list(self.variant_fps(variants))]),
             .Spec(name, cases) -> fp(56, [fp_str(name), fp_list(self.case_fps(cases))]),
         }
@@ -1296,20 +1323,34 @@ impl NodeStore {
     /// are different records, and a defaults list beside the fields
     /// says which defaults exist without saying whose they are.
     fn param_fps(params: List<Param>) -> List<int> {
-        [fp(123, [fp_str(p.name), type_fp(p.ty), mark_fp(p.mark), self.opt_fp(p.default)]) for p in params]
+        [fp(123, [fp_str(p.name.of), type_fp(p.ty), mark_fp(p.mark), self.opt_fp(p.default)]) for p in params]
     }
 
     /// A variant list's fingerprint parts — ONE VALUE PER VARIANT.
     /// Spliced flat, a variant's payload run and the next variant's
     /// name share a boundary that moves.
     fn variant_fps(variants: List<Variant>) -> List<int> {
-        [fp(124, [fp_str(v.name), fp_list(self.param_fps(v.payloads))]) for v in variants]
+        [fp(124, [fp_str(v.name.of), fp_list(self.param_fps(v.payloads))]) for v in variants]
     }
 }
 
 /// A string list's fingerprint parts, in order.
 fn str_fps(texts: List<string>) -> List<int> {
     [fp_str(t) for t in texts]
+}
+
+// A run of NAMES fingerprinted. One per name kind, and the bodies
+// agree because the difference is the SEAT: a name is opaque there,
+// so a `List<Plain>` and a `List<Scoped>` are two types and a fold
+// over one is not a fold over the other. Spelling the unwrap at each
+// call site instead would build a second list per node.
+
+fn plain_fps(names: List<Plain>) -> List<int> {
+    [fp_str(n.of) for n in names]
+}
+
+fn scoped_fps(names: List<Scoped>) -> List<int> {
+    [fp_str(n.of) for n in names]
 }
 
 /// A bool as a fingerprint part.

@@ -12,7 +12,7 @@ use diagnostics.{refusal, warning}
 /// The declaration's own law.
 export fn check_enum_decl(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
-        .EnumDecl(name, _, variants) -> decl_checks(cx, s, name, variants),
+        .EnumDecl(name, _, variants) -> decl_checks(cx, s, name.of, variants),
         _ -> nothing(),
     }
 }
@@ -21,7 +21,7 @@ export fn check_enum_decl(mut cx: TypeCx, s: StmtId) {
 /// a name whose FIRST position is earlier than this one.
 fn decl_checks(mut cx: TypeCx, s: StmtId, name: string, variants: List<Variant>) {
     if variants.is_empty() { no_variants(cx, s, name) }
-    for d in duplicate_names("type.enum_decl", name, [v.name for v in variants], cx.stmt_loc(s)) {
+    for d in duplicate_names("type.enum_decl", name, [v.name.of for v in variants], cx.stmt_loc(s)) {
         cx.emit(d)
     }
 }
@@ -30,8 +30,8 @@ fn enums_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Match(subject, arms) -> matched_type(cx, e, subject, arms),
-        .Is(subject, variant) -> asked_type(cx, e, subject, variant),
-        .VariantLit(name, args) -> literal_type(cx, e, name, args),
+        .Is(subject, variant) -> asked_type(cx, e, subject, variant.of),
+        .VariantLit(name, args) -> literal_type(cx, e, name.of, args),
         rest -> cx.error_type,
     }
 }
@@ -117,7 +117,7 @@ export fn bind_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId>
     match cx.view.store.pat(p) {
         .Wild or .Rest -> [],
         .Bind(_) -> [expected],
-        .Variant(name, args) -> variant_types(cx, p, name, args, expected),
+        .Variant(name, args) -> variant_types(cx, p, name.of, args, expected),
         .Lit(v) -> lit_types(cx, p, v, expected),
     }
 }
@@ -235,7 +235,7 @@ fn tests_first(cx: TypeCx, rows: List<Row>, name: string) -> bool {
 
 fn names_variant(cx: TypeCx, p: PatId, name: string) -> bool {
     match cx.view.store.pat(p) {
-        .Variant(n, _) -> n == name,
+        .Variant(n, _) -> n.of == name,
         .Wild or .Rest or .Bind(_) or .Lit(_) -> false,
     }
 }
@@ -273,7 +273,7 @@ fn held(p: PatId) -> PatId? {
 /// a bare `.V` reads none — else absence.
 fn variant_args(cx: TypeCx, p: PatId, name: string, arity: int) -> List<PatId?>? {
     match cx.view.store.pat(p) {
-        .Variant(n, args) -> if n == name { padded(args, arity) } else { null },
+        .Variant(n, args) -> if n.of == name { padded(args, arity) } else { null },
         .Wild or .Rest or .Bind(_) or .Lit(_) -> null,
     }
 }
@@ -330,7 +330,7 @@ fn hole_binds(cx: TypeCx, hole: PatId) -> bool {
 /// patterns are all irrefutable — or absence.
 fn whole_variant(cx: TypeCx, p: PatId) -> string? {
     match cx.view.store.pat(p) {
-        .Variant(name, args) -> if all_irrefutable(cx.view.store, args) { name } else { null },
+        .Variant(name, args) -> if all_irrefutable(cx.view.store, args) { name.of } else { null },
         .Wild or .Rest or .Bind(_) or .Lit(_) -> null,
     }
 }

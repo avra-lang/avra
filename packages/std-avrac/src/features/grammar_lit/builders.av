@@ -2,7 +2,7 @@
 //! written back out as the literal that builds it. The parse happens
 //! once, while this feature's own file is compiled; assembly then
 //! merges values and never parses text.
-use core.{Expr, ExprId, Span}
+use core.{Expr, ExprId, Span, Nominal, Plain, Scoped}
 use features.{LangNode, Builder}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover, Diagnostic, parse_grammar}
 
@@ -95,20 +95,20 @@ fn recover_expr(mut b: Builder, held: Recover?, sp: Span?) -> ExprId {
 // ── The four shapes every writer above spells ──
 
 fn lit_struct(mut b: Builder, name: string, fields: List<string>, values: List<ExprId>, sp: Span?) -> ExprId {
-    b.store.alloc_expr(Expr.StructLit(name, fields, values), sp)
+    b.store.alloc_expr(Expr.StructLit(Nominal(name), [Plain(t) for t in fields], values), sp)
 }
 
 /// A CARRYING variant, built on its own type — what `Prim.Lit` and
 /// `Build.Call` are written as.
 fn variant(mut b: Builder, ty: string, name: string, args: List<ExprId>, sp: Span?) -> ExprId {
-    let subject = b.store.alloc_expr(Expr.Ident(ty), sp)
-    b.store.alloc_expr(Expr.MethodCall(subject, name, args), sp)
+    let subject = b.store.alloc_expr(Expr.Ident(Scoped(ty)), sp)
+    b.store.alloc_expr(Expr.MethodCall(subject, Plain(name), args), sp)
 }
 
 /// A variant that CARRIES NOTHING — what `Rep.Star` is written as.
 fn unit(mut b: Builder, ty: string, name: string, sp: Span?) -> ExprId {
-    let subject = b.store.alloc_expr(Expr.Ident(ty), sp)
-    b.store.alloc_expr(Expr.Prop(subject, name), sp)
+    let subject = b.store.alloc_expr(Expr.Ident(Scoped(ty)), sp)
+    b.store.alloc_expr(Expr.Prop(subject, Plain(name)), sp)
 }
 
 fn bool_expr(mut b: Builder, v: bool, sp: Span?) -> ExprId {
