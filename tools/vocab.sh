@@ -44,17 +44,58 @@ Type	packages/std-avrac/src/features/str_lit/check.av	printable	which shapes an 
 
 # A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
 # ends the script rather than a subshell the gate never sees.
+# SELF-TEST, both surfaces: a catch-all AFTER a braced arm is refused
+# (the shape that once ended the scan), and its clean twin passes.
+selftest=$(mktemp)
+cat > "$selftest" <<'FIX'
+fn probe(i: Ins) -> int {
+    match i {
+        .A -> {
+            1
+        }
+        _ -> 0,
+    }
+}
+fn clean(i: Ins) -> int {
+    match i {
+        .A -> {
+            1
+        }
+        .B -> 0,
+    }
+}
+FIX
+count() { awk -v fn="$2" '
+    !inside && $0 ~ "^ *(export )?fn " fn "\\(" {
+      inside = 1; match($0, /^ */); close_rx = "^" substr($0, 1, RLENGTH) "}$"
+    }
+    inside { seen++ }
+    inside && $0 ~ close_rx { inside = 0 }
+    END { print seen+0 }
+  ' "$1"; }
+scan() { awk -v fn="$2" '
+    !inside && $0 ~ "^ *(export )?fn " fn "\\(" {
+      inside = 1; match($0, /^ */); close_rx = "^" substr($0, 1, RLENGTH) "}$"
+    }
+    inside && (/_ ->/ || / is \./) { print FNR ": " $0 }
+    inside && $0 ~ close_rx { inside = 0 }
+  ' "$1"; }
+[ -n "$(scan "$selftest" probe)" ] || { echo "vocab: SELF-TEST — a catch-all after a braced arm was not seen"; exit 1; }
+[ -z "$(scan "$selftest" clean)" ] || { echo "vocab: SELF-TEST — a clean dispatch was refused"; exit 1; }
+rm -f "$selftest"
+
+examined=""
 while IFS='	' read -r enum file fn what; do
   [ -n "$file" ] || continue
   if [ ! -f "$file" ]; then
     echo "vocab: $file is gone — the $enum consumer registry is stale"
     exit 1
   fi
-  hit=$(awk -v fn="$fn" '
-    $0 ~ "^ *(export )?fn " fn "\\(" { inside = 1 }
-    inside && (/_ ->/ || / is \./) { print FNR ": " $0 }
-    inside && /^ *}$/ && inside { inside = 0 }
-  ' "$file")
+  # A fn ends at the `}` on ITS OWN indent, never at the first
+  # closing brace: a braced arm closes deeper, and ending there read
+  # three of nine `Ins` consumers only up to their first arm.
+  hit=$(scan "$file" "$fn")
+  examined="$examined $fn:$(count "$file" "$fn")"
   if [ -n "$hit" ]; then
     echo "vocab: ${file}:${fn} decides ${what} and does not answer exhaustively:"
     echo "$hit" | sed 's/^/    /'
@@ -78,5 +119,6 @@ for e in Ins RtKind Type; do
   line="$line $e $(echo "$CONSUMERS" | grep -c "^$e	")"
 done
 echo "vocab: consumers GUARDED —$line"
+echo "vocab: lines examined per consumer —$examined"
 echo "vocab: the lists are CURATED, not a census: a consumer they do not name is"
 echo "vocab: unguarded, and naming it is how this law reaches it."

@@ -13649,3 +13649,85 @@ are empty by scope and not by sweep.
   DOGFOODING's `Ratcheted:` line lagged the tool by two rules;
   `python3 tools/idioms.py --rules` answers now and the doc points
   at it. One flag, one pointer, no third copy.
+
+## Feedback survey — 2026-09-14 #10 (lane/d, the Rules-section law audit)
+
+Counted per axis: friction 1, sugar 0, features 1, defects 1 (a
+keeper's, latent), doctrine 4, performance 0, process 2. The top three
+by cost: a keeper that read three of nine `Ins` consumers only up to
+their first arm; a consumer count spelled in three places while the
+keeper's table grew past it; a lead's own grep that missed the first
+row of a heredoc. Not surveyed: "The subset today" and "Working
+discipline" (the next slices); any package's code beyond what the 68
+laws cite. No Avra was written, so sugar and performance are empty by
+scope.
+
+### FRICTION — what cost time
+
+- **A GREP FOR `^Ins` MISSES THE ROW ON THE OPENER'S LINE.**
+  `CONSUMERS="Ins …` puts the first row after the variable name, so a
+  line-anchored grep counted eight rows of nine and I filed `dst_of`
+  as missing from the keeper, added a duplicate, and read `Ins 10`
+  back. Cost: one false finding, one revert. EVIDENCE: tools/vocab.sh:28.
+  THE ASK: none for the tree — ask the keeper (`make vocab` prints its
+  count) before grepping the file it guards; CLAUDE.md's "ENUMERATE
+  FROM WHAT THE CONSUMER SEES" already says so.
+
+### FEATURES — a capability
+
+- **THE ROSTER IS ONE TABLE.** The `Ins` consumer list is spelled in
+  tools/vocab.sh, core/ir.av's header and `avra new ins`'s scaffold;
+  the two prose copies said "eight" while both listed nine. This slice
+  made the prose count-free and left three lists. THE ASK: the
+  scaffold and the header read vocab.sh's rows (a comptime `const` over
+  the table, or the scaffold shelling to `make vocab --rows`); the
+  third copy names the concept and dies.
+
+### DEFECTS — a keeper that examined too little
+
+- **A CONSUMER ENDED AT THE FIRST CLOSING BRACE.** tools/vocab.sh ended
+  a fn at `/^ *}$/`, so a dispatch with a braced arm was scanned only
+  to that arm's close: `memory_ins` 78 of 224 lines, `body_lines` 54
+  of 121, `give` 397 of 403. Latent — the unread regions carry no
+  catch-all today — and witnessed both ways on copies: a planted
+  `_ ->` at memory_ins:75 refused, at :150 accepted. Fixed in this
+  slice: a fn ends at the brace on ITS OWN indent, the keeper prints
+  lines examined per consumer, and a two-surface self-test plants the
+  shape. EVIDENCE: the rules refuter's probe; `make vocab` now prints
+  the per-consumer count. CLAUDE.md's "THE DELIMITER IS NOT WHERE THE
+  LAYOUT SUGGESTS" names this exact shape, for a different tool.
+
+### DOCTRINE — stale facts in nine of 68 laws
+
+- **A COUNT IN A LAW IS A CLAIM WITH NO RECEIPT.** "19 sites" (no
+  grep reproduces it), "eight consumers" (nine), "four emitters"
+  (five: `.Pack`, memory.av:210), "three features" (four). All four
+  counts were true when written and none carried the command that
+  produced them. Reworded count-free or to the keeper that holds the
+  number. CONFIRMS "A COUNT FROM A PACKAGE SWEEP IS LINES, NOT SITES".
+- **A DEAD NAME IN A LAW IS INVISIBLE TO EVERY READER.** `balanced`
+  and the `"quote" "{" t:STRING "}"` rule both died at 131f044 when a
+  quote became a parsed tree; the law kept teaching `quote {` as a raw
+  body. Survey #9's cited-name keeper ask covers it; 93 backticked
+  names now resolve but two licensed.
+- **AN ATTRIBUTION EXPIRES WHEN THE CODE LANDS.** "The sqlite lane's
+  empty-path door is the instance, attributed" — landed at 7ac2c51
+  (open.av's `path_fault`) and still labelled as another tree's. THE
+  ASK: a merge that lands an attributed instance edits its label in
+  the same commit; the cited-name keeper cannot see this one.
+- **A LAW'S EXAMPLE WEARS THE TREE'S CURRENT SPELLING.** Two examples
+  (`tag_of(cx, v)`, `lower_defect(cx, e, …)`) were free-fn forms I39
+  now refuses; a reader copying the law's own example would have
+  tripped the ratchet. Reworded to the methods.
+
+### PROCESS — the working discipline
+
+- **KEEP: parallel auditors, one refuter, and the refuter checks the
+  lead too.** Four Opus auditors over 17 laws each, one refuter over
+  their nine texts; the refuter found the keeper defect while testing
+  a fact I had handed it as established, and refuted two of my three
+  handed-down facts. A fact in a brief is a claim like any other.
+- **KEEP: exact FROM/TO pairs applied by script.** Nine rewordings
+  landed by `str.count(old) == 1` replacement with no hand editing; a
+  FROM that did not match would have failed loudly instead of
+  splicing at the wrong anchor (CLAUDE.md's twice-applied-patch law).
