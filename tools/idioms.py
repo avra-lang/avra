@@ -26,10 +26,10 @@ with its reason. The registry can never again outrun the ratchet.
 import collections, os, re, sys, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SRC = ["packages/std-avrac/src", "packages/cli/src", "packages/std-toml/src",
-       "packages/std-time/src", "packages/std-process/src", "packages/std-io/src", "packages/std-cli/src",
-       "packages/std-text/src", "packages/std-path/src", "packages/std-json/src",
-       "packages/std-errors/src", "packages/std-testing/src"]
+# EVERY PACKAGE'S SOURCE, never a list: a listed root forgets the next
+# package, and three had joined the tree unread (std-sqlite, std-meta,
+# std-derive) while this tool reported success.
+SRC = sorted(os.path.relpath(p, ROOT) for p in glob.glob(os.path.join(ROOT, "packages", "*", "src")))
 BASELINE = os.path.join(ROOT, "tools", "idioms.baseline")
 SKIP = ("spec_test",)
 
@@ -253,7 +253,7 @@ def dead_parameter(lines):
         # A head with no `{` is a trait's signature: nothing reads
         # its params by design. String contents are not a head.
         bare = re.sub(r'"(\\.|[^"\\])*"', '""', l)
-        m = re.match(r"\s*(?:export )?(?:mut )?fn ([a-z_]+)\((.*)\)", bare)
+        m = re.match(r"\s*(?:export )?(?:mut )?fn ([a-z_]+)\(([^)]*)\)", bare)
         if not m or "{" not in bare:
             continue
         # a `mut` seat is still a parameter: the mark is not its name
@@ -673,7 +673,22 @@ def selftest():
         for spec in specimens:
             if not list(matcher(spec)):
                 dead.append(f"{code}'s matcher misses `{' / '.join(spec)[:52]}`")
+    for code, clean in CLEAN.items():
+        for spec in clean:
+            if list(RULES[code][0](spec)):
+                dead.append(f"{code}'s matcher fires on the clean `{' / '.join(spec)[:52]}`")
     return dead
+
+
+# THE OTHER SURFACE: what a matcher must ACCEPT. A false positive is a
+# refusal nobody can pay, and the specimens above cannot see it — I23
+# read a one-line fn's `with { mode: … }` as a parameter list for as
+# long as every fn it met spanned lines.
+CLEAN = {
+    "I23": [["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
+            ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
+}
+
 
 def sources():
     for base in SRC:
