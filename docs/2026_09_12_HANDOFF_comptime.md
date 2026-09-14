@@ -48,7 +48,7 @@ owner. Done rows stay for the record.
 | typed sublanguage holes (`sql { … }`) | COMPTIME TEMPLATES, after (e) | queued |
 | §4.5 static data for aggregate consts (a read is an address) | COMPTIME STATIC | **DONE** 2026-09-13 (`comptime/static`): `Ins.StaticAddr`, `Lowered.statics`, the fold in features/statics.av, layout in the wrapper over runtime/avra_box.h |
 | §7 q4 budgets: measured defaults, `[lifted]` manifest rows | COMPTIME STATIC | **DONE** 2026-09-13 (`comptime/static`): steps 600,000 / memory 5 MiB from a 164-settlement measurement (§4.4); F2061 names the row; a memory ceiling reads `avra_mem_live` |
-| §7 q5 package-namespaced diagnostic kinds for user annotations | COMPTIME STATIC | queued |
+| §7 q5 package-namespaced diagnostic kinds for user annotations | COMPTIME STATIC | **DONE** 2026-09-13 (`comptime/static`): `Diagnostic.kind`, `refuse_as`, `error[@scope/name: E1]`, `avra explain @scope/name:E1` over `Program.kind_rows` |
 | §7 q1 type-as-value spelling | task master | DECIDED: the annotation position is enough until a use outside one appears |
 | `@total` (spec 14.4) | owner's word on scope | asked 2026-09-14 |
 | type operators (`Type -> Type`) | needs type aliases — owner's language decision | asked 2026-09-14 |
