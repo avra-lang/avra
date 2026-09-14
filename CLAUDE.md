@@ -182,10 +182,10 @@ engine's spec, written by dogfooding.
   are exhaustive matches now.
   ENFORCEMENT SPLITS FROM THE LAW HERE, deliberately: no grep tells a
   registry enum from a projection one, so this gets NO ratchet rule.
-  The keeper is `make vocab`, which names each registry's consumers
-  and refuses BOTH shapes inside them; it covers `Ins` and `RtKind`,
-  and a registry it does not name is unguarded. Naming the next one
-  IS how this law is enforced.
+  The keeper is `make vocab`, a CURATED table naming each registry's
+  consumers and refusing BOTH shapes inside them — the table says
+  which registries it holds, and a registry it does not name is
+  unguarded. Naming the next one IS how this law is enforced.
   AND THE OBLIGATION CROSSES INTO C, where no keeper can follow. The
   runtime's `acc_kind_of` was a kind-keyed ternary falling through to
   ACC_RECORD — correct for the three kinds that existed when it was
@@ -270,7 +270,7 @@ engine's spec, written by dogfooding.
   (language/tests/seats holds the proof).
 - EVERY POINTER AVRA HOLDS CARRIES A HEADER. The runtime counts
   references in sixteen bytes BEFORE each payload (tag, kind, rc,
-  and a record's size class or a string's length),
+  and a LENGTH — a string's text length, a record's payload bytes),
   and `avra_rc_retain/release` read that header — so a managed
   value that came from anywhere else reads memory that is not ours.
   The sources are all headered: the backend's string constants
@@ -352,7 +352,7 @@ engine's spec, written by dogfooding.
   caller having done nothing wrong. The face takes the new type too,
   so the box stays in the caller's hands and the type says what the
   contract always required. THE SEATS WHERE THIS BITES ARE FEW AND
-  GREPPABLE: those whose contract mentions LIFETIME (19 sites here).
+  GREPPABLE: those whose contract mentions LIFETIME.
   One level down, the same law: a box materialised ONLY to be staged
   has no other holder, so its last reference dies before the call and
   C reads freed memory — staged boxes are held until the call
@@ -653,8 +653,8 @@ engine's spec, written by dogfooding.
   disagree are AVRA AND C, never two Avra verbs, so the door and its
   callee are inspecting DIFFERENT VALUES only where the callee is
   the C one. The trap the door exists to stop walks straight through
-  it there. The sqlite lane's
-  empty-path door is the instance, attributed: an empty path opens a
+  it there. @std/sqlite's empty-path door is the instance (the
+  sqlite lane's, open.av's `path_fault`): an empty path opens a
   PRIVATE TEMPORARY database deleted at close, so every write
   succeeds and the data is silently gone. The guard was not weak —
   it was reading a different string than the callee.
@@ -747,16 +747,17 @@ engine's spec, written by dogfooding.
   lists adjacently; `>>` is TWO tokens the grammar joins, both
   branches capturing ONE token into the same label so the run stays
   aligned. The next `>=`-shaped operator faces the same question.
-- Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `quote {`
-  and `grammar {` emit their `{` as a token, so the lexer emits the
-  `}` that ends the raw body too, and the rule consumes it
-  (`"quote" "{" t:STRING "}"`). Swallowing it left the line law's
-  bracket stack holding a brace nothing closed, and `[quote { … } for
-  x in xs]` dropped the break after its line. AND A RAW BODY OPENED
-  INSIDE A HOLE pays the hole's count too (`balanced`): the opener was
-  counted against the enclosing hole when it was emitted, and the
-  closer never passes through that count. Line comments inside a raw
-  body are the generated program's — a `}` in one ends nothing.
+- Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `grammar {`
+  and a block word's `{` hand their body over whole, so the lexer emits
+  the `}` that ends it too, and the rule consumes it (`"grammar" "{"
+  s:STRING "}"`). Swallowing it left the line law's bracket stack
+  holding a brace nothing closed. A `quote {` body is NO raw body —
+  tokenized as source, parsed where it stands — and its rule consumes
+  its own `"}"` all the same. AND A RAW BODY OPENED INSIDE A HOLE pays
+  the hole's count too: the opener was counted against the enclosing
+  hole when emitted, and the closer never passes through it. Line
+  comments inside a raw body are the generated program's — a `}` in
+  one ends nothing.
 - A NAME-KEYED TABLE CROSSES MODULES. `impls_by_name` files every
   `impl` under its NAME, so asking `@std.meta.Code`'s methods signed
   the compiler's own `impl Code` and dragged `features` into a
@@ -819,8 +820,9 @@ engine's spec, written by dogfooding.
 - Grammar authoring: a rule's GRAM TEXT and its BUILDERS are one
   unit — a builder named in feature A's grammar registers in
   feature A, never in a feature that might be absent (a partial
-  assembly refuses on the dangling name; the let_stmt tests parse
-  with three features only). The NODE may still be another
+  assembly refuses on the dangling name — "no feature owns builder
+  `x`"; the let_stmt tests assemble a PARTIAL list). The NODE may
+  still be another
   feature's to give meaning: semantics_of decides ownership of
   MEANING, the gram decides ownership of PARSE.
 - Grammar authoring: a KEYWORD ANCHOR merges before every
@@ -847,14 +849,15 @@ engine's spec, written by dogfooding.
 - A feature never matches ANOTHER feature's variants — nor
   re-extracts its OWN literal's payload inline: all literal reads
   go through core's value protocol (`bool_of`, `int_of`, `text_of`,
-  `pairs_of`, `elems_of`, all in core/nodes.av) — one projection per
+  `pairs_of`, `elems_of` and their siblings, DERIVED onto `Expr` by
+  `@derive(ValueProtocol)`, core/protocol.av) — one projection per
   category a feature reads WITHOUT its own dispatch. The protocol
   grows with value categories — a core event — never per feature.
   (N variants need N projections — payload types differ, and a
   unified return would be the parallel Value enum the doctrine
   refuses.) A protocol read is NEVER `?? <a
   plausible default>`: the dispatch guaranteed that payload, so
-  absence is a DEFECT — `lower_defect(cx, e, ...)`, or the compiler
+  absence is a DEFECT — `cx.lower_defect(e, ...)`, or the compiler
   ships a silently wrong program.
 - The IR is a CURATED vocabulary, not a frozen one. Features lower
   into it and never grow it; growth is a CORE event with a
@@ -871,15 +874,15 @@ engine's spec, written by dogfooding.
      consumer; it did NOT add SwitchArm/SwitchEnd. Prefer the
      variant that makes an existing concept more general over one
      that adds a parallel concept.
-  3. PAY THE EIGHT CONSUMERS, which the compiler lists for you
-     because each dispatch is exhaustive: `dst_of`, `body_symbol`
-     and `hosted_symbol` (core/ir.av), `step` (interp),
-     `memory_ins`, `body_lines` (ir_text), `emit_ins` (llvm),
-     `give` (features/facts.av — does the runtime registry
-     validate it) — plus a program test proving eval == native
-     and the IR golden that shows the shape.
-  4. THE GUARANTEE: those eight matches carry no `_ ->`, so a new
-     variant breaks all eight at compile time. The vocabulary
+  3. PAY EVERY CONSUMER, which the compiler lists for you because
+     each dispatch is exhaustive: `make vocab`'s Ins rows name
+     them and `avra new ins` prints the arm each wants, across
+     core/ir.av, interp, memory, ir_text, llvm and
+     features/facts.av (does the runtime registry validate it) —
+     plus a program test proving eval == native and the IR golden
+     that shows the shape.
+  4. THE GUARANTEE: those matches carry no `_ ->`, so a new
+     variant breaks every one at compile time. The vocabulary
      cannot grow half-way, and a variant nobody implements cannot
      ship. Keep them catch-all free.
   5. AND THE PROTOCOL GUARDS THE WRONG DOOR ON ITS OWN — it gates
@@ -914,8 +917,8 @@ engine's spec, written by dogfooding.
      than one that grows the vocabulary and answers yes.
      THE MEASUREMENT WANTED A COMPILER-SIDE COUNT INSTEAD — the
      memory pass knows why it emitted each retain at the moment it
-     emits it (four emitters: a cell store, an owned load, a scope's
-     yield, a call seat), and counting them needs no IR at all.
+     emits it (a cell store, an owned load, a pack, a scope's yield,
+     a call seat), and counting them needs no IR at all.
   The backend and memory pass stay functions of the IR, dispatching
   on shapes, never on features.
 - THE VOCABULARY SEAM RULE — which shape a new vocabulary takes,
@@ -965,7 +968,7 @@ engine's spec, written by dogfooding.
   (`IfStart … ArmEnd … RegionEnd`); a `Bin(Or)` on bools is the
   defect "a non-equality op reached bool operands". And THE MINT
   LAW: a register is DEFINED in the order it was minted — mint
-  operands first (`let tag = tag_of(cx, v)` before minting the
+  operands first (`let tag = cx.tag_of(v)` before minting the
   constant it compares to), the answer last.
 - A feature is a directory: `mod.av` is the declarative manifest
   (component + tables), `builders.av` holds parse lowering,
