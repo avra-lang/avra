@@ -74,9 +74,9 @@ spec "features/consts — a value the compiler settles" {
         then "a copy taken from a const is a copy" {
             shown("fn xs() -> List<int> {\n    [1, 2]\n}\nconst XS: List<int> = xs()\nmut ys = XS\nys.push(3)\n\"\${XS.length} \${ys.length}\"") == "2 3"
         }
-        then "the use calls a literal-backed unit, never the initializer" {
+        then "the use reads static data: no call, no once cache, no initializer" {
             let text = render_ir(ir_of("fn xs() -> List<int> {\n    [1, 2]\n}\nconst XS: List<int> = xs()\nXS.length"))
-            text.contains("call const$") && text.contains("avra_once_get") && !text.contains("call xs")
+            text.contains("r0 = static const$0$2") && text.contains("static const$0$2 {\n  0: [1, 2]\n}") && !text.contains("avra_once_get") && !text.contains("call const$") && !text.contains("call xs")
         }
         then "`?` over a scalar has no compile-time value form yet" {
             refused_with("fn m() -> int? {\n    3\n}\nconst M = m()\nM ?? 9", "compile-time value form")

@@ -27,7 +27,7 @@
 | S4r origin hygiene | **DONE** 2026-09-13 | generations + origin-keyed resolve; private helpers found, `let tmp` cannot capture; refusals speak at the template line |
 | shared `param` grammar rule | leave-alone, trigger named | not forced yet |
 | private top-level `const` module scope | **DONE** 2026-09-13 (comptime/const) | a top-level const is a module declaration; 58 `export`s dropped |
-| later list | open | static aggregate data, JIT, type operators, typed holes, manifest grants, parallel settlement, `@total` |
+| later list | open | JIT, type operators, typed holes, manifest grants, parallel settlement, `@total` (static aggregate data landed, `comptime/static`) |
 
 **Working state:** branch `lane/comptime`, worktree
 `/Users/tristan/projects/tristanMatthias/avra-lane-comptime`, gate
@@ -46,7 +46,7 @@ owner. Done rows stay for the record.
 | S1–S5, S4r, private const, const seats, `check --every` | lane/comptime | DONE (`2d4663e`) |
 | parsed templates (a)–(e): holes typed by position, name holes, S4r text machinery gone, expand provenance | COMPTIME TEMPLATES | (a) gated, awaiting three fixes + the commit word |
 | typed sublanguage holes (`sql { … }`) | COMPTIME TEMPLATES, after (e) | queued |
-| §4.5 static data for aggregate consts (a read is an address) | COMPTIME STATIC | queued |
+| §4.5 static data for aggregate consts (a read is an address) | COMPTIME STATIC | **DONE** 2026-09-13 (`comptime/static`): `Ins.StaticAddr`, `Lowered.statics`, the fold in features/statics.av, layout in the wrapper over runtime/avra_box.h |
 | §7 q4 budgets: measured defaults, `[lifted]` manifest rows | COMPTIME STATIC | queued |
 | §7 q5 package-namespaced diagnostic kinds for user annotations | COMPTIME STATIC | queued |
 | §7 q1 type-as-value spelling | task master | DECIDED: the annotation position is enough until a use outside one appears |

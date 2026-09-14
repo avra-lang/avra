@@ -261,7 +261,7 @@ engine's spec, written by dogfooding.
   and `avra_rc_retain/release` read that header — so a managed
   value that came from anywhere else reads memory that is not ours.
   The sources are all headered: the backend's string constants
-  (`avra_llvm_build_global_string_ptr`, kind STATIC, immortal),
+  (`avra_llvm_build_text`, kind STATIC, immortal),
   the runtime's own words (`avra_bool_text`, "null"), argv and the
   environment (`str_static`). A new C fn that answers TEXT to a
   program allocates it with `box_alloc`/`str_owned`, or
@@ -347,6 +347,23 @@ engine's spec, written by dogfooding.
   (Attributed to the sqlite lead and the substrate lane: `Bytes` is
   not on main. The seat, its contract and its `string` type ARE here,
   so the hazard is live for whoever migrates it.)
+- A SETTLED AGGREGATE IS STATIC DATA, AND ITS BUFFER IS THE
+  BINARY'S. A const's list, record, enum or map is laid out as an
+  immortal headered global (`Ins.StaticAddr`, features/statics.av;
+  the runtime's layouts are ONE definition, runtime/avra_box.h, that
+  the backend mirrors and static-asserts). A read is an address; the
+  memory pass owes it nothing. The runtime never frees or reallocs
+  what it did not allocate: `array_grow` moves a laid-out buffer's
+  cells out (`laid_out`), and a static map's index is BUILT ON FIRST
+  LOOKUP, sized for its keys — one hash, the runtime's, never a copy
+  in the compiler. AND A FIX THAT IS THE LAW CAN STILL TRAP THE
+  COMPILER: opening every `mut`-seat argument unique (a copy is a
+  copy) trapped the product's own `check` with "index 304 is out of
+  bounds" — the compiler's source rides that write-through channel
+  (ROADMAP H3b) — and the way it was told apart from a broken tree
+  was the pre-fix product checking the SAME source clean. When a
+  second-generation product traps, run the first generation over the
+  same source before reading the trap as the tree's.
 - A RUNTIME ROW BORROWS ITS ARGUMENTS — callee-cleans is the AVRA
   call's convention, not the registry's. `retained_args` retains for
   `.Call` and `.CallPtr` alone; a `CallRt`/`CallRtVoid` argument

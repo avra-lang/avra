@@ -6,7 +6,7 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
-use core.{Ins, Reg, body_symbol, hosted_symbol, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index}
+use core.{Ins, Reg, body_symbol, hosted_symbol, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index, Static, StaticBox, Slot}
 use features.{nothing}
 
 // The runtime's wreck. The backend has no diagnostic channel — by the
@@ -66,6 +66,7 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
     declare_runtime(lc, m)
     declare_externs(lc, m, l.externs)
     for bd in l.fns { declare_user(lc, m, l.types, bd) }
+    for st in l.statics { emit_static(lc, m, st) }
     let rt = rt_index()
     for bd in l.fns {
         let f = avra_llvm_get_named_function(m, mangled(bd.name))
@@ -80,6 +81,51 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
     avra_llvm_dispose_builder(b)
     avra_llvm_context_dispose(lc)
     null
+}
+
+/// One static as its globals: every box under its own name, the
+/// root under the static's, so a read finds it by that name alone.
+/// Boxes are laid out child-first, as the fold pushed them, so each
+/// slot's box already stands when the slot names it.
+fn emit_static(lc: ptr, m: ptr, st: Static) {
+    for j, b in st.boxes { emit_box(lc, m, box_name(st, j), st, b) }
+}
+
+fn box_name(st: Static, j: int) -> string {
+    if j == st.boxes.length - 1 { mangled(st.name) } else { "${mangled(st.name)}$${j}" }
+}
+
+fn emit_box(lc: ptr, m: ptr, name: string, st: Static, b: StaticBox) {
+    match b {
+        .Slots(cells) -> { let _ = static_array(lc, m, name, st, cells) },
+        .Table(keys, values) -> {
+            let k = static_array(lc, m, "${name}$k", st, [Slot.Text(key) for key in keys])
+            let v = static_array(lc, m, "${name}$v", st, values)
+            let _ = avra_llvm_static_map(m, name, k, v)
+        },
+    }
+}
+
+/// A slot array laid out whole; answers its payload's address.
+fn static_array(lc: ptr, m: ptr, name: string, st: Static, cells: List<Slot>) -> ptr {
+    let arr = avra_llvm_value_array_new(cells.length)
+    for j, c in cells { avra_llvm_value_array_set(arr, j, slot_value(lc, m, st, c)) }
+    let payload = avra_llvm_static_array(m, name, arr, cells.length)
+    avra_llvm_value_array_free(arr)
+    payload
+}
+
+/// A slot's constant: a word as the i64 a cell holds, a pointer as
+/// the address of the data it names — the layout marks it owned.
+fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
+    match c {
+        .Int(n) -> avra_llvm_const_int(avra_llvm_int64_type(lc), n, 1),
+        .Float(bits) -> avra_llvm_const_int(avra_llvm_int64_type(lc), bits, 1),
+        .Bool(b) -> avra_llvm_const_int(avra_llvm_int64_type(lc), if b { 1 } else { 0 }, 0),
+        .Text(s) -> avra_llvm_global_text(m, s, s.length, ".str"),
+        .Box(at) -> avra_llvm_global_payload(m, box_name(st, at)),
+        .Null -> avra_llvm_const_pointer_null(avra_llvm_pointer_type(lc)),
+    }
 }
 
 /// THE CLOSURE LAW: every name a program's steps call is one the
@@ -282,7 +328,7 @@ impl Emit {
             .ConstInt(dst, v) -> self.define(self.const_int_value(dst, v)),
             .ConstFloat(_, bits) -> self.define(avra_llvm_const_double_bits(self.lc, bits)),
             .ConstBool(_, v) -> self.define(avra_llvm_const_int(avra_llvm_int1_type(self.lc), if v { 1 } else { 0 }, 0)),
-            .ConstStr(_, s) -> self.define(avra_llvm_build_global_string_ptr(self.b, s, ".str")),
+            .ConstStr(_, s) -> self.define(avra_llvm_build_text(self.b, s, s.length, ".str")),
             .Bin(_, op, a, x) -> self.define(self.binary_value(op, a, x)),
             .Un(_, op, src) -> self.define(self.un_value(op, self.vals[src.index])),
             .CallRtVoid(callee, args) -> self.void_rt_call(callee, args),
@@ -292,6 +338,7 @@ impl Emit {
             .Call(_, callee, args) -> self.define(self.call(mangled(callee), [self.vals[a.index] for a in args])),
             .FnAddr(_, sym) -> self.define(avra_llvm_cast_to_type(self.b,
                 avra_llvm_get_named_function(self.m, mangled(sym)), avra_llvm_int64_type(self.lc))),
+            .StaticAddr(_, sym) -> self.define(avra_llvm_global_payload(self.m, mangled(sym))),
             .CallPtr(d, f, args) -> self.define(self.call_ptr_value(d, f, args)),
             .Release(r) -> self.released(r),
             .Retain(r) -> self.retained(r),

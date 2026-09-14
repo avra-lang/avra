@@ -110,10 +110,10 @@ build/%.sha: FORCE
 	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
 	@rm -f $@.tmp
 
-build/runtime.sha: SHA_SRC := runtime/avra_runtime.c
-build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c
+build/runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h
+build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c runtime/avra_box.h
 
-build/avra_runtime.o: runtime/avra_runtime.c build/runtime.sha
+build/avra_runtime.o: runtime/avra_runtime.c runtime/avra_box.h build/runtime.sha
 	@mkdir -p build
 	cc -O2 -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
 
@@ -131,7 +131,7 @@ traps: $(RUNTIME_OBJS)
 census:
 	@sh tools/census.sh $(CMD)
 
-build/llvm_wrapper.o: backend/llvm_wrapper.c build/llvm_wrapper.sha
+build/llvm_wrapper.o: backend/llvm_wrapper.c runtime/avra_box.h build/llvm_wrapper.sha
 	@mkdir -p build
 	cc -c -O2 -I$(LLVM_PREFIX)/include -o build/llvm_wrapper.o backend/llvm_wrapper.c
 

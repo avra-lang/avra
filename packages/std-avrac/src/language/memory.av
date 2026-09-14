@@ -192,7 +192,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 out.push(i)
             }
             .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-            .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or
+            .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or
             .CallRt(_, _, _) or .CallRtVoid(_, _) or .Release(_) or
             .Pack(_, _) or .Extract(_, _, _) or .LoopEnd or
             .Retain(_) or .RetVal(_) or .Ret(_) -> {
@@ -297,7 +297,7 @@ fn view_of(i: Ins) -> Reg? {
         // reference, never a view of an argument.
         .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
         .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or
-        .Pack(_, _) or .FnAddr(_, _) or .ScopeEnter(_) or
+        .Pack(_, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .ScopeEnter(_) or
         .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or
         .ArmEnd(_) or .RegionEnd(_, _) or .Call(_, _, _) or
         .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or
@@ -431,7 +431,16 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
     // answer (bool_text) never earns a release.
     match i {
         .CallRt(_, callee, _) -> if rt_owns(callee) { dst } else { null },
-        _ -> dst,
+        // static data is immortal: nothing to release, ever
+        .StaticAddr(_, _) -> null,
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+        .Bin(_, _, _, _) or .Un(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or
+        .FnAddr(_, _) or .Call(_, _, _) or .CallPtr(_, _, _) or .RegionEnd(_, _) or
+        .Alloca(_) or .Load(_, _) -> dst,
+        .CallRtVoid(_, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
+        .SwitchStart(_, _) or .ArmEnd(_) or .Store(_, _) or .LoopStart or
+        .LoopCond(_) or .LoopEnd or .Release(_) or .Retain(_) or .RetVal(_) or
+        .FnExit(_) or .Ret(_) -> null,
     }
 }
 

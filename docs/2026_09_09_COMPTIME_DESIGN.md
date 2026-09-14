@@ -513,21 +513,36 @@ dynamic one and stays as the belt.
 
 ### 4.5 Materializing a settled aggregate
 
-Scalars and strings are `Const*` today. For lists, structs, enums,
-maps there are two honest forms:
+Scalars and strings are `Const*`. Lists, structs, enums and maps are
+STATIC DATA (landed 2026-09-13, `comptime/static`): a settled
+aggregate is laid out before the program runs, and a read is an
+ADDRESS — `Ins.StaticAddr(dst, sym)`, the one constant that aims at
+a pointer register, and it is a name, never a number.
 
-- **v1: the literal, under `once`.** The const's initializer is
-  REPLACED by its settled literal spelling (crossing 2) and the
-  declaration rides the `once` path (`lower_walk.av:102-116`,
-  `avra_once_get/set`): built at first read from constants, immortal
-  after. Every read is a load of a cached pointer, and nothing
-  computes at run time. Visible in `avra expand` as the literal.
-- **later: static data.** The backend lays the value out as an
-  immortal headered object (kind STATIC, as string constants are).
-  Then a read is an address. A backend slice, no change above.
-
-`const` promises "nothing the program computes", not "no load"; v1
-keeps the promise and says so.
+- **One fold, two projections.** The crossing tree (`MetaVal`, in
+  hand from settlement) is read ONCE under its static type by
+  `StaticBuild.slot_of` (features/statics.av): a flat record is its
+  field's slot, a boxed nullable a one-slot box, an enum its tag
+  before its payloads, a map its keys beside its values. The result
+  is a `Static` — boxes of `Slot`s, child-first, the root last — held
+  in `Lowered.statics`. The backend lays each box out as a headered
+  global (kind immortal, the header law: a list's cells and owned
+  marks in one global, a map's index left unbuilt for the runtime's
+  own hash on first lookup); the evaluator builds the same boxes once
+  per run under the static's name. `materialized` (a register) is
+  the same fold with the root slot emitted: a word is its constant, a
+  box its address. Settled `const` SEATS ride it too.
+- **The promise.** `const` promised "nothing the program computes";
+  it now promises NO LOAD either: no `once` cache, no call, no
+  first-read build — `avra ir` of a const list shows `= static` and
+  the static block, and nothing else. The memory pass owes a static
+  nothing (`managed_dst` answers null — immortal data is nobody's to
+  release); a copy taken from one is a copy, because a write through
+  a shared value clones and an immortal box is always shared.
+- **v1, retired.** The literal-under-`once` form (the const's unit
+  built at first read and cached by `avra_once_get`) is gone with
+  the `Wanted.settled` channel and `const_call`; `once_body` is a
+  `once fn`'s alone again.
 
 ### 4.6 Visible magic: `avra expand`, provenance, `explain`
 
@@ -684,7 +699,7 @@ goldens, F-codes, `make gate` green, and its idiom entries.
 | **S3** | **annotations + `@std/meta` + expansion** | `@name(args)` grammar (`@` already lexes as `Pkg`, `lexer.av:374`); first-seat law; answer-type effects; meta values in (crossing 1); `expanded` family; two-tier namespace; provenance table; annotation side table; `explain @name` | `@deprecated`, a `Diagnostics` lint, and `Fn -> Fn` `@traced` written in a test package; a derive built from meta values directly (no quotes yet) erasing one `_of` accessor family in the compiler | 5–6 days |
 | **S4** | **`quote` + `${}`** | the quote literal (Avra as a sublanguage of the assembled grammar); hole typing by position; template store + splice copy; origin-hygiene table; `Code<T>` claim check; quote/template provenance through the landed source printer; trait associated fns + `Trait.derive`; `@derive` in std | `@derive(Show, Eq)` on a struct and an enum, in std, tested by `spec` + `expand` golden; `fingerprint_stmt`'s arms erased by `@derive` in the compiler's own source | 5–7 days |
 | **S5** | **`const` seats** | the seat mark in fn types; `Sub` widened by settled values; per-instantiation folding | `matches(const pattern, s)` compiles one unit per pattern; the regex body folds | 3 days |
-| later | the `Code<T>` claim and origin hygiene (S4 refinements); static data for aggregates; JIT engine behind `run_call`; type operators (`Type -> Type`, needs aliases); typed sublanguage holes (`sql { }`); manifest read grants; parallel settlement; `@total` | | |
+| later | the `Code<T>` claim and origin hygiene (S4 refinements); static data for aggregates (LANDED 2026-09-13, comptime/static); JIT engine behind `run_call`; type operators (`Type -> Type`, needs aliases); typed sublanguage holes (`sql { }`); manifest read grants; parallel settlement; `@total` | | |
 
 S1 STATUS (lane/comptime, 2026-09-09): LANDED for scalars and text.
 `run_settle` (interp.av) + `Machine.budget`; `reach` column on
@@ -712,7 +727,8 @@ laws and then CALLED by the program: its unit is `once`-shaped
 and the same box after (`const_call`, lower_state.av). The value
 crosses as one `MetaVal` tree that lowering materializes under the
 const's type (values.av); a type with no compile-time value form
-refuses with F2063. Static data (§4.5 later) remains. A runtime path
+refuses with F2063. Static data (§4.5) landed 2026-09-13 on
+`comptime/static`: the once path above is retired. A runtime path
 reaching `embed` still traps dynamically; its static effect-graph
 refusal is recorded in ROADMAP because a phase bit on a memoized body
 is unsound.
@@ -1232,7 +1248,8 @@ THE SEQUENCE the inventory implies:
 4. `fingerprint_*` (D/E) stays until S4's quotes + `Variant.payload`
    binder names.
 
-- [ ] **Later list, unstarted.** Static aggregate data (§4.5); a JIT
+- [x] **Static aggregate data (§4.5)** — `comptime/static`, 2026-09-13.
+- [ ] **Later list, unstarted.** A JIT
       engine behind `run_call`; type operators (`Type -> Type`, needs
       aliases); typed sublanguage holes (`sql { }`); manifest read
       grants; parallel settlement; `@total`.

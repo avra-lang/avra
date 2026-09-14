@@ -10,7 +10,7 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, reversed, rt_index, hosted_symbol, fp, fp_str}
+use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, reversed, rt_index, hosted_symbol, fp, fp_str, Static, StaticBox, Slot}
 use @std.path.{joined_path}
 use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing}
 
@@ -49,6 +49,8 @@ type Machine = {
     cells: List<Val>,
     // a `once fn`'s answer, settled for this run under its symbol
     onces: Map<string, Val>,
+    // a static's value, built once per run under its name
+    statics: Map<string, Val>,
     out: List<string>,
     failures: List<string>,
     // instructions this run may still execute; below zero it traps
@@ -61,7 +63,7 @@ type Machine = {
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [], budget: unbudgeted, base: null, embeds: [] }
+    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], failures: [], budget: unbudgeted, base: null, embeds: [] }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -118,6 +120,18 @@ fn truth_of(symbol: string, v: Val) -> Result<bool, string> {
     match v {
         .B(b) -> .Ok(b),
         _ -> .Err("`${symbol}` answered no bool"),
+    }
+}
+
+/// A slot's value — a box's by the handle already built for it.
+fn slot_val(c: Slot, built: List<Val>) -> Val {
+    match c {
+        .Int(n) -> Val.I(n),
+        .Float(bits) -> Val.F(bits),
+        .Bool(b) -> Val.B(b),
+        .Text(s) -> Val.S(s),
+        .Box(at) -> built[at],
+        .Null -> Val.N,
     }
 }
 
@@ -354,6 +368,7 @@ impl Machine {
             .CallRtVoid(callee, args) -> self.rt_void(callee, args, pc),
             .Call(d, callee, args) -> self.put_at(d, self.call_val(callee, args), pc),
             .FnAddr(d, sym) -> self.put_at(d, self.fn_addr_val(sym), pc),
+            .StaticAddr(d, sym) -> self.put_at(d, self.static_val(sym), pc),
             .CallPtr(d, f, args) -> self.put_at(d, self.call_ptr_val(f, args), pc),
             .IfStart(c) -> if self.truth(c) { pc + 1 } else { b.past_else(pc) },
             .SwitchStart(sel, cases) -> b.arm_start(pc, self.chosen_arm(sel, cases)),
@@ -664,6 +679,33 @@ impl Machine {
             if b.name == sym { return Val.I(j) }
         }
         self.defect_val("a fn address without a body survived lowering")
+    }
+
+    /// A static's value: built from its boxes on first read, child-
+    /// first so every slot's box already stands, and the same handle
+    /// on every read after — the evaluator's copy of what the backend
+    /// lays out.
+    fn static_val(sym: string) -> Val {
+        let held: Val? = self.statics.get(sym)
+        if held != null { return held! }
+        let st: Static? = self.l.statics.find((s: Static) -> s.name == sym)
+        if st == null { return self.defect_val("a static read names no data") }
+        mut built: List<Val> = []
+        // LICENSED I3: a fold — each box reads the ones built before it
+        for b in st!.boxes { built.push(self.box_val(b, built)) }
+        let v = built.last() ?? Val.N
+        self.statics.set(sym, v)
+        v
+    }
+
+    fn box_val(b: StaticBox, built: List<Val>) -> Val {
+        match b {
+            .Slots(cells) -> self.fresh_array([slot_val(c, built) for c in cells]),
+            .Table(keys, values) -> {
+                self.maps.push(MapVal { keys: keys, vals: [slot_val(c, built) for c in values] })
+                Val.M(self.maps.length - 1)
+            },
+        }
     }
 
     fn call_ptr_val(f: Reg, args: List<Reg>) -> Val {
