@@ -13,7 +13,7 @@ fn err_shape(a: Analysis, id: TypeId) -> bool { a.view.decls.types.shape_of(id) 
 
 /// Error-typed slots in one analysis.
 fn holes(a: Analysis) -> int {
-    a.facts.of_expr.filter(err_shape(a, it)).length
+    a.facts.of_expr.ids(err_shape(a, it)).length
 }
 
 spec "language/typing" {
@@ -34,14 +34,14 @@ spec "language/typing" {
     given "a recovery hole between good statements" {
         then "totality holds — the table covers every expression" {
             let a = analyze_source("let a = 1\nlet = 3\nlet y = 2")
-            a.facts.of_expr.length == a.view.store.exprs.count() &&
+            a.facts.of_expr.length() == a.view.store.exprs.count() &&
                 a.facts.voices.list.is_empty()
         }
     }
     given "several declarations in one file" {
         then "totality holds across every body — one table covers the file" {
             let a = analyze_source("type P = { x: int }\nenum E {\n    a\n    b\n}\nfn f(p: P) -> int {\n    p.x\n}\nfn g(e: E) -> int {\n    match e {\n        .a -> 1\n        .b -> 2\n    }\n}\nf(P { x: 1 }) + g(E.b)")
-            a.diagnostics.is_empty() && a.facts.of_expr.length == a.view.store.exprs.count()
+            a.diagnostics.is_empty() && a.facts.of_expr.length() == a.view.store.exprs.count()
         }
         then "two erroring bodies report in SOURCE order, whatever order they were asked in" {
             // the entry calls `b` before `a`, so `b`'s body is asked first;
