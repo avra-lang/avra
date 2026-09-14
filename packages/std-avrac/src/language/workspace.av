@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Code, Generation, Segment, ArenaMarks, quote_meta, Elsewhere}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Code, Generation, Segment, ArenaMarks, quote_meta, Elsewhere, SettleRoot}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use core.{debug}
@@ -111,7 +111,15 @@ type LiftAsk = { decl: DeclId, file: FileId, stmt: StmtId, args: List<ExprId> }
 
 /// A const site's stable inputs. The dense list position is the
 /// `Settled` family's key; its initializer is read inside the query.
-type SettleAsk = { file: FileId, stmt: StmtId, name: string, seats: List<SeatValue> }
+type SettleAsk = { file: FileId, root: SettleRoot, name: string, seats: List<SeatValue> }
+
+/// The const a settlement is for — none for an expression's.
+fn const_stmt(root: SettleRoot) -> StmtId? {
+    match root {
+        .Const(s) -> s,
+        .Expr(_) -> null,
+    }
+}
 
 fn lift_ask(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> LiftAsk {
     LiftAsk { decl: d, file: f, stmt: s, args: args }
@@ -302,7 +310,7 @@ impl Workspace {
         let _ = self.methods(d)
     }
 
-    fn const_type_ensured(f: FileId, s: StmtId) -> bool { self.const_type_at(self.settle_id(f, s, [])) }
+    fn const_type_ensured(f: FileId, s: StmtId) -> bool { self.const_type_at(self.settle_id(f, SettleRoot.Const(s), [])) }
 
     fn writes_ensured() {
         let _ = self.receivers()
@@ -746,7 +754,7 @@ impl Workspace {
         match self.units.start_recursive(id) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let w = self.asks[id]
         let ws = self
-        let settle: fn(FileId, StmtId, List<SeatValue>) -> Result<Settled, Unsettled> = (f: FileId, s: StmtId, seats: List<SeatValue>) -> ws.settled(f, s, seats)
+        let settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> = (f: FileId, root: SettleRoot, seats: List<SeatValue>) -> ws.settled(f, root, seats)
         let out = lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle)
         self.units.finish(id, out, self.db.revision())
     }
@@ -755,25 +763,29 @@ impl Workspace {
     /// lowered as a program of its own — the units it reaches are the
     /// program's, memoized — then run in the evaluator. A const whose
     /// value asks for itself is refused as the cycle it is.
-    fn settled(f: FileId, s: StmtId, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
-        self.settled_at(self.settle_id(f, s, seats))
+    fn settled(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
+        self.settled_at(self.settle_id(f, root, seats))
     }
 
-    fn settle_id(f: FileId, s: StmtId, seats: List<SeatValue>) -> int {
-        let name = self.settle_symbol(f, s, seats)
+    fn settle_id(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> int {
+        let name = self.settle_symbol(f, root, seats)
         let known: int? = self.settle_specs.get(name)
         if known != null { return known! }
         let id = self.settle_asks.length
         self.settle_specs.set(name, id)
-        self.settle_asks.push(SettleAsk { file: f, stmt: s, name: name, seats: seats })
+        self.settle_asks.push(SettleAsk { file: f, root: root, name: name, seats: seats })
         id
     }
 
-    /// A settlement's key: the const's statement, plus the settled
-    /// seats' fingerprints when a unit fixes them — so two units of
-    /// one body settle their own values.
-    fn settle_symbol(f: FileId, s: StmtId, seats: List<SeatValue>) -> string {
-        settled_symbol(const_symbol(f, s), seats)
+    /// A settlement's key: the const's statement or the expression,
+    /// plus the settled seats' fingerprints when a unit fixes them —
+    /// so two units of one body settle their own values.
+    fn settle_symbol(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> string {
+        let own = match root {
+            .Const(s) -> const_symbol(f, s),
+            .Expr(e) -> expr_symbol(f, e),
+        }
+        settled_symbol(own, seats)
     }
 
     /// A const's inferred type is a program fact, like a signature:
@@ -789,15 +801,22 @@ impl Workspace {
             .Compute -> self.const_type_facts.begin(id),
         }
         let ask = self.settle_asks[id]
+        // only a const's statement has a type to publish
+        let held: StmtId? = const_stmt(ask.root)
+        if held == null {
+            let _ = self.const_type_facts.finish(id, error, error.index)
+            return false
+        }
+        let s = held!
         touch(self.items(ask.file))
         // a top-level const is a declaration: typing it records the
         // value's type; a nested one is recorded by the body it is in.
         // Its typing already OPEN is the same cycle seen from the
         // other side — the value is asking for the const's own type.
-        let d: DeclId? = self.decls.decl_of(ask.file, ask.stmt)
+        let d: DeclId? = self.decls.decl_of(ask.file, s)
         let cyclic = d != null && self.decl_facts.open(d!.index)
         if d != null && !cyclic { touch(self.typed(d!)) }
-        let ty = self.decls.held_const_type(ask.file, ask.stmt) ?? error
+        let ty = self.decls.held_const_type(ask.file, s) ?? error
         let _ = self.const_type_facts.finish(id, ty, ty.index)
         cyclic
     }
@@ -809,7 +828,10 @@ impl Workspace {
             .Compute -> self.settlements.begin(id),
         }
         let ask = self.settle_asks[id]
-        let root = self.analysis(ask.file).view.store.const_value(ask.stmt)!
+        let root: ExprId = match ask.root {
+            .Const(s) -> self.analysis(ask.file).view.store.const_value(s)!,
+            .Expr(e) -> e,
+        }
         let r = self.settlement_of(ask.file, root, ask.name, ask.seats)
         // `embed` is the one permitted build-world read. Make every
         // file it opened a source input dependency before this query

@@ -3,7 +3,7 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, NodeStore, FnParts, SeatMark, mut_mark, settled_mark}
+use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, NodeStore, FnParts, SeatMark, mut_mark, settled_mark, is_literal}
 use diagnostics.{Diag, refusal, warning}
 
 impl TypeCx {
@@ -644,48 +644,57 @@ impl TypeCx {
         null
     }
 
-    /// A `const` seat's argument VALUE: a value the SOURCE alone
-    /// spells (a scalar, or a fully-written aggregate), a name bound to
-    /// such a `const`, or a settled seat FORWARDED from the enclosing
-    /// fn. Anything else is computed at run time — a `let`, a call, a
-    /// field read.
+    /// A `const` seat's argument, when the SOURCE settles it: its
+    /// fingerprint is a placeholder key — lowering rebuilds the unit's
+    /// key from the VALUE, so two spellings of one value share a unit.
     fn settled_fp(e: ExprId) -> string? {
-        if self.source_spelled(e) { return "${self.view.store.expr_fingerprint(e)}" }
-        let b: Binding? = self.names.binding(e)
-        if b == null { return null }
-        match b! {
-            .Def(s) -> {
-                let v: ExprId? = self.view.store.const_value(s)
-                if v == null { return null }
-                "${self.view.store.expr_fingerprint(v!)}"
-            }
-            // A FORWARDED seat: legal, because the enclosing unit
-            // settles it. Its value is per-unit, so this key is a
-            // placeholder — lowering rebuilds it from the unit's own
-            // seat (one unit per distinct value, not per read site).
-            .Param(_) -> if self.names.reads_settled_seat(e) { "${self.view.store.expr_fingerprint(e)}" } else { null },
-            // a DECLARED `const`, from any file of the program
-            .Decl(d) -> self.declared_const_fp(d),
-            .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+        if self.spelled_by_source(e) { return "${self.view.store.expr_fingerprint(e)}" }
+        null
+    }
+
+    /// THE SEAT LAW'S TEST: every node of the argument is a literal,
+    /// an aggregate or variant of such, a `const`'s name, a settled
+    /// seat FORWARDED from the enclosing fn, or a variant's enum. A
+    /// `let`, a call, an operator, a field read is computed at run
+    /// time — a const's field included: the seat takes what the
+    /// source spells, never what it would compute.
+    fn spelled_by_source(e: ExprId) -> bool {
+        post_order(self.dispatch, self.view.store, e).all((k: ExprId) -> self.spelled_node(k))
+    }
+
+    fn spelled_node(k: ExprId) -> bool {
+        let node: Expr = self.view.store.expr(k)
+        if is_literal(node) { return true }
+        match node {
+            .NullLit or .ListLit(_) or .MapLit(_, _) or .StructLit(_, _, _) or .VariantLit(_, _) -> true,
+            .Ident(_) -> self.settled_name(k),
+            // a qualified variant — `K.B`, `K.B(1)` — reads its enum, never a value
+            .Prop(subject, _) -> self.names_enum(subject),
+            .MethodCall(subject, _, _) -> self.names_enum(subject),
+            rest -> false,
         }
     }
 
-    /// A declared const's value fingerprint, read from its own store;
-    /// null for a declaration that is not a const.
-    fn declared_const_fp(d: DeclId) -> string? {
-        let x = self.view.decls.decl(d)
-        if !(x.kind is .Const) { return null }
-        let v: ExprId? = self.view.decls.store(d).const_value(x.stmt)
-        if v == null { return null }
-        "${self.view.decls.store(d).expr_fingerprint(v!)}"
+    /// A name that settles: a `const` (a body's own or a declared one),
+    /// a forwarded settled seat, or an enum's name under a variant.
+    fn settled_name(k: ExprId) -> bool {
+        let b: Binding? = self.names.binding(k)
+        if b == null { return false }
+        match b! {
+            .Def(s) -> self.view.store.const_value(s) != null,
+            .Decl(d) -> self.view.decls.decl(d).kind is .Const || self.names_enum(k),
+            .Param(_) -> self.names.reads_settled_seat(k),
+            .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+        }
     }
 
-    /// Whether the source alone spells the value at `e` — the SAME
-    /// test lowering runs, so typing's verdict and the unit's value
-    /// never disagree.
-    fn source_spelled(e: ExprId) -> bool {
-        mut heap = new_meta_heap()
-        literal_meta(self.view.store, self.view.decls, self.facts, e, heap) != null
+    fn names_enum(k: ExprId) -> bool {
+        let b: Binding? = self.names.binding(k)
+        if b == null { return false }
+        match b! {
+            .Decl(d) -> self.view.decls.decl(d).kind is .Enum,
+            rest -> false,
+        }
     }
 
     /// A declaration's written seat names, for a voice — read from

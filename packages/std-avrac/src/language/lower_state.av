@@ -4,7 +4,7 @@
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, FileId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, NodeStore, SeatMark, is_literal, settled_mark}
 use diagnostics.{loc_at, refusal, Diag}
-use features.{LowerCx, capture_lane, Sub, Cap, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, const_symbol, settled_symbol, post_order, nothing, MetaVal, MetaHeap, new_meta_heap, literal_meta}
+use features.{LowerCx, capture_lane, Sub, Cap, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, post_order, nothing, MetaVal, MetaHeap, new_meta_heap, literal_meta}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -110,16 +110,30 @@ impl LowerCx {
         match b {
             .Param(_) -> self.forwarded_seat(b, index),
             // a body's own `const`: spelled, or settled on this unit's seats
-            .Def(s) -> self.spelled_seat(a, index) ?? self.settled_seat(self.view.file, s, self.seats, index, self.facts.type_at(a)),
+            .Def(s) -> self.spelled_seat(a, index) ?? self.settled_seat(self.view.file, SettleRoot.Const(s), self.seats, index, self.facts.type_at(a)),
             // a DECLARED `const`: settled in its own file, whatever it spells
             .Decl(d) -> if self.view.decls.decl(d).kind is .Const { self.declared_seat(d, index, self.facts.type_at(a)) } else { null },
-            rest -> self.spelled_seat(a, index),
+            // anything else the source spells — an aggregate with consts
+            // or seats inside, a variant — settles as an expression
+            rest -> self.spelled_seat(a, index) ?? self.settled_arg(a, index),
         }
     }
 
     fn declared_seat(d: DeclId, index: int, ty: TypeId) -> SeatValue? {
         let x = self.view.decls.decl(d)
-        self.settled_seat(x.file, x.stmt, [], index, ty)
+        self.settled_seat(x.file, SettleRoot.Const(x.stmt), [], index, ty)
+    }
+
+    /// A `const`-seat argument the evaluator settles as an expression
+    /// of this unit — on its seats, so a forwarded value inside folds.
+    fn settled_arg(a: ExprId, index: int) -> SeatValue? {
+        match self.jobs.settle(self.view.file, SettleRoot.Expr(a), self.seats) {
+            .Ok(x) -> seat_value(index, self.facts.type_at(a), x),
+            .Err(why) -> {
+                self.argument_unsettled(a, why)
+                null
+            },
+        }
     }
 
     /// A `const`-seat value the source alone spells — the argument
@@ -140,9 +154,9 @@ impl LowerCx {
     /// A `const`-seat argument that is a `const` the evaluator settles —
     /// in its home file, on the seats it may read — keyed on the value
     /// itself, so two spellings of one value share one unit.
-    fn settled_seat(f: FileId, s: StmtId, seats: List<SeatValue>, index: int, ty: TypeId) -> SeatValue? {
-        match self.jobs.settle(f, s, seats) {
-            .Ok(x) -> SeatValue { index: index, fp: "v${x.fingerprint}", ty: ty, value: x.answer, heap: x.heap },
+    fn settled_seat(f: FileId, root: SettleRoot, seats: List<SeatValue>, index: int, ty: TypeId) -> SeatValue? {
+        match self.jobs.settle(f, root, seats) {
+            .Ok(x) -> seat_value(index, ty, x),
             .Err(_) -> null,
         }
     }
@@ -274,7 +288,7 @@ impl LowerCx {
     /// a scalar materialized here, a boxed value called for; a
     /// refusal spoken at the const's own value.
     fn settled_value_reg(f: FileId, s: StmtId, ty: TypeId, seats: List<SeatValue>) -> Reg? {
-        match self.jobs.settle(f, s, seats) {
+        match self.jobs.settle(f, SettleRoot.Const(s), seats) {
             .Ok(x) -> if !self.view.types.rides_pointer(ty) { self.materialized(x.answer, x.heap, ty) }
                       else { self.const_call(f, s, ty, x, seats) },
             .Err(why) -> {
@@ -559,6 +573,12 @@ impl LowerCx {
 
 }
 
+/// A settled seat's value, keyed on the VALUE (`v`), so two spellings
+/// of one value share one unit.
+fn seat_value(index: int, ty: TypeId, x: Settled) -> SeatValue {
+    SeatValue { index: index, fp: "v${x.fingerprint}", ty: ty, value: x.answer, heap: x.heap }
+}
+
 /// Register 0 — a body's first seat: a method's receiver, or the
 /// env box a lifted lambda's captures ride in.
 const first_seat: Reg = Reg { index: 0 }
@@ -603,5 +623,12 @@ impl LowerCx {
             .Spoken -> null,
         }
         if d != null { self.out.voices.speak(d!) }
+    }
+
+    /// A `const` seat's argument the evaluator could not settle — its
+    /// parts were spelled, so what failed was a const inside it.
+    fn argument_unsettled(a: ExprId, why: Unsettled) {
+        if why is .Spoken { return }
+        self.out.voices.speak(refusal("const.trap", self.view.loc_of(a), "a `const` seat's argument did not settle", why.words(), "the argument settles at compile time from its literals and consts — what fails there is refused here"))
     }
 }

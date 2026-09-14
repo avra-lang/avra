@@ -992,6 +992,30 @@ to start cold; the size is the design's estimate.
       generates — its names resolve in the WRITING file, so a
       generated const reading its generated sibling (and a generated
       fn calling one) is "not defined".
+- [x] **THE SEAT LAW READS THE SOURCE — survey #6's two leftovers.
+      LANDED (2026-09-13, comptime/const).** A `const` seat's argument
+      was judged by `literal_meta` (does the crossing tree build from
+      the source alone?), which has no bindings table and reads the
+      typing facts — so a const NESTED in an aggregate (`take(P { x:
+      N })`) and an inline variant (`take(.B)`, typed only once the
+      seat's want lands) both refused F2073. The law is a WALK now
+      (`spelled_by_source`, features/checks.av): every node of the
+      argument is a literal, an aggregate or variant of such, a
+      `const`'s name (a body's own or a declared one), a forwarded
+      settled seat, or an enum's name under a variant (`K.B`,
+      `K.B(1)`); a `let`, a call, an operator, a field read — a
+      const's included — is computed at run time. It reads the SOURCE
+      and the bindings, never the facts, which is why the ORDER change
+      survey #6 proposed (feed the seat wants before the const-seat
+      check) was NOT needed. Lowering keeps the literal fast path
+      (`e`-keyed) and otherwise SETTLES THE ARGUMENT as an expression
+      of its unit — `SettleRoot.Expr`, the one settlement door
+      widened from a const's statement to an expression, on the unit's
+      seats so a nested forwarded value folds — keyed on the VALUE
+      (`v`). Proof: `fns_adversarial_test`'s nine seat cases (nested
+      consts, nested forwarded seat, bare/qualified/payload variants,
+      and the three refusals) and the `const_seat` program (eval ==
+      native == expected).
 - [x] **S4r — the `Code` value and the claim. LANDED (2026-09-13),
       DECIDED as UNTYPED `Code`.** A quote answers `@std.meta.Code`:
       `{ pieces: List<Piece> }`, each `Piece { text, origin, at }` a

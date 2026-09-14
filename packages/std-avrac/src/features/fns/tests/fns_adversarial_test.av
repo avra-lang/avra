@@ -170,6 +170,33 @@ spec "features/fns (adversarial)" {
         then "an aggregate literal settles inline — every field is source-spelled" {
             shown("type P = { x: int, y: int }\nfn take(const p: P) -> int {\n    p.x + p.y\n}\ntake(P { x: 3, y: 4 })") == "7"
         }
+        then "a `const` NESTED in the aggregate settles — a body's own, and a declared one" {
+            shown("type P = { x: int, y: int }\nconst N: int = 5\nfn take(const p: P) -> int {\n    p.x + p.y\n}\nfn f() -> int {\n    const m = 2\n    take(P { x: N, y: m })\n}\nf()") == "7"
+        }
+        then "a FORWARDED seat nested in the aggregate settles per outer value" {
+            shown("type P = { x: int }\nfn take(const p: P) -> int {\n    p.x\n}\nfn outer(const n: int) -> int {\n    take(P { x: n })\n}\nouter(3) + outer(4)") == "7"
+        }
+        then "an inline variant literal settles — the seat's want names the enum" {
+            shown("enum K { A, B }\nfn take(const k: K) -> int {\n    match k { .A -> 1, .B -> 2 }\n}\ntake(.B)") == "2"
+        }
+        then "a qualified variant settles too" {
+            shown("enum K { A, B }\nfn take(const k: K) -> int {\n    match k { .A -> 1, .B -> 2 }\n}\ntake(K.B) + take(K.A)") == "3"
+        }
+        then "a variant with a PAYLOAD settles, bare and qualified" {
+            shown("enum K { A, B(int) }\nfn take(const k: K) -> int {\n    match k { .A -> 1, .B(n) -> n }\n}\ntake(.B(4)) + take(K.B(5))") == "9"
+        }
+        then "a variant nested in a record settles" {
+            shown("enum K { A, B }\ntype P = { k: K, n: int }\nfn take(const p: P) -> int {\n    match p.k { .A -> p.n, .B -> p.n * 10 }\n}\ntake(P { k: .B, n: 3 })") == "30"
+        }
+        then "a field read of a const still refuses — the seat takes what the source spells" {
+            refused_with("type P = { x: int }\nconst O: P = P { x: 1 }\nfn take(const n: int) -> int {\n    n\n}\ntake(O.x)", "`n` is a `const` seat")
+        }
+        then "a call nested in the aggregate refuses" {
+            refused_with("type P = { x: int }\nfn g() -> int {\n    1\n}\nfn take(const p: P) -> int {\n    p.x\n}\ntake(P { x: g() })", "`p` is a `const` seat")
+        }
+        then "an operator over a const refuses — a const, not an expression of one" {
+            refused_with("const N: int = 1\nfn take(const n: int) -> int {\n    n\n}\ntake(N + 1)", "`n` is a `const` seat")
+        }
         then "an aggregate with a run-time field still refuses" {
             refused_with("type P = { x: int }\nfn take(const p: P) -> int {\n    p.x\n}\nfn f(n: int) -> int {\n    take(P { x: n })\n}\nf(3)", "`p` is a `const` seat")
         }

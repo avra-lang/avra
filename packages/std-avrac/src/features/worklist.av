@@ -24,6 +24,27 @@ export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, sea
 /// `Spoken`: an earlier read already said so, and this one is silent.
 export enum Unsettled { Reach(string), Budget(string), Trap(string), Param(string), Spoken }
 
+impl Unsettled {
+    /// Why, in the words a refusal's label carries.
+    fn words() -> string {
+        match self {
+            .Reach(label) -> label,
+            .Budget(label) -> label,
+            .Trap(words) -> words,
+            .Param(runtime) -> "reads `${runtime}`",
+            .Spoken -> "",
+        }
+    }
+}
+
+/// What a settlement runs: a `const`'s initializer, or an expression
+/// of its own — a `const` seat's argument, spelled from literals and
+/// consts, settled so the unit keys on its VALUE.
+export enum SettleRoot {
+    Const(StmtId)
+    Expr(ExprId)
+}
+
 /// The unit a const's initializer lowers as, named for its statement.
 export fn const_symbol(f: FileId, s: StmtId) -> string {
     "const$${f.index}$${s.index}"
@@ -184,11 +205,11 @@ export type DeclareWork = { ann: DeclId, stmt: StmtId, callee: ExprId, args: Lis
 
 /// One body's worklist: the bodies it wants, the lambdas it lifted,
 /// the wrappers it minted, and the names it has already asked for.
-export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, externs: List<string>, settle: fn(FileId, StmtId, List<SeatValue>) -> Result<Settled, Unsettled> }
+export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> }
 
 /// A fresh worklist over the program's extern symbols — what every
 /// body's emitter refuses an unknown callee against.
-export fn new_jobs(externs: List<string>, settle: fn(FileId, StmtId, List<SeatValue>) -> Result<Settled, Unsettled>) -> Jobs {
+export fn new_jobs(externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> Jobs {
     Jobs { pending: [], seen: {}, lifts: [], wraps: [], externs: externs, settle: settle }
 }
 

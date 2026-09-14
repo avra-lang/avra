@@ -7577,7 +7577,15 @@ The `/feedback` run for the slice that lifted the two S5b boundaries: a settled 
 ### SUGAR — a construct the language should have
 
 - **A `const` NESTED IN AN AGGREGATE LITERAL AT A SETTLED SEAT.** `const N: int = 5; take(P { x: N })` refuses F2073 because `literal_meta` (the source-spelling check) has no bindings table, so a NAME inside an aggregate is not source-spelled. The top-level name itself settles (`take(N)` works, via the `const` branch); only the nested one does not. Wanting site: `features/values.av`'s `literal_record`. Either `literal_meta` takes `NameFacts` and resolves a `const` ident, or the aggregate crosses through the evaluator.
+  LANDED 2026-09-13 (comptime/const): the second — typing's law is a
+  source walk (`spelled_by_source`) and lowering settles the argument
+  as an expression (`SettleRoot.Expr`, on the unit's seats).
 - **AN INLINE VARIANT LITERAL AT A SETTLED SEAT.** `take(.B)` refuses F2073 with the misleading "computed at run time" — `.B`'s enum type is only known AFTER the call's seat WANTS are fed, and the const-seat check runs BEFORE `seats_fit`/`accepts` feeds them (`dispatched_call`, features/fns/check.av:93 -> features/checks.av:615). The real fix is an ORDER change: feed the seats before judging the settled fills. A struct literal works only because its type name is explicit. Wanting site: `take(.B)`, probed 2026-09-13.
+  LANDED 2026-09-13 (comptime/const) WITHOUT the order change: the
+  seat law reads the source and the bindings, never the facts, so the
+  variant's type need not be known when it is judged. `K.B` and
+  `K.B(1)` (a qualified variant — a method-call node on the enum's
+  name) settle too.
 
 ### FEATURES — a capability, more than sugar
 
