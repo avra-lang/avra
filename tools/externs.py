@@ -43,16 +43,23 @@ happens to have. Only the declaration can be held to account.
 import re, sys, glob, os
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# The compiler's own C — GLOBBED, not listed. A hand-written list is a
-# registry that silently forgets its next member, and this one would
-# have: the first new file under `runtime/` would have had every
-# extern in it unchecked, with the keeper reporting green.
+# The compiler's own C — GLOBBED, not listed: every `.c` one directory
+# under the tree's root, outside `packages/` (a package's C is read by
+# `package_sources`). A hand-written list is a registry that silently
+# forgets its next member — and a listed pair of DIRECTORIES forgets
+# the next directory the same way.
 def tree_sources():
-    found = []
-    for d in ("runtime", "backend"):
-        for path in sorted(glob.glob(os.path.join(ROOT, d, "*.c"))):
-            found.append(os.path.relpath(path, ROOT))
-    return found
+    return sorted(os.path.relpath(path, ROOT)
+                  for path in glob.glob(os.path.join(ROOT, "*", "*.c"))
+                  if not path.startswith(os.path.join(ROOT, "packages") + os.sep))
+
+
+# The registry's one file, opened by one name.
+RT_API = "packages/std-avrac/src/core/runtime_api.av"
+
+
+def rt_api():
+    return open(os.path.join(ROOT, RT_API)).read()
 
 
 # a C return whose value fills the whole 64-bit register
@@ -448,7 +455,7 @@ def owned_mints(bodies):
 def rows():
     """The names `rt_sigs()` carries — the only place `owns_result` is
     written."""
-    text = open(os.path.join(ROOT, "packages/std-avrac/src/core/runtime_api.av")).read()
+    text = rt_api()
     return set(re.findall(r'RtSig \{ name: "([a-z_0-9]+)"', text))
 
 
@@ -737,7 +744,7 @@ def wrong_boxes(sigs):
 
 def sig_rows():
     """Each `rt_sigs()` row's name, `keeps` seats, and `owns_result`."""
-    text = open(os.path.join(ROOT, "packages/std-avrac/src/core/runtime_api.av")).read()
+    text = rt_api()
     out = {}
     for m in re.finditer(r'RtSig \{ name: "([a-z_0-9]+)"(.*?) \},', text, re.S):
         keeps = re.search(r"keeps: \[([^\]]*)\]", m.group(2))
@@ -895,7 +902,7 @@ def main():
         if voids:
             print(f"externs: {len(voids)} extern(s) read an answer their C body does not give")
         return 1
-    api = open(os.path.join(ROOT, "packages/std-avrac/src/core/runtime_api.av")).read()
+    api = rt_api()
     loud = resolving_inerts(seated_bodies(sources), inert_rows(api))
     for name, calls in loud:
         print(f"externs: {name} is marked `inert` and its C body calls {', '.join(calls)}")
