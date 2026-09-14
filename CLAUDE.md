@@ -481,6 +481,30 @@ engine's spec, written by dogfooding.
   that pair as a test BEFORE the fix. Three collisions were
   nameable by hand here; enumerating every splice site and running
   it against the parent made nine.
+  AND ITS QUIETER TWIN: A HASH THAT FORGETS A PAYLOAD. Same
+  consequence — two values, one identity — but nothing to enumerate,
+  because the omission leaves NO MARK at the site: the parts list
+  reads complete. THE TEST IS A DIFF, the record's fields against the
+  hash's parts, field by field. Seven were missing here in one sweep
+  and every one was a field ADDED after its hash was written —
+  `Param.mark` (so `fn f(mut x)` and `fn f(x)` were one statement),
+  `Param.default`'s OWNER (a defaults list beside the fields says
+  which exist, never whose), `TypeRef.dynamic`/`marks`/`arrow`,
+  `export`, `StructSig.defaults`, and a named type whose whole
+  signature hash was the constant `1`. So ask it of a hash on the
+  same day a field lands, never of the hash alone.
+  AND THE PART WORTH THE MOST: `export` was forgotten THREE LINES
+  UNDER the comment that states the law — "A MARK IS PART OF THE
+  STATEMENT: `fn f()`, `mut fn f()` and `once fn f()` declare
+  different things". The doc named three of the five marks and the
+  code stamped those three. A LAW WRITTEN AS A DOC COMMENT THAT
+  ENUMERATES ITS INSTANCES DECAYS INTO A LIST, and the list stops
+  growing before the code does; the reader sees a stated law and
+  stops looking. `make fingerprints` is the enforcement now — it
+  refuses a run spliced into a parts list (both surfaces witnessed
+  failing), counts the lists it read, and claims the shared fold's
+  tag in every file that CALLS it, since a borrowed tag mixes into
+  that file's space.
 - A GUARD IS A PROPERTY OF EVERY CROSSING, NOT OF A PACKAGE. The law
   above says a NUL is spent at the C boundary; this one is where the
   refusal goes. THE CROSSING IS THE EXTERN SEAT, and only that: every

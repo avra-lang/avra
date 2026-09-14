@@ -825,7 +825,7 @@ impl NodeStore {
             .Wild -> fp(50, []),
             .Rest -> fp(51, []),
             .Bind(name) -> fp(52, [fp_str(name)]),
-            .Variant(name, args) -> fp(53, [fp_str(name)].concat([self.pat_fingerprint(a) for a in args])),
+            .Variant(name, args) -> fp(53, [fp_str(name), fp_list([self.pat_fingerprint(a) for a in args])]),
             .Lit(v) -> fp(54, [self.expr_fingerprint(v)]),
         }
     }
@@ -837,7 +837,7 @@ impl NodeStore {
     /// sequence and the same fingerprint. Two different programs,
     /// one identity, and the memo kernel cannot tell them apart.
     fn arm_fps(arms: List<Arm>) -> List<int> {
-        [fp(29, [self.pat_fingerprint(p) for p in a.pats].concat([self.expr_fingerprint(a.value)])) for a in arms]
+        [fp(29, [fp_list([self.pat_fingerprint(p) for p in a.pats]), self.expr_fingerprint(a.value)]) for a in arms]
     }
 
     /// The one statement-allocation seam.
@@ -892,7 +892,7 @@ impl NodeStore {
         mut held = self.annotations[s.index]
         held.push(a)
         self.annotations.set(s.index, held)
-        self.stmt_fingerprints.set(s.index, fp(114, [self.stmt_fingerprints[s.index], self.expr_fingerprint(a.callee)].concat([self.expr_fingerprint(e) for e in a.args])))
+        self.stmt_fingerprints.set(s.index, fp(114, [self.stmt_fingerprints[s.index], self.expr_fingerprint(a.callee), fp_list(self.expr_fps(a.args))]))
     }
 
     fn annotations_of(s: StmtId) -> List<Annotation> {
@@ -933,17 +933,19 @@ impl NodeStore {
         self.statics[s.index]
     }
 
-    /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()` and
-    /// `once fn f()` declare different things, so no two of them
-    /// may wear one fingerprint.
+    /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()`,
+    /// `once fn f()`, `static fn f()` and `export fn f()` declare
+    /// different things, so no two of them may wear one fingerprint.
     fn restamp(s: StmtId, tag: int) {
         self.stmt_fingerprints.set(s.index, fp(tag, [self.stmt_fingerprints[s.index]]))
     }
 
     /// `export` crossed this declaration — the module's surface
-    /// carries it.
+    /// carries it, so it is part of the statement like every other
+    /// mark.
     fn mark_exported(s: StmtId) {
         self.exported.set(s.index, true)
+        self.restamp(s, 127)
     }
 
     fn is_exported(s: StmtId) -> bool {
@@ -1048,6 +1050,12 @@ impl NodeStore {
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
     /// Tags are never reused; `make fingerprints` names the next.
+    ///
+    /// A PARTS LIST IS FIXED ARITY. Every variable-length run folds
+    /// through `fp_list` first, so no payload's boundary can move and
+    /// two shapes cannot splice to one sequence. The greppable form of
+    /// the law: no `.concat` and no comprehension stands in a parts
+    /// list except inside `fp_list`.
     fn fingerprint_expr(e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -1081,7 +1089,7 @@ impl NodeStore {
                 fp(13, [fp_list(self.expr_fps(conds)), fp_list(self.expr_fps(values)),
                         self.expr_fingerprint(fallback)]),
             .Block(stmts, value) ->
-                fp(14, [fp_list(self.stmt_fps(stmts)), fp_list(self.tail_fp(value))]),
+                fp(14, [fp_list(self.stmt_fps(stmts)), self.opt_fp(value)]),
             .StructLit(name, fields, values) ->
                 fp(24, [fp_str(name), fp_list(str_fps(fields)),
                         fp_list(self.expr_fps(values))]),
@@ -1089,27 +1097,28 @@ impl NodeStore {
                 fp(26, [self.expr_fingerprint(subject),
                         fp_list(str_fps(fields)), fp_list(self.expr_fps(values))]),
             .Match(subject, arms) ->
-                fp(28, [self.expr_fingerprint(subject)].concat(self.arm_fps(arms))),
+                fp(28, [self.expr_fingerprint(subject), fp_list(self.arm_fps(arms))]),
             .NullLit -> fp(30, []),
             .Coalesce(l, r) ->
                 fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
             .Is(v, variant) -> fp(49, [self.expr_fingerprint(v), fp_str(variant)]),
-            .VariantLit(name, args) -> fp(58, [fp_str(name)].concat(self.expr_fps(args))),
-            // an ABSENT guard contributes NOTHING: fingerprinting it as
-            // the element gave `[x for x in xs]` and `[x for x in xs if x]`
-            // ONE identity. The 55/61 tag already tells an absent range
-            // end from a present one, so `hi` needs no such care.
+            .VariantLit(name, args) -> fp(58, [fp_str(name), fp_list(self.expr_fps(args))]),
+            // both ends are OPTIONAL and each folds as one: an absent
+            // guard fingerprinted as the element gave `[x for x in xs]`
+            // and `[x for x in xs if x]` one identity, and the range's
+            // end was told apart by a second tag (61, retired here)
+            // where absence is a value the payload can carry.
             .Comp(elem, index, name, source, hi, cond) ->
-                fp(if hi == null { 55 } else { 61 }, [self.expr_fingerprint(elem), fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(source), self.expr_fingerprint(hi ?? source)].concat(self.expr_fps(some_list(cond)))),
+                fp(55, [self.expr_fingerprint(elem), fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(source), self.opt_fp(hi), self.opt_fp(cond)]),
             .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
             .MethodCall(subject, name, margs) ->
-                fp(43, flatten([[self.expr_fingerprint(subject)], [fp_str(name)],
-                                self.expr_fps(margs)])),
+                fp(43, [self.expr_fingerprint(subject), fp_str(name),
+                        fp_list(self.expr_fps(margs))]),
             .Lambda(params, body) ->
-                fp(46, [fp_list(param_fps(params)), self.expr_fingerprint(body)]),
+                fp(46, [fp_list(self.param_fps(params)), self.expr_fingerprint(body)]),
             .CallValue(subject, cargs) ->
-                fp(47, [self.expr_fingerprint(subject)].concat(self.expr_fps(cargs))),
+                fp(47, [self.expr_fingerprint(subject), fp_list(self.expr_fps(cargs))]),
             .Catch(subject, variants, binds, values) ->
                 fp(40, [self.expr_fingerprint(subject),
                         fp_list(str_fps(variants)),
@@ -1206,11 +1215,13 @@ impl NodeStore {
         }
     }
 
-    /// A block tail's fingerprint contribution — nothing when the
-    /// block leaves instead of answering.
-    fn tail_fp(value: ExprId?) -> List<int> {
-        if value == null { return [] }
-        [self.expr_fingerprint(value!)]
+    /// AN OPTIONAL EXPRESSION IS ONE VALUE, absence included — a
+    /// block that leaves instead of answering, a comprehension with
+    /// no guard, a field with no default. Fixed arity, so it stands
+    /// in a parts list directly, as `type_fp` does for a type.
+    fn opt_fp(value: ExprId?) -> int {
+        if value == null { return 0 }
+        fp(128, [self.expr_fingerprint(value!)])
     }
 
     /// The fingerprints of expression children, in order.
@@ -1230,79 +1241,101 @@ impl NodeStore {
             .ConstDecl(name, ty, value) -> fp(109, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
             .Assign(target, value) -> fp(16, [self.expr_fingerprint(target), self.expr_fingerprint(value)]),
             .While(cond, stmts) ->
-                fp(17, [self.expr_fingerprint(cond)].concat(self.stmt_fps(stmts))),
+                fp(17, [self.expr_fingerprint(cond), fp_list(self.stmt_fps(stmts))]),
             .IfStmt(cond, then_stmts, else_stmts) ->
                 fp(35, [self.expr_fingerprint(cond),
                         fp_list(self.stmt_fps(then_stmts)),
                         fp_list(self.stmt_fps(else_stmts))]),
-            .Return(value) -> fp(36, [self.expr_fingerprint(v) for v in some_list(value)]),
+            .Return(value) -> fp(36, [self.opt_fp(value)]),
             .Fail(value) -> fp(39, [self.expr_fingerprint(value)]),
             .ImplDecl(of, target, fns) ->
-                fp(44, [fp_str(of ?? ""), fp_str(target)].concat(self.stmt_fps(fns))),
+                fp(44, [fp_str(of ?? ""), fp_str(target), fp_list(self.stmt_fps(fns))]),
             .TraitDecl(name, fns) ->
-                fp(45, [fp_str(name)].concat(self.stmt_fps(fns))),
+                fp(45, [fp_str(name), fp_list(self.stmt_fps(fns))]),
             .SyntaxDecl(name, text) -> fp(119, [fp_str(name), fp_str(text)]),
             .LetElse(name, subject, stmts) ->
-                fp(38, [fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
+                fp(38, [fp_str(name), self.expr_fingerprint(subject), fp_list(self.stmt_fps(stmts))]),
             // For's cond and step derive from name/from/to — the
             // identity needs only the sources.
             .For(name, from, to, _, _, stmts) ->
-                fp(18, [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)].concat(self.stmt_fps(stmts))),
+                fp(18, [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to), fp_list(self.stmt_fps(stmts))]),
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Discard(value) -> fp(57, [self.expr_fingerprint(value)]),
             .Defer(body, on_error) -> fp(if on_error { 107 } else { 106 }, [self.expr_fingerprint(body)]),
             .Use(path, items, aliases) -> fp(108, [fp_list(str_fps(path)), fp_list(str_fps(items)), fp_list(str_fps(aliases))]),
             .ForEach(index, name, subject, stmts) ->
-                fp(42, [fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
+                fp(42, [fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(subject), fp_list(self.stmt_fps(stmts))]),
             .Error -> fp(7, []),
-            .ExternFn(name, params, ret) -> fp(59, [fp_str(name), fp_list(param_fps(params)), type_fp(ret)]),
+            .ExternFn(name, params, ret) -> fp(59, [fp_str(name), fp_list(self.param_fps(params)), type_fp(ret)]),
             .FnDecl(name, tparams, params, ret, body) ->
-                fp(12, [fp_str(name), fp_list(param_fps(tparams)),
-                        fp_list(param_fps(params)),
+                fp(12, [fp_str(name), fp_list(self.param_fps(tparams)),
+                        fp_list(self.param_fps(params)),
                         type_fp(ret), self.expr_fingerprint(body)]),
             .StructDecl(name, tparams, fields) ->
                 fp(25, [fp_str(name), fp_list(str_fps(tparams)),
-                        fp_list(param_fps(fields)),
-                        fp_list(self.expr_fps([f.default! for f in fields if f.default != null]))]),
+                        fp_list(self.param_fps(fields))]),
             .NamedType(name, tparams, of) ->
                 fp(122, [fp_str(name), fp_list(str_fps(tparams)), type_fp(of)]),
             .EnumDecl(name, tparams, variants) ->
                 fp(27, [fp_str(name), fp_list(str_fps(tparams)),
-                        fp_list(variant_fps(variants))]),
-            .Spec(name, cases) -> fp(56, [fp_str(name)].concat(self.case_fps(cases))),
+                        fp_list(self.variant_fps(variants))]),
+            .Spec(name, cases) -> fp(56, [fp_str(name), fp_list(self.case_fps(cases))]),
         }
     }
 }
 
 impl NodeStore {
-    /// A case list's fingerprint parts: each group, name and body.
+    /// A case list's fingerprint parts — one value per case.
     fn case_fps(cases: List<Case>) -> List<int> {
-        flatten([[fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)] for c in cases])
+        [fp(125, [fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)]) for c in cases]
+    }
+
+    /// A param list's fingerprint parts — ONE VALUE PER SEAT. A seat
+    /// IS its name, its written type, its contract and the default it
+    /// declares: `{ a: int = 1, b: int }` and `{ a: int, b: int = 1 }`
+    /// are different records, and a defaults list beside the fields
+    /// says which defaults exist without saying whose they are.
+    fn param_fps(params: List<Param>) -> List<int> {
+        [fp(123, [fp_str(p.name), type_fp(p.ty), mark_fp(p.mark), self.opt_fp(p.default)]) for p in params]
+    }
+
+    /// A variant list's fingerprint parts — ONE VALUE PER VARIANT.
+    /// Spliced flat, a variant's payload run and the next variant's
+    /// name share a boundary that moves.
+    fn variant_fps(variants: List<Variant>) -> List<int> {
+        [fp(124, [fp_str(v.name), fp_list(self.param_fps(v.payloads))]) for v in variants]
     }
 }
 
-/// A variant list's fingerprint parts: each name, then its payloads.
-fn variant_fps(variants: List<Variant>) -> List<int> {
-    flatten([[fp_str(v.name)].concat(param_fps(v.payloads)) for v in variants])
-}
-
-/// A param list's fingerprint parts: name, type, in declaration order.
 /// A string list's fingerprint parts, in order.
 fn str_fps(texts: List<string>) -> List<int> {
     [fp_str(t) for t in texts]
 }
 
-fn param_fps(params: List<Param>) -> List<int> {
-    flatten([[fp_str(p.name), type_fp(p.ty)] for p in params])
+/// A bool as a fingerprint part.
+fn flagged(b: bool) -> int {
+    if b { 1 } else { 0 }
 }
 
-/// A written type's identity: absence is its own value, and the `?`
-/// is part of what the type IS.
+/// A SEAT'S CONTRACT IS PART OF WHAT THE SEAT IS: `fn(mut Cx)` is a
+/// different type from `fn(Cx)`, and `const x` a different seat from
+/// `x`, so the marks ride the identity as the interner's key already
+/// says they ride the type.
+fn mark_fp(m: SeatMark) -> int {
+    fp(126, [flagged(m.mutable), flagged(m.settled)])
+}
+
+/// A written type's identity: absence is its own value, and the `?`,
+/// the `dyn`, the arrow and the seats' marks are all part of what the
+/// type IS — a fingerprint that forgets one of them certifies a
+/// changed program as unchanged.
 fn type_fp(t: TypeRef?) -> int {
     if t == null { return 0 }
     let written = t!
     fp(if written.optional { 101 } else { 100 },
-       [fp_str(written.name)].concat([type_fp(a) for a in written.args]))
+       [fp_str(written.name), flagged(written.dynamic), flagged(written.arrow),
+        fp_list([mark_fp(m) for m in written.marks]),
+        fp_list([type_fp(a) for a in written.args])])
 }
 
 fn fp_binop(op: BinOp) -> int {
@@ -1339,8 +1372,9 @@ export fn fp(tag: int, parts: List<int>) -> int {
 /// A SEQUENCE FOLDS TO ONE VALUE, so a payload's ARITY is fixed and
 /// the boundary between two of them cannot move. Spliced flat,
 /// `f<A>(B)` and `f<A, B?>()` wore one fingerprint — a pinned type
-/// and an argument are the same value in a flat list.
-fn fp_list(parts: List<int>) -> int { fp(105, parts) }
+/// and an argument are the same value in a flat list. SHARED across
+/// every fold space, so tag 105 is claimed wherever it is called.
+export fn fp_list(parts: List<int>) -> int { fp(105, parts) }
 
 /// In-process rolling hash; both operands normalized under a prime so
 /// mixing never overflows, negative payloads included. The crypto
