@@ -6,7 +6,8 @@
 //! records, `List<Diagnostic>` validates. The law
 //! satisfied, the call runs, and what it said is spoken here.
 use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt, source_spelled, same_file, user_kind, is_kind_word}
-use features.{TypeCx, kind_word, FnSig, Said, Unsettled, nothing}
+use features.{TypeCx, kind_word, FnSig, Unsettled, nothing}
+use @std.meta.{Diagnostic}
 use diagnostics.{refusal, loc_at}
 use @std.errors.{Loc}
 
@@ -69,11 +70,16 @@ export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
         computed_argument(cx, a)
         return
     }
+    let moved: string? = cx.view.decls.meta_disagreement()
+    if moved != null {
+        foreign_meta(cx, a, moved!)
+        return
+    }
     if act is .Derives && derive_law(cx, a, s) { return }
     match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
         .Ok(crossed) -> {
             match act {
-                .Records or .Validates -> { for x in cx.view.decls.saids(crossed, sig.ret) { if !x.warning { spoken_said(cx, a, d, s, x) } } },
+                .Records or .Validates -> { for x in crossed.saids() { if !x.warning { spoken_said(cx, a, d, s, x) } } },
                 .Declares or .Derives -> nothing(),
             }
         },
@@ -305,7 +311,7 @@ fn effect_words(e: Effect) -> string {
 /// the declaration's word for its users, kept and spoken at each use
 /// (`warn_use`), never here. A kind the annotation NAMED wears its
 /// package's namespace; a kind-less refusal wears this feature's.
-fn spoken_said(mut cx: TypeCx, a: Annotation, d: DeclId, s: StmtId, x: Said) {
+fn spoken_said(mut cx: TypeCx, a: Annotation, d: DeclId, s: StmtId, x: Diagnostic) {
     if x.kind != null && !is_kind_word(x.kind!) { return bad_kind(cx, a, x) }
     let here: Loc? = x.at ?? cx.view.stmt_loc(s)
     // LICENSED I18: a kind the annotation did not name is not a missing payload — the refusal wears this feature's own code
@@ -315,8 +321,19 @@ fn spoken_said(mut cx: TypeCx, a: Annotation, d: DeclId, s: StmtId, x: Said) {
 
 /// A kind that is not a word is the ANNOTATION's mistake, spoken in
 /// place of the verdict it carried — one message for one mistake.
-fn bad_kind(mut cx: TypeCx, a: Annotation, x: Said) {
+fn bad_kind(mut cx: TypeCx, a: Annotation, x: Diagnostic) {
     let _ = cx.spoken(refusal("annotation.kind", at_annotation(cx, a), "an annotation's kind is a word", "`@${a.name}` named `${x.kind!}`, saying: ${x.message}", "spell the kind `[A-Za-z0-9_-]+`, like `E1`"))
+}
+
+/// The LOADED `@std/meta` is not the one this compiler was built
+/// against. The crossing reads and writes by SLOT, so a shape that
+/// moved reads a different value in every seat — the annotation
+/// cannot run at all.
+fn foreign_meta(mut cx: TypeCx, a: Annotation, moved: string) {
+    let _ = cx.spoken(refusal("annotation.meta", at_annotation(cx, a),
+                       "the compiler crosses `@std/meta`'s own shapes",
+                       "the compiler was built against another `@std/meta` — ${moved}",
+                       "build against the `@std/meta` this compiler ships"))
 }
 
 fn unsettled(mut cx: TypeCx, a: Annotation, why: Unsettled) {

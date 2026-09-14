@@ -523,7 +523,7 @@ RULES = {
             "a long string duplicated in one file — shared messages are fns"),
     "I13": (line_rx(r"([a-z_]+\.[a-z_]+\(([a-z_]+)\)).*\1"),
             "the same projection computed twice on one line — bind it"),
-    "I43": (bool_comprehension,
+    "I48": (bool_comprehension,
             "a comprehension over a LIST folded to a bool — that is a scan: "
             "`xs.all(pred)` stops at the first answer and builds nothing"),
     "I14": (emit_then_error,
@@ -587,11 +587,16 @@ RULES = {
 }
 
 UNRATCHETED = {
-    "I44": "no grep links two fns as INVERSES, so nothing textual sees a pack\n"
+    "I49": "no grep links two fns as INVERSES, so nothing textual sees a pack\n"
            "           learning a category its unpack has not. The keeper is `make\n"
            "           vocab`: both directions are named as consumers of the SAME\n"
            "           registry enum, and a catch-all or an `is` test inside either\n"
            "           fails the gate whichever direction grew the hole",
+    "I44": "no grep tells a BOUNDARY registry from any other list of rows, and a\n"
+           "           reader that spells slot names or a writer that spells literal tags\n"
+           "           reads as ordinary code. The keeper is the boundary check itself:\n"
+           "           crossing_test.av moves each crossed shape and demands the refusal\n"
+           "           name the one that moved",
     "I42": "no grep tells a READ site from a SEAT site — `shape_at` is correct at\n"
            "           one and a defect at the other, and both spellings live beside each\n"
            "           other in the same file. The keeper is the adversarial suite:\n"
@@ -676,7 +681,7 @@ CLEAN = {
     "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
             ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
-    "I43": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
+    "I48": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
 }
@@ -696,7 +701,7 @@ SPECIMENS = {
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
-    "I43": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
+    "I48": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
             ["    [b.ieq_at(0, b.length, w) for w in written_by].any(it)"],
             ["    ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)"]],
     "I14": [["    cx.emit(d)", "    cx.intern(Type.Error)"]],

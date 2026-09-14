@@ -16,7 +16,9 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Node, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
+use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait}
+use @std.meta.{Diagnostic, Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Decls as MetaDecls}
 use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, copier, quote_kind, all_codes, is_name_cont, SyntaxParts, ForeignRange}
 use grammar.{parse_grammar, ready}
 use diagnostics.{defect_at}
@@ -366,7 +368,7 @@ impl Workspace {
     /// annotation run and its WARNINGS kept (errors speak at the
     /// declaration). Runs inside the armed hook, so a use finds a
     /// later declaration's warnings however the files are ordered.
-    fn computed_marks(d: DeclId) -> List<Said> {
+    fn computed_marks(d: DeclId) -> List<Diagnostic> {
         let x = self.decls.decl(d)
         let p = self.parsed(x.file)
         // A builtin or synthetic declaration has no statement record;
@@ -380,7 +382,7 @@ impl Workspace {
 
     /// One annotation's WARNING diagnostics, empty for an annotation
     /// that answers something other than `List<Diagnostic>`.
-    fn annotation_warnings(x: Decl, p: Parsed, vis: Namespace, a: Annotation) -> List<Said> {
+    fn annotation_warnings(x: Decl, p: Parsed, vis: Namespace, a: Annotation) -> List<Diagnostic> {
         let found: DeclId? = self.named_arg(p, vis, a.callee)
         if found == null { return [] }
         let callee = found!
@@ -394,7 +396,7 @@ impl Workspace {
         // a warning's kind wears the annotation fn's package here, where
         // that fn is known; a use speaks it under that kind
         match self.lifted(callee, x.file, x.stmt, a.callee, a.args) {
-            .Ok(crossed) -> [w with { kind: worded_kind(self.decls.package_of(callee), w.kind) } for w in self.decls.saids(crossed, s.ret) if w.warning],
+            .Ok(crossed) -> [w with { kind: worded_kind(self.decls.package_of(callee), w.kind) } for w in crossed.saids() if w.warning],
             .Err(_) -> [],
         }
     }
@@ -1127,35 +1129,26 @@ impl Workspace {
     /// answers, which do not exist yet.
     fn materialized(f: FileId, w: DeclareWork, p: Parsed, vis: Namespace) -> List<DeclId> {
         if !w.args.all((e: ExprId) -> source_spelled(p.store.expr(e)) || p.store.ident_name(e) != null) { return [] }
-        let directives = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.ret) }
+        // a loaded `@std/meta` the crossing cannot read generates
+        // nothing; the annotation law speaks it
+        if self.decls.meta_disagreement() != null { return [] }
+        let directives = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args) }
         flatten([self.materialized_directive(f, w, directive, vis) for directive in directives])
     }
 
     /// One directive: a `source` is generated CODE parsed and admitted
-    /// beside the original, a `twin` mints a fn beside it, and source
-    /// this compiler cannot read is spoken rather than dropped.
+    /// beside the original, and a `twin` mints a fn beside it.
     fn materialized_directive(f: FileId, w: DeclareWork, directive: Directive, vis: Namespace) -> List<DeclId> {
         let ann = self.decls.decl(w.ann).name
-        match directive.source {
-            .Made(node) -> self.admit_code(f, node, ann, w.at, vis),
-            .Foreign -> self.unmirrored(f, ann, w.at),
-            .None -> self.twinned(f, w, directive, ann),
-        }
+        let source: MetaDecls? = directive.source
+        if source == null { return self.twinned(f, w, directive, ann) }
+        self.admit_code(f, source!.node, ann, w.at, vis)
     }
 
     /// The fn a directive asks for beside the original, when it asks.
     fn twinned(f: FileId, w: DeclareWork, directive: Directive, ann: string) -> List<DeclId> {
         if directive.twin.is_empty() { return [] }
         [self.decls.mint_generated(f, directive.twin, w.tparams, w.params, w.answer, w.original, ann, w.at)]
-    }
-
-    /// Generated source the compiler cannot read: the crossing and
-    /// `@std.meta.Node` agree by the VARIANT'S NAME, and a name the
-    /// compiler does not mirror would otherwise generate nothing
-    /// while the annotation said it would generate something.
-    fn unmirrored(f: FileId, ann: string, at: Span?) -> List<DeclId> {
-        self.decls.speak_expansion(f, [unmirrored_defect(self.decls.file(f).path, ann, at)])
-        []
     }
 
     /// A written fn's Declares annotation, as the materializer's
@@ -1359,9 +1352,9 @@ impl Workspace {
 
     /// A lifted call's directives, or none when it refused — the ONE
     /// read of a `List<Directive>` answer.
-    fn lifted_directives(d: DeclId, f: FileId, stmt: StmtId, call: ExprId, args: List<ExprId>, ret: TypeId) -> List<Directive> {
+    fn lifted_directives(d: DeclId, f: FileId, stmt: StmtId, call: ExprId, args: List<ExprId>) -> List<Directive> {
         match self.lifted(d, f, stmt, call, args) {
-            .Ok(crossed) -> self.decls.directives_of(crossed, ret),
+            .Ok(crossed) -> crossed.directives(),
             .Err(_) -> [],
         }
     }
@@ -1391,115 +1384,47 @@ impl Workspace {
         // The provider guard: a same-file derive would need this file's
         // names while they are still being made. `check_annotation` speaks.
         if same_file(self.decls.decl(m).file, f) { return [] }
-        let msig: FnSig? = (self.decls.sig(m))?.fn_sig()
-        if msig == null { return [] }
-        self.lifted_directives(m, f, w.stmt, w.callee, [], msig!.ret)
+        if (self.decls.sig(m))?.fn_sig() == null { return [] }
+        self.lifted_directives(m, f, w.stmt, w.callee, [])
     }
 
     /// The declaration at `s` as the value the fn's first seat asks
-    /// for — its slots filled BY NAME from the seat type's own field
-    /// table, so the compiler and `@std/meta` agree by the field's
-    /// name and never by a position. Reads the PARSE store only: an
-    /// expanded sibling is generated before this file's typed facts
-    /// exist.
+    /// for. Reads the PARSE store only: an expanded sibling is
+    /// generated before this file's typed facts exist.
     fn crossed_decl(f: FileId, s: StmtId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let found: DeclId? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s))
         if found == null { return MetaVal.Absent }
         self.crossed_decl_of(found!, want, heap)
     }
 
-    /// A declaration as meta data, by identity — the receiver and an
-    /// argument's NAME (a `Type`, `Trait`, `Fn` or `Named` seat) both
-    /// cross here. The decl's OWN file supplies the parse it reads.
+    /// A declaration as the meta value its seat names — the receiver
+    /// and an argument's NAME both cross here. The compiler builds
+    /// `@std/meta`'s OWN record and the crossing lays out its slots,
+    /// so a field that moves in the package breaks this build. The
+    /// decl's own file supplies the parse it reads.
     fn crossed_decl_of(d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
         let x = self.decls.decl(d)
         let v = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
-        let found_sig: StructSig? = self.decls.fields_of_type(want)
-        if found_sig == null { return MetaVal.Absent }
-        let sig = found_sig!
-        let at = self.crossed_loc(v, v.store.stmt_span(x.stmt), heap)
-        mut slots: List<MetaVal> = []
-        for i, n in sig.names {
-            slots.push(match n {
-                "name" -> MetaVal.Text(x.name),
-                "at" -> at,
-                "answer" -> self.crossed_answer(v, x.stmt),
-                "params" -> self.crossed_params(v, d, sig.types[i], heap),
-                "fields" -> self.crossed_fields(v, d, sig.types[i], heap),
-                "variants" -> self.crossed_variants(v, d, sig.types[i], heap),
-                _ -> MetaVal.Absent,
-            })
+        let at = placed(v, v.store.stmt_span(x.stmt))
+        match self.decls.meta_seat(want) {
+            .Fn -> meta_of_fn(MetaFn { name: x.name, params: self.crossed_params(v, x.stmt), answer: self.crossed_answer(v, x.stmt), at: at }, heap),
+            .Type -> meta_of_type(MetaType { name: x.name, fields: crossed_fields(v, x.stmt), variants: crossed_variants(v, x.stmt), at: at }, heap),
+            .Named -> meta_of_named(Named { name: x.name, at: at }, heap),
+            .Trait -> meta_of_trait(MetaTrait { name: x.name, at: at }, heap),
+            .Other -> MetaVal.Absent,
         }
-        heap.node(slots)
     }
 
-    /// A type reference's spelling, "" for a written absence.
-    fn spelling(t: TypeRef?) -> string {
-        if t == null { return "" }
-        spelled(t!)
+    /// A fn's parameters as `Param` values: name, the type's spelling,
+    /// its `mut` and `const` marks.
+    fn crossed_params(v: FileView, s: StmtId) -> List<MetaParam> {
+        [MetaParam { name: p.name, ty: typed_text(self.decls.types, p.ty), mutable: p.mark.mutable, settled: p.mark.settled, at: placed(v, p.span) } for p in declared_params(v.store, s)]
     }
 
     /// A fn's answer, spelled from its declared TypeRef — a store read
     /// alone, so crossing a declaration needs no typed facts.
-    fn crossed_answer(v: FileView, s: StmtId) -> MetaVal {
-        typed_meta(self.decls.types, v.store.fn_parts(s)?.ret)
-    }
-
-    /// The element record's shape of a `List<…>` meta seat, or null —
-    /// every crossing that fills a list of meta rows asks this once.
-    fn meta_elem(want: TypeId) -> StructSig? {
-        let item: TypeId? = elem_of(self.decls.types, want)
-        if item == null { return null }
-        self.decls.fields_of_type(item!)
-    }
-
-    /// A fn's parameters as `Param` values: name, the type's spelling,
-    /// its `mut` and `const` marks — built by the `List<Param>` seat's
-    /// element type.
-    fn crossed_params(v: FileView, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
-        let elem: StructSig? = self.meta_elem(want)
-        if elem == null { return heap.node([]) }
-        let shape = elem!
-        let params = declared_params(v.store, self.decls.decl(d).stmt)
-        heap.node([meta_row(heap, shape, {
-            "name": MetaVal.Text(params[i].name),
-            "ty": typed_meta(self.decls.types, params[i].ty),
-            "mutable": MetaVal.Bool(params[i].mark.mutable),
-            "settled": MetaVal.Bool(params[i].mark.settled),
-            "at": self.crossed_loc(v, params[i].span, heap),
-        }) for i in 0..params.length])
-    }
-
-    /// A record's fields as `Field` values.
-    fn crossed_fields(v: FileView, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
-        let x = self.decls.decl(d)
-        let elem: StructSig? = self.meta_elem(want)
-        if elem == null { return heap.node([]) }
-        let shape = elem!
-        heap.node([meta_row(heap, shape, {
-            "name": MetaVal.Text(f.name),
-            "ty": MetaVal.Text(self.spelling(f.ty)),
-            "at": self.crossed_loc(v, f.span, heap),
-        }) for f in declared_fields(v.store, x.stmt)])
-    }
-
-    /// An enum's variants as `Variant` values: name and payload spellings.
-    fn crossed_variants(v: FileView, d: DeclId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
-        let x = self.decls.decl(d)
-        let elem: StructSig? = self.meta_elem(want)
-        if elem == null { return heap.node([]) }
-        let shape = elem!
-        heap.node([meta_row(heap, shape, {
-            "name": MetaVal.Text(va.name),
-            "payload": heap.node([MetaVal.Text(self.spelling(p.ty)) for p in va.payloads]),
-            "at": self.crossed_loc(v, va.span, heap),
-        }) for va in declared_variants(v.store, x.stmt)])
-    }
-
-    /// A source span as a `Loc` value — file, lo, hi — or absent.
-    fn crossed_loc(v: FileView, sp: Span?, mut heap: MetaHeap) -> MetaVal {
-        if sp == null { return MetaVal.Absent }
-        heap.node([MetaVal.Text(v.source.file), MetaVal.Int(sp!.lo), MetaVal.Int(sp!.hi)])
+    fn crossed_answer(v: FileView, s: StmtId) -> string {
+        typed_text(self.decls.types, v.store.fn_parts(s)?.ret)
     }
 
     // ── Modules ──
@@ -2486,13 +2411,34 @@ fn unsettled_hash(why: Unsettled) -> int {
     }
 }
 
-/// A declared TypeRef as the crossing's text value — parsed from the
-/// STORE alone, absent when the word names a type only the namespace
-/// knows. The same read `crossed_answer` makes.
-fn typed_meta(types: TypeRegistry, ann: TypeRef?) -> MetaVal {
+/// A declared TypeRef as the crossing's text — parsed from the STORE
+/// alone, "" when the word names a type only the namespace knows.
+fn typed_text(types: TypeRegistry, ann: TypeRef?) -> string {
     let held: TypeId? = spelled_type(types, ann)
-    if held == null { return MetaVal.Absent }
-    MetaVal.Text(types.name_of(held!))
+    if held == null { return "" }
+    types.name_of(held!)
+}
+
+/// A source span as the place a meta value names.
+fn placed(v: FileView, sp: Span?) -> Loc? {
+    if sp == null { return null }
+    Loc { file: v.source.file, lo: sp!.lo, hi: sp!.hi }
+}
+
+/// A record's fields as `Field` values.
+fn crossed_fields(v: FileView, s: StmtId) -> List<MetaField> {
+    [MetaField { name: p.name, ty: written_spelling(p.ty), at: placed(v, p.span) } for p in declared_fields(v.store, s)]
+}
+
+/// An enum's variants as `Variant` values: name and payload spellings.
+fn crossed_variants(v: FileView, s: StmtId) -> List<MetaVariant> {
+    [MetaVariant { name: va.name, payload: [written_spelling(p.ty) for p in va.payloads], at: placed(v, va.span) } for va in declared_variants(v.store, s)]
+}
+
+/// A type reference as the program WROTE it, "" for a written absence.
+fn written_spelling(t: TypeRef?) -> string {
+    if t == null { return "" }
+    spelled(t!)
 }
 
 /// A fn declaration's parameters, with their source spans.
@@ -2574,12 +2520,6 @@ fn template_site(node: Node) -> Loc? {
 }
 
 fn nothing_copied() -> Copied { Copied { stmts: [], arms: [] } }
-
-/// The splice's own disagreement with typing: hole `k` of the template
-/// at `at` was filled with a shape its seat does not take.
-fn unmirrored_defect(path: string, ann: string, at: Span?) -> Diag {
-    defect_at(loc_at(path, at), "defect: `@${ann}` generated source naming a `@std.meta.Node` variant this compiler does not mirror")
-}
 
 fn misfit_defect(template: string, at: int, k: int) -> Diag {
     defect_at(Loc { file: template, lo: at, hi: at }, "defect: hole ${k} of the template at offset ${at} was filled with a shape its seat does not take")

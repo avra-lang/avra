@@ -479,7 +479,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       sibling and quietly diverging, which is how two of the three
       `fn`-shaped rules came to differ on `mut`. Lane B named the
       class; this is the first tool that can see an instance of it.
-- I43 (ratcheted) A COMPREHENSION OVER A LIST, BUILT ONLY TO BE
+- I48 (ratcheted) A COMPREHENSION OVER A LIST, BUILT ONLY TO BE
       FOLDED TO A BOOL. `[writable(h) for h in r.headers].all(it)`
       builds every element and then measures what it built;
       `r.headers.all((h) -> writable(h))` stops at the first answer
@@ -694,7 +694,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       synthetic". Not ratcheted: the smell is a naming choice, not a
       shape a grep can see.
 
-- I44 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
+- I49 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
       conversions that are inverses name their categories ONCE, as a
       registry enum, and each direction is an exhaustive match over
       it, arm for arm. The word slot is the instance: `slot_form`
@@ -746,6 +746,22 @@ reintroducing I3's blind spot names the two spellings it lost.
       free fn's parameters and nowhere else; the typed door stays
       on the owner (`type_at(e: ExprId)`), which is where every
       reader already goes.
+
+- I44 (unratcheted) A POSITIONAL BOUNDARY SPELLS ITS ORDER ONCE — a
+      value crossing between two compilations of the same
+      declaration travels by SLOT, so the order is a REGISTRY ROW
+      carrying the name, the payload count and the reader together
+      (`node_readers`, `features/crossing.av`), and the writer takes
+      its tag from that same list. THE SMELL: a reader that matches
+      slot names as STRINGS, a writer that spells literal tags, or a
+      check that lists the expected order in a second place — each is
+      the order written twice, and the two spellings part silently
+      the day the other side moves a field. The row is what makes the
+      boundary check and the dispatch ONE fact. Not ratcheted: no
+      grep tells a boundary registry from any other list of rows; the
+      keeper is the boundary check itself, whose fixtures move each
+      shape and demand the refusal name it.
+
 
 ## Lowering: MINT IN EMISSION ORDER
 
