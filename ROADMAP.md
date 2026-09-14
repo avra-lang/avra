@@ -13569,3 +13569,83 @@ lanes' trees; this tree at the merge points only.
   name the CONTRACT it protects; two spec assertions changed because
   the mechanism moved (a refusal's seat words, a parse error now at
   the library) and were reported, not hidden.
+
+## Feedback survey — 2026-09-14 #9 (lane/d, the Style-section law audit)
+
+Counted per axis: friction 2, sugar 0, features 1, defects 0,
+doctrine 3, performance 0, process 2. The top three by cost: a law
+that was false forty minutes after it landed and stood for eight
+days; a hand-kept list beside the tool that owns it; a refuter's
+final sentence that had to be checked against the tree like any
+other claim. Not surveyed: any package's code beyond the names the
+seven laws cite; the other sections of CLAUDE.md (the next slices).
+No Avra was written this slice, so sugar, defects and performance
+are empty by scope and not by sweep.
+
+### FRICTION — what cost time
+
+- **A SUBAGENT REPORT TRUNCATES AT THE HARNESS, NOT AT THE
+  FINDING.** Both agents' reports were cut mid-law and had to be
+  re-requested in pieces; the cut fell inside the one law that
+  mattered, twice. EVIDENCE: two `SendMessage` round trips for laws
+  5–7 and for law 5's final text. THE ASK: none for the tree — brief
+  a subagent to lead with verdicts and put exact texts LAST, so the
+  cut lands on the recoverable half.
+- **THE GATE OUTGROWS THE FOREGROUND WINDOW.** `make gate` under the
+  watchdog crossed 600 s and moved to the background; the lock held
+  and the peak printed (728 MB), exactly as the LOCK law says.
+  EVIDENCE: this slice's gate. CONFIRMS CLAUDE.md's "THE LOCK IS THE
+  LAW"; no ask.
+
+### FEATURES — a capability
+
+- **A KEEPER FOR THE NAMES DOCTRINE CITES.** CLAUDE.md names 98
+  snake_case identifiers in backticks; before this slice two of the
+  seven Style laws cited fns dead since 20dae3b, and no tool could
+  say so. Measured after the fix: 96/98 resolve, and the two that do
+  not are a negative example (`emit_loop`, a shape the law refuses)
+  and a prose shortening (`get_owned`). EVIDENCE: a grep of every
+  `` `a_b` `` in CLAUDE.md against packages/, tools/, runtime/,
+  backend/. THE ASK: `make doctrine` — grep each cited identifier
+  and refuse a dead one unless the sentence licenses it; a 2%
+  false-positive floor is the price of not finding the next
+  `printed_value` by hand.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **A LAW CAN BE STALE THE DAY IT LANDS.** The builder-words law was
+  written at 56424e0 (15:05) asserting a "builder failed:" prefix
+  the same author removed at c7b5038 (15:46). The entry described
+  the tree it was about to change, in the present tense, and the
+  correction was in the commit body and not in the doctrine.
+  EVIDENCE: `git log -1 --date=iso` on both. THE ASK: a change that
+  retires a mechanism a law names carries the law's edit in the same
+  commit — the cited-name keeper above is the enforcement.
+- **A COUNT IN A LAW NAMES ITS RECEIPT.** "five of today's messages
+  … against eight real defects" never matched c7b5038's own body
+  ("five of the seven builder refusals lane C sampled"); today's
+  split is 10 defect-worded to 13 law-worded. Reworded to the
+  receipt's figure and its commit. CONFIRMS "A COUNT FROM A PACKAGE
+  SWEEP IS LINES, NOT SITES" one level up: a count with no base is a
+  claim.
+- **A GENERAL SHAPE MUST FIT ITS OWN INSTANCE.** The law's lesson
+  read "put the claim in the words, not in a flag — a flag can be
+  set wrong", while its instance was the reverse: the flag
+  (`Cause.Builder`, still projected to F0102) was right and the
+  prose restating it lied. Reworded: a paraphrase of a flag is a
+  second copy; words carry the claim, structure the category, and
+  the words never restate the category. EVIDENCE:
+  `grammar/executor.av:374`, `language/codes.av:19`.
+
+### PROCESS — the working discipline
+
+- **KEEP: the auditor/refuter pair, and check the refuter too.** The
+  refuter found both the count mismatch and the incoherent general
+  shape, which the auditor had passed; its own closing sentence
+  ("either the words carry the claim or the structure does, never
+  both") contradicted the tree and was corrected against
+  `codes.av:19`. A refutation is a claim like any other.
+- **KEEP: the hand list dies in the same commit that finds it.**
+  DOGFOODING's `Ratcheted:` line lagged the tool by two rules;
+  `python3 tools/idioms.py --rules` answers now and the doc points
+  at it. One flag, one pointer, no third copy.

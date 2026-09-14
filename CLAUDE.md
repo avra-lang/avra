@@ -113,16 +113,20 @@ source and refuses a repeated number.
   rule to obey — so it teaches the reader to look for the quirk. The
   law's wording outlives its own implementation, which is what makes
   it worth pinning in the golden (lower.av's pointer-constant guard).
-- A BUILDER'S WORDS ARE ITS CLAIM. The executor prefixes every
-  builder error with "builder failed:" (grammar/executor.av), so a
-  LAW the writer can fix reads as an internal failure — five of
-  today's messages are laws, against eight real defects, and the
-  prefix lies about all five. The seam needed no change: `Cause`
-  already separates `Builder` from `Defect`, and only the WORDING
-  lied. THE GENERAL SHAPE: when a message's TRUTHFULNESS is what is
-  at stake, put the claim in the WORDS and not in a flag beside
-  them — a flag can be set wrong and stay invisible, while words
-  that say the wrong thing are visibly wrong to the next reader.
+- A BUILDER'S WORDS ARE ITS CLAIM. A builder's refusal is carried
+  WHOLE into its diagnostic (grammar/executor.av's build phase:
+  `cause: Cause.Builder, message: m`), so a message that is a LAW
+  the writer broke reads as the law, and one that is a DEFECT says
+  so in its own words. A blanket "builder failed:" prefix once told
+  the reader the compiler had broken about every law — five of the
+  seven refusals sampled at c7b5038 — while `Cause` had separated
+  `Builder` from `Defect` all along: the seam was right and only the
+  WORDING lied. THE GENERAL SHAPE: A PARAPHRASE OF A FLAG IS A
+  SECOND COPY, and the reader believes the words — the flag is
+  checked by the code, the prose by nobody. So the WORDS carry the
+  CLAIM and the STRUCTURE carries the CATEGORY (`Cause.Builder`
+  projects to F0102, language/codes.av), and the words never restate
+  the category.
 - A projection is ONE match: nested patterns
   (`.Node(.NAlt(a)) -> a, _ -> null`), never an unwrap ladder.
 - The third copy of a shape names the concept: shared walks and
