@@ -497,7 +497,7 @@ fn match_prim<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
         .Named(term) -> {
             let t = cx.tokens[cursor]
             let k = term_kind(term)
-            if k != null && t.kind == k! {
+            if k != null && t.kind_is(k!) {
                 // Eof is a position, not a token: match without consuming.
                 let step = if t.kind == TokenKind.Eof { 0 } else { 1 }
                 matched<N>(cursor + step, bindings, captured_terminal<N>(t), cx.silence, null)
@@ -588,6 +588,13 @@ fn nothing_noted() {
 /// (error holes inside) is a result.
 export fn run_grammar<N>(rd: Ready, tokens: List<Token>,
                          build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>) -> RunOutcome<N> {
+    run_from<N>(rd, rd.g.start, tokens, build)
+}
+
+/// Run `rd` from the rule named `start` — a FRAGMENT parse, for a
+/// spelling that is one type or one expression rather than a program.
+export fn run_from<N>(rd: Ready, start: string, tokens: List<Token>,
+                      build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>) -> RunOutcome<N> {
     if !rd.defects.is_empty() {
         return RunOutcome { result: null, diagnostics: rd.defects }
     }
@@ -600,7 +607,7 @@ export fn run_grammar<N>(rd: Ready, tokens: List<Token>,
         g: g, tokens: tokens, ordinals: rd.ordinals, lit_expects: rd.lit_expects, kind_expects: rd.kind_expects,
         absent: captured_absent<N>(), silence: silence, build: build, memo: memo,
     }
-    let r = match_rule<N>(cx, g.start, 0, false)
+    let r = match_rule<N>(cx, start, 0, false)
     mut diagnostics = [d for d in r.diagnostics]
     if r.status != MatchStatus.Hit {
         if diagnostics.is_empty() { diagnostics.push(overall_failure<N>(cx, r)) }
@@ -608,8 +615,8 @@ export fn run_grammar<N>(rd: Ready, tokens: List<Token>,
     }
     if cx.tokens[r.cursor].kind != TokenKind.Eof {
         diagnostics.push(Diagnostic {
-            cause: Cause.Trailing, message: "unexpected input after `${g.start}`",
-            span: cx.tokens[r.cursor].span, expected: [], in_rule: g.start,
+            cause: Cause.Trailing, message: "unexpected input after `${start}`",
+            span: cx.tokens[r.cursor].span, expected: [], in_rule: start,
         })
     }
     RunOutcome { result: r.value, diagnostics: diagnostics }

@@ -3,7 +3,11 @@
 //! language source (`lex_source` — every newline separates, and
 //! strings carry `${}` holes: IStrBegin/IStrMid/IStrEnd pieces
 //! around ordinary hole tokens, a stack tracking nested holes and
-//! their brace depths).
+//! their brace depths). A `quote { … }` body is tokenized like any
+//! source, except that a `${…}` in code position is a TEMPLATE HOLE:
+//! one `Hole` token stands in its place (a name no program can
+//! write, `holes.av`), and the hole's own tokens are DEFERRED to
+//! after the quote's closing brace as a `HoleBegin … HoleEnd` group.
 //!
 //! Layout is the lexer's: a newline becomes a Break token only where
 //! the flavor's boundary allows; every other newline is whitespace.
@@ -14,7 +18,7 @@
 //! one pass reports everything.
 use @std.text.{Text, builder}
 use core.{Span, span_of}
-use core.{is_space, is_name_start, is_name_cont, is_digit}
+use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder}
 
 /// What a token is; Lit-vs-kind matching keys off this. The IStr
 /// kinds are an interpolated string's pieces: `"a ${x} b ${y} c"`
@@ -22,7 +26,9 @@ use core.{is_space, is_name_start, is_name_cont, is_digit}
 /// IStrEnd(" c").
 /// `Pkg` is an `@name` — a package's head in a `use` path, and the
 /// grammar DSL's own `@expect`/`@recover` words.
-export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg }
+/// `Hole` is a template's placeholder name; `HoleBegin`/`HoleEnd`
+/// bracket a deferred hole expression after the quote's brace.
+export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd }
 
 /// One DSL token. For Str and the IStr kinds, `text` is the
 /// unquoted, unescaped contents; the span covers the delimiters.
@@ -34,8 +40,15 @@ impl Token {
     fn lit_matches(text: string) -> bool {
         match self.kind {
             .Name or .Num or .Op or .Break or .Pkg -> self.text == text,
-            .Str or .IStrBegin or .IStrMid or .IStrEnd or .Eof -> false,
+            .Str or .IStrBegin or .IStrMid or .IStrEnd or .Eof or .Hole or .HoleBegin or .HoleEnd -> false,
         }
+    }
+
+    /// Whether this token is of a grammar's named kind. A template's
+    /// `Hole` stands wherever a NAME may: every builder mints its
+    /// ordinary node with the placeholder name.
+    fn kind_is(k: TokenKind) -> bool {
+        self.kind == k || (k == TokenKind.Name && self.kind == TokenKind.Hole)
     }
 
     /// The BITS of the real this number denotes. A fraction only —
@@ -108,7 +121,7 @@ fn scan_while(src: string, n: int, from: int, pred: fn(int) -> bool) -> int {
 /// One scanner step: at most one token, at most one error, always
 /// progress. `opens_hole` means the token ended at `${` and the
 /// loop now lexes the hole's expression.
-type ScanStep = { token: Token?, err: LexError?, opens_hole: bool, next: int, depth: int = 0 }
+type ScanStep = { token: Token?, err: LexError?, opens_hole: bool, next: int }
 
 /// A step that produced a token.
 fn emit(t: Token, next: int) -> ScanStep {
@@ -124,14 +137,6 @@ fn body_closed(s: ScanStep) -> bool {
 /// The closing brace a raw body's scan consumed, as its own token.
 fn brace_at(next: int) -> Token {
     token(TokenKind.Op, "}", next - 1, next)
-}
-
-/// A raw body closed INSIDE a hole: its opener was counted against
-/// the enclosing hole's depth when it was emitted, and its closer
-/// never passes through that count — so the count is paid here.
-fn balanced(holes: List<int>) -> List<int> {
-    if holes.is_empty() { return holes }
-    holes.slice(0, holes.length - 1).concat([holes.last()! - 1])
 }
 
 /// Whether a `//` line comment starts at `j`.
@@ -189,8 +194,7 @@ fn opens_grammar(raw: List<Token>, just: Token?) -> bool {
     opens_word_block(raw, just, "grammar")
 }
 
-/// A `quote { … }` body is taken whole too: its bytes are generated
-/// SOURCE, not our tokens, so the lexer hands it over as one literal.
+/// Whether the token just emitted opens a quote's body.
 fn opens_quote(raw: List<Token>, just: Token?) -> bool {
     opens_word_block(raw, just, "quote")
 }
@@ -285,7 +289,7 @@ fn unescape(e: int) -> string? {
 /// or not at all.
 enum StrStop { Quote, Hole, Ragged }
 
-type StrPart = { text: string, stop: StrStop, next: int, depth: int = 0 }
+type StrPart = { text: string, stop: StrStop, next: int }
 
 /// Text from `from` (already inside the quotes) to the piece's end.
 /// Plain runs are copied whole into the builder; only an escape
@@ -344,57 +348,6 @@ fn scan_string(src: string, i: int, opening: bool, interpolate: bool) -> ScanSte
         }
     }
     ScanStep { token: t, err: null, opens_hole: p.stop is .Hole, next: p.next }
-}
-
-/// A QUOTE piece: raw source to the next `${` or the `}` that closes
-/// the quote. Braces inside the body count (a generated fn's own
-/// `{}`), and braces inside the body's STRING literals do not — the
-/// same rule the `grammar` block's scan follows.
-fn scan_quote_part(src: string, from: int, start: int) -> StrPart {
-    let n = src.length
-    mut depth = start
-    mut quoted = false
-    mut j = from
-    while j < n {
-        let c = src.char_code(j)
-        if quoted {
-            if c == 92 { j = j + 1 }
-            else if c == 34 { quoted = false }
-        } else if line_comment_at(src, n, j) {
-            j = line_end(src, n, j)
-        } else if c == 34 {
-            quoted = true
-        } else if c == 36 && j + 1 < n && src.char_code(j + 1) == 123 {
-            return StrPart { text: src.substring(from, j), stop: StrStop.Hole, next: j + 2, depth: depth }
-        } else if c == 123 {
-            depth = depth + 1
-        } else if c == 125 {
-            if depth == 0 { return StrPart { text: src.substring(from, j), stop: StrStop.Quote, next: j + 1 } }
-            depth = depth - 1
-        }
-        j = j + 1
-    }
-    ragged(src.substring(from, j), j)
-}
-
-/// A quote piece as its token, the string scanner's twin: the OPENING
-/// piece is Str (no hole) or IStrBegin; a CONTINUATION piece is
-/// IStrMid or IStrEnd. `opens_hole` tells the loop to enter a hole.
-fn scan_quote(src: string, i: int, opening: bool, start: int) -> ScanStep {
-    let p = scan_quote_part(src, i, start)
-    let kind = match p.stop {
-        .Quote or .Ragged -> if opening { TokenKind.Str } else { TokenKind.IStrEnd },
-        .Hole -> if opening { TokenKind.IStrBegin } else { TokenKind.IStrMid },
-    }
-    let t = token(kind, p.text, i, p.next)
-    if p.stop is .Ragged {
-        return ScanStep {
-            token: t, opens_hole: false,
-            err: LexError { message: "a `quote` block is never closed", span: span_of(i, p.next) },
-            next: p.next,
-        }
-    }
-    ScanStep { token: t, err: null, opens_hole: p.stop is .Hole, next: p.next, depth: p.depth }
 }
 
 /// First index at or after `from` that is a newline (or the end).
@@ -598,131 +551,15 @@ fn continuing_op(text: string) -> bool {
 }
 
 /// The whole input, one ScanStep at a time; then the line policy, a
-/// final Break, and Eof. `holes` is the stack of open interpolation
-/// holes, each entry its brace depth — a depth-0 `}` resumes the
-/// string instead of emitting the brace.
+/// final Break, and Eof.
 fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bool) -> LexResult {
-    mut raw: List<Token> = []
-    mut docs: List<DocComment> = []
-    mut pending: List<string> = []
-    mut line_comment = false
-    mut line_has_token = false
-    mut errors: List<LexError> = []
-    mut holes: List<int> = []
-    // whether each open hole belongs to a `quote` (true) or a string,
-    // and for a quote hole the brace depth the raw body had reached
-    mut quoted_holes: List<bool> = []
-    mut quote_depths: List<int> = []
-    mut opened_quote = false
-    mut i = 0
-    let n = src.length
-    while i < n {
-        let comment = line_comment_at(src, n, i)
-        if comment {
-            // Any comment marks its line; only a `///` at line start
-            // is a doc line, and only a blank line detaches a group.
-            line_comment = true
-            if !line_has_token && i + 2 < n && src.char_code(i + 2) == 47 {
-                pending.push(doc_line(src, n, i))
-            }
-        }
-        opened_quote = false
-        mut s = scan_step(src, n, i, interpolate)
-        // THE BODY'S CLOSING BRACE IS A TOKEN: a `quote {` or
-        // `grammar {` opener was emitted as one, so the brace that
-        // ends the raw body is emitted too — the stream stays
-        // balanced, and the line law's bracket stack never holds a
-        // brace nothing closes.
-        // LICENSED I4: the brace is a SECOND token one step yields, never a scan's find
-        mut closer: Token? = null
-        if in_hole(holes, s.token) {
-            let t = s.token!
-            if t.text == "{" { holes.set(holes.length - 1, holes.last()! + 1) }
-            if t.text == "}" {
-                if holes.last()! == 0 {
-                    let _ = holes.pop()
-                    let was_quote = quoted_holes.pop()
-                    if was_quote {
-                        opened_quote = true
-                        s = scan_quote(src, s.next, false, quote_depths.pop())
-                        if body_closed(s) {
-                            closer = brace_at(s.next)
-                            holes = balanced(holes)
-                        }
-                    } else {
-                        s = scan_string(src, s.next, false, interpolate)
-                    }
-                } else {
-                    holes.set(holes.length - 1, holes.last()! - 1)
-                }
-            }
-        }
-        // A hole is single-line: a newline inside one is the missing
-        // `}`, said once, and lexing recovers to normal.
-        if !holes.is_empty() && s.token != null && s.token!.kind == TokenKind.Break {
-            errors.push(hole_error(s.token!.span.lo))
-            holes = []
-            quoted_holes = []
-            quote_depths = []
-        }
-        if s.token != null {
-            let t = s.token!
-            if t.kind == TokenKind.Break {
-                line_has_token = false
-                if !pending.is_empty() && !line_comment { pending = [] }
-                line_comment = false
-            } else {
-                if !pending.is_empty() {
-                    if declaration_start(t) {
-                        docs.push(DocComment { lines: pending, before: t.span.lo })
-                    }
-                    pending = []
-                }
-                line_has_token = true
-                line_comment = false
-            }
-            raw.push(t)
-            if closer != null { raw.push(closer!) }
-        }
-        if s.err != null { errors.push(s.err!) }
-        if s.opens_hole {
-            holes.push(0)
-            quoted_holes.push(opened_quote)
-            if opened_quote { quote_depths.push(s.depth) }
-        }
-        i = s.next
-        // THE GRAMMAR BLOCK is not Avra: its body is grammar
-        // notation, so the lexer hands it over whole. Nothing else
-        // could read it — `n:NAME` and `->` are not our tokens, and
-        // the braces it counts live inside its own string literals.
-        if opens_grammar(raw, s.token) {
-            let body = scan_raw_block(src, n, i, "grammar")
-            if body.token != null { raw.push(body.token!) }
-            if body_closed(body) {
-                raw.push(brace_at(body.next))
-                holes = balanced(holes)
-            }
-            if body.err != null { errors.push(body.err!) }
-            i = body.next
-        }
-        if opens_quote(raw, s.token) {
-            let first = scan_quote(src, i, true, 0)
-            if first.token != null { raw.push(first.token!) }
-            if body_closed(first) {
-                raw.push(brace_at(first.next))
-                holes = balanced(holes)
-            }
-            if first.err != null { errors.push(first.err!) }
-            if first.opens_hole {
-                holes.push(0)
-                quoted_holes.push(true)
-                quote_depths.push(first.depth)
-            }
-            i = first.next
-        }
+    mut lx = Lexing {
+        src: src, n: src.length, interpolate: interpolate,
+        raw: [], docs: [], pending: [], errors: [], stack: [], frames: [],
+        line_comment: false, line_has_token: false, i: 0,
     }
-    if !holes.is_empty() { errors.push(hole_error(src.length)) }
-    mut tokens = collapse_breaks(raw, boundary)
+    lx.run()
+    mut tokens = collapse_breaks(lx.raw, boundary)
     // Every rule or statement ends in a Break, even without a trailing
     // newline.
     let tail: Token? = tokens.last()
@@ -730,19 +567,374 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
         tokens.push(token(TokenKind.Break, "", src.length, src.length))
     }
     tokens.push(token(TokenKind.Eof, "", src.length, src.length))
-    LexResult { tokens: tokens, docs: docs, errors: errors }
+    LexResult { tokens: tokens, docs: lx.docs, errors: lx.errors }
+}
+
+/// What the scanner is INSIDE, innermost last: a quote's body, a
+/// string's hole, or a quote's hole — each with the depth its braces
+/// have reached, so the `}` that closes it is told from the braces
+/// the source itself opened.
+enum Ctx {
+    Body(frame: int)
+    StrHole(depth: int)
+    QuoteHole(frame: int)
+}
+
+/// One open `quote { … }`: its body's brace depth, the hole groups
+/// deferred to after its closing brace, and the Hole token being
+/// assembled — its name runs, its start, and the holes it spans.
+type QuoteFrame = {
+    depth: int,
+    groups: List<HoleGroup>,
+    count: int,
+    // the open hole's tokens, brace depth, and where its `${` stands
+    current: List<Token>,
+    hole_depth: int,
+    hole_lo: int,
+    // the Hole token in assembly, when one is
+    assembling: bool,
+    parts: List<string>,
+    holes: List<int>,
+    lo: int,
+}
+
+/// One deferred hole: its tokens and its extent, `${` to `}`.
+type HoleGroup = { tokens: List<Token>, lo: int, hi: int }
+
+/// The scan's state: the tokens so far, the doc-comment bookkeeping,
+/// the context stack, and the quote frames the stack's entries name.
+type Lexing = {
+    src: string,
+    n: int,
+    interpolate: bool,
+    raw: List<Token>,
+    docs: List<DocComment>,
+    pending: List<string>,
+    errors: List<LexError>,
+    stack: List<Ctx>,
+    frames: List<QuoteFrame>,
+    line_comment: bool,
+    line_has_token: bool,
+    i: int,
+}
+
+impl Lexing {
+    mut fn run() {
+        while self.i < self.n {
+            self.noted_comment()
+            if self.hole_opens_here() {
+                self.open_hole()
+            } else {
+                self.step()
+            }
+        }
+        self.closed_at_end()
+    }
+
+    /// One scanner step, routed by what the scanner is inside.
+    mut fn step() {
+        let s = scan_step(self.src, self.n, self.i, self.interpolate)
+        let routed = self.routed(s)
+        if routed.token != null { self.push(routed.token!) }
+        if routed.err != null { self.errors.push(routed.err!) }
+        if routed.opens_hole { self.stack.push(Ctx.StrHole(0)) }
+        self.i = routed.next
+        self.opened_blocks(routed.token)
+    }
+
+    /// A brace steps the innermost context's depth; the `}` at depth
+    /// zero CLOSES it — a string resumes, a quote hole finishes, a
+    /// quote body ends and its deferred holes follow.
+    mut fn routed(s: ScanStep) -> ScanStep {
+        let top: Ctx? = self.stack.last()
+        if top == null || s.token == null || !is_brace(s.token!) { return s }
+        let opens = s.token!.text == "{"
+        match top! {
+            .Body(f) -> {
+                if opens {
+                    self.frame_depth(f, 1)
+                    return s
+                }
+                if self.frames[f].depth > 0 {
+                    self.frame_depth(f, -1)
+                    return s
+                }
+                self.close_quote(s.token!)
+                skip(s.next)
+            },
+            .StrHole(depth) -> {
+                if opens {
+                    self.str_depth(depth + 1)
+                    return s
+                }
+                if depth > 0 {
+                    self.str_depth(depth - 1)
+                    return s
+                }
+                let _ = self.stack.pop()
+                scan_string(self.src, s.next, false, self.interpolate)
+            },
+            .QuoteHole(f) -> {
+                if opens {
+                    self.hole_depth(f, 1)
+                    return s
+                }
+                if self.frames[f].hole_depth > 0 {
+                    self.hole_depth(f, -1)
+                    return s
+                }
+                self.close_hole(f, s.next)
+                skip(self.i)
+            },
+        }
+    }
+
+    // ── contexts ──
+
+    mut fn frame_depth(f: int, by: int) {
+        mut fr = self.frames[f]
+        fr.depth = fr.depth + by
+        self.frames.set(f, fr)
+    }
+
+    mut fn hole_depth(f: int, by: int) {
+        mut fr = self.frames[f]
+        fr.hole_depth = fr.hole_depth + by
+        self.frames.set(f, fr)
+    }
+
+    mut fn str_depth(depth: int) {
+        self.stack.set(self.stack.length - 1, Ctx.StrHole(depth))
+    }
+
+    /// The brace that opened a raw block or a quote body was counted
+    /// against the enclosing context when it was pushed; the block
+    /// consumes its own closer, so the count is undone here.
+    mut fn unopened() {
+        let top: Ctx? = self.stack.last()
+        if top == null { return }
+        match top! {
+            .Body(f) -> self.frame_depth(f, -1),
+            .StrHole(depth) -> self.str_depth(depth - 1),
+            .QuoteHole(f) -> self.hole_depth(f, -1),
+        }
+    }
+
+    /// A `grammar {` body is handed over whole; a `quote {` opens a
+    /// frame whose body is tokenized like any source.
+    mut fn opened_blocks(just: Token?) {
+        if opens_grammar(self.sink(), just) {
+            let body = scan_raw_block(self.src, self.n, self.i, "grammar")
+            if body.token != null { self.push(body.token!) }
+            if body_closed(body) { self.push(brace_at(body.next)) }
+            if body.err != null { self.errors.push(body.err!) }
+            self.i = body.next
+            self.unopened()
+        }
+        if opens_quote(self.sink(), just) {
+            self.unopened()
+            self.frames.push(QuoteFrame { depth: 0, groups: [], count: 0, current: [], hole_depth: 0, hole_lo: 0, assembling: false, parts: [], holes: [], lo: self.i })
+            self.stack.push(Ctx.Body(self.frames.length - 1))
+        }
+    }
+
+    /// Whether a template hole opens here: `${` in code position
+    /// inside a quote.
+    fn hole_opens_here() -> bool {
+        !self.frames.is_empty() && self.i + 1 < self.n && self.src.char_code(self.i) == 36 && self.src.char_code(self.i + 1) == 123
+    }
+
+    /// A hole of the innermost quote opens: a Hole token begins here
+    /// (or continues, after `}${`), taking the name run just emitted
+    /// when it touches the hole.
+    mut fn open_hole() {
+        let f = self.frames.length - 1
+        let top: Ctx? = self.stack.last()
+        if top != null && top! is .QuoteHole {
+            self.errors.push(LexError { message: "a hole inside a hole — splice the inner value first", span: span_of(self.i, self.i + 2) })
+            self.i = self.i + 2
+            return
+        }
+        mut fr = self.frames[f]
+        if !fr.assembling {
+            let touching: Token? = self.touching_name()
+            if touching != null {
+                self.unpushed()
+                fr.parts = [touching!.text]
+                fr.lo = touching!.span.lo
+            } else {
+                fr.parts = [""]
+                fr.lo = self.i
+            }
+            fr.holes = []
+            fr.assembling = true
+        }
+        fr.holes.push(fr.count)
+        fr.count = fr.count + 1
+        fr.current = []
+        fr.hole_depth = 0
+        fr.hole_lo = self.i
+        self.frames.set(f, fr)
+        self.stack.push(Ctx.QuoteHole(f))
+        self.i = self.i + 2
+    }
+
+    /// The name token just emitted, when it ends exactly where the
+    /// hole begins — the run a name-embedded hole continues.
+    fn touching_name() -> Token? {
+        let just: Token? = self.sink().last()
+        if just == null { return null }
+        let t = just!
+        if t.kind == TokenKind.Name && t.span.hi == self.i { t } else { null }
+    }
+
+    /// The hole's `}`: its tokens become a deferred group, the name
+    /// run after it joins the token, and the token is emitted unless
+    /// another hole follows at once.
+    mut fn close_hole(f: int, next: int) {
+        let _ = self.stack.pop()
+        mut fr = self.frames[f]
+        fr.groups.push(HoleGroup { tokens: fr.current, lo: fr.hole_lo, hi: next })
+        fr.current = []
+        let j = scan_while(self.src, self.n, next, is_name_cont)
+        fr.parts.push(self.src.substring(next, j))
+        self.i = j
+        let continues = j + 1 < self.n && self.src.char_code(j) == 36 && self.src.char_code(j + 1) == 123
+        if !continues {
+            fr.assembling = false
+            self.frames.set(f, fr)
+            self.push(token(TokenKind.Hole, placeholder(fr.parts, fr.holes), fr.lo, j))
+            return
+        }
+        self.frames.set(f, fr)
+    }
+
+    /// The body's `}`: the brace, then every deferred hole as its own
+    /// bracketed group, in body order.
+    mut fn close_quote(brace: Token) {
+        let _ = self.stack.pop()
+        let fr = self.frames.pop()
+        self.push(brace)
+        for g in fr.groups {
+            self.push(token(TokenKind.HoleBegin, "\${", g.lo, g.lo + 2))
+            // LICENSED I3: `push` is the sink's verb — it routes each token by context, not a list write
+            for t in g.tokens { self.push(t) }
+            self.push(token(TokenKind.HoleEnd, "}", g.hi - 1, g.hi))
+        }
+    }
+
+    // ── the sink ──
+
+    /// Where a token lands: the innermost open quote hole's group, or
+    /// the stream itself.
+    fn sink() -> List<Token> {
+        let f: int? = self.open_hole_frame()
+        if f == null { return self.raw }
+        self.frames[f!].current
+    }
+
+    fn open_hole_frame() -> int? {
+        mut j = self.stack.length - 1
+        while j >= 0 {
+            let f: int? = match self.stack[j] { .QuoteHole(f) -> f, .Body(_) or .StrHole(_) -> null }
+            if f != null { return f }
+            j = j - 1
+        }
+        null
+    }
+
+    /// One token to its sink, with the doc-comment bookkeeping every
+    /// token pays: a line's first token ends a comment group unless it
+    /// starts a declaration, and a Break ends a line.
+    mut fn push(t: Token) {
+        if t.kind == TokenKind.Break {
+            self.line_has_token = false
+            if !self.pending.is_empty() && !self.line_comment { self.pending = [] }
+            self.line_comment = false
+        } else {
+            if !self.pending.is_empty() {
+                if declaration_start(t) { self.docs.push(DocComment { lines: self.pending, before: t.span.lo }) }
+                self.pending = []
+            }
+            self.line_has_token = true
+            self.line_comment = false
+        }
+        // A hole is single-line: a newline inside one is the missing
+        // `}`, said once, and lexing recovers to the enclosing body.
+        if t.kind == TokenKind.Break && self.in_hole() {
+            self.errors.push(hole_error(t.span.lo))
+            self.left_holes()
+        }
+        let f: int? = self.open_hole_frame()
+        if f == null {
+            self.raw.push(t)
+            return
+        }
+        mut fr = self.frames[f!]
+        fr.current.push(t)
+        self.frames.set(f!, fr)
+    }
+
+    /// The token just pushed, taken back — a name run that a hole
+    /// continues.
+    mut fn unpushed() {
+        let f: int? = self.open_hole_frame()
+        if f == null {
+            let _ = self.raw.pop()
+            return
+        }
+        mut fr = self.frames[f!]
+        let _ = fr.current.pop()
+        self.frames.set(f!, fr)
+    }
+
+    fn in_hole() -> bool {
+        let top: Ctx? = self.stack.last()
+        if top == null { return false }
+        match top! { .Body(_) -> false, .StrHole(_) or .QuoteHole(_) -> true }
+    }
+
+    /// Every open hole abandoned, down to the enclosing body.
+    mut fn left_holes() {
+        while self.in_hole() {
+            let top = self.stack.pop()
+            match top { .QuoteHole(f) -> self.dropped_hole(f), .Body(_) or .StrHole(_) -> nothing_noted() }
+        }
+    }
+
+    mut fn dropped_hole(f: int) {
+        mut fr = self.frames[f]
+        fr.assembling = false
+        fr.current = []
+        self.frames.set(f, fr)
+    }
+
+    /// A `//` comment marks its line; only a `///` at line start is a
+    /// doc line, and only a blank line detaches a group.
+    mut fn noted_comment() {
+        if !line_comment_at(self.src, self.n, self.i) { return }
+        self.line_comment = true
+        if !self.line_has_token && self.i + 2 < self.n && self.src.char_code(self.i + 2) == 47 {
+            self.pending.push(doc_line(self.src, self.n, self.i))
+        }
+    }
+
+    /// What the input ended inside: an open hole or an open quote.
+    mut fn closed_at_end() {
+        if self.in_hole() { self.errors.push(hole_error(self.n)) }
+        for fr in self.frames {
+            self.errors.push(LexError { message: "a `quote` block is never closed", span: span_of(fr.lo, self.n) })
+        }
+    }
+}
+
+fn is_brace(t: Token) -> bool {
+    t.kind == TokenKind.Op && (t.text == "{" || t.text == "}")
 }
 
 /// The unclosed-hole complaint, at `at`.
 fn hole_error(at: int) -> LexError {
     LexError { message: "an interpolation hole is missing its `}`", span: span_of(at, at) }
-}
-
-/// True when the step's token is a brace the open hole owns.
-fn in_hole(holes: List<int>, t: Token?) -> bool {
-    if holes.is_empty() || t == null { return false }
-    let tok = t!
-    tok.kind == TokenKind.Op && (tok.text == "{" || tok.text == "}")
 }
 
 /// Grammar-DSL text: a line break survives only at a rule boundary;

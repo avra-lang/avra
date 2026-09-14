@@ -1,24 +1,61 @@
-//! The raw block's runs and hole expressions -> the Quote node, with
-//! where each run starts kept as a store fact.
-use core.{Expr}
-use features.{LangNode, Builder, zip_defect_of}
+//! The parsed body and the deferred hole expressions -> the Quote
+//! node. The runs of source between holes ride along as the printing
+//! projection; a body of arms takes a lone hole statement as an arm.
+use core.{Expr, Pat, Arm, StmtId}
+use features.{LangNode, Builder, arms_at, zip_defect_of}
+use grammar.{Token}
 
 fn build_quote(mut b: Builder) -> Result<LangNode, string> {
-    let t = b.token(0)?
-    let e = b.store.alloc_expr(Expr.Quote([t.text], []), b.span)
-    b.store.mark_quote_starts(e, [t.span.lo])
+    let open = b.token(0)?
+    let arms = arms_at(b.args, 1)
+    let stmts = b.stmts(2)?
+    let close = b.token(3)?
+    let begins = b.tokens(4)?
+    let holes = b.exprs(5)?
+    let ends = b.tokens(6)?
+    if begins.length != holes.length { return .Err("a hole is empty — `\${e}` takes an expression") }
+    if ends.length != holes.length { return .Err(zip_defect_of("quote holes")) }
+    let parts = runs(b.text, open.span.hi, close.span.lo, begins, ends)
+    if !arms.is_empty() && !stmts.all((s: StmtId) -> b.store.hole_stmt(s) != null) { return .Err("a quote holds arms or statements, not both") }
+    let body_stmts = if arms.is_empty() { stmts } else { [] }
+    let body_arms = if arms.is_empty() { [] } else { merged(b, arms, stmts) }
+    let e = b.store.alloc_expr(Expr.Quote(parts, body_stmts, body_arms, holes), b.span)
+    b.store.mark_quote_at(e)
     .Ok(LangNode.NExpr(e))
 }
 
-fn build_quote_interp(mut b: Builder) -> Result<LangNode, string> {
-    let head = b.token(0)?
-    let first = b.expr(1)?
-    let mids = b.tokens(2)?
-    let rest = b.exprs(3)?
-    let tail = b.token(4)?
-    if mids.length != rest.length { return .Err(zip_defect_of("quote pieces")) }
-    let runs = [head].concat(mids).concat([tail])
-    let e = b.store.alloc_expr(Expr.Quote([r.text for r in runs], [first].concat(rest)), b.span)
-    b.store.mark_quote_starts(e, [r.span.lo for r in runs])
-    .Ok(LangNode.NExpr(e))
+/// The source between the braces, cut at each hole: one run more
+/// than there are holes.
+fn runs(text: string, lo: int, hi: int, begins: List<Token>, ends: List<Token>) -> List<string> {
+    let starts = [lo].concat([t.span.hi for t in ends])
+    let stops = [t.span.lo for t in begins].concat([hi])
+    [text.substring(starts[j], stops[j]) for j in 0..starts.length]
+}
+
+/// Arms and lone hole statements in source order — each hole
+/// statement an arm whose pattern and value are the one hole.
+fn merged(mut b: Builder, arms: List<Arm>, stmts: List<StmtId>) -> List<Arm> {
+    mut out: List<Arm> = []
+    mut i = 0
+    mut j = 0
+    while i < arms.length || j < stmts.length {
+        if j >= stmts.length || (i < arms.length && arm_start(b, arms[i]) <= stmt_start(b, stmts[j])) {
+            out.push(arms[i])
+            i = i + 1
+        } else {
+            out.push(hole_arm(b, stmts[j]))
+            j = j + 1
+        }
+    }
+    out
+}
+
+fn arm_start(b: Builder, a: Arm) -> int { (b.store.pat_span(a.pats[0]))?.lo ?? 0 }
+
+fn stmt_start(b: Builder, s: StmtId) -> int { (b.store.stmt_span(s))?.lo ?? 0 }
+
+fn hole_arm(mut b: Builder, s: StmtId) -> Arm {
+    let value = b.store.answer_of(s)!
+    let name = b.store.ident_name(value) ?? ""
+    Arm { pats: [b.store.alloc_pat(Pat.Bind(name), b.store.stmt_span(s))], value: value }
 }

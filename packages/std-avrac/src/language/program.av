@@ -2,8 +2,8 @@
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
 use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, Variant, Case, TypeRef, flatten}
-use grammar.{Captured, RunOutcome, DocComment, run_grammar, lex_source, lex_diagnostic}
-use features.{LangNode, NodeSemantics, StmtSemantics, PatSemantics, Dispatch, build_named, list_at, stmt_id_at}
+use grammar.{Captured, RunOutcome, DocComment, run_grammar, run_from, lex_source, lex_diagnostic, TokenKind}
+use features.{LangNode, NodeSemantics, StmtSemantics, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at}
 use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
 use features.quote.{QuoteSemantics}
@@ -72,7 +72,7 @@ export fn parse_into(lang: Language, mut store: NodeStore, src: SourceFile) -> P
         return Parsed { store: store, stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
     }
     let lexed = lex_source(src.text)
-    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span)
+    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, src.text)
     let o = run_grammar<LangNode>(lang.syntax!, lexed.tokens, build)
     attach_docs(store, lexed.docs)
     let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics)
@@ -82,6 +82,21 @@ export fn parse_into(lang: Language, mut store: NodeStore, src: SourceFile) -> P
         source: src,
         voices: Voices { list: project_all(engine, src.file, lang.rows.codes) },
     }
+}
+
+/// A type SPELLING (`List<ExprId>?`) as the written type it spells —
+/// the meta contract carries types as their spellings, and a type
+/// hole filled from one reads it with the language's own rule. Null
+/// when the spelling is not a type.
+export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
+    if lang.syntax == null { return null }
+    mut store = new_node_store()
+    let lexed = lex_source(text)
+    if !lexed.errors.is_empty() { return null }
+    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, text)
+    let o = run_from<LangNode>(lang.syntax!, "type", [t for t in lexed.tokens if t.kind != TokenKind.Break], build)
+    if o.result == null || !o.diagnostics.is_empty() { return null }
+    type_ref_at([o.result!], 0)
 }
 
 /// Attach each source-ordered doc group to the nearest statement
