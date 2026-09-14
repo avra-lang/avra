@@ -1178,6 +1178,14 @@ Wants the typer does not carry yet:
   only what the parse tree holds. A computed argument is the ask
   that arrives with quotes (S4); `Records`/`Validates` annotations
   take aggregates today, because they run after resolve.
+- A NULLABLE SCALAR FIELD (`type P = { x: int?, y: int }`): F2008 "a
+  struct field cannot hold this yet" — a scalar pair lives in
+  registers and no slot holds one, so a record cannot carry `int?`
+  (a pointer-riding `string?`, `List<int>?` or a flat record's `Id?`
+  is fine: those are a niche or a one-slot box). Two sites wanted it
+  the same day (a manifest's optional `[lifted]` rows, an attack
+  fixture); the manifest resolves the rows to their defaults at read
+  time instead. Probed at comptime/static, both engines.
 - A GENERIC struct literal's field seat UNIFIES instead of planting a
   want, so a no-argument generic call written there still needs its
   pin (`MatchContext { absent: captured_absent<N>(), … }` inside a

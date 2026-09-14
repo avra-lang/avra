@@ -504,9 +504,26 @@ The check is static and over IR: walk the settlement's units,
 `extern fn` is `World` (the interpreter cannot host it —
 `interp.av:589` already says so).
 
-Budgets: `Machine.budget` decremented per `step`; a memory ceiling
-via the runtime's accounting. Defaults: 10M steps, 256 MiB (the old
-tree's, kept until measured). `[lifted] steps = N` in the manifest.
+Budgets: `Machine.budget` decremented per `step`, and a MEMORY
+ceiling read from the runtime's accounting every 1024 steps — the
+live bytes of the compiler's own heap beyond what stood when the run
+began (`avra_mem_live`, always counted; never a sampler's number).
+Either crossed is F2061, whose help names the manifest row:
+`[lifted] steps = N` (instructions) and `memory = M` (MiB), read by
+language/manifest.av and resolved to the defaults where unwritten.
+
+THE DEFAULTS ARE MEASURED (2026-09-13, comptime/static, `AVRA_DEBUG=1`
+prints one `settle: <unit> steps=<n> bytes=<b>` line per run; the run
+was `avra check --every` over std-avrac and cli — every const and
+every `@derive` the compiler runs on itself — plus every package's
+test module, 164 distinct settlements). The largest: 60,027 steps and
+445,314 bytes, both a 5,000-element const list
+(consts/tests/static_shapes); the compiler's own largest derive is
+3,824 steps (`Eq`), its largest const 4,339 steps / 120,517 bytes
+(`builtin_codes`). Defaults are the maximum times ten, rounded:
+`default_steps = 600000`, `default_memory_mib = 5`
+(features/worklist.av). Re-measure with the same line when a
+settlement is refused at the default and the refusal is not a bug.
 
 `@total` (14.4) is the eventual static answer; the budget is the
 dynamic one and stays as the belt.
@@ -1286,8 +1303,9 @@ quotes keeps the two hard problems apart.
    compiler's own enum derives write; it is neither statement nor
    expression. Ordered choice in the quote body (arm first) is the
    proposal.
-4. **Budget defaults.** 10M steps / 256 MiB are inherited numbers.
-   Measure the compiler's own derives under S4 and set them from that.
+4. **Budget defaults.** MEASURED 2026-09-13 (§4.4): 600,000 steps
+   and 5 MiB, ten times the largest gated settlement; `[lifted]`
+   raises either per package.
 5. **Where diagnostics kinds for user annotations register.** Every
    diagnostic names a registered kind; a package's annotation needs a
    package-namespaced kind (`@myorg/audited: E1`). The registry is

@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Code, Generation, Segment, ArenaMarks, quote_meta, Elsewhere, SettleRoot}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Code, Generation, Segment, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use core.{debug}
@@ -857,7 +857,7 @@ impl Workspace {
         // order choose which body survives.
         let l = self.isolated(f, root, "settling$${name}", seats)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        run_settle(l, settle_steps, dir_of(self.decls.file(f).path))
+        run_settle(l, self.budgets(), dir_of(self.decls.file(f).path))
     }
 
     /// One expression lowered as a program of its own, while every
@@ -872,7 +872,7 @@ impl Workspace {
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
         let l = self.isolated(f, e, expr_symbol(f, e), [])
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        match run_crossed(l, settle_steps, dir_of(self.decls.file(f).path)) {
+        match run_crossed(l, self.budgets(), dir_of(self.decls.file(f).path)) {
             .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)),
             .Err(why) -> .Err(why),
         }
@@ -934,7 +934,7 @@ impl Workspace {
                 .Err(why) -> { return .Err(why) },
             }
         }
-        match run_lifted(l, self.decls.symbol(d), vals, heap, settle_steps) {
+        match run_lifted(l, self.decls.symbol(d), vals, heap, self.budgets()) {
             .Ok(r2) -> .Ok(r2),
             .Err(why) -> .Err(why),
         }
@@ -1832,7 +1832,7 @@ fn is_warning(d: Diag) -> bool {
 // ── The packages ──
 
 fn empty_manifest() -> Manifest {
-    Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], voices: [] }
+    Manifest { budgets: budgets_of(null, null), name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], voices: [] }
 }
 
 impl Workspace {
@@ -1849,6 +1849,12 @@ impl Workspace {
             let text = self.host.read(path)
             Loaded { value: read_manifest(new_source_file(path, text)), fingerprint: fp_str(text) }
         })
+    }
+
+    /// What a settlement may spend: the ROOT package's `[lifted]` rows,
+    /// the measured defaults where it writes none.
+    fn budgets() -> Budgets {
+        self.manifest(0).budgets
     }
 
     fn has_manifest(pkg: Package) -> bool {
@@ -2027,7 +2033,6 @@ fn unpackaged_use(at: Loc?) -> Diag {
 }
 
 /// The instructions one settlement may run before it is refused.
-const settle_steps: int = 10000000
 
 /// An annotation answer's structural fingerprint for early cutoff.
 fn lift_hash(r: LiftResult) -> int {

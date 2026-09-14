@@ -185,4 +185,23 @@ spec "language/packages" {
             answered(ws.program("/w/src/main.av")) == "1 2"
         }
     }
+    given "[lifted] budgets" {
+        then "a settlement past the manifest's steps is refused, and the refusal names the row" {
+            let ws = with_two("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[lifted]\nsteps = 500\n",
+                              "/w/src/main.av", "fn spin() -> int {\n    mut i = 0\n    while i < 1000 { i = i + 1 }\n    i\n}\nconst N = spin()\nN\n")
+            let report = answered(ws.program("/w/src/main.av"))
+            report.contains("error[F2061]") && report.contains("took more than 500 steps") && report.contains("raise `[lifted] steps")
+        }
+        then "a settlement past the manifest's memory is refused in bytes" {
+            let ws = with_two("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[lifted]\nmemory = 1\n",
+                              "/w/src/main.av", "fn heavy() -> List<int> {\n    [i for i in 0..300000]\n}\nconst H = heavy()\nH.length\n")
+            let report = answered(ws.program("/w/src/main.av"))
+            report.contains("error[F2061]") && report.contains("held more than 1048576 bytes")
+        }
+        then "within both, the const settles" {
+            let ws = with_two("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[lifted]\nsteps = 100000\nmemory = 1\n",
+                              "/w/src/main.av", "fn spin() -> int {\n    mut i = 0\n    while i < 1000 { i = i + 1 }\n    i\n}\nconst N = spin()\nN\n")
+            answered(ws.program("/w/src/main.av")) == "1000"
+        }
+    }
 }

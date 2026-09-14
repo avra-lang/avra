@@ -19,6 +19,30 @@ export type SeatValue = { index: int, fp: string, ty: TypeId, value: MetaVal, he
 /// it is generic, named by its symbol or mangling, in its file.
 export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, seats: List<SeatValue> = [], root: ExprId? = null }
 
+/// What a settlement may spend: instructions, and bytes of the
+/// compiler's own heap it holds. The defaults are MEASURED — the
+/// largest settlement in the compiler's derives and every gated
+/// program, times ten (design §4.4 names the run) — and a package
+/// raises either under `[lifted]` in its manifest.
+export type Budgets = { steps: int, bytes: int }
+
+export const default_steps: int = 600000
+export const default_memory_mib: int = 5
+
+export fn budgets_of(steps: int?, memory_mib: int?) -> Budgets {
+    Budgets { steps: steps ?? default_steps, bytes: bytes_of_mib(memory_mib ?? default_memory_mib) }
+}
+
+/// MiB as bytes, SATURATING: a count past what bytes can hold means
+/// no ceiling, never a wrapped one that refuses everything.
+fn bytes_of_mib(mib: int) -> int {
+    if mib > mib_ceiling { return mib_ceiling * 1048576 }
+    mib * 1048576
+}
+
+/// The most MiB a byte count holds.
+const mib_ceiling: int = 8796093022207
+
 /// Why a const did not SETTLE — three laws, each its own voice: the
 /// value reached the world, ran past its budget, or trapped. And
 /// `Spoken`: an earlier read already said so, and this one is silent.

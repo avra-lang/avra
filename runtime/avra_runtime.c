@@ -307,7 +307,17 @@ static void acc_settled(void) {
 
 static inline int accounting(void) { return g_acc_on; }
 
+// EVERY BOX AND BUFFER ALIVE, in bytes, counted whether or not the
+// report is on: a settlement's memory ceiling reads it, so it is
+// never a guess and never a sampler's number. Measured free: the add
+// sits in bodies that call malloc or free and already keep a frame,
+// and `check packages/std-avrac` timed the same with it gated.
+static int64_t g_live_bytes = 0;
+
+int64_t avra_mem_live(void) { return g_live_bytes; }
+
 static void acc_add(int k, int64_t bytes) {
+    g_live_bytes += bytes;
     if (!accounting()) return;
     g_acc_live[k] += bytes;
     g_acc_total_live += bytes;

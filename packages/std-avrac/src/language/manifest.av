@@ -6,6 +6,7 @@
 //! file's words.
 use core.{span_of, joined, is_package_key, is_name_word, is_digit, all_codes, Span}
 use @std.toml.{TomlDoc, TomlValue, TomlEntry, TomlHeader, parse_toml, toml_text, toml_field}
+use features.{Budgets, budgets_of}
 use diagnostics.{SourceFile, Diag, refusal, warning, loc_at}
 use @std.errors.{Loc}
 
@@ -32,7 +33,10 @@ export type ToolRow = { name: string, from: Provenance, var: string?, default: s
 /// `deps_at` is where a new dependency line goes: after the last
 /// one, else after the `[dependencies]` header, else absent (the
 /// file has no such section yet).
-export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, search: List<string>, libs: List<string>, raw: List<string>, tools: List<ToolRow> = [], voices: List<Diag> }
+/// `budgets` is what a settlement may spend — `[lifted]`'s `steps` in
+/// instructions and `memory` in MiB of the compiler's heap, resolved
+/// to the measured defaults where the manifest writes none.
+export type Manifest = { name: string, version: string, bin: string?, lib: string?, deps: List<Dependency>, deps_at: Span?, excludes: List<string>, objects: List<string>, search: List<string>, libs: List<string>, raw: List<string>, tools: List<ToolRow> = [], budgets: Budgets, voices: List<Diag> }
 
 /// A reader over one document: the source for positions, the
 /// document, and what it has said so far.
@@ -44,7 +48,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
     r.unknowns()
     if !r.doc.has_section("package") {
         r.speak(refusal("manifest.no_package", r.at(0, 0), "a manifest declares its package — `[package]` is missing", "this manifest", "add `[package]` with `name` and `version`"))
-        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], voices: r.voices }
+        return Manifest { name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], budgets: budgets_of(null, null), voices: r.voices }
     }
     let name = r.word("name", "manifest.no_name", "a name — `name = \"@scope/name\"`")
     let version = r.word("version", "manifest.no_version", "a version — `version = \"0.1.0\"`")
@@ -59,6 +63,7 @@ export fn read_manifest(src: SourceFile) -> Manifest {
         deps: r.dependencies("dependencies", false, name).concat(r.dependencies("dev-dependencies", true, name)),
         deps_at: r.deps_at(),
         tools: r.tools(),
+        budgets: budgets_of(r.budget("steps"), r.budget("memory")),
         voices: r.voices,
     }
 }
@@ -84,7 +89,7 @@ fn is_number(s: string) -> bool {
 /// The sections a manifest may hold, and the keys each takes.
 fn known_section(name: string) -> bool {
     name == "package" || name == "bin" || name == "lib" || name == "dependencies" || name == "dev-dependencies" ||
-        name == "features" || name == "build" || name == "link" || name == "link.raw" || name.starts_with("profile.") || is_process_section(name)
+        name == "features" || name == "build" || name == "link" || name == "link.raw" || name == "lifted" || name.starts_with("profile.") || is_process_section(name)
 }
 
 /// `[process]` and what hangs off it: the tools, each inline or as
@@ -102,6 +107,7 @@ fn known_key(section: string, key: string) -> bool {
     if section == "bin" || section == "lib" { return key == "path" || key == "name" }
     if section == "link" { return key == "objects" || key == "search" || key == "libs" }
     if section == "link.raw" { return key == "flags" }
+    if section == "lifted" { return key == "steps" || key == "memory" }
     if section.starts_with("profile.") { return ["opt_level", "debug", "overflow_checks", "incremental", "coverage"].contains(key) }
     if section == "process" { return key == "max_capture" || key == "enforce" }
     if section == "process.env" { return key == "base" || key == "pass" || key == "set" }
@@ -247,6 +253,17 @@ impl Reader {
         if row.from is .Env && row.var == null { self.speak(refusal("manifest.tool_env_var", row.at, "`${row.name}` comes from the environment and names no `var`", "here", "add `var = \"CC\"`")) }
         if row.from is .Abs && row.at_path == null { self.speak(refusal("manifest.tool_abs_at", row.at, "`${row.name}` is an absolute tool and names no `at`", "here", "add `at = \"/usr/bin/…\"`")) }
         row
+    }
+
+    /// A `[lifted]` row: a count of at least one, or absent. Anything
+    /// else is refused and read as absent — the default, never zero.
+    fn budget(key: string) -> int? {
+        let e: TomlEntry? = self.doc.entry("lifted", key)
+        if e == null { return null }
+        let n: int? = match e!.value { .Int(v) -> v, .Str(_) or .Bool(_) or .Strs(_) or .Table(_) -> null }
+        if n != null && n! >= 1 { return n }
+        self.speak(refusal("manifest.bad_budget", self.entry_at(e!), "`[lifted] ${key}` is a count of at least 1", "here", "`steps = 600000` counts instructions; `memory = 5` counts MiB of the compiler's heap"))
+        null
     }
 
     /// A target's entry path: the written one, the section's
