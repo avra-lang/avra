@@ -53,7 +53,15 @@ fn checked_fn(mut cx: TypeCx, s: StmtId, fname: string, fret: TypeRef, body: Exp
     cx.walk_under(s, body)
     let want: TypeId = sig?.ret ?? cx.error_type
     let got: TypeId = cx.type_at(body)
-    if !cx.accepts(body, want) { body_disagrees(cx, body, fname, fret, got) }
+    // a body that did not parse has spoken already; its answer is
+    // whatever the hole left, not a second mistake
+    if !cx.accepts(body, want) && !holds_error(cx, body) { body_disagrees(cx, body, fname, fret, got) }
+}
+
+/// Whether a body's statements hold a parse recovery.
+fn holds_error(cx: TypeCx, body: ExprId) -> bool {
+    let stmts: List<StmtId> = match cx.view.store.expr(body) { .Block(ss, _) -> ss, _ -> [] }
+    stmts.any((s: StmtId) -> cx.view.store.stmt(s) is .Error)
 }
 
 fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
