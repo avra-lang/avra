@@ -13569,3 +13569,57 @@ lanes' trees; this tree at the merge points only.
   name the CONTRACT it protects; two spec assertions changed because
   the mechanism moved (a refusal's seat words, a parse error now at
   the library) and were reported, not hidden.
+
+## Feedback survey — 2026-09-14 #9 (TOOLCHAIN, `avra staged` retired — PR #8)
+
+Counted per axis: friction 3, sugar 0, features 0, defects 0,
+doctrine 1, performance 1, process 1. The top three by cost: the
+build lock's queue (a step launched first waits behind steps launched
+later), a scratch probe that cannot print, and a one-file test that
+compiles its whole package. Not surveyed: any tree but
+../avra-lane-a at 12738f7 + this slice.
+
+### FRICTION — what cost time
+
+- **THE LOCK'S QUEUE IS NOT A QUEUE.** A one-file test launched at
+  14:45 was still waiting at 14:57 while a `make avra` launched at
+  14:53 held the lock: `watch.sh` polls, so whoever polls at the
+  right moment wins, and a long waiter can starve. Cost: the test was
+  killed and the whole suite run instead. EVIDENCE: `ps` at 14:57
+  listed five `watch.sh` waiters and the 14:53 holder. THE ASK: a
+  ticket — the lock directory holds a queue file, and a waiter takes
+  the lock only when its ticket is the lowest.
+- **A PROBE CANNOT PRINT.** The laziness of `??` was probed by a
+  TRAP on the right side, because a scratch file has no `println`
+  (F3000 "no `fn println` is defined") and its shown value is one
+  expression. CONFIRMS avra-3qg3 (the prelude); this is its wanting
+  site outside the tree's tests.
+- **ONE FILE'S CASES COST THE PACKAGE'S COMPILE.** `avra test
+  <file>` in `@std/avrac` compiles the whole package to run five
+  cases — the same cost as the whole suite (peak 462 MB, watch), so
+  the suite is the cheaper receipt and the per-file form buys
+  nothing. THE ASK: a per-file test compiles the file's module
+  closure, not the package's.
+
+### DOCTRINE
+
+- **THE CLI RULE NAMED ONLY COMMANDS.** CLAUDE.md's CLI rule read
+  "main.av only composes the list", and the entry now also hands off
+  before the app runs. AMENDED in this slice, in the same paragraph.
+
+### PERFORMANCE
+
+- **A GATE PEAKS AT ~740 MB, NOT 0.3 GB.** Every gate and `make avra`
+  in this slice peaked between 712 and 791 MB under `watch.sh`
+  (bootstrap 712, `make avra` 745/789/791, gate 744/738) at
+  12738f7. CLAUDE.md's "a gate is ~0.3 GB" and `watch.sh`'s header
+  describe an older tree; the number is worth re-measuring by whoever
+  next reads a peak as a regression.
+
+### PROCESS
+
+- **A PIPE'S EXIT IS THE LAST COMMAND'S.** Two red-team rounds read
+  `./avra … | head -1; echo $?` as the compiler's exit and recorded
+  0 for a refusal that exits 2. The truncating-probe law one step
+  over: record an exit code with no pipe on the line, and the words
+  from a second run.
