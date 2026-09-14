@@ -378,7 +378,15 @@ engine's spec, written by dogfooding.
   and read as "no fn declared in this package" for a fn declared
   right there. The caller's directory is `AVRA_CWD`, exported by the
   shim before it moves; a command that reads the package it stands in
-  roots at `here()` (cli/commands/shared.av), never at ".". AND A
+  roots at `here()` (cli/commands/shared.av), never at ".", and EVERY
+  PATH ARGUMENT is rooted there too, ABSOLUTELY (`rooted`) — a
+  relative one read where the tree stands found nothing from another
+  directory, and read from a package's own root it walked past the
+  `avra.toml` at `.`; one absolute spelling serves both. AND THE
+  SHIM'S HEAVINESS TEST SKIPS THE SUBCOMMAND WORD: `build/` is a
+  directory at the tree's root, so every `avra build <file>` queued
+  on the machine lock as a package-scale run until the loop learned
+  to start at the second word. AND A
   PACKAGE IS NAMED BY ONE VERB: a root module carries no package
   prefix, so `package_of_module` answered "" for the root while the
   manifest named it — `Decls.package_named` answers the root's
@@ -660,6 +668,22 @@ engine's spec, written by dogfooding.
   near-miss rather than counting it as a pass is what separates a
   red team from a demo. (That accident was the pre-f57372a `==`; the
   lossy half it relied on is gone, and the near-miss lesson is not.)
+- `@std/*` IS THE TOOLCHAIN'S, NOT THE MANIFEST'S. A `use @std.x` needs
+  no dependency row: the CLI's disk host names a std root found from
+  the binary's own directory (`<self>/../packages` in a checkout,
+  `<self>/../lib/avra/std` under `make install`), and the workspace
+  admits `@std/x` from `<std_root>/std-x` the first time a `use`
+  reaches for it — `reaches` is the ONE door, F3013 is what it still
+  says for a key the toolchain does not carry. A row that names a std
+  package is a PIN and wins for the whole graph. The old blocker —
+  one directory under two spellings refusing as F4014 — is paid in
+  `admitted`, which compares `host.absolute(...)` of both roots.
+  RECORDED TRIGGER: the compiler's own manifests (`packages/std-*`,
+  `packages/cli`) still declare their `@std/*` rows, and must, until
+  `make seed` on main carries this resolver — the committed seed
+  compiles HEAD in `seed-check`, and a seed that predates the door
+  cannot read a manifest with no rows. Strip them in the slice after
+  that refresh, and the pin law holds across the tree.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
