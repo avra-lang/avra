@@ -96,9 +96,10 @@ source and refuses a repeated number.
   POINT (`lower(a: Analysis)`, `memory(l: Lowered)`) keeps the one
   standard signature and is not a verb.
 - A long fn splits at its PHASE boundaries into named helpers, each
-  with a one-line contract (`match_seq` matches, `built` builds;
-  `printed_value` dispatches, `bool_word` branches). If a fn needs
-  a paragraph comment mid-body, that paragraph is a helper's name.
+  with a one-line contract (`match_seq` matches, `built` builds —
+  grammar/executor.av; `window` frames, `severity_word` branches —
+  diagnostics/render.av). If a fn needs a paragraph comment
+  mid-body, that paragraph is a helper's name.
 - A LAW never assembles PROSE: every refusal is a NAMED VOICE fn
   (its whole body the one `spoken`/`emit`), in a voices section at
   the file's tail or shared where features share words. Rule
