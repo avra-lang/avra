@@ -15,11 +15,14 @@ export LLVM_PREFIX
 
 RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 
-# Every package that carries spec cases, in dependency order.
-SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-meta packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite
+# Every package that carries tests, in dependency order — DERIVED from
+# the manifests (tools/suites.py), never listed: a hand-kept list is a
+# registry that forgets its next member, and the gate would report
+# green over a suite it never ran. `suites` is the keeper that speaks.
+SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: census traps test tested clean seed-check gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed recover bootstrap \
-        check run ir emit build-native native-check avra
+        check run ir emit build-native native-check avra suites
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -81,7 +84,7 @@ sweep:
 	@find packages -type d -name build -prune -exec rm -rf {} +
 	@rm -rf build/test_shards
 
-test: $(RUNTIME_OBJS) build/sqlite3.o build/sqlite_sentinel.o
+test: $(RUNTIME_OBJS) build/sqlite3.o build/sqlite_sentinel.o suites
 	@for p in $(SUITES); do \
 	  ./avra test $$p || exit 1; \
 	done
@@ -179,6 +182,12 @@ emit: $(RUNTIME_OBJS)
 
 build-native: $(RUNTIME_OBJS)
 	@./avra build $(FILE)
+
+# The suites, derived and counted: a cycle or a dependency that is no
+# package refuses here, before a silent empty list runs nothing.
+suites:
+	@python3 tools/suites.py --self-test
+	@python3 tools/suites.py --report
 
 # The idiom bar: the baseline LISTS sites and only ever shrinks —
 # `idioms-accept` prunes what is fixed and can never add. A new
