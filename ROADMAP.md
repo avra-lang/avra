@@ -6694,6 +6694,135 @@ additions get siblings, nothing changes shape:
       to localize, or at the next pass added, whichever comes first.
       Evidence: ROADMAP "Feedback survey — 2026-09-11".
 
+## Feedback survey — 2026-09-14 #2 (CROSSING, phase B of the perfect compiler)
+
+One slice on 12738f7 (lane/comptime): the META CROSSING COLLAPSE —
+the compiler's mirrors of `@std/meta`'s records deleted, the package's
+own types imported and used NATIVELY, every value crossing by SLOT
+ORDER, and ONE boundary check holding the loaded package to the
+shapes this compiler was built against. Merged with phase H
+(7047d00, side tables) before the final gate. Gate green (2514/2514
+spec cases, 125 programs proved), idioms debt 0, fixed point
+byte-identical, seed refreshed, `avra expand` byte-identical over
+nodes.av, contract.av, protocol.av, projections.av and the derive
+program test. Everything below was met writing it; no other lane's
+tree was read.
+
+### FRICTION — what cost time
+
+- **A FAILED `use` ACCUSES THE OPERATOR.** A dependency path typo in
+  a probe package made `@std.meta` unreachable, and the FIRST errors
+  printed were three copies of "`+` needs `int` operands, found
+  `string`" pointing at a string concatenation four lines below the
+  failing import. Ten minutes went into "does `+` concatenate?" (it
+  does — probed, /tmp/avra-probes/plus.av). THE ASK: an expression
+  whose operand is `<error>` should not reach the operator laws;
+  the cascade is what the `errored(e)` guard exists for, and the
+  binary operator rule does not ask it.
+- **A SPEC CASE THAT BUILDS A `Program` CANNOT SHOW ITS REPORT.**
+  Twelve new cases went red at once with no way to see what the
+  compiler said; the whole debug loop moved to a hand-built package
+  under /tmp and `avra check` by absolute path. This is the PREVIOUS
+  survey's first entry firing again, in a different suite — it is
+  now the top friction item two slices running.
+- **`bare` IS A RESERVED WORD**, and the fixture that used it as a
+  test verb reported only "case failed". Cheap once seen from the
+  CLI, invisible from the suite. Same root cause as the entry above.
+- **THE BUILD LOCK IS THE SLICE'S CRITICAL PATH.** With a sibling
+  worker in another worktree, a `make gate` queued behind a `make
+  census` behind a `make avra`; single runs waited 5-12 minutes to
+  START. Nothing to fix in the tool — the lock is doing its job —
+  but it is why this slice's wall time is builds, not thinking.
+
+### SUGAR — a construct the language should have
+
+- **A DERIVE A CONSUMER CAN ASK FOR ON A FOREIGN DECLARATION.** The
+  honest shape for this slice was `@derive(Crossing)` on each
+  `@std/meta` record, generating the slot reader and writer from the
+  declaration — impossible, because the annotation lives AT the
+  declaration and `@std/meta` cannot depend on the compiler that
+  crosses it. WANTING SITE: `features/crossing.av`'s fourteen
+  hand-written record rows and eight `Node` readers, every one of
+  which a derive could write. THE ASK: an annotation applicable at
+  the IMPORT (`use @std.meta.{Directive} @derive(Crossing)`), or a
+  trait a consumer may implement for a foreign type BY DERIVE.
+- **A PAIRED COMPREHENSION**, again: `[f(j, x) for j, x in xs]`. The
+  boundary check's `first_difference` wants exactly this and got a
+  filtered index comprehension instead.
+
+### FEATURES — a capability, larger than sugar
+
+- **A TYPED `Kind` IN `@std/meta`** (the task master's B2, not
+  landed here). `Field.ty`, `Param.ty`, `Variant.payload` and
+  `Fn.answer` are SPELLINGS; phase H's derived fingerprints need a
+  type value. The slice is real but it is TWO commits, and the
+  reason is this slice: see the doctrine entry below.
+
+### DEFECTS — found, with a repro
+
+- **A HOLE IN A NON-FINAL DECLARATION OF A MULTI-DECLARATION
+  TEMPLATE DEFECTS.** `quote { fn a() -> int { ${literal("x")}.length }
+  fn b() -> int { 7 } }` answers `error[F0900]: defect: a property
+  without a row survived typing`; the SAME hole in the LAST
+  declaration compiles and runs. PRE-EXISTING — `build/avra.pre`
+  (the binary before this slice) reproduces it exactly. Found by the
+  crossing red team; `features/tests/crossing/provider/src/provider.av`
+  holds the working (hole-last) form, so a fix has its fixture one
+  edit away. Not pinned as a test: a defect is not behaviour to
+  freeze.
+
+### DOCTRINE — a law this slice paid for
+
+- **THE PRICE OF A BOUNDARY CHECK IS A LADDER.** A check that holds
+  the loaded package to the shapes the compiler was BUILT against
+  cannot let those shapes move in one generation: the standing
+  binary carries the old rows and refuses the new package while
+  compiling it, so the first `make avra` fails and there is no
+  product that agrees with the tree. Every future change to a
+  crossed `@std/meta` shape is therefore TWO commits — (1) the
+  compiler alone, with `meta_disagreement` answering null, gated;
+  (2) the package's shape moved, the rows updated and the door
+  restored, built by (1)'s product, gated, then `make avra` again
+  for the fixed point. This is the stub-then-restore ladder
+  docs/2026_09_13_PARSED_TEMPLATES.md §11 prescribes, arriving one
+  layer down. Written at `features/crossing.av`'s module doc, where
+  the next person to move a shape will read it.
+- **A GENERIC CROSSING IS NOT WRITABLE IN THIS LANGUAGE, AND THE
+  REGISTRY ROW IS WHAT REPLACES IT.** `from_evaluator(v, heap, ty)
+  -> Native?` needs runtime reflection: a native value of a
+  dynamically-named type cannot be constructed without an unsafe
+  cast, and a tagged `Native` union is the parallel Value enum the
+  doctrine already refuses. What IS one fold each way is the ORDER:
+  `node_readers` carries each variant's name, payload count and
+  reader in ONE row, the boundary check reads the names off it and
+  the writer takes its tag from it, so no second spelling of the
+  order exists. Landed as DOGFOODING I44 (I43 went to phase H the same day — the
+  duplicate-number trap CLAUDE.md names, caught by reading the other
+  lane's `tools/idioms.py` before renumbering).
+
+### PERFORMANCE
+
+- Census over `check packages/std-avrac`, both runs on this tree at
+  12738f7, the slice stashed and popped between them:
+
+      before  5,656,218,027 retains  5,845,075,514 releases
+              792,873,753 list reads  8,681,313,373 list writes
+      after   5,726,678,907 retains  5,916,392,664 releases
+              796,162,165 list reads  8,801,652,352 list writes
+
+  +1.25% retains, +1.22% releases, +0.41% list reads, +1.39% list
+  writes. WHAT WAS MEASURED, AND WHAT IT DOES NOT SAY: the measured
+  input is `packages/std-avrac` itself, and this slice ADDS 471 lines
+  of source to that package (`features/crossing.av` and its suite),
+  so the compiler in the "after" run parses and types more than the
+  one in the "before" run. The delta is therefore an upper bound on
+  the slice's cost and is consistent with the added source; isolating
+  it would need a census over a package the slice did not touch,
+  which is two more instrumented builds and was not run. The crossing
+  itself is off every hot path — once per annotation, once per
+  directive — and the readers it replaced copied every crossed value
+  into a mirror.
+
 ## Feedback survey — 2026-09-14 (NAMED TYPES, comptime/types)
 
 One slice on 9d0f331: `type Name = Shape` — a DISTINCT named type

@@ -675,6 +675,22 @@ reintroducing I3's blind spot names the two spellings it lost.
       on the owner (`type_at(e: ExprId)`), which is where every
       reader already goes.
 
+- I44 (unratcheted) A POSITIONAL BOUNDARY SPELLS ITS ORDER ONCE — a
+      value crossing between two compilations of the same
+      declaration travels by SLOT, so the order is a REGISTRY ROW
+      carrying the name, the payload count and the reader together
+      (`node_readers`, `features/crossing.av`), and the writer takes
+      its tag from that same list. THE SMELL: a reader that matches
+      slot names as STRINGS, a writer that spells literal tags, or a
+      check that lists the expected order in a second place — each is
+      the order written twice, and the two spellings part silently
+      the day the other side moves a field. The row is what makes the
+      boundary check and the dispatch ONE fact. Not ratcheted: no
+      grep tells a boundary registry from any other list of rows; the
+      keeper is the boundary check itself, whose fixtures move each
+      shape and demand the refusal name it.
+
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is

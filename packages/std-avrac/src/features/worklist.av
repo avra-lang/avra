@@ -161,47 +161,6 @@ impl MetaHeap {
     }
 }
 
-/// What a lifted call SAID about a declaration: one diagnostic, in
-/// the annotation's own words, at the place it chose. A WARNING is
-/// the declaration's word for its users, kept and spoken at each use.
-export type Said = { message: string, help: string?, at: Loc?, warning: bool, kind: string? = null }
-
-/// A DIRECTIVE a Declares annotation asked the compiler to fulfil —
-/// a fn's wrapped twin, an impl's projection. The compiler's own
-/// view of the crossing: `@std/meta`'s spellable `Directive` ships
-/// the same fields; the materializer mints a twin from them. (NOT
-/// `Decl` — that is the compiler's own declaration record.)
-export type Directive = { twin: string, name: string, at: Loc?, source: Generated }
-
-/// WHAT A DIRECTIVE'S `source` CROSSED AS. Absence and failure are
-/// DIFFERENT VALUES and `Node?` spent one on both: a directive that
-/// declares no source and one whose source this compiler cannot read
-/// answered alike, and the second generated nothing with nobody told.
-export enum Generated {
-    /// the directive asks for no declarations
-    None
-    Made(node: Node)
-    /// the value is there and this compiler cannot read it — the two
-    /// `Node` enums agree by the VARIANT'S NAME, so a name it does
-    /// not mirror is an `@std/meta` it was not built against
-    Foreign
-}
-
-/// Generated code as a tree — the compiler's view of `@std.meta.Node`,
-/// variant for variant. A `Template` names a quote (the file that
-/// wrote it, the offset it starts at) and carries its fills; the
-/// body is that quote's own, in that file's store.
-export enum Node {
-    Template(file: string, at: int, parts: List<string>, fills: List<Node>)
-    Name(text: string)
-    Text(text: string)
-    Int(value: int)
-    Float(bits: int)
-    Bool(value: bool)
-    Interp(parts: List<string>, holes: List<Node>)
-    Many(items: List<Node>)
-}
-
 /// Where a generated node was WRITTEN: in the file it stands in (a
 /// hole's fill, a hole-named node) or in the file whose template it
 /// was copied from.
@@ -252,14 +211,6 @@ impl ArenaMarks {
 /// occupy and the annotation that asked for it. Where each node was
 /// WRITTEN is the node's own fact (`Decls.origin_of`).
 export type Generation = { exprs: IndexRange, stmts: IndexRange, pats: IndexRange, at: Span? }
-
-/// A record under a seat: one slot per field, in the seat's own
-/// order, filled by NAME from a keyed map — the one WRITE across the
-/// meta boundary; absence for a name the map does not carry. The
-/// reader (`field_of`) agrees by the name, never by a position.
-export fn meta_row(heap: MetaHeap, shape: StructSig, filled: Map<string, MetaVal>) -> MetaVal {
-    heap.node([filled.get(n) ?? MetaVal.Absent for n in shape.names])
-}
 
 /// Where a generated declaration came from — the annotation fn that
 /// asked for it, the declaration it wraps, the annotation's site, and

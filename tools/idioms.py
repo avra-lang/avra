@@ -514,6 +514,11 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "I44": "no grep tells a BOUNDARY registry from any other list of rows, and a\n"
+           "           reader that spells slot names or a writer that spells literal tags\n"
+           "           reads as ordinary code. The keeper is the boundary check itself:\n"
+           "           crossing_test.av moves each crossed shape and demands the refusal\n"
+           "           name the one that moved",
     "I42": "no grep tells a READ site from a SEAT site — `shape_at` is correct at\n"
            "           one and a defect at the other, and both spellings live beside each\n"
            "           other in the same file. The keeper is the adversarial suite:\n"
