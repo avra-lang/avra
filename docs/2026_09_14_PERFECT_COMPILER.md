@@ -162,6 +162,103 @@ lint I13 "the same projection computed twice on one line" {
 
 Keepers become programs over the real tree; `make gate` is `avra lint`.
 
+## 10. Beyond the projections — the machinery around the model
+
+Sections 1–9 derive projections OF the model. These derive the
+machinery AROUND it, and each names the bug class this branch already
+paid for by keeping that machinery by hand.
+
+### 10.1 Side tables declared, not hand-sized
+
+```avra
+export type TypeFacts = {
+    of_expr: SideTable<ExprId, TypeId>,
+    captures: SideTable<ExprId, Cap?>,
+}
+```
+
+Storage, growth and the "unminted id" defect derive from the KEY type.
+KILLS: "a table sized before the arena grew" — twice on this branch
+(`resolved` materializing expansions ahead of the resolver's tables;
+the names test's fill order).
+
+### 10.2 Queries declared, result hashes derived
+
+```avra
+query sig(d: DeclId) -> DeclSig?  { … }      // memo family, deps tracked by the kernel
+```
+
+The result's hash is the `Fingerprint` derive over the result TYPE;
+no family writes `sig_hash`/`program_hash`/`fp(31, …)` again. KILLS:
+two of the seven fingerprint collisions (an enum sig spliced flat, a
+named type's sig hash the constant `1`) and the receivers family's
+flat bit list.
+
+### 10.3 Ownership roles on instructions
+
+```avra
+export enum Ins {
+    Pack(@owns dst: Reg, parts: List<Reg>)
+    Extract(@view dst: Reg, subject: Reg, slot: int)
+    Call(@owns dst: Reg, @symbol callee: string, @moves args: List<Reg>)
+}
+```
+
+`managed_dst`, `view_of`, `retained_args` derive from the marks; the
+memory pass READS the IR's declaration instead of holding a second
+opinion. KILLS: the double release at the identity pack (two hand
+lists disagreed on whether `Pack` owns).
+
+### 10.4 Attacks derived from the grammar
+
+`avra attack <feature>` generates the red team's mechanical classes —
+degenerate shapes (N = 0, 1, max of every repeated capture), every
+slot every wrong type (from the type model), malformed surface (delete,
+duplicate, swap, keyword-replace each token) — deterministically from
+the feature's rule and the model, and pins them as
+`<feature>_adversarial_test.av`. A person writes only the semantic
+attacks. KILLS: the survivors every red team on this branch found in
+class 2/3 by hand (a `bool` fitting a NAME seat; `${}` empty hole).
+
+### 10.5 Three hole-bearing blocks become one
+
+`"a ${x} b"`, `quote { … }` and `sql { … }` are ONE shape: a body owned
+by a named grammar, with holes — string interpolation is the `text`
+sublanguage. One node (`Block(word, parts, holes)`), one lexer path,
+one hole law; the string case lowers to the `join` it lowers to today.
+KILLS: the three lexer paths whose brace and hole accounting diverged
+(a raw body in a hole never closing; the closer never counted).
+
+### 10.6 The runtime row is the whole binding
+
+One `rt_sigs` row generates the C prototype (§7), the LLVM declaration
+AND the evaluator's call binding. KILLS: `tools/externs.py` and the two
+link sites a hand list let drift.
+
+### 10.7 A diagnostic knows where it points
+
+```avra
+"type.quote_hole" | "F2075" | at: hole | "a hole in ${seat} position takes ${takes}" | …
+```
+
+The row names the payload it blames; the location is a mark, homing
+applies by construction. KILLS: a voice passing the wrong `loc_of`,
+and the span-outside-its-text trap (a Loc built with the wrong file).
+
+### 10.8 The reference manual is a projection
+
+`avra doc`: grammar rules → the syntax reference; the diagnostics
+tables → the error index; `rt_sigs` → the runtime reference; each
+feature's `docs =` → its chapter; `///` → every export. Nothing is
+written twice; the docs campaign's "docs as a compile target".
+
+### The "not simpler" line
+
+Written by hand, always: the evaluator, the memory pass's meaning, the
+backend, the type rules, the lowering, the grammar's words, the words
+in a diagnostic, the runtime C. Each is a DECISION. Everything else is
+the model looked at from another side.
+
 ## Performance
 
 No runtime cost: derived code is generated Avra compiled like the hand
@@ -181,5 +278,9 @@ time cost is the derives, measured per settlement by the budget slice.
 | E | type-shape marks, IR roles, dispatch by ownership (§4–6) | 3 days |
 | F | keepers in Avra (§9) | 1 week |
 | G | C header from the runtime rows (§7); diagnostics as rows (§8) | 2 days |
+| H | side tables + queries declared (§10.1–2) | 3 days |
+| I | ownership roles on Ins (§10.3) | 2 days |
+| J | one hole-bearing block (§10.5) | 3 days, after D |
+| K | `avra attack` (§10.4), `avra doc` (§10.8), the whole binding (§10.6), diagnostics' `at` (§10.7) | 1 week |
 
-B, C, E, G are independent; D and F run alone.
+B, C, E, G, H, I are independent; D, F, J run alone.
