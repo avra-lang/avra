@@ -201,6 +201,28 @@ spec "features/consts (adversarial)" {
             shown("fn f() -> int { 3 }\nconst A: int = f()\nfn twice() -> int { A * 2 }\nconst B: int = twice()\nB") == "6"
         }
     }
+    given "a run-time read hidden in a branch" {
+        then "a const reading a parameter inside an `if` branch is refused F2074, never a defect" {
+            let src = "fn g(n: int) -> int {\n    const C = if true { n } else { 0 }\n    C\n}\ng(1)\n"
+            refused_at_run(src, "`C` reads `parameter 1`") && !run_words(src).contains("defect")
+        }
+        then "inside a `match` arm" {
+            let src = "fn g(n: int) -> int {\n    const C = match 1 {\n        1 -> n\n        _ -> 0\n    }\n    C\n}\ng(1)\n"
+            refused_at_run(src, "`C` reads `parameter 1`") && !run_words(src).contains("defect")
+        }
+        then "inside a block's statement" {
+            let src = "fn g(n: int) -> int {\n    const C = {\n        let t = n\n        t\n    }\n    C\n}\ng(1)\n"
+            refused_at_run(src, "`C` reads `parameter 1`") && !run_words(src).contains("defect")
+        }
+    }
+}
+
+/// What running the program said, or "" when it ran.
+fn run_words(source: string) -> string {
+    match analyze_source(source).run() {
+        .Err(msg) -> msg,
+        .Ok(_) -> "",
+    }
 }
 
 /// The code appears in the report exactly once.
