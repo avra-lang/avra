@@ -7983,6 +7983,28 @@ REFUSES cleanly today, so none is a silent hole:
   landed 2026-09-14: a literal pattern reads its subject through the
   name, exactly as `==` does.
 
+FROM PHASE H (side tables; 2026-09-14), probed on phase/h at 12738f7:
+
+- A BOUND ON A GENERIC TYPE'S OR AN IMPL'S PARAMETER — `type
+  SideTable<K: Indexed, V> = { … }` is F0100 "expected `=` while
+  parsing `stmt`" AT the `<`, and `impl SideTable<K: Indexed, V> {`
+  is F0100 "expected `{`" at the same character. A bound lands on a
+  free fn's parameters and NOWHERE ELSE: a generic METHOD is F2031
+  "generic methods are recorded, not landed", so no door lets a
+  generic TYPE read anything off a type-parameter key (`self.cells[
+  k.slot()]` is F2030 "`K` has no known methods"). WANTING SITE:
+  core/side_table.av's `SideTable`, which is keyed by a slot `int`
+  for exactly this reason while each facts type keeps the typed door
+  (`fn type_at(e: ExprId)`). FIRES the day a bound is spellable on a
+  type: `SideTable<K, V>` then takes the typed id and the per-facts
+  accessors stop being the only thing holding the key's type.
+  Probed at that commit; the F2030 help used to NAME this refused
+  form, which is fixed in the same slice (`bound_remedy`).
+- `xs.resize(n, v)` — see the 2026-09-11 row below; phase H's
+  `SideTable.grow_to(count)` is a SECOND wanting site for it, and
+  `Decls.record_generated`'s hand-rolled `concat(filled(…))` is the
+  first. One door, two callers.
+
 FROM THE 2026-09-13 #8 FEEDBACK SURVEY (comptime/templates; rows and
 evidence under "Feedback survey — 2026-09-13 #8"): a hole in a
 STRING's literal run (site `std-derive`'s `Show`); a PARAMETER-LIST

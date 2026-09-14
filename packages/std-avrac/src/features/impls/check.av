@@ -2,7 +2,7 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, TypeId, Arrow, DeclId}
+use core.{ExprId, TypeId, Arrow, DeclId, DeclKind}
 use features.{TypeCx, FnSig, this_is, MethodCall}
 use diagnostics.{refusal}
 
@@ -25,7 +25,7 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
     match callee_of(cx.view, cx.type_at(subject), name) {
         .Variant(decl, tname) -> if cx.view.store.is_type_lit(e) { no_interned(cx, e, tname) } else { cx.construct_variant(e, decl, tname, name, args) },
         .Static(m, tname) -> static_call(cx, e, m, tname, name, args),
-        .Bounded(decl, j, tname) -> bounded_call(cx, e, subject, tname, cx.bound_name(decl, j), name, args),
+        .Bounded(decl, j, tname) -> bounded_call(cx, e, subject, decl, tname, cx.bound_name(decl, j), name, args),
         .Contract(tdecl, tname) -> dyn_call(cx, e, subject, tdecl, tname, name, args),
         .FnField(_, fty) -> fielded_call(cx, e, name, fty, args),
         .Row(r) -> r.check(cx, MethodCall { e: e, subject: subject, args: args }),
@@ -177,11 +177,22 @@ fn fielded_call(mut cx: TypeCx, e: ExprId, name: string, fty: TypeId, args: List
 /// the sig (no receiver seat — the receiver fills it trivially);
 /// mono resolves the concrete impl per specialization. An UNBOUNDED
 /// T refuses with the spec's own remedy.
-fn bounded_call(mut cx: TypeCx, e: ExprId, subject: ExprId, tname: string, trait_name: string, name: string, args: List<ExprId>) -> TypeId {
+fn bounded_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, tname: string, trait_name: string, name: string, args: List<ExprId>) -> TypeId {
     if trait_name == "" {
-        return cx.spoken(refusal("type.method", cx.loc_of(e), "`${tname}` has no known methods", "called here", "add a bound — `<${tname}: SomeTrait>`"))
+        return cx.spoken(refusal("type.method", cx.loc_of(e), "`${tname}` has no known methods", "called here", bound_remedy(cx.view.decls.decl(decl).kind, tname)))
     }
     trait_judged(cx, e, subject, trait_name, name, args) ?? no_trait_method(cx, e, trait_name, name, tname)
+}
+
+/// A REMEDY NAMES A FORM THAT PARSES. A bound is written on a fn's
+/// type parameters and nowhere else — a type's and an impl's refuse
+/// it at the `<` — so telling every unbounded parameter to add one
+/// sends half of them at a form the grammar has no rule for.
+fn bound_remedy(kind: DeclKind, tname: string) -> string {
+    match kind {
+        .Record or .Named or .Enum or .Impl -> "a type's and an impl's parameters take no bound yet — a bounded generic is a free `fn<${tname}: SomeTrait>` for now",
+        .Fn or .Method or .Trait or .Default or .Case or .Main or .Const or .Syntax or .Builtin -> "add a bound — `<${tname}: SomeTrait>`",
+    }
 }
 
 /// A method on a CONTRACT value: the trait's sig judges (self
