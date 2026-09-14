@@ -629,15 +629,15 @@ engine's spec, written by dogfooding.
   IMPOSSIBLE — never an escape. A command asked to be inert data AND
   a grammar the shell parses is the first firing: `avra_spawn_status`
   did not quote better, it REMOVED THE PARSER, and the supply-chain
-  hole closed as a consequence rather than as the goal. The sqlite
-  driver lane reports the second at a different boundary — under
-  `SQLITE_USE_URI` a path handed to `sqlite3_open_v2` is a filename
-  AND a URI parsed for `?mode=`, so a user's path beginning `file:`
-  changes meaning with nobody writing a line. The RESOLUTION is the
-  same shape, which is what makes it a law and not a coincidence:
-  SPLIT THE VERB, one per grammar. `open(path)` is always a filename
-  and names its sibling when refusing a `file:` prefix; a separate
-  verb takes a URI deliberately. The capability was never the
+  hole closed as a consequence rather than as the goal. @std/sqlite
+  is the second, at a different boundary — under `SQLITE_USE_URI` a
+  path handed to `sqlite3_open_v2` is a filename AND a URI parsed for
+  `?mode=`, so a user's path beginning `file:` changes meaning with
+  nobody writing a line. The RESOLUTION is the same shape, which is
+  what makes it a law and not a coincidence: SPLIT THE VERB, one per
+  grammar. `open(path)` is always a filename and refuses a `file:`
+  prefix, saying to ask deliberately; `open_with` is where the ask
+  lives (`uri: true`). The capability was never the
   problem, the AMBIGUITY was. THE TEST: when a value crosses a
   boundary, ask whether the CALLEE will parse it — if it will, the
   value wears two hats and the design owes a SPLIT, not an escape.
@@ -1422,11 +1422,10 @@ Runtime facts, ours to ratify:
   shared with a loaded desktop and has panicked twice under this
   tree — three concurrent `make test` runs once, and a background
   gate with other compiler runs beside it (a WindowServer watchdog
-  panic). A gate is ~0.3 GB for twenty seconds; nothing else heavy runs
-  beside it, no gate runs in the background, and every suite, gate
-  or whole-package check runs through the watchdog, which holds the
-  machine-wide lock, kills the tree past its cap and prints the
-  peak.
+  panic). A gate is ~0.3 GB for twenty seconds; nothing else heavy
+  runs beside it, and every suite, gate or whole-package check runs
+  through the watchdog, which holds the machine-wide lock, kills the
+  tree past its cap and prints the peak.
   THE LOCK IS THE LAW AND THE FOREGROUND IS ITS MECHANISM. "One
   heavy process at a time" means ONE PROCESS HOLDING THE WATCHDOG'S
   LOCK, and every heavy run is LAUNCHED in the foreground under it.
@@ -1526,7 +1525,7 @@ Runtime facts, ours to ratify:
   bootstrap` GREEN, NEVER `make avra` GREEN. `make avra` builds the
   cli with the STANDING binary and copies the result; it never
   touches `bootstrap/seed.ll`, which is a COMMITTED artifact naming
-  every runtime symbol it needs (31 `avra_io_` references today). So
+  every runtime symbol it needs, the `avra_io_` names among them. So
   deleting a runtime symbol gates clean under `make avra`, twice,
   while the cold path is already broken — `make bootstrap` links the
   seed against the runtime and every removed name is undefined.
@@ -1559,8 +1558,8 @@ Runtime facts, ours to ratify:
   compiles the source with the STANDING binary — ONE `make avra`
   ADVANCES THE COMPILER BY EXACTLY ONE GENERATION, because the recipe
   is one `./avra build packages/cli` and one `cp` over `build/avra`
-  while the shim execs the binary already on disk (Makefile:59-64,
-  `avra`:19-24). THE GENERATION IS THE LAW AND "THE SECOND BUILD" IS
+  while the shim execs the binary already on disk (the Makefile's
+  `avra` target). THE GENERATION IS THE LAW AND "THE SECOND BUILD" IS
   ITS CONSEQUENCE: change the recipe and the count goes stale while
   the rule does not. So a product built
   right after merging a memory-pass fix carries the fix as SOURCE
@@ -1645,18 +1644,18 @@ Runtime facts, ours to ratify:
   foreign-text design READ the entry and asked what the empty case
   would do. A deadline is paid by a new consumer arriving, not by
   the breakage arriving. And `parsed`'s early cutoff, sound only
-  while compiles are ONE-SHOT (= ROADMAP:2190).
+  while compiles are ONE-SHOT.
   THERE: the pointer-constant guard, landed as "unreachable today"
-  (ROADMAP:2018 — and its condition ACTUALLY CHANGED hours later when
-  `avra_ptr_at` made a pointer mintable; it survived only because the
-  capability took a runtime-row shape rather than a constant fold, so
-  by an unrelated design choice and nothing its author did); `plain`
+  (and its condition ACTUALLY CHANGED hours later when `avra_ptr_at`
+  made a pointer mintable; it survived only because the capability
+  took a runtime-row shape rather than a constant fold, so by an
+  unrelated design choice and nothing its author did); `plain`
   dropping a fn type's seat marks, safe only while a nullable fn type
-  is unspellable (ROADMAP:2109); and @std/sqlite's `close(mut db)`,
-  whose idempotence rests ENTIRELY on `mut b = a` aliasing — the day
-  S2 makes copies copy, `close(a)` is a DOUBLE FREE in a shipping std
+  is unspellable; and @std/sqlite's `close(mut db)`, whose
+  idempotence rests ENTIRELY on `mut b = a` aliasing — the day S2
+  makes copies copy, `close(a)` is a DOUBLE FREE in a shipping std
   package, and the driver's own test passes because it uses one
-  binding (ROADMAP:2345, verified here at open.av:358).
+  binding (verified here at `close`, open.av).
   So NAME THE CONDITION IN THE SAME BREATH — an unstated one is what
   makes the eventual breakage read as a new bug rather than an
   EXPIRY. A sixth instance is a CITATION of this line, never another
@@ -1768,14 +1767,14 @@ Runtime facts, ours to ratify:
 - AND A KEEPER HAS TWO SURFACES: what it REFUSES and what it
   ACCEPTS. Making it fail tests only the first. `tools/idioms.py`'s
   counted-refusal matcher listed `refused_n(` among the honest
-  spellings, and no such fn has ever existed — `testing/mod.av`
-  exports `refused_with` and `refused_at_run` and nothing of that
-  name. A DEAD ALTERNATIVE: accepted by nobody, protecting nothing,
-  quietly widening what the keeper permits, and invisible to every
-  fixture that makes the keeper fail, because the keeper was working.
-  So exercise each alternative a keeper ACCEPTS as well as one that
-  breaks it — a matcher with N spellings needs N positive fixtures,
-  or the dead one sits there for as long as nobody greps it.
+  spellings while no fn of that name existed. A DEAD ALTERNATIVE:
+  accepted by nobody, protecting nothing, quietly widening what the
+  keeper permits, and invisible to every fixture that makes the
+  keeper fail, because the keeper was working. So exercise each
+  alternative a keeper ACCEPTS as well as one that breaks it — a
+  matcher with N spellings needs N positive fixtures, which
+  `ACCEPTED` now holds for all five (a fn of that name landed at
+  c515f04, so the alternative is live).
 - A TEST WITH ITS OWN COPY OF THE LOGIC TESTS THE COPY, and the
   SYMPTOM IS WHAT MISDIRECTS. The externs keeper's self-test built
   its typedef map from an inline duplicate of the collection it
@@ -1892,10 +1891,10 @@ Runtime facts, ours to ratify:
   than agreed with — so the instances have to stay checkable. One
   probed in this tree reads as fact; one from a lane's own tree is
   named as that lane's and stays ATTRIBUTED until the code lands
-  here. The two-hats law carries one of each, deliberately. Mixing
-  them silently is how a file of receipts decays into a file of
-  claims, and the reader loses the ability to tell which line to
-  trust — including the lines that are true.
+  here — AND THE LABEL EXPIRES WITH THE LANDING, or it sends the
+  reader away for a receipt in front of them (the two-hats law's
+  sqlite half). Mixing the two silently is how a file of receipts
+  decays into claims, and even the true lines stop being trusted.
 - A COUNT FROM A PACKAGE SWEEP IS LINES, NOT SITES. Checking one
   package reports its DEPENDENCIES' warnings too, so summing the
   twelve counts every shared site once per package that reaches it:

@@ -13731,3 +13731,47 @@ scope.
   landed by `str.count(old) == 1` replacement with no hand editing; a
   FROM that did not match would have failed loudly instead of
   splicing at the wrong anchor (CLAUDE.md's twice-applied-patch law).
+
+## Feedback survey — 2026-09-14 #11 (lane/d, the Working-discipline law audit)
+
+Counted per axis: friction 0, sugar 0, features 0, defects 0,
+doctrine 3, performance 0, process 2. The top three by cost: four
+`file:line` pointers that had all rotted in one law; a law calling a
+fn "never existed" the day after that fn landed; a keeper whose
+accepted surface had no fixture while the law beside it demanded
+one. Not surveyed: "The subset today" (the last slice; probe-heavy).
+No Avra was written, so the empty axes are empty by scope.
+
+### DOCTRINE — stale facts in six of 24 laws, plus one in Rules
+
+- **A LINE NUMBER IN A LAW IS A CLAIM WITH A HALF-LIFE OF ONE EDIT.**
+  `Makefile:59-64` now lands on the bootstrap target (`make recover`
+  moved it), `ROADMAP:2018/2109/2190/2345` all point elsewhere,
+  `open.av:358` is a doc comment two fns down. Reworded to NAMES: a
+  target, a fn, a heading, a greppable phrase. EVIDENCE: wd-gA's
+  probes; `grep -n "^avra:" Makefile`. THE ASK: the cited-name keeper
+  (survey #9) refuses a bare `file:NNN` in CLAUDE.md, or resolves it
+  and reports drift.
+- **"HAS NEVER EXISTED" IS A DATED CLAIM.** The two-surfaces law said
+  no `refused_n` had ever existed; it landed at c515f04 with 30
+  callers, and the idioms matcher that once permitted a dead spelling
+  now permits a live one. The law's own ask — N spellings, N positive
+  fixtures — was unpaid in the tool. Paid: `ACCEPTED` in
+  tools/idioms.py, five fixtures, falsified by dropping one spelling.
+- **A LABEL EXPIRES WITH THE LANDING, TWICE.** The two-hats law still
+  said "the sqlite driver lane reports" for a URI door in open.av
+  here, and the receipts law cited that label as its live exemplar.
+  Slice three fixed one expired label and read past this one in the
+  same section; a sweep by CLAIM ("attributed", "lane's") finds them,
+  a sweep by law does not. CONFIRMS "THE SWEEP IS BY CLAIM, NEVER BY
+  FILE".
+
+### PROCESS — the working discipline
+
+- **KEEP: refuse a fresh line number as a fix.** The refuter was told
+  to reject any TO text that swapped a rotted line for today's, and
+  did; every replacement cites by name. A rule stated to the reviewer
+  beats one hoped for from the author.
+- **KEEP: land the label fix before the law that cites it.** Two
+  hats before the receipts law, or the receipts law names a label
+  still standing in the same commit. One PR, ordered hunks.
