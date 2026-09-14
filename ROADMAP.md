@@ -7607,6 +7607,13 @@ The `/feedback` run for the slice that lifted the two S5b boundaries: a settled 
 
 ## Sugar backlog — dogfooding asks
 
+DECIDED 2026-09-14 (owner + task master), for type operators: `type
+Name = Shape` is always DISTINCT (a name that counts); no alias form.
+Literals fill it, the shape's methods forward, `Name(value)` converts
+and the refusal suggests it. Typed ids shorten to `type UserId = int`.
+Design doc §7 q1 carries the reasoning; the wanting site is every
+`{ index: int }` id in core/nodes.av and the type-operator later row.
+
 FROM THE 2026-09-13 #7 FEEDBACK SURVEY (lane/comptime): `join` over
 `List<Code>` (a trait-keyed method row; sites `std-derive/src/derive.av`),
 and a hole in NAME position completing the name (waits on parsed

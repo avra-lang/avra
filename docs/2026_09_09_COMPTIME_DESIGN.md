@@ -1255,10 +1255,21 @@ quotes keeps the two hard problems apart.
 
 ## 7. Open questions (five)
 
-1. **Spelling a type as a value in user code.** Inside the compiler
-   it is `v.type(T)` (sugar 2). In an annotation's argument list a
-   bare name is its meta value (§3.3). Is a bare `type(User)`
-   elsewhere wanted, or is the annotation position enough?
+1. **Spelling a type as a value in user code.** DECIDED 2026-09-14:
+   the annotation position is enough until a use outside one appears
+   (no site wants it; a recorded trigger). AND THE NAMED-TYPE LAW,
+   decided the same day for type operators: `type Name = Shape` is
+   ALWAYS a distinct type — a name that counts — with no alias form.
+   The box costs nothing to use: a literal fills it directly (`let
+   rows: Rows = [...]`), the shape's methods forward (`rows.push`),
+   and an unnamed value converts by one spelling, `Rows(xs)`, which
+   the refusal offers as a high-confidence fix. Today's `{ index: int
+   }` typed ids become the short form `type UserId = int`. A type
+   operator binds its computed shape with the same word. REFUSED: a
+   transparent alias — the one place a name would promise nothing
+   (P9), and the ambiguity a generator cannot resolve on first
+   generation (P1); the languages with both words see the alias used
+   where the newtype was meant.
 2. **`Code<T>` vs untyped `Code`.** DECIDED 2026-09-13: untyped
    `Code`. A text template's hole has no position until the splice
    parses, so the claim could only be checked where typing the
