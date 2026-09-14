@@ -22,15 +22,20 @@ spec "features/consts (adversarial)" {
         }
     }
     given "a name a `let` also claims" {
-        // The crossing law asked whether the name's FIRST definition
-        // was a const, then handed back the binding CURRENTLY
-        // visible — a different statement once a `let` shadowed it.
-        // The fn read a top-level slot it cannot see: index -1.
-        then "a `let` shadowing a const is refused inside a fn, not trapped" {
-            refused_with("const N = 1\nlet N = 2\nfn f() -> int {\n    N\n}\nf()", "run-time")
+        // A top-level const is a DECLARATION: order-free and
+        // module-wide, like a fn. A `let` of the same name shadows it
+        // from that line on, in the sequence alone — a fn body sees
+        // no `let`, so it reads the declaration. (Before the const was
+        // a declaration, the crossing law once handed a fn the
+        // shadowing `let`'s slot: index -1.)
+        then "a `let` shadows a const in the sequence; a fn body still reads the const" {
+            shown("const N = 1\nlet N = 2\nfn f() -> int {\n    N\n}\n\"\${f()} \${N}\"") == "1 2"
         }
         then "the const still crosses when the shadow comes after the body" {
             shown("const N = 1\nfn f() -> int {\n    N\n}\nlet N = 2\nf()") == "1"
+        }
+        then "a `let` before the const shadows it too — a declaration has no line" {
+            shown("let N = 2\nconst N = 1\nfn f() -> int {\n    N\n}\n\"\${N} \${f()}\"") == "2 1"
         }
         then "a shadow INSIDE the body wins over the const" {
             shown("const N = 1\nfn f() -> int {\n    let N = 5\n    N\n}\nf()") == "5"
@@ -38,8 +43,11 @@ spec "features/consts (adversarial)" {
         then "a parameter of the same name wins over the const" {
             shown("const N = 1\nfn f(N: int) -> int {\n    N\n}\nf(9)") == "9"
         }
-        then "a later const of the same name is the one that reads" {
-            shown("const N = 1\nconst N = 2\nN") == "2"
+        then "two consts of one name in one file clash, as two fns do" {
+            refused_with("const N = 1\nconst N = 2\nN", "defined more than once")
+        }
+        then "a const is read before its line, as a fn is" {
+            shown("let a = N\nconst N = 1\na") == "1"
         }
     }
     given "an annotation that changes the value's SHAPE" {
@@ -119,6 +127,18 @@ spec "features/consts (adversarial)" {
             shown("type P = { x: int }\nfn p() -> P { P { x: 1 } }\nconst X: int = p().x\nX") == "1"
         }
     }
+    // red team, the private const: a top-level const is a DECLARATION
+    given "a const as a place" {
+        // The assignment law asks the BINDING; a declared const is a
+        // `Decl`, and the arm for one once answered nothing — the
+        // lowering then met a non-place and blamed itself.
+        then "an assignment to a const is refused in the const's own words" {
+            refused_with("const K = 1\nK = 2\nK", "is a const")
+        }
+        then "and a path under one too" {
+            refused_with("type P = { x: int }\nconst K = P { x: 1 }\nK.x = 2\nK.x", "is a const")
+        }
+    }
     // red team, comptime S2: a boxed const is one box, called for
     given "boxed consts" {
         then "a push on a const is refused as on any `let`" {
@@ -145,10 +165,28 @@ spec "features/consts (adversarial)" {
             refused_at_run("extern fn avra_puts(s: string)\nfn g() -> int {\n    avra_puts(\"x\")\n    1\n}\nfn f() -> int {\n    g() + 1\n}\nconst X = f()\nX", "reaches `avra_puts` in `g`, called from `f`")
         }
     }
-    given "cascades" {
-        then "a value the walk refused earns no second refusal" {
+    given "a const that asks for itself" {
+        // A const is a declaration, so its own name resolves inside
+        // its value. The TYPE cycle speaks once, at the const; an
+        // annotated one types without asking and traps while
+        // settling instead.
+        then "a value that reads its own const is refused ONCE, at the const" {
             refusals("const X =\nX") == 1
         }
+        then "and the refusal names the law" {
+            refused_with("const X = X\nX", "asks for its own type")
+        }
+        then "an annotated one settles, and the settlement traps" {
+            refused_at_run("const X: int = X\nX", "trapped while settling")
+        }
+        then "two consts reading each other are refused, not recursed" {
+            refused_with("const A = B + 1\nconst B = A + 1\nA", "asks for its own type")
+        }
+        then "a const reading itself through a fn traps while settling" {
+            refused_at_run("fn f() -> int {\n    X\n}\nconst X: int = f()\nX", "trapped while settling")
+        }
+    }
+    given "cascades" {
         then "a const that trapped is refused ONCE, however many reads" {
             let a = analyze_source("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nfn twice() -> int {\n    Z + Z\n}\ntwice() + Z")
             match a.run() {

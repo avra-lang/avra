@@ -1122,10 +1122,13 @@ Syntax the grammar lacks:
   hold this yet" (help: "nullable slots arrive with ownership's next
   slice"). A writing verb answers what it wrote instead —
   `@std/io`'s `write_text`/`make_dirs`/`remove` answer the path.
-- `const` in a MODULE file (a library's `const PIPE_IN: int = 1`):
-  F0902 "a module file holds declarations — only the entry runs
-  statements" — a library's constant is a fn (`fn pipe_in() -> int
-  { 1 }`; @std/process's flag words).
+- A TOP-LEVEL `const` IS A DECLARATION, like a fn: module-wide,
+  order-free, exported only when it says `export`. Two in one module
+  clash (F3003 in one file, F3017 across files); a `let` of the same
+  name shadows it from that line on, in the sequence alone — a fn
+  body reads the const. A const whose value asks for its own type is
+  F2078; an annotated one settles and traps (F2062). The old entry
+  here — "`const` in a MODULE file is F0902" — was stale twice over.
 - A METHOD after `?` on a Result (`shell(line)?.run()`): F2023
   "`?.` reaches into a nullable, this is `Result<R, string>`". The
   chain DOES call methods now (`a?.m(args)` on a nullable), which is

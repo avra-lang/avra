@@ -664,8 +664,20 @@ impl TypeCx {
             // placeholder — lowering rebuilds it from the unit's own
             // seat (one unit per distinct value, not per read site).
             .Param(_) -> if self.names.reads_settled_seat(e) { "${self.view.store.expr_fingerprint(e)}" } else { null },
-            .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
+            // a DECLARED `const`, from any file of the program
+            .Decl(d) -> self.declared_const_fp(d),
+            .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
         }
+    }
+
+    /// A declared const's value fingerprint, read from its own store;
+    /// null for a declaration that is not a const.
+    fn declared_const_fp(d: DeclId) -> string? {
+        let x = self.view.decls.decl(d)
+        if !(x.kind is .Const) { return null }
+        let v: ExprId? = self.view.decls.store(d).const_value(x.stmt)
+        if v == null { return null }
+        "${self.view.decls.store(d).expr_fingerprint(v!)}"
     }
 
     /// Whether the source alone spells the value at `e` — the SAME

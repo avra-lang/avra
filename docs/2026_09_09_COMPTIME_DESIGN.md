@@ -18,9 +18,11 @@
 > zero-arg constant fns became `export const` (368 call sites), the
 > grammar and the diagnostic registry now settle once, and a module
 > may hold a private `const` (F0902 was about effects, not values).
-> The sweep exposed the one gap left: a PRIVATE top-level `const` is
-> file-local and order-sensitive, unlike a private `fn` (sugar
-> backlog). **THE S5 REFINEMENTS LANDED** — a settled seat FORWARDS
+> The sweep exposed the one gap left, PAID on comptime/const
+> (2026-09-13): EVERY top-level `const` is a module declaration like
+> a private `fn` — order-free, visible across the module's files,
+> exported only when it says so — and 58 `export`s the sweep owed
+> came back off. **THE S5 REFINEMENTS LANDED** — a settled seat FORWARDS
 > to another fn, and a direct AGGREGATE literal settles a seat; both
 > ride the ONE S5c channel, widened to the crossing tree every
 > compile-time value already travels as. **S4r LANDED (2026-09-13)**:
@@ -932,7 +934,9 @@ to start cold; the size is the design's estimate.
       REMEMBER: `avra run`/`build` lower REACHED units only; `avra
       test` lowers EVERY declared body (every-mode) — a template-body
       change must be proved with `test`.
-- [x] **S1 — `export const`. LANDED (2026-09-12).** An EXPORTED
+- [x] **S1 — `export const`. LANDED (2026-09-12); its "only when
+      exported" scoping SUPERSEDED by THE PRIVATE CONST above
+      (2026-09-13).** An EXPORTED
       top-level `const` is a DECLARATION: `DeclKind.Const` is admitted
       (only when exported), it binds in the module's value namespace
       with fns, `use util.{K}` imports it, and a cross-file read
@@ -945,6 +949,49 @@ to start cold; the size is the design's estimate.
       unchanged). Proof: the `export_const` program test — int,
       string and computed consts imported and read, eval == native ==
       expected.
+- [x] **THE PRIVATE CONST — a top-level `const` is a DECLARATION.
+      LANDED (2026-09-13, comptime/const).** The `export const` slice
+      admitted a const only when exported; now `admit` mints a
+      `DeclKind.Const` for every top-level const, `is_declaration`
+      answers true for one (a const never runs), the resolver's
+      `bind_checked` leaves a declared statement to the namespace,
+      and the three crossing laws the file-local const needed
+      (`settled_binding`, the floor's const clause, the capture
+      exception) are gone — a const crosses a floor because it is a
+      declaration. A `let` of the same name shadows it from its line
+      on, in the sequence alone (a fn body reads the const); two in
+      one module clash as two fns do. A declared const fills a
+      `const` SEAT from any file (`declared_seat`, settled in its own
+      file on no seats); a body's own nested const keeps the
+      spelled-or-settled-on-this-unit's-seats path. THE LAW THIS
+      PINNED: a const's value now resolves the const's own name, so
+      the TYPE cycle must speak — `Decls.const_type` answers
+      `ConstType` (`Known`/`Refused`/`Cyclic`), the workspace reads
+      the cycle from BOTH sides (its own memo's `.Cycle`, or the
+      const's `typed` query already OPEN — `Memo.open`), and the read
+      speaks F2078 once at the const; an annotated self-reference
+      types without asking and traps while settling (F2062). Proof:
+      `consts/tests/private_const` (a private const read from another
+      file, before its line, at a `const` seat, eval == native ==
+      expected), the adversarial suite's shadowing group rewritten
+      DELIBERATELY, and the cycle group. The compiler sweep: 58
+      module-private `export const` lost their `export`; the seed is
+      refreshed. RED-TEAMED (71 programs over the eight classes, 24
+      accepted ones eval == native): TWO more landed. An assignment
+      to a const (`K = 2`, `K.x = 2`) reached lowering as a non-place
+      and blamed the compiler (F0900) — the assignment law's `Decl`
+      arm answered nothing for a const; it refuses in the const's
+      words now (F3005, `consts_adversarial_test`). And a GENERATED
+      top-level `const` was never admitted at all (pre-existing:
+      `mint_code_stmt` minted fns, types and impls only), so a
+      template could not generate one; `mint_code_const` mints it
+      wearing its value's range, proven by `consts/tests/
+      generated_const` (read at the top level, in a fn, at a `const`
+      seat; eval == native == expected). FOUND, NOT FIXED, pre-existing
+      and recorded in the ROADMAP: a template cannot name what it
+      generates — its names resolve in the WRITING file, so a
+      generated const reading its generated sibling (and a generated
+      fn calling one) is "not defined".
 - [x] **S4r — the `Code` value and the claim. LANDED (2026-09-13),
       DECIDED as UNTYPED `Code`.** A quote answers `@std.meta.Code`:
       `{ pieces: List<Piece> }`, each `Piece { text, origin, at }` a

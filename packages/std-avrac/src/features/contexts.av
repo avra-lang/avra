@@ -82,7 +82,7 @@ impl Decls {
     /// value (a generic fn wears no single signature).
     fn decl_type_of(voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
         let x = self.decl(d)
-        if x.kind is .Const { return self.const_type(x.file, x.stmt) ?? error_type }
+        if x.kind is .Const { return self.declared_const_type(voices, error_type, d) }
         let tname: string? = self.type_name(d)
         if tname != null { return self.types.intern(Type.TypeName(d, tname!)) }
         if !self.tparams(d).is_empty() {
@@ -194,7 +194,7 @@ export fn def_type_of(facts: TypeFacts, mut view: FileView, error_type: TypeId, 
     // the program's answer or the HOLE. Falling through would index
     // the asker's table with another body's expression (-1).
     if view.store.const_value(s) != null {
-        return settled_type(view.store, view.types, s) ?? view.decls.const_type(view.file, s) ?? error_type
+        return view.decls.type_of_const(view.file, s) ?? error_type
     }
     let declared: TypeId? = facts.declared_binding(s)
     if declared != null { return declared! }
@@ -202,6 +202,25 @@ export fn def_type_of(facts: TypeFacts, mut view: FileView, error_type: TypeId, 
     let v: ExprId? = view.store.stmt_value(s)
     if v == null { return error_type }
     facts.type_at(v!)
+}
+
+impl Decls {
+    /// A const's type, by the file and statement that declare it: read
+    /// off a literal, else the program's answer through the const-type
+    /// query.
+    fn const_answer(f: FileId, s: StmtId) -> ConstType {
+        let literal: TypeId? = settled_type(self.store_of(f), self.types, s)
+        if literal != null { return ConstType.Known(literal!) }
+        self.const_type(f, s)
+    }
+
+    /// The type a const carries, when it carries one.
+    fn type_of_const(f: FileId, s: StmtId) -> TypeId? {
+        match self.const_answer(f, s) {
+            .Known(t) -> t,
+            .Refused or .Cyclic -> null,
+        }
+    }
 }
 
 /// A literal const's type can be read without asking the workspace.
@@ -395,6 +414,25 @@ impl LowerCx {
 impl Decls {
     /// A type literal's answer — `self.type(T)` interns into the table.
     fn interned(t: TypeLit) -> TypeId { self.types.interned(t) }
+
+    /// A declared const read as a value: its type — read off a
+    /// literal, else the program's answer — and the one refusal only
+    /// the READ can speak: a value that asks for its own type.
+    fn declared_const_type(voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
+        let x = self.decl(d)
+        match self.const_answer(x.file, x.stmt) {
+            .Known(t) -> t,
+            .Refused -> error_type,
+            .Cyclic -> {
+                voices.speak(self.self_referent(d))
+                error_type
+            },
+        }
+    }
+
+    fn self_referent(d: DeclId) -> Diag {
+        refusal("const.cycle", self.loc(d), "a const's value asks for its own type", "`${self.decl(d).name}` reads itself here", "a const settles from what is written and from other consts — not from its own value")
+    }
 
     fn not_a_value(d: DeclId) -> Diag {
         refusal("type.lambda", self.loc(d), "a generic fn is not a value — no single signature to wear", "declared here", "wrap it — `(x: T0) -> ${self.fn_name(d) ?? "f"}(x)` with the types pinned")

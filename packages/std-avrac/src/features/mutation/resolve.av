@@ -2,7 +2,7 @@
 //! rooted in a name — and that name must land on a `mut` binding;
 //! params and plain lets refuse with the remedy. The path itself
 //! resolves like any expression.
-use core.{StmtId, ExprId, Binding, same_expr}
+use core.{StmtId, ExprId, DeclId, Binding, same_expr}
 use features.{ResolveCx, nothing}
 use diagnostics.{refusal}
 use @std.errors.{Loc}
@@ -33,9 +33,15 @@ export fn resolve_assign(mut cx: ResolveCx, s: StmtId) {
         .Def(s) -> mut_or_refused(cx, s, n, at),
         .Pattern(_, _) -> immutable_bind(cx, n, at),
         .Capture(_, _) -> captured_copy(cx, n, at),
-        // a type's name as a value: the walk already spoke
-        .Decl(d) -> if cx.view.decls.fn_name(d) != null { not_a_fn_place(cx, n, at) } else { nothing() },
+        .Decl(d) -> declared_place(cx, d, n, at),
     }
+}
+
+/// A declaration is never a place: a fn and a const each refuse in
+/// their own words; a type's name as a value — the walk already spoke.
+fn declared_place(mut cx: ResolveCx, d: DeclId, n: string, at: Loc?) {
+    if cx.view.decls.fn_name(d) != null { return not_a_fn_place(cx, n, at) }
+    if cx.view.decls.decl(d).kind is .Const { immutable_const(cx, n, at) }
 }
 
 /// A definition is a place only when it was declared `mut`.
@@ -46,7 +52,7 @@ fn mut_or_refused(mut cx: ResolveCx, s: StmtId, n: string, at: Loc?) {
 // ── The voices ──
 
 /// Every refusal here labels the assignment itself.
-export const assigned_here: string = "assigned here"
+const assigned_here: string = "assigned here"
 
 /// The remedy for a name that is read-only by nature: copy it.
 fn mut_copy_help(n: string) -> string {
@@ -86,6 +92,10 @@ fn not_a_fn_place(mut cx: ResolveCx, n: string, at: Loc?) {
 
 fn immutable_index(mut cx: ResolveCx, n: string, at: Loc?) {
     cx.emit(refusal("resolve.immutable", at, "`${n}` is a loop index — it counts, it is not assigned", assigned_here, mut_copy_help(n)))
+}
+
+fn immutable_const(mut cx: ResolveCx, n: string, at: Loc?) {
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is a const — the compiler settled it, it is not assigned", assigned_here, "bind a `mut` copy to change it — `mut k = ${n}`"))
 }
 
 fn not_mut(mut cx: ResolveCx, n: string, at: Loc?) {

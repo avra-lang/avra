@@ -236,7 +236,7 @@ fn overlay_at(overlays: List<Map<string, Binding>>, at: int, name: string) -> Bi
 }
 
 /// The home of a name that lives OUTSIDE every lambda frame.
-export const no_frame: int = 0 - 1
+const no_frame: int = 0 - 1
 
 /// The innermost frame whose FLOOR admits the overlay — the frame
 /// the overlay was opened inside.
@@ -582,47 +582,25 @@ impl ResolveCx {
         if idx != null { return self.chained(0, name, Binding.Param(idx! + self.seat_base())) }
         let outer: Binding? = self.outer_binding(name)
         if outer == null { return null }
-        // A CONST IS NEVER CAPTURED: a lambda's env holds run-time
-        // values, and a const has none to hold — its use emits the
-        // value the compiler settled, inside a lambda as anywhere.
-        if self.settled_binding(outer!) { return outer }
         self.chained(0, name, outer!)
     }
 
     /// The top level's binding for a name — unless a fn body is
-    /// asking: its floor hides the run-time values around it.
-    /// The world OUTSIDE the innermost body: a fn sees no run-time
-    /// binding of the top level — but a CONST is not one. The
-    /// compiler settled it, so it crosses the floor like a
-    /// declaration does.
+    /// asking: its floor hides the run-time values around it. (A
+    /// `const` is a declaration, found in the namespace after this.)
     fn outer_binding(name: string) -> Binding? {
-        let held: Binding? = self.visible.get(name)
-        if self.floors.is_empty() { return held }
-        if held == null { return null }
-        if self.settled_binding(held!) { return held }
+        if self.floors.is_empty() { return self.visible.get(name) }
         null
-    }
-
-    /// Whether a binding is a CONST's — asked of the BINDING IN
-    /// HAND, never of the name: a `let` may shadow a const, and then
-    /// the name's first definition and the binding in hand are
-    /// different statements. Every other binding kind is a run-time
-    /// value — a parameter, a pattern's bind, a capture — and any
-    /// kind added later will be one too.
-    fn settled_binding(b: Binding) -> bool {
-        match b {
-            .Def(s) -> settled_stmt(self.view.store, s),
-            _ -> false,
-        }
     }
 
     /// A name a body cannot see: the top level's RUN-TIME binding —
     /// declared before the body or after it, all the same. A const
-    /// is not one; the compiler settled it, so it crosses.
+    /// is not one; it is a declaration, and the namespace answered
+    /// for it before this is asked.
     fn hidden_def(name: string) -> bool {
         if self.floors.is_empty() { return false }
         let store = self.view.store
-        self.all_defs.any(it.name == name && !settled_stmt(store, it.stmt))
+        self.all_defs.any((d) -> d.name == name && store.const_value(d.stmt) == null)
     }
 
     /// Wrap a binding in Capture links for every frame from
@@ -714,7 +692,11 @@ impl ResolveCx {
     fn bind_checked(s: StmtId) {
         let binds: string? = self.view.store.let_name(s)
         if binds == null { return }
-        if !self.refused_name(binds!, self.stmt_loc(s)) { self.bind(keyed(binds!, self.view.origin_of_stmt(s)), Binding.Def(s)) }
+        if self.refused_name(binds!, self.stmt_loc(s)) { return }
+        // a DECLARED statement (a top-level `const`) is the namespace's:
+        // order-free and module-wide, it binds nowhere in the sequence
+        if self.view.decls.decl_of(self.view.file, s) != null { return }
+        self.bind(keyed(binds!, self.view.origin_of_stmt(s)), Binding.Def(s))
     }
 
     /// Latest binding wins — Map.set IS shadowing. Inside a block,
@@ -752,15 +734,9 @@ impl ResolveCx {
     }
 }
 
-/// Whether a program-scope definition is a const's — the one
-/// question both the crossing law and the hiding law ask.
 /// The capture table's key for the receiver — a word no NAME can
 /// spell, `self` being a keyword, so it collides with nothing.
-export const receiver_key: string = "self"
-
-fn settled_stmt(store: NodeStore, s: StmtId) -> bool {
-    store.const_value(s) != null
-}
+const receiver_key: string = "self"
 
 /// A binder's KEY in the scope tables: the name, marked with the file
 /// that wrote a template's text. `@` is unwritable, so a marked key

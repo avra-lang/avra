@@ -302,7 +302,7 @@ impl Workspace {
         let _ = self.methods(d)
     }
 
-    fn const_type_ensured(f: FileId, s: StmtId) { let _ = self.const_type_at(self.settle_id(f, s, [])) }
+    fn const_type_ensured(f: FileId, s: StmtId) -> bool { self.const_type_at(self.settle_id(f, s, [])) }
 
     fn writes_ensured() {
         let _ = self.receivers()
@@ -777,25 +777,29 @@ impl Workspace {
     }
 
     /// A const's inferred type is a program fact, like a signature:
-    /// type its owning Main on demand and publish the answer through
-    /// Decls so every other body reads the same identity.
-    fn const_type_at(id: int) -> TypeId {
+    /// type its declaration on demand and publish the answer through
+    /// Decls so every other body reads the same identity. Answers
+    /// whether THIS ask closed a cycle — a const's value asking for
+    /// the const's own type.
+    fn const_type_at(id: int) -> bool {
         let error = self.decls.types.intern(Type.Error)
         match self.const_type_facts.ask(id) {
-            .Cycle -> { return error },
-            .Reuse(held) -> { return held },
+            .Cycle -> { return true },
+            .Reuse(_) -> { return false },
             .Compute -> self.const_type_facts.begin(id),
         }
         let ask = self.settle_asks[id]
         touch(self.items(ask.file))
-        // a const is a DECLARATION of its own now: type it, so
-        // `check_const` records the value's type
+        // a top-level const is a declaration: typing it records the
+        // value's type; a nested one is recorded by the body it is in.
+        // Its typing already OPEN is the same cycle seen from the
+        // other side — the value is asking for the const's own type.
         let d: DeclId? = self.decls.decl_of(ask.file, ask.stmt)
-        if d != null { touch(self.typed(d!)) }
-        let main: DeclId? = self.decls.main_of(ask.file)
-        if main != null { touch(self.typed(main!)) }
+        let cyclic = d != null && self.decl_facts.open(d!.index)
+        if d != null && !cyclic { touch(self.typed(d!)) }
         let ty = self.decls.held_const_type(ask.file, ask.stmt) ?? error
-        self.const_type_facts.finish(id, ty, ty.index)
+        let _ = self.const_type_facts.finish(id, ty, ty.index)
+        cyclic
     }
 
     fn settled_at(id: int) -> Result<Settled, Unsettled> {
@@ -1995,7 +1999,7 @@ fn unpackaged_use(at: Loc?) -> Diag {
 }
 
 /// The instructions one settlement may run before it is refused.
-export const settle_steps: int = 10000000
+const settle_steps: int = 10000000
 
 /// An annotation answer's structural fingerprint for early cutoff.
 fn lift_hash(r: LiftResult) -> int {

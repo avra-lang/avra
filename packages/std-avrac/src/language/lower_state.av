@@ -109,10 +109,17 @@ impl LowerCx {
         let b = found!
         match b {
             .Param(_) -> self.forwarded_seat(b, index),
-            // a computed `const`: its SETTLED value IS the seat's
-            .Def(s) -> self.spelled_seat(a, index) ?? self.settled_seat(s, index, self.facts.type_at(a)),
+            // a body's own `const`: spelled, or settled on this unit's seats
+            .Def(s) -> self.spelled_seat(a, index) ?? self.settled_seat(self.view.file, s, self.seats, index, self.facts.type_at(a)),
+            // a DECLARED `const`: settled in its own file, whatever it spells
+            .Decl(d) -> if self.view.decls.decl(d).kind is .Const { self.declared_seat(d, index, self.facts.type_at(a)) } else { null },
             rest -> self.spelled_seat(a, index),
         }
+    }
+
+    fn declared_seat(d: DeclId, index: int, ty: TypeId) -> SeatValue? {
+        let x = self.view.decls.decl(d)
+        self.settled_seat(x.file, x.stmt, [], index, ty)
     }
 
     /// A `const`-seat value the source alone spells — the argument
@@ -130,11 +137,11 @@ impl LowerCx {
         SeatValue { index: index, fp: "e${self.view.store.expr_fingerprint(e)}", ty: self.facts.type_at(a), value: value!, heap: heap }
     }
 
-    /// A `const`-seat argument that is a computed `const`: settle it —
-    /// on the enclosing unit's seats — and key the unit on the value
+    /// A `const`-seat argument that is a `const` the evaluator settles —
+    /// in its home file, on the seats it may read — keyed on the value
     /// itself, so two spellings of one value share one unit.
-    fn settled_seat(s: StmtId, index: int, ty: TypeId) -> SeatValue? {
-        match self.jobs.settle(self.view.file, s, self.seats) {
+    fn settled_seat(f: FileId, s: StmtId, seats: List<SeatValue>, index: int, ty: TypeId) -> SeatValue? {
+        match self.jobs.settle(f, s, seats) {
             .Ok(x) -> SeatValue { index: index, fp: "v${x.fingerprint}", ty: ty, value: x.answer, heap: x.heap },
             .Err(_) -> null,
         }
@@ -151,8 +158,8 @@ impl LowerCx {
     }
 
     /// The expression whose value a `const`-seat argument spells: the
-    /// argument itself, or a `const` name's initializer. Null for a
-    /// run-time value.
+    /// argument itself, or a body's own `const` name's initializer.
+    /// Null for a run-time value.
     fn spelled_source(a: ExprId) -> ExprId? {
         let b: Binding? = self.names.binding(a)
         if b == null { return a }
@@ -234,8 +241,6 @@ impl LowerCx {
         let value: ExprId? = self.view.store.const_value(s)
         if value == null { return self.slot_reg(s, ty) }
         let init = value!
-        let written: Expr = self.view.store.expr(init)
-        if is_literal(written) { return self.settled_reg(e, written) }
         if self.sub == null && self.reads_settled_seat(init) {
             // a TEMPLATE body, not a unit: its `const` seats have no
             // value here — the specialized units fold them
@@ -246,30 +251,34 @@ impl LowerCx {
             self.unsettled(self.view.store, self.view.source.file, s, Unsettled.Param(runtime!))
             return self.zero_of(ty)
         }
-        match self.jobs.settle(self.view.file, s, self.seats) {
-            .Ok(x) -> if !self.view.types.rides_pointer(ty) { self.materialized(x.answer, x.heap, ty) }
-                      else { self.const_call(self.view.file, s, ty, x, self.seats) },
-            .Err(why) -> {
-                self.unsettled(self.view.store, self.view.source.file, s, why)
-                self.zero_of(ty)
-            },
-        }
+        self.const_reg(e, self.view.file, s, ty, self.seats)
     }
 
-    /// A CROSS-FILE const read: settle the declaration's value in its
-    /// OWN file, then materialize it here.
+    /// A DECLARED const read: settled in the declaration's OWN file, on
+    /// no seats — a declaration has none.
     fn const_decl_reg(e: ExprId, d: DeclId, ty: TypeId) -> Reg? {
         let x = self.view.decls.decl(d)
-        let store: NodeStore = self.view.decls.store(d)
-        let value: ExprId? = store.const_value(x.stmt)
-        if value == null { return null }
-        let written: Expr = store.expr(value!)
+        self.const_reg(e, x.file, x.stmt, ty, [])
+    }
+
+    /// The const at `s` in file `f`, read here: a literal as written,
+    /// else what the evaluator settled.
+    fn const_reg(e: ExprId, f: FileId, s: StmtId, ty: TypeId, seats: List<SeatValue>) -> Reg? {
+        let store: NodeStore = self.view.decls.store_of(f)
+        let written: Expr = store.expr(store.const_value(s)!)
         if is_literal(written) { return self.settled_reg(e, written) }
-        match self.jobs.settle(x.file, x.stmt, []) {
-            .Ok(x2) -> if !self.view.types.rides_pointer(ty) { self.materialized(x2.answer, x2.heap, ty) }
-                       else { self.const_call(x.file, x.stmt, ty, x2, []) },
+        self.settled_value_reg(f, s, ty, seats)
+    }
+
+    /// What the evaluator settled for the const at `s` in file `f`:
+    /// a scalar materialized here, a boxed value called for; a
+    /// refusal spoken at the const's own value.
+    fn settled_value_reg(f: FileId, s: StmtId, ty: TypeId, seats: List<SeatValue>) -> Reg? {
+        match self.jobs.settle(f, s, seats) {
+            .Ok(x) -> if !self.view.types.rides_pointer(ty) { self.materialized(x.answer, x.heap, ty) }
+                      else { self.const_call(f, s, ty, x, seats) },
             .Err(why) -> {
-                self.unsettled(store, self.view.decls.file(x.file).path, x.stmt, why)
+                self.unsettled(self.view.decls.store_of(f), self.view.decls.file(f).path, s, why)
                 self.zero_of(ty)
             },
         }
@@ -552,7 +561,7 @@ impl LowerCx {
 
 /// Register 0 — a body's first seat: a method's receiver, or the
 /// env box a lifted lambda's captures ride in.
-export const first_seat: Reg = Reg { index: 0 }
+const first_seat: Reg = Reg { index: 0 }
 
 impl LowerCx {
     /// A const no literal spells is CALLED: its unit answers the value

@@ -186,6 +186,16 @@ spec "query/memo" {
             }, (v: int) -> v)
             first == 21 && second == 21 && runs.get() == 1
         }
+        then "a memo's query is open between begin and finish, and not after" {
+            let db = new_db()
+            let family = db.family((arg: int) -> 0)
+            let memo = new_memo<int>(db, family)
+            let before = memo.open(3)
+            memo.begin(3)
+            let during = memo.open(3)
+            let _ = memo.finish(3, 1, 1)
+            !before && during && !memo.open(3)
+        }
         then "eviction removes values and kernel reuse together" {
             let db = new_db()
             let family = db.family((arg: int) -> db.changed_at(Key { family: 0, arg: arg }))

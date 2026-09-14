@@ -26,7 +26,7 @@
 | S4r the `Code` value | **DONE** 2026-09-13 | a quote answers `@std.meta.Code`; `Code<T>` decided UNTYPED, homing pays the two-frame error |
 | S4r origin hygiene | **DONE** 2026-09-13 | generations + origin-keyed resolve; private helpers found, `let tmp` cannot capture; refusals speak at the template line |
 | shared `param` grammar rule | leave-alone, trigger named | not forced yet |
-| private top-level `const` module scope | **NEW ASK** (dogfooding) | today file-local + order-sensitive |
+| private top-level `const` module scope | **DONE** 2026-09-13 (comptime/const) | a top-level const is a module declaration; 58 `export`s dropped |
 | later list | open | static aggregate data, JIT, type operators, typed holes, manifest grants, parallel settlement, `@total` |
 
 **Working state:** branch `lane/comptime`, worktree
@@ -81,7 +81,7 @@ the owner says otherwise:
    machinery (generations, segments, keyed binders) is what it would
    sit on.
 
-4. THE PRIVATE-CONST ASK (a language migration, not a patch). A
+4. (done 2026-09-13, comptime/const) THE PRIVATE-CONST ASK (a language migration, not a patch). A
    private `fn` is module-visible and order-free; a private top-level
    `const` is FILE-LOCAL and F3001 "used before its definition", so
    ~60 internal constants had to be exported in the dogfooding

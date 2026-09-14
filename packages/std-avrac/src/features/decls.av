@@ -68,7 +68,9 @@ export type Decls = {
     // without walking every declaration in the workspace
     impls_by_name: Map<string, List<DeclId>>,
     ensure: List<fn(DeclId)>,
-    ensure_const: List<fn(FileId, StmtId)>,
+    // the workspace's const-type hook: types the const, and answers
+    // whether this ask closed a cycle
+    ensure_const: List<fn(FileId, StmtId) -> bool>,
     // the workspace's lifting hook: an annotation fn run over a
     // declaration at compile time, what it said back
     lifter: List<fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>>,
@@ -101,7 +103,16 @@ fn no_marks(d: DeclId) {
 }
 
 // LICENSED I23: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
-fn no_const_ensure(f: FileId, s: StmtId) { }
+fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
+
+/// A const's type as the program answers it — or why it has none:
+/// the const REFUSED (spoken at its own value), or its value asks
+/// for its own type, which only the asking read can speak.
+export enum ConstType {
+    Known(TypeId)
+    Refused
+    Cyclic
+}
 
 fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 
@@ -229,10 +240,9 @@ impl Decls {
                     if fd.default != null { made.push(self.mint_default(key, f, s, fd, name, d)) }
                 }
             }
-            // an EXPORTED top-level `const` is a declaration too —
-            // exportable, namespaced, read cross-file. A plain one
-            // stays a file-local value, as it always was.
-            if store.declared_kind(s) == null && store.is_exported(s) && store.const_value(s) != null {
+            // a top-level `const` is a declaration like a fn: module-wide,
+            // order-free, exported only when it says so.
+            if store.const_value(s) != null {
                 let name = store.let_name(s) ?? ""
                 let key = fresh_key("${path}::const::${name}", s, seen)
                 seen.push(key)
@@ -442,9 +452,20 @@ impl Decls {
     fn mint_code_stmt(f: FileId, store: NodeStore, s: StmtId, tag: string, ann: string, at: Span?, lo: int) -> List<DeclId> {
         let kind: DeclKind? = store.declared_kind(s)
         if kind != null { return self.mint_code_decl(f, store, s, kind!, tag, ann, at, lo) }
+        if store.const_value(s) != null { return [self.mint_code_const(f, store, s, tag, ann, at, lo)] }
         let ip: ImplParts? = store.impl_parts(s)
         if ip != null { return self.mint_code_impl(f, store, s, ip!, tag, ann, at, lo) }
         []
+    }
+
+    /// A generated top-level `const`: a declaration like a written one,
+    /// wearing the range of its own value.
+    fn mint_code_const(f: FileId, store: NodeStore, s: StmtId, tag: string, ann: string, at: Span?, lo: int) -> DeclId {
+        let name = store.let_name(s) ?? ""
+        let d = self.mint(generated_key(f, "${tag}$${name}"), f, s, name, DeclKind.Const, false, "", null, false, null)
+        self.note_provenance(d, ann, name, at)
+        self.decls.set(d.index, self.decl(d) with { lo: lo, hi: store.const_value(s)!.index + 1 })
+        d
     }
 
     /// A generated declaration, under the key no written name can take,
@@ -681,12 +702,14 @@ impl Decls {
         self.ensure.set(0, ensure)
     }
 
-    fn arm_const(ensure: fn(FileId, StmtId)) { self.ensure_const.set(0, ensure) }
+    fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(0, ensure) }
 
-    fn const_type(f: FileId, s: StmtId) -> TypeId? {
+    fn const_type(f: FileId, s: StmtId) -> ConstType {
         let ensure = self.ensure_const[0]
-        ensure(f, s)
-        self.held_const_type(f, s)
+        if ensure(f, s) { return ConstType.Cyclic }
+        let held: TypeId? = self.held_const_type(f, s)
+        if held == null { return ConstType.Refused }
+        ConstType.Known(held!)
     }
 
     fn held_const_type(f: FileId, s: StmtId) -> TypeId? { self.const_types.get(const_type_key(f, s)) }
