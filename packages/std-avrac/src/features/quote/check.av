@@ -1,42 +1,106 @@
-//! The hole law: a hole splices text (a name, a fragment), a scalar
-//! (its spelling), a named meta value (its name) or `Code` (runs with
-//! their own origins); the answer is always `Code`.
-use core.{ExprId, TypeId, DeclId, QuoteParts}
+//! The hole law, by SEAT: a hole takes what its position takes, and
+//! the quote answers the meta kind its body parsed as — both judged
+//! HERE, in the file that wrote the template, with no user of it.
+use core.{ExprId, TypeId, DeclId, QuoteParts, HoleKind, hole_kinds, quote_kind}
 use features.{TypeCx, this_is}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
 
 fn quote_type(mut cx: TypeCx, e: ExprId) -> TypeId {
-    let code: DeclId? = cx.view.decls.meta_named("Code")
-    if code == null { return cx.spoken(no_meta(cx.loc_of(e))) }
-    let answer = cx.view.decls.self_type_of(code!)
-    let q: QuoteParts? = (cx.view.store.expr(e)).quote_of()
-    for h in q?.holes ?? [] {
-        if !fills_hole(cx, h) { return cx.spoken(hole_refused(cx.loc_of(h), cx.name_at(h))) }
+    let held: QuoteParts? = (cx.view.store.expr(e)).quote_of()
+    if held == null { return cx.error_type }
+    let q = held!
+    let kinds = hole_kinds(cx.view.store, q)
+    let whole = quote_kind(cx.view.store, q)
+    for k, h in q.holes {
+        let kind = if whole is .Holes { HoleKind.Statement } else { kinds[k] }
+        if !fills(cx, kind, h) { return cx.spoken(hole_refused(cx.loc_of(h), kind, cx.name_at(h), cx.shape_at(h) is .Str)) }
     }
-    answer
+    let answer: string = match whole {
+        .Expr -> "Code",
+        .Stmts -> "Stmts",
+        .Arms -> "Arms",
+        .Decls -> "Decls",
+        .Holes -> filled_kind(cx, q.holes),
+    }
+    let d: DeclId? = cx.view.decls.meta_named(answer)
+    if d == null { return cx.spoken(no_meta(cx.loc_of(e), answer)) }
+    cx.view.decls.self_type_of(d!)
 }
 
-/// WHAT A HOLE CAN SPLICE — a REGISTRY, not a question about one
-/// variant: a new value category must say whether it splices.
-fn fills_hole(cx: TypeCx, h: ExprId) -> bool {
+/// A quote of nothing but holes answers what fills it: the first
+/// hole's kind, an expression for a scalar.
+fn filled_kind(cx: TypeCx, holes: List<ExprId>) -> string {
+    let first: ExprId? = holes.first()
+    if first == null { return "Stmts" }
+    let ty = cx.type_at(first!)
+    let kinds = ["Code", "Stmts", "Arms", "Decls"]
+    kinds.find((k: string) -> cx.view.decls.meta_type(ty, k)) ?? "Code"
+}
+
+/// WHAT A SEAT TAKES — a REGISTRY over the hole kinds: a new kind
+/// must say what fills it.
+fn fills(cx: TypeCx, kind: HoleKind, h: ExprId) -> bool {
     let ty = cx.type_at(h)
-    match cx.shape_at(h) {
-        .Int or .Float or .Bool or .Str or .Error -> true,
-        .Struct(_, _) -> cx.view.decls.meta_type(ty, "Code") || cx.view.decls.meta_names_one(ty),
-        .Ptr or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or
-        .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or
-        .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or
-        .Var(_, _, _) -> false,
+    let shape = cx.shape_at(h)
+    match kind {
+        .Expression -> is_meta(cx, ty, "Code") || shape is .Int || shape is .Bool,
+        .Name or .Type -> names(cx, h),
+        .Binder -> names(cx, h) || elem_is(cx, ty, (t: TypeId) -> cx.view.types.shape_of(t) is .Str),
+        .Statement -> statement(cx, ty) || elem_is(cx, ty, (t: TypeId) -> statement(cx, t)),
+        .Arm -> is_meta(cx, ty, "Arms") || elem_is(cx, ty, (t: TypeId) -> is_meta(cx, t, "Arms")),
     }
+}
+
+/// A name's fills: text, a number's digits, or a named meta value.
+fn names(cx: TypeCx, h: ExprId) -> bool {
+    let shape = cx.shape_at(h)
+    shape is .Str || shape is .Int || cx.view.decls.meta_names_one(cx.type_at(h))
+}
+
+/// A statement seat takes any code but arms.
+fn statement(cx: TypeCx, ty: TypeId) -> bool {
+    is_meta(cx, ty, "Code") || is_meta(cx, ty, "Stmts") || is_meta(cx, ty, "Decls")
+}
+
+fn is_meta(cx: TypeCx, ty: TypeId, name: string) -> bool { cx.view.decls.meta_type(ty, name) }
+
+fn elem_is(cx: TypeCx, ty: TypeId, pred: fn(TypeId) -> bool) -> bool {
+    let elem: TypeId? = cx.view.decls.elem_of(ty)
+    elem != null && pred(elem!)
 }
 
 // ── voices ──
 
-fn no_meta(at: Loc?) -> Diag {
-    refusal("type.quote_meta", at, "a `quote` answers `@std.meta.Code`, and this program does not load `@std/meta`", "the quote", "add `\"@std/meta\"` to the package's dependencies")
+fn no_meta(at: Loc?, answer: string) -> Diag {
+    refusal("type.quote_meta", at, "a `quote` answers `@std.meta.${answer}`, and this program does not load `@std/meta`", "the quote", "add `\"@std/meta\"` to the package's dependencies")
 }
 
-fn hole_refused(at: Loc?, n: string) -> Diag {
-    refusal("type.quote_hole", at, "a quote's hole splices text, a scalar, a named meta value or `Code`, found `${n}`", this_is(n), "splice the value's name or spelling, or a `quote { … }` of it")
+fn hole_refused(at: Loc?, kind: HoleKind, n: string, text: bool) -> Diag {
+    if text && kind is .Expression {
+        return refusal("type.quote_hole", at, "a string in expression position is ambiguous — `literal(s)` spells a string literal, `name(s)` a name", "this hole", "say which: `\${literal(s)}` or `\${name(s)}`")
+    }
+    refusal("type.quote_hole", at, "a hole in ${seat_word(kind)} position takes ${takes_word(kind)}, found `${n}`", this_is(n), "fill the hole with what its seat takes")
+}
+
+fn seat_word(kind: HoleKind) -> string {
+    match kind {
+        .Expression -> "expression",
+        .Name -> "name",
+        .Binder -> "binder",
+        .Type -> "type",
+        .Statement -> "statement",
+        .Arm -> "arm",
+    }
+}
+
+fn takes_word(kind: HoleKind) -> string {
+    match kind {
+        .Expression -> "`Code`, an `int` or a `bool`",
+        .Name -> "a `string`, an `int` or a named meta value",
+        .Binder -> "a name, or a `List<string>` of them",
+        .Type -> "a `Type`, a `Field`'s or a `string` spelling",
+        .Statement -> "`Code`, `Stmts` or `Decls`, or a list of them",
+        .Arm -> "`Arms` or a `List<Arms>`",
+    }
 }

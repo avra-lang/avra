@@ -5,7 +5,7 @@
 //! It is the S4 payday: a METHOD-shaped derive rides `Decls.methods`
 //! program-wide, so a generated accessor crosses files with no
 //! namespace widening and no call-site shape but `d.fn_sig()`.
-use @std.meta.{Type, Variant, Directive as MetaDirective}
+use @std.meta.{Type, Variant, Directive as MetaDirective, Decls as MetaDecls}
 use @std.text.{from_codepoints}
 
 /// The compiler's own derive: the accessors of the annotated enum,
@@ -15,16 +15,15 @@ use @std.text.{from_codepoints}
 trait Projections {
     static fn derive(t: Type) -> List<MetaDirective> {
         let methods = [projection_of(v) for v in t.variants]
-        let body = methods.join("\n")
-        [MetaDirective { twin: "", name: t.name, at: t.at, source: quote { impl ${t} {
-${body}
-} } }]
+        [MetaDirective { twin: "", name: t.name, at: t.at, source: quote { impl ${t} { ${methods} } } }]
     }
 }
 
 /// One variant's accessor: `<name>_sig`, the payload, or null.
-fn projection_of(v: Variant) -> string {
-    "fn ${method_name(v.name)}() -> ${v.payload[0]}? { match self { .${v.name}(s) -> s, _ -> null } }"
+fn projection_of(v: Variant) -> MetaDecls {
+    let method = method_name(v.name)
+    let payload = v.payload[0]
+    quote { fn ${method}() -> ${payload}? { match self { .${v}(s) -> s, _ -> null } } }
 }
 
 /// `Fn` -> `fn_sig`, `Record` -> `record_sig`, `Enum` -> `enum_sig`.

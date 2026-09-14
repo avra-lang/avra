@@ -1,51 +1,111 @@
-//! A quote lowers as its runs: each part is `quoted` from this file,
-//! each hole `spliced` as text or taken as the `Code` it is, and ONE
-//! `joined` answers — three `@std/meta` calls, no new instruction.
-use core.{ExprId, Reg, Ins, DeclId, QuoteParts}
+//! A quote lowers as ONE `template` call: this file, the quote's
+//! offset, its runs, and its fills — each fill coerced by its seat's
+//! kind through a `@std/meta` row — wrapped as the kind the body
+//! parsed as. No new instruction.
+use core.{ExprId, Reg, Ins, DeclId, TypeId, QuoteParts, HoleKind, hole_kinds, quote_kind}
 use features.{LowerCx}
 
 fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     let held: QuoteParts? = (cx.view.store.expr(e)).quote_of()
-    if held == null { return cx.lower_defect(e, "a quote without its runs") }
+    if held == null { return cx.lower_defect(e, "a quote without its body") }
     let q = held!
-    let starts = cx.view.store.quote_starts_of(e)
-    let origin = cx.const_str(cx.view.source.file)
-    mut runs = [run_reg(cx, e, q.parts[0], starts[0], origin)]
-    for j, h in q.holes {
-        runs.push(hole_reg(cx, e, h))
-        runs.push(run_reg(cx, e, q.parts[j + 1], starts[j + 1], origin))
+    let node_ty = meta_self(cx, "Node")
+    let kinds = hole_kinds(cx.view.store, q)
+    let whole = quote_kind(cx.view.store, q)
+    let file = cx.const_str(cx.view.source.file)
+    let at = cx.const_int((cx.view.store.expr_span(e))?.lo ?? 0)
+    let parts = boxed(cx, cx.type(List<string>), [cx.const_str(p) for p in q.parts])
+    mut fills: List<Reg> = []
+    // LICENSED I3: each fill EMITS through the context, which a comprehension element does not
+    for k, h in q.holes {
+        fills.push(fill_reg(cx, e, if whole is .Holes { HoleKind.Statement } else { kinds[k] }, h, node_ty))
     }
-    let size = cx.box_size(runs.length)
-    let code = cx.type_at(e)
-    let arr = cx.mint_ty(cx.type(List<code>))
-    cx.grown_box(arr, size, runs)
-    let sep = cx.const_str("")
-    meta_call(cx, e, "joined", [arr, sep])
+    let node = meta_call(cx, e, "template", [file, at, parts, boxed(cx, cx.type(List<node_ty>), fills)], node_ty)
+    meta_call(cx, e, wrap_verb(cx, e), [node], cx.type_at(e))
 }
 
-/// One of the template's own runs, wearing this file and its offset.
-fn run_reg(mut cx: LowerCx, e: ExprId, text: string, at: int, origin: Reg) -> Reg {
-    let t = cx.const_str(text)
-    let a = cx.const_int(at)
-    meta_call(cx, e, "quoted", [t, origin, a])
+/// The wrapping row for the kind the quote answers.
+fn wrap_verb(cx: LowerCx, e: ExprId) -> string {
+    let ty = cx.type_at(e)
+    let kinds = ["Code", "Stmts", "Arms", "Decls"]
+    let kind = kinds.find((k: string) -> cx.view.decls.meta_type(ty, k)) ?? "Code"
+    match kind {
+        "Stmts" -> "as_stmts",
+        "Arms" -> "as_arms",
+        "Decls" -> "as_decls",
+        _ -> "as_code",
+    }
 }
 
-/// A hole's value as code: `Code` as it is; a named meta value by
-/// its name; anything else by its text — spliced, so its names
-/// resolve where the code lands.
-fn hole_reg(mut cx: LowerCx, e: ExprId, h: ExprId) -> Reg {
+/// A hole's value as a `Node`, by its seat: a template as its node,
+/// a scalar or a name through the row that lifts it, a list through
+/// the row that joins it.
+fn fill_reg(mut cx: LowerCx, e: ExprId, kind: HoleKind, h: ExprId, node_ty: TypeId) -> Reg {
     let ty = cx.type_at(h)
-    if cx.view.decls.meta_type(ty, "Code") { return cx.reg_of(h) }
-    let named: int? = if cx.view.decls.meta_names_one(ty) { cx.view.decls.fields_of_type(ty)?.slot_of("name") } else { null }
-    let text = if named != null { cx.field_read(cx.reg_of(h), ty, named!, cx.type(string)) } else { cx.texted(h) }
-    meta_call(cx, e, "spliced", [text])
+    let templated: string? = ["Code", "Stmts", "Arms", "Decls"].find((k: string) -> cx.view.decls.meta_type(ty, k))
+    if templated != null { return node_of(cx, cx.reg_of(h), ty, node_ty) }
+    let listed: string? = list_row(cx, ty)
+    if listed != null { return meta_call(cx, e, listed!, [cx.reg_of(h)], node_ty) }
+    if cx.view.decls.meta_names_one(ty) { return meta_call(cx, e, "name_node", [named(cx, h, ty)], node_ty) }
+    match cx.shape_at(h) {
+        .Str -> meta_call(cx, e, "name_node", [cx.reg_of(h)], node_ty),
+        .Int -> meta_call(cx, e, if kind is .Expression { "int_node" } else { "int_name" }, [cx.reg_of(h)], node_ty),
+        .Bool -> meta_call(cx, e, "bool_node", [cx.reg_of(h)], node_ty),
+        rest -> cx.lower_defect(h, "a hole typing accepted lowers no fill"),
+    }
 }
 
-/// A `@std/meta` verb called by the compiler — answering `Code`.
-fn meta_call(mut cx: LowerCx, e: ExprId, verb: string, args: List<Reg>) -> Reg {
+/// The joining row for a list fill, by its element.
+fn list_row(cx: LowerCx, ty: TypeId) -> string? {
+    let elem: TypeId? = cx.view.decls.elem_of(ty)
+    if elem == null { return null }
+    let t = elem!
+    let rows = table<ListRow> {
+        kind    | row
+        "Code"  | "code_nodes"
+        "Stmts" | "stmts_nodes"
+        "Arms"  | "arms_nodes"
+        "Decls" | "decls_nodes"
+    }
+    let found: ListRow? = rows.find((r: ListRow) -> cx.view.decls.meta_type(t, r.kind))
+    if found != null { return found!.row }
+    if cx.view.types.shape_of(t) is .Str { return "names_node" }
+    null
+}
+
+type ListRow = { kind: string, row: string }
+
+/// A template value's node — its one field.
+fn node_of(mut cx: LowerCx, v: Reg, ty: TypeId, node_ty: TypeId) -> Reg {
+    let slot: int? = (cx.view.decls.fields_of_type(ty))?.slot_of("node")
+    cx.field_read(v, ty, slot ?? 0, node_ty)
+}
+
+/// A named meta value's `name`.
+fn named(mut cx: LowerCx, h: ExprId, ty: TypeId) -> Reg {
+    let slot: int? = (cx.view.decls.fields_of_type(ty))?.slot_of("name")
+    cx.field_read(cx.reg_of(h), ty, slot ?? 0, cx.type(string))
+}
+
+/// A list of registers as a box of `ty`.
+fn boxed(mut cx: LowerCx, ty: TypeId, items: List<Reg>) -> Reg {
+    let size = cx.box_size(items.length)
+    let arr = cx.mint_ty(ty)
+    cx.grown_box(arr, size, items)
+    arr
+}
+
+fn meta_self(mut cx: LowerCx, name: string) -> TypeId {
+    let d: DeclId? = cx.view.decls.meta_named(name)
+    if d == null { return cx.type(string) }
+    cx.view.decls.self_type_of(d!)
+}
+
+/// A `@std/meta` row called by the compiler, answering `ret`.
+fn meta_call(mut cx: LowerCx, e: ExprId, verb: string, args: List<Reg>, ret: TypeId) -> Reg {
     let d: DeclId? = cx.view.decls.meta_named(verb)
     if d == null { return cx.lower_defect(e, "`@std.meta.${verb}` is not declared") }
-    let dst = cx.mint_ty(cx.type_at(e))
+    let dst = cx.mint_ty(ret)
     cx.emit(Ins.Call(dst, cx.wanted(d!, null, []), args))
     dst
 }

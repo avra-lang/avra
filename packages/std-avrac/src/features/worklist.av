@@ -119,15 +119,22 @@ export type Said = { message: string, help: string?, at: Loc?, warning: bool }
 /// view of the crossing: `@std/meta`'s spellable `Directive` ships
 /// the same fields; the materializer mints a twin from them. (NOT
 /// `Decl` — that is the compiler's own declaration record.)
-export type Directive = { twin: string, name: string, at: Loc?, source: Code? = null }
+export type Directive = { twin: string, name: string, at: Loc?, source: Node? = null }
 
-/// One run of generated source and the file that wrote it — the
-/// compiler's view of `@std.meta.Piece`. An absent origin is a hole's
-/// text: it resolves where the code is spliced.
-export type Piece = { text: string, origin: string?, at: int }
-
-/// Generated source with its origins — `@std.meta.Code` crossed.
-export type Code = { pieces: List<Piece> }
+/// Generated code as a tree — the compiler's view of `@std.meta.Node`,
+/// variant for variant. A `Template` names a quote (the file that
+/// wrote it, the offset it starts at) and carries its fills; the
+/// body is that quote's own, in that file's store.
+export enum Node {
+    Template(file: string, at: int, parts: List<string>, fills: List<Node>)
+    Name(text: string)
+    Text(text: string)
+    Int(value: int)
+    Float(bits: int)
+    Bool(value: bool)
+    Interp(parts: List<string>, holes: List<Node>)
+    Many(items: List<Node>, sep: string)
+}
 
 /// A half-open run of arena indexes.
 export type IndexRange = { lo: int, hi: int }
@@ -144,27 +151,9 @@ impl ArenaMarks {
 }
 
 /// One admitted GENERATION of a file: the arena ranges its nodes
-/// occupy, the runs its text was stitched from, and the annotation
-/// that asked for it — how a generated node answers where it was
-/// written.
-export type Generation = { exprs: IndexRange, stmts: IndexRange, pats: IndexRange, segments: List<Segment>, at: Span? }
-
-/// A run of a generation's text: its bytes in the generated source,
-/// the file that wrote it (absent: a hole's text, resolved where the
-/// code is spliced) and the run's offset in that file.
-export type Segment = { lo: int, hi: int, origin: FileId?, at: int }
-
-impl Generation {
-    /// The run holding offset `at` of the generated source.
-    fn segment_at(at: int) -> Segment? {
-        self.segments.find(it.lo <= at && at < it.hi)
-    }
-}
-
-impl Code {
-    /// The source, origins forgotten.
-    fn text() -> string { joined([p.text for p in self.pieces], "") }
-}
+/// occupy and the annotation that asked for it. Where each node was
+/// WRITTEN is the node's own fact (`Decls.origin_of`).
+export type Generation = { exprs: IndexRange, stmts: IndexRange, pats: IndexRange, at: Span? }
 
 /// A record under a seat: one slot per field, in the seat's own
 /// order, filled by NAME from a keyed map — the one WRITE across the
@@ -175,8 +164,9 @@ export fn meta_row(heap: MetaHeap, shape: StructSig, filled: Map<string, MetaVal
 }
 
 /// Where a generated declaration came from — the annotation fn that
-/// asked for it, the declaration it wraps, and the annotation's site.
-export type Provenance = { ann: string, original: string, at: Span? }
+/// asked for it, the declaration it wraps, the annotation's site, and
+/// the template that wrote it.
+export type Provenance = { ann: string, original: string, at: Span?, template: Loc? = null }
 
 /// One generated fn's materializer inputs, gathered from a written
 /// declaration and its Declares annotation.
