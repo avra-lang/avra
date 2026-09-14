@@ -11,7 +11,7 @@
 //! `repr_of`, and every consumer asks the verbs below instead of
 //! knowing. A new value CATEGORY joins here, beside the readers
 //! that make its layout nobody else's business.
-use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, Expr, NodeStore, filled, QuoteParts}
+use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, Expr, NodeStore, filled, QuoteParts, quote_kind}
 use features.{MetaVal, MetaHeap, TypeFacts, Decls, StructSig, EnumSig}
 
 // ── The source-spelled value ────────────────────────────────────
@@ -115,20 +115,28 @@ fn literal_variant(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, 
     heap.node([MetaVal.Int(tag)].concat(payloads!))
 }
 
-/// A hole-less quote as the crossing tree — one run of this file's
-/// own text, as `Code { pieces: [Piece { text, origin, at }] }`. Null
-/// for anything else, a quote with holes included: a hole is a body
-/// the evaluator runs.
+/// A hole-less quote as the crossing tree — a `Template` naming this
+/// file and the quote's offset, with nothing to fill, under the kind
+/// its body parsed as. Null for anything else, a quote with holes
+/// included: a hole is a body the evaluator runs.
 export fn quote_meta(store: NodeStore, decls: Decls, path: string, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
-    let q: QuoteParts? = (store.expr(e)).quote_of()
-    if q == null || !q!.holes.is_empty() { return null }
-    let run: MetaVal? = decls.meta_record("Piece", heap, {
-        "text": MetaVal.Text(q!.parts[0]),
-        "origin": MetaVal.Text(path),
-        "at": MetaVal.Int(store.quote_starts_of(e)[0]),
-    })
-    if run == null { return null }
-    decls.meta_record("Code", heap, { "pieces": heap.node([run!]) })
+    let held: QuoteParts? = (store.expr(e)).quote_of()
+    if held == null || !held!.holes.is_empty() { return null }
+    let q = held!
+    let node_decl = decls.meta_named("Node")
+    if node_decl == null { return null }
+    let sig: EnumSig? = decls.variants_of_type(decls.self_type_of(node_decl!))
+    let tag: int? = sig?.tag_of("Template")
+    if tag == null { return null }
+    let at: int = (store.expr_span(e))?.lo ?? 0
+    let template = heap.node([MetaVal.Int(tag!), MetaVal.Text(path), MetaVal.Int(at), heap.node([MetaVal.Text(p) for p in q.parts]), heap.node([])])
+    let kind: string = match quote_kind(store, q) {
+        .Expr -> "Code",
+        .Stmts or .Holes -> "Stmts",
+        .Arms -> "Arms",
+        .Decls -> "Decls",
+    }
+    decls.meta_record(kind, heap, { "node": template })
 }
 
 // ── The slot array, behind its verbs ────────────────────────────

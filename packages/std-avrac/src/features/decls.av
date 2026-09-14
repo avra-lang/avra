@@ -8,12 +8,12 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr}
+use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr}
 use core.{SeatMark, mark_at, plain_mark}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
-use @std.errors.{Loc, Frame}
-use features.{TypeRow, TypeArgs, Said, Unsettled, Lifted, MetaHeap, MetaVal, StructSig, EnumSig, generated_key, Decl}
+use @std.errors.{Loc}
+use features.{TypeRow, TypeArgs, Said, Unsettled, Lifted, MetaHeap, MetaVal, StructSig, EnumSig, generated_key, Decl, Node}
 
 /// A file's path facts — known at first mention, before its parse.
 export type FileInfo = { id: FileId, path: string, module_id: ModuleId }
@@ -47,9 +47,13 @@ export type Decls = {
     sigs: List<DeclSig?>,
     // a GENERATED declaration's origin — null for every written one
     provenance: List<Provenance?>,
-    // a file's admitted GENERATIONS, in order — where each generated
-    // node's text was written; dense by FileId
+    // a file's admitted GENERATIONS, in order — the arena ranges each
+    // took and the annotation that asked; dense by FileId
     generations: List<List<Generation>>,
+    // a generated node's ORIGIN — the file whose template wrote it,
+    // by node key (`e12`, `s3`, `p7`); absent for a written node and
+    // for one whose name came through a hole; dense by FileId
+    origins: List<Map<string, int>>,
     // what a file's expansions REFUSED — generated source that did not
     // parse, spoken at the template that wrote it; dense by FileId
     expansion_voices: List<List<Diag>>,
@@ -108,7 +112,7 @@ fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
-        stores: [], decl_ids: [], file_decls: [], generations: [], expansion_voices: [], meta_ids: {}, decls: [], keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
+        stores: [], decl_ids: [], file_decls: [], generations: [], origins: [], expansion_voices: [], meta_ids: {}, decls: [], keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
         ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
         seat_marks: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
         lifter: [no_lifter],
@@ -167,6 +171,7 @@ impl Decls {
         self.decl_ids.push([])
         self.file_decls.push([])
         self.generations.push([])
+        self.origins.push({})
         self.expansion_voices.push([])
         self.mains.push(null)
         id
@@ -567,6 +572,21 @@ impl Decls {
         self.generations.set(f.index, self.generations[f.index].concat([g]))
     }
 
+    /// Nodes copied from a template: each wears the file that wrote it.
+    fn note_origins(f: FileId, keys: List<string>, origin: FileId) {
+        mut known = self.origins[f.index]
+        for k in keys { known.set(k, origin.index) }
+        self.origins.set(f.index, known)
+    }
+
+    /// The file a generated node's text was WRITTEN in, when it is
+    /// another than the node's own.
+    fn origin_of(f: FileId, key: string) -> FileId? {
+        let i: int? = self.origins[f.index].get(key)
+        if i == null { return null }
+        FileId { index: i! }
+    }
+
     /// What a file's expansion refused, kept for its resolve to speak.
     fn speak_expansion(f: FileId, ds: List<Diag>) {
         self.expansion_voices.set(f.index, self.expansion_voices[f.index].concat(ds))
@@ -761,11 +781,11 @@ impl Decls {
         }
     }
 
-    /// A directive's generated source, when it carries one.
-    fn source_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Code? {
+    /// A directive's generated declarations, when it carries some.
+    fn source_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Node? {
         let at = sig.names.index_of("source")
         if at < 0 { return null }
-        self.code_of_meta(heap, sig.types[at], self.field_of(heap, sig, item, "source"))
+        self.node_of_meta(heap, sig.types[at], self.field_of(heap, sig, item, "source"))
     }
 
     /// A list type's element, or null for any other shape.
@@ -800,22 +820,52 @@ impl Decls {
         }
     }
 
-    /// A crossed `Code`: its runs, each with the file that wrote it.
-    fn code_of_meta(heap: MetaHeap, ty: TypeId, v: MetaVal) -> Code? {
+    /// A crossed template value (`Code`, `Stmts`, `Arms`, `Decls`):
+    /// its one field, the node.
+    fn node_of_meta(heap: MetaHeap, ty: TypeId, v: MetaVal) -> Node? {
         if v is .Absent { return null }
         let held: StructSig? = self.fields_of_type(self.types.carried(ty) ?? ty)
         if held == null { return null }
-        let code_sig = held!
-        let piece_sig: StructSig? = self.elem_sig(code_sig.types[code_sig.names.index_of("pieces")])
-        if piece_sig == null { return null }
-        Code { pieces: [self.piece_of(heap, piece_sig!, item) for item in heap.slots(self.field_of(heap, code_sig, v, "pieces"))] }
+        let sig = held!
+        let at = sig.names.index_of("node")
+        if at < 0 { return null }
+        self.node_value(heap, sig.types[at], self.field_of(heap, sig, v, "node"))
     }
 
-    fn piece_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Piece {
-        Piece {
-            text: self.text_of_meta(self.field_of(heap, sig, item, "text")),
-            origin: self.optional_text(self.field_of(heap, sig, item, "origin")),
-            at: self.int_of_meta(self.field_of(heap, sig, item, "at")),
+    /// A crossed `@std.meta.Node`: the tag names the variant, the
+    /// slots after it are the payloads — the meta enum and the
+    /// compiler's mirror agree by the VARIANT'S NAME, never a position.
+    fn node_value(heap: MetaHeap, ty: TypeId, v: MetaVal) -> Node? {
+        let sig: EnumSig? = self.variants_of_type(ty)
+        let slots = heap.slots(v)
+        if sig == null || slots.is_empty() { return null }
+        let tag = self.int_of_meta(slots[0])
+        if tag < 0 || tag >= sig!.names.length { return null }
+        match sig!.names[tag] {
+            "Template" -> Node.Template(self.text_of_meta(slots[1]), self.int_of_meta(slots[2]), self.texts_of_meta(heap, slots[3]), self.nodes_of_meta(heap, ty, slots[4])),
+            "Name" -> Node.Name(self.text_of_meta(slots[1])),
+            "Text" -> Node.Text(self.text_of_meta(slots[1])),
+            "Int" -> Node.Int(self.int_of_meta(slots[1])),
+            "Float" -> Node.Float(self.bits_of_meta(slots[1])),
+            "Bool" -> Node.Bool(self.bool_of_meta(slots[1])),
+            "Interp" -> Node.Interp(self.texts_of_meta(heap, slots[1]), self.nodes_of_meta(heap, ty, slots[2])),
+            "Many" -> Node.Many(self.nodes_of_meta(heap, ty, slots[1]), self.text_of_meta(slots[2])),
+            _ -> null,
+        }
+    }
+
+    fn texts_of_meta(heap: MetaHeap, v: MetaVal) -> List<string> {
+        [self.text_of_meta(x) for x in heap.slots(v)]
+    }
+
+    fn nodes_of_meta(heap: MetaHeap, ty: TypeId, v: MetaVal) -> List<Node> {
+        flatten([some_list(self.node_value(heap, ty, x)) for x in heap.slots(v)])
+    }
+
+    fn bits_of_meta(v: MetaVal) -> int {
+        match v {
+            .Float(bits) -> bits,
+            .Int(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> 0,
         }
     }
 
@@ -1087,33 +1137,18 @@ impl Decls {
     /// that wrote it, or at the annotation that asked.
     fn loc(d: DeclId) -> Loc? {
         let x = self.decl(d)
-        self.homed(x.file, self.generation_of_stmt(x.file, x.stmt), self.decl_span(d))
+        self.homed(x.file, self.origin_of(x.file, "s${x.stmt.index}"), self.generation_of_stmt(x.file, x.stmt), self.decl_span(d))
     }
 
-    /// A generated source's diagnostic homed: every frame's offsets in
-    /// the generated text become the run's place in the file that
-    /// wrote it, or the asking annotation's.
-    fn homed_diag(f: FileId, g: Generation, d: Diag) -> Diag {
-        d with { primary: self.homed_frame(f, g, d.primary), secondary: [self.homed_frame(f, g, fr) for fr in d.secondary] }
-    }
-
-    fn homed_frame(f: FileId, g: Generation, fr: Frame) -> Frame {
-        if fr.loc == null { return fr }
-        Frame { label: fr.label, loc: self.homed(f, g, Span { lo: fr.loc!.lo, hi: fr.loc!.hi }) }
-    }
-
-    /// A span of a file homed: a written node's is the file's own; a
-    /// generated node's is its run's place in the file that wrote it,
-    /// or the asking annotation's for a hole's text.
-    fn homed(f: FileId, g: Generation?, sp: Span?) -> Loc? {
-        if g == null { return loc_at(self.file(f).path, sp) }
-        if sp == null { return null }
-        let s = sp!
-        let seg: Segment? = g!.segment_at(s.lo)
-        if seg == null || seg!.origin == null { return loc_at(self.file(f).path, g!.at) }
-        let run = seg!
-        let hi = if s.hi < run.hi { s.hi } else { run.hi }
-        Loc { file: self.file(run.origin!).path, lo: run.at + s.lo - run.lo, hi: run.at + hi - run.lo }
+    /// A span of a file homed. A copied template node keeps the span
+    /// it was written with, so its place is that span in its origin
+    /// file; a generated node of this file's own text is at its span
+    /// here; a node minted with no span is at the annotation that
+    /// asked for it.
+    fn homed(f: FileId, origin: FileId?, g: Generation?, sp: Span?) -> Loc? {
+        if origin != null && sp != null { return loc_at(self.file(origin!).path, sp) }
+        if g == null || sp != null { return loc_at(self.file(f).path, sp) }
+        loc_at(self.file(f).path, g!.at)
     }
 
     /// THE symbol a declaration lowers to — its name under its

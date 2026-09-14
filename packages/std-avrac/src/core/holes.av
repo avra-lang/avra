@@ -1,0 +1,87 @@
+//! A template's HOLES: a hole is a NAME no program can write — `${k}`,
+//! `k` its index in the quote — so every builder mints its ordinary
+//! node with a placeholder name, and the seat that name sits in is
+//! the hole's kind.
+
+/// A hole-bearing name's runs and the holes between them: `l${2}_x`
+/// is `parts: ["l", "_x"], holes: [2]`. A LONE hole has two empty
+/// parts.
+export type HoleName = { parts: List<string>, holes: List<int> }
+
+impl HoleName {
+    /// Whether the name is the hole and nothing else.
+    fn lone() -> bool { self.holes.length == 1 && self.parts.all(it.is_empty()) }
+}
+
+/// The name a hole-bearing token wears — the inverse of `hole_name`.
+export fn placeholder(parts: List<string>, holes: List<int>) -> string {
+    let woven = [parts[j] + "\${${k}}" for j, k in holes]
+    woven.join("") + parts[holes.length]
+}
+
+/// The holes a name carries, or null for a written name. `$` spells
+/// no written name, so the test is one character.
+export fn hole_name(text: string) -> HoleName? {
+    if !text.contains("$") { return null }
+    mut parts: List<string> = []
+    mut holes: List<int> = []
+    mut run = 0
+    mut i = 0
+    while i < text.length {
+        if text.char_code(i) == 36 && i + 1 < text.length && text.char_code(i + 1) == 123 {
+            let close = closing(text, i + 2)
+            parts.push(text.substring(run, i))
+            holes.push(digits(text.substring(i + 2, close)))
+            i = close + 1
+            run = i
+        } else {
+            i = i + 1
+        }
+    }
+    parts.push(text.substring(run, text.length))
+    HoleName { parts: parts, holes: holes }
+}
+
+/// The `}` at or after `from` — a hole's index has no other closer.
+fn closing(text: string, from: int) -> int {
+    mut j = from
+    while j < text.length && text.char_code(j) != 125 { j = j + 1 }
+    j
+}
+
+fn digits(s: string) -> int {
+    mut v = 0
+    for i in 0..s.length { v = v * 10 + (s.char_code(i) - 48) }
+    v
+}
+
+/// What a hole's seat takes — typed by POSITION at the quote.
+export enum HoleKind {
+    /// a lone name where an expression stands
+    Expression
+    /// a name, or part of one: a declaration's, a field's, a
+    /// variant's, a property's
+    Name
+    /// a lone binder in a pattern
+    Binder
+    /// a written type's name
+    Type
+    /// a lone name standing as a whole statement
+    Statement
+    /// a lone name standing as a whole match arm
+    Arm
+}
+
+/// What a quote's body PARSED as — the kind its value wears.
+export enum QuoteKind {
+    /// statements whose tail is an expression: one expression
+    Expr
+    /// statements with no value
+    Stmts
+    /// match arms
+    Arms
+    /// declarations only
+    Decls
+    /// nothing but holes: the kind is what fills them
+    Holes
+}

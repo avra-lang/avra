@@ -1,0 +1,420 @@
+//! The walk that REBUILDS a template's body. At the quote's build it
+//! CLASSIFIES every hole by the seat it stands in; at the splice it
+//! COPIES the body into the target store with the holes filled. One
+//! exhaustive registry, two roles — a node nobody rebuilds cannot be
+//! spliced, and the build says so.
+
+/// What a hole is filled with — one shape per `HoleKind`.
+export enum Filled {
+    Expr(e: ExprId)
+    Name(text: string)
+    Names(texts: List<string>)
+    Type(t: TypeRef)
+    Stmts(ss: List<StmtId>)
+    Arms(arms: List<Arm>)
+}
+
+export type Rebuilder = {
+    src: NodeStore,
+    dst: NodeStore,
+    // the fills by hole index — empty while classifying
+    fills: List<Filled>,
+    // whether the walk MINTS: a classifying walk allocates nothing
+    copying: bool,
+    // a nested quote's body is copied VERBATIM: its placeholders are
+    // its own, not this template's
+    verbatim: bool,
+    // classified: each hole's kind by its index
+    kinds: Map<string, HoleKind>,
+    // minted: the nodes that wear the TEMPLATE's origin — every node
+    // but one whose binder or read came through a hole
+    made: List<string>,
+    // the open nodes, innermost last: whether a name of each came
+    // through a hole
+    holed: List<bool>,
+}
+
+/// A classifying walk over a store's quote body.
+export fn classifier(store: NodeStore) -> Rebuilder {
+    Rebuilder { src: store, dst: store, fills: [], copying: false, verbatim: false, kinds: {}, made: [], holed: [] }
+}
+
+/// A copying walk from `src` into `dst`, the holes filled.
+export fn copier(src: NodeStore, dst: NodeStore, fills: List<Filled>) -> Rebuilder {
+    Rebuilder { src: src, dst: dst, fills: fills, copying: true, verbatim: false, kinds: {}, made: [], holed: [] }
+}
+
+/// A quote's holes classified — the kind of each, by its index.
+export fn hole_kinds(store: NodeStore, q: QuoteParts) -> List<HoleKind> {
+    mut rb = classifier(store)
+    let _ = rb.stmts(q.stmts)
+    let _ = rb.arms(q.arms)
+    [rb.kinds.get("${k}") ?? HoleKind.Name for k in 0..q.holes.length]
+}
+
+/// What a quote's body PARSED as.
+export fn quote_kind(store: NodeStore, q: QuoteParts) -> QuoteKind {
+    if !q.arms.is_empty() { return QuoteKind.Arms }
+    if q.stmts.is_empty() { return QuoteKind.Stmts }
+    if q.stmts.all((s: StmtId) -> store.hole_stmt(s) != null) { return QuoteKind.Holes }
+    if store.hole_stmt(q.stmts.last()!) == null && store.stmt(q.stmts.last()!) is .ExprStmt { return QuoteKind.Expr }
+    if q.stmts.all((s: StmtId) -> store.declares(s) || store.hole_stmt(s) != null) { return QuoteKind.Decls }
+    QuoteKind.Stmts
+}
+
+fn key_expr(e: ExprId) -> string { "e${e.index}" }
+fn key_stmt(s: StmtId) -> string { "s${s.index}" }
+fn key_pat(p: PatId) -> string { "p${p.index}" }
+
+impl Rebuilder {
+    // ── seats ──
+
+    mut fn expr(e: ExprId) -> ExprId {
+        let x = self.src.expr(e)
+        let k: int? = self.lone_hole(self.src.ident_name(e))
+        if k != null {
+            self.classify(k!, HoleKind.Expression)
+            if !self.copying { return e }
+            return self.fill_expr(k!)
+        }
+        self.holed.push(false)
+        let rebuilt = self.rebuilt_expr(x)
+        let holed = self.holed.pop()
+        if !self.copying { return e }
+        self.minted_expr(e, rebuilt, holed)
+    }
+
+    mut fn expr_opt(e: ExprId?) -> ExprId? {
+        if e == null { return null }
+        self.expr(e!)
+    }
+
+    mut fn exprs(es: List<ExprId>) -> List<ExprId> { [self.expr(e) for e in es] }
+
+    mut fn stmts(ss: List<StmtId>) -> List<StmtId> { flatten([self.stmt(s) for s in ss]) }
+
+    /// A statement seat: a lone hole standing as a whole statement
+    /// fills with statements.
+    mut fn stmt(s: StmtId) -> List<StmtId> {
+        let k: int? = if self.verbatim { null } else { self.src.hole_stmt(s) }
+        if k != null {
+            self.classify(k!, HoleKind.Statement)
+            if !self.copying { return [s] }
+            return self.fill_stmts(k!)
+        }
+        let annotations = [self.annotation(a) for a in self.src.annotations_of(s)]
+        self.holed.push(false)
+        let rebuilt = self.rebuilt_stmt(self.src.stmt(s))
+        let holed = self.holed.pop()
+        if !self.copying { return [s] }
+        [self.minted_stmt(s, rebuilt, holed, annotations)]
+    }
+
+    mut fn annotation(a: Annotation) -> Annotation {
+        Annotation { name: a.name, callee: self.expr(a.callee), args: self.exprs(a.args), span: a.span }
+    }
+
+    /// A payload's pattern seats: a lone binder hole fills with one
+    /// binder per name it holds.
+    mut fn pats(ps: List<PatId>) -> List<PatId> { flatten([self.pat_seat(p) for p in ps]) }
+
+    mut fn pat_seat(p: PatId) -> List<PatId> {
+        let k: int? = self.lone_hole(self.src.bind_name(p))
+        if k == null { return [self.pat(p)] }
+        self.classify(k!, HoleKind.Binder)
+        if !self.copying { return [p] }
+        [self.dst.alloc_pat(Pat.Bind(n), null) for n in self.fill_names(k!)]
+    }
+
+    /// One pattern: a lone binder hole fills with its first name.
+    mut fn pat(p: PatId) -> PatId {
+        let k: int? = self.lone_hole(self.src.bind_name(p))
+        if k != null {
+            self.classify(k!, HoleKind.Binder)
+            if !self.copying { return p }
+            return self.dst.alloc_pat(Pat.Bind(self.fill_name(k!)), null)
+        }
+        self.holed.push(false)
+        let rebuilt = self.rebuilt_pat(self.src.pat(p))
+        let holed = self.holed.pop()
+        if !self.copying { return p }
+        let id = self.dst.alloc_pat(rebuilt, self.src.pat_span(p))
+        if !holed { self.made.push(key_pat(id)) }
+        id
+    }
+
+    mut fn arms(arms: List<Arm>) -> List<Arm> { flatten([self.arm(a) for a in arms]) }
+
+    /// An arm seat: a lone hole standing as a whole arm — its pattern
+    /// and its value the same hole — fills with arms.
+    mut fn arm(a: Arm) -> List<Arm> {
+        let k: int? = self.arm_hole(a)
+        if k != null {
+            self.classify(k!, HoleKind.Arm)
+            if !self.copying { return [a] }
+            return self.fill_arms(k!)
+        }
+        [Arm { pats: [self.pat(p) for p in a.pats], value: self.expr(a.value) }]
+    }
+
+    fn arm_hole(a: Arm) -> int? {
+        if a.pats.length != 1 { return null }
+        let k: int? = self.lone_hole(self.src.bind_name(a.pats[0]))
+        if k == null || self.lone_hole(self.src.ident_name(a.value)) != k { return null }
+        k
+    }
+
+    /// A written type: a lone hole as its name fills with a type,
+    /// keeping the `?` and the arguments written around it.
+    mut fn tref(t: TypeRef) -> TypeRef {
+        let k: int? = self.lone_hole(t.name)
+        if k != null {
+            self.classify(k!, HoleKind.Type)
+            if !self.copying { return t }
+            let f = self.fill_type(k!)
+            if t.args.is_empty() { return f with { optional: f.optional || t.optional, span: t.span } }
+            return t with { name: f.name, args: self.trefs(t.args) }
+        }
+        t with { name: self.plain_name(t.name), args: self.trefs(t.args) }
+    }
+
+    mut fn trefs(ts: List<TypeRef>) -> List<TypeRef> { [self.tref(t) for t in ts] }
+
+    mut fn tref_opt(t: TypeRef?) -> TypeRef? {
+        if t == null { return null }
+        self.tref(t!)
+    }
+
+    /// A type's NAME where no written type stands (an impl target).
+    mut fn type_name(text: string) -> string {
+        let k: int? = self.lone_hole(text)
+        if k == null { return self.plain_name(text) }
+        self.classify(k!, HoleKind.Type)
+        if !self.copying { return text }
+        self.fill_type(k!).name
+    }
+
+    mut fn type_name_opt(text: string?) -> string? {
+        if text == null { return null }
+        self.type_name(text!)
+    }
+
+    /// A binder or a read: a hole in it marks the open node as
+    /// wearing the target's origin.
+    mut fn name(text: string) -> string {
+        if !self.verbatim && hole_name(text) != null && !self.holed.is_empty() { self.holed.set(self.holed.length - 1, true) }
+        self.plain_name(text)
+    }
+
+    mut fn name_opt(text: string?) -> string? {
+        if text == null { return null }
+        self.name(text!)
+    }
+
+    /// A name that keys no scope — a type's, a field's, a variant's.
+    mut fn plain_name(text: string) -> string {
+        if self.verbatim { return text }
+        let held: HoleName? = hole_name(text)
+        if held == null { return text }
+        let hole = held!
+        for k in hole.holes { self.classify(k, HoleKind.Name) }
+        if !self.copying { return text }
+        [hole.parts[j] + self.fill_name(k) for j, k in hole.holes].join("") + hole.parts.last()!
+    }
+
+    mut fn param(p: Param) -> Param {
+        Param { name: self.name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default), mark: p.mark, span: p.span }
+    }
+
+    mut fn params(ps: List<Param>) -> List<Param> { [self.param(p) for p in ps] }
+
+    mut fn variant(v: Variant) -> Variant {
+        Variant { name: self.plain_name(v.name), payloads: self.params(v.payloads), span: v.span }
+    }
+
+    mut fn case(c: Case) -> Case {
+        Case { group: c.group, name: c.name, body: self.expr(c.body) }
+    }
+
+    // ── the registry ──
+
+    mut fn rebuilt_expr(x: Expr) -> Expr {
+        match x {
+            .IntLit(v) -> Expr.IntLit(v),
+            .FloatLit(bits) -> Expr.FloatLit(bits),
+            .StrLit(v) -> Expr.StrLit(v),
+            .BoolLit(v) -> Expr.BoolLit(v),
+            .NullLit -> Expr.NullLit,
+            .Receiver -> Expr.Receiver,
+            .Error -> Expr.Error,
+            .Ident(name) -> Expr.Ident(self.name(name)),
+            .Binary(op, l, r) -> Expr.Binary(op, self.expr(l), self.expr(r)),
+            .Not(v) -> Expr.Not(self.expr(v)),
+            .ListLit(elems) -> Expr.ListLit(self.exprs(elems)),
+            .Comp(elem, index, name, source, hi, cond) ->
+                Expr.Comp(self.expr(elem), self.name_opt(index), self.name(name), self.expr(source), self.expr_opt(hi), self.expr_opt(cond)),
+            .MapLit(keys, values) -> Expr.MapLit(self.exprs(keys), self.exprs(values)),
+            .Index(subject, index) -> Expr.Index(self.expr(subject), self.expr(index)),
+            .Prop(subject, name) -> Expr.Prop(self.expr(subject), self.plain_name(name)),
+            .Interp(parts, holes) -> Expr.Interp(parts, self.exprs(holes)),
+            .Quote(parts, stmts, arms, holes) -> self.nested_quote(parts, stmts, arms, holes),
+            .If(c, t, f) -> Expr.If(self.expr(c), self.expr(t), self.expr(f)),
+            .When(conds, values, fallback) -> Expr.When(self.exprs(conds), self.exprs(values), self.expr(fallback)),
+            .Block(stmts, value) -> Expr.Block(self.stmts(stmts), self.expr_opt(value)),
+            .Call(callee, pins, args) -> Expr.Call(self.name(callee), self.trefs(pins), self.exprs(args)),
+            .StructLit(name, fields, values) -> Expr.StructLit(self.type_name(name), [self.plain_name(f) for f in fields], self.exprs(values)),
+            .With(subject, fields, values) -> Expr.With(self.expr(subject), [self.plain_name(f) for f in fields], self.exprs(values)),
+            .Match(subject, arms) -> Expr.Match(self.expr(subject), self.arms(arms)),
+            .Coalesce(l, r) -> Expr.Coalesce(self.expr(l), self.expr(r)),
+            .MatchOpt(subject, bind, present, absent) -> Expr.MatchOpt(self.expr(subject), self.name(bind), self.expr(present), self.expr(absent)),
+            .Lambda(params, body) -> Expr.Lambda(self.params(params), self.expr(body)),
+            .CallValue(subject, args) -> Expr.CallValue(self.expr(subject), self.exprs(args)),
+            .Chain(subject, name) -> Expr.Chain(self.expr(subject), self.plain_name(name)),
+            .Force(v) -> Expr.Force(self.expr(v)),
+            .Is(subject, variant) -> Expr.Is(self.expr(subject), self.plain_name(variant)),
+            .VariantLit(name, args) -> Expr.VariantLit(self.plain_name(name), self.exprs(args)),
+            .Propagate(v) -> Expr.Propagate(self.expr(v)),
+            .Catch(subject, variants, binds, values) ->
+                Expr.Catch(self.expr(subject), [self.plain_name(v) for v in variants], [self.name(b) for b in binds], self.exprs(values)),
+            .MethodCall(subject, name, args) -> Expr.MethodCall(self.expr(subject), self.plain_name(name), self.exprs(args)),
+        }
+    }
+
+    /// A quote inside the template: its body is copied as written —
+    /// its placeholders are its own — and its holes are this
+    /// template's expressions.
+    mut fn nested_quote(parts: List<string>, stmts: List<StmtId>, arms: List<Arm>, holes: List<ExprId>) -> Expr {
+        mut sub = self with { verbatim: true, holed: [] }
+        let ss = sub.stmts(stmts)
+        let inner = sub.arms(arms)
+        self.made = self.made.concat(sub.made)
+        Expr.Quote(parts, ss, inner, self.exprs(holes))
+    }
+
+    mut fn rebuilt_stmt(x: Stmt) -> Stmt {
+        match x {
+            .Let(name, ty, value) -> Stmt.Let(self.name(name), self.tref_opt(ty), self.expr(value)),
+            .MutLet(name, ty, value) -> Stmt.MutLet(self.name(name), self.tref_opt(ty), self.expr(value)),
+            .ConstDecl(name, ty, value) -> Stmt.ConstDecl(self.name(name), self.tref_opt(ty), self.expr(value)),
+            .Assign(target, value) -> Stmt.Assign(self.expr(target), self.expr(value)),
+            .ExprStmt(v) -> Stmt.ExprStmt(self.expr(v)),
+            .Discard(v) -> Stmt.Discard(self.expr(v)),
+            .FnDecl(name, tparams, params, ret, body) ->
+                Stmt.FnDecl(self.name(name), self.params(tparams), self.params(params), self.tref(ret), self.expr(body)),
+            .ExternFn(name, params, ret) -> Stmt.ExternFn(self.name(name), self.params(params), self.tref(ret)),
+            .While(c, stmts) -> Stmt.While(self.expr(c), self.stmts(stmts)),
+            .IfStmt(c, t, e) -> Stmt.IfStmt(self.expr(c), self.stmts(t), self.stmts(e)),
+            .Return(v) -> Stmt.Return(self.expr_opt(v)),
+            .Fail(v) -> Stmt.Fail(self.expr(v)),
+            .ImplDecl(of, target, fns) -> Stmt.ImplDecl(self.type_name_opt(of), self.type_name(target), self.stmts(fns)),
+            .TraitDecl(name, fns) -> Stmt.TraitDecl(self.name(name), self.stmts(fns)),
+            .LetElse(name, subject, stmts) -> Stmt.LetElse(self.name(name), self.expr(subject), self.stmts(stmts)),
+            .For(name, from, to, cond, step, stmts) ->
+                Stmt.For(self.name(name), self.expr(from), self.expr(to), self.expr(cond), self.expr(step), self.stmts(stmts)),
+            .Use(path, items, aliases) -> Stmt.Use(path, items, aliases),
+            .ForEach(index, name, subject, stmts) -> Stmt.ForEach(self.name_opt(index), self.name(name), self.expr(subject), self.stmts(stmts)),
+            .StructDecl(name, tparams, fields) -> Stmt.StructDecl(self.name(name), [self.plain_name(t) for t in tparams], self.params(fields)),
+            .EnumDecl(name, tparams, variants) -> Stmt.EnumDecl(self.name(name), [self.plain_name(t) for t in tparams], [self.variant(v) for v in variants]),
+            .Spec(name, cases) -> Stmt.Spec(name, [self.case(c) for c in cases]),
+            .Defer(body, on_error) -> Stmt.Defer(self.expr(body), on_error),
+            .Error -> Stmt.Error,
+        }
+    }
+
+    mut fn rebuilt_pat(x: Pat) -> Pat {
+        match x {
+            .Wild -> Pat.Wild,
+            .Rest -> Pat.Rest,
+            .Bind(name) -> Pat.Bind(self.name(name)),
+            .Variant(name, args) -> Pat.Variant(self.plain_name(name), self.pats(args)),
+            .Lit(v) -> Pat.Lit(self.expr(v)),
+        }
+    }
+
+    // ── minting ──
+
+    mut fn minted_expr(e: ExprId, x: Expr, holed: bool) -> ExprId {
+        let id = self.dst.alloc_expr(x, self.src.expr_span(e))
+        if self.src.is_trailing(e) { self.dst.mark_trailing(id) }
+        if self.src.is_type_lit(e) { self.dst.mark_type_lit(id) }
+        if self.src.is_hole(e) { self.dst.mark_hole(id) }
+        if x is .Quote { self.dst.mark_quote_at(id) }
+        if !holed { self.made.push(key_expr(id)) }
+        id
+    }
+
+    mut fn minted_stmt(s: StmtId, x: Stmt, holed: bool, annotations: List<Annotation>) -> StmtId {
+        let id = self.dst.alloc_stmt(x, self.src.stmt_span(s))
+        if self.src.is_exported(s) { self.dst.mark_exported(id) }
+        if self.src.is_mutating(s) { self.dst.mark_mutating(id) }
+        if self.src.is_once(s) { self.dst.mark_once(id) }
+        if self.src.is_static(s) { self.dst.mark_static(id) }
+        let docs: List<string>? = self.src.doc_comment(s)
+        if docs != null { self.dst.document(id, docs!) }
+        for a in annotations { self.dst.annotate(id, a) }
+        if !holed { self.made.push(key_stmt(id)) }
+        id
+    }
+
+    // ── holes and fills ──
+
+    /// The index of a lone hole standing as this name, or null.
+    fn lone_hole(text: string?) -> int? {
+        if self.verbatim || text == null { return null }
+        let hole: HoleName? = hole_name(text!)
+        if hole == null || !hole!.lone() { return null }
+        hole!.holes[0]
+    }
+
+    mut fn classify(k: int, kind: HoleKind) {
+        if !self.copying { self.kinds.set("${k}", kind) }
+    }
+
+    mut fn fill_expr(k: int) -> ExprId {
+        match self.fills[k] {
+            .Expr(e) -> e,
+            .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) -> self.dst.alloc_expr(Expr.Error, null),
+        }
+    }
+
+    fn fill_name(k: int) -> string {
+        match self.fills[k] {
+            .Name(t) -> t,
+            .Type(t) -> t.name,
+            .Names(ts) -> ts.first() ?? "",
+            .Expr(_) or .Stmts(_) or .Arms(_) -> "",
+        }
+    }
+
+    fn fill_names(k: int) -> List<string> {
+        match self.fills[k] {
+            .Names(ts) -> ts,
+            .Name(t) -> [t],
+            .Type(t) -> [t.name],
+            .Expr(_) or .Stmts(_) or .Arms(_) -> [],
+        }
+    }
+
+    fn fill_type(k: int) -> TypeRef {
+        match self.fills[k] {
+            .Type(t) -> t,
+            .Name(t) -> named_ref(t),
+            .Names(_) or .Expr(_) or .Stmts(_) or .Arms(_) -> named_ref(""),
+        }
+    }
+
+    mut fn fill_stmts(k: int) -> List<StmtId> {
+        match self.fills[k] {
+            .Stmts(ss) -> ss,
+            .Expr(e) -> [self.dst.alloc_stmt(Stmt.ExprStmt(e), null)],
+            .Name(_) or .Names(_) or .Type(_) or .Arms(_) -> [],
+        }
+    }
+
+    fn fill_arms(k: int) -> List<Arm> {
+        match self.fills[k] {
+            .Arms(arms) -> arms,
+            .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) -> [],
+        }
+    }
+}

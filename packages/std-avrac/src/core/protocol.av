@@ -1,8 +1,8 @@
 //! THE VALUE PROTOCOL, derived — `Expr`'s literal payload projections.
 //! Five categories take the variant's one payload; the map and the
-//! quote take two and build their record. A feature reads a payload through
-//! these methods instead of matching a variant.
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive}
+//! quote take their payloads and build a record. A feature reads a
+//! payload through these methods instead of matching a variant.
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Decls}
 
 /// The five single-payload categories: variant -> accessor.
 fn accessor(name: string) -> string? {
@@ -19,19 +19,24 @@ fn accessor(name: string) -> string? {
 /// The compiler's derive for the value protocol.
 trait ValueProtocol {
     static fn derive(t: MetaType) -> List<Directive> {
-        let methods = [projection_of(v) for v in t.variants if accessor(v.name) != null]
-        let body = methods.concat([pairs_of_method, quote_of_method]).join("\n")
-        [Directive { twin: "", name: t.name, at: t.at, source: quote { impl ${t} {
-${body}
-} } }]
+        let methods = [projection_of(v) for v in t.variants if accessor(v.name) != null].concat([pairs_of_method(), quote_of_method()])
+        [Directive { twin: "", name: t.name, at: t.at, source: quote { impl ${t} { ${methods} } } }]
     }
 }
 
 /// One category's accessor: the payload, or null.
-fn projection_of(v: MetaVariant) -> string {
-    "fn ${accessor(v.name)!}() -> ${v.payload[0]}? { match self { .${v.name}(s) -> s, _ -> null } }"
+fn projection_of(v: MetaVariant) -> Decls {
+    let method = accessor(v.name)!
+    let payload = v.payload[0]
+    quote { fn ${method}() -> ${payload}? { match self { .${v}(s) -> s, _ -> null } } }
 }
 
-/// The two categories with TWO payloads — a record each, not a payload.
-export const pairs_of_method: string = "fn pairs_of() -> MapPairs? { match self { .MapLit(keys, values) -> MapPairs { keys: keys, values: values }, _ -> null } }"
-export const quote_of_method: string = "fn quote_of() -> QuoteParts? { match self { .Quote(parts, holes) -> QuoteParts { parts: parts, holes: holes }, _ -> null } }"
+/// The two categories with SEVERAL payloads — a record each, not a
+/// payload.
+fn pairs_of_method() -> Decls {
+    quote { fn pairs_of() -> MapPairs? { match self { .MapLit(keys, values) -> MapPairs { keys: keys, values: values }, _ -> null } } }
+}
+
+fn quote_of_method() -> Decls {
+    quote { fn quote_of() -> QuoteParts? { match self { .Quote(parts, stmts, arms, holes) -> QuoteParts { parts: parts, stmts: stmts, arms: arms, holes: holes }, _ -> null } } }
+}

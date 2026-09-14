@@ -205,11 +205,12 @@ export enum Expr {
     Prop(subject: ExprId, name: string)
     /// `"a ${x} b"` — parts always one longer than holes.
     Interp(parts: List<string>, holes: List<ExprId>)
-    /// `quote { a ${x} b }` — generated SOURCE as a value: the parts
-    /// are this file's own runs, the holes splice what they hold.
-    /// Parts are one longer than holes; where each part starts is a
-    /// store fact (`quote_starts_of`).
-    Quote(parts: List<string>, holes: List<ExprId>)
+    /// `quote { a ${x} b }` — a TEMPLATE: its body parsed here, into
+    /// this store, as statements or as match arms, every hole a
+    /// placeholder NAME (`holes.av`); the holes are the expressions
+    /// that fill them, in body order; the parts are the runs of
+    /// source between holes (one longer), the printing projection.
+    Quote(parts: List<string>, stmts: List<StmtId>, arms: List<Arm>, holes: List<ExprId>)
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
@@ -300,15 +301,15 @@ export fn source_spelled(e: Expr) -> bool {
 /// A quote with no holes is source-spelled code.
 fn hole_free(e: Expr) -> bool {
     match e {
-        .Quote(_, holes) -> holes.is_empty(),
+        .Quote(_, _, _, holes) -> holes.is_empty(),
         _ -> false,
     }
 }
 
 /// A map literal's keys and values, in written order.
 export type MapPairs = { keys: List<ExprId>, values: List<ExprId> }
-/// A quote's runs of text and the holes between them.
-export type QuoteParts = { parts: List<string>, holes: List<ExprId> }
+/// A quote's parts, its parsed body, and the holes between the parts.
+export type QuoteParts = { parts: List<string>, stmts: List<StmtId>, arms: List<Arm>, holes: List<ExprId> }
 /// A WRITTEN type: its name, its arguments (`List<int>`), and
 /// whether it was written nullable (`int?`). An annotation is DATA,
 /// not a node — no pass walks one — so its span rides here rather
@@ -524,16 +525,16 @@ export type NodeStore = {
     // written inside one — a hole
     type_lits: List<bool>,
     holes: List<bool>,
-    // where each of a quote's runs of text starts in the source, by
-    // the quote's expression index — a position, so a store fact
-    quote_starts: Map<string, List<int>>,
+    // each quote by the offset it starts at — how a template VALUE
+    // names its node
+    quotes_at: Map<string, int>,
 }
 
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
         stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], statics: [], annotations: [], docs: [],
-        pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [], quote_starts: {},
+        pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [], quotes_at: {},
     }
 }
 
@@ -581,12 +582,32 @@ impl NodeStore {
     }
 
     /// Where a quote's runs of text start in the source, one per part.
-    fn mark_quote_starts(e: ExprId, starts: List<int>) {
-        self.quote_starts.set("${e.index}", starts)
+    fn mark_quote_at(e: ExprId) {
+        let sp: Span? = self.expr_span(e)
+        if sp != null { self.quotes_at.set("${sp!.lo}", e.index) }
     }
 
-    fn quote_starts_of(e: ExprId) -> List<int> {
-        self.quote_starts.get("${e.index}") ?? []
+    /// The quote starting at a source offset, when one does.
+    fn quote_at(offset: int) -> ExprId? {
+        let i: int? = self.quotes_at.get("${offset}")
+        if i == null { return null }
+        ExprId { index: i! }
+    }
+
+    /// The hole a statement IS — a lone placeholder standing as a
+    /// whole statement — by index, or null.
+    fn hole_stmt(s: StmtId) -> int? {
+        let v: ExprId? = match self.stmt(s) { .ExprStmt(v) -> v, _ -> null }
+        if v == null { return null }
+        let hole: HoleName? = hole_name(self.ident_name(v!) ?? "")
+        if hole == null || !hole!.lone() { return null }
+        hole!.holes[0]
+    }
+
+    /// Whether a statement DECLARES: a fn, a type, an enum, a trait,
+    /// an impl.
+    fn declares(s: StmtId) -> bool {
+        self.declared_kind(s) != null || self.impl_parts(s) != null
     }
 
     /// THE CALL PROTOCOL: the node with `blocks` appended to its
@@ -601,7 +622,7 @@ impl NodeStore {
             .Ident(name) -> Expr.Call(name, [], blocks),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
             .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or
-            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .Quote(_, _) or .If(_, _, _) or .Receiver or
+            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .Quote(_, _, _, _) or .If(_, _, _) or .Receiver or
             .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or
             .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
             .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or
@@ -882,7 +903,7 @@ impl NodeStore {
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or
-            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .Quote(_, _) or .If(_, _, _) or .Call(_, _, _) or
+            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .Quote(_, _, _, _) or .If(_, _, _) or .Call(_, _, _) or
             .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or
             .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
             .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _) or
@@ -944,7 +965,7 @@ impl NodeStore {
             .Prop(subject, _) -> self.pronoun_rides(subject),
             .Chain(subject, _) -> self.pronoun_rides(subject),
             .Interp(_, holes) -> self.any_rides(holes),
-            .Quote(_, holes) -> self.any_rides(holes),
+            .Quote(_, _, _, holes) -> self.any_rides(holes),
             .If(cond, on_true, on_false) ->
                 self.pronoun_rides(cond) || self.pronoun_rides(on_true) || self.pronoun_rides(on_false),
             .Call(callee, _, args) -> callee == "it" || self.any_rides(args),
@@ -1016,8 +1037,8 @@ impl NodeStore {
                 fp(22, [self.expr_fingerprint(subject), fp_str(name)]),
             .Interp(parts, holes) ->
                 fp(23, [fp_list(str_fps(parts)), fp_list(self.expr_fps(holes))]),
-            .Quote(parts, holes) ->
-                fp(116, [fp_list(str_fps(parts)), fp_list(self.expr_fps(holes))]),
+            .Quote(parts, stmts, arms, holes) ->
+                fp(116, [fp_list(str_fps(parts)), fp_list(self.stmt_fps(stmts)), fp_list(self.arm_fps(arms)), fp_list(self.expr_fps(holes))]),
             .StrLit(value) -> fp(8, [fp_str(value)]),
             .BoolLit(value) -> fp(9, [if value { 1 } else { 0 }]),
             .If(cond, on_true, on_false) ->
