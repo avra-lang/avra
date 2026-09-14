@@ -12,7 +12,7 @@
 //! disagree, and with neither the variant law speaks the refusal —
 //! it is the one that can name what the type does have.
 use core.{Type, TypeId, DeclId}
-use features.{FileView, MethodRow, method_row, StructSig, EnumSig}
+use features.{FileView, MethodRow, method_row, StructSig, EnumSig, declared_decl}
 
 export enum Callee {
     Variant(decl: DeclId, tname: string)
@@ -26,6 +26,12 @@ export enum Callee {
 }
 
 export fn callee_of(view: FileView, ty: TypeId, name: string) -> Callee {
+    // A NAME IS TRANSPARENT AT A READ, and its OWN impl answers
+    // first: a method the name declares wins, and everything else
+    // the shape answers — so `rows.best()` and `rows.push(v)` are
+    // one surface.
+    let under: TypeId? = stood_over(view, ty, name)
+    if under != null { return callee_of(view, under!, name) }
     let sh: Type = view.types.shape_of(ty)
     let built: Callee? = builtin_static(view, sh, name)
     if built != null { return built! }
@@ -86,6 +92,16 @@ fn static_method(view: FileView, target: DeclId, name: string) -> DeclId? {
 fn names_a_variant(view: FileView, decl: DeclId, name: string) -> bool {
     let sig: EnumSig? = (view.decls.sig(decl))?.enum_sig()
     sig != null && sig!.tag_of(name) != null
+}
+
+/// The shape a NAMED type forwards this call to — absent when the
+/// type is no name, or when its own impl declares the method.
+fn stood_over(view: FileView, ty: TypeId, name: string) -> TypeId? {
+    let under: TypeId? = view.types.stands_for(ty)
+    if under == null { return null }
+    let d: DeclId? = declared_decl(view.types.shape_of(ty))
+    if d != null && view.decls.method(d!, name) != null { return null }
+    under
 }
 
 /// A fn-typed field of the name — the capability-record pattern.

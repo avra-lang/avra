@@ -37,8 +37,10 @@ impl StaticBuild {
     /// pointer's is the value itself. A scalar pair has no slot.
     mut fn optional_slot(v: MetaVal, heap: MetaHeap, inner: TypeId) -> Slot? {
         if v is .Absent { return Slot.Null }
-        if self.decls.types.is_flat(inner) { return self.array_slot(heap.slots(v), heap, [inner]) }
+        // the NICHE first: a flat record that RIDES a pointer is its
+        // own absence, and only a flat WORD needs the one-slot box
         if self.decls.types.rides_pointer(inner) { return self.slot_of(v, heap, inner) }
+        if self.decls.types.is_flat(inner) { return self.array_slot(heap.slots(v), heap, [inner]) }
         null
     }
 
@@ -51,9 +53,11 @@ impl StaticBuild {
     /// A record: a flat one IS its field; a boxed one is its fields in
     /// declaration order.
     mut fn record_slot(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Slot? {
+        // a FLAT record IS its field, whether a record declared it or
+        // a NAME stands over it — the registry answers for both
+        if self.decls.types.is_flat(ty) { return self.slot_of(v, heap, self.decls.types.flat_fields(ty)[0]) }
         let sig: StructSig? = self.decls.fields_of_type(ty)
         if sig == null { return null }
-        if self.decls.types.is_flat(ty) { return self.slot_of(v, heap, sig!.types[0]) }
         self.array_slot(heap.slots(v), heap, sig!.types)
     }
 

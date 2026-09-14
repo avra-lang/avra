@@ -9,6 +9,8 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
             let host: string? = cx.extern_callee(e)
             if host != null { return extern_call_reg(cx, e, host!, host_regs(cx, e, args)) }
             let regs = [cx.reg_of(a) for a in args]
+            let made: Reg? = named_reg(cx, e, regs)
+            if made != null { return made! }
             let through: Reg? = cx.indirect_callee(e)
             if through != null { return valued_call_reg(cx, e, through!, regs) }
             let dst = cx.result(e)
@@ -17,6 +19,17 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
         }
         _ -> cx.foreign_node(e),
     }
+}
+
+/// A NAMED TYPE'S CONSTRUCTION — `UserId(5)`: the name is free at
+/// runtime, so the value IS the argument and one Pack gives the
+/// register the NAME's type, which each engine renders as identity.
+/// Absent when the callee is no named type.
+fn named_reg(mut cx: LowerCx, e: ExprId, regs: List<Reg>) -> Reg? {
+    let d: DeclId? = bound_decl_of(cx.names, e)
+    if d == null || !cx.view.decls.is_named(d!) { return null }
+    if regs.length != 1 { return cx.lower_defect(e, "a named type built from no single value survived typing") }
+    cx.packed(e, regs)
 }
 
 /// A host call's arguments. A `mut` seat takes the ADDRESS of the

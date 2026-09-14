@@ -114,6 +114,8 @@ export enum DeclKind {
     Builtin
     Fn
     Record
+    /// `type Name = <type>` — a name over a shape, distinct from it.
+    Named
     Enum
     Trait
     /// a sublanguage — a block word and its grammar
@@ -298,6 +300,30 @@ export enum Expr {
 /// reading it needs typed answers that do not exist before analysis.
 export fn is_literal(e: Expr) -> bool {
     (e).int_of() != null || (e).bits_of() != null || (e).bool_of() != null || (e).text_of() != null
+}
+
+/// A FORM THE SOURCE SPELLS AS A VALUE — a scalar, text, a list, a
+/// map, a variant, `null`. The parts inside may be computed; the
+/// FORM is what this asks about.
+///
+/// A NAMED TYPE'S SEAT TAKES ONE DIRECTLY (`let id: UserId = 5`):
+/// the name's shape becomes the want and the literal fills it.
+/// Nothing COMPUTED wears a name it was not given, which is the
+/// opacity half of the named-type law and what makes the name worth
+/// having. A REGISTRY, every arm spelled: the day a new value form
+/// lands it must decide whether a name adopts it.
+export fn literal_form(e: Expr) -> bool {
+    match e {
+        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Interp(_, _) or
+        .ListLit(_) or .Comp(_, _, _, _, _, _) or .MapLit(_, _) or .NullLit or
+        .VariantLit(_, _) or .StructLit(_, _, _) -> true,
+        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or
+        .Quote(_, _, _, _) or .Sublang(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or
+        .Block(_, _) or .Call(_, _, _) or .With(_, _, _) or .Match(_, _) or
+        .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or
+        .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or
+        .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
+    }
 }
 
 /// What the SOURCE alone spells: a literal, or a quote with no
@@ -499,6 +525,11 @@ export enum Stmt {
     /// `type Name = { field: ty, ... }` — a nominal record; the
     /// name lives in the TYPE namespace, program-wide like fns.
     StructDecl(name: string, tparams: List<string>, fields: List<Param>)
+    /// `type Name = <type>` — a DISTINCT type over a written shape,
+    /// never an alias: the name counts at every seat and the shape
+    /// answers every read. It travels AS its shape (a flat record
+    /// of one anonymous field), so the name is free at runtime.
+    NamedType(name: string, tparams: List<string>, of: TypeRef)
     /// `enum Name { A B(payload: int) }` — a nominal closed set
     /// sharing the TYPE namespace with records. A variant is a
     /// Param: an ABSENT `ty` IS a unit variant.
@@ -700,7 +731,7 @@ impl NodeStore {
             .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
             .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or
-            .LetElse(_, _, _) or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or
+            .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or
             .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> null,
         }
     }
@@ -1063,7 +1094,7 @@ impl NodeStore {
             .For(_, from, to, _, _, stmts) -> self.pronoun_rides(from) || self.pronoun_rides(to) || self.any_stmt_rides(stmts),
             .ForEach(_, _, subject, stmts) -> self.pronoun_rides(subject) || self.any_stmt_rides(stmts),
             .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or
-            .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) or .Use(_, _, _) or .Error -> false,
+            .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) or .Use(_, _, _) or .Error -> false,
         }
     }
 
@@ -1221,7 +1252,7 @@ impl NodeStore {
             .Discard(value) -> [value],
             .Defer(body, _) -> [body],
             .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Use(_, _, _) or .Error or .ExternFn(_, _, _) or
-            .FnDecl(_, _, _, _, _) or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) -> [],
+            .FnDecl(_, _, _, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) -> [],
         }
     }
 
@@ -1283,6 +1314,8 @@ impl NodeStore {
                 fp(25, [fp_str(name), fp_list(str_fps(tparams)),
                         fp_list(param_fps(fields)),
                         fp_list(self.expr_fps([f.default! for f in fields if f.default != null]))]),
+            .NamedType(name, tparams, of) ->
+                fp(122, [fp_str(name), fp_list(str_fps(tparams)), type_fp(of)]),
             .EnumDecl(name, tparams, variants) ->
                 fp(27, [fp_str(name), fp_list(str_fps(tparams)),
                         fp_list(variant_fps(variants))]),

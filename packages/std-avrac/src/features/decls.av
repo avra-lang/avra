@@ -154,7 +154,7 @@ fn no_ensure(d: DeclId) {
 export fn kind_word(k: DeclKind) -> string {
     match k {
         .Fn -> "fn",
-        .Record -> "type",
+        .Record or .Named -> "type",
         .Enum -> "enum",
         .Trait -> "trait",
         .Syntax -> "syntax",
@@ -1100,6 +1100,8 @@ impl Decls {
 
     fn is_enum(d: DeclId) -> bool { self.decl(d).kind is .Enum }
 
+    fn is_named(d: DeclId) -> bool { self.decl(d).kind is .Named }
+
     /// The language's own type declarations, minted once from the
     /// type rows. Enum rows also declare their variants; structural
     /// rows still need a value-level name for static vocabulary.
@@ -1142,7 +1144,7 @@ impl Decls {
     fn type_name(d: DeclId) -> string? {
         let x = self.decl(d)
         match x.kind {
-            .Record or .Enum -> x.name,
+            .Record or .Named or .Enum -> x.name,
             .Builtin -> x.name,
             .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const -> null,
         }
@@ -1153,7 +1155,7 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Fn or .Method -> x.name,
-            .Record or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const -> null,
+            .Record or .Named or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const -> null,
         }
     }
 
@@ -1212,7 +1214,7 @@ impl Decls {
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
             .Case -> "spec$${x.id.index}",
-            .Fn or .Const or .Record or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin -> x.name,
+            .Fn or .Const or .Record or .Named or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
     }

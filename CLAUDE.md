@@ -391,6 +391,43 @@ engine's spec, written by dogfooding.
   handed, storing what it never retained — leaves the cache holding
   freed memory, and the next reader segfaults (the once cache, first
   draft).
+- A NAME IS OPAQUE AT A SEAT AND TRANSPARENT AT A READ. `type Name =
+  Shape` is ALWAYS a DISTINCT type — there is no alias form, and that
+  is the point (P9). A seat (a parameter, a field, an annotation, an
+  argument, an operand) judges the NAME; a read (a property, a
+  method, an index, a `for` head, an interpolation hole, a LITERAL
+  PATTERN, printing) judges the SHAPE — `match id { 5 -> … }` over a
+  `UserId` compares the number, exactly as `id == 5` does. The two doors are spelled: `shape_at`/`shape_of`
+  keep the name, `seen_at`/`seen_shape` see through it (I42). A
+  LITERAL fills a named seat directly (`let rows: Rows = [1, 2]`,
+  `let id: UserId = 5`) because a literal has no type of its own
+  until a want lands on it; nothing COMPUTED wears a name it was not
+  given, and `Name(value)` is how it crosses. AND THE OTHER SIDE
+  DECIDES WHICH REFUSAL IS TRUE at an operand: the name's own SHAPE
+  hears the conversion, ANOTHER NAME hears "two types" and NO fix
+  (neither stands over the other, so no wrap is honest), and
+  anything else is the operator's own law to refuse. One voice for
+  all three told `A == B` that `B` was `A`'s shape. A name is FREE at
+  runtime — it is a FLAT RECORD over one anonymous field, so the
+  value IS its shape and the pack is identity. The seams and the
+  recorded triggers are docs/2026_09_14_NAMED_TYPES.md.
+  AND ITS MARK IS MADE AT ITS DECLARATION, which is the flat law's
+  own hazard one type over: a law reading the registry mid-flight
+  answers by declaration ORDER. `declared_type` ASKS the declaration
+  before handing out a named type's id; without it the CLI (which
+  signs types first) was green and `analyze_source` (which types the
+  entry first) refused every literal fill — one tree, two answers,
+  22 spec cases red while every probe passed.
+- A CLOSER NEVER CONTINUES A LINE. The lexer's continuation rule
+  listed `>`, which closes a TYPE ARGUMENT LIST as well as wanting a
+  right side — so `type Rows = List<int>` dropped its BREAK and
+  swallowed the statement below it. No statement in the tree had
+  ever ENDED in `>` (a trait's bodiless `fn a() -> List<T>` does, and
+  parsed only because a `}` supplied its END), so the rule had never
+  been tested: the assumption-nobody-violated law wearing the
+  lexer's clothes. `>` is out, `<` stays — a line ending in `<` is
+  incomplete under either reading. The next `>`-shaped closer faces
+  the same question.
 - WHETHER A VALUE RIDES A POINTER IS ITS DECLARATION'S ANSWER, so a
   law that asks the type registry must ask the DECLARATION first.
   A record of one scalar field is FLATTENED — it travels as the
@@ -1034,9 +1071,6 @@ Syntax the grammar lacks:
   `stmt`" at the second `?` — the type grammar takes one `?` per name,
   so a doubly-nullable value has no spelling, in an annotation or a
   type literal alike.
-- Type aliases and newtypes (`type Id = int`): "expected `{` while
-  parsing `stmt`". Typed ids are single-field structs (`{ index:
-  int }`), which the checker keeps apart.
 - A `table` literal without its row type: a bare `table { id: 1 }`
   reads as a STRUCT LITERAL of a type named `table` — F3000 "no `type
   table` is declared", with no hint that the row type is missing. The

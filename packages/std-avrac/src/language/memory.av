@@ -29,8 +29,9 @@ export fn memory(l: Lowered) -> Lowered {
 export fn is_managed(types: TypeRegistry, ty: TypeId) -> bool {
     match types.shape_of(ty) {
         .Str -> true,
-        // A FLAT record holds no reference — nothing to count.
-        .Struct(_, _) -> !types.is_flat(ty),
+        // A FLAT RECORD IS ITS FIELD: a record of words holds no
+        // reference, a NAME over a list holds the list's.
+        .Struct(_, _) -> flat_managed(types, ty),
         // EmptyList is the one identity widen whose pointer is a
         // REAL box: the callee's List param releases it, so the
         // caller must own it too, or the seam frees a live name.
@@ -42,6 +43,13 @@ export fn is_managed(types: TypeRegistry, ty: TypeId) -> bool {
         .Ptr or .Int or .Float or .Bool or .TypeName(_, _) or .Var(_, _, _) or .Null or
         .Error or .Void -> false,
     }
+}
+
+/// A RECORD's own answer: a flat one IS its one field, so it is
+/// managed exactly when the field is; a boxed one always counts.
+fn flat_managed(types: TypeRegistry, ty: TypeId) -> bool {
+    if !types.is_flat(ty) { return true }
+    is_managed(types, types.flat_fields(ty)[0])
 }
 
 /// A fn's managed params — they arrive owned, so its first scope
@@ -191,10 +199,21 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 for s in scope.settled(null) { out.push(s) }
                 out.push(i)
             }
+            // A FLAT RECORD'S PACK IS IDENTITY, so the destination is
+            // a SECOND NAME for the part's box and takes its OWN
+            // reference — the part keeps the one it had, and the
+            // scope settles both. (Every other pack is a scalar
+            // pair, which owns nothing.) Its twin `Extract` is a
+            // VIEW and owns nothing, which `managed_dst` says.
+            .Pack(dst, _) -> {
+                out.push(i)
+                if is_managed(types, reg_types[dst.index]) { out.push(Ins.Retain(dst)) }
+                manages(types, reg_types, open_scopes, i)
+            }
             .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
             .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or
             .CallRt(_, _, _) or .CallRtVoid(_, _) or .Release(_) or
-            .Pack(_, _) or .Extract(_, _, _) or .LoopEnd or
+            .Extract(_, _, _) or .LoopEnd or
             .Retain(_) or .RetVal(_) or .Ret(_) -> {
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
@@ -433,8 +452,15 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
         .CallRt(_, callee, _) -> if rt_owns(callee) { dst } else { null },
         // static data is immortal: nothing to release, ever
         .StaticAddr(_, _) -> null,
+        // A FLAT RECORD'S EXTRACT IS IDENTITY — the register IS its
+        // field's — so it is a VIEW of a box somebody else already
+        // owns, never a reference of its own (`view_of` says the
+        // same; this arm used to disagree, invisibly, while no flat
+        // record was managed). A PACK owns, because its arm above
+        // retains: the destination is a second holder.
+        .Extract(_, _, _) -> null,
         .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-        .Bin(_, _, _, _) or .Un(_, _, _) or .Pack(_, _) or .Extract(_, _, _) or
+        .Bin(_, _, _, _) or .Un(_, _, _) or .Pack(_, _) or
         .FnAddr(_, _) or .Call(_, _, _) or .CallPtr(_, _, _) or .RegionEnd(_, _) or
         .Alloca(_) or .Load(_, _) -> dst,
         .CallRtVoid(_, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or

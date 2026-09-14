@@ -1,0 +1,155 @@
+// NAMED TYPES, vertically: `type N = <shape>` declares a DISTINCT
+// type over a shape — never an alias. A literal fills it, `N(value)`
+// converts, every READ forwards to the shape, and every SEAT keeps
+// the name.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refused_with}
+
+/// The smallest name there is, and a list one — shared with the
+/// adversarial file (one directory is one module).
+export fn uid() -> string {
+    "type UserId = int\n"
+}
+
+export fn rows() -> string {
+    "type Rows = List<int>\n"
+}
+
+export fn tag() -> string {
+    "type Tag = string\n"
+}
+
+spec "features/structs (named types)" {
+    given "the declaration" {
+        then "a name over a scalar declares and a literal fills it" {
+            shown("${uid()}let id: UserId = 5\nid") == "5"
+        }
+        then "a name over text takes a string literal" {
+            shown("${tag()}let t: Tag = \"hi\"\nt") == "hi"
+        }
+        then "a name over a list takes a list literal" {
+            shown("${rows()}let r: Rows = [1, 2, 3]\nr.length") == "3"
+        }
+        then "a name over a name reaches the shape" {
+            shown("type A = int\ntype B = A\nlet b: B = 5\nb + B(1)") == "6"
+        }
+        then "a name over a record reads its fields" {
+            shown("type P = { x: int, y: int }\ntype W = P\nlet w: W = P { x: 1, y: 2 }\nw.x + w.y") == "3"
+        }
+        then "a name over a fn type holds a fn" {
+            shown("type F = fn(int) -> int\nfn twice(n: int) -> int { n * 2 }\nlet f: F = twice\nf(3)") == "6"
+        }
+    }
+    given "the construction" {
+        then "`N(value)` makes one" {
+            shown("${uid()}UserId(7)") == "7"
+        }
+        then "it judges its one seat in the call's own words" {
+            refused_with("${uid()}UserId(\"x\")", "argument 1 of `UserId` wants `int`, found `string`")
+        }
+        then "it takes exactly one value" {
+            refused_with("${uid()}UserId(1, 2)", "`UserId` takes 1 arguments, found 2")
+        }
+        then "a declared fn of the same name still wins the call" {
+            shown("${uid()}fn UserId2(n: int) -> int { n + 1 }\nUserId2(1)") == "2"
+        }
+    }
+    given "reads forwarding to the shape" {
+        then "a measured property answers" {
+            shown("${rows()}let r: Rows = [1, 2]\nr.length") == "2"
+        }
+        then "an index answers the element" {
+            shown("${rows()}let r: Rows = [7, 8]\nr[1]") == "8"
+        }
+        then "a `for` head walks it" {
+            shown("${rows()}let r: Rows = [1, 2, 3]\nmut t = 0\nfor v in r { t = t + v }\nt") == "6"
+        }
+        then "a writing method lands through a mut binding" {
+            shown("${rows()}mut r: Rows = [1]\nr.push(9)\nr[1]") == "9"
+        }
+        then "a list verb answers the RECEIVER'S name" {
+            shown("${rows()}let r: Rows = [1, 2, 3]\nlet f: Rows = r.filter(it > 1)\nf.length") == "2"
+        }
+        then "a text verb answers" {
+            shown("${tag()}let t: Tag = \"hello\"\nt.contains(\"ell\")") == "true"
+        }
+        then "an interpolation hole prints the shape's value" {
+            shown("${uid()}let id: UserId = 5\n\"n=\${id}\"") == "n=5"
+        }
+        then "a LITERAL PATTERN reads the subject through the name" {
+            shown("${uid()}let id: UserId = 5\nmatch id {\n    5 -> \"five\",\n    _ -> \"other\",\n}") == "five"
+        }
+        then "a literal pattern over a named TEXT reads it too" {
+            shown("${tag()}let t: Tag = \"hi\"\nmatch t {\n    \"hi\" -> 1,\n    _ -> 0,\n}") == "1"
+        }
+        then "a `when` reads a named subject through its comparison" {
+            shown("${uid()}let id: UserId = 5\nwhen {\n    id == UserId(5) -> \"five\"\n    _ -> \"other\"\n}") == "five"
+        }
+        then "a literal pattern of the WRONG shape still refuses, naming the subject" {
+            refused_with("${uid()}let id: UserId = 5\nmatch id {\n    \"no\" -> 1,\n    _ -> 0,\n}",
+                         "a `string` never matches `UserId`")
+        }
+        then "the name's OWN impl answers before the shape" {
+            shown("${uid()}impl UserId { fn doubled() -> int { 2 } }\nlet u: UserId = 3\nu.doubled()") == "2"
+        }
+    }
+    given "arithmetic and comparison" {
+        then "two of one name add to that name" {
+            shown("${uid()}let a: UserId = 2\nlet b: UserId = 3\nlet c: UserId = a + b\nc") == "5"
+        }
+        then "a LITERAL operand adopts the name" {
+            shown("${uid()}let a: UserId = 2\na + 1") == "3"
+        }
+        then "equality holds between two of one name" {
+            shown("${uid()}let a: UserId = 2\na == UserId(2)") == "true"
+        }
+        then "a name and its bare shape never mix" {
+            refused_with("${uid()}let a: UserId = 2\nlet n = 1\na + n",
+                         "an operand of `UserId` meets `int` — a named type never mixes with its shape")
+        }
+        then "the mixing refusal offers the conversion" {
+            let a = analyze_source("${uid()}let a: UserId = 2\nlet n = 1\na + n")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`UserId` is its own type — write `UserId(n)`")
+        }
+    }
+    given "the seats staying opaque" {
+        then "a bare scalar refuses at a named seat" {
+            refused_with("${uid()}fn take(id: UserId) -> int { 1 }\nlet n = 5\ntake(n)",
+                         "argument 1 of `take` wants `UserId`, found `int`")
+        }
+        then "one name refuses at another's seat" {
+            refused_with("${uid()}type OrderId = int\nfn take(id: UserId) -> int { 1 }\nlet o: OrderId = 5\ntake(o)",
+                         "argument 1 of `take` wants `UserId`, found `OrderId`")
+        }
+        then "a bare list refuses at a named binding" {
+            refused_with("${rows()}let xs: List<int> = [1]\nlet r: Rows = xs",
+                         "`r` declares `Rows`, this is `List<int>`")
+        }
+        then "a named field refuses a bare value" {
+            refused_with("${uid()}type P = { id: UserId }\nlet n = 1\nlet p = P { id: n }\n2",
+                         "field `id` is `UserId`, this is `int`")
+        }
+    }
+    given "the name's own laws" {
+        then "a name over itself refuses" {
+            refused_with("type X = X\n1", "`X` stands over itself")
+        }
+        then "a circle of names refuses" {
+            refused_with("type A = B\ntype B = A\n1", "stands over itself")
+        }
+        then "type parameters are recorded, not landed" {
+            refused_with("type Box<T> = List<T>\n1",
+                         "`Box` is a named type with type parameters, which is recorded, not landed")
+        }
+        then "a shape no slot can hold refuses" {
+            refused_with("type V = void\n1", "a named type cannot stand over this yet")
+        }
+        then "a name taken twice refuses like any type" {
+            refused_with("type A = int\ntype A = string\n1", "`A` is declared more than once")
+        }
+        then "the language's own names stay the language's" {
+            refused_with("type int = string\n1", "`int` is a built-in type")
+        }
+    }
+}

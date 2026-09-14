@@ -518,6 +518,15 @@ impl ResolveCx {
             self.bind_use(e, local!)
             return
         }
+        // A NAMED TYPE CONSTRUCTS BY CALL — `UserId(5)`. The type
+        // namespace answers LAST, so no declared fn and no local
+        // value is ever shadowed by a type of the same name; typing
+        // judges the one seat.
+        let as_type: DeclId? = names.types.get(name)
+        if as_type != null {
+            self.bind_use(e, Binding.Decl(as_type!))
+            return
+        }
         if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, self.loc_of(e)) }
         self.emit(self.suggested(
             refusal("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined", "called here", null),

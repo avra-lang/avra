@@ -3,8 +3,9 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, NodeStore, FnParts, SeatMark, mut_mark, settled_mark, is_literal}
+use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, NodeStore, FnParts, SeatMark, mut_mark, settled_mark, is_literal, literal_form, Span, some_list}
 use diagnostics.{Diag, refusal, warning}
+use @std.errors.{Confidence, Edit, Suggestion}
 
 impl TypeCx {
     /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -147,7 +148,9 @@ impl TypeCx {
         // place — absence has no layout of its own, and lowering's
         // adoption edge mints each form from this record.
         let absent: bool = self.view.types.shape_of(got) is .Null
-        if !absent && self.types_disagree(got, inner!) { return false }
+        // a LITERAL fills a named type through the absence too:
+        // `let rows: Rows? = [1]` writes the shape and means the name
+        if !absent && self.types_disagree(got, inner!) && !self.named_accepts(e, inner!) { return false }
         self.widen(e, want)
         true
     }
@@ -183,8 +186,22 @@ impl TypeCx {
             self.widen(e, want)
             return true
         }
+        if self.named_accepts(e, want) { return true }
         if self.dyn_accepts(e, got, want) { return true }
         self.res_accepts(e, got, want)
+    }
+
+    /// A LITERAL FILLS A NAMED SEAT: the name's shape becomes the
+    /// want and the ordinary law judges the form against it, so
+    /// `let id: UserId = 5` and `let rows: Rows = [1, 2]` read
+    /// straight. NO LIFT IS RECORDED and none is needed — a name
+    /// travels as its shape, so the two machine forms are the same
+    /// one. A COMPUTED value never fills: that is the opacity half,
+    /// and `Name(v)` is how it crosses.
+    mut fn named_accepts(e: ExprId, want: TypeId) -> bool {
+        let of: TypeId? = self.view.types.stands_for(want)
+        if of == null || !literal_form(self.view.store.expr(e)) { return false }
+        self.accepts(e, of!)
     }
 
     /// A signatory LIFTS into its contract — the boxing widen, the
@@ -303,6 +320,11 @@ impl TypeCx {
         if sig != null { return self.field_member(e, shown, sig!, name) }
         let row: PropertyRow? = property_row(self.view.lang.properties, name, self.view.types.shape_of(ty))
         if row != null { return row!.check(self, e, ty) }
+        // A NAME IS TRANSPARENT AT A READ: nothing of the name's own
+        // answered, so the shape it stands over does — and the
+        // refusal, if any, still shows the name the writer wrote.
+        let of: TypeId? = self.view.types.stands_for(ty)
+        if of != null { return self.member_type_of(e, shown, of!, name) }
         self.no_such_property(e, shown, name)
     }
 
@@ -340,7 +362,7 @@ impl TypeCx {
         if self.shape_at(v) is .TypeName { return }
         if self.accepts(v, declared) { return }
         let n = self.name_at(v)
-        self.emit(refusal("type.binding", self.loc_of(v), "`${name}` declares `${self.view.types.name_of(declared)}`, this is `${n}`", this_is(n), null))
+        self.emit(self.named_fix(refusal("type.binding", self.loc_of(v), "`${name}` declares `${self.view.types.name_of(declared)}`, this is `${n}`", this_is(n), null), declared, v))
     }
 
     /// The VALUE law: a type NAME is not a value. `Color` alone is
@@ -499,7 +521,32 @@ impl TypeCx {
         let n = self.name_at(a)
         if self.view.store.is_trailing(a) { return self.block_misseated(callee, j, want, n, a) }
         if self.view.store.is_hole(a) { return self.hole_misseated(n, a) }
-        self.emit(refusal("type.mismatch", self.loc_of(a), "argument ${j + 1} of `${callee}` wants `${self.view.types.name_of(want)}`, found `${n}`", this_is(n), null))
+        self.emit(self.named_fix(refusal("type.mismatch", self.loc_of(a), "argument ${j + 1} of `${callee}` wants `${self.view.types.name_of(want)}`, found `${n}`", this_is(n), null), want, a))
+    }
+
+    /// THE NAME'S REMEDY, worded once. A NAMED TYPE is its own type —
+    /// that is the whole of it — so a value of the shape it stands
+    /// over crosses by CONSTRUCTION, and the fix wraps the value
+    /// where it is written. Every seat's refusal and the operand law
+    /// pass a want through here; a want that is no name comes back
+    /// untouched.
+    fn named_fix(d: Diag, want: TypeId, at: ExprId) -> Diag {
+        if self.view.types.stands_for(want) == null { return d }
+        let name = self.view.types.name_of(want)
+        let shown = self.written_text(at)
+        if shown == null { return d with { help: "`${name}` is its own type — write `${name}(<value>)`" } }
+        let call = "${name}(${shown!})"
+        let fix = Suggestion { confidence: Confidence.High, description: "write `${call}`", edits: [Edit { loc: l, replacement: call } for l in some_list(self.loc_of(at))] }
+        d with { help: "`${name}` is its own type — write `${call}`", suggestions: [fix] }
+    }
+
+    /// The SOURCE a node was written as — absent for one this file
+    /// did not write, where no span of ours names its text.
+    fn written_text(e: ExprId) -> string? {
+        if self.view.origin_of(e) != null { return null }
+        let span: Span? = self.view.store.expr_span(e)
+        if span == null { return null }
+        self.view.source.text.substring(span!.lo, span!.hi)
     }
 
     /// A type literal's HOLE holding the wrong thing — the argument

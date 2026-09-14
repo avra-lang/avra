@@ -186,6 +186,16 @@ export fn declared_decl(sh: Type) -> DeclId? {
     }
 }
 
+/// The declaration a TYPE USED AS A VALUE names — `UserId` in
+/// `UserId(5)`, `Color` in `Color.red`. A PROJECTION: one shape
+/// answers, and the catch-all pins every other to absence.
+export fn type_name_decl(sh: Type) -> DeclId? {
+    match sh {
+        .TypeName(d, _) -> d,
+        _ -> null,
+    }
+}
+
 /// What a `let`/`mut` binding holds: its declared type, its value's
 /// type, or — for a loop's counter — int.
 export fn def_type_of(facts: TypeFacts, mut view: FileView, error_type: TypeId, s: StmtId) -> TypeId {
@@ -305,6 +315,12 @@ impl TypeCx {
     /// A type literal's answer — `cx.type(T)` interns into this view's table.
     fn interned(t: TypeLit) -> TypeId { self.view.types.interned(t) }
     fn shape_at(e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
+    /// A NAME IS OPAQUE AT A SEAT AND TRANSPARENT AT A READ: these
+    /// are the read's two doors — the shape a node reads AS, and the
+    /// type a name stands over. A seat law asks `shape_at`/`type_at`
+    /// and keeps the name.
+    fn seen_at(e: ExprId) -> Type { self.view.types.seen_shape(self.type_at(e)) }
+    fn seen(ty: TypeId) -> TypeId { self.view.types.seen_through(ty) }
     /// Whether typing already refused here — the cause spoke, so the
     /// site absorbs instead of speaking twice.
     fn errored(e: ExprId) -> bool { self.shape_at(e) is .Error }
@@ -363,6 +379,11 @@ impl LowerCx {
     fn interned(t: TypeLit) -> TypeId { self.view.types.interned(t) }
     fn type_at(e: ExprId) -> TypeId { self.viewed(self.facts.type_at(e)) }
     fn shape_at(e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
+    /// The READ's two doors — typing's `seen_at`/`seen` twins: a
+    /// named type is its shape at every read, and identical at
+    /// runtime, so the lowering that fits the shape fits the name.
+    fn seen_at(e: ExprId) -> Type { self.view.types.seen_shape(self.type_at(e)) }
+    fn seen(ty: TypeId) -> TypeId { self.view.types.seen_through(ty) }
     fn result(e: ExprId) -> Reg { self.out.mint_ty(self.type_at(e)) }
     fn mint_like(r: Reg) -> Reg { self.out.mint_ty(self.out.type_of_reg(r)) }
     fn mint_shape(sh: Type) -> Reg { self.out.mint_ty(self.view.types.intern(sh)) }

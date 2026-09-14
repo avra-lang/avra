@@ -1339,6 +1339,15 @@ quotes keeps the two hard problems apart.
    (P9), and the ambiguity a generator cannot resolve on first
    generation (P1); the languages with both words see the alias used
    where the newtype was meant.
+   LANDED 2026-09-14 (comptime/types): the whole law, with the model
+   and the seams in docs/2026_09_14_NAMED_TYPES.md. A name is
+   modelled as a FLAT RECORD over one anonymous field, so it is free
+   at runtime; the sentence that holds the design is A NAME IS
+   OPAQUE AT A SEAT AND TRANSPARENT AT A READ. Recorded, not landed:
+   type parameters (`type Box<T> = …`), `match`/`is`/`with` reaching
+   through a name to an enum or a record, a named construction at a
+   `const` seat, and the sweep of the compiler's own `{ index: int }`
+   ids.
 2. **`Code<T>` vs untyped `Code`.** DECIDED 2026-09-13, twice.
    Under text templates: untyped, since a hole had no position until
    the splice parsed. Under PARSED templates (the same day, the

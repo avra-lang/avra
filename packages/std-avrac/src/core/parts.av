@@ -21,7 +21,7 @@ impl NodeStore {
             .LetElse(name, _, _) -> name,
             .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _)
                 or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
-                or .Fail(_) or .StructDecl(_, _, _) or .EnumDecl(_, _, _)
+                or .Fail(_) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _)
                 or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> null,
         }
     }
@@ -46,7 +46,7 @@ impl NodeStore {
             .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _)
                 or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _)
                 or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _)
-                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _)
+                or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _)
                 or .Spec(_, _) or .Defer(_, _) or .Error -> null,
         }
     }
@@ -112,7 +112,7 @@ impl NodeStore {
             .Defer(v, _) -> v,
             .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _)
                 or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Use(_, _, _)
-                or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Error -> null,
+                or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Error -> null,
         }
     }
 
@@ -122,6 +122,7 @@ impl NodeStore {
         match self.stmt(s) {
             .FnDecl(_, tparams, _, _, _) -> [t.name for t in tparams],
             .StructDecl(_, tparams, _) -> tparams,
+            .NamedType(_, tparams, _) -> tparams,
             .EnumDecl(_, tparams, _) -> tparams,
             .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or
@@ -159,7 +160,7 @@ impl NodeStore {
             .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or
             .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .LetElse(_, _, _) or
-            .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> false,
+            .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> false,
         }
     }
 
@@ -217,6 +218,7 @@ impl NodeStore {
     fn type_decl_name(s: StmtId) -> string? {
         match self.stmt(s) {
             .StructDecl(name, _, _) -> name,
+            .NamedType(name, _, _) -> name,
             .EnumDecl(name, _, _) -> name,
             .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or
             .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
@@ -229,6 +231,14 @@ impl NodeStore {
     fn enum_parts(s: StmtId) -> EnumParts? {
         match self.stmt(s) {
             .EnumDecl(name, tparams, variants) -> EnumParts { name: name, tparams: tparams, variants: variants },
+            _ -> null,
+        }
+    }
+
+    /// A NAMED TYPE's pieces, when the statement is one.
+    fn named_parts(s: StmtId) -> NamedParts? {
+        match self.stmt(s) {
+            .NamedType(name, tparams, of) -> NamedParts { name: name, tparams: tparams, of: of },
             _ -> null,
         }
     }
@@ -247,6 +257,7 @@ impl NodeStore {
         if self.fn_parts(s) != null || self.extern_parts(s) != null { return DeclKind.Fn }
         if self.enum_parts(s) != null { return DeclKind.Enum }
         if self.struct_parts(s) != null { return DeclKind.Record }
+        if self.named_parts(s) != null { return DeclKind.Named }
         if self.trait_parts(s) != null { return DeclKind.Trait }
         if self.syntax_parts(s) != null { return DeclKind.Syntax }
         null
@@ -305,6 +316,9 @@ export type FnParts = { name: string, tparams: List<Param>, params: List<Param>,
 
 /// What a struct declaration carries, projected once.
 export type StructParts = { name: string, tparams: List<string>, fields: List<Param> }
+
+/// What a NAMED TYPE declaration carries, projected once.
+export type NamedParts = { name: string, tparams: List<string>, of: TypeRef }
 
 /// What a spec carries, projected once.
 export type SpecParts = { name: string, cases: List<Case> }

@@ -7,7 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, SeatMark, mut_mark}
-use features.{no_pins, Pins, TypeCx, FnSig, nothing, this_is, tparams_refused, unpinned_of, slice_promise}
+use features.{no_pins, Pins, TypeCx, FnSig, nothing, this_is, tparams_refused, unpinned_of, slice_promise, type_name_decl}
 use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
@@ -81,6 +81,8 @@ fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, args: List<ExprId>) -> TypeId {
     if !pins.is_empty() { return value_takes_no_pins(cx, e, callee) }
     let bound = cx.target_type(e)
+    let made: TypeId? = named_construction(cx, e, callee, args, bound)
+    if made != null { return made! }
     let held: Arrow? = cx.view.types.arrow_parts(bound)
     if held != null {
         let arrow = held!
@@ -88,6 +90,22 @@ fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, a
     }
     if cx.errored_ty(bound) { return cx.error_type }
     not_callable(cx, e, callee, bound)
+}
+
+/// A NAMED TYPE CONSTRUCTS BY CALL — `UserId(5)`. It takes ONE
+/// argument of the shape it stands over, judged by the ORDINARY
+/// SEAT LAW, so arity and the value refuse in the call's own words
+/// and this rule owes no voice of its own. Absent when the callee
+/// names no type, or names one that stands over nothing.
+fn named_construction(mut cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, bound: TypeId) -> TypeId? {
+    let d: DeclId? = type_name_decl(cx.view.types.shape_of(bound))
+    if d == null { return null }
+    // the DECLARATION first: the name's mark is made when it is
+    let _ = cx.view.decls.sig(d!)
+    let named = cx.view.decls.self_type_of(d!)
+    let of: TypeId? = cx.view.types.stands_for(named)
+    if of == null { return null }
+    cx.seats_judged(e, callee, [of!], [], named, args)
 }
 
 /// A GENERIC callee unifies; a plain one type-checks directly. The

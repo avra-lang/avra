@@ -256,25 +256,19 @@ fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {
 
 /// A shape's LLVM type.
 fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
-    match types.shape_of(ty) {
+    // THE MACHINE FORM decides, never the bare shape: a FLAT record
+    // IS its one field, so a name over `string` is a pointer and a
+    // name over `float` is a double.
+    match types.machine_shape(ty) {
         // TypeName never materializes: no value ever has it — nor
         // does Var: mono substitutes before any register minted.
         .Float -> avra_llvm_double_type(lc),
         .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
         .Opt(inner) -> opt_ll_type(lc, types, inner),
-        .Struct(_, _) -> flat_or_pointer(lc, types, ty),
-        .Str or .Ptr or .List(_) or .Cell(_) or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _) or
+        .Struct(_, _) or .Str or .Ptr or .List(_) or .Cell(_) or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _) or
         .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> avra_llvm_pointer_type(lc),
     }
-}
-
-/// A record's machine type: a FLAT record IS its one field — a
-/// newtype over `int` is an `int`, so it rides every seat the field
-/// rides; every other record is the pointer to its box.
-fn flat_or_pointer(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
-    if !types.is_flat(ty) { return avra_llvm_pointer_type(lc) }
-    ll_type_of(lc, types, types.flat_fields(ty)[0])
 }
 
 /// A nullable's machine type: the niche IS its value's pointer; a
@@ -420,7 +414,7 @@ impl Emit {
     fn binary_value(op: BinOp, a: Reg, x: Reg) -> ptr {
         let l = self.vals[a.index]
         let r = self.vals[x.index]
-        if self.types.shape_of(self.tys[a.index]) is .Float { return self.float_value(op, l, r) }
+        if self.types.machine_shape(self.tys[a.index]) is .Float { return self.float_value(op, l, r) }
         self.bin_value(op, l, r)
     }
 
@@ -485,7 +479,7 @@ impl Emit {
         let called = self.call(callee, self.rt_args(callee, args))
         self.normalized_cells(callee, args)
         let raw = self.answered(callee, called)
-        if self.types.shape_of(self.tys[dst.index]) is .Bool {
+        if self.types.machine_shape(self.tys[dst.index]) is .Bool {
             return avra_llvm_build_icmp(self.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(self.lc), 0, 0), "b")
         }
         // The result coercion, rt_arg's mirror: an I64 answer is a WORD,
@@ -496,7 +490,7 @@ impl Emit {
         // A DOUBLE IS NOT A WORD. Every container keeps its elements in
         // an i64 slot, so a float coming back out of one is
         // REINTERPRETED, not converted. `worded` is the twin.
-        if self.types.shape_of(self.tys[dst.index]) is .Float && self.answers_word(callee) {
+        if self.types.machine_shape(self.tys[dst.index]) is .Float && self.answers_word(callee) {
             return avra_llvm_build_bitcast(self.b, raw, avra_llvm_double_type(self.lc), "unslotted")
         }
         raw
@@ -644,11 +638,11 @@ impl Emit {
         if self.types.rides_pointer(self.tys[r.index]) {
             return avra_llvm_build_ptr_to_int(self.b, v, i64t, "slot")
         }
-        if self.types.shape_of(self.tys[r.index]) is .Bool {
+        if self.types.machine_shape(self.tys[r.index]) is .Bool {
             return avra_llvm_build_zext(self.b, v, i64t, "slot")
         }
         // Its twin in `call_rt_value`: the bits go in as they come out.
-        if self.types.shape_of(self.tys[r.index]) is .Float {
+        if self.types.machine_shape(self.tys[r.index]) is .Float {
             return avra_llvm_build_bitcast(self.b, v, i64t, "slot")
         }
         v

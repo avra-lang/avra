@@ -1,0 +1,191 @@
+// The RED TEAM's permanent record for NAMED TYPES (see
+// .claude/skills/red-team). Every case here was written to break the
+// feature, and the ones that ARE broken were found breaking it — a
+// double release the reference-count guard named, a print with no
+// projection, a row reading a receiver it could not see through, a
+// line the lexer glued to the next one.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.testing.{shown, refusals, refused_with}
+
+spec "features/structs (named types, adversarial)" {
+    given "the declaration ORDER, which is what a registry answers by" {
+        // FOUND BY RED-TEAMING: the mark a name carries is made when
+        // its DECLARATION is, so a body typed BEFORE that declaration
+        // read the registry mid-flight and saw no name at all. The
+        // CLI signs types first and was right; `analyze_source` types
+        // the entry first and refused every literal fill. Every
+        // `shown` case in named_test.av runs this path — this one
+        // says so out loud.
+        then "a name declared BELOW its use still stands" {
+            shown("let id: Later = 5\ntype Later = int\nid") == "5"
+        }
+        then "a name reached only through another name still stands" {
+            shown("let b: B = 5\ntype B = A\ntype A = int\nb") == "5"
+        }
+    }
+    given "the LINE the shape ends on" {
+        // FOUND BY LANDING THIS: `>` closes a type argument list AND
+        // wants a right side, and the lexer read it as a
+        // continuation — so `type Rows = List<int>` swallowed the
+        // next statement whole. A CLOSER NEVER CONTINUES A LINE.
+        then "a declaration ending in `>` ends" {
+            shown("type Rows = List<int>\nlet r: Rows = [1, 2]\nr.length") == "2"
+        }
+        then "an argument list ending in `>` inside a trait still ends" {
+            shown("trait T {\n    fn a() -> List<int>\n    fn b() -> List<int>\n}\n1") == "1"
+        }
+        then "a bare `>` no longer continues a line" {
+            refusals("let a = 1\nlet b = 2\nlet c = a >\n  b\nc") > 0
+        }
+    }
+    given "printing a named value" {
+        // FOUND BY RED-TEAMING: the program's ANSWER law read the
+        // bare shape, so a `UserId` answer refused with "no text
+        // projection" though its value is an int.
+        then "a named scalar is the program's answer" {
+            shown("type UserId = int\nUserId(7)") == "7"
+        }
+        then "a named text is the program's answer" {
+            shown("type Tag = string\nTag(\"hi\")") == "hi"
+        }
+        then "a named list is the program's answer" {
+            shown("type Rows = List<int>\nlet r: Rows = [1, 2]\nr") == "[1, 2]"
+        }
+    }
+    given "a name over a MANAGED shape" {
+        // FOUND BY RED-TEAMING, natively, under AVRA_RC_GUARD=1: the
+        // identity pack was read as a VIEW, so the fn's own scope
+        // released the string it answered and the caller read freed
+        // memory. Both engines agreed on the interpreter's answer and
+        // the native one was empty — the divergence is the tell.
+        then "a name built inside a fn survives its return" {
+            shown("type Tag = string\nfn make(a: Tag) -> Tag { Tag(\"x\${a}\") }\nmake(Tag(\"q\"))") == "xq"
+        }
+        then "a name rebuilt many times neither leaks nor frees twice" {
+            let src = "type Rows = List<int>\nfn wider(r: Rows) -> Rows { r.concat([0]) }\nmut held: Rows = []\nmut i = 0\nwhile i < 200 {\n    held = wider(held)\n    i = i + 1\n}\nheld.length"
+            shown(src) == "200"
+        }
+    }
+    given "a name over a shape the VOCABULARY answers for" {
+        // FOUND BY RED-TEAMING: the map rows read `shape_at`, saw a
+        // record, and answered the ABSORBING error type with NO
+        // diagnostic — a clean analysis that then wrecked the run.
+        then "a map's `get` reads through the name" {
+            shown("type Counts = Map<string, int>\nlet c: Counts = { \"a\": 1 }\nc.get(\"a\") ?? 0") == "1"
+        }
+        then "a map's `set` writes through the name" {
+            shown("type Counts = Map<string, int>\nmut c: Counts = {}\nc.set(\"a\", 2)\nc.get(\"a\") ?? 0") == "2"
+        }
+        then "a cell reads and writes through the name" {
+            shown("type Held = Cell<int>\nlet h: Held = Held(Cell.new(3))\nh.set(4)\nh.get()") == "4"
+        }
+    }
+    given "a name over a NULLABLE" {
+        // FOUND BY RED-TEAMING: the nullable's REPRESENTATION was read
+        // off the bare shape, so a name over `string?` took the
+        // scalar-pair layout and text came out of a register holding
+        // a pointer.
+        then "a name over a nullable carries a value" {
+            shown("type Maybe = string?\nlet m: Maybe = \"hi\"\nm ?? \"none\"") == "hi"
+        }
+        then "a name over a nullable carries absence" {
+            shown("type Maybe = string?\nlet m: Maybe = null\nm ?? \"none\"") == "none"
+        }
+        then "a NULLABLE named seat takes a literal too" {
+            shown("type Rows = List<int>\nlet r: Rows? = [1, 2]\nr!.length") == "2"
+        }
+    }
+    given "the name against ITSELF" {
+        then "converting a value that already wears the name refuses" {
+            refused_with("type A = int\nlet a: A = 1\nA(a)", "argument 1 of `A` wants `int`, found `A`")
+        }
+        then "`with` does not reach through a name to a record" {
+            refused_with("type P = { x: int }\ntype W = P\nlet w: W = P { x: 1 }\nw with { x: 2 }",
+                         "`with` copies a struct, found `W`")
+        }
+        then "`is` does not reach through a name to an enum" {
+            refused_with("enum C { Red Green }\ntype K = C\nlet k: K = K(C.Red)\nk is .Red",
+                         "`is` asks an enum for its variant")
+        }
+    }
+    given "the mixed-operand refusal naming the RIGHT pair" {
+        // FOUND IN REVIEW: one voice said "a named type never mixes
+        // with its shape" for `A == B`, where `B` is not `A`'s shape
+        // at all — a refusal that named a relationship that does not
+        // exist, and offered a wrap for it. The OTHER SIDE decides
+        // which refusal is true.
+        then "a name meeting its own shape hears the conversion" {
+            let a = analyze_source("type A = int\nlet a: A = 1\nlet n = 3\na + n")
+            a.diagnostics.length == 1 &&
+                a.report().contains("an operand of `A` meets `int` — a named type never mixes with its shape") &&
+                a.report().contains("`A` is its own type — write `A(n)`")
+        }
+        then "a name meeting ANOTHER name hears no conversion, because there is none" {
+            let a = analyze_source("type A = int\ntype B = int\nlet a: A = 1\nlet b: B = 2\na == b")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`A` and `B` are two types — a named type never mixes with another") &&
+                !a.report().contains("write `A(")
+        }
+        then "a name meeting an unrelated type is the OPERATOR's refusal" {
+            refused_with("type A = int\nlet a: A = 1\na + \"s\"", "`+` needs `int` operands, found `string`")
+        }
+    }
+    given "names against names" {
+        then "a declared fn wins the call over a type of the same name" {
+            shown("type A = int\nfn A(n: int) -> int { n + 1 }\nA(1)") == "2"
+        }
+        then "a local binding shadows the type's name as a value" {
+            shown("type A = int\nlet A = 5\nA") == "5"
+        }
+        then "a name over a name over a name reaches the shape" {
+            shown("type A = int\ntype B = A\ntype C = B\nlet c: C = 5\nc + C(1)") == "6"
+        }
+    }
+    given "a name at every SLOT the language has" {
+        then "a record field holds one" {
+            shown("type R = List<int>\ntype H = { rows: R }\nlet h = H { rows: [1, 2] }\nh.rows.length") == "2"
+        }
+        then "an enum payload holds one" {
+            shown("type R = List<int>\nenum E { One(r: R) }\nfn n(e: E) -> int {\n    match e {\n        .One(r) -> r.length,\n    }\n}\nn(E.One([1, 2, 3]))") == "3"
+        }
+        then "a list element holds one" {
+            shown("type T = string\nlet xs: List<T> = [\"a\", \"b\"]\nxs[1]") == "b"
+        }
+        then "a map value holds one" {
+            shown("type T = string\nlet m: Map<string, T> = { \"k\": \"v\" }\nm.get(\"k\") ?? \"?\"") == "v"
+        }
+        then "a Result side holds one" {
+            shown("type Code = int\nfn risky(n: Code) -> Result<Code, string> { .Ok(n) }\nrisky(Code(3)) catch e -> Code(0)") == "3"
+        }
+        then "a lambda seat holds one" {
+            shown("type U = int\nlet f = (a: U) -> a + U(1)\nf(U(4))") == "5"
+        }
+    }
+    given "aliasing, where a name inherits the RECORD'S debt" {
+        // MEASURED, not asserted as right: a `mut fn` RECEIVER aliases
+        // — the write is seen through a second binding — while the
+        // shape's own vocabulary copies. That is the record's standing
+        // debt (ROADMAP: RECEIVER ALIASING), and a name over a list
+        // inherits it exactly. The assertion is the PARITY: the day
+        // the receiver stops aliasing, both answers move together and
+        // this case says so.
+        then "the vocabulary COPIES through a name, as it does without one" {
+            shown("type R = List<int>\nmut a: R = [1]\nlet b = a\na.push(2)\n\"\${a.length} \${b.length}\"") == "2 1"
+        }
+        then "a `mut fn` receiver ALIASES through a name and through a record alike" {
+            let named = "type R = List<int>\nimpl R { mut fn add(v: int) { self.push(v) } }\nmut a: R = [1]\nlet b = a\na.add(2)\n\"\${a.length} \${b.length}\""
+            let record = "type H = { xs: List<int> }\nimpl H { mut fn add(v: int) { self.xs.push(v) } }\nmut h = H { xs: [1] }\nlet g = h\nh.add(2)\n\"\${h.xs.length} \${g.xs.length}\""
+            shown(named) == "2 2" && shown(named) == shown(record)
+        }
+    }
+    given "a writing method reached through the name" {
+        // FOUND BY RED-TEAMING: the SEATS pass read the bare shape, so
+        // a `mut` seat written only through a named receiver was
+        // inferred never-written — a warning that contradicted the
+        // code, and a seat law reading the wrong answer.
+        then "a `mut` seat written through a name is inferred written" {
+            let a = analyze_source("type R = List<int>\nfn grow(mut r: R) { r.push(1) }\nmut rs: R = []\ngrow(rs)\nrs.length")
+            a.diagnostics.is_empty() && a.ran() == "1"
+        }
+    }
+}

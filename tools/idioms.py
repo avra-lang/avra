@@ -495,6 +495,11 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "I42": "no grep tells a READ site from a SEAT site — `shape_at` is correct at\n"
+           "           one and a defect at the other, and both spellings live beside each\n"
+           "           other in the same file. The keeper is the adversarial suite:\n"
+           "           named_adversarial_test.av reaches every vocabulary a name can\n"
+           "           stand over, and a row reading the wrong door fails there",
     "I41": "an unwritable spelling as a key is a NAMING choice — the smell is\n"
            "           an in-band tag a program could write, which no grep tells from\n"
            "           an honest name; the review round hunts it",

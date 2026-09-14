@@ -35,8 +35,8 @@ fn spine_lower(mut cx: LowerCx, e: ExprId) -> Reg {
 /// twin: exactly one nullable beside the absence, for `==`/`!=`.
 fn asked_subject(cx: LowerCx, op: BinOp, l: ExprId, r: ExprId) -> ExprId? {
     if op != BinOp.Eq && op != BinOp.Ne { return null }
-    if cx.shape_at(l) is .Opt && cx.shape_at(r) is .Null { return l }
-    if cx.shape_at(r) is .Opt && cx.shape_at(l) is .Null { return r }
+    if cx.seen_at(l) is .Opt && cx.seen_at(r) is .Null { return l }
+    if cx.seen_at(r) is .Opt && cx.seen_at(l) is .Null { return r }
     null
 }
 
@@ -64,7 +64,10 @@ fn index_reg(mut cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
 fn prop_reg(mut cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
     let sh: Type = cx.shape_at(s)
     if sh is .TypeName { return variant_reg(cx, e, name) }
-    let sig: StructSig? = cx.fields_at(s)
+    // A NAME IS TRANSPARENT AT A READ, and the register already IS
+    // the shape's — so the SHAPE's layout decides, never the name's.
+    let sty = cx.seen(cx.type_at(s))
+    let sig: StructSig? = cx.fields_of(sty)
     if sig == null { return property_reg(cx, e, s, name) }
     let slot: int? = sig!.slot_of(name)
     if slot == null {
@@ -72,7 +75,7 @@ fn prop_reg(mut cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
     }
     // THE one slot read: a boxed record reads through its box, a
     // flat one extracts from registers, and this site knows neither.
-    cx.field_read(cx.reg_of(s), cx.type_at(s), slot!, cx.type_at(e))
+    cx.field_read(cx.reg_of(s), sty, slot!, cx.type_at(e))
 }
 
 /// Constructing a variant: ONE array carrying the tag at slot 0.
@@ -102,7 +105,9 @@ fn binary_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Re
     if asked != null { return presence_reg(cx, e, op, asked!) }
     let a = cx.reg_of(l)
     let b = cx.reg_of(r)
-    let sh: Type = cx.shape_at(l)
+    // THE READ'S SHAPE: a NAMED type lowers exactly as what it
+    // stands over — it IS that value at runtime.
+    let sh: Type = cx.seen_at(l)
     // THE BACKEND PICKS THE INSTRUCTION FROM THE OPERAND TYPE, so the
     // shapes below are the ones needing a DIFFERENT lowering, not a
     // different opcode — float needed no arm here for exactly that
@@ -112,7 +117,7 @@ fn binary_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Re
     // THE HAZARD, so it is not rediscovered: a future value category
     // that needs its own lowering SHAPE (as `Str` does for `+`) falls
     // to the eager `Bin` in silence. Add its arm here when it lands.
-    if (op == BinOp.Eq || op == BinOp.Ne) && (sh is .Opt || cx.shape_at(r) is .Opt) {
+    if (op == BinOp.Eq || op == BinOp.Ne) && (sh is .Opt || cx.seen_at(r) is .Opt) {
         return negated_when(cx, e, op == BinOp.Ne, nullable_eq_reg(cx, e, l, r))
     }
     if op == BinOp.Add && sh is .Str {
@@ -194,7 +199,7 @@ fn not_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
 
 /// A property the receiver's shape answers — its row's lowering.
 fn property_reg(mut cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
-    let row: PropertyRow? = property_row(cx.view.lang.properties, name, cx.shape_at(s))
+    let row: PropertyRow? = property_row(cx.view.lang.properties, name, cx.seen_at(s))
     if row == null { return cx.lower_defect(e, "a property without a row survived typing") }
     let r = row!
     r.lower(cx, e, s)

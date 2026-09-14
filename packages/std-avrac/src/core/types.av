@@ -126,21 +126,24 @@ export enum TypeLit {
     Id(id: TypeId)
 }
 
-/// A record's layout row: the fields it IS when flat, and whether an
-/// impl SEALED it boxed. A record's declaration and its impl block
-/// are ordered only by demand — two memoized queries, possibly in
-/// different files — so the conservative answer is STICKY.
-export type FlatRow = { fields: List<TypeId>, sealed: bool }
+/// A type's REPRESENTATION row: the fields it IS when flat, whether
+/// an impl SEALED it boxed, and the shape a NAMED type stands for.
+/// A record's declaration and its impl block are ordered only by
+/// demand — two memoized queries, possibly in different files — so
+/// the sealed answer is STICKY. `stands_for` is kept BESIDE the
+/// fields, not read out of them: sealing empties the fields and a
+/// name must outlive that.
+export type RepRow = { fields: List<TypeId>, sealed: bool, stands_for: TypeId? = null }
 
 /// The interner: shapes in, ids out — assigned once, compared as
 /// ints forever. The index map is keyed by each shape's CANONICAL
 /// form — deterministic structural content, children by interned id —
 /// which is exactly what content-addressing later hashes: the key
 /// derivation swaps, the map and its callers do not.
-export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId>, flats: List<FlatRow> }
+export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId>, reps: List<RepRow> }
 
 export fn new_type_registry() -> TypeRegistry {
-    TypeRegistry { shapes: [], ids: {}, flats: [] }
+    TypeRegistry { shapes: [], ids: {}, reps: [] }
 }
 
 /// A heap-shaped value: it rides POINTERS, and it waits on
@@ -199,10 +202,10 @@ impl TypeRegistry {
         let hit: TypeId? = self.ids.get(key)
         if hit != null { return hit! }
         self.shapes.push(t)
-        // the flat table runs PARALLEL to the shapes: every type has
-        // a row, and only a declared record of words fills one
-        let blank = FlatRow { fields: [], sealed: false }
-        self.flats.push(blank)
+        // the representation table runs PARALLEL to the shapes:
+        // every type has a row, and only a declared record fills one
+        let blank = RepRow { fields: [], sealed: false }
+        self.reps.push(blank)
         let id = TypeId { index: self.shapes.length - 1 }
         self.ids.set(key, id)
         id
@@ -230,13 +233,62 @@ impl TypeRegistry {
 
     fn shape_of(id: TypeId) -> Type { self.shapes[id.index] }
 
-    /// A FLAT record's fields, in slot order — a record of scalars
-    /// alone, which rides REGISTERS and is never a heap box. Empty
-    /// for every other type; the flat ones are marked at
-    /// declaration, where the fields are known.
-    fn flat_fields(id: TypeId) -> List<TypeId> { self.flats[id.index].fields }
+    /// A FLAT record's fields, in slot order — a value that IS its
+    /// fields, with no box of its own: a record of scalars, which
+    /// rides REGISTERS, or a NAME over any shape, which rides
+    /// whatever that shape rides. Empty for every other type; the
+    /// flat ones are marked at declaration, where the fields are
+    /// known.
+    fn flat_fields(id: TypeId) -> List<TypeId> { self.reps[id.index].fields }
 
-    fn is_flat(id: TypeId) -> bool { !self.flats[id.index].fields.is_empty() }
+    fn is_flat(id: TypeId) -> bool { !self.reps[id.index].fields.is_empty() }
+
+    /// THE SHAPE A NAME STANDS FOR — `type Rows = List<int>` answers
+    /// `List<int>`; every other type answers absence. A NAME IS
+    /// OPAQUE AT A SEAT AND TRANSPARENT AT A READ, and this is the
+    /// read's door: the seat law compares ids and never asks here.
+    fn stands_for(id: TypeId) -> TypeId? { self.reps[id.index].stands_for }
+
+    /// `stands_for` all the way down — a name over a name over a
+    /// shape is that shape. Itself when the type names nothing.
+    fn seen_through(id: TypeId) -> TypeId {
+        let under: TypeId? = self.stands_for(id)
+        if under == null { return id }
+        self.seen_through(under!)
+    }
+
+    /// THE READ'S SHAPE — a named type's stands-over shape, every
+    /// other type's own. Every rule that DISPATCHES ON A SHAPE to
+    /// read, print, measure or compare asks here; a SEAT law asks
+    /// `shape_of` and keeps the name.
+    fn seen_shape(id: TypeId) -> Type { self.shape_of(self.seen_through(id)) }
+
+    /// A NAME's shape, recorded once at declare. The name keeps its
+    /// own identity — this says only what it travels as.
+    fn mark_named(id: TypeId, of: TypeId) {
+        self.reps.set(id.index, self.reps[id.index] with { stands_for: of })
+    }
+
+    /// Whether naming `id` over `of` would CLOSE A CIRCLE — a name
+    /// standing for itself, however many names away. The guard that
+    /// keeps `seen_through` finite; the declaration is its only
+    /// caller, so the recorded graph is acyclic by construction.
+    fn names_itself(id: TypeId, of: TypeId) -> bool {
+        // LICENSED I9: type IDENTITY, not agreement — the same interned type
+        if of.index == id.index { return true }
+        let under: TypeId? = self.stands_for(of)
+        if under == null { return false }
+        self.names_itself(id, under!)
+    }
+
+    /// THE MACHINE FORM a value of this type takes. A FLAT record IS
+    /// its one field, all the way down, so every seam that COERCES
+    /// by shape — a word into an i64 slot, a bool's zext, a double's
+    /// bitcast, an LLVM type — asks here and never `shape_of`.
+    fn machine_shape(id: TypeId) -> Type {
+        if self.is_flat(id) { return self.machine_shape(self.flat_fields(id)[0]) }
+        self.shape_of(id)
+    }
 
     /// Whether a NULLABLE of `inner` rides a pointer — the question
     /// the slot law and the machine type ask. A flat record answers
@@ -266,25 +318,30 @@ impl TypeRegistry {
     /// a value in a register has no identity to write through
     /// (ROADMAP: RECEIVER ALIASING). STICKY — a later `mark_flat`
     /// must not undo it, because the two run in demand order.
+    /// A NAMED TYPE never seals: it has no field to write through,
+    /// and its whole promise is that it travels as its shape. A
+    /// `mut` seat and a `mut fn` receiver of one still work — they
+    /// alias exactly as a record's receiver does (ROADMAP: RECEIVER
+    /// ALIASING), which the adversarial suite pins as a PARITY.
     fn unflatten(id: TypeId) {
-        let shut = FlatRow { fields: [], sealed: true }
-        self.flats.set(id.index, shut)
+        if self.stands_for(id) != null { return }
+        self.reps.set(id.index, RepRow { fields: [], sealed: true })
     }
 
-    /// Mark a declared record flat. Its fields hold no reference, so
-    /// nothing counts them and nothing frees them: the value IS its
-    /// fields. A SEALED record refuses.
+    /// Mark a type FLAT: the value IS its fields, with no box of its
+    /// own. A record of scalars holds no reference at all; a NAME
+    /// holds exactly what its shape holds, and the memory pass asks
+    /// the field. A SEALED record refuses.
     fn mark_flat(id: TypeId, fields: List<TypeId>) {
-        if self.flats[id.index].sealed { return }
-        let row = FlatRow { fields: fields, sealed: false }
-        self.flats.set(id.index, row)
+        if self.reps[id.index].sealed { return }
+        self.reps.set(id.index, self.reps[id.index] with { fields: fields })
     }
 
     /// What a nullable carries, or absent when the id is not one —
     /// THE projection (values.av's `carried_type` is its cx-space
     /// mirror).
     fn carried(id: TypeId) -> TypeId? {
-        match self.shape_of(id) {
+        match self.shape_of(self.seen_through(id)) {
             .Opt(inner) -> inner,
             _ -> null,
         }
@@ -293,14 +350,14 @@ impl TypeRegistry {
     /// A list's element, or absent when the id is not one — the
     /// projection every walk and index reads.
     fn element(id: TypeId) -> TypeId? {
-        match self.shape_of(id) {
+        match self.shape_of(self.seen_through(id)) {
             .List(t) -> t,
             _ -> null,
         }
     }
 
     fn cell_inner(id: TypeId) -> TypeId? {
-        match self.shape_of(id) {
+        match self.shape_of(self.seen_through(id)) {
             .Cell(t) -> t,
             _ -> null,
         }
@@ -309,7 +366,7 @@ impl TypeRegistry {
     /// A Result's two sides, or absent when the id is not one —
     /// `carried`'s twin for the failure channel.
     fn res_parts(id: TypeId) -> ResSides? {
-        match self.shape_of(id) {
+        match self.shape_of(self.seen_through(id)) {
             .Res(ok, err) -> ResSides { ok: ok, err: err },
             _ -> null,
         }
@@ -317,7 +374,7 @@ impl TypeRegistry {
 
     /// A fn type's seats and answer — res_parts' twin.
     fn arrow_parts(id: TypeId) -> Arrow? {
-        match self.shape_of(id) {
+        match self.shape_of(self.seen_through(id)) {
             .Fn(params, marks, ret) -> Arrow { seats: params, marks: marks, answer: ret },
             _ -> null,
         }
@@ -338,14 +395,16 @@ impl TypeRegistry {
     }
 
     fn rides_pointer(id: TypeId) -> bool {
-        // a FLAT record is a machine word — its NULLABLE is the box,
-        // and `opt_rides_pointer` is the question that asks about it
-        if self.is_flat(id) { return false }
-        match self.shape_of(id) {
+        // A FLAT RECORD IS ITS FIELD, so it rides whatever the field
+        // rides — a name over `int` is a word, a name over a list is
+        // that list's pointer. Its NULLABLE is the question
+        // `opt_rides_pointer` asks.
+        let m: Type = self.machine_shape(id)
+        match m {
             // a nullable answers as ITS OWN machine form: a flat
             // record's nullable is the box, though the record is not
             .Opt(inner) -> self.opt_rides_pointer(inner),
-            _ -> ptr_shape(self.shape_of(id)),
+            _ -> ptr_shape(m),
         }
     }
 

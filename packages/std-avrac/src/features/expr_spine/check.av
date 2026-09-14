@@ -71,8 +71,8 @@ fn variant_type(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: st
 /// nullable beside the absence; null otherwise. The lowering keeps
 /// a shape-twin of this projection.
 fn presence_subject(cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
-    if cx.shape_at(l) is .Opt && cx.shape_at(r) is .Null { return l }
-    if cx.shape_at(r) is .Opt && cx.shape_at(l) is .Null { return r }
+    if cx.seen_at(l) is .Opt && cx.seen_at(r) is .Null { return l }
+    if cx.seen_at(r) is .Opt && cx.seen_at(l) is .Null { return r }
     null
 }
 
@@ -82,7 +82,51 @@ fn member_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> Type
     cx.member_type_of(e, cx.name_at(subject), cx.type_at(subject), name)
 }
 
+/// THE NAMED OPERAND LAW: a NAME and its bare shape never mix —
+/// the name is the whole point — but a LITERAL beside a name adopts
+/// it, exactly as a seat's does. Two values of one name answer THAT
+/// NAME; a test answers `bool` whatever it compared. The operator's
+/// own law still runs over the SHAPE, so `Rows + Rows` refuses in
+/// the shape's words.
 fn binary_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
+    let named: TypeId? = named_side(cx, l) ?? named_side(cx, r)
+    if named != null && !named_agree(cx, l, r, named!) { return cx.error_type }
+    let answer = op_type(cx, e, op, l, r)
+    if named == null || cx.errored_ty(answer) { return answer }
+    if cx.view.types.shape_of(answer) is .Bool { return answer }
+    named!
+}
+
+/// The NAME a side wears, when it wears one.
+fn named_side(cx: TypeCx, e: ExprId) -> TypeId? {
+    let ty = cx.type_at(e)
+    if cx.view.types.stands_for(ty) == null { return null }
+    ty
+}
+
+/// Both sides wear the name — the same name, or a literal that
+/// adopts it. A side that does not speaks the name's own remedy.
+fn named_agree(mut cx: TypeCx, l: ExprId, r: ExprId, named: TypeId) -> bool {
+    named_operand(cx, l, named) && named_operand(cx, r, named)
+}
+
+/// THE OTHER SIDE DECIDES WHICH REFUSAL IS TRUE. Its bare shape has
+/// a wrap and hears about it; ANOTHER NAME has none, and saying "its
+/// shape" would name a type that is not one; anything else is the
+/// operator's own law to refuse, in its own words.
+fn named_operand(mut cx: TypeCx, e: ExprId, named: TypeId) -> bool {
+    if cx.errored(e) || cx.accepts(e, named) { return true }
+    let ty = cx.type_at(e)
+    if !cx.types_disagree(ty, cx.seen(named)) {
+        mixed_with_shape(cx, e, named)
+        return false
+    }
+    if cx.view.types.stands_for(ty) == null { return true }
+    two_names(cx, e, named)
+    false
+}
+
+fn op_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     match op {
         .Add -> added_type(cx, op, l, r),
         .Sub or .Mul or .Div -> arith_type(cx, op, l, r),
@@ -115,7 +159,7 @@ fn shifted_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
 /// `+` joins two texts or adds two ints — the left side decides
 /// which law the right must meet.
 fn added_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
-    if cx.shape_at(l) is .Str { return op_over(cx, op, l, r, Type.Str, Type.Str) }
+    if cx.seen_at(l) is .Str { return op_over(cx, op, l, r, Type.Str, Type.Str) }
     arith_type(cx, op, l, r)
 }
 
@@ -125,20 +169,20 @@ fn added_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
 /// the two kinds answer differently for the same digits. A mixed
 /// expression says which it means by converting.
 fn arith_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
-    if cx.shape_at(l) is .Float { return op_over(cx, op, l, r, Type.Float, Type.Float) }
+    if cx.seen_at(l) is .Float { return op_over(cx, op, l, r, Type.Float, Type.Float) }
     op_over(cx, op, l, r, Type.Int, Type.Int)
 }
 
 /// The ordered comparisons, by the same law, answering a bool.
 fn ordered_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
-    if cx.shape_at(l) is .Float { return op_over(cx, op, l, r, Type.Float, Type.Bool) }
+    if cx.seen_at(l) is .Float { return op_over(cx, op, l, r, Type.Float, Type.Bool) }
     op_over(cx, op, l, r, Type.Int, Type.Bool)
 }
 
 /// The homogeneous-operand law: both sides `want`, or each PRESENT
 /// wrong side speaks for itself.
 fn op_over(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId, want: Type, answer: Type) -> TypeId {
-    if wears(cx.shape_at(l), want) && wears(cx.shape_at(r), want) {
+    if wears(cx.seen_at(l), want) && wears(cx.seen_at(r), want) {
         return cx.view.types.intern(answer)
     }
     needs(cx, op, l, want)
@@ -147,7 +191,7 @@ fn op_over(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId, want: Type, answer: 
 }
 
 fn needs(mut cx: TypeCx, op: BinOp, e: ExprId, want: Type) {
-    let sh = cx.shape_at(e)
+    let sh = cx.seen_at(e)
     if wears(sh, want) || sh is .Error { return }
     wrong_operand(cx, op, e, want)
 }
@@ -168,7 +212,7 @@ fn wears(sh: Type, want: Type) -> bool {
 
 /// `!` negates a bool; Error absorbs to the answer.
 fn not_type(mut cx: TypeCx, v: ExprId) -> TypeId {
-    let sh = cx.shape_at(v)
+    let sh = cx.seen_at(v)
     if sh is .Bool || sh is .Error { return cx.type(bool) }
     not_negatable(cx, v)
 }
@@ -190,8 +234,8 @@ fn nullable_compared(cx: TypeCx, l: ExprId, r: ExprId) -> TypeId? {
 /// The side that cannot be compared, LEFT first — the one the
 /// refusal should point at.
 fn uncomparable(cx: TypeCx, l: ExprId, r: ExprId) -> ExprId? {
-    if !cx.compares_by_value(cx.type_at(l)) { return l }
-    if !cx.compares_by_value(cx.type_at(r)) { return r }
+    if !cx.compares_by_value(cx.seen(cx.type_at(l))) { return l }
+    if !cx.compares_by_value(cx.seen(cx.type_at(r))) { return r }
     null
 }
 
@@ -215,8 +259,8 @@ fn compare_help(sh: Type) -> string {
 }
 
 fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
-    let ls = cx.shape_at(l)
-    let rs = cx.shape_at(r)
+    let ls = cx.seen_at(l)
+    let rs = cx.seen_at(r)
     if ls is .Error || rs is .Error { return cx.error_type }
     // THE PRESENCE TEST: a nullable beside `null` asks IS IT THERE —
     // the one comparison absence answers, and the answer is a bool.
@@ -248,7 +292,9 @@ fn eq_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
     // identical values.
     let found: ExprId? = uncomparable(cx, l, r)
     if found != null { return not_comparable(cx, op, found!) }
-    if !cx.types_disagree(cx.type_at(l), cx.type_at(r)) { return cx.type(bool) }
+    // A NAME IS TRANSPARENT AT A READ: the named law already held
+    // both sides to one name, so the shapes are what remain to agree.
+    if !cx.types_disagree(cx.seen(cx.type_at(l)), cx.seen(cx.type_at(r))) { return cx.type(bool) }
     mismatched_sides(cx, op, l, r)
 }
 
@@ -296,12 +342,25 @@ fn not_askable(mut cx: TypeCx, op: BinOp, solid: ExprId) -> TypeId {
 
 fn not_comparable(mut cx: TypeCx, op: BinOp, offender: ExprId) -> TypeId {
     let n = cx.name_at(offender)
-    cx.spoken(refusal("type.mismatch", cx.loc_of(offender), "`${op_symbol(op)}` compares scalars for now", this_is(n), compare_help(cx.shape_at(offender))))
+    cx.spoken(refusal("type.mismatch", cx.loc_of(offender), "`${op_symbol(op)}` compares scalars for now", this_is(n), compare_help(cx.seen_at(offender))))
 }
 
 fn mismatched_sides(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
     let rn = cx.name_at(r)
     cx.spoken(refusal("type.mismatch", cx.loc_of(r), "`${op_symbol(op)}` compares matching types, found `${cx.name_at(l)}` and `${rn}`", this_is(rn), null))
+}
+
+/// A NAME MEETS ITS OWN SHAPE — the remedy is the conversion.
+fn mixed_with_shape(mut cx: TypeCx, e: ExprId, named: TypeId) {
+    let n = cx.name_at(e)
+    cx.emit(cx.named_fix(refusal("type.mismatch", cx.loc_of(e), "an operand of `${cx.view.types.name_of(named)}` meets `${n}` — a named type never mixes with its shape", this_is(n), null), named, e))
+}
+
+/// A NAME MEETS ANOTHER NAME. No wrap is honest — neither stands
+/// over the other — so the refusal offers none.
+fn two_names(mut cx: TypeCx, e: ExprId, named: TypeId) {
+    let n = cx.name_at(e)
+    cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${cx.view.types.name_of(named)}` and `${n}` are two types — a named type never mixes with another", this_is(n), null))
 }
 
 fn bad_shift_count(mut cx: TypeCx, r: ExprId, count: int) -> TypeId {

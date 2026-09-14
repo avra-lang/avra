@@ -218,7 +218,7 @@ impl LowerCx {
     /// pass the hole laws; every other arm stands on the raw register.
     mut fn texted(h: ExprId) -> Reg {
         let v = self.reg_of(h)
-        match self.shape_at(h) {
+        match self.seen_at(h) {
             .Str -> v,
             .Int -> self.spelled_by("avra_int_text", v),
             .Float -> self.spelled_by("avra_float_text", v),
@@ -252,9 +252,9 @@ impl LowerCx {
     /// Equality of two values of one type as a bool register — the
     /// runtime's `avra_streq` for text, the Eq operator otherwise.
     mut fn same_value(a: Reg, b: Reg, ty: TypeId) -> Reg {
-        if self.view.types.shape_of(ty) is .Enum { return self.same_tag(a, b) }
+        if self.view.types.seen_shape(ty) is .Enum { return self.same_tag(a, b) }
         let dst = self.mint_shape(Type.Bool)
-        if self.view.types.shape_of(ty) is .Str {
+        if self.view.types.seen_shape(ty) is .Str {
             self.emit(Ins.CallRt(dst, "avra_streq", [a, b]))
         } else {
             self.emit(Ins.Bin(dst, BinOp.Eq, a, b))
@@ -385,7 +385,9 @@ impl LowerCx {
     /// catch-all is honest: a non-`Opt` shape is the absorbing error
     /// path, which lowers nothing, so the pair it names is never built.
     fn repr_of(opt: TypeId) -> Repr {
-        match self.view.types.shape_of(opt) {
+        // A NAME over a nullable IS that nullable — the layout is the
+        // shape's, so the read door answers here too.
+        match self.view.types.seen_shape(opt) {
             .Opt(inner) -> self.inner_repr(inner),
             _ -> Repr.Pair,
         }
@@ -400,15 +402,15 @@ impl LowerCx {
     /// and the machine type asks the same question (`opt_rides_pointer`).
     /// The two answers must never disagree — they are the same layout.
     fn inner_repr(inner: TypeId) -> Repr {
-        if self.view.types.is_flat(inner) { return Repr.Boxed }
         if self.view.types.rides_pointer(inner) { return Repr.Niche }
+        if self.view.types.is_flat(inner) { return Repr.Boxed }
         Repr.Pair
     }
 
     /// What a nullable type carries — the `Opt`'s inner, with the
     /// catch-all pinned to the asker's own type on the error path.
     fn carried_type(opt: TypeId) -> TypeId {
-        match self.view.types.shape_of(opt) {
+        match self.view.types.seen_shape(opt) {
             .Opt(inner) -> inner,
             _ -> opt,
         }
@@ -421,6 +423,15 @@ impl LowerCx {
             .Niche or .Boxed -> self.nonzero(v, self.zeroed(self.mint_ty(opt))),
             .Pair -> self.extracted(v, 0, self.mint_shape(Type.Bool)),
         }
+    }
+
+    /// A value PACKED into the expression's own register. A FLAT
+    /// record IS its one field, so each engine renders a one-part
+    /// pack as identity — which is how a NAMED TYPE costs nothing.
+    mut fn packed(e: ExprId, parts: List<Reg>) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.Pack(dst, parts))
+        dst
     }
 
     /// One element of a packed value, into a caller-typed register.
@@ -546,7 +557,7 @@ impl LowerCx {
     /// the type's zero. An absent pair's payload rides one, and so
     /// does the yield of an arm that already EXITED the fn.
     mut fn hollow_of(inner: TypeId) -> Reg {
-        if self.view.types.shape_of(inner) is .Bool {
+        if self.view.types.seen_shape(inner) is .Bool {
             let z = self.mint_ty(inner)
             self.emit(Ins.ConstBool(z, false))
             return z

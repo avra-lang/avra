@@ -6694,6 +6694,169 @@ additions get siblings, nothing changes shape:
       to localize, or at the next pass added, whichever comes first.
       Evidence: ROADMAP "Feedback survey — 2026-09-11".
 
+## Feedback survey — 2026-09-14 (NAMED TYPES, comptime/types)
+
+One slice on 9d0f331: `type Name = Shape` — a DISTINCT named type
+over any shape, the design doc's §7 q1 law landed whole
+(docs/2026_09_14_NAMED_TYPES.md). Gate green, idioms debt 0, fixed
+point identical, seed refreshed. Everything below was met writing it;
+nothing was surveyed outside this worktree, and no other lane's tree
+was read.
+
+### FRICTION — what cost time
+
+- **A SPEC CASE CANNOT PRINT.** Twenty-two `shown(...)` cases went red
+  while every CLI probe of the same source passed, and a spec case
+  answers a bool — so there was no way to see what `analyze_source`
+  actually said. The debug loop was: build a THROWAWAY PACKAGE
+  depending on `@std/avrac`, write `println(a.report())` into its
+  entry, `avra build` it, run it. ~25 minutes and three heavy builds
+  for one question. EVIDENCE: /tmp/avra-probes/dbg, built twice
+  because the first copy was a generation behind the fix. THE ASK: a
+  failing spec case should print the two sides it compared, as a
+  program test's diff does — or `avra test --explain <case>` should
+  re-run one case with its intermediate values shown.
+- **A PROGRAM TEST INSIDE THE TREE CANNOT BE RUN BY HAND.** `./avra
+  run packages/.../tests/named/named.av` reads the file as a MODULE
+  of std-avrac and answers F0902 once per statement. Every iteration
+  went through a `cp` to /tmp. THE ASK: `avra run` on a file the
+  harness would treat as a program test should treat it as one.
+- **THE PRODUCT AND THE PROBE GO STALE SEPARATELY.** A debug package
+  built against `@std/avrac` keeps the OLD compiler's behaviour until
+  it is rebuilt, and nothing says so — one round was spent concluding
+  a fix had not worked when the probe was simply a generation behind.
+  THE ASK: nothing structural; the entry belongs in the working
+  discipline (below).
+
+### SUGAR — a construct the language should have
+
+- **AN IDEMPOTENT CONVERSION.** `Name(v)` where `v` already wears the
+  name refuses ("argument 1 of `A` wants `int`, found `A`"), so a
+  generic-ish helper that normalises its input cannot write
+  `Rows(xs)` unconditionally. WANTING SITE: the first draft of
+  `named_managed.av`'s `widened`. The ask is small — accept the
+  identity conversion, or refuse it in its own words ("`xs` is
+  already a `Rows`").
+- **A PAIRED COMPREHENSION**, confirmed again (already filed, I3
+  licences): `[f(j, p) for j, p in ps]` does not parse, so
+  `seat_words` and three sites in this slice kept accumulator loops.
+- **A `mut` METHOD ON A NAMED TYPE'S SHAPE WITHOUT AN IMPL.**
+  `rows.push(v)` works; `rows.sorted()` does not exist because the
+  LIST has no such verb. Not this slice's ask, but the named type
+  makes the gap visible: a name is where a user would naturally hang
+  the verb, and `impl Rows { … }` is the answer — which works today.
+  Confirmation, not a new row.
+
+### FEATURES — a capability, larger than sugar
+
+- **A NAME OVER AN ENUM SHOULD FORWARD `match` AND `is`.** `type K =
+  Color` declares, constructs and compares; `k is .Red` refuses
+  cleanly. Forwarding needs `variants_of_type` and `fields_of_type`
+  to see through, which also lets `K { … }` and `w with { … }` reach
+  a shape the LAYOUT laws do not follow — so it is a slice, not a
+  line. RECORDED TRIGGER below.
+- **A NAMED CONSTRUCTION AT A `const` SEAT.** `seat(A(3))` is F2073:
+  the settled-seat law reads the SOURCE, and `A(3)` is a call. The
+  fix is to teach `literal_meta` that a named construction over a
+  literal is source-spelled. RECORDED TRIGGER below.
+
+### DEFECTS — the compiler blaming itself
+
+All four were found IN THIS SLICE, by the red team, and all four are
+fixed with a permanent case in `named_adversarial_test.av`:
+
+- **A DOUBLE RELEASE AT THE IDENTITY PACK.** A fn answering a named
+  value released the part and handed the caller freed memory. The
+  ENGINES DISAGREED ON THE VALUE while agreeing on the verdict — `xq`
+  evaluated, empty natively — and `AVRA_RC_GUARD=1` named it
+  ("released an already-dead box"). CAUSE: `Ins.Pack` was read as a
+  VIEW; the outermost scope's yield carries the reference the scope
+  already holds, so a pack that owns nothing leaves the answer dead.
+- **A ROW READING A RECEIVER IT COULD NOT SEE THROUGH.** `Counts.get`
+  over `type Counts = Map<string, int>` answered the ABSORBING error
+  type with NO diagnostic — a clean analysis that then wrecked the
+  run ("defect: a non-string reached text"). CAUSE: `value_held` read
+  `shape_at`, which answers `.Struct` for every named value.
+- **A NULLABLE'S LAYOUT READ OFF THE BARE SHAPE.** `type Maybe =
+  string?` took the scalar-pair representation and text came out of a
+  register holding a pointer.
+- **THE PROGRAM'S ANSWER LAW.** A named answer refused with "no text
+  projection yet" though its value is an int.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **A LAW IS NOT APPLIED UNTIL ITS LIST IS ENUMERATED.** The slice's
+  own sentence names the READS — "a property, a method, an index, a
+  `for` head, an interpolation hole" — and a LITERAL PATTERN is one
+  and was not on the list, so `match id { 5 -> … }` over a `UserId`
+  refused F2038 "a `int` never matches `UserId`". FOUND IN REVIEW,
+  not by the red team, which had attacked every vocabulary a name can
+  stand over and never written a pattern. THE LESSON: a law stated as
+  a LIST is applied by ENUMERATING the sites, not by reading the
+  list — the gap is invisible to anyone holding the same list.
+- **A REFUSAL THAT NAMES A RELATIONSHIP THAT DOES NOT EXIST.** One
+  voice served every mixed operand, so `A == B` (two names over
+  `int`) said "a named type never mixes with its SHAPE" and offered
+  `A(b)` — a wrap that cannot be honest, because `B` is not `A`'s
+  shape. FOUND IN REVIEW. Three refusals now, chosen by what the
+  OTHER side is. THE LESSON: when a voice takes one argument and the
+  truth depends on two, it will be wrong on some pair — and the pair
+  it is wrong about is the one nobody wrote a case for.
+- **A CLOSER NEVER CONTINUES A LINE** — new, filed in CLAUDE.md.
+  `>` was in the lexer's continuation set and closes a type argument
+  list, so `type Rows = List<int>` swallowed the statement below it.
+  No statement in the tree had ever ENDED in `>` (a trait's bodiless
+  `fn a() -> List<T>` does, and parsed only because a `}` supplied
+  its END), so the rule had never been tested.
+- **A NAMED TYPE'S MARK IS MADE AT ITS DECLARATION** — the flat law's
+  own declaration-ORDER hazard, one type over, filed in CLAUDE.md.
+  The CLI signs types first and every probe was green;
+  `analyze_source` types the entry first and refused every literal
+  fill. ONE TREE, TWO ANSWERS — and the CLI is the instrument a lane
+  reaches for first, so the hazard hides behind a green probe.
+- **THE FLAT LAW'S COMMENTS WERE STALE THE MOMENT IT GENERALISED.**
+  `flat_fields`, `mark_flat` and `unflatten` each said "a record of
+  scalars, which rides REGISTERS and holds no reference" — true of
+  every flat record that existed, and false of the first one that
+  did not. Rewritten in the same change that generalised them.
+- **A "VIEW" AND AN "OWNER" ARE NOT THE ONLY TWO ANSWERS.**
+  `view_of` and `managed_dst` disagreed about `Extract` for as long
+  as no flat record was managed, and the disagreement read as a bug
+  in one of them. It was not: `Extract` IS a view and `Pack` IS an
+  owner, and they share a shape only by accident.
+
+### PERFORMANCE — a measured cost
+
+- **THE SEE-THROUGH DOOR COSTS 0.1–0.2%**, measured. `make census
+  CMD="check packages/std-cli"`, same compiler generation, HEAD's
+  source as the control (stash, `make avra`, census, pop):
+
+      control  19,581,050 retains  23,476,926 releases  14,867,956 list reads
+      slice    19,609,090 retains  23,505,650 releases  14,898,556 list reads
+      delta        +28,040 (+0.14%)   +28,724 (+0.12%)     +30,600 (+0.21%)
+
+  The cost is one list index and a null test inside `element`,
+  `carried`, `cell_inner`, `res_parts`, `arrow_parts` and
+  `rides_pointer`. No allocation was added. Gate peak moved inside
+  its usual band (679–802 MB across the slice's runs).
+
+### PROCESS — the working discipline itself
+
+- **KEEP: the front-end ladder, exactly as written.** `cp build/avra
+  build/avra.pre`, build twice, `cmp`. The grammar change compiled
+  happily on the first build and the `>` defect appeared only on the
+  second — the "build that succeeded was the build that lied", on
+  schedule.
+- **KEEP: `AVRA_RC_GUARD=1` on a small native program.** It named the
+  double release in one run, after the differential had already gone
+  green on the interpreter. The guard is the only instrument that saw
+  it.
+- **ADD TO THE DISCIPLINE: A PROBE PACKAGE IS A PRODUCT TOO.** A
+  debug package built against `@std/avrac` carries the compiler
+  generation it was built with, and nothing says so. A round was lost
+  reading a stale probe as evidence that a fix had failed. Rebuild
+  the probe after every `make avra`, or treat its answer as dated.
+
 ## Feedback survey — 2026-09-13 (COMPTIME STATIC, comptime/static)
 
 Three slices on acb3a93: static data for aggregate consts (025366f),
@@ -7774,6 +7937,51 @@ Literals fill it, the shape's methods forward, `Name(value)` converts
 and the refusal suggests it. Typed ids shorten to `type UserId = int`.
 Design doc §7 q1 carries the reasoning; the wanting site is every
 `{ index: int }` id in core/nodes.av and the type-operator later row.
+LANDED 2026-09-14 (comptime/types), whole: the grammar, the
+construction, the literal fill, read forwarding, the named operand
+law and the `Name(v)` suggestion. The model, the seams and the exact
+refusal words are docs/2026_09_14_NAMED_TYPES.md; the law is
+CLAUDE.md's "A NAME IS OPAQUE AT A SEAT AND TRANSPARENT AT A READ",
+the idiom DOGFOODING's I42, the proof
+`features/structs/tests/named{,_managed}` plus 64 spec cases in
+`named_test.av` and `named_adversarial_test.av`. Recorded triggers
+below.
+
+RECORDED TRIGGERS from that slice (comptime/types, 2026-09-14) — each
+REFUSES cleanly today, so none is a silent hole:
+
+- A GENERIC NAMED TYPE (`type Box<T> = List<T>`): F2083 "`Box` is a
+  named type with type parameters, which is recorded, not landed".
+  The record form's tparams do NOT carry over — `App(decl, name,
+  args)` interns per instantiation, so the name's mark would have to
+  be SUBSTITUTED and made at `applied_decl` rather than at declare.
+  FIRES at the first site that wants a generic typed id.
+- A NAME OVER AN ENUM OR A RECORD FORWARDING `match`/`is`/`with`:
+  `k is .Red` over `type K = Color` is F2013 "`is` asks an enum for
+  its variant, found `K`", and `w with { … }` over `type W = P` is
+  F2011. Forwarding means `variants_of_type` and `fields_of_type`
+  seeing through, which also lets `K { … }` and a field read reach a
+  LAYOUT the flat law does not follow — a slice, not a line. FIRES at
+  the first site that wants a named enum or a named record.
+- A NAMED CONSTRUCTION AT A `const` SEAT: `seat(A(3))` is F2073
+  "computed at run time" — the settled-seat law reads the SOURCE and
+  `A(3)` is a call. FIRES at the first `const` seat that wants a
+  named type; the fix is `literal_meta` reading a named construction
+  over a literal as source-spelled.
+- AN IDEMPOTENT CONVERSION: `Name(v)` where `v` already wears the
+  name refuses in the seat's words. FIRES when a normalising helper
+  wants to write it unconditionally.
+- THE SWEEP OF THE COMPILER'S OWN `*Id = { index: int }` IDS (seven
+  declarations, `.index` read thousands of times). FIRES when those
+  reads can be replaced mechanically — by a forwarding property or a
+  scripted rewrite with a gated diff. Deliberately NOT done in the
+  landing slice: the representation is already identical, so the
+  sweep buys spelling and nothing else, and it would have hidden the
+  four defects the red team found.
+- A LITERAL PATTERN OVER A NAMED ENUM (`match k { .Red -> … }`) —
+  the VARIANT half of the `match` trigger above. The SCALAR half
+  landed 2026-09-14: a literal pattern reads its subject through the
+  name, exactly as `==` does.
 
 FROM THE 2026-09-13 #8 FEEDBACK SURVEY (comptime/templates; rows and
 evidence under "Feedback survey — 2026-09-13 #8"): a hole in a

@@ -137,9 +137,14 @@ fn variant_types(mut cx: TypeCx, p: PatId, name: string, args: List<PatId>, expe
 
 /// A literal in a pattern is typed like any literal, then judged
 /// against the subject: a string never matches an int.
+///
+/// A PATTERN READS ITS SUBJECT, so it reads through a NAME: `match
+/// id { 5 -> … }` over a `UserId` compares the number, exactly as
+/// `id == 5` does. The refusal still names the type the writer
+/// WROTE — the subject is a `UserId`, whatever it is read as.
 fn lit_types(mut cx: TypeCx, p: PatId, v: ExprId, expected: TypeId) -> List<TypeId> {
     let got = cx.walk_type(v)
-    if cx.types_disagree(got, expected) { literal_mismatch(cx, p, got, expected) }
+    if cx.types_disagree(got, cx.seen(expected)) { literal_mismatch(cx, p, got, expected) }
     []
 }
 

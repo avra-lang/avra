@@ -288,7 +288,10 @@ impl Survey {
     }
 
     fn callee_of(ty: TypeId, name: string) -> Callee {
-        let sh: Type = self.decls.types.shape_of(ty)
+        // A NAME IS TRANSPARENT AT A READ, and a writing row reached
+        // through one writes its receiver exactly as the shape's
+        // does — a survey blind to that infers "never writes".
+        let sh: Type = self.decls.types.seen_shape(ty)
         match sh {
             .List(_) or .Cell(_) or .Map(_, _) or .Str -> Callee.Row(row_writes(self.ws.lang.rows.methods, name, sh)),
             .Struct(d, _) -> self.field_or_method(ty, d, name),

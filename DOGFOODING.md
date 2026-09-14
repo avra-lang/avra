@@ -633,6 +633,22 @@ reintroducing I3's blind spot names the two spellings it lost.
       synthetic". Not ratcheted: the smell is a naming choice, not a
       shape a grep can see.
 
+- I42 (unratcheted) A READ ASKS THE SEEN SHAPE, A SEAT ASKS THE
+      TYPE — the named-type law (`type Rows = List<int>`) written as
+      a code shape. A rule that DISPATCHES ON A SHAPE to read,
+      print, measure, walk, index or compare asks `cx.seen_at(e)` /
+      `types.seen_shape(ty)`; a rule that JUDGES AGREEMENT asks
+      `cx.shape_at(e)` / `types.shape_of(ty)` and keeps the name.
+      THE SMELL: a vocabulary row, a property row, a walk head or an
+      operand law reading `shape_at` — it answers `.Struct` for
+      every named value and the row then absorbs, sometimes with NO
+      diagnostic (the map rows did exactly that). Every instance
+      found in this slice was a READ. Not ratcheted: no grep tells a
+      read site from a seat site, and both spellings are correct
+      somewhere. The keeper is the adversarial suite —
+      `named_adversarial_test.av` reaches every vocabulary a name
+      can stand over.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is
