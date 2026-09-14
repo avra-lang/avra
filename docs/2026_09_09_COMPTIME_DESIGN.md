@@ -1016,6 +1016,16 @@ to start cold; the size is the design's estimate.
       consts, nested forwarded seat, bare/qualified/payload variants,
       and the three refusals) and the `const_seat` program (eval ==
       native == expected).
+- [x] **`avra check --every` — survey #6's third leftover. LANDED
+      (2026-09-13, comptime/const).** `run`/`build`/`check` lower only
+      what the entry REACHES; `test` lowers every declared body, which
+      is where a template body's defect surfaces. `check --every`
+      (`Program.check_every`, one `check_bodies(every)` behind both
+      verbs) lowers every declared body under the entry's laws, so a
+      lane can probe a template body without writing a package test.
+      Proof: `language/tests/check_every_test.av` — an unreached body's
+      settlement trap is silent under `check` and spoken under
+      `check_every`; a reached one speaks under both.
 - [x] **S4r — the `Code` value and the claim. LANDED (2026-09-13),
       DECIDED as UNTYPED `Code`.** A quote answers `@std.meta.Code`:
       `{ pieces: List<Piece> }`, each `Piece { text, origin, at }` a

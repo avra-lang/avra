@@ -1,0 +1,31 @@
+// `check --every` lowers what the entry never reaches: a body's
+// lowering-time refusal is silent under `check` and spoken here.
+use @std.avrac.language.{analyze_source}
+
+spec "language/check_every" {
+    given "a body the entry never reaches" {
+        then "`check` is clean — the body never lowers" {
+            analyze_source(unreached()).program().check() is .Ok
+        }
+        then "`check_every` lowers it and speaks its refusal" {
+            match analyze_source(unreached()).program().check_every() {
+                .Err(report) -> report.contains("trapped while settling"),
+                .Ok(_) -> false,
+            }
+        }
+        then "a reached body speaks under both" {
+            let a = analyze_source(reached())
+            !(a.program().check() is .Ok) && !(a.program().check_every() is .Ok)
+        }
+    }
+}
+
+/// `unused` traps while settling its const, and nothing calls it.
+fn unreached() -> string {
+    "fn unused() -> int {\n    const z: int = 1 / 0\n    z\n}\nfn main_ish() -> int { 1 }\nmain_ish()"
+}
+
+/// The same body, called.
+fn reached() -> string {
+    "fn used() -> int {\n    const z: int = 1 / 0\n    z\n}\nused()"
+}

@@ -1,21 +1,31 @@
 //! `avra check` — report everything wrong with a source file, or
-//! with every file of a package root.
-use @std.cli.{Subcommand, CliResult, Runnable}
+//! with every file of a package root. `--every` lowers every declared
+//! body, as `avra test` does, not only what the entry reaches.
+use @std.cli.{Subcommand, CliResult, Runnable, FlagDef}
 use @std.avrac.language.{Program}
 use @std.io.{println}
 
 type CheckCmd = { }
 
 impl Runnable for CheckCmd {
-    fn run(args: CliResult) -> int { phased(args, "lower", checked) }
+    fn run(args: CliResult) -> int {
+        phased(args, "lower", if args.has_flag("every") { checked_every } else { checked })
+    }
 }
 
-fn checked(p: Program) -> Result<int, string> {
-    let warned = p.check()?
+fn checked(p: Program) -> Result<int, string> { printed_warnings(p.check()?) }
+
+fn checked_every(p: Program) -> Result<int, string> { printed_warnings(p.check_every()?) }
+
+/// A clean program's warnings, printed; exit 0.
+fn printed_warnings(warned: string) -> Result<int, string> {
     if !warned.is_empty() { println(warned) }
     0
 }
 
+const every_flag: FlagDef = FlagDef { name: "--every", short: "", description: "lower every declared body, as `avra test` does — not only what the entry reaches", aliases: [] }
+
 export fn check_command() -> Subcommand {
-    Subcommand { meta: file_command("check", "Report everything wrong with a source file or a package root"), body: CheckCmd { } }
+    let meta = file_command("check", "Report everything wrong with a source file or a package root")
+    Subcommand { meta: meta with { flags: meta.flags.concat([every_flag]) }, body: CheckCmd { } }
 }

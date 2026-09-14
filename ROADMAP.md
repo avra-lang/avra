@@ -7590,6 +7590,8 @@ The `/feedback` run for the slice that lifted the two S5b boundaries: a settled 
 ### FEATURES — a capability, more than sugar
 
 - **AN `every`-MODE PROBE.** A command that lowers EVERY declared body the way `avra test` does (`avra check --every`, or have `check` lower every body when no entry runs) would let a lane catch template-body defects without a package test. The gap cost the F2074 detour above.
+  LANDED 2026-09-13 (comptime/const): `avra check --every`
+  (`Program.check_every`, one `check_bodies(every)` behind both).
 
 ### DOCTRINE — a law missing, misleading, or stale
 
