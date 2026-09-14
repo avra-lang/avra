@@ -44,14 +44,14 @@ owner. Done rows stay for the record.
 | item | owner | status |
 |---|---|---|
 | S1–S5, S4r, private const, const seats, `check --every` | lane/comptime | DONE (`2d4663e`) |
-| parsed templates (a)–(e): holes typed by position, name holes, S4r text machinery gone, expand provenance | COMPTIME TEMPLATES | (a) gated, awaiting three fixes + the commit word |
-| typed sublanguage holes (`sql { … }`) | COMPTIME TEMPLATES, after (e) | queued |
+| parsed templates (a)–(e): holes typed by position, name holes, S4r text machinery gone, expand provenance | COMPTIME TEMPLATES | DONE (`131f044`, `d83b027`, `b158432`) |
+| typed sublanguage holes (`sql { … }`) | COMPTIME TEMPLATES | in flight 2026-09-14 (owner: "continue on") |
 | §4.5 static data for aggregate consts (a read is an address) | COMPTIME STATIC | **DONE** 2026-09-13 (`comptime/static`): `Ins.StaticAddr`, `Lowered.statics`, the fold in features/statics.av, layout in the wrapper over runtime/avra_box.h |
 | §7 q4 budgets: measured defaults, `[lifted]` manifest rows | COMPTIME STATIC | **DONE** 2026-09-13 (`comptime/static`): steps 600,000 / memory 5 MiB from a 164-settlement measurement (§4.4); F2061 names the row; a memory ceiling reads `avra_mem_live` |
 | §7 q5 package-namespaced diagnostic kinds for user annotations | COMPTIME STATIC | **DONE** 2026-09-13 (`comptime/static`): `Diagnostic.kind`, `refuse_as`, `error[@scope/name: E1]`, `avra explain @scope/name:E1` over `Program.kind_rows` |
 | §7 q1 type-as-value spelling | task master | DECIDED: the annotation position is enough until a use outside one appears |
-| `@total` (spec 14.4) | owner's word on scope | asked 2026-09-14 |
-| type operators (`Type -> Type`) | needs type aliases — owner's language decision | asked 2026-09-14 |
+| `@total` (spec 14.4) | owner | LEFT for now (2026-09-14); the step budget is the belt |
+| type operators (`Type -> Type`) | needs named types — DECIDED `type` always distinct, no alias (`837bac7`); the language slice is on the sugar backlog | waits on that slice |
 | JIT behind `run_call`, parallel settlement, manifest read grants | recorded triggers, not blockers | a settlement over budget / a measured wall-clock / the first `embed` outside the package root |
 
 ## Prompt for the next session
