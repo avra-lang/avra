@@ -16,6 +16,7 @@ impl Runnable for ExplainCmd {
     fn run(args: CliResult) -> int {
         let q = args.arg("code")
         if q == "process" { return explained_process(args.arg("at")) }
+        if q.contains(":") { return explained_kind(q) }
         if q.starts_with("@") { return explained_annotation(q.substring(1, q.length)) }
         let hit: DiagCode? = avra().rows.codes.find(it.id == q || it.kind == q)
         if hit == null {
@@ -26,6 +27,24 @@ impl Runnable for ExplainCmd {
         println("${c.id} ${c.kind} — ${c.summary}")
         0
     }
+}
+
+/// `avra explain @scope/name:E1` — a PACKAGE's diagnostic kind, from
+/// the annotation fns the package you stand in reaches: registered by
+/// spelling the kind as a literal in `refuse_as`.
+fn explained_kind(q: string) -> int {
+    let p = root_program(".")
+    if !p.clean() {
+        eprintln(p.report())
+        return 1
+    }
+    let hit: DiagCode? = p.kind_rows().find(it.kind == q || it.id == q)
+    if hit == null {
+        eprintln("avra: no annotation this package reaches registers `${q}` — a kind registers when `refuse_as` spells it as a literal, or when an annotation speaks it")
+        return 1
+    }
+    println("${hit!.id} — ${hit!.summary}")
+    0
 }
 
 /// `avra explain @name` — the annotation fn's signature, which IS
@@ -106,6 +125,6 @@ fn terminator_text(t: string?) -> string {
 
 export fn explain_command() -> Subcommand {
     let body: ExplainCmd = ExplainCmd { }
-    let args = [ArgDef { name: "code", description: "an F-code, a kind, or `process`", required: true, variadic: false }, ArgDef { name: "at", description: "for `process`: the package directory (the root when absent)", required: false, variadic: false }]
+    let args = [ArgDef { name: "code", description: "an F-code, a kind, a package kind (`@scope/name:E1`), or `process`", required: true, variadic: false }, ArgDef { name: "at", description: "for `process`: the package directory (the root when absent)", required: false, variadic: false }]
     Subcommand { meta: arg_command("explain", "What a diagnostic code means; `process` — what this package may run", args), body: body }
 }

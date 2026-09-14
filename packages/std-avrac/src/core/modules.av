@@ -80,6 +80,33 @@ export fn package_of_module(m: string) -> string {
     "${segs[0]}.${segs[1]}"
 }
 
+/// A user diagnostic's KIND under its package: `@scope/name:E1` —
+/// the identity a report and `avra explain` both use; a package with
+/// no scoped name (a root program) speaks its kinds bare. Null when
+/// the annotation named none.
+export fn user_kind(package: string, kind: string?) -> string? {
+    if kind == null { return null }
+    if package.is_empty() { return kind }
+    "${package.replace(".", "/")}:${kind!}"
+}
+
+/// Whether a kind an annotation names is a WORD — `[A-Za-z0-9_-]+`,
+/// like `E1`: the one shape that renders and explains unambiguously
+/// beside its package.
+export fn is_kind_word(s: string) -> bool {
+    !s.is_empty() && all_codes(s, is_kind_code)
+}
+
+fn is_kind_code(c: int) -> bool {
+    is_word_code(c) || (c >= 65 && c <= 90)
+}
+
+/// Whether a kind is a package's own — it carries the `:` no
+/// feature kind does.
+export fn is_user_kind(kind: string) -> bool {
+    kind.contains(":")
+}
+
 /// Whether a key is a package name: `@scope/name`, both words of
 /// `[a-z0-9_-]`.
 export fn is_package_key(key: string) -> bool {

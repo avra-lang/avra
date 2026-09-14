@@ -14,12 +14,12 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Node, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of}
 use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, copier, hole_kinds, quote_kind, all_codes, is_name_cont}
 use diagnostics.{defect_at}
-use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
+use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error, user_code, DiagCode}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use core.{debug}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
@@ -343,15 +343,18 @@ impl Workspace {
     fn annotation_warnings(x: Decl, p: Parsed, vis: Namespace, a: Annotation) -> List<Said> {
         let found: DeclId? = self.named_arg(p, vis, a.callee)
         if found == null { return [] }
-        let sig: FnSig? = (self.decls.sig(found!))?.fn_sig()
+        let callee = found!
+        let sig: FnSig? = (self.decls.sig(callee))?.fn_sig()
         if sig == null { return [] }
         let s = sig!
         if s.params.is_empty() { return [] }
         let elem: TypeId? = elem_of(self.decls.types, s.ret)
         if elem == null { return [] }
         if !self.decls.meta_type(elem!, "Diagnostic") { return [] }
-        match self.lifted(found!, x.file, x.stmt, a.callee, a.args) {
-            .Ok(crossed) -> [w for w in self.decls.saids(crossed, s.ret) if w.warning],
+        // a warning's kind wears the annotation fn's package here, where
+        // that fn is known; a use speaks it under that kind
+        match self.lifted(callee, x.file, x.stmt, a.callee, a.args) {
+            .Ok(crossed) -> [w with { kind: worded_kind(self.decls.package_of(callee), w.kind) } for w in self.decls.saids(crossed, s.ret) if w.warning],
             .Err(_) -> [],
         }
     }
@@ -1680,6 +1683,49 @@ fn segments_of(dotted_text: string) -> List<string> {
 /// takes either.
 export type Program = { ws: Workspace, files: List<Analysis>, entry: Entry?, phases: List<Phase>, cache: string, defects: List<Diag>, voices: List<Diag>, manifests: List<SourceFile> }
 
+/// A warning's kind under its package when it is a word; a kind
+/// that is not one is dropped — the warning speaks kind-less.
+fn worded_kind(package: string, kind: string?) -> string? {
+    if kind == null || !is_kind_word(kind!) { return null }
+    user_kind(package, kind)
+}
+
+/// Each kind once, the first row of a name kept.
+fn distinct_codes(rows: List<DiagCode>) -> List<DiagCode> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<DiagCode> = []
+    for r in rows {
+        if seen.get(r.kind) == null {
+            seen.set(r.kind, true)
+            out.push(r)
+        }
+    }
+    out
+}
+
+/// A kinded constructor call as its source spells it: the kind
+/// literal, and the message when that is a literal too.
+type Kinded = { kind: string, message: string? }
+
+impl Decls {
+    /// A call to one of `@std/meta`'s KINDED constructors (`refuse_as`,
+    /// `refuse_as_at`) whose kind is a literal; null for any other
+    /// expression — the callee is judged by its DECLARATION's package,
+    /// never by its written name.
+    fn kinded_call(names: NameFacts, store: NodeStore, e: ExprId) -> Kinded? {
+        let held: List<ExprId>? = match store.expr(e) { .Call(_, _, xs) -> xs, rest -> null }
+        if held == null { return null }
+        let args = held!
+        let d: DeclId? = bound_decl_of(names, e)
+        if d == null || self.package_of(d!) != "@std.meta" { return null }
+        let message_at: int? = match self.decl(d!).name { "refuse_as" -> 1, "refuse_as_at" -> 2, _ -> null }
+        if message_at == null || args.length <= message_at! { return null }
+        let kind: string? = (store.expr(args[0])).text_of()
+        if kind == null { return null }
+        Kinded { kind: kind!, message: (store.expr(args[message_at!])).text_of() }
+    }
+}
+
 /// The entry's seat among the program's files.
 type Entry = { at: int }
 
@@ -1833,7 +1879,54 @@ impl Program {
     /// of this package, or the dependency file that wrote a template.
     fn rendered(ds: List<Diag>) -> string {
         let sources = self.manifests.concat([self.ws.source(f.id) for f in self.ws.decls.files])
-        joined([render_among(d, self.ws.lang.rows.codes, sources) for d in ds], "\n\n")
+        let codes = self.ws.lang.rows.codes.concat(self.spoken_codes(ds))
+        joined([render_among(d, codes, sources) for d in ds], "\n\n")
+    }
+
+    /// The rows the PACKAGE kinds among `ds` render under — one per
+    /// diagnostic that wears one, its message the summary. A kind
+    /// spoken is registered by being spoken; `kind_rows` is the
+    /// registry `avra explain` walks without a diagnostic in hand.
+    fn spoken_codes(ds: List<Diag>) -> List<DiagCode> {
+        [user_code(d.kind, d.message) for d in ds if is_user_kind(d.kind)]
+    }
+
+    /// THE PACKAGE KINDS `avra explain @scope/name:E1` answers from:
+    /// every `refuse_as("E1", "…")` with a literal kind in the
+    /// annotation fns the workspace holds (the complete walk — a
+    /// dependency's fns are where a package's kinds are spelled, and
+    /// `files` is the root's alone), and every kind an annotation in
+    /// this program SPOKE, which is how a kind computed at run time
+    /// registers.
+    fn kind_rows() -> List<DiagCode> {
+        let spoken = self.spoken_codes(flatten([a.diagnostics for a in self.files]).concat(self.voices))
+        distinct_codes(spoken.concat(flatten([self.kind_rows_of(fi.id) for fi in self.ws.decls.files])))
+    }
+
+    fn kind_rows_of(f: FileId) -> List<DiagCode> {
+        let decls = self.ws.decls
+        let names = self.ws.resolved(f)
+        flatten([self.kind_rows_in(names, d) for d in decls.decls_of_file(f) if decls.decl(d).root != null])
+    }
+
+    /// The kinds one declaration's body spells, hidden branches
+    /// included: every call bound to `@std/meta`'s kinded constructors
+    /// with a literal kind.
+    fn kind_rows_in(names: NameFacts, d: DeclId) -> List<DiagCode> {
+        let decls = self.ws.decls
+        let x = decls.decl(d)
+        let package = decls.package_of(d)
+        let store = decls.store(d)
+        mut rows: List<DiagCode> = []
+        for e in store.every_expr(x.root!) {
+            let spoken: Kinded? = decls.kinded_call(names, store, e)
+            if spoken != null {
+                let k = spoken!
+                let kind: string? = user_kind(package, k.kind)
+                if kind != null { rows.push(user_code(kind!, k.message ?? "spoken by `@${x.name}`")) }
+            }
+        }
+        rows
     }
 
     /// The program as IR, memory strategy applied — every unit

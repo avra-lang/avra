@@ -1093,6 +1093,85 @@ impl NodeStore {
         }
     }
 
+    // ── THE COMPLETE WALK ───────────────────────────────────────────
+    // `post_order` (features/dispatch.av) walks `kids`, and a feature
+    // HIDES the children it types under its own narrowing — an `if`'s
+    // branches, a `match`'s arms, a `catch`'s, a nullable's, a lambda's
+    // body — and a block's statements are not expressions at all. THE
+    // HIDDEN-BRANCH LAW: a question about EVERY expression a body holds
+    // (does it read a run-time parameter; which kinds does it spell)
+    // walks here, where every variant names all its children and a
+    // statement its expressions — a registry, like the fingerprints.
+
+    /// Every expression at and under `root`, children before owners,
+    /// hidden branches and statement bodies included.
+    fn every_expr(root: ExprId) -> List<ExprId> {
+        flatten([self.every_expr(k) for k in self.expr_children(root)]).concat([root])
+    }
+
+    /// An expression's direct expression children, ALL of them.
+    fn expr_children(e: ExprId) -> List<ExprId> {
+        match self.expr(e) {
+            .IntLit(_) or .FloatLit(_) or .Ident(_) or .Receiver or .Error or .StrLit(_) or
+            .BoolLit(_) or .NullLit -> [],
+            .Binary(_, left, right) -> [left, right],
+            .Not(value) -> [value],
+            .ListLit(elems) -> elems,
+            .MapLit(keys, values) -> keys.concat(values),
+            .Index(subject, index) -> [subject, index],
+            .Prop(subject, _) -> [subject],
+            .Interp(_, holes) -> holes,
+            .Quote(_, stmts, arms, holes) -> self.stmts_exprs(stmts).concat([a.value for a in arms]).concat(holes),
+            .If(cond, on_true, on_false) -> [cond, on_true, on_false],
+            .Call(_, _, args) -> args,
+            .When(conds, values, fallback) -> conds.concat(values).concat([fallback]),
+            .Block(stmts, value) -> self.stmts_exprs(stmts).concat(some_list(value)),
+            .StructLit(_, _, values) -> values,
+            .With(subject, _, values) -> [subject].concat(values),
+            .Match(subject, arms) -> [subject].concat([a.value for a in arms]),
+            .Coalesce(l, r) -> [l, r],
+            .Force(v) -> [v],
+            .Is(v, _) -> [v],
+            .VariantLit(_, args) -> args,
+            .Comp(elem, _, _, source, hi, cond) -> [elem, source].concat(some_list(hi)).concat(some_list(cond)),
+            .Propagate(v) -> [v],
+            .MethodCall(subject, _, margs) -> [subject].concat(margs),
+            .Lambda(_, body) -> [body],
+            .CallValue(subject, cargs) -> [subject].concat(cargs),
+            .Catch(subject, _, _, values) -> [subject].concat(values),
+            .MatchOpt(subject, _, present, absent) -> [subject, present, absent],
+            .Chain(subject, _) -> [subject],
+        }
+    }
+
+    fn stmts_exprs(ids: List<StmtId>) -> List<ExprId> {
+        flatten([self.stmt_exprs(s) for s in ids])
+    }
+
+    /// A statement's direct expressions, its nested statements' too.
+    /// A declaration holds a body of its own and is walked from that
+    /// body, never through the statement that declares it.
+    fn stmt_exprs(s: StmtId) -> List<ExprId> {
+        match self.stmt(s) {
+            .Let(_, _, value) -> [value],
+            .MutLet(_, _, value) -> [value],
+            .ConstDecl(_, _, value) -> [value],
+            .Assign(target, value) -> [target, value],
+            .While(cond, stmts) -> [cond].concat(self.stmts_exprs(stmts)),
+            .IfStmt(cond, then_stmts, else_stmts) -> [cond].concat(self.stmts_exprs(then_stmts)).concat(self.stmts_exprs(else_stmts)),
+            .Return(value) -> some_list(value),
+            .Fail(value) -> [value],
+            .LetElse(_, subject, stmts) -> [subject].concat(self.stmts_exprs(stmts)),
+            .For(_, from, to, _, _, stmts) -> [from, to].concat(self.stmts_exprs(stmts)),
+            .ForEach(_, _, subject, stmts) -> [subject].concat(self.stmts_exprs(stmts)),
+            .ExprStmt(value) -> [value],
+            .Discard(value) -> [value],
+            .Defer(body, _) -> [body],
+            .ImplDecl(_, _, _) or .TraitDecl(_, _) or .Use(_, _, _) or .Error or .ExternFn(_, _, _) or
+            .FnDecl(_, _, _, _, _) or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) -> [],
+        }
+    }
+
     /// A block tail's fingerprint contribution — nothing when the
     /// block leaves instead of answering.
     fn tail_fp(value: ExprId?) -> List<int> {
