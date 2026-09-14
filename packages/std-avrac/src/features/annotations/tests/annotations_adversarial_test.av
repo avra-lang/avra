@@ -1,7 +1,7 @@
 // The annotation boundary: its callee, receiver, remaining seats,
 // answer effect, execution, and one-message discipline.
-use @std.avrac.language.{avra, new_workspace, memory_host, parse_source, Program}
-use @std.avrac.core.{flatten}
+use @std.avrac.language.{avra, new_workspace, memory_host, parse_source, Program, Workspace}
+use @std.avrac.testing.{said, refused_n, refused_in, vendored_meta, vendored_meta_paths}
 
 fn meta_use() -> string {
     "use @std.meta.{Fn, Type, Diagnostic}\n"
@@ -23,29 +23,43 @@ fn collect_use() -> string {
     "use @std.meta.{Fn, Directive, collect}\n"
 }
 
+
+/// The fixtures the REAL `@std/meta` deliberately has not: a `Decl`
+/// LOOKALIKE (the real package refuses that name — a collision would
+/// arm a counterfeit), a trait whose `derive` makes a twin, one that
+/// declares none, and an annotation taking a list.
+fn meta_probes() -> string {
+    "use @std.errors.{Loc}\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport trait Show {\n    static fn derive(what: Named) -> List<Directive> { [Directive { twin: \"gen_\" + what.name, name: what.name, at: what.at }] }\n}\nexport trait Empty {\n    fn mark() -> int\n}\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n"
+}
+
 fn packaged(source: string) -> Program {
-    let files = {
+    let files = vendored_meta({
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n",
         "/w/src/main.av": source,
-        "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc?, warning: bool = false, kind: string? = null }\nexport fn refuse_as(kind: string, message: string) -> Diagnostic { Diagnostic { message: message, help: null, at: null, kind: kind } }\nexport type Named = { name: string, at: Loc? }\nexport type Trait = { name: string, at: Loc? }\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport type Directive = { twin: string, name: string, at: Loc? }\nexport type Derived = { made: List<Directive> }\nexport fn derive(what: Named, tr: Trait) -> Derived { Derived { made: [] } }\nexport trait Show {\n    static fn derive(what: Named) -> List<Directive> { [Directive { twin: \"gen_\" + what.name, name: what.name, at: what.at }] }\n}\nexport trait Empty {\n    fn mark() -> int\n}\nexport fn warn(message: string) -> Diagnostic { Diagnostic { message: message, help: null, at: null, warning: true } }\nexport fn deprecated(what: Named, note: string) -> List<Diagnostic> { [warn(\"`\${what.name}` is deprecated — \${note}\" )] }\n/// Makes a traced sibling.\n/// The signature declares the effect.\nexport fn traced(f: Fn, label: string) -> List<Directive> { [Directive { twin: \"\${f.name}_traced\", name: f.name, at: null }] }\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n",
-    }
-    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av"]), "/w", avra())
+        "/w/vendor/meta/src/probes.av": meta_probes(),
+    })
+    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/src/probes.av"].concat(vendored_meta_paths())), "/w", avra())
     ws.program("/w/src/main.av")
 }
 
-/// The package with a second dependency, `@acme/audit`, whose
-/// annotation refuses under its OWN kind.
-fn audited(source: string) -> Program {
-    let files = {
+/// An annotation package of its own, refusing under its OWN kind.
+fn audit_source() -> string {
+    "use @std.meta.{Fn, Diagnostic, refuse_as, refuse}\nexport fn audited(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"E1\", \"`\${f.name}` is audited\")]\n}\nexport fn plain(f: Fn) -> List<Diagnostic> {\n    [refuse(\"`\${f.name}` is plain\")]\n}\nexport fn quiet(f: Fn) -> List<Diagnostic> {\n    if f.name == \"never\" { [refuse_as(\"E2\", \"a quiet fn\")] } else { [] }\n}\nexport fn blank(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"\", \"`\${f.name}` is blank\")]\n}\nexport fn old(f: Fn) -> List<Diagnostic> {\n    [Diagnostic { message: \"`\${f.name}` is old\", help: null, at: null, warning: true, kind: \"W1\" }]\n}\n"
+}
+
+/// The workspace with a second dependency, `@acme/audit`.
+fn audit_workspace(source: string) -> Workspace {
+    let files = vendored_meta({
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/audit\" = { path = \"vendor/audit\" }\n",
         "/w/src/main.av": source,
-        "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-        "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc?, warning: bool = false, kind: string? = null }\nexport fn refuse_as(kind: string, message: string) -> Diagnostic { Diagnostic { message: message, help: null, at: null, kind: kind } }\nexport fn refuse(message: string) -> Diagnostic { Diagnostic { message: message, help: null, at: null } }\n",
         "/w/vendor/audit/avra.toml": "[package]\nname = \"@acme/audit\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
-        "/w/vendor/audit/src/audit.av": "use @std.meta.{Fn, Diagnostic, refuse_as, refuse}\nexport fn audited(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"E1\", \"`\${f.name}` is audited\")]\n}\nexport fn plain(f: Fn) -> List<Diagnostic> {\n    [refuse(\"`\${f.name}` is plain\")]\n}\nexport fn quiet(f: Fn) -> List<Diagnostic> {\n    if f.name == \"never\" { [refuse_as(\"E2\", \"a quiet fn\")] } else { [] }\n}\nexport fn blank(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"\", \"`\${f.name}` is blank\")]\n}\nexport fn old(f: Fn) -> List<Diagnostic> {\n    [Diagnostic { message: \"`\${f.name}` is old\", help: null, at: null, warning: true, kind: \"W1\" }]\n}\n",
-    }
-    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av", "/w/vendor/audit/avra.toml", "/w/vendor/audit/src/audit.av"]), "/w", avra())
+        "/w/vendor/audit/src/audit.av": audit_source(),
+    })
+    new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/audit/avra.toml", "/w/vendor/audit/src/audit.av"].concat(vendored_meta_paths())), "/w", avra())
+}
+
+fn audited(source: string) -> Program {
+    mut ws = audit_workspace(source)
     ws.program("/w/src/main.av")
 }
 
@@ -54,16 +68,12 @@ fn audit_use() -> string {
 }
 
 fn refused(source: string, phrase: string) -> bool {
-    let p = packaged(source)
-    let ds = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
-    ds.length == 1 && p.report().contains(phrase)
+    refused_in(packaged(source), phrase)
 }
 
 fn refused_at(source: string, phrase: string, line: int) -> bool {
     let p = packaged(source)
-    let ds = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
-    let report = p.report()
-    ds.length == 1 && report.contains(phrase) && report.contains("main.av:${line}")
+    refused_in(p, phrase) && p.report().contains("main.av:${line}")
 }
 
 /// A clean program's warnings, rendered; a refusal's report when it
@@ -77,12 +87,6 @@ fn checked(p: Program) -> string {
 
 /// `refused`, with a pinned COUNT — a refusal test proves both the
 /// words and that a cascade did not hide behind them.
-fn refused_n(source: string, phrase: string, n: int) -> bool {
-    let p = packaged(source)
-    let ds = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
-    ds.length == n && p.report().contains(phrase)
-}
-
 spec "features/annotations — the compile-time call's laws" {
     given "the callee and receiver" {
         then "a value is not an annotation fn" {
@@ -115,14 +119,14 @@ spec "features/annotations — the compile-time call's laws" {
             refused(src, "not `List<@std.meta.Diagnostic>`")
         }
         then "a lookalike answer does not declare — only `Directive` does" {
-            refused_n(meta_use() + "fn mark(f: Fn) -> List<Decl> { [] }\n@mark\nfn answer() -> int { 1 }\nanswer()",
+            refused_n(packaged(meta_use() + "fn mark(f: Fn) -> List<Decl> { [] }\n@mark\nfn answer() -> int { 1 }\nanswer()"),
                       "answers an effect", 2)
         }
     }
     given "declaration generation" {
         then "an annotation fn's signature IS its effect — `explain @name`" {
             let p = packaged(directive_use() + "@traced(\"sum\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
-            p.explain_annotation("traced") == "fn traced(Fn, string) -> List<Directive>\n\nMakes a traced sibling.\nThe signature declares the effect."
+            p.explain_annotation("traced") == "fn traced(Fn, string) -> List<Directive>\n\nThe trace directive's decoder: `@traced(\"label\")` on `fn sum`\nasks for a sibling named `sum_traced`."
         }
         then "a generated twin lists with its provenance" {
             mut p = packaged(directive_use() + "@traced(\"x\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
@@ -139,9 +143,9 @@ spec "features/annotations — the compile-time call's laws" {
             parse_source(p.expanded_source(p.entry_file()!.view.file)).voices.list.is_empty()
         }
         then "a declaration-making annotation fn in the same file is refused, not ignored" {
-            refused_n(directive_use() +
+            refused_n(packaged(directive_use() +
                       "fn gen(f: Fn) -> List<Directive> { [] }\n" +
-                      "@gen\nfn sum() -> int { 1 }\nsum()",
+                      "@gen\nfn sum() -> int { 1 }\nsum()"),
                       "generates declarations and stands in this file", 1)
         }
         then "an undeclared annotation name explains to nothing" {
@@ -149,7 +153,7 @@ spec "features/annotations — the compile-time call's laws" {
             p.explain_annotation("ghost") == null
         }
         then "a declaration-making annotation reaches only literals" {
-            refused_n(collect_use() + "@collect([1, 2])\nfn answer() -> int { 1 }\nanswer()",
+            refused_n(packaged(collect_use() + "@collect([1, 2])\nfn answer() -> int { 1 }\nanswer()"),
                       "generates declarations, so its arguments come from the source alone", 1)
         }
     }
@@ -230,12 +234,12 @@ spec "features/annotations — the compile-time call's laws" {
     given "a package-namespaced kind" {
         then "a kinded refusal renders under the annotation's package, and is the one diagnostic" {
             let p = audited(audit_use() + "@audited\nfn f() -> int {\n    1\n}\nf()\n")
-            let diagnostics = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
+            let diagnostics = said(p)
             diagnostics.length == 1 && diagnostics[0].kind == "@acme/audit:E1" && p.report().starts_with("error[@acme/audit: E1]: `f` is audited\n")
         }
         then "a kind-less refusal stays F2069" {
             let p = audited(audit_use() + "@plain\nfn f() -> int {\n    1\n}\nf()\n")
-            let diagnostics = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
+            let diagnostics = said(p)
             diagnostics.length == 1 && diagnostics[0].kind == "annotation.said" && p.report().starts_with("error[F2069]: `f` is plain\n")
         }
         then "a root program's kind wears its own manifest name" {
@@ -251,24 +255,16 @@ spec "features/annotations — the compile-time call's laws" {
         }
         then "a kind that is not a word is the annotation's mistake, spoken in place of its verdict" {
             let p = audited(audit_use() + "@blank\nfn f() -> int {\n    1\n}\nf()\n")
-            let diagnostics = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
+            let diagnostics = said(p)
             diagnostics.length == 1 && p.report().starts_with("error[F2079]: an annotation's kind is a word\n") && p.report().contains("`@blank` named ``, saying: `f` is blank")
         }
         then "a kinded WARNING wears its package at the use" {
             let p = audited(audit_use() + "@old\nfn f() -> int {\n    1\n}\nf()\n")
-            let diagnostics = flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
+            let diagnostics = said(p)
             p.clean() && diagnostics.length == 1 && diagnostics[0].kind == "@acme/audit:W1" && p.warnings().starts_with("warning[@acme/audit: W1]: `f` is old\n")
         }
         then "the registry reaches a dependency through the package's own entry, as `avra explain` does" {
-            let files = {
-                "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@acme/audit\" = { path = \"vendor/audit\" }\n",
-                "/w/src/main.av": audit_use() + "fn f() -> int {\n    1\n}\nf()\n",
-                "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-                "/w/vendor/meta/src/meta.av": "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Diagnostic = { message: string, help: string?, at: Loc?, warning: bool = false, kind: string? = null }\nexport fn refuse_as(kind: string, message: string) -> Diagnostic { Diagnostic { message: message, help: null, at: null, kind: kind } }\nexport fn refuse(message: string) -> Diagnostic { Diagnostic { message: message, help: null, at: null } }\n",
-                "/w/vendor/audit/avra.toml": "[package]\nname = \"@acme/audit\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
-                "/w/vendor/audit/src/audit.av": "use @std.meta.{Fn, Diagnostic, refuse_as, refuse}\nexport fn audited(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"E1\", \"`\${f.name}` is audited\")]\n}\nexport fn plain(f: Fn) -> List<Diagnostic> {\n    [refuse(\"`\${f.name}` is plain\")]\n}\nexport fn quiet(f: Fn) -> List<Diagnostic> {\n    if f.name == \"never\" { [refuse_as(\"E2\", \"a quiet fn\")] } else { [] }\n}\nexport fn blank(f: Fn) -> List<Diagnostic> {\n    [refuse_as(\"\", \"`\${f.name}` is blank\")]\n}\nexport fn old(f: Fn) -> List<Diagnostic> {\n    [Diagnostic { message: \"`\${f.name}` is old\", help: null, at: null, warning: true, kind: \"W1\" }]\n}\n",
-            }
-            mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av", "/w/vendor/audit/avra.toml", "/w/vendor/audit/src/audit.av"]), "/w", avra())
+            mut ws = audit_workspace(audit_use() + "fn f() -> int {\n    1\n}\nf()\n")
             let p = ws.program(ws.entry_of())
             p.clean() && p.kind_rows().find(it.kind == "@acme/audit:E1") != null
         }

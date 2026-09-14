@@ -2,28 +2,23 @@
 // a hole, the block inside other features, the body's lexing limit,
 // two imports of one word, mutual imports, and a block inside a template.
 use @std.avrac.language.{avra, new_workspace, memory_host, Program}
+use @std.avrac.testing.{vendored_meta, vendored_meta_paths, refused_n}
 
 /// A program with TWO providers both exporting a `sql` word, and a
 /// provider of derives whose templates hold a block.
 fn packaged_wide(main: string, prov: string, other: string, derives: string) -> Program {
-    let files = {
+    let files = vendored_meta({
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/sql\" = { path = \"vendor/sql\" }\n\"@y/sql\" = { path = \"vendor/ysql\" }\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/derives\" = { path = \"vendor/derives\" }\n",
         "/w/src/main.av": main,
         "/w/vendor/sql/avra.toml": "[package]\nname = \"@x/sql\"\nversion = \"0.1.0\"\n",
         "/w/vendor/sql/src/sql.av": prov,
         "/w/vendor/ysql/avra.toml": "[package]\nname = \"@y/sql\"\nversion = \"0.1.0\"\n",
         "/w/vendor/ysql/src/sql.av": other,
-        "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-        "/w/vendor/meta/src/meta.av": meta_source(),
         "/w/vendor/derives/avra.toml": "[package]\nname = \"@x/derives\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n\"@x/sql\" = { path = \"../sql\" }\n",
         "/w/vendor/derives/src/derives.av": derives,
-    }
-    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/sql/avra.toml", "/w/vendor/sql/src/sql.av", "/w/vendor/ysql/avra.toml", "/w/vendor/ysql/src/sql.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av", "/w/vendor/derives/avra.toml", "/w/vendor/derives/src/derives.av"]), "/w", avra())
+    })
+    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/sql/avra.toml", "/w/vendor/sql/src/sql.av", "/w/vendor/ysql/avra.toml", "/w/vendor/ysql/src/sql.av", "/w/vendor/derives/avra.toml", "/w/vendor/derives/src/derives.av"].concat(vendored_meta_paths())), "/w", avra())
     ws.program("/w/src/main.av")
-}
-
-fn meta_source() -> string {
-    "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, settled: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Named = { name: string, at: Loc? }\nexport type Trait = { name: string, at: Loc? }\nexport enum Node {\n    Template(file: string, at: int, parts: List<string>, fills: List<Node>)\n    Name(text: string)\n    Text(text: string)\n    Int(value: int)\n    Float(bits: int)\n    Bool(value: bool)\n    Interp(parts: List<string>, holes: List<Node>)\n    Many(items: List<Node>)\n}\nimpl Node {\n    fn text() -> string {\n        match self {\n            .Template(_, _, parts, fills) -> woven(parts, [f.text() for f in fills]),\n            .Name(t) -> t,\n            .Text(t) -> \"\\\"\${t}\\\"\",\n            .Int(v) -> \"\${v}\",\n            .Float(bits) -> \"\${bits}\",\n            .Bool(b) -> \"\${b}\",\n            .Interp(parts, holes) -> \"\\\"\${woven(parts, [\"\\\${\${h.text()}}\" for h in holes])}\\\"\",\n            .Many(items) -> [i.text() for i in items].join(\"\\n\"),\n        }\n    }\n}\nfn woven(parts: List<string>, fills: List<string>) -> string { [parts[j] + f for j, f in fills].join(\"\") + parts[fills.length] }\nexport type Code = { node: Node }\nexport type Stmts = { node: Node }\nexport type Arms = { node: Node }\nexport type Decls = { node: Node }\nimpl Code { fn text() -> string { self.node.text() } }\nimpl Stmts { fn text() -> string { self.node.text() } }\nimpl Arms { fn text() -> string { self.node.text() } }\nimpl Decls { fn text() -> string { self.node.text() } }\nexport fn name(text: string) -> Code { Code { node: Node.Name(text) } }\nexport fn literal(text: string) -> Code { Code { node: Node.Text(text) } }\nexport fn interpolated(parts: List<string>, holes: List<Code>) -> Code { Code { node: Node.Interp(parts, [h.node for h in holes]) } }\nexport fn template(file: string, at: int, parts: List<string>, fills: List<Node>) -> Node { Node.Template(file, at, parts, fills) }\nexport fn as_code(n: Node) -> Code { Code { node: n } }\nexport fn as_stmts(n: Node) -> Stmts { Stmts { node: n } }\nexport fn as_arms(n: Node) -> Arms { Arms { node: n } }\nexport fn as_decls(n: Node) -> Decls { Decls { node: n } }\nexport fn int_node(v: int) -> Node { Node.Int(v) }\nexport fn bool_node(b: bool) -> Node { Node.Bool(b) }\nexport fn name_node(text: string) -> Node { Node.Name(text) }\nexport fn int_name(v: int) -> Node { Node.Name(\"\${v}\") }\nexport fn names_node(texts: List<string>) -> Node { Node.Many([Node.Name(t) for t in texts]) }\nexport fn code_nodes(xs: List<Code>) -> Node { Node.Many([x.node for x in xs]) }\nexport fn stmts_nodes(xs: List<Stmts>) -> Node { Node.Many([x.node for x in xs]) }\nexport fn arms_nodes(xs: List<Arms>) -> Node { Node.Many([x.node for x in xs]) }\nexport fn decls_nodes(xs: List<Decls>) -> Node { Node.Many([x.node for x in xs]) }\nexport type Directive = { twin: string, name: string, at: Loc?, source: Decls? = null }\nexport type Derived = { made: List<Directive> }\nexport fn derive(what: Named, tr: Trait) -> Derived { Derived { made: [] } }\n"
 }
 
 

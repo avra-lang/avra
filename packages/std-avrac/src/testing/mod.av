@@ -1,7 +1,10 @@
 //! What every spec file needs to ask of a program, in one place.
 //! Test files are separate compilation units, so each used to carry
 //! its own copy of these — 26 of them, byte-identical.
-use language.{analyze_source, Lowered}
+use language.{analyze_source, Lowered, Program}
+use @std.avrac.diagnostics.{Diag}
+use @std.avrac.core.{flatten}
+use @std.meta.{embed}
 
 /// A program's printed value, or "<refused>".
 export fn shown(source: string) -> string {
@@ -37,6 +40,26 @@ export fn refused_at_run(source: string, phrase: string) -> bool {
     }
 }
 
+/// EVERYTHING A PROGRAM SAID — its files' diagnostics, the
+/// workspace's voices and its defects. A suite over an in-memory
+/// package asks a `Program`, not a source, and three test modules had
+/// each spelled this walk and the two refusal verbs over it.
+export fn said(p: Program) -> List<Diag> {
+    flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
+}
+
+/// `refused_with` for a program already built: the words, and the
+/// COUNT, so no cascade hides behind the phrase the case names.
+export fn refused_n(p: Program, phrase: string, n: int) -> bool {
+    said(p).length == n && p.report().contains(phrase)
+}
+
+/// One mistake, one message — the count a refusal test pins by
+/// default.
+export fn refused_in(p: Program, phrase: string) -> bool {
+    refused_n(p, phrase, 1)
+}
+
 /// The program as IR, memory strategy applied.
 export fn ir_of(source: string) -> Lowered {
     analyze_source(source).lowered()
@@ -50,3 +73,31 @@ export const finder: string = "type User = { age: int }\n" + "fn find_user(id: i
 
 /// The scalar-nullable maker: half of an even, absence of an odd.
 export const halver: string = "fn half(n: int) -> int? { if n % 2 == 0 { n / 2 } else { null } }\n"
+
+// ── `@std/meta`, vendored in memory ──────────────────────────────────
+// A suite that proves the ANNOTATION BOUNDARY needs `@std/meta` inside
+// its in-memory workspace, and five hand-written copies of it had
+// accumulated across three suites in two shapes — the thin one had
+// lost a `const` seat's mark and a `Directive`'s `source`, so the
+// boundary was being proved against a shadow of the contract. These
+// are the packages' OWN sources, read at compile time.
+
+const meta_real: string = embed("../../../std-meta/src/meta.av")
+
+const errors_real: string = embed("../../../std-errors/src/errors.av")
+
+/// The real `@std/meta` and the `@std/errors` it rests on, added to a
+/// memory host's files. The paths are `vendored_meta_paths()`.
+export fn vendored_meta(files: Map<string, string>) -> Map<string, string> {
+    mut out = files
+    out.set("/w/vendor/meta/avra.toml", "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/errors\" = { path = \"../errors\" }\n")
+    out.set("/w/vendor/meta/src/meta.av", meta_real)
+    out.set("/w/vendor/errors/avra.toml", "[package]\nname = \"@std/errors\"\nversion = \"0.1.0\"\n")
+    out.set("/w/vendor/errors/src/errors.av", errors_real)
+    out
+}
+
+/// What `vendored_meta` adds, for the host's path list.
+export fn vendored_meta_paths() -> List<string> {
+    ["/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av", "/w/vendor/errors/avra.toml", "/w/vendor/errors/src/errors.av"]
+}

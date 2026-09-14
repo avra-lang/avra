@@ -319,10 +319,15 @@ form the SHORT one: it pins the count at one and the phrase together,
 replacing a shape hand-spelled at 131 sites. A `refused_n` for the
 shapes where a cascade is today's truth — pinning the count so a
 later improvement is VISIBLE, every malformed fn signature being
-exactly 2 — is a WANT and has never landed: `testing/mod.av` exports
-`shown`, `refusals`, `refused_with`, `refused_at_run`, `ir_of`,
-`makers`, `finder` and `halver`, and nothing else. Spell a cascade
-`refusals(src) == n` until it does.
+exactly 2 — LANDED with the comptime lane, and HOW it landed is the
+lesson: THREE test modules each wrote their own (two over a `Program`,
+one over a source) while this paragraph still said it had never
+landed. A WANT RECORDED AS ABSENT IS READ AS ABSENT — nobody greps
+for a fn the rulebook says does not exist — so three authors wrote it
+instead of one moving it. `testing/mod.av` exports it now, with
+`said` (everything a program said — its files' diagnostics, the
+workspace's voices, its defects) and `refused_in` beside it. Spell a
+cascade `refused_n(p, phrase, n)` or `refusals(src) == n`.
 
 The remainder is no longer a hand-kept tally: I30 ratchets the
 `>= 1` spelling and I20's guard demands a real count, so the number

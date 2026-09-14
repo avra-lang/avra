@@ -2,26 +2,18 @@
 // hole's text resolves where it is spliced, and a template's own
 // names resolve in the file that wrote the quote — origin hygiene.
 use @std.avrac.language.{avra, new_workspace, memory_host, parse_source, render_source, Program}
-use @std.avrac.diagnostics.{Diag}
-use @std.avrac.core.{flatten}
-
-/// The meta vocabulary a quote and a derive need, vendored in memory.
-fn meta_source() -> string {
-    "export type Loc = { file: string?, lo: int, hi: int }\nexport type Param = { name: string, ty: string, mutable: bool, settled: bool, at: Loc? }\nexport type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }\nexport type Field = { name: string, ty: string, at: Loc? }\nexport type Variant = { name: string, payload: List<string>, at: Loc? }\nexport type Type = { name: string, fields: List<Field>, variants: List<Variant>, at: Loc? }\nexport type Named = { name: string, at: Loc? }\nexport type Trait = { name: string, at: Loc? }\nexport enum Node {\n    Template(file: string, at: int, parts: List<string>, fills: List<Node>)\n    Name(text: string)\n    Text(text: string)\n    Int(value: int)\n    Float(bits: int)\n    Bool(value: bool)\n    Interp(parts: List<string>, holes: List<Node>)\n    Many(items: List<Node>)\n}\nimpl Node {\n    fn text() -> string {\n        match self {\n            .Template(_, _, parts, fills) -> woven(parts, [f.text() for f in fills]),\n            .Name(t) -> t,\n            .Text(t) -> \"\\\"\${t}\\\"\",\n            .Int(v) -> \"\${v}\",\n            .Float(bits) -> \"\${bits}\",\n            .Bool(b) -> \"\${b}\",\n            .Interp(parts, holes) -> \"\\\"\${woven(parts, [\"\\\${\${h.text()}}\" for h in holes])}\\\"\",\n            .Many(items) -> [i.text() for i in items].join(\"\\n\"),\n        }\n    }\n}\nfn woven(parts: List<string>, fills: List<string>) -> string { [parts[j] + f for j, f in fills].join(\"\") + parts[fills.length] }\nexport type Code = { node: Node }\nexport type Stmts = { node: Node }\nexport type Arms = { node: Node }\nexport type Decls = { node: Node }\nimpl Code { fn text() -> string { self.node.text() } }\nimpl Stmts { fn text() -> string { self.node.text() } }\nimpl Arms { fn text() -> string { self.node.text() } }\nimpl Decls { fn text() -> string { self.node.text() } }\nexport fn name(text: string) -> Code { Code { node: Node.Name(text) } }\nexport fn literal(text: string) -> Code { Code { node: Node.Text(text) } }\nexport fn interpolated(parts: List<string>, holes: List<Code>) -> Code { Code { node: Node.Interp(parts, [h.node for h in holes]) } }\nexport fn template(file: string, at: int, parts: List<string>, fills: List<Node>) -> Node { Node.Template(file, at, parts, fills) }\nexport fn as_code(n: Node) -> Code { Code { node: n } }\nexport fn as_stmts(n: Node) -> Stmts { Stmts { node: n } }\nexport fn as_arms(n: Node) -> Arms { Arms { node: n } }\nexport fn as_decls(n: Node) -> Decls { Decls { node: n } }\nexport fn int_node(v: int) -> Node { Node.Int(v) }\nexport fn bool_node(b: bool) -> Node { Node.Bool(b) }\nexport fn name_node(text: string) -> Node { Node.Name(text) }\nexport fn int_name(v: int) -> Node { Node.Name(\"\${v}\") }\nexport fn names_node(texts: List<string>) -> Node { Node.Many([Node.Name(t) for t in texts]) }\nexport fn code_nodes(xs: List<Code>) -> Node { Node.Many([x.node for x in xs]) }\nexport fn stmts_nodes(xs: List<Stmts>) -> Node { Node.Many([x.node for x in xs]) }\nexport fn arms_nodes(xs: List<Arms>) -> Node { Node.Many([x.node for x in xs]) }\nexport fn decls_nodes(xs: List<Decls>) -> Node { Node.Many([x.node for x in xs]) }\nexport type Directive = { twin: string, name: string, at: Loc?, source: Decls? = null }\nexport type Derived = { made: List<Directive> }\nexport fn derive(what: Named, tr: Trait) -> Derived { Derived { made: [] } }\n"
-}
+use @std.avrac.testing.{vendored_meta, vendored_meta_paths, said, refused_n, refused_in}
 
 /// A program with `@std/meta` and a PROVIDER package (`@x/prov`) whose
 /// templates the program's annotations run.
 fn packaged(main: string, prov: string) -> Program {
-    let files = {
+    let files = vendored_meta({
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
         "/w/src/main.av": main,
-        "/w/vendor/meta/avra.toml": "[package]\nname = \"@std/meta\"\nversion = \"0.1.0\"\n",
-        "/w/vendor/meta/src/meta.av": meta_source(),
         "/w/vendor/prov/avra.toml": "[package]\nname = \"@x/prov\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
         "/w/vendor/prov/src/prov.av": prov,
-    }
-    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/meta/avra.toml", "/w/vendor/meta/src/meta.av", "/w/vendor/prov/avra.toml", "/w/vendor/prov/src/prov.av"]), "/w", avra())
+    })
+    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/prov/avra.toml", "/w/vendor/prov/src/prov.av"].concat(vendored_meta_paths())), "/w", avra())
     ws.program("/w/src/main.av")
 }
 
@@ -40,19 +32,6 @@ fn report(p: Program) -> string {
         .Ok(warned) -> warned,
         .Err(words) -> words,
     }
-}
-
-/// Everything the program said, files and workspace alike.
-fn spoken(p: Program) -> List<Diag> {
-    flatten([a.diagnostics for a in p.files]).concat(p.voices).concat(p.defects)
-}
-
-fn refused(p: Program, phrase: string) -> bool { refused_n(p, phrase, 1) }
-
-/// `refused` with a pinned COUNT — the words, and no cascade hiding
-/// behind them but the ones the case names.
-fn refused_n(p: Program, phrase: string, n: int) -> bool {
-    spoken(p).length == n && p.report().contains(phrase)
 }
 
 fn clean(p: Program) -> bool { p.check() is .Ok }
@@ -84,10 +63,10 @@ spec "features/quote — a quote is `Code`" {
             clean(packaged("use @std.meta.{Code, Decls, name}\nlet n = 7\nlet tname = \"P\"\nlet inner: Code = name(\"x\")\nlet c: Decls = quote { impl \${tname} { fn get() -> int { \${n} + \${inner} } } }\nc.text()", provider()))
         }
         then "a list in a hole refuses at the hole" {
-            refused(packaged("use @std.meta.{Code}\nlet xs = [1, 2]\nlet c: Code = quote { \${xs} }\nc.text()", provider()), "a hole takes a template, a number, a name, a list of names or of templates, found `List<int>`")
+            refused_in(packaged("use @std.meta.{Code}\nlet xs = [1, 2]\nlet c: Code = quote { \${xs} }\nc.text()", provider()), "a hole takes a template, a number, a name, a list of names or of templates, found `List<int>`")
         }
         then "a quote without `@std/meta` has no `Code` to answer" {
-            refused(meta_less("let c = quote { 1 }\n1"), "a `quote` answers `@std.meta.Code`, and this program does not load `@std/meta`")
+            refused_in(meta_less("let c = quote { 1 }\n1"), "a `quote` answers `@std.meta.Code`, and this program does not load `@std/meta`")
         }
         then "a quote prints back as written" {
             canonical("let c = quote { impl \${name} { fn get() -> int { \${n} } } }") == "let c = quote { impl \${name} { fn get() -> int { \${n} } } }"
@@ -114,7 +93,7 @@ spec "features/quote — a quote is `Code`" {
         }
         then "a name a template does not know refuses in the template's own file" {
             let p = packaged(loud_program(), provider().replace("shout(\${name})", "missing(\${name})"))
-            let diagnostics = spoken(p)
+            let diagnostics = said(p)
             diagnostics.length == 1 && p.report().contains("no `fn missing` is defined") && p.report().contains("/w/vendor/prov/src/prov.av:7")
         }
     }
@@ -122,12 +101,12 @@ spec "features/quote — a quote is `Code`" {
     given "a template's own mistakes speak at the template" {
         then "a template that does not parse refuses at the library's own parse, and the target says nothing more" {
             let p = packaged(loud_program(), provider().replace("shout(\${name})", "let = 3"))
-            let diagnostics = spoken(p)
+            let diagnostics = said(p)
             diagnostics.length == 1 && p.report().contains("expected NAME") && p.report().contains("/w/vendor/prov/src/prov.av:7")
         }
         then "a type error inside a template blames the template, not the user" {
             let p = packaged(loud_program(), provider().replace("shout(\${name})", "shout(1)"))
-            let diagnostics = spoken(p)
+            let diagnostics = said(p)
             diagnostics.length == 1 && p.report().contains("argument 1 of `shout` wants `string`, found `int`") && p.report().contains("/w/vendor/prov/src/prov.av:7")
         }
     }

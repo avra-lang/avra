@@ -851,7 +851,10 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       `@derive(Show)` generate `fn show` on a struct. S4e LANDED — the
       `quote { … }` surface: the lexer takes the body whole (like a
       `grammar` block) and the parser makes it one string literal, so
-      braces, quotes and newlines inside need no escaping. S4f LANDED —
+      braces, quotes and newlines inside need no escaping. SUPERSEDED
+      by the parsed templates (2026_09_13): a quote's body is a TREE
+      parsed where it is written, never a string — this line records
+      what S4e built, not what the tree does. S4f LANDED —
       `${e}` HOLES: the raw scan is brace-depth aware across holes
       (a generated fn's own `{}` count, a `}` in the body's string
       literal does not), a hole in code position splices its value,
