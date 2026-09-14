@@ -17,8 +17,10 @@ export enum Filled {
 export type Rebuilder = {
     src: NodeStore,
     dst: NodeStore,
-    // the fills by hole index — empty while classifying
-    fills: List<Filled>,
+    // the fills by hole index, each materialized AT ITS SEAT and by
+    // the seat's kind — so a fill's nodes mint just before the node
+    // that holds them, as a parsed child does; empty while classifying
+    fills: List<fn(HoleKind) -> Filled>,
     // whether the walk MINTS: a classifying walk allocates nothing
     copying: bool,
     // a nested quote's body is copied VERBATIM: its placeholders are
@@ -45,7 +47,7 @@ export fn classifier(store: NodeStore, count: int) -> Rebuilder {
 }
 
 /// A copying walk from `src` into `dst`, the holes filled.
-export fn copier(src: NodeStore, dst: NodeStore, fills: List<Filled>) -> Rebuilder {
+export fn copier(src: NodeStore, dst: NodeStore, fills: List<fn(HoleKind) -> Filled>) -> Rebuilder {
     Rebuilder { src: src, dst: dst, fills: fills, copying: true, verbatim: false, kinds: [], made_exprs: [], made_stmts: [], made_pats: [], misfits: [], holed: [] }
 }
 
@@ -377,8 +379,14 @@ impl Rebuilder {
     // shape is a defect: it is recorded (`misfits`) for the splice to
     // speak, and the seat takes a placeholder.
 
+    /// A hole's fill, materialized now, for the seat that asks.
+    fn filled(k: int, kind: HoleKind) -> Filled {
+        let fill = self.fills[k]
+        fill(kind)
+    }
+
     mut fn fill_expr(k: int) -> ExprId {
-        match self.fills[k] {
+        match self.filled(k, HoleKind.Expression) {
             .Expr(e) -> e,
             .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) -> {
                 self.misfits.push(k)
@@ -388,7 +396,7 @@ impl Rebuilder {
     }
 
     mut fn fill_name(k: int) -> string {
-        match self.fills[k] {
+        match self.filled(k, HoleKind.Name) {
             .Name(t) -> t,
             .Type(t) -> t.name,
             .Names(ts) -> ts.first() ?? "",
@@ -397,7 +405,7 @@ impl Rebuilder {
     }
 
     mut fn fill_names(k: int) -> List<string> {
-        match self.fills[k] {
+        match self.filled(k, HoleKind.Binder) {
             .Names(ts) -> ts,
             .Name(t) -> [t],
             .Type(t) -> [t.name],
@@ -406,7 +414,7 @@ impl Rebuilder {
     }
 
     mut fn fill_type(k: int) -> TypeRef {
-        match self.fills[k] {
+        match self.filled(k, HoleKind.Type) {
             .Type(t) -> t,
             .Name(t) -> named_ref(t),
             .Names(_) or .Expr(_) or .Stmts(_) or .Arms(_) -> named_ref(self.misfit(k)),
@@ -414,7 +422,7 @@ impl Rebuilder {
     }
 
     mut fn fill_stmts(k: int) -> List<StmtId> {
-        match self.fills[k] {
+        match self.filled(k, HoleKind.Statement) {
             .Stmts(ss) -> ss,
             .Expr(e) -> [self.dst.alloc_stmt(Stmt.ExprStmt(e), null)],
             .Name(_) or .Names(_) or .Type(_) or .Arms(_) -> {
@@ -425,7 +433,7 @@ impl Rebuilder {
     }
 
     mut fn fill_arms(k: int) -> List<Arm> {
-        match self.fills[k] {
+        match self.filled(k, HoleKind.Arm) {
             .Arms(arms) -> arms,
             .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) -> {
                 self.misfits.push(k)

@@ -61,7 +61,7 @@ fn clean(p: Program) -> bool { p.check() is .Ok }
 /// helper unqualified, and an annotation that splices the user's code
 /// beside a template `tmp`.
 fn provider() -> string {
-    "use @std.meta.{Type, Fn, Directive, Code, literal}\nfn shout(s: string) -> string { \"\${s}!\" }\n/// A template naming this file's private helper.\nexport trait Loud {\n    static fn derive(t: Type) -> List<Directive> {\n        let name = literal(t.name)\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn loud() -> string { shout(\${name}) } } } }]\n    }\n}\nexport fn wrapped(f: Fn, body: Code) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_wrapped() -> int {\n            let tmp = 1\n            let picked = \${body}\n            picked() + tmp\n        }\n    } }]\n}\n"
+    "use @std.meta.{Type, Fn, Directive, Code, literal}\nfn shout(s: string) -> string { \"\${s}!\" }\n/// A template naming this file's private helper.\nexport trait Loud {\n    static fn derive(t: Type) -> List<Directive> {\n        let name = literal(t.name)\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn loud() -> string { shout(\${name}) } } } }]\n    }\n}\nexport fn wrapped(f: Fn, body: Code) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_wrapped() -> int {\n            let tmp = 1\n            let picked = \${body}\n            picked() + tmp\n        }\n    } }]\n}\nexport fn holed(f: Fn, x: string) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_holed() -> int {\n            let \${x} = 1\n            x + 1\n        }\n    } }]\n}\n"
 }
 
 fn loud_program() -> string {
@@ -100,6 +100,13 @@ spec "features/quote — a quote is `Code`" {
         }
         then "a template's `let tmp` never captures the user's `tmp` arriving through a hole" {
             clean(packaged(wrapped_program(), provider()))
+        }
+        then "a template's own read does not see a binder whose name came through a hole" {
+            refused_n(packaged("use @std.meta.{derive}\nuse @x.prov.{holed}\n@holed(\"x\")\nfn go() -> int { 0 }\ngo_holed()", provider()), "`x` is not defined", 1)
+        }
+        then "`avra expand` names the template beside the annotation that asked" {
+            let p = packaged(loud_program(), provider())
+            p.expanded_source(p.ws.file_id("/w/src/main.av")).contains("// from @derive on Point — template /w/vendor/prov/src/prov.av:7")
         }
         then "the user's code is spliced as written" {
             let p = packaged(wrapped_program(), provider())

@@ -398,3 +398,20 @@ that predates the change.
   and refuses a mix. The split of `Int` from `Bool` in the seat law
   FOUND a hole: a bool fit a name seat as a "number". Same receipt:
   gate green, expand byte-identical, no `.expected` changed.
+- (b) LANDED 2026-09-13 (d83b027): a body holding a parse recovery
+  speaks once; the seat voices pinned by rendering and count.
+- (c) + (e) LANDED 2026-09-14: `quote/tests/names` pins a name built
+  from two holes, a hole between runs, a number's digits, and a
+  hole-named binder read by a hole; a template's own read of a
+  hole-named binder refuses (`x` is not defined, at the template).
+  `avra expand` prints `// from @derive on Point — template
+  <file>:<line>` (`Provenance.template`, set at the splice from the
+  directive's outer template). The first-byte rule is gone from the
+  design doc; slice (d)'s audit is a grep: no `Piece`, `Segment`,
+  `quote_starts` or `segments_of` in the tree. FOUND by `names`: a
+  fill materialized BEFORE the copy minted a later method's nodes
+  before an earlier method's body, and that method's expression
+  range (previous sibling's end to its own body) no longer held its
+  children — typing indexed its table at -2. A fill is materialized
+  AT ITS SEAT now (`Rebuilder.fills` are thunks by seat kind), so
+  generated nodes mint children-before-owner as parsed ones do.

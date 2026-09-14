@@ -17,7 +17,7 @@
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Node, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of}
-use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, copier, hole_kinds, quote_kind, all_codes, is_name_cont}
+use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, copier, quote_kind, all_codes, is_name_cont}
 use diagnostics.{defect_at}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
@@ -1086,7 +1086,9 @@ impl Workspace {
         // answer different impls mint two, and a re-run of one mints
         // nothing new.
         let tag = fp(117, [store.stmt_fingerprint(s) for s in stmts])
-        self.decls.mint_generated_code(f, store, stmts, before.exprs, "${tag}", ann, at)
+        let made = self.decls.mint_generated_code(f, store, stmts, before.exprs, "${tag}", ann, at)
+        for d in made { self.decls.note_template(d, template_site(code)) }
+        made
     }
 
     // ── The splice: a Node materialized in a SEAT of file f's store.
@@ -1174,10 +1176,12 @@ impl Workspace {
         store.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value!), null)
     }
 
-    /// A template's body copied into file f's store, its holes filled
-    /// by their kinds — a body of nothing but holes takes the SEAT's
-    /// kind for every one. Each copied node records the file that
-    /// wrote it, unless that is f itself.
+    /// A template's body copied into file f's store, each hole filled
+    /// AT ITS SEAT by the seat's kind — so a fill's nodes mint just
+    /// before the node holding them, and every generated declaration
+    /// keeps a contiguous range. A body of nothing but holes is its
+    /// fills in the seat asked for. Each copied node records the file
+    /// that wrote it, unless that is f itself.
     fn copied(f: FileId, file: string, at: int, fills: List<Node>, seat: HoleKind) -> Copied {
         let held: FileId? = self.decls.paths.get(file)
         if held == null { return nothing_copied() }
@@ -1188,10 +1192,10 @@ impl Workspace {
         let parts: QuoteParts? = (src.expr(q!)).quote_of()
         if parts == null { return nothing_copied() }
         let body = parts!
-        let kinds = hole_kinds(src, body)
-        let whole = quote_kind(src, body)
-        let filled = [self.spliced(f, fill, if whole is .Holes { seat } else { kinds[k] }) for k, fill in fills]
-        mut rb = copier(src, self.decls.store_of(f), filled)
+        if quote_kind(src, body) is .Holes { return self.holes_copied(f, fills, seat) }
+        let ws = self
+        let thunks = [(kind: HoleKind) -> ws.spliced(f, fill, kind) for fill in fills]
+        mut rb = copier(src, self.decls.store_of(f), thunks)
         let stmts = rb.stmts(body.stmts)
         let arms = rb.arms(body.arms)
         if !same_file(origin, f) { self.decls.note_origins(f, rb.made_exprs, rb.made_stmts, rb.made_pats, origin) }
@@ -1811,9 +1815,24 @@ impl Program {
         if provenance.is_empty() { source } else { "${provenance}\n${source}" }
     }
 
+    /// `// from @derive on Point — template …/derive.av:24`: who asked,
+    /// what it names, and the quote the declaration was copied from.
     fn provenance_line(d: DeclId) -> string {
-        let provenance = self.ws.decls.provenance_of(d)
-        if provenance == null { "" } else { "// from @${provenance!.ann} on ${provenance!.original}" }
+        let held = self.ws.decls.provenance_of(d)
+        if held == null { return "" }
+        let provenance = held!
+        let template: string? = self.template_word(provenance.template)
+        "// from @${provenance.ann} on ${provenance.original}${template ?? ""}"
+    }
+
+    /// The template's file and line, when the file is loaded.
+    fn template_word(template: Loc?) -> string? {
+        if template == null || template!.file == null { return null }
+        let site = template!
+        let path = site.file!
+        let f: FileId? = self.ws.decls.paths.get(path)
+        if f == null { return null }
+        " — template ${path}:${self.ws.source(f!).linecol(site.lo).line}"
     }
 
     fn clean() -> bool { self.defects.is_empty() && !has_errors(self.voices) && !self.files.any(unclean(it)) }
@@ -2201,6 +2220,27 @@ fn elem_of(types: TypeRegistry, ty: TypeId) -> TypeId? {
 /// The arenas' counts now.
 /// A template's body copied: its statements, or its arms.
 type Copied = { stmts: List<StmtId>, arms: List<Arm> }
+
+impl Workspace {
+    /// A body of nothing but holes, in the seat it is put in.
+    fn holes_copied(f: FileId, fills: List<Node>, seat: HoleKind) -> Copied {
+        match seat {
+            .Arm -> Copied { stmts: [], arms: flatten([self.spliced_arms(f, x) for x in fills]) },
+            .Expression or .Statement or .Name or .Binder or .Type -> Copied { stmts: flatten([self.spliced_stmts(f, x) for x in fills]), arms: [] },
+        }
+    }
+}
+
+/// Where a directive's code was written: its first template's file
+/// and offset — the outer template when templates nest.
+fn template_site(node: Node) -> Loc? {
+    match node {
+        .Template(file, at, _, _) -> Loc { file: file, lo: at, hi: at },
+        .Many(items) -> { let first: Node? = items.first()
+            if first == null { null } else { template_site(first!) } },
+        .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> null,
+    }
+}
 
 fn nothing_copied() -> Copied { Copied { stmts: [], arms: [] } }
 
