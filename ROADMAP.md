@@ -14266,6 +14266,196 @@ lanes' trees; this tree at the merge points only.
   the mechanism moved (a refusal's seat words, a parse error now at
   the library) and were reported, not hidden.
 
+## Feedback survey — 2026-09-14 (phase/h, side tables declared)
+
+Counted per axis: friction 5, sugar 3, features 2, defects 1 (found
+by my own probes, fixed in 372fd59), doctrine 3, performance 2,
+process 3. The top three by cost: a compiler trap that names no Avra
+frame (found only under lldb, reading mangled symbols), the build
+lock's queue (~45 min of a ~3 h session spent waiting, nine heavy
+runs), and a probe of my own that truncated its output and produced a
+finding that does not exist. Not surveyed: H2 (re-cut by the task
+master to wait on phase B's typed `Kind`), the sqlite/http/comptime
+lanes' trees, and anything outside `packages/std-avrac` + `tools/`.
+
+### FRICTION — what cost time
+
+- **A TRAP NAMES NO AVRA FRAME.** `avra: index 1 is out of bounds
+  (length 0)` is the whole message: no fn, no file, no pass, no
+  phase. Finding the site meant `lldb -b -o "b avra_trap" -o run -o
+  "bt 45"` and reading mangled symbols
+  (`av_$40std$2Eavrac$2Elanguage$2ETypeCx$2Etarget_type`), which
+  requires knowing both the debugger recipe and the mangling scheme.
+  ~10 minutes, and it is the ONLY way. EVIDENCE: scratch/p7.av (7
+  lines) on phase/h at 12738f7; the backtrace named `target_type` in
+  frame 3 and nothing before it did. THE ASK: `AVRA_TRACE=1` printing
+  the Avra call stack at `avra_trap`, demangled — the runtime already
+  owns the trap and the symbols are in the binary.
+- **A LOOSE FILE CANNOT `use` A PACKAGE, so a probe needs a package
+  built around it.** Probing a `@derive` meant a directory, an
+  `avra.toml` with a version and a relative dependency path, and a
+  `src/main.av` — and a manifest that is wrong in either respect
+  fails EARLY with errors that then crowd out the ones being probed
+  (see the process row below). EVIDENCE: scratch/pkg, this session;
+  the first manifest lacked `version` and the `@std/meta` dependency.
+  THE ASK: a loose-file probe rooted at the tree's packages, so a
+  one-file `use @std.meta.{…}` resolves without a manifest.
+- **A MECHANICAL REFACTOR TRIPS THE `it` PRONOUN.** Rewriting
+  `xs[i]` to `xs.get(i)` turned a working line into F2033 — `it`
+  binds to the NEAREST call, so `find(it.name == n &&
+  !self.scoped.get(it.stmt.index))` broke the instant the index
+  became a method. The rule is already in "The subset today";
+  CONFIRMS, with the NEW angle worth having: it fires on
+  index-to-method conversion, which is exactly the shape a sweep
+  makes, so every such sweep should expect it. EVIDENCE:
+  `language/resolve.av:688`, build refused, one edit.
+- **A TYPE'S FIELD CHANGE BREAKS ITS TESTS AT THE GATE, NOT AT THE
+  BUILD.** `TypeFacts.of_expr` changing from `List<TypeId>` to
+  `SideTable<TypeId>` compiled clean and failed inside `make gate`'s
+  `tested` step with `SideTable has no method filter`. Three minutes
+  per cycle to learn it, twice. EVIDENCE: `language/tests/
+  typing_test.av:16,23,37,44`. THE ASK: none obvious — the suites
+  ARE product code and the compiler did its job; recorded as the
+  measured cost of a type migration.
+- **THE BUILD LOCK IS THE WALL CLOCK.** One `make avra` measured
+  7:58 wall for ~1:30 of work — 6.5 minutes queued behind two other
+  workers. Nine heavy runs this session. EVIDENCE: `time sh
+  tools/watch.sh 4000 make avra`, 24 "waiting for the build lock"
+  lines. NOT a defect: the lock is the law and it held. Recorded so
+  a lane budgeting a slice on this machine multiplies by three.
+
+### SUGAR — a construct the language should have
+
+- **A BOUND ON A GENERIC TYPE'S OR AN IMPL'S PARAMETER.** Filed today
+  in the sugar backlog with the five probes; the wanting site is
+  `core/side_table.av`, keyed by a slot `int` for exactly this
+  reason. CONFIRMS — see "FROM PHASE H" above.
+- **`xs.resize(n, v)`.** Filed 2026-09-11 with
+  `Decls.record_generated` as its site. `SideTable.grow_to` is the
+  SECOND wanting site and is now the one door both callers share.
+  CONFIRMS.
+- **A GENERIC FN AS A PREDICATE VALUE, AND THE WRAP ITS HELP NAMES
+  IS UNWRITABLE WHERE IT IS WANTED.** `SideTable.lay` and
+  `lay_named` differ by one predicate; DRY-ing them wants
+  `lay(other) { self.lay_named(other, always) }` with `fn
+  always<V>(v: V) -> bool { true }`. F2033 "a generic fn is not a
+  value — no single signature to wear", help "wrap it — `(x: T0) ->
+  always(x)` with the types pinned". Inside a generic impl that wrap
+  is F2001 "`V` names no type". So neither form exists and the two
+  copies stand. EVIDENCE: scratch/p14.av, phase/h at ef94e05, both
+  refusals quoted. THE ASK: a generic fn monomorphised at a fn-typed
+  seat, or a generic impl's own parameter usable in a local
+  signature.
+
+### FEATURES — a capability, larger than sugar
+
+- **THE TRAP'S AVRA STACK** (the friction row above, as a
+  capability): the runtime traps with a C-level message while the
+  Avra frames are on the stack and the symbols are in the binary.
+  `AVRA_TRACE=1` at `avra_trap` would have turned a 10-minute lldb
+  session into one line.
+- **A PROBE ROOTED AT THE TREE.** `avra check <loose file>` is the
+  workhorse of every subset probe and cannot reach a package. The
+  ask is a flag or a command that roots one file against the tree's
+  manifests.
+
+### DEFECTS — the compiler blaming itself
+
+- **A GENERIC METHOD'S BODY CRASHED THE COMPILER.** `impl Holder {
+  fn get<K: Indexed>(k: K) -> int { k.slot() } }` — seven lines, no
+  call site — traps with `avra: index 1 is out of bounds (length
+  0)` on `check` and on `run`. The method is refused whole (F2031,
+  no signature recorded) and its body is typed anyway, so
+  `walk_under`'s `sig?.params ?? []` hands every seat read an empty
+  scope. The same fn at the TOP LEVEL is fine, which is what made it
+  look like the bound's fault. EVIDENCE: scratch/p7.av; `lldb` names
+  `TypeCx.target_type`; witnessed failing by reverting the one-line
+  fix and running the suite, which trapped AND named the new case
+  (`impls_adversarial_test.av:139`). FIXED in 372fd59 — one reader
+  (`TypeCx.seat_type`) for all five seat reads; the law is in
+  CLAUDE.md.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **A DIAGNOSTIC'S HELP IS A CLAIM ABOUT THE GRAMMAR, AND NOTHING
+  CHECKS IT.** F2030's help said "add a bound — `<T: SomeTrait>`"
+  for EVERY unbounded type parameter, including a type's and an
+  impl's, where the grammar refuses a bound AT the `<`. A reader
+  follows a remedy; this one sent them at a form that does not
+  parse, at both sites where it could be written. Fixed in 372fd59
+  (`bound_remedy`, a registry on the declaring kind). THE GENERAL
+  LAW, which has no keeper: every `help:` string names a form, and
+  no test anywhere asserts that the form it names compiles. The
+  golden rendering tests pin the WORDS, never the claim.
+- **AND IT FIRED AGAIN THE SAME DAY, IN A SECOND DIAGNOSTIC.** F2033
+  "a generic fn is not a value" helps "wrap it — `(x: T0) ->
+  always(x)` with the types pinned"; inside a generic impl, where
+  that wrap is wanted, `(x: V) -> …` is F2001 "`V` names no type".
+  Two independent instances in one session is the argument for the
+  keeper: a help that names a form should be checked by COMPILING
+  that form. EVIDENCE: scratch/p14.av, both refusals quoted, phase/h
+  at ef94e05.
+- **THE TRUNCATION LAW NAMES `head` AND THE TRAP IS `tail`.**
+  CLAUDE.md's "A PROBE THAT TRUNCATES ITS OWN OUTPUT" is written
+  about `| head -6`. I read that entry earlier in this same session
+  and then ran `./avra run <pkg> 2>&1 | tail -6`, which cut the
+  errors BEFORE the window — an invalid manifest — and left one
+  "missing method" visible that I read as a derive defect. `tail`
+  hides the FIRST errors, which are the causing ones, so it is the
+  sharper half of the same hazard. THE ASK: the entry's cure
+  (`grep -oE 'F[0-9]{4}' | sort -u`) should be stated as covering
+  both ends, and the entry should say `head`/`tail` rather than
+  `head`.
+
+### PERFORMANCE — a measured cost
+
+- **THE SWEEP COSTS UNDER 1% OF RETAINS, MEASURED ON A FIXED
+  INPUT.** `make census CMD="check packages/std-toml"`, before =
+  372fd59's tree, after = ef94e05: retains 17,195,512 ->
+  17,342,168 (+0.85%), releases 20,614,426 -> 20,765,125 (+0.73%),
+  list reads 13,087,350 -> 13,315,030 (+1.74%), list writes
+  14,359,673 -> 14,386,609 (+0.19%), reclaims 3,423,816 ->
+  3,427,859 (+0.12%). `type_at` went from one inlined index to a
+  method call, a window check and an index; the list-read rise is
+  that check. Gate peak FELL, 785 MB -> 743 MB. Under CLAUDE.md's
+  own stated stopwatch floor (+/-0.05 s on 5.9 s is ~0.85%), so NO
+  licensed raw read was taken. If a later measurement disagrees the
+  two or three hottest columns (`of_expr`, `hungry`, `wants`) are
+  where it would go.
+- **A CENSUS OVER THE COMPILER'S OWN SOURCE MEASURES TWO THINGS
+  CHANGING AT ONCE.** My first attempt was `check
+  packages/std-avrac`, which reports +1.30% retains — but the AFTER
+  tree has ~200 more lines of source to check as well as a changed
+  compiler, so the number answers no question. The fixed-input run
+  above is the honest one. Recorded because `check
+  packages/std-avrac` is the census command this tree reaches for by
+  habit, and it is exactly the wrong one for measuring a change to
+  the compiler.
+
+### PROCESS — the working discipline itself
+
+- **KEEP: WITNESS THE KEEPER FAILING.** Reverting the one-line fix
+  and running the package suite made the new adversarial case trap
+  AND made the runner print its name — which is what turned "four
+  cases added" into "four cases that run". One package run, under a
+  minute of the session. It also settled a real doubt: the gate's
+  `414/414` line is the CLI's, not std-avrac's, and the number that
+  moved was 2484 -> 2499.
+- **KEEP: PROBE BEFORE DESIGNING.** Five probes settled the
+  `SideTable<K, V>` question in about ten minutes and found a
+  compiler crash on the way. The design that shipped is the one the
+  probes permitted, not the one the task described, and saying which
+  five refusals forced it is what made that reviewable.
+- **CHANGE: `git stash push -- <paths>` CONFLICTS ON FILES IT DID
+  NOT STASH.** Splitting two commits, I stashed H1's eight files by
+  path; applying that stash onto the new commit 0 reported `UU
+  CLAUDE.md` and `UU typing.av`, neither of which was in the path
+  list. Resolving a CLAUDE.md conflict by hand is the documented
+  prose hazard, so I took HEAD wholesale and verified both hunks
+  survived by `grep -c`. THE ASK: for a two-commit split in a shared
+  worktree, prefer a temporary WIP commit and `git reset --soft`
+  over a path-scoped stash; the stash's recorded tree is not
+  path-scoped even when its arguments are.
 ## Feedback survey — 2026-09-14 (STD-SUBSTRATE: main 12738f7 into lane/http, 23fc98c..d3406ce)
 
 Surveyed: the merge, the http fixes, the red team and the review round

@@ -864,6 +864,18 @@ engine's spec, written by dogfooding.
 - Every diagnostic names a registered kind (its F-code is the
   registry's projection), carries help or a structured fix where
   expressible, and has a golden rendering test.
+  AND A HELP IS A CLAIM ABOUT THE GRAMMAR THAT NOTHING CHECKS. The
+  golden test pins the WORDS; no test anywhere compiles the FORM a
+  remedy names, so a help can send every reader at something the
+  parser refuses and stay green forever. Two fired in one session:
+  F2030's "add a bound — `<T: SomeTrait>`" was spoken for a type's
+  and an impl's parameters, where a bound is F0100 AT the `<` (fixed
+  — `bound_remedy` is a registry on the declaring kind); and F2033's
+  "wrap it — `(x: T0) -> always(x)`" is F2001 "`V` names no type"
+  inside the generic impl that wants the wrap. A REMEDY NAMES A FORM
+  THAT PARSES WHERE IT IS SPOKEN — the `where` is half the claim, and
+  the keeper this wants compiles the named form in the refusing
+  context.
 - A LINT COUNTS WHAT ITS DOCTRINE COUNTS, never a proxy that
   correlates. F2040 was written to count HIDDEN VARIANTS where the
   doctrine counts ANSWERING ARMS: measured tree-wide, 191 sites
@@ -2086,6 +2098,16 @@ Runtime facts, ours to ratify:
   concluding which ones there are: `grep -oE 'F[0-9]{4}' | sort -u`
   costs nothing and cannot lie by omission, where a `head` always
   can.
+  AND `tail` IS THE SHARPER HALF, which this entry's wording missed
+  by naming only `head`. A `head` cuts the LAST errors; a `tail` cuts
+  the FIRST, and the first are the CAUSING ones — a bad manifest, a
+  missing dependency, the parse error every later refusal cascades
+  from. `./avra run <pkg> | tail -6` over a probe package whose
+  manifest lacked a version and a dependency showed one "no method"
+  line, and that line read as a defect in the `@derive` machinery
+  that does not exist: the derive had never run at all. The author of
+  this paragraph did that, in the session that wrote it. Both ends
+  cut, and the cure covers both.
   THAT CURE HOLDS FOR LITERALS ONLY, AND IT FAILED HERE. Choosing a
   free fingerprint tag, `grep -oE 'fp\([0-9]+'` answered
   `102 105 108 109` — and 100, 101, 106 and 107 are taken, spelled
