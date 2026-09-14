@@ -337,9 +337,9 @@ impl TypeCx {
         let b: Binding? = self.names.binding(e)
         if b == null { return self.error_type }
         match b! {
-            .Param(i) -> self.narrowed_param(e, i) ?? self.scope[i],
+            .Param(i) -> self.narrowed_param(e, i) ?? self.seat_type(i),
             // the receiver rides seat 0 of a method's sig
-            .Receiver -> self.scope.first() ?? self.error_type,
+            .Receiver -> self.seat_type(0),
             .Def(s) -> self.narrowed_def(e, s) ?? self.def_type(s),
             // The arm's OWNER spoke this type before the arm was
             // walked; an absent one means the bind was refused.
@@ -350,6 +350,19 @@ impl TypeCx {
             .Index(_) -> self.type(int),
             .Decl(d) -> self.decl_type(d),
         }
+    }
+
+    /// A SEAT'S TYPE COMES FROM THE SCOPE, AND A BODY WHOSE
+    /// DECLARATION RECORDED NO SIGNATURE HAS NO SCOPE. Its seats are
+    /// Error, silently: the refusal that kept the signature out was
+    /// already spoken (a generic method is one), so every read of a
+    /// seat it never declared answers nothing. ONE reader for every
+    /// seat — a receiver and a parameter are the same question, and
+    /// the two spellings disagreeing is how a refused method's body
+    /// read past an empty scope.
+    fn seat_type(i: int) -> TypeId {
+        if i >= self.scope.length { return self.error_type }
+        self.scope[i]
     }
 
     mut fn push_frame(which: Narrowing, frame: NarrowFrame) {
