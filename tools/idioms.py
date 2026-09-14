@@ -56,6 +56,21 @@ def spelled_shape(lines):
         if SPELLED_SHAPE.search(l):
             yield i, l.strip()
 
+# I43: a fact column sized from an arena's count, or an id read
+# through a hand offset — the two halves of a hand-kept side table.
+HAND_SIZED = re.compile(r"filled[<(][^;]*\.count\(\)|\.index - ")
+
+def hand_sized_column(lines):
+    """A column sized by an arena's count, or an id minus a window's
+    base (I43). A COMMENT IS NOT A SITE: the loops suite quotes the
+    old spelling to say what once trapped."""
+    for i, l in enumerate(lines):
+        s = l.strip()
+        if s.startswith("//"):
+            continue
+        if HAND_SIZED.search(l):
+            yield i, s
+
 def line_rx(pattern):
     p = re.compile(pattern)
     def f(lines):
@@ -492,6 +507,10 @@ RULES = {
     "I40": (spelled_shape,
             "a structural type interned by hand — `intern(Type.Opt(intern(Type.Str)))` — "
             "where a type literal spells it: `cx.type(string?)`, `types.type(List<elem>)`"),
+    "I43": (hand_sized_column,
+            "a fact column sized by hand, or an id read through an offset — "
+            "`SideTable<V>` states the window, the growth and the out-of-window "
+            "defect once: `side_table(name, lo, hi, seed)`, `get(id)`, `grow_to(n)`"),
 }
 
 UNRATCHETED = {
@@ -600,6 +619,9 @@ SPECIMENS = {
     "I39": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
             ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
             ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
+    "I43": [["    mut walked: List<bool> = filled(view.store.exprs.count(), false)"],
+            ["        of_expr: filled<TypeId>(store.exprs.count(), hole),"],
+            ["    fn type_at(e: ExprId) -> TypeId { self.of_expr[e.index - self.lo] }"]],
     "I40": [["    let str = cx.view.types.intern(Type.Str)"],
             ["    cx.view.types.intern(Type.Opt(held))"],
             ["    self.types.intern(Type.Map(cx.view.types.intern(Type.Str), want))"]],

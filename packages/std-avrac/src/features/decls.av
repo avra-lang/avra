@@ -8,7 +8,7 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr}
+use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr}
 use core.{SeatMark, mark_at, plain_mark}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
@@ -40,7 +40,7 @@ export type Decls = {
     module_files: List<List<FileId>>,
     mains: List<DeclId?>,
     stores: List<NodeStore?>,
-    decl_ids: List<List<DeclId?>>,
+    decl_ids: List<SideTable<DeclId?>>,
     file_decls: List<List<DeclId>>,
     decls: List<Decl>,
     keys: Map<string, DeclId>,
@@ -183,7 +183,7 @@ impl Decls {
         mf.push(id)
         self.module_files.set(m.index, mf)
         self.stores.push(null)
-        self.decl_ids.push([])
+        self.decl_ids.push(side_table<DeclId?>("decl_ids", 0, 0, null))
         self.file_decls.push([])
         self.generations.push([])
         self.origins.push(no_origins())
@@ -221,7 +221,7 @@ impl Decls {
     /// top-level ids, in order.
     fn admit(f: FileId, store: NodeStore, stmts: List<StmtId>) -> List<DeclId> {
         self.stores.set(f.index, store)
-        mut by_stmt: List<DeclId?> = filled<DeclId?>(store.stmts.count(), null)
+        mut by_stmt = side_table<DeclId?>("decl_ids", 0, store.stmts.count(), null)
         mut out: List<DeclId> = []
         mut made: List<DeclId> = []
         mut seen: List<string> = []
@@ -294,7 +294,7 @@ impl Decls {
         for i in 0..store.stmts.count() {
             let s = StmtId { index: i }
             let nested: DeclKind? = store.declared_kind(s)
-            if by_stmt[i] == null && nested != null {
+            if by_stmt.get(i) == null && nested != null {
                 let name = store.declared_name(s) ?? ""
                 let nd = self.mint("${path}::nested ${i}::${name}", f, s, name, nested!, false, "", null, true, null)
                 by_stmt.set(i, nd)
@@ -535,8 +535,7 @@ impl Decls {
     /// `decl_of` reads it by statement, and a miss reads past its end.
     fn record_generated(f: FileId, made: List<DeclId>) {
         mut by_stmt = self.decl_ids[f.index]
-        let stmts = self.store_of(f).stmts.count()
-        if by_stmt.length < stmts { by_stmt = by_stmt.concat(filled<DeclId?>(stmts - by_stmt.length, null)) }
+        by_stmt.grow_to(self.store_of(f).stmts.count())
         for d in made { by_stmt.set(self.decl(d).stmt.index, d) }
         self.decl_ids.set(f.index, by_stmt)
         self.file_decls.set(f.index, self.file_decls[f.index].concat(made))
@@ -647,10 +646,7 @@ impl Decls {
     }
 
     /// The declaration a statement of a file makes, when it does.
-    fn decl_of(f: FileId, s: StmtId) -> DeclId? {
-        let held: DeclId? = self.decl_ids[f.index][s.index]
-        held
-    }
+    fn decl_of(f: FileId, s: StmtId) -> DeclId? { self.decl_ids[f.index].get(s.index) }
 
     fn store(d: DeclId) -> NodeStore { self.store_of(self.decl(d).file) }
 

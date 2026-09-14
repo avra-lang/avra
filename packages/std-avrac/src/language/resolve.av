@@ -12,11 +12,11 @@
 //! the file that wrote its text, so a template's `let tmp` and a
 //! hole's `tmp` never meet, and a template's module names resolve in
 //! the namespace of the file that wrote the quote.
-use core.{StmtId, ExprId, FileId, PatId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore, LambdaParts, Annotation, same_file}
-use core.{SeatMark}
+use core.{StmtId, ExprId, FileId, PatId, Param, closest, Closest, some_list, DeclId, flatten, Binding, found_at, NodeStore, LambdaParts, Annotation, same_file}
+use core.{SeatMark, side_table}
 use diagnostics.{Diag, error_at, pointed, refusal, Voices, no_voices}
 use features.modules.{module_laws}
-use features.{ResolveCx, Def, LFrame, Dispatch, self_word, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats, nothing, semantics_of, stmt_semantics_of, post_order, Elsewhere, Bound}
+use features.{ResolveCx, Def, LFrame, Dispatch, self_word, Cap, Namespace, NameFacts, new_name_facts, FileView, remedy_for, written_seats, nothing, semantics_of, stmt_semantics_of, post_order, Elsewhere, Bound}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
 /// Words the spec reserves for future levels, memory, and
@@ -30,17 +30,11 @@ export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, sc
     let defs = defs_of(view.store, view.stmts)
     mut r = ResolveCx {
         view: view, dispatch: dispatch, keywords: keywords, all_defs: defs,
-        facts: NameFacts {
-            bindings: filled<Binding?>(view.store.exprs.count(), null),
-            captures: filled<Cap?>(view.store.exprs.count(), null),
-            mut_reads: filled(view.store.exprs.count(), false),
-            settled_reads: filled(view.store.exprs.count(), false),
-            names: scope, voices: no_voices(),
-        },
+        facts: new_name_facts(view.store.exprs.count(), scope),
         def_names: [d.name for d in defs],
         visible: {}, overlays: [], lframes: [], floors: [], receivers: [], marks: [],
-        walked: filled(view.store.exprs.count(), false),
-        scoped: filled(view.store.stmts.count(), false),
+        walked: side_table("walked", 0, view.store.exprs.count(), false),
+        scoped: side_table("scoped", 0, view.store.stmts.count(), false),
         scope: [], in_block: false, elsewhere: elsewhere,
     }
     r.name_laws()
@@ -467,7 +461,7 @@ impl ResolveCx {
     /// neither re-scope nor re-diagnose it. True when this node has
     /// been met before; a first sighting marks it and answers false.
     fn met(e: ExprId) -> bool {
-        if self.walked[e.index] { return true }
+        if self.walked.get(e.index) { return true }
         self.walked.set(e.index, true)
         false
     }
@@ -646,7 +640,7 @@ impl ResolveCx {
     /// The capture's lane in the lambda's set — found, or minted at
     /// the tail. The set's order IS the box's slot order.
     fn captured(lam: ExprId, name: string, source: Binding) -> int {
-        let held: Cap? = self.facts.captures[lam.index]
+        let held: Cap? = self.facts.captures.get(lam.index)
         if held == null {
             self.facts.captures.set(lam.index, Cap { names: [name], sources: [source] })
             return 0
@@ -691,7 +685,9 @@ impl ResolveCx {
     /// The first PROGRAM-SCOPE definition of `name` anywhere — a
     /// scoped binder (a loop counter) is not one.
     fn later_def(name: string) -> StmtId? {
-        self.all_defs.find(it.name == name && !self.scoped[it.stmt.index])?.stmt
+        // the table is named because `it` binds to the NEAREST call
+        let scoped = self.scoped
+        self.all_defs.find((d) -> d.name == name && !scoped.get(d.stmt.index))?.stmt
     }
 
     /// A statement's binding, run through the naming law — the one

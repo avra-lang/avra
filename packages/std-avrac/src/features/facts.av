@@ -3,8 +3,8 @@
 //! (`FileView`), and the pass values that are pure data with the
 //! verbs that read and write their own columns. The reads that
 //! cross values, and the contexts' forwarders, live in contexts.av.
-use core.{FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, Span, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of}
-use core.{SeatMark}
+use core.{FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, Span, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, dst_of, rt_sig_of}
+use core.{SeatMark, SideTable, side_table, side_table_of}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
 
@@ -56,17 +56,26 @@ export type Cap = { names: List<string>, sources: List<Binding> }
 /// A file's names: what each expression's name resolves to, each
 /// lambda's captures, the namespace they were resolved in, and the
 /// voices resolving earned.
-export type NameFacts = { bindings: List<Binding?>, captures: List<Cap?>, mut_reads: List<bool>, settled_reads: List<bool>, names: Namespace, voices: Voices }
+export type NameFacts = { bindings: SideTable<Binding?>, captures: SideTable<Cap?>, mut_reads: SideTable<bool>, settled_reads: SideTable<bool>, names: Namespace, voices: Voices }
+
+/// Born total over the file's expressions: nothing bound, nothing
+/// captured, no seat read yet.
+export fn new_name_facts(exprs: int, names: Namespace) -> NameFacts {
+    NameFacts {
+        bindings: side_table<Binding?>("bindings", 0, exprs, null),
+        captures: side_table<Cap?>("captures", 0, exprs, null),
+        mut_reads: side_table("mut_reads", 0, exprs, false),
+        settled_reads: side_table("settled_reads", 0, exprs, false),
+        names: names, voices: no_voices(),
+    }
+}
 
 impl NameFacts {
-    fn binding(e: ExprId) -> Binding? {
-        let held: Binding? = self.bindings[e.index]
-        held
-    }
+    fn binding(e: ExprId) -> Binding? { self.bindings.get(e.index) }
 
     /// Whether this parameter read names a `mut` seat — the
     /// resolver marks it as it binds.
-    fn reads_mut_seat(e: ExprId) -> bool { self.mut_reads[e.index] }
+    fn reads_mut_seat(e: ExprId) -> bool { self.mut_reads.get(e.index) }
 
     fn mark_mut_read(e: ExprId) {
         self.mut_reads.set(e.index, true)
@@ -74,16 +83,13 @@ impl NameFacts {
 
     /// Whether this parameter read names a `const` (settled) seat —
     /// the resolver marks it as it binds, the way it marks `mut`.
-    fn reads_settled_seat(e: ExprId) -> bool { self.settled_reads[e.index] }
+    fn reads_settled_seat(e: ExprId) -> bool { self.settled_reads.get(e.index) }
 
     fn mark_settled_read(e: ExprId) {
         self.settled_reads.set(e.index, true)
     }
 
-    fn capture(lam: ExprId) -> Cap? {
-        let held: Cap? = self.captures[lam.index]
-        held
-    }
+    fn capture(lam: ExprId) -> Cap? { self.captures.get(lam.index) }
 }
 
 /// What a nullable was asked, for lowering: the subject, and whether
@@ -100,165 +106,141 @@ export type Asked = { subject: ExprId, on_present: bool }
 type ParamScope = { params: List<TypeId> }
 
 export type TypeFacts = {
-    lo: int,
-    of_expr: List<TypeId>,
-    widens: List<TypeId?>,
-    narrows: List<TypeId?>,
-    asks: List<Asked?>,
-    substs: List<Sub?>,
-    lambda_params: List<List<TypeId>?>,
+    of_expr: SideTable<TypeId>,
+    widens: SideTable<TypeId?>,
+    narrows: SideTable<TypeId?>,
+    asks: SideTable<Asked?>,
+    substs: SideTable<Sub?>,
+    lambda_params: SideTable<List<TypeId>?>,
     // the seat CONTRACTS those seats wear — written, or heard from the slot
-    lambda_marks: List<List<SeatMark>?>,
+    lambda_marks: SideTable<List<SeatMark>?>,
     // what each lambda CAPTURED, typed in lane order — the type a
     // capture read wears, wherever the lane is read
-    captures: List<List<TypeId>?>,
-    wants: List<TypeId?>,
-    hungry: List<bool>,
-    starved: List<TypeId?>,
+    captures: SideTable<List<TypeId>?>,
+    wants: SideTable<TypeId?>,
+    hungry: SideTable<bool>,
+    starved: SideTable<TypeId?>,
     // the parameter scope a hungry node was typed under — what its
     // rule runs under again when fed or starving
-    scopes: List<ParamScope?>,
-    pattern_types: List<List<TypeId>>,
-    binding_types: List<TypeId?>,
+    scopes: SideTable<ParamScope?>,
+    pattern_types: SideTable<List<TypeId>>,
+    binding_types: SideTable<TypeId?>,
     // a `mut` binding that BORROWS a parameter's field (bs2's
     // aliasing, honored until self-host — ROADMAP: the bs2 debt ledger)
-    borrows: List<bool>,
+    borrows: SideTable<bool>,
     // a use whose declaration's warnings were already spoken — one
     // voice per use, however often the node is typed
-    warned: List<bool>,
+    warned: SideTable<bool>,
     voices: Voices,
 }
 
 /// Born total: every expression in the range pre-typed as the hole.
+/// THE WINDOW IS THE TABLE'S — the expression columns run over
+/// [lo, hi) and the statement columns over the whole file, so no
+/// reader subtracts anything.
 export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFacts {
-    let exprs = hi - lo
+    let no_types: List<TypeId> = []
     TypeFacts {
-        lo: lo,
-        of_expr: filled(exprs, hole),
-        widens: filled<TypeId?>(exprs, null),
-        narrows: filled<TypeId?>(exprs, null),
-        asks: filled<Asked?>(exprs, null),
-        substs: filled<Sub?>(exprs, null),
-        lambda_params: filled<List<TypeId>?>(exprs, null),
-        lambda_marks: filled<List<SeatMark>?>(exprs, null),
-        captures: filled<List<TypeId>?>(exprs, null),
-        wants: filled<TypeId?>(exprs, null),
-        hungry: filled(exprs, false),
-        warned: filled(exprs, false),
-        starved: filled<TypeId?>(exprs, null),
-        scopes: filled<ParamScope?>(exprs, null),
-        pattern_types: empty_lists_ty(exprs),
-        binding_types: filled<TypeId?>(stmts, null),
-        borrows: filled(stmts, false),
+        of_expr: side_table("of_expr", lo, hi, hole),
+        widens: side_table<TypeId?>("widens", lo, hi, null),
+        narrows: side_table<TypeId?>("narrows", lo, hi, null),
+        asks: side_table<Asked?>("asks", lo, hi, null),
+        substs: side_table<Sub?>("substs", lo, hi, null),
+        lambda_params: side_table<List<TypeId>?>("lambda_params", lo, hi, null),
+        lambda_marks: side_table<List<SeatMark>?>("lambda_marks", lo, hi, null),
+        captures: side_table<List<TypeId>?>("captures", lo, hi, null),
+        wants: side_table<TypeId?>("wants", lo, hi, null),
+        hungry: side_table("hungry", lo, hi, false),
+        warned: side_table("warned", lo, hi, false),
+        starved: side_table<TypeId?>("starved", lo, hi, null),
+        scopes: side_table<ParamScope?>("scopes", lo, hi, null),
+        pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
+        binding_types: side_table<TypeId?>("binding_types", 0, stmts, null),
+        borrows: side_table("borrows", 0, stmts, false),
         voices: no_voices(),
     }
 }
 
 impl TypeFacts {
-    fn type_at(e: ExprId) -> TypeId { self.of_expr[e.index - self.lo] }
-    /// Whether this table's range holds the expression — an
+    fn type_at(e: ExprId) -> TypeId { self.of_expr.get(e.index) }
+    /// Whether this table's window holds the expression — an
     /// expression is typed by the body that OWNS it, never another.
-    fn owns(e: ExprId) -> bool { e.index >= self.lo && e.index - self.lo < self.of_expr.length }
+    fn owns(e: ExprId) -> bool { self.of_expr.holds(e.index) }
 
-    fn hungry_at(e: ExprId) -> bool { self.hungry[e.index - self.lo] }
+    fn hungry_at(e: ExprId) -> bool { self.hungry.get(e.index) }
 
-    /// The hungry expressions, in range order.
+    /// The hungry expressions, in window order.
     fn hungry_ones() -> List<ExprId> {
-        mut out: List<ExprId> = []
-        for j, h in self.hungry {
-            if h { out.push(ExprId { index: self.lo + j }) }
-        }
-        out
+        [ExprId { index: i } for i in self.hungry.ids(is_hungry)]
     }
 
     /// The seat a starved expression wanted, when it was starved.
-    fn starved_at(e: ExprId) -> TypeId? {
-        let held: TypeId? = self.starved[e.index - self.lo]
-        held
-    }
+    fn starved_at(e: ExprId) -> TypeId? { self.starved.get(e.index) }
 
     fn set_type(e: ExprId, ty: TypeId) {
-        self.of_expr.set(e.index - self.lo, ty)
+        self.of_expr.set(e.index, ty)
     }
 
     fn widen(v: ExprId, ty: TypeId) {
-        self.widens.set(v.index - self.lo, ty)
+        self.widens.set(v.index, ty)
     }
 
-    fn widened_at(e: ExprId) -> TypeId? {
-        let held: TypeId? = self.widens[e.index - self.lo]
-        held
-    }
+    fn widened_at(e: ExprId) -> TypeId? { self.widens.get(e.index) }
 
     fn narrow(e: ExprId, opt: TypeId) {
-        self.narrows.set(e.index - self.lo, opt)
+        self.narrows.set(e.index, opt)
     }
 
-    fn narrowed_at(e: ExprId) -> TypeId? {
-        let held: TypeId? = self.narrows[e.index - self.lo]
-        held
-    }
+    fn narrowed_at(e: ExprId) -> TypeId? { self.narrows.get(e.index) }
 
     fn record_ask(e: ExprId, subject: ExprId, on_present: bool) {
-        self.asks.set(e.index - self.lo, Asked { subject: subject, on_present: on_present })
+        self.asks.set(e.index, Asked { subject: subject, on_present: on_present })
     }
 
-    fn ask_of(e: ExprId) -> Asked? {
-        let held: Asked? = self.asks[e.index - self.lo]
-        held
-    }
+    fn ask_of(e: ExprId) -> Asked? { self.asks.get(e.index) }
 
     fn record_subst(e: ExprId, target: DeclId, targs: List<TypeId>, consts: List<string>) {
-        self.substs.set(e.index - self.lo, Sub { target: target, args: targs, consts: consts })
+        self.substs.set(e.index, Sub { target: target, args: targs, consts: consts })
     }
 
-    fn subst_at(e: ExprId) -> Sub? {
-        let held: Sub? = self.substs[e.index - self.lo]
-        held
-    }
+    fn subst_at(e: ExprId) -> Sub? { self.substs.get(e.index) }
 
     fn set_want(e: ExprId, ty: TypeId) {
-        self.wants.set(e.index - self.lo, ty)
+        self.wants.set(e.index, ty)
     }
 
-    fn want_at(e: ExprId) -> TypeId? {
-        let held: TypeId? = self.wants[e.index - self.lo]
-        held
-    }
+    fn want_at(e: ExprId) -> TypeId? { self.wants.get(e.index) }
 
     fn go_hungry(e: ExprId) {
-        self.hungry.set(e.index - self.lo, true)
+        self.hungry.set(e.index, true)
     }
 
     fn remember_scope(e: ExprId, params: List<TypeId>) {
-        self.scopes.set(e.index - self.lo, ParamScope { params: params })
+        self.scopes.set(e.index, ParamScope { params: params })
     }
 
-    fn scope_at(e: ExprId) -> List<TypeId>? {
-        let held: ParamScope? = self.scopes[e.index - self.lo]
-        held?.params
-    }
+    fn scope_at(e: ExprId) -> List<TypeId>? { self.scopes.get(e.index)?.params }
 
     fn absorb_hunger(e: ExprId) {
-        self.hungry.set(e.index - self.lo, false)
+        self.hungry.set(e.index, false)
     }
 
     /// A hungry expression starved of the seat it wanted; true when
     /// it was hungry.
     fn starve(e: ExprId, want: TypeId) -> bool {
-        if !self.hungry[e.index - self.lo] { return false }
-        self.starved.set(e.index - self.lo, want)
+        if !self.hungry.get(e.index) { return false }
+        self.starved.set(e.index, want)
         true
     }
 
     /// An arm's binds, typed in pattern order.
     fn bind_types(v: ExprId, tys: List<TypeId>) {
-        self.pattern_types.set(v.index - self.lo, tys)
+        self.pattern_types.set(v.index, tys)
     }
 
     /// The arm's Nth bind, when the arm's owner spoke it.
     fn pattern_type(v: ExprId, j: int) -> TypeId? {
-        let tys = self.pattern_types[v.index - self.lo]
+        let tys = self.pattern_types.get(v.index)
         if j >= tys.length { return null }
         tys[j]
     }
@@ -272,13 +254,13 @@ impl TypeFacts {
     }
 
     /// Whether this use already spoke its declaration's warnings.
-    fn spoke_warning(e: ExprId) -> bool { self.warned[e.index - self.lo] }
+    fn spoke_warning(e: ExprId) -> bool { self.warned.get(e.index) }
 
     fn mark_warned(e: ExprId) {
-        self.warned.set(e.index - self.lo, true)
+        self.warned.set(e.index, true)
     }
 
-    fn is_borrow(s: StmtId) -> bool { self.borrows[s.index] }
+    fn is_borrow(s: StmtId) -> bool { self.borrows.get(s.index) }
 
     /// Another body's facts laid into this table over its range,
     /// and every binding it declared — the per-file fold. The
@@ -286,56 +268,43 @@ impl TypeFacts {
     /// working state, spoken before its facts settle; the voices
     /// fold at the workspace, in source order.
     fn absorb(other: TypeFacts) {
-        let at = other.lo - self.lo
-        // EACH COLUMN THROUGH ITS FIELD: a fn handed the list could
-        // only fill a copy, and the fold runs once per body
-        // LICENSED I3: nine named columns, one write each — the walk is the copy
-        for (j, v) in other.of_expr.enumerate() { self.of_expr.set(at + j, v) }
-        for (j, v) in other.widens.enumerate() { self.widens.set(at + j, v) }
-        for (j, v) in other.narrows.enumerate() { self.narrows.set(at + j, v) }
-        for (j, v) in other.asks.enumerate() { self.asks.set(at + j, v) }
-        for (j, v) in other.substs.enumerate() { self.substs.set(at + j, v) }
-        for (j, v) in other.lambda_params.enumerate() { self.lambda_params.set(at + j, v) }
-        for (j, v) in other.lambda_marks.enumerate() { self.lambda_marks.set(at + j, v) }
-        for (j, v) in other.captures.enumerate() { self.captures.set(at + j, v) }
-        for (j, v) in other.wants.enumerate() { self.wants.set(at + j, v) }
-        for (j, v) in other.pattern_types.enumerate() { self.pattern_types.set(at + j, v) }
-        for j, b in other.borrows {
-            if b { self.borrows.set(j, true) }
-        }
-        for j, b in other.binding_types {
-            if b != null { self.binding_types.set(j, b) }
-        }
+        // EACH COLUMN THROUGH ITS FIELD: a fn handed the table could
+        // only fill a copy, and the fold runs once per body. The
+        // OFFSET is the tables' own — each window knows where it sits.
+        // LICENSED I3: twelve named columns, one lay each
+        self.of_expr.lay(other.of_expr)
+        self.widens.lay(other.widens)
+        self.narrows.lay(other.narrows)
+        self.asks.lay(other.asks)
+        self.substs.lay(other.substs)
+        self.lambda_params.lay(other.lambda_params)
+        self.lambda_marks.lay(other.lambda_marks)
+        self.captures.lay(other.captures)
+        self.wants.lay(other.wants)
+        self.pattern_types.lay(other.pattern_types)
+        self.borrows.lay_named(other.borrows, is_true)
+        self.binding_types.lay_named(other.binding_types, is_typed)
     }
 
-    fn declared_binding(s: StmtId) -> TypeId? {
-        let held: TypeId? = self.binding_types[s.index]
-        held
-    }
+    fn declared_binding(s: StmtId) -> TypeId? { self.binding_types.get(s.index) }
 
     fn seat_lambda(lam: ExprId, tys: List<TypeId>, marks: List<SeatMark>) {
-        self.lambda_params.set(lam.index - self.lo, tys)
-        self.lambda_marks.set(lam.index - self.lo, marks)
+        self.lambda_params.set(lam.index, tys)
+        self.lambda_marks.set(lam.index, marks)
     }
 
-    fn heard_marks(lam: ExprId) -> List<SeatMark>? {
-        let held: List<SeatMark>? = self.lambda_marks[lam.index - self.lo]
-        held
-    }
+    fn heard_marks(lam: ExprId) -> List<SeatMark>? { self.lambda_marks.get(lam.index) }
 
-    fn lambda_seats(lam: ExprId) -> List<TypeId>? {
-        let held: List<TypeId>? = self.lambda_params[lam.index - self.lo]
-        held
-    }
+    fn lambda_seats(lam: ExprId) -> List<TypeId>? { self.lambda_params.get(lam.index) }
 
     fn seat_captures(lam: ExprId, tys: List<TypeId>) {
-        self.captures.set(lam.index - self.lo, tys)
+        self.captures.set(lam.index, tys)
     }
 
     /// The type the lambda's Nth capture wears — the CAPTURED
     /// binding's, never the lambda's or a reading node's.
     fn capture_type(lam: ExprId, j: int) -> TypeId? {
-        let held: List<TypeId>? = self.captures[lam.index - self.lo]
+        let held: List<TypeId>? = self.captures.get(lam.index)
         if held == null || j >= held!.length { return null }
         held![j]
     }
@@ -426,28 +395,26 @@ impl Emitter {
 /// A body's per-node registers: each expression's, each binding's
 /// slot (a cell when boxed), each pattern bind's, each pairing
 /// loop's index.
-export type BodyRegs = { regs: List<Reg?>, slots: List<Reg?>, boxed: List<bool>, pattern_regs: List<List<Reg>>, index_regs: List<Reg?>, test_regs: List<List<Reg>> }
+export type BodyRegs = { regs: SideTable<Reg?>, slots: SideTable<Reg?>, boxed: SideTable<bool>, pattern_regs: SideTable<List<Reg>>, index_regs: SideTable<Reg?>, test_regs: SideTable<List<Reg>> }
 
 export fn new_body_regs(exprs: int, stmts: int, pats: int) -> BodyRegs {
+    let no_regs: List<Reg> = []
     BodyRegs {
-        regs: filled<Reg?>(exprs, null), slots: filled<Reg?>(stmts, null), boxed: filled(stmts, false),
-        pattern_regs: empty_lists_reg(exprs), index_regs: filled<Reg?>(stmts, null),
-        test_regs: empty_lists_reg(pats),
+        regs: side_table<Reg?>("regs", 0, exprs, null),
+        slots: side_table<Reg?>("slots", 0, stmts, null),
+        boxed: side_table("boxed", 0, stmts, false),
+        pattern_regs: side_table_of("pattern_regs", 0, empty_lists_reg(exprs), no_regs),
+        index_regs: side_table<Reg?>("index_regs", 0, stmts, null),
+        test_regs: side_table_of("test_regs", 0, empty_lists_reg(pats), no_regs),
     }
 }
 
 impl BodyRegs {
-    fn reg_at(e: ExprId) -> Reg? {
-        let held: Reg? = self.regs[e.index]
-        held
-    }
+    fn reg_at(e: ExprId) -> Reg? { self.regs.get(e.index) }
     fn set_reg(e: ExprId, r: Reg) {
         self.regs.set(e.index, r)
     }
-    fn slot_of(s: StmtId) -> Reg? {
-        let held: Reg? = self.slots[s.index]
-        held
-    }
+    fn slot_of(s: StmtId) -> Reg? { self.slots.get(s.index) }
     fn set_slot(s: StmtId, r: Reg) {
         self.slots.set(s.index, r)
     }
@@ -455,28 +422,23 @@ impl BodyRegs {
         self.boxed.set(s.index, true)
         self.set_slot(s, cell)
     }
-    fn is_boxed(s: StmtId) -> bool { self.boxed[s.index] }
+    fn is_boxed(s: StmtId) -> bool { self.boxed.get(s.index) }
     fn pattern_reg(v: ExprId, j: int) -> Reg? {
-        let regs = self.pattern_regs[v.index]
+        let regs = self.pattern_regs.get(v.index)
         if j >= regs.length { return null }
         regs[j]
     }
     fn bind_patterns(v: ExprId, regs: List<Reg>) {
         self.pattern_regs.set(v.index, regs)
     }
-    fn index_reg(s: StmtId) -> Reg? {
-        let held: Reg? = self.index_regs[s.index]
-        held
-    }
+    fn index_reg(s: StmtId) -> Reg? { self.index_regs.get(s.index) }
     /// WHAT A PATTERN'S TEST PRODUCED FOR ITS BINDS. Enums' protocol
     /// is TEST then BIND — the test emits OUTSIDE an arm's region so
     /// an untaken arm reads nothing, the binds inside — and a
     /// pattern whose test IS its bind would otherwise run its scan
     /// twice. Keyed by the PATTERN, so a nested one finds its own
     /// and no caller threads it through the recursion.
-    fn test_regs_of(p: PatId) -> List<Reg> {
-        self.test_regs[p.index]
-    }
+    fn test_regs_of(p: PatId) -> List<Reg> { self.test_regs.get(p.index) }
     fn bind_test(p: PatId, regs: List<Reg>) {
         self.test_regs.set(p.index, regs)
     }
@@ -484,6 +446,11 @@ impl BodyRegs {
         self.index_regs.set(s.index, r)
     }
 }
+
+/// A column's fold reads only what the body actually recorded.
+fn is_true(b: bool) -> bool { b }
+fn is_typed(t: TypeId?) -> bool { t != null }
+fn is_hungry(h: bool) -> bool { h }
 
 /// `n` empty type lists — spelled without the generic fill: a test
 /// shard instantiating a list-writing generic at a list-of-lists
