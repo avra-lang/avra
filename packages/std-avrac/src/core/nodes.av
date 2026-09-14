@@ -175,6 +175,30 @@ export const all_binops: List<BinOp> = [BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.D
      BinOp.And, BinOp.Or,
      BinOp.BitAnd, BinOp.BitOr, BinOp.BitXor, BinOp.Shl, BinOp.Shr]
 
+/// THE THREE KINDS OF NAME A NODE CARRIES. Every name in the tree
+/// is text; what differs is WHAT IT KEYS, and until now that fact
+/// lived only in the walks that read it. It is the payload's TYPE
+/// now, so the enum states it and a derive can read it.
+///
+/// A name is FREE at runtime — each is its own type over `string`,
+/// which travels as the string it is; `n.of` reads the text back.
+
+/// A name that KEYS A SCOPE — a binder (`let x`, a parameter, a
+/// pattern's bind, a fn's own name) or a READ of one (`x`, a call's
+/// callee). The resolver walks the scope chain for it, so a
+/// TEMPLATE filling one hands the node to the splice site's scope.
+export type Scoped = string
+
+/// A name that keys NO scope — a field, a method, a property, a
+/// variant, a type parameter. It is answered by a shape the
+/// compiler already knows, so filling one changes nothing about
+/// where the node resolves.
+export type Plain = string
+
+/// A name in the TYPE namespace — a literal's type, an impl's
+/// target. A template's hole in one is filled by a written TYPE.
+export type Nominal = string
+
 @derive(ValueProtocol)
 export enum Expr {
     IntLit(value: int)
@@ -186,7 +210,7 @@ export enum Expr {
     FloatLit(bits: int)
     StrLit(value: string)
     BoolLit(value: bool)
-    Ident(name: string)
+    Ident(name: Scoped)
     /// `self` — the enclosing method's receiver. A keyword, so it
     /// carries no name: the binding says what it is.
     Receiver
@@ -199,14 +223,14 @@ export enum Expr {
     /// another, or counting `source..hi` when `hi` is present;
     /// `index` names the position when written as `index, name`,
     /// null otherwise. The binders hold for `elem` and `cond` alone.
-    Comp(elem: ExprId, index: string?, name: string, source: ExprId, hi: ExprId?, cond: ExprId?)
+    Comp(elem: ExprId, index: Scoped?, name: Scoped, source: ExprId, hi: ExprId?, cond: ExprId?)
     /// `{ "k": v, … }` — keys and values in written order.
     MapLit(keys: List<ExprId>, values: List<ExprId>)
     /// `subject[index]` — element access.
     Index(subject: ExprId, index: ExprId)
     /// `subject.name` — a property read; TYPING refuses unknown
     /// names, so the parse stays generous.
-    Prop(subject: ExprId, name: string)
+    Prop(subject: ExprId, name: Plain)
     /// `"a ${x} b"` — parts always one longer than holes.
     Interp(parts: List<string>, holes: List<ExprId>)
     /// `quote { a ${x} b }` — a TEMPLATE: its body parsed here, into
@@ -231,13 +255,13 @@ export enum Expr {
     Block(stmts: List<StmtId>, value: ExprId?)
     /// A direct call by name; fn values arrive later. `pins` are
     /// explicit type arguments (`f<int>(x)`) — empty when inferred.
-    Call(callee: string, pins: List<TypeRef>, args: List<ExprId>)
+    Call(callee: Scoped, pins: List<TypeRef>, args: List<ExprId>)
     /// `Name { field: value, ... }` — fields in WRITTEN order
     /// (evaluation order); lowering reorders to declaration slots.
-    StructLit(name: string, fields: List<string>, values: List<ExprId>)
+    StructLit(name: Nominal, fields: List<Plain>, values: List<ExprId>)
     /// `subject with { field: value, ... }` — a modified COPY; the
     /// unwritten fields carry over.
-    With(subject: ExprId, fields: List<string>, values: List<ExprId>)
+    With(subject: ExprId, fields: List<Plain>, values: List<ExprId>)
     /// `match subject { pattern -> value, ... }` — the first arm
     /// whose pattern accepts the subject answers; typing proves the
     /// arms cover the subject (every variant, or a catch-all).
@@ -251,7 +275,7 @@ export enum Expr {
     /// `match v { b? -> present, null -> absent }` — the absence
     /// answered by ASKING. Exactly two arms, and `bind` names what
     /// the present arm receives, so no arm needs a string tag.
-    MatchOpt(subject: ExprId, bind: string, present: ExprId, absent: ExprId)
+    MatchOpt(subject: ExprId, bind: Scoped, present: ExprId, absent: ExprId)
     /// `(params) -> body` — a CLOSURE: the body may read outer
     /// names, captured BY VALUE into the closure's box at
     /// creation (value semantics makes by-value capture silent).
@@ -265,17 +289,17 @@ export enum Expr {
     /// `subject?.name` — the member of what a nullable CARRIES,
     /// nullable again: an absent subject answers absence, and the
     /// whole chain short-circuits on the first one.
-    Chain(subject: ExprId, name: string)
+    Chain(subject: ExprId, name: Plain)
     /// `value!` — the absence answered by INSISTING. The type loses
     /// its `?`; a value that is absent anyway refuses at runtime,
     /// which is the whole cost of writing it.
     Force(value: ExprId)
     /// `subject is .variant` — the tag test; typing demands an enum
     /// subject that names the variant, and answers bool.
-    Is(subject: ExprId, variant: string)
+    Is(subject: ExprId, variant: Plain)
     /// `.name(args)` — a variant of the enum the site EXPECTS; the
     /// want names the enum, the literal names the variant.
-    VariantLit(name: string, args: List<ExprId>)
+    VariantLit(name: Plain, args: List<ExprId>)
     /// `value?` — the absence answered by PASSING IT ON: a present
     /// value unwraps; an absent one makes the ENCLOSING fn answer
     /// `null` right here, so the fn must promise a nullable.
@@ -286,12 +310,12 @@ export enum Expr {
     /// `binds[j]` what it receives ("" is nothing). COVERAGE
     /// decides the type: a total catch recovers to the ok side; a
     /// selective one stays the Result, the unmatched propagating.
-    Catch(subject: ExprId, variants: List<string>, binds: List<string>, values: List<ExprId>)
+    Catch(subject: ExprId, variants: List<Plain>, binds: List<Scoped>, values: List<ExprId>)
     /// `subject.name(args)` — a METHOD call: the impl the
     /// receiver's TYPE names supplies the fn; `subject` rides as
     /// its first argument. Resolution is provable at typing —
     /// never a runtime lookup.
-    MethodCall(subject: ExprId, name: string, args: List<ExprId>)
+    MethodCall(subject: ExprId, name: Plain, args: List<ExprId>)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
@@ -410,7 +434,7 @@ export const pronoun_param: Param = Param { name: "it", ty: null, default: null,
 /// has to ask which kind it is.
 /// A declared seat — a fn's param, a lambda's, a struct's field, an
 /// enum variant's payload — with the DEFAULT a field may declare.
-export type Param = { name: string, ty: TypeRef?, default: ExprId?, mark: SeatMark, span: Span? = null }
+export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, mark: SeatMark, span: Span? = null }
 
 /// A pattern's identity in the store's pattern table.
 export type PatId = { index: int }
@@ -423,8 +447,8 @@ export type PatId = { index: int }
 export enum Pat {
     Wild
     Rest
-    Bind(name: string)
-    Variant(name: string, args: List<PatId>)
+    Bind(name: Scoped)
+    Variant(name: Plain, args: List<PatId>)
     Lit(value: ExprId)
 }
 
@@ -433,7 +457,7 @@ export type Arm = { pats: List<PatId>, value: ExprId }
 
 /// One declared variant: its name and what it carries, in order —
 /// a single positional payload, or named fields.
-export type Variant = { name: string, payloads: List<Param>, span: Span? = null }
+export type Variant = { name: Plain, payloads: List<Param>, span: Span? = null }
 
 /// One test case: its `given` group's name, its own name (the
 /// `then`'s), and its body — a block answering a bool.
@@ -441,8 +465,8 @@ export type Case = { group: string, name: string, body: ExprId }
 
 /// One step of a PLACE — where a mutation lands.
 export enum PlaceStep {
-    Root(name: string)
-    Field(subject: ExprId, name: string)
+    Root(name: Scoped)
+    Field(subject: ExprId, name: Plain)
     At(subject: ExprId, index: ExprId)
 }
 
@@ -456,17 +480,17 @@ export enum Stmt {
     /// `let name = v`, optionally `let name: T = v` — the written
     /// type, when declared, is what the binding HOLDS; the value
     /// must be accepted by it.
-    Let(name: string, ty: TypeRef?, value: ExprId)
+    Let(name: Scoped, ty: TypeRef?, value: ExprId)
     /// A reassignable binding — unmanaged values only, until
     /// ownership analysis; optionally annotated, holding what it
     /// declares exactly as `let` does.
-    MutLet(name: string, ty: TypeRef?, value: ExprId)
+    MutLet(name: Scoped, ty: TypeRef?, value: ExprId)
     /// `const name = v` — a value the COMPILER computes, so every
     /// use is that value and the program never computes it. Its
     /// initializer is evaluated at compile time, which is also the
     /// law it must satisfy: nothing the host answers, nothing that
     /// does not settle.
-    ConstDecl(name: string, ty: TypeRef?, value: ExprId)
+    ConstDecl(name: Scoped, ty: TypeRef?, value: ExprId)
     /// Reassignment of a `mut` binding, by name.
     Assign(target: ExprId, value: ExprId)
     /// An expression at statement position.
@@ -476,10 +500,10 @@ export enum Stmt {
     /// `tparams` are the declared type parameters, in order — the
     /// ordinal IS the Var identity; a tparam's `ty` names its
     /// BOUND (`<T: Show>`), absent when unconstrained.
-    FnDecl(name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId)
+    FnDecl(name: Scoped, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId)
     /// `extern fn name(params) -> ret` — a fn the host provides: a
     /// signature with no body, called by its bare symbol.
-    ExternFn(name: string, params: List<Param>, ret: TypeRef)
+    ExternFn(name: Scoped, params: List<Param>, ret: TypeRef)
     /// Condition re-evaluated each turn; the body is a scope.
     While(cond: ExprId, stmts: List<StmtId>)
     /// `if c { … }` (optionally `else { … }`) at STATEMENT
@@ -500,46 +524,46 @@ export enum Stmt {
     /// fn lowers under a QUALIFIED name (`Target.method`). `of`
     /// names the TRAIT being implemented — null for an inherent impl
     /// — and an impl-for must answer every trait method.
-    ImplDecl(of: string?, target: string, fns: List<StmtId>)
+    ImplDecl(of: Nominal?, target: Nominal, fns: List<StmtId>)
     /// `trait Name { fn sigs… }` — a nominal behavior contract.
     /// The sigs ride as BODYLESS fn declarations (body = a hole no
     /// pass walks), so declare and totality reuse fn machinery.
-    TraitDecl(name: string, fns: List<StmtId>)
+    TraitDecl(name: Scoped, fns: List<StmtId>)
     /// `let name? = subject else { stmts }` — the bind-fresh form
     /// that KEEPS GOING: a present subject binds its carried value
     /// in the enclosing scope; an absent one runs the else, which
     /// must leave. Parsed by `let_stmt`; nullability gives it
     /// meaning.
-    LetElse(name: string, subject: ExprId, stmts: List<StmtId>)
+    LetElse(name: Scoped, subject: ExprId, stmts: List<StmtId>)
     /// `for name in from..to` — binds `name` over the body. `cond`
     /// and `step` are parse-time desugar (`name < to`, `name + 1`):
     /// real nodes every pass walks, so the loop is mut+while in
     /// costume.
-    For(name: string, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>)
+    For(name: Scoped, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>)
     /// `use a.b.{x, y}` — the path's segments (a `@pkg` head kept
     /// as written) and the items brought into scope.
     Use(path: List<string>, items: List<string>, aliases: List<string>)
     /// `for x in xs` — or `for i, x in xs`, the index beside the
     /// element, the loop's own counter with a name.
-    ForEach(index: string?, name: string, subject: ExprId, stmts: List<StmtId>)
+    ForEach(index: Scoped?, name: Scoped, subject: ExprId, stmts: List<StmtId>)
     /// `type Name = { field: ty, ... }` — a nominal record; the
     /// name lives in the TYPE namespace, program-wide like fns.
-    StructDecl(name: string, tparams: List<string>, fields: List<Param>)
+    StructDecl(name: Scoped, tparams: List<Plain>, fields: List<Param>)
     /// `type Name = <type>` — a DISTINCT type over a written shape,
     /// never an alias: the name counts at every seat and the shape
     /// answers every read. It travels AS its shape (a flat record
     /// of one anonymous field), so the name is free at runtime.
-    NamedType(name: string, tparams: List<string>, of: TypeRef)
+    NamedType(name: Scoped, tparams: List<Plain>, of: TypeRef)
     /// `enum Name { A B(payload: int) }` — a nominal closed set
     /// sharing the TYPE namespace with records. A variant is a
     /// Param: an ABSENT `ty` IS a unit variant.
-    EnumDecl(name: string, tparams: List<string>, variants: List<Variant>)
+    EnumDecl(name: Scoped, tparams: List<Plain>, variants: List<Variant>)
     /// `spec "name" { given "…" { then "…" { … } } }` — a test
     /// suite; each case is a declaration of its own.
     Spec(name: string, cases: List<Case>)
     /// `syntax sql { … }` — a sublanguage declared: the block word and
     /// the grammar notation, kept as text; the workspace readies it.
-    SyntaxDecl(name: string, text: string)
+    SyntaxDecl(name: Scoped, text: string)
     /// `defer e` — the body runs when the enclosing scope ends or
     /// the fn exits early, last-registered first; `on_error` marks
     /// an `errdefer`, which runs only when the fn exits through its

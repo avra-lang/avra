@@ -93,6 +93,29 @@ spec "features/structs (named types)" {
             shown("${uid()}impl UserId { fn doubled() -> int { 2 } }\nlet u: UserId = 3\nu.doubled()") == "2"
         }
     }
+    given "the shape read" {
+        then "`of` answers the shape a name stands over" {
+            shown("${uid()}fn take(n: int) -> int { n + 1 }\nlet id: UserId = 5\ntake(id.of)") == "6"
+        }
+        then "a named TEXT reads back as text" {
+            shown("${tag()}fn take(s: string) -> int { s.length }\nlet t: Tag = \"hello\"\ntake(t.of)") == "5"
+        }
+        then "a named LIST reads back as its list" {
+            shown("${rows()}let r: Rows = [1, 2]\nlet xs: List<int> = r.of\nxs.length") == "2"
+        }
+        then "a name over a name reads ONE level" {
+            shown("type A = int\ntype B = A\nlet b: B = 5\nlet a: A = b.of\na + A(1)") == "6"
+        }
+        then "a RECORD has no `of` — its fields answer first" {
+            refused_with("type P = { x: int }\nlet p = P { x: 1 }\np.of", "no field `of` on `P`")
+        }
+        then "a bare shape has no `of`" {
+            refused_with("let n = 5\nn.of", "no property `of` on `int`")
+        }
+        then "a name standing over nothing says what `of` reads" {
+            refused_with("type X = X\nlet x: X = 1\nx.of", "`.of` reads a named type's shape, this is `X`")
+        }
+    }
     given "arithmetic and comparison" {
         then "two of one name add to that name" {
             shown("${uid()}let a: UserId = 2\nlet b: UserId = 3\nlet c: UserId = a + b\nc") == "5"

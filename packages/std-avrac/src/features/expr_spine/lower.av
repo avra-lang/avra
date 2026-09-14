@@ -197,9 +197,17 @@ fn not_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
     dst
 }
 
+/// THE ROW TYPING CHOSE: the subject's OWN shape first, then the
+/// shape it stands over. `member_type_of` asks in that order, and a
+/// guard and the thing it guards must read the same bytes.
+fn property_of(cx: LowerCx, s: ExprId, name: string) -> PropertyRow? {
+    property_row(cx.view.lang.properties, name, cx.view.types.shape_of(cx.type_at(s))) ??
+        property_row(cx.view.lang.properties, name, cx.seen_at(s))
+}
+
 /// A property the receiver's shape answers — its row's lowering.
 fn property_reg(mut cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
-    let row: PropertyRow? = property_row(cx.view.lang.properties, name, cx.seen_at(s))
+    let row: PropertyRow? = property_of(cx, s, name)
     if row == null { return cx.lower_defect(e, "a property without a row survived typing") }
     let r = row!
     r.lower(cx, e, s)
