@@ -67,6 +67,20 @@ spec "features/quote — adversarial" {
         }
     }
 
+    given "the voices, rendered" {
+        then "a seat refusal renders its law, its label and its remedy" {
+            let r = slotted("let w = quote { fn \${b}() -> int { 1 } }").report()
+            r.contains("error[F2075]: a hole in name position takes a `string`, an `int` or a named meta value, found `bool`") && r.contains("this is `bool`") && r.contains("help: fill the hole with what its seat takes")
+        }
+        then "the ambiguous string renders both spellings as its remedy" {
+            let r = slotted("let w = quote { fn f() -> int { \${s} } }").report()
+            r.contains("error[F2075]: a string in expression position is ambiguous") && r.contains("this hole") && r.contains("help: say which: `\${literal(s)}` or `\${name(s)}`")
+        }
+        then "a mix of kinds in a body of holes refuses once, at the quote" {
+            refused_n(packaged("use @std.meta.{Code, Arms}\nlet c: Code = quote { 1 }\nlet a: Arms = quote { .A -> 1 }\nlet w = quote { \${c}\n\${a} }\n1", provider()), "a quote of nothing but holes takes ONE kind — its first hole's — and these disagree", 1)
+        }
+    }
+
     given "names against names" {
         then "a generated name the file already declares speaks at the annotation" {
             let p = packaged("use @std.meta.{derive}\nuse @x.prov.{wrapped}\nfn tmp() -> int { 10 }\nfn go_wrapped() -> int { 5 }\n@wrapped(quote { tmp })\nfn go() -> int { 0 }\ngo_wrapped()", provider())

@@ -39,10 +39,10 @@ source_filename = "avra"
 @"av_const$217$85$2" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 1, i64 1, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$217$85$2", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$217$85$2", i32 0, i32 3), ptr null }, [1 x i64] [i64 2], [1 x i8] zeroinitializer }, align 16
 @"av_const$217$85$3" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 1, i64 1, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$217$85$3", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$217$85$3", i32 0, i32 3), ptr null }, [1 x i64] [i64 3], [1 x i8] zeroinitializer }, align 16
 @"av_const$217$85" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [4 x i64], [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 4, i64 4, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [4 x i64], [4 x i8] }, ptr @"av_const$217$85", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [4 x i64], [4 x i8] }, ptr @"av_const$217$85", i32 0, i32 3), ptr null }, [4 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$217$85$0", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$217$85$1", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$217$85$2", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$217$85$3", i64 16) to i64)], [4 x i8] c"\01\01\01\01" }, align 16
-@"av_const$125$198$0" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 0, i64 0, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$125$198$0", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$125$198$0", i32 0, i32 3), ptr null }, [0 x i64] zeroinitializer, [0 x i8] zeroinitializer }, align 16
-@"av_const$125$198$1" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 0, i64 0, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$125$198$1", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$125$198$1", i32 0, i32 3), ptr null }, [0 x i64] zeroinitializer, [0 x i8] zeroinitializer }, align 16
+@"av_const$125$201$0" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 0, i64 0, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$125$201$0", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$125$201$0", i32 0, i32 3), ptr null }, [0 x i64] zeroinitializer, [0 x i8] zeroinitializer }, align 16
+@"av_const$125$201$1" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 0, i64 0, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$125$201$1", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$125$201$1", i32 0, i32 3), ptr null }, [0 x i64] zeroinitializer, [0 x i8] zeroinitializer }, align 16
 @.str.22 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"void\00" }, align 16
-@"av_const$125$198" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 7, i64 7, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] }, ptr @"av_const$125$198", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] }, ptr @"av_const$125$198", i32 0, i32 3), ptr null }, [7 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.22, i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$125$198$0", i64 16) to i64), i64 0, i64 0, i64 0, i64 0, i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$125$198$1", i64 16) to i64)], [7 x i8] c"\01\01\00\00\00\01\01" }, align 16
+@"av_const$125$201" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 7, i64 7, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] }, ptr @"av_const$125$201", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] }, ptr @"av_const$125$201", i32 0, i32 3), ptr null }, [7 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.22, i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$125$201$0", i64 16) to i64), i64 0, i64 0, i64 0, i64 0, i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$125$201$1", i64 16) to i64)], [7 x i8] c"\01\01\00\00\00\01\01" }, align 16
 @.str.23 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"lex.error\00" }, align 16
 @.str.24 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"F0001\00" }, align 16
 @.str.25 = private unnamed_addr constant { { i32, i32, i32, i32 }, [46 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 45 }, [46 x i8] c"a character or string the lexer cannot accept\00" }, align 16
@@ -65766,11 +65766,11 @@ then:                                             ; preds = %entry
   br label %endif
 
 else:                                             ; preds = %entry
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @"av_const$125$198", i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @"av_const$125$201", i64 16))
   br label %endif
 
 endif:                                            ; preds = %else, %then
-  %regval = phi ptr [ %7, %then ], [ getelementptr inbounds (i8, ptr @"av_const$125$198", i64 16), %else ]
+  %regval = phi ptr [ %7, %then ], [ getelementptr inbounds (i8, ptr @"av_const$125$201", i64 16), %else ]
   call void @avra_rc_retain(ptr %regval)
   %8 = call ptr @"av_$40std$2Eavrac$2Ecore$2Espelled"(ptr %regval)
   %9 = call ptr @avra_array_sized(i64 7)
@@ -66160,16 +66160,29 @@ endif4:                                           ; preds = %else3, %then2
 
 then6:                                            ; preds = %endif4
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr %2)
-  call void @avra_rc_retain(ptr %3)
-  %13 = call i64 @"av_$40std$2Eavrac$2Efeatures$2Efns$2Ebody_disagrees"(ptr %0, i64 %4, ptr %2, ptr %3, i64 %11)
+  %13 = call i1 @"av_$40std$2Eavrac$2Efeatures$2Efns$2Eholds_error"(ptr %0, i64 %4)
+  %not9 = xor i1 %13, true
   br label %endif8
 
 else7:                                            ; preds = %endif4
   br label %endif8
 
 endif8:                                           ; preds = %else7, %then6
-  %regval9 = phi i64 [ 0, %then6 ], [ 0, %else7 ]
+  %regval10 = phi i1 [ %not9, %then6 ], [ false, %else7 ]
+  br i1 %regval10, label %then11, label %else12
+
+then11:                                           ; preds = %endif8
+  call void @avra_rc_retain(ptr %0)
+  call void @avra_rc_retain(ptr %2)
+  call void @avra_rc_retain(ptr %3)
+  %14 = call i64 @"av_$40std$2Eavrac$2Efeatures$2Efns$2Ebody_disagrees"(ptr %0, i64 %4, ptr %2, ptr %3, i64 %11)
+  br label %endif13
+
+else12:                                           ; preds = %endif8
+  br label %endif13
+
+endif13:                                          ; preds = %else12, %then11
+  %regval14 = phi i64 [ 0, %then11 ], [ 0, %else12 ]
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %regval)
   call void @avra_rc_release(ptr null)
@@ -66228,6 +66241,94 @@ entry:
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %0)
   ret i64 %14
+}
+
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Efns$2Eholds_error"(ptr %0, i64 %1) {
+entry:
+  %slot3 = alloca i64, align 8
+  %slot = alloca i1, align 1
+  %2 = call i64 @avra_array_get(ptr %0, i64 0)
+  %boxed = inttoptr i64 %2 to ptr
+  %3 = call i64 @avra_array_get(ptr %boxed, i64 1)
+  %boxed1 = inttoptr i64 %3 to ptr
+  call void @avra_rc_retain(ptr %boxed1)
+  %4 = call ptr @"av_$40std$2Eavrac$2Ecore$2ENodeStore$2Eexpr"(ptr %boxed1, i64 %1)
+  %5 = call i64 @avra_array_get(ptr %4, i64 0)
+  switch i64 %5, label %arm2 [
+    i64 17, label %arm
+  ]
+
+arm:                                              ; preds = %entry
+  %6 = call ptr @avra_array_get_owned(ptr %4, i64 1)
+  br label %endswitch
+
+arm2:                                             ; preds = %entry
+  %7 = call ptr @avra_array_sized(i64 0)
+  br label %endswitch
+
+endswitch:                                        ; preds = %arm2, %arm
+  %regval = phi ptr [ %6, %arm ], [ %7, %arm2 ]
+  store i1 false, ptr %slot, align 8
+  %8 = call ptr @avra_array_sized(i64 2)
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l96" to i64))
+  call void @avra_array_push_owned(ptr %8, ptr %0)
+  %9 = call i64 @avra_array_get(ptr %8, i64 0)
+  %10 = call i64 @avra_array_len(ptr %regval)
+  store i64 0, ptr %slot3, align 8
+  br label %lhead
+
+lhead:                                            ; preds = %endif, %endswitch
+  %ld = load i64, ptr %slot3, align 8
+  %cmp = icmp slt i64 %ld, %10
+  br i1 %cmp, label %lbody, label %lexit
+
+lexit:                                            ; preds = %lhead
+  %ld7 = load i1, ptr %slot, align 8
+  call void @avra_rc_release(ptr %8)
+  call void @avra_rc_release(ptr %regval)
+  call void @avra_rc_release(ptr %4)
+  call void @avra_rc_release(ptr %0)
+  ret i1 %ld7
+
+lbody:                                            ; preds = %lhead
+  %ld4 = load i64, ptr %slot3, align 8
+  %11 = call i64 @avra_array_get(ptr %regval, i64 %ld4)
+  call void @avra_rc_retain(ptr %8)
+  %cast = inttoptr i64 %9 to ptr
+  %12 = call i1 %cast(ptr %8, i64 %11)
+  br i1 %12, label %then, label %else
+
+then:                                             ; preds = %lbody
+  store i1 true, ptr %slot, align 8
+  store i64 %10, ptr %slot3, align 8
+  br label %endif
+
+else:                                             ; preds = %lbody
+  br label %endif
+
+endif:                                            ; preds = %else, %then
+  %regval5 = phi i64 [ 0, %then ], [ 0, %else ]
+  %ld6 = load i64, ptr %slot3, align 8
+  %add = add i64 %ld6, 1
+  store i64 %add, ptr %slot3, align 8
+  br label %lhead
+}
+
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l96"(ptr %0, i64 %1) {
+entry:
+  %2 = call i64 @avra_array_get(ptr %0, i64 1)
+  %boxed = inttoptr i64 %2 to ptr
+  %3 = call i64 @avra_array_get(ptr %boxed, i64 0)
+  %boxed1 = inttoptr i64 %3 to ptr
+  %4 = call i64 @avra_array_get(ptr %boxed1, i64 1)
+  %boxed2 = inttoptr i64 %4 to ptr
+  call void @avra_rc_retain(ptr %boxed2)
+  %5 = call ptr @"av_$40std$2Eavrac$2Ecore$2ENodeStore$2Estmt"(ptr %boxed2, i64 %1)
+  %6 = call i64 @avra_array_get(ptr %5, i64 0)
+  %cmp = icmp eq i64 %6, 22
+  call void @avra_rc_release(ptr %5)
+  call void @avra_rc_release(ptr %0)
+  ret i1 %cmp
 }
 
 define i64 @"av_$40std$2Eavrac$2Elanguage$2ETypeCx$2Ewalk_under"(ptr %0, i64 %1, i64 %2) {
