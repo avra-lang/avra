@@ -19,6 +19,14 @@ fn severity_word(s: Severity) -> string {
     }
 }
 
+/// A label with nowhere to point — its own line under the message,
+/// no window. Nothing for an empty label, exactly as an unlabeled
+/// mark draws no arrow.
+fn unplaced(frame_label: string?) -> List<string> {
+    if frame_label == null || frame_label!.is_empty() { return [] }
+    ["  ${frame_label!}"]
+}
+
 /// The source window for one located frame: location header, the
 /// line, and the pointer carrying the frame's label when it has one.
 fn window(at_loc: Loc, frame_label: string?, src: SourceFile) -> string {
@@ -62,11 +70,23 @@ fn source_named(sources: List<SourceFile>, file: string?) -> SourceFile {
 }
 
 /// Every frame windowed from the source its Loc picks.
+///
+/// THE RENDERER NEVER DROPS A LABEL. A label is what the diagnostic
+/// SAYS; a Loc is only where to point while saying it. An unlocated
+/// primary label used to vanish — silently, because a label is
+/// optional everywhere else — so a voice about a PACKAGE rather than
+/// a line (the meta boundary's: the package moved, not a line) lost
+/// the one part naming which shape moved, and six suites asserting
+/// those words went red with the refusal itself still correct. The
+/// workaround is worse than the defect: folding the label into the
+/// message at one voice is a copy the next unlocated voice repeats.
 fn render_with(d: Diag, codes: List<DiagCode>, pick: fn(Loc) -> SourceFile) -> string {
     let code = code_for(codes, d.kind) ?? d.kind
     mut parts = ["${severity_word(d.severity)}[${code}]: ${d.message}"]
     if d.primary.loc != null {
         parts.push(window(d.primary.loc!, d.primary.label, pick(d.primary.loc!)))
+    } else {
+        parts = parts.concat(unplaced(d.primary.label))
     }
     parts = parts.concat([window(f.loc!, f.label, pick(f.loc!)) for f in d.secondary if f.loc != null])
     if d.help != null { parts.push("help: ${d.help!}") }

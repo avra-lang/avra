@@ -864,6 +864,24 @@ engine's spec, written by dogfooding.
 - Every diagnostic names a registered kind (its F-code is the
   registry's projection), carries help or a structured fix where
   expressible, and has a golden rendering test.
+  AND THE RENDERER NEVER DROPS A LABEL: a voice with NO PLACE still
+  renders its label. A label is what the diagnostic SAYS; a Loc is
+  only where to point while saying it, so `render_with` windowing
+  the label and skipping it when `loc == null` lost information for
+  a reason that has nothing to do with information. It was silent,
+  because a label is optional everywhere else: a package-level
+  refusal (the meta boundary's — the package moved, not a line)
+  wrote its detail in the label the way every located voice does,
+  and six suites asserting that detail went red with the refusal
+  itself correct. An unlocated label renders as its own line under
+  the message, and a golden pins it.
+  THE INSTANCE WORTH KEEPING IS THE FIX I NEARLY SHIPPED: folding
+  the label into that one voice's MESSAGE. It was smaller, it was
+  green, and it was a COPY — the next voice about a package rather
+  than a line repeats it, and the third one is where someone notices
+  the concept was never named. When a voice cannot say something the
+  renderer drops, the renderer is the defect; a workaround at the
+  voice is the shape that arrives three times.
   AND A HELP IS A CLAIM ABOUT THE GRAMMAR THAT NOTHING CHECKS. The
   golden test pins the WORDS; no test anywhere compiles the FORM a
   remedy names, so a help can send every reader at something the
