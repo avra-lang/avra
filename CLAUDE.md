@@ -725,6 +725,41 @@ engine's spec, written by dogfooding.
   after `make seed` on main carries the prelude, drop io's two verbs
   and the 19 `use @std.io.{println…}` lines — an explicit import of
   the prelude's name is legal, so the sweep is deletion only.
+- A REFUSAL THAT EXPLAINS ITSELF ON THE SAME CHANNEL AS ITS CONSENT IS
+  A TRAP FOR THE NEXT CALLER. A verb answering both a VERDICT and
+  PROSE must not send the prose where a reader takes it for the
+  verdict: `receipt_trusts` printed "no receipt in …/build" on STDOUT
+  and returned 1, the caller read stdout and swallowed the status, and
+  a MISSING receipt read as permission to skip a gate — on the
+  feature's first integration. Consent gets its own channel (stdout
+  non-empty if and only if trusted, every reason on stderr), and a
+  status-blind caller then fails SAFE rather than open. AND BOTH
+  BRANCHES ANNOUNCE: moving the reason to stderr silenced the
+  integrator's own log until the caller was taught to read it, so a
+  skip says what it trusted and a gate says what it read instead —
+  neither branch silent is what makes a mechanism auditable rather
+  than merely honest. AND THE TESTS MUST USE THE CALLER'S CONVENTION:
+  four fixtures called the function and checked its EXIT STATUS while
+  the caller read its STDOUT, so they were green over a contract
+  nobody used — "a test with its own copy of the logic tests the
+  copy", one seam over, where the copy is the calling convention.
+- A SELF-TEST MUST NOT BE REACHABLE FROM THE ENTRY POINT IT
+  EXERCISES. "An instrument proves itself before it certifies
+  anything" put the fixtures inside `write`, and the fixtures call
+  `write`: 986 processes in one chain, 2441 of a 2666 fork limit, and
+  every other session's builds died on `fork: Resource temporarily
+  unavailable`. THE FIX IS THE SHAPE, never a depth counter — every
+  verb a function, the fixtures calling the functions, so recursion is
+  unreachable rather than bounded; run the fixtures once at gate time
+  beside the verb, not inside it. A fixture may re-enter the script
+  only where what it checks is a PROCESS's exit status, and only while
+  the path it re-enters runs no fixtures. AND THE SIGNATURE IS THE
+  HALF TO REMEMBER: A RESOURCE EXHAUSTION PRESENTS AS A FAILURE IN
+  WHATEVER ELSE HAPPENS TO BE RUNNING, so the first unexplained
+  "Resource temporarily unavailable" is a question about the MACHINE,
+  never about the command that reported it — it fooled the author of
+  the bomb, holding its own output, ten minutes before anyone else saw
+  it.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
