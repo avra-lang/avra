@@ -1,0 +1,52 @@
+//! `@derive(Grammar)` — a node enum's variants as PAYLOAD ROWS, read
+//! off the declaration: each payload's name with its type's spelling,
+//! in declaration order. A grammar rule that names a node
+//! (`-> Expr.StrLit`) is bound against these, so the rows are the one
+//! source of truth for what a variant carries and in what order.
+//!
+//! It stands ALONE in this file on purpose: running a derive TYPES
+//! the file that declares it, and a file that also walked the nodes
+//! would be typed while the annotated file's own impls are still
+//! registering (CLAUDE.md).
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, literal}
+
+/// The compiler's derive for the node model's payload rows. Each
+/// enum answers its own fn, so one file may carry several.
+export trait Grammar {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+            export fn ${"grammar_payloads_${t.name}"}() -> List<PayloadRow> {
+                ${as_list_expr([row_of(t, v) for v in t.variants])}
+            }
+        } }]
+    }
+}
+
+/// One variant's row: its payloads in DECLARATION ORDER, which is the
+/// order a build's arguments are filled in.
+fn row_of(t: MetaType, v: MetaVariant) -> Code {
+    quote {
+        PayloadRow {
+            owner: ${literal(t.name)},
+            variant: ${literal(v.name)},
+            payloads: ${as_list_expr([payload_of(f) for f in v.fields])},
+        }
+    }
+}
+
+fn payload_of(f: Field) -> Code {
+    quote { Payload { name: ${literal(f.name)}, ty: ${literal(f.ty)} } }
+}
+
+/// The parts as ONE list expression. A hole in expression position
+/// takes one `Code` (F2075), so a run of them is folded rather than
+/// spliced.
+fn as_list_expr(parts: List<Code>) -> Code {
+    if parts.is_empty() { return quote { [] } }
+    mut all = quote { [${parts[0]}] }
+    for p in parts.slice(1, parts.length) {
+        let sofar = all
+        all = quote { ${sofar}.concat([${p}]) }
+    }
+    all
+}
