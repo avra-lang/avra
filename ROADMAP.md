@@ -8112,6 +8112,27 @@ REFUSES cleanly today, so none is a silent hole:
   landed 2026-09-14: a literal pattern reads its subject through the
   name, exactly as `==` does.
 
+FROM PHASE B2 (the meta boundary; 2026-09-14), probed on phase/h at
+aa6b629:
+
+- A FIELD ANNOTATION — `@excluded` (or any mark) above a record's
+  field. `type P = {\n    @excluded\n    a: int,\n    b: int,\n}` is
+  F0100 "expected BREAK while parsing `stmt`" AT the `type` line; the
+  identical struct without the annotation is clean. So a per-field
+  mark has NO spelling, and a licensed deviation about a field cannot
+  be written where the field is — which is what the exemption law
+  asks for ("a doctrine exemption not written AT THE SITE is an
+  unbounded amnesty"). WANTING SITE: `@derive(Fingerprint)`
+  (features/fingerprint.av, phase H2), whose refusal for a
+  non-structural field names two exits — implement the trait by hand,
+  or exclude the field — and the second exit does not exist yet. THE
+  THREE WORKAROUNDS WERE ALL REFUSED and the reason is one sentence:
+  a sibling annotation on the TYPE, a registry of identity-less
+  types, and a companion trait each put the exemption somewhere OTHER
+  than the field, which is the precise thing that makes an exemption
+  rot into a default. FIRES the first time a derivable trait must
+  skip one field of a type it otherwise derives.
+
 FROM PHASE H (side tables; 2026-09-14), probed on phase/h at 12738f7:
 
 - A BOUND ON A GENERIC TYPE'S OR AN IMPL'S PARAMETER — `type
@@ -14103,3 +14124,126 @@ anything outside `packages/std-avrac` + `packages/std-meta`.
   re-apply the three `.of` reads). Worth stating as a recipe: on a
   seed conflict there is nothing to merge — take theirs and run
   `make seed` after the fixed point.
+
+## Feedback survey — 2026-09-14 #2 (phase/h, the meta boundary: B2a/B2b/B2c)
+
+Counted per axis: defects 3 (two mine, found and fixed; one standing),
+doctrine 3, process 6. The top three by cost: three build ladders with
+ONE symptom and three different causes, a writer short by one slot that
+the boundary read as green, and my own reporting a gate green that I had
+not watched to the end. Not surveyed: H2, and anything outside
+`packages/std-avrac` + `packages/std-meta` + `tools/`.
+
+### DEFECTS
+
+- **A SEAT'S TYPE SPELLING IS "" FOR EVERY DECLARED TYPE, AND WIDER
+  THAN THAT.** `Param.ty` comes from `typed_text` -> `spelled_type` ->
+  `spelled_plain`, which builds only what `scalar_named` answers plus
+  generic wrappers over it. So a declared record, a FN type and a
+  `Result` all cross as `""`. Measured: `fn takes(a: int, b:
+  List<string>, c: fn(mut string) -> int) -> Result<Held, string>`
+  crossed as `OLD(int,List<string>,)->`. Every `@validates` author has
+  been reading those as empty strings, silently, under a passing test
+  (the crossing suite's `seats` provider prints `f.params[0].ty` over
+  `fn answer(n: int)`, where `int` resolves). STANDING: `kind` is
+  correct beside it now (B2b), and moving `ty` to the same door is a
+  slice of its own, because the crossing suite's pinned words move.
+  EVIDENCE: `language/workspace.av`'s `typed_text`;
+  `features/contexts.av`'s `spelled_type`/`spelled_plain`; pinned in
+  `features/tests/kinds`.
+
+- **THE CROSSING CHECKED THE PACKAGE AND NEVER THE WRITERS** (mine,
+  fixed in B2b). `meta_disagreement` holds the LOADED shapes to the
+  rows; a writer is a positional list literal, not a match, so nothing
+  compared `meta_of_fn`'s slot count to the `Fn` row's. Growing `Fn`
+  and updating three of four writers emitted a 4-slot value where the
+  record declares 5, boundary green throughout — "A HASH THAT FORGETS
+  A PAYLOAD" in the crossing's clothes. FIXED: ten outbound records go
+  through `written`, held to the same rows the reader is, and
+  WITNESSED failing ("the crossing writes `Fn` with 4 slots where its
+  row declares 5", exit 2, at the writer).
+
+- **A BENIGN RE-ENTRY WORE `Trap`'s NAME** (mine, fixed in B2b). The
+  memo cycle the design calls "a recursive view that contributes
+  nothing" was reported as a trap. Invisible while every declaring
+  door was mute; two false refusals of `@derive(Rebuild)` on the
+  compiler's own source the moment one spoke. FIXED:
+  `Unsettled.Recursive`. THE COMPILER FOUND WHAT I DID NOT — F2013
+  named a fourth match I had missed by grep, and a FIFTH (in
+  `settle_test.av`) after I had twice said "four".
+
+### DOCTRINE
+
+- **A BOUNDARY CHECK HAS THREE GENERATIONS, AND THE RULE WAS TOO
+  BROAD.** Written as "a checked shape costs two commits", it cost
+  three build ladders in one day from three causes — a committed seed
+  older than the growth, a merge bringing an older seed, and an
+  intermediate binary whose rows were ahead of the source — each with
+  the SAME symptom (`F2030`, missing derived accessors, boundary named
+  nowhere). SETTLED: growth is not a moved shape. Rename/reorder/shrink
+  refuse; a package that appends fields crosses, because the reader
+  takes the slots it knows by slot order. Adding a field is ONE commit
+  and a merge with an older seed still bootstraps. VERIFIED: B2c's
+  `Variant.fields` needed one `make avra`, no F-codes, no seed refresh,
+  no ladder.
+
+- **A DIAGNOSTIC IS THE THIRD SELF-REFERENTIAL CHANGE.** Codegen and
+  the front end were named; a refusal ADDED to the compiler fires on
+  the compiler's own source during the build that adds it, and the
+  only binary with the voice refuses the source that fixes the cause.
+  The way through is the generation that does not yet speak.
+
+- **A KEEPER'S SUMMARY IS A SECOND SPELLING OF ITS TABLE.**
+  `tools/vocab.sh` tallied `for e in Ins RtKind Type` — a hand-kept
+  copy of its own first column — so naming `Kind` guarded two
+  consumers and reported nothing about them. A label NARROWER than its
+  coverage, in the tool whose own comment warns about the wider kind.
+  FIXED: the tally reads `cut -f1 | sort -u` from the table.
+
+### PROCESS
+
+- **I REPORTED A GATE GREEN THAT I HAD NOT WATCHED TO THE END.** B2b's
+  commit message says "gate green"; after the idiom fix I ran the
+  witness and the fixed point and never a full gate. The fifth
+  `Unsettled` match was in the tree when I pushed `aa6b629`, and B2c's
+  gate is what found it. A RECEIPT IS A THING YOU SAW, and a gate read
+  from a partial log is not one. THE CURE IS MECHANICAL, not
+  attentional: redirect the gate to its own file and read that file's
+  TAIL, never a shared path another run rewrites.
+
+- **A PIPE IS NOT THE THING, FIVE TIMES.** A wait condition read a file
+  the job truncates on start; a monitor fired on output my own `cat`
+  had printed into the file it watched; a `tail -6` cut the causing
+  errors and produced a finding that did not exist; a `.expected`
+  generated from a task log kept the harness's `[exited with code 0]`;
+  a gate log read after a later run had overwritten it reported "only
+  lock-wait lines". Every one is the same shape — a conclusion drawn
+  from an artifact not verified to be the one meant.
+
+- **A JOB QUEUED BEHIND THE LOCK IS INDISTINGUISHABLE FROM A DEAD
+  ONE.** An empty output file, no match in a `ps` grep, an unchanged
+  artifact — and it was alive for fifty minutes, then rewrote
+  `seed.ll` while the gate that reads it was running. Nothing broke
+  (the lock serialised), but the arrangement was an accident. The
+  task's own pid is the identity; a `ps aux | grep` for the command
+  string misses it.
+
+- **KILL BY PID, NEVER BY PATTERN, ON A SHARED MACHINE.** Another
+  lane's `pkill -f "watch.sh 4000 make avra"` killed an in-flight
+  fixed-point build. No corruption — a dead build leaves the previous
+  binary — but the work was lost and a build that stops looks exactly
+  like one never scheduled.
+
+- **A SELF-CLEANING FIXTURE MUST RESTORE EVERY ARTIFACT, NOT THE
+  SOURCE.** The short-writer witness shortened a writer, BUILT a
+  compiler from it, and its `trap` put only the SOURCE back — so the
+  defective compiler stays installed, and nothing announces it.
+  `tools/census.sh` guards exactly this and rebuilds the shipping
+  compiler in its trap. (The mechanism is read off the script; the
+  differing binary I first cited as proof was a later build's first
+  generation, and that claim is withdrawn.)
+
+- **A DOC COLUMN IN A SHELL STRING IS CODE.** A backtick in
+  `vocab.sh`'s "what it decides" column is command substitution: the
+  keeper died with "@std/meta: No such file or directory" — from a
+  comment.
