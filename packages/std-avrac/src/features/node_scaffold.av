@@ -1,29 +1,20 @@
-//! THE HAND TABLE, WRITTEN TO BE DELETED. `@derive(Grammar)` on the
-//! node enums generates exactly these rows and these builders, read
-//! off each variant's declared payloads; it cannot yet, because
-//! `@std.meta.Variant` carries a payload's TYPE and not its NAME.
+//! THE MIGRATION'S FRONT: the builders a node build still needs and
+//! the node model cannot answer from `core/`.
 //!
-//! RETIREMENT TRIGGER: `Variant.fields` landing in `@std/meta`. The
-//! first step then is to prove the generated rows equal these, row
-//! for row, and delete this file. Every row here is a TRANSCRIPTION
-//! of core/nodes.av — never a second opinion about it.
+//! One per variant, each naming a CORE constructor and
+//! FEATURES verbs in one expression, which neither layer can write
+//! alone: a derive emits into the file it annotates, and the node
+//! enums are `core/` while `Builder` and `LangNode` are `features/`.
+//! RETIREMENT TRIGGER: a derive being handed a Type it does not sit
+//! on (avra-8sb5.11.100). A payload-value union was considered and
+//! REFUSED — it is the parallel value enum the protocol refused,
+//! wearing an argument's clothes.
 use core.{Expr}
-use features.{BuilderRow, LangNode, Builder, Payload, PayloadRow}
+use features.{BuilderRow, LangNode, Builder}
 
-/// The variants a rule may name today — the migration's front.
-export fn node_payloads() -> List<PayloadRow> {
-    [
-        PayloadRow { owner: "Expr", variant: "StrLit", payloads: [Payload { name: "value", ty: "string" }] },
-        PayloadRow { owner: "Expr", variant: "BoolLit", payloads: [Payload { name: "value", ty: "bool" }] },
-        PayloadRow { owner: "Expr", variant: "Interp", payloads: [
-            Payload { name: "parts", ty: "List<string>" },
-            Payload { name: "holes", ty: "List<ExprId>" },
-        ] },
-    ]
-}
-
-/// Each variant's builder, its arguments in PAYLOAD ORDER — which is
-/// what the binding guarantees.
+/// Each variant's builder. Arguments arrive in PAYLOAD ORDER, and a
+/// reader names the payload it wants — never its index, so two
+/// same-typed payloads cannot be swapped silently.
 export fn node_builders() -> List<BuilderRow> {
     let rows = table<BuilderRow> {
         name          | build
@@ -37,17 +28,17 @@ export fn node_builders() -> List<BuilderRow> {
 // LICENSED I39: a builder is a registry ROW's fn, not a verb on `Builder` —
 // the shape every `features/*/builders.av` carries, exempt there by path alone
 fn build_expr_str_lit(mut b: Builder) -> Result<LangNode, string> {
-    b.make_expr(Expr.StrLit(b.text(0)?))
+    b.make_expr(Expr.StrLit(b.text_of("value")?))
 }
 
 // LICENSED I39: a builder is a registry ROW's fn, not a verb on `Builder` —
 // the shape every `features/*/builders.av` carries, exempt there by path alone
 fn build_expr_bool_lit(mut b: Builder) -> Result<LangNode, string> {
-    b.make_expr(Expr.BoolLit(b.flag(0)?))
+    b.make_expr(Expr.BoolLit(b.flag_of("value")?))
 }
 
 // LICENSED I39: a builder is a registry ROW's fn, not a verb on `Builder` —
 // the shape every `features/*/builders.av` carries, exempt there by path alone
 fn build_expr_interp(mut b: Builder) -> Result<LangNode, string> {
-    b.make_expr(Expr.Interp(b.texts(0)?, b.exprs(1)?))
+    b.make_expr(Expr.Interp(b.texts_of("parts")?, b.exprs_of("holes")?))
 }
