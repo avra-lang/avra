@@ -8,7 +8,7 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr}
+use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, GrammarSpec}
 use core.{SeatMark, mark_at, plain_mark}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
@@ -1143,6 +1143,15 @@ impl Decls {
 
     /// Whether a fn is the HOST's — declared `extern`, called by its
     /// bare symbol, never lowered.
+    /// The format a declaration's record reads, when a `grammar`
+    /// declared it — the one question that admits a type name as a
+    /// CALL rather than a construction.
+    fn grammar_of(d: DeclId) -> GrammarSpec? {
+        let x = self.decl(d)
+        if !(x.kind is .Record) { return null }
+        self.store(d).grammar_of(x.stmt)
+    }
+
     fn is_extern(d: DeclId) -> bool {
         let x = self.decl(d)
         x.kind is .Fn && self.store(d).extern_parts(x.stmt) != null

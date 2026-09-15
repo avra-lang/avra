@@ -1,0 +1,88 @@
+//! proves: the process seam, abused directly — bogus and stale handles
+//! refuse with an errno and never trap; conflicting flags are -EINVAL;
+//! a spent stage token is refused; a slot's next tenant does not answer
+//! to the old handle; and a live child is written, drained and reaped
+//! over descriptors alone.
+extern fn avra_proc_stage() -> int
+extern fn avra_proc_word(token: int, text: string) -> int
+extern fn avra_proc_var(token: int, text: string) -> int
+extern fn avra_proc_unstage(token: int) -> int
+extern fn avra_proc_spawn(token: int, file: string, cwd: string, flags: int, from_h: int) -> int
+extern fn avra_proc_fd(h: int, stream: int) -> int
+extern fn avra_proc_shut(h: int, stream: int) -> int
+extern fn avra_proc_ready(h: int, timeout_ms: int) -> int
+extern fn avra_proc_reap(h: int) -> int
+extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
+extern fn avra_proc_pid(h: int) -> int
+extern fn avra_proc_close(h: int) -> int
+extern fn avra_proc_executable(path: string) -> int
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fd_taken(token: int) -> Bytes
+extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
+extern fn avra_errno_text(err: int) -> string
+
+fn neg(n: int) -> string {
+    if n < 0 { "err:${avra_errno_text(n)}" } else { "ok:${n}" }
+}
+
+/// A child spawned with no words but the flags asked for.
+fn spawned(file: string, flags: int) -> int {
+    avra_proc_spawn(avra_proc_stage(), file, "", flags, 0 - 1)
+}
+
+fn quiet() -> int { 16 + 2 + 4 }
+
+// bogus handles: 0, -1, a huge index
+let bogus = "${neg(avra_proc_ready(0, 0))} ${neg(avra_proc_ready(0 - 1, 0))} ${neg(avra_proc_reap(99999999))} ${neg(avra_proc_fd(0, 1))} ${avra_proc_pid(0)} ${neg(avra_proc_signal(0, 15, 1))} ${neg(avra_proc_shut(0, 0))}"
+
+// a stage spent twice, and a word on a token that names nothing
+let spent = avra_proc_stage()
+let ok_word = avra_proc_word(spent, "x")
+let _ = avra_proc_unstage(spent)
+let stage = "ok${ok_word} ${neg(avra_proc_word(spent, "late"))} ${neg(avra_proc_var(spent, "K=V"))} ${neg(avra_proc_spawn(spent, "/bin/echo", "", quiet(), 0 - 1))}"
+
+// conflicting flags, and a variable with no `=`
+let both_in = spawned("/bin/echo", 1 + 16 + 2 + 4)
+let no_out = spawned("/bin/echo", 2 + 4)
+let t = avra_proc_stage()
+let bad_var = avra_proc_var(t, "NOEQUALS")
+let _ = avra_proc_unstage(t)
+let merged = spawned("/bin/echo", 16 + 2 + 8)
+let conflicts = "${neg(both_in)} ${neg(no_out)} ${neg(bad_var)} ${merged > 0}"
+let _ = avra_proc_close(merged)
+
+// a live child: written, drained, reaped — descriptors only
+let s = avra_proc_spawn(avra_proc_stage(), "/bin/cat", "", 1 + 2 + 4 + 1024, 0 - 1)
+let wrote = avra_fd_write(avra_proc_fd(s, 0), "abc".bytes(), 0)
+let closed = avra_proc_shut(s, 0)
+mut said: List<Bytes> = []
+mut turns = 0
+while turns < 400 && avra_proc_reap(s) == 0 {
+    let ready = avra_proc_ready(s, 25)
+    if ready & 1 == 1 {
+        mut token = avra_fd_read(avra_proc_fd(s, 1), 65536)
+        while token > 0 {
+            said.push(avra_fd_taken(token))
+            token = avra_fd_read(avra_proc_fd(s, 1), 65536)
+        }
+    }
+    turns = turns + 1
+}
+mut last = avra_fd_read(avra_proc_fd(s, 1), 65536)
+while last > 0 {
+    said.push(avra_fd_taken(last))
+    last = avra_fd_read(avra_proc_fd(s, 1), 65536)
+}
+let word = avra_proc_reap(s)
+let live = "wrote${wrote} closed${closed} tag${word / 4294967296} [${said.bytes().text() ?? "?"}]"
+let _ = avra_proc_close(s)
+
+// a closed handle refuses everything, and a new one does not answer to it
+let stale = "${neg(avra_proc_ready(s, 0))} ${neg(avra_proc_reap(s))} ${neg(avra_proc_fd(s, 1))}"
+let s2 = spawned("/bin/echo", quiet())
+let reuse = "${s2 != s} ${neg(avra_proc_reap(s))}"
+let _ = avra_proc_close(s2)
+
+// what only C can answer about a path
+let exec = "${neg(avra_proc_executable("/bin/sh"))} ${neg(avra_proc_executable("/etc"))} ${neg(avra_proc_executable("/no/such"))}"
+"${bogus}\n${stage}\n${conflicts}\n${live}\n${stale}\n${reuse}\n${exec}"

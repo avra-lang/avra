@@ -64,6 +64,25 @@ spec "std/text — adversarial" {
         then "a NUL can be replaced away" {
             ("a" + from_codepoint(0) + "b").replace(from_codepoint(0), "-") == "a-b"
         }
+        // AT EQUAL LENGTH A PREFIX IS EQUALITY, so `starts_with` and
+        // `==` must never disagree about the same pair. The sweep that
+        // taught the length walk named five verbs and these two are
+        // the sixth and seventh.
+        then "a prefix differing only past a NUL is not a prefix" {
+            let held = "ab" + from_codepoint(0) + "cd"
+            !held.starts_with("ab" + from_codepoint(0) + "ce")
+        }
+        then "a prefix agreeing past a NUL is a prefix" {
+            let held = "ab" + from_codepoint(0) + "cd"
+            held.starts_with("ab" + from_codepoint(0) + "cd") && held.starts_with("ab")
+        }
+        then "a prefix longer than the text is not a prefix" {
+            !"ab".starts_with("ab" + from_codepoint(0) + "cd")
+        }
+        then "a suffix differing only past a NUL is not a suffix" {
+            let held = "ab" + from_codepoint(0) + "cd"
+            !held.ends_with(from_codepoint(0) + "ce") && held.ends_with(from_codepoint(0) + "cd")
+        }
     }
     given "the split contract, which the length walk must preserve" {
         then "a trailing empty segment is dropped, a leading one kept" {

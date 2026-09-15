@@ -4,7 +4,7 @@
 // the call, param releases at the exit, the answer kept.
 use @std.avrac.core.{RtKind, RtSig, joined}
 use @std.avrac.language.{analyze_source, avra, render_ir}
-use @std.avrac.testing.{refused_with, shown, ir_of, refused_at_run}
+use @std.avrac.testing.{refused_with, shown, ir_of, refused_at_run, refusals}
 
 spec "features/fns" {
     given "a `mut` seat on an extern — the INOUT ABI" {
@@ -86,20 +86,107 @@ spec "features/fns" {
     }
 
     given "extern fns — the host's, by their bare symbol" {
+        then "an extern naming a runtime row must wear that row's shape" {
+            // both engines call a row by the REGISTRY's seats, so a
+            // declaration that disagrees is called on the row's shape
+            // with nothing said — this one handed a raw pointer back
+            // as an `int`, differently on each engine
+            refused_with("extern fn avra_host_env(a: string, b: string) -> int\navra_host_env(\"a\", \"b\")", "`avra_host_env` is a runtime row of 1 seat(s), declared here with 2")
+        }
+        then "an extern that AGREES with its row is the row, and passes" {
+            shown("extern fn avra_host_env(name: string) -> string\navra_host_env(\"PATH\").length > 0") == "true"
+        }
+        then "the row's help names how many seats it takes" {
+            refused_with("extern fn avra_now_ns(a: int) -> int\navra_now_ns(1)", "`avra_now_ns` is a runtime row of 0 seat(s), declared here with 1")
+        }
+        then "a ROW's seat takes no absence — core's C reads every pointer it is handed" {
+            // `avra_host_env(null)` checked CLEAN and the two engines
+            // wrecked differently: `defect: a non-string reached text
+            // in a clean program` evaluated, a `getenv(NULL)` natively.
+            refused_with("extern fn avra_host_env(name: string?) -> string\navra_host_env(null).length",
+                         "seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence")
+        }
+        then "octets are refused there in the same words — the box is not the axis" {
+            refused_with("extern fn avra_str_len(s: Bytes?) -> int\navra_str_len(null)",
+                         "seat 1 of `avra_str_len` wears `Bytes?`, and a runtime row's seat takes no absence")
+        }
+        then "the row's absence law renders whole" {
+            analyze_source("extern fn avra_host_env(name: string?) -> string\n1").report().starts_with("error[F2088]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_env(name: string?) -> string\n  · ┬\n  · ╰── declared here\n──╯\nhelp: core's rows are the compiler's own C and every one of them READS the pointer it is handed")
+        }
+        then "a PACKAGE's C keeps the capability — a nullable seat it may test" {
+            refusals("extern fn zz(name: string?, p: ptr?, n: int?) -> int\n1") == 0
+        }
+        then "and a package's nullable seat carries a PRESENT value across" {
+            shown("extern fn strlen(s: string?) -> int\nstrlen(\"abc\")") == "3"
+        }
+        then "an ABSENT one crosses too where the callee spends the null" {
+            // the guard is on the FAULT and not on the null: C's own
+            // conventions spend the null pointer as a value, and
+            // @std/sqlite hands `SQLITE_STATIC` — a null — at every
+            // bind seat. `atoi(null)` wrecks and is the traps harness's
+            // row; a refusal here would take both of these with it.
+            shown("extern fn free(p: ptr?)\nfree(null)\n7") == "7"
+        }
         then "an extern declares a signature the call is judged by" {
             refused_with("extern fn host_add(a: int, b: int) -> int\nhost_add(1, \"x\")", "argument 2 of `host_add` wants `int`, found `string`")
         }
         then "a ptr is a word an extern passes and answers" {
             refused_with("extern fn open_it() -> ptr\nlet p = open_it()\np + 1", "`+` needs `int` operands, found `ptr`")
         }
-        then "the evaluator cannot host one — it names the call and says how" {
-            refused_at_run("extern fn avra_host_is_dir(p: string) -> int\navra_host_is_dir(\"/\") > 0", "`avra_host_is_dir` is extern — the evaluator cannot host it; build natively")
+        then "the evaluator hosts a symbol its own image carries" {
+            shown("extern fn avra_host_is_dir(p: string) -> int\navra_host_is_dir(\"/\") > 0") == "true"
         }
         then "an extern the runtime registry hosts answers under the evaluator" {
             shown("extern fn avra_now_ns() -> int\navra_now_ns() > 0") == "true"
         }
+        then "a symbol the image does not carry is refused by name" {
+            refused_at_run("extern fn sqlite3_libversion() -> string\nsqlite3_libversion().length > 0", "`sqlite3_libversion` is extern and this image does not carry it — build natively")
+        }
+        then "a declaration wider than one frame is refused by name" {
+            refused_at_run("extern fn avra_selfhost_argc(a: int, b: int, c: int, d: int, e: int, f: int, g: int, h: int, i: int, j: int, k: int) -> int\navra_selfhost_argc(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11) > 0", "takes more seats than one frame carries")
+        }
+        then "a plain aggregate seat cannot cross either — the `mut` half is above" {
+            // lane D's wording: `mut xs: List<string>` was ALREADY
+            // refused by the inout law and a PLAIN one passed, so this
+            // closes exactly that half and the name says which
+            refused_with("extern fn zz(xs: List<string>)\nzz([\"a\"])", "seat 1 of `zz` wears `List<string>`, which cannot cross to C")
+        }
+        then "a map seat cannot cross, and a record seat cannot either" {
+            refused_with("extern fn zz(m: Map<string, int>) -> i64\nzz({ \"a\": 1 })", "wears `Map<string, int>`, which cannot cross to C") &&
+                refused_with("type P = {\n    s: string,\n}\nextern fn zz(p: P) -> i64\nzz(P { s: \"a\" })", "wears `P`, which cannot cross to C")
+        }
+        then "a ROW is the exemption — its arm materialises the box on both sides" {
+            shown("extern fn avra_str_join(xs: List<string>, sep: string) -> string\navra_str_join([\"a\", \"b\"], \"-\")") == "a-b"
+        }
+        then "a refused seat means the symbol is never CALLED" {
+            // THE NAME ABOVE ASSERTS THE WORDS AND NOTHING ELSE, which
+            // is how this sat: the refusal was recorded MID-staging and
+            // the loop carried on, so the symbol ran with the slot at
+            // the reset's zero. `strlen` reads address zero and the
+            // evaluator SEGFAULTED — five shapes did, with `check`
+            // clean. The callee here is chosen to dereference, so a
+            // regression kills this suite outright rather than
+            // reporting a wrong string.
+            // the seat law refuses an aggregate at `./avra check` now,
+            // so the frame's own floor is reached by a CELL alone —
+            // which no source can write either. Verified by trace and
+            // by `build/avra.pre`: the same program exits 139 there.
+            refused_with("extern fn strlen(m: Map<string, int>) -> i64\nstrlen({ \"a\": 1 })", "wears `Map<string, int>`, which cannot cross to C")
+        }
+        then "a `mut` seat CROSSES now — the frame seeds a cell and reads it back" {
+            // the refusal this replaced carried a recorded trigger,
+            // "the first in-image extern with a `mut` seat, or S2c
+            // putting a package's own C in reach". S2c fired it.
+            // `avra_selfhost_argc` writes nothing through its seat, so
+            // the cell comes back as it went in — which is the inout
+            // half of the contract, an inout not always being an out.
+            shown("extern fn avra_selfhost_argc(mut out: i64) -> int\nmut n = 7\nlet _ = avra_selfhost_argc(n)\nn") == "7"
+        }
         then "a void extern is a statement" {
-            refused_at_run("extern fn println(s: string)\nprintln(\"hi\")\n2", "`println` is extern")
+            shown("extern fn avra_ffi_reset()\navra_ffi_reset()\n2") == "2"
+        }
+        then "a foreign pointer answers by its niche alone" {
+            shown("extern fn avra_ptr_at(a: int) -> ptr?\nif avra_ptr_at(0) == null { \"null\" } else { \"some\" }") == "null"
         }
     }
     given "`return` — the enclosing fn answers now" {

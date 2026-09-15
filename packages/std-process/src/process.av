@@ -17,17 +17,29 @@ use @std.time.{Duration, secs, now_ms}
 use @std.errors.{Error, ErrorInfo, info}
 use @std.text.{nul_at}
 
-extern fn avra_proc_spawn(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, max_bytes: int, from_h: int) -> int
-extern fn avra_proc_run(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, stdin_text: string, timeout_ms: int, grace_ms: int, max_bytes: int) -> int
-extern fn avra_proc_poll(h: int, timeout_ms: int) -> int
-extern fn avra_proc_write(h: int, text: string) -> int
-extern fn avra_proc_stdin_close(h: int) -> int
-extern fn avra_proc_take(h: int, stream: int) -> string
+// THIS PACKAGE'S OWN C (src/c/std_process.c) — the spawn table, the
+// pipes, the signals and the reaping, every one answering an int. A
+// child's streams are DESCRIPTORS; what flows through them is read
+// and written by the runtime's rows below, which are the only door
+// that mints a managed box.
+extern fn avra_proc_stage() -> int
+extern fn avra_proc_word(token: int, text: string) -> int
+extern fn avra_proc_var(token: int, text: string) -> int
+extern fn avra_proc_unstage(token: int) -> int
+extern fn avra_proc_spawn(token: int, file: string, cwd: string, flags: int, from_h: int) -> int
+extern fn avra_proc_fd(h: int, stream: int) -> int
+extern fn avra_proc_shut(h: int, stream: int) -> int
+extern fn avra_proc_ready(h: int, timeout_ms: int) -> int
+extern fn avra_proc_reap(h: int) -> int
 extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
-extern fn avra_proc_status(h: int) -> int
 extern fn avra_proc_pid(h: int) -> int
-extern fn avra_proc_close(h: int)
-extern fn avra_proc_which(file: string, path: string) -> string
+extern fn avra_proc_close(h: int) -> int
+extern fn avra_proc_executable(path: string) -> int
+
+// THE RUNTIME'S OWN — the descriptor rows.
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fd_taken(token: int) -> Bytes
+extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
 extern fn avra_errno_text(err: int) -> string
 extern fn avra_host_env(name: string) -> string
 extern fn avra_process_exit(code: int)
@@ -45,11 +57,19 @@ const inherit_out: int = 256
 const inherit_err: int = 512
 const new_pgroup: int = 1024
 const inherit_env: int = 8192
-const ev_exited: int = 64
-const ev_timeout: int = 128
-const ev_capped_out: int = 256
-const ev_capped_err: int = 512
-const ev_truncated: int = 4096
+// What `ready` reports — bits, since more than one can be true.
+const ready_out: int = 1
+const ready_err: int = 2
+const ready_in: int = 4
+
+/// The pump's turn. Short enough that a deadline is not overshot by
+/// much, long enough that a quiet child is not spun on — and its size
+/// is not a correctness question, because the three invariants the
+/// pump holds are about ORDER (`pumped`).
+const turn_ms: int = 20
+
+/// The read's bite, the descriptor scratch's own size.
+const chunk: int = 1048576
 /// The status word's tag lives above the low 32 bits.
 const tag_base: int = 4294967296
 export const enoent: int = 2
@@ -247,7 +267,7 @@ fn stream_text(s: Stream) -> string {
 export fn tool(name: string) -> Result<Tool, ProcessError> {
     let holed_at = nul_at(name)
     if holed_at >= 0 { fail ProcessError.Holed(name, holed_at) }
-    let path = avra_proc_which(name, search_path())
+    let path = which(name, search_path())
     if path.length == 0 { fail ProcessError.NotFound(name, search_path()) }
     Tool { name: name, path: path, terminator: terminator_of(name) }
 }
@@ -264,6 +284,20 @@ export fn tool_from_env(var: string, default: string) -> Result<Tool, ProcessErr
 
 /// The invoker's PATH with its relative entries removed — the only PATH
 /// a lookup or a child ever sees.
+/// WHERE A NAME RESOLVES on the search path — the first entry holding
+/// a file this process may execute, or "" for none. The WALK is the
+/// language's; C answers the one question only it can, which is the
+/// same split as @std/io's environment predicate.
+fn which(name: string, path: string) -> string {
+    if name.contains("/") { return if avra_proc_executable(name) == 0 { name } else { "" } }
+    let hit: string? = [candidate(d, name) for d in path.split(":") if d.starts_with("/")].find(avra_proc_executable(it) == 0)
+    hit ?? ""
+}
+
+fn candidate(dir: string, name: string) -> string {
+    "${dir}/${name}"
+}
+
 fn search_path() -> string {
     [d for d in avra_host_env("PATH").split(":") if is_absolute(d)].join(":")
 }
@@ -445,21 +479,15 @@ impl Command {
     /// Run to the end and READ: the exit is the caller's to match. Fails
     /// only when the child never ran, timed out, or outgrew its cap.
     fn outcome() -> Result<Outcome, ProcessError> {
-        let bad: string? = self.env.names().find(bad_env_name(it))
-        if bad != null { fail ProcessError.BadEnvName(bad!) }
-        let short: ProcessError? = holed(self)
-        if short != null { fail short! }
-        let started = now_ms()
-        let h = avra_proc_run(self.tool.path, self.args, self.env.words(), self.cwd ?? "", self.flags(), stdin_text(self.stdin), timeout_ms(self.timeout), self.drain_grace.ms, self.max_capture)
-        if h < 0 { fail spawn_error(self.tool, self.cwd ?? "", 0 - h) }
-        let ev = avra_proc_poll(h, 0)
-        let out = Output { stdout: avra_proc_take(h, 1), stderr: avra_proc_take(h, 2), truncated: has_bit(ev, ev_truncated) }
-        let word = avra_proc_status(h)
-        avra_proc_close(h)
-        if has_bit(ev, ev_timeout) { fail ProcessError.TimedOut(timeout_ms(self.timeout), out) }
-        if has_bit(ev, ev_capped_out) { fail ProcessError.TooMuch(Stream.Stdout, self.max_capture, out) }
-        if has_bit(ev, ev_capped_err) { fail ProcessError.TooMuch(Stream.Stderr, self.max_capture, out) }
-        Outcome { exit: exit_of(word), out: out, took_ms: now_ms() - started }
+        let began = now_ms()
+        mut s = launched(self, 0 - 1)?
+        let done = pumped(s, self.drain_grace.ms)
+        let word = avra_proc_reap(done.h)
+        let _ = avra_proc_close(done.h)
+        if done.timed { fail ProcessError.TimedOut(timeout_ms(self.timeout), gathered(done)) }
+        if done.capped_out { fail ProcessError.TooMuch(Stream.Stdout, self.max_capture, gathered(done)) }
+        if done.capped_err { fail ProcessError.TooMuch(Stream.Stderr, self.max_capture, gathered(done)) }
+        Outcome { exit: exit_of(word), out: gathered(done), took_ms: now_ms() - began }
     }
 
     /// Whether `ok_exits` accepts an exit; a signal death never is.
@@ -486,6 +514,12 @@ fn stdin_flag(s: Stdin) -> int {
         .Inherit -> inherit_in,
         .Open or .Text(_) or .Lines(_) -> pipe_in,
     }
+}
+
+/// Stdin's octets. A NUL here is DATA — stdin is a byte stream, where
+/// a path is a name; the same package rules them opposite ways.
+fn stdin_bytes(s: Stdin) -> Bytes {
+    stdin_text(s).bytes()
 }
 
 fn stdin_text(s: Stdin) -> string {
@@ -557,7 +591,13 @@ fn holed(c: Command) -> ProcessError? {
 /// it out. Output said and not yet read waits in the stage's `out` and
 /// `err`. Once ended, the child REMEMBERS its outcome: `stop` and `wait`
 /// answer it again, `read_line` has nothing more, `is_alive` is false.
-export type Child = { stage: Stage, command: Command, ended: Outcome? = null }
+/// A child in flight under a driver. THE TEXT IT HAS SAID LIVES HERE,
+/// not in the stage: the one-shot pump keeps its landings and gathers
+/// once at the end, while a line reader must see text as it arrives —
+/// so each turn moves the stage's landings into these and clears
+/// them. The move is the size of the TURN's output, never of the
+/// child's, and `read_line` drains what it cuts.
+export type Child = { stage: Stage, command: Command, out: string = "", err: string = "", ended: Outcome? = null }
 
 impl Command {
     /// The child started and READY by the sign asked for — or stopped
@@ -570,26 +610,34 @@ impl Command {
     }
 }
 
-/// A tick's events read as "the child is gone and every end is at EOF".
-fn finished(ev: int) -> bool {
-    has_bit(ev, ev_exited) && has_bit(ev, 4) && has_bit(ev, 8)
-}
-
 impl Child {
-    /// One tick of the pump: whatever arrived joins the stage. A handle
-    /// the host no longer knows reads as finished.
-    fn pump(ms: int) -> int {
+    /// One turn of the pump: whatever arrived joins this child's text
+    /// and the stage's landings are spent. Answers whether the child
+    /// is gone AND both ends are at EOF, which is what every caller
+    /// here asked the old event word.
+    fn pump(ms: int) -> bool {
         let t = ticked(self.stage, ms)
-        if t.ev < 0 { return ev_exited + 4 + 8 }
-        self.stage = t.stage
-        t.ev
+        self.out = self.out + (t.out.bytes().text() ?? "")
+        self.err = self.err + (t.err.bytes().text() ?? "")
+        self.stage = t with { out: [], err: [] }
+        self.done()
     }
 
-    /// The child's ending, taken once: the stage becomes the outcome and
+    /// Gone, with nothing left to read on either end.
+    fn done() -> bool {
+        self.stage.stopped && avra_proc_fd(self.stage.h, 1) < 0 && avra_proc_fd(self.stage.h, 2) < 0
+    }
+
+    /// The child's ending, taken once: the text becomes the outcome and
     /// the handle is released.
     fn ended_with(began: int) -> Outcome {
-        let o = collected(self.stage, began)
-        self.stage = self.stage with { out: "", err: "" }
+        let word = avra_proc_reap(self.stage.h)
+        let _ = avra_proc_close(self.stage.h)
+        let o = Outcome { exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
+                          out: Output { stdout: self.out, stderr: self.err, truncated: self.stage.truncated },
+                          took_ms: now_ms() - began }
+        self.out = ""
+        self.err = ""
         self.ended = o
         o
     }
@@ -602,12 +650,11 @@ impl Child {
         let deadline = began + within.ms
         mut waited = 0
         while true {
-            let ev = self.pump(100)
+            let gone = self.pump(100)
             if self.satisfied(ready) { return now_ms() - began }
-            let gone = has_bit(ev, ev_exited)
             waited = now_ms() - began
             if (gone && !(ready is .Exit)) || now_ms() >= deadline {
-                let partial = gathered(self.stage)
+                let partial = Output { stdout: self.out, stderr: self.err, truncated: false }
                 self.stop()
                 fail ProcessError.NotReady(waited, partial)
             }
@@ -618,21 +665,25 @@ impl Child {
     fn satisfied(ready: Ready) -> bool {
         match ready {
             .Started -> true,
-            .Exit -> avra_proc_status(self.stage.h) != 0,
-            .Line(p) -> self.stage.out.contains(p) || self.stage.err.contains(p),
+            .Exit -> avra_proc_reap(self.stage.h) != 0,
+            .Line(p) -> self.out.contains(p) || self.err.contains(p),
             .Exec(probe) -> probe_clean(probe),
         }
     }
 
     /// Text queued for the child's stdin; `Open` is the stdin that takes it.
+    /// LENGTH-AWARE: the bytes are measured by the header, so a NUL is
+    /// data here — stdin is a byte stream where a path is a name.
     fn write(text: string) -> Result<int, ProcessError> {
-        let n = avra_proc_write(self.stage.h, text)
+        let fd = avra_proc_fd(self.stage.h, 0)
+        if fd < 0 { fail ProcessError.Host(9, "stdin") }
+        let n = avra_fd_write(fd, text.bytes(), 0)
         if n < 0 { fail ProcessError.Host(0 - n, "stdin") }
         n
     }
 
     fn close_stdin() {
-        let _ = avra_proc_stdin_close(self.stage.h)
+        let _ = avra_proc_shut(self.stage.h, 0)
     }
 
     /// The next line the child says on stdout, waiting up to `within` —
@@ -643,17 +694,16 @@ impl Child {
         if self.ended != null { return null }
         let deadline = now_ms() + within.ms
         while true {
-            let cut = self.stage.out.index_of("\n")
+            let cut = self.out.index_of("\n")
             if cut >= 0 {
-                let line = self.stage.out.substring(0, cut)
-                self.stage = self.stage with { out: self.stage.out.substring(cut + 1, self.stage.out.length) }
+                let line = self.out.substring(0, cut)
+                self.out = self.out.substring(cut + 1, self.out.length)
                 return line
             }
-            let ev = self.pump(50)
-            if finished(ev) {
-                if self.stage.out.length == 0 { return null }
-                let rest = self.stage.out
-                self.stage = self.stage with { out: "" }
+            if self.pump(50) {
+                if self.out.length == 0 { return null }
+                let rest = self.out
+                self.out = ""
                 return rest
             }
             if now_ms() >= deadline { return null }
@@ -667,12 +717,12 @@ impl Child {
         if self.ended != null { return self.ended! }
         let began = now_ms()
         let deadline = timeout_ms(within)
-        mut ev = self.pump(0)
-        while !finished(ev) && (deadline < 0 || now_ms() - began < deadline) {
-            ev = self.pump(100)
+        mut gone = self.pump(0)
+        while !gone && (deadline < 0 || now_ms() - began < deadline) {
+            gone = self.pump(100)
         }
-        if !finished(ev) {
-            let partial = gathered(self.stage)
+        if !gone {
+            let partial = Output { stdout: self.out, stderr: self.err, truncated: true }
             self.stop()
             fail ProcessError.TimedOut(deadline, partial)
         }
@@ -684,10 +734,10 @@ impl Child {
     fn stop() -> Exit {
         if self.ended != null { return self.ended!.exit }
         let began = now_ms()
-        avra_proc_signal(self.stage.h, sigterm, 1)
+        let _ = avra_proc_signal(self.stage.h, sigterm, 1)
         self.until_gone(self.command.stop_grace.ms)
-        if avra_proc_status(self.stage.h) == 0 {
-            avra_proc_signal(self.stage.h, sigkill, 1)
+        if avra_proc_reap(self.stage.h) == 0 {
+            let _ = avra_proc_signal(self.stage.h, sigkill, 1)
             self.until_gone(self.command.stop_grace.ms)
         }
         self.ended_with(began).exit
@@ -696,9 +746,9 @@ impl Child {
     /// Ticks until the child is reaped or `ms` pass.
     fn until_gone(ms: int) {
         let deadline = now_ms() + ms
-        mut ev = self.pump(0)
-        while !has_bit(ev, ev_exited) && now_ms() < deadline {
-            ev = self.pump(50)
+        let _ = self.pump(0)
+        while avra_proc_reap(self.stage.h) == 0 && now_ms() < deadline {
+            let _ = self.pump(50)
         }
     }
 
@@ -708,7 +758,7 @@ impl Child {
 
     /// Whether the child still runs — asked of the host.
     fn is_alive() -> bool {
-        self.ended == null && avra_proc_poll(self.stage.h, 0) >= 0 && avra_proc_status(self.stage.h) == 0
+        self.ended == null && avra_proc_reap(self.stage.h) == 0
     }
 }
 
@@ -746,58 +796,238 @@ impl Command {
     }
 }
 
-/// One child in flight under a driver: its handle, its deadline (or
-/// none below zero), what it has said, and whether the driver is done
-/// with it.
-type Stage = { h: int, deadline: int, out: string, err: string, stopped: bool }
+/// One child in flight: its handle, its deadline (or none below
+/// zero), the landings each stream has given, what stdin still owes
+/// it, and the verdicts that have become true. The buffers live HERE
+/// now — the C holds descriptors and nothing else.
+type Stage = {
+    h: int,
+    deadline: int,
+    out: List<Bytes> = [],
+    err: List<Bytes> = [],
+    out_len: int = 0,
+    err_len: int = 0,
+    feed: Bytes,
+    fed: int = 0,
+    cap: int,
+    capped_out: bool = false,
+    capped_err: bool = false,
+    closes: bool = false,
+    stopped: bool = false,
+    timed: bool = false,
+    truncated: bool = false,
+}
 
-/// A stage after one tick: the stage grown by what arrived, and the
-/// tick's events.
-type Ticked = { stage: Stage, ev: int }
+/// One stream's landings, taken until it has nothing more to give.
+/// A read answers a TOKEN and the take mints from it once, so each
+/// landing is taken before the next read is asked for.
+/// `ended` is the stream at EOF — a read answering 0, which is the
+/// child's end of it closed. The stream is LET GO then: a reader that
+/// keeps a dead end open never reads as finished, and every verb here
+/// that asks "is it done" asks whether both ends are gone.
+type Landed = { parts: List<Bytes>, len: int, over: bool, ended: bool }
 
-/// A command launched for a driver; `upstream` is the handle whose
-/// stdout feeds it, or -1.
+fn landed(fd: int, have: int, cap: int) -> Landed {
+    mut parts: List<Bytes> = []
+    mut len = have
+    mut token = avra_fd_read(fd, bite(len, cap))
+    while token > 0 {
+        let b = avra_fd_taken(token)
+        parts.push(b)
+        len = len + b.length
+        if cap > 0 && len > cap { return Landed { parts: parts, len: len, over: true, ended: false } }
+        token = avra_fd_read(fd, bite(len, cap))
+    }
+    Landed { parts: parts, len: len, over: cap > 0 && len > cap, ended: token == 0 }
+}
+
+/// HOW MUCH TO ASK FOR, which a cap decides. Draining the pipe dry
+/// and THEN testing the bound makes the capture as big as the child
+/// is fast: a cap of 1000 against `yes` kept 679 KB natively and 52 MB
+/// under the evaluator — the same decision, a different answer, which
+/// is a divergence in a value the caller reads. Asking for one byte
+/// past what is left bounds the overshoot to that byte.
+fn bite(have: int, cap: int) -> int {
+    if cap <= 0 { return chunk }
+    let left = cap - have + 1
+    if left < chunk { left } else { chunk }
+}
+
+/// A command launched; `upstream` is the handle whose stdout feeds
+/// it, or -1. THE GUARD JUDGES THE WHOLE COMMAND BEFORE THE FIRST
+/// WORD IS STAGED: a holed argument refused mid-stage would leave
+/// staged state to unwind, and judged up front the refusal has no
+/// side effects at all.
 fn launched(c: Command, upstream: int) -> Result<Stage, ProcessError> {
     let bad: string? = c.env.names().find(bad_env_name(it))
     if bad != null { fail ProcessError.BadEnvName(bad!) }
     let short: ProcessError? = holed(c)
     if short != null { fail short! }
-    let h = avra_proc_spawn(c.tool.path, c.args, c.env.words(), c.cwd ?? "", c.flags(), c.max_capture, upstream)
+    let token = avra_proc_stage()
+    for w in c.args { let _ = avra_proc_word(token, w) }
+    for v in words_for(c.env) { let _ = avra_proc_var(token, v) }
+    let h = avra_proc_spawn(token, c.tool.path, c.cwd ?? "", c.flags(), upstream)
     if h < 0 { fail spawn_error(c.tool, c.cwd ?? "", 0 - h) }
-    if upstream < 0 && !(c.stdin is .Open) {
-        let text = stdin_text(c.stdin)
-        if text.length > 0 { avra_proc_write(h, text) }
-        let _ = avra_proc_stdin_close(h)
-    }
     let t = timeout_ms(c.timeout)
-    Stage { h: h, deadline: if t < 0 { 0 - 1 } else { now_ms() + t }, out: "", err: "", stopped: false }
+    fed_first(Stage { h: h, deadline: if t < 0 { 0 - 1 } else { now_ms() + t }, feed: stdin_bytes(c.stdin), cap: c.max_capture }, c, upstream)
 }
 
-/// One tick of a stage's pump.
-fn ticked(s: Stage, ms: int) -> Ticked {
-    let ev = avra_proc_poll(s.h, ms)
-    Ticked { stage: s with { out: s.out + avra_proc_take(s.h, 1), err: s.err + avra_proc_take(s.h, 2), stopped: finished(ev) }, ev: ev }
+/// An inherited environment stages no variables — the child takes the
+/// world as it stands.
+fn words_for(e: Env) -> List<string> {
+    if e is .Inherit { return [] }
+    e.words()
+}
+
+/// A stage whose stdin the caller will never write again gets it all
+/// now and the end closed, so a child reading to EOF is not waiting
+/// on a driver that has moved on.
+fn fed_first(s: Stage, c: Command, upstream: int) -> Stage {
+    if upstream >= 0 || c.stdin is .Open { return s }
+    shut_when_fed(poured(s with { closes: true }))
+}
+
+/// A stdin the stage OWNS is closed once it is all delivered — never
+/// before, because a feed larger than the pipe takes several turns.
+/// An `Open` stdin is the CALLER's and this must not touch it: the
+/// first draft closed it the moment the pipe was writable, which for
+/// an empty feed is immediately, and a child waiting to be written to
+/// saw EOF instead.
+fn shut_when_fed(s: Stage) -> Stage {
+    if s.closes && s.fed >= s.feed.length { let _ = avra_proc_shut(s.h, 0) }
+    s
+}
+
+/// Stdin handed to the pipe as far as it takes it — a short write is
+/// normal. The bytes are measured by the HEADER, so a NUL in stdin is
+/// data and travels: stdin is a byte stream where a path is a name.
+fn poured(s: Stage) -> Stage {
+    let fd = avra_proc_fd(s.h, 0)
+    if fd < 0 || s.fed >= s.feed.length { return s }
+    let n = avra_fd_write(fd, s.feed, s.fed)
+    if n <= 0 { return s }
+    s with { fed: s.fed + n }
+}
+
+/// One turn: what is ready, drained and fed, then a reap. The turn's
+/// LENGTH is not a correctness question — `pumped` holds the order.
+fn ticked(s: Stage, ms: int) -> Stage {
+    let ready = avra_proc_ready(s.h, ms)
+    let after = fed_on(drawn(s, ready), ready)
+    after with { stopped: avra_proc_reap(after.h) != 0 }
+}
+
+fn drawn(s: Stage, ready: int) -> Stage {
+    let a = if has_bit(ready, ready_out) { taken_out(s) } else { s }
+    if has_bit(ready, ready_err) { taken_err(a) } else { a }
+}
+
+fn fed_on(s: Stage, ready: int) -> Stage {
+    if !has_bit(ready, ready_in) { return s }
+    shut_when_fed(poured(s))
+}
+
+fn taken_out(s: Stage) -> Stage {
+    let fd = avra_proc_fd(s.h, 1)
+    if fd < 0 { return s }
+    let l = landed(fd, s.out_len, s.cap)
+    if l.ended { let _ = avra_proc_shut(s.h, 1) }
+    s with { out: s.out.concat(l.parts), out_len: l.len, capped_out: s.capped_out || l.over }
+}
+
+fn taken_err(s: Stage) -> Stage {
+    let fd = avra_proc_fd(s.h, 2)
+    if fd < 0 { return s }
+    let l = landed(fd, s.err_len, s.cap)
+    if l.ended { let _ = avra_proc_shut(s.h, 2) }
+    s with { err: s.err.concat(l.parts), err_len: l.len, capped_err: s.capped_err || l.over }
+}
+
+/// Everything readable right now, both streams, with no wait.
+fn swept(s: Stage) -> Stage {
+    taken_err(taken_out(s))
+}
+
+/// THE PUMP, AND ITS THREE ORDER INVARIANTS — lane B's, and they are
+/// ORDER rather than granularity, which is why the turn's length
+/// above is free.
+///
+/// (A) A DEADLINE ALREADY PASSED FIRES BEFORE THE CHILD IS POLLED AT
+/// ALL. `ms(-5)` and `ms(0)` must answer a timeout with an EMPTY
+/// capture — one turn taken first and `echo` gets its word out.
+///
+/// (B) A TIMEOUT'S CAPTURE HOLDS EVERYTHING READABLE WHEN THE
+/// DEADLINE FIRED: the last act before declaring one is a SWEEP. (A)
+/// and (B) are opposite orderings around one event, which is why no
+/// turn size satisfies both and two invariants do.
+///
+/// (C) THE DRAIN GRACE IS A FLOOR, NOT A CEILING. After the child is
+/// gone its pipes may still be held by a grandchild; overshooting is
+/// safe and under-waiting is not, so the grace is waited OUT rather
+/// than raced.
+fn pumped(start: Stage, grace_ms: int) -> Stage {
+    mut s = start
+    while !s.stopped && !s.timed && !s.capped_out && !s.capped_err {
+        if past(s) {
+            s = swept(s) with { timed: true }
+        } else {
+            s = ticked(s, turn_ms)
+        }
+    }
+    if s.timed || s.capped_out || s.capped_err { return stopped_tree(s) }
+    grace(s, grace_ms)
+}
+
+/// Past its deadline, which is asked BEFORE any poll.
+fn past(s: Stage) -> bool {
+    s.deadline >= 0 && now_ms() >= s.deadline
+}
+
+/// A child that broke a bound is ended with its tree and swept once
+/// more — what it managed to say before it died is still the
+/// caller's.
+fn stopped_tree(s: Stage) -> Stage {
+    let _ = avra_proc_signal(s.h, sigkill, 1)
+    swept(s) with { truncated: true }
+}
+
+/// The grace WAITED OUT after the child is gone: a grandchild may
+/// hold the pipes open, and whatever it says inside the floor is
+/// captured. What is still open when the floor expires is truncation.
+fn grace(s: Stage, grace_ms: int) -> Stage {
+    let until = now_ms() + grace_ms
+    mut g = s
+    while now_ms() < until {
+        g = swept(ticked(g, turn_ms))
+    }
+    let last = swept(g)
+    if avra_proc_fd(last.h, 1) < 0 && avra_proc_fd(last.h, 2) < 0 { return last }
+    // A GRANDCHILD IS HOLDING OUR PIPE past the floor — the child is
+    // gone and its end is not. The GROUP goes, or the run leaves a
+    // process behind that outlives it; then one last sweep, because
+    // what it managed to say before it died is still the caller's.
+    let _ = avra_proc_signal(last.h, sigkill, 1)
+    swept(last) with { truncated: true }
+}
+
+/// What a stage has captured, both streams gathered once.
+fn gathered(s: Stage) -> Output {
+    Output { stdout: s.out.bytes().text() ?? "", stderr: s.err.bytes().text() ?? "", truncated: s.truncated }
 }
 
 /// Past its deadline and still running.
-fn overdue(s: Stage, ev: int) -> bool {
-    s.deadline >= 0 && now_ms() >= s.deadline && !has_bit(ev, ev_exited)
+fn overdue(s: Stage) -> bool {
+    s.timed
 }
 
-fn capped(ev: int) -> bool {
-    has_bit(ev, ev_capped_out) || has_bit(ev, ev_capped_err)
-}
-
-/// What a stage has captured so far, both streams, untruncated.
-fn gathered(s: Stage) -> Output {
-    Output { stdout: s.out, stderr: s.err, truncated: false }
+fn capped(s: Stage) -> bool {
+    s.capped_out || s.capped_err
 }
 
 /// The bound a stage broke, as the error a driver fails with.
-fn broken(c: Command, s: Stage, ev: int) -> ProcessError {
-    let partial = gathered(s)
-    if overdue(s, ev) { return ProcessError.TimedOut(timeout_ms(c.timeout), partial) }
-    ProcessError.TooMuch(if has_bit(ev, ev_capped_out) { Stream.Stdout } else { Stream.Stderr }, c.max_capture, partial)
+fn broken(c: Command, s: Stage) -> ProcessError {
+    if s.timed { return ProcessError.TimedOut(timeout_ms(c.timeout), gathered(s)) }
+    ProcessError.TooMuch(if s.capped_out { Stream.Stdout } else { Stream.Stderr }, c.max_capture, gathered(s))
 }
 
 fn is_sigpipe(e: Exit) -> bool {
@@ -810,16 +1040,16 @@ fn is_sigpipe(e: Exit) -> bool {
 /// A finished stage's outcome; the handle is released. A status the
 /// host cannot answer reads as a kill, never as a code.
 fn collected(s: Stage, began: int) -> Outcome {
-    let word = avra_proc_status(s.h)
-    avra_proc_close(s.h)
+    let word = avra_proc_reap(s.h)
+    let _ = avra_proc_close(s.h)
     Outcome { exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) }, out: gathered(s), took_ms: now_ms() - began }
 }
 
 /// Every stage still running killed with its tree and released.
 fn abandoned(live: List<Stage>) {
     for s in live {
-        if !s.stopped { avra_proc_signal(s.h, sigkill, 1) }
-        avra_proc_close(s.h)
+        if !s.stopped { let _ = avra_proc_signal(s.h, sigkill, 1) }
+        let _ = avra_proc_close(s.h)
     }
 }
 
@@ -884,13 +1114,16 @@ impl Pipeline {
                 if s.stopped {
                     grown.push(s)
                 } else {
-                    let t = ticked(s, 10)
-                    if overdue(t.stage, t.ev) || capped(t.ev) {
-                        avra_proc_signal(s.h, sigkill, 1)
-                        if failure == null { failure = broken(self.stages[i], t.stage, t.ev) }
+                    // THE DEADLINE IS ASKED BEFORE THE TURN, as the
+                    // one-shot pump asks it, and the sweep before
+                    // declaring holds what the stage had said.
+                    let t = if past(s) { swept(s) with { timed: true } } else { ticked(s, 10) }
+                    if overdue(t) || capped(t) {
+                        let _ = avra_proc_signal(s.h, sigkill, 1)
+                        if failure == null { failure = broken(self.stages[i], t) }
                     }
-                    grown.push(t.stage)
-                    if !t.stage.stopped { pending = pending + 1 }
+                    grown.push(t)
+                    if !t.stopped && !t.timed && !capped(t) { pending = pending + 1 }
                 }
             }
             live = grown
@@ -935,17 +1168,18 @@ export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, Proce
         mut still: List<Stage> = []
         mut still_owners: List<int> = []
         for i, s in live {
-            let t = ticked(s, 10)
-            if overdue(t.stage, t.ev) || capped(t.ev) {
-                let why = broken(cs[owners[i]], t.stage, t.ev)
+            // the deadline before the turn, the sweep before declaring
+            let t = if past(s) { swept(s) with { timed: true } } else { ticked(s, 10) }
+            if overdue(t) || capped(t) {
+                let why = broken(cs[owners[i]], t)
                 abandoned(live)
                 fail why
             }
-            if t.stage.stopped {
-                outs.set(owners[i], collected(t.stage, began))
+            if t.stopped {
+                outs.set(owners[i], collected(t, began))
                 done = done + 1
             } else {
-                still.push(t.stage)
+                still.push(t)
                 still_owners.push(owners[i])
             }
         }
@@ -984,14 +1218,15 @@ export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessE
         mut winner: Outcome? = null
         mut grown: List<Stage> = []
         for i, s in live {
-            let t = ticked(s, 10)
-            if overdue(t.stage, t.ev) || capped(t.ev) {
-                let why = broken(cs[owners[i]], t.stage, t.ev)
+            // the deadline before the turn, the sweep before declaring
+            let t = if past(s) { swept(s) with { timed: true } } else { ticked(s, 10) }
+            if overdue(t) || capped(t) {
+                let why = broken(cs[owners[i]], t)
                 abandoned(live)
                 fail why
             }
-            if t.stage.stopped && winner == null { winner = collected(t.stage, began) }
-            grown.push(t.stage)
+            if t.stopped && winner == null { winner = collected(t, began) }
+            grown.push(t)
         }
         if winner != null {
             abandoned([s for s in grown if !s.stopped])

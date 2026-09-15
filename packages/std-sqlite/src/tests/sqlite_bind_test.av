@@ -20,12 +20,12 @@ fn with_null(sql: string) -> string { asked(sql, bound_null()) }
 
 /// How a value gets into hole 1 — a fn per kind, so the cases below
 /// show only the SQL and the value.
-type Binder = { kind: int, text: string, number: int }
+type Binder = { kind: int, text: string, number: int, octets: Bytes? = null }
 fn bound_text(v: string) -> Binder { Binder { kind: 1, text: v, number: 0 } }
 fn bound_blob(v: string) -> Binder { Binder { kind: 2, text: v, number: 0 } }
 fn bound_int(v: int) -> Binder { Binder { kind: 3, text: "", number: v } }
 fn bound_null() -> Binder { Binder { kind: 4, text: "", number: 0 } }
-fn bound_static(v: string) -> Binder { Binder { kind: 5, text: v, number: 0 } }
+fn bound_static(v: string) -> Binder { Binder { kind: 5, text: v, number: 0, octets: v.bytes() } }
 
 fn asked(sql: string, b: Binder) -> string { in_memory((db) -> in_db(db, sql, b)) }
 
@@ -61,7 +61,10 @@ fn place(s: Stmt, b: Binder) -> Result<int, SqlError> {
     if b.kind == 1 { return bind_text(s, 1, b.text) }
     if b.kind == 2 { return bind_blob(s, 1, b.text) }
     if b.kind == 3 { return bind_int(s, 1, b.number) }
-    if b.kind == 5 { return bind_text_unsafely_borrowed(s, 1, b.text) }
+    // THE BORROWED BIND TAKES THE CALLER'S OCTETS, and the box
+    // lives in the Binder for the statement's whole life — which is
+    // the promise the verb's name asks for, made visible.
+    if b.kind == 5 { return bind_text_unsafely_borrowed(s, 1, b.octets!) }
     bind_null(s, 1)
 }
 

@@ -2,7 +2,7 @@
 // can grow: degenerate shapes, every wrong value in every slot, the
 // two engines, ownership, and refusal quality. Each case names the
 // attack; the fixtures are the shell and a hand-built tool.
-use @std.process.{Tool, tool, tool_from_env, cmd, Command, Pipeline, Stdin, Ready, Env, ProcessError, minimal, exit_text, parallel, race}
+use @std.process.{Tool, tool, tool_from_env, cmd, Command, Pipeline, Stdin, Ready, Env, EnvPair, Output, ProcessError, minimal, exit_text, parallel, race}
 use @std.time.{ms, secs, now_ms}
 use @std.text.{from_codepoint}
 
@@ -93,6 +93,66 @@ fn empty_env_name() -> Result<string, ProcessError> {
     text(shell("echo x")? with { env: minimal().with_var("", "x") })
 }
 
+/// What a flooding child leaves in the partial capture when it breaks
+/// a cap — the SIZE, which is what diverged.
+/// A command carrying one environment pair, run.
+fn named(n: string, v: string) -> Result<Output, ProcessError> {
+    let c = shell("true")? with { env: Env.Only([EnvPair { name: n, value: v }]) }
+    c.run()
+}
+
+fn env_said(r: Result<Output, ProcessError>) -> string {
+    match r {
+        .Ok(_) -> "ok",
+        .Err(e) -> e.describe().kind.replace("process.", ""),
+    }
+}
+
+fn captured_over(cap: int) -> int {
+    match flooded(cap) {
+        .Ok(n) -> n,
+        .Err(_) -> 0 - 1,
+    }
+}
+
+fn flooded(cap: int) -> Result<int, ProcessError> {
+    let c = shell("yes")? with { timeout: secs(5), max_capture: cap }
+    match c.run() {
+        .Ok(o) -> o.stdout.length,
+        .Err(e) -> match e {
+            .TooMuch(s, n, part) -> part.stdout.length,
+            rest -> { fail e }
+        },
+    }
+}
+
+extern fn avra_proc_stage() -> int
+extern fn avra_proc_word(token: int, text: string) -> int
+extern fn avra_proc_spawn(token: int, file: string, cwd: string, flags: int, from_h: int) -> int
+extern fn avra_proc_reap(h: int) -> int
+extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
+extern fn avra_proc_close(h: int) -> int
+
+/// A child in its OWN GROUP, run to its end and reaped, then its
+/// group signalled twice — the answers, negated.
+fn emptied_group() -> string {
+    let t = avra_proc_stage()
+    let _ = avra_proc_word(t, "-c")
+    let _ = avra_proc_word(t, "exit 0")
+    // NEW_PGROUP so the child leads a group; NULL in, PIPE out and err
+    let h = avra_proc_spawn(t, "/bin/sh", "", 16 + 2 + 4 + 1024, 0 - 1)
+    // REAPED, NOT MERELY POLLED AT. `reap` does not wait, so the bound
+    // counts immediate asks and a shell takes tens of thousands of
+    // them to start and exit — a bound of 400 left the group ALIVE and
+    // the case read as a failing fix rather than a short loop.
+    mut turns = 0
+    while turns < 400000 && avra_proc_reap(h) == 0 { turns = turns + 1 }
+    let first = 0 - avra_proc_signal(h, 15, 1)
+    let second = 0 - avra_proc_signal(h, 15, 1)
+    let _ = avra_proc_close(h)
+    "${first}/${second}"
+}
+
 fn grandchild_is_stopped() -> Result<string, ProcessError> {
     // the child prints its grandchild's pid and exits; the grandchild
     // holds our pipe past the grace, so the run is truncated — and the
@@ -145,6 +205,15 @@ fn many() -> Result<string, ProcessError> {
         if (cmd(t, []).outcome()?).exit is .Clean { clean = clean + 1 }
     }
     "${clean}"
+}
+
+/// A command whose shell variable shares its name with a local. The
+/// local must not reach the child: the shell expands `$AVRA_PROBE`,
+/// and the `${…}` spelling would have handed over "decoy" instead.
+fn shadowed_var() -> Result<string, ProcessError> {
+    let AVRA_PROBE = "decoy"
+    let c = shell("echo $AVRA_PROBE")? with { env: minimal().with_var("AVRA_PROBE", "seen") }
+    "${(c.run()?).stdout.trim()}${AVRA_PROBE.replace("decoy", "")}"
 }
 
 fn hostile_words() -> Result<string, ProcessError> {
@@ -408,6 +477,38 @@ spec "std/process adversarial" {
             cmd(dashed(), []).path("").args.join("|") == ""
         }
     }
+    given "an environment entry with no name" {
+        then "the face refuses one, whatever its value" {
+            env_said(named("", "V")) == "bad_env_name" && env_said(named("", "")) == "bad_env_name"
+        }
+        then "a name set to EMPTY is set, and is not the same thing" {
+            env_said(named("AVRA_RT_SET", "")) == "ok"
+        }
+    }
+    given "the cap bounds what it captures, not merely what it accepts" {
+        // A FLOODING CHILD gave 679 KB natively and 52 MB under the
+        // evaluator for a cap of 1000 — the decision agreed and the
+        // CAPTURE did not, which is a divergence in a value the caller
+        // reads. A drain that empties the pipe before testing the bound
+        // is bounded by the child's speed, not by the cap.
+        then "a cap of 1000 keeps at most a chunk past it, not megabytes" {
+            captured_over(1000) <= 2000
+        }
+        then "the same cap keeps the same amount whatever the engine's speed" {
+            captured_over(64) <= 128 && captured_over(64) >= 64
+        }
+    }
+    given "a group whose members are gone" {
+        // A GROUP OUTLIVES ITS LEADER, which is why a signal must not
+        // test the leader's life — and the same reasoning bounds it:
+        // once the group is genuinely EMPTY the OS may recycle the
+        // pgid, and a late signal lands on an unrelated group. The
+        // pgid is a raw OS number no generation can guard, so the
+        // slot records the first emptiness it ever observes.
+        then "the first signal to an emptied group answers ESRCH, and so does every later one" {
+            emptied_group() == "3/3"
+        }
+    }
     given "the tree, not the child" {
         then "a grandchild holding the pipe is truncated and stopped with the group" {
             shown(grandchild_is_stopped()) == "true/dead"
@@ -416,6 +517,17 @@ spec "std/process adversarial" {
     given "the words are data" {
         then "shell metacharacters in words reach the child as themselves" {
             shown(hostile_words()) == "b c d\"e $HOME ; rm -rf / --flag `id`"
+        }
+        // A SHELL VARIABLE IS SPELLED `$NAME`, NEVER `${NAME}`, and the
+        // difference is silent. `"${HOME}"` is Avra's interpolation: with
+        // nothing of that name it is a loud F3000, and with a `let HOME`
+        // in scope it COMPILES CLEAN and the command becomes the local's
+        // value — measured here, `echo /tmp/not-your-home`, no
+        // diagnostics. So the loud half protects a writer only while no
+        // local shares the name, and a command line is exactly where
+        // HOME, PATH and USER are likely to be locals too.
+        then "a same-named local does not reach the child — the `$NAME` spelling is the shell's" {
+            shown(shadowed_var()) == "seen"
         }
     }
 }

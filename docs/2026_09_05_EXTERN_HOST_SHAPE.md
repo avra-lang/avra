@@ -113,6 +113,19 @@ the declaration**, and getting that wrong would break the native path.
 *(An f32 RETURN can be read correctly by casting the pointer, which is
 why a return-side f32 is admissible and an argument-side one is not.)*
 
+> **CORRECTED 2026-09-07. THE PARENTHESIS ABOVE IS FALSE ON THE FRAME
+> THAT LANDED, and it is kept because the package-C standard quoted it
+> into §5.6.8 as "an f32 RETURN is fine and passes".** Nothing casts a
+> pointer: the frame's f64 door is `avra_ffi_call_f64`, which calls
+> through a `double`-answering prototype and reads `v0` WHOLE, and
+> there is no `f32` width word for the answer to be read back through.
+> A C `float` writes only the low half. Measured on a witness body
+> answering `1.5f` through a declared `f64`: `5.28426686e-315`, in BOTH
+> engines — a green differential over a wrong number. `make externs`
+> holds a declared `f64`/`float` to a C `double` now. The claim was
+> true of the DESIGN this paper describes and never of the code; the
+> citation is what carried it.
+
 ### The refusal, placed correctly
 
 > **CORRECTED 2026-09-07. THE PARAGRAPH BELOW WAS FALSE AND IS KEPT SO

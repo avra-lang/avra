@@ -341,7 +341,14 @@ impl Rebuilder {
             .Bind(name) -> Pat.Bind(self.name(name)),
             .Variant(name, args) -> Pat.Variant(self.plain_name(name), self.pats(args)),
             .Lit(v) -> Pat.Lit(self.expr(v)),
+            .Format(head, parts) -> Pat.Format(head, [self.rebuilt_part(p) for p in parts]),
         }
+    }
+
+    /// A hole that binds is renamed as a bind is; `_` stays.
+    mut fn rebuilt_part(p: FormatPart) -> FormatPart {
+        if !binds(p.hole) { return p }
+        p with { hole: p.hole with { name: self.name(p.hole.name) } }
     }
 
     // ── minting ──
