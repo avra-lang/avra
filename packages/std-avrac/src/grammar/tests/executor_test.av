@@ -93,12 +93,37 @@ spec "grammar/executor" {
             )])])
             result_str(run_sx(g, "a , b , c")) == "(mk [a b c])"
         }
-        then "the same label on separate non-repeating items is last-wins" {
+        then "a label on separate non-repeating items COLLECTS both" {
             let g = g1([rule("d", [seq_to(
                 [cap("a", named("NAME")), cap("a", named("STRING")), item(named("BREAK"))],
                 Build.Call("mk", ["a"]),
             )])])
-            result_str(run_sx(g, "x \"y\"")) == "(mk y)"
+            result_str(run_sx(g, "x \"y\"")) == "(mk [x y])"
+        }
+        then "a label bound once in each alternative of a group carries ONE value" {
+            let g = g1([rule("d", [seq_to(
+                [
+                    item(Prim.Group(Alt { branches: [
+                        seq([cap("a", named("NAME"))]),
+                        seq([cap("a", named("STRING"))]),
+                    ] })),
+                    item(named("BREAK")),
+                ],
+                Build.Call("mk", ["a"]),
+            )])])
+            result_str(run_sx(g, "x")) == "(mk x)"
+        }
+        then "a label collected under a star survives a plain binding after it" {
+            let g = g1([rule("d", [seq_to(
+                [
+                    cap("a", named("NAME")),
+                    item(Prim.Group(Alt { branches: [seq([item(lit(",")), cap("a", named("NAME"))])] }))
+                        with { rep: Rep.Star },
+                    cap("a", named("STRING")), item(named("BREAK")),
+                ],
+                Build.Call("mk", ["a"]),
+            )])])
+            result_str(run_sx(g, "x , y \"z\"")) == "(mk [x y z])"
         }
         then "an untaken optional delivers Absent to the build" {
             let g = g1([rule("p", [seq_to(
