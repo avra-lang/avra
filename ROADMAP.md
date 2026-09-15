@@ -7068,7 +7068,6 @@ additions get siblings, nothing changes shape:
   edit re-runs importers only when the export surface's fingerprint
   moved.
 
-<<<<<<< HEAD
 ## Feedback survey — 2026-09-15 (phase C, C1: children and identity derived)
 
 Base: lane/comptime 1c39ad8 + phase/c. Counts: FRICTION 3, FEATURES 1,
@@ -7414,8 +7413,6 @@ blocked and did not build.
   into the design without probing it, chosen because it "obviously"
   should work.
 
-=======
->>>>>>> b7b040c (feat(meta): a MARK is data where an annotation is a call — and every mark owes a reader)
 ## Feedback survey — 2026-09-15 (phase C, C0: marks on declared members)
 
 Base: lane/comptime 7ab84f1 + phase/c. Counts: FRICTION 3, SUGAR 2,
@@ -7595,18 +7592,11 @@ and the cli.
       says so in a greppable form, and a keeper diffs those names
       against the tree. Design it when the third arrives, not before.
 
-<<<<<<< HEAD
 - [x] THE GATE PROVES A TREE AND THE INTEGRATOR COMMITS A TREE —
       FIXED at fe1c152: integrate.sh commits, THEN gates, THEN merges,
       and HEAD, the tracked content and the untracked list are pinned
       before the gate and compared after (avra-8sb5.2.2). Reported by
       the SQLITE lead, the deepest of three found the same night. `tools/integrate.sh` runs `make gate` over the
-=======
-- [ ] THE GATE PROVES A TREE AND THE INTEGRATOR COMMITS A TREE, AND
-      NOTHING TIES THEM TOGETHER. Reported by the SQLITE lead
-      2026-09-07, unfixed, and it is the deepest of three found the
-      same night. `tools/integrate.sh` runs `make gate` over the
->>>>>>> b7b040c (feat(meta): a MARK is data where an annotation is a call — and every mark owes a reader)
       working tree and then merges what git has; a working tree that
       moves between the two — a half-finished rename, a deliberate
       break left in a file — is gated in one state and merged in
