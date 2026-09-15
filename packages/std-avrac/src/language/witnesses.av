@@ -1,0 +1,236 @@
+//! WHAT TRIGGERS EACH REFUSAL, as source the compiler runs. A
+//! registered code's golden is the compiler over its witness, so the
+//! rendering in docs/DIAGNOSTICS.md is MADE rather than written, and
+//! a voice whose wording drifts fails there.
+//!
+//! WHY THE WITNESS AND NOT THE PROSE. A kind keys the F-CODE, not the
+//! law: 45 kinds carry more than one law and `type.mismatch` carries
+//! 38, so a row cannot hold the message. Moving the prose into a
+//! template would also trade a compiler-checked interpolation for an
+//! unchecked hole map, where a mistyped hole name is silent. The
+//! witness keeps every voice as it is and makes the golden anyway.
+//!
+//! A WITNESS THAT NO LONGER TRIGGERS ITS KIND IS A GREEN TEST PROVING
+//! NOTHING — the compiler moves under it, it starts producing some
+//! other code, and the golden pins that instead. So the run asserts
+//! the witness PRODUCED its code, and the count is of the ones that
+//! fired.
+use core.{joined}
+use diagnostics.{DiagCode, new_source_file}
+
+/// How a code is witnessed. ABSENCE HAS TWO CAUSES and they are named
+/// apart: a code nobody has written a witness for is a DEBT, and one
+/// no lone source can reach is a FACT — as one nullable they read
+/// alike, and only the first is work.
+export enum Witness {
+    Absent
+    Source(text: string)
+    Beyond(why: string)
+}
+
+impl Witness {
+    /// Whether this witness RUNS — the only kind whose silence is a
+    /// defect. ASKED AS A MATCH, never `is .Source`: a boolean over
+    /// one variant of a registry enum falls through for every variant
+    /// added after it, which is a hole in different clothes.
+    fn runs() -> bool {
+        match self { .Source(_) -> true, .Absent or .Beyond(_) -> false }
+    }
+
+    /// Whether this code is still owed a witness — a debt, where an
+    /// unreachable one is a fact.
+    fn owed() -> bool {
+        match self { .Absent -> true, .Source(_) or .Beyond(_) -> false }
+    }
+}
+
+/// One code's witness, as the registry spells it.
+export type CodeWitness = { code: string, witness: Witness }
+
+/// One code's witness, run: what the compiler actually said, and
+/// whether the code it claims to show came out.
+export type Shown = { code: DiagCode, witness: Witness, rendered: string, fired: bool }
+
+impl Shown {
+    /// The source the witness ran, when one ran — empty otherwise, so
+    /// a caller showing it prints nothing rather than a placeholder.
+    fn witness_source() -> string {
+        match self.witness { .Source(text) -> text, .Absent or .Beyond(_) -> "" }
+    }
+}
+
+/// Every registered code with its witness run, in registry order —
+/// which is feature order, which is the language.
+export fn shown_codes() -> List<Shown> {
+    [shown(c) for c in avra().rows.codes]
+}
+
+fn shown(c: DiagCode) -> Shown {
+    let w = witness_for(c.id)
+    let out = rendered_over(w)
+    Shown { code: c, witness: w, rendered: out, fired: out.contains("[${c.id}]") }
+}
+
+/// The compiler's own words over a witness; nothing where no source
+/// reaches the code.
+fn rendered_over(w: Witness) -> string {
+    match w {
+        .Source(text) -> avra().check(new_source_file("witness.av", text)),
+        .Absent or .Beyond(_) -> "",
+    }
+}
+
+/// One code's witness, run — what `avra explain` shows beside the
+/// summary: a REAL refusal with its holes filled, never a template.
+export fn shown_code(id: string) -> Shown? {
+    let c: DiagCode? = avra().rows.codes.find(it.id == id)
+    if c == null { return null }
+    shown(c!)
+}
+
+/// The codes a witness row names that the registry does not — the
+/// other direction a registry forgets in.
+export fn stray_witnesses() -> List<string> {
+    [w.code for w in witnesses() if !avra().rows.codes.any(it.id == w.code)]
+}
+
+/// The codes a SECOND row would shadow — the lookup takes the first
+/// match, so a duplicate row silently never runs and its author would
+/// see the other one's golden.
+export fn shadowed_witnesses() -> List<string> {
+    [w.code for w in witnesses() if rows_for(w.code) > 1]
+}
+
+fn rows_for(code: string) -> int {
+    [w for w in witnesses() if w.code == code].length
+}
+
+fn witness_for(code: string) -> Witness {
+    witnesses().find(it.code == code)?.witness ?? Witness.Absent
+}
+
+/// The codes whose witness no longer produces them — the shape this
+/// registry exists to refuse.
+export fn silent_witnesses(runs: List<Shown>) -> List<Shown> {
+    [s for s in runs if s.witness.runs() && !s.fired]
+}
+
+/// The codes no witness reaches yet.
+export fn unwitnessed(runs: List<Shown>) -> List<Shown> {
+    [s for s in runs if s.witness.owed()]
+}
+
+/// THE ERROR INDEX: every registered code, its meaning, the source
+/// that triggers it, and what the compiler says. Generated, compared
+/// by `make witnesses`, and the golden for every voice it reaches.
+export fn diagnostics_index(runs: List<Shown>) -> string {
+    joined([index_head(runs)].concat([entry(s) for s in runs]), "\n")
+}
+
+fn index_head(runs: List<Shown>) -> string {
+    joined([
+        "# The diagnostics index",
+        "",
+        "GENERATED by `avra diagnostics` from the assembled registry —",
+        "`make witnesses` refuses an index the compiler did not make. Each",
+        "entry's rendering is the compiler's own words over the witness",
+        "beside it, so a voice whose wording drifts shows up here as a diff.",
+        "",
+        "${runs.length} codes registered · ${[s for s in runs if s.fired].length} witnessed · ${unwitnessed(runs).length} with no witness yet",
+    ], "\n")
+}
+
+fn entry(s: Shown) -> string {
+    joined(["", "## ${s.code.id} — ${s.code.kind}", "", s.code.summary, ""].concat(body(s)), "\n")
+}
+
+fn body(s: Shown) -> List<string> {
+    match s.witness {
+        .Source(text) -> ["```avra", text, "```", "", "```", s.rendered, "```"],
+        .Beyond(why) -> ["No witness here: ${why}."],
+        .Absent -> ["No witness yet."],
+    }
+}
+
+/// THE WITNESSES. Each is a whole program the compiler runs; a code
+/// with no row here is a debt the index names, so forgetting one is
+/// visible rather than silent. EACH TRIGGERS ONE CODE where it can:
+/// a source that refuses twice puts both refusals in both entries,
+/// and the golden then pins another code's wording as this one's.
+fn witnesses() -> List<CodeWitness> {
+    let rows: List<CodeWitness> = [
+    CodeWitness { code: "F0001", witness: Witness.Source("let a = 1\n$\nlet b = 2") },
+    CodeWitness { code: "F0100", witness: Witness.Source("}") },
+    CodeWitness { code: "F0901", witness: Witness.Source("type P = { x: int }\nP { x: 1 }") },
+    CodeWitness { code: "F2000", witness: Witness.Source("!5") },
+    CodeWitness { code: "F2001", witness: Witness.Source("fn f(x: decimal) -> int { 1 }\nf(1)") },
+    CodeWitness { code: "F2003", witness: Witness.Source("let n = 3\nn.x") },
+    CodeWitness { code: "F2005", witness: Witness.Source("[1, true]\n2") },
+    CodeWitness { code: "F2006", witness: Witness.Source("let xs = [null, null]\n1") },
+    CodeWitness { code: "F2007", witness: Witness.Source("\"\${[1, 2]}\"") },
+    CodeWitness { code: "F2008", witness: Witness.Source("type P = { x: int? }\nlet p = P { x: 1 }\np.x ?? 0") },
+    CodeWitness { code: "F2009", witness: Witness.Source("type P = { x: int, x: bool }\nlet p = P { x: 1 }\n2") },
+    CodeWitness { code: "F2010", witness: Witness.Source("type P = { x: int }\nlet p = P { x: true }\n2") },
+    CodeWitness { code: "F2011", witness: Witness.Source("let n = 3\nlet m = n with { x: 1 }\n2") },
+    CodeWitness { code: "F2012", witness: Witness.Source("enum E { }\n1") },
+    CodeWitness { code: "F2013", witness: Witness.Source("let n = 3\nmatch n {\n    .a -> 1\n}") },
+    CodeWitness { code: "F2014", witness: Witness.Source("type P = { x: int }\nmut p = P\n1") },
+    CodeWitness { code: "F2015", witness: Witness.Source("enum S {\n    a(int)\n    b\n}\nlet x = S.a()\n2") },
+    CodeWitness { code: "F2016", witness: Witness.Source("enum E {\n    a(int?)\n    b\n}\nmatch E.a(1) { .a(n) -> 0, .b -> 0 }") },
+    CodeWitness { code: "F2017", witness: Witness.Source("null ?? 1") },
+    CodeWitness { code: "F2019", witness: Witness.Source("let m: Map<int, int> = {}\n1") },
+    CodeWitness { code: "F2020", witness: Witness.Source("fn f(a: int, a: int) -> int { a }\nf(1, 2)") },
+    CodeWitness { code: "F2021", witness: Witness.Source("let n = 1\nn!") },
+    CodeWitness { code: "F2022", witness: Witness.Source("match null {\n    v? -> 1\n    null -> 2\n}") },
+    CodeWitness { code: "F2023", witness: Witness.Source("let n = 1\nn?.x") },
+    CodeWitness { code: "F2024", witness: Witness.Source("let x: int = true\nx") },
+    CodeWitness { code: "F2025", witness: Witness.Source("return 1") },
+    CodeWitness { code: "F2026", witness: Witness.Source("fn f() -> int {\n    let n = 1\n    n?\n}\nf()") },
+    CodeWitness { code: "F2027", witness: Witness.Source("let v? = 1 else { 1 }\nv") },
+    CodeWitness { code: "F2028", witness: Witness.Source("fn f() -> int {\n    fail 1\n}\nf()") },
+    CodeWitness { code: "F2029", witness: Witness.Source("let n = 1 catch 2\nn") },
+    CodeWitness { code: "F2030", witness: Witness.Source("[1].reverse()") },
+    CodeWitness { code: "F2031", witness: Witness.Source("impl Nope {\n    fn f() -> int { 1 }\n}\n1") },
+    CodeWitness { code: "F2032", witness: Witness.Source("trait T {\n    fn m() -> int\n}\ntype P = { x: int }\nimpl T for P {\n    fn m() -> int { 1 }\n    fn extra() -> int { 2 }\n}\n1") },
+    CodeWitness { code: "F2033", witness: Witness.Source("null()") },
+    CodeWitness { code: "F2034", witness: Witness.Source("fn grow(xs: List<int>) { xs.push(1) }\nmut v = [1]\ngrow(v)\nv.length") },
+    CodeWitness { code: "F2035", witness: Witness.Source("let m = {1: 2}\n1") },
+    CodeWitness { code: "F2036", witness: Witness.Source("let m = {\"a\": 1, \"b\": true}\n1") },
+    CodeWitness { code: "F2039", witness: Witness.Source("enum E {\n    a(int)\n    b\n}\nmatch E.a(1) {\n    .a(n) or .b -> n\n}") },
+    CodeWitness { code: "F2040", witness: Witness.Source("enum Q {\n    A\n    B\n    C\n    D\n}\nmatch Q.B {\n    .A -> 1\n    .B -> 2\n    _ -> 0\n}") },
+    CodeWitness { code: "F2041", witness: Witness.Source("[x for x in 1]") },
+    CodeWitness { code: "F2042", witness: Witness.Source("spec \"s\" {\n    given \"g\" {\n        then \"t\" { 1 }\n    }\n}") },
+    CodeWitness { code: "F2043", witness: Witness.Source("let x = .foo\n1") },
+    CodeWitness { code: "F2044", witness: Witness.Source("1 ?? 2") },
+    CodeWitness { code: "F2046", witness: Witness.Source("mut fn f() -> int { 1 }\nf()") },
+    CodeWitness { code: "F2047", witness: Witness.Source("type B = { xs: List<int> }\nimpl B {\n    fn put(v: int) { self.xs.push(v) }\n}\nlet b = B { xs: [] }\nb.put(1)\nb.xs.length") },
+    CodeWitness { code: "F2048", witness: Witness.Source("fn f(mut n: int) -> int { n }\nf(1)") },
+    CodeWitness { code: "F2050", witness: Witness.Source("type C = { n: int }\nimpl C {\n    mut fn get() -> int { self.n }\n}\nmut c = C { n: 1 }\nc.get()") },
+    CodeWitness { code: "F2051", witness: Witness.Source("fn show(mut n: int) -> int { n }\nmut k = 5\nshow(k)") },
+    CodeWitness { code: "F2054", witness: Witness.Source("errdefer 1") },
+    CodeWitness { code: "F2055", witness: Witness.Source("once fn seed() -> int { 7 }\nseed()") },
+    CodeWitness { code: "F2057", witness: Witness.Source("1 << 99") },
+    CodeWitness { code: "F2059", witness: Witness.Source("enum E {\n    a\n}\nimpl E {\n    static fn a() -> int { 1 }\n}\n1") },
+    CodeWitness { code: "F2062", witness: Witness.Source("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nfn twice() -> int {\n    Z + Z\n}\ntwice() + Z") },
+    CodeWitness { code: "F2066", witness: Witness.Source("fn tag() { }\n@tag\ntype P = { x: int }\nP { x: 2 }.x") },
+    CodeWitness { code: "F2083", witness: Witness.Source("type X = X\n1") },
+    CodeWitness { code: "F3000", witness: Witness.Source("nope(1)") },
+    CodeWitness { code: "F3001", witness: Witness.Source("x\nlet x = 1") },
+    CodeWitness { code: "F3002", witness: Witness.Source("if()") },
+    CodeWitness { code: "F3003", witness: Witness.Source("fn f(x: int) -> int { x }\nfn f(y: int) -> int { y }\nf(1)") },
+    CodeWitness { code: "F3004", witness: Witness.Source("fn f() -> int {\n    fn g() -> int { 1 }\n    2\n}\nf()") },
+    CodeWitness { code: "F3005", witness: Witness.Source("let x = 1\nx = 2\nx") },
+    CodeWitness { code: "F3006", witness: Witness.Source("type P = { x: int }\nenum P {\n    a\n}\n1") },
+    CodeWitness { code: "F3007", witness: Witness.Source("fn f() -> int {\n    enum E {\n        a\n    }\n    1\n}\nf()") },
+    CodeWitness { code: "F3008", witness: Witness.Source("enum bool {\n    a\n}") },
+    CodeWitness { code: "F3009", witness: Witness.Source("1 = 2") },
+    CodeWitness { code: "F3010", witness: Witness.Source("for i, i in [1] {\n    1\n}\n1") },
+    CodeWitness { code: "F3015", witness: Witness.Source("use util.{twice}\n1\n") },
+    CodeWitness { code: "F3020", witness: Witness.Source("let x = 1\nfn f() -> int { x }\nf()") },
+    CodeWitness { code: "F3022", witness: Witness.Source("fn f() -> int {\n    spec \"s\" { }\n    1\n}\nf()") },
+    CodeWitness { code: "F3023", witness: Witness.Source("spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n        then \"t\" { true }\n    }\n}") },
+    CodeWitness { code: "F3024", witness: Witness.Source("let self = 1\nself") },
+    CodeWitness { code: "F3025", witness: Witness.Source("fn f() -> int {\n    impl X {\n        fn g() -> int { 1 }\n    }\n    1\n}\nf()") },
+    ]
+    rows
+}

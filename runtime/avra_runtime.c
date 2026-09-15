@@ -2413,3 +2413,9 @@ const char* avra_capture_end(void) {
     free(buf);
     return out;
 }
+
+// THE ROWS CLAIM THIS FILE. `runtime/avra_rt.h` is generated from
+// `rt_sigs()` and asserts, in the C compiler, that every body above
+// answers the width its row names and takes the seats it names.
+// Included LAST, so those bodies are already declared.
+#include "avra_rt.h"
