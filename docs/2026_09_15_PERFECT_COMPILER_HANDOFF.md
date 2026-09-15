@@ -45,8 +45,15 @@ do.** This file is the whole workload; keep it current.
   files** (its gap), **527 doc-comment lines lost in 21 files**
   (PRE-EXISTING — `///` is kept only on a declaration), 497 files differ
   for reasons not yet explained. RULED: build the **positional cursor**,
-  not ten per-site lookups. `--write` stays gated on both counts reaching
-  zero over every file — never a corpus.
+  not ten per-site lookups — the `mut`-through-a-comprehension fear that
+  argued for ten sites was PROBED and unfounded. `--write` stays gated on
+  both counts reaching zero over every file — never a corpus.
+  THE 497 ARE ONE THING: the renderer never preserves a ONE-LINE form,
+  always expanding a braced body. By the same principle as blank lines
+  (the tree holds `{ a }` and a three-line block identically, so the form
+  is the author's), that is invented layout. SCOPED AS RUNG 2 — rung 1
+  finishes on CONTENT loss at zero, with the whitespace-only class
+  counted and deferred. Doc-comment gap is `avra-8sb5.11.104`.
 - **E2** — role marks on `Ins` payloads. Approved: the payload-mark
   **grammar change** (marks attach to a variant today, not a payload), so
   phase I inherits the honest spelling. §4 DROPPED as a derive — 40
