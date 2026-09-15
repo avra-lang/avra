@@ -8060,6 +8060,40 @@ The `/feedback` run for the slice that lifted the two S5b boundaries: a settled 
 
 ## Sugar backlog — dogfooding asks
 
+UNVERIFIED HAZARD (H2, 2026-09-15) — `hush_expansion` INSIDE A
+RE-ENTRANT RUN. `expanded(f)` clears a file's expansion voices as its
+first act, and the memo kernel makes a recursive demand COMPUTE
+rather than reuse (`start_recursive`: `.Cycle -> Compute`), so an
+inner run's hush fires while an outer run is midway through its
+directive loop. If the outer run has already spoken a refusal for an
+earlier directive, the inner hush erases it and the outer never
+re-speaks it — a silently dropped diagnostic. I did NOT observe this:
+the case I measured had both voices land AFTER the last hush (two
+copies survived, which is what the `speak_expansion` dedupe now
+folds). So this is a mechanism I can describe and have not made fire,
+and it is recorded as a question rather than a finding. WHAT WOULD
+SETTLE IT: a file whose FIRST directive refuses and whose SECOND
+triggers the re-entrant resolve — if the first refusal is missing
+from the report, the hazard is real.
+
+
+WANT (H2, 2026-09-14) — A DERIVE DECLARES THE NAMES ITS OUTPUT NEEDS.
+`@derive(Fingerprint)` generates code calling `fp`, `fp_list` and
+`fp_str`, so the ANNOTATED file must import them on the generated
+code's behalf — and `make idioms` reads SOURCE, where those names are
+never used, so I24 ("a name imported and never used in its MODULE")
+fires truthfully about a line that is not a mistake. Licensed at
+`features/contract.av:24` tonight, which is the right call for one
+site and the wrong shape for the rule: every future derive adds
+another licensed import, and the license is what an amnesty looks
+like before it becomes one. THE ASK: let a derive answer an IMPORT
+directive the crossing splices into the annotated module, so the
+source file imports only what IT names and the keeper stays honest
+without an exemption. The wanting site is `features/contract.av`'s
+`fp`/`fp_list`/`fp_str` line; the keeper's reading is correct and
+should not be weakened to accommodate generated code.
+
+
 DECIDED 2026-09-14 (owner + task master), for type operators: `type
 Name = Shape` is always DISTINCT (a name that counts); no alias form.
 Literals fill it, the shape's methods forward, `Name(value)` converts
