@@ -4,23 +4,27 @@ A new STD task master reads this file and takes the work. Written
 2026-09-15 by the outgoing master. State first, then how to run it,
 then the sessions.
 
-## STATE at main `25cee6b`
+## STATE at main `43ae6f4`
 
-24 merges landed 09-14/15. Tracker: `export
+26 merges landed 09-14/15. Tracker: `export
 TASKS_DB=/Users/tristan/projects/tristanMatthias/avra/.tasks/avra.db
 TASKS_ACTOR="STD MASTER"`. Epic `avra-ms0j` under `avra-8sb5`.
 
 ### In flight
 | what | where |
 |---|---|
-| PR #23 `data/process-turn` | `avra-0m3d`, the race launcher, 73x measured. Queued. |
-| PR #24 `data/finalized-door` | `avra-f3qo`, ten sqlite verbs skipping the finalized check. Queued. |
+| nothing | No open PRs. Every branch pushed on 09-14/15 is landed. |
 
 ### Lanes
-- **STD-DATA** — LIVE, on `avra-8sb5.6.2`, the sqlite text/blob read
-  half. The owner discharged the sqlite lead's fence in their own
-  words ("do a") — Option A, recorded on the task. Then `.3.2`,
-  `.3.6`. Epic `avra-bjkk`.
+- **STD-DATA** — LIVE. `.6.2` (the sqlite read half) is WRITTEN and
+  proved (430/430 both engines) but MUST LAND AS TWO PRs: a new
+  `rt_sigs` row the compiler's own source declares CANNOT GATE from a
+  seed that predates it. PR A carries the runtime C, the `RtHost`
+  variant with a placeholder arm, the row, the reach law and the
+  vocab entry — no declaration, so it gates alone; merge and seed. PR
+  B adds the declaration, the real arm and the faces. `avra-vvds`
+  holds the ladder. Doing `.3.2` meanwhile; then `.3.6`. Epic
+  `avra-bjkk`.
 - **TOOLCHAIN** — CLOSED, epic closed, five worktrees retired and
   branches archived. `avra-kpqs` left open and UNASSIGNED for a fresh
   session (it is not in a closed epic by accident).
