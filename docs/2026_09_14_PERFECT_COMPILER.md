@@ -34,6 +34,30 @@ through `plain_name`), the fingerprint (tag + one folded value per
 payload — the arity law by construction), the value protocol. The two
 semantic arms are MARKS on the variant, read by the derive.
 
+**TWO WALKS, TWO CONTRACTS, AND ONLY ONE IS MECHANICAL.** The COMPLETE
+walk (`expr_children`, `stmt_children`) names every child a node has,
+and it is derivable: a payload's TYPE says whether it carries
+expressions. A feature's `kids` is a different question — WHICH
+CHILDREN THIS FEATURE TYPES — and it hides some on purpose: an `if`'s
+branches type under the narrow a presence test may prove, a
+`MatchOpt`'s arms each under their own scope, a lambda's body under
+its own. No derive can know that, so `kids` and the `post_order` that
+walks it stay written by hand, and the hidden-branch law (nodes.av)
+is what sends a question about EVERY expression to the complete walk
+instead. A derive that wrote `kids` would silently widen every
+narrowing in the compiler.
+
+**AND A NODE'S DERIVES GENERATE STORE VOCABULARY, NOT VALUE METHODS.**
+`Expr.Binary(op, left, right)` carries `ExprId`s, and an `ExprId` is
+`{ index: int }` — so a fold over the VALUE folds an arena POSITION,
+and two structurally identical subtrees wear different identities,
+which destroys the one property a fingerprint has. A node's children
+and its identity are only meaningful THROUGH its arena, so both
+derives emit `impl NodeStore` methods and an id payload reaches its
+answer through the store (`self.expr_fingerprint(id)`). `Fingerprint`
+folds a value; `Identity` folds a node; they are different operations
+and wear different names.
+
 **A MARK IS DATA; AN ANNOTATION IS A CALL.** Both are written `@word`,
 and that is where the likeness ends. An annotation stands before a
 DECLARATION and the compiler CALLS it at compile time, so its arguments

@@ -6656,6 +6656,130 @@ additions get siblings, nothing changes shape:
   edit re-runs importers only when the export surface's fingerprint
   moved.
 
+## Feedback survey — 2026-09-15 (phase C, C1: children and identity derived)
+
+Base: lane/comptime 1c39ad8 + phase/c. Counts: FRICTION 3, FEATURES 1,
+DOCTRINE 3, PERFORMANCE 1, PROCESS 2; SUGAR and DEFECTS came back
+EMPTY for this slice (C0's rows still stand; nothing new was wanted
+from the language and nothing new blamed the compiler on itself).
+Top three by cost: the bricked product after a deliberate break (two
+extra heavy runs per attempt), nine name clashes in `core`'s flat
+namespace (four rounds), and reading generated code through a command
+that prints it several times (one false alarm).
+
+NOT SURVEYED: performance causes — see the one row below, which is an
+observation and not a measurement.
+
+### DOCTRINE
+
+- **A GREEN RUN OF THE CONTENT-IDENTITY CASE PROVES MUCH LESS THAN IT
+  LOOKS LIKE IT PROVES.** The headline of the slice, and it inverts
+  what two people assumed. `nodes_test`'s "same content means same
+  fingerprint, despite distinct ids and spans" was named as the one
+  instrument standing between the derive's design and the defect it
+  would cause. It is not. Broken on purpose two different ways, that
+  case NEVER RAN: folding an `ExprId` as its index failed the BUILD
+  with 410 × F2031 "declared twice" — every derive's generated impl
+  minted twice, because GENERATED-DECLARATION IDEMPOTENCE IS KEYED ON
+  THE SAME CONTENT FINGERPRINT — and folding `int` payloads to a
+  constant failed `features/fns/tests/const_seat` with `eval !=
+  expected`, because const SETTLEMENT is keyed on it too. `./avra
+  test` runs program tests before spec cases, so nothing in
+  `nodes_test` was reached either time (`grep -cE "tests passed|✓|✗"`
+  answers 0 on the first log). THE CASE IS A DOCUMENTING TEST, not a
+  load-bearing one; the real guards are two of the compiler's own
+  content-keyed caches, and nobody had named them. Only trying to
+  break it showed that.
+- **A DERIVE MUST CLAIM ONLY WHAT IT READS.** Caught by the review
+  round, in my own code, one slice after building the claim law:
+  `Children` and `Identity` both claimed `@verbatim` and NEITHER read
+  it — claimed purely so F2086 would not fire on a mark no reader had.
+  That makes the law say nothing: a word stops being refused without
+  anything having started to read it. THE FIX WAS THE FEATURE: the
+  mark's real reader is `Rebuild`, whose `hand_written` keyed the two
+  semantic arms on the variant NAMES "Quote" and "Sublang" — a
+  registry that would silently miss the next such variant. It reads
+  the marks now and claims them; each derive claims exactly what it
+  reads. THE TEMPTATION IS STRUCTURAL and worth naming: a claim list
+  is the cheapest way to silence a refusal, so the law's own
+  enforcement invites the lie.
+- **§1's CHILD-WALK CLAIM WAS WRONG AND IS CORRECTED.** It said
+  `post_order` and the hand-written walks die. A feature's `kids`
+  hides children deliberately (an `if`'s branches type under a narrow;
+  a lambda's body under its own scope) and no derive can know that.
+  Two walks, two contracts, one mechanical and one semantic — now
+  stated in the doc where the next reader meets it.
+
+### FRICTION
+
+- **A BROKEN DERIVE BRICKS THE PRODUCT AND THE ONLY WAY BACK IS THE
+  SEED.** A derive that breaks content-identity makes generation 1
+  unable to compile the tree AT ALL (410 duplicate declarations), so
+  `make avra` fails at generation 2 with the bad product already on
+  disk. `make bootstrap` was the recovery, twice. THE ASK: `make avra`
+  keeps the previous product aside itself — every lane does `cp
+  build/avra build/avra.pre` by hand and the protocol's whole value
+  rests on nobody forgetting.
+- **NINE NAME CLASHES IN `core`'s FLAT NAMESPACE, AND THE ONE THAT
+  NAMES THE CAUSE IS BURIED.** Writing two files in `core` collided
+  with `arm_of`, `binders`, `joined`, `mixed`, `int_lit`, `listed`,
+  `fp_str`, `fp_mix` and `Mark`. Each is a correct F3017 — but the
+  `arm_of` one came with 377 cascade errors and sat at LINE 3627 of
+  the log, so a `grep -A 6 "^error" | head -30` showed only innocent
+  files and I concluded the compiler had not reported it. (My own
+  fault twice over: CLAUDE.md says to list the CODES first, which
+  answers it instantly.) THE ASK: a duplicate declaration should
+  suppress the cascade it causes, or be reported first — one mistake,
+  one message, applied to the message that explains the other 377.
+- **`avra expand` PRINTS A GENERATED BLOCK SEVERAL TIMES** — `fn
+  rebuilt` 6 times for 3 annotated enums, `grammar_payloads_Expr` 3
+  times for 1, mine 4 times for 1 — so it cannot be used to read
+  generated code exactly, and it cost a false alarm about a double
+  mint. The build is green, so these are not duplicate declarations;
+  it is the printer showing several generations. THE ASK: `expand`
+  prints what the store will COMPILE, once.
+
+### FEATURES
+
+- **A DERIVE'S OUTPUT HAS NO GOLDEN, AND MINE STRUCTURALLY CANNOT
+  HAVE ONE.** Phase D's `grammar_derive_test.av` sets the standard —
+  "the hand rows below are a TRANSCRIPTION made by a person, so they
+  are the derive's one second opinion" — and it works because
+  `@derive(Grammar)` applies to any enum, including a two-payload
+  fixture. `Children` and `Identity` generate `impl NodeStore` and
+  read `self.expr(id)`, so they only apply to the two node ARENAS and
+  cannot be pointed at a fixture. Their test is the whole suite. THE
+  ASK: a way to review a derive's output as text — `avra emit derived
+  <type>`, or an `expand` that prints once — so the arm-by-arm check I
+  did by eye is something a reviewer can repeat.
+
+### PERFORMANCE
+
+- **THE GATE'S PEAK ROSE 835 MB → 1014 MB ACROSS C0 AND C1**, measured
+  by the watchdog on three gate runs (835 at C0's final gate, 1003 and
+  1014 at C1's). This is an OBSERVATION, NOT A MEASUREMENT: two
+  derives now run over the node model at every compile of `core`, and
+  phase D's and G's work landed in the same window, so the cause is
+  unattributed. It is recorded because a number that moves 21% deserves
+  a name before someone meets it cold. `make census` would attribute
+  it and was not run.
+
+### PROCESS
+
+- **BREAKING A THING ON PURPOSE FOUND THE RIGHT ANSWER BY FAILING TO
+  DO WHAT IT WAS AIMED AT.** Both deliberate breaks missed the
+  instrument they targeted and hit a louder one. The METHOD worked
+  perfectly; the ASSUMPTION about which instrument guards what was
+  wrong, and that assumption is what a green suite had been quietly
+  confirming. Keep the method, and expect the answer to be about
+  WHICH guard fires as often as whether one does.
+- **A CLEAN WORKING TREE MADE THE MERGE FREE.** phase/c
+  fast-forwarded to lane/comptime with no conflict because the task
+  master had already resolved both lanes' import-line collisions on
+  his side. Worth naming as the thing that worked: the integrator
+  taking the merge, gating the MERGED tree rather than trusting either
+  lane's receipt, is why neither lane had to.
+
 ## Feedback survey — 2026-09-15 (phase C, C0: marks on declared members)
 
 Base: lane/comptime 7ab84f1 + phase/c. Counts: FRICTION 3, SUGAR 2,

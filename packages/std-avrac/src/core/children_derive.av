@@ -1,0 +1,142 @@
+//! `@derive(Children)` — THE COMPLETE WALK, read off the node model:
+//! every expression a node holds, named by its payload TYPES. An
+//! `ExprId` is a child, a `List<ExprId>` is children, an `ExprId?` is
+//! a child when present, a `List<StmtId>` reaches through its
+//! statements and a `List<Arm>` through its arms' values. Everything
+//! else carries no expression and contributes none.
+//!
+//! IT IS NOT `kids`, AND THE DIFFERENCE IS THE POINT. A feature's
+//! `kids` answers WHICH CHILDREN THAT FEATURE TYPES and hides some
+//! deliberately — an `if`'s branches type under the narrow a presence
+//! test may prove, a lambda's body under its own scope. That is
+//! MEANING and no derive can read it. This walk answers what a node
+//! HOLDS, which is a fact about the declaration, so a question about
+//! every expression in a body asks here (nodes.av's hidden-branch
+//! law) and never through `kids`.
+//!
+//! IT GENERATES STORE VOCABULARY. A child is an `ExprId`, and an id
+//! means nothing without its arena — reaching a statement list's
+//! expressions is `self.stmts_exprs(ss)`. So the walk is a method on
+//! `NodeStore`, as `@derive(Grammar)` answers a free fn rather than a
+//! value method for the same reason.
+//!
+//! TWO MARKS THE TYPES CANNOT SAY. `@expands(f)` means the named
+//! payload holds what the others EXPAND TO, so the walk takes the
+//! expansion when it is present and the rest only until then —
+//! walking both would visit one program twice. `@declares` means the
+//! statement declares a body OF ITS OWN, walked from that body and
+//! never through the statement, so it holds no children whatever its
+//! payloads say.
+//!
+//! It stands ALONE in this file on purpose: running a derive TYPES
+//! the file that declares it, and a file that also walked the nodes
+//! would be typed while the annotated file's own impls are still
+//! registering (CLAUDE.md).
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Mark as MetaMark, Directive, Code, Arms, name}
+
+/// The compiler's derive for the complete child walk.
+export trait Children {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+            impl NodeStore {
+                fn ${walk_of(t.name)}(id: ${holder_of(t.name)}) -> List<ExprId> {
+                    match self.${reader_of(t.name)}(id) { ${[child_arm(v) for v in t.variants]} }
+                }
+            }
+        } }]
+    }
+
+    /// The words this derive reads off a variant — and no others. A
+    /// derive that claims a mark it never reads makes the claim law
+    /// say nothing: the word stops being refused without anything
+    /// having started to read it.
+    static fn marks(t: MetaType) -> List<string> { ["expands", "declares"] }
+}
+
+/// One variant's arm: its payloads bound, the expression-bearing ones
+/// concatenated in declaration order.
+fn child_arm(v: MetaVariant) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> [] } }
+    quote { .${v}(${binders(v)}) -> ${reach_of(v)} }
+}
+
+/// What a variant reaches. A DECLARING statement reaches nothing —
+/// its body is walked as the declaration it is. An EXPANDING variant
+/// reaches its expansion once that exists, and its unexpanded parts
+/// until then; walking both would visit one program twice.
+fn reach_of(v: MetaVariant) -> Code {
+    if marked(v, "declares") != null { return quote { [] } }
+    let expands: MetaMark? = marked(v, "expands")
+    if expands == null { return concatenated(parts_of(v, "")) }
+    let held = expands!.args.first() ?? ""
+    quote { (if ${name(held)} == null { ${concatenated(parts_of(v, held))} } else { [${name(held)}!] }) }
+}
+
+/// The mark of this name the variant carries, or absence.
+fn marked(v: MetaVariant, word: string) -> MetaMark? {
+    v.marks.find(it.name == word)
+}
+
+/// Each expression-bearing payload's reach, in declaration order,
+/// with `except` left out — an expansion is the arm's other half, and
+/// "" excludes nothing. ONE LIST DECIDES: a payload carries
+/// expressions exactly when `reach` answers, so the question "does
+/// this type carry any" and the answer "here is how to reach them"
+/// cannot drift into two lists that disagree.
+fn parts_of(v: MetaVariant, except: string) -> List<Code> {
+    let held = [reach(f) for f in v.fields if f.name != except]
+    [r! for r in held if r != null]
+}
+
+/// HOW A PAYLOAD'S TYPE REACHES THE EXPRESSIONS UNDER IT — the whole
+/// registry, one row per shape the node model spells, and ABSENCE for
+/// a type that carries no expression. `List<Param>` is absent on
+/// purpose: it holds a field's DEFAULT, which is a declaration of its
+/// own and walked from its own root.
+///
+/// A NEW ID-BEARING PAYLOAD TYPE GETS NO ROW AND SO CARRIES NOTHING,
+/// silently — the one hole this shape has. It is closed from the other
+/// side: `@derive(Identity)` folds the SAME payload types and refuses
+/// an unrowed one at the generated code, so a type added to the model
+/// without a row here breaks that build before it can quietly shrink
+/// this walk.
+fn reach(f: Field) -> Code? {
+    let b = name(f.name)
+    match f.ty {
+        "ExprId" -> quote { [${b}] },
+        "ExprId?" -> quote { some_list(${b}) },
+        "List<ExprId>" -> b,
+        "List<StmtId>" -> quote { self.stmts_exprs(${b}) },
+        "List<Arm>" -> quote { [a.value for a in ${b}] },
+        _ -> null,
+    }
+}
+
+/// The parts as ONE expression — a hole in expression position takes
+/// one `Code`, so a run is folded rather than spliced.
+fn concatenated(parts: List<Code>) -> Code {
+    if parts.is_empty() { return quote { [] } }
+    mut all = parts[0]
+    for p in parts.slice(1, parts.length) {
+        let sofar = all
+        all = quote { ${sofar}.concat(${p}) }
+    }
+    all
+}
+
+/// The walk's name, its id type and the store's reader for it — the
+/// node model's two arenas, named once.
+fn walk_of(owner: string) -> string {
+    if owner == "Expr" { return "expr_children" }
+    "stmt_children"
+}
+
+fn holder_of(owner: string) -> string {
+    if owner == "Expr" { return "ExprId" }
+    "StmtId"
+}
+
+fn reader_of(owner: string) -> string {
+    if owner == "Expr" { return "expr" }
+    "stmt"
+}
