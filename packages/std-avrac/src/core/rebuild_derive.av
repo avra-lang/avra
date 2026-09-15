@@ -15,6 +15,10 @@ use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Arms, Code, 
 
 /// The compiler's derive for the template rebuilder.
 trait Rebuild {
+    /// The words this derive reads off a variant: which arms carry
+    /// their own MEANING, which a payload's type cannot say.
+    static fn marks(t: MetaType) -> List<string> { ["verbatim", "expands"] }
+
     static fn derive(t: MetaType) -> List<Directive> {
         let arms = [arm_of(v) for v in t.variants]
         [Directive { twin: "", name: t.name, at: t.at, source: quote {
@@ -30,7 +34,7 @@ trait Rebuild {
 /// One variant's arm: its payloads bound, each rebuilt by its own
 /// verb, the variant built again.
 fn arm_of(v: MetaVariant) -> Arms {
-    let held: string? = hand_written(v.name)
+    let held: string? = hand_written(v)
     let binders = ["p${i}" for i in 0..v.payload.length]
     if held != null { return handed(v, held!, binders) }
     built(v, binders, [rebuilt_arg(p, binders[i]) for i, p in v.payload])
@@ -45,16 +49,19 @@ fn rebuilt_arg(spelling: string, binder: string) -> Code {
     quote { rb.${verb!}(${name(binder)}) }
 }
 
-/// THE TWO SEMANTIC ARMS. A payload's type cannot say either one, so
-/// each keeps a hand-written method and the arm only routes to it.
-/// Both carry FOUR payloads; a fifth would refuse at the generated
-/// call, which is the same ask `built`'s ladder names.
-fn hand_written(variant: string) -> string? {
-    match variant {
-        "Quote" -> "nested_quote",
-        "Sublang" -> "rebuilt_sublang",
-        _ -> null,
-    }
+/// THE TWO SEMANTIC ARMS, ROUTED BY A MARK AND NO LONGER BY A NAME.
+/// A payload's type cannot say either one, so each keeps a
+/// hand-written method — but WHICH variants need one is a fact the
+/// declaration states: `@verbatim` says a body is copied as written
+/// (its placeholders are its own), `@expands(f)` says the others
+/// expand into `f`. Keyed on the variant's NAME this was a registry
+/// that would silently miss the next such variant; keyed on the mark
+/// it cannot. Both carry FOUR payloads; a fifth would refuse at the
+/// generated call, which is the same ask `built`'s ladder names.
+fn hand_written(v: MetaVariant) -> string? {
+    if v.marks.any(it.name == "verbatim") { return "nested_quote" }
+    if v.marks.any(it.name == "expands") { return "rebuilt_sublang" }
+    null
 }
 
 fn handed(v: MetaVariant, method: string, bs: List<string>) -> Arms {
