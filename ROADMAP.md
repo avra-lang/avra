@@ -468,10 +468,13 @@ the compiler checking itself 28.8s.
   - [ ] THE 43 STRING-TAKING EXTERNS GO FROM SAFE-BY-CONSTRUCTION TO
         SAFE-BY-CONVENTION THE DAY `Bytes` LANDS (recorded 2026-09-05
         while reviewing the sqlite lane's UTF-8 validator; a TRIGGER,
-        not open work). Today no Avra string can hold a NUL, because
-        nothing mints one — every string comes from a literal, an
-        interpolation, or a runtime row over text that was already
-        NUL-free. So handing one to C, which reads a bare
+        not open work). PREMISE RETRACTED: an Avra string CAN hold a
+        NUL and a program mints one with no foreign input at all —
+        `@std/text`'s `from_codepoint(0)` (landed fc7026d, the same day
+        this entry was written). So the safe-by-construction half was
+        already false when recorded; what landed instead was a guard at
+        the crossing (`nul_at`/`has_nul`, 26 sites), not the length law
+        below. The seat count is 109 today, not 43. So handing one to C, which reads a bare
         NUL-terminated `const char*`, is safe for a reason nobody
         wrote down: there is nothing to truncate.
         U+0000 IS VALID UTF-8 and is one byte. So a correct
@@ -6658,10 +6661,11 @@ additions get siblings, nothing changes shape:
 
 ## Recorded triggers — the integrator's substrate
 
-- [ ] THE GATE PROVES A TREE AND THE INTEGRATOR COMMITS A TREE, AND
-      NOTHING TIES THEM TOGETHER. Reported by the SQLITE lead
-      2026-09-07, unfixed, and it is the deepest of three found the
-      same night. `tools/integrate.sh` runs `make gate` over the
+- [x] THE GATE PROVES A TREE AND THE INTEGRATOR COMMITS A TREE —
+      FIXED at fe1c152: integrate.sh commits, THEN gates, THEN merges,
+      and HEAD, the tracked content and the untracked list are pinned
+      before the gate and compared after (avra-8sb5.2.2). Reported by
+      the SQLITE lead, the deepest of three found the same night. `tools/integrate.sh` runs `make gate` over the
       working tree and then merges what git has; a working tree that
       moves between the two — a half-finished rename, a deliberate
       break left in a file — is gated in one state and merged in
@@ -7249,6 +7253,9 @@ PERFORMANCE 1, PROCESS 2.
   variant docs) and `features/mod.av` 5. The day `fmt` consumes the
   projection it will DELETE those lines. Pinned by the
   `docs_adversarial_test.av` row that must fail when the tables land.
+  (No `docs_adversarial_test.av` exists in this tree — the pin is on
+  the docs campaign's branch or unwritten; a deadline whose keeper
+  cannot be found is unpinned. Confirm with the DOCS lead first.)
 - **DOCTRINE — A FLAT JOIN IS NOT A ROUND TRIP WHEN THE TAIL IS EMPTY.**
   An instance of CLAUDE.md's arity law: `join("\n")`/`split("\n")`
   round-trips only while no line is empty; the empty tail is what
@@ -10520,11 +10527,12 @@ by meaning; each is a slice for lane D unless a lane is named.
   registry (`Program.kind_rows`) registers `refuse_as("E1", …)` only
   where the walk reaches, so a conditional kind — most kinded
   refusals — registers by being spoken and `avra explain` misses an
-  unspoken one; its miss says so. RECORDED TRIGGER: land ONE complete
-  walk (`every_expr`: kids plus each feature's hidden children, and a
-  statement list's expressions) and point `runtime_read`,
-  `reads_settled_seat` and `kind_rows_in` at it — the third consumer
-  names the concept, and the first fixes (1). Owner unconfirmed.
+  unspoken one; its miss says so. RECORDED TRIGGER — FIRED AND PAID at
+  865c806: `every_expr` is one walk (core/nodes.av) and all three
+  consumers read it — `runtime_read` and
+  `reads_settled_seat` (lower_state.av) and `kind_rows_in`
+  (workspace.av).
+  The third consumer named the concept, as recorded.
 - H3b. A `mut` SEAT'S ARGUMENT IS NEVER OPENED (found 2026-09-13 by
   the COMPTIME STATIC red team, both engines, native and evaluated).
   A `mut` local handed whole to a `mut` seat is LOADED, not opened
@@ -10608,15 +10616,14 @@ by meaning; each is a slice for lane D unless a lane is named.
   liveness, so deleting the borrow first turns each into a cloning
   path write (measured 60x); and S3 needs no owner decision where S2
   needs several.
-  RECORDED TRIGGER — when S3 MERGES (lane C's, built and gate-green
-  as of 2026-09-05, not yet landed): CLAUDE.md's "A BORROW ALIASES, A
-  PATH WRITE THROUGH A SHARED INTERMEDIATE COPIES" loses its
-  performance rationale — a managed read becomes a BORROW of the
-  cell's one reference, so the direct path write no longer clones and
-  the borrow idiom buys nothing. The rule is amended and the 17 I34
-  licenses retire THEN, by lane C, whose slice it is. Until it lands
-  the rule stands as written; lane D writes no NEW borrows for
-  performance.
+  RECORDED TRIGGER — FIRED AND PAID at 85aa9a8 (S3b): CLAUDE.md's "A
+  BORROW ALIASES, A PATH WRITE THROUGH A SHARED INTERMEDIATE COPIES"
+  lost its performance rationale — liveness reaches the OWNED TWIN
+  choice, so a path write no longer finds its own read's +1 and no
+  longer clones. Sweeping 34 borrow sites measured FREE (6.87s against
+  6.90s) and all 17 I34 licenses retired (DOGFOODING.md I34, RETIRED). A borrow is now written for its ALIASING and never for
+  speed; nine sites still need that aliasing, and that same aliasing is
+  H3's silent channel.
 
   THE RETIREMENT LANDED AND H3 DID NOT CLOSE (2026-09-05, lane C's
   measurement, lane D's census). The I34 retirement is in at cfa834d
@@ -12283,11 +12290,10 @@ UNDERSTAND. A seed that cannot compile HEAD is not a seed, it is a
 fossil. `make bootstrap` is how you find out, and the day to run it
 is the day a construct lands and gets dogfooded into `packages/`.
 
-STILL OWED: nothing checks the rule. A gate step that bootstraps and
-rebuilds costs ~45s and would catch a fossil the day it forms;
-without one, the seed rots exactly as the bs2 path did. FIRING
-CONDITION: the next construct dogfooded into the compiler's own
-source.
+PAID at 296c008: `make seed-check` links the committed
+seed and builds packages/cli with it, refusing with "the seed cannot
+compile HEAD — run `make seed` (a stale seed is a fossil)". It is a
+gate step (`make gate`), so a fossil is caught the day it forms.
 
 ## ~~THE SUBSET NOTES ARE STALE — an audit owed~~ — DONE THE SAME DAY
 ## IT WAS WRITTEN (2026-09-04), and never marked until 2026-09-07
@@ -13570,7 +13576,7 @@ lanes' trees; this tree at the merge points only.
   the mechanism moved (a refusal's seat words, a parse error now at
   the library) and were reported, not hidden.
 
-## Feedback survey — 2026-09-14 #9 (lane/d, the Style-section law audit)
+## Feedback survey — 2026-09-14 lane/d (the Style-section law audit)
 
 Counted per axis: friction 2, sugar 0, features 1, defects 0,
 doctrine 3, performance 0, process 2. The top three by cost: a law
@@ -13650,7 +13656,7 @@ are empty by scope and not by sweep.
   `python3 tools/idioms.py --rules` answers now and the doc points
   at it. One flag, one pointer, no third copy.
 
-## Feedback survey — 2026-09-14 #10 (lane/d, the Rules-section law audit)
+## Feedback survey — 2026-09-14 lane/d (the Rules-section law audit)
 
 Counted per axis: friction 1, sugar 0, features 1, defects 1 (a
 keeper's, latent), doctrine 4, performance 0, process 2. The top three
@@ -13732,7 +13738,7 @@ scope.
   FROM that did not match would have failed loudly instead of
   splicing at the wrong anchor (CLAUDE.md's twice-applied-patch law).
 
-## Feedback survey — 2026-09-14 #11 (lane/d, the Working-discipline law audit)
+## Feedback survey — 2026-09-14 lane/d (the Working-discipline law audit)
 
 Counted per axis: friction 0, sugar 0, features 0, defects 0,
 doctrine 3, performance 0, process 2. The top three by cost: four
@@ -13776,7 +13782,7 @@ No Avra was written, so the empty axes are empty by scope.
   hats before the receipts law, or the receipts law names a label
   still standing in the same commit. One PR, ordered hunks.
 
-## Feedback survey — 2026-09-14 #12 (lane/d, the subset re-probe; the audit's last slice)
+## Feedback survey — 2026-09-14 lane/d (the subset re-probe; the audit's last slice)
 
 Counted per axis: friction 2, sugar 0, features 0, defects 3 (the
 compiler's, filed), doctrine 3, performance 0, process 2. The top
@@ -13842,3 +13848,77 @@ Avra was written beyond scratch probes.
 - **RECORDED TRIGGER, unchanged:** when `lang/subset/*.av` lands as
   gate-verified program tests, this section becomes a pointer. Its
   first two members are the entries a loose file cannot reach.
+
+## Feedback survey — 2026-09-15 lane/d (the recorded-trigger audit, avra-8sb5.9)
+
+Counted per axis: friction 1, sugar 0, features 1, defects 1 (the
+compiler's std, filed), doctrine 4, performance 0, process 2. The top
+three by cost: a deadline that fired the day it was written and stood
+eight days (the digit fold that wraps); 37 triggers recorded in the
+ledgers and in no task; three triggers recorded AFTER their own
+condition had arrived. Not surveyed: triggers inside docs/ (only
+ROADMAP, CLAUDE.md and DOGFOODING were swept); other masters' epics
+beyond a keyword search. No Avra was written beyond scratch probes.
+
+Verdicts over the 30 children of avra-8sb5.9, every non-OPEN one
+re-run by a refuter: 19 OPEN (condition re-worded as a law, owner
+named or "owner unconfirmed"), 6 FIRED-UNPAID, 4 FIRED-AND-PAID
+(closed with the commit), 1 OBSOLETE (closed with the mechanism).
+The sweep's 49 candidates refuted to 37 untracked (8 tracked in other
+epics, 3 not triggers, 1 duplicate), all 37 minted under .9.
+
+### FRICTION — what cost time
+
+- **A SWEEP THAT SEARCHES ONE EPIC CALLS TRACKED WORK UNTRACKED.**
+  Eight of 49 candidates had tasks under other epics (avra-8sb5.2,
+  .4, .5, .10, .11). The refuter searched the whole db by keyword.
+  THE ASK: none for the tree — a sweep for "untracked" searches the
+  whole tracker, never the epic it will file into.
+
+### FEATURES — a capability
+
+- **ONE INTEGER PARSE ROW.** `v = v*10 + (c-48)` is hand-rolled in
+  four places and guarded in one (grammar/lexer.av's `int_value`
+  answers `int?`); json.av, toml.av and core/holes.av wrap silently
+  at 9223372036854775808. `"42".to_int()` is F2030 and the runtime's
+  `avra_int_text` has no inverse. The trigger (.9.1) fired unpaid;
+  routed to STD-DATA avra-bjkk. THE ASK is the row, once, that the
+  three copies then call.
+
+### DEFECTS — filed
+
+- **THE DIGIT FOLD WRAPS** (above): `max=9223372036854775807
+  over=-9223372036854775808 way_over=7766279631452241919`, exit 0,
+  no trap, in the std parsers, where the lexer refuses identical text
+  with F0001. Task .9.1 carries the probe.
+
+### DOCTRINE
+
+- **A TRIGGER RECORDED AFTER ITS CONDITION IS A DEADLINE ALREADY
+  PASSED.** Three of thirty fired at birth: .9.15 (`once fn` had
+  landed), .9.30 (the render path landed two days before the
+  trigger), and .9.20's "fifth walk" count was uncountable in its own
+  commit. THE LAW: a trigger's first probe is run the day it is
+  recorded, and the result is written beside the condition.
+- **A LEDGER ENTRY THAT IS PAID AND STILL READS LIVE RECRUITS.** Three
+  ROADMAP triggers were paid (85aa9a8, 865c806, 296c008) and still
+  written as open; one `- [ ]` box was fixed at fe1c152. Corrected in
+  place with the commit. CONFIRMS "a stale ledger entry recruits like
+  a wrong owner does" (epic avra-8sb5.5's notes).
+- **A RETRACTED PREMISE STOOD IN THE ROADMAP AFTER CLAUDE.md SWEPT
+  IT.** ROADMAP's extern-seat trigger still said "no Avra string can
+  hold a NUL, because nothing mints one"; `from_codepoint(0)` landed
+  the same day the entry was written. CLAUDE.md's "A RETRACTED FACT
+  SPREADS BY CITATION" law, firing on the file it names. Corrected.
+- **A DEADLINE WHOSE KEEPER CANNOT BE FOUND IS UNPINNED.** The docs
+  deadline cites `docs_adversarial_test.av`; no such file is in this
+  tree. Marked; the DOCS lead confirms or writes it.
+
+### PROCESS — the working discipline
+
+- **KEEP: the trigger-owner law.** Two OPEN triggers named owners
+  inferred from a file or a prose handoff; both reworded to "owner
+  unconfirmed" — a named owner in a trigger is a routing instruction.
+- **KEEP: name the paying epic, never mint a twin.** A FIRED-UNPAID
+  trigger keeps its task and gains the paying epic in its comment; the
+  master re-parents it. Six went that way.
