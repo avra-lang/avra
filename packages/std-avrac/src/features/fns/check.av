@@ -26,7 +26,7 @@ export fn check_fn(mut cx: TypeCx, s: StmtId) {
 /// the top half stale, which is B3's defect wearing the other hat.
 fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, hret: TypeRef) {
     for j, pp in hparams {
-        if pp.mark.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
+        if pp.promises.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
     }
     crossing_law(cx, s, hname, hparams)
     let row? = rt_sigs().find(it.name == hname) else { return }
@@ -56,7 +56,7 @@ fn crossing_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) 
     if declared == null { return nothing() }
     let sig = declared!
     for j, p in sig.params {
-        if !hparams[j].mark.mutable && !crossable(cx.view.types, p) { seat_cannot_cross(cx, s, hname, j, p) }
+        if !hparams[j].promises.mutable && !crossable(cx.view.types, p) { seat_cannot_cross(cx, s, hname, j, p) }
     }
     if !answerable(cx.view.types, sig.ret) { answer_cannot_cross(cx, s, hname, sig.ret) }
 }
@@ -116,7 +116,7 @@ fn answerable(types: TypeRegistry, ty: TypeId) -> bool {
 fn row_absence_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
     let sig? = cx.stmt_sig(s) else { return }
     for j, p in sig.params {
-        if !hparams[j].mark.mutable && cx.view.types.carried(p) != null { row_seat_takes_no_absence(cx, s, hname, j, p) }
+        if !hparams[j].promises.mutable && cx.view.types.carried(p) != null { row_seat_takes_no_absence(cx, s, hname, j, p) }
     }
 }
 

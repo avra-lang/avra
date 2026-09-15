@@ -3,7 +3,7 @@
 //! while node order, operator grouping, declaration marks and payloads
 //! are preserved. `avra expand` and the future formatter share this one
 //! renderer.
-use core.{NodeStore, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Variant, Case, Annotation, TypeRef, FormatPart, Hole, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed}
+use core.{NodeStore, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Variant, Case, Annotation, TypeRef, FormatPart, Hole, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed, marks_prefixed}
 use features.{chained_binder}
 use @std.text.{Text, builder}
 
@@ -113,7 +113,7 @@ impl SourceText {
     fn param(p: Param, depth: int) -> string {
         let name = if p.name.is_empty() { "" } else { "${source_name(p.name.of)}${if p.ty == null { "" } else { ": " }}" }
         let ty = if p.ty == null { "" } else { spelled(p.ty!) }
-        "${mark_prefixed(p.mark, name)}${ty}${self.default_value(p.default, depth)}"
+        "${marks_prefixed(p.marks)}${mark_prefixed(p.promises, name)}${ty}${self.default_value(p.default, depth)}"
     }
 
     fn default_value(value: ExprId?, depth: int) -> string {
@@ -189,8 +189,8 @@ impl SourceText {
     }
 
     fn variant(v: Variant, depth: int) -> string {
-        if v.payloads.is_empty() { return source_name(v.name.of) }
-        "${source_name(v.name.of)}(${self.params(v.payloads, depth)})"
+        if v.payloads.is_empty() { return "${marks_prefixed(v.marks)}${source_name(v.name.of)}" }
+        "${marks_prefixed(v.marks)}${source_name(v.name.of)}(${self.params(v.payloads, depth)})"
     }
 
     fn spec_decl(name: string, cases: List<Case>, depth: int) -> string {

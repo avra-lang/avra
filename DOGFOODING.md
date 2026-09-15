@@ -780,6 +780,26 @@ reintroducing I3's blind spot names the two spellings it lost.
       nothing else" from an ordinary file with a trait in it, and the
       shape that breaks it is whatever ELSE the file holds; the keeper
       is the law in CLAUDE.md and the first build that tries.
+- I46 (unratcheted) A PER-DECLARATION WALK ASKS A STATEMENT'S
+      QUESTION TWICE. A declared MEMBER can carry a declaration of its
+      own standing on its OWNER'S statement — a record field's DEFAULT
+      is minted with the struct's `s` (`decls.av`'s `mint("${owner}#${field}", f, s, …)`)
+      — so a law asked `for d in decls_of_file(f)` about that
+      statement's members runs once per member declaration too, each
+      time with a DIFFERENT view of the owner's annotations. The mark
+      law shipped that way for one build: four refusals for one
+      mistake, three of them computed with an empty claim set because
+      the field's default decl carries none of its owner's `@derive`s.
+      THE SMELL: a decl loop that reads `decl(d).stmt` and asks a
+      question about the STATEMENT rather than about `d`. The idiom is
+      to walk `p.stmts` and find the owning decl once. NOT the smell: a
+      question genuinely about the declaration (its sig, its name, its
+      own annotations). Not ratcheted — no grep tells a statement
+      question from a declaration one; the keeper is a test that pins
+      the COUNT (`refused_in`, one mistake one message) over a member
+      that has a declaration of its own, which is a field with a
+      default.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is
