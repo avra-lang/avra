@@ -34,6 +34,7 @@ Ins	packages/std-avrac/src/language/llvm.av	emit_ins	its machine projection
 Ins	packages/std-avrac/src/features/facts.av	give	whether the runtime registry validates it
 Ins	packages/std-avrac/src/core/ir.av	body_symbol	the program body it names
 Ins	packages/std-avrac/src/core/ir.av	hosted_symbol	the hosted fn it calls
+RtKind	packages/std-avrac/src/core/runtime_header.av	c_kind	the C type, probe and word it crosses as
 RtKind	packages/std-avrac/src/language/llvm.av	ll_rt_kind	the LLVM type it becomes
 RtKind	packages/std-avrac/src/language/llvm.av	rt_arg	how an argument crosses the boundary
 RtKind	packages/std-avrac/src/language/llvm.av	answers_word	how an answer crosses back
