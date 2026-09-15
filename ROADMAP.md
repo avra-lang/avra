@@ -13569,3 +13569,276 @@ lanes' trees; this tree at the merge points only.
   name the CONTRACT it protects; two spec assertions changed because
   the mechanism moved (a refusal's seat words, a parse error now at
   the library) and were reported, not hidden.
+
+## Feedback survey — 2026-09-14 #9 (lane/d, the Style-section law audit)
+
+Counted per axis: friction 2, sugar 0, features 1, defects 0,
+doctrine 3, performance 0, process 2. The top three by cost: a law
+that was false forty minutes after it landed and stood for eight
+days; a hand-kept list beside the tool that owns it; a refuter's
+final sentence that had to be checked against the tree like any
+other claim. Not surveyed: any package's code beyond the names the
+seven laws cite; the other sections of CLAUDE.md (the next slices).
+No Avra was written this slice, so sugar, defects and performance
+are empty by scope and not by sweep.
+
+### FRICTION — what cost time
+
+- **A SUBAGENT REPORT TRUNCATES AT THE HARNESS, NOT AT THE
+  FINDING.** Both agents' reports were cut mid-law and had to be
+  re-requested in pieces; the cut fell inside the one law that
+  mattered, twice. EVIDENCE: two `SendMessage` round trips for laws
+  5–7 and for law 5's final text. THE ASK: none for the tree — brief
+  a subagent to lead with verdicts and put exact texts LAST, so the
+  cut lands on the recoverable half.
+- **THE GATE OUTGROWS THE FOREGROUND WINDOW.** `make gate` under the
+  watchdog crossed 600 s and moved to the background; the lock held
+  and the peak printed (728 MB), exactly as the LOCK law says.
+  EVIDENCE: this slice's gate. CONFIRMS CLAUDE.md's "THE LOCK IS THE
+  LAW"; no ask.
+
+### FEATURES — a capability
+
+- **A KEEPER FOR THE NAMES DOCTRINE CITES.** CLAUDE.md names 98
+  snake_case identifiers in backticks; before this slice two of the
+  seven Style laws cited fns dead since 20dae3b, and no tool could
+  say so. Measured after the fix: 96/98 resolve, and the two that do
+  not are a negative example (`emit_loop`, a shape the law refuses)
+  and a prose shortening (`get_owned`). EVIDENCE: a grep of every
+  `` `a_b` `` in CLAUDE.md against packages/, tools/, runtime/,
+  backend/. THE ASK: `make doctrine` — grep each cited identifier
+  and refuse a dead one unless the sentence licenses it; a 2%
+  false-positive floor is the price of not finding the next
+  `printed_value` by hand.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **A LAW CAN BE STALE THE DAY IT LANDS.** The builder-words law was
+  written at 56424e0 (15:05) asserting a "builder failed:" prefix
+  the same author removed at c7b5038 (15:46). The entry described
+  the tree it was about to change, in the present tense, and the
+  correction was in the commit body and not in the doctrine.
+  EVIDENCE: `git log -1 --date=iso` on both. THE ASK: a change that
+  retires a mechanism a law names carries the law's edit in the same
+  commit — the cited-name keeper above is the enforcement.
+- **A COUNT IN A LAW NAMES ITS RECEIPT.** "five of today's messages
+  … against eight real defects" never matched c7b5038's own body
+  ("five of the seven builder refusals lane C sampled"); today's
+  split is 10 defect-worded to 13 law-worded. Reworded to the
+  receipt's figure and its commit. CONFIRMS "A COUNT FROM A PACKAGE
+  SWEEP IS LINES, NOT SITES" one level up: a count with no base is a
+  claim.
+- **A GENERAL SHAPE MUST FIT ITS OWN INSTANCE.** The law's lesson
+  read "put the claim in the words, not in a flag — a flag can be
+  set wrong", while its instance was the reverse: the flag
+  (`Cause.Builder`, still projected to F0102) was right and the
+  prose restating it lied. Reworded: a paraphrase of a flag is a
+  second copy; words carry the claim, structure the category, and
+  the words never restate the category. EVIDENCE:
+  `grammar/executor.av:374`, `language/codes.av:19`.
+
+### PROCESS — the working discipline
+
+- **KEEP: the auditor/refuter pair, and check the refuter too.** The
+  refuter found both the count mismatch and the incoherent general
+  shape, which the auditor had passed; its own closing sentence
+  ("either the words carry the claim or the structure does, never
+  both") contradicted the tree and was corrected against
+  `codes.av:19`. A refutation is a claim like any other.
+- **KEEP: the hand list dies in the same commit that finds it.**
+  DOGFOODING's `Ratcheted:` line lagged the tool by two rules;
+  `python3 tools/idioms.py --rules` answers now and the doc points
+  at it. One flag, one pointer, no third copy.
+
+## Feedback survey — 2026-09-14 #10 (lane/d, the Rules-section law audit)
+
+Counted per axis: friction 1, sugar 0, features 1, defects 1 (a
+keeper's, latent), doctrine 4, performance 0, process 2. The top three
+by cost: a keeper that read three of nine `Ins` consumers only up to
+their first arm; a consumer count spelled in three places while the
+keeper's table grew past it; a lead's own grep that missed the first
+row of a heredoc. Not surveyed: "The subset today" and "Working
+discipline" (the next slices); any package's code beyond what the 68
+laws cite. No Avra was written, so sugar and performance are empty by
+scope.
+
+### FRICTION — what cost time
+
+- **A GREP FOR `^Ins` MISSES THE ROW ON THE OPENER'S LINE.**
+  `CONSUMERS="Ins …` puts the first row after the variable name, so a
+  line-anchored grep counted eight rows of nine and I filed `dst_of`
+  as missing from the keeper, added a duplicate, and read `Ins 10`
+  back. Cost: one false finding, one revert. EVIDENCE: tools/vocab.sh:28.
+  THE ASK: none for the tree — ask the keeper (`make vocab` prints its
+  count) before grepping the file it guards; CLAUDE.md's "ENUMERATE
+  FROM WHAT THE CONSUMER SEES" already says so.
+
+### FEATURES — a capability
+
+- **THE ROSTER IS ONE TABLE.** The `Ins` consumer list is spelled in
+  tools/vocab.sh, core/ir.av's header and `avra new ins`'s scaffold;
+  the two prose copies said "eight" while both listed nine. This slice
+  made the prose count-free and left three lists. THE ASK: the
+  scaffold and the header read vocab.sh's rows (a comptime `const` over
+  the table, or the scaffold shelling to `make vocab --rows`); the
+  third copy names the concept and dies.
+
+### DEFECTS — a keeper that examined too little
+
+- **A CONSUMER ENDED AT THE FIRST CLOSING BRACE.** tools/vocab.sh ended
+  a fn at `/^ *}$/`, so a dispatch with a braced arm was scanned only
+  to that arm's close: `memory_ins` 78 of 224 lines, `body_lines` 54
+  of 121, `give` 397 of 403. Latent — the unread regions carry no
+  catch-all today — and witnessed both ways on copies: a planted
+  `_ ->` at memory_ins:75 refused, at :150 accepted. Fixed in this
+  slice: a fn ends at the brace on ITS OWN indent, the keeper prints
+  lines examined per consumer, and a two-surface self-test plants the
+  shape. EVIDENCE: the rules refuter's probe; `make vocab` now prints
+  the per-consumer count. CLAUDE.md's "THE DELIMITER IS NOT WHERE THE
+  LAYOUT SUGGESTS" names this exact shape, for a different tool.
+
+### DOCTRINE — stale facts in nine of 68 laws
+
+- **A COUNT IN A LAW IS A CLAIM WITH NO RECEIPT.** "19 sites" (no
+  grep reproduces it), "eight consumers" (nine), "four emitters"
+  (five: `.Pack`, memory.av:210), "three features" (four). All four
+  counts were true when written and none carried the command that
+  produced them. Reworded count-free or to the keeper that holds the
+  number. CONFIRMS "A COUNT FROM A PACKAGE SWEEP IS LINES, NOT SITES".
+- **A DEAD NAME IN A LAW IS INVISIBLE TO EVERY READER.** `balanced`
+  and the `"quote" "{" t:STRING "}"` rule both died at 131f044 when a
+  quote became a parsed tree; the law kept teaching `quote {` as a raw
+  body. Survey #9's cited-name keeper ask covers it; 93 backticked
+  names now resolve but two licensed.
+- **AN ATTRIBUTION EXPIRES WHEN THE CODE LANDS.** "The sqlite lane's
+  empty-path door is the instance, attributed" — landed at 7ac2c51
+  (open.av's `path_fault`) and still labelled as another tree's. THE
+  ASK: a merge that lands an attributed instance edits its label in
+  the same commit; the cited-name keeper cannot see this one.
+- **A LAW'S EXAMPLE WEARS THE TREE'S CURRENT SPELLING.** Two examples
+  (`tag_of(cx, v)`, `lower_defect(cx, e, …)`) were free-fn forms I39
+  now refuses; a reader copying the law's own example would have
+  tripped the ratchet. Reworded to the methods.
+
+### PROCESS — the working discipline
+
+- **KEEP: parallel auditors, one refuter, and the refuter checks the
+  lead too.** Four Opus auditors over 17 laws each, one refuter over
+  their nine texts; the refuter found the keeper defect while testing
+  a fact I had handed it as established, and refuted two of my three
+  handed-down facts. A fact in a brief is a claim like any other.
+- **KEEP: exact FROM/TO pairs applied by script.** Nine rewordings
+  landed by `str.count(old) == 1` replacement with no hand editing; a
+  FROM that did not match would have failed loudly instead of
+  splicing at the wrong anchor (CLAUDE.md's twice-applied-patch law).
+
+## Feedback survey — 2026-09-14 #11 (lane/d, the Working-discipline law audit)
+
+Counted per axis: friction 0, sugar 0, features 0, defects 0,
+doctrine 3, performance 0, process 2. The top three by cost: four
+`file:line` pointers that had all rotted in one law; a law calling a
+fn "never existed" the day after that fn landed; a keeper whose
+accepted surface had no fixture while the law beside it demanded
+one. Not surveyed: "The subset today" (the last slice; probe-heavy).
+No Avra was written, so the empty axes are empty by scope.
+
+### DOCTRINE — stale facts in six of 24 laws, plus one in Rules
+
+- **A LINE NUMBER IN A LAW IS A CLAIM WITH A HALF-LIFE OF ONE EDIT.**
+  `Makefile:59-64` now lands on the bootstrap target (`make recover`
+  moved it), `ROADMAP:2018/2109/2190/2345` all point elsewhere,
+  `open.av:358` is a doc comment two fns down. Reworded to NAMES: a
+  target, a fn, a heading, a greppable phrase. EVIDENCE: wd-gA's
+  probes; `grep -n "^avra:" Makefile`. THE ASK: the cited-name keeper
+  (survey #9) refuses a bare `file:NNN` in CLAUDE.md, or resolves it
+  and reports drift.
+- **"HAS NEVER EXISTED" IS A DATED CLAIM.** The two-surfaces law said
+  no `refused_n` had ever existed; it landed at c515f04 with 30
+  callers, and the idioms matcher that once permitted a dead spelling
+  now permits a live one. The law's own ask — N spellings, N positive
+  fixtures — was unpaid in the tool. Paid: `ACCEPTED` in
+  tools/idioms.py, five fixtures, falsified by dropping one spelling.
+- **A LABEL EXPIRES WITH THE LANDING, TWICE.** The two-hats law still
+  said "the sqlite driver lane reports" for a URI door in open.av
+  here, and the receipts law cited that label as its live exemplar.
+  Slice three fixed one expired label and read past this one in the
+  same section; a sweep by CLAIM ("attributed", "lane's") finds them,
+  a sweep by law does not. CONFIRMS "THE SWEEP IS BY CLAIM, NEVER BY
+  FILE".
+
+### PROCESS — the working discipline
+
+- **KEEP: refuse a fresh line number as a fix.** The refuter was told
+  to reject any TO text that swapped a rotted line for today's, and
+  did; every replacement cites by name. A rule stated to the reviewer
+  beats one hoped for from the author.
+- **KEEP: land the label fix before the law that cites it.** Two
+  hats before the receipts law, or the receipts law names a label
+  still standing in the same commit. One PR, ordered hunks.
+
+## Feedback survey — 2026-09-14 #12 (lane/d, the subset re-probe; the audit's last slice)
+
+Counted per axis: friction 2, sugar 0, features 0, defects 3 (the
+compiler's, filed), doctrine 3, performance 0, process 2. The top
+three by cost: three compiler defects found by re-running the file's
+own examples; a probe harness that rewrote `\u` into U+FFFD and
+reported a holding entry as accepted; an entry that contradicted its
+neighbour eleven lines down. Not surveyed: the two entries a loose
+file cannot reach (a declares-annotation needs a second module; a
+minted NUL needs `@std/text`) — cited from source, not probed. No
+Avra was written beyond scratch probes.
+
+### FRICTION — what cost time
+
+- **THE PROBE HARNESS REWRITES `\u`.** A heredoc and the editor's
+  Write both turned `"�"` into a real U+FFFD, so entry 26's
+  probe first read ACCEPTED where it HOLDS (length 6, a backslash and
+  a `u`). `printf '\134u'` writes the byte. EVIDENCE: sub2's report.
+  THE ASK: none for the tree — write probe files with printf and
+  octal escapes; a probe's file is checked with `od -c` before its
+  result is believed.
+- **`$?` AFTER A PIPE IS THE PIPE'S.** Four exit-0 readings were
+  `tee`'s status. Read the compiler's status before piping.
+
+### DEFECTS — the compiler's, filed under avra-8sb5.5
+
+- **A `null ->` ARM OVER A NULLABLE ENUM CASCADES F3002** ("`null` is
+  a keyword — pick another name") beside the true F2013, and carets
+  the arm's body. Filed avra-ismf.
+- **AN ANNOTATION ON A FN'S TAIL EXPRESSION IS SILENT**: `@no_such`
+  before the tail `1` checks and runs clean; on a statement or a
+  declaration it is F3000. Filed avra-mtrh.
+- **A USER `fn main` CALLED FROM THE TOP LEVEL RECURSES** into the
+  program's own entry ("recursion too deep — 400 nested calls"), no
+  annotation involved. Filed avra-ewei.
+
+### DOCTRINE — the cache moved under nine entries
+
+- **A CACHE ENTRY NAMES ITS BASE OR IT CANNOT BE RE-CHECKED.** 58
+  entries re-probed at f178c17: 46 held verbatim; 8 refuse with a
+  different code or different words today (`ident` unpinned now
+  SPEAKS F2033; the two-`for` comprehension now names the
+  comprehension first; a parse error no longer stops typing for the
+  file); `@comptime` parses now (F3000, a speaking law, deleted);
+  `export const` compiles (the guard spares a `const_value`, the
+  clause retired). Every rewording quotes the output it was
+  re-probed with.
+- **TWO ENTRIES CONTRADICTED EACH OTHER ELEVEN LINES APART.** The
+  `export const` refusal and the top-level-`const` entry ("exported
+  only when it says `export`") both stood; one was stale. CONFIRMS
+  the duplicate-prose law's premise that prose has no gate; a
+  cross-entry contradiction needs a reader, and this audit was one.
+- **AN EXAMPLE THAT TRIPS A SECOND LAW HIDES THE ONE IT SHOWS.**
+  Entry 22's comprehension example named a parameter `as`, a
+  keyword, so its probe drew F3002 beside the refusal it exists to
+  demonstrate. Re-spelled.
+
+### PROCESS — the working discipline
+
+- **KEEP: the refuter re-runs every probe.** Told that a verdict it
+  had not reproduced was not a verdict, it refuted one of eleven
+  (entry 27's "stops there": the whole file goes untyped, earlier
+  declarations included) and narrowed two others.
+- **RECORDED TRIGGER, unchanged:** when `lang/subset/*.av` lands as
+  gate-verified program tests, this section becomes a pointer. Its
+  first two members are the entries a loose file cannot reach.

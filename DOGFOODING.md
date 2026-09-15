@@ -59,7 +59,8 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I38 I35 I36.
+Ratcheted: `python3 tools/idioms.py --rules` answers, from the tool's own
+`RULES` keys — never a hand copy here.
 Unratcheted, read by a human: I5 (a matcher cannot see whether a
 predicate has effects), I31 (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
