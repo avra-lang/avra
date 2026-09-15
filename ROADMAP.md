@@ -14281,3 +14281,147 @@ not watched to the end. Not surveyed: H2, and anything outside
   `vocab.sh`'s "what it decides" column is command substitution: the
   keeper died with "@std/meta: No such file or directory" — from a
   comment.
+
+## Feedback survey — 2026-09-15 (phase/d, D1: the grammar names the node)
+
+Scope: the D1 slice on `phase/d` at `7ab84f1`+ — the `@derive(Grammar)`
+payload rows, the row carried on `Builder`, the name-keyed readers, and
+the differential against the hand transcription. NOT surveyed: the
+runtime, the backend, any package outside `std-avrac`, and performance
+beyond gate peaks (see PERFORMANCE).
+
+### FRICTION
+
+- **A DERIVE CANNOT SHOW WHAT IT GENERATED.** Three failed `make avra`
+  cycles (~4 min each) diagnosing generation purely from downstream
+  symptoms, because nothing prints the post-expansion file. EVIDENCE:
+  `build/mk2.log` — "`@std.avrac.core` does not export
+  `grammar_payloads_Expr`" plus "no `fn grammar_payloads_Expr` is
+  defined", which are the SAME fact (the fn existed, file-locally) worn
+  as two different accusations; `build/mk4.log` — 43 x F2030 with no
+  line naming the cause. THE ASK: `avra expand <file>`, printing a
+  file's declarations after derives have run. Every one of the three
+  cycles would have been one look.
+- **AN ANNOTATION PROBE NEEDS A PACKAGE BUILT AROUND IT.** A loose
+  scratch file using `@std.meta` is F3015 "this file is not in a
+  package — `use` needs a root", so each meta probe costs an
+  `avra.toml`, a `src/`, and a relative dependency path. Three
+  scaffolds this slice. THE ASK: a probe mode that supplies a root, so
+  a one-file question stays a one-file probe.
+
+### SUGAR
+
+- **A HOLE THAT SPLICES A RUN INTO A LIST OR ARGUMENT POSITION.**
+  F2075: "a hole in expression position takes `Code`, an `int` or a
+  `bool`, found `List<Code>`". So a derive generating N values folds
+  them by hand, and the fold is now spelled THREE independent times:
+  `@std/derive`'s `conj` (std-derive/src/derive.av:66), this slice's
+  `as_list_expr` (core/grammar_derive.av:44), and — the sharpest —
+  `core/rebuild_derive.av:69-78`, an arity ladder written out to SIX
+  payloads whose own comment says "the one place this derive repeats
+  itself, and the backlog's ask names the site". WANTING SITES:
+  core/grammar_derive.av:19 and :32. THE ASK: a hole that splices a
+  `List<Code>` comma-separated into a list literal and an argument
+  list, as a `List<string>` hole already splices binders into a
+  pattern (`.${v}(${bs})`, rebuild_derive.av:61). One ask retires all
+  three spellings and the ladder.
+
+### FEATURES
+
+- **A DERIVE READING A TYPE IT DOES NOT SIT ON, AND EMITTING WHERE THE
+  READER IS.** Filed as avra-8sb5.11.100 with the measurements; not
+  re-filed here. It is what blocks deleting node_scaffold.av's three
+  builders (D1b).
+
+### DEFECTS
+
+- **AN ANNOTATION ON A DECLARATION KIND IT CANNOT TAKE IS SILENTLY
+  IGNORED.** Filed as avra-8sb5.11.101, routed to phase C. THE PART
+  THAT BELONGS HERE IS THAT IT IS THE SECOND INSTANCE OF ONE CLASS:
+  the 2026-09-14 comptime/names survey records a derive whose
+  expansion failed mid-resolve, producing "51 errors of the form
+  '`NodeStore` has no method `hole_stmt`', ALL pointing at rebuild.av,
+  NONE at the annotation", at ~2.5 hours to bisect. Mine produced 43
+  errors, none at the annotation, from a different cause. TWO CAUSES,
+  ONE SYMPTOM: a silent expansion failure whose whole evidence accuses
+  correct call sites. THE ASK IS THEREFORE WIDER THAN EITHER BUG: any
+  expansion that does not happen must SPEAK — the sibling of "a fill
+  the compiler cannot place is spoken, never spliced".
+
+### DOCTRINE
+
+- **A DERIVE'S OUTPUT IS FILE-LOCAL.** Not module-local: a SIBLING
+  FILE in the same module cannot call what a derive made. EVIDENCE
+  (probed at `7ab84f1`, both files in one module directory): an enum
+  with the derive in `src/m/a.av`, `src/m/b.av` calling the generated
+  fn, answers F3000 "no `fn rows_of_Color` is defined"; the same call
+  from the annotated file works. Documented nowhere. CONSEQUENCE PAID
+  IN D1: `node_payload_rows()` is hand-written in core/nodes.av — the
+  only file that can see what `@derive(Grammar)` made — instead of
+  living beside its consumer.
+- **A DESIGN DOC'S PLACEMENT DECISION WAS REFUTED BY THE FIRST
+  IMPLEMENTER.** `docs/2026_09_14_GRAMMAR_NAMES_THE_NODE.md` §4
+  decided the derive is "applied features-side, to a declaration that
+  NAMES the core enum". There is no such spelling: `@ann` on `type
+  Alias = Expr` is F2066 "this is a type", `Named` carries only
+  `{name, at}`, and `@std/meta` has no lookup-by-name. The doc's own
+  premise — "it is handed a `Type`, not a file" — is true but hands it
+  the ANNOTATED declaration's Type. Ratified correction: the derive
+  sits on the core enums. THE LAW CONFIRMED: a locally coherent design
+  fails on first contact with an implementer, and reading it again
+  would never have found it.
+- **A GENERATED FN'S NAME IS A `string` HOLE, NOT `Code`.**
+  `${"grammar_payloads_${t.name}"}` works; `${name("...")}` is refused
+  — "a hole in name position takes a `string`, an `int` or a named
+  meta value, found `Code`". Recorded so the next author does not
+  re-probe it.
+
+### PERFORMANCE
+
+EMPTY, and deliberately. Nothing in D1 was measured beyond gate peaks
+(826-860 MB, in line with the tree's ~800 MB gate), and the two costs a
+reader might assume — `row_for`'s linear scan over the ~100-row union,
+and `payloads_for`'s scan per builder row — are ASSEMBLY-TIME, paid
+once per language assembly, and were NOT measured. Stating that rather
+than guessing: an unmeasured cost is not a finding.
+
+### PROCESS
+
+- **A RECEIPT DOES NOT NAME THE TREE IT CAME FROM, AND I PROVED IT THE
+  EXPENSIVE WAY.** Four heavy runs — a full emit, a gate, `make test`,
+  `make tested` — executed in `/avra` (main) while assigned to
+  `../avra-phase-d`, with nothing in any output naming the worktree. I
+  then used main's seed history to tell the coordinator their
+  291,270-line count was wrong; it was right for their tree and my
+  count was right for a tree nobody had asked about. THE EXISTING LAW
+  ("when two people disagree about a COUNT, ask WHICH TREE EACH
+  COUNTED") is confirmed, and the gap is that no receipt carries the
+  answer. THE ASK: heavy tool output names its worktree and branch —
+  `watch.sh`'s peak line is the natural place, one line, and it would
+  have made the error self-evident on the first run.
+- **THE BUILD LOCK WAS A RACE, NOT A QUEUE — AND THE PRIOR SURVEY
+  CONCLUDED OTHERWISE.** The 2026-09-14 survey recorded "THE BUILD
+  LOCK'S QUEUE … No ask — the lock is right and the serialisation is
+  the point." The serialisation was right; the FAIRNESS was not.
+  `tools/watch.sh` took the lock with a bare `until mkdir` poll, which
+  serves whoever polls at the right instant rather than whoever
+  arrived first, so a lane running back-to-back builds starves a
+  waiter indefinitely. MEASURED: 161 consecutive lock-wait lines in
+  `build/t4.log` against phase C re-acquiring under three different
+  pids. FIXED by the coordinator at `37f1ec4` (lane/comptime) as a
+  ticket queue. RECORDED because a prior survey's "no ask" is exactly
+  what a later instance has to overturn, and the cost of the wrong
+  conclusion was a slice stalled mid-pass.
+- **A LEADING `&&` DOES NOT CONTINUE A LINE.** The twin of the
+  2026-09-14 survey's leading-`??` row, same law, same misleading
+  refusal ("expected `}` to close the block", pointing at the `&&`
+  line and never at continuation). Cost one test run. Confirmation,
+  not a new ask.
+- **THE DISCIPLINE THAT HELD, WORTH NAMING.** Two moments where the
+  rules did the work: not editing the worktree while its own run sat
+  queued (the edits were staged and applied after), and diffing the
+  test fixture against `git show HEAD:node_scaffold.av` to prove it
+  was the D0 transcription verbatim rather than something I had
+  re-derived from the source I was testing. The second is what makes
+  the differential a two-reading oracle instead of a copy checking
+  itself.
