@@ -148,6 +148,51 @@ fn the_fast_one_wins() -> Result<string, ProcessError> {
     "${w.out.stdout.trim()}|${now_ms() - began < 2000}"
 }
 
+/// A STAGGER OF ZERO ASKS FOR ALL OF THEM AT ONCE, and this reads the
+/// answer without a stopwatch. Sixteen losers, each with a 300ms
+/// deadline, and an instant winner LAST: a launcher that starts one
+/// command per sweep needs longer than that deadline just to REACH the
+/// winner, so the losers go overdue and the race fails. Starting every
+/// DUE command starts all seventeen and the winner is home first.
+fn all_at_once_reaches_the_last() -> Result<string, ProcessError> {
+    let s = p_sh()?
+    mut cs: List<Command> = []
+    mut i = 0
+    while i < 16 {
+        cs.push(cmd(s, ["-c", "sleep 9"]) with { timeout: ms(300) })
+        i = i + 1
+    }
+    cs.push(cmd(s, ["-c", "echo won"]))
+    let w = race(cs, ms(0))?
+    w.out.stdout.trim()
+}
+
+/// AND A STAGGER THAT IS NOT ZERO IS STILL A STAGGER. Three commands
+/// 200ms apart: the third cannot have started before 400ms, whatever
+/// the launcher does with the ones that are due.
+fn a_stagger_still_staggers() -> Result<string, ProcessError> {
+    let s = p_sh()?
+    let cs = [cmd(s, ["-c", "sleep 9"]), cmd(s, ["-c", "sleep 9"]), cmd(s, ["-c", "exit 0"])]
+    let began = now_ms()
+    let _ = race(cs, ms(200))?
+    "${now_ms() - began >= 400}"
+}
+
+/// EIGHT STAGES, TWO MEGABYTES EACH, while a sweep spends its one wait
+/// on a single stage. The bytes are the assertion — a stage polled
+/// without a wait must still be drained.
+fn every_stage_is_drained() -> Result<string, ProcessError> {
+    let s = p_sh()?
+    mut cs: List<Command> = []
+    mut i = 0
+    while i < 8 {
+        cs.push(cmd(s, ["-c", "yes abcdefghijklmnopqrstuvwxyz | head -c 2000000"]))
+        i = i + 1
+    }
+    let outs = parallel(cs, 8)?
+    "${[o.out.stdout.length for o in outs].all(it == 2000000)}"
+}
+
 fn a_failing_finisher_wins_too() -> Result<string, ProcessError> {
     let s = p_sh()?
     let w = race([cmd(s, ["-c", "sleep 5"]), cmd(s, ["-c", "exit 2"])], ms(10))?
@@ -170,6 +215,21 @@ spec "std/process pipelines" {
         }
         then "finishing with a failure still wins" {
             p_shown(a_failing_finisher_wins_too()) == "with code 2"
+        }
+    }
+
+    given "a sweep is paced by ONE wait, and a stagger of zero by none" {
+        // Both cases read the LAUNCHER and the PACING without a
+        // stopwatch: one turns a latency into a refusal, the other
+        // turns a missed poll into missing bytes.
+        then "every command that is due starts, so the last is reached before the first times out" {
+            p_shown(all_at_once_reaches_the_last()) == "won"
+        }
+        then "and a stagger that is not zero still holds the third command back" {
+            p_shown(a_stagger_still_staggers()) == "true"
+        }
+        then "a stage polled without a wait is still drained whole" {
+            p_shown(every_stage_is_drained()) == "true"
         }
     }
     given "kernel pipes between stages" {

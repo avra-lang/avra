@@ -909,6 +909,23 @@ fn poured(s: Stage) -> Stage {
     s with { fed: s.fed + n }
 }
 
+/// ONE STAGE'S TURN IN A SWEEP: the DEADLINE asked before the turn, as
+/// the one-shot pump asks it, and the WAIT spent only if this sweep has
+/// not spent it yet.
+///
+/// ONE WAIT PACES A SWEEP, NOT ONE PER STAGE. The wait is what paces
+/// the loop, so N waits pace it N times over and the field's own size
+/// becomes the latency. A stage that turns ready during that one wait
+/// is seen on the next pass — one turn late at worst, where a wait per
+/// stage made it N turns.
+///
+/// `timed` is the witness of which branch was taken: nothing else sets
+/// it, and a stage that is already timed never reaches a sweep.
+fn paced(s: Stage, waited: bool) -> Stage {
+    if past(s) { return swept(s) with { timed: true } }
+    ticked(s, if waited { 0 } else { turn_ms })
+}
+
 /// One turn: what is ready, drained and fed, then a reap. The turn's
 /// LENGTH is not a correctness question — `pumped` holds the order.
 fn ticked(s: Stage, ms: int) -> Stage {
@@ -1124,14 +1141,13 @@ impl Pipeline {
         while pending > 0 {
             pending = 0
             mut grown: List<Stage> = []
+            mut waited = false
             for i, s in live {
                 if s.stopped {
                     grown.push(s)
                 } else {
-                    // THE DEADLINE IS ASKED BEFORE THE TURN, as the
-                    // one-shot pump asks it, and the sweep before
-                    // declaring holds what the stage had said.
-                    let t = if past(s) { swept(s) with { timed: true } } else { ticked(s, 10) }
+                    let t = paced(s, waited)
+                    waited = waited || !t.timed
                     if overdue(t) || capped(t) {
                         let _ = avra_proc_signal(s.h, sigkill, 1)
                         if failure == null { failure = broken(self.stages[i], t) }
@@ -1181,9 +1197,10 @@ export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, Proce
         }
         mut still: List<Stage> = []
         mut still_owners: List<int> = []
+        mut waited = false
         for i, s in live {
-            // the deadline before the turn, the sweep before declaring
-            let t = if past(s) { swept(s) with { timed: true } } else { ticked(s, 10) }
+            let t = paced(s, waited)
+            waited = waited || !t.timed
             if overdue(t) || capped(t) {
                 let why = broken(cs[owners[i]], t)
                 abandoned(live)
@@ -1214,7 +1231,12 @@ export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessE
     mut next = 0
     mut next_at = began
     while true {
-        if next < cs.length && now_ms() >= next_at {
+        // EVERY COMMAND THAT IS DUE, not one per pass. A pass costs a
+        // turn per live stage, so launching one at a time made the
+        // START of the last command wait for a sweep of all the
+        // others — quadratic in the field, and `stagger: ms(0)`,
+        // which asks for all of them AT ONCE, paid the most.
+        while next < cs.length && now_ms() >= next_at {
             match launched(cs[next], 0 - 1) {
                 .Err(e) -> {
                     abandoned(live)
@@ -1231,9 +1253,10 @@ export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessE
         // LICENSED I4: the first stage to finish over pump TURNS — a fold in time, not a scan of a list
         mut winner: Outcome? = null
         mut grown: List<Stage> = []
+        mut waited = false
         for i, s in live {
-            // the deadline before the turn, the sweep before declaring
-            let t = if past(s) { swept(s) with { timed: true } } else { ticked(s, 10) }
+            let t = paced(s, waited)
+            waited = waited || !t.timed
             if overdue(t) || capped(t) {
                 let why = broken(cs[owners[i]], t)
                 abandoned(live)
