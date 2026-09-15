@@ -14176,3 +14176,46 @@ empty. Not surveyed: any tree but ../avra-lane-a.
   a scratch directory first, and the scratch package's stray files
   join its program (two hostile `use` lines made a clean `run`
   fail) — one file per probe package.
+
+## Feedback survey — 2026-09-14 #13 (TOOLCHAIN, the prelude — PR pending, stacked on #11)
+
+Counted per axis: friction 1, sugar 1, doctrine 2, process 1;
+features, defects, performance empty. Not surveyed: any tree but
+../avra-lane-a.
+
+### FRICTION — what cost time
+
+- **A PACKAGE'S OWN PROGRAM TEST IS A FILE OF THE PACKAGE.** The
+  prelude's proof, laid out as `src/tests/hello/hello.av`, belonged
+  to the prelude package and so saw no prelude — one gate. The proof
+  is a nested package (`tests/hello/avra.toml` + `src/main.av`),
+  which is also the user's shape. The lesson generalises: a package
+  whose feature is "what other packages see" proves it from a
+  package that is not itself.
+
+### SUGAR — a construct the language should have
+
+- **`print` WITHOUT A NEWLINE.** Lane C's list named it; no runtime
+  row backs it (`avra_puts` writes a line, `avra_io_write` a file),
+  so the prelude cannot carry it under its own rule. THE ASK: an
+  `avra_print` row, then `print` joins the floor.
+
+### DOCTRINE
+
+- **THE PRELUDE IS A PACKAGE, NOT A SCOPE.** Lane C's recommendation,
+  taken: it is a node in the graph, so the layering has a bottom and
+  the floor law (F4018, a prelude manifest declaring a dependency) is
+  enforceable; a scope could not be at the bottom of anything.
+- **WEAK BINDING IS THE SHADOW LAW.** A prelude export binds only
+  where nothing else holds the name (`bind_prelude`, beside
+  `bind_builtin`), so a file's `fn println`, its `use @std.io.
+  {println}` and a `let println` all win in silence — witnessed from
+  an outside package for each. No warning: a name the floor offers is
+  a default, and a default overridden is not a mistake.
+
+### PROCESS
+
+- **THE SEED'S GENERATION GATES TWO SWEEPS.** Both this slice's and
+  #11's stripping sweeps (io's two verbs; the std manifests' rows)
+  wait on one `make seed` on main; filed as one recorded trigger in
+  CLAUDE.md each, both naming the same event.

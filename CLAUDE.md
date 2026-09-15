@@ -704,6 +704,25 @@ engine's spec, written by dogfooding.
   compiles HEAD in `seed-check`, and a seed that predates the door
   cannot read a manifest with no rows. Strip them in the slice after
   that refresh, and the pin law holds across the tree.
+- THE PRELUDE IS THE FLOOR: `@std/prelude` (packages/std-prelude) is
+  seen by every file in every package without a `use` — `println`
+  and `eprintln` today, and nothing a program can be compiled
+  without; a verb that fails that test belongs to a package above.
+  It is a PACKAGE the toolchain carries, not a scope the resolver
+  injects (P7: a reader can open it, `explain` can point at it, and
+  the layering `prelude <- text <- io <- process <- …` has a node at
+  its bottom). It binds WEAKLY (`bind_prelude`, features/
+  namespace.av): a file's own declaration, an explicit import, a
+  local binding all win silently. It DEPENDS ON NOTHING, and the
+  compiler refuses a prelude manifest that says otherwise (F4018).
+  A package's tests print through it, never through `@std/io`, so
+  a dev edge never points up — `@std/text`'s did, and is gone.
+  RECORDED TRIGGER: `@std/io` still exports `println`/`eprintln`
+  and the compiler's own source imports them, because the committed
+  seed predates the prelude and `seed-check` compiles HEAD with it;
+  after `make seed` on main carries the prelude, drop io's two verbs
+  and the 19 `use @std.io.{println…}` lines — an explicit import of
+  the prelude's name is legal, so the sweep is deletion only.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the

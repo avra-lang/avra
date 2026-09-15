@@ -281,11 +281,14 @@ fn toolchain_files() -> Map<string, string> {
         "/tc/std-io/avra.toml": "[package]\nname = \"@std/io\"\nversion = \"0.0.1\"\n",
         "/tc/std-io/src/io.av": "use @std.text.{shout}\nexport fn shouted(s: string) -> string {\n    shout(s)\n}\n",
         "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        "/tc/std-prelude/avra.toml": "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n",
+        "/tc/std-prelude/src/prelude.av": "export fn greet(s: string) -> string {\n    \"hi \" + s\n}\nexport fn floor() -> int {\n    0\n}\n",
     }
 }
 
 fn toolchain_names() -> List<string> {
-    ["/tc/std-text/avra.toml", "/tc/std-text/src/text.av", "/tc/std-io/avra.toml", "/tc/std-io/src/io.av", "/w/avra.toml", "/w/src/main.av"]
+    ["/tc/std-text/avra.toml", "/tc/std-text/src/text.av", "/tc/std-io/avra.toml", "/tc/std-io/src/io.av", "/w/avra.toml", "/w/src/main.av",
+     "/tc/std-prelude/avra.toml", "/tc/std-prelude/src/prelude.av"]
 }
 
 /// The program's root file, under a host whose std root is `/tc`.
@@ -369,6 +372,46 @@ spec "one directory, one spelling" {
             let names = ["/tc/std-text/avra.toml", "/tc/std-text/src/text.av", "/tc/std-io/avra.toml", "/tc/std-io/src/io.av", "w/avra.toml", "w/src/main.av"]
             let ws = new_workspace(memory_host_at(fs, names, "/") with { std_root: "/tc" }, "w", avra())
             ws.analyze_file("w/src/main.av").diagnostics.is_empty()
+        }
+    }
+}
+
+spec "the prelude" {
+    given "a file that imports nothing" {
+        then "a prelude export is in scope" {
+            ran_as(toolchain_app("greet(\"x\")\n").program("/w/src/main.av").run(), "hi x")
+        }
+        then "the toolchain's own packages see it too" {
+            mut fs = toolchain_files()
+            fs.set("/tc/std-text/src/text.av", "export fn shout(s: string) -> string {\n    greet(s) + \"!\"\n}\n")
+            fs.set("/w/src/main.av", "use @std.text.{shout}\nshout(\"x\")\n")
+            ran_as(new_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w", avra()).program("/w/src/main.av").run(), "hi x!")
+        }
+        then "a host with no std root has no prelude" {
+            let a = with_main("greet(\"x\")\n").analyze_file("/w/src/main.av")
+            a.diagnostics.length == 1 && a.report().contains("no `fn greet` is defined")
+        }
+    }
+    given "a name the file holds itself" {
+        then "the file's own declaration wins silently" {
+            ran_as(toolchain_app("fn greet(s: string) -> string {\n    \"mine \" + s\n}\ngreet(\"x\")\n").program("/w/src/main.av").run(), "mine x")
+        }
+        then "an explicit import wins silently" {
+            mut fs = toolchain_files()
+            fs.set("/tc/std-text/src/text.av", "export fn greet(s: string) -> string {\n    \"text \" + s\n}\n")
+            fs.set("/w/src/main.av", "use @std.text.{greet}\ngreet(\"x\")\n")
+            ran_as(new_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w", avra()).program("/w/src/main.av").run(), "text x")
+        }
+        then "the prelude's own file does not see itself twice" {
+            new_workspace(memory_host(toolchain_files(), toolchain_names()) with { std_root: "/tc" }, "/tc/std-prelude", avra()).analyze_file("/tc/std-prelude/src/prelude.av").diagnostics.is_empty()
+        }
+    }
+    given "the floor" {
+        then "a prelude that declares a dependency is refused" {
+            mut fs = toolchain_files()
+            fs.set("/tc/std-prelude/avra.toml", "[package]\nname = \"@std/prelude\"\nversion = \"0.0.1\"\n\n[dependencies]\n\"@std/text\" = { path = \"../std-text\" }\n")
+            fs.set("/w/src/main.av", "greet(\"x\")\n")
+            package_voice(new_workspace(memory_host(fs, toolchain_names()) with { std_root: "/tc" }, "/w", avra()), "`@std/prelude` depends on nothing")
         }
     }
 }

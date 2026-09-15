@@ -56,10 +56,11 @@ impl Decls {
 
     /// A file's namespace: its module's winners, then its imports; the
     /// module's clashes at this file's own declarations ride along.
-    fn file_names(file: FileId, module: ModuleNames, imports: List<Import>, shown: fn(string) -> string) -> Namespace {
+    fn file_names(file: FileId, module: ModuleNames, imports: List<Import>, prelude: List<Import>, shown: fn(string) -> string) -> Namespace {
         mut b = self.binder(shown)
         for d in module.bound { b.bind_decl(d) }
         for i in imports { b.import(i, file) }
+        for i in prelude { b.bind_prelude(i) }
         for d in self.builtin_decls() { b.bind_builtin(d) }
         let own = [c.diag for c in module.clashes if in_file(c, file)]
         b.names with { voices: Voices { list: own.concat(b.names.voices.list) } }
@@ -99,6 +100,13 @@ impl Binder {
     fn bind_decl(d: DeclId) {
         let x = self.decls.decl(d)
         self.bind(x.kind, x.name, d)
+    }
+
+    /// A prelude export binds where nothing else took the name — a
+    /// file's own `println`, or one it imports, wins silently.
+    fn bind_prelude(i: Import) {
+        let x = self.decls.decl(i.decl)
+        if self.held(x.kind, x.name) == null { self.bind(x.kind, x.name, i.decl) }
     }
 
     /// The language's own declaration binds where nothing else
