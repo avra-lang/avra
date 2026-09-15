@@ -780,6 +780,31 @@ reintroducing I3's blind spot names the two spellings it lost.
       nothing else" from an ordinary file with a trait in it, and the
       shape that breaks it is whatever ELSE the file holds; the keeper
       is the law in CLAUDE.md and the first build that tries.
+- I47 (unratcheted) A SPAN WINDOW'S ANCHOR SET HOLDS EVERY MEMBER IT
+      COULD CLOSE ON. Optional pieces of a declaration are attached to
+      the member they precede by WINDOWS over spans — a window opens
+      at the previous anchor and closes at this one — and the whole
+      correctness of that lives in the ANCHOR LIST. An anchor list
+      that names only SOME of the members leaves the others' pieces
+      inside a neighbour's window, so they attach to the wrong member
+      SILENTLY: `aligned_marks` opened a variant's window at the
+      previous variant NAME's end, which contains that variant's
+      entire payload list, so the moment payloads could carry marks a
+      variant's LAST payload's mark became the NEXT VARIANT'S. THE
+      SMELL: a window helper whose anchors are one KIND of member
+      (`List<Token>` of names) while the range it spans holds members
+      of another kind (the payload types between them). THE IDIOM:
+      one `MarkWindows`-shaped value carrying EVERY anchor, in any
+      order, asked per anchor (`w.at(lo)`), so adding a kind of
+      member that can carry the piece is adding it to the anchor list
+      and nothing else. Not ratcheted: no grep tells a complete
+      anchor list from a partial one — the anchors are whatever the
+      grammar can put there. THE KEEPER IS THE ATTACK, and it is
+      cheap: for each member kind, write the piece on the LAST member
+      of one group with another group following, and read it back
+      through the printer. Nine such cases round-trip at
+      `annotations_adversarial_test.av`'s "payload marks — alignment";
+      every one of them would have failed the partial anchor set.
 - I46 (unratcheted) A PER-DECLARATION WALK ASKS A STATEMENT'S
       QUESTION TWICE. A declared MEMBER can carry a declaration of its
       own standing on its OWNER'S statement — a record field's DEFAULT
