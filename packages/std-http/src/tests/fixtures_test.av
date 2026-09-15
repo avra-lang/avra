@@ -1,0 +1,28 @@
+// THE FIXTURES THE SUITES SHARE. Every file in this directory is ONE
+// module, so a fixture defined here is in scope for all of them — and
+// a fixture each suite spells for itself is a second builder under
+// test beside the product. Six files each built a `Request` from
+// octets; this is that builder, once.
+use @std.http.frame.{framed, limits}
+use @std.http.http.{Request}
+use @std.text.{from_codepoint}
+
+/// A request as the server holds one: framed from the octets it
+/// arrived in, so the target is a SPAN the framer already judged and
+/// never a string a test invented.
+fn framed_from(raw: Bytes) -> Request? {
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "t" }
+        .Partial -> null
+        .Refused(_) -> null
+    }
+}
+
+/// A request from its whole line, with the Host a 1.1 request owes.
+fn asked(line: string) -> Request? { framed_from((line + "\r\nHost: h\r\n\r\n").bytes()) }
+
+/// A GET of one target.
+fn asked_get(target: string) -> Request? { asked("GET " + target + " HTTP/1.1") }
+
+/// A NUL, which no string literal can spell.
+fn nul() -> string { from_codepoint(0) }
