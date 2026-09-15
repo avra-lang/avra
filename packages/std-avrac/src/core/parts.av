@@ -263,6 +263,33 @@ impl NodeStore {
         null
     }
 
+    /// A declaration's declared SEATS — a fn's parameters, or an
+    /// extern's. THROUGH THE PARTS, never by matching the node: this
+    /// file's whole contract is that a pass reads a statement HERE,
+    /// and three hand-written twins of these had grown in a driver.
+    fn declared_params(s: StmtId) -> List<Param> {
+        self.fn_parts(s)?.params ?? self.extern_parts(s)?.params ?? []
+    }
+
+    /// A record's declared fields, empty for every other statement.
+    fn declared_fields(s: StmtId) -> List<Param> {
+        self.struct_parts(s)?.fields ?? []
+    }
+
+    /// An enum's declared variants, empty for every other statement.
+    fn declared_variants(s: StmtId) -> List<Variant> {
+        self.enum_parts(s)?.variants ?? []
+    }
+
+    /// Every MARK written on a declaration's members — a record's
+    /// fields, an enum's variants and their payloads. A mark on the
+    /// declaration ITSELF is an annotation, and answers elsewhere.
+    fn marks_written(s: StmtId) -> List<Mark> {
+        let vs = self.declared_variants(s)
+        flatten([f.marks for f in self.declared_fields(s)])
+            .concat(flatten([v.marks.concat(flatten([q.marks for q in v.payloads])) for v in vs]))
+    }
+
     /// A declaring statement's name.
     fn declared_name(s: StmtId) -> string? {
         self.fn_parts(s)?.name ?? self.extern_parts(s)?.name ?? self.type_decl_name(s) ?? self.trait_parts(s)?.name ?? self.syntax_parts(s)?.name

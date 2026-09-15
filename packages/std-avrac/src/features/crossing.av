@@ -26,7 +26,7 @@
 //! refusing, one that moves the shape and restores it.
 use core.{TypeId, DeclId, TypeRegistry, SeatMark, mark_at, flatten, some_list, wreck}
 use @std.errors.{Loc}
-use @std.meta.{Param as MetaParam, Fn as MetaFn, Field as MetaField, Variant as MetaVariant, Type as MetaType, Diagnostic, Named, Trait as MetaTrait, Node, Decls as MetaDecls, Directive, Kind, Seat as MetaSeatValue}
+use @std.meta.{Param as MetaParam, Fn as MetaFn, Field as MetaField, Variant as MetaVariant, Mark as MetaMark, Type as MetaType, Diagnostic, Named, Trait as MetaTrait, Node, Decls as MetaDecls, Directive, Kind, Seat as MetaSeatValue}
 use features.{MetaVal, MetaHeap, Decls, Lifted, StructSig, EnumSig}
 
 // ── The shapes this compiler was built against ──────────────────
@@ -42,8 +42,9 @@ fn meta_records() -> List<MetaShape> {
         MetaShape { pkg: "@std.errors", name: "Loc", fields: ["file", "lo", "hi"] },
         MetaShape { pkg: "@std.meta", name: "Param", fields: ["name", "ty", "mutable", "settled", "at", "kind"] },
         MetaShape { pkg: "@std.meta", name: "Fn", fields: ["name", "params", "answer", "at", "answers"] },
-        MetaShape { pkg: "@std.meta", name: "Field", fields: ["name", "ty", "at", "kind"] },
-        MetaShape { pkg: "@std.meta", name: "Variant", fields: ["name", "payload", "at", "fields"] },
+        MetaShape { pkg: "@std.meta", name: "Mark", fields: ["name", "args", "at"] },
+        MetaShape { pkg: "@std.meta", name: "Field", fields: ["name", "ty", "at", "kind", "marks"] },
+        MetaShape { pkg: "@std.meta", name: "Variant", fields: ["name", "payload", "at", "fields", "marks"] },
         MetaShape { pkg: "@std.meta", name: "Seat", fields: ["kind", "mutable", "settled"] },
         MetaShape { pkg: "@std.meta", name: "Type", fields: ["name", "fields", "variants", "at"] },
         MetaShape { pkg: "@std.meta", name: "Diagnostic", fields: ["message", "help", "at", "warning", "kind"] },
@@ -166,6 +167,11 @@ impl Lifted {
     /// Each `Directive` the annotation answered.
     fn directives() -> List<Directive> {
         [crossed_directive(self.heap, item) for item in self.heap.slots(self.answer)]
+    }
+
+    /// Each mark WORD a trait's `marks` claims its `derive` reads.
+    fn claims() -> List<string> {
+        [crossed_text(item) for item in self.heap.slots(self.answer)]
     }
 }
 
@@ -303,11 +309,20 @@ fn meta_of_param(x: MetaParam, mut heap: MetaHeap) -> MetaVal {
 }
 
 fn meta_of_field(x: MetaField, mut heap: MetaHeap) -> MetaVal {
-    written("Field", [MetaVal.Text(x.name), MetaVal.Text(x.ty), meta_of_loc(x.at, heap), meta_of_kind(x.kind, heap)], heap)
+    written("Field", [MetaVal.Text(x.name), MetaVal.Text(x.ty), meta_of_loc(x.at, heap), meta_of_kind(x.kind, heap), meta_of_marks(x.marks, heap)], heap)
 }
 
 fn meta_of_variant(x: MetaVariant, mut heap: MetaHeap) -> MetaVal {
-    written("Variant", [MetaVal.Text(x.name), heap.node([MetaVal.Text(p) for p in x.payload]), meta_of_loc(x.at, heap), heap.node([meta_of_field(f, heap) for f in x.fields])], heap)
+    written("Variant", [MetaVal.Text(x.name), heap.node([MetaVal.Text(p) for p in x.payload]), meta_of_loc(x.at, heap), heap.node([meta_of_field(f, heap) for f in x.fields]), meta_of_marks(x.marks, heap)], heap)
+}
+
+/// A member's marks — the `@word`s it carries, in written order.
+fn meta_of_marks(ms: List<MetaMark>, mut heap: MetaHeap) -> MetaVal {
+    heap.node([meta_of_mark(m, heap) for m in ms])
+}
+
+fn meta_of_mark(x: MetaMark, mut heap: MetaHeap) -> MetaVal {
+    written("Mark", [MetaVal.Text(x.name), meta_of_texts(x.args, heap), meta_of_loc(x.at, heap)], heap)
 }
 
 // ── The type vocabulary, both ways ──────────────────────────────
