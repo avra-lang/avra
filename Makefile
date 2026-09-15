@@ -185,9 +185,8 @@ bootstrap: recover
 avra: $(COMPILER_OBJS)
 	@mkdir -p build
 	@# the log is BOUNDED: only its last 200 KB is ever read, and a build failing in a
-	@# loop filled the volume twice. The status rides the stream, which the pipe eats.
-	@{ ./avra build packages/cli 2>&1; echo "avra-build-status=$$?"; } | tail -c 200000 > build/avra-build.out
-	@[ "$$(tail -1 build/avra-build.out)" = "avra-build-status=0" ] || { cat build/avra-build.out; exit 1; }
+	@# loop filled the volume twice (tools/capped.sh, which also carries the status).
+	@sh tools/capped.sh build/avra-build.out 200000 ./avra build packages/cli || { cat build/avra-build.out; exit 1; }
 	@mkdir -p build
 	@cp packages/cli/src/main build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
@@ -310,7 +309,7 @@ seed-check: $(COMPILER_OBJS)
 	@clang -w -O1 build/seed-check/seed.ll $(COMPILER_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra-seed-check 2> build/seed-check/link.err \
 	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check build/avra-seed-check; exit 1; }
-	@build/avra-seed-check build packages/cli >> build/seed-check/out 2>&1 \
+	@sh tools/capped.sh build/seed-check/out 200000 build/avra-seed-check build packages/cli \
 	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; tail -c 2000 build/seed-check/out; rm -rf build/seed-check build/avra-seed-check; exit 1; }
 	@rm -rf build/seed-check build/avra-seed-check
 	@echo "seed-check: the seed compiles HEAD"
@@ -431,8 +430,14 @@ SQLITE_FLAGS := \
 # the sharpest — a BINARY one lane compiled and another could run,
 # under a rule whose whole claim is "Avra == C on the SAME object".
 # The build LOCK stays in /tmp by design: it is machine-wide.
+# THE TWO READINGS ARE NOT CAPPED, AND MUST NOT BE: they are compared,
+# and a `tail` over both could make two DIFFERENT outputs equal —
+# manufacturing the very agreement this rule exists to test. Their
+# producer is one fixed program in this tree whose whole output the
+# last line prints. The build's stderr beside them is a log, and is
+# capped. (tools/capped.sh carries the rule.)
 witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@./avra build packages/width-witness > build/witness.path 2> build/witness.err \
+	@sh tools/capped.sh build/witness.err 200000 sh -c './avra build packages/width-witness > build/witness.path' \
 	  || { echo "witness: build FAILED"; cat build/witness.err; cat build/witness.path; exit 1; }
 	@$$(tail -1 build/witness.path) > build/witness-avra.out
 	@cc -O2 -o build/witness-c packages/width-witness/src/reader.c build/width_witness.o
@@ -457,14 +462,17 @@ gate: seed-check stems vocab fingerprints externs idioms cited tested traps witn
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
 	@rm -rf packages/std-avrac/src/features/zz_probe
-	@./avra new feature zz_probe > build/scaffold-new.out 2>&1 || { cat build/scaffold-new.out; exit 1; }
+	@sh tools/capped.sh build/scaffold-new.out 200000 ./avra new feature zz_probe || { cat build/scaffold-new.out; exit 1; }
 	@trap 'rm -rf packages/std-avrac/src/features/zz_probe' EXIT INT TERM; $(MAKE) -s test
 
 # The differential gate: the compiled binary must say exactly what
 # the evaluator says.
+# THE TWO READINGS ARE UNCAPPED for the reason `witness` gives: they
+# are compared, and truncating both could make them agree. The build's
+# stderr is a log and is capped.
 native-check: $(COMPILER_OBJS)
 	@./avra run $(FILE) > build/native-check-eval.out
-	@./avra build $(FILE) > build/native-check-bin.path 2> build/native-check-bin.err
+	@sh tools/capped.sh build/native-check-bin.err 200000 sh -c './avra build $(FILE) > build/native-check-bin.path'
 	@"$$(cat build/native-check-bin.path)" > build/native-check-native.out
 	@diff build/native-check-eval.out build/native-check-native.out && echo "native == eval"
 
@@ -480,8 +488,8 @@ fuzz: $(COMPILER_OBJS)
 # throwaway feature, run the suite with it in the tree, remove it.
 scaffold-check: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe
-	@./avra new feature zz_probe > build/scaffold-new.out 2>&1 || { cat build/scaffold-new.out; exit 1; }
-	@./avra test packages/std-avrac/src/features/zz_probe/tests/zz_probe_test.av > build/scaffold.out 2>&1; s=$$?; \
+	@sh tools/capped.sh build/scaffold-new.out 200000 ./avra new feature zz_probe || { cat build/scaffold-new.out; exit 1; }
+	@sh tools/capped.sh build/scaffold.out 200000 ./avra test packages/std-avrac/src/features/zz_probe/tests/zz_probe_test.av; s=$$?; \
 	  rm -rf packages/std-avrac/src/features/zz_probe; \
 	  if [ $$s -ne 0 ]; then echo "scaffold-check FAILED"; tail -20 build/scaffold.out; exit 1; fi; \
 	  echo "scaffold-check: the templates compile and their test passes"

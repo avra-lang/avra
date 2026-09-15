@@ -641,6 +641,18 @@ engine's spec, written by dogfooding.
   the branch that would dodge it: deduplicating `far_merge`'s
   expected sets measured 3% SLOWER, and skipping an empty
   `concat` measured neutral. Measure before removing an allocation.
+- A CAP BELONGS ON A LOG, NEVER ON DATA THAT IS COMPARED. A build log
+  with no ceiling is a full disk — `make avra` wrote 43 GB into a file
+  whose last 200 KB was all anyone read, twice in one day, and took a
+  compiler binary and every other session's work with it. So every log
+  runs through `tools/capped.sh`, which caps the output and answers
+  the COMMAND's status (a bare pipe answers `tail`'s). But the same
+  `tail` over an artifact that is DIFFED can truncate two different
+  outputs INTO AGREEMENT — `witness` and `native-check` exist to prove
+  two readings agree, and a cap there manufactures the agreement with
+  no failing run to reveal it. Those two stay uncapped, with the
+  reason at the site. Ask of every redirect which it is: read by its
+  tail when something breaks, or compared to another file.
 - A PROCESS STATUS IS A VERDICT, never a count: statuses are eight
   bits, so 256 failures read as success. Exit 0 or 1 and print the
   count. A TRAP is not a verdict either — `avra_trap` exits 2, so a
