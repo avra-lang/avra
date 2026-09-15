@@ -15969,3 +15969,54 @@ unguarded crossing — that is avra-dtdp and it needs the compiler.
 - **MEASURING A CHECK'S RATE BEFORE BUILDING IT COST TEN MINUTES AND
   SAVED THE HOUR.** F2040 shipped because nobody measured; this one
   was refused on its own numbers before a line of it was written.
+
+## Feedback survey — 2026-09-15 #22 (TOOLCHAIN, the three fired-unpaid triggers)
+
+Counted per axis: doctrine 2, process 2; friction, sugar, features,
+defects, performance empty. Not surveyed: the other 27 triggers in
+LANE-D's audit — these are the three routed here.
+
+### DOCTRINE
+
+- **THREE TRIGGERS PROBED, TWO WRONG AS FILED, AND WRONG IN
+  DIFFERENT DIRECTIONS.** avra-8tbo asked for a length carried across
+  "109 extern string seats": derived, 71 rows take text and 19 end it
+  at a terminator, so the exposure was a quarter of the claim and
+  concentrated in rows the guard law already names — and the fix it
+  asked for would not have caught any of the eight defects that
+  prompted it. avra-ul2v asked to delete `avra_spawn_status` as "a
+  symbol no Avra source declares": it has a registry row, an `RtHost`
+  variant, an interpreter arm, a seed reference and a trap fixture.
+  avra-nmmv held exactly as written. A TRIGGER IS A CLAIM WITH A DATE
+  ON IT, and these were written by reading code rather than running
+  it; the audit that mirrored them found three of thirty had already
+  fired at birth. Evidence for the owner's open question (avra-us1e)
+  that a trigger's first probe belongs on the day it is recorded.
+- **A DELETION THAT REMOVES AN ATTACK IS NOT A CLEANUP.**
+  `avra_spawn_status`'s live Avra consumer is `tools/traps.sh`'s
+  `nul_crossing_bytes_prog` case, which attacks the
+  argv-is-not-a-shell-line law on the one axis the other three cases
+  miss. A chore that deletes a symbol and takes a hostile test with
+  it reads as a tidy-up in the diff, and the coverage loss appears
+  nowhere. Before deleting anything, ask what tests it.
+
+### PROCESS
+
+- **A RECEIPT IS A LINE THAT SAYS THE THING, QUOTED VERBATIM, OR
+  THERE IS NO RECEIPT.** I told the master a branch had "gated green"
+  when its chain had only ever printed "waiting for a build slot",
+  and the task output I read was the commit subject. Third instance
+  of one shape tonight — output that EXISTED, read for what it did
+  not say — after a bootstrap's peak read as a gate's and a fork
+  bomb's first symptom read as machine load. I caught two and sent
+  the third, and corrected it unprompted before it could be acted
+  on. The escalation is the lesson: my own law says a pattern
+  matching the first of a repeated line is not a completion test, and
+  "the task produced output at all" is that error with the pattern
+  removed entirely.
+- **A WORKTREE I HAVE JUST COMMITTED IN FEELS IDLE AND IS NOT.**
+  Twice tonight I started the next slice inside the worktree whose
+  gate was still running, because committing feels like finishing.
+  The gate is the part still using it. The habit that fixes it: the
+  next slice starts in a NEW worktree, always, not in the one whose
+  receipt is still outstanding.
