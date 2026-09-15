@@ -49,7 +49,7 @@ fn one_int(db: Db, sql: string) -> Result<int, SqlError> {
     v
 }
 
-fn head_int(mut s: Stmt) -> Result<int, SqlError> {
+fn head_int(s: Stmt) -> Result<int, SqlError> {
     let more = step(s)?
     if !more { fail no_row_here() }
     int_at(s, 0)
@@ -71,20 +71,18 @@ fn insert_thrice() -> string {
 }
 
 fn thrice(db: Db) -> string {
-    mut d = db
-    let word = match prepare(d, "insert into t(v) values (1)") {
+    let word = match prepare(db, "insert into t(v) values (1)") {
         .Ok(s) -> stepped_thrice(s),
         .Err(e) -> e.cause.kind(),
     }
-    let n = rows_in(d)
-    let _ = close(d)
+    let n = rows_in(db)
+    let _ = close(db)
     "${word} rows=${n}"
 }
 
 fn stepped_thrice(s: Stmt) -> string {
-    mut held = s
-    let w = "${sk(step(held))} ${sk(step(held))} ${sk(step(held))}"
-    let _ = finalize(held)
+    let w = "${sk(step(s))} ${sk(step(s))} ${sk(step(s))}"
+    let _ = finalize(s)
     w
 }
 
@@ -97,20 +95,18 @@ fn select_past_done() -> string {
 }
 
 fn two_passes(db: Db) -> string {
-    mut d = db
-    let _ = run(d, "insert into t(v) values (1), (2)")
-    let word = match prepare(d, "select v from t") {
+    let _ = run(db, "insert into t(v) values (1), (2)")
+    let word = match prepare(db, "select v from t") {
         .Ok(s) -> five_steps(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(d)
+    let _ = close(db)
     word
 }
 
 fn five_steps(s: Stmt) -> string {
-    mut held = s
-    let w = "${sk(step(held))} ${sk(step(held))} ${sk(step(held))} | ${sk(step(held))} ${sk(step(held))}"
-    let _ = finalize(held)
+    let w = "${sk(step(s))} ${sk(step(s))} ${sk(step(s))} | ${sk(step(s))} ${sk(step(s))}"
+    let _ = finalize(s)
     w
 }
 
@@ -123,21 +119,19 @@ fn rebound_late() -> string {
 }
 
 fn late(db: Db) -> string {
-    mut d = db
-    let word = match prepare(d, "insert into t(v) values (?1)") {
+    let word = match prepare(db, "insert into t(v) values (?1)") {
         .Ok(s) -> bind_step_bind(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(d)
+    let _ = close(db)
     word
 }
 
 fn bind_step_bind(s: Stmt) -> string {
-    mut held = s
-    let a = ik(bind_int(held, 1, 10))
-    let b = sk(step(held))
-    let c = ik(bind_int(held, 1, 20))
-    let _ = finalize(held)
+    let a = ik(bind_int(s, 1, 10))
+    let b = sk(step(s))
+    let c = ik(bind_int(s, 1, 20))
+    let _ = finalize(s)
     "bind=${a} step=${b} rebind=${c}"
 }
 
@@ -150,19 +144,17 @@ fn after_finalize() -> string {
 }
 
 fn dead(db: Db) -> string {
-    mut d = db
-    let word = match prepare(d, "select 1") {
+    let word = match prepare(db, "select 1") {
         .Ok(s) -> used_after(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(d)
+    let _ = close(db)
     word
 }
 
 fn used_after(s: Stmt) -> string {
-    mut held = s
-    let rc = finalize(held)
-    "finalize=${rc} step=${sk(step(held))} width=${width(held)} standing=${standing(held)} slots=${slots(held)}"
+    let rc = finalize(s)
+    "finalize=${rc} step=${sk(step(s))} width=${width(s)} standing=${standing(s)} slots=${slots(s)}"
 }
 
 /// RESET REWINDS AND KEEPS THE BINDINGS.
@@ -174,23 +166,21 @@ fn reset_keeps() -> string {
 }
 
 fn kept(db: Db) -> string {
-    mut d = db
-    let word = match prepare(d, "insert into t(v) values (?1)") {
+    let word = match prepare(db, "insert into t(v) values (?1)") {
         .Ok(s) -> bind_step_reset_step(s),
         .Err(e) -> e.cause.kind(),
     }
-    let n = ik(one_int(d, "select count(*) from t where v = 77"))
-    let _ = close(d)
+    let n = ik(one_int(db, "select count(*) from t where v = 77"))
+    let _ = close(db)
     "${word} 77s=${n}"
 }
 
 fn bind_step_reset_step(s: Stmt) -> string {
-    mut held = s
-    let _ = bind_int(held, 1, 77)
-    let a = sk(step(held))
-    let rc = reset(held)
-    let b = sk(step(held))
-    let _ = finalize(held)
+    let _ = bind_int(s, 1, 77)
+    let a = sk(step(s))
+    let rc = reset(s)
+    let b = sk(step(s))
+    let _ = finalize(s)
     "step=${a} reset=${rc} again=${b}"
 }
 
@@ -199,25 +189,23 @@ fn bind_step_reset_step(s: Stmt) -> string {
 fn varying() -> string { in_memory(varied) }
 
 fn varied(db: Db) -> string {
-    mut d = db
-    let _ = run(d, "create table mixed(x)")
-    let _ = run(d, "insert into mixed(x) values (1), ('two'), (null)")
-    let word = match prepare(d, "select x from mixed order by rowid") {
+    let _ = run(db, "create table mixed(x)")
+    let _ = run(db, "insert into mixed(x) values (1), ('two'), (null)")
+    let word = match prepare(db, "select x from mixed order by rowid") {
         .Ok(s) -> three_classes(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(d)
+    let _ = close(db)
     word
 }
 
 fn three_classes(s: Stmt) -> string {
-    mut held = s
-    let w = "${one_class(held)} ${one_class(held)} ${one_class(held)}"
-    let _ = finalize(held)
+    let w = "${one_class(s)} ${one_class(s)} ${one_class(s)}"
+    let _ = finalize(s)
     w
 }
 
-fn one_class(mut s: Stmt) -> string {
+fn one_class(s: Stmt) -> string {
     match step(s) {
         .Ok(m) -> if m { "${ck(class_at(s, 0))}/${ik(int_at(s, 0))}" } else { "DONE" },
         .Err(e) -> e.cause.kind(),
@@ -229,22 +217,20 @@ fn one_class(mut s: Stmt) -> string {
 fn nul_trip() -> string { in_memory(tripped) }
 
 fn tripped(db: Db) -> string {
-    mut d = db
-    let _ = run(d, "create table n(t text)")
-    let word = match prepare(d, "insert into n(t) values (?1)") {
+    let _ = run(db, "create table n(t text)")
+    let word = match prepare(db, "insert into n(t) values (?1)") {
         .Ok(s) -> bound_with_nul(s),
         .Err(e) -> e.cause.kind(),
     }
-    let bytes = ik(one_int(d, "select length(cast(t as blob)) from n"))
-    let _ = close(d)
+    let bytes = ik(one_int(db, "select length(cast(t as blob)) from n"))
+    let _ = close(db)
     "${word} bytes=${bytes}"
 }
 
 fn bound_with_nul(s: Stmt) -> string {
-    mut held = s
-    let a = ik(bind_text(held, 1, "ab${from_codepoint(0)}cd"))
-    let b = sk(step(held))
-    let _ = finalize(held)
+    let a = ik(bind_text(s, 1, "ab${from_codepoint(0)}cd"))
+    let b = sk(step(s))
+    let _ = finalize(s)
     "bind=${a} step=${b}"
 }
 
@@ -259,19 +245,17 @@ fn outlives() -> string {
 }
 
 fn across(db: Db) -> string {
-    mut d = db
-    let _ = run(d, "insert into t(v) values (1), (2)")
-    match prepare(d, "select v from t order by v") {
-        .Ok(s) -> stepped_across(d, s),
+    let _ = run(db, "insert into t(v) values (1), (2)")
+    match prepare(db, "select v from t order by v") {
+        .Ok(s) -> stepped_across(db, s),
         .Err(e) -> e.cause.kind(),
     }
 }
 
 fn stepped_across(db: Db, s: Stmt) -> string {
-    mut d = db
     mut held = s
     let a = "${sk(step(held))}/${ik(int_at(held, 0))}"
-    let rc = close(d)
+    let rc = close(db)
     let b = "${sk(step(held))}/${ik(int_at(held, 0))}"
     let fin = finalize(held)
     "before=${a} close=${rc} after=${b} finalize=${fin}"
@@ -282,9 +266,8 @@ fn stepped_across(db: Db, s: Stmt) -> string {
 fn nested(n: int) -> string { in_memory((db) -> deep(db, n)) }
 
 fn deep(db: Db, n: int) -> string {
-    mut d = db
-    let word = ik(one_int(d, "select ${dup("(", n)}1${dup(")", n)}"))
-    let _ = close(d)
+    let word = ik(one_int(db, "select ${dup("(", n)}1${dup(")", n)}"))
+    let _ = close(db)
     word
 }
 
@@ -295,29 +278,27 @@ fn dup(s: string, n: int) -> string { [s for i in 0..n].join("") }
 fn cell_of(sql: string) -> string { in_memory((db) -> celled(db, sql)) }
 
 fn celled(db: Db, sql: string) -> string {
-    mut d = db
-    let word = match prepare(d, sql) {
+    let word = match prepare(db, sql) {
         .Ok(s) -> three_questions(s),
         .Err(e) -> e.cause.kind(),
     }
-    let _ = close(d)
+    let _ = close(db)
     word
 }
 
 fn three_questions(s: Stmt) -> string {
-    mut h = s
-    let out = match step(h) {
-        .Ok(m) -> if m { asked_in_order(h) } else { "no row" },
+    let out = match step(s) {
+        .Ok(m) -> if m { asked_in_order(s) } else { "no row" },
         .Err(e) -> e.cause.kind(),
     }
-    let _ = finalize(h)
+    let _ = finalize(s)
     out
 }
 
 fn asked_in_order(s: Stmt) -> string {
-    let cls = sqlite3_column_type(s.raw!, 0)
-    let ptr_word = pw(sqlite3_column_blob(s.raw!, 0))
-    let n = sqlite3_column_bytes(s.raw!, 0)
+    let cls = sqlite3_column_type(s.raw.get()!, 0)
+    let ptr_word = pw(sqlite3_column_blob(s.raw.get()!, 0))
+    let n = sqlite3_column_bytes(s.raw.get()!, 0)
     "class=${cls} blob=${ptr_word} bytes=${n}"
 }
 
@@ -346,9 +327,9 @@ spec "std/sqlite statement adversarial" {
         // notice. It carries one now, they failed, and these are their
         // replacements.
         //
-        // `Stmt` holds `done`, `step` takes a `mut` seat and sets it at
-        // DONE, and `reset` clears it — because rewinding is exactly the
-        // caller saying they mean to run it again.
+        // `Stmt` holds `done` in a CELL, `step` sets it at DONE, and
+        // `reset` clears it — because rewinding is exactly the caller
+        // saying they mean to run it again.
         then "the first step answers DONE and the second is refused" { insert_thrice() == "DONE sqlite.done sqlite.done rows=1" }
         then "and one insert writes ONE row, however many times it is stepped" { insert_thrice().ends_with("rows=1") }
         then "a SELECT gives each row once and then stops" { select_past_done() == "ROW ROW DONE | sqlite.done sqlite.done" }

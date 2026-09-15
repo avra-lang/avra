@@ -27,9 +27,8 @@ fn on_a_closed_db(work: fn(Db) -> string) -> string {
 }
 
 fn after_closing(db: Db, work: fn(Db) -> string) -> string {
-    mut held = db
-    let _ = close(held)
-    work(held)
+    let _ = close(db)
+    work(db)
 }
 
 fn asked_open(db: Db) -> string { "${in_transaction(db)}" }
@@ -91,10 +90,9 @@ fn commit_under_a_standing_reader() -> string {
 fn busy_path() -> string { "build/sqlite-tx-busy.db" }
 
 fn with_a_writer(w: Db) -> string {
-    mut held = w
     let said = contended(w)
-    let _ = finish(held)
-    let _ = close(held)
+    let _ = finish(w)
+    let _ = close(w)
     let _ = busy_swept()
     said
 }
@@ -128,9 +126,8 @@ fn with_a_reader(w: Db) -> string {
 }
 
 fn reading(w: Db, r: Db) -> string {
-    mut held = r
     let said = held_open(w, r)
-    let _ = close(held)
+    let _ = close(r)
     said
 }
 
@@ -142,10 +139,9 @@ fn held_open(w: Db, r: Db) -> string {
 }
 
 fn stepped_then_committed(w: Db, s: Stmt) -> string {
-    mut held = s
-    let _ = step(held)
+    let _ = step(s)
     let said = committed_while_read(w)
-    let _ = finalize(held)
+    let _ = finalize(s)
     said
 }
 
@@ -173,9 +169,8 @@ fn inner_cleanup(clean: fn(Db, bool) -> int) -> string {
 }
 
 fn tx_nested(db: Db, clean: fn(Db, bool) -> int) -> string {
-    mut held = db
     let said = outer_then_inner(db, clean)
-    let _ = close(held)
+    let _ = close(db)
     said
 }
 
@@ -204,10 +199,9 @@ fn cleaned_by_the_pair(db: Db, opened: bool) -> int { finish_if_opened(db, opene
 fn wrote_inside_a_read() -> string { in_memory(promoting) }
 
 fn promoting(db: Db) -> string {
-    mut held = db
     let said = deferred_then_wrote(db)
-    let _ = finish(held)
-    let _ = close(held)
+    let _ = finish(db)
+    let _ = close(db)
     said
 }
 
