@@ -24,7 +24,7 @@ do.** This file is the whole workload; keep it current.
 | H side tables, derived identity | **DONE** 2/2 | retired |
 | G runtime header + diagnostic witnesses | **DONE** 2/2 | `../avra-phase-g`, `phase/g` @ `efb1200`, merged, clean — retire it |
 | C children + fingerprints derived | 1/3 | `../avra-phase-c`, `phase/c` @ `1c39ad8` |
-| D grammar names the node, fmt | 2/4 | `../avra-phase-d`, `phase/d` @ `75d0946` — **committed, NOT merged, gate RED** |
+| D grammar names the node, fmt | 2/4, **worker RETIRED** | `../avra-phase-d`, `phase/d` @ `75d0946` — **committed, NOT merged, gate RED** |
 | E type marks, IR roles, ownership | 0/3 | `../avra-phase-e`, `phase/e` @ `1c39ad8` |
 | I ownership roles on Ins | **UNSTAFFED** | blocked: marks the same `Ins` payloads as E2 — start only after E2 lands |
 | J one hole-bearing block | not started | after D |
@@ -123,6 +123,7 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
 | `avra-6ndp` | collapse `Variant.payload` into a projection of `fields` (shrink ladder) |
 | `avra-5m62` | ANSWERED by G: summary and law are different artifacts, 60 of 72 differ |
 | `avra-inr8` | **P1**: two `match` expressions in ONE derive's `Decls` lose their enum — the second's variant patterns arrive without it. Bisected to four runs. **Silent at `make avra`** (an entry lowers only reachable bodies), so a derive can be built and shipped broken. Crossing = C's. |
+| `avra-wzuw` | **P1**: an undefined name in a spliced quote TRAPS (exit 2, "a span reaches outside its own text") instead of saying F3000 — a generated node carries the DERIVE file's span, read against the TARGET file's text. And `rebuild_derive.av`'s arity hatch is the tree's ONE "a derive refuses loudly" idiom and has the same trap, never fired. **So a derive cannot refuse by naming an undeclared fn until this is fixed.** |
 | `avra-l4xk` | a derive's `export` is inert at the package surface — module-visible, package-invisible. Phases D and E have each worked around it independently, which is what makes it a defect and not a fact of life. |
 
 ## Laws this program paid for
