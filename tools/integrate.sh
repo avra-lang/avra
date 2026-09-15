@@ -141,15 +141,23 @@ before="$(pinned)"
 # must not. The status is the only channel that says yes.
 merged_tree="$(git -C "$main" merge-tree --write-tree main "lane/$lane" 2>/dev/null || true)"
 trusted=""
+why=""
 if [ -n "$merged_tree" ]; then
-    if said="$(sh tools/gate_receipt.sh trusts "$worktree" "$merged_tree" 2>/dev/null)"; then
+    # STDOUT IS CONSENT, STDERR IS THE REASON, and BOTH are announced:
+    # a skip says what it trusted, and a refusal to skip says what it
+    # read. Discarding the reason here would have made the gate that
+    # follows look like an unexplained choice.
+    if said="$(sh tools/gate_receipt.sh trusts "$worktree" "$merged_tree" 2>"$tmp-receipt.err")"; then
         trusted="$said"
+    else
+        why="$(cat "$tmp-receipt.err" 2>/dev/null || true)"
     fi
 fi
 if [ -n "$trusted" ]; then
     echo "integrate: the merge takes the tree lane/$lane already gated — trusting its receipt"
     echo "integrate:   tree $(echo "$merged_tree" | cut -c1-12), gated at $trusted"
 else
+    if [ -n "$why" ]; then echo "integrate: gating in full — $why"; fi
     sh tools/watch.sh $cap make gate > "$gate_out" 2>&1 || {
         echo "integrate: the gate is RED on lane/$lane — main untouched ($gate_out)"
         grep -n "✗\|FAILED\|error" "$gate_out" | head -12
