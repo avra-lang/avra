@@ -15519,3 +15519,134 @@ wrongly here; the six callers are listed above by name so the sweep
 is mechanical once the form exists. RECORDED TRIGGER: when `SlotForm`
 (or its successor) lands, `machine_shape` answers it and this entry
 is what the sweep follows.
+
+## Feedback survey — 2026-09-15 #18 (TOOLCHAIN, the lane's whole night)
+
+Nine slices landed or pushed tonight (staged, suites, census, std
+root, prelude, Ptr-seat box, seed-check, after-seed, gate receipt,
+caps, idiom tables, Type registries, the receipt's channels). This
+survey covers what the NIGHT taught that the per-slice surveys #9 to
+#17 did not, and does not repeat them.
+
+Counted per axis: friction 2, features 1, defects 3 (all mine, all
+caught before or at first use), doctrine 4, process 3; sugar 0,
+performance 0. The top three by cost: the fork bomb I wrote and then
+misdiagnosed (three sessions' builds, ~40 minutes of other lanes'
+work), the lock's unfairness (gates queued 10 to 30 minutes all
+evening, read as ordinary contention until another campaign measured
+it), and the two-channel contract that shipped a skip firing on "no
+receipt". NOT SURVEYED: any tree but this lane's five worktrees, and
+the integrator's behaviour after my branches left my hands.
+
+### DEFECTS — mine, and what each says about testing
+
+- **A FORK BOMB IN A SELF-TESTING TOOL, AND ITS AUTHOR MISREAD ITS
+  FIRST SYMPTOM.** `gate_receipt.sh --self-test` invoked `write`, and
+  `write` ran the fixtures first — "an instrument proves itself
+  before it certifies anything" — so the fixtures ran the verb that
+  ran the fixtures: 986 and 985 processes in one chain, 2441 of a
+  2666 fork limit, and every other session's builds died on `fork:
+  Resource temporarily unavailable`. THE HALF WORTH KEEPING: ten
+  minutes earlier a probe of mine had died with that exact message
+  and I wrote it off as machine load, because the self-test passed on
+  either side of it. The signature — A RESOURCE EXHAUSTION PRESENTS
+  AS A FAILURE IN WHATEVER ELSE HAPPENS TO BE RUNNING — fooled the
+  author of the bomb, holding its own output. Fixed by SHAPE: every
+  verb is a function, the fixtures call the functions, and
+  `grep -c 'sh "$0"'` over the capture path is 0, so recursion is
+  unreachable rather than bounded. Filed as avra-l33q.
+- **A TWO-CHANNEL CONTRACT WHERE THE CALLER READ THE WRONG
+  CHANNEL.** `receipt_trusts` printed its refusal REASON on stdout
+  and returned 1; the caller I wrote in the same commit read stdout
+  and swallowed the status with `|| true`, so "no receipt in
+  …/build" READ AS PERMISSION and the skip fired exactly where it
+  must not. Caught on the feature's first integration by the
+  announcement the design required, not by a test. MY FOUR FIXTURES
+  PROVED THE WRONG CONTRACT: they called the function and checked its
+  EXIT STATUS, which is not how the caller used it — four green
+  fixtures over a function nobody invoked that way. Same family as "a
+  test with its own copy of the logic tests the copy", one seam over:
+  the copy is the CALLING CONVENTION. Filed as avra-zxo9; the
+  contract now fails safe (stdout non-empty if and only if trusted).
+- **A CAPTURE WRAPPER THAT WOULD HAVE ANSWERED GREEN FOR EVERY RED
+  COMMAND**, caught by its own fixture on the first run — recorded in
+  survey #16, cited here because it is the third instance of the same
+  night's pattern: the defect was in the SHELL's semantics, not the
+  logic, and only a fixture that ran the real thing could see it.
+
+### DOCTRINE
+
+- **A REFUSAL THAT EXPLAINS ITSELF ON THE SAME CHANNEL AS ITS CONSENT
+  IS A TRAP FOR THE NEXT CALLER.** The general law behind the skip
+  defect, and it reaches well past that tool: when a verb answers
+  both a VERDICT and PROSE, the prose must not travel where a
+  careless reader takes it for the verdict. Give consent its own
+  channel and the failure mode inverts from open to safe.
+- **A DESIGN NOTE THAT MAKES THE MECHANISM SAY WHAT IT DID IS AN
+  INSTRUMENT**, whether or not it was written as one. "A skip is
+  announced with what it trusted, because a verification that is
+  sometimes skipped and never says so is one nobody can audit" was
+  written as a justification for a design choice; it printed two
+  contradictory lines next to each other and caught the design's own
+  defect on its first real run. The inverse of this tree's entry
+  about a doc that demonstrates a hazard being code that has never
+  been run.
+- **A KEEPER'S FALSE POSITIVE CAN NAME A MISSING VERB** — survey #17,
+  cited here as the night's best small outcome: the cheap answers
+  were a license or a narrower matcher, and the right one was to ask
+  what the refusal was reaching for.
+- **A NAME IS NOT AN IDENTITY, AT THE FILESYSTEM TOO.** The
+  integrator derived its worktree path from a lane name and began a
+  rebase inside a lane's live worktree, which it did not own; earlier
+  the same day a directory was removed because its name matched a
+  convention. Both are the `impls_by_name` hazard wearing a
+  filesystem's clothes — a key that does not identify, failing
+  silently and confidently. (STD MASTER's, attributed; their practice
+  changed rather than mine.)
+
+### FRICTION
+
+- **THE BUILD LOCK IS A RACE, NOT A QUEUE** — and I read it as
+  ordinary contention for a whole evening. A lane running
+  back-to-back steps re-takes the lock before a waiting lane's next
+  poll fires. My gates queued 10 to 30 minutes each; the COMPTIME
+  campaign measured one of their workers losing the race 161 times in
+  a row. Their fix (a ticket per waiter, dead tickets reaped) is on
+  lane/comptime at 37f1ec4 and only helps between worktrees that BOTH
+  carry it. Corroborates avra-3inr from the other side.
+- **A BORN-CLEAN WORKTREE COSTS A BOOTSTRAP BEFORE ITS FIRST GATE,**
+  and that bootstrap takes the machine-wide lock — so a "light" probe
+  in a fresh worktree sat in front of another lane's gate until I
+  killed it. Five worktrees tonight, five bootstraps. THE ASK: a way
+  to seed a new worktree's `build/` from a sibling whose tree is
+  compatible, which is what I did by hand for the after-seed ladder.
+
+### FEATURES
+
+- **`avra --version` SHOULD CARRY THE SOURCE COMMIT ITS BINARY WAS
+  BUILT FROM** (avra-s351, filed earlier tonight): a lane cannot tell
+  its binary's generation, and a stale one refuses with a true
+  message about the wrong cause. It cost one wrong diagnosis here and
+  the ladder to recover.
+
+### PROCESS
+
+- **A PATTERN THAT MATCHES THE FIRST OCCURRENCE OF SOMETHING A RUN
+  PRINTS MORE THAN ONCE IS NOT A COMPLETION TEST.** My wait-loop
+  watched a chain's log for `watch: peak` and fired on the
+  BOOTSTRAP's peak, so I read a gate as finished when it had not
+  started. Filed as avra-9f7h with the truncating-probe law and
+  avra-dnf2 as one family: treating the first hit as authoritative
+  when the key does not identify. I wait on a task's own exit now.
+- **THE HARNESS KILLS HEAVY RUNS FOR MEMORY THAT THE WATCHDOG'S FLOOR
+  ADMITTED.** Six kills tonight, every one leaving the tree clean and
+  every one re-queued; peaks at the moment of death were 376 to 447
+  MB, well under the cap. A killed gate is a re-run, never a verdict.
+- **VOLUNTEERING A WRONG CALL COSTS LESS THAN IT LOOKS AND IS WORTH
+  MORE THAN THE FIX.** Twice tonight I reported a conclusion I had
+  reached and then falsified — the fork bomb misdiagnosed as machine
+  load, and a gate read as finished that had not started. Both went
+  into the ledgers as their own findings; neither was visible to
+  anyone but me, and both generalise past the incident. A lane that
+  reports only its fixes hands the next reader a tidier and less
+  useful record.
