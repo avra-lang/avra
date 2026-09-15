@@ -434,7 +434,12 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
+# THE RECEIPT: a green gate names the tree it proved, so an
+# integration that takes that exact tree need not prove it again
+# (tools/gate_receipt.sh). A dirty tree writes none.
 gate: seed-check stems vocab fingerprints externs idioms tested traps witness
+	@sh tools/gate_receipt.sh --self-test
+	@sh tools/gate_receipt.sh write
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
 	@rm -rf packages/std-avrac/src/features/zz_probe
