@@ -1450,13 +1450,28 @@ impl Workspace {
     /// WROTE, and the shape its signature resolved it to.
     fn crossed_fields(v: FileView, s: StmtId, d: DeclId) -> List<MetaField> {
         let kinds = self.field_kinds(d)
-        [MetaField { name: p.name, ty: written_spelling(p.ty), at: placed(v, p.span), kind: kind_at(kinds, j) } for j, p in declared_fields(v.store, s)]
+        [crossed_field(v, p, kind_at(kinds, j)) for j, p in declared_fields(v.store, s)]
     }
 
-    /// An enum's variants: name, payload spellings, payload shapes.
+    /// An enum's variants: name, payload spellings, and the payload
+    /// as FIELDS — one writer, so a payload's name and its spelling
+    /// cannot come from two places and disagree.
     fn crossed_variants(v: FileView, s: StmtId, d: DeclId) -> List<MetaVariant> {
         let rows = self.payload_kinds(d)
-        [MetaVariant { name: va.name.of, payload: [written_spelling(p.ty) for p in va.payloads], at: placed(v, va.span), kinds: kinds_at(rows, j) } for j, va in declared_variants(v.store, s)]
+        [self.crossed_variant(v, va, kinds_at(rows, j)) for j, va in declared_variants(v.store, s)]
+    }
+
+    fn crossed_variant(v: FileView, va: Variant, kinds: List<Kind>) -> MetaVariant {
+        MetaVariant { name: va.name.of, payload: [written_spelling(p.ty) for p in va.payloads], at: placed(v, va.span),
+                      fields: [crossed_field(v, p, kind_at(kinds, j)) for j, p in va.payloads] }
+    }
+
+    /// A variant's payload shapes, variant by variant — the enum's
+    /// own signature, positionally.
+    fn payload_kinds(d: DeclId) -> List<List<Kind>> {
+        let sig: EnumSig? = (self.decls.sig(d))?.enum_sig()
+        if sig == null { return [] }
+        [[kind_of(self.decls.types, t) for t in ps] for ps in sig!.payloads]
     }
 
     /// THE SHAPE COMES FROM THE SIGNATURE, NEVER FROM THE SPELLING.
@@ -2494,9 +2509,23 @@ fn typed_text(types: TypeRegistry, ann: TypeRef?) -> string {
 
 /// A shape by position — unspelled past the signature's end, which
 /// is a declaration the crossing reached before its own sig.
+fn kinds_at(rows: List<List<Kind>>, j: int) -> List<Kind> {
+    if j >= rows.length { return [] }
+    rows[j]
+}
+
 fn kind_at(kinds: List<Kind>, j: int) -> Kind {
     if j >= kinds.length { return no_kind() }
     kinds[j]
+}
+
+/// A DECLARED PARAMETER AS A `Field`. A record's field and an enum
+/// payload are the SAME shape crossing, so one writer makes both —
+/// a payload's name, its spelling and its shape cannot come from two
+/// places and disagree, which is the property the crossing suite
+/// asserts positionally.
+fn crossed_field(v: FileView, p: Param, kind: Kind) -> MetaField {
+    MetaField { name: p.name.of, ty: written_spelling(p.ty), at: placed(v, p.span), kind: kind }
 }
 
 /// A source span as the place a meta value names.
