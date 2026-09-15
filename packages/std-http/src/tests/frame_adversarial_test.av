@@ -25,6 +25,12 @@ fn fa_refuses(src: string, want: Refusal) -> bool { refuses(src.bytes(), want) }
 fn fa_partial(src: string) -> bool { partial(src.bytes()) }
 fn fa_frames(src: string) -> bool { why(src.bytes()) == null && !fa_partial(src) }
 
+fn fa_value(src: string, i: int) -> string {
+    let h = head_of(src.bytes())!
+    let f = h.fields[i]
+    src.bytes().slice(f.value.lo, f.value.hi).text() ?? "<not text>"
+}
+
 spec "@std.http frame adversarial" {
     given "degenerate shapes" {
         then "an empty buffer is partial, never a refusal" { fa_partial("") }
@@ -153,6 +159,24 @@ spec "@std.http frame adversarial" {
         }
         then "an empty coding list is not a list" {
             fa_refuses("POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding:\r\n\r\n", .TransferEncoding)
+        }
+    }
+    given "OWS around a value, attacked by length and by kind" {
+        then "an OWS-only value is the empty value" {
+            fa_value("GET / HTTP/1.1\r\nHost: a\r\nName:   \r\n\r\n", 1) == ""
+        }
+        then "tabs are OWS on both sides" {
+            fa_value("GET / HTTP/1.1\r\nHost: a\r\nName:\t\tv\t\r\n\r\n", 1) == "v"
+        }
+        then "space inside a value is the value's own" {
+            fa_value("GET / HTTP/1.1\r\nHost: a\r\nName: a  b \r\n\r\n", 1) == "a  b"
+        }
+        then "four thousand spaces before and after are one scan each" {
+            let pad = ["    " for i in 0..1000].join("")
+            fa_value("GET / HTTP/1.1\r\nHost: a\r\nName:${pad}v${pad}\r\n\r\n", 1) == "v"
+        }
+        then "OWS before the colon still refuses — it is not the name's" {
+            fa_refuses("GET / HTTP/1.1\r\nHost: a\r\nName :v\r\n\r\n", .FieldName)
         }
     }
 }

@@ -318,4 +318,19 @@ spec "features/formats adversarial" {
             shown("grammar G = \"/s/{p...}\"\nG.parse(\"/x/y\".bytes()) == null") == "true"
         }
     }
+
+    given "a format over a NAMED text type — a pattern is a READ, so it sees the shape" {
+        then "holes over a name over string bind the spans" {
+            shown("type Id = string\nlet i: Id = \"k-1\"\nmatch i {\n    \"k-{n}\" -> n\n    _ -> \"none\"\n}") == "1"
+        }
+        then "a hole-less literal over the name still compares the text" {
+            shown("type Id = string\nlet i: Id = \"k1\"\nmatch i {\n    \"k1\" -> 1\n    _ -> 0\n}") == "1"
+        }
+        then "holes over a name over Bytes cut octets" {
+            shown("type Raw = Bytes\nlet r = Raw(\"k-1\".bytes())\nmatch r {\n    \"k-{n}\" -> n.text() ?? \"?\"\n    _ -> \"none\"\n}") == "1"
+        }
+        then "a grammar's door is a SEAT — a named text is judged by its name there" {
+            refused_with("grammar G = \"{a}-{b}\"\ntype Id = string\nlet i: Id = \"x-y\"\nG.parse(i)", "argument 1 of `parse` wants `string`, found `Id`")
+        }
+    }
 }

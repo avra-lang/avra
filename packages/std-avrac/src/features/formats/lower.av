@@ -211,7 +211,7 @@ fn last_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, stop: Reg) -> Reg {
 fn cut(mut cx: LowerCx, subject: Reg, lo_cell: Reg, hi_cell: Reg, v: Reg, vty: TypeId) -> Reg {
     let lo = loaded_from(cx, lo_cell)
     let hi = loaded_from(cx, hi_cell)
-    if cx.view.types.shape_of(vty) is .Bytes {
+    if cx.view.types.seen_shape(vty) is .Bytes {
         let out = cx.mint_shape(Type.Bytes)
         cx.emit(Ins.CallRt(out, "avra_bytes_slice", [subject, lo, hi]))
         return out
@@ -227,7 +227,7 @@ fn cut(mut cx: LowerCx, subject: Reg, lo_cell: Reg, hi_cell: Reg, v: Reg, vty: T
 /// copied once, which is what buys a NUL-exact scan over text whose
 /// C-string primitives are not.
 fn octets(mut cx: LowerCx, v: Reg, vty: TypeId) -> Reg {
-    if cx.view.types.shape_of(vty) is .Bytes { return v }
+    if cx.view.types.seen_shape(vty) is .Bytes { return v }
     rt1(cx, Type.Bytes, "avra_bytes_of_str", v)
 }
 
@@ -287,7 +287,7 @@ export fn lower_parse(mut cx: LowerCx, mc: MethodCall) -> Reg {
     if found == null { return doorless(cx, mc.e) }
     let read = found!
     let want = cx.type_at(mc.e)
-    if cx.view.types.shape_of(cx.type_at(mc.args[0])) is .Bytes { return from_octets(cx, mc, read, want) }
+    if cx.seen_at(mc.args[0]) is .Bytes { return from_octets(cx, mc, read, want) }
     read_into(cx, read, cx.reg_of(mc.args[0]), want)
 }
 
