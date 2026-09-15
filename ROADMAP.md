@@ -13953,3 +13953,69 @@ epics, 3 not triggers, 1 duplicate), all 37 minted under .9.
 - **KEEP: name the paying epic, never mint a twin.** A FIRED-UNPAID
   trigger keeps its task and gains the paying epic in its comment; the
   master re-parents it. Six went that way.
+
+## Hand-kept lists in tools/ and the Makefile — the census paid (2026-09-14, TOOLCHAIN)
+
+avra-8sb5.1.21's six, re-measured on main at 12738f7, and the sweep
+that found what the six missed. CONVERTED: (1) `tools/externs.py`'s
+`("runtime", "backend")` tuple is a glob of every `*/*.c` under the
+tree's root outside `packages/` — a new top-level C directory joins
+the keeper the day it appears; (3) its three opens of
+`runtime_api.av` are one `rt_api()`; (5) `SUITES` is derived
+(tools/suites.py, its own PR). RETIRED BEFORE MEASURED: (2)
+`tools/stems.sh` and (6) `tools/libscope.sh` are not in the tree; (4)
+`NOT_A_POINTER` is gone from externs.py. FOUND BY THE SWEEP, the one
+that mattered: `tools/idioms.py`'s `SRC` listed twelve package roots
+and the tree had fifteen — std-sqlite, std-meta and std-derive were
+never read by `make idioms`, which reported debt 0 over them. The
+roots are every `packages/*/src` now; widening them exposed 18 sites,
+of which 7 were the KEEPER's — I23 read a one-line fn's `with { mode:
+… }` as a parameter list (a greedy `\((.*)\)`), the false positive a
+positive-only specimen table cannot see, so the tool has a CLEAN
+table now, the shapes a matcher must accept. The other 11 are
+licensed at the site (four C out-parameter cells, two annotation
+decoders, three callback contracts) or fixed (one unused import).
+LEFT AS DATA, each with its reason: `tools/vocab.sh`'s CONSUMERS —
+naming a registry's consumers IS the law's enforcement (CLAUDE.md);
+`SQLITE_FLAGS` — the definition, kept honest by `promised()`;
+`tools/traps.sh`'s fixture manifests — programs, not a registry.
+LEFT WITH A TRIGGER: the Makefile's per-package object rules
+(`build/sqlite3.o`, `build/sqlite_sentinel.o`, `build/width_witness.o`)
+and `test:`'s object prerequisites are one list spelled in two
+places, and the package-C standard (lane/http, ROADMAP B7) is the
+derivation — fires when it lands on main. `tools/census.sh:18`
+respells the runtime's compile line with `-DAVRA_CENSUS`; a second
+respelling names the Makefile variable it should read.
+
+## Feedback survey — 2026-09-14 #11 (TOOLCHAIN, the hand-kept-list census — PR pending)
+
+Counted per axis: defects 1 (a keeper's), doctrine 1, process 1;
+friction, sugar, features, performance empty. Not surveyed: any tree
+but ../avra-lane-a at 12738f7.
+
+### DEFECTS
+
+- **THE IDIOM KEEPER READ TWELVE OF FIFTEEN PACKAGES.** `SRC` was a
+  list; std-sqlite, std-meta and std-derive were never read, and
+  `make idioms` reported debt 0 over them from the day each joined.
+  Roots are every `packages/*/src` now; the widening exposed 18
+  sites, 7 of them the keeper's own false positives (I23's greedy
+  `\((.*)\)` on one-line fns carrying `with { k: v }`). EVIDENCE:
+  tools/idioms.py:29 before; `make idioms` over the widened roots.
+
+### DOCTRINE
+
+- **A KEEPER HAS TWO SURFACES AND HAD ONE TABLE.** `SPECIMENS` proves
+  each matcher fires; nothing proved one stays quiet. `CLEAN` is the
+  accept-side table now (the clean check named the old regex when it
+  was put back — witnessed). CLAUDE.md's "a keeper has two surfaces"
+  entry already states the law; this is its second instance and the
+  first with a fixture table.
+
+### PROCESS
+
+- **A CENSUS AGES FAST.** Of avra-8sb5.1.21's six items, three were
+  gone before they were measured (two tools deleted, one list
+  retired); the sweep that mattered found a seventh the census had
+  named as fixed. Re-measure a census on the day it is paid, and
+  count what the sweep finds beside it.
