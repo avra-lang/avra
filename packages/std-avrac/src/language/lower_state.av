@@ -607,7 +607,7 @@ impl LowerCx {
             .Budget(label) -> refusal("const.budget", at, "a const ran past its budget", "`${name}` ${label}", "raise `[lifted] steps = …` or `memory = …` (MiB) in the package manifest, or settle it at run time under `let`"),
             .Trap(words) -> refusal("const.trap", at, "a const trapped while settling", "`${name}` ${words}", "the initializer runs at compile time, so what traps there is refused here"),
             .Param(runtime) -> refusal("const.param", at, "a const cannot read a run-time parameter", "`${name}` reads `${runtime}`", "make `${runtime}` a `const` seat — `fn f(const ${runtime}: …)` — or compute this at run time under `let`"),
-            .Spoken -> null,
+            .Spoken or .Recursive -> null,
         }
         if d != null { self.out.voices.speak(d!) }
     }
@@ -615,7 +615,7 @@ impl LowerCx {
     /// A `const` seat's argument the evaluator could not settle — its
     /// parts were spelled, so what failed was a const inside it.
     fn argument_unsettled(a: ExprId, why: Unsettled) {
-        if why is .Spoken { return }
+        if why.words().is_empty() { return }
         self.out.voices.speak(refusal("const.trap", self.view.loc_of(a), "a `const` seat's argument did not settle", why.words(), "the argument settles at compile time from its literals and consts — what fails there is refused here"))
     }
 }
