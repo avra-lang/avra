@@ -135,10 +135,16 @@ before="$(pinned)"
 # A SKIP IS ANNOUNCED WITH WHAT IT TRUSTED — the receipt's commit, its
 # date and the tree — because a verification that is sometimes skipped
 # and never says so is one nobody can audit.
+# THE STATUS IS THE ANSWER, NEVER THE OUTPUT. `trusts` prints its
+# REASON on refusal as well as its receipt on trust, so reading stdout
+# read every refusal as permission — the skip fired exactly when it
+# must not. The status is the only channel that says yes.
 merged_tree="$(git -C "$main" merge-tree --write-tree main "lane/$lane" 2>/dev/null || true)"
 trusted=""
 if [ -n "$merged_tree" ]; then
-    trusted="$(sh tools/gate_receipt.sh trusts "$worktree" "$merged_tree" 2>/dev/null || true)"
+    if said="$(sh tools/gate_receipt.sh trusts "$worktree" "$merged_tree" 2>/dev/null)"; then
+        trusted="$said"
+    fi
 fi
 if [ -n "$trusted" ]; then
     echo "integrate: the merge takes the tree lane/$lane already gated — trusting its receipt"
