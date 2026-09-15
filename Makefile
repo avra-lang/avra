@@ -70,8 +70,10 @@ bootstrap: recover
 # reader ran `./avra build packages/cli` by hand to find out why.
 avra: $(RUNTIME_OBJS)
 	@mkdir -p build
-	@: > build/avra-build.out
-	@./avra build packages/cli >> build/avra-build.out 2>&1 || { tail -c 200000 build/avra-build.out; exit 1; }
+	@# the log is BOUNDED: only its last 200 KB is ever read, and a build failing in a
+	@# loop filled the volume twice. The status rides the stream, which the pipe eats.
+	@{ ./avra build packages/cli 2>&1; echo "avra-build-status=$$?"; } | tail -c 200000 > build/avra-build.out
+	@[ "$$(tail -1 build/avra-build.out)" = "avra-build-status=0" ] || { cat build/avra-build.out; exit 1; }
 	@mkdir -p build
 	@cp packages/cli/src/main build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
