@@ -6656,7 +6656,184 @@ additions get siblings, nothing changes shape:
   edit re-runs importers only when the export surface's fingerprint
   moved.
 
+## Feedback survey — 2026-09-15 (phase C, C0: marks on declared members)
+
+Base: lane/comptime 7ab84f1 + phase/c. Counts: FRICTION 3, SUGAR 2,
+FEATURES 1, DEFECTS 3, DOCTRINE 4, PERFORMANCE 0 (not swept, see
+below), PROCESS 3. Top three by cost: the double-mint defect (found by
+a probe designed to disprove a reading, ~40 min including the
+control), the manifest's hand-counted relative paths (2 rounds), and a
+probe batch that printed only F-CODES and hid the message text (one
+suite run, four tests asserting a phrase I had never read).
+
+NOT SURVEYED: performance. `has_marks` runs `marks_written` over every
+statement of every file on every compile and builds lists; I kept ONE
+walk rather than write a second boolean one, because allocation here
+is cheap and avoiding one is a trade to be measured. `make census
+CMD="check packages/std-avrac"` before and after settles it and was
+not run. Also not surveyed: any package outside std-avrac, std-meta
+and the cli.
+
+### FRICTION
+
+- **A PROBE OF A DERIVE NEEDS A PACKAGE BUILT AROUND IT.** Three
+  probes this slice (the claim protocol, the double-mint control, the
+  program test) each needed a manifest, a provider package and an
+  entry, because a derive's trait must stand in another file and a
+  loose file cannot `use` a package. ALREADY FILED as avra-8sb5.11.13;
+  confirming with a third wanting site.
+- **A MANIFEST'S RELATIVE PATH IS COUNTED BY HAND, AND THE REFUSAL
+  POINTS ELSEWHERE.** `packages/.../tests/marks/avra.toml` needs
+  `../../../../../../std-meta` and its provider needs seven; I wrote
+  five and six. The refusal was F2075 "a hole in type position takes a
+  `Type` … found `<error>`" AT THE PROVIDER'S `quote`, three lines
+  from a manifest that never resolved `@std/meta`. THE ASK: a path
+  dependency that resolves to nothing says so (F4007 exists and did
+  not fire here — it fires for a missing `avra.toml`, not for a
+  dependency whose types then fail to resolve).
+- **A PROBE BATCH THAT PRINTS ONLY F-CODES HIDES THE WORDS.** My
+  wrong-type sweep printed exit, count and codes, so I read "F0100"
+  ten times and wrote four tests asserting "expected `)`". The real
+  message is "expected `}` while parsing `stmt`". Four tests failed on
+  the first suite run. THE ASK is doctrine, not tooling, and it is
+  already in CLAUDE.md ("a finding that survives quotes the OUTPUT") —
+  the survey row exists because I violated it while holding a batch
+  harness I had written myself to be fast.
+
+### SUGAR
+
+- **A TRAVERSE — `List<T?>` TO `List<T>?`.** `all_claims`
+  (language/workspace.av) hand-writes "if any part is absent the whole
+  is absent, else concatenate", which is the shape every
+  all-or-nothing fold wants. ALREADY FILED as avra-8sb5.11.55
+  (`flatten` over `List<T?>`); SHARPENING the ask — what is wanted is
+  not flatten-and-drop but the ALL-OR-NOTHING direction, because
+  dropping is exactly the bug (an unanswerable claim set that shrinks
+  instead of poisoning refuses a mark that is perfectly well claimed).
+- **A NULLABLE AGGREGATE ELEMENT NEEDS A PIN.** `let each:
+  List<List<string>?> = [...]` twice in workspace.av; without the
+  annotation the comprehension does not settle. Already in CLAUDE.md's
+  subset; confirming with two wanting sites.
+
+### FEATURES
+
+- **A TRAIT'S ASSOCIATED FN IS FOUND BY ITS NAME, AS A STRING.**
+  `Decls.trait_derive` is `trait_fns(d).find(fn_name(m) == "derive")`
+  and C0 adds `trait_marks`, the same shape for `"marks"`. Two
+  string-keyed lookups into a trait's members, and the compiler holds
+  no list of which names it reserves there. TRIGGER: the THIRD such
+  associated fn names the concept — a declared table of the compiler's
+  reserved trait members, so a typo (`static fn mark`) is refused at
+  the trait instead of silently claiming nothing. Owner unconfirmed.
+
+### DEFECTS
+
+- **AN ANNOTATION ON A FILE'S FIRST STATEMENT IS APPLIED TWICE**, with
+  no diagnostic — avra-iwls, proved with a control. The synthetic main
+  stands on `stmts.first()`, so `declared_work` reads statement 0's
+  annotations for main as well as for the declaration that carries
+  them. `no_stmt` is `StmtId { index: 0 }` and index 0 is a real
+  statement: the sentinel spends a value that is not spare.
+- **`avra expand` ON AN EMPTY FILE TRAPS** — avra-jbpa, "index 0 is
+  out of bounds (length 0)", exit 2, pre-existing (reproduced on
+  build/avra.pre). `check`, `ir` and `run` are all fine; only expand
+  reaches `Workspace.expanded` directly, past the prefilter.
+- **A GENERIC METHOD TRAPS ON MAIN AND NOT HERE** — avra-8sb5.11.91.
+  `type W = { n: int }` + `impl W { fn kept<T>(x: T) -> T { x } }`
+  answers "avra: index 1 is out of bounds (length 0)" under main's
+  `build/avra` at 09890e8, and F2031 "`kept` is generic — generic
+  methods are recorded, not landed", exit 1, under phase/c. Six
+  shapes probed here (uncalled, called, static, mut, on a generic
+  type, beside a plain method): none trap. A seventh, a generic method
+  in a TRAIT, is F0100 — the trait grammar spells no type parameters
+  on a method signature, which is a separate gap. SO IT IS FIXED ON
+  THE BRANCH AND LIVE ON MAIN, and the count-names-its-tree law is
+  what kept me from closing it after the first six green probes.
+
+### DOCTRINE
+
+- **A LAW'S EXAMPLE EXPIRED WHILE THE LAW STOOD** — the keeper-surfaces
+  entry named `refused_n` as a dead alternative; `refused_n` landed at
+  c515f04 and the alternative actually missing was `refused_in`.
+  Corrected in CLAUDE.md, and recorded as a trigger above (second
+  instance; the NUL entry is the first).
+- **A DOC ASSERTED THE ASSUMPTION THAT HOLDS THE BUG UP.** `no_stmt`'s
+  doc reads "the first slot, WHICH A BUILTIN NEVER READS", and
+  `declared_work` reads it unconditionally as its first line. The doc
+  names the exact failing case (an empty file's main) and asserts
+  nobody reaches it.
+- **THE SUBSET ENTRY FORBADE MORE THAN THE COMPILER DOES.** "An EMPTY
+  LITERAL does not adopt a NULLABLE aggregate want" reads as
+  forbidding `x?.xs ?? []`, which COMPILES (probed, both engines). A
+  clause now says so, because the entry as written sends a reader at a
+  defensive two-arm match for a shape that needs none.
+- **A FILE'S HEADER STATED A LAW THREE DRIVERS BROKE.**
+  `core/parts.av` opens "every pass reads them here, NEVER BY MATCHING
+  A NODE ITSELF", and `language/workspace.av` held three hand-written
+  twins of projections parts.av already owned — and C0 added a fourth
+  before the review round caught it. All four now live in parts.av;
+  driver-side statement matching is zero (the two survivors are
+  `source_text.av`'s printer registry, which is the legitimate shape).
+
+### PROCESS
+
+- **RUN THE PREVIOUS GENERATION OVER THE SAME FILE.** Used twice,
+  decisive both times: it turned "my grammar broke expand" into "expand
+  was already broken" in one command, and it is what proved the
+  generic-method trap is main's and not the branch's. KEEP, and it
+  deserves to be the FIRST move when a second-generation product
+  misbehaves, not a step after a diagnosis.
+- **A SCRIPT REPLACED UNDER A RUNNING SHELL KILLS THE RUN AT THE
+  LAST LINE.** `tools/watch.sh` was updated while a gate was running;
+  `sh` reads a script incrementally, so the gate completed every step
+  and then died with "syntax error near unexpected token `)`", exit 2,
+  after `witness` had already printed. It also left a stray `.log` at
+  the tree root holding the partial error. Cost: one gate re-run, and
+  a minute spent believing the gate had failed. THE ASK: land a tool
+  change when no run holds the lock, or copy-then-rename so the swap
+  is atomic.
+- **A PROGRAM TEST HAS NO `fn main`.** Its FINAL EXPRESSION is the
+  value compared against `.expected`; I wrote `fn main() -> int` with
+  a `print` and got F3000 "no `fn print` is defined". The convention is
+  right and undocumented outside the existing tests — one line in
+  CLAUDE.md's program-test sentence would have paid for itself.
+
 ## Recorded triggers — the integrator's substrate
+
+- [ ] A LAW WHOSE INSTANCE IS A NAMED ARTIFACT GOES STALE WHEN THE
+      ARTIFACT MOVES — TWO INSTANCES, WAITING FOR A THIRD. Recorded by
+      PHASE C 2026-09-15, deliberately NOT written up as a law: the
+      tree's own rule is that two copies may wait and three never do,
+      and that rule applies to its own prose. This entry exists so the
+      third reader counts from two rather than deriving the shape
+      again. Owner: nobody — it fires on the third instance, whoever
+      meets it.
+      THE SHAPE: a doctrine entry states an evergreen law and carries a
+      NAMED ARTIFACT as its instance (a fn, a symbol, a commit, a
+      behaviour). The artifact moves. The LAW is still true, so nobody
+      re-reads it — and its wording goes on asserting the old state,
+      reading as current for as long as it stands. It is the
+      retracted-fact-spreads-by-citation entry with the CITATION AND
+      THE ORIGIN BEING THE SAME PARAGRAPH, which is why sweeping by
+      claim does not reach it: there is no second copy to disagree
+      with the first.
+      INSTANCE 1 — the NUL entry ("A STRING HOLDS A NUL, ALL THE WAY").
+      It taught the opposite until 927ed49, and half the file's NUL
+      doctrine was written from it. It now says so about itself at
+      length, which is why it is the better-documented of the two.
+      INSTANCE 2 — the keeper-surfaces entry ("AND A KEEPER HAS TWO
+      SURFACES"). It named `refused_n` as a DEAD alternative accepted
+      by nobody. `refused_n` LANDED at c515f04; the entry went on
+      naming it as the dead one, and the alternative actually missing
+      from the matcher was a DIFFERENT one (`refused_in`) that no
+      grep found — it took WRITING a test with the honest verb.
+      Corrected in phase/c, law kept, example retired.
+      WHAT THE THIRD INSTANCE SHOULD LAND: not "re-read the doctrine"
+      — that is what nobody does — but a mechanism that ties an entry
+      to its artifact, so the day the artifact moves the entry is
+      named. The cheapest candidate is that an entry naming a symbol
+      says so in a greppable form, and a keeper diffs those names
+      against the tree. Design it when the third arrives, not before.
 
 - [ ] THE GATE PROVES A TREE AND THE INTEGRATOR COMMITS A TREE, AND
       NOTHING TIES THEM TOGETHER. Reported by the SQLITE lead

@@ -428,14 +428,46 @@ fn spelled_arrow(t: TypeRef) -> string {
 }
 
 /// The pronoun's own seat — what an implicit `it` lambda declares.
-export const pronoun_param: Param = Param { name: "it", ty: null, default: null, mark: plain_mark, span: null }
+export const pronoun_param: Param = Param { name: "it", ty: null, default: null, promises: plain_mark, span: null }
 
-/// One declared parameter: its name and its written type. An ABSENT
-/// type IS a unit enum variant, so one shape covers both and no arm
-/// has to ask which kind it is.
+/// A MARK IS DATA; AN ANNOTATION IS A CALL. `@word` or
+/// `@word(a, b)` written before a declared member — a variant, a
+/// field — is recorded and handed to whoever reads it, never run.
+/// That is why its arguments are WORDS: a mark is read while the
+/// file's names are still resolving, so it can reach only what the
+/// parse holds. `Annotation` is the other half of the `@` surface,
+/// where the arguments are expressions because something evaluates
+/// them.
+///
+/// THE COMPILER JUDGES NO MARK. A mark's meaning lives with its
+/// reader, and a reader says which marks it claims; a mark no reader
+/// claims is refused where it is written, so a typo cannot be silent.
+// LICENSED — a string where the doctrine says no string tag: a mark
+// CROSSES into `@std/meta`, where a foreign enum has no typed id, so
+// its word is the only currency both sides can spell. The same reason
+// `node_value` matches `@std.meta.Node`'s variant names. The
+// mitigation the doctrine names is paid in full: the unknown SPEAKS
+// (workspace's claim law) rather than falling through.
+export type Mark = { name: string, args: List<string>, span: Span? = null }
+
 /// A declared seat — a fn's param, a lambda's, a struct's field, an
-/// enum variant's payload — with the DEFAULT a field may declare.
-export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, mark: SeatMark, span: Span? = null }
+/// enum variant's payload — with the DEFAULT a field may declare,
+/// the PROMISES it makes its callee (`mut`, `const`) and the MARKS
+/// written before it. An ABSENT type IS a unit enum variant, so one
+/// shape covers both and no arm has to ask which kind it is.
+export type Param = { name: Scoped, ty: TypeRef?, default: ExprId?, promises: SeatMark, span: Span? = null, marks: List<Mark> = [] }
+
+/// A member's marks as they were written, with a trailing space —
+/// "" when it carries none, so a printer needs no branch.
+export fn marks_prefixed(ms: List<Mark>) -> string {
+    joined([mark_spelled(m) + " " for m in ms], "")
+}
+
+/// One mark as it was written.
+fn mark_spelled(m: Mark) -> string {
+    if m.args.is_empty() { return "@${m.name}" }
+    "@${m.name}(${joined(m.args, ", ")})"
+}
 
 /// A pattern's identity in the store's pattern table.
 export type PatId = { index: int }
@@ -457,9 +489,10 @@ export enum Pat {
 /// One match arm: its alternatives (`a or b`) and its value.
 export type Arm = { pats: List<PatId>, value: ExprId }
 
-/// One declared variant: its name and what it carries, in order —
-/// a single positional payload, or named fields.
-export type Variant = { name: Plain, payloads: List<Param>, span: Span? = null }
+/// One declared variant: its name, what it carries in order — a
+/// single positional payload, or named fields — and the marks
+/// written before it.
+export type Variant = { name: Plain, payloads: List<Param>, span: Span? = null, marks: List<Mark> = [] }
 
 /// One test case: its `given` group's name, its own name (the
 /// `then`'s), and its body — a block answering a bool.
@@ -1323,15 +1356,23 @@ impl NodeStore {
     /// are different records, and a defaults list beside the fields
     /// says which defaults exist without saying whose they are.
     fn param_fps(params: List<Param>) -> List<int> {
-        [fp(123, [fp_str(p.name.of), type_fp(p.ty), mark_fp(p.mark), self.opt_fp(p.default)]) for p in params]
+        [fp(123, [fp_str(p.name.of), type_fp(p.ty), mark_fp(p.promises), self.opt_fp(p.default), fp_list(mark_fps(p.marks))]) for p in params]
     }
 
     /// A variant list's fingerprint parts — ONE VALUE PER VARIANT.
     /// Spliced flat, a variant's payload run and the next variant's
     /// name share a boundary that moves.
     fn variant_fps(variants: List<Variant>) -> List<int> {
-        [fp(124, [fp_str(v.name.of), fp_list(self.param_fps(v.payloads))]) for v in variants]
+        [fp(124, [fp_str(v.name.of), fp_list(self.param_fps(v.payloads)), fp_list(mark_fps(v.marks))]) for v in variants]
     }
+}
+
+/// A mark list's fingerprint parts — ONE VALUE PER MARK, its
+/// arguments folded to one of their own. `@a(x)` and `@a @x` are
+/// different declarations, and a flat splice would give them one
+/// identity.
+fn mark_fps(marks: List<Mark>) -> List<int> {
+    [fp(129, [fp_str(m.name), fp_list(str_fps(m.args))]) for m in marks]
 }
 
 /// A string list's fingerprint parts, in order.

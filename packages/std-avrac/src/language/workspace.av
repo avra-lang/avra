@@ -14,11 +14,11 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, Mark, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
-use @std.meta.{Diagnostic, Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Decls as MetaDecls, Kind}
+use @std.meta.{Diagnostic, Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Mark as MetaMark, Decls as MetaDecls, Kind}
 use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, Unplaced, copier, quote_kind, all_codes, is_name_cont, SyntaxParts, ForeignRange}
 use grammar.{parse_grammar, ready}
 use diagnostics.{defect_at}
@@ -553,7 +553,7 @@ impl Workspace {
         // so the expansions run here, ahead of them, and their
         // statements join the walk. (The second-tier LOOKUP still
         // happens on a miss, below.)
-        let made = if self.has_declares(f) { self.expanded(f) } else { [] }
+        let made = if self.has_declares(f) || self.has_marks(f) { self.expanded(f) } else { [] }
         let p = self.parsed(f)
         // THE TWO LOOKS PAST THE FILE: a name missing from the written
         // namespace asks the file's generated declarations, which
@@ -588,11 +588,17 @@ impl Workspace {
     /// never re-enters the namespace from inside a resolve).
     fn has_declares(f: FileId) -> bool {
         let p = self.parsed(f)
-        mut any = false
-        for s in p.stmts {
-            if !p.store.annotations_of(s).is_empty() { any = true }
-        }
-        any
+        p.stmts.any((s: StmtId) -> !p.store.annotations_of(s).is_empty())
+    }
+
+    /// Whether any declaration carries a MARK — the same prefilter for
+    /// the other half of the `@` surface. A file with marks and no
+    /// annotation still walks the expansion, because that is where
+    /// every mark is held to a reader, and such a file is about to be
+    /// refused anyway: nothing claims its marks.
+    fn has_marks(f: FileId) -> bool {
+        let p = self.parsed(f)
+        p.stmts.any((s: StmtId) -> !p.store.marks_written(s).is_empty())
     }
 
     /// A declaration's signature, computed on first ask: the ONE place
@@ -1065,6 +1071,7 @@ impl Workspace {
                 made = made.concat(self.materialized(f, w, p, vis))
             }
         }
+        self.hold_marks_to_a_reader(f, p, vis)
         self.generated.finish(f.index, made, fp(31, [d.index for d in made]))
         made
     }
@@ -1107,7 +1114,7 @@ impl Workspace {
         // A code directive needs no declaration shape; a twin walks a
         // FN, so a type's twin reads empty seats and a `void` answer.
         let parts: FnParts? = p.store.fn_parts(x.stmt)
-        let params = if parts == null { [] } else { declared_params(p.store, x.stmt) }
+        let params = if parts == null { [] } else { p.store.declared_params(x.stmt) }
         let tparams: List<Param> = parts?.tparams ?? []
         let answer: TypeRef = parts?.ret ?? named_ref("void")
         mut out: List<DeclareWork> = []
@@ -1151,6 +1158,78 @@ impl Workspace {
     /// Whether a return type is `@std.meta.Derived` — the `@derive`
     /// cue: the compiler runs each named trait's associated `derive`.
     fn is_derived(ret: TypeId) -> bool { self.decls.meta_type(ret, "Derived") }
+
+    /// EVERY MARK OWES A READER. The compiler judges no mark — its
+    /// meaning lives with whoever reads it — so the only law it can
+    /// hold is that SOMEONE reads it: each `@derive` on the
+    /// declaration says which marks it takes (the trait's `marks`),
+    /// and a word in no claim is refused where it was written. Without
+    /// this a misspelled mark sits there doing nothing, forever and
+    /// silently, which is the whole class this seam exists to kill.
+    ///
+    /// ASKED PER DECLARING STATEMENT, never per declaration: a field's
+    /// default is a declaration of its own standing on its OWNER's
+    /// statement, so a per-decl walk asks the same marks twice — once
+    /// with the owner's claims and once with none, and the second run
+    /// refuses what the first allowed.
+    fn hold_marks_to_a_reader(f: FileId, p: Parsed, vis: Namespace) {
+        for s in p.stmts {
+            self.hold_the_marks_of(f, s, p.store.marks_written(s), p, vis)
+        }
+    }
+
+    fn hold_the_marks_of(f: FileId, s: StmtId, written: List<Mark>, p: Parsed, vis: Namespace) {
+        if written.is_empty() { return }
+        let owner: DeclId? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s))
+        if owner == null { return }
+        let asked: List<string>? = self.claimed_marks(f, owner!, p, vis)
+        if asked == null { return }
+        let claimed = asked!
+        // LICENSED — matching a mark by its WORD: a mark crosses a
+        // package boundary, where a foreign enum has no typed id, so
+        // the word is the currency. The doctrine's mitigation is this
+        // very line — the unknown speaks instead of falling through.
+        let unread = [m for m in written if !claimed.contains(m.name)]
+        if unread.is_empty() { return }
+        self.decls.speak_expansion(f, [unclaimed_mark(m, claimed, loc_at(self.decls.file(f).path, m.span)) for m in unread])
+    }
+
+    /// THE CLAIM SET, OR ABSENCE WHEN IT CANNOT BE KNOWN — and the two
+    /// are DIFFERENT VALUES. An empty claim set refuses every mark; an
+    /// unanswerable one must refuse none, or a declaration whose
+    /// annotations the compiler has not read yet loses every mark it
+    /// legitimately carries. Knowable exactly twice: a declaration
+    /// carrying NO annotation claims nothing, and one whose every
+    /// derive answered claims their union.
+    fn claimed_marks(f: FileId, d: DeclId, p: Parsed, vis: Namespace) -> List<string>? {
+        if p.store.annotations_of(self.decls.decl(d).stmt).is_empty() { return claims_nothing() }
+        let each: List<List<string>?> = [self.derive_claims(w, f, p, vis) for w in self.declared_work(f, d, p, vis) if self.is_derived(w.ret)]
+        if each.is_empty() { return null }
+        all_claims(each)
+    }
+
+    fn derive_claims(w: DeclareWork, f: FileId, p: Parsed, vis: Namespace) -> List<string>? {
+        let each: List<List<string>?> = [self.trait_claims(self.named_arg(p, vis, e), w, f) for e in w.args]
+        all_claims(each)
+    }
+
+    /// One trait's claim — its associated `marks` run over the
+    /// declaration, exactly as its `derive` is and under the same
+    /// provider guard. A trait that declares no `marks` claims
+    /// nothing, knowably; everything the compiler could not reach
+    /// answers absence.
+    fn trait_claims(tr: DeclId?, w: DeclareWork, f: FileId) -> List<string>? {
+        if tr == null { return null }
+        let member: DeclId? = self.decls.trait_marks(tr!)
+        if member == null { return claims_nothing() }
+        let m = member!
+        if same_file(self.decls.decl(m).file, f) { return null }
+        if (self.decls.sig(m))?.fn_sig() == null { return null }
+        match self.lifted(m, f, w.stmt, w.callee, []) {
+            .Ok(crossed) -> crossed.claims(),
+            .Err(_) -> null,
+        }
+    }
 
     /// A directive's generated DECLARATIONS spliced into this file's
     /// store — every template copied from the store that parsed it,
@@ -1389,11 +1468,11 @@ impl Workspace {
     /// AND ITS SHAPE, its `mut` and `const` marks.
     fn crossed_params(v: FileView, s: StmtId, d: DeclId) -> List<MetaParam> {
         let kinds = self.seat_kinds(d)
-        [self.crossed_param(v, p, kind_at(kinds, j)) for j, p in declared_params(v.store, s)]
+        [self.crossed_param(v, p, kind_at(kinds, j)) for j, p in v.store.declared_params(s)]
     }
 
     fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
-        MetaParam { name: p.name.of, ty: typed_text(self.decls.types, p.ty), mutable: p.mark.mutable, settled: p.mark.settled, at: placed(v, p.span), kind: k }
+        MetaParam { name: p.name.of, ty: typed_text(self.decls.types, p.ty), mutable: p.promises.mutable, settled: p.promises.settled, at: placed(v, p.span), kind: k }
     }
 
     /// A fn's answer, spelled from its declared TypeRef — a store read
@@ -1406,7 +1485,7 @@ impl Workspace {
     /// WROTE, and the shape its signature resolved it to.
     fn crossed_fields(v: FileView, s: StmtId, d: DeclId) -> List<MetaField> {
         let kinds = self.field_kinds(d)
-        [crossed_field(v, p, kind_at(kinds, j)) for j, p in declared_fields(v.store, s)]
+        [crossed_field(v, p, kind_at(kinds, j)) for j, p in v.store.declared_fields(s)]
     }
 
     /// An enum's variants: name, payload spellings, and the payload
@@ -1414,12 +1493,13 @@ impl Workspace {
     /// cannot come from two places and disagree.
     fn crossed_variants(v: FileView, s: StmtId, d: DeclId) -> List<MetaVariant> {
         let rows = self.payload_kinds(d)
-        [self.crossed_variant(v, va, kinds_at(rows, j)) for j, va in declared_variants(v.store, s)]
+        [self.crossed_variant(v, va, kinds_at(rows, j)) for j, va in v.store.declared_variants(s)]
     }
 
     fn crossed_variant(v: FileView, va: Variant, kinds: List<Kind>) -> MetaVariant {
         MetaVariant { name: va.name.of, payload: [written_spelling(p.ty) for p in va.payloads], at: placed(v, va.span),
-                      fields: [crossed_field(v, p, kind_at(kinds, j)) for j, p in va.payloads] }
+                      fields: [crossed_field(v, p, kind_at(kinds, j)) for j, p in va.payloads],
+                      marks: crossed_marks(v, va.marks) }
     }
 
     /// A variant's payload shapes, variant by variant — the enum's
@@ -2418,7 +2498,13 @@ fn kind_at(kinds: List<Kind>, j: int) -> Kind {
 /// places and disagree, which is the property the crossing suite
 /// asserts positionally.
 fn crossed_field(v: FileView, p: Param, kind: Kind) -> MetaField {
-    MetaField { name: p.name.of, ty: written_spelling(p.ty), at: placed(v, p.span), kind: kind }
+    MetaField { name: p.name.of, ty: written_spelling(p.ty), at: placed(v, p.span), kind: kind, marks: crossed_marks(v, p.marks) }
+}
+
+/// A member's marks as the derive reads them — the word, its words,
+/// and where it stands.
+fn crossed_marks(v: FileView, ms: List<Mark>) -> List<MetaMark> {
+    [MetaMark { name: m.name, args: m.args, at: placed(v, m.span) } for m in ms]
 }
 
 /// A source span as the place a meta value names.
@@ -2433,27 +2519,23 @@ fn written_spelling(t: TypeRef?) -> string {
     spelled(t!)
 }
 
-/// A fn declaration's parameters, with their source spans.
-fn declared_params(store: NodeStore, s: StmtId) -> List<Param> {
-    match store.stmt(s) {
-        .FnDecl(_, _, params, _, _) -> params,
-        .ExternFn(_, params, _) -> params,
-        rest -> [],
-    }
+/// A claim set that is KNOWN and EMPTY, which is not the same value
+/// as an unknown one — and the empty literal does not adopt a
+/// nullable aggregate's want, so it is bound at its own type here and
+/// the two answers read as the two facts they are.
+fn claims_nothing() -> List<string> {
+    let none: List<string> = []
+    none
 }
 
-fn declared_fields(store: NodeStore, s: StmtId) -> List<Param> {
-    match store.stmt(s) {
-        .StructDecl(_, _, fields) -> fields,
-        rest -> [],
-    }
-}
-
-fn declared_variants(store: NodeStore, s: StmtId) -> List<Variant> {
-    match store.stmt(s) {
-        .EnumDecl(_, _, variants) -> variants,
-        rest -> [],
-    }
+/// EVERY PART OR NONE — claim sets folded into one union, absent when
+/// any part is absent. An unanswerable claim set POISONS the union
+/// rather than shrinking it: shrinking would say "nothing reads this"
+/// where the truth is "we cannot say yet", and refuse a mark that is
+/// perfectly well claimed.
+fn all_claims(each: List<List<string>?>) -> List<string>? {
+    if each.any(it == null) { return null }
+    flatten([c! for c in each])
 }
 
 /// A list type's element, or null for any other shape.
@@ -2544,6 +2626,23 @@ fn arena_marks(store: NodeStore) -> ArenaMarks {
 /// annotation is asked to choose another.
 /// An annotation that could not run — the DECLARING path's voice,
 /// the validating path's words.
+/// A mark no reader on this declaration claims. THE LAW LINE
+/// OUTLIVES ITS MECHANISM: it says a mark is read by something that
+/// CLAIMS it, never "by a derive" — a derive is who claims today, and
+/// a law worded after its implementation goes stale the moment the
+/// implementation moves. The mechanism belongs in the HELP, beside
+/// the claims that ARE standing, so a typo reads as a typo.
+fn unclaimed_mark(m: Mark, claimed: List<string>, at: Loc?) -> Diag {
+    refusal("annotation.unread_mark", at, "every mark is read by something that claims it",
+            "`@${m.name}` — nothing on this declaration reads it",
+            claims_help(claimed))
+}
+
+fn claims_help(claimed: List<string>) -> string {
+    if claimed.is_empty() { return "a mark is read by a `@derive` whose trait declares `marks`" }
+    "the marks read here are ${joined(["`@${c}`" for c in sorted_texts(claimed)], ", ")}"
+}
+
 fn lift_failed(label: string, at: Loc?) -> Diag {
     refusal("annotation.unsettled", at, "an annotation could not run", label, "an annotation runs at compile time from pure computation alone")
 }

@@ -947,7 +947,7 @@ impl Decls {
         if x.kind is .Builtin { return [] }
         // `Self` is bounded by the trait itself: inside a default,
         // `self` answers the trait's own members
-        if x.kind is .Trait { return [Param { name: Scoped(self_word), ty: named_ref(x.name), default: null, mark: plain_mark, span: null }] }
+        if x.kind is .Trait { return [Param { name: Scoped(self_word), ty: named_ref(x.name), default: null, promises: plain_mark, span: null }] }
         self.store(d).decl_tbounds(x.stmt)
     }
 
@@ -1106,6 +1106,14 @@ impl Decls {
     /// the compiler runs for `@derive`.
     fn trait_derive(d: DeclId) -> DeclId? {
         self.trait_fns(d).find((m: DeclId) -> self.fn_name(m) == "derive")
+    }
+
+    /// A trait's associated `marks` member, or none — what its
+    /// `derive` says it READS off the declaration's members. A derive
+    /// that declares none claims none, and every mark written on a
+    /// declaration it alone serves is then unread.
+    fn trait_marks(d: DeclId) -> DeclId? {
+        self.trait_fns(d).find((m: DeclId) -> self.fn_name(m) == "marks")
     }
 
     /// A type's method by name — asking IS the query: the hook fills
