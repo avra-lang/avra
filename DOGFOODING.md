@@ -844,6 +844,19 @@ once REBINDS (`let es = elems!`) so the `!` happens exactly once —
 flow narrowing is on the sugar backlog; until the language absorbs
 it, the rebind is the pattern.
 
+## A field default is evaluated per construction
+
+A default that CALLS something runs at every construction, so each
+value gets its own:
+
+    type Stmt = { raw: Cell<ptr?>, done: Cell<bool> = Cell.new(false) }
+
+Two `Stmt`s hold two cells; setting one leaves the other alone
+(measured, both engines). So a default may mint a box — the shared
+mutable default that bites in other languages does not exist here, and
+a field whose initial value is a fresh box belongs at the field rather
+than repeated at every construction site.
+
 ## A pure map never mutates
 
 An accumulate loop that only pushes `f(x)` is a MAP — write the
