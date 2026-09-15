@@ -32,6 +32,7 @@ export const no_stmt: StmtId = StmtId { index: 0 }
 /// trait or method — minted once per declaration; every type shape
 /// that names a declaration carries it, never a file-local StmtId.
 /// In a lone file the two coincide; the workspace makes them differ.
+@derive(Fingerprint)
 export type DeclId = { index: int }
 
 /// Statement identity — two ids name one statement when their
@@ -1401,38 +1402,3 @@ fn fp_binop(op: BinOp) -> int {
     }
 }
 
-/// A variant tag folded with its parts, in order — THE fingerprint
-/// fold, for nodes and for every query value's hash alike.
-export fn fp(tag: int, parts: List<int>) -> int {
-    mut h = fp_mix(tag, parts.length)
-    for p in parts { h = fp_mix(h, p) }
-    h
-}
-
-/// A SEQUENCE FOLDS TO ONE VALUE, so a payload's ARITY is fixed and
-/// the boundary between two of them cannot move. Spliced flat,
-/// `f<A>(B)` and `f<A, B?>()` wore one fingerprint — a pinned type
-/// and an argument are the same value in a flat list. SHARED across
-/// every fold space, so tag 105 is claimed wherever it is called.
-export fn fp_list(parts: List<int>) -> int { fp(105, parts) }
-
-/// In-process rolling hash; both operands normalized under a prime so
-/// mixing never overflows, negative payloads included. The crypto
-/// tier arrives with the on-disk cache.
-fn fp_mix(h: int, v: int) -> int {
-    mut nv = v % 1000000007
-    if nv < 0 { nv = nv + 1000000007 }
-    (h * 131 + nv + 7) % 1000000007
-}
-
-export fn fp_str(s: string) -> int {
-    mut h = 0
-    mut i = 0
-    // A string's `.length` is `strlen`: asked once, not per character.
-    let n = s.length
-    while i < n {
-        h = fp_mix(h, s.char_code(i))
-        i = i + 1
-    }
-    fp_mix(h, n)
-}

@@ -447,6 +447,17 @@ engine's spec, written by dogfooding.
   signs types first) was green and `analyze_source` (which types the
   entry first) refused every literal fill — one tree, two answers,
   22 spec cases red while every probe passed.
+- A CONTINUING OPERATOR TRAILS, IT NEVER LEADS. The lexer drops a
+  break AFTER a continuing operator, so the line that continues is the
+  one ENDING in `&&`; a line BEGINNING with `&&` starts a new
+  statement and the parse dies one line later — "expected `}` to close
+  the block" at the `&&`, then "expected EOF while parsing
+  `program`". The habit every other language teaches is the leading
+  form, and the cost is not the parse error: the file fails WHOLE, so
+  the module exports nothing and the symptom lands in the FILES THAT
+  IMPORT IT ("`@std.avrac.features` does not export `Decls`", from
+  three innocent files, with the real error unread above them). Same
+  shape for every binary operator a condition wraps on.
 - A CLOSER NEVER CONTINUES A LINE. The lexer's continuation rule
   listed `>`, which closes a TYPE ARGUMENT LIST as well as wanting a
   right side — so `type Rows = List<int>` dropped its BREAK and
@@ -803,6 +814,24 @@ engine's spec, written by dogfooding.
   counted against the enclosing hole when it was emitted, and the
   closer never passes through that count. Line comments inside a raw
   body are the generated program's — a `}` in one ends nothing.
+- A RUN OF TEMPLATES HAS NO EXPRESSION POSITION, and every OTHER seat
+  takes one. `${xs}` with a `List<Code>` flattens where a RUN belongs
+  — statements, arms, binders each join a `Many` — and an expression
+  seat holds ONE value, where no separator between two of them is the
+  compiler's to choose. That arm answered an `Expr.Error` node, so
+  the only word spoken was the TYPER's about the seat (F2075, "a hole
+  takes what its seat takes"), which names neither the mistake nor
+  its exits; it is F2085 now, homed at the hole, and it carries both.
+  THE FIX IS IN THE GENERATOR, NOT THE TEMPLATE: fold the list where
+  the derive runs, one hole per element (`[a].concat([b])`), so the
+  generated literal's length is fixed per type — which is also what
+  the ARITY law wants, so the two laws agree on one shape. Not listed
+  under "the subset today" because it SPEAKS, which is the whole
+  point of the change. And the hole vocabulary is wider than it
+  looks: an INT hole is native in both positions (`int_node` in an
+  expression, `int_name` in a name), so `${tag()}` needs no
+  hand-rolled `name("${v}")` — a second instrument for a question the
+  compiler already answers.
 - A BOUNDARY CHECK MAKES A MOVED SHAPE UNMOVABLE IN ONE GENERATION,
   AND GROWTH IS NOT A MOVED SHAPE. `features/crossing.av` holds
   `@std/meta`'s shapes as rows the compiler was built against; a
@@ -816,6 +845,20 @@ engine's spec, written by dogfooding.
   seed is a THIRD generation with the same rule: `make seed` rides a
   MOVING commit, and a merge that brings an older seed needs it only
   when a shape moved.
+  AND THAT LAST SENTENCE WAS WRONG, BY ITS OWN AUTHOR, ONE SLICE
+  LATER. Growth needs no refresh WHILE NOTHING READS THE NEW FIELD —
+  and the refresh is owed by the FIRST READER, not by the grower. B2c
+  appended `Variant.fields` and crossed unassisted, which is the rule
+  working; H2's `@derive(Fingerprint)` then READ that field, and the
+  committed seed — older than the growth — refused with
+  "`derive` index 3 is out of bounds (length 3)" at the annotation.
+  Nothing moved; the seed simply writes three slots where the derive
+  reads four. So the obligation does not ride the commit that grows a
+  shape, it rides the commit that first CONSUMES it, and those are
+  usually different commits by different hands. THE TELL IS THE
+  ARITHMETIC IN THE REFUSAL: an index one past a length, named at an
+  annotation, is a seed behind the source — never a defect in the
+  derive.
   WHAT AN OLDER COMPILER OWES A NEWER PACKAGE IS NOTHING, and the
   program hears it: the old compiler writes the slots it knows, so a
   program reading a field it never wrote reads past the row's end and
@@ -1653,6 +1696,17 @@ Runtime facts, ours to ratify:
   build/avra.pre` is the whole protocol here too — and RUNNING OUT OF
   DISK is the same destruction by a second cause (2026-09-07: a lane
   stopped on ENOSPC).
+  AND `make census` IS THE THIRD CAUSE, WORSE THAN BOTH, because it
+  removes the compiler DELIBERATELY as step one and restores it with
+  a trap that needs exactly the resources that just ran out. It killed
+  one lane's compiler twice in an hour — once to an OOM kill, once to
+  ENOSPC — and both times the trap's own `make avra` died with it, so
+  the tree held no compiler at the moment the machine was least able
+  to make one. A RECOVERY THAT REBUILDS IS NOT A RECOVERY UNDER THE
+  CONDITIONS THAT BREAK THINGS; the recovery that worked was a COPY
+  taken before the removal (`build/avra.gen1`, two commands back).
+  Hence the tool saves the binary aside and restores by `mv`, and
+  refuses early when there is no compiler to save.
   BUT THE FREE-SPACE NUMBER BREATHES, so ONE `df` READING IS NOT A
   DECISION. It went 4.7 GiB -> 651 MiB -> 3.1 GiB -> 2.1 GiB in
   minutes with NOTHING DELETED: macOS mints and releases swapfiles
@@ -1943,6 +1997,19 @@ Runtime facts, ours to ratify:
   and no constant ever aims at one. That non-event with its mechanism
   is the better receipt, and it exists only because someone went back
   to check their own ledger entry against the tree.
+- A DRAFT PARKED IN `packages/` IS IN THE COMPILER'S SOURCE, and the
+  keepers read the TREE, not the commit. `seed-check` compiles the
+  WORKING tree (`build/seed-check/avra build packages/cli`), so one
+  untracked half-written file under `packages/` turned a gate red —
+  GATE-STATUS 2, "the seed cannot compile HEAD — run `make seed`" —
+  thirty-six seconds after it was saved, against a commit whose own
+  gate had been green minutes before. THE SYMPTOM ACCUSES THE COMMIT:
+  the words name HEAD and the seed, and nothing names the file. The
+  isolation needed no build — `git status --porcelain` answered one
+  line — but the reflex it interrupts is `make seed`, which would
+  have rewritten a committed artifact to chase a file that was never
+  in it. Park drafts in `/tmp` or `build/scratch` until they type;
+  `packages/` is for code that compiles.
 - A PROBE THAT TRUNCATES ITS OWN OUTPUT REPORTS THE ABSENCE OF WHAT
   IT CUT. `./avra check … | head -6` showed F3015 alone on an `export
   use` line, so this file recorded that the re-export law is never
