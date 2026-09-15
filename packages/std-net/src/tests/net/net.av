@@ -1,0 +1,52 @@
+//! proves: @std.net on loopback — a listener on the kernel's port, a
+//! connect, an accept, readiness for the server side through the
+//! poller, a write, an exact read, the echo back, EOF after the
+//! client closes, and the peer named as the loopback address.
+use @std.net.{listen, connect, poller, Poller, Read, Interest, NetError}
+use @std.time.{secs}
+
+fn ready(p: Poller, fd: int) -> Result<bool, NetError> {
+    let events = p.wait(secs(2))?
+    .Ok(events.any((e) -> e.fd == fd && e.readable))
+}
+
+fn shown(r: Read) -> string {
+    match r {
+        .Data(b) -> b.text() ?? "<bytes>",
+        .Eof -> "<eof>",
+        .Pending -> "<pending>",
+    }
+}
+
+fn exchange() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let client = connect("127.0.0.1", l.port, secs(2))?
+    let p = poller()?
+    p.watch(l.fd, .Read)?
+    let listener_ready = ready(p, l.fd)?
+    let server = l.accept()?
+    p.watch(l.fd, .None)?
+    p.watch(server!.fd, .Read)?
+    let quiet = shown(server!.read(64)?)
+    let hello = "GET / HTTP/1.1\r\n".bytes()
+    let put = client.write(hello, 0)?
+    let server_ready = ready(p, server!.fd)?
+    let got = server!.read(64)?
+    let echoed = server!.write(hello, 0)?
+    p.watch(client.fd, .Read)?
+    let client_ready = ready(p, client.fd)?
+    let back = shown(client.read(64)?)
+    let peer = server!.peer().starts_with("127.0.0.1:")
+    client.close()?
+    let eof_ready = ready(p, server!.fd)?
+    let eof = shown(server!.read(64)?)
+    server!.close()?
+    l.close()?
+    p.close()?
+    .Ok("${l.port > 0} ${listener_ready} ${quiet} ${put} ${server_ready} ${shown(got).length} ${echoed} ${client_ready} ${back.length} ${peer} ${eof_ready} ${eof}")
+}
+
+match exchange() {
+    .Ok(line) -> line,
+    .Err(e) -> "failed: ${e.verb} ${e.subject}",
+}

@@ -100,6 +100,35 @@ avra_fd_taken(0).length
 trapped take_of_error "avra: a take of an error — \`read\` answered -35, not a token" 2 '' 'extern fn avra_fd_taken(token: int) -> Bytes
 avra_fd_taken(-35).length
 '
+trapped stale_take "avra: a take of read 1, but read 2 has landed since" 2 '
+[dependencies]
+"@std/net"  = { path = "../../../packages/std-net" }
+"@std/time" = { path = "../../../packages/std-time" }
+' 'use @std.net.{listen, connect, poller, Interest, NetError}
+use @std.time.{secs}
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fd_taken(token: int) -> Bytes
+fn run() -> Result<int, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let p = poller()?
+    p.watch(l.fd, .Read)?
+    p.wait(secs(2))?
+    let s = l.accept()?
+    p.watch(s!.fd, .Read)?
+    c.write("a".bytes(), 0)?
+    p.wait(secs(2))?
+    let first = avra_fd_read(s!.fd, 10)
+    c.write("b".bytes(), 0)?
+    p.wait(secs(2))?
+    let second = avra_fd_read(s!.fd, 10)
+    .Ok(avra_fd_taken(first).length + second)
+}
+match run() {
+    .Ok(n) -> "${n}",
+    .Err(e) -> e.verb,
+}
+'
 # A STRING CROSSING TO C IS ONE STRING. Avra measures text by the
 # header and C reads to the first NUL, so a string holding one is TWO
 # VALUES at the seam — a name that was checked is not the name that is
