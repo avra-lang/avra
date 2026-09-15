@@ -14292,16 +14292,35 @@ beyond gate peaks (see PERFORMANCE).
 
 ### FRICTION
 
-- **A DERIVE CANNOT SHOW WHAT IT GENERATED.** Three failed `make avra`
-  cycles (~4 min each) diagnosing generation purely from downstream
-  symptoms, because nothing prints the post-expansion file. EVIDENCE:
-  `build/mk2.log` — "`@std.avrac.core` does not export
-  `grammar_payloads_Expr`" plus "no `fn grammar_payloads_Expr` is
-  defined", which are the SAME fact (the fn existed, file-locally) worn
-  as two different accusations; `build/mk4.log` — 43 x F2030 with no
-  line naming the cause. THE ASK: `avra expand <file>`, printing a
-  file's declarations after derives have run. Every one of the three
-  cycles would have been one look.
+- ~~**A DERIVE CANNOT SHOW WHAT IT GENERATED.**~~ **RETRACTED THE SAME
+  DAY, BY THE AUTHOR, BEFORE ANYONE ACTED ON IT.** This row asked for
+  `avra expand <file>` — "printing a file's declarations after derives
+  have run" — and `avra expand` HAS DONE EXACTLY THAT SINCE BEFORE THIS
+  SLICE: `packages/cli/src/commands/expand.av`, "the file as compiled,
+  its generated declarations inlined after their written origins", and
+  `workspace.av:1931`'s `expanded_source` pushes `decl_block(d)` for
+  every generated decl whose provenance names the written one. I spent
+  three `make avra` cycles (~4 min each) inferring from downstream
+  symptoms what one `avra expand` would have shown me.
+  WHAT THE ROW IS ACTUALLY EVIDENCE OF: not a missing tool, but a
+  SURVEY ROW WRITTEN FROM RECALL RATHER THAN CHECKED — the exact
+  failure this survey's own posture forbids ("a finding without
+  evidence is a question, not a finding"), committed by the person
+  writing the posture. The cost of the un-checked version is worse than
+  the friction it described: a feature request for a shipped feature
+  routes someone to build a duplicate.
+  THE RESIDUE, AND IT IS SMALL: a derive's failure modes are diagnosed
+  from downstream symptoms by default, and nothing in the refusal text
+  points at `expand`. EVIDENCE that the symptoms mislead stands —
+  `build/mk2.log` says both "`@std.avrac.core` does not export
+  `grammar_payloads_Expr`" and "no `fn grammar_payloads_Expr` is
+  defined", which are ONE fact (it existed, file-locally) worn as two
+  accusations; `build/mk4.log` is 43 x F2030 with no line naming the
+  cause. A NARROWED ASK: when a name is not found and a derive in that
+  file generated declarations, say so and name `avra expand`.
+  UNVERIFIED: I could not re-run `avra expand` to confirm it would have
+  shown the generated fn, being on hold for heavy runs; the claim rests
+  on reading expand.av and expanded_source, not on output.
 - **AN ANNOTATION PROBE NEEDS A PACKAGE BUILT AROUND IT.** A loose
   scratch file using `@std.meta` is F3015 "this file is not in a
   package — `use` needs a root", so each meta probe costs an

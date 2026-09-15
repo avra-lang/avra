@@ -1928,6 +1928,24 @@ impl Program {
     /// A file as compiled: written nodes in source order, with every
     /// generated declaration immediately after the declaration its
     /// annotation wrapped.
+    /// THE FILE AS WRITTEN, canonically printed — what `fmt` answers.
+    /// NEVER the EXPANDED source: a generated declaration is the
+    /// COMPILER's, and writing one back into the file would make it the
+    /// author's, to be expanded again on the next build.
+    ///
+    /// AND A FORMATTER NEVER REWRITES WHAT IT COULD NOT READ. The
+    /// parser is error-tolerant, so a file with a parse error still
+    /// answers a tree — with HOLES where it could not read — and
+    /// rendering that tree puts the holes' source back as nothing,
+    /// silently deleting exactly the region the author most wants kept.
+    /// TYPE errors are no bar: a formatter is most wanted on code that
+    /// does not check yet, and typing moves no token.
+    fn formatted_source(f: FileId) -> Result<string, string> {
+        let parsed = self.ws.parsed(f)
+        if has_errors(parsed.voices.list) { return .Err(self.report()) }
+        .Ok(render_source(parsed.store, parsed.stmts))
+    }
+
     fn expanded_source(f: FileId) -> string {
         let made = self.ws.expanded(f)
         let parsed = self.ws.parsed(f)

@@ -1,0 +1,42 @@
+//! `avra fmt <file>` — the file as canonical Avra, SAID and never
+//! written back.
+//!
+//! THERE IS NO `--write` YET, AND THE REASON IS A MEASUREMENT. The
+//! renderer keeps `///` doc comments and DROPS every plain `//` one,
+//! so formatting is LOSSY on any file that carries a remark: a
+//! `--write` would silently delete the author's comments. Reading is
+//! safe and useful today; rewriting is not, and a formatter that
+//! eats comments is worse than no formatter.
+//!
+//! AND IDEMPOTENCE DOES NOT CATCH IT — measured, not argued.
+//! `fmt(fmt(x)) == fmt(x)` is GREEN, because the second pass has no
+//! comments left to lose. A suite that checks only idempotence ships
+//! the deleter. The receipt a formatter owes is LOSSLESSNESS, which
+//! is a different question and currently answers no.
+use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.avrac.language.{Program, Analysis}
+use @std.io.{println}
+
+type FmtCmd = { }
+
+impl Runnable for FmtCmd {
+    fn run(args: CliResult) -> int { phased(args, "fmt", printed) }
+}
+
+/// The canonical text, said.
+fn printed(p: Program) -> Result<int, string> {
+    let a = entered(p)?
+    println(p.formatted_source(a.view.file)?)
+    0
+}
+
+/// The file the command was given, analyzed.
+fn entered(p: Program) -> Result<Analysis, string> {
+    let held: Analysis? = p.entry_file()
+    if held == null { fail "the program is empty" }
+    .Ok(held!)
+}
+
+export fn fmt_command() -> Subcommand {
+    Subcommand { meta: file_command("fmt", "Print a file as canonical Avra"), body: FmtCmd { } }
+}
