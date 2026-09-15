@@ -993,7 +993,7 @@ impl Workspace {
     /// so that recursive view contributes nothing.
     fn lifted_at(id: int) -> Result<Lifted, Unsettled> {
         match self.lift_results.ask(id) {
-            .Cycle -> { return .Err(Unsettled.Trap("asks for its own answer while lifting")) },
+            .Cycle -> { return .Err(Unsettled.Recursive) },
             .Reuse(held) -> { return reused_lift(held) },
             .Compute -> self.lift_results.begin(id),
         }
@@ -1355,7 +1355,7 @@ impl Workspace {
         // names while they are still being made. `check_annotation` speaks.
         if same_file(self.decls.decl(m).file, f) { return [] }
         if (self.decls.sig(m))?.fn_sig() == null { return [] }
-        self.lifted_directives(m, f, w.stmt, w.callee, [])
+        self.lifted_directives(m, f, w.stmt, w.callee, [], w.at)
     }
 
     /// The declaration at `s` as the value the fn's first seat asks
@@ -1378,7 +1378,7 @@ impl Workspace {
         let at = placed(v, v.store.stmt_span(x.stmt))
         match self.decls.meta_seat(want) {
             .Fn -> meta_of_fn(MetaFn { name: x.name, params: self.crossed_params(v, x.stmt, d), answer: self.crossed_answer(v, x.stmt), at: at, answers: self.answer_kind(d) }, heap),
-            .Type -> meta_of_type(MetaType { name: x.name, fields: self.crossed_fields(v, x.stmt, d), variants: self.crossed_variants(v, x.stmt, d), at: at }, heap),
+            .Type -> meta_of_type(MetaType { name: x.name, fields: self.crossed_fields(v, x.stmt, d), variants: self.crossed_variants(v, x.stmt), at: at }, heap),
             .Named -> meta_of_named(Named { name: x.name, at: at }, heap),
             .Trait -> meta_of_trait(MetaTrait { name: x.name, at: at }, heap),
             .Other -> MetaVal.Absent,
@@ -1409,10 +1409,9 @@ impl Workspace {
         [MetaField { name: p.name.of, ty: written_spelling(p.ty), at: placed(v, p.span), kind: kind_at(kinds, j) } for j, p in declared_fields(v.store, s)]
     }
 
-    /// An enum's variants: name, payload spellings, payload shapes.
-    fn crossed_variants(v: FileView, s: StmtId, d: DeclId) -> List<MetaVariant> {
-        let rows = self.payload_kinds(d)
-        [MetaVariant { name: va.name.of, payload: [written_spelling(p.ty) for p in va.payloads], at: placed(v, va.span), kinds: kinds_at(rows, j) } for j, va in declared_variants(v.store, s)]
+    /// An enum's variants: name and payload spellings.
+    fn crossed_variants(v: FileView, s: StmtId) -> List<MetaVariant> {
+        [MetaVariant { name: va.name.of, payload: [written_spelling(p.ty) for p in va.payloads], at: placed(v, va.span) } for va in declared_variants(v.store, s)]
     }
 
     /// THE SHAPE COMES FROM THE SIGNATURE, NEVER FROM THE SPELLING.
@@ -1441,11 +1440,7 @@ impl Workspace {
         [kind_of(self.decls.types, t) for t in sig!.types]
     }
 
-    fn payload_kinds(d: DeclId) -> List<List<Kind>> {
-        let sig: EnumSig? = (self.decls.sig(d))?.enum_sig()
-        if sig == null { return [] }
-        [[kind_of(self.decls.types, t) for t in ps] for ps in sig!.payloads]
-    }
+
 
     // ── Modules ──
     /// A path as a diagnostic shows it: under its package's source root.
@@ -1983,7 +1978,19 @@ impl Program {
     /// The packages' voices first (a manifest's trouble explains
     /// the rest), then every file's diagnostics, the workspace's
     /// defects last; "" means clean.
+    ///
+    /// THE BOUNDARY SPEAKS FIRST, AND ALONE. A refused `@std/meta`
+    /// makes every expansion generate nothing, so every USE of a
+    /// derived accessor refuses — a cascade of "no method" that names
+    /// the boundary NOWHERE. Three build failures in one day read
+    /// exactly that way, from three different causes, and the word
+    /// "boundary" appeared in none of them. When the door refused,
+    /// its refusal IS the report. The VERDICT still counts every
+    /// diagnostic (`clean` is untouched): only the rendering stops
+    /// explaining the wrong thing.
     fn report() -> string {
+        let moved: string? = self.ws.decls.meta_disagreement()
+        if moved != null { return self.rendered([foreign_package(moved!)]) }
         let files = [self.rendered(a.diagnostics) for a in self.files if unclean(a)]
         let heads: List<string> = if self.voices.is_empty() { [] } else { [self.rendered(self.voices)] }
         let tails: List<string> = if self.defects.is_empty() { [] } else { [self.rendered(self.defects)] }
@@ -2365,6 +2372,7 @@ fn unsettled_hash(why: Unsettled) -> int {
         .Trap(words) -> fp(67, [fp_str(words)]),
         .Param(words) -> fp(84, [fp_str(words)]),
         .Spoken -> fp(71, []),
+        .Recursive -> fp(123, []),
     }
 }
 
@@ -2381,11 +2389,6 @@ fn typed_text(types: TypeRegistry, ann: TypeRef?) -> string {
 fn kind_at(kinds: List<Kind>, j: int) -> Kind {
     if j >= kinds.length { return no_kind() }
     kinds[j]
-}
-
-fn kinds_at(rows: List<List<Kind>>, j: int) -> List<Kind> {
-    if j >= rows.length { return [] }
-    rows[j]
 }
 
 /// A source span as the place a meta value names.
@@ -2494,6 +2497,17 @@ fn arena_marks(store: NodeStore) -> ArenaMarks {
 /// the validating path's words.
 fn lift_failed(label: string, at: Loc?) -> Diag {
     refusal("annotation.unsettled", at, "an annotation could not run", label, "an annotation runs at compile time from pure computation alone")
+}
+
+/// THE PACKAGE'S OWN VOICE for a moved `@std/meta` — spoken whether
+/// or not any annotation was reached, because the cascade that
+/// follows a refused boundary can reach a file the crossing never
+/// touched. The words are the annotation door's, so a reader who has
+/// seen one has seen both.
+fn foreign_package(moved: string) -> Diag {
+    refusal("annotation.meta", null, "the compiler crosses `@std/meta`'s own shapes",
+            "the compiler was built against another `@std/meta` — ${moved}",
+            "build against the `@std/meta` this compiler ships")
 }
 
 fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {

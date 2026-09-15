@@ -54,8 +54,17 @@ fn widened_variant() -> string {
         .replace("Node.Many([Node.Name(t) for t in texts])", "Node.Many([Node.Name(t) for t in texts], \"\")")
         .replace("Node.Many([x.node for x in xs])", "Node.Many([x.node for x in xs], \"\")")
 }
+/// A record that declares FEWER than the crossing reads — the slot
+/// is gone and the reader would take the NEXT one for it.
+fn shrunk_record() -> string { real_meta_source().replace("export type Named = { name: string, at: Loc? }", "export type Named = { name: string }") }
 /// A record that declares MORE than the crossing reads.
 fn extra_field() -> string { real_meta_source().replace("export type Named = { name: string, at: Loc? }", "export type Named = { name: string, at: Loc?, extra: int = 0 }") }
+
+/// A program that DERIVES — so a refused boundary leaves its
+/// generated method missing and every use of it refusing.
+fn uses_a_derive() -> string {
+    "use @x.prov.{Shape}\n@derive(Shape)\ntype P = { x: int }\nP { x: 1 }.shape()"
+}
 
 fn validated(verb: string) -> string {
     "use @x.prov.{" + verb + "}\n@" + verb + "\nfn answer(n: int) -> int { n }\nanswer(1)"
@@ -69,17 +78,37 @@ spec "features/crossing — the meta boundary" {
         then "SWAPPED variants are named by the first that moved" {
             refused_n(under(validated("plainly"), swapped_variants()), "`Node` declares `Text` where the crossing reads `Name`", 1)
         }
-        then "a variant that GREW a payload is named by its count" {
-            refused_n(under(validated("plainly"), widened_variant()), "`Node.Many` carries 2 payloads where the crossing reads 1", 1)
+        then "a SHRUNK record is named by the slot that is gone" {
+            refused_n(under(validated("plainly"), shrunk_record()), "`Named` declares nothing where the crossing reads `at`", 1)
         }
-        then "a field the crossing does not read is TOLERATED for one generation — the annotation RUNS" {
-            // This side of the door is off while `@std/meta` grows
-            // its `Kind`: the compiler that must COMPILE a package
-            // with more slots than it fills cannot also refuse it.
-            // The proof is the PROVIDER's own refusal and no other —
-            // the value crossed, the annotation ran, the boundary
-            // said nothing. The arm comes back with the slots.
+        then "THE BOUNDARY SPEAKS FIRST AND ALONE — no cascade of missing accessors" {
+            // A refused boundary generates nothing, so every USE of a
+            // derived accessor refuses. Three build failures in one
+            // day printed that cascade and named the boundary
+            // nowhere. The report leads with the door and shows
+            // nothing else; the VERDICT still counts everything.
+            let said = under(uses_a_derive(), shrunk_record()).report()
+            said.contains("the compiler crosses `@std/meta`'s own shapes") &&
+                !said.contains("F2030") && !said.contains("has no method")
+        }
+    }
+    given "a program whose derives never ran" {
+        then "it is refused, and the refusal is the boundary's" {
+            under(uses_a_derive(), shrunk_record()).check() is .Err
+        }
+    }
+    given "a package that GREW — the ordinary way a contract evolves" {
+        // GROWTH IS NOT A MOVED SHAPE. An older reader takes the
+        // slots it knows and never looks at the trailing ones, so a
+        // grown package crosses whole. The proof is the PROVIDER's
+        // own refusal and NO other: the value crossed and the
+        // annotation RAN. An `.is_empty()` here would be green for
+        // the wrong reason — `@plainly` always refuses once.
+        then "a field the crossing does not read is TOLERATED, and the annotation RUNS" {
             refused_n(under(validated("plainly"), extra_field()), "plainly from `answer`", 1)
+        }
+        then "a variant that GREW a payload the reader ignores crosses too" {
+            refused_n(under(validated("plainly"), widened_variant()), "plainly from `answer`", 1)
         }
         then "every refusal wears the boundary's own words" {
             refused_in(under(validated("plainly"), renamed_field()), "the compiler was built against another `@std/meta`")
