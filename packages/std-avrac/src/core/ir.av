@@ -6,6 +6,8 @@
 //! The language binds every name once, so a definition's register IS
 //! its value everywhere it is read — the IR is born SSA.
 
+use @std.meta.{derive}
+
 /// A virtual register. Minted in instruction order: the Nth
 /// value-producing instruction defines register N.
 export type Reg = { index: int }
@@ -47,48 +49,49 @@ export fn un_symbol(op: UnOp) -> string {
 /// prefer making an existing concept more general over adding a
 /// parallel one. That is what keeps this vocabulary small while it
 /// grows.
+@derive(Roles)
 export enum Ins {
     // Values.
-    ConstInt(dst: Reg, v: int)
+    ConstInt(@dst dst: Reg, v: int)
     /// A REAL constant, carried as its IEEE-754 bit pattern because
     /// the compiler that emits it holds no float of its own. THE
     /// VARIANT IS THE TYPE: every value category has its own
     /// constant, so what an instruction MEANS never depends on where
     /// its answer is going.
-    ConstFloat(dst: Reg, bits: int)
-    ConstStr(dst: Reg, s: string)
-    ConstBool(dst: Reg, v: bool)
+    ConstFloat(@dst dst: Reg, bits: int)
+    ConstStr(@dst dst: Reg, s: string)
+    ConstBool(@dst dst: Reg, v: bool)
     /// The eager binary operations — operands same-typed. The lazy
     /// ops (And/Or) never reach here: they lower as regions.
-    Bin(dst: Reg, op: BinOp, a: Reg, b: Reg)
+    Bin(@dst dst: Reg, op: BinOp, a: Reg, b: Reg)
     /// The unary operations.
-    Un(dst: Reg, op: UnOp, src: Reg)
+    Un(@dst dst: Reg, op: UnOp, src: Reg)
     /// An effect-only call into the runtime's C surface — no value
     /// defined (seeding an aggregate, releasing early).
-    CallRtVoid(callee: string, args: List<Reg>)
+    CallRtVoid(@host callee: string, args: List<Reg>)
     /// A call into the runtime's C surface — THE escape hatch that
     /// keeps this instruction set closed: features lower
     /// value-producing runtime needs here, never as new variants.
-    CallRt(dst: Reg, callee: string, args: List<Reg>)
+    CallRt(@dst dst: Reg, @host callee: string, args: List<Reg>)
     /// A small immutable aggregate built IN REGISTERS — the machine
     /// shape behind the unboxed pair (a scalar nullable's
     /// {present, value}); the backend keeps it out of memory
     /// entirely, so the optimizer sees through it. A register holds
     /// ONE VALUE, not one word — this is the variant that says so.
-    Pack(dst: Reg, elems: List<Reg>)
+    Pack(@dst dst: Reg, elems: List<Reg>)
     /// One element of a packed value.
-    Extract(dst: Reg, src: Reg, at: int)
+    Extract(@dst dst: Reg, src: Reg, at: int)
     /// A named fn's ADDRESS as a value — the code pointer a dyn
     /// box (and, ahead, a closure) carries; `CallPtr` calls
     /// through it. An opaque word to every other consumer.
-    FnAddr(dst: Reg, sym: string)
+    FnAddr(@dst dst: Reg, @code sym: string)
     /// A SETTLED aggregate's ADDRESS: the `Static` of that name in
     /// the program, laid out before it runs as an immortal headered
     /// box — never built, never released, so a read costs one
     /// address and the memory pass owes it nothing. The one constant
     /// that aims at a pointer register, and it is a name, never a
     /// number.
-    StaticAddr(dst: Reg, sym: string)
+    StaticAddr(@dst dst: Reg, sym: string)
 
     // Structure: scopes, regions, and calls — all BRACKETS in the
     // one flat list, never labels or jumps. Each branch of a region
@@ -111,14 +114,14 @@ export enum Ins {
     /// why it is not named for either.
     ArmEnd(gives: Reg)
     /// End of the LAST arm: every arm's yield merges into `dst`.
-    RegionEnd(dst: Reg, gives: Reg)
+    RegionEnd(@dst dst: Reg, gives: Reg)
     /// A call to an Avra fn body. The ABI is callee-cleans: the
     /// caller retains managed arguments in, the callee's exit
     /// releases its params minus what RetVal keeps.
-    Call(dst: Reg, callee: string, args: List<Reg>)
+    Call(@dst dst: Reg, @body callee: string, @seats args: List<Reg>)
     /// An INDIRECT call through a register-held fn address — dyn
     /// dispatch (and, ahead, closures). The ABI is `Call`'s.
-    CallPtr(dst: Reg, f: Reg, args: List<Reg>)
+    CallPtr(@dst dst: Reg, f: Reg, @seats args: List<Reg>)
     /// A fn body's answer, after its scope has settled its debts.
     RetVal(r: Reg)
     /// An EARLY answer — `return` from anywhere in a body. The
@@ -132,8 +135,8 @@ export enum Ins {
     // single-assignment — a mut binding allocates a slot, loads
     // mint fresh registers, stores update the slot. Scalars only
     // until ownership analysis covers managed values.
-    Alloca(dst: Reg)
-    Load(dst: Reg, slot: Reg)
+    Alloca(@dst dst: Reg)
+    Load(@dst dst: Reg, slot: Reg)
     Store(slot: Reg, src: Reg)
 
     // Loops: the third bracket family. The condition's instructions
@@ -191,73 +194,11 @@ export fn closes_region(i: Ins) -> bool {
     i is .RegionEnd
 }
 
-/// The register an instruction DEFINES, when it defines one — kept
-/// beside the enum so consumers never grow their own lists.
-export fn dst_of(i: Ins) -> Reg? {
-    match i {
-        .ConstInt(d, _) -> d,
-        .ConstFloat(d, _) -> d,
-        .ConstStr(d, _) -> d,
-        .ConstBool(d, _) -> d,
-        .Bin(d, _, _, _) -> d,
-        .Un(d, _, _) -> d,
-        .CallRtVoid(_, _) -> null,
-        .CallRt(d, _, _) -> d,
-        .Pack(d, _) -> d,
-        .Extract(d, _, _) -> d,
-        .Call(d, _, _) -> d,
-        .FnAddr(d, _) -> d,
-        .StaticAddr(d, _) -> d,
-        .CallPtr(d, _, _) -> d,
-        .RegionEnd(d, _) -> d,
-        .Alloca(d) -> d,
-        .Load(d, _) -> d,
-        .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
-        .SwitchStart(_, _) or .ArmEnd(_) or
-        .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or
-        .Release(_) or .Retain(_) or .RetVal(_) or .FnExit(_) or
-        .Ret(_) -> null,
-    }
-}
-
 /// Register identity — two registers are one when their indexes
 /// agree.
 export fn same_reg(a: Reg, b: Reg) -> bool {
     // LICENSED I9: register identity, not type agreement — ids compare by index
     a.index == b.index
-}
-
-/// The registers a step READS — its operands, never its
-/// destination. ONE definition of what an instruction consumes, so
-/// a pass asking about a register's uses asks here and no consumer
-/// re-derives the list. A slot is read by the step that touches it:
-/// a Load reads its cell, a Store reads the cell and the value.
-export fn reads_of(i: Ins) -> List<Reg> {
-    match i {
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-        .FnAddr(_, _) or .StaticAddr(_, _) or .ScopeEnter(_) or .Alloca(_) or
-        .LoopStart or .LoopEnd or .Ret(_) -> [],
-        .Bin(_, _, a, b) -> [a, b],
-        .Un(_, _, src) -> [src],
-        .CallRtVoid(_, args) -> args,
-        .CallRt(_, _, args) -> args,
-        .Pack(_, elems) -> elems,
-        .Extract(_, src, _) -> [src],
-        .Call(_, _, args) -> args,
-        .CallPtr(_, f, args) -> [f].concat(args),
-        .ScopeExit(gives) -> if gives == null { [] } else { [gives!] },
-        .IfStart(cond) -> [cond],
-        .SwitchStart(selector, _) -> [selector],
-        .ArmEnd(gives) -> [gives],
-        .RegionEnd(_, gives) -> [gives],
-        .RetVal(r) -> [r],
-        .FnExit(gives) -> [gives],
-        .Load(_, slot) -> [slot],
-        .Store(slot, src) -> [slot, src],
-        .LoopCond(c) -> [c],
-        .Retain(r) -> [r],
-        .Release(r) -> [r],
-    }
 }
 
 /// Does `i` let `r` OUTLIVE the call that handed it over? A seat
@@ -300,106 +241,9 @@ export fn escapes_in(i: Ins, r: Reg) -> bool {
     }
 }
 
-/// An AVRA CALL's argument registers — the seats `retained_args`
-/// retains, and the only ones a conditional ABI could stop retaining.
-/// A REGISTRY: every arm is spelled, so an instruction that grows
-/// call seats breaks the build until it answers.
-export fn seat_regs(i: Ins) -> List<Reg> {
-    match i {
-        .Call(_, _, args) -> args,
-        .CallPtr(_, _, args) -> args,
-        // a runtime row BORROWS its arguments; everything else has none
-        .CallRt(_, _, _) or .CallRtVoid(_, _) or .Pack(_, _) or
-        .Store(_, _) or .Retain(_) or .Release(_) or .RetVal(_) or
-        .FnExit(_) or .ArmEnd(_) or .RegionEnd(_, _) or .ScopeExit(_) or
-        .Extract(_, _, _) or .Bin(_, _, _, _) or .Un(_, _, _) or
-        .Load(_, _) or .IfStart(_) or .SwitchStart(_, _) or
-        .LoopCond(_) or .ScopeEnter(_) or .ConstInt(_, _) or
-        .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-        .FnAddr(_, _) or .StaticAddr(_, _) or .Alloca(_) or .LoopStart or .LoopEnd or
-        .Ret(_) -> [],
-    }
-}
-
-/// The symbol an AVRA call names, when it is a known body — a
-/// `CallPtr` names none, so its seats can never be shown read-only.
-export fn call_symbol(i: Ins) -> string? {
-    match i {
-        .Call(_, callee, _) -> callee,
-        .CallPtr(_, _, _) or .CallRt(_, _, _) or .CallRtVoid(_, _) or
-        .Pack(_, _) or .Store(_, _) or .Retain(_) or .Release(_) or
-        .RetVal(_) or .FnExit(_) or .ArmEnd(_) or .RegionEnd(_, _) or
-        .ScopeExit(_) or .Extract(_, _, _) or .Bin(_, _, _, _) or
-        .Un(_, _, _) or .Load(_, _) or .IfStart(_) or
-        .SwitchStart(_, _) or .LoopCond(_) or .ScopeEnter(_) or
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or
-        .ConstBool(_, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .Alloca(_) or
-        .LoopStart or .LoopEnd or .Ret(_) -> null,
-    }
-}
-
-/// A store that RETAINS: the pass's rule is both the cell and the
-/// value being managed, so this answers the pair for a caller that
-/// applies `is_managed` itself.
-export fn store_pair(i: Ins) -> List<Reg> {
-    match i {
-        .Store(slot, src) -> [slot, src],
-        .Call(_, _, _) or .CallPtr(_, _, _) or .CallRt(_, _, _) or
-        .CallRtVoid(_, _) or .Pack(_, _) or .Retain(_) or .Release(_) or
-        .RetVal(_) or .FnExit(_) or .ArmEnd(_) or .RegionEnd(_, _) or
-        .ScopeExit(_) or .Extract(_, _, _) or .Bin(_, _, _, _) or
-        .Un(_, _, _) or .Load(_, _) or .IfStart(_) or
-        .SwitchStart(_, _) or .LoopCond(_) or .ScopeEnter(_) or
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or
-        .ConstBool(_, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .Alloca(_) or
-        .LoopStart or .LoopEnd or .Ret(_) -> [],
-    }
-}
-
 /// Does `r` fill a seat this row keeps?
 fn kept_seat(callee: string, args: List<Reg>, r: Reg) -> bool {
     [j for j, a in args if same_reg(a, r)].any(rt_keeps(callee, it))
-}
-
-/// THE USER BODY a step names — a call's callee, a fn value's
-/// address. Runtime and host callees name no body of ours, so they
-/// answer nothing. Every symbol a program's bodies name must be a
-/// body the program holds: the emitter's closure law.
-export fn body_symbol(i: Ins) -> string? {
-    match i {
-        .Call(_, callee, _) -> callee,
-        .FnAddr(_, symbol) -> symbol,
-        .StaticAddr(_, _) or
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-        .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or .CallRt(_, _, _) or
-        .Pack(_, _) or .Extract(_, _, _) or .CallPtr(_, _, _) or
-        .RegionEnd(_, _) or .Alloca(_) or .Load(_, _) or
-        .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
-        .SwitchStart(_, _) or .ArmEnd(_) or
-        .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or
-        .Release(_) or .Retain(_) or .RetVal(_) or .FnExit(_) or
-        .Ret(_) -> null,
-    }
-}
-
-/// THE HOSTED FN a step calls — the runtime's rows and the
-/// program's own externs share one call shape, so they share one
-/// projection. Every name here must be a declared row.
-export fn hosted_symbol(i: Ins) -> string? {
-    match i {
-        .CallRt(_, callee, _) -> callee,
-        .CallRtVoid(callee, _) -> callee,
-        .Call(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-        .Bin(_, _, _, _) or .Un(_, _, _) or
-        .Pack(_, _) or .Extract(_, _, _) or .CallPtr(_, _, _) or
-        .RegionEnd(_, _) or .Alloca(_) or .Load(_, _) or
-        .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
-        .SwitchStart(_, _) or .ArmEnd(_) or
-        .Store(_, _) or .LoopStart or .LoopCond(_) or .LoopEnd or
-        .Release(_) or .Retain(_) or .RetVal(_) or .FnExit(_) or
-        .Ret(_) -> null,
-    }
 }
 
 /// A slot in a runtime signature — the CallRt contract's currency,
@@ -586,3 +430,40 @@ impl RtSig {
         if j < self.boxes.length { self.boxes[j] } else { Box.Any }
     }
 }
+
+// ── The role projections ──────────────────────────────────────────
+// A DERIVE'S DECLARATION IS ITS MODULE'S, NOT ITS PACKAGE'S: a
+// generated `export` does not reach the module surface, so each
+// projection's BODY is derived off the payload roles above and its
+// DOOR is written here. (`node_payload_rows` in core/nodes.av carries
+// the same one-line door for `@derive(Grammar)`.)
+
+/// The register an instruction DEFINES, when it defines one.
+export fn dst_of(i: Ins) -> Reg? { dst_of_role(i) }
+
+/// The registers a step READS — its operands, never its destination.
+/// ONE definition of what an instruction consumes, so a pass asking
+/// about a register's uses asks here. A slot is read by the step that
+/// touches it: a Load reads its cell, a Store the cell and the value.
+export fn reads_of(i: Ins) -> List<Reg> { reads_of_role(i) }
+
+/// An AVRA CALL's argument registers — the seats `retained_args`
+/// retains, and the only ones a conditional ABI could stop retaining.
+/// A runtime row BORROWS its arguments, so its are not seats.
+export fn seat_regs(i: Ins) -> List<Reg> { seat_regs_role(i) }
+
+/// The symbol an AVRA call names, when it is a known body — a
+/// `CallPtr` names none, so its seats can never be shown read-only.
+export fn call_symbol(i: Ins) -> string? { call_symbol_role(i) }
+
+/// THE USER BODY a step names — a call's callee, a fn value's
+/// address. Runtime and host callees name no body of ours. Every
+/// symbol a program's bodies name must be a body the program holds:
+/// the emitter's closure law.
+export fn body_symbol(i: Ins) -> string? { body_symbol_role(i) }
+
+/// THE HOSTED FN a step calls — the runtime's rows and the program's
+/// own externs share one call shape, so they share one projection.
+/// Every name here must be a declared row.
+export fn hosted_symbol(i: Ins) -> string? { hosted_symbol_role(i) }
+
