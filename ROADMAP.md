@@ -14237,3 +14237,111 @@ lanes' trees; this tree at the merge points only.
   name the CONTRACT it protects; two spec assertions changed because
   the mechanism moved (a refusal's seat words, a parse error now at
   the library) and were reported, not hidden.
+
+## Feedback survey — 2026-09-14 (STD-SUBSTRATE: main 12738f7 into lane/http, 23fc98c..d3406ce)
+
+Surveyed: the merge, the http fixes, the red team and the review round
+in ../avra-lane-http. NOT surveyed: lane/http's own 325 commits (their
+lanes filed theirs), the toolchain PRs landing beside this work.
+
+### FRICTION — what cost time
+
+- TWO FRONT ENDS LEAVE NO COMPILER THAT COMPILES THE MERGE. Main's seed
+  names runtime symbols lane moved into package C (`recover` failed on
+  eleven `avra_io_*`/`avra_proc_*`), and main's compiler refuses lane's
+  `Bytes` in the merged source; lane's compiler refuses main's syntax.
+  Half the session went to the ladder: gen-0 = the seed over MAIN's
+  runtime; gen-1 = gen-0 over a throwaway spelling (Bytes as string in
+  four files) with main's std-io/std-process and an io/proc shim
+  (`ld -r -exported_symbols_list` over main's runtime); then `make avra`
+  to a byte-identical fixed point. The shim's first cut split the io
+  family, and `list_dir`'s text landed in the other runtime's stash — a
+  compiler that could READ files but list none, refusing "src/main.av
+  does not exist" on a file it had just read. THE ASK: a seed that
+  carries the runtime it links (seed.ll beside the runtime C it was
+  emitted against), so `make bootstrap` links on every tree; until then
+  the ladder is on avra-wbra.
+- THE MACHINE LOCK IS A QUEUE NOBODY CAN SEE. Four sessions gating at
+  once: every heavy step waited 10–40 minutes, and the harness killed my
+  waiting shells six times under memory pressure (swap 15.9 of 17.4 GB,
+  `sysctl vm.swapusage`). What survived was a run launched in its own
+  session (`python3 -c "os.setsid(); os.execvp(...)"`). THE ASK:
+  `tools/watch.sh` prints the queue depth and who holds the lock;
+  the bootstrap README names the detached form.
+- A LOOSE FILE'S NATIVE BUILD TAKES THE LOCK. `./avra build one.av`
+  queues behind package gates, so "does eval == native on this probe"
+  cannot be asked quickly; the honest form was a scratch PACKAGE with
+  `src/tests/<name>/<name>.av` run once. THE ASK: a lock-free
+  single-file differential, or the lock only for directory arguments.
+- A FILE-ENTRY CHECK INSIDE A PACKAGE WITH PROGRAM TESTS IS A WALL: 628
+  F0902 lines (main's own tree: 588 on `lists/check.av`) because every
+  program test's top level is read as a module's statements. THE ASK: a
+  file-entry check leaves program tests (an `.expected` beside) out of
+  the module set.
+
+### SUGAR — a construct the language should have
+
+- A REVERSE CLASS-TABLE SCAN. `run` scans forward only, so trailing OWS
+  is a `while` with a counter (std-http frame.av `before_ows`) where the
+  leading side is one `buf.run(at, ows())`. Wanting site: frame.av:367.
+  THE ASK: `b.run_back(hi, table) -> int`, one C row.
+- A HOLE-LESS LITERAL OVER OCTETS COMPARES OCTETS. `match r { "k-1" -> }`
+  over a `Bytes` (or a name over one) is F2038 "a `string` never matches
+  `Raw`" while `"k-{n}"` with a hole cuts octets. Probed at ad9186e
+  (build/scratch/rt/nb_lit.av). THE ASK: formats builds the equality
+  pattern as an octet compare when the subject is octets.
+
+### FEATURES — a capability, larger than sugar
+
+- A DIAGNOSTIC-CODE KEEPER IN THE GATE. Two lanes claimed F2060/61/63/65/66
+  and the collision surfaced only when the merged compiler ASSEMBLED its
+  language at run time ("registered more than once") — after a whole
+  generation was built. The fingerprint and idiom keepers caught their
+  twins statically (tags 111/112, I39); codes have no keeper. THE ASK:
+  a keeper over every `diags` table, in `make gate`.
+
+### DEFECTS — the compiler blaming itself
+
+- `avra test <dir>` WITHOUT A MANIFEST EXITS 2 AND SAYS NOTHING. Main's
+  binary too (`../avra/build/avra test build/scratch/rt/programs`: exit
+  2, no output). A refusal must speak; a directory of programs at the
+  top level is not a shape today (only a nested root under a package's
+  `src/` is), and the refusal should name the shape it wants.
+- A BUILTIN'S STATIC VOCABULARY ADMITTED EVERY TYPE NAME. `builtin_static`
+  (main, for `Cell.new`) consulted the method rows for any `TypeName`
+  receiver before the declaration-based door admission, so a plain
+  record's `Port.parse(...)` typed as a grammar door and lowering said
+  "a grammar door without its declaration survived typing". Latent on
+  main alone (no other rows took a type name); fixed in 23fc98c — the
+  language's declarations alone.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- "A LANE'S FIRST BUILD IS `make bootstrap`" ASSUMES THE SEED LINKS. It
+  does not when the merge moved runtime symbols into packages; the law
+  needs the second half: when `recover` fails on symbols the tree no
+  longer defines, the bridge is a seed over the OTHER side's runtime and
+  a throwaway spelling for the constructs that compiler cannot read,
+  never a rewrite. Attributed here, 2026-09-14.
+- "THE MAKEFILE FROM MAIN" was the merge brief; the honest resolution
+  was main's TARGETS (recover, seed-check, the named suites) over lane's
+  OBJECT MACHINERY (one rule, COMPILER_OBJS/PACKAGE_OBJS, the stem law),
+  because the brief's own subject — package C — IS the Makefile change.
+
+### PERFORMANCE — a measured cost
+
+- The merged gate peaks at 828 MB (`watch: peak`), gen-1's build at 764,
+  the seed refresh + bootstrap at 740; the machine's swap sat at 14–16 GB
+  of 15–17 GB throughout from concurrent sessions. No regression
+  measured against main's gate; nothing else was measured.
+
+### PROCESS — the working discipline itself
+
+- KEEP: one lock, every heavy run under the watchdog; the deterministic
+  red-team battery as a scratch PACKAGE's tests dir (16 programs, one
+  lock turn, both engines); a probe result names its base — the stale
+  standing binary answered F2084 for a case the fixed library passed.
+- CHANGE: a waiter that sleeps is still a process the harness kills; a
+  run that must survive is launched in its own session, and a chain of
+  heavy steps is ONE watchdog hold, never several queued behind each
+  other.
