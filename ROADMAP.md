@@ -15349,3 +15349,117 @@ citations, deliberately out of scope.
 - **KEEP: the keeper's first run is a measurement, not a formality.**
   It found three real stale citations in a file nobody suspected,
   written by people who had every reason to keep it current.
+
+## Feedback survey — 2026-09-15 (STD-DATA: the word slot, PR #20)
+
+Scope: `avra-0wv6` only — reading the relaunch doc, falsifying the
+task, the `SlotForm` registry, its red team and review round, four
+gates. Base `../avra-lane-sq-ffi` at main `6f09bf7`. NOT surveyed:
+@std/sqlite (the next slice), @std/process (`avra-0m3d`, unopened),
+and any performance question — nothing in this slice was measured for
+time or memory, so that axis is honestly EMPTY rather than clean.
+
+Counts: friction 4, features 1, defects 1, doctrine 3, process 3,
+sugar 0, performance 0 (not swept). Top three by cost: the four gates
+(~50 min of lock), the hand-rolled differential (six commands per
+probe, six probes), the loose-file refusal (six file copies and one
+misread minute).
+
+### Friction
+
+- **A NAMED FILE IS MORE SPECIFIC THAN THE MANIFEST AROUND IT.**
+  `./avra run scratch/tiny.av` inside the tree answers `F4005:
+  '<root>/avra.toml' declares no [bin], and 'src/main.av' does not
+  exist — nothing to run`. The refusal never mentions the file that
+  was named, so it reads as a broken manifest rather than "that file
+  is not in a runnable position". Every red-team probe was copied
+  outside the repo to be run. THE ASK: when a FILE is argued, the
+  refusal names that file; `file_workspace`
+  (cli/src/commands/shared.av:99) already has the three cases and the
+  voice does not. Probed at `6f09bf7`, 2026-09-15.
+- **I HAND-ROLLED AN INSTRUMENT THE GATE ALREADY HAS.** Six commands
+  per differential — run, build, read the path, run the binary, diff,
+  report — written out six times. `make native-check FILE=<f>` does
+  exactly that and answers `native == eval`; confirmed on this tree.
+  The tool was not the gap, knowing it existed was. THE ASK: the
+  red-team skill names it, and `avra --help` or the Makefile's own
+  header lists the probe targets. A hand-rolled second instrument is
+  not a shortcut, it is an unverified one — this file says so about
+  greps and it is just as true about harnesses.
+- **FOUR GATES FOR ONE SLICE, ~50 minutes of lock.** Initial, after
+  the deadline doc, after the review-round fixes, after a rename.
+  Three earned their receipt. The fourth did not change a byte of
+  behaviour, and nothing in the tree says what a change CAN affect,
+  so a rename costs the same as a codegen edit. THE ASK: unclear, and
+  recorded as friction rather than as a demand — a gate that guesses
+  what a diff can reach is a gate that will guess wrong.
+- **THE MACHINE LOCK IS A RACE, NOT A QUEUE.** A bootstrap waited 20
+  minutes behind back-to-back steps from other lanes. CONFIRMING an
+  existing finding (the comptime campaign measured the cause and one
+  of their workers lost 161 times in a row); no re-file.
+
+### Features
+
+- **A KEEPER SHOULD COUNT FROM ITS OWN TABLE.** `tools/vocab.sh`
+  printed its summary from a hand-kept `for e in Ins RtKind Type`
+  beside the `CONSUMERS` table it counts, so a registry added to the
+  table went uncounted by the keeper's own report — the
+  label-wider-than-its-coverage species, inside a keeper. Fixed here
+  (it reads the table's first column). THE GENERAL ASK: every keeper
+  that reports a count derives it from the thing it read.
+
+### Defects
+
+- **A RUNTIME ROW'S ANSWER KIND IS CHECKED BY NOBODY** — filed
+  `avra-kln6`, P1, routed to TOOLCHAIN. `extern fn avra_array_new()
+  -> bool` checks clean; `./avra run` prints `made=[]` (a `bool` as a
+  LIST) and the native binary prints `made=true`. `row_shape_law`
+  (features/fns/check.av:129) checks a row's arity and each POINTER
+  seat's box; the answer is checked by nothing. The native build DOES
+  notice and CANNOT speak — its `[warn] redeclared with a different
+  type` channel exists for seed/source skew, and a name in `rt_sigs`
+  redeclared with a different answer is not skew.
+
+### Doctrine
+
+- **I44: A PACK AND ITS UNPACK READ ONE TABLE** — landed in
+  DOGFOODING.md's registry, unratcheted, with `make vocab` as its
+  keeper rather than a grep, since nothing textual links two fns as
+  inverses.
+- **THE SLOT TABLE HAS A SECOND COPY AND IT IS UNREACHABLE.**
+  `rt_kind_of` (core/runtime_api.av:122) is the same `is`-chain —
+  `.Void`, `.Float`, `rides_pointer`, else I64 — and asks `shape_of`
+  where `machine_shape` belongs, so a FLAT record over `float` files
+  as a word and a double would ride an integer seat. Unreachable
+  today: F2056 refuses a named type at an extern seat and
+  `extern_kind` is the only caller. RECORDED TRIGGER: the day an
+  extern seat may wear a named type, or the day `rt_kind_of` gains a
+  second caller, it must become an exhaustive match over
+  `machine_shape`. Owner unconfirmed.
+- **A STALE DOC IN @std/sqlite.** `stmt.av`'s `step` reads "The fix
+  is a flag on `Stmt` and a `mut` seat here; until then, step until
+  `false` and then stop" — the flag landed and the doc still
+  recommends it as future work. Paid in the next slice
+  (`avra-8sb5.9.5`), which rewrites that seat.
+
+### Process
+
+- **A WORKTREE CAN BE CLEAN AND IN USE AT THE SAME TIME.**
+  `../avra-lane-sqlite` was removed while a `make bootstrap` was
+  running inside it; it was clean and zero commits ahead, and both
+  facts were true and irrelevant. Cost: one bootstrap. "Safe to
+  delete" is a question about PROCESSES as much as about content.
+- **KEEP: THE PLANTED MUTATION.** `.Float -> SlotForm.Word`, one
+  `make avra`, and the new program test was witnessed FAILING — the
+  native build dies on LLVM verification while the evaluator still
+  answers correctly. One generation is enough to witness a codegen
+  mutation, since only the product's OUTPUT is under test. And the
+  result is its own finding: neither engine alone catches it and the
+  DIFFERENTIAL does, which is the counter-example to "the engines
+  agreeing proves consistency, not correctness" — here the engines
+  disagreeing is the only witness.
+- **KEEP: MEASURE THE TASK BEFORE WORKING IT.** `avra-0wv6` named
+  105 uncommitted lines as a fix that was already on main under two
+  commits, with the corpus program already relocated. Three tasks
+  handed out that day were falsified the same way by the lane that
+  received them. A task is a claim with a date on it.
