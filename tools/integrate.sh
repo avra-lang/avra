@@ -196,6 +196,7 @@ echo "integrate: merged as $(git log -1 --format=%h)"
 # main and gated green with it, so it is the compiler this tree needs. Main's own
 # product is re-derived by the fixed point below.
 if [ -n "$seed_from_lane" ]; then
+    mkdir -p build
     cp "$worktree/build/avra" build/avra
     codesign -f -s - build/avra 2>/dev/null || true
     echo "integrate: main's compiler seeded from lane/$lane's product"
