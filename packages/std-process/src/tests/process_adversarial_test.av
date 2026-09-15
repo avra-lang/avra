@@ -326,6 +326,27 @@ fn middle_stdin_ignored() -> Result<string, ProcessError> {
     (head.pipe(cmd(cat, []) with { stdin: Stdin.Text("mine") }).run()?).stdout.trim()
 }
 
+/// THIS PROCESS'S CONSUMED CPU, the only witness that tells a WAIT from
+/// a SPIN — both take the same wall time. Declared here and nowhere
+/// else: the language needs no such row, this law does.
+extern fn avra_proc_cpu_ms() -> i64
+
+/// A command whose child ends at once, with a drain grace the driver
+/// must WAIT OUT — the window where there is nothing left to poll.
+/// Answers the elapsed milliseconds and the CPU milliseconds the wait
+/// itself cost.
+fn quick_with_grace(g: int) -> Result<int, ProcessError> {
+    let began = now_ms()
+    let _ = (shell("echo done")? with { drain_grace: ms(g) }).run()?
+    now_ms() - began
+}
+
+fn cpu_of_grace(g: int) -> Result<int, ProcessError> {
+    let cpu = avra_proc_cpu_ms()
+    let _ = (shell("echo done")? with { drain_grace: ms(g) }).run()?
+    avra_proc_cpu_ms() - cpu
+}
+
 spec "std/process adversarial" {
     given "a NUL makes a value two values, so the host is never handed one" {
         then "a tool path holding a NUL refuses — it does NOT run the truncated program" {
@@ -528,6 +549,36 @@ spec "std/process adversarial" {
         // HOME, PATH and USER are likely to be locals too.
         then "a same-named local does not reach the child — the `$NAME` spelling is the shell's" {
             shown(shadowed_var()) == "seen"
+        }
+    }
+
+    given "a grace with nothing left to watch — the wait is a wait, never a spin" {
+        // A CHILD THAT IS GONE AND DRAINED LEAVES NOTHING TO POLL, and
+        // the driver still waits the grace out (a grandchild may hold
+        // the pipes). `avra_proc_ready` slept only while the child was
+        // alive, so this window returned instantly and the loop spun:
+        // one core for the whole grace, two seconds per command by
+        // default. The row waits whenever it is asked to, so the time
+        // is SLEPT — measurable as elapsed time here, and as user time
+        // in the suite's own clock.
+        then "the grace is waited out, not raced" {
+            (quick_with_grace(300) catch 0) >= 250
+        }
+        then "a longer grace waits longer — the window is the caller's number" {
+            (quick_with_grace(600) catch 0) >= 550
+        }
+        then "and it is not waited twice — the floor is the grace, not a multiple" {
+            (quick_with_grace(300) catch 9999) < 2000
+        }
+        // THE ELAPSED TIME CANNOT TELL A WAIT FROM A SPIN: both take the
+        // grace. The CPU can, and it is the whole claim — so the law is
+        // asserted where it lives. A 500 ms grace slept costs a few
+        // milliseconds of CPU; spun it cost ~500.
+        then "the grace is SLEPT — it costs wall time and almost no CPU" {
+            (cpu_of_grace(500) catch 9999) < 100
+        }
+        then "a longer grace costs no more CPU than a shorter one" {
+            (cpu_of_grace(1000) catch 9999) < 100
         }
     }
 }

@@ -146,6 +146,7 @@ int64_t avra_proc_executable(const char* path) {
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
+#include <sys/resource.h>
 #include <time.h>
 
 /* A child's cwd bound through a file action: POSIX-2024's name where
@@ -416,6 +417,20 @@ int64_t avra_proc_shut(int64_t h, int64_t stream) {
    never has to reap to find out whether to keep going. An interrupted
    wait answers 0 rather than an error: the caller's own deadline is
    the authority on whether to wait again. */
+/* THIS PROCESS'S CONSUMED CPU, in milliseconds — user plus system, the
+   whole tree of it. A WAIT AND A SPIN TAKE THE SAME WALL TIME, so only
+   this tells them apart: the pump's own suite asserts that a grace
+   window costs elapsed time and almost no CPU. Nothing in the language
+   needs it; the row exists so the law is testable. */
+int64_t avra_proc_cpu_ms(void) {
+    struct rusage self, kids;
+    if (getrusage(RUSAGE_SELF, &self) != 0 || getrusage(RUSAGE_CHILDREN, &kids) != 0) return -1;
+    int64_t ms = 0;
+    ms += (int64_t)self.ru_utime.tv_sec * 1000 + self.ru_utime.tv_usec / 1000;
+    ms += (int64_t)self.ru_stime.tv_sec * 1000 + self.ru_stime.tv_usec / 1000;
+    return ms;
+}
+
 int64_t avra_proc_ready(int64_t h, int64_t timeout_ms) {
     Proc* p = proc_at(h);
     if (!p) return -EBADF;
@@ -433,9 +448,15 @@ int64_t avra_proc_ready(int64_t h, int64_t timeout_ms) {
             if (slot_err >= 0 && fds[slot_err].revents) ev |= READY_ERR;
             if (slot_in >= 0 && (fds[slot_in].revents & (POLLOUT | POLLERR | POLLHUP))) ev |= READY_IN;
         }
-    } else if (p->pid >= 0 && timeout_ms > 0) {
-        /* nothing to watch but a child still running: a bare wait,
-           since polling no descriptors would spin */
+    } else if (timeout_ms > 0) {
+        /* NOTHING TO WATCH IS STILL A WAIT. A caller that asks for
+           `timeout_ms` gets it whether or not the child is alive:
+           polling no descriptors returns at once, so a driver that
+           waits a grace OUT (`grace`, after the child is reaped and
+           both pipes are closed) turned this row into a spin — a core
+           burned for the whole grace, two seconds per command by
+           default. The row answers "nothing became ready", after the
+           wait it was asked for. */
         struct timespec ts = { timeout_ms / 1000, (timeout_ms % 1000) * 1000000L };
         nanosleep(&ts, NULL);
     }
