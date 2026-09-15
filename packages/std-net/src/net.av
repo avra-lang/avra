@@ -1,0 +1,276 @@
+//! @std.net — stream sockets and readiness, as values.
+//!
+//! A `Listener` is a bound port, a `Conn` a nonblocking stream, a
+//! `Poller` a readiness queue (kqueue on darwin, epoll on linux),
+//! and every verb answers a `Result` whose failure names the verb,
+//! its subject and the platform's errno. Nothing here blocks except
+//! `connect` for its own timeout and `wait` for its own; a read that
+//! finds nothing answers `.Pending`, a write that takes nothing
+//! answers 0, and the loop above decides.
+use @std.errors.{Error, ErrorInfo, info}
+use @std.time.{Duration}
+
+extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
+extern fn avra_net_listen_all(port: int, backlog: int) -> int
+extern fn avra_net_accept(lfd: int) -> int
+extern fn avra_net_connect(host: string, port: int, timeout_ms: int) -> int
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fd_taken(token: int) -> Bytes
+extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
+extern fn avra_net_close(fd: int) -> int
+extern fn avra_net_shutdown(fd: int, how: int) -> int
+extern fn avra_net_poll_new() -> int
+extern fn avra_net_watch(pfd: int, fd: int, interest: int) -> int
+extern fn avra_net_wait(pfd: int, timeout_ms: int) -> int
+extern fn avra_net_event_fd(i: int) -> int
+extern fn avra_net_event_flags(i: int) -> int
+extern fn avra_net_peer_family(fd: int) -> int
+extern fn avra_net_peer_port(fd: int) -> int
+extern fn avra_net_peer_word(fd: int, i: int) -> int
+extern fn avra_net_local_port(fd: int) -> int
+extern fn avra_errno_text(err: int) -> string
+extern fn avra_errno_again() -> int
+extern fn avra_errno_invalid() -> int
+
+/// A verb that failed: which, on what, and the platform's word.
+export type NetError = { verb: string, subject: string, errno: int }
+
+impl Error for NetError {
+    fn describe() -> ErrorInfo {
+        info("net.${self.verb}", "${self.verb} ${self.subject}: ${avra_errno_text(self.errno)}")
+    }
+}
+
+fn failed<T>(verb: string, subject: string, code: int) -> Result<T, NetError> {
+    .Err(NetError { verb: verb, subject: subject, errno: 0 - code })
+}
+
+fn would_block(code: int) -> bool { code == -avra_errno_again() }
+
+/// A bound, listening port. `port` is the one the kernel gave, so a
+/// listener asked for port 0 knows where it is.
+export type Listener = { fd: int, port: int }
+
+/// A nonblocking stream to a peer.
+export type Conn = { fd: int }
+
+/// A readiness queue over descriptors.
+export type Poller = { fd: int }
+
+/// One readiness report: what the descriptor is ready for, and
+/// whether its peer hung up or the socket holds an error.
+export type Event = { fd: int, readable: bool, writable: bool, hangup: bool, failed: bool }
+
+/// What a poller is asked to report for a descriptor.
+export enum Interest { Read, Write, Both, None }
+
+/// What a read found.
+export enum Read {
+    Data(b: Bytes)
+    Eof
+    Pending
+}
+
+/// A listener on ONE interface, named — never every interface: an
+/// empty host is refused, because a value the callee reinterprets
+/// is two things at once and the wildcard is `listen_all`'s to ask
+/// for. Port 0 is the kernel's choice.
+export fn listen(host: string, port: int) -> Result<Listener, NetError> {
+    if !names_a_host(host) { return no_host("listen", host, port) }
+    bound(avra_net_listen(host, port, backlog()), "${host}:${port}")
+}
+
+/// A listener on EVERY interface, asked for by name.
+export fn listen_all(port: int) -> Result<Listener, NetError> {
+    bound(avra_net_listen_all(port, backlog()), "*:${port}")
+}
+
+/// A bound descriptor as a listener, or the verb that failed on it.
+/// The port is READ BACK rather than echoed: a listener asked for
+/// port 0 knows where the kernel put it.
+fn bound(fd: int, subject: string) -> Result<Listener, NetError> {
+    if fd < 0 { return failed("listen", subject, fd) }
+    .Ok(Listener { fd: fd, port: avra_net_local_port(fd) })
+}
+
+/// How many connections the kernel may queue before one is accepted.
+fn backlog() -> int { 511 }
+
+/// A connection to host:port made within `timeout`, which is a
+/// budget and never a sentinel: a negative one is refused rather than
+/// read as "forever", and a zero one looks once.
+export fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, NetError> {
+    if !names_a_host(host) { return no_host("connect", host, port) }
+    if timeout.ms < 0 { return failed("connect", "${host}:${port} within ${timeout.ms} ms", -avra_errno_invalid()) }
+    streamed(avra_net_connect(host, port, timeout.ms), "connect", "${host}:${port}")
+}
+
+/// A connected descriptor as a stream, or the verb that failed on it.
+fn streamed(fd: int, verb: string, subject: string) -> Result<Conn, NetError> {
+    if fd < 0 { return failed(verb, subject, fd) }
+    .Ok(Conn { fd: fd })
+}
+
+/// Whether text names a host at all: not empty, and holding no NUL —
+/// judged over its bytes, which is what the resolver will read; a
+/// door built from `==` would read a C string and stop at the NUL.
+fn names_a_host(host: string) -> bool {
+    let b = host.bytes()
+    !b.is_empty() && b.index_of([0].bytes()!, 0) < 0
+}
+
+fn no_host<T>(verb: string, host: string, port: int) -> Result<T, NetError> {
+    failed(verb, "\"${host}\":${port}", 0 - avra_errno_invalid())
+}
+
+/// A BUDGET ALREADY SPENT: present and negative. Absence is not spent
+/// — it is the wait that carries no budget at all, and forever is
+/// what it means.
+fn spent(ms: int?) -> bool { (ms ?? 0) < 0 }
+
+fn no_budget(ms: int) -> Result<List<Event>, NetError> {
+    failed("wait", "poller within ${ms} ms", -avra_errno_invalid())
+}
+
+/// A readiness queue.
+export fn poller() -> Result<Poller, NetError> {
+    let fd = avra_net_poll_new()
+    if fd < 0 { return failed("poller", "", fd) }
+    .Ok(Poller { fd: fd })
+}
+
+impl Listener {
+    /// The next pending connection, or null when none is waiting.
+    fn accept() -> Result<Conn?, NetError> {
+        let fd = avra_net_accept(self.fd)
+        if would_block(fd) { return .Ok(null) }
+        let c = streamed(fd, "accept", "port ${self.port}")?
+        .Ok(c)
+    }
+
+    /// Closed; answers the port it held.
+    fn close() -> Result<int, NetError> {
+        let r = avra_net_close(self.fd)
+        if r < 0 { return failed("close", "port ${self.port}", r) }
+        .Ok(self.port)
+    }
+}
+
+impl Conn {
+    /// Up to `max` bytes, as an owned value; `.Eof` once the peer has
+    /// finished writing; `.Pending` when nothing has arrived yet. The
+    /// read answers a token its take presents, so a read that lands
+    /// between the two is a trap and never a stranger's bytes.
+    fn read(max: int) -> Result<Read, NetError> {
+        let token = avra_fd_read(self.fd, max)
+        if would_block(token) { return .Ok(.Pending) }
+        if token < 0 { return failed("read", self.named(), token) }
+        if token == 0 { return .Ok(.Eof) }
+        .Ok(.Data(avra_fd_taken(token)))
+    }
+
+    /// `bytes` from `from` written as far as the socket takes them:
+    /// the count, which is 0 when it would block — a short count is
+    /// normal, and the caller keeps its cursor.
+    fn write(bytes: Bytes, from: int) -> Result<int, NetError> {
+        let n = avra_fd_write(self.fd, bytes, from)
+        if would_block(n) { return .Ok(0) }
+        if n < 0 { return failed("write", self.named(), n) }
+        .Ok(n)
+    }
+
+    /// The write side closed: the peer reads EOF after what was sent.
+    fn shutdown_write() -> Result<int, NetError> {
+        let r = avra_net_shutdown(self.fd, 1)
+        if r < 0 { return failed("shutdown", self.named(), r) }
+        .Ok(self.fd)
+    }
+
+    /// Closed; answers the descriptor it held.
+    fn close() -> Result<int, NetError> {
+        let r = avra_net_close(self.fd)
+        if r < 0 { return failed("close", "fd ${self.fd}", r) }
+        .Ok(self.fd)
+    }
+
+    /// The connection's name in a refusal: its peer while it has one,
+    /// its descriptor once the peer is gone.
+    fn named() -> string {
+        let peer = self.peer()
+        if peer.is_empty() { "fd ${self.fd}" } else { peer }
+    }
+
+    /// The peer as "ip:port" — a v6 address in brackets — or "" once
+    /// it is gone.
+    fn peer() -> string {
+        let port = avra_net_peer_port(self.fd)
+        match avra_net_peer_family(self.fd) {
+            4 -> "${dotted(self.fd)}:${port}",
+            6 -> "[${grouped(self.fd)}]:${port}",
+            _ -> "",
+        }
+    }
+}
+
+impl Poller {
+    /// Interest in `fd`; `.None` stops watching it. Answers the
+    /// descriptor.
+    fn watch(fd: int, interest: Interest) -> Result<int, NetError> {
+        let r = avra_net_watch(self.fd, fd, bits_of(interest))
+        if r < 0 { return failed("watch", "fd ${fd}", r) }
+        .Ok(fd)
+    }
+
+    /// The descriptors ready now, waiting up to `timeout` for the
+    /// first — null waits until one is. The budget is never a
+    /// sentinel here either: a negative one is refused rather than
+    /// read as forever, which absence already spells. An interrupted
+    /// wait answers none.
+    fn wait(timeout: Duration?) -> Result<List<Event>, NetError> {
+        let budget = timeout?.ms
+        if spent(budget) { return no_budget(budget!) }
+        let n = avra_net_wait(self.fd, budget ?? -1)
+        if n < 0 { return failed("wait", "poller", n) }
+        .Ok([event_at(i) for i in 0..n])
+    }
+
+    fn close() -> Result<int, NetError> {
+        let r = avra_net_close(self.fd)
+        if r < 0 { return failed("close", "poller", r) }
+        .Ok(self.fd)
+    }
+}
+
+fn bits_of(interest: Interest) -> int {
+    match interest {
+        .Read -> 1,
+        .Write -> 2,
+        .Both -> 3,
+        .None -> 0,
+    }
+}
+
+fn event_at(i: int) -> Event {
+    let flags = avra_net_event_flags(i)
+    Event { fd: avra_net_event_fd(i), readable: flags & 1 == 1, writable: flags & 2 == 2, hangup: flags & 4 == 4, failed: flags & 8 == 8 }
+}
+
+/// A v4 address as its four octets.
+fn dotted(fd: int) -> string {
+    let hi = avra_net_peer_word(fd, 0)
+    let lo = avra_net_peer_word(fd, 1)
+    "${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}"
+}
+
+/// A v6 address as its eight groups, lowercase hex, leading zeros
+/// dropped, uncompressed.
+fn grouped(fd: int) -> string {
+    [hex_group(avra_net_peer_word(fd, i)) for i in 0..8].join(":")
+}
+
+fn hex_group(w: int) -> string {
+    if w < 16 { return hex_digit(w) }
+    hex_group(w >> 4) + hex_digit(w & 15)
+}
+
+fn hex_digit(d: int) -> string { "0123456789abcdef".substring(d, d + 1) }
