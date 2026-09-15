@@ -135,9 +135,8 @@ build/%.o: %.c build/%.sha
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: census traps test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap libs libscope \
+.PHONY: census traps test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check
-
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
 # tree only.
@@ -227,10 +226,10 @@ sprite:
 # What a fresh Sprite from THIS tree would do: no build when the tree is
 # the source the seed came from, one build once it has moved.
 sprite-check:
-	@h=$$(sh tools/sources_hash.sh); s=$$(cat bootstrap/seed.sources); \
+	@h=$$(sh tools/sources_hash.sh); s=$$(cat bootstrap/seed.sources 2>/dev/null || echo none); \
 	 printf 'sprite-check: sources %s\nsprite-check: seed    %s\n' "$$h" "$$s"; \
 	 if [ "$$h" = "$$s" ]; then echo "sprite-check: the seed IS this tree — a fresh Sprite needs no build"; \
-	 else echo "sprite-check: this tree has moved — a fresh Sprite takes one build; \`make seed\` restores the seed path"; fi
+	 else echo "sprite-check: this tree has moved — a fresh Sprite takes one build; `make seed` restores the seed path"; fi
 
 # Scratch a run leaves behind: the test binaries each package's
 # cases were linked into.
@@ -274,11 +273,20 @@ FORCE:
 # never as a wrong rule. Precious keeps the stamps.
 .PRECIOUS: build/%.sha
 
+# A HEADER RIDES THE CONTENT HASH when a named list says so. The chain
+# rule's own prerequisite is the `.c`, and the stamp normally hashes
+# it; an object whose behaviour changes with a HEADER names that
+# header too, so a stash-and-rebuild inside one second still rebuilds
+# it instead of trusting a mtime.
+build/runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h
+build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c runtime/avra_box.h
+
 build/%.sha: %.c FORCE
 	@mkdir -p build
-	@shasum -a 256 $< | cut -d' ' -f1 > $@.tmp
+	@shasum -a 256 $(if $(SHA_SRC),$(SHA_SRC),$<) | cut -d' ' -f1 > $@.tmp
 	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
 	@rm -f $@.tmp
+
 
 # The runtime's trap contract: the words and the verdict (exit 2).
 # No program test can hold it — a suite runs every program in
@@ -337,7 +345,9 @@ seed-check: $(COMPILER_OBJS)
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra-seed-check 2> build/seed-check/link.err \
 	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check build/avra-seed-check; exit 1; }
 	@sh tools/capped.sh build/seed-check/out 200000 build/avra-seed-check build packages/cli \
-	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; tail -c 2000 build/seed-check/out; rm -rf build/seed-check build/avra-seed-check; exit 1; }
+	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; \
+	      printf 'seed-check: codes '; grep -oE 'F[0-9]{4}' build/seed-check/out | sort -u | tr '\n' ' '; echo; \
+	      tail -c 2000 build/seed-check/out; rm -rf build/seed-check build/avra-seed-check; exit 1; }
 	@rm -rf build/seed-check build/avra-seed-check
 	@echo "seed-check: the seed compiles HEAD"
 
@@ -404,6 +414,37 @@ vocab:
 fingerprints:
 	@python3 tools/fingerprints.py
 
+# THE ROWS' CLAIM ON THE C. `runtime/avra_rt.h` is generated from
+# `rt_sigs()` and included last by the runtime, so a body that answers
+# a width its row does not name is a C compiler error at the line that
+# implements it. A STALE header asserts the OLD rows and says nothing
+# about the new ones — silently, which is the shape a generated
+# artifact fails in — so the gate regenerates it and compares.
+rt-header:
+	@./avra runtime-header > build/avra_rt.h.gen
+	@cmp -s build/avra_rt.h.gen runtime/avra_rt.h || { \
+	  echo "rt-header: runtime/avra_rt.h is not what the rows say — it is generated, never edited:"; \
+	  echo "rt-header:   ./avra runtime-header > runtime/avra_rt.h"; \
+	  diff runtime/avra_rt.h build/avra_rt.h.gen 2>/dev/null | head -20; exit 1; }
+	@echo "rt-header: $$(grep -c '^_Static_assert' runtime/avra_rt.h) row(s) claim a C body, checked by the C compiler that builds the runtime"
+
+# EVERY REGISTERED CODE'S GOLDEN IS THE COMPILER OVER ITS WITNESS.
+# docs/DIAGNOSTICS.md is made by `avra diagnostics` — each entry is a
+# source that triggers the code and the compiler's own words over it —
+# so a voice whose wording drifts shows up as a diff here rather than
+# nowhere. 135 codes are registered and 23 appeared in any test before
+# this existed.
+# AND A WITNESS THAT NO LONGER TRIGGERS ITS KIND IS REFUSED: the
+# compiler moves under it, it starts producing some other code, and a
+# green golden of the wrong words is worse than no golden. The command
+# exits 1 on one, which fails this target at its first line.
+witnesses:
+	@./avra diagnostics > build/DIAGNOSTICS.md.gen
+	@cmp -s build/DIAGNOSTICS.md.gen docs/DIAGNOSTICS.md || { \
+	  echo "witnesses: docs/DIAGNOSTICS.md is not what the compiler says — it is generated, never edited:"; \
+	  echo "witnesses:   ./avra diagnostics > docs/DIAGNOSTICS.md"; \
+	  diff docs/DIAGNOSTICS.md build/DIAGNOSTICS.md.gen 2>/dev/null | head -30; exit 1; }
+
 # THE EXTERN WALL'S WIDTH: Avra's `int` is 64 bits and C's is 32, so a
 # C body answering a narrow type writes only the low half and a
 # negative value reads as a large positive one. Both engines agree on
@@ -449,6 +490,7 @@ SQLITE_FLAGS := \
   -DSQLITE_DEFAULT_CACHE_SIZE=-8000 -DSQLITE_DEFAULT_WORKER_THREADS=0 \
   -DNDEBUG=1
 
+
 # EVERY WORKING FILE LIVES IN `build/`, WHICH IS PER-WORKTREE. A
 # shared `/tmp` path is written by one lane and read by another: the
 # `.out` files here are DIFFED, and every worktree runs the same
@@ -483,7 +525,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # THE RECEIPT: a green gate names the tree it proved, so an
 # integration that takes that exact tree need not prove it again
 # (tools/gate_receipt.sh). A dirty tree writes none.
-gate: seed-check stems vocab fingerprints externs idioms cited tested traps witness
+gate: seed-check stems vocab fingerprints rt-header witnesses externs idioms cited tested traps witness
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/gate_receipt.sh write
 

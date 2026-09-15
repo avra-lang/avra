@@ -1,0 +1,51 @@
+//! `avra diagnostics` — the error index, made: every registered code,
+//! the source that triggers it, and the compiler's own words over
+//! that source. Refuses when a witness no longer produces its code —
+//! the golden would then pin whatever it produces instead.
+use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.avrac.language.{shown_codes, diagnostics_index, silent_witnesses, unwitnessed, stray_witnesses, shadowed_witnesses}
+
+type DiagnosticsCmd = { }
+
+impl Runnable for DiagnosticsCmd {
+    fn run(args: CliResult) -> int {
+        let runs = shown_codes()
+        println(diagnostics_index(runs))
+        let silent = silent_witnesses(runs)
+        for s in silent { drifted(s.code.id) }
+        for id in stray_witnesses() { stray(id) }
+        for id in shadowed_witnesses() { shadowed(id) }
+        counted(runs.length, [s for s in runs if s.fired].length, unwitnessed(runs).length)
+        if silent.is_empty() && stray_witnesses().is_empty() && shadowed_witnesses().is_empty() { 0 } else { 1 }
+    }
+}
+
+/// A KEEPER COUNTS WHAT IT LOOKED AT: the codes it ran, the ones that
+/// fired, and the debt it did not examine.
+fn counted(registered: int, fired: int, owed: int) {
+    eprintln("diagnostics: ${registered} code(s) registered, ${fired} witnessed and fired, ${owed} with no witness yet")
+}
+
+/// A REGISTRY FORGETS IN BOTH DIRECTIONS: a code with no row is the
+/// debt the count names, and a row naming no code is one nothing will
+/// ever run.
+fn stray(id: string) {
+    eprintln("diagnostics: a witness names `${id}`, which no feature registers — nothing runs it")
+}
+
+/// And a third: the lookup takes the FIRST row, so a second one for a
+/// code never runs and its author reads the first one's golden.
+fn shadowed(id: string) {
+    eprintln("diagnostics: `${id}` carries more than one witness — only the first ever runs")
+}
+
+/// THE refusal: a witness that has stopped producing its code.
+fn drifted(id: string) {
+    eprintln("diagnostics: ${id}'s witness no longer produces it — a witness that")
+    eprintln("diagnostics:   triggers some other code makes a green golden of the wrong")
+    eprintln("diagnostics:   words. Fix the witness, or the voice that moved.")
+}
+
+export fn diagnostics_command() -> Subcommand {
+    Subcommand { meta: bare_command("diagnostics", "Print the error index, made from every registered code"), body: DiagnosticsCmd { } }
+}
