@@ -932,6 +932,36 @@ engine's spec, written by dogfooding.
   compiling the source that changes it. A change to a checked shape
   is two commits: one that stops the door refusing, one that moves
   the shape and restores it.
+  AND THE DOOR CHECKS THE PACKAGE, NEVER THE WRITERS. It holds the
+  LOADED shapes to the rows and says the exhaustive matches are the
+  guarantee past it — but a WRITER is a positional list literal, not
+  a match, so nothing compares `meta_of_fn`'s slot count to the `Fn`
+  row's field count. Growing `Fn` by one field and forgetting that
+  one writer produced a 4-slot value where the record declares 5,
+  and the boundary was green: it is "A HASH THAT FORGETS A PAYLOAD"
+  in the crossing's clothes, a field added after the writer was
+  written, leaving NO MARK at the site. The symptom is a slot read
+  past the end, and where it lands decides whether anyone hears it.
+  AND A FAILED LIFT IN THE `Declares` PATH IS SILENT. The same
+  defect SPOKE as F2070 "an annotation could not run — index 4 is
+  out of bounds" under a VALIDATES annotation, and said NOTHING
+  under a DECLARING one: `materialized` answers `[]` and the only
+  evidence is F3000 at the USE SITE of a name that was never
+  generated. One mechanism, one loud path and one mute one — and
+  the mute one is the path a derive takes.
+  AND THE SEED IS A THIRD GENERATION, older than both. `seed-check`
+  compiles HEAD with the COMMITTED seed, which predates the tolerant
+  commit as well as the moving one, so the moving commit owes `make
+  seed` BEFORE its gate and not as a later chore. ITS SYMPTOM
+  ACCUSES THE DERIVES: a refused boundary makes `materialized`
+  generate nothing, so the gate reads "`Expr` has no method
+  `pairs_of`" five times and never says "boundary" — the generated
+  accessors are simply absent, and nothing connects that to the
+  package that moved. AND THE KEEPER CUT ITS OWN EVIDENCE: seed-check
+  ended in `tail -c 2000`, which drops the FIRST errors, and the
+  first are the causing ones. It lists the codes and shows the HEAD
+  now. The three generations are the law; a keeper that truncates
+  from the wrong end is how the law stayed invisible for one gate.
 - A NAME-KEYED TABLE CROSSES MODULES. `impls_by_name` files every
   `impl` under its NAME, so asking `@std.meta.Code`'s methods signed
   the compiler's own `impl Code` and dragged `features` into a
@@ -1423,6 +1453,12 @@ Syntax the grammar lacks:
   hold this yet" (help: "nullable slots arrive with ownership's next
   slice"). A writing verb answers what it wrote instead —
   `@std/io`'s `write_text`/`make_dirs`/`remove` answer the path.
+- A `mut` SEAT CANNOT BE ASSIGNED WHOLE: `a = a + 1` on a `mut a:
+  int` parameter is F3005 "`a` is a `mut` seat — assigning it whole
+  arrives with the inout ABI", help "write a path under it (`a.field
+  = …`), or answer the new value". A `mut` seat is a place the
+  CALLER owns; writing a path under it reaches the caller's value,
+  replacing it whole does not.
 - A TOP-LEVEL `const` IS A DECLARATION, like a fn: module-wide,
   order-free, exported only when it says `export`. Two in one module
   clash (F3003 in one file, F3017 across files); a `let` of the same

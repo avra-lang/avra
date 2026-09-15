@@ -6,7 +6,7 @@
 //! records, `List<Diagnostic>` validates. The law
 //! satisfied, the call runs, and what it said is spoken here.
 use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt, source_spelled, same_file, user_kind, is_kind_word}
-use features.{TypeCx, kind_word, FnSig, Unsettled, nothing}
+use features.{TypeCx, kind_word, FnSig, Unsettled, unsettled_label, nothing}
 use @std.meta.{Diagnostic}
 use diagnostics.{refusal, loc_at}
 use @std.errors.{Loc}
@@ -337,13 +337,7 @@ fn foreign_meta(mut cx: TypeCx, a: Annotation, moved: string) {
 }
 
 fn unsettled(mut cx: TypeCx, a: Annotation, why: Unsettled) {
-    let label = match why {
-        .Reach(words) -> "`${a.name}` ${words}",
-        .Budget(words) -> "`${a.name}` ${words}",
-        .Trap(words) -> "`${a.name}` ${words}",
-        .Param(words) -> "`${a.name}` reads ${words}",
-        .Spoken -> "",
-    }
+    let label = unsettled_label(a.name, why)
     if label.is_empty() { return }
     let _ = cx.spoken(refusal("annotation.unsettled", at_annotation(cx, a),
                        "an annotation could not run",
