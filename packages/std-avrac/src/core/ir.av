@@ -538,4 +538,25 @@ export enum RtHost {
 /// env, a child — and no compile-time evaluation may.
 export enum Reach { Pure, Embed, World }
 
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], cells: List<RtKind> = [], reach: Reach = Reach.Pure }
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [] }
+
+/// WHICH BOX a `Ptr` seat takes — a pointer says only that a header
+/// stands there, and a text length read from a list's header is a
+/// plausible number. `Text` is C's `const char*`; `List` and `Map`
+/// are the runtime's own layouts; `Any` is a seat that takes every
+/// box and means it (`avra_rc_retain`). A row that names no boxes
+/// takes `Any` at every pointer seat — unconstrained, never wrongly
+/// constrained.
+export enum Box {
+    Any
+    Text
+    List
+    Map
+}
+
+impl RtSig {
+    /// The box the j-th seat takes.
+    fn box_at(j: int) -> Box {
+        if j < self.boxes.length { self.boxes[j] } else { Box.Any }
+    }
+}

@@ -208,3 +208,42 @@ spec "features/fns (adversarial)" {
         }
     }
 }
+
+spec "an extern that names a runtime row wears the row's shape" {
+    given "a text seat" {
+        then "a list handed to a text row is refused" {
+            refused_with("extern fn avra_str_len(b: List<int>) -> int\nlet xs = [1, 2]\navra_str_len(xs)\n", "seat 1 of `avra_str_len` reads a text box, this is `List<int>`")
+        }
+        then "a map handed to a text row is refused" {
+            refused_with("extern fn avra_str_len(b: Map<string, int>) -> int\n1\n", "reads a text box, this is `Map<string, int>`")
+        }
+        then "text is the box" {
+            refusals("extern fn avra_str_len(s: string) -> int\navra_str_len(\"abc\")\n") == 0
+        }
+        then "ptr is the raw crossing and fits" {
+            refusals("extern fn avra_str_len(p: ptr) -> int\n1\n") == 0
+        }
+    }
+    given "a list seat and a map seat" {
+        then "text handed to a list row is refused" {
+            refused_with("extern fn avra_array_len(s: string) -> int\n1\n", "seat 1 of `avra_array_len` reads a list box, this is `string`")
+        }
+        then "a list at a map seat is refused" {
+            refused_with("extern fn avra_map_len(m: List<int>) -> int\n1\n", "reads a map box, this is `List<int>`")
+        }
+        then "a seat that takes any box takes a list" {
+            refusals("extern fn avra_rc_retain(x: List<int>)\n1\n") == 0
+        }
+    }
+    given "the row's seat count" {
+        then "an extra seat is refused" {
+            refused_with("extern fn avra_puts(a: string, b: string)\n1\n", "`avra_puts` is a runtime row of 1 seat(s), declared here with 2")
+        }
+        then "a missing seat is refused" {
+            refused_with("extern fn avra_streq(a: string) -> bool\n1\n", "is a runtime row of 2 seat(s), declared here with 1")
+        }
+        then "a name the runtime does not carry is any shape" {
+            refusals("extern fn my_own_c(a: List<int>, b: string) -> int\n1\n") == 0
+        }
+    }
+}
