@@ -30,16 +30,41 @@ use @std.testing.{CaseRef, words}
 extern fn avra_host_env(name: string) -> string
 
 /// The filesystem, as four questions.
-export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool }
+export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, std_root: string? = null, cwd: string = "" }
+
+impl Host {
+    /// One spelling for one directory: a relative path rooted at the
+    /// host's cwd, normalized — the identity two package roots are
+    /// compared by, never the strings as typed.
+    fn absolute(path: string) -> string {
+        normalized(joined_path(self.cwd, path))
+    }
+
+    /// The directory the toolchain's copy of a std package would
+    /// stand in, when the host names a std root: `@std/text` is
+    /// `<std_root>/std-text`.
+    fn std_dir(key: string) -> string? {
+        let root? = self.std_root else { return null }
+        if !key.starts_with("@std/") { return null }
+        joined_path(root, key.substring(1, key.length).replace("/", "-"))
+    }
+}
 
 /// A host over an in-memory file table — the tests' host, and a
 /// lone file's.
 export fn memory_host(files: Map<string, string>, names: List<string>) -> Host {
+    memory_host_at(files, names, "")
+}
+
+/// An in-memory host standing in a directory: a relative path is
+/// looked up under `cwd`, as the disk would.
+export fn memory_host_at(files: Map<string, string>, names: List<string>, cwd: string) -> Host {
     Host {
-        exists: (p: string) -> files.get(p) != null,
-        read: (p: string) -> files.get(p) ?? "",
-        list: (dir: string) -> children_of(names, dir),
-        is_dir: (dir: string) -> names.any(under_dir(it, dir)),
+        exists: (p: string) -> files.get(normalized(joined_path(cwd, p))) != null,
+        read: (p: string) -> files.get(normalized(joined_path(cwd, p))) ?? "",
+        list: (dir: string) -> children_of(names, normalized(joined_path(cwd, dir))),
+        is_dir: (dir: string) -> names.any(under_dir(it, normalized(joined_path(cwd, dir)))),
+        cwd: cwd,
     }
 }
 
@@ -155,7 +180,15 @@ fn reused_settlement(held: Settlement) -> Result<Settled, Unsettled> {
 /// for a root without one), its root and source directories, its
 /// ordinal (the manifest query's key), and where it was named —
 /// absent for the root.
-export type Package = { key: string, root: string, src: string, ordinal: int, at: Loc? }
+export type Package = { key: string, root: string, src: string, ordinal: int, at: Loc?, origin: Origin }
+
+/// How a package entered the workspace: the root it was opened at, a
+/// manifest row (`at` is that row), or the toolchain's std root.
+export enum Origin {
+    Root
+    Declared
+    Toolchain
+}
 
 /// One timed phase, in nanoseconds of the workspace's clock.
 export type Phase = { name: string, ns: int }
@@ -469,8 +502,9 @@ impl Workspace {
     /// name the line imports.
     fn line_grammars(from: Package, own: string, u: UseParts) -> List<BlockGrammar> {
         let m = qualified(module_path(u.path), from)
-        if m.malformed() || m.text() == own || self.ambiguous_module(m) || self.module_files(m).is_empty() { return [] }
+        if m.malformed() || m.text() == own { return [] }
         if m.package() != null && !self.reaches(from, m.package()!) { return [] }
+        if self.ambiguous_module(m) || self.module_files(m).is_empty() { return [] }
         let declared = flatten([self.plain_grammars(path) for path in self.module_files(m)])
         mut blocks: List<BlockGrammar> = []
         for j, item in u.items {
@@ -2177,7 +2211,7 @@ impl Workspace {
     /// key is one directory, and no cycle closes.
     fn load_packages(src: string) {
         mut ps = self.packages
-        let unnamed = Package { key: "", root: self.root, src: src, ordinal: 0, at: null }
+        let unnamed = Package { key: "", root: self.root, src: src, ordinal: 0, at: null, origin: Origin.Root }
         ps.push(unnamed)
         let m = self.manifest(0)
         self.decls.name_root(m.name)
@@ -2198,13 +2232,33 @@ impl Workspace {
         if chain.contains(key) { return self.speak_package(dependency_cycle(at, chain.concat([key]))) }
         let known: Package? = self.packages.find(it.key == key)
         if known != null {
-            if known!.root != dir { self.speak_package(duplicate_package(at, key, known!.root, dir)) }
+            if self.host.absolute(known!.root) != self.host.absolute(dir) { self.speak_package(duplicate_package(at, key, known!.root, dir)) }
             return
         }
         if !self.host.exists(joined_path(dir, "avra.toml")) { return self.speak_package(bad_dependency_path(at, key, dir)) }
+        self.entered(key, dir, at, Origin.Declared, chain)
+    }
+
+    /// A std package the toolchain carries, admitted the first time a
+    /// `use` names it: no manifest row, the std root's directory, its
+    /// own dependencies admitted as any package's. A key the toolchain
+    /// carries is EVERY package's to reach, whichever copy is held — a
+    /// declared row pins or overrides the toolchain's, for the whole
+    /// graph. A key the toolchain does not carry is nobody's here.
+    fn std_admitted(key: string) -> bool {
+        let dir? = self.host.std_dir(key) else { return false }
+        if !self.host.exists(joined_path(dir, "avra.toml")) { return false }
+        if self.packages.any(it.key == key) { return true }
+        self.entered(key, dir, null, Origin.Toolchain, [])
+        true
+    }
+
+    /// One package entered under a key: listed, its manifest read and
+    /// held to the key, its dependencies admitted.
+    fn entered(key: string, dir: string, at: Loc?, origin: Origin, chain: List<string>) {
         mut ps = self.packages
         let i = ps.length
-        let pkg = Package { key: key, root: dir, src: joined_path(dir, "src"), ordinal: i, at: at }
+        let pkg = Package { key: key, root: dir, src: joined_path(dir, "src"), ordinal: i, at: at, origin: origin }
         ps.push(pkg)
         let m = self.manifest(i)
         if m.name != key { self.speak_package(name_mismatch(at, key, m.name, dir)) }
@@ -2252,10 +2306,13 @@ impl Workspace {
         self.packages.find(it.key == k!)
     }
 
-    /// A package reaches itself — its own files `use` it by name — and
-    /// every package its manifest declares.
+    /// A package reaches itself — its own files `use` it by name —
+    /// every package its manifest declares, and every std package the
+    /// toolchain carries, admitted on the first ask. The std packages
+    /// are the toolchain's: no manifest row names them, and a row that
+    /// does is a pin.
     fn reaches(from: Package, k: string) -> bool {
-        k == from.key || self.depends_on(from, k)
+        k == from.key || self.depends_on(from, k) || self.std_admitted(k)
     }
 
     /// Whether a package's manifest declares the key.

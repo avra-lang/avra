@@ -22,7 +22,7 @@ RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: census traps test tested clean seed-check gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed recover bootstrap \
-        check run ir emit build-native native-check avra suites
+        check run ir emit build-native native-check avra suites install
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -77,6 +77,18 @@ avra: $(RUNTIME_OBJS)
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
 	@echo "avra: build/avra"
+
+# THE INSTALL: the binary under bin/, and what it finds from its own
+# directory — the runtime's object and every std package — under
+# lib/avra/. A program anywhere then says `use @std.io` with no
+# manifest row, and links.
+PREFIX ?= /usr/local
+install: avra
+	@mkdir -p $(PREFIX)/bin $(PREFIX)/lib/avra/std
+	@cp build/avra $(PREFIX)/bin/avra
+	@cp build/avra_runtime.o $(PREFIX)/lib/avra/avra_runtime.o
+	@for p in packages/std-*; do rm -rf $(PREFIX)/lib/avra/std/$$(basename $$p); cp -R $$p $(PREFIX)/lib/avra/std/; done
+	@echo "install: $(PREFIX)/bin/avra, $$(ls -d packages/std-* | wc -l | tr -d ' ') std packages under $(PREFIX)/lib/avra/std"
 
 # Scratch a run leaves behind: the test binaries each package's
 # cases were linked into.

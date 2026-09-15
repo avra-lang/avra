@@ -14114,3 +14114,65 @@ compiles its whole package. Not surveyed: any tree but
   0 for a refusal that exits 2. The truncating-probe law one step
   over: record an exit code with no pipe on the line, and the words
   from a second run.
+
+## Feedback survey — 2026-09-14 #12 (TOOLCHAIN, @std from the install root — PR pending)
+
+Counted per axis: friction 2, defects 2 (found by the slice's own
+probes, fixed), doctrine 2, process 1; sugar, features, performance
+empty. Not surveyed: any tree but ../avra-lane-a.
+
+### FRICTION — what cost time
+
+- **THE SHIM READS THE SUBCOMMAND WORD AS A PATH.** `avra build x.av`
+  was a heavy step under the lock because `build/` is a directory
+  at the tree's root and the heaviness loop tested every argument —
+  every `avra build` of one file has queued behind the machine lock
+  since the loop was written. FIXED: the loop skips the first word.
+- **A TEST CANNOT RUN A PROGRAM WITHOUT ITS ENTRY.** Three new cases
+  wrote `program(null).run()` after the pattern of the cases-at
+  tests beside them and answered nothing; `program("/w/src/main.av")`
+  is the spelling the running tests use. One name (`program`) for
+  "the package's program" and "this file's program" — the null form
+  should refuse a `run` it cannot enter.
+
+### DEFECTS
+
+- **A RELATIVE PATH ARGUMENT WAS READ WHERE THE TREE STOOD.** The shim
+  `cd`s to the tree's root before the CLI reads argv, so `avra check
+  src/main.av` from another directory found nothing; only `explain`
+  rooted at `AVRA_CWD`. Every path argument is rooted there now,
+  absolutely. Its twin: a bare binary run from a package's own root
+  with a relative path never found the `avra.toml` at `.` (the walk
+  stops before the empty directory) — absolute rooting pays both.
+- **A KNOWN KEY IS NOT A REACHABLE KEY.** The first draft of the
+  toolchain door answered "reachable" for any key some package
+  carried, so a transitive `@acme/words` stopped being F3013 — one
+  existing test caught it. A std key the toolchain carries is
+  everyone's; any other key is the manifest's.
+
+### DOCTRINE
+
+- **A DECLARED ROW PINS FOR THE WHOLE GRAPH, AND ONLY WHEN THE STD
+  PACKAGES DECLARE NO ROWS OF THEIR OWN.** A root's `"@std/text" =
+  { path = "vendor/text" }` beside a toolchain `@std/io` that itself
+  declares `"@std/text" = { path = "../std-text" }` is F4014 — two
+  directories, honestly. The pin works once the std packages resolve
+  their siblings through the toolchain, which is why their rows
+  must go — RECORDED TRIGGER: strip every `@std/*` row from
+  `packages/std-*/avra.toml` and `packages/cli/avra.toml` AFTER
+  `make seed` has refreshed the seed with this resolver; a seed that
+  predates it cannot compile a manifest with no rows, and
+  `seed-check` would fail the gate.
+- **THE HOST CARRIES THE TOOLCHAIN'S FACTS.** `Host.std_root` and
+  `Host.cwd` are defaulted fields; a memory host has no toolchain
+  unless a test gives it one, and `memory_host_at` stands in a cwd
+  as the disk does. Written into workspace.av.
+
+### PROCESS
+
+- **PROBE FROM OUTSIDE THE TREE.** Every defect above was invisible
+  from inside: every in-tree path is relative to the root the shim
+  moves to. A slice about "usable outside this repo" is probed from
+  a scratch directory first, and the scratch package's stray files
+  join its program (two hostile `use` lines made a clean `run`
+  fail) — one file per probe package.
