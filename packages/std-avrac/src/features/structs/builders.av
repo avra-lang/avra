@@ -2,7 +2,7 @@
 //! StructDecl or NamedType statement and the StructLit node. Names
 //! and their types (or values) arrive as parallel capture lists and
 //! zip.
-use core.{Expr, Stmt, ExprId}
+use core.{Expr, Stmt, ExprId, Nominal, Plain, Scoped}
 use features.{LangNode, Builder, zip_defect, marks_at}
 
 /// THE ONE `type` BUILDER: the grammar's ordered choice captures a
@@ -16,9 +16,9 @@ fn build_type_decl(mut b: Builder) -> Result<LangNode, string> {
     let fds = b.exprs(4)?
     let nt = b.type_refs(5)?
     let names = [t.text for t in tp]
-    if !nt.is_empty() { return b.make_stmt(Stmt.NamedType(n.text, names, nt[0])) }
+    if !nt.is_empty() { return b.make_stmt(Stmt.NamedType(Scoped(n.text), [Plain(t) for t in names], nt[0])) }
     let fields = b.fields_zipped(fs, ft, fds, marks_at(b.args, 6))?
-    b.make_stmt(Stmt.StructDecl(n.text, names, fields))
+    b.make_stmt(Stmt.StructDecl(Scoped(n.text), [Plain(t) for t in names], fields))
 }
 
 /// `T { a: x, b: y }` — every field written with its value: a punned
@@ -31,5 +31,5 @@ fn build_struct_lit(mut b: Builder) -> Result<LangNode, string> {
     let ve = b.exprs(2)?
     if vn.length != ve.length { return .Err(zip_defect) }
     let names = [k.text for k in vn]
-    b.make_expr(Expr.StructLit(t.text, names, ve))
+    b.make_expr(Expr.StructLit(Nominal(t.text), [Plain(t) for t in names], ve))
 }

@@ -8,7 +8,7 @@
 //! before the member it marks, so a variant NAME and a payload TYPE
 //! are both anchors — a window set short of the payloads reads a
 //! variant's last payload's mark as the NEXT variant's.
-use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, plain_mark}
+use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, plain_mark, Plain, Scoped}
 use features.{LangNode, Builder, window_end, pat_ids_at, arms_at, ref_within, within, marks_at, type_lo, MarkWindows}
 use grammar.{Token}
 
@@ -31,16 +31,16 @@ fn build_enum_decl(mut b: Builder) -> Result<LangNode, string> {
     mut variants: List<Variant> = []
     for j, v in vs {
         let upto = window_end(vs, j, ends!)
-        variants.push(Variant { name: v.text, payloads: payloads_between(names, tys, w, v.span.lo, upto), span: v.span, marks: w.at(v.span.lo) })
+        variants.push(Variant { name: Plain(v.text), payloads: payloads_between(names, tys, w, v.span.lo, upto), span: v.span, marks: w.at(v.span.lo) })
     }
-    b.make_stmt(Stmt.EnumDecl(n.text, [t.text for t in tp], variants))
+    b.make_stmt(Stmt.EnumDecl(Scoped(n.text), [Plain(t.text) for t in tp], variants))
 }
 
 /// One variant's payloads: the types inside its window, each named
 /// by the field name written just before it, or "" when positional,
 /// and each carrying the marks written in front of it.
 fn payloads_between(names: List<Token>, tys: List<TypeRef>, w: MarkWindows, after: int, before: int) -> List<Param> {
-    [Param { name: name_before(names, t, after), ty: t, default: null, mark: plain_mark, span: t.span, marks: w.at(type_lo(t)) } for t in tys if ref_within(t, after, before)]
+    [Param { name: Scoped(name_before(names, t, after)), ty: t, default: null, mark: plain_mark, span: t.span, marks: w.at(type_lo(t)) } for t in tys if ref_within(t, after, before)]
 }
 
 /// The field name written between the variant's name and this
@@ -69,13 +69,13 @@ fn build_arm(b: Builder) -> Result<LangNode, string> {
 /// reads it as an ARM seat.
 fn build_hole_arm(mut b: Builder) -> Result<LangNode, string> {
     let h = b.token(0)?
-    let value = b.expr_node(Expr.Ident(h.text))
-    b.make_arm([b.store.alloc_pat(Pat.Bind(h.text), b.span)], value)
+    let value = b.expr_node(Expr.Ident(Scoped(h.text)))
+    b.make_arm([b.store.alloc_pat(Pat.Bind(Scoped(h.text)), b.span)], value)
 }
 
 fn build_variant_pat(mut b: Builder) -> Result<LangNode, string> {
     let name = b.token(0)?
-    b.make_pat(Pat.Variant(name.text, pat_ids_at(b.args, 1)))
+    b.make_pat(Pat.Variant(Plain(name.text), pat_ids_at(b.args, 1)))
 }
 
 fn build_wild_pat(mut b: Builder) -> Result<LangNode, string> {
@@ -87,7 +87,7 @@ fn build_wild_pat(mut b: Builder) -> Result<LangNode, string> {
 fn build_bind_pat(mut b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     if n.text == "rest" { return b.make_pat(Pat.Rest) }
-    b.make_pat(Pat.Bind(n.text))
+    b.make_pat(Pat.Bind(Scoped(n.text)))
 }
 
 fn build_num_pat(mut b: Builder) -> Result<LangNode, string> {
@@ -106,5 +106,5 @@ fn build_false_pat(mut b: Builder) -> Result<LangNode, string> {
 /// `.name(args)` — the variant the expected type will name.
 fn build_variant_lit(mut b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    b.make_expr(Expr.VariantLit(n.text, b.exprs(1)?))
+    b.make_expr(Expr.VariantLit(Plain(n.text), b.exprs(1)?))
 }

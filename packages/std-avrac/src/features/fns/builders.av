@@ -1,7 +1,7 @@
 //! Parse-time lowering: captured tokens and expressions -> the
 //! FnDecl statement and the Call node. Param names and their WRITTEN
 //! types arrive as two parallel captures and zip into Params.
-use core.{Expr, Stmt, Param, TypeRef, plain_mark}
+use core.{Expr, Stmt, Param, TypeRef, plain_mark, Scoped}
 use grammar.{Token}
 use features.{LangNode, Builder, aligned_binds, aligned_param_types, expr_id_at, seats, marked_seats}
 
@@ -19,8 +19,8 @@ fn build_fn(mut b: Builder) -> Result<LangNode, string> {
     // PARSE; spans re-align both (only `self` may go bare — the
     // declare law enforces it).
     let bounds = aligned_binds(tp, b.tokens(2)?, ends!)
-    let tparams = [Param { name: t.text, ty: bound_ref(bounds[j], t), default: null, mark: plain_mark, span: t.span } for j, t in tp]
-    b.make_stmt(Stmt.FnDecl(n.text, tparams, marked_seats(ps, aligned_param_types(ps, b.type_refs(6)?, ends!), muts, consts, n.span.lo), r, body))
+    let tparams = [Param { name: Scoped(t.text), ty: bound_ref(bounds[j], t), default: null, mark: plain_mark, span: t.span } for j, t in tp]
+    b.make_stmt(Stmt.FnDecl(Scoped(n.text), tparams, marked_seats(ps, aligned_param_types(ps, b.type_refs(6)?, ends!), muts, consts, n.span.lo), r, body))
 }
 
 /// `once fn` — a fn plus the mark. Its laws (no arguments, an
@@ -35,7 +35,7 @@ fn build_once_fn(mut b: Builder) -> Result<LangNode, string> {
     let body = b.expr(6)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: a once declaration without a span — the arena and the grammar disagree") }
-    let s = b.store.alloc_stmt(Stmt.FnDecl(n.text, [], seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends!)), r, body), b.span)
+    let s = b.store.alloc_stmt(Stmt.FnDecl(Scoped(n.text), [], seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends!)), r, body), b.span)
     b.store.mark_once(s)
     .Ok(LangNode.NStmt(s))
 }
@@ -49,7 +49,7 @@ fn bound_ref(bound: string, at: Token) -> TypeRef? {
 fn build_call(mut b: Builder) -> Result<LangNode, string> {
     let c = b.token(0)?
     let args = b.exprs(1)?
-    b.make_expr(Expr.Call(c.text, [], args))
+    b.make_expr(Expr.Call(Scoped(c.text), [], args))
 }
 
 /// `f<int>(x)` — the explicit pins. The no-chain comparison law is
@@ -59,7 +59,7 @@ fn build_pinned_call(mut b: Builder) -> Result<LangNode, string> {
     let c = b.token(0)?
     let pins = b.type_refs(1)?
     let args = b.exprs(2)?
-    b.make_expr(Expr.Call(c.text, pins, args))
+    b.make_expr(Expr.Call(Scoped(c.text), pins, args))
 }
 
 fn build_return(mut b: Builder) -> Result<LangNode, string> {
@@ -77,5 +77,5 @@ fn build_extern(mut b: Builder) -> Result<LangNode, string> {
     let ps = b.tokens(3)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: an extern declaration without a span — the arena and the grammar disagree") }
-    b.make_stmt(Stmt.ExternFn(n.text, marked_seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends!), muts, consts, n.span.lo), b.answer(5)))
+    b.make_stmt(Stmt.ExternFn(Scoped(n.text), marked_seats(ps, aligned_param_types(ps, b.type_refs(4)?, ends!), muts, consts, n.span.lo), b.answer(5)))
 }

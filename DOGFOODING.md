@@ -763,6 +763,23 @@ reintroducing I3's blind spot names the two spellings it lost.
       shape and demand the refusal name it.
 
 
+- I45 (unratcheted) A DERIVE STANDS ALONE IN ITS FILE — a file that
+      declares a trait's associated `derive` declares that trait, its
+      helpers and `use @std.meta` and NOTHING ELSE. Running the derive
+      TYPES the whole declaring file, and it runs while the ANNOTATED
+      file's own impls are still registering, so anything else in the
+      derive's file is typed against a half-built neighbour. THE
+      SMELL: a `static fn derive` beside a walk, a state record's
+      impl, or any fn that reads the annotated file's types. THE
+      FAILURE IS SILENT AND BLAMES THE INNOCENT — the annotated file
+      loses its methods and every CALLER is diagnosed, with nothing
+      said at the annotation (51 such errors, all naming a file that
+      was not at fault). `core/rebuild_derive.av` is the form;
+      `core/protocol.av` and `features/projections.av` already had it
+      by accident. Not ratcheted: no grep tells "declares a derive and
+      nothing else" from an ordinary file with a trait in it, and the
+      shape that breaks it is whatever ELSE the file holds; the keeper
+      is the law in CLAUDE.md and the first build that tries.
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is

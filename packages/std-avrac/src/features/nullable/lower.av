@@ -5,7 +5,7 @@
 //! side, the absent arm, and the chain's absence all run only when
 //! the value is not there.
 use core.{ExprId, StmtId, TypeId, Reg, Ins}
-use features.{LowerCx, StructSig}
+use features.{LowerCx, StructSig, PropertyRow, property_of}
 
 fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
@@ -15,7 +15,7 @@ fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
         .Force(v) -> forced_reg(cx, e, v),
         .Propagate(v) -> propagate_reg(cx, e, v),
         .MatchOpt(s, _, p, a) -> match_opt_reg(cx, e, s, p, a),
-        .Chain(s, name) -> chain_reg(cx, e, s, name),
+        .Chain(s, name) -> chain_reg(cx, e, s, name.of),
         rest -> cx.foreign_node(e),
     }
 }
@@ -125,19 +125,22 @@ fn lifted_member(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
     member_reg(cx, e, cx.carried_of(v, held), cx.carried_type(held), name, answer)
 }
 
-/// The member read on the carried value: a field's slot, or the
-/// length word for the measurable shapes, each lifted into
-/// `answer`. A field already wearing the answer's nullable reads
-/// straight; one wearing what it carries is adopted; anything else
-/// means the flatten rule changed without this lowering learning
-/// it, which must break loudly, not lift twice.
+/// The member read on the carried value: a field's slot, or the row
+/// the receiver's shape answers (a measure, a name's shape), each
+/// lifted into `answer`. THE SAME REGISTRY THE SPINE READS — the
+/// chain holds a register where the spine holds a node, which is
+/// the whole reason a row's lowering takes one. A field already
+/// wearing the answer's nullable reads straight; one wearing what
+/// it carries is adopted; anything else means the flatten rule
+/// changed without this lowering learning it, which must break
+/// loudly, not lift twice.
 fn member_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
               name: string, answer: TypeId) -> Reg {
     let sig: StructSig? = cx.fields_of(held)
-    if sig == null { return cx.adopted(answer, false, cx.measure_of(e, carried, held)) }
+    if sig == null { return cx.adopted(answer, false, chained_row(cx, e, carried, held, name)) }
     let fields = sig!
     let slot: int? = fields.slot_of(name)
-    if slot == null { return cx.lower_defect(e, "a memberless chain survived typing") }
+    if slot == null { return memberless_chain(cx, e) }
     let at = slot!
     let own = fields.types[at]
     if !types_differ(own, answer) { return cx.field_read(carried, held, at, own) }
@@ -145,6 +148,21 @@ fn member_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
         return cx.lower_defect(e, "a chain's member wears a type its lift does not expect")
     }
     cx.adopted(answer, false, cx.field_read(carried, held, at, own))
+}
+
+/// The property the receiver answers, lowered from the carried
+/// register.
+fn chained_row(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId, name: string) -> Reg {
+    let row: PropertyRow? = property_of(cx.view.types, cx.view.lang.properties, name, held)
+    if row == null { return memberless_chain(cx, e) }
+    let r = row!
+    r.lower(cx, e, carried, held)
+}
+
+/// A chain reaching a member the receiver has not got — typing
+/// admitted it, so the lowering cannot.
+fn memberless_chain(mut cx: LowerCx, e: ExprId) -> Reg {
+    cx.lower_defect(e, "a memberless chain survived typing")
 }
 
 fn types_differ(a: TypeId, b: TypeId) -> bool {

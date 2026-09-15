@@ -1,0 +1,108 @@
+//! `@derive(Rebuild)` — the arm each node variant takes in the
+//! template rebuilder, read off its payload SPELLINGS: an id is a
+//! child to rebuild, a name goes through the verb its KIND names, a
+//! written type through `tref`, a record list through its walker, and
+//! every other payload is carried through. `@std/meta` hands a
+//! payload's type over as the words the program wrote, so the derive
+//! reads the same declaration a person does — these are DECLARATIONS
+//! read at compile time, never tags read at run time.
+//!
+//! It stands ALONE in this file on purpose: running a derive TYPES
+//! the file that declares it, and a file that also walked the nodes
+//! would be typed while the annotated file's own impls are still
+//! registering (CLAUDE.md).
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Arms, Code, name}
+
+/// The compiler's derive for the template rebuilder.
+trait Rebuild {
+    static fn derive(t: MetaType) -> List<Directive> {
+        let arms = [arm_of(v) for v in t.variants]
+        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+            impl ${t} {
+                fn rebuilt(mut rb: Rebuilder) -> ${t} {
+                    match self { ${arms} }
+                }
+            }
+        } }]
+    }
+}
+
+/// One variant's arm: its payloads bound, each rebuilt by its own
+/// verb, the variant built again.
+fn arm_of(v: MetaVariant) -> Arms {
+    let held: string? = hand_written(v.name)
+    let binders = ["p${i}" for i in 0..v.payload.length]
+    if held != null { return handed(v, held!, binders) }
+    built(v, binders, [rebuilt_arg(p, binders[i]) for i, p in v.payload])
+}
+
+/// One payload rebuilt: through the verb its TYPE names, or carried
+/// through when the type names none — a literal's value, an
+/// operator, a `use` path, a spec's title.
+fn rebuilt_arg(spelling: string, binder: string) -> Code {
+    let verb: string? = verb_of(spelling)
+    if verb == null { return name(binder) }
+    quote { rb.${verb!}(${name(binder)}) }
+}
+
+/// THE TWO SEMANTIC ARMS. A payload's type cannot say either one, so
+/// each keeps a hand-written method and the arm only routes to it.
+/// Both carry FOUR payloads; a fifth would refuse at the generated
+/// call, which is the same ask `built`'s ladder names.
+fn hand_written(variant: string) -> string? {
+    match variant {
+        "Quote" -> "nested_quote",
+        "Sublang" -> "rebuilt_sublang",
+        _ -> null,
+    }
+}
+
+fn handed(v: MetaVariant, method: string, bs: List<string>) -> Arms {
+    quote { .${v}(${bs}) -> rb.${method}(${name(bs[0])}, ${name(bs[1])}, ${name(bs[2])}, ${name(bs[3])}) }
+}
+
+/// THE ARM, SPELLED ONCE PER PAYLOAD COUNT. A hole splices a binder
+/// LIST and a statement list, and no seat splices an ARGUMENT list —
+/// so the construction is written out by arity. The one place this
+/// derive repeats itself, and the backlog's ask names the site.
+fn built(v: MetaVariant, bs: List<string>, args: List<Code>) -> Arms {
+    match args.length {
+        0 -> quote { .${v} -> .${v} },
+        1 -> quote { .${v}(${bs}) -> .${v}(${args[0]}) },
+        2 -> quote { .${v}(${bs}) -> .${v}(${args[0]}, ${args[1]}) },
+        3 -> quote { .${v}(${bs}) -> .${v}(${args[0]}, ${args[1]}, ${args[2]}) },
+        4 -> quote { .${v}(${bs}) -> .${v}(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}) },
+        5 -> quote { .${v}(${bs}) -> .${v}(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4]}) },
+        6 -> quote { .${v}(${bs}) -> .${v}(${args[0]}, ${args[1]}, ${args[2]}, ${args[3]}, ${args[4]}, ${args[5]}) },
+        _ -> quote { .${v} -> a_variant_of_seven_payloads_needs_its_arity_spelled() },
+    }
+}
+
+/// THE VERB A PAYLOAD'S TYPE NAMES, or absence when the payload is
+/// carried through — which is what every type that is not a child,
+/// a name or a written type is.
+fn verb_of(spelling: string) -> string? {
+    match spelling {
+        "ExprId" -> "expr",
+        "ExprId?" -> "expr_opt",
+        "List<ExprId>" -> "exprs",
+        "List<StmtId>" -> "stmts",
+        "List<PatId>" -> "pats",
+        "TypeRef" -> "tref",
+        "TypeRef?" -> "tref_opt",
+        "List<TypeRef>" -> "trefs",
+        "List<Arm>" -> "arms",
+        "List<Case>" -> "cases",
+        "List<Param>" -> "params",
+        "List<Variant>" -> "variants",
+        "List<FormatPart>" -> "rebuilt_parts",
+        "Scoped" -> "scoped_name",
+        "Scoped?" -> "scoped_name_opt",
+        "List<Scoped>" -> "scoped_names",
+        "Plain" -> "plain_name",
+        "List<Plain>" -> "plain_names",
+        "Nominal" -> "type_name",
+        "Nominal?" -> "type_name_opt",
+        _ -> null,
+    }
+}
