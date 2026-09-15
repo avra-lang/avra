@@ -1,15 +1,11 @@
 use @std.net.{Conn, Poller, Read, NetError, listen, connect, poller}
 use @std.time.{ms, secs}
 use @std.http.frame.{limits}
-use @std.http.http.{Request, Response, text}
+use @std.http.http.{text}
 use @std.http.server.{Server, served, timing}
 
 type App = { hits: int }
 
-fn echo(mut app: App, q: Request) -> Response {
-    app.hits = app.hits + 1
-    text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${app.hits}")
-}
 
 type Pair = { s: Server<App>, c: Conn, p: Poller }
 
@@ -35,7 +31,10 @@ fn exchanged(mut pr: Pair, sent: string, expected: int) -> Result<string, NetErr
 
 fn shown() -> Result<string, NetError> {
     let l = listen("127.0.0.1", 0)?
-    let s = served(l, App { hits: 0 }, echo, limits(), timing())?
+    let s = served(l, App { hits: 0 }, limits(), timing()) { mut app, q ->
+        app.hits = app.hits + 1
+        text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${app.hits}")
+    }?
     let c = connect("127.0.0.1", l.port, secs(2))?
     let p = poller()?
     p.watch(c.fd, .Read)?

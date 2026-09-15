@@ -127,6 +127,7 @@ once fn tchar() -> Bytes { admits(is_tchar) }
 once fn vchar() -> Bytes { admits(is_vchar) }
 once fn target_char() -> Bytes { admits(is_target) }
 once fn digit() -> Bytes { admits(is_digit) }
+once fn ows() -> Bytes { admits(is_ows) }
 
 once fn crlf() -> Bytes { "\r\n".bytes() }
 once fn blank_line() -> Bytes { "\r\n\r\n".bytes() }
@@ -354,12 +355,18 @@ fn field_line(buf: Bytes, at: int, eol: int, limits: Limits) -> FieldLine {
     .Line(Field { name: Span { lo: at, hi: n_end }, value: Span { lo: v_lo, hi: before_ows(buf, v_lo, eol) } })
 }
 
+/// The first non-OWS position at or after `at` — one class-table
+/// scan, so a run of a thousand spaces costs one call, not a frame each.
 fn past_ows(buf: Bytes, at: int) -> int {
-    if at < buf.length && is_ows(buf.at(at)) { past_ows(buf, at + 1) } else { at }
+    buf.run(at, ows())
 }
 
+/// The end of the value once trailing OWS is dropped — a walk, never
+/// a recursion, for the same reason.
 fn before_ows(buf: Bytes, lo: int, hi: int) -> int {
-    if hi > lo && is_ows(buf.at(hi - 1)) { before_ows(buf, lo, hi - 1) } else { hi }
+    mut end = hi
+    while end > lo && is_ows(buf.at(end - 1)) { end = end - 1 }
+    end
 }
 
 // ── The framing fields (RFC 9112 §6, 9110 §7.2, §10.1.1) ────────
@@ -559,6 +566,7 @@ fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) 
 fn settled_reply(buf: Bytes, status: int, minor: int, fields: List<Field>, end: int, limits: Limits, asked: Method) -> FramedReply {
     let fr = framing_of(buf, fields)
     if fr.why != null { return .Refused(fr.why!) }
+    if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
     let broken: Refusal? = body_refusal(fr, limits)
     if broken != null { return .Refused(broken!) }
     let bodiless = asked is .Head || status < 200 || status == 204 || status == 304

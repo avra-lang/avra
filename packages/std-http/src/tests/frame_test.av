@@ -134,6 +134,10 @@ spec "std.http frame" {
                 refuses("GET / HTTP/1.1\r\nHost: a b\r\n\r\n".bytes(), Refusal.Host) &&
                 head_of("GET / HTTP/1.0\r\n\r\n".bytes())!.keep_alive == false
         }
+        then "a thousand spaces of OWS are one scan — the value is still the value" {
+            let pad = ["  " for i in 0..500].join("")
+            value_of(req("Name:${pad}v${pad}\r\n"), 1) == "v"
+        }
         then "space before the colon or an empty name refuses; OWS around a value is not the value" {
             refuses(req("Name : v\r\n"), Refusal.FieldName) && refuses(req(": v\r\n"), Refusal.FieldName) &&
                 value_of(req("Name:v\r\n"), 1) == "v" && value_of(req("Name:  v  \r\n"), 1) == "v"

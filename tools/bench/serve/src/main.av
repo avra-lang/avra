@@ -1,18 +1,17 @@
 use @std.net.{NetError, listen}
 use @std.http.frame.{limits}
-use @std.http.http.{Request, Response, text}
+use @std.http.http.{text}
 use @std.http.server.{served, timing}
 
 type App = { hits: int }
 
-fn hello(mut app: App, q: Request) -> Response {
-    app.hits = app.hits + 1
-    text(200, "hello")
-}
 
 fn serving() -> Result<int, NetError> {
     let l = listen("127.0.0.1", 18080)?
-    mut s = served(l, App { hits: 0 }, hello, limits(), timing())?
+    mut s = served(l, App { hits: 0 }, limits(), timing()) { mut app, q ->
+        app.hits = app.hits + 1
+        text(200, "hello")
+    }?
     s.run()
 }
 

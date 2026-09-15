@@ -63,9 +63,11 @@ export type Server<A> = {
     swept_at: int,
 }
 
-/// A server on `l`, its handler watching `app`. The listener is
-/// watched for readiness before the first turn.
-export fn served<A>(l: Listener, app: A, handle: fn(mut A, Request) -> Response, limits: Limits, timing: Timing) -> Result<Server<A>, NetError> {
+/// A server on `l`, its handler watching `app` — the handler is the
+/// last seat, so a call writes it as a trailing block:
+/// `served(l, app, limits(), timing()) { mut app, q -> … }`. The
+/// listener is watched for readiness before the first turn.
+export fn served<A>(l: Listener, app: A, limits: Limits, timing: Timing, handle: fn(mut A, Request) -> Response) -> Result<Server<A>, NetError> {
     let p = poller()?
     p.watch(l.fd, .Read)?
     .Ok(Server { listener: l, poll: p, app: app, handle: handle, limits: limits, timing: timing, links: [], live: 0, swept_at: now_ms() })

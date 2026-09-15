@@ -3,14 +3,10 @@
 use @std.net.{NetError, listen}
 use @std.time.{ms, secs}
 use @std.http.frame.{limits, Method}
-use @std.http.http.{Request, Response, Header, text}
+use @std.http.http.{Header, text}
 use @std.http.server.{Server, served, timing}
 use @std.http.client.{Client, Answer, ClientError, connected, request}
 
-fn tagged(mut app: App, q: Request) -> Response {
-    app.hits = app.hits + 1
-    text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${q.header("x-tag") ?? "-"}|${app.hits}")
-}
 
 type Duo = { s: Server<App>, c: Client }
 
@@ -23,7 +19,10 @@ fn lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
 
 fn duo() -> Result<Duo, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
-    let s = lifted(served(l, App { hits: 0 }, tagged, limits(), timing()))?
+    let s = lifted(served(l, App { hits: 0 }, limits(), timing()) { mut app, q ->
+        app.hits = app.hits + 1
+        text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${q.header("x-tag") ?? "-"}|${app.hits}")
+    })?
     let c = connected("127.0.0.1", l.port, secs(2), limits())?
     .Ok(Duo { s: s, c: c })
 }
