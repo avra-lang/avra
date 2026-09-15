@@ -38,15 +38,8 @@ fn payload_of(f: Field) -> Code {
     quote { Payload { name: ${literal(f.name)}, ty: ${literal(f.ty)} } }
 }
 
-/// The parts as ONE list expression. A hole in expression position
-/// takes one `Code` (F2075), so a run of them is folded rather than
-/// spliced.
+/// The parts as ONE list expression — each part an ELEMENT, so each
+/// is wrapped before the shared fold joins them.
 fn as_list_expr(parts: List<Code>) -> Code {
-    if parts.is_empty() { return quote { [] } }
-    mut all = quote { [${parts[0]}] }
-    for p in parts.slice(1, parts.length) {
-        let sofar = all
-        all = quote { ${sofar}.concat([${p}]) }
-    }
-    all
+    concatenated([quote { [${p}] } for p in parts])
 }
