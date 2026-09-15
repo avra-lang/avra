@@ -1,0 +1,74 @@
+// THE DERIVE AGAINST AN INDEPENDENT READING. The hand rows below are
+// a TRANSCRIPTION of core/nodes.av made by a person, so they are the
+// derive's one second opinion — `fields` against `payload` agree by
+// construction (one writer) and cannot play that part.
+//
+// ORDER IS THE CONTRACT: a build's arguments are filled in payload
+// order, so `Pair.Two` carries two SAME-TYPED payloads — without that
+// case an order check proves nothing, since every other fixture is
+// told apart by its types alone.
+use @std.avrac.core.{PayloadRow, Payload, node_payload_rows, row_for, Grammar}
+use @std.meta.{derive}
+
+@derive(Grammar)
+enum Pair { Two(first: int, second: int) }
+
+/// ONE rendering, applied to both sides — a second spelling would
+/// compare a copy with itself.
+fn rendered(rows: List<PayloadRow>, owner: string, variant: string) -> string {
+    let hit: PayloadRow? = row_for(rows, owner, variant)
+    if hit == null { return "<no such variant>" }
+    let r = hit!
+    "${r.owner}.${r.variant}(${[payload_shown(p) for p in r.payloads].join(", ")})"
+}
+
+fn payload_shown(p: Payload) -> string { "${p.name}: ${p.ty}" }
+
+/// The hand transcription of core/nodes.av — the migration's front.
+fn hand() -> List<PayloadRow> {
+    [
+        PayloadRow { owner: "Expr", variant: "StrLit", payloads: [Payload { name: "value", ty: "string" }] },
+        PayloadRow { owner: "Expr", variant: "BoolLit", payloads: [Payload { name: "value", ty: "bool" }] },
+        PayloadRow { owner: "Expr", variant: "Interp", payloads: [
+            Payload { name: "parts", ty: "List<string>" },
+            Payload { name: "holes", ty: "List<ExprId>" },
+        ] },
+    ]
+}
+
+spec "core/grammar_derive" {
+    given "the derived rows against the hand transcription" {
+        then "`Expr.StrLit` reads the same from both" {
+            rendered(node_payload_rows(), "Expr", "StrLit") == rendered(hand(), "Expr", "StrLit")
+        }
+        then "`Expr.BoolLit` reads the same from both" {
+            rendered(node_payload_rows(), "Expr", "BoolLit") == rendered(hand(), "Expr", "BoolLit")
+        }
+        then "`Expr.Interp` reads the same from both" {
+            rendered(node_payload_rows(), "Expr", "Interp") == rendered(hand(), "Expr", "Interp")
+        }
+        then "the comparison is NOT vacuous — both sides name a real row" {
+            rendered(node_payload_rows(), "Expr", "Interp") == "Expr.Interp(parts: List<string>, holes: List<ExprId>)"
+        }
+        then "a variant the model does not declare reads as absent" {
+            rendered(node_payload_rows(), "Expr", "NoSuchVariant") == "<no such variant>"
+        }
+        then "a variant carrying NOTHING is PRESENT — the empty case is not the missing one" {
+            rendered(node_payload_rows(), "Pat", "Wild") == "Pat.Wild()"
+        }
+    }
+
+    given "two payloads of the SAME type" {
+        then "declaration order is what the row carries" {
+            rendered(grammar_payloads_Pair(), "Pair", "Two") == "Pair.Two(first: int, second: int)"
+        }
+    }
+
+    given "the union" {
+        then "it reaches all three node enums" {
+            row_for(node_payload_rows(), "Expr", "StrLit") != null &&
+                row_for(node_payload_rows(), "Stmt", "MutLet") != null &&
+                row_for(node_payload_rows(), "Pat", "Bind") != null
+        }
+    }
+}
