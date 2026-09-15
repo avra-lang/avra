@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
@@ -1220,7 +1220,7 @@ impl Workspace {
         mut store = self.decls.store_of(f)
         match node {
             .Template(file, at, _, fills) -> self.copied_expr(f, file, at, fills),
-            .Name(t) -> store.alloc_expr(Expr.Ident(t), null),
+            .Name(t) -> store.alloc_expr(Expr.Ident(Scoped(t)), null),
             .Text(t) -> store.alloc_expr(Expr.StrLit(t), null),
             .Int(v) -> store.alloc_expr(Expr.IntLit(v), null),
             .Float(bits) -> store.alloc_expr(Expr.FloatLit(bits), null),
@@ -1393,7 +1393,7 @@ impl Workspace {
     }
 
     fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
-        MetaParam { name: p.name, ty: typed_text(self.decls.types, p.ty), mutable: p.mark.mutable, settled: p.mark.settled, at: placed(v, p.span), kind: k }
+        MetaParam { name: p.name.of, ty: typed_text(self.decls.types, p.ty), mutable: p.mark.mutable, settled: p.mark.settled, at: placed(v, p.span), kind: k }
     }
 
     /// A fn's answer, spelled from its declared TypeRef — a store read
@@ -1406,13 +1406,13 @@ impl Workspace {
     /// WROTE, and the shape its signature resolved it to.
     fn crossed_fields(v: FileView, s: StmtId, d: DeclId) -> List<MetaField> {
         let kinds = self.field_kinds(d)
-        [MetaField { name: p.name, ty: written_spelling(p.ty), at: placed(v, p.span), kind: kind_at(kinds, j) } for j, p in declared_fields(v.store, s)]
+        [MetaField { name: p.name.of, ty: written_spelling(p.ty), at: placed(v, p.span), kind: kind_at(kinds, j) } for j, p in declared_fields(v.store, s)]
     }
 
     /// An enum's variants: name, payload spellings, payload shapes.
     fn crossed_variants(v: FileView, s: StmtId, d: DeclId) -> List<MetaVariant> {
         let rows = self.payload_kinds(d)
-        [MetaVariant { name: va.name, payload: [written_spelling(p.ty) for p in va.payloads], at: placed(v, va.span), kinds: kinds_at(rows, j) } for j, va in declared_variants(v.store, s)]
+        [MetaVariant { name: va.name.of, payload: [written_spelling(p.ty) for p in va.payloads], at: placed(v, va.span), kinds: kinds_at(rows, j) } for j, va in declared_variants(v.store, s)]
     }
 
     /// THE SHAPE COMES FROM THE SIGNATURE, NEVER FROM THE SPELLING.

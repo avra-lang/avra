@@ -84,6 +84,20 @@ export trait Nested {
     }
 }
 
+/// A template holding a quote WITH A HOLE OF ITS OWN: the inner
+/// body's placeholder belongs to the inner quote, and a copier that
+/// read it as one of THIS template's holes would fill it with the
+/// wrong thing.
+export trait NestedHoled {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+            impl ${t} {
+                fn holed_q(n: int) -> Code { quote { ${name("inner")} + ${n} } }
+            }
+        } }]
+    }
+}
+
 /// A template that DECLARES a name and READS it.
 export trait SelfRead {
     static fn derive(t: Type) -> List<Directive> {
@@ -122,6 +136,60 @@ export trait Names {
                     let ${v}${tail} = 40
                     ${name("v${tail}")} + 2
                 }
+            }
+        } }]
+    }
+}
+
+/// What a payload pattern needs, declared HERE: a template's names
+/// resolve in the file that wrote the quote.
+export enum Held { One(v: int) Two }
+
+/// A failing answer the template catches — declared HERE, with the
+/// enum, because a template's names resolve where it was written.
+export fn sad() -> Result<int, Bad> { fail Bad.Sad("nope") }
+
+/// A failure a `catch` selects by variant — the only payload pair
+/// where a PLAIN run and a SCOPED run sit side by side.
+export enum Bad { Sad(why: string) }
+
+/// THE BINDER SWEEP: every name payload the node model marks as
+/// SCOPE-KEYING, bound through a hole and read through a hole. A
+/// copier that carried one of these as a PLAIN name would leave the
+/// binder unfilled and the read undefined, or fill one and not the
+/// other.
+export trait Binders {
+    static fn derive(t: Type) -> List<Directive> {
+        let q = "q"
+        [Directive { twin: "", name: t.name, at: t.at, source: quote {
+            fn ${q}free() -> int { 100 }
+
+            impl ${t} {
+                fn binders() -> int {
+                    let ${q}let = 1
+                    mut ${q}mut = 2
+                    ${q}mut = ${q}mut + ${name("${q}let")}
+                    const ${q}const = 4
+                    mut total = ${name("${q}mut")} + ${name("${q}const")}
+                    for ${q}range in 0..3 { total = total + ${name("${q}range")} }
+                    for ${q}at, ${q}elem in [10, 20] { total = total + ${name("${q}at")} + ${name("${q}elem")} }
+                    let ${q}lam = (${q}seat: int) -> ${name("${q}seat")} * 10
+                    total = total + ${q}lam(3)
+                    total = total + [${name("${q}comp")} for ${q}comp in [1, 2, 3]].length
+                    let held: int? = 7
+                    total = total + match held {
+                        null -> 0
+                        ${q}bind? -> ${name("${q}bind")}
+                    }
+                    let ${q}else? = held else { return 0 - 1 }
+                    total = total + ${name("${q}else")}
+                    total = total + match Held.One(5) { .One(${q}pat) -> ${name("${q}pat")}, .Two -> 0 }
+                    let ${q}sel = sad() catch .Sad(${q}why) -> ${name("${q}why")}.length
+                    let ${q}all = sad() catch ${q}any -> 0
+                    total + ${name("${q}sel")} + ${name("${q}all")} + self.${q}method() + ${q}free()
+                }
+
+                fn ${q}method() -> int { 1000 }
             }
         } }]
     }
