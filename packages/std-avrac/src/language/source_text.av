@@ -3,16 +3,127 @@
 //! while node order, operator grouping, declaration marks and payloads
 //! are preserved. `avra expand` and the future formatter share this one
 //! renderer.
-use core.{NodeStore, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Variant, Case, Annotation, TypeRef, FormatPart, Hole, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed, marks_prefixed}
+use core.{NodeStore, Trivia, Span, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Variant, Case, Annotation, TypeRef, FormatPart, Hole, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed, marks_prefixed}
 use features.{chained_binder}
 use @std.text.{Text, builder}
 
-fn source_text(store: NodeStore) -> SourceText { SourceText { store: store } }
+/// The renderer with NO remarks — one statement, or one expression.
+///
+/// A REMARK IS AN OFFSET INTO THE FILE IT WAS WRITTEN IN, and these
+/// entry points render a node that may have been COPIED from another
+/// file's store: `expand` renders generated declarations through
+/// `render_statement`, and a generated node's span is homed in the
+/// file that wrote the template. Interleaving a remark table against
+/// a span from a different text would be silent, because an offset is
+/// always a number and never an error. So the guard is not a check —
+/// it is that these render with an EMPTY table, and generated code
+/// carries no remarks because none were ever measured in it.
+fn source_text(store: NodeStore) -> SourceText {
+    SourceText { store: store, at_offset: {}, tail: {}, file_tail: [] }
+}
+
+/// The renderer for a WHOLE FILE, its remarks placed. Only this entry
+/// point has a text the offsets belong to.
+fn source_text_of_file(store: NodeStore) -> SourceText {
+    mut at_offset: Map<string, List<Trivia>> = {}
+    mut tail: Map<string, List<Trivia>> = {}
+    mut file_tail: List<Trivia> = []
+    for r in store.remarks {
+        let host: StmtId? = innermost_holding(store, r.at)
+        // A REMARK IS PLACED BY OFFSET, NEVER BY NODE IDENTITY. Two
+        // reasons, and the second is the one that bit: a block's final
+        // expression is its VALUE, printed by `braced` through
+        // `expression` and never through `statement`; and the arena
+        // holds statements the renderer never visits (a block's value
+        // also exists as an orphan `ExprStmt`), so a remark keyed to
+        // one of those is a remark nobody prints. An OFFSET is answered
+        // by whichever node actually renders there.
+        let spot: int? = first_start_after(store, r.at, host)
+        if spot != null {
+            at_offset.set("${spot!}", (at_offset.get("${spot!}") ?? []).concat([r.trivia]))
+        } else if host != null {
+            tail.set(stmt_key(host!), (tail.get(stmt_key(host!)) ?? []).concat([r.trivia]))
+        } else {
+            file_tail.push(r.trivia)
+        }
+    }
+    SourceText { store: store, at_offset: at_offset, tail: tail, file_tail: file_tail }
+}
+
+/// WHERE A REMARK GOES: before the statement it immediately precedes
+/// WITHIN ITS OWN BLOCK, so a comment at a block's end stays inside
+/// the braces instead of drifting past them. A remark nothing follows
+/// is that block's TAIL, and one no statement encloses is the FILE's.
+/// The case with nothing after it is the one that silently vanishes,
+/// so it is answered here and never left to fall through.
+fn stmt_key(s: StmtId) -> string { "${s.index}" }
+
+/// The innermost statement whose span holds `at`, if any.
+fn innermost_holding(store: NodeStore, at: int) -> StmtId? {
+    // LICENSED I4: a scan for the NARROWEST span — `find` answers the
+    // first match, and this wants the smallest
+    mut best: StmtId? = null
+    mut width = 0
+    for i in 0..store.stmts.count() {
+        let span: Span? = store.stmts.span_at(i)
+        if span != null {
+            let held = span!
+            if holds(held, at) && (best == null || held.hi - held.lo < width) {
+                best = StmtId { index: i }
+                width = held.hi - held.lo
+            }
+        }
+    }
+    best
+}
+
+/// Whether a span holds `at` strictly inside it.
+fn holds(s: Span, at: int) -> bool { s.lo < at && at < s.hi }
+
+/// The offset the next thing begins at after `at`, within `host` when
+/// there is one — a sibling inside the block, never the statement that
+/// follows it. Statements and expressions both count: what matters is
+/// where the printer's next output starts, not what kind of node it is.
+fn first_start_after(store: NodeStore, at: int, host: StmtId?) -> int? {
+    // LICENSED I4: a scan for the EARLIEST start — `find` answers the
+    // first match, and this wants the smallest
+    mut best: int? = null
+    for i in 0..store.stmts.count() {
+        let span: Span? = store.stmts.span_at(i)
+        if span != null { best = nearer(best, span!, at, store, host) }
+    }
+    for i in 0..store.exprs.count() {
+        let span: Span? = store.exprs.span_at(i)
+        if span != null { best = nearer(best, span!, at, store, host) }
+    }
+    best
+}
+
+/// `best`, or this span's start when it begins sooner after `at`.
+fn nearer(best: int?, held: Span, at: int, store: NodeStore, host: StmtId?) -> int? {
+    if held.lo <= at || !within(store, held, host) { return best }
+    if best == null || held.lo < best! { return held.lo }
+    best
+}
+
+/// Whether a span sits inside `host` — vacuously true at file level.
+fn within(store: NodeStore, span: Span, host: StmtId?) -> bool {
+    if host == null { return true }
+    let outer: Span? = store.stmt_span(host!)
+    outer != null && outer!.lo <= span.lo && span.hi <= outer!.hi
+}
 
 /// Statements as canonical source, separated at the top level.
 export fn render_source(store: NodeStore, stmts: List<StmtId>) -> string {
-    let out = source_text(store)
-    joined([joined(out.statement(s, 0), "\n") for s in stmts], "\n\n")
+    let out = source_text_of_file(store)
+    // NO BLANK LINE OF THE PRINTER'S OWN. A blank between declarations
+    // is the AUTHOR's paragraphing and arrives as trivia; joining with
+    // one here too printed each of them twice.
+    let body = joined([joined(out.statement(s, 0), "\n") for s in stmts], "\n")
+    if out.file_tail.is_empty() { return body }
+    let tail = joined([trivia_line(t, 0) for t in out.file_tail], "\n")
+    if body.is_empty() { return tail }
+    "${body}\n${tail}"
 }
 
 /// One statement as canonical source.
@@ -26,15 +137,72 @@ export fn render_expression(store: NodeStore, expr: ExprId) -> string {
     source_text(store).expression(expr, loosest_tier, 0)
 }
 
-type SourceText = { store: NodeStore }
+type SourceText = { store: NodeStore, at_offset: Map<string, List<Trivia>>, tail: Map<string, List<Trivia>>, file_tail: List<Trivia> }
 
 impl SourceText {
     /// A statement and its retained documentation and annotations.
     fn statement(s: StmtId, depth: int) -> List<string> {
-        self.doc_lines(s, depth)
+        let written = self.doc_lines(s, depth)
             .concat([source_line(depth, self.annotation(a, depth)) for a in self.store.annotations_of(s)])
             .concat(self.statement_node(s, depth))
+        self.remarks_before(s, depth).concat(self.with_tail(s, written, depth))
     }
+
+    /// The remarks written above the offset this expression starts at —
+    /// a block's VALUE, which is rendered without a statement of its own.
+    fn remarks_at(e: ExprId, depth: int) -> List<string> {
+        let held: Span? = self.store.expr_span(e)
+        if held == null { return [] }
+        [trivia_line(t, depth) for t in self.at_offset.get("${held!.lo}") ?? []]
+    }
+
+    /// The remarks written above this statement, at its indent.
+    fn remarks_before(s: StmtId, depth: int) -> List<string> {
+        let held: Span? = self.store.stmt_span(s)
+        if held == null { return [] }
+        [trivia_line(t, depth) for t in self.at_offset.get("${held!.lo}") ?? []]
+    }
+
+    /// A block's tail remarks, INSIDE its braces.
+    ///
+    /// A STATEMENT'S LINES ARE NOT ONE PER ENTRY: a block statement is
+    /// a SINGLE multi-line string (`statement_block` joins its body
+    /// before answering), so the closing brace is the last LINE of the
+    /// last ENTRY, not the last entry. Inserting before the entry puts
+    /// the tail above the whole block, which is where the first draft
+    /// of this put it.
+    fn with_tail(s: StmtId, lines: List<string>, depth: int) -> List<string> {
+        let held: List<Trivia>? = self.tail.get(stmt_key(s))
+        if held == null || held!.is_empty() { return lines }
+        let tail = [trivia_line(t, depth + 1) for t in held!]
+        if lines.is_empty() { return tail }
+        lines.slice(0, lines.length - 1).concat([closed_over(lines.last()!, tail, depth)])
+    }
+}
+
+/// One piece of trivia as a line: a comment at its indent, a blank
+/// line as nothing at all — an indented empty line is trailing
+/// whitespace the author did not write.
+fn trivia_line(t: Trivia, depth: int) -> string {
+    match t {
+        .Comment(text) -> source_line(depth, text),
+        .Blank -> "",
+    }
+}
+
+/// One rendered statement with `tail` put inside its braces. A body
+/// that collapsed to `{}` is opened again, since a remark is a reason
+/// the block is not empty.
+fn closed_over(rendered: string, tail: List<string>, depth: int) -> string {
+    if rendered.ends_with("{}") {
+        return joined([rendered.substring(0, rendered.length - 1)].concat(tail).concat([source_line(depth, "}")]), "\n")
+    }
+    let parts = rendered.split("\n")
+    if parts.length < 2 { return joined([rendered].concat(tail), "\n") }
+    joined(parts.slice(0, parts.length - 1).concat(tail).concat([parts.last()!]), "\n")
+}
+
+impl SourceText {
 
     fn doc_lines(s: StmtId, depth: int) -> List<string> {
         let doc = self.store.doc_comment(s)
@@ -129,7 +297,7 @@ impl SourceText {
 
     fn braced(stmts: List<StmtId>, value: ExprId?, depth: int) -> string {
         let body = flatten([self.statement(s, depth + 1) for s in stmts])
-        let lines = if value == null { body } else { body.concat([source_line(depth + 1, self.expression(value!, 0, depth + 1))]) }
+        let lines = if value == null { body } else { body.concat(self.remarks_at(value!, depth + 1)).concat([source_line(depth + 1, self.expression(value!, 0, depth + 1))]) }
         if lines.is_empty() { return "{}" }
         "{\n${joined(lines, "\n")}\n${source_line(depth, "}")}"
     }
@@ -335,7 +503,11 @@ impl SourceText {
     }
 
     fn match_expr(subject: ExprId, arms: List<Arm>, depth: int) -> string {
-        let body = [source_line(depth + 1, "${joined([self.pattern(p, depth + 1) for p in a.pats], " or ")} -> ${self.expression(a.value, 0, depth + 1)}") for a in arms]
+        // AN ARM IS NOT A STATEMENT, so a remark above one is placed at
+        // the arm's VALUE (the first thing with a span after it) and has
+        // to be collected here — the printer emits lines in more places
+        // than it has node kinds.
+        let body = flatten([self.remarks_at(a.value, depth + 1).concat([source_line(depth + 1, "${joined([self.pattern(p, depth + 1) for p in a.pats], " or ")} -> ${self.expression(a.value, 0, depth + 1)}")]) for a in arms])
         "match ${self.expression(subject, loosest_tier, depth)} {\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 

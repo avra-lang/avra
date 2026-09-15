@@ -442,6 +442,33 @@ impl Workspace {
         self.decls.file_id(path, self.module_of(path))
     }
 
+    /// THE FILE AS WRITTEN, canonically printed — from a PARSE, never
+    /// an analysis.
+    ///
+    /// FORMATTING MOVES NO TOKEN THAT TYPING DECIDES, so a formatter
+    /// that waits for a package to type is paying for an answer it
+    /// never reads: one file cost 2.5 MINUTES through the analyzed
+    /// path (`entry_file` forces the whole package) and milliseconds
+    /// through this one. It is also what makes the tree-wide receipt
+    /// possible at all — `fmt(x) == x` over every file is minutes, not
+    /// days.
+    ///
+    /// It renders the file AS WRITTEN and never the EXPANDED source: a
+    /// generated declaration is the COMPILER's, and writing one back
+    /// would make it the author's, to be expanded again next build.
+    ///
+    /// AND IT REFUSES A FILE WITH PARSE ERRORS. The parser is
+    /// error-tolerant, so a broken file still answers a tree with
+    /// HOLES, and rendering it puts those regions back as nothing —
+    /// deleting exactly what the author most wants kept. TYPE errors
+    /// are no bar: a formatter is most wanted on code that does not
+    /// check yet.
+    fn formatted_source(f: FileId) -> Result<string, string> {
+        let parsed = self.parsed(f)
+        if !has_errors(parsed.voices.list) { return .Ok(render_source(parsed.store, parsed.stmts)) }
+        .Err(joined([render_among(d, self.lang.rows.codes, [self.source(f)]) for d in parsed.voices.list], "\n\n"))
+    }
+
     /// An INPUT: the file's text, hashed; the revision moves only when
     /// the text did.
     fn source(f: FileId) -> SourceFile {
@@ -2087,24 +2114,6 @@ impl Program {
     /// A file as compiled: written nodes in source order, with every
     /// generated declaration immediately after the declaration its
     /// annotation wrapped.
-    /// THE FILE AS WRITTEN, canonically printed — what `fmt` answers.
-    /// NEVER the EXPANDED source: a generated declaration is the
-    /// COMPILER's, and writing one back into the file would make it the
-    /// author's, to be expanded again on the next build.
-    ///
-    /// AND A FORMATTER NEVER REWRITES WHAT IT COULD NOT READ. The
-    /// parser is error-tolerant, so a file with a parse error still
-    /// answers a tree — with HOLES where it could not read — and
-    /// rendering that tree puts the holes' source back as nothing,
-    /// silently deleting exactly the region the author most wants kept.
-    /// TYPE errors are no bar: a formatter is most wanted on code that
-    /// does not check yet, and typing moves no token.
-    fn formatted_source(f: FileId) -> Result<string, string> {
-        let parsed = self.ws.parsed(f)
-        if has_errors(parsed.voices.list) { return .Err(self.report()) }
-        .Ok(render_source(parsed.store, parsed.stmts))
-    }
-
     fn expanded_source(f: FileId) -> string {
         let made = self.ws.expanded(f)
         let parsed = self.ws.parsed(f)

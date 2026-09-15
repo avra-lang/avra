@@ -1415,6 +1415,13 @@ Syntax the grammar lacks:
           2  | "b"
       }
 - The pipe `|>`: "expected BREAK while parsing `stmt`".
+- `continue` AND `break` ARE NOT WORDS: `continue` inside a `for` is
+  F3000 "`continue` is not defined", reported as an undefined NAME
+  rather than a missing construct — neither is reserved, so the
+  refusal does not say the loop has no such word. A skip is spelled as
+  a guard folded into the body's `if`, or a named predicate. In the
+  sugar backlog, asked by the owner, with the wanting sites
+  (`innermost_holding`, `first_start_after` in language/source_text.av).
 - A SEMICOLON between statements (`let a = 1; a + 1`): F0001
   "unexpected character" at the `;` — a statement ends at a line
   break, and a one-line body is `{ a }` with one statement. A
@@ -2239,6 +2246,51 @@ Runtime facts, ours to ratify:
   reading that change would have blinked. ONE DEFINITION, called by
   the tree and by its test; a keeper's fixture that cannot fail for
   the real reason is the untested instrument above, one level up.
+- A PERFORMANCE DEFECT AND A SAMPLING TEMPTATION ARE THE SAME DEFECT.
+  When a check is too slow to run over EVERYTHING, the next decision
+  made is which subset to trust — and nobody records that the subset
+  was chosen by the CLOCK rather than by the question. The receipt
+  then covers what was fast to look at, which is not a property
+  anything cares about. MEASURED HERE: `avra fmt` asked for the entry
+  file to get a `FileId`, which forces the whole package to TYPE, so
+  printing one file cost 2.5 MINUTES — and the honest receipt
+  (`fmt(x) == x` over every file in the tree) became days. The
+  pressure that creates is toward a CHOSEN CORPUS, which is how the
+  case that would have failed goes unwritten; it is the
+  hostile-case-cannot-be-built law with a stopwatch as the cause.
+  Formatting moves no token that typing decides, so the fix was to
+  PARSE and not analyse, and the tree-wide receipt went from days to
+  minutes. THE TEST: when a check is about to be run on a subset, ask
+  whether the subset was chosen by the QUESTION or by the RUNTIME. If
+  by the runtime, the defect to fix is the runtime — the subset is a
+  symptom, and shrinking the claim to fit it launders a tooling
+  problem into a methodology.
+- A CHECK CAN PASS *BECAUSE* OF THE BUG, and the obvious receipt for a
+  ROUND TRIP is the one that does it. A formatter owes LOSSLESSNESS —
+  `fmt(x) == x` where the input is already canonical — and the check
+  every author reaches for first is IDEMPOTENCE, `fmt(fmt(x)) ==
+  fmt(x)`. They are DIFFERENT QUESTIONS, and idempotence is not the
+  weaker one, it is the WRONG one: measured here, `fmt` dropped every
+  plain `//` comment and idempotence went GREEN precisely because the
+  second pass had no comments left to lose. The bug made the check
+  pass. 452 of 465 files carried a comment, so a `--write` behind that
+  green would have deleted them tree-wide. THE TELL IS STRUCTURAL: a
+  check that composes the transform with ITSELF can only see what
+  survives the first application, so it is blind to everything the
+  first application destroys — which is exactly what a round trip is
+  supposed to be about. ASK WHAT THE TRANSFORM IS SUPPOSED TO PRESERVE
+  AND COMPARE AGAINST THAT, never against the transform's own output.
+  The family is wider than formatters: a serializer checked by
+  re-serializing, a normalizer checked by re-normalizing, a migration
+  checked by re-running it. This is the untested-instrument law in its
+  sharpest costume, because here the instrument is not merely untested
+  — it is REPORTING THE DEFECT AS HEALTH.
+  AND TWO LOSSES NEED TWO GUARDS. `fmt` already refused a file with
+  PARSE ERRORS, on the law that an error-tolerant parser answers a tree
+  with HOLES and rendering it deletes what it could not read. That
+  guard is right and does not reach this: the comment file parses
+  CLEANLY and the RENDER is what loses. "Could not read it" and "read
+  it and cannot say it again" are different failures.
 - MACHINERY BUILT AHEAD OF A DECISION BIASES THE DECISION TOWARD THE
   SHAPE IT SERVES (lane A's, via lane C). The owner was asked whether
   a program may mint a pointer from an integer, and a correct unused
