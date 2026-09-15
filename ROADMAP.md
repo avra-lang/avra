@@ -15855,3 +15855,67 @@ of the slice), and one avoidable gate.
   where the layout suggests. It was correct here because every test fn
   is top-level, and the DIFF was read site by site rather than
   trusted. Recording the check, not the cleverness.
+
+## Feedback survey — 2026-09-15 (STD-DATA: the finalized door, avra-f3qo)
+
+Scope: `avra-f3qo` only — @std/sqlite's finalized door and the four
+counting verbs. Base: branch `data/finalized-door` on top of
+`data/handle-cells`, itself on main `b118773`. NOT surveyed: the read
+half (`.6.2`), @std/io, @std/process.
+
+Counts: friction 1, features 1, defects 0, doctrine 1, performance 0
+(not swept), process 2, sugar 0. Top by cost: finding that a spec case
+cannot be isolated while a program test in the same package fails.
+
+### Friction
+
+- **A PROGRAM TEST'S FAILURE HIDES THE SPEC SUITE.** `./avra test
+  <package>` prints the failing program's diff and never reports the
+  spec cases at all — no counts, no names. Planting the exact defect
+  this slice removes (a zero-wide row read as no statement) made
+  `sqlite-refusals` fail, and the run said nothing about which of 426
+  spec cases would also have caught it. THE ASK: run both and report
+  both, or say "N spec cases not run". A mutation experiment is how a
+  test is proven to be an instrument, and this shape makes it
+  unanswerable at package scale.
+
+### Features
+
+- **`./avra test <one spec file>` IS THE ISOLATION, and it worked.**
+  With the conflation planted, running the single file answered
+  `29/30` and named exactly one case — "a LIVE statement, which the new
+  door must not swallow / and the read names the ROW, not the
+  statement". That is the proof the case is an instrument rather than
+  decoration. SECOND TIME THIS SESSION that the tool I needed already
+  existed (`make native-check FILE=` was the first). The gap is
+  discoverability, not capability: neither is named anywhere a lane
+  reads before writing its own.
+
+### Doctrine
+
+- **A SAFETY PROPERTY MAY REST ON A BUILD FLAG, AND THAT IS THE LEAST
+  VISIBLE KIND.** Four verbs answered 0 for a finalized statement only
+  because the vendored library is compiled with
+  `SQLITE_ENABLE_API_ARMOR` (Makefile:410). No reader of @std/sqlite
+  would look at the Makefile, and the package's own boundary doc — the
+  file whose whole subject is what crosses to C — does not mention it.
+  The fix is not to state the condition but to DELETE it: the four test
+  the handle themselves and answer the same zero. Same shape as the
+  slice before it, where a `mut` seat was not documented but removed.
+  The register entry is `dead`'s contract, at the site.
+
+### Process
+
+- **KEEP: MUTATE THE FIX, NOT THE TEST.** Two mutations were run. A
+  too-eager door (`dead` always true) broke both program tests, which
+  proves the suite catches it but not WHICH case. The precise one — a
+  zero-wide row refused as a finalized statement, the exact conflation
+  the fix removes — isolated to one named case. The second is the one
+  worth the time: a mutation that breaks everything proves less than
+  one that breaks one thing.
+- **THE ORDER OF A DOOR IS ITS WHOLE MEANING.** The finalized test
+  stands in FRONT of the out-of-row and out-of-slots laws, so the case
+  that matters is not "a finalized statement refuses" but "a LIVE one
+  still hears the old law". The witness is in one string: `width=1`
+  says the statement is there while `standing=0` says no row is. A
+  guard added in front of an existing refusal owes that case, always.
