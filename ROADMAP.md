@@ -7068,7 +7068,529 @@ additions get siblings, nothing changes shape:
   edit re-runs importers only when the export surface's fingerprint
   moved.
 
+## Feedback survey — 2026-09-15 (phase C, C1: children and identity derived)
+
+Base: lane/comptime 1c39ad8 + phase/c. Counts: FRICTION 3, FEATURES 1,
+DOCTRINE 3, PERFORMANCE 1, PROCESS 2; SUGAR and DEFECTS came back
+EMPTY for this slice (C0's rows still stand; nothing new was wanted
+from the language and nothing new blamed the compiler on itself).
+Top three by cost: the bricked product after a deliberate break (two
+extra heavy runs per attempt), nine name clashes in `core`'s flat
+namespace (four rounds), and reading generated code through a command
+that prints it several times (one false alarm).
+
+NOT SURVEYED: performance causes — see the one row below, which is an
+observation and not a measurement.
+
+### DOCTRINE
+
+- **A GREEN RUN OF THE CONTENT-IDENTITY CASE PROVES MUCH LESS THAN IT
+  LOOKS LIKE IT PROVES.** The headline of the slice, and it inverts
+  what two people assumed. `nodes_test`'s "same content means same
+  fingerprint, despite distinct ids and spans" was named as the one
+  instrument standing between the derive's design and the defect it
+  would cause. It is not. Broken on purpose two different ways, that
+  case NEVER RAN: folding an `ExprId` as its index failed the BUILD
+  with 410 × F2031 "declared twice" — every derive's generated impl
+  minted twice, because GENERATED-DECLARATION IDEMPOTENCE IS KEYED ON
+  THE SAME CONTENT FINGERPRINT — and folding `int` payloads to a
+  constant failed `features/fns/tests/const_seat` with `eval !=
+  expected`, because const SETTLEMENT is keyed on it too. `./avra
+  test` runs program tests before spec cases, so nothing in
+  `nodes_test` was reached either time (`grep -cE "tests passed|✓|✗"`
+  answers 0 on the first log). THE CASE IS A DOCUMENTING TEST, not a
+  load-bearing one; the real guards are two of the compiler's own
+  content-keyed caches, and nobody had named them. Only trying to
+  break it showed that.
+- **A DERIVE MUST CLAIM ONLY WHAT IT READS.** Caught by the review
+  round, in my own code, one slice after building the claim law:
+  `Children` and `Identity` both claimed `@verbatim` and NEITHER read
+  it — claimed purely so F2086 would not fire on a mark no reader had.
+  That makes the law say nothing: a word stops being refused without
+  anything having started to read it. THE FIX WAS THE FEATURE: the
+  mark's real reader is `Rebuild`, whose `hand_written` keyed the two
+  semantic arms on the variant NAMES "Quote" and "Sublang" — a
+  registry that would silently miss the next such variant. It reads
+  the marks now and claims them; each derive claims exactly what it
+  reads. THE TEMPTATION IS STRUCTURAL and worth naming: a claim list
+  is the cheapest way to silence a refusal, so the law's own
+  enforcement invites the lie.
+- **§1's CHILD-WALK CLAIM WAS WRONG AND IS CORRECTED.** It said
+  `post_order` and the hand-written walks die. A feature's `kids`
+  hides children deliberately (an `if`'s branches type under a narrow;
+  a lambda's body under its own scope) and no derive can know that.
+  Two walks, two contracts, one mechanical and one semantic — now
+  stated in the doc where the next reader meets it.
+
+### FRICTION
+
+- **A BROKEN DERIVE BRICKS THE PRODUCT AND THE ONLY WAY BACK IS THE
+  SEED.** A derive that breaks content-identity makes generation 1
+  unable to compile the tree AT ALL (410 duplicate declarations), so
+  `make avra` fails at generation 2 with the bad product already on
+  disk. `make bootstrap` was the recovery, twice. THE ASK: `make avra`
+  keeps the previous product aside itself — every lane does `cp
+  build/avra build/avra.pre` by hand and the protocol's whole value
+  rests on nobody forgetting.
+- **NINE NAME CLASHES IN `core`'s FLAT NAMESPACE, AND THE ONE THAT
+  NAMES THE CAUSE IS BURIED.** Writing two files in `core` collided
+  with `arm_of`, `binders`, `joined`, `mixed`, `int_lit`, `listed`,
+  `fp_str`, `fp_mix` and `Mark`. Each is a correct F3017 — but the
+  `arm_of` one came with 377 cascade errors and sat at LINE 3627 of
+  the log, so a `grep -A 6 "^error" | head -30` showed only innocent
+  files and I concluded the compiler had not reported it. (My own
+  fault twice over: CLAUDE.md says to list the CODES first, which
+  answers it instantly.) THE ASK: a duplicate declaration should
+  suppress the cascade it causes, or be reported first — one mistake,
+  one message, applied to the message that explains the other 377.
+- **`avra expand` PRINTS A GENERATED BLOCK SEVERAL TIMES** — `fn
+  rebuilt` 6 times for 3 annotated enums, `grammar_payloads_Expr` 3
+  times for 1, mine 4 times for 1 — so it cannot be used to read
+  generated code exactly, and it cost a false alarm about a double
+  mint. The build is green, so these are not duplicate declarations;
+  it is the printer showing several generations. THE ASK: `expand`
+  prints what the store will COMPILE, once.
+
+### FEATURES
+
+- **A DERIVE'S OUTPUT HAS NO GOLDEN, AND MINE STRUCTURALLY CANNOT
+  HAVE ONE.** Phase D's `grammar_derive_test.av` sets the standard —
+  "the hand rows below are a TRANSCRIPTION made by a person, so they
+  are the derive's one second opinion" — and it works because
+  `@derive(Grammar)` applies to any enum, including a two-payload
+  fixture. `Children` and `Identity` generate `impl NodeStore` and
+  read `self.expr(id)`, so they only apply to the two node ARENAS and
+  cannot be pointed at a fixture. Their test is the whole suite. THE
+  ASK: a way to review a derive's output as text — `avra emit derived
+  <type>`, or an `expand` that prints once — so the arm-by-arm check I
+  did by eye is something a reviewer can repeat.
+
+### PERFORMANCE
+
+- **THE GATE'S PEAK ROSE 835 MB → 1014 MB ACROSS C0 AND C1**, measured
+  by the watchdog on three gate runs (835 at C0's final gate, 1003 and
+  1014 at C1's). This is an OBSERVATION, NOT A MEASUREMENT: two
+  derives now run over the node model at every compile of `core`, and
+  phase D's and G's work landed in the same window, so the cause is
+  unattributed. It is recorded because a number that moves 21% deserves
+  a name before someone meets it cold. `make census` would attribute
+  it and was not run.
+
+### PROCESS
+
+- **BREAKING A THING ON PURPOSE FOUND THE RIGHT ANSWER BY FAILING TO
+  DO WHAT IT WAS AIMED AT.** Both deliberate breaks missed the
+  instrument they targeted and hit a louder one. The METHOD worked
+  perfectly; the ASSUMPTION about which instrument guards what was
+  wrong, and that assumption is what a green suite had been quietly
+  confirming. Keep the method, and expect the answer to be about
+  WHICH guard fires as often as whether one does.
+- **A CLEAN WORKING TREE MADE THE MERGE FREE.** phase/c
+  fast-forwarded to lane/comptime with no conflict because the task
+  master had already resolved both lanes' import-line collisions on
+  his side. Worth naming as the thing that worked: the integrator
+  taking the merge, gating the MERGED tree rather than trusting either
+  lane's receipt, is why neither lane had to.
+## Feedback survey — 2026-09-15 (phase E: §4–§6 of the perfect compiler)
+
+18 findings. Top three by cost: THE INSPECTOR THAT AGREED WITH THE
+BROKEN TREE (~1h, an 8-run bisection it would have prevented and
+instead would have misdirected), A DERIVE CHANGE COSTS A COMPILER
+REBUILD (~40 min across four cycles), and A MODULE NAMESPACE
+COLLISION IS FOUND ONLY BY BUILDING (~20 min, two cycles). Axes
+DOCTRINE and DEFECTS are the heaviest; PERFORMANCE came back with one
+row and an honest unmeasured. NOT SURVEYED: the runtime C, the memory
+pass, anything outside `core/`, `features/enums`, `features/builder`,
+`language/escapes` and `tools/vocab.sh`; and §6, which I measured as
+blocked and did not build.
+
+### FRICTION
+
+- **AN INSPECTOR THAT CANNOT SHOW ALIASING WILL AGREE WITH A BROKEN
+  TREE.** `avra expand` exists and is good — it prints the generated
+  source with a provenance comment naming the template line. It
+  renders the avra-wzuw/avra-inr8 case PERFECTLY: both generated fns
+  read `match i { .A(x) -> [x] }`, sound Avra, while `./avra check` on
+  the same file answers `error[F0900]: defect: register r3 defines out
+  of mint order`. The aliasing is in the NODE IDENTITIES and a printer
+  projects a graph into TEXT, which loses identity — so a defect whose
+  whole content is "two declarations hold the same nodes" is invisible
+  to every rendering, by construction. I found the bug by an 8-run
+  bisection instead; had I reached for `expand` first it would have
+  told me the generated code was fine and sent me hunting elsewhere.
+  THE ASK: an inspection that shows IDENTITY, not just text — `avra
+  expand --ids`, or a splice-time assertion that no node id appears in
+  two declarations. THE DOCTRINE HALF is filed below: P7 says the
+  magic is inspectable, and this is a class of magic no projection can
+  show. (phase/e at 1c39ad8+, 2026-09-15)
+
+- **A DERIVE CHANGE COSTS A FULL COMPILER REBUILD.** The compiler's own
+  derives run inside the compiler, so a one-line change to
+  `core/ir_roles.av` cannot be checked without `make avra` — ~8 min
+  under the three-slot lock, four times. The workaround I built by
+  hand: a two-package scratch (`provider` + consumer) with the derive
+  source COPIED in and `some_list`/`flatten`/`binders` stubbed, so the
+  iteration loop was `./avra check <scratch>` at ~1 s. It found
+  everything: the two-match defect, the export limitation, the span
+  trap, the duplicate-role survivor. THE ASK: `avra new probe
+  <name>` scaffolding that two-package shape, since every derive
+  author will build it by hand otherwise, as I did six times.
+
+- **A MODULE NAMESPACE COLLISION IS FOUND ONLY BY BUILDING.** `folded`
+  and `binders` each collided with `core/fingerprint.av` and each cost
+  a full build cycle to discover: `error[F3017]: `folded` is declared
+  twice in this module — here and in `core/fingerprint.av``. The
+  refusal is excellent (it names both files) and arrives 8 minutes
+  after the edit. Worth its own line because the fix was not to rename
+  but to REUSE — `binders` was exactly the fn I wanted, and the
+  collision is what told me it existed. A namespace with no local
+  scoping is a discovery mechanism as well as a hazard. NOT AN ASK,
+  recorded as the counter-example to "collisions are friction".
+
+### SUGAR
+
+- **A DERIVE CAN REFUSE** — filed in the sugar backlog with its wanting
+  site (`core/ir_roles.av`'s `answering`). Confirmed here.
+
+- **A GENERATED `export` REACHES THE PACKAGE SURFACE** — filed in the
+  sugar backlog (avra-l4xk). Confirmed here, and note that phase D
+  paid it before me without filing.
+
+- **A FOLD OVER A LIST.** `MarkWindows.opens_before` wants "the largest
+  anchor below `lo`" and `concatenated` wants "join these with
+  `.concat`"; `List` has neither a `max` nor a `fold`, so both are
+  hand `mut` loops. The idiom bar sends you at a comprehension and
+  there is none to reach. Small, and the drafts are honest; recorded
+  because two sites in one file wanted the same missing verb.
+
+### FEATURES
+
+- **A SPLICE-TIME IDENTITY CHECK.** The whole content of avra-inr8 is
+  two declarations sharing nodes. A single assertion at the splice —
+  no arena id reachable from two admitted declarations — would have
+  caught it at the moment it was made rather than 543 defects later,
+  and it is the kind of check a keeper cannot approximate. Related to
+  the inspector row above: the check is possible exactly where the
+  rendering is not.
+
+### DEFECTS
+
+- **TWO `match` EXPRESSIONS IN ONE DERIVE'S `Decls` ALIAS THEIR PATTERN
+  NODES** — avra-inr8, P1, filed with the twenty-line repro and the
+  four-run bisection. Confirmed here. The half worth repeating: it is
+  SILENT AT `make avra`, twice, because a program with an entry lowers
+  only reachable bodies; `check`/`test` over a PACKAGE seeds from
+  every declared body and 543 defects appear. A derive can be written,
+  built and shipped broken, and the first person to CALL the generated
+  fn finds out.
+
+- **AN UNDEFINED NAME IN A SPLICED QUOTE TRAPS THE COMPILER** —
+  avra-wzuw, P1, filed. `avra: a span reaches outside its own text —
+  offset 257 of 107`, exit 2, where F3000 belongs. `rebuild_derive`'s
+  `a_variant_of_seven_payloads_needs_its_arity_spelled()` is the
+  tree's ONE idiom for a derive refusing loudly and carries the same
+  trap; it has never fired because no node variant has seven payloads.
+
+- **A DERIVE'S `export` IS INERT AT THE PACKAGE SURFACE** — avra-l4xk,
+  filed. Probed: "its exports: Shape, in_module" for a module whose
+  derive generated `made_word`, while a hand-written export in the
+  same module calls it fine.
+
+- **A ROLE CLAIMED TWICE HID A REGISTER** (mine, fixed in the same
+  commit). `TwoDsts(@dst a: Reg, @dst b: Reg)` answered `dst=1
+  reads=` — the second register invisible to liveness. Fixed by
+  keying the operand filter on the payload `dst_of` ANSWERS rather
+  than on the mark, so a duplicate can make a register an operand and
+  never hide one: `dst=1 reads=2`, both engines.
+
+### DOCTRINE
+
+- **§4 OF THE PERFECT COMPILER WAS WRONG BY ABOUT SIX TIMES**, corrected
+  in place. It claimed `is_managed`, `rides_pointer`, `printable` "and
+  ~20 exhaustive lists" collapse into three derived predicates.
+  MEASURED: 40 exhaustive matches over `Type` (22 variants); THREE ask
+  the machine-shape question; and those three DISAGREE at `Ptr`,
+  `Null`, `Struct` and `Opt` BY DESIGN — `Ptr` and `Null` ride a
+  pointer and carry no header, so nothing counts them. Three
+  properties that correlate, not one property with three readers. A
+  `@scalar`/`@boxed` mark vocabulary would have flattened a real
+  distinction into one bit, which is the defect the marks exist to
+  prevent. THE GENERAL LESSON, written into the doc: a derive is worth
+  its machinery when N readers ask ONE question, never when N readers
+  ask questions that agree on most inputs — count the readers of the
+  QUESTION, not the matches over the enum.
+
+- **A DOC COMMENT IS NOT ATTACHED TO ANYTHING.** `rides_pointer`'s
+  contract was not on `rides_pointer`: `c5a542c` (2026-09-09) inserted
+  `spells` between the doc and its body, so for six days a predicate
+  22 sites call carried NO contract and its words read as `spells`'.
+  Found only because §4's measurement made me read all three
+  predicates side by side. With `///` a compile target (the docs
+  campaign), that is what `avra doc` would have shipped. THE ASK: the
+  docs pass can see this — a `///` block whose first sentence names a
+  DIFFERENT fn than the one below it is a cheap, high-precision lint.
+
+- **A KEEPER ROW CAN GO VACUOUS WITHOUT ANYONE TOUCHING IT.**
+  `make vocab` guarded `dst_of`, `body_symbol` and `hosted_symbol` by
+  awking core/ir.av for `fn <name>(`. Deriving them removes the fn
+  from the file, the awk matches nothing, and three of nineteen rows
+  report SUCCESS having examined nothing — in one commit, silently, as
+  a side effect of a change nobody would connect to the keeper. Fixed:
+  rows gain a `how` column (`spelled` / `derived:<Trait>`) and a row
+  whose subject is in NEITHER form fails. All three refusals witnessed
+  firing.
+
+- **AND MY OWN KEEPER HAD A DEAD ALTERNATIVE, ON ITS FIRST DAY.** The
+  new `derived:` branch checks `grep -rq "trait $trait" packages/`.
+  Renaming `trait Roles` to `trait RolesX` to witness the refusal did
+  NOT fire it — `trait Roles` is a SUBSTRING of `trait RolesX`. The
+  check had never been looking for what I thought, and I found it only
+  because I made it fail on purpose. Anchored now
+  (`^ *(export )?trait X *\{`) and re-witnessed. Direct instance of
+  "a keeper has two surfaces"; the cost of witnessing was one minute
+  and it caught a check that protected nothing.
+
+- **I WROTE A STRING-KEYED SPELLING MATCH BECAUSE THE NEAREST EXAMPLE
+  DID.** My first `operand` read the payload's TYPE TEXT (`"Reg"`,
+  `"List<Reg>"`, `"Reg?"`, `_ -> null`) — copied in shape from
+  `rebuild_derive.av`'s `verb_of`, a 19-row table of spellings. It is
+  the pattern avra-9cbe and avra-9tfi exist to retire, and I reached
+  for it not because I judged it good but because it was the closest
+  thing to copy. THAT is the cost of leaving those registries standing:
+  every day they are there, they are teaching. Fixed to ask `Kind`
+  exhaustively (all 17 variants, no `_ ->`).
+
+- **`Kind` IS POPULATED AND STRUCTURAL AT DERIVE TIME**, which is the
+  timing question avra-9cbe would otherwise answer from scratch.
+  Measured from inside a running `derive`: `d|ty=Reg|kind=Reg`,
+  `args|ty=List<Reg>|kind=List<Reg>`, `gives|ty=Reg?|kind=Reg?` —
+  structurally `Named("Reg", [])`, `List(Named("Reg", []))`,
+  `Opt(Named("Reg", []))`. It matters because `crossed_variant` reads
+  payload kinds from the enum's SIGNATURE and the sibling comment at
+  `seat_kinds` warns that an unearned signature leaves every shape
+  unspelled. Earned, at the moment `@derive(Grammar)` runs. So
+  `core.Payload`'s `{name, ty}` can carry a `Kind` with no new
+  machinery; `reg_kind` in `core/ir_roles.av` is the pattern.
+
+- **A SPAN WINDOW'S ANCHOR SET MUST HOLD EVERY MEMBER** — landed as
+  DOGFOODING I47 (unratcheted, with its reason in tools/idioms.py).
+  Discovered by building payload marks against `aligned_marks`, whose
+  window opened at the previous variant NAME's end: a variant's LAST
+  payload's mark would have become the NEXT VARIANT'S, silently.
+
+### PERFORMANCE
+
+- **176 LINES OF REGISTRY OUT, 56 IN**, in core/ir.av; gate peak 865 MB
+  against phase C's 835 MB at the same target, which is inside the
+  run-to-run spread I saw (835–933 MB across seven builds) and not a
+  measurement of this change.
+
+- **UNMEASURED, SAID SO:** `MarkWindows.opens_before` is O(anchors) per
+  anchor, so O(n²) per enum declaration — ~90 anchors for the largest
+  enum in the tree, ~8100 int compares, at parse time. I did not
+  measure it and I am not claiming it is free; I am claiming I did not
+  look, because `make census` on a whole-package check would not
+  resolve a cost this small and a stopwatch certainly would not.
+
+### PROCESS
+
+- **THE THREE-SLOT LOCK WORKED AND THE QUEUE IS THE FEATURE.** "all 3
+  build slots busy — waiting (ticket 2)" appeared constantly and never
+  cost me a wrong measurement. Peaks 340–933 MB, no kill, no panic,
+  beside three other lanes.
+
+- **I EDITED THE WORKTREE WHILE ITS OWN BUILD RAN, ONCE.** Adding the
+  adversarial test file during a `make avra`. It did not bite — the
+  test phase ran after the edits landed — but the run's numbers were
+  not trustworthy and I re-ran to get a clean one. Recording it
+  because the discipline is explicit and I broke it by convenience,
+  not by reasoning.
+
+- **PROBE-FIRST PAID AGAIN, AND THE ONE TIME I DID NOT, IT COST THE
+  MOST.** Every measured claim in this survey came from a scratch that
+  took under a minute. The 8-run bisection happened because I assumed
+  a quote could hold six declarations — the one assumption I carried
+  into the design without probing it, chosen because it "obviously"
+  should work.
+
+## Feedback survey — 2026-09-15 (phase C, C0: marks on declared members)
+
+Base: lane/comptime 7ab84f1 + phase/c. Counts: FRICTION 3, SUGAR 2,
+FEATURES 1, DEFECTS 3, DOCTRINE 4, PERFORMANCE 0 (not swept, see
+below), PROCESS 3. Top three by cost: the double-mint defect (found by
+a probe designed to disprove a reading, ~40 min including the
+control), the manifest's hand-counted relative paths (2 rounds), and a
+probe batch that printed only F-CODES and hid the message text (one
+suite run, four tests asserting a phrase I had never read).
+
+NOT SURVEYED: performance. `has_marks` runs `marks_written` over every
+statement of every file on every compile and builds lists; I kept ONE
+walk rather than write a second boolean one, because allocation here
+is cheap and avoiding one is a trade to be measured. `make census
+CMD="check packages/std-avrac"` before and after settles it and was
+not run. Also not surveyed: any package outside std-avrac, std-meta
+and the cli.
+
+### FRICTION
+
+- **A PROBE OF A DERIVE NEEDS A PACKAGE BUILT AROUND IT.** Three
+  probes this slice (the claim protocol, the double-mint control, the
+  program test) each needed a manifest, a provider package and an
+  entry, because a derive's trait must stand in another file and a
+  loose file cannot `use` a package. ALREADY FILED as avra-8sb5.11.13;
+  confirming with a third wanting site.
+- **A MANIFEST'S RELATIVE PATH IS COUNTED BY HAND, AND THE REFUSAL
+  POINTS ELSEWHERE.** `packages/.../tests/marks/avra.toml` needs
+  `../../../../../../std-meta` and its provider needs seven; I wrote
+  five and six. The refusal was F2075 "a hole in type position takes a
+  `Type` … found `<error>`" AT THE PROVIDER'S `quote`, three lines
+  from a manifest that never resolved `@std/meta`. THE ASK: a path
+  dependency that resolves to nothing says so (F4007 exists and did
+  not fire here — it fires for a missing `avra.toml`, not for a
+  dependency whose types then fail to resolve).
+- **A PROBE BATCH THAT PRINTS ONLY F-CODES HIDES THE WORDS.** My
+  wrong-type sweep printed exit, count and codes, so I read "F0100"
+  ten times and wrote four tests asserting "expected `)`". The real
+  message is "expected `}` while parsing `stmt`". Four tests failed on
+  the first suite run. THE ASK is doctrine, not tooling, and it is
+  already in CLAUDE.md ("a finding that survives quotes the OUTPUT") —
+  the survey row exists because I violated it while holding a batch
+  harness I had written myself to be fast.
+
+### SUGAR
+
+- **A TRAVERSE — `List<T?>` TO `List<T>?`.** `all_claims`
+  (language/workspace.av) hand-writes "if any part is absent the whole
+  is absent, else concatenate", which is the shape every
+  all-or-nothing fold wants. ALREADY FILED as avra-8sb5.11.55
+  (`flatten` over `List<T?>`); SHARPENING the ask — what is wanted is
+  not flatten-and-drop but the ALL-OR-NOTHING direction, because
+  dropping is exactly the bug (an unanswerable claim set that shrinks
+  instead of poisoning refuses a mark that is perfectly well claimed).
+- **A NULLABLE AGGREGATE ELEMENT NEEDS A PIN.** `let each:
+  List<List<string>?> = [...]` twice in workspace.av; without the
+  annotation the comprehension does not settle. Already in CLAUDE.md's
+  subset; confirming with two wanting sites.
+
+### FEATURES
+
+- **A TRAIT'S ASSOCIATED FN IS FOUND BY ITS NAME, AS A STRING.**
+  `Decls.trait_derive` is `trait_fns(d).find(fn_name(m) == "derive")`
+  and C0 adds `trait_marks`, the same shape for `"marks"`. Two
+  string-keyed lookups into a trait's members, and the compiler holds
+  no list of which names it reserves there. TRIGGER: the THIRD such
+  associated fn names the concept — a declared table of the compiler's
+  reserved trait members, so a typo (`static fn mark`) is refused at
+  the trait instead of silently claiming nothing. Owner unconfirmed.
+
+### DEFECTS
+
+- **AN ANNOTATION ON A FILE'S FIRST STATEMENT IS APPLIED TWICE**, with
+  no diagnostic — avra-iwls, proved with a control. The synthetic main
+  stands on `stmts.first()`, so `declared_work` reads statement 0's
+  annotations for main as well as for the declaration that carries
+  them. `no_stmt` is `StmtId { index: 0 }` and index 0 is a real
+  statement: the sentinel spends a value that is not spare.
+- **`avra expand` ON AN EMPTY FILE TRAPS** — avra-jbpa, "index 0 is
+  out of bounds (length 0)", exit 2, pre-existing (reproduced on
+  build/avra.pre). `check`, `ir` and `run` are all fine; only expand
+  reaches `Workspace.expanded` directly, past the prefilter.
+- **A GENERIC METHOD TRAPS ON MAIN AND NOT HERE** — avra-8sb5.11.91.
+  `type W = { n: int }` + `impl W { fn kept<T>(x: T) -> T { x } }`
+  answers "avra: index 1 is out of bounds (length 0)" under main's
+  `build/avra` at 09890e8, and F2031 "`kept` is generic — generic
+  methods are recorded, not landed", exit 1, under phase/c. Six
+  shapes probed here (uncalled, called, static, mut, on a generic
+  type, beside a plain method): none trap. A seventh, a generic method
+  in a TRAIT, is F0100 — the trait grammar spells no type parameters
+  on a method signature, which is a separate gap. SO IT IS FIXED ON
+  THE BRANCH AND LIVE ON MAIN, and the count-names-its-tree law is
+  what kept me from closing it after the first six green probes.
+
+### DOCTRINE
+
+- **A LAW'S EXAMPLE EXPIRED WHILE THE LAW STOOD** — the keeper-surfaces
+  entry named `refused_n` as a dead alternative; `refused_n` landed at
+  c515f04 and the alternative actually missing was `refused_in`.
+  Corrected in CLAUDE.md, and recorded as a trigger above (second
+  instance; the NUL entry is the first).
+- **A DOC ASSERTED THE ASSUMPTION THAT HOLDS THE BUG UP.** `no_stmt`'s
+  doc reads "the first slot, WHICH A BUILTIN NEVER READS", and
+  `declared_work` reads it unconditionally as its first line. The doc
+  names the exact failing case (an empty file's main) and asserts
+  nobody reaches it.
+- **THE SUBSET ENTRY FORBADE MORE THAN THE COMPILER DOES.** "An EMPTY
+  LITERAL does not adopt a NULLABLE aggregate want" reads as
+  forbidding `x?.xs ?? []`, which COMPILES (probed, both engines). A
+  clause now says so, because the entry as written sends a reader at a
+  defensive two-arm match for a shape that needs none.
+- **A FILE'S HEADER STATED A LAW THREE DRIVERS BROKE.**
+  `core/parts.av` opens "every pass reads them here, NEVER BY MATCHING
+  A NODE ITSELF", and `language/workspace.av` held three hand-written
+  twins of projections parts.av already owned — and C0 added a fourth
+  before the review round caught it. All four now live in parts.av;
+  driver-side statement matching is zero (the two survivors are
+  `source_text.av`'s printer registry, which is the legitimate shape).
+
+### PROCESS
+
+- **RUN THE PREVIOUS GENERATION OVER THE SAME FILE.** Used twice,
+  decisive both times: it turned "my grammar broke expand" into "expand
+  was already broken" in one command, and it is what proved the
+  generic-method trap is main's and not the branch's. KEEP, and it
+  deserves to be the FIRST move when a second-generation product
+  misbehaves, not a step after a diagnosis.
+- **A SCRIPT REPLACED UNDER A RUNNING SHELL KILLS THE RUN AT THE
+  LAST LINE.** `tools/watch.sh` was updated while a gate was running;
+  `sh` reads a script incrementally, so the gate completed every step
+  and then died with "syntax error near unexpected token `)`", exit 2,
+  after `witness` had already printed. It also left a stray `.log` at
+  the tree root holding the partial error. Cost: one gate re-run, and
+  a minute spent believing the gate had failed. THE ASK: land a tool
+  change when no run holds the lock, or copy-then-rename so the swap
+  is atomic.
+- **A PROGRAM TEST HAS NO `fn main`.** Its FINAL EXPRESSION is the
+  value compared against `.expected`; I wrote `fn main() -> int` with
+  a `print` and got F3000 "no `fn print` is defined". The convention is
+  right and undocumented outside the existing tests — one line in
+  CLAUDE.md's program-test sentence would have paid for itself.
+
 ## Recorded triggers — the integrator's substrate
+
+- [ ] A LAW WHOSE INSTANCE IS A NAMED ARTIFACT GOES STALE WHEN THE
+      ARTIFACT MOVES — TWO INSTANCES, WAITING FOR A THIRD. Recorded by
+      PHASE C 2026-09-15, deliberately NOT written up as a law: the
+      tree's own rule is that two copies may wait and three never do,
+      and that rule applies to its own prose. This entry exists so the
+      third reader counts from two rather than deriving the shape
+      again. Owner: nobody — it fires on the third instance, whoever
+      meets it.
+      THE SHAPE: a doctrine entry states an evergreen law and carries a
+      NAMED ARTIFACT as its instance (a fn, a symbol, a commit, a
+      behaviour). The artifact moves. The LAW is still true, so nobody
+      re-reads it — and its wording goes on asserting the old state,
+      reading as current for as long as it stands. It is the
+      retracted-fact-spreads-by-citation entry with the CITATION AND
+      THE ORIGIN BEING THE SAME PARAGRAPH, which is why sweeping by
+      claim does not reach it: there is no second copy to disagree
+      with the first.
+      INSTANCE 1 — the NUL entry ("A STRING HOLDS A NUL, ALL THE WAY").
+      It taught the opposite until 927ed49, and half the file's NUL
+      doctrine was written from it. It now says so about itself at
+      length, which is why it is the better-documented of the two.
+      INSTANCE 2 — the keeper-surfaces entry ("AND A KEEPER HAS TWO
+      SURFACES"). It named `refused_n` as a DEAD alternative accepted
+      by nobody. `refused_n` LANDED at c515f04; the entry went on
+      naming it as the dead one, and the alternative actually missing
+      from the matcher was a DIFFERENT one (`refused_in`) that no
+      grep found — it took WRITING a test with the honest verb.
+      Corrected in phase/c, law kept, example retired.
+      WHAT THE THIRD INSTANCE SHOULD LAND: not "re-read the doctrine"
+      — that is what nobody does — but a mechanism that ties an entry
+      to its artifact, so the day the artifact moves the entry is
+      named. The cheapest candidate is that an entry naming a symbol
+      says so in a greppable form, and a keeper diffs those names
+      against the tree. Design it when the third arrives, not before.
 
 - [x] THE GATE PROVES A TREE AND THE INTEGRATOR COMMITS A TREE —
       FIXED at fe1c152: integrate.sh commits, THEN gates, THEN merges,
@@ -7209,7 +7731,8 @@ tree was read.
   `node_readers` carries each variant's name, payload count and
   reader in ONE row, the boundary check reads the names off it and
   the writer takes its tag from it, so no second spelling of the
-  order exists. Landed as DOGFOODING I44 (I43 went to phase H the same day — the
+  order exists. Landed as DOGFOODING I44 (the comprehension idiom that
+  claimed I43, renumbered I48 here, went to phase H the same day — the
   duplicate-number trap CLAUDE.md names, caught by reading the other
   lane's `tools/idioms.py` before renumbering).
 
@@ -8474,7 +8997,288 @@ The `/feedback` run for the slice that lifted the two S5b boundaries: a settled 
 
 ---
 
+## Feedback survey — 2026-09-15 (phase G)
+
+Base: worktree `../avra-phase-g` on `phase/g`, branched at `190ae72`.
+Scope: §7 (the C header from `rt_sigs()`) and §8 (diagnostics'
+goldens). NOT SURVEYED: any other phase's files, the packages outside
+std-avrac and cli, and performance beyond the two numbers below.
+
+### Friction
+
+- **A ONE-FILE CHECK INSIDE A PACKAGE IS NOT A ONE-FILE CHECK.**
+  `./avra check packages/std-avrac/src/core/tests/runtime_header_test.av`
+  compiled the whole package (>2 min) and then reported F0902 for every
+  OTHER package's program tests, because naming a file makes it the
+  entry and the entry-only law refuses everyone else's top level. The
+  output is ~40 refusals about files I did not touch and none about
+  mine. Cost: two detours before I stopped using it to check a file.
+  THE ASK: a `--file` reading that analyses the named file in its
+  package WITHOUT making it the entry (`caseless_program` already has
+  the shape — `avra test` uses it for exactly this reason).
+  EVIDENCE: task `bfsvp3yex` output, this tree, 2026-09-15.
+
+- **A GENERATED ARTIFACT COSTS A FULL COMPILER BUILD TO EDIT.** The
+  witness table and the header text are compiled INTO the product, so
+  every wording change is `make avra` (~4 min) before the artifact can
+  be regenerated. Seven builds went to this. It is inherent to
+  self-hosting and I am not asking for it to change; the finding is
+  that a lane should BATCH generated-artifact wording, which I did not
+  and should have.
+
+- **`zsh` MULTIOS MADE AN INSTRUMENT LIE.**
+  `./avra runtime-header 2>&1 1>/dev/null | wc -l` answered 218, which
+  reads as "the header goes to stderr too". Redirecting to two files
+  says stdout=218, stderr=0. Cost: one wrong conclusion, caught by
+  re-measuring. THE ASK: none on the tree — recorded because CLAUDE.md
+  already says to know what an instrument does to a measurement, and
+  this is that law with a shell in the instrument's place.
+
+### Sugar
+
+- Filed above: **A MULTI-LINE CELL** (the witness wants to ride the
+  `DiagCode` row and cannot, because a `table` cell spends its
+  alignment on `"enum E {\n    a(int)\n ..."`). Wanting site
+  `packages/std-avrac/src/language/witnesses.av`.
+- **A TYPED `DiagId`.** The witness registry keys on the F-code as a
+  STRING, which is avra-9cbe's trap one domain over. It is safe here
+  only because both directions of the key are refused
+  (`stray_witnesses`, `shadowed_witnesses`, both witnessed failing).
+  A typed id would make the key structural and delete both keepers.
+  Wanting site: `witnesses.av`'s `CodeWitness { code: string, … }`.
+
+### Features
+
+- **`avra runtime-header`** and **`avra diagnostics`** landed here;
+  both are bare projections of a registry, and they are the second and
+  third of that family after `avra grammar`. When §10.8's `avra doc`
+  lands there will be four, at which point "print a projection of the
+  language" is a concept with four instances and one file each.
+  RECORDED TRIGGER: `avra doc`.
+
+### Defects
+
+Swept and EMPTY for this slice: no `defect:`, no trap, no crash, no
+engine divergence. The one wrong answer found was in a witness I wrote
+(two codes sharing one source, so each entry pinned the other's
+wording) and the idioms ratchet caught it as an I11 duplicate before
+the gate did.
+
+### Doctrine
+
+- **§7's "`tools/externs.py` retires" WAS FALSE and is corrected in
+  place** (the design doc, with the 83/230/32 counts and the six
+  checks that are not widths). Two more stale claims corrected in the
+  same doc: §8's row shape and §10.6's kill list.
+- **CLAUDE.md's `it`-binding law is correct and I still hit it.**
+  `avra().rows.codes.all(text.contains("## ${it.id}"))` — `it` binds
+  to the NEAREST call, which is `contains`. The compiler's help writes
+  the fix (`(k) -> …`) and the law is already in "The subset today";
+  confirming, not re-filing. Cost: one gate.
+
+### Performance
+
+- `avra diagnostics` runs 72 whole compiles in **0.172s total**
+  (`time`, this tree) and peaks at **1 MB** (`AVRA_MEM_STATS=1`), so
+  the error index is free to put in the gate.
+- The header adds 83 `_Static_assert`s to one TU and did not move the
+  runtime's compile time out of the noise (`make gate` peak 856–911 MB
+  across five runs, unchanged from the 823–860 MB before it).
+
+### Process
+
+- **KEEP: making the keeper fail before trusting it.** Five failure
+  classes for the header and three for the witness keeper were
+  witnessed failing, and two of the three probe holes I found would
+  have shipped — the null-pointer-constant one silently.
+- **KEEP: the three-slot lock.** Every heavy run queued; "all 3 build
+  slots busy — waiting (ticket N)" appeared four times and nothing
+  raced.
+- **CHANGE: a gate log piped through `tail` is not a gate log.** My
+  first green gate was read from the last 80 lines, which cut every
+  keeper line; `watch: status 0` was the only real evidence. Redirect
+  to a file, always.
+
 ## Sugar backlog — dogfooding asks
+
+ANSWERED, NOT COLLAPSED (phase G, 2026-09-15) — A REGISTRY SUMMARY AND
+A VOICE'S HEADLINE ARE DIFFERENT THINGS. Asked whether the two spell
+one law twice (avra-5m62, from phase C's side). MEASURED over the 72
+codes docs/DIAGNOSTICS.md now witnesses, summary against the rendered
+headline: 6 IDENTICAL, 6 where the headline is the summary PLUS the
+offending fact, and 60 genuinely different. So nine sites agreeing was
+never the goal, and neither side may derive from the other:
+  - the SUMMARY is the law with NO PROGRAM attached, which is exactly
+    what `avra explain F2035` needs when there is no program to point
+    at ("a map's keys are strings");
+  - the HEADLINE is that law AS IT APPLIES HERE, carrying the value
+    that broke it ("a map's keys are strings, not `int`") — which is
+    CLAUDE.md's voice law, and 60 of 72 carry a fact the summary
+    cannot hold.
+The 6 identical ones are the PLACEMENT rules (F3004, F3007, F3025 and
+kin): the violation has no extra fact beyond WHERE, which the span
+already carries, so the law IS the whole message. That is correct, not
+duplicated.
+WHAT THE WITNESS ACTUALLY BUYS HERE: both now stand side by side in
+one generated document, so a drift between them is READABLE where it
+was invisible. That is the fix the duplication question wanted.
+
+ATTRIBUTION CORRECTED: the "9 of 120 codes spell their law twice"
+figure reached me as mine and is not — I measured 292 voices over 118
+kinds, 135 registered codes and 23 appearing in any test, and never
+compared summaries to headlines until asked. The numbers above are
+that comparison, made here, over 72 codes rather than 120. A count
+offered as a correction names its base (CLAUDE.md).
+
+CONSOLIDATION LEDGER (phase G, 2026-09-15) — counted, per the standing
+order. COLLAPSED: `explain`'s example and the error index are ONE
+derivation (both are `shown_code`/`shown_codes` over the same registry
+— before, `explain` printed a summary and the index did not exist);
+inside the header generator, `c_kind(s.ret)` called three times per row
+became once, a one-use `said` projection became a `CKind` method, and
+a `preamble()` verb became the `const` it always was.
+NOT COLLAPSED, WITH TRIGGERS:
+  - The runtime C still spells its own 83 signatures beside the rows.
+    The header CHECKS rather than collapses them, because collapsing
+    needs the extern seat to carry the C spelling (the doc's §7 move 1)
+    — ~117 C edits and a const-stripping cast at every text row.
+    TRIGGER: when an extern seat's type can carry its C spelling.
+  - 5 codes now carry BOTH a hand-written golden in a spec test and a
+    generated one (F0100, F2000, F3000, F3001, F3002); 9 more are
+    hand-only (F0900, F2061, F2069, F2075, F2079 and four manifest
+    codes). Two copies may wait. TRIGGER: a third rendering of the
+    same code — §10.8's `avra doc` is the one that will mint it — or
+    a manifest witness reaching the four F40xx codes, at which point
+    the hand-written set is wholly covered and goes.
+  - The 21 feature `table<DiagCode>`s are untouched; see the
+    multi-line-cell WANT above.
+KEYED ON A STRING, DELIBERATELY: the witness registry keys on the
+F-code, which is the trap avra-9cbe names one domain over. It is safe
+here only because BOTH directions of the key are refused — a row
+naming no registered code (`stray_witnesses`) and a second row for one
+code (`shadowed_witnesses`), both witnessed failing. A typed `DiagId`
+would make the key structural and is the honest ask.
+
+
+DEAD ROW (phase G, 2026-09-15) — `avra_int_not` IS CALLED BY NOTHING.
+Measured while answering "how many runtime rows does anything reach":
+of 83 rows, 59 are emitted by the compiler's own lowering as a quoted
+callee and 32 are reached through an `extern fn` wall in a std
+package; `avra_int_not` is reached by NEITHER. `~v` desugars in the
+builder to `v ^ -1` (expr_spine/builders.av's `build_bitnot`, which
+says so), there is no `BitNot` in `UnOp`, and the interpreter declares
+`avra_int_and/or/xor` and not this one. So the row, its C body and now
+its header assertion are all carried for a call that cannot happen.
+NOT REMOVED HERE: deleting the C body removes a runtime symbol, and
+the receipt for that is `make bootstrap` green plus a seed refresh
+riding the same commit (CLAUDE.md). It is a small slice of its own.
+
+WANT (phase G, 2026-09-15) — A MULTI-LINE CELL, so a witness can ride
+its own row. §8's witness belongs ON the `DiagCode` row — one
+definition, and `explain` reads it from the row it already has. It
+lives in `language/witnesses.av` instead because a witness is a whole
+PROGRAM: `Witness.Source("enum E {\n    a(int)\n    b\n}\nmatch …")`
+in a `table<DiagCode>` cell spends exactly the alignment a `table`
+buys (the vocabulary seam rule), and the 21 feature code tables would
+each have to become struct-literal lists to hold it. WANTING SITE:
+`packages/std-avrac/src/language/witnesses.av`'s row list, against the
+`codes = table<DiagCode>` in every feature's mod.av. PROBED at phase
+G, both true: a `table<T>` header may OMIT a defaulted column (so the
+column could land without touching the 21 tables), and a cell may hold
+an enum WITH a payload (`Witness.Source("…")` type-checks in a cell).
+What is missing is only a readable spelling for a multi-line cell.
+
+MEASUREMENT, NOT A WANT (phase G, 2026-09-15) — A PER-ROW REFCOUNT
+DIFFERENTIAL IS NEW INSTRUMENTATION, not a reuse of the census. The
+idea is to make `owns_result`/`keeps` an executable claim: observe
+each runtime call's refcount effect and compare it to what its row
+says. WHAT THE CENSUS ACTUALLY RECORDS today (runtime/avra_runtime.c,
+`-DAVRA_CENSUS`): five global counters — retains, releases, frees,
+list gets, list pushes — plus three per-CALLER tables keyed by
+`__builtin_return_address` (pushes, copies, retains). Per caller, not
+per runtime ROW, and no per-argument delta anywhere. So the
+differential needs a wrapper per row that snapshots each pointer
+argument's rc across the call — which the generated header (§7) is the
+natural place to emit, since it already spells every row's seats. AND
+THE COVERAGE CAVEAT IS REAL: a row nobody calls is never measured, and
+`avra_int_not` above is the proof that such rows exist here.
+WANT (phase E, 2026-09-15) — A DERIVE CAN REFUSE. `derive(t: Type) ->
+List<Directive>` has ONE channel and it is generation: there is no way
+for a derive to say "this declaration is wrong" the way a VALIDATES
+annotation says it with `List<Diagnostic>`. The tree's answer today is
+to generate a call to a name nothing declares and let resolution
+refuse — `rebuild_derive.av`'s
+`a_variant_of_seven_payloads_needs_its_arity_spelled()` is that idiom,
+and it is the only one. IT TRAPS THE COMPILER (avra-wzuw): the
+generated node carries the DERIVE file's span and it is read against
+the TARGET file's text, so `./avra check` wrecks with "a span reaches
+outside its own text", exit 2, instead of speaking. The hatch has
+never fired — no node variant has seven payloads — so nobody had
+learned this. THE WANTING SITE is `core/ir_roles.av`'s `answering`: a
+variant carrying two `@dst` marks is a mistake the derive can SEE and
+cannot SAY, so it takes the sound direction instead (the duplicate
+makes a register an operand, never hides one) and the transcription
+test is what catches the mistake. THE ASK: a refusal channel on
+`derive`, homed at the member the mark stands on. Fixing avra-wzuw
+alone would make today's idiom merely ugly rather than fatal; the
+channel is what makes it honest.
+
+WANT (phase E, 2026-09-15) — A GENERATED `export` REACHES THE PACKAGE
+SURFACE. A derive's `export fn` is visible inside its MODULE and
+absent from the module's exports (avra-l4xk, probed: "its exports:
+Shape, in_module" for a module whose derive generated `made_word`).
+So a derived projection cannot own its public name, and every
+cross-module consumer needs a hand-written one-line door. TWO PHASES
+HAVE NOW PAID IT INDEPENDENTLY: phase D's `node_payload_rows` (whose
+comment reads it as a fact of life — "module can call what it made")
+and phase E's six doors in `core/ir.av`. One consumer adapting is a
+workaround; two consumers adapting without either knowing is a seam
+that is wrong.
+
+RECORDED TRIGGER (phase E, 2026-09-15) — THE THIRD SHARED DERIVE
+SPELLING NAMES A FILE. Two helpers are already shared across derive
+files with no home of their own: `binders` (in `core/fingerprint.av`,
+used by `core/ir_roles.av`) and `concatenated` (in `core/ir_roles.av`,
+used by `core/grammar_derive.av`'s `as_list_expr`). Each sits in
+whichever derive happened to need it first, so the dependency runs in
+an arbitrary direction. Two copies may wait. FIRES when a third
+spelling is shared: they move to one file whose subject is "what a
+derive builds", and the derives import it.
+
+
+UNVERIFIED HAZARD (H2, 2026-09-15) — `hush_expansion` INSIDE A
+RE-ENTRANT RUN. `expanded(f)` clears a file's expansion voices as its
+first act, and the memo kernel makes a recursive demand COMPUTE
+rather than reuse (`start_recursive`: `.Cycle -> Compute`), so an
+inner run's hush fires while an outer run is midway through its
+directive loop. If the outer run has already spoken a refusal for an
+earlier directive, the inner hush erases it and the outer never
+re-speaks it — a silently dropped diagnostic. I did NOT observe this:
+the case I measured had both voices land AFTER the last hush (two
+copies survived, which is what the `speak_expansion` dedupe now
+folds). So this is a mechanism I can describe and have not made fire,
+and it is recorded as a question rather than a finding. WHAT WOULD
+SETTLE IT: a file whose FIRST directive refuses and whose SECOND
+triggers the re-entrant resolve — if the first refusal is missing
+from the report, the hazard is real.
+
+
+WANT (H2, 2026-09-14) — A DERIVE DECLARES THE NAMES ITS OUTPUT NEEDS.
+`@derive(Fingerprint)` generates code calling `fp`, `fp_list` and
+`fp_str`, so the ANNOTATED file must import them on the generated
+code's behalf — and `make idioms` reads SOURCE, where those names are
+never used, so I24 ("a name imported and never used in its MODULE")
+fires truthfully about a line that is not a mistake. Licensed at
+`features/contract.av:24` tonight, which is the right call for one
+site and the wrong shape for the rule: every future derive adds
+another licensed import, and the license is what an amnesty looks
+like before it becomes one. THE ASK: let a derive answer an IMPORT
+directive the crossing splices into the annotated module, so the
+source file imports only what IT names and the keeper stays honest
+without an exemption. The wanting site is `features/contract.av`'s
+`fp`/`fp_list`/`fp_str` line; the keeper's reading is correct and
+should not be weakened to accommodate generated code.
+
 
 - A LOOP THAT DIVERGES STILL OWES A TAIL VALUE (filed 2026-09-08, the
   HTTP lane's review round). `while true { ... }` whose every path
@@ -14921,6 +15725,170 @@ not watched to the end. Not surveyed: H2, and anything outside
   `vocab.sh`'s "what it decides" column is command substitution: the
   keeper died with "@std/meta: No such file or directory" — from a
   comment.
+
+## Feedback survey — 2026-09-15 (phase/d, D1: the grammar names the node)
+
+Scope: the D1 slice on `phase/d` at `7ab84f1`+ — the `@derive(Grammar)`
+payload rows, the row carried on `Builder`, the name-keyed readers, and
+the differential against the hand transcription. NOT surveyed: the
+runtime, the backend, any package outside `std-avrac`, and performance
+beyond gate peaks (see PERFORMANCE).
+
+### FRICTION
+
+- ~~**A DERIVE CANNOT SHOW WHAT IT GENERATED.**~~ **RETRACTED THE SAME
+  DAY, BY THE AUTHOR, BEFORE ANYONE ACTED ON IT.** This row asked for
+  `avra expand <file>` — "printing a file's declarations after derives
+  have run" — and `avra expand` HAS DONE EXACTLY THAT SINCE BEFORE THIS
+  SLICE: `packages/cli/src/commands/expand.av`, "the file as compiled,
+  its generated declarations inlined after their written origins", and
+  `workspace.av:1931`'s `expanded_source` pushes `decl_block(d)` for
+  every generated decl whose provenance names the written one. I spent
+  three `make avra` cycles (~4 min each) inferring from downstream
+  symptoms what one `avra expand` would have shown me.
+  WHAT THE ROW IS ACTUALLY EVIDENCE OF: not a missing tool, but a
+  SURVEY ROW WRITTEN FROM RECALL RATHER THAN CHECKED — the exact
+  failure this survey's own posture forbids ("a finding without
+  evidence is a question, not a finding"), committed by the person
+  writing the posture. The cost of the un-checked version is worse than
+  the friction it described: a feature request for a shipped feature
+  routes someone to build a duplicate.
+  THE RESIDUE, AND IT IS SMALL: a derive's failure modes are diagnosed
+  from downstream symptoms by default, and nothing in the refusal text
+  points at `expand`. EVIDENCE that the symptoms mislead stands —
+  `build/mk2.log` says both "`@std.avrac.core` does not export
+  `grammar_payloads_Expr`" and "no `fn grammar_payloads_Expr` is
+  defined", which are ONE fact (it existed, file-locally) worn as two
+  accusations; `build/mk4.log` is 43 x F2030 with no line naming the
+  cause. A NARROWED ASK: when a name is not found and a derive in that
+  file generated declarations, say so and name `avra expand`.
+  UNVERIFIED: I could not re-run `avra expand` to confirm it would have
+  shown the generated fn, being on hold for heavy runs; the claim rests
+  on reading expand.av and expanded_source, not on output.
+- **AN ANNOTATION PROBE NEEDS A PACKAGE BUILT AROUND IT.** A loose
+  scratch file using `@std.meta` is F3015 "this file is not in a
+  package — `use` needs a root", so each meta probe costs an
+  `avra.toml`, a `src/`, and a relative dependency path. Three
+  scaffolds this slice. THE ASK: a probe mode that supplies a root, so
+  a one-file question stays a one-file probe.
+
+### SUGAR
+
+- **A HOLE THAT SPLICES A RUN INTO A LIST OR ARGUMENT POSITION.**
+  F2075: "a hole in expression position takes `Code`, an `int` or a
+  `bool`, found `List<Code>`". So a derive generating N values folds
+  them by hand, and the fold is now spelled THREE independent times:
+  `@std/derive`'s `conj` (std-derive/src/derive.av:66), this slice's
+  `as_list_expr` (core/grammar_derive.av:44), and — the sharpest —
+  `core/rebuild_derive.av:69-78`, an arity ladder written out to SIX
+  payloads whose own comment says "the one place this derive repeats
+  itself, and the backlog's ask names the site". WANTING SITES:
+  core/grammar_derive.av:19 and :32. THE ASK: a hole that splices a
+  `List<Code>` comma-separated into a list literal and an argument
+  list, as a `List<string>` hole already splices binders into a
+  pattern (`.${v}(${bs})`, rebuild_derive.av:61). One ask retires all
+  three spellings and the ladder.
+
+### FEATURES
+
+- **A DERIVE READING A TYPE IT DOES NOT SIT ON, AND EMITTING WHERE THE
+  READER IS.** Filed as avra-8sb5.11.100 with the measurements; not
+  re-filed here. It is what blocks deleting node_scaffold.av's three
+  builders (D1b).
+
+### DEFECTS
+
+- **AN ANNOTATION ON A DECLARATION KIND IT CANNOT TAKE IS SILENTLY
+  IGNORED.** Filed as avra-8sb5.11.101, routed to phase C. THE PART
+  THAT BELONGS HERE IS THAT IT IS THE SECOND INSTANCE OF ONE CLASS:
+  the 2026-09-14 comptime/names survey records a derive whose
+  expansion failed mid-resolve, producing "51 errors of the form
+  '`NodeStore` has no method `hole_stmt`', ALL pointing at rebuild.av,
+  NONE at the annotation", at ~2.5 hours to bisect. Mine produced 43
+  errors, none at the annotation, from a different cause. TWO CAUSES,
+  ONE SYMPTOM: a silent expansion failure whose whole evidence accuses
+  correct call sites. THE ASK IS THEREFORE WIDER THAN EITHER BUG: any
+  expansion that does not happen must SPEAK — the sibling of "a fill
+  the compiler cannot place is spoken, never spliced".
+
+### DOCTRINE
+
+- **A DERIVE'S OUTPUT IS FILE-LOCAL.** Not module-local: a SIBLING
+  FILE in the same module cannot call what a derive made. EVIDENCE
+  (probed at `7ab84f1`, both files in one module directory): an enum
+  with the derive in `src/m/a.av`, `src/m/b.av` calling the generated
+  fn, answers F3000 "no `fn rows_of_Color` is defined"; the same call
+  from the annotated file works. Documented nowhere. CONSEQUENCE PAID
+  IN D1: `node_payload_rows()` is hand-written in core/nodes.av — the
+  only file that can see what `@derive(Grammar)` made — instead of
+  living beside its consumer.
+- **A DESIGN DOC'S PLACEMENT DECISION WAS REFUTED BY THE FIRST
+  IMPLEMENTER.** `docs/2026_09_14_GRAMMAR_NAMES_THE_NODE.md` §4
+  decided the derive is "applied features-side, to a declaration that
+  NAMES the core enum". There is no such spelling: `@ann` on `type
+  Alias = Expr` is F2066 "this is a type", `Named` carries only
+  `{name, at}`, and `@std/meta` has no lookup-by-name. The doc's own
+  premise — "it is handed a `Type`, not a file" — is true but hands it
+  the ANNOTATED declaration's Type. Ratified correction: the derive
+  sits on the core enums. THE LAW CONFIRMED: a locally coherent design
+  fails on first contact with an implementer, and reading it again
+  would never have found it.
+- **A GENERATED FN'S NAME IS A `string` HOLE, NOT `Code`.**
+  `${"grammar_payloads_${t.name}"}` works; `${name("...")}` is refused
+  — "a hole in name position takes a `string`, an `int` or a named
+  meta value, found `Code`". Recorded so the next author does not
+  re-probe it.
+
+### PERFORMANCE
+
+EMPTY, and deliberately. Nothing in D1 was measured beyond gate peaks
+(826-860 MB, in line with the tree's ~800 MB gate), and the two costs a
+reader might assume — `row_for`'s linear scan over the ~100-row union,
+and `payloads_for`'s scan per builder row — are ASSEMBLY-TIME, paid
+once per language assembly, and were NOT measured. Stating that rather
+than guessing: an unmeasured cost is not a finding.
+
+### PROCESS
+
+- **A RECEIPT DOES NOT NAME THE TREE IT CAME FROM, AND I PROVED IT THE
+  EXPENSIVE WAY.** Four heavy runs — a full emit, a gate, `make test`,
+  `make tested` — executed in `/avra` (main) while assigned to
+  `../avra-phase-d`, with nothing in any output naming the worktree. I
+  then used main's seed history to tell the coordinator their
+  291,270-line count was wrong; it was right for their tree and my
+  count was right for a tree nobody had asked about. THE EXISTING LAW
+  ("when two people disagree about a COUNT, ask WHICH TREE EACH
+  COUNTED") is confirmed, and the gap is that no receipt carries the
+  answer. THE ASK: heavy tool output names its worktree and branch —
+  `watch.sh`'s peak line is the natural place, one line, and it would
+  have made the error self-evident on the first run.
+- **THE BUILD LOCK WAS A RACE, NOT A QUEUE — AND THE PRIOR SURVEY
+  CONCLUDED OTHERWISE.** The 2026-09-14 survey recorded "THE BUILD
+  LOCK'S QUEUE … No ask — the lock is right and the serialisation is
+  the point." The serialisation was right; the FAIRNESS was not.
+  `tools/watch.sh` took the lock with a bare `until mkdir` poll, which
+  serves whoever polls at the right instant rather than whoever
+  arrived first, so a lane running back-to-back builds starves a
+  waiter indefinitely. MEASURED: 161 consecutive lock-wait lines in
+  `build/t4.log` against phase C re-acquiring under three different
+  pids. FIXED by the coordinator at `37f1ec4` (lane/comptime) as a
+  ticket queue. RECORDED because a prior survey's "no ask" is exactly
+  what a later instance has to overturn, and the cost of the wrong
+  conclusion was a slice stalled mid-pass.
+- **A LEADING `&&` DOES NOT CONTINUE A LINE.** The twin of the
+  2026-09-14 survey's leading-`??` row, same law, same misleading
+  refusal ("expected `}` to close the block", pointing at the `&&`
+  line and never at continuation). Cost one test run. Confirmation,
+  not a new ask.
+- **THE DISCIPLINE THAT HELD, WORTH NAMING.** Two moments where the
+  rules did the work: not editing the worktree while its own run sat
+  queued (the edits were staged and applied after), and diffing the
+  test fixture against `git show HEAD:node_scaffold.av` to prove it
+  was the D0 transcription verbatim rather than something I had
+  re-derived from the source I was testing. The second is what makes
+  the differential a two-reading oracle instead of a copy checking
+  itself.
+
 ## Feedback survey — 2026-09-14 (STD-SUBSTRATE: main 12738f7 into lane/http, 23fc98c..d3406ce)
 
 Surveyed: the merge, the http fixes, the red team and the review round
@@ -16400,7 +17368,7 @@ misread minute).
 
 ### Doctrine
 
-- **I44: A PACK AND ITS UNPACK READ ONE TABLE** — landed in
+- **I49: A PACK AND ITS UNPACK READ ONE TABLE** — landed in
   DOGFOODING.md's registry, unratcheted, with `make vocab` as its
   keeper rather than a grep, since nothing textual links two fns as
   inverses.
