@@ -107,25 +107,56 @@ Two generic verbs remain — `into_evaluator(v, ty)` and
 `from_evaluator(v, ty)` — each a walk of the TYPE over headered boxes,
 which static data already proved in one direction.
 
-## 4. Type shapes carry their properties as marks
+## 4. Type shapes carry their properties as marks — MEASURED AND
+## WITHDRAWN
 
-```avra
-export enum Type {
-    @scalar Int
-    @scalar Float
-    @scalar Bool
-    @boxed Str
-    @boxed List(elem: TypeId)
-    @boxed Map(key: TypeId, value: TypeId)
-    /// pointer-shaped when its inner is; a register pair otherwise
-    @by(inner) Opt(inner: TypeId)
-    @flat Struct(decl: DeclId, name: string)
-}
-```
+The draft proposed `@scalar Int`, `@boxed Str`, `@flat Struct`,
+`@by(inner) Opt`, and claimed that `is_managed`, `rides_pointer`,
+`printable`, `texted` "and ~20 exhaustive lists become three derived
+predicates plus one honest hand arm per conditional shape."
 
-`is_managed`, `rides_pointer`, `printable`, `texted` and ~20 exhaustive
-lists become three derived predicates plus one honest hand arm per
-conditional shape, marked `@by(...)` so the derive asks.
+MEASURED at phase E (`1c39ad8`), and the claim does not hold.
+
+`Type` has 22 variants and FORTY exhaustive matches over it across the
+tree. THREE ask the machine-shape question: `ptr_shape`
+(core/types.av), `is_managed` (language/memory.av), and
+`ll_type_of`'s pointer/scalar split (language/llvm.av). The other
+thirty-seven are genuine registries answering DIFFERENT questions and
+no property mark derives them — `comparable` and `printable` differ
+only at `Error`; `slot_worthy`, `materializable`, `writable`,
+`length_word`, `canon`, `name_of`, `args_of`, `substituted`,
+`kind_of`, `fields_of_type`, `on_enum` and the rest are each their own
+mapping, and each is REQUIRED to break when a variant lands.
+
+AND THE THREE THAT LOOK ALIKE DISAGREE, at four variants, BY DESIGN:
+
+| variant | rides a pointer | counted | machine class |
+|---|---|---|---|
+| `Ptr` | yes | no | pointer |
+| `Null` | yes | no | pointer |
+| `Struct` | yes | only when not flat | by the machine form |
+| `Opt` | yes, bare | by the inner | by the inner |
+
+`Ptr` and `Null` ride a pointer and carry NO HEADER, so nothing counts
+them; `Struct` and `Opt` are decided by a flatness or a payload the
+bare shape cannot see. So this is not one property with three readers,
+it is three properties that CORRELATE — and a `@scalar`/`@boxed`
+vocabulary would have flattened a real distinction into a single bit,
+which is the defect the marks were supposed to prevent.
+
+THE CHEAP HALF LANDED INSTEAD: each of the three says at its own site
+WHICH QUESTION IT ANSWERS, with the full three-way statement at
+`rides_pointer` and a pointer to it from the other two. Which turned
+up the reason it was worth doing at all: `rides_pointer`'s doc comment
+was not on `rides_pointer`. `c5a542c` (2026-09-09) inserted `spells`
+between the doc and its body, so for six days a predicate 22 sites
+call carried no contract and its words read as `spells`' — with
+`///` a compile target, that is what `avra doc` would have shipped.
+
+THE GENERAL LESSON, which outlives this section: A DERIVE IS WORTH ITS
+MACHINERY WHEN N READERS ASK ONE QUESTION, never when N readers ask
+questions that happen to agree on most inputs. Count the readers of
+the QUESTION, not the matches over the enum, before proposing a mark.
 
 ## 5. Instructions name their roles
 
@@ -140,8 +171,47 @@ export enum Ins {
 }
 ```
 
-`dst_of`, `body_symbol`, `hosted_symbol`, the IR printer: derived. The
-evaluator's `step`, the memory pass, `emit_ins`: written — the meaning.
+`dst_of`, `reads_of`, `seat_regs`, `call_symbol`, `body_symbol`,
+`hosted_symbol`: derived. The evaluator's `step`, the memory pass,
+`emit_ins`: written — the meaning, where the exhaustive match IS the
+registration.
+
+LANDED at phase E, with three corrections the draft could not know.
+
+THE SPELLING ABOVE DID NOT PARSE. A mark stood before a VARIANT or a
+record FIELD; the enum rule had no slot before a PAYLOAD, so
+`Call(@dst dst: Reg, …)` was F0100 "expected `}` while parsing `stmt`"
+at the `@`. The rule gained `( pm:mark )*` before each payload and the
+builder aligns them; nothing else moved, because `core.Param` already
+carried `marks`, `crossed_field` already read them off any `Param`,
+the printer already printed them and `marks_written` already gathered
+a variant's payloads' marks. Phase C had written every consumer and
+only the grammar slot was missing.
+
+AND A VARIANT NAME IS NOT THE ONLY ANCHOR. Marks were aligned to
+variant names by a window opening at the PREVIOUS NAME'S END — which
+contains the previous variant's whole payload list, so the last
+payload's mark would have been read as the NEXT VARIANT'S. A mark
+marks the member it precedes, so the anchor set must hold EVERY place
+a mark may land: `MarkWindows` takes variant names and payload types
+together, and a set short of one anchor reads that member's marks as
+its successor's.
+
+AND `reads_of` JOINED THE LIST, WHICH THE DRAFT DID NOT NAME. It is
+"every reg-shaped payload but the `@dst` one, in declaration order",
+and that is TOTAL over all 31 variants — including the three that look
+like exceptions: `CallPtr` reads its callee before its seats
+(declaration order), `Store` has no destination at all, and
+`ScopeExit`'s `Reg?` flattens. No hand arm. `escapes_in` stays written
+(it is §10.3's ownership question, phase I's) and `store_pair` went
+HOME: one caller, in the pass whose rule it was, where it is a
+one-arm projection with an honest catch-all rather than a registry in
+core.
+
+THE ROLES ARE `@dst`, `@seats` (an Avra call's arguments —
+callee-cleans, so a runtime row's are not seats), `@body` (a body a
+call ENTERS), `@code` (a body's address as a value), `@host` (a hosted
+fn). 176 lines of registry out, 56 in.
 
 ## 6. Ownership is declared, not mapped
 

@@ -322,17 +322,35 @@ fn one_between(types: List<TypeRef>, after: int, before: int) -> TypeRef? {
     types.find(ref_within(it, after, before))
 }
 
-/// EACH ANCHOR'S MARKS — a mark stands BEFORE what it marks, so its
-/// window opens where the PREVIOUS member's name ended and closes at
-/// this one's. The first member's opens at `from`, the declaration's
-/// own start: nothing before it can be a member's mark.
-export fn aligned_marks(anchors: List<Token>, marks: List<Mark>, from: int) -> List<List<Mark>> {
-    [marks_inside(marks, window_start(anchors, j, from), a.span.lo) for j, a in anchors]
+/// A MARK MARKS THE MEMBER IT PRECEDES, so it belongs to the nearest
+/// anchor that follows it. `anchors` holds EVERY place on the
+/// declaration a mark may land — an enum's variant names AND its
+/// payload types — in any order; a set short of one anchor reads
+/// that member's marks as its successor's. `from` is the
+/// declaration's own start: nothing before it is a member's mark.
+export type MarkWindows = { anchors: List<int>, marks: List<Mark>, from: int }
+
+impl MarkWindows {
+    /// The marks the anchor at `lo` carries.
+    fn at(lo: int) -> List<Mark> {
+        marks_inside(self.marks, self.opens_before(lo), lo)
+    }
+
+    /// Where an anchor's window opens: the nearest anchor before it,
+    /// or the declaration's start when nothing precedes it.
+    fn opens_before(lo: int) -> int {
+        mut open = self.from
+        for a in self.anchors {
+            if a > open && a < lo { open = a }
+        }
+        open
+    }
 }
 
-fn window_start(anchors: List<Token>, j: int, from: int) -> int {
-    if j == 0 { return from }
-    anchors[j - 1].span.hi
+/// A WRITTEN TYPE'S START — the anchor a payload's marks precede, and
+/// the projection two enum sites would otherwise spell twice.
+export fn type_lo(t: TypeRef) -> int {
+    t.span?.lo ?? 0
 }
 
 /// The marks whose `@` stands strictly inside a window.
@@ -365,8 +383,8 @@ impl Builder {
         if fs.length != ft.length {
             return .Err(zip_defect_of("field names and types"))
         }
-        let each = aligned_marks(fs, marks, self.span?.lo ?? 0)
-        .Ok([Param { name: Scoped(f.text), ty: ft[j], default: self.default_before(fs, fds, j), promises: plain_mark, span: f.span, marks: each[j] } for j, f in fs])
+        let w = MarkWindows { anchors: [f.span.lo for f in fs], marks: marks, from: self.span?.lo ?? 0 }
+        .Ok([Param { name: Scoped(f.text), ty: ft[j], default: self.default_before(fs, fds, j), promises: plain_mark, span: f.span, marks: w.at(f.span.lo) } for j, f in fs])
     }
 
     /// The default whose position falls between field `j`'s name and
