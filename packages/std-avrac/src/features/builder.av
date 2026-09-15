@@ -1,6 +1,6 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, Mark, flatten, some_list, SeatMark, plain_mark, Scoped}
+use core.{NodeStore, Payload, found_at, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, Mark, flatten, some_list, SeatMark, plain_mark, Scoped}
 use grammar.{Captured, Token, Ready}
 
 /// One build call's world: the store, the captured arguments in
@@ -8,7 +8,7 @@ use grammar.{Captured, Token, Ready}
 /// matched, and the source being parsed — a template keeps its
 /// runs of source as its printing projection. Builders read
 /// arguments and make nodes through this.
-export type Builder = { store: NodeStore, args: List<Captured<LangNode>>, span: Span?, text: string = "", blocks: List<BlockGrammar> = [] }
+export type Builder = { store: NodeStore, args: List<Captured<LangNode>>, span: Span?, text: string = "", blocks: List<BlockGrammar> = [], payloads: List<Payload> = [] }
 
 /// A sublanguage the file imports: its block word, its grammar
 /// readied, and the file whose fns its actions name.
@@ -30,25 +30,39 @@ impl Builder {
         want(stmt_id_at(self.args, i), "a statement argument")
     }
 
-    /// The text an argument CARRIES — a token's, and a payload the
-    /// rule stated alike: what a value means is decided by the
-    /// payload it fills, never by how it was spelled.
-    fn text(i: int) -> Result<string, string> {
-        .Ok((self.token(i)?).text)
+    /// THE SLOT A PAYLOAD NAME OCCUPIES — declaration order, which is
+    /// the order arguments arrive in. Asking by NAME is what keeps two
+    /// same-typed payloads from being swapped silently.
+    fn slot_of(n: string) -> Result<int, string> {
+        let at: int? = found_at([p.name for p in self.payloads], n)
+        if at == null { return .Err(unknown_payload(self.payloads, n)) }
+        .Ok(at!)
     }
 
-    /// The repeated capture at `i`, as the text each token carries.
-    fn texts(i: int) -> Result<List<string>, string> {
-        .Ok([t.text for t in self.tokens(i)?])
+    /// The text the payload `n` CARRIES — a token's, and a payload the
+    /// rule stated alike: what a value means is decided by the payload
+    /// it fills, never by how it was spelled.
+    fn text_of(n: string) -> Result<string, string> {
+        .Ok((self.token(self.slot_of(n)?)?).text)
     }
 
-    /// The truth a word states. The assembly already refused any other
-    /// word for a `bool` payload, so this is the belt.
-    fn flag(i: int) -> Result<bool, string> {
-        let word = self.text(i)?
+    /// The truth the payload `n` states. The assembly already refused
+    /// any other word for a `bool` payload, so this is the belt.
+    fn flag_of(n: string) -> Result<bool, string> {
+        let word = self.text_of(n)?
         if word == "true" { return .Ok(true) }
         if word == "false" { return .Ok(false) }
         .Err("`${word}` states no truth — a `bool` payload is `true` or `false`")
+    }
+
+    /// The repeated text the payload `n` carries.
+    fn texts_of(n: string) -> Result<List<string>, string> {
+        .Ok([t.text for t in self.tokens(self.slot_of(n)?)?])
+    }
+
+    /// The expressions the payload `n` carries.
+    fn exprs_of(n: string) -> Result<List<ExprId>, string> {
+        self.exprs(self.slot_of(n)?)
     }
 
     /// The written-type argument at `i`.
@@ -424,4 +438,10 @@ fn seat_since(ps: List<Token>, j: int, from: int) -> int {
 
 fn mark_within(t: Token, after: int, before: int) -> bool {
     within(t.span.lo, after, before)
+}
+
+/// A build asked for a payload its variant does not declare.
+fn unknown_payload(ps: List<Payload>, n: string) -> string {
+    if ps.is_empty() { return "no payload `${n}` — this build carries none" }
+    "no payload `${n}` — this build carries `${[p.name for p in ps].join("`, `")}`"
 }
