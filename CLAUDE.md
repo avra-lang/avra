@@ -2215,6 +2215,7 @@ Runtime facts, ours to ratify:
   which is the new-consumer law one rule over. An entry whose instance
   is a NAMED ARTIFACT owes a re-check the day that artifact moves —
   the law is evergreen, the example has a date on it.
+<<<<<<< HEAD
   AND THE MECHANISM THIS LAW CALLS FOR DOES NOT EXIST AS FIRST
   WRITTEN: there is no `ACCEPTED` table in `tools/idioms.py`. What the
   tree holds is main's `CLEAN` table — the accept surface for I20,
@@ -2222,6 +2223,14 @@ Runtime facts, ours to ratify:
   matcher's worth of the accept surface; both are self-tested, and
   every other matcher's accept surface is still unexercised. Do not
   read this entry as saying every matcher's accept surface is guarded.
+=======
+  AND THE MECHANISM THIS LAW CALLS FOR DOES NOT EXIST: there is no
+  `ACCEPTED` table in `tools/idioms.py`, only `SPECIMENS`, which holds
+  the shapes a matcher must FIRE on — the refuse surface alone. The
+  `COUNTS` list beside `COUNTED` is one matcher's worth of the accept
+  surface, self-tested; every other matcher's accept surface is still
+  unexercised. Do not read this entry as saying the table is there.
+>>>>>>> b7b040c (feat(meta): a MARK is data where an annotation is a call — and every mark owes a reader)
 - A TEST WITH ITS OWN COPY OF THE LOGIC TESTS THE COPY, and the
   SYMPTOM IS WHAT MISDIRECTS. The externs keeper's self-test built
   its typedef map from an inline duplicate of the collection it

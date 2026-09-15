@@ -32,8 +32,42 @@ Derived from the payload types: the child walk (`ExprId`, `List<ExprId>`,
 `ExprId?` are children), the copier (`Binder` through `name`, `Member`
 through `plain_name`), the fingerprint (tag + one folded value per
 payload — the arity law by construction), the value protocol. The two
-semantic arms are MARKS on the variant, read by the derive. NEEDS: annotations
-on variants and fields, as data a derive can read.
+semantic arms are MARKS on the variant, read by the derive.
+
+**A MARK IS DATA; AN ANNOTATION IS A CALL.** Both are written `@word`,
+and that is where the likeness ends. An annotation stands before a
+DECLARATION and the compiler CALLS it at compile time, so its arguments
+are expressions — something evaluates them. A mark stands before a
+declared MEMBER — a variant, a field — and nothing runs: it is recorded
+and handed to whoever reads it, so its arguments are WORDS. The reason
+is not economy, it is TIMING: a mark is read while the file's names are
+still resolving, so it can reach only what the parse holds. It is the
+Declares-argument law (a generated name must exist while names are
+being made) one notch stricter, and it is why a mark cannot be an
+annotation with a clever seat.
+
+Two consequences follow, and both are laws rather than conveniences.
+THE COMPILER JUDGES NO MARK: a mark's meaning lives with its reader, so
+there is no registry of legal words and a package may mint its own.
+AND EVERY MARK OWES A READER: a reader says which marks it claims (a
+trait's `marks` beside its `derive`), and a word no reader on that
+declaration claims is refused WHERE IT WAS WRITTEN. Without the second
+law the first ships a silent typo — `@verbatm` sitting on a variant
+forever, doing nothing, with no diagnostic anywhere. The claim set is
+`List<string>?` and not `List<string>`: an empty claim set refuses every
+mark, an UNANSWERABLE one must refuse none, and spending one value for
+both is how the first implementation refused four marks for one
+mistake.
+
+ITS MIRROR, at the other end of the same seam: AN ANNOTATION THAT
+CANNOT MEAN ITS DECLARATION MUST SAY SO THERE. `@derive` itself takes
+`Named`, which fits every declaration by design, so the receiver law
+passes whatever is written and the trait's OWN `derive` — which takes
+`Type` — is never asked whether it fits. Landed on a fn, the crossing
+hands it a record with no fields and no variants, indistinguishable
+from an empty one: nothing is generated, nothing is said, and every
+CALLER of the method that was never made is blamed instead (43 errors,
+each naming an innocent file). The seat law reaches the second hop.
 
 ## 2. The grammar names the node; the builder and the printer are the rule
 

@@ -1,6 +1,10 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
+<<<<<<< HEAD
 use core.{NodeStore, Payload, found_at, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, Mark, flatten, some_list, SeatMark, plain_mark, Scoped}
+=======
+use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, Mark, flatten, some_list, SeatMark, plain_mark, Scoped}
+>>>>>>> b7b040c (feat(meta): a MARK is data where an annotation is a call — and every mark owes a reader)
 use grammar.{Captured, Token, Ready}
 
 /// One build call's world: the store, the captured arguments in
@@ -322,6 +326,7 @@ fn one_between(types: List<TypeRef>, after: int, before: int) -> TypeRef? {
     types.find(ref_within(it, after, before))
 }
 
+<<<<<<< HEAD
 /// A MARK MARKS THE MEMBER IT PRECEDES, so it belongs to the nearest
 /// anchor that follows it. `anchors` holds EVERY place on the
 /// declaration a mark may land — an enum's variant names AND its
@@ -351,6 +356,19 @@ impl MarkWindows {
 /// the projection two enum sites would otherwise spell twice.
 export fn type_lo(t: TypeRef) -> int {
     t.span?.lo ?? 0
+=======
+/// EACH ANCHOR'S MARKS — a mark stands BEFORE what it marks, so its
+/// window opens where the PREVIOUS member's name ended and closes at
+/// this one's. The first member's opens at `from`, the declaration's
+/// own start: nothing before it can be a member's mark.
+export fn aligned_marks(anchors: List<Token>, marks: List<Mark>, from: int) -> List<List<Mark>> {
+    [marks_inside(marks, window_start(anchors, j, from), a.span.lo) for j, a in anchors]
+}
+
+fn window_start(anchors: List<Token>, j: int, from: int) -> int {
+    if j == 0 { return from }
+    anchors[j - 1].span.hi
+>>>>>>> b7b040c (feat(meta): a MARK is data where an annotation is a call — and every mark owes a reader)
 }
 
 /// The marks whose `@` stands strictly inside a window.
@@ -378,14 +396,23 @@ fn token_between(tokens: List<Token>, after: int, before: int) -> string {
 impl Builder {
     /// Field names, their types, and the DEFAULTS some carry, zipped —
     /// captures arrive per slot, so a default finds its field by
+<<<<<<< HEAD
     /// POSITION: the last name that starts before it. A MARK stands
     /// before the member it marks, so each field's marks are the ones
     /// written in its window.
+=======
+    /// POSITION: the last name that starts before it.
+>>>>>>> b7b040c (feat(meta): a MARK is data where an annotation is a call — and every mark owes a reader)
     fn fields_zipped(fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>, marks: List<Mark>) -> Result<List<Param>, string> {
         if fs.length != ft.length {
             return .Err(zip_defect_of("field names and types"))
         }
+<<<<<<< HEAD
         .Ok([Param { name: Scoped(f.text), ty: ft[j], default: self.default_before(fs, fds, j), mark: plain_mark, span: f.span, marks: w.at(f.span.lo) } for j, f in fs])
+=======
+        let each = aligned_marks(fs, marks, self.span?.lo ?? 0)
+        .Ok([Param { name: Scoped(f.text), ty: ft[j], default: self.default_before(fs, fds, j), promises: plain_mark, span: f.span, marks: each[j] } for j, f in fs])
+>>>>>>> b7b040c (feat(meta): a MARK is data where an annotation is a call — and every mark owes a reader)
     }
 
     /// The default whose position falls between field `j`'s name and
@@ -419,7 +446,7 @@ export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
 /// seat. ONE window law, so every param list — a fn's, a method's, a
 /// lambda's, a fn type's — reads the same marks the same way.
 export fn marked_seats(ps: List<Token>, tys: List<TypeRef?>, muts: List<Token>, consts: List<Token>, from: int) -> List<Param> {
-    [Param { name: Scoped(p.text), ty: tys[j], default: null, mark: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo), span: p.span } for j, p in ps]
+    [Param { name: Scoped(p.text), ty: tys[j], default: null, promises: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo), span: p.span } for j, p in ps]
 }
 
 /// One seat's contract: the `mut` and `const` tokens written in its

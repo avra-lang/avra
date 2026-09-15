@@ -3,18 +3,30 @@
 // first to the second leaves the same list, and two different nodes
 // wear one identity. Every node kind splicing two sequences is
 // attacked here by moving exactly one item across its boundary.
+<<<<<<< HEAD
 use @std.avrac.core.{Scoped, Plain, new_node_store, Expr, Stmt, Pat, Param, TypeRef, SeatMark, named_ref, plain_mark, GrammarSpec}
+=======
+use @std.avrac.core.{Scoped, Plain, new_node_store, Expr, Stmt, Pat, Param, Variant, TypeRef, SeatMark, Mark, named_ref, plain_mark}
+>>>>>>> b7b040c (feat(meta): a MARK is data where an annotation is a call — and every mark owes a reader)
 
 fn written(name: string, optional: bool) -> TypeRef {
     named_ref(name) with { optional: optional }
 }
 
 fn seat(name: string, t: TypeRef?) -> Param {
-    Param { name: Scoped(name), ty: t, default: null, mark: plain_mark }
+    Param { name: Scoped(name), ty: t, default: null, promises: plain_mark }
 }
 
-fn seat_marked(name: string, t: TypeRef?, mark: SeatMark) -> Param {
-    Param { name: Scoped(name), ty: t, default: null, mark: mark }
+fn seat_marked(name: string, t: TypeRef?, promises: SeatMark) -> Param {
+    Param { name: Scoped(name), ty: t, default: null, promises: promises }
+}
+
+fn marked(name: string, args: List<string>) -> Mark {
+    Mark { name: name, args: args }
+}
+
+fn marked_variant(name: string, payloads: List<Param>, marks: List<Mark>) -> Variant {
+    Variant { name: Plain(name), payloads: payloads, marks: marks }
 }
 
 const mut_mark: SeatMark = SeatMark { mutable: true, settled: false }
@@ -177,8 +189,8 @@ spec "core/nodes adversarial" {
             mut s = new_node_store()
             let one = s.alloc_expr(Expr.IntLit(1), null)
             let t = written("int", false)
-            let a_def = Param { name: "a", ty: t, default: one, mark: plain_mark }
-            let b_def = Param { name: "b", ty: t, default: one, mark: plain_mark }
+            let a_def = Param { name: "a", ty: t, default: one, promises: plain_mark }
+            let b_def = Param { name: "b", ty: t, default: one, promises: plain_mark }
             let first = s.alloc_stmt(Stmt.StructDecl("S", [], [a_def, seat("b", t)]), null)
             let second = s.alloc_stmt(Stmt.StructDecl("S", [], [seat("a", t), b_def]), null)
             s.stmt_fingerprint(first) != s.stmt_fingerprint(second)
@@ -189,6 +201,42 @@ spec "core/nodes adversarial" {
             let unmarked = s.alloc_stmt(Stmt.Let("x", named_ref("Show"), v), null)
             let boxed = s.alloc_stmt(Stmt.Let("x", named_ref("Show") with { dynamic: true }, v), null)
             s.stmt_fingerprint(unmarked) != s.stmt_fingerprint(boxed)
+        }
+        then "a marked variant is not a plain one" {
+            mut s = new_node_store()
+            let t = written("int", false)
+            let plain = s.alloc_stmt(Stmt.EnumDecl("E", [], [marked_variant("A", [seat("x", t)], [])]), null)
+            let held = s.alloc_stmt(Stmt.EnumDecl("E", [], [marked_variant("A", [seat("x", t)], [marked("verbatim", [])])]), null)
+            s.stmt_fingerprint(plain) != s.stmt_fingerprint(held)
+        }
+        then "a marked field is not a plain one" {
+            mut s = new_node_store()
+            let t = written("int", false)
+            let plain = s.alloc_stmt(Stmt.StructDecl("S", [], [seat("a", t)]), null)
+            let held = s.alloc_stmt(Stmt.StructDecl("S", [], [seat("a", t) with { marks: [marked("excluded", [])] }]), null)
+            s.stmt_fingerprint(plain) != s.stmt_fingerprint(held)
+        }
+        then "a mark's WORDS are part of it — `@by(a)` is not `@by(b)`" {
+            mut s = new_node_store()
+            let t = written("int", false)
+            let by_a = s.alloc_stmt(Stmt.EnumDecl("E", [], [marked_variant("A", [seat("x", t)], [marked("by", ["a"])])]), null)
+            let by_b = s.alloc_stmt(Stmt.EnumDecl("E", [], [marked_variant("A", [seat("x", t)], [marked("by", ["b"])])]), null)
+            s.stmt_fingerprint(by_a) != s.stmt_fingerprint(by_b)
+        }
+        then "a mark's arguments do not splice into the mark run — `@a(x)` is not `@a @x`" {
+            mut s = new_node_store()
+            let t = written("int", false)
+            let with_arg = s.alloc_stmt(Stmt.EnumDecl("E", [], [marked_variant("A", [seat("x", t)], [marked("a", ["x"])])]), null)
+            let two = s.alloc_stmt(Stmt.EnumDecl("E", [], [marked_variant("A", [seat("x", t)], [marked("a", []), marked("x", [])])]), null)
+            s.stmt_fingerprint(with_arg) != s.stmt_fingerprint(two)
+        }
+        then "a variant's marks are not its payload's" {
+            mut s = new_node_store()
+            let t = written("int", false)
+            let m = marked("dst", [])
+            let on_variant = s.alloc_stmt(Stmt.EnumDecl("E", [], [marked_variant("A", [seat("x", t)], [m])]), null)
+            let on_payload = s.alloc_stmt(Stmt.EnumDecl("E", [], [marked_variant("A", [seat("x", t) with { marks: [m] }], [])]), null)
+            s.stmt_fingerprint(on_variant) != s.stmt_fingerprint(on_payload)
         }
         then "a fn type's seat marks ride its identity" {
             mut s = new_node_store()
