@@ -116,11 +116,31 @@ pinned() {
 }
 before="$(pinned)"
 
-sh tools/watch.sh $cap make gate > "$gate_out" 2>&1 || {
-    echo "integrate: the gate is RED on lane/$lane — main untouched ($gate_out)"
-    grep -n "✗\|FAILED\|error" "$gate_out" | head -12
-    exit 1
-}
+# THE LANE'S OWN GREEN, WHEN THIS INTEGRATION TAKES THE VERY SAME
+# TREE. `git merge-tree --write-tree` answers the tree the merge would
+# land, without merging; when the lane's receipt names that exact
+# hash, the gate below would read the tree that receipt already
+# describes. Main having moved, a ledger conflict resolved, one byte
+# anywhere: the hash differs and the gate runs in full.
+# A SKIP IS ANNOUNCED WITH WHAT IT TRUSTED — the receipt's commit, its
+# date and the tree — because a verification that is sometimes skipped
+# and never says so is one nobody can audit.
+merged_tree="$(git -C "$main" merge-tree --write-tree main "lane/$lane" 2>/dev/null || true)"
+trusted=""
+if [ -n "$merged_tree" ]; then
+    trusted="$(sh tools/gate_receipt.sh trusts "$worktree" "$merged_tree" 2>/dev/null || true)"
+fi
+if [ -n "$trusted" ]; then
+    echo "integrate: the merge takes the tree lane/$lane already gated — trusting its receipt"
+    echo "integrate:   tree $(echo "$merged_tree" | cut -c1-12), gated at $trusted"
+else
+    sh tools/watch.sh $cap make gate > "$gate_out" 2>&1 || {
+        echo "integrate: the gate is RED on lane/$lane — main untouched ($gate_out)"
+        grep -n "✗\|FAILED\|error" "$gate_out" | head -12
+        exit 1
+    }
+    echo "integrate: gate green on lane/$lane ($(grep -c 'tests passed' "$gate_out") suites)"
+fi
 
 if [ "$(pinned)" != "$before" ]; then
     echo "integrate: the tree CHANGED under the gate — main untouched"
@@ -130,7 +150,6 @@ if [ "$(pinned)" != "$before" ]; then
     git status --short | head -12
     exit 1
 fi
-echo "integrate: gate green on lane/$lane ($(grep -c 'tests passed' "$gate_out") suites)"
 
 # THE PRE-FLIGHT: can MAIN's standing compiler READ the lane's tree? A lane that
 # lands a language change AND uses it (lane C's `self`, its `mut` seats) leaves a
