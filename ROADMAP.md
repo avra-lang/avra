@@ -15650,3 +15650,94 @@ the integrator's behaviour after my branches left my hands.
   anyone but me, and both generalise past the incident. A lane that
   reports only its fixes hands the next reader a tidier and less
   useful record.
+
+## Feedback survey — 2026-09-15 (STD-DATA: the handle cells, avra-8sb5.9.5)
+
+Scope: `avra-8sb5.9.5` only — @std/sqlite's handles becoming cells, its
+red team and review round. Base `../avra-lane-sq-ffi`, rebased onto
+main `b118773`. NOT surveyed: @std/sqlite's read half (`.6.2`, next
+after `avra-f3qo`), @std/io, @std/process.
+
+Counts: friction 2, sugar 0, features 0, defects 1, doctrine 3,
+performance 1, process 2. Top three by cost: a probe touching a std
+package needs a whole scratch PACKAGE (three attempts before the
+probe ran), the compiler-guided sweep (a KEEP, and the cheapest part
+of the slice), and one avoidable gate.
+
+### Friction
+
+- **A LOOSE FILE CANNOT REACH `@std/*`.** `use @std.text.{has_nul}` in
+  a file outside any package is `F3015: this file is not in a package
+  — 'use' needs a root`, help "put an `avra.toml` at the package root".
+  So a probe that touches ANY std package needs a scratch package —
+  manifest, `src/`, `[bin]` — and three attempts went into discovering
+  that. The requirement is about MODULE NAMING, which a `@std` import
+  does not need: the toolchain now finds std from its own install root
+  with no manifest row at all. THE ASK: a loose file admits `@std/*`
+  and refuses only a bare `use some.local.module`. Re-probed on main
+  `b118773`, AFTER the toolchain's install-root resolver landed, so it
+  is not a staleness artifact. Pairs with the survey above's "a named
+  file is more specific than the manifest around it" — together they
+  are why every probe in two slices ran from outside the repo.
+- **ONE AVOIDABLE GATE.** The field default below was found by probing
+  AFTER the tree had gated, so the improvement cost a second full gate.
+  A probe that answers "can the language do X" belongs before the code
+  that works around X, and the idiom bar already says so — this is the
+  bar being skipped, recorded rather than excused.
+
+### Defects
+
+- **@std/sqlite: TEN STATEMENT VERBS NEVER ASK THE FINALIZED DOOR** —
+  filed `avra-f3qo`. `step` and `finalize` test the handle; `width`,
+  `standing`, `slots`, `reset` and every `bind_*`/`*_at` do not, and
+  hand NULL to C. Measured on a finalized statement:
+  `width=0 standing=0 slots=0 reset=0`,
+  `class=sqlite.out_of_row int=sqlite.out_of_row`,
+  `bind_int=sqlite.out_of_slots`. Two laws broken at once: the safety
+  rests on `-DSQLITE_ENABLE_API_ARMOR=1` in the MAKEFILE (line 410),
+  which no reader of the package would look at, and the refusals that
+  do arrive state the SYMPTOM — a caller reading a finalized statement
+  is sent to their column index.
+
+### Doctrine
+
+- **A DEADLINE IS PAID BY DELETING THE CHANNEL, NOT BY MEETING IT** —
+  landed in CLAUDE.md's deadline register. `close(mut db)` was on that
+  register as a double free waiting for S2; the fix was not to make
+  the seat safer but to stop using a seat, so the property belongs to
+  the type and survives whatever a seat copy comes to mean.
+- **WHEN A DEADLINE NAMES ONE PASSENGER, ASK WHAT ELSE IS ABOARD** —
+  landed beside it. The register named the HANDLE because losing it
+  traps; `Stmt.done` rode the same seat unnamed, and losing that
+  re-runs the statement and answers rows a second time with nothing in
+  the answer saying so. The loud passenger is the one that gets
+  written down.
+- **A FIELD DEFAULT IS EVALUATED PER CONSTRUCTION** — landed in
+  DOGFOODING. `done: Cell<bool> = Cell.new(false)` gives every `Stmt`
+  its own cell; two values, two slots, measured on both engines. The
+  shared-mutable-default trap other languages have does not exist
+  here, and a field whose initial value is a fresh box belongs at the
+  field rather than repeated at every construction site.
+
+### Performance
+
+- **THE CELL'S COST IS BELOW THE INSTRUMENT.** 300 open/prepare/step/
+  reset/finalize/close rounds, each through two copies of both
+  handles, read 0 MB peak and 0 MB live in every `AVRA_MEM_STATS`
+  category. One box per handle is real and this says only that it is
+  under 1 MB at 300 — not that it is free. Unmeasured: the cost at
+  a connection pool's scale.
+
+### Process
+
+- **KEEP: THE COMPILER DROVE THE SWEEP.** Removing the `mut` seats
+  left 13 declarations and 49 alias bindings stale across six files,
+  and F2048/F2051 named every one — two `./avra check` cycles found
+  them all. A conversion whose fallout the type system enumerates is a
+  conversion that can be done at once rather than in nervous pieces.
+- **A SCRIPT THAT ENDS A FN AT THE NEXT UNINDENTED LINE.** The alias
+  collapse was mechanical over 49 sites, and the tool that did it used
+  exactly the heuristic CLAUDE.md warns about — the delimiter is not
+  where the layout suggests. It was correct here because every test fn
+  is top-level, and the DIFF was read site by site rather than
+  trusted. Recording the check, not the cleverness.
