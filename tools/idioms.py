@@ -605,6 +605,14 @@ UNRATCHETED = {
            "           vocab`: both directions are named as consumers of the SAME\n"
            "           registry enum, and a catch-all or an `is` test inside either\n"
            "           fails the gate whichever direction grew the hole",
+    "I47": "no grep tells a COMPLETE anchor list from a partial one — the anchors\n"
+           "           are whatever the grammar can put in the range, so a helper taking\n"
+           "           `List<Token>` of names reads identically whether or not the span\n"
+           "           between them holds members of another kind. The keeper is the\n"
+           "           attack: write the optional piece on the LAST member of one group\n"
+           "           with another group following, and read it back through the\n"
+           "           printer (annotations_adversarial_test.av, \"payload marks —\n"
+           "           alignment\")",
     "I46": "no grep tells a question about a STATEMENT from a question about the\n"
            "           DECLARATION in hand — both read `decl(d).stmt`, and which one a\n"
            "           law is asking is semantic. The keeper is a test that pins the\n"
