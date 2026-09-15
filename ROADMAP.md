@@ -15447,3 +15447,75 @@ performance empty. Not surveyed: any tree but ../avra-lane-caps.
   machine-wide lock, so a "light" probe sat in front of another
   lane's gate. Killed it and ran the checks that need no compiler.
   Know which probes are light BEFORE the worktree has a binary.
+
+## Feedback survey — 2026-09-15 #17 (TOOLCHAIN, the Type registries)
+
+Counted per axis: defects 1, doctrine 2, process 0; friction, sugar,
+features, performance empty. Not surveyed: any tree but this one.
+
+### DEFECTS
+
+- **THE MACHINE PROJECTION ITSELF WAS UNGUARDED.** `ll_type_of` in
+  llvm.av dispatches exhaustively over `Type` and decides the LLVM
+  type every value takes; `make vocab` had never named it, so a new
+  `Type` variant could have reached codegen with no arm and nothing
+  would have said so. It was invisible to the task that found the
+  other two because nobody had asked. The keeper reports Type 6 where
+  it reported Type 3.
+
+### DOCTRINE
+
+- **A KEEPER'S FALSE POSITIVE CAN NAME A MISSING VERB.** Naming
+  `slot_worthy` made `make vocab` refuse it: an arm asked
+  `types.shape_of(inner) is .Var`, which a grep cannot tell from a
+  dispatch on the value being judged. The test was legitimate — it
+  asks about the `Opt`'s INNER type — so the cheap answers were a
+  license or a narrower matcher. The right one was the question the
+  refusal was really asking: that test deserved a name. It is
+  `abstract_yet(id)` on the registry now, beside `opt_rides_pointer`,
+  and the arm reads as prose. Before licensing a keeper's false
+  positive, ask what it was reaching for.
+- **A REGISTRY LAW CAN BE MISAPPLIED, AND THE COST IS CEREMONY.** The
+  six `machine_shape` callers are refused deliberately; the section
+  below carries the argument and the trigger.
+
+## The `machine_shape` callers — a registry law MISapplied (2026-09-15, TOOLCHAIN)
+
+avra-0fay asked for three unguarded `Type` registries. Two are
+registries and are now in `tools/vocab.sh`'s table (`ptr_shape`,
+`slot_worthy`), along with a third the task did not name and the
+keeper had never seen: `ll_type_of`, the machine projection itself.
+`machine_shape` is NOT one — it is `if is_flat … else shape_of`, no
+match at all, so it cannot be a consumer. What the task was reaching
+for is its SIX `is .Variant` CALLERS, and the answer there is to
+change the value they ask about rather than the way they ask.
+
+THE CALLERS, judged one at a time. `binary_value` asks `is .Float` to
+choose the float arithmetic; `call_rt_value` asks `is .Bool` for the
+answer's icmp and `is .Float` for the unslotting bitcast; `slotted`
+asks `is .Bool` for a zext and `is .Float` for a bitcast; `rt_val` in
+the interpreter asks `is .Bool` to rebuild a boolean. Every one asks
+THE SAME THREE-WAY QUESTION — does this value live in a float
+register, is it a bool needing a width, or is it a plain word — and
+each spells it as one or two `is` tests with a fallthrough.
+
+WHY SEVEN EXHAUSTIVE MATCHES WOULD BE THE LAW MISAPPLIED. The
+registry law exists so that a NEW VARIANT MUST DECIDE. A new `Type`
+variant has no opinion about floatness: forcing `.Decimal`, `.I32` or
+the next value category to state, six times over 25 variants, that it
+is not a float is ceremony that hides the one decision that matters.
+The tree already spells the right shape one enum over — `rides_fp`
+answers, for an `RtKind`, which register file a seat rides — so the
+concept has a name and a precedent here.
+
+THE FIX IS A NARROW FORM, AND IT IS NOT MINE TO LAND. `machine_shape`
+should answer a small machine FORM (word, float, bool, pointer) with
+ONE exhaustive projection from `Type`; the six callers then match
+over three or four variants, and a new type decides once, in the
+projection, where the decision belongs. STD-DATA is adding `SlotForm`
+to the slot table, which is this concept arriving from the other
+side. HANDED TO THEM with this reasoning rather than done quickly and
+wrongly here; the six callers are listed above by name so the sweep
+is mechanical once the form exists. RECORDED TRIGGER: when `SlotForm`
+(or its successor) lands, `machine_shape` answers it and this entry
+is what the sweep follows.
