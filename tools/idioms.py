@@ -26,17 +26,10 @@ with its reason. The registry can never again outrun the ratchet.
 import collections, os, re, sys, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-# THE ROOTS ARE THE PACKAGES THEMSELVES, asked of the tree. A
-# hand-kept list names what someone remembered, so a package that
-# joins the tree is invisible to the bar until someone adds it — and
-# a bar that examined nothing reports success just as loudly as one
-# that examined everything.
-def roots():
-    packages = os.path.join(ROOT, "packages")
-    return sorted(os.path.join("packages", d, "src") for d in os.listdir(packages)
-                  if os.path.isdir(os.path.join(packages, d, "src")))
-
-SRC = roots()
+# EVERY PACKAGE'S SOURCE, never a list: a listed root forgets the next
+# package, and three had joined the tree unread (std-sqlite, std-meta,
+# std-derive) while this tool reported success.
+SRC = sorted(os.path.relpath(p, ROOT) for p in glob.glob(os.path.join(ROOT, "packages", "*", "src")))
 BASELINE = os.path.join(ROOT, "tools", "idioms.baseline")
 SKIP = ("spec_test",)
 
@@ -627,6 +620,19 @@ UNRATCHETED = {
 # forever. Every matcher must catch its own specimen, checked on every
 # run — this caught I18 shipping with a regex that could not span a
 # nested call.
+# A KEEPER HAS TWO SURFACES: what it refuses and what it accepts. Each
+# honest spelling a matcher permits is exercised here, or a dead
+# alternative can widen the rule unseen (`refused_n(` was one).
+ACCEPTED = {
+    "I20": [
+        ['        then "k" {', '            a.report().contains("x") && a.diagnostics.length == 1'],
+        ['        then "k" {', '            a.report().contains("x") && a.voices.length == 1'],
+        ['        then "k" {', '            a.report().contains("x") && refusals(src) == 1'],
+        ['        then "k" {', '            a.report().contains("x") && refused_with(src, "x")'],
+        ['        then "k" {', '            a.report().contains("x") && refused_n(p, "x", 1)'],
+    ],
+}
+
 SPECIMENS = {
     "I3":  [["for x in xs {", "    out.push(x)", "}"],
             ["    for x in xs { out.push(x) }"],
@@ -773,10 +779,25 @@ def selftest():
         for spec in specimens:
             if not list(matcher(spec)):
                 dead.append(f"{code}'s matcher misses `{' / '.join(spec)[:52]}`")
-        for spec in CLEAN.get(code, []):
+        for spec in ACCEPTED.get(code, []):
             if list(matcher(spec)):
-                dead.append(f"{code} accuses `{' / '.join(spec)[:52]}`")
+                dead.append(f"{code}'s matcher refuses the honest `{' / '.join(spec)[-52:]}`")
+    for code, clean in CLEAN.items():
+        for spec in clean:
+            if list(RULES[code][0](spec)):
+                dead.append(f"{code}'s matcher fires on the clean `{' / '.join(spec)[:52]}`")
     return dead
+
+
+# THE OTHER SURFACE: what a matcher must ACCEPT. A false positive is a
+# refusal nobody can pay, and the specimens above cannot see it — I23
+# read a one-line fn's `with { mode: … }` as a parameter list for as
+# long as every fn it met spanned lines.
+CLEAN = {
+    "I23": [["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
+            ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
+}
+
 
 def sources():
     for base in SRC:
@@ -858,8 +879,16 @@ def registry_entries():
 def registry_codes():
     return set(registry_entries())
 
+def numbered(codes):
+    """Idiom codes in numeric order."""
+    return sorted(codes, key=lambda c: int(c[1:]))
+
 def main():
     accept = "--accept" in sys.argv
+    if "--rules" in sys.argv:
+        print("ratcheted:", " ".join(numbered(RULES)))
+        print("unratcheted:", " ".join(numbered(UNRATCHETED)))
+        return 0
     # LAW 4: the registry may never outrun the ratchet.
     missing = registry_codes() - set(RULES) - set(UNRATCHETED)
     if missing:

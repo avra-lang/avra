@@ -129,11 +129,14 @@ build/%.o: %.c build/%.sha
 
 -include $(patsubst %.o,%.d,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS)))
 
-# Every package that carries spec cases, in dependency order.
-SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-meta packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite packages/std-net packages/std-http
+# Every package that carries tests, in dependency order — DERIVED from
+# the manifests (tools/suites.py), never listed: a hand-kept list is a
+# registry that forgets its next member, and the gate would report
+# green over a suite it never ran. `suites` is the keeper that speaks.
+SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: census traps test tested clean seed-check gate externs idioms idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap libs libscope \
-        check run ir emit build-native native-check avra
+        check run ir emit build-native native-check avra suites install
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -189,13 +192,25 @@ avra: $(COMPILER_OBJS)
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
 	@echo "avra: build/avra"
 
+# THE INSTALL: the binary under bin/, and what it finds from its own
+# directory — the runtime's object and every std package — under
+# lib/avra/. A program anywhere then says `use @std.io` with no
+# manifest row, and links.
+PREFIX ?= /usr/local
+install: avra
+	@mkdir -p $(PREFIX)/bin $(PREFIX)/lib/avra/std
+	@cp build/avra $(PREFIX)/bin/avra
+	@cp build/avra_runtime.o $(PREFIX)/lib/avra/avra_runtime.o
+	@for p in packages/std-*; do rm -rf $(PREFIX)/lib/avra/std/$$(basename $$p); cp -R $$p $(PREFIX)/lib/avra/std/; done
+	@echo "install: $(PREFIX)/bin/avra, $$(ls -d packages/std-* | wc -l | tr -d ' ') std packages under $(PREFIX)/lib/avra/std"
+
 # Scratch a run leaves behind: the test binaries each package's
 # cases were linked into.
 sweep:
 	@find packages -type d -name build -prune -exec rm -rf {} +
 	@rm -rf build/test_shards
 
-test: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+test: $(COMPILER_OBJS) $(PACKAGE_OBJS) suites
 	@for p in $(SUITES); do \
 	  ./avra test $$p || exit 1; \
 	done
@@ -276,12 +291,15 @@ clean:
 # This gate step cold-bootstraps into a throwaway BUILD and refuses a
 # latent drift: a seed that fails here fails the gate, not a future
 # `make clean` + `make bootstrap`.
+# THE OBJECTS ARE PREREQUISITES, and the link's words are kept: a
+# born-clean worktree once failed here on missing build/*.o with the
+# reason sent to /dev/null, and the gate read red for a green tree.
 seed-check: $(COMPILER_OBJS)
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
 	@clang -w -O1 build/seed-check/seed.ll $(COMPILER_OBJS) \
-	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/seed-check/avra 2>/dev/null \
-	 || { echo "seed-check: seed links — FAILED"; exit 1; }
+	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/seed-check/avra 2> build/seed-check/link.err \
+	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check; exit 1; }
 	@build/seed-check/avra build packages/cli >> build/seed-check/out 2>&1 \
 	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; tail -c 2000 build/seed-check/out; rm -rf build/seed-check; exit 1; }
 	@rm -rf build/seed-check
@@ -318,6 +336,12 @@ libs: avra $(PACKAGE_OBJS)
 	  python3 tools/libs.py --build $$n || exit 1; \
 	done
 	@echo "libs: `python3 tools/libs.py --names | wc -w | tr -d ' '` package librar(y|ies) built"
+
+# The suites, derived and counted: a cycle or a dependency that is no
+# package refuses here, before a silent empty list runs nothing.
+suites:
+	@python3 tools/suites.py --self-test
+	@python3 tools/suites.py --report
 
 # The idiom bar: the baseline LISTS sites and only ever shrinks —
 # `idioms-accept` prunes what is fixed and can never add. A new

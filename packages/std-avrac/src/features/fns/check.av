@@ -6,14 +6,14 @@
 //! generic call INSTANTIATES: pins pre-fill, arguments unify, a
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
-use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, SeatMark, mut_mark, RtSig, rt_sig_of, extern_kind, TypeRegistry}
+use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, SeatMark, mut_mark, rt_sigs, RtSig, Box, TypeRegistry}
 use features.{no_pins, Pins, TypeCx, FnSig, nothing, this_is, tparams_refused, unpinned_of, slice_promise, type_name_decl}
 use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .FnDecl(fname, _, _, fret, body) -> checked_fn(cx, s, fname, fret, body),
-        .ExternFn(hname, hparams, hret) -> checked_extern(cx, s, hname, hparams, hret),
+        .ExternFn(hname, hparams, _) -> checked_extern(cx, s, hname, hparams),
         rest -> nothing(),
     }
 }
@@ -24,12 +24,14 @@ export fn check_fn(mut cx: TypeCx, s: StmtId) {
 /// C cannot keep the refcount contract a box demands. A NARROW WIDTH
 /// is out — the cell is 64 bits and a 32-bit write through it leaves
 /// the top half stale, which is B3's defect wearing the other hat.
-fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, hret: TypeRef) {
+fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
     for j, pp in hparams {
         if pp.mark.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
     }
     crossing_law(cx, s, hname, hparams)
-    row_law(cx, s, hname, hparams, hret)
+    let row? = rt_sigs().find(it.name == hname) else { return }
+    row_shape_law(cx, s, row, hparams)
+    row_absence_law(cx, s, hname, hparams)
 }
 
 /// THE PLAIN HALF OF THE SEAT LAW, AND THE ANSWER — one law, because
@@ -49,7 +51,7 @@ fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>
 /// has taken a `List<string>` that way since before this law, and
 /// `avra_fd_taken` has answered `Bytes` that way.
 fn crossing_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
-    if rt_sig_of(hname) != null { return nothing() }
+    if rt_sigs().any(it.name == hname) { return nothing() }
     let declared: FnSig? = cx.stmt_sig(s)
     if declared == null { return nothing() }
     let sig = declared!
@@ -103,23 +105,6 @@ fn answerable(types: TypeRegistry, ty: TypeId) -> bool {
     }
 }
 
-/// AN EXTERN THAT NAMES A RUNTIME ROW *IS* THE ROW. Both engines ask
-/// the registry BEFORE the program's own declarations, so a
-/// same-named extern's seats and answer are DISCARDED and the call is
-/// made on the ROW's shape — with no diagnostic anywhere. Declaring
-/// `avra_host_env(a: string, b: string) -> int` over a one-seat row
-/// ran on both engines and handed the program a raw pointer as an
-/// `int`. A row's name is not one a program may re-spell: either the
-/// declaration wears the row's shape, or it wears another name.
-fn row_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, hret: TypeRef) {
-    let row: RtSig? = rt_sig_of(hname)
-    if row == null { return nothing() }
-    let sig: FnSig? = cx.stmt_sig(s)
-    if sig == null { return nothing() }
-    if !row_agrees(cx, row!, sig!, hparams, hret) { extern_redeclares_a_row(cx, s, hname, row!) }
-    row_absence_law(cx, s, hname, hparams, sig!)
-}
-
 /// A ROW'S SEAT TAKES NO ABSENCE, and this is the half the seat law
 /// could not hold: `row_agrees` compares ABI KINDS, and a nullable
 /// fills the same `Ptr` its present twin does, so `avra_host_env(name:
@@ -128,19 +113,40 @@ fn row_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, hret:
 /// of them reads the pointer it is handed — which is why the refusal
 /// is by name here and the capability stays for a package, whose C may
 /// take a pointer-or-NULL and mean it.
-fn row_absence_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, sig: FnSig) {
+fn row_absence_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
+    let sig? = cx.stmt_sig(s) else { return }
     for j, p in sig.params {
         if !hparams[j].mark.mutable && cx.view.types.carried(p) != null { row_seat_takes_no_absence(cx, s, hname, j, p) }
     }
 }
 
-/// Whether a declaration crosses the way its row does — the arity,
-/// every seat's kind and the answer's, in the currency the seam
-/// actually uses.
-fn row_agrees(cx: TypeCx, row: RtSig, sig: FnSig, hparams: List<Param>, hret: TypeRef) -> bool {
-    if row.params.length != sig.params.length { return false }
-    if extern_kind(cx.view.types, hret, sig.ret) != row.ret { return false }
-    [1 for j, p in sig.params if extern_kind(cx.view.types, hparams[j].ty, p) != row.params[j]].is_empty()
+/// AN EXTERN THAT NAMES A RUNTIME ROW WEARS THE ROW'S SHAPE: as many
+/// seats as the row, and at each of the row's pointer seats a type
+/// that IS the box the row reads — `avra_str_len` reads a text
+/// header, and a list handed there answers its byte size as a
+/// length, in a clean program. `ptr` is the raw crossing and fits
+/// any box; a row that names no box takes every one.
+fn row_shape_law(mut cx: TypeCx, s: StmtId, row: RtSig, hparams: List<Param>) {
+    if hparams.length != row.params.length { return row_arity(cx, s, row, hparams.length) }
+    for j, pp in hparams {
+        if row.params[j] is .Ptr && !fits_box(pp.ty, row.box_at(j)) { seat_not_the_box(cx, s, row, j, pp) }
+    }
+}
+
+/// Whether a written seat type is the box a row's pointer seat reads.
+/// TEXT AND OCTETS ARE ONE HEADERED BOX natively, read at the header's
+/// length either way, so a text row takes a `Bytes` (those bytes viewed
+/// as text) and an octet row takes a `string` — the engines agree on
+/// both, and the program tests beside `features/bytes` pin it.
+fn fits_box(t: TypeRef?, b: Box) -> bool {
+    let written? = t else { return false }
+    if written.name == "ptr" { return true }
+    match b {
+        .Any -> true,
+        .Text or .Bytes -> headered_text(written.name),
+        .List -> written.name == "List",
+        .Map -> written.name == "Map",
+    }
 }
 
 /// The types a `mut` extern seat may wear, by the word the seat
@@ -448,6 +454,40 @@ fn bound_unheld(mut cx: TypeCx, e: ExprId, tname: string, ty: TypeId) {
     cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${tn}` does not implement `${tname}`", "in this call", "write `impl ${tname} for ${tn} { … }`"))
 }
 
+fn row_arity(mut cx: TypeCx, s: StmtId, row: RtSig, declared: int) {
+    cx.emit(refusal("type.row_shape", cx.stmt_loc(s), "`${row.name}` is a runtime row of ${row.params.length} seat(s), declared here with ${declared}", "this extern", "declare the row's seats, or name a fn the runtime does not carry"))
+}
+
+fn seat_not_the_box(mut cx: TypeCx, s: StmtId, row: RtSig, j: int, pp: Param) {
+    let b = row.box_at(j)
+    cx.emit(refusal("type.row_shape", cx.stmt_loc(s), "seat ${j + 1} of `${row.name}` reads ${box_word(b)}, this is `${spelled(pp.ty ?? void_written)}`", "this extern", "a runtime row reads the box its header names — declare the seat `${box_seat(b)}`, or `ptr` for the raw crossing"))
+}
+
+/// The two names a headered text or octet box wears at a seat.
+fn headered_text(name: string) -> bool {
+    name == "string" || name == "Bytes"
+}
+
+fn box_word(b: Box) -> string {
+    match b {
+        .Any -> "any box",
+        .Text -> "a text box",
+        .Bytes -> "an octet box",
+        .List -> "a list box",
+        .Map -> "a map box",
+    }
+}
+
+fn box_seat(b: Box) -> string {
+    match b {
+        .Any -> "ptr",
+        .Text -> "string",
+        .Bytes -> "Bytes",
+        .List -> "List<…>",
+        .Map -> "Map<string, …>",
+    }
+}
+
 fn seat_not_inout_able(mut cx: TypeCx, s: StmtId, hname: string, j: int, pp: Param) {
     cx.emit(refusal("type.host_seat", cx.stmt_loc(s), "seat ${j + 1} of `${hname}` is `mut` and wears `${spelled(pp.ty ?? void_written)}` — a `mut` host seat hands C the ADDRESS of the caller's cell", "declared here", "a cell C may write is `ptr`, `ptr?`, or an integer at its DECLARED WIDTH — `i32` for a C `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`. A bare `int` is refused here alone, because it is right for `int64_t*` and silently wrong for `int*`, and only the declaration knows which. A managed value (`string`, a list, a map, a record) cannot cross at all — C keeps no refcount for what it writes."))
 }
@@ -458,10 +498,6 @@ fn seat_cannot_cross(mut cx: TypeCx, s: StmtId, hname: string, j: int, p: TypeId
 
 fn answer_cannot_cross(mut cx: TypeCx, s: StmtId, hname: string, ret: TypeId) {
     cx.emit(refusal("type.host_seat", cx.stmt_loc(s), "the answer of `${hname}` wears `${cx.view.types.name_of(ret)}`, which cannot cross to C", "declared here", "an extern's answer is what ONE frame reads back out of a register: a machine word (`int`, `bool`, a width word), a `float`, a pointer (`ptr`, `ptr?`), text (`string`, `string?`), or nothing at all. Everything else is a box in Avra's layout and a foreign address is not one — the compiled program reads C memory as ours and the evaluator has no arm to make a box from an address. `Bytes` is refused HERE though a seat takes it: a seat hands C a box whose length the caller already knows, and an answer would have to invent one. Answer `ptr` and read the bytes yourself, or make the callee a runtime row, whose arm materialises the box on both sides."))
-}
-
-fn extern_redeclares_a_row(mut cx: TypeCx, s: StmtId, hname: string, row: RtSig) {
-    cx.emit(refusal("type.host_row", cx.stmt_loc(s), "`${hname}` is a runtime row, and this declaration does not wear its shape", "declared here", "both engines call a row by the REGISTRY's seats, never by a program's — so a declaration that disagrees is called on the row's shape with nothing said. The row takes ${row.params.length} seat(s). Spell it as the row does, or name your own C something else."))
 }
 
 fn row_seat_takes_no_absence(mut cx: TypeCx, s: StmtId, hname: string, j: int, p: TypeId) {

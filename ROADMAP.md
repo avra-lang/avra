@@ -468,10 +468,13 @@ the compiler checking itself 28.8s.
   - [ ] THE 43 STRING-TAKING EXTERNS GO FROM SAFE-BY-CONSTRUCTION TO
         SAFE-BY-CONVENTION THE DAY `Bytes` LANDS (recorded 2026-09-05
         while reviewing the sqlite lane's UTF-8 validator; a TRIGGER,
-        not open work). Today no Avra string can hold a NUL, because
-        nothing mints one — every string comes from a literal, an
-        interpolation, or a runtime row over text that was already
-        NUL-free. So handing one to C, which reads a bare
+        not open work). PREMISE RETRACTED: an Avra string CAN hold a
+        NUL and a program mints one with no foreign input at all —
+        `@std/text`'s `from_codepoint(0)` (landed fc7026d, the same day
+        this entry was written). So the safe-by-construction half was
+        already false when recorded; what landed instead was a guard at
+        the crossing (`nul_at`/`has_nul`, 26 sites), not the length law
+        below. The seat count is 109 today, not 43. So handing one to C, which reads a bare
         NUL-terminated `const char*`, is safe for a reason nobody
         wrote down: there is nothing to truncate.
         U+0000 IS VALID UTF-8 and is one byte. So a correct
@@ -7067,10 +7070,11 @@ additions get siblings, nothing changes shape:
 
 ## Recorded triggers — the integrator's substrate
 
-- [ ] THE GATE PROVES A TREE AND THE INTEGRATOR COMMITS A TREE, AND
-      NOTHING TIES THEM TOGETHER. Reported by the SQLITE lead
-      2026-09-07, unfixed, and it is the deepest of three found the
-      same night. `tools/integrate.sh` runs `make gate` over the
+- [x] THE GATE PROVES A TREE AND THE INTEGRATOR COMMITS A TREE —
+      FIXED at fe1c152: integrate.sh commits, THEN gates, THEN merges,
+      and HEAD, the tracked content and the untracked list are pinned
+      before the gate and compared after (avra-8sb5.2.2). Reported by
+      the SQLITE lead, the deepest of three found the same night. `tools/integrate.sh` runs `make gate` over the
       working tree and then merges what git has; a working tree that
       moves between the two — a half-finished rename, a deliberate
       break left in a file — is gated in one state and merged in
@@ -7658,6 +7662,9 @@ PERFORMANCE 1, PROCESS 2.
   variant docs) and `features/mod.av` 5. The day `fmt` consumes the
   projection it will DELETE those lines. Pinned by the
   `docs_adversarial_test.av` row that must fail when the tables land.
+  (No `docs_adversarial_test.av` exists in this tree — the pin is on
+  the docs campaign's branch or unwritten; a deadline whose keeper
+  cannot be found is unpinned. Confirm with the DOCS lead first.)
 - **DOCTRINE — A FLAT JOIN IS NOT A ROUND TRIP WHEN THE TAIL IS EMPTY.**
   An instance of CLAUDE.md's arity law: `join("\n")`/`split("\n")`
   round-trips only while no line is empty; the empty tail is what
@@ -10972,11 +10979,12 @@ by meaning; each is a slice for lane D unless a lane is named.
   registry (`Program.kind_rows`) registers `refuse_as("E1", …)` only
   where the walk reaches, so a conditional kind — most kinded
   refusals — registers by being spoken and `avra explain` misses an
-  unspoken one; its miss says so. RECORDED TRIGGER: land ONE complete
-  walk (`every_expr`: kids plus each feature's hidden children, and a
-  statement list's expressions) and point `runtime_read`,
-  `reads_settled_seat` and `kind_rows_in` at it — the third consumer
-  names the concept, and the first fixes (1). Owner unconfirmed.
+  unspoken one; its miss says so. RECORDED TRIGGER — FIRED AND PAID at
+  865c806: `every_expr` is one walk (core/nodes.av) and all three
+  consumers read it — `runtime_read` and
+  `reads_settled_seat` (lower_state.av) and `kind_rows_in`
+  (workspace.av).
+  The third consumer named the concept, as recorded.
 - H3b. A `mut` SEAT'S ARGUMENT IS NEVER OPENED (found 2026-09-13 by
   the COMPTIME STATIC red team, both engines, native and evaluated).
   A `mut` local handed whole to a `mut` seat is LOADED, not opened
@@ -11060,15 +11068,14 @@ by meaning; each is a slice for lane D unless a lane is named.
   liveness, so deleting the borrow first turns each into a cloning
   path write (measured 60x); and S3 needs no owner decision where S2
   needs several.
-  RECORDED TRIGGER — when S3 MERGES (lane C's, built and gate-green
-  as of 2026-09-05, not yet landed): CLAUDE.md's "A BORROW ALIASES, A
-  PATH WRITE THROUGH A SHARED INTERMEDIATE COPIES" loses its
-  performance rationale — a managed read becomes a BORROW of the
-  cell's one reference, so the direct path write no longer clones and
-  the borrow idiom buys nothing. The rule is amended and the 17 I34
-  licenses retire THEN, by lane C, whose slice it is. Until it lands
-  the rule stands as written; lane D writes no NEW borrows for
-  performance.
+  RECORDED TRIGGER — FIRED AND PAID at 85aa9a8 (S3b): CLAUDE.md's "A
+  BORROW ALIASES, A PATH WRITE THROUGH A SHARED INTERMEDIATE COPIES"
+  lost its performance rationale — liveness reaches the OWNED TWIN
+  choice, so a path write no longer finds its own read's +1 and no
+  longer clones. Sweeping 34 borrow sites measured FREE (6.87s against
+  6.90s) and all 17 I34 licenses retired (DOGFOODING.md I34, RETIRED). A borrow is now written for its ALIASING and never for
+  speed; nine sites still need that aliasing, and that same aliasing is
+  H3's silent channel.
 
   THE RETIREMENT LANDED AND H3 DID NOT CLOSE (2026-09-05, lane C's
   measurement, lane D's census). The I34 retirement is in at cfa834d
@@ -12735,11 +12742,10 @@ UNDERSTAND. A seed that cannot compile HEAD is not a seed, it is a
 fossil. `make bootstrap` is how you find out, and the day to run it
 is the day a construct lands and gets dogfooded into `packages/`.
 
-STILL OWED: nothing checks the rule. A gate step that bootstraps and
-rebuilds costs ~45s and would catch a fossil the day it forms;
-without one, the seed rots exactly as the bs2 path did. FIRING
-CONDITION: the next construct dogfooded into the compiler's own
-source.
+PAID at 296c008: `make seed-check` links the committed
+seed and builds packages/cli with it, refusing with "the seed cannot
+compile HEAD — run `make seed` (a stale seed is a fossil)". It is a
+gate step (`make gate`), so a fossil is caught the day it forms.
 
 ## ~~THE SUBSET NOTES ARE STALE — an audit owed~~ — DONE THE SAME DAY
 ## IT WAS WRITTEN (2026-09-04), and never marked until 2026-09-07
@@ -14345,3 +14351,647 @@ lanes filed theirs), the toolchain PRs landing beside this work.
   run that must survive is launched in its own session, and a chain of
   heavy steps is ONE watchdog hold, never several queued behind each
   other.
+
+## Feedback survey — 2026-09-14 lane/d (the Style-section law audit)
+
+Counted per axis: friction 2, sugar 0, features 1, defects 0,
+doctrine 3, performance 0, process 2. The top three by cost: a law
+that was false forty minutes after it landed and stood for eight
+days; a hand-kept list beside the tool that owns it; a refuter's
+final sentence that had to be checked against the tree like any
+other claim. Not surveyed: any package's code beyond the names the
+seven laws cite; the other sections of CLAUDE.md (the next slices).
+No Avra was written this slice, so sugar, defects and performance
+are empty by scope and not by sweep.
+
+### FRICTION — what cost time
+
+- **A SUBAGENT REPORT TRUNCATES AT THE HARNESS, NOT AT THE
+  FINDING.** Both agents' reports were cut mid-law and had to be
+  re-requested in pieces; the cut fell inside the one law that
+  mattered, twice. EVIDENCE: two `SendMessage` round trips for laws
+  5–7 and for law 5's final text. THE ASK: none for the tree — brief
+  a subagent to lead with verdicts and put exact texts LAST, so the
+  cut lands on the recoverable half.
+- **THE GATE OUTGROWS THE FOREGROUND WINDOW.** `make gate` under the
+  watchdog crossed 600 s and moved to the background; the lock held
+  and the peak printed (728 MB), exactly as the LOCK law says.
+  EVIDENCE: this slice's gate. CONFIRMS CLAUDE.md's "THE LOCK IS THE
+  LAW"; no ask.
+
+### FEATURES — a capability
+
+- **A KEEPER FOR THE NAMES DOCTRINE CITES.** CLAUDE.md names 98
+  snake_case identifiers in backticks; before this slice two of the
+  seven Style laws cited fns dead since 20dae3b, and no tool could
+  say so. Measured after the fix: 96/98 resolve, and the two that do
+  not are a negative example (`emit_loop`, a shape the law refuses)
+  and a prose shortening (`get_owned`). EVIDENCE: a grep of every
+  `` `a_b` `` in CLAUDE.md against packages/, tools/, runtime/,
+  backend/. THE ASK: `make doctrine` — grep each cited identifier
+  and refuse a dead one unless the sentence licenses it; a 2%
+  false-positive floor is the price of not finding the next
+  `printed_value` by hand.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **A LAW CAN BE STALE THE DAY IT LANDS.** The builder-words law was
+  written at 56424e0 (15:05) asserting a "builder failed:" prefix
+  the same author removed at c7b5038 (15:46). The entry described
+  the tree it was about to change, in the present tense, and the
+  correction was in the commit body and not in the doctrine.
+  EVIDENCE: `git log -1 --date=iso` on both. THE ASK: a change that
+  retires a mechanism a law names carries the law's edit in the same
+  commit — the cited-name keeper above is the enforcement.
+- **A COUNT IN A LAW NAMES ITS RECEIPT.** "five of today's messages
+  … against eight real defects" never matched c7b5038's own body
+  ("five of the seven builder refusals lane C sampled"); today's
+  split is 10 defect-worded to 13 law-worded. Reworded to the
+  receipt's figure and its commit. CONFIRMS "A COUNT FROM A PACKAGE
+  SWEEP IS LINES, NOT SITES" one level up: a count with no base is a
+  claim.
+- **A GENERAL SHAPE MUST FIT ITS OWN INSTANCE.** The law's lesson
+  read "put the claim in the words, not in a flag — a flag can be
+  set wrong", while its instance was the reverse: the flag
+  (`Cause.Builder`, still projected to F0102) was right and the
+  prose restating it lied. Reworded: a paraphrase of a flag is a
+  second copy; words carry the claim, structure the category, and
+  the words never restate the category. EVIDENCE:
+  `grammar/executor.av:374`, `language/codes.av:19`.
+
+### PROCESS — the working discipline
+
+- **KEEP: the auditor/refuter pair, and check the refuter too.** The
+  refuter found both the count mismatch and the incoherent general
+  shape, which the auditor had passed; its own closing sentence
+  ("either the words carry the claim or the structure does, never
+  both") contradicted the tree and was corrected against
+  `codes.av:19`. A refutation is a claim like any other.
+- **KEEP: the hand list dies in the same commit that finds it.**
+  DOGFOODING's `Ratcheted:` line lagged the tool by two rules;
+  `python3 tools/idioms.py --rules` answers now and the doc points
+  at it. One flag, one pointer, no third copy.
+
+## Feedback survey — 2026-09-14 lane/d (the Rules-section law audit)
+
+Counted per axis: friction 1, sugar 0, features 1, defects 1 (a
+keeper's, latent), doctrine 4, performance 0, process 2. The top three
+by cost: a keeper that read three of nine `Ins` consumers only up to
+their first arm; a consumer count spelled in three places while the
+keeper's table grew past it; a lead's own grep that missed the first
+row of a heredoc. Not surveyed: "The subset today" and "Working
+discipline" (the next slices); any package's code beyond what the 68
+laws cite. No Avra was written, so sugar and performance are empty by
+scope.
+
+### FRICTION — what cost time
+
+- **A GREP FOR `^Ins` MISSES THE ROW ON THE OPENER'S LINE.**
+  `CONSUMERS="Ins …` puts the first row after the variable name, so a
+  line-anchored grep counted eight rows of nine and I filed `dst_of`
+  as missing from the keeper, added a duplicate, and read `Ins 10`
+  back. Cost: one false finding, one revert. EVIDENCE: tools/vocab.sh:28.
+  THE ASK: none for the tree — ask the keeper (`make vocab` prints its
+  count) before grepping the file it guards; CLAUDE.md's "ENUMERATE
+  FROM WHAT THE CONSUMER SEES" already says so.
+
+### FEATURES — a capability
+
+- **THE ROSTER IS ONE TABLE.** The `Ins` consumer list is spelled in
+  tools/vocab.sh, core/ir.av's header and `avra new ins`'s scaffold;
+  the two prose copies said "eight" while both listed nine. This slice
+  made the prose count-free and left three lists. THE ASK: the
+  scaffold and the header read vocab.sh's rows (a comptime `const` over
+  the table, or the scaffold shelling to `make vocab --rows`); the
+  third copy names the concept and dies.
+
+### DEFECTS — a keeper that examined too little
+
+- **A CONSUMER ENDED AT THE FIRST CLOSING BRACE.** tools/vocab.sh ended
+  a fn at `/^ *}$/`, so a dispatch with a braced arm was scanned only
+  to that arm's close: `memory_ins` 78 of 224 lines, `body_lines` 54
+  of 121, `give` 397 of 403. Latent — the unread regions carry no
+  catch-all today — and witnessed both ways on copies: a planted
+  `_ ->` at memory_ins:75 refused, at :150 accepted. Fixed in this
+  slice: a fn ends at the brace on ITS OWN indent, the keeper prints
+  lines examined per consumer, and a two-surface self-test plants the
+  shape. EVIDENCE: the rules refuter's probe; `make vocab` now prints
+  the per-consumer count. CLAUDE.md's "THE DELIMITER IS NOT WHERE THE
+  LAYOUT SUGGESTS" names this exact shape, for a different tool.
+
+### DOCTRINE — stale facts in nine of 68 laws
+
+- **A COUNT IN A LAW IS A CLAIM WITH NO RECEIPT.** "19 sites" (no
+  grep reproduces it), "eight consumers" (nine), "four emitters"
+  (five: `.Pack`, memory.av:210), "three features" (four). All four
+  counts were true when written and none carried the command that
+  produced them. Reworded count-free or to the keeper that holds the
+  number. CONFIRMS "A COUNT FROM A PACKAGE SWEEP IS LINES, NOT SITES".
+- **A DEAD NAME IN A LAW IS INVISIBLE TO EVERY READER.** `balanced`
+  and the `"quote" "{" t:STRING "}"` rule both died at 131f044 when a
+  quote became a parsed tree; the law kept teaching `quote {` as a raw
+  body. Survey #9's cited-name keeper ask covers it; 93 backticked
+  names now resolve but two licensed.
+- **AN ATTRIBUTION EXPIRES WHEN THE CODE LANDS.** "The sqlite lane's
+  empty-path door is the instance, attributed" — landed at 7ac2c51
+  (open.av's `path_fault`) and still labelled as another tree's. THE
+  ASK: a merge that lands an attributed instance edits its label in
+  the same commit; the cited-name keeper cannot see this one.
+- **A LAW'S EXAMPLE WEARS THE TREE'S CURRENT SPELLING.** Two examples
+  (`tag_of(cx, v)`, `lower_defect(cx, e, …)`) were free-fn forms I39
+  now refuses; a reader copying the law's own example would have
+  tripped the ratchet. Reworded to the methods.
+
+### PROCESS — the working discipline
+
+- **KEEP: parallel auditors, one refuter, and the refuter checks the
+  lead too.** Four Opus auditors over 17 laws each, one refuter over
+  their nine texts; the refuter found the keeper defect while testing
+  a fact I had handed it as established, and refuted two of my three
+  handed-down facts. A fact in a brief is a claim like any other.
+- **KEEP: exact FROM/TO pairs applied by script.** Nine rewordings
+  landed by `str.count(old) == 1` replacement with no hand editing; a
+  FROM that did not match would have failed loudly instead of
+  splicing at the wrong anchor (CLAUDE.md's twice-applied-patch law).
+
+## Feedback survey — 2026-09-14 lane/d (the Working-discipline law audit)
+
+Counted per axis: friction 0, sugar 0, features 0, defects 0,
+doctrine 3, performance 0, process 2. The top three by cost: four
+`file:line` pointers that had all rotted in one law; a law calling a
+fn "never existed" the day after that fn landed; a keeper whose
+accepted surface had no fixture while the law beside it demanded
+one. Not surveyed: "The subset today" (the last slice; probe-heavy).
+No Avra was written, so the empty axes are empty by scope.
+
+### DOCTRINE — stale facts in six of 24 laws, plus one in Rules
+
+- **A LINE NUMBER IN A LAW IS A CLAIM WITH A HALF-LIFE OF ONE EDIT.**
+  `Makefile:59-64` now lands on the bootstrap target (`make recover`
+  moved it), `ROADMAP:2018/2109/2190/2345` all point elsewhere,
+  `open.av:358` is a doc comment two fns down. Reworded to NAMES: a
+  target, a fn, a heading, a greppable phrase. EVIDENCE: wd-gA's
+  probes; `grep -n "^avra:" Makefile`. THE ASK: the cited-name keeper
+  (survey #9) refuses a bare `file:NNN` in CLAUDE.md, or resolves it
+  and reports drift.
+- **"HAS NEVER EXISTED" IS A DATED CLAIM.** The two-surfaces law said
+  no `refused_n` had ever existed; it landed at c515f04 with 30
+  callers, and the idioms matcher that once permitted a dead spelling
+  now permits a live one. The law's own ask — N spellings, N positive
+  fixtures — was unpaid in the tool. Paid: `ACCEPTED` in
+  tools/idioms.py, five fixtures, falsified by dropping one spelling.
+- **A LABEL EXPIRES WITH THE LANDING, TWICE.** The two-hats law still
+  said "the sqlite driver lane reports" for a URI door in open.av
+  here, and the receipts law cited that label as its live exemplar.
+  Slice three fixed one expired label and read past this one in the
+  same section; a sweep by CLAIM ("attributed", "lane's") finds them,
+  a sweep by law does not. CONFIRMS "THE SWEEP IS BY CLAIM, NEVER BY
+  FILE".
+
+### PROCESS — the working discipline
+
+- **KEEP: refuse a fresh line number as a fix.** The refuter was told
+  to reject any TO text that swapped a rotted line for today's, and
+  did; every replacement cites by name. A rule stated to the reviewer
+  beats one hoped for from the author.
+- **KEEP: land the label fix before the law that cites it.** Two
+  hats before the receipts law, or the receipts law names a label
+  still standing in the same commit. One PR, ordered hunks.
+
+## Feedback survey — 2026-09-14 lane/d (the subset re-probe; the audit's last slice)
+
+Counted per axis: friction 2, sugar 0, features 0, defects 3 (the
+compiler's, filed), doctrine 3, performance 0, process 2. The top
+three by cost: three compiler defects found by re-running the file's
+own examples; a probe harness that rewrote `\u` into U+FFFD and
+reported a holding entry as accepted; an entry that contradicted its
+neighbour eleven lines down. Not surveyed: the two entries a loose
+file cannot reach (a declares-annotation needs a second module; a
+minted NUL needs `@std/text`) — cited from source, not probed. No
+Avra was written beyond scratch probes.
+
+### FRICTION — what cost time
+
+- **THE PROBE HARNESS REWRITES `\u`.** A heredoc and the editor's
+  Write both turned `"�"` into a real U+FFFD, so entry 26's
+  probe first read ACCEPTED where it HOLDS (length 6, a backslash and
+  a `u`). `printf '\134u'` writes the byte. EVIDENCE: sub2's report.
+  THE ASK: none for the tree — write probe files with printf and
+  octal escapes; a probe's file is checked with `od -c` before its
+  result is believed.
+- **`$?` AFTER A PIPE IS THE PIPE'S.** Four exit-0 readings were
+  `tee`'s status. Read the compiler's status before piping.
+
+### DEFECTS — the compiler's, filed under avra-8sb5.5
+
+- **A `null ->` ARM OVER A NULLABLE ENUM CASCADES F3002** ("`null` is
+  a keyword — pick another name") beside the true F2013, and carets
+  the arm's body. Filed avra-ismf.
+- **AN ANNOTATION ON A FN'S TAIL EXPRESSION IS SILENT**: `@no_such`
+  before the tail `1` checks and runs clean; on a statement or a
+  declaration it is F3000. Filed avra-mtrh.
+- **A USER `fn main` CALLED FROM THE TOP LEVEL RECURSES** into the
+  program's own entry ("recursion too deep — 400 nested calls"), no
+  annotation involved. Filed avra-ewei.
+
+### DOCTRINE — the cache moved under nine entries
+
+- **A CACHE ENTRY NAMES ITS BASE OR IT CANNOT BE RE-CHECKED.** 58
+  entries re-probed at f178c17: 46 held verbatim; 8 refuse with a
+  different code or different words today (`ident` unpinned now
+  SPEAKS F2033; the two-`for` comprehension now names the
+  comprehension first; a parse error no longer stops typing for the
+  file); `@comptime` parses now (F3000, a speaking law, deleted);
+  `export const` compiles (the guard spares a `const_value`, the
+  clause retired). Every rewording quotes the output it was
+  re-probed with.
+- **TWO ENTRIES CONTRADICTED EACH OTHER ELEVEN LINES APART.** The
+  `export const` refusal and the top-level-`const` entry ("exported
+  only when it says `export`") both stood; one was stale. CONFIRMS
+  the duplicate-prose law's premise that prose has no gate; a
+  cross-entry contradiction needs a reader, and this audit was one.
+- **AN EXAMPLE THAT TRIPS A SECOND LAW HIDES THE ONE IT SHOWS.**
+  Entry 22's comprehension example named a parameter `as`, a
+  keyword, so its probe drew F3002 beside the refusal it exists to
+  demonstrate. Re-spelled.
+
+### PROCESS — the working discipline
+
+- **KEEP: the refuter re-runs every probe.** Told that a verdict it
+  had not reproduced was not a verdict, it refuted one of eleven
+  (entry 27's "stops there": the whole file goes untyped, earlier
+  declarations included) and narrowed two others.
+- **RECORDED TRIGGER, unchanged:** when `lang/subset/*.av` lands as
+  gate-verified program tests, this section becomes a pointer. Its
+  first two members are the entries a loose file cannot reach.
+
+## Feedback survey — 2026-09-14 #14 (TOOLCHAIN, the pointer seat's box — PR pending)
+
+Counted per axis: defects 1 (the keeper's, mine, caught by making it
+fail), doctrine 1, process 1; friction, sugar, features, performance
+empty. Not surveyed: any tree but ../avra-lane-a.
+
+### DEFECTS
+
+- **A KEEPER THAT LOOKED UP ONLY WHAT THE WALL NAMED.** The first
+  `wrong_boxes` took the C signatures already in hand, and those are
+  looked up BY THE NAMES `extern fn` DECLARATIONS ASK ABOUT — so a
+  row nobody declares (`avra_str_len`, emitted by the compiler) was
+  never compared and a flipped box passed. Found by flipping one box
+  and watching nothing happen; it reads every row's C now. The
+  "make it fail" law, paid on the day the keeper was written.
+
+### DOCTRINE
+
+- **THE COLUMN IS FILLED FROM THE C, NOT BY HAND.** `const char*` is
+  `Text` and `void*` a box; the sweep that wrote 46 rows read the C
+  bodies' parameter types, and the keeper reads them again on every
+  gate, so the fill and its check are one reading. A hand-filled
+  column would have been a second registry.
+
+### PROCESS
+
+- **A PROBE THAT IMPORTS A KEEPER RUNS IT.** `import externs` ran the
+  keeper's main and exited before the probe's first line; the listing
+  it was meant to produce came from a standalone regex instead. A
+  tool meant to be imported by a probe guards its main.
+
+## Feedback survey — 2026-09-15 lane/d (the recorded-trigger audit, avra-8sb5.9)
+
+Counted per axis: friction 1, sugar 0, features 1, defects 1 (the
+compiler's std, filed), doctrine 4, performance 0, process 2. The top
+three by cost: a deadline that fired the day it was written and stood
+eight days (the digit fold that wraps); 37 triggers recorded in the
+ledgers and in no task; three triggers recorded AFTER their own
+condition had arrived. Not surveyed: triggers inside docs/ (only
+ROADMAP, CLAUDE.md and DOGFOODING were swept); other masters' epics
+beyond a keyword search. No Avra was written beyond scratch probes.
+
+Verdicts over the 30 children of avra-8sb5.9, every non-OPEN one
+re-run by a refuter: 19 OPEN (condition re-worded as a law, owner
+named or "owner unconfirmed"), 6 FIRED-UNPAID, 4 FIRED-AND-PAID
+(closed with the commit), 1 OBSOLETE (closed with the mechanism).
+The sweep's 49 candidates refuted to 37 untracked (8 tracked in other
+epics, 3 not triggers, 1 duplicate), all 37 minted under .9.
+
+### FRICTION — what cost time
+
+- **A SWEEP THAT SEARCHES ONE EPIC CALLS TRACKED WORK UNTRACKED.**
+  Eight of 49 candidates had tasks under other epics (avra-8sb5.2,
+  .4, .5, .10, .11). The refuter searched the whole db by keyword.
+  THE ASK: none for the tree — a sweep for "untracked" searches the
+  whole tracker, never the epic it will file into.
+
+### FEATURES — a capability
+
+- **ONE INTEGER PARSE ROW.** `v = v*10 + (c-48)` is hand-rolled in
+  four places and guarded in one (grammar/lexer.av's `int_value`
+  answers `int?`); json.av, toml.av and core/holes.av wrap silently
+  at 9223372036854775808. `"42".to_int()` is F2030 and the runtime's
+  `avra_int_text` has no inverse. The trigger (.9.1) fired unpaid;
+  routed to STD-DATA avra-bjkk. THE ASK is the row, once, that the
+  three copies then call.
+
+### DEFECTS — filed
+
+- **THE DIGIT FOLD WRAPS** (above): `max=9223372036854775807
+  over=-9223372036854775808 way_over=7766279631452241919`, exit 0,
+  no trap, in the std parsers, where the lexer refuses identical text
+  with F0001. Task .9.1 carries the probe.
+
+### DOCTRINE
+
+- **A TRIGGER RECORDED AFTER ITS CONDITION IS A DEADLINE ALREADY
+  PASSED.** Three of thirty fired at birth: .9.15 (`once fn` had
+  landed), .9.30 (the render path landed two days before the
+  trigger), and .9.20's "fifth walk" count was uncountable in its own
+  commit. THE LAW: a trigger's first probe is run the day it is
+  recorded, and the result is written beside the condition.
+- **A LEDGER ENTRY THAT IS PAID AND STILL READS LIVE RECRUITS.** Three
+  ROADMAP triggers were paid (85aa9a8, 865c806, 296c008) and still
+  written as open; one `- [ ]` box was fixed at fe1c152. Corrected in
+  place with the commit. CONFIRMS "a stale ledger entry recruits like
+  a wrong owner does" (epic avra-8sb5.5's notes).
+- **A RETRACTED PREMISE STOOD IN THE ROADMAP AFTER CLAUDE.md SWEPT
+  IT.** ROADMAP's extern-seat trigger still said "no Avra string can
+  hold a NUL, because nothing mints one"; `from_codepoint(0)` landed
+  the same day the entry was written. CLAUDE.md's "A RETRACTED FACT
+  SPREADS BY CITATION" law, firing on the file it names. Corrected.
+- **A DEADLINE WHOSE KEEPER CANNOT BE FOUND IS UNPINNED.** The docs
+  deadline cites `docs_adversarial_test.av`; no such file is in this
+  tree. Marked; the DOCS lead confirms or writes it.
+
+### PROCESS — the working discipline
+
+- **KEEP: the trigger-owner law.** Two OPEN triggers named owners
+  inferred from a file or a prose handoff; both reworded to "owner
+  unconfirmed" — a named owner in a trigger is a routing instruction.
+- **KEEP: name the paying epic, never mint a twin.** A FIRED-UNPAID
+  trigger keeps its task and gains the paying epic in its comment; the
+  master re-parents it. Six went that way.
+
+## Hand-kept lists in tools/ and the Makefile — the census paid (2026-09-14, TOOLCHAIN)
+
+avra-8sb5.1.21's six, re-measured on main at 12738f7, and the sweep
+that found what the six missed. CONVERTED: (1) `tools/externs.py`'s
+`("runtime", "backend")` tuple is a glob of every `*/*.c` under the
+tree's root outside `packages/` — a new top-level C directory joins
+the keeper the day it appears; (3) its three opens of
+`runtime_api.av` are one `rt_api()`; (5) `SUITES` is derived
+(tools/suites.py, its own PR). RETIRED BEFORE MEASURED: (2)
+`tools/stems.sh` and (6) `tools/libscope.sh` are not in the tree; (4)
+`NOT_A_POINTER` is gone from externs.py. FOUND BY THE SWEEP, the one
+that mattered: `tools/idioms.py`'s `SRC` listed twelve package roots
+and the tree had fifteen — std-sqlite, std-meta and std-derive were
+never read by `make idioms`, which reported debt 0 over them. The
+roots are every `packages/*/src` now; widening them exposed 18 sites,
+of which 7 were the KEEPER's — I23 read a one-line fn's `with { mode:
+… }` as a parameter list (a greedy `\((.*)\)`), the false positive a
+positive-only specimen table cannot see, so the tool has a CLEAN
+table now, the shapes a matcher must accept. The other 11 are
+licensed at the site (four C out-parameter cells, two annotation
+decoders, three callback contracts) or fixed (one unused import).
+LEFT AS DATA, each with its reason: `tools/vocab.sh`'s CONSUMERS —
+naming a registry's consumers IS the law's enforcement (CLAUDE.md);
+`SQLITE_FLAGS` — the definition, kept honest by `promised()`;
+`tools/traps.sh`'s fixture manifests — programs, not a registry.
+LEFT WITH A TRIGGER: the Makefile's per-package object rules
+(`build/sqlite3.o`, `build/sqlite_sentinel.o`, `build/width_witness.o`)
+and `test:`'s object prerequisites are one list spelled in two
+places, and the package-C standard (lane/http, ROADMAP B7) is the
+derivation — fires when it lands on main. `tools/census.sh:18`
+respells the runtime's compile line with `-DAVRA_CENSUS`; a second
+respelling names the Makefile variable it should read.
+
+## Feedback survey — 2026-09-14 #11 (TOOLCHAIN, the hand-kept-list census — PR pending)
+
+Counted per axis: defects 1 (a keeper's), doctrine 1, process 1;
+friction, sugar, features, performance empty. Not surveyed: any tree
+but ../avra-lane-a at 12738f7.
+
+### DEFECTS
+
+- **THE IDIOM KEEPER READ TWELVE OF FIFTEEN PACKAGES.** `SRC` was a
+  list; std-sqlite, std-meta and std-derive were never read, and
+  `make idioms` reported debt 0 over them from the day each joined.
+  Roots are every `packages/*/src` now; the widening exposed 18
+  sites, 7 of them the keeper's own false positives (I23's greedy
+  `\((.*)\)` on one-line fns carrying `with { k: v }`). EVIDENCE:
+  tools/idioms.py:29 before; `make idioms` over the widened roots.
+
+### DOCTRINE
+
+- **A KEEPER HAS TWO SURFACES AND HAD ONE TABLE.** `SPECIMENS` proves
+  each matcher fires; nothing proved one stays quiet. `CLEAN` is the
+  accept-side table now (the clean check named the old regex when it
+  was put back — witnessed). CLAUDE.md's "a keeper has two surfaces"
+  entry already states the law; this is its second instance and the
+  first with a fixture table.
+
+### PROCESS
+
+- **A CENSUS AGES FAST.** Of avra-8sb5.1.21's six items, three were
+  gone before they were measured (two tools deleted, one list
+  retired); the sweep that mattered found a seventh the census had
+  named as fixed. Re-measure a census on the day it is paid, and
+  count what the sweep finds beside it.
+
+## Feedback survey — 2026-09-14 #10 (TOOLCHAIN, the suites derived — PR #9)
+
+Counted per axis: friction 1, defects 2 (the tool's own, found by its
+red team, fixed), doctrine 1, process 1; sugar, features and
+performance empty. Not surveyed: any tree but ../avra-lane-a.
+
+### FRICTION — what cost time
+
+- **A GATE KILLED FROM OUTSIDE THE WATCHDOG.** The harness stopped a
+  running `make gate` "because the system is running low on memory"
+  while the watchdog's own floor (20%) had admitted it; the tree was
+  left clean (the `tested` trap removed the scaffold) and the gate
+  was re-queued by hand, ~25 minutes. THE ASK: none the tree can
+  pay — the harness's floor is not the watchdog's; a lane reads a
+  killed gate as "re-run", never as a verdict.
+
+### DEFECTS — silent shapes in a keeper written that morning
+
+- **A DIRECTORY HOLDING TESTS WITH NO MANIFEST WAS QUIETLY NO SUITE.**
+  The first draft skipped it, which is the exact disease the tool
+  exists to kill. Refuses now ("holds tests and no avra.toml —
+  nothing would ever run them"), fixture pinned.
+- **A SYMLINKED PACKAGE WAS TWO SUITES.** `packages/alias -> a` listed
+  both and would have run one suite twice; refuses now, fixture
+  pinned. Both found by building the hostile tree, not by reading.
+
+### DOCTRINE
+
+- **A DEV EDGE ORDERS NOTHING.** Ordering by every dependency row
+  found a cycle on the first run (`std-io -> std-text -> std-io`,
+  through text's dev edge to io); the order reads `[dependencies]`
+  alone, which is the workspace's own law (`dep_chain`: a dev edge
+  starts its own chain). Written into the tool's doc.
+
+### PROCESS
+
+- **A TOOL'S RED TEAM IS A HOSTILE TREE.** Nine trees built in a
+  scratch script found two silent shapes in a tool whose five
+  fixtures were all green; the fixtures were the shapes the author
+  imagined. Keep: build the trees before calling a keeper done.
+
+## Feedback survey — 2026-09-14 #9 (TOOLCHAIN, `avra staged` retired — PR #8)
+
+Counted per axis: friction 3, sugar 0, features 0, defects 0,
+doctrine 1, performance 1, process 1. The top three by cost: the
+build lock's queue (a step launched first waits behind steps launched
+later), a scratch probe that cannot print, and a one-file test that
+compiles its whole package. Not surveyed: any tree but
+../avra-lane-a at 12738f7 + this slice.
+
+### FRICTION — what cost time
+
+- **THE LOCK'S QUEUE IS NOT A QUEUE.** A one-file test launched at
+  14:45 was still waiting at 14:57 while a `make avra` launched at
+  14:53 held the lock: `watch.sh` polls, so whoever polls at the
+  right moment wins, and a long waiter can starve. Cost: the test was
+  killed and the whole suite run instead. EVIDENCE: `ps` at 14:57
+  listed five `watch.sh` waiters and the 14:53 holder. THE ASK: a
+  ticket — the lock directory holds a queue file, and a waiter takes
+  the lock only when its ticket is the lowest.
+- **A PROBE CANNOT PRINT.** The laziness of `??` was probed by a
+  TRAP on the right side, because a scratch file has no `println`
+  (F3000 "no `fn println` is defined") and its shown value is one
+  expression. CONFIRMS avra-3qg3 (the prelude); this is its wanting
+  site outside the tree's tests.
+- **ONE FILE'S CASES COST THE PACKAGE'S COMPILE.** `avra test
+  <file>` in `@std/avrac` compiles the whole package to run five
+  cases — the same cost as the whole suite (peak 462 MB, watch), so
+  the suite is the cheaper receipt and the per-file form buys
+  nothing. THE ASK: a per-file test compiles the file's module
+  closure, not the package's.
+
+### DOCTRINE
+
+- **THE CLI RULE NAMED ONLY COMMANDS.** CLAUDE.md's CLI rule read
+  "main.av only composes the list", and the entry now also hands off
+  before the app runs. AMENDED in this slice, in the same paragraph.
+
+### PERFORMANCE
+
+- **A GATE PEAKS AT ~740 MB, NOT 0.3 GB.** Every gate and `make avra`
+  in this slice peaked between 712 and 791 MB under `watch.sh`
+  (bootstrap 712, `make avra` 745/789/791, gate 744/738) at
+  12738f7. CLAUDE.md's "a gate is ~0.3 GB" and `watch.sh`'s header
+  describe an older tree; the number is worth re-measuring by whoever
+  next reads a peak as a regression.
+
+### PROCESS
+
+- **A PIPE'S EXIT IS THE LAST COMMAND'S.** Two red-team rounds read
+  `./avra … | head -1; echo $?` as the compiler's exit and recorded
+  0 for a refusal that exits 2. The truncating-probe law one step
+  over: record an exit code with no pipe on the line, and the words
+  from a second run.
+
+## Feedback survey — 2026-09-14 #12 (TOOLCHAIN, @std from the install root — PR pending)
+
+Counted per axis: friction 2, defects 2 (found by the slice's own
+probes, fixed), doctrine 2, process 1; sugar, features, performance
+empty. Not surveyed: any tree but ../avra-lane-a.
+
+### FRICTION — what cost time
+
+- **THE SHIM READS THE SUBCOMMAND WORD AS A PATH.** `avra build x.av`
+  was a heavy step under the lock because `build/` is a directory
+  at the tree's root and the heaviness loop tested every argument —
+  every `avra build` of one file has queued behind the machine lock
+  since the loop was written. FIXED: the loop skips the first word.
+- **A TEST CANNOT RUN A PROGRAM WITHOUT ITS ENTRY.** Three new cases
+  wrote `program(null).run()` after the pattern of the cases-at
+  tests beside them and answered nothing; `program("/w/src/main.av")`
+  is the spelling the running tests use. One name (`program`) for
+  "the package's program" and "this file's program" — the null form
+  should refuse a `run` it cannot enter.
+
+### DEFECTS
+
+- **A RELATIVE PATH ARGUMENT WAS READ WHERE THE TREE STOOD.** The shim
+  `cd`s to the tree's root before the CLI reads argv, so `avra check
+  src/main.av` from another directory found nothing; only `explain`
+  rooted at `AVRA_CWD`. Every path argument is rooted there now,
+  absolutely. Its twin: a bare binary run from a package's own root
+  with a relative path never found the `avra.toml` at `.` (the walk
+  stops before the empty directory) — absolute rooting pays both.
+- **A KNOWN KEY IS NOT A REACHABLE KEY.** The first draft of the
+  toolchain door answered "reachable" for any key some package
+  carried, so a transitive `@acme/words` stopped being F3013 — one
+  existing test caught it. A std key the toolchain carries is
+  everyone's; any other key is the manifest's.
+
+### DOCTRINE
+
+- **A DECLARED ROW PINS FOR THE WHOLE GRAPH, AND ONLY WHEN THE STD
+  PACKAGES DECLARE NO ROWS OF THEIR OWN.** A root's `"@std/text" =
+  { path = "vendor/text" }` beside a toolchain `@std/io` that itself
+  declares `"@std/text" = { path = "../std-text" }` is F4014 — two
+  directories, honestly. The pin works once the std packages resolve
+  their siblings through the toolchain, which is why their rows
+  must go — RECORDED TRIGGER: strip every `@std/*` row from
+  `packages/std-*/avra.toml` and `packages/cli/avra.toml` AFTER
+  `make seed` has refreshed the seed with this resolver; a seed that
+  predates it cannot compile a manifest with no rows, and
+  `seed-check` would fail the gate.
+- **THE HOST CARRIES THE TOOLCHAIN'S FACTS.** `Host.std_root` and
+  `Host.cwd` are defaulted fields; a memory host has no toolchain
+  unless a test gives it one, and `memory_host_at` stands in a cwd
+  as the disk does. Written into workspace.av.
+
+### PROCESS
+
+- **PROBE FROM OUTSIDE THE TREE.** Every defect above was invisible
+  from inside: every in-tree path is relative to the root the shim
+  moves to. A slice about "usable outside this repo" is probed from
+  a scratch directory first, and the scratch package's stray files
+  join its program (two hostile `use` lines made a clean `run`
+  fail) — one file per probe package.
+
+## Feedback survey — 2026-09-14 #13 (TOOLCHAIN, the prelude — PR pending, stacked on #11)
+
+Counted per axis: friction 1, sugar 1, doctrine 2, process 1;
+features, defects, performance empty. Not surveyed: any tree but
+../avra-lane-a.
+
+### FRICTION — what cost time
+
+- **A PACKAGE'S OWN PROGRAM TEST IS A FILE OF THE PACKAGE.** The
+  prelude's proof, laid out as `src/tests/hello/hello.av`, belonged
+  to the prelude package and so saw no prelude — one gate. The proof
+  is a nested package (`tests/hello/avra.toml` + `src/main.av`),
+  which is also the user's shape. The lesson generalises: a package
+  whose feature is "what other packages see" proves it from a
+  package that is not itself.
+
+### SUGAR — a construct the language should have
+
+- **`print` WITHOUT A NEWLINE.** Lane C's list named it; no runtime
+  row backs it (`avra_puts` writes a line, `avra_io_write` a file),
+  so the prelude cannot carry it under its own rule. THE ASK: an
+  `avra_print` row, then `print` joins the floor.
+
+### DOCTRINE
+
+- **THE PRELUDE IS A PACKAGE, NOT A SCOPE.** Lane C's recommendation,
+  taken: it is a node in the graph, so the layering has a bottom and
+  the floor law (F4018, a prelude manifest declaring a dependency) is
+  enforceable; a scope could not be at the bottom of anything.
+- **WEAK BINDING IS THE SHADOW LAW.** A prelude export binds only
+  where nothing else holds the name (`bind_prelude`, beside
+  `bind_builtin`), so a file's `fn println`, its `use @std.io.
+  {println}` and a `let println` all win in silence — witnessed from
+  an outside package for each. No warning: a name the floor offers is
+  a default, and a default overridden is not a mistake.
+
+### PROCESS
+
+- **THE SEED'S GENERATION GATES TWO SWEEPS.** Both this slice's and
+  #11's stripping sweeps (io's two verbs; the std manifests' rows)
+  wait on one `make seed` on main; filed as one recorded trigger in
+  CLAUDE.md each, both naming the same event.

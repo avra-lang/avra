@@ -2293,6 +2293,18 @@ static int self_path(char* buf, size_t cap) {
 #endif
 }
 
+// The directory this image stands in — immortal, minted once.
+const char* avra_self_dir(void) {
+    static const char* dir = NULL;
+    if (dir) return dir;
+    char self[4096];
+    if (!self_path(self, sizeof self)) return str_static("");
+    char* slash = strrchr(self, '/');
+    if (slash) *slash = 0;
+    dir = str_static(self);
+    return dir;
+}
+
 int64_t avra_exec_self(void* args) {
     AvraArray* a = (AvraArray*)args;
     char self[4096];
