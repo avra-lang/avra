@@ -4,11 +4,26 @@
 //! and never by a field's name. `meta_disagreement` is the one door:
 //! it holds the LOADED package to the shapes this compiler was built
 //! against, and past it the exhaustive matches are the guarantee.
-//! THE PRICE OF THE GUARANTEE: a crossed shape cannot move in one
-//! generation. The standing binary carries the OLD rows and refuses
-//! the new package while compiling it, so a change here lands in two
-//! commits — one that stops this door refusing, one that moves the
-//! shape and restores it.
+//!
+//! GROWTH IS NOT A MOVED SHAPE. A package that declares MORE than
+//! the rows read — fields APPENDED, in order — is the ordinary way a
+//! contract evolves, and an older reader is safe by SLOT ORDER: it
+//! reads the positions it knows and the trailing ones are not its
+//! business. So the door refuses a RENAMED, a REORDERED and a SHRUNK
+//! shape, and tolerates a grown one. Adding a field to `@std/meta`
+//! is ONE commit, and a merge that brings an older seed still
+//! bootstraps.
+//! WHAT AN OLDER COMPILER OWES A NEWER PACKAGE IS NOTHING, and the
+//! program hears it: the old compiler WRITES the slots it knows, so
+//! a program reading a field it never wrote reads past the row's end
+//! and the annotation refuses ("an annotation could not run — index
+//! N is out of bounds"), naming itself. That is the honest failure,
+//! and it is why growth needs no ceremony.
+//! THE PRICE THAT REMAINS: a shape that MOVES — renamed, reordered,
+//! shrunk — cannot move in one generation. The standing binary
+//! carries the OLD rows and refuses the new package while compiling
+//! it, so those land in two commits — one that stops this door
+//! refusing, one that moves the shape and restores it.
 use core.{TypeId, DeclId, TypeRegistry, SeatMark, mark_at, flatten, some_list, wreck}
 use @std.errors.{Loc}
 use @std.meta.{Param as MetaParam, Fn as MetaFn, Field as MetaField, Variant as MetaVariant, Type as MetaType, Diagnostic, Named, Trait as MetaTrait, Node, Decls as MetaDecls, Directive, Kind, Seat as MetaSeatValue}
@@ -28,7 +43,7 @@ fn meta_records() -> List<MetaShape> {
         MetaShape { pkg: "@std.meta", name: "Param", fields: ["name", "ty", "mutable", "settled", "at", "kind"] },
         MetaShape { pkg: "@std.meta", name: "Fn", fields: ["name", "params", "answer", "at", "answers"] },
         MetaShape { pkg: "@std.meta", name: "Field", fields: ["name", "ty", "at", "kind"] },
-        MetaShape { pkg: "@std.meta", name: "Variant", fields: ["name", "payload", "at", "kinds"] },
+        MetaShape { pkg: "@std.meta", name: "Variant", fields: ["name", "payload", "at"] },
         MetaShape { pkg: "@std.meta", name: "Seat", fields: ["kind", "mutable", "settled"] },
         MetaShape { pkg: "@std.meta", name: "Type", fields: ["name", "fields", "variants", "at"] },
         MetaShape { pkg: "@std.meta", name: "Diagnostic", fields: ["message", "help", "at", "warning", "kind"] },
@@ -95,29 +110,26 @@ impl Decls {
 /// The first place two orders part, in the words the boundary voice
 /// carries — null when they are the same.
 ///
+/// A shape SHRANK when the crossing reads a slot the package no
+/// longer declares — "declares nothing where the crossing reads
+/// `kind`" — and MOVED when the names at a position differ. A shape
+/// that merely GREW parts nothing here reads is no difference at
+/// all: this walk is over what the crossing READS, so a trailing
+/// slot is never examined.
 fn first_difference(name: string, loaded: List<string>, built: List<string>) -> string? {
     let parted: int? = [j for j, x in built if j >= loaded.length || loaded[j] != x].first()
-    if parted == null { return longer_than_read(name, loaded, built) }
+    if parted == null { return null }
     let at = parted!
     let found = if at >= loaded.length { "nothing" } else { "`${loaded[at]}`" }
     "`${name}` declares ${found} where the crossing reads `${built[at]}`"
 }
 
-/// A loaded shape that declares MORE than the crossing reads is a
-/// different package too: the slot it added is one this compiler
-/// never fills, and the value it holds there is nobody's. RESTORED
-/// here — the generation before this one had to compile the
-/// `@std/meta` that grew these very slots, and could not also refuse
-/// it.
-fn longer_than_read(name: string, loaded: List<string>, built: List<string>) -> string? {
-    if loaded.length <= built.length { return null }
-    "`${name}` declares `${loaded[built.length]}`, which the crossing does not read"
-}
-
-/// The first variant whose payload count moved — asked only once the
-/// names agree, so the two runs are the same length.
+/// The first variant carrying FEWER payloads than the crossing
+/// reads — asked only once the names agree, so the two runs are the
+/// same length. A variant that GREW one the reader ignores is
+/// growth, and growth is not a moved shape.
 fn first_arity_difference(loaded: List<List<TypeId>>, rows: List<NodeReader>) -> string? {
-    let parted: int? = [j for j, r in rows if loaded[j].length != r.arity].first()
+    let parted: int? = [j for j, r in rows if loaded[j].length < r.arity].first()
     if parted == null { return null }
     let at = parted!
     "`Node.${rows[at].name}` carries ${loaded[at].length} payloads where the crossing reads ${rows[at].arity}"
@@ -295,7 +307,7 @@ fn meta_of_field(x: MetaField, mut heap: MetaHeap) -> MetaVal {
 }
 
 fn meta_of_variant(x: MetaVariant, mut heap: MetaHeap) -> MetaVal {
-    written("Variant", [MetaVal.Text(x.name), heap.node([MetaVal.Text(p) for p in x.payload]), meta_of_loc(x.at, heap), heap.node([meta_of_kind(k, heap) for k in x.kinds])], heap)
+    written("Variant", [MetaVal.Text(x.name), heap.node([MetaVal.Text(p) for p in x.payload]), meta_of_loc(x.at, heap)], heap)
 }
 
 // ── The type vocabulary, both ways ──────────────────────────────
