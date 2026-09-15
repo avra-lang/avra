@@ -8,8 +8,8 @@ use diagnostics.{refusal}
 fn structs_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
-        .StructLit(name, fields, values) -> lit_type(cx, e, name, fields, values),
-        .With(subject, fields, values) -> with_type(cx, e, subject, fields, values),
+        .StructLit(name, fields, values) -> lit_type(cx, e, name.of, [t.of for t in fields], values),
+        .With(subject, fields, values) -> with_type(cx, e, subject, [t.of for t in fields], values),
         rest -> cx.error_type,
     }
 }
@@ -177,4 +177,26 @@ export fn fits_default(mut cx: TypeCx, d: ExprId, name: string, want: TypeId) {
     if cx.accepts(d, want) { return }
     let n = cx.name_at(d)
     cx.emit(refusal("type.struct_fields", cx.loc_of(d), "field `${name}` defaults to `${n}`, and it is `${cx.view.types.name_of(want)}`", this_is(n), null))
+}
+
+// ── A NAME'S SHAPE ──
+
+/// A NAME IS OPAQUE AT A SEAT, so a named value reaching a seat of
+/// its shape needs a word for the crossing — `id.of` is that word,
+/// the declaration read backwards (`type Name = <of>`). The row takes
+/// every NOMINAL shape, which is a record's and a name's alike; a
+/// record answers its FIELDS first, so only a name reaches here.
+export fn on_nominal(t: Type) -> bool {
+    t is .Struct
+}
+
+/// `x.of` answers the shape the name stands over.
+export fn check_named_of(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
+    let of: TypeId? = cx.view.types.stands_for(ty)
+    if of == null { return not_a_name(cx, e, ty) }
+    of!
+}
+
+fn not_a_name(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
+    cx.spoken(refusal("type.named", cx.loc_of(e), "`.of` reads a named type's shape, this is `${cx.view.types.name_of(ty)}`", "read here", "`of` is the shape after `=` in `type Name = <shape>`"))
 }

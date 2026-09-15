@@ -3,14 +3,14 @@
 //! in DECLARATION order; values evaluate in WRITTEN order first.
 //! Reads are the spine's property ladder (a slot read at the
 //! field's compile-time index) — zero new instructions anywhere.
-use core.{ExprId, Reg, Ins, filled, DeclId}
+use core.{ExprId, Reg, Ins, TypeId, filled, DeclId}
 use features.{LowerCx, StructSig}
 
 fn structs_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
-        .StructLit(_, fields, values) -> lit_reg(cx, e, fields, values),
-        .With(subject, fields, values) -> with_reg(cx, e, subject, fields, values),
+        .StructLit(_, fields, values) -> lit_reg(cx, e, [t.of for t in fields], values),
+        .With(subject, fields, values) -> with_reg(cx, e, subject, [t.of for t in fields], values),
         rest -> cx.foreign_node(e),
     }
 }
@@ -87,4 +87,15 @@ fn defaulted_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
     let dst = cx.mint_ty(cx.viewed(sig.types[slot]))
     cx.emit(Ins.Call(dst, cx.symbol_at(d!, e), []))
     dst
+}
+
+/// `x.of` — the shape a name stands over. A named value IS its
+/// shape, so the read is the SUBJECT'S OWN REGISTER: no instruction,
+/// no reference, nothing to settle. An `Extract` would read the
+/// REGISTER's recorded type, and a literal filling a named seat
+/// records no lift — so the register wears the shape and the extract
+/// would have nothing to open.
+// LICENSED I23: a row's rule wears the row's signature
+export fn lower_named_of(mut cx: LowerCx, e: ExprId, r: Reg, ty: TypeId) -> Reg {
+    r
 }

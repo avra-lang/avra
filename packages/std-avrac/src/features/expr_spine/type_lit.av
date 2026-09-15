@@ -7,7 +7,7 @@
 //! NAME is a hole — a `TypeId` binding in scope
 //! (`cx.type(Map<string, want>)`). A declared type has no spelling
 //! here: its id is a binding, so the hole is how it is named.
-use core.{Expr, ExprId, TypeRef, plain, mut_mark, settled_mark}
+use core.{Expr, ExprId, TypeRef, plain, mut_mark, settled_mark, Plain, Scoped}
 use features.{Builder, chained_binder}
 
 /// A word that spells a shape of its own.
@@ -46,10 +46,10 @@ fn type_literal(mut b: Builder, subject: ExprId, t: TypeRef) -> Result<ExprId, s
 /// `a?.type(T)` IS `match a { null -> null, v? -> v.type(T) }`, the
 /// chain every `?.` link lowers to.
 fn chained_type_literal(mut b: Builder, subject: ExprId, t: TypeRef) -> Result<ExprId, string> {
-    let carried = b.store.alloc_expr(Expr.Ident(chained_binder), b.span)
+    let carried = b.store.alloc_expr(Expr.Ident(Scoped(chained_binder)), b.span)
     let call = type_literal(b, carried, t)?
     let absent = b.store.alloc_expr(Expr.NullLit, b.span)
-    .Ok(b.store.alloc_expr(Expr.MatchOpt(subject, chained_binder, call, absent), b.span))
+    .Ok(b.store.alloc_expr(Expr.MatchOpt(subject, Scoped(chained_binder), call, absent), b.span))
 }
 
 /// A written type as a `TypeLit` VALUE — bare variants, heard from
@@ -67,7 +67,7 @@ fn spelling(mut b: Builder, t: TypeRef) -> Result<ExprId, string> {
     let found: Applied? = applieds.find(it.name == t.name)
     if found == null {
         if !t.args.is_empty() { return .Err(no_spelling("`${t.name}<…>`")) }
-        let hole = b.store.alloc_expr(Expr.Ident(t.name), t.span)
+        let hole = b.store.alloc_expr(Expr.Ident(Scoped(t.name)), t.span)
         b.store.mark_hole(hole)
         return variant(b, t, "Id", [hole])
     }
@@ -97,7 +97,7 @@ fn fn_spelling(mut b: Builder, t: TypeRef) -> Result<ExprId, string> {
 }
 
 fn variant(mut b: Builder, t: TypeRef, name: string, args: List<ExprId>) -> Result<ExprId, string> {
-    .Ok(b.store.alloc_expr(Expr.VariantLit(name, args), t.span))
+    .Ok(b.store.alloc_expr(Expr.VariantLit(Plain(name), args), t.span))
 }
 
 // ── The voices ──

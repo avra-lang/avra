@@ -14585,6 +14585,198 @@ lanes' trees, and anything outside `packages/std-avrac` + `tools/`.
   worktree, prefer a temporary WIP commit and `git reset --soft`
   over a path-scoped stash; the stash's recorded tree is not
   path-scoped even when its arguments are.
+
+## Feedback survey — 2026-09-14 (comptime/names, typed name payloads + the rebuilder derived)
+
+Counted per axis: friction 5, sugar 3, features 2, defects 6, doctrine
+3, performance 1, process 4. The top three by cost: a SILENT expansion
+failure that accused an innocent file (~2.5 h, and the diagnostics
+named a file I had not touched), the shared build lock's queue (~19
+heavy runs, roughly a third of them spent waiting), and a chain
+lowering that was broken the moment the new property landed because
+the lowering and the law that admits it looked the row up two
+different ways. Not surveyed: the sqlite/http lanes' trees, and
+anything outside `packages/std-avrac` + `packages/std-meta`.
+
+### FRICTION — what cost time
+
+- **AN EXPANSION FAILURE THAT ACCUSES AN INNOCENT.** `@derive(Rebuild)`
+  on `Expr` in core/nodes.av, with the trait beside the walk in
+  core/rebuild.av, made every `impl NodeStore` method in nodes.av
+  vanish: 51 errors of the form "`NodeStore` has no method
+  `hole_stmt`", ALL pointing at rebuild.av, NONE at the annotation,
+  and no diagnostic saying an expansion had failed. Bisecting cost
+  about 2.5 hours: the annotation, the impl target, the seat type, the
+  arity ladder and the method calls each had to be removed in turn.
+  EVIDENCE: the cure is `core/rebuild_derive.av` — the derive alone in
+  its file, importing `@std/meta` and nothing else. THE ASK: when a
+  method table is read while its file's resolve is in flight,
+  `methods()` already declines to MEMOIZE it (workspace.av); make it
+  SPEAK too — "an expansion read `NodeStore`'s methods before
+  core/nodes.av finished registering".
+- **THE BUILD LOCK'S QUEUE.** The machine is shared; ~19 heavy runs
+  this session, several queued behind another lane's census for
+  minutes each. No ask — the lock is right and the serialisation is
+  the point. Recorded so the cost is visible.
+- **A LEADING `??` DOES NOT CONTINUE A LINE.** The LINE LAW drops a
+  break AFTER a continuing operator, so `a\n    ?? b` is a parse
+  error at the `??` while `a ??\n    b` is fine. Cost one failed
+  build. Not a bug — the law is the law — but the refusal ("expected
+  `}` to close the block") says nothing about continuation.
+- **A 331-ERROR RETYPE IS DRIVEN BY THE COMPILER, NOT BY GREP.** Every
+  site the named payloads broke was named with a file, a line and a
+  COLUMN, which is what let a 60-line script apply 263 of them and
+  leave 30 for judgement. This is a KEEP, filed as friction only
+  because the tooling around it (a scratch fixer) had to be written
+  from nothing each time.
+- **A PROBE PACKAGE FOR EVERY DERIVE QUESTION.** Same as survey #7's
+  row: a loose file cannot `use @std.meta`, so each derive probe is a
+  directory, a manifest with two relative paths, and a `src/main.av`.
+  Five probe packages this session.
+
+### SUGAR — a construct the language should have
+
+- **A HOLE THAT SPLICES AN EXPRESSION LIST.** `${bs}` splices BINDERS
+  into a pattern's payload list and `${ss}` splices STATEMENTS, but
+  nothing splices EXPRESSIONS into an argument list, so a derive that
+  builds `.${v}(a0, …, aN)` must spell one quote per arity. TWO
+  WANTING SITES, independently: `built` in core/rebuild_derive.av
+  (seven arms, 0..6, the only place that derive repeats itself), and
+  `@std/derive`'s `Eq`, which dodged it by FOLDING its checks through
+  `conj` — a fold works for `&&` and not for an argument list. The
+  shape is already named in `@std.meta`'s own doc ("`Many` — several
+  in one seat"), which lists arms, declarations, statements and
+  binders and stops there.
+- **AN ELEMENTWISE UNWRAP FOR A NAMED ELEMENT TYPE.** `List<Plain>` at
+  a `List<string>` seat is refused (rightly — a seat judges the name),
+  and the only spelling is `[t.of for t in xs]`, which COPIES. It sits
+  at 21 sites, four of them per-node. `contains`/`index_of` over a
+  named element type are refused too (F2005 "scalars and text for
+  now"), which is what stopped the conversion moving INTO the rules.
+  THE ASK: either those two verbs over a named element type, or a
+  view that reads a `List<Name>` as its `List<Shape>` without a copy.
+- **A NAMED TYPE AS A MAP KEY.** `Map<Scoped, Binding>` is F2019 "a
+  map's keys are strings, not `Scoped`". It is why the typed payloads
+  stop at core's projections: the resolver's tables are string-keyed
+  by law, so a name must become text before it can be looked up. Not
+  urgent; recorded because it is the exact boundary of this slice.
+
+### FEATURES — a capability, larger than sugar
+
+- **A PAYLOAD MARK, so a derive can REFUSE what it cannot classify.**
+  `@derive(Rebuild)` copies a bare `string` payload, which is right
+  for every such payload today (a spec's title, an interpolation's
+  runs, a `use` path) and would be SILENTLY WRONG for a new NAME
+  payload someone spells `string`. The old hand-written registry
+  refused the build until a human answered; the derive does not. A
+  fourth name kind would only move the problem (a `use` path is an
+  identifier and a spec's title is text). What closes it is a mark the
+  derive can read — the same ask the polish round's `@derive(Children)`
+  row already names, from the other side.
+- **A SUBLANGUAGE BLOCK INSIDE A TEMPLATE, with holes.** `sql { … ${x}
+  … }` inside a `quote { … }` does not work: the quote's lexer claims
+  the `${x}` first, so the block's own hole is read as the template's.
+  Blocked the one test that would have covered the rebuilder's
+  `Sublang` arm (see DEFECTS/process).
+
+### DEFECTS — found, with a repro
+
+- **A GENERIC METHOD TRAPS THE COMPILER.** Four lines:
+  `type W = { n: int }` + `impl W { fn kept<T>(x: T) -> T { x } }` +
+  any use of `W` traps with `avra: index 1 is out of bounds (length
+  0)` — declared-but-never-called is enough. PRE-EXISTING: reproduced
+  with main's own `build/avra` at 12738f7, so not this slice's.
+  Latent because nothing in the tree has written one.
+- **`mut fn ${hole}` IN GENERATED CODE TRAPS.** A generated
+  `mut fn ${method}(…)` traps with "a span reaches outside its own
+  text — offset 436 of 239"; `fn ${method}` and `mut fn literal_name`
+  each work alone. Repro in the probe package under /tmp; the
+  workaround is to drop `mut` (which the compiler now advises anyway).
+- **A DERIVE'S GENERATED CODE NAMING ANOTHER FILE'S DECLARATION WIPES
+  THE ANNOTATED FILE'S IMPLS, SILENTLY.** The friction row above, as a
+  defect: no diagnostic is spoken, the annotated file simply loses its
+  methods and every CALLER is blamed. The law is now in CLAUDE.md;
+  the DIAGNOSTIC is still owed.
+- **THE COPIER TRAPS WHERE IT SHOULD SPEAK.** With the `Quote`
+  exception removed, `self.fills[k]` indexed past its list and trapped
+  ("index 1 is out of bounds (length 1)") instead of recording a
+  misfit. Only reachable from a broken derive, so not shipping — but
+  the `misfits` channel exists precisely so the splice can speak.
+- **A `${…}` INSIDE A SUBLANGUAGE BLOCK INSIDE A QUOTE.** F2075 "a
+  hole in name position takes a `string`, an `int` or a named meta
+  value, found `<error>`", pointing at the block's hole. The two raw
+  scanners (`scan_raw_block`, `raw_step`) are the leave-alone this
+  touches from the other side.
+- **I36 FIRES ON INT ACCUMULATION.** `total = total + (sad() catch … )`
+  is flagged as quadratic text growth — the matcher keys on
+  `x = x + (`, which cannot see the type. Two false positives in one
+  file this session; both dodged by binding the value first. THE ASK:
+  either drop `(` from the matcher or teach it the `"`-led forms only.
+
+### DOCTRINE — a law this slice paid for
+
+- **A DERIVE'S FILE IS TYPED WHILE THE ANNOTATED FILE IS STILL
+  REGISTERING.** Landed in CLAUDE.md. `core/protocol.av` obeyed it by
+  accident; `core/rebuild_derive.av` obeys it on purpose.
+- **A PROPERTY'S ROW MUST BE FOUND THE SAME WAY TWICE.** Typing asked
+  the receiver's OWN shape then the shape it stands over; the lowering
+  asked the seen shape alone. Every property that existed agreed under
+  both, so the gap was invisible until `of`, which only the own shape
+  answers. `property_of` is the one verb now, and the CHAIN shares it:
+  a row's lowering takes the subject's REGISTER and TYPE, because a
+  chain holds a register where the spine holds a node. Landed in the
+  named-types doc.
+- **A NAMED TYPE'S PROJECTION IS IDENTITY, NOT AN `Extract`.** The
+  first draft emitted `Ins.Extract(dst, src, 0)` — correct by the flat
+  law, and wrong in fact: a LITERAL filling a named seat records no
+  lift, so the register wears the SHAPE and the extract has nothing to
+  open ("an extract from a non-pack in a clean program"). The
+  instruction-level check reads the REGISTER's recorded type where the
+  law reads the STATIC one; answering the subject's own register is
+  both free and true.
+
+### PERFORMANCE
+
+- **THE COMPILER IS UNCHANGED; THE MEASUREMENT ALMOST SAID OTHERWISE.**
+  Census on `check packages/std-avrac` (base d282942 -> this tree)
+  reads 5,809,988,240 -> 5,852,796,874 retains (+0.74%) and
+  8,929,756,261 -> 9,005,221,987 list writes (+0.85%) — above noise
+  for exact counters. On an UNCHANGED input (`check
+  packages/std-toml`, same pair) it is 17,342,179 -> 17,345,771
+  retains and 14,386,891 -> 14,387,248 list writes, **+0.02%** —
+  noise. The 0.74% was
+  the compiler's own source growing (263 `.of` reads, the derive, 41
+  new spec cases), not the compiler getting slower, and a first pass
+  at "fixing" it (folding the fingerprint walk's doubled list copies)
+  measured NEUTRAL and was kept only because it reads better. A
+  control on an unchanged input is what told the two apart.
+
+### PROCESS
+
+- **KEEP: MAKE THE NEW KEEPER FAIL, AND LEARN SOMETHING BETTER.**
+  Routing `Scoped` to `plain_name` in the derive's verb table does not
+  produce a wrong answer — it does not COMPILE: "argument 1 of
+  `.Ident` wants `Scoped`, found `Plain`". The typed payloads turned
+  the derive's table from something trusted into something checked,
+  and that was only visible by breaking it on purpose.
+- **KEEP: BREAK THE EXCEPTION, NOT JUST THE RULE.** Removing the
+  `Quote` exception left the whole gate GREEN — `nested`'s inner quote
+  is `quote { 1 + 1 }`, which has no hole, so verbatim mode changed
+  nothing. The new `nested_holed` program test is the case that fails,
+  written because the exception was tested and found untested.
+- **SURVIVOR, RECORDED: THE `Sublang` EXCEPTION HAS NO TEST.** Removing
+  it leaves every sublang test green. The case that would fail is a
+  block inside a template, which does not parse (DEFECTS above). So
+  the arm is currently unreachable from any writable program — a
+  DEADLINE, not a test gap: the day a template can carry a block, that
+  arm is exercised for the first time and is unproven until then.
+- **CHANGE: TWO MERGES LANDED MID-SLICE.** Both were clean through
+  `git stash push -u` / `git merge` / `git stash pop`; the second
+  conflicted on `bootstrap/seed.ll` (take the incoming, re-seed) and
+  on a crossing region lane/comptime had rewritten (take upstream,
+  re-apply the three `.of` reads). Worth stating as a recipe: on a
+  seed conflict there is nothing to merge — take theirs and run
+  `make seed` after the fixed point.
 ## Feedback survey — 2026-09-14 (STD-SUBSTRATE: main 12738f7 into lane/http, 23fc98c..d3406ce)
 
 Surveyed: the merge, the http fixes, the red team and the review round

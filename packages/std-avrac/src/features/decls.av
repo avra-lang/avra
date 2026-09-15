@@ -8,7 +8,7 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, GrammarSpec}
+use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, GrammarSpec, Scoped}
 use core.{SeatMark, mark_at, plain_mark}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
@@ -397,7 +397,7 @@ impl Decls {
     /// A field's default: a body under the record, named by the
     /// field, its statement the record's.
     fn mint_default(owner_key: string, f: FileId, s: StmtId, field: Param, owner: string, parent: DeclId) -> DeclId {
-        self.mint("${owner_key}#${field.name}", f, s, field.name, DeclKind.Default, false, owner, parent, false, field.default)
+        self.mint("${owner_key}#${field.name}", f, s, field.name.of, DeclKind.Default, false, owner, parent, false, field.default)
     }
 
     /// A parent admitted again lists its members afresh.
@@ -564,11 +564,11 @@ impl Decls {
         // / exit puts wrap is a later directive; v1 proves the seam.)
         let v = "${name}$$v"
         let arg_ids = [store.alloc_expr(Expr.Ident(p.name), at) for p in params]
-        let call = store.alloc_expr(Expr.Call(original, [], arg_ids), at)
-        let bound = store.alloc_expr(Expr.Ident(v), at)
-        let l2 = store.alloc_stmt(Stmt.Let(v, null, call), at)
+        let call = store.alloc_expr(Expr.Call(Scoped(original), [], arg_ids), at)
+        let bound = store.alloc_expr(Expr.Ident(Scoped(v)), at)
+        let l2 = store.alloc_stmt(Stmt.Let(Scoped(v), null, call), at)
         let body = store.alloc_expr(Expr.Block([l2], bound), at)
-        let s = store.alloc_stmt(Stmt.FnDecl(name, tparams, params, ret, body), at)
+        let s = store.alloc_stmt(Stmt.FnDecl(Scoped(name), tparams, params, ret, body), at)
         let d = self.mint(key, f, s, name, DeclKind.Fn, false, "", null, false, body)
         // THE GENERATED RANGE: the twin's own nodes, minted last, so
         // its body's exprs sit at the arena's end — lo its first, hi
@@ -931,7 +931,7 @@ impl Decls {
         if x.kind is .Builtin { return [] }
         // `Self` is bounded by the trait itself: inside a default,
         // `self` answers the trait's own members
-        if x.kind is .Trait { return [Param { name: self_word, ty: named_ref(x.name), default: null, mark: plain_mark, span: null }] }
+        if x.kind is .Trait { return [Param { name: Scoped(self_word), ty: named_ref(x.name), default: null, mark: plain_mark, span: null }] }
         self.store(d).decl_tbounds(x.stmt)
     }
 

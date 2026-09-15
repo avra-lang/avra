@@ -168,6 +168,32 @@ The docs string says the law out loud: **there is no alias form.**
 - `fns/lower.av` emits `cx.packed(e, [reg])` — one identity Pack,
   the same verb `packed_lit` uses.
 
+### 4.2b The inverse — `value.of`
+
+`Name(v)` wraps; `id.of` reads the shape back. A name is OPAQUE at a
+seat, so a named value reaching a seat of its shape needs a word for
+the crossing, and the DECLARATION supplies it: `type Name = <of>`
+read backwards. It is a PROPERTY ROW (`structs/mod.av`), so it obeys
+the member law — a record answers its FIELDS first, which is why a
+record with a field `of` keeps it and only a name (which has no
+fields) reaches the row.
+
+    let id: UserId = 5
+    take_int(id.of)                 // fn take_int(n: int)
+    let xs: List<int> = rows.of     // Rows = List<int>
+    let t: A = b.of                 // type B = A: ONE level
+
+Free at runtime: a named value IS its shape, so the lowering answers
+the SUBJECT'S OWN REGISTER — no instruction, no reference, nothing to
+settle. An `Extract` would be wrong, and the reason is worth pinning:
+a LITERAL filling a named seat records no lift, so the register wears
+the SHAPE and the extract would have nothing to open.
+
+Refusals: `p.of` on a record is "no field `of` on `P`" (the fields
+answered first), `n.of` on a bare `int` is "no property `of` on
+`int`", and a name standing over nothing says the law —
+"`.of` reads a named type's shape, this is `X`".
+
 ### 4.3 A literal fills a named seat
 
 `accepts` is the ONE door (`other_accepts`' fourth arm). A LITERAL
@@ -347,7 +373,7 @@ product refuses its own source.
 
 ---
 
-## 9. Two laws this slice paid for
+## 9. Three laws this slice paid for
 
 **A CLOSER NEVER CONTINUES A LINE.** `>` closes a type argument list
 as well as wanting a right side, and the lexer's continuation rule
@@ -358,6 +384,17 @@ did, and parsed only because a `}` supplied its END), which is the
 "assumption nothing has ever tried to violate" law wearing the
 lexer's clothes. `>` is out of `continuing_op`; `<` stays, because a
 line ending in `<` is incomplete either way.
+
+**A PROPERTY'S ROW MUST BE FOUND THE SAME WAY TWICE.** Typing asks
+`member_type_of`, which tries the receiver's OWN shape and then the
+shape it stands over; the LOWERING asked `seen_at` alone. For every
+property that existed, the two agreed — a named type's `length` is
+found under `.List` either way — so the disagreement was invisible
+until `of`, which only the OWN shape answers. The two now share one
+verb (`property_of`), and the chain's member read shares it too: a
+row's lowering takes the subject's REGISTER and TYPE, which is what a
+chain holds where the spine holds a node. (Found by `?.of` lowering
+as a MEASURE and answering "a non-string reached text".)
 
 **A NAMED TYPE'S MARK IS MADE AT ITS DECLARATION**, so a law reading
 the registry mid-flight answers by declaration ORDER. The CLI signs
