@@ -1800,9 +1800,31 @@ Runtime facts, ours to ratify:
   is polled, or `echo` under `ms(0)` still gets its word out; and a
   timeout's capture must hold everything readable WHEN it fired, so
   the last act before declaring is a DRAIN and the grace is a floor.
-  Stated as order, the process pump's turn length was never tuned
-  once when it moved from C into Avra — A TUNED INTERVAL IS THE SMELL
-  that two orderings are being approximated by one number.
+  A TUNED INTERVAL IS THE SMELL that two orderings are being
+  approximated by one number.
+  THE INSTANCE: a grace waited out after the child was reaped SPUN a
+  core for its whole window, because the poll row's guard against
+  spinning asked whether the CHILD WAS ALIVE where the question is
+  whether the CALLER ASKED TO WAIT — so with nothing left to poll it
+  returned at once and the driver looped hot. The fix moved no
+  number: the row now waits whenever it is asked to, in every state
+  of the child.
+  AND THAT FIX ALONE LEFT THE WALL TIME WHERE IT WAS, which is the
+  law demonstrating itself in two steps. With the burn gone the grace
+  still waited its floor out for every command, because the loop's
+  exit asked the CLOCK alone where the question needs TWO facts: the
+  floor bounds how long a grandchild MAY still speak, and the pipe
+  state says whether anyone is left to speak at all. The loop already
+  asked the second question — AFTER itself. One invariant fixed the
+  burn; only both fixed the wait.
+  AND THE TEMPTING NUMBER WAS NOT THE TURN BUT THE GRACE — the turn
+  was never consulted on that path, so shortening it would have
+  measured nothing, while the spin lasted exactly the GRACE, so
+  cutting that cuts the burn IN PROPORTION and pays for it
+  by shortening the window a grandchild has to speak. A tuning that
+  works is the dangerous one.
+  AND ONLY A WITNESS THAT SEPARATES THEM CAN PIN IT: a wait and a
+  spin take the same WALL time, so the law is tested in CPU.
 - AN ASSUMPTION NOTHING HAS EVER TRIED TO VIOLATE IS NOT A GUARANTEE.
   A check that passes proves the arrangement it was handed happened
   to work; it does not prove the check would NOTICE. Two shapes,
