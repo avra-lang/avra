@@ -29,6 +29,25 @@ spec "diagnostics/render" {
             s.line_text(1) == "let a = 1" && s.line_text(2) == "let = 3"
         }
     }
+    given "a diagnostic with NO place" {
+        // A LABEL IS WHAT THE DIAGNOSTIC SAYS; a Loc is only where to
+        // point while saying it. An unlocated label used to vanish,
+        // and a voice about a PACKAGE rather than a line lost the one
+        // part naming what moved.
+        then "the label renders on its own line, under the message, with no window" {
+            let d = error_at("language.defect", null, "the package moved")
+                with { primary: Frame { label: "`Named` declares nothing where the crossing reads `at`", loc: null },
+                       help: "build against the one this compiler ships" }
+            let expected = """error[F0900]: the package moved
+  `Named` declares nothing where the crossing reads `at`
+help: build against the one this compiler ships"""
+            render(d, rendered_registry(), two_lines()) == expected
+        }
+        then "no label is no line — nothing is promised and nothing written" {
+            let d = error_at("language.defect", null, "the package moved")
+            render(d, rendered_registry(), two_lines()) == "error[F0900]: the package moved"
+        }
+    }
     given "a located diagnostic" {
         then "the rendering is exact — header, window, pointer, help" {
             let at = Loc { file: "app.av", lo: 14, hi: 15 }
