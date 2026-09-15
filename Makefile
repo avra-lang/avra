@@ -154,12 +154,15 @@ clean:
 # This gate step cold-bootstraps into a throwaway BUILD and refuses a
 # latent drift: a seed that fails here fails the gate, not a future
 # `make clean` + `make bootstrap`.
-seed-check:
+# THE OBJECTS ARE PREREQUISITES, and the link's words are kept: a
+# born-clean worktree once failed here on missing build/*.o with the
+# reason sent to /dev/null, and the gate read red for a green tree.
+seed-check: $(RUNTIME_OBJS)
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
 	@clang -w -O1 build/seed-check/seed.ll $(RUNTIME_OBJS) \
-	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/seed-check/avra 2>/dev/null \
-	 || { echo "seed-check: seed links — FAILED"; exit 1; }
+	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/seed-check/avra 2> build/seed-check/link.err \
+	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check; exit 1; }
 	@build/seed-check/avra build packages/cli >> build/seed-check/out 2>&1 \
 	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; tail -c 2000 build/seed-check/out; rm -rf build/seed-check; exit 1; }
 	@rm -rf build/seed-check
