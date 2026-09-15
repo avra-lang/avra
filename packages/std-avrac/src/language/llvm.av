@@ -184,6 +184,9 @@ fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>) {
 /// seat alone — the registry's own rows are all words and pointers.
 /// `.F64`/`.F32` land here as the double and float types the day a
 /// float VALUE exists to construct them.
+/// The four ways a value rides the runtime's 64-bit cells.
+enum SlotForm { Address, Widened, Reinterpreted, Word }
+
 fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
     match k {
         .I64 -> avra_llvm_int64_type(lc),
@@ -451,15 +454,14 @@ impl Emit {
         let called = self.call(callee, self.rt_args(callee, args))
         self.normalized_cells(callee, args)
         let raw = self.answered(callee, called)
-        if self.types.shape_of(self.tys[dst.index]) is .Bool {
-            return avra_llvm_build_icmp(self.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(self.lc), 0, 0), "b")
-        }
-        // The result coercion, rt_arg's mirror: an I64 answer is a WORD,
-        // and a pointer-shaped destination rides back out of it.
-        if self.types.rides_pointer(self.tys[dst.index]) && self.answers_word(callee) {
-            return avra_llvm_build_int_to_ptr(self.b, raw, avra_llvm_pointer_type(self.lc), "boxed")
-        }
-        raw
+        // The result coercion, `worded` inverted. A bool destination
+        // narrows from ANY integer answer, word or width, so it is
+        // asked before the word question; every other category rides
+        // back out only of a WORD.
+        let form = self.slot_form(self.tys[dst.index])
+        if form is .Widened { return self.unworded(form, raw) }
+        if !self.answers_word(callee) { return raw }
+        self.unworded(form, raw)
     }
 
 
@@ -609,14 +611,53 @@ impl Emit {
 
     /// A value cast into the I64 slot every category rides.
     fn worded(r: Reg, v: ptr) -> ptr {
-        let i64t = avra_llvm_int64_type(self.lc)
-        if self.types.rides_pointer(self.tys[r.index]) {
-            return avra_llvm_build_ptr_to_int(self.b, v, i64t, "slot")
+        match self.slot_form(self.tys[r.index]) {
+            .Address -> avra_llvm_build_ptr_to_int(self.b, v, avra_llvm_int64_type(self.lc), "slot"),
+            .Widened -> avra_llvm_build_zext(self.b, v, avra_llvm_int64_type(self.lc), "slot"),
+            .Reinterpreted -> avra_llvm_build_bitcast(self.b, v, avra_llvm_int64_type(self.lc), "slot"),
+            .Word -> v,
         }
-        if self.types.shape_of(self.tys[r.index]) is .Bool {
-            return avra_llvm_build_zext(self.b, v, i64t, "slot")
+    }
+
+
+    /// The WORD SLOT read back — `worded` inverted, arm for arm from
+    /// the SAME table, so the two directions cannot disagree about a
+    /// category. A pack and an unpack are opposite operations and
+    /// this is the only way one of them cannot be copied wrong.
+    fn unworded(form: SlotForm, raw: ptr) -> ptr {
+        match form {
+            .Address -> avra_llvm_build_int_to_ptr(self.b, raw, avra_llvm_pointer_type(self.lc), "boxed"),
+            .Widened -> avra_llvm_build_icmp(self.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(self.lc), 0, 0), "b"),
+            .Reinterpreted -> avra_llvm_build_bitcast(self.b, raw, avra_llvm_double_type(self.lc), "unslotted"),
+            .Word -> raw,
         }
-        v
+    }
+
+
+    /// HOW A VALUE CATEGORY CROSSES A WORD SLOT. The runtime's cells
+    /// are `int64_t`, so a value entering one is converted and a
+    /// value leaving one is converted back — and BOTH directions read
+    /// this one answer.
+    ///
+    /// A MATCH over the value's own type, never a chain of `is`.
+    /// A chain answers `Word` — unconverted — for every category
+    /// nobody thought about, which is how a double came to be handed
+    /// to `avra_array_push` as if it were an integer. `rides_pointer`
+    /// answers first because it is the registry's question, not a
+    /// shape's: a FLAT record is not a pointer though its shape is,
+    /// and a niche nullable IS one though its shape is `Opt`.
+    fn slot_form(ty: TypeId) -> SlotForm {
+        if self.types.rides_pointer(ty) { return SlotForm.Address }
+        match self.types.shape_of(ty) {
+            .Bool -> SlotForm.Widened,
+            .Float -> SlotForm.Reinterpreted,
+            .Int or .Error or .Void or .TypeName(_, _) or .Var(_, _, _) -> SlotForm.Word,
+            // every boxed shape — `rides_pointer` already answered for
+            // these, and they are spelled so a new one must decide
+            .Ptr or .Str or .List(_) or .Map(_, _) or .Struct(_, _) or .Enum(_, _) or
+            .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or
+            .Opt(_) or .Null or .EmptyList or .EmptyMap -> SlotForm.Address,
+        }
     }
 
 

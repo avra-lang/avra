@@ -321,6 +321,14 @@ LLVMValueRef avra_llvm_build_or(LLVMBuilderRef b, LLVMValueRef lhs, LLVMValueRef
 /* ── The FLOAT seam. A double lives in its own register file, so a
    float value never rides an integer instruction — the builders are
    separate on purpose and mixing them is silently wrong. */
+/* A REINTERPRETATION between the register files — same 64 bits, read
+   as the other kind. This is what a double crossing a WORD SLOT
+   needs: the runtime's slots are `int64_t` cells, so a float going
+   into one and coming back out is bits, never a conversion. */
+LLVMValueRef avra_llvm_build_bitcast(LLVMBuilderRef b, LLVMValueRef val, LLVMTypeRef dest_ty, const char* name) {
+    return LLVMBuildBitCast(b, val, dest_ty, name);
+}
+
 LLVMTypeRef avra_llvm_double_type(LLVMContextRef ctx) { return LLVMDoubleTypeInContext(ctx); }
 
 /* A float CONSTANT arrives as its IEEE-754 BIT PATTERN in an int64,

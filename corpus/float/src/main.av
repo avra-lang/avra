@@ -11,10 +11,48 @@ fn nearer(a: float, b: float, target: float) -> float {
     if da < db { a } else { b }
 }
 
+//! AND A FLOAT IN EVERY CONTAINER, because a boxed slot is an `i64`
+//! cell and a double neither packs into one nor unpacks out of one
+//! on its own. This program's first version had none of these and
+//! passed on both engines while every one of them was an ICE.
+type Point = { x: float, y: float }
+
+enum Reading {
+    Taken(v: float)
+    Missing
+}
+
+fn halved(v: float) -> Result<float, string> {
+    if v < 0.0 { return .Err("negative") }
+    .Ok(v / 2.0)
+}
+
+fn read_of(r: Reading) -> float {
+    match r {
+        .Taken(v) -> v,
+        .Missing -> 0.0,
+    }
+}
+
+fn answered(r: Result<float, string>) -> float {
+    match r {
+        .Ok(v) -> v,
+        .Err(_) -> 0.0,
+    }
+}
+
+let xs = [1.5, 2.25, 4.0]
+let p = Point { x: 0.5, y: 1.25 }
+let taken = Reading.Taken(6.5)
+let sum = xs[0] + xs[1] + xs[2]
+
 let half = 0.5
 let quarter = half * half
 
 "sum=${1.5 + 0.25} diff=${1.5 - 0.25} prod=${1.5 * 0.25} quot=${1.5 / 0.25}" +
 " quarter=${quarter} area=${area(2.0)} nearer=${nearer(1.0, 2.75, 3.0)}" +
 " lt=${0.1 < 0.2} ge=${2.0 >= 2.0} eq=${0.5 == half} ne=${0.5 != 0.25}" +
-" tenths=${0.1 + 0.2} whole=${4.0 / 2.0} neg=${0.0 - 1.5}"
+" tenths=${0.1 + 0.2} whole=${4.0 / 2.0} neg=${0.0 - 1.5}" +
+" list=${xs[0]},${xs[2]} listsum=${sum} listlen=${xs.length}" +
+" field=${p.x},${p.y} payload=${read_of(taken)} absent=${read_of(Reading.Missing)}" +
+" ok=${answered(halved(9.0))} err=${answered(halved(0.0 - 1.0))}"
