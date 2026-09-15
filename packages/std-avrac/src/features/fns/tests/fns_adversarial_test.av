@@ -2,7 +2,7 @@
 // params, returns. Every program here was written to BREAK the
 // feature, not to use it.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{refused_with, shown, refusals, ir_of, halver}
+use @std.avrac.testing.{refused_with, refused_at_run, shown, refusals, ir_of, halver}
 
 spec "features/fns (adversarial)" {
     given "`return` under attack — depths, tails, boundaries" {
@@ -134,6 +134,117 @@ spec "features/fns (adversarial)" {
             shown("once fn t() -> string? {\n    null\n}\nt() ?? \"absent\"") == "absent"
         }
     }
+    given "wrong types in every extern slot — the host seat law's third arm" {
+        // THE SEAT SIDE WAS HELD AND THE ANSWER SIDE WAS NOT. A
+        // record, an enum, a `dyn` or a `Bytes` answered by a non-row
+        // extern checked CLEAN, and then the evaluator said `defect:`
+        // while the native binary SEGFAULTED — one user mistake, two
+        // internal failures, in two different ways.
+        then "a record ANSWER refuses — a foreign pointer is not a box in our layout" {
+            refused_with("type R = { a: int, b: int }\nextern fn c_get() -> R\nc_get().a",
+                         "the answer of `c_get` wears `R`, which cannot cross to C")
+        }
+        then "an enum answer refuses in the same words" {
+            refused_with("enum E { A, B }\nextern fn c_get() -> E\nc_get() is .A",
+                         "the answer of `c_get` wears `E`, which cannot cross to C")
+        }
+        then "a `dyn` answer refuses" {
+            refused_with("trait Show {\n    fn show() -> string\n}\nextern fn c_get() -> dyn Show\nc_get().show()",
+                         "the answer of `c_get` wears `dyn Show`, which cannot cross to C")
+        }
+        then "a `Bytes` answer refuses — no length crosses back" {
+            refused_with("extern fn c_get() -> Bytes\nc_get().length",
+                         "the answer of `c_get` wears `Bytes`, which cannot cross to C")
+        }
+        then "a ROW answering `Bytes` is the exemption, and stands" {
+            refusals("extern fn avra_fd_taken(token: int) -> Bytes\n1") == 0
+        }
+        then "every answer the frame reads back is taken" {
+            refusals("extern fn c_w() -> int\nextern fn c_n(x: int) -> i32\nextern fn c_u(x: int) -> u32\n" +
+                     "extern fn c_l(x: int) -> i64\nextern fn c_f(x: int) -> f64\nextern fn c_g(x: int) -> float\n" +
+                     "extern fn c_b(x: int) -> bool\nextern fn c_s(x: int) -> string\nextern fn c_o(x: int) -> string?\n" +
+                     "extern fn c_p(x: int) -> ptr\nextern fn c_q(x: int) -> ptr?\nextern fn c_v(x: int)\n1") == 0
+        }
+        then "a `void` SEAT refuses — the frame calls it a defect and LLVM refuses the module" {
+            refused_with("extern fn c_take(x: void) -> int\n1",
+                         "seat 1 of `c_take` wears `void`, which cannot cross to C")
+        }
+        then "one mistake in the answer earns one message" {
+            refusals("type R = { a: int, b: int }\nextern fn c_get() -> R\n1") == 1
+        }
+        then "a seat and an answer that both refuse speak once each" {
+            refusals("type R = { a: int, b: int }\nextern fn c_get(x: R) -> R\n1") == 2
+        }
+    }
+    given "degenerate shapes at the extern frame — N=0, N=1, N=max" {
+        // The INTEGER file's bound is pinned in fns_test.av at 11.
+        // The FP file has its own, and had no case: the two are
+        // counted separately, so a rule that read one for both would
+        // pass every test in the tree.
+        then "the FP file carries eight seats" {
+            shown("extern fn avra_selfhost_argc(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64) -> int\n" +
+                  "avra_selfhost_argc(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5) >= 1") == "true"
+        }
+        then "the NINTH is past the file, and says so" {
+            refused_at_run("extern fn avra_selfhost_argc(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, g: f64, h: f64, i: f64) -> int\n" +
+                           "avra_selfhost_argc(1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5) >= 1",
+                           "takes more seats than one frame carries")
+        }
+        then "no seats at all is a call, not a special case" {
+            shown("extern fn avra_selfhost_argc() -> int\navra_selfhost_argc() >= 1") == "true"
+        }
+        then "an EMPTY string crosses as itself, not as absence" {
+            shown("extern fn avra_str_len(s: string) -> int\navra_str_len(\"\")") == "0"
+        }
+        then "empty octets cross as themselves" {
+            shown("extern fn avra_bytes_len(b: Bytes) -> int\nlet e: Bytes = \"\".bytes()\navra_bytes_len(e)") == "0"
+        }
+        then "a one-character symbol is asked for by that name" {
+            refused_at_run("extern fn q() -> int\nq() > 0", "`q` is extern and this image does not carry it")
+        }
+        then "an extern DECLARED and never called asks no symbol" {
+            shown("extern fn no_such_symbol_anywhere(x: int) -> int\n7") == "7"
+        }
+    }
+    given "the extern host crossed with every other feature" {
+        then "a loop calls it every turn — the symbol memo answers the same address" {
+            shown("extern fn avra_host_is_dir(p: string) -> int\nmut n = 0\nmut i = 0\nwhile i < 3 {\n    n = n + avra_host_is_dir(\"packages\")\n    i = i + 1\n}\nn") == "3"
+        }
+        then "a comprehension over a list of paths" {
+            shown("extern fn avra_host_is_dir(p: string) -> int\nlet xs = [avra_host_is_dir(p) for p in [\"packages\", \"no-such-directory\"]]\nxs[0] - xs[1]") == "1"
+        }
+        then "recursion reaches it at the floor" {
+            shown("extern fn avra_host_is_dir(p: string) -> int\nfn down(n: int) -> int {\n    if n <= 0 {\n        return avra_host_is_dir(\"packages\")\n    }\n    down(n - 1)\n}\ndown(20)") == "1"
+        }
+        then "a lambda holds the call" {
+            shown("extern fn avra_host_is_dir(p: string) -> int\nlet f = (p: string) -> avra_host_is_dir(p)\nf(\"packages\")") == "1"
+        }
+        then "one extern's ANSWER fills another's seat" {
+            shown("extern fn avra_selfhost_get_arg_cstr(i: int) -> string\nextern fn avra_str_len(s: string) -> int\navra_str_len(avra_selfhost_get_arg_cstr(0)) > 0") == "true"
+        }
+    }
+    given "ownership across the extern seam — a pointer the callee owns" {
+        // A foreign `const char*` answered as `string` is text with
+        // no header of ours in front of it. It is BORROWED, so a
+        // retain or a release on it would read memory that is not
+        // ours — measured clean under AVRA_RC_GUARD and AVRA_MEM_STATS,
+        // held, joined, stored and dropped.
+        then "a foreign answer survives being held and joined" {
+            shown("extern fn avra_selfhost_get_arg_cstr(i: int) -> string\nfn held() -> int {\n    let a = avra_selfhost_get_arg_cstr(0)\n    let b = a + \"!\"\n    b.length - a.length\n}\nheld()") == "1"
+        }
+        then "a foreign answer stored in a list outlives the loop that made it" {
+            shown("extern fn avra_selfhost_get_arg_cstr(i: int) -> string\nmut xs: List<string> = []\nmut i = 0\nwhile i < 20 {\n    xs.push(avra_selfhost_get_arg_cstr(0))\n    i = i + 1\n}\nxs.length") == "20"
+        }
+        then "a foreign answer stored in a record survives the fn that made it" {
+            shown("type Held = { text: string }\nextern fn avra_selfhost_get_arg_cstr(i: int) -> string\nfn kept() -> Held {\n    Held { text: avra_selfhost_get_arg_cstr(0) }\n}\nkept().text.length > 0") == "true"
+        }
+        then "a cell holding a foreign answer takes an owned box back" {
+            shown("extern fn avra_selfhost_get_arg_cstr(i: int) -> string\nmut s = \"an owned box\"\ns = avra_selfhost_get_arg_cstr(0)\ns = \"another\"\ns") == "another"
+        }
+        then "octets minted only to be staged outlive the call" {
+            shown("extern fn avra_bytes_len(b: Bytes) -> int\navra_bytes_len((\"ab\" + \"cd\").bytes())") == "4"
+        }
+    }
     given "the `const` seat under attack" {
         then "N=0 — `fn(const)` marks no name, and refuses" {
             refusals("fn f(const) -> int {\n    0\n}") == 2
@@ -242,8 +353,11 @@ spec "an extern that names a runtime row wears the row's shape" {
         then "a missing seat is refused" {
             refused_with("extern fn avra_streq(a: string) -> bool\n1\n", "is a runtime row of 2 seat(s), declared here with 1")
         }
-        then "a name the runtime does not carry is any shape" {
-            refusals("extern fn my_own_c(a: List<int>, b: string) -> int\n1\n") == 0
+        then "a name the runtime does not carry escapes the row law — its seats still cross" {
+            refusals("extern fn my_own_c(a: int, b: string) -> int\n1\n") == 0
+        }
+        then "a name the runtime does not carry still meets the crossing law at a list seat" {
+            refused_with("extern fn my_own_c(a: List<int>, b: string) -> int\n1\n", "seat 1 of `my_own_c` wears `List<int>`, which cannot cross to C")
         }
     }
 }

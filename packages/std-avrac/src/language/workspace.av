@@ -1781,6 +1781,31 @@ impl Workspace {
             .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
     }
 
+    /// THE PROGRAM'S OWN CLOSURE AS LIBRARIES the evaluator may open —
+    /// one per package that owns native code, derived from the package's
+    /// manifest NAME and never from a path a manifest wrote: a manifest
+    /// path the toolchain OPENS is a load primitive, which is the
+    /// write-primitive law at the same force.
+    ///
+    /// THE STEM CARRIES NO SUFFIX, so the platform question never enters
+    /// the compiler: the evaluator tries the ones it knows and the
+    /// refusal names the PACKAGE rather than a path only one machine has.
+    /// A disagreement with `tools/libs.py`, which derives the same stem
+    /// on the build side, is LOUD: nothing opens and the refusal names
+    /// the package.
+    fn linked_packages() -> List<LinkedPackage> {
+        [self.linked_of(pkg) for pkg in self.packages if self.owns_native(pkg)]
+    }
+
+    fn owns_native(pkg: Package) -> bool {
+        !self.manifest(pkg.ordinal).objects.is_empty()
+    }
+
+    fn linked_of(pkg: Package) -> LinkedPackage {
+        let named = self.manifest(pkg.ordinal).name
+        LinkedPackage { name: named, library: "build/lib${library_stem(named)}" }
+    }
+
     /// The root package's entry file: its `[bin]` path, else
     /// `src/main.av` when that exists, else absence.
     fn entry_of() -> string? {
@@ -1904,6 +1929,16 @@ fn same_body(c: Case, body: ExprId) -> bool {
 /// that fill to nothing. A hole naming nothing asks for NO WORD:
 /// an empty one would be an argument the linker still counts, and a
 /// bare `-L` eats the word after it.
+/// A package's manifest name as a library stem: `@std/sqlite` becomes
+/// `std-sqlite` — ONE leading `@` dropped, every `/` a `-`. The rule
+/// is spelled twice, here and in `tools/libs.py`, and the halves must
+/// be copyable into each other: "strip one leading `@`" is,
+/// "strip every `@`" is not.
+fn library_stem(named: string) -> string {
+    let stripped = if named.starts_with("@") { named.substring(1, named.length) } else { named }
+    stripped.replace("/", "-")
+}
+
 fn filled_words(words: List<string>) -> List<string> {
     [w for w in [expanded(x) for x in words] if !w.is_empty()]
 }
@@ -2123,7 +2158,7 @@ impl Program {
 
     fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
         let ws = self.ws
-        memory(self.ws.decls.union(self.files, entry, every, programs, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
+        memory(self.ws.decls.union(self.files, entry, every, programs, (w: Wanted) -> ws.lowered(ws.spec_id(w)))) with { libraries: ws.linked_packages() }
     }
 
     /// The lowered program, CHECKED — every file's analysis first,

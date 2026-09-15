@@ -491,7 +491,14 @@ impl TypeCx {
         self.seats_fit(mc.e, name, mc.args, wants)
     }
 
-    /// The by-value law over a TYPE: the scalars and text, and an enum
+    /// A method row's seats, then its answer — the shape every
+    /// runtime-backed method check takes.
+    mut fn worded(mc: MethodCall, name: string, wants: List<Type>, answers: Type) -> TypeId {
+        if !self.seated(mc, name, [self.view.types.intern(w) for w in wants]) { return self.error_type }
+        self.view.types.intern(answers)
+    }
+
+/// The by-value law over a TYPE: the scalars and text, and an enum
     /// whose variants carry nothing — it compares by variant.
     fn compares_by_value(ty: TypeId) -> bool {
         comparable(self.view.types.shape_of(ty)) || self.unit_enum(ty)
@@ -851,7 +858,7 @@ export fn this_is(n: string) -> string {
 /// answers a question nobody asked.
 export fn comparable(sh: Type) -> bool {
     match sh {
-        .Int or .Float or .Bool or .Str -> true,
+        .Int or .Float or .Bool or .Str or .Bytes -> true,
         .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or
         .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or
         .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or
