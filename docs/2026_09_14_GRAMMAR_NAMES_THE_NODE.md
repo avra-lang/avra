@@ -445,6 +445,31 @@ D1 decides this against the real nine; D0 commits only to the shape.
 
 ## 10. The printer (D2) — the staging, and the open question
 
+> AUDITED 2026-09-15 before writing D2. Two corrections and one
+> sharpening; the section's staging is otherwise right.
+>
+> **THE DERIVATION'S COVERAGE IS THE DOTTED MIGRATION'S COVERAGE, and
+> this section does not say so.** A rule can only be run backwards
+> where it NAMES its node — a `Build.Node` — because only then is the
+> capture↔payload join known. For `-> mut_stmt(n, t, v)` only the
+> builder's BODY knows that `n` fills `name`, and assuming positional
+> correspondence is the silent wrong tree D0 exists to prevent.
+> MEASURED at `c3a5d3b`: **5** dotted node builds against **230**
+> hand-builder arrows over 28 `builders.av` and 90 `build_` fns. A
+> printer derived today covers ~2%. AND THE MIGRATION THAT WOULD FIX
+> IT IS ITSELF BLOCKED: converting a rule needs a builder for that
+> variant, builders cannot be generated across the layer (§4), so each
+> rule converted before avra-8sb5.11.100 lands ADDS a hand builder to
+> the file the migration exists to delete. The chain is
+> avra-8sb5.11.100 → derivable builders → bulk conversion → derived
+> printer, and only the last of those is this section's subject.
+>
+> The `If` count and its resolution were also wrong — three rules
+> claimed, two measured, and the proposed disambiguator settling the
+> wrong half — and both are CORRECTED IN THE BODY below rather than
+> noted here, along with the check that replaces uniqueness.
+
+
 A rule run backwards prints: its literals print, a capture prints its
 payload, and precedence is the rule LADDER, so `source_text.av`'s four
 hand-named tiers (`atom_tier`, `unary_tier`, … `loosest_tier`) come
@@ -463,14 +488,28 @@ tokens derived first, measured against the golden, policy fitted to
 the diff — and if the policy turns out to need per-variant knowledge
 after all, THAT is the finding to report, not a reformatted tree.
 
-A second question D2 must answer: three rules build `Expr.If`
-(statement, expression, chained). A printer derived from rules must
-pick one. The rule the printer runs backwards is the one whose FIXED
-payloads match and whose captures are all present — and for `If` the
-statement/expression split is decided by the node's own kind
-(`Stmt.IfStmt` vs `Expr.If`), which is already two variants. Recorded
-as the check D2 runs first over all ~40 rules; a variant with two
-genuinely ambiguous rules needs a mark, and D2 will name them.
+A second question D2 must answer: SEVERAL RULES CAN BUILD ONE NODE, and
+a printer run backwards must pick one. The candidates are the rules
+whose FIXED payloads match and whose captures are all present.
+
+THE FIRST CHECK IS NOT UNIQUENESS. It is whether the candidate rules
+PRINT THE SAME TOKEN SEQUENCE — and that is the design, not a
+refinement of it. `if` is the worked example, measured at `c3a5d3b`:
+FIVE rules anchor on the keyword, and **two** of them build `Expr.If`
+(`features/if_expr/mod.av:19` and `:20`), while `:18` builds
+`Stmt.IfStmt` and `features/nullable/mod.av:41` builds the `if let`
+match. So deciding by the node's own kind — the resolution this
+section first proposed — separates the STATEMENT and leaves behind
+exactly the pair it was meant to settle. Those two rules are textually
+identical but for an `@expect`, so either one prints the same tokens
+and the ambiguity is HARMLESS.
+
+A uniqueness test reports a false conflict there, and a false conflict
+is worse than none: it would send D2 to invent a disambiguating mark
+for a pair that needs no decision. So the check D2 runs first over all
+~40 rules asks what the printer actually depends on — do the
+candidates AGREE on the tokens — and only a disagreement is a real
+ambiguity needing a mark. D2 names those.
 
 ## 11. ~~THE BLOCKING ASK~~ — payload names in `@std/meta`: LANDED
 
@@ -518,15 +557,52 @@ recruits. Everything else in this document is phase D's own.
 
 ## 12. Leave-alones, with triggers
 
-- **The engine's `Captured` and the `Builder` methods stay.** The
-  derive generates bodies that call them; nothing about the capture
-  protocol moves. Trigger to revisit: a payload type the table cannot
-  name.
-- **The payload-type table now exists TWICE** — `verb_of` in
-  `rebuild_derive.av` and the grammar derive's reader table — keyed
-  identically. Two copies may wait; the THIRD names the concept
-  (`core/payload.av`, a payload KIND read by every derive). Trigger:
-  phase A's `Fingerprint` or `Children` derive wanting the same keys.
+> AUDITED 2026-09-15. Trigger 1 is PARTLY SPENT, trigger 2 has NOT
+> fired but its condition is SUPERSEDED, trigger 3 holds as written.
+>
+> Triggers 1 and 2 are CORRECTED IN THE BULLETS below rather than
+> noted here — a note above a wrong condition leaves the wrong
+> condition readable, and a trigger is written to be acted on.
+> Trigger 2's replacement is a filed ticket (avra-9tfi); the `Kind`
+> retirement was deliberately NOT taken in D1, since it would have
+> changed the differential's subject mid-slice and `rebuild_derive.av`
+> is not phase D's file.
+>
+> **3 — holds exactly as written.** `grammar/validate.av` still does not
+> and cannot check builder names; the node refusals live in the
+> language's assembly (`bind_nodes`, called from `language/mod.av`),
+> which is where D0 put them and where D1 left them.
+
+- **The engine's `Captured` stays; the `Builder`'s READERS did not.**
+  Nothing about the capture protocol moves — `Captured` is untouched by
+  D0 and D1, and that is the half of this leave-alone that held. The
+  reading surface DID move: D1 gave `Builder` a `payloads` field and
+  four NAME-keyed readers (`text_of`, `flag_of`, `texts_of`,
+  `exprs_of`) and deleted the three index readers (`text`, `texts`,
+  `flag`), because an index is a human counting declaration order where
+  a name is the declaration answering.
+  TRIGGER, corrected: **a rule converting to a variant whose payload
+  has no reader** — `List<Arm>`, `List<Case>`, `MapPairs`, `TypeRef`
+  and the rest. The original condition ("a payload type the table
+  cannot name") points at the wrong moment: the rows name every payload
+  type already, since D1 derives them for every variant of `Expr`,
+  `Pat` and `Stmt`. It is CONVERSION that needs a reader, not naming.
+- **The payload-type table exists TWICE, and the trigger for it is
+  SUPERSEDED — see avra-9tfi.** The two copies are `verb_of` in
+  `rebuild_derive.av` and `text_types`/`element_of`/`wanted_carrier` in
+  `features/node_grammar.av`, both keyed on a type SPELLING
+  (`fingerprint.av` keys on nothing of the sort; counted at `c3a5d3b`).
+  This entry waited for a THIRD copy to name the concept. That
+  condition will never be the right one again: B2c (`3cad0d9`) landed
+  `@std.meta.Kind`, a STRUCTURED type shape, and `workspace.av`'s
+  `crossed_field` POPULATES it on every enum payload — so both tables
+  are retirable onto a shape TODAY, at two copies, rather than at
+  three. `Kind`'s own doc names this as its purpose: "telling
+  `List<int>` from a type named `Listen` was a substring test before
+  this".
+  TRIGGER: none — it is a filed ticket, avra-9tfi, not a condition to
+  wait on. A trigger that is already spent should stop reading as
+  future work.
 - **`grammar/validate.av` does not check builder names** and cannot —
   it is language-agnostic. The node refusals go in the language's
   assembly beside `compose_grammar`, not in `validate.av`. Trigger:
