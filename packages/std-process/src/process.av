@@ -997,7 +997,14 @@ fn stopped_tree(s: Stage) -> Stage {
 fn grace(s: Stage, grace_ms: int) -> Stage {
     let until = now_ms() + grace_ms
     mut g = s
-    while now_ms() < until {
+    // THE FLOOR BOUNDS A HOLDER'S TIME, IT DOES NOT MANUFACTURE ONE.
+    // The window exists because a GRANDCHILD may still hold a pipe and
+    // speak into it; with both ends closed nobody can, and waiting the
+    // rest out buys nothing — the loop asked the clock alone and paid
+    // the whole floor for every command that had no holder at all.
+    // Both questions, in the order they answer: is there time left,
+    // and is anyone left to use it.
+    while now_ms() < until && still_held(g) {
         g = swept(ticked(g, turn_ms))
     }
     let last = swept(g)
@@ -1008,6 +1015,13 @@ fn grace(s: Stage, grace_ms: int) -> Stage {
     // what it managed to say before it died is still the caller's.
     let _ = avra_proc_signal(last.h, sigkill, 1)
     swept(last) with { truncated: true }
+}
+
+/// WHETHER ANYONE CAN STILL SPEAK INTO THIS STAGE: an end of ours
+/// still open is a pipe a grandchild may hold. Both closed is silence
+/// that cannot break — the floor has nothing left to protect.
+fn still_held(s: Stage) -> bool {
+    avra_proc_fd(s.h, 1) >= 0 || avra_proc_fd(s.h, 2) >= 0
 }
 
 /// What a stage has captured, both streams gathered once.
