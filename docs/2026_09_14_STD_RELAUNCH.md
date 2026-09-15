@@ -4,16 +4,15 @@ A new STD task master reads this file and takes the work. Written
 2026-09-15 by the outgoing master. State first, then how to run it,
 then the sessions.
 
-## STATE at main `fa0c1ec`
+## STATE at main `25cee6b`
 
-23 merges landed 09-14/15. Tracker: `export
+24 merges landed 09-14/15. Tracker: `export
 TASKS_DB=/Users/tristan/projects/tristanMatthias/avra/.tasks/avra.db
 TASKS_ACTOR="STD MASTER"`. Epic `avra-ms0j` under `avra-8sb5`.
 
 ### In flight
 | what | where |
 |---|---|
-| `toolchain/bench` | integrating from `../avra-lane-benchint`, log `/tmp/integrate-benchint.log`. Last TOOLCHAIN branch. |
 | PR #23 `data/process-turn` | `avra-0m3d`, the race launcher, 73x measured. Queued. |
 | PR #24 `data/finalized-door` | `avra-f3qo`, ten sqlite verbs skipping the finalized check. Queued. |
 
@@ -22,8 +21,9 @@ TASKS_ACTOR="STD MASTER"`. Epic `avra-ms0j` under `avra-8sb5`.
   half. The owner discharged the sqlite lead's fence in their own
   words ("do a") — Option A, recorded on the task. Then `.3.2`,
   `.3.6`. Epic `avra-bjkk`.
-- **TOOLCHAIN** — idle, queue empty. Epic `avra-n1w7` has one
-  unassigned item, `avra-kpqs`. Session can be killed.
+- **TOOLCHAIN** — CLOSED, epic closed, five worktrees retired and
+  branches archived. `avra-kpqs` left open and UNASSIGNED for a fresh
+  session (it is not in a closed epic by accident).
 - **LANE-D / STD-SUBSTRATE / STD-NET-HTTP** — closed, worktrees
   retired, branches archived as `archive/*` tags (pushed).
 - **LANGUAGE-CORE** (`avra-2y5c`), **SUGAR** (`avra-70jh`) — never
