@@ -15264,3 +15264,48 @@ length changes nothing measurable. The tempting knob was
 proportion, left the spin intact, and paid for it by shortening the
 window a grandchild has to speak — a tuned interval standing in for
 the ordering the loop actually needed.
+## Feedback survey — 2026-09-14 #15 (TOOLCHAIN, after the seed — toolchain/after-seed, no PR)
+
+Counted per axis: friction 2, doctrine 1, process 1; sugar, features,
+defects, performance empty. Not surveyed: any tree but
+../avra-lane-a; the slice lands last, bootstrapped from the refreshed
+seed, so its seed-check receipt is the master's.
+
+### FRICTION — what cost time
+
+- **A BINARY CANNOT SAY ITS GENERATION.** The worktree's standing
+  `build/avra` was the Ptr-seat product (off main) when this branch —
+  whose manifests assume the std-root resolver — was built with it,
+  and the refusal was F3013 on every std `use` in the cli: a true
+  message about the wrong cause, one chain lost. The way out was the
+  generation ladder (build the prelude branch's product, then this
+  branch twice). THE ASK: `avra --version` carries the source commit
+  the binary was built from (P7), so "my binary predates my source"
+  is one command instead of a diagnosis.
+- **A TOML COMMENT HAS NO OWNER.** Stripping rows and their emptied
+  sections by regex ate a comment block that belonged to the NEXT
+  section twice (`[process.tools]`'s in cli, `[link]`'s in sqlite),
+  and left three that belonged to removed rows standing; the rule
+  that held — a block glued to a following header is that header's —
+  is a heuristic. THE ASK: manifest edits as structured fixes the
+  compiler writes (`dependency_fix` already adds a row; a `drop row`
+  fix and a section-empty rule beside it), so no sweep regexes TOML.
+
+### DOCTRINE
+
+- **A BRANCH'S BUILD NEEDS A PRODUCT OF ITS MANIFESTS' GENERATION.**
+  A manifest with no std rows is readable only by a compiler that
+  carries the resolver, so the standing binary must be at least that
+  generation or the build refuses with a message about dependencies.
+  Held in this slice's commit message and on avra-n1w7; the general
+  form is CLAUDE.md's "after a language change merges, a lane's
+  first build is `make bootstrap`" — this is its pre-merge twin,
+  where the seed is the older one and a sibling branch's product is
+  the bootstrap.
+
+### PROCESS
+
+- **FOUR HARNESS KILLS TODAY.** Two more gates stopped "because the
+  system is running low on memory" (444 MB and 376 MB peaks, both
+  under the watchdog's floor); every one left the tree clean and was
+  re-queued. CONFIRMS avra-kbxq; nothing new to file.
