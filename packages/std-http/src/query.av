@@ -1,0 +1,239 @@
+//! THE QUERY — what follows the target's first `?`, read as KEYED
+//! FIELDS beside the path a route matched.
+//!
+//! A ROUTE MATCHES THE PATH, NEVER THE QUERY. A grammar is POSITIONAL
+//! and ORDERED; a query is KEYED and order-independent, so a pattern
+//! that reached into it would swallow `&page=2` into a capture and
+//! refuse `?page=2&q=cats` — the same request written the other way
+//! round. The router splits the target and matches what is left of
+//! the `?`.
+//!
+//! RAW OCTETS, AND NOTHING IS DECODED HERE. The splits are on the
+//! literal octets `&` and `=`, so **`%26` IS NOT `&`** and `%3D` is
+//! not `=`: an escape cannot smuggle a separator past this reader,
+//! and a value that contains one arrives whole. `;` is not a
+//! separator either — a dead HTML recommendation browsers never sent,
+//! and a parser differential wherever it is honoured.
+//!
+//! `+` IS NOT A SPACE. That is a FORM encoding
+//! (`application/x-www-form-urlencoded`), not a URI one, and a query
+//! is not always a form. When someone asks for forms it arrives as
+//! its own verb beside `decoded`, which will never guess.
+//!
+//! DECODING HAPPENS IN THE HANDLER, on the one value it asked for,
+//! through `decoded`. That is the only place, and it is deliberate: a
+//! decode before the split changes what the split means, and a decode
+//! the reader performs is a decode nobody chose. `decoded` serves a
+//! path capture the same way.
+//!
+//! A NAME IS COMPARED EXACTLY, octet for octet and case for case. A
+//! field name folds because RFC 9110 says so; a query name is opaque,
+//! so `?Page=2` does not answer an ask for `page`, and `?a=1&ab=2`
+//! answers `a` and `ab` apart.
+//!
+//! THE SPLIT NEVER SEES A NUL, AND `decoded` CAN MINT ONE. The framer
+//! refuses every CTL in a target, so no NUL reaches the pair reader —
+//! and every scan here reads the header's length anyway. But `%00`
+//! decodes to a real NUL, and a value carrying one has a `.length`
+//! that counts it while `==`, `contains`, `index_of` and `split` stop
+//! before it. That is the language's own NUL law arriving through a
+//! URL, and `decoded` is the door: it runs AFTER the split, so what it
+//! mints can never change where a pair began.
+//!
+//! ABSENT, EMPTY AND INVALID ARE THREE ANSWERS. A key that is not
+//! there, a key with no `=` at all, a key whose value is empty, and a
+//! key asked for as a scalar that came twice — `Asked` keeps all four
+//! apart, because collapsing them is how one layer reads `?id=1` and
+//! the next reads `?id=2` from the same request.
+use frame.{Span, hex_of}
+
+/// One `name=value` from the query, as spans into the target's
+/// buffer. `value` is ABSENT when the pair carried no `=` at all —
+/// `?a` and `?a=` are different on the wire and stay different here.
+export type Pair = { name: Span, value: Span? }
+
+/// The query, in encounter order, over ITS OWN OCTETS.
+///
+/// THE READER HOLDS THE QUERY AND NOTHING ELSE, and that is a bound
+/// rather than a convenience. A reader over the whole request buffer
+/// searches it for each separator, so the BODY is searched too, and a
+/// request well inside the declared bounds — a target at the line
+/// bound, a body at the body bound — costs (pairs x buffer) on one
+/// call to `query()`. The answer was never wrong; the cost was, and
+/// no bound on a search fixes what having the body in reach permits.
+export type Query = { raw: Bytes, pairs: List<Pair> }
+
+/// What asking a query for ONE name answers. A scalar is at most
+/// once: a repeat is not a value, it is a mistake, and it says so
+/// rather than picking a side.
+export enum Asked {
+    Absent
+    Bare
+    Value(v: Bytes)
+    Repeated(times: int)
+}
+
+/// The query inside `raw` between `lo` and `hi` — the span AFTER the
+/// `?`. An empty span is an EMPTY query, which is a query: `/x?` and
+/// `/x` differ, and only the caller who split them knows which it
+/// had.
+///
+/// A PAIR WITHOUT A NAME NEVER BEGINS. `?` alone, `?&&`, a trailing
+/// `&` and `?=v` all carry no pairs, because a segment of no octets
+/// and a segment opening with `=` name no key — and a key of no
+/// octets is not a key. `starts` is where that is decided.
+export fn query_of(raw: Bytes, lo: int, hi: int) -> Query {
+    if lo >= hi { return Query { raw: no_octets(), pairs: [] } }
+    own(raw.slice(lo, hi))
+}
+
+/// The query read over octets that are ITS OWN, so every separator
+/// search ends where the query does.
+fn own(b: Bytes) -> Query {
+    Query { raw: b, pairs: [pair_of(b, at, ends(b, at)) for at in starts(b)] }
+}
+
+fn no_octets() -> Bytes { "".bytes() }
+
+/// Where each NAMED pair begins: 0, then one past every `&`, minus
+/// the positions that begin no key. A segment opening with `&` is
+/// empty and a segment opening with `=` has no name, so `?&&`, a
+/// trailing `&` and `?=v` all yield no starts — which is why an empty
+/// query and a query of separators agree.
+fn starts(raw: Bytes) -> List<int> {
+    [i for i in 0..raw.length if names_a_key(raw, i)]
+}
+
+/// Whether a pair WITH A NAME begins at `i`: the query's own start or
+/// one past an `&`, and not itself a separator.
+fn names_a_key(raw: Bytes, i: int) -> bool {
+    let c = raw.at(i)
+    opens(raw, i) && c != amp_octet() && c != equals_octet()
+}
+
+fn opens(raw: Bytes, i: int) -> bool { i == 0 || raw.at(i - 1) == amp_octet() }
+
+/// Where the pair beginning at `at` ends — the next `&`, or the
+/// query's end.
+fn ends(raw: Bytes, at: int) -> int {
+    let amp = raw.index_of(amp(), at)
+    if amp < 0 { return raw.length }
+    amp
+}
+
+/// One pair, split at its FIRST `=`. A later `=` belongs to the
+/// value: `?a=b=c` names `a` and holds `b=c`.
+fn pair_of(raw: Bytes, at: int, end: int) -> Pair {
+    let eq = raw.index_of(equals(), at)
+    if eq < 0 || eq >= end { return Pair { name: Span { lo: at, hi: end }, value: null } }
+    Pair { name: Span { lo: at, hi: eq }, value: Span { lo: eq + 1, hi: end } }
+}
+
+/// Whether a pair's name IS this one — compared exactly, octet for
+/// octet and case for case: a query name is opaque where a field name
+/// folds. The one place a name is judged, so an ask and a count can
+/// never disagree about which pairs answered.
+fn carries(raw: Bytes, p: Pair, want: Bytes) -> bool { raw.eq_at(p.name.lo, p.name.hi, want) }
+
+fn amp_octet() -> int { 38 }
+fn equals_octet() -> int { 61 }
+once fn amp() -> Bytes { "&".bytes() }
+once fn equals() -> Bytes { "=".bytes() }
+once fn percent() -> Bytes { "%".bytes() }
+
+impl Query {
+    /// How many pairs the query carries. Zero is an empty query and
+    /// says nothing about whether there was a `?`.
+    fn length() -> int { self.pairs.length }
+
+    /// Whether any pair carries this name, `=` or not.
+    fn has(name: string) -> bool {
+        let want = name.bytes()
+        let raw = self.raw
+        self.pairs.any((p) -> carries(raw, p, want))
+    }
+
+    /// Every name the query carries, IN ENCOUNTER ORDER and with
+    /// repeats kept — what was sent, not what a set of it would be.
+    fn names() -> List<Bytes> {
+        let raw = self.raw
+        [raw.slice(p.name.lo, p.name.hi) for p in self.pairs]
+    }
+
+    /// THE SCALAR ASK: one name, at most once. A repeat answers
+    /// `.Repeated` rather than a side, because choosing one silently
+    /// is how two layers read different values out of one request.
+    fn one(name: string) -> Asked {
+        let found = self.at(name)
+        if found.length > 1 { return .Repeated(found.length) }
+        if found.is_empty() { return .Absent }
+        let v: Span? = self.pairs[found[0]].value
+        if v == null { return .Bare }
+        .Value(self.raw.slice(v!.lo, v!.hi))
+    }
+
+    /// THE LIST ASK: every value of this name, in ENCOUNTER ORDER. A
+    /// bare key contributes an absence, so a caller sees that it was
+    /// there and carried nothing.
+    fn all(name: string) -> List<Bytes?> {
+        [self.value_at(j) for j in self.at(name)]
+    }
+
+    /// The positions of every pair carrying this name.
+    fn at(name: string) -> List<int> {
+        let want = name.bytes()
+        let raw = self.raw
+        [j for j, p in self.pairs if carries(raw, p, want)]
+    }
+
+    fn value_at(j: int) -> Bytes? {
+        let v: Span? = self.pairs[j].value
+        if v == null { return null }
+        self.raw.slice(v!.lo, v!.hi)
+    }
+}
+
+/// PERCENT-DECODING, and THE ONLY PLACE IT HAPPENS. `%XY` becomes the
+/// octet those two hex digits name; everything else is copied. A
+/// MALFORMED ESCAPE IS NOT A CHARACTER — a `%` at the end, or one not
+/// followed by two hex digits, answers ABSENCE rather than passing
+/// the `%` through, because a reader that repairs an escape and a
+/// reader that refuses it disagree about what the request said.
+///
+/// `+` IS LEFT ALONE. It is a space only in a form body's encoding,
+/// which this is not.
+///
+/// A value with no `%` is answered as it arrived, allocating nothing.
+export fn decoded(b: Bytes) -> Bytes? {
+    if b.index_of(percent(), 0) < 0 { return b }
+    if malformed(b) { return null }
+    // an escape's two digits are dropped where they sit and spent at its `%`
+    [octet_at(b, i) for i in 0..b.length if !inside_escape(b, i)].bytes()!
+}
+
+/// Whether any `%` here opens no escape.
+fn malformed(b: Bytes) -> bool {
+    ![i for i in 0..b.length if b.at(i) == percent_octet() && !escaped(b, i)].is_empty()
+}
+
+fn percent_octet() -> int { 37 }
+
+/// Whether a `%` at `i` is followed by two hex digits.
+fn escaped(b: Bytes, i: int) -> bool {
+    i + 2 < b.length && hex_of(b.at(i + 1)) != null && hex_of(b.at(i + 2)) != null
+}
+
+/// Whether the octet at `i` is one of the two hex digits of an escape
+/// that opened at `i - 1` or `i - 2`.
+fn inside_escape(b: Bytes, i: int) -> bool {
+    (i >= 1 && b.at(i - 1) == percent_octet()) || (i >= 2 && b.at(i - 2) == percent_octet())
+}
+
+/// The octet position `i` contributes: an escape's value at its `%`,
+/// otherwise the octet itself.
+fn octet_at(b: Bytes, i: int) -> int {
+    let c = b.at(i)
+    if c != percent_octet() { return c }
+    hex_of(b.at(i + 1))! * 16 + hex_of(b.at(i + 2))!
+}
+

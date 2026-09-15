@@ -1,0 +1,50 @@
+use @std.net.{Conn, Poller, Read, NetError, listen, connect, poller}
+use @std.time.{ms, secs, now_ns}
+use @std.http.frame.{limits}
+use @std.http.http.{text}
+use @std.http.server.{Server, Timing, served}
+
+type App = { hits: int }
+
+
+/// One request written, the server turned until the reply is read.
+fn turned(mut s: Server<App>, c: Conn, p: Poller, req: Bytes) -> Result<int, NetError> {
+    let _ = c.write(req, 0)?
+    mut got = 0
+    while got == 0 {
+        s.turn(ms(100))?
+        p.wait(ms(100))?
+        got = match c.read(4096)? {
+            .Data(b) -> b.length,
+            .Eof -> -1,
+            .Pending -> 0,
+        }
+    }
+    .Ok(got)
+}
+
+fn measured(n: int) -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    mut s = served(l, App { hits: 0 }, limits(), Timing { requests: 1000000 }) { mut app, q ->
+        app.hits = app.hits + 1
+        text(200, "hello")
+    }?
+    let c = connect("127.0.0.1", l.port, secs(2))?
+    let p = poller()?
+    p.watch(c.fd, .Read)?
+    let req = "GET / HTTP/1.1\r\nHost: bench\r\nUser-Agent: turn\r\nAccept: */*\r\n\r\n".bytes()
+    let _ = turned(s, c, p, req)?
+    let start = now_ns()
+    mut i = 0
+    while i < n {
+        let _ = turned(s, c, p, req)?
+        i = i + 1
+    }
+    let each = (now_ns() - start) / n
+    .Ok("${n} requests, ${each} ns each round trip, ${s.app.hits} served")
+}
+
+match measured(200000) {
+    .Ok(t) -> t,
+    .Err(e) -> "failed: ${e.describe().message}",
+}

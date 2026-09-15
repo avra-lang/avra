@@ -1,0 +1,193 @@
+//! THE BASELINE, and what a format pattern costs beside a hand-written
+//! scan. Five ways to read one HTTP request line, timed in the same
+//! run so the comparison survives a noisy machine even when the
+//! absolute numbers do not:
+//!
+//!   1. `@std.http`'s framer over a whole head — the standing
+//!      baseline, kept so a faster oracle can be measured against the
+//!      same harness.
+//!   2/3. The request line over TEXT, split by hand and by a format
+//!      pattern. A string's `index_of` takes no offset, so the hand
+//!      version re-slices its tail at every step.
+//!   4/5. The same over OCTETS, where `index_of` resumes and neither
+//!      side converts anything.
+//!
+//! Each pair reads the same value and answers the same thing, so the
+//! difference inside a pair is the feature's cost and nothing else.
+//! The octet pair is the one the obligation is stated over: it is
+//! where the framer lives and where no subject is copied.
+use @std.http.frame.{framed, limits}
+use @std.time.{now_ns}
+
+fn head() -> Bytes { "GET /index.html HTTP/1.0\r\n\r\n".bytes() }
+fn line() -> string { "GET /index.html HTTP/1.0" }
+once fn octets() -> Bytes { "GET /index.html HTTP/1.0".bytes() }
+once fn space() -> Bytes { " ".bytes() }
+
+/// How many of `runs` framed completely — the count is read, so the
+/// loop is not work a backend may drop.
+fn framings(buf: Bytes, runs: int) -> int {
+    let bounds = limits()
+    mut ok = 0
+    // LICENSED I3: a timed loop counts, it does not build a list
+    for i in 0..runs {
+        if framed(buf, 0, 0, bounds) is .Complete { ok = ok + 1 }
+    }
+    ok
+}
+
+/// The request line split by hand over TEXT: find a space, cut, find
+/// the next in what is left. Each cut copies, because a string's
+/// `index_of` cannot resume at an offset.
+fn split_text(l: string) -> int {
+    let first = l.index_of(" ")
+    if first < 0 { return 0 }
+    let rest = l.substring(first + 1, l.length)
+    let second = rest.index_of(" ")
+    if second < 0 { return 0 }
+    l.substring(0, first).length + rest.substring(0, second).length +
+        rest.substring(second + 1, rest.length).length
+}
+
+/// The same over OCTETS: `index_of` resumes, so nothing is re-sliced
+/// to find the next separator, and the separator itself is hoisted —
+/// which the compiled scan cannot yet do (ROADMAP: hoisted literals).
+fn split_octets(b: Bytes) -> int {
+    let first = b.index_of(space(), 0)
+    if first < 0 { return 0 }
+    let second = b.index_of(space(), first + 1)
+    if second < 0 { return 0 }
+    b.slice(0, first).length + b.slice(first + 1, second).length +
+        b.slice(second + 1, b.length).length
+}
+
+grammar Line = "{method} {path} {version}"
+
+/// The same line through the DOOR a grammar declares: the same scan,
+/// then the record its holes name.
+fn door_text(l: string) -> int {
+    match Line.parse(l) {
+        r? -> r.method.length + r.path.length + r.version.length
+        null -> 0
+    }
+}
+
+/// The pattern AND the same record the door builds — the control
+/// that says whether the door's extra cost is its scan or its record.
+fn built_text(l: string) -> int {
+    match l {
+        "{method} {path} {version}" -> holds(Line { method: method, path: path, version: version })
+        _ -> 0
+    }
+}
+
+fn holds(r: Line) -> int { r.method.length + r.path.length + r.version.length }
+
+fn scan_text(l: string) -> int {
+    match l {
+        "{method} {path} {version}" -> method.length + path.length + version.length
+        _ -> 0
+    }
+}
+
+fn scan_octets(b: Bytes) -> int {
+    match b {
+        "{method} {path} {version}" -> method.length + path.length + version.length
+        _ -> 0
+    }
+}
+
+fn text_by_hand(runs: int) -> int {
+    // the subject is read ONCE: a `once` read is not free, and inside
+    // the loop it would inflate both sides and compress the ratio
+    let subject = line()
+    mut total = 0
+    // LICENSED I3: a timed loop sums, it does not build a list
+    for i in 0..runs { total = total + split_text(subject) }
+    total
+}
+
+fn text_by_scan(runs: int) -> int {
+    // the subject is read ONCE: a `once` read is not free, and inside
+    // the loop it would inflate both sides and compress the ratio
+    let subject = line()
+    mut total = 0
+    // LICENSED I3: a timed loop sums, it does not build a list
+    for i in 0..runs { total = total + scan_text(subject) }
+    total
+}
+
+fn text_by_door(runs: int) -> int {
+    // the subject is read ONCE: a `once` read is not free, and inside
+    // the loop it would inflate both sides and compress the ratio
+    let subject = line()
+    mut total = 0
+    // LICENSED I3: a timed loop sums, it does not build a list
+    for i in 0..runs { total = total + door_text(subject) }
+    total
+}
+
+fn text_by_built(runs: int) -> int {
+    // the subject is read ONCE: a `once` read is not free, and inside
+    // the loop it would inflate both sides and compress the ratio
+    let subject = line()
+    mut total = 0
+    // LICENSED I3: a timed loop sums, it does not build a list
+    for i in 0..runs { total = total + built_text(subject) }
+    total
+}
+
+fn octets_by_hand(runs: int) -> int {
+    // the subject is read ONCE: a `once` read is not free, and inside
+    // the loop it would inflate both sides and compress the ratio
+    let subject = octets()
+    mut total = 0
+    // LICENSED I3: a timed loop sums, it does not build a list
+    for i in 0..runs { total = total + split_octets(subject) }
+    total
+}
+
+fn octets_by_scan(runs: int) -> int {
+    // the subject is read ONCE: a `once` read is not free, and inside
+    // the loop it would inflate both sides and compress the ratio
+    let subject = octets()
+    mut total = 0
+    // LICENSED I3: a timed loop sums, it does not build a list
+    for i in 0..runs { total = total + scan_octets(subject) }
+    total
+}
+
+/// Nanoseconds per call, and -1 when a run answered wrongly, so a
+/// broken measurement cannot read as a fast one.
+fn per_call(spent: int, runs: int, got: int, want: int) -> int {
+    if got != want { return -1 }
+    spent / runs
+}
+
+let runs = 200000
+let want = split_text(line()) * runs
+
+let t0 = now_ns()
+let framings_ok = framings(head(), runs)
+let t1 = now_ns()
+let hand_text = text_by_hand(runs)
+let t2 = now_ns()
+let scan_text_total = text_by_scan(runs)
+let t3 = now_ns()
+let door_total = text_by_door(runs)
+let t35 = now_ns()
+let built_total = text_by_built(runs)
+let t37 = now_ns()
+let hand_octets = octets_by_hand(runs)
+let t4 = now_ns()
+let scan_octets_total = octets_by_scan(runs)
+let t5 = now_ns()
+
+let framer = per_call(t1 - t0, runs, framings_ok, runs)
+let th = per_call(t2 - t1, runs, hand_text, want)
+let ts = per_call(t3 - t2, runs, scan_text_total, want)
+let dr = per_call(t35 - t3, runs, door_total, want)
+let bu = per_call(t37 - t35, runs, built_total, want)
+let oh = per_call(t4 - t37, runs, hand_octets, want)
+let os = per_call(t5 - t4, runs, scan_octets_total, want)
+"runs ${runs} | framer head ${framer} | text: hand ${th} scan ${ts} scan+record ${bu} door ${dr} | octets: hand ${oh} scan ${os}"
