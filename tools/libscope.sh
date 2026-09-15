@@ -6,9 +6,8 @@
 # property whose failure looks exactly like success.
 #
 # WHY NOT AN ORDERED PAIR OF PROGRAMS, which is what the design asked
-# for first: `avra corpus` runs many programs in ONE process, but it
-# builds ONE WORKSPACE over the directory, so every program in it
-# shares one dependency closure. "A program that does not depend on
+# for first: a package's program tests run in ONE process over ONE
+# WORKSPACE, so every program in it shares one dependency closure. "A program that does not depend on
 # sqlite, running after one that does" is not expressible there — the
 # second program would have the first's closure. No harness in the
 # tree runs two closures in one process.
@@ -55,7 +54,7 @@ SQLITE='
 
 # 1. THE LIBRARY IS REACHED BY A PROGRAM THAT DEPENDS ON THE PACKAGE.
 #    Before S2c this refused by name under the evaluator — sqlite's
-#    object is not in `build/avra`, which is why `corpus/sqlite` was
+#    object is not in `build/avra`, which is why sqlite's programs were
 #    native-only.
 scoped reached "true" "$SQLITE" 'use @std.sqlite.{version}
 version().length > 0
