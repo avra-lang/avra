@@ -932,36 +932,43 @@ engine's spec, written by dogfooding.
   compiling the source that changes it. A change to a checked shape
   is two commits: one that stops the door refusing, one that moves
   the shape and restores it.
+- A BOUNDARY CHECK MAKES A MOVED SHAPE UNMOVABLE IN ONE GENERATION,
+  AND GROWTH IS NOT A MOVED SHAPE. `features/crossing.av` holds
+  `@std/meta`'s shapes as rows the compiler was built against; a
+  package that RENAMED, REORDERED or SHRANK one is refused, and one
+  that merely GREW — fields appended, in order — crosses, because
+  the reader takes the slots it knows by SLOT ORDER and never looks
+  at the trailing ones. So adding a field is ONE commit; moving a
+  shape is two — one that stops the door refusing, one that moves it
+  and restores the door — because there the STANDING binary carries
+  the old rows and refuses the new package while compiling it. The
+  seed is a THIRD generation with the same rule: `make seed` rides a
+  MOVING commit, and a merge that brings an older seed needs it only
+  when a shape moved.
+  WHAT AN OLDER COMPILER OWES A NEWER PACKAGE IS NOTHING, and the
+  program hears it: the old compiler writes the slots it knows, so a
+  program reading a field it never wrote reads past the row's end and
+  the annotation refuses, naming itself. That honest failure is why
+  growth needs no ceremony — and the rule was WRITTEN as two commits
+  for everything, which cost three rungs of a build ladder twice in
+  one day before the growth case was told apart from the moving one.
   AND THE DOOR CHECKS THE PACKAGE, NEVER THE WRITERS. It holds the
   LOADED shapes to the rows and says the exhaustive matches are the
   guarantee past it — but a WRITER is a positional list literal, not
-  a match, so nothing compares `meta_of_fn`'s slot count to the `Fn`
-  row's field count. Growing `Fn` by one field and forgetting that
-  one writer produced a 4-slot value where the record declares 5,
-  and the boundary was green: it is "A HASH THAT FORGETS A PAYLOAD"
-  in the crossing's clothes, a field added after the writer was
-  written, leaving NO MARK at the site. The symptom is a slot read
-  past the end, and where it lands decides whether anyone hears it.
-  AND A FAILED LIFT IN THE `Declares` PATH IS SILENT. The same
-  defect SPOKE as F2070 "an annotation could not run — index 4 is
-  out of bounds" under a VALIDATES annotation, and said NOTHING
-  under a DECLARING one: `materialized` answers `[]` and the only
-  evidence is F3000 at the USE SITE of a name that was never
-  generated. One mechanism, one loud path and one mute one — and
-  the mute one is the path a derive takes.
-  AND THE SEED IS A THIRD GENERATION, older than both. `seed-check`
-  compiles HEAD with the COMMITTED seed, which predates the tolerant
-  commit as well as the moving one, so the moving commit owes `make
-  seed` BEFORE its gate and not as a later chore. ITS SYMPTOM
-  ACCUSES THE DERIVES: a refused boundary makes `materialized`
-  generate nothing, so the gate reads "`Expr` has no method
-  `pairs_of`" five times and never says "boundary" — the generated
-  accessors are simply absent, and nothing connects that to the
-  package that moved. AND THE KEEPER CUT ITS OWN EVIDENCE: seed-check
-  ended in `tail -c 2000`, which drops the FIRST errors, and the
-  first are the causing ones. It lists the codes and shows the HEAD
-  now. The three generations are the law; a keeper that truncates
-  from the wrong end is how the law stayed invisible for one gate.
+  a match, so nothing compared `meta_of_fn`'s slot count to the `Fn`
+  row's. Growing `Fn` by one field and forgetting that one writer
+  produced a 4-slot value where the record declares 5, with the
+  boundary green: "A HASH THAT FORGETS A PAYLOAD" in the crossing's
+  clothes, a field added after the writer was written, leaving NO
+  MARK at the site. Every outbound record goes through `written`
+  now, held to the SAME rows the reader is.
+  AND A FAILED LIFT IN THE `Declares` PATH WAS SILENT. The same
+  defect SPOKE as F2070 under a VALIDATES annotation and said
+  NOTHING under a DECLARING one: `materialized` answered `[]` and
+  the only evidence was F3000 at the USE SITE of a name nobody
+  minted. One mechanism, one loud door and one mute one, and the
+  mute one is the door every `@derive` takes. All three doors read
+  one `unsettled_label` now.
 - A NAME-KEYED TABLE CROSSES MODULES. `impls_by_name` files every
   `impl` under its NAME, so asking `@std.meta.Code`'s methods signed
   the compiler's own `impl Code` and dragged `features` into a
@@ -1878,6 +1885,22 @@ Runtime facts, ours to ratify:
   bootstrap`, not `make avra`, was the way out each time. A lane
   touching the LEXER must not read the codegen wording and conclude
   the rule is not theirs.
+  AND A DIAGNOSTIC IS THE THIRD KIND, which this wording did not
+  reach either: a refusal ADDED to the compiler fires on the
+  compiler's OWN SOURCE during the very build that adds it. Making
+  the declaring path speak turned a benign re-entry — a memo cycle
+  the design calls "a recursive view that contributes nothing" —
+  into two refusals of `@derive(Rebuild)` in core/nodes.av, and the
+  source that fixes the CAUSE (a cycle wearing `Trap`'s name) could
+  not be compiled by the only binary that had the voice. Not the
+  seed, which is older; not `make avra`, which reproduces the
+  refusal. THE WAY THROUGH IS THE GENERATION THAT DOES NOT YET
+  SPEAK — a saved product from before the voice — which compiles the
+  source silently and yields one carrying both the voice and the
+  honest cause. So a change that makes the compiler SPEAK about a
+  construct its own source contains is self-referential exactly as a
+  syntax change is, and `cp build/avra build/avra.pre` is the whole
+  protocol for it too.
   AND ITS SYMPTOM ACCUSES AN INNOCENT: the `>>` collision surfaced as
   "@std.avrac.language does not export Program" — from the file that
   DEFINES `Program` — and the `|` collision as "@std.process does not
