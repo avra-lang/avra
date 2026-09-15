@@ -1232,6 +1232,32 @@ def wrong_boxes(sigs):
     return out
 
 
+def row_answers():
+    """Each row's declared ANSWER box, by name — the rows that name
+    one. `Any` is the default and constrains nothing, so it is not
+    here."""
+    return {m.group(1): m.group(2)
+            for m in re.finditer(r'RtSig \{ name: "([a-z_0-9]+)".*?answer: Box\.(\w+)', rt_api())}
+
+
+def wrong_answers(returns):
+    """Every row whose ANSWER box disagrees with what its C body
+    returns. The seat rule, one end over: a row that says it hands
+    back TEXT must return a `char*`, and one that says LIST or MAP
+    must not — an answer box is how a declaration is held to the box
+    the body actually built."""
+    out = []
+    for name, box in row_answers().items():
+        if name not in returns:
+            continue
+        ret = returns[name][0]
+        if "*" not in ret:
+            continue
+        if (box in ("Text", "Bytes")) != ("char" in ret):
+            out.append((name, box, ret))
+    return out
+
+
 def sig_rows():
     """Each `rt_sigs()` row's name, `keeps` seats, and `owns_result`."""
     text = rt_api()
@@ -1486,6 +1512,13 @@ def main():
         print(f"externs: {len(boxed)} row box(es) disagree with their C seat")
         return 1
     print(f"externs: {sum(len(v) for v in row_boxes().values())} row seat(s) name the box their C seat reads")
+    answers = wrong_answers(c_returns(sources))
+    for name, box, ret in answers:
+        print(f"externs: `{name}` answers box {box} and its C body returns `{ret}`")
+    if answers:
+        print(f"externs: {len(answers)} row answer(s) disagree with their C body")
+        return 1
+    print(f"externs: {len(row_answers())} row answer(s) name the box their C body builds")
     print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES) + len(FAULT_CASES) + len(OCTET_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES)} of the keeper's own cases hold")
     return 0
 

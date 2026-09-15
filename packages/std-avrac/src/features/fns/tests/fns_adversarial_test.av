@@ -361,3 +361,82 @@ spec "an extern that names a runtime row wears the row's shape" {
         }
     }
 }
+
+spec "a runtime row's ANSWER is the row's, not the declaration's" {
+    given "a pointer-answering row" {
+        then "a bool answer is refused" {
+            refused_with("extern fn avra_array_new() -> bool\n1\n", "`avra_array_new` answers a pointer, this declares `bool`, which rides a word")
+        }
+        then "an int answer is refused" {
+            refused_with("extern fn avra_array_new() -> int\n1\n", "answers a pointer, this declares `int`")
+        }
+        then "a pointer answer is the row's" {
+            refusals("extern fn avra_array_new() -> ptr\n1\n") == 0
+        }
+        then "a text answer rides a pointer and is taken" {
+            refusals("extern fn avra_str_concat(a: string, b: string) -> string\n1\n") == 0
+        }
+    }
+    given "a word-answering row" {
+        then "a float answer is refused" {
+            refused_with("extern fn avra_array_len(xs: List<int>) -> float\n1\n", "`avra_array_len` answers a word, this declares `float`, which rides a double")
+        }
+        then "a pointer answer is refused" {
+            refused_with("extern fn avra_array_len(xs: List<int>) -> string\n1\n", "answers a word, this declares `string`, which rides a pointer")
+        }
+        then "a narrow width is not the row's word" {
+            refused_with("extern fn avra_array_len(xs: List<int>) -> i32\n1\n", "answers a word, this declares `i32`, which rides a 32-bit signed word")
+        }
+        then "an int answer is the row's" {
+            refusals("extern fn avra_array_len(xs: List<int>) -> int\n1\n") == 0
+        }
+    }
+    given "a void-answering row" {
+        then "an answer where the row answers nothing is refused" {
+            refused_with("extern fn avra_puts(line: string) -> int\n1\n", "`avra_puts` answers nothing, this declares `int`, which rides a word")
+        }
+        then "no answer is the row's" {
+            refusals("extern fn avra_puts(line: string)\n1\n") == 0
+        }
+    }
+    given "a name the runtime does not carry" {
+        then "any answer is its own business" {
+            refusals("extern fn my_own_c(a: int) -> float\n1\n") == 0
+        }
+    }
+}
+
+spec "a pointer answer names the box it hands back" {
+    given "a row that builds a list" {
+        then "octets are refused" {
+            refused_with("extern fn avra_array_new() -> Bytes\n1\n", "`avra_array_new` answers a list box, this declares `Bytes`")
+        }
+        then "text is refused" {
+            refused_with("extern fn avra_array_new() -> string\n1\n", "answers a list box, this declares `string`")
+        }
+        then "a list is the box" {
+            refusals("extern fn avra_array_new() -> List<int>\n1\n") == 0
+        }
+        then "ptr is the raw crossing and fits" {
+            refusals("extern fn avra_array_new() -> ptr\n1\n") == 0
+        }
+    }
+    given "a row that builds text" {
+        then "a list is refused" {
+            refused_with("extern fn avra_str_concat(a: string, b: string) -> List<int>\n1\n", "answers a text box, this declares `List<int>`")
+        }
+        then "octets are the same headered box and are taken" {
+            refusals("extern fn avra_str_concat(a: string, b: string) -> Bytes\n1\n") == 0
+        }
+    }
+    given "a row that builds a map" {
+        then "a list is refused" {
+            refused_with("extern fn avra_map_new() -> List<int>\n1\n", "answers a map box, this declares `List<int>`")
+        }
+    }
+    given "a row that hands back whatever it was given" {
+        then "any box is its own business" {
+            refusals("extern fn avra_once_get(k: ptr) -> List<int>\n1\n") == 0
+        }
+    }
+}

@@ -6,14 +6,14 @@
 //! generic call INSTANTIATES: pins pre-fill, arguments unify, a
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
-use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, SeatMark, mut_mark, rt_sigs, RtSig, Box, TypeRegistry}
+use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, SeatMark, mut_mark, rt_sigs, RtSig, RtKind, Box, TypeRegistry, extern_kind, width_named}
 use features.{no_pins, Pins, TypeCx, FnSig, nothing, this_is, tparams_refused, unpinned_of, slice_promise, type_name_decl}
 use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
         .FnDecl(fname, _, _, fret, body) -> checked_fn(cx, s, fname, fret, body),
-        .ExternFn(hname, hparams, _) -> checked_extern(cx, s, hname, hparams),
+        .ExternFn(hname, hparams, hret) -> checked_extern(cx, s, hname, hparams, hret),
         rest -> nothing(),
     }
 }
@@ -24,13 +24,13 @@ export fn check_fn(mut cx: TypeCx, s: StmtId) {
 /// C cannot keep the refcount contract a box demands. A NARROW WIDTH
 /// is out — the cell is 64 bits and a 32-bit write through it leaves
 /// the top half stale, which is B3's defect wearing the other hat.
-fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
+fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, hret: TypeRef) {
     for j, pp in hparams {
         if pp.mark.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
     }
     crossing_law(cx, s, hname, hparams)
     let row? = rt_sigs().find(it.name == hname) else { return }
-    row_shape_law(cx, s, row, hparams)
+    row_shape_law(cx, s, row, hparams, hret)
     row_absence_law(cx, s, hname, hparams)
 }
 
@@ -126,10 +126,58 @@ fn row_absence_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param
 /// header, and a list handed there answers its byte size as a
 /// length, in a clean program. `ptr` is the raw crossing and fits
 /// any box; a row that names no box takes every one.
-fn row_shape_law(mut cx: TypeCx, s: StmtId, row: RtSig, hparams: List<Param>) {
+fn row_shape_law(mut cx: TypeCx, s: StmtId, row: RtSig, hparams: List<Param>, hret: TypeRef) {
+    // THE WRONG COUNT IS ONE MISTAKE AND IT IS SPOKEN ALONE: a
+    // declaration whose arity disagrees may be naming a row its
+    // writer did not mean, and every seat and answer complaint under
+    // it would be about a fn they were not declaring.
     if hparams.length != row.params.length { return row_arity(cx, s, row, hparams.length) }
     for j, pp in hparams {
         if row.params[j] is .Ptr && !fits_box(pp.ty, row.box_at(j)) { seat_not_the_box(cx, s, row, j, pp) }
+    }
+    row_answer_law(cx, s, row, hret)
+}
+
+/// A ROW'S ANSWER IS THE ROW'S, NOT THE DECLARATION'S. The seat law
+/// held every argument and left the value coming BACK unheld: an
+/// extern naming a row could answer any type at all, so
+/// `extern fn avra_array_new() -> bool` checked clean and the two
+/// engines then disagreed about what it answered — the evaluator
+/// printing a list where native printed `true`. The declared answer
+/// must ride the currency the row answers in.
+fn row_answer_law(mut cx: TypeCx, s: StmtId, row: RtSig, hret: TypeRef) {
+    let sig? = cx.stmt_sig(s) else { return }
+    let got = extern_kind(cx.view.types, written_ret(hret), sig.ret)
+    if !same_kind(got, row.ret) { return answer_not_the_row(cx, s, row, hret, got) }
+    // AND WHICH BOX IT HANDS BACK, for the same reason a seat names
+    // the box it reads: `avra_array_new` answers a LIST, and declaring
+    // it `Bytes` rides a pointer like any other box, so the kind
+    // agrees and the program then reads a list's header as octets —
+    // "a non-Bytes value reached a byte operation in a clean program",
+    // which is the compiler blaming itself for what it accepted.
+    if row.ret is .Ptr && !fits_box(hret, row.answer) { answer_not_the_box(cx, s, row, hret) }
+}
+
+/// The WIDTH a return annotation named, when it named one — a bare
+/// name carries no arguments and is the only shape a width word can
+/// wear, exactly as a seat's is.
+fn written_ret(hret: TypeRef) -> TypeRef? {
+    if width_named(hret.name) == null { return null }
+    hret
+}
+
+/// Two kinds are the same currency when they are the same variant.
+/// EXHAUSTIVE OVER THE PAIR THAT MATTERS: a narrow width and a word
+/// are DIFFERENT — `i32` against the row's `I64` is the truncation
+/// the width keeper exists for, one seam over.
+fn same_kind(a: RtKind, b: RtKind) -> bool {
+    match a {
+        .I64 -> b is .I64,
+        .Ptr -> b is .Ptr,
+        .Void -> b is .Void,
+        .I32 -> b is .I32,
+        .U32 -> b is .U32,
+        .F64 -> b is .F64,
     }
 }
 
@@ -456,6 +504,26 @@ fn bound_unheld(mut cx: TypeCx, e: ExprId, tname: string, ty: TypeId) {
 
 fn row_arity(mut cx: TypeCx, s: StmtId, row: RtSig, declared: int) {
     cx.emit(refusal("type.row_shape", cx.stmt_loc(s), "`${row.name}` is a runtime row of ${row.params.length} seat(s), declared here with ${declared}", "this extern", "declare the row's seats, or name a fn the runtime does not carry"))
+}
+
+fn answer_not_the_box(mut cx: TypeCx, s: StmtId, row: RtSig, hret: TypeRef) {
+    cx.emit(refusal("type.row_shape", cx.stmt_loc(s), "`${row.name}` answers ${box_word(row.answer)}, this declares `${spelled(hret)}`", "this extern", "a runtime row answers the box its C body built — declare the answer `${box_seat(row.answer)}`, or `ptr` for the raw crossing"))
+}
+
+fn answer_not_the_row(mut cx: TypeCx, s: StmtId, row: RtSig, hret: TypeRef, got: RtKind) {
+    cx.emit(refusal("type.row_shape", cx.stmt_loc(s), "`${row.name}` answers ${kind_word(row.ret)}, this declares `${spelled(hret)}`, which rides ${kind_word(got)}", "this extern", "a runtime row answers what its C body answers — declare the answer the row names, or name a fn the runtime does not carry"))
+}
+
+/// A runtime kind as a reader meets it.
+fn kind_word(k: RtKind) -> string {
+    match k {
+        .I64 -> "a word",
+        .Ptr -> "a pointer",
+        .Void -> "nothing",
+        .I32 -> "a 32-bit signed word",
+        .U32 -> "a 32-bit unsigned word",
+        .F64 -> "a double",
+    }
 }
 
 fn seat_not_the_box(mut cx: TypeCx, s: StmtId, row: RtSig, j: int, pp: Param) {
