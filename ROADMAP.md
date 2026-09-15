@@ -14995,3 +14995,78 @@ features, defects, performance empty. Not surveyed: any tree but
   #11's stripping sweeps (io's two verbs; the std manifests' rows)
   wait on one `make seed` on main; filed as one recorded trigger in
   CLAUDE.md each, both naming the same event.
+
+## Feedback survey — 2026-09-15 (STD-SUBSTRATE: the pump, PR #16)
+
+Three rows from one P0: the std-process pump burned a core and paid a
+floor nobody was waiting for (avra-7202, fixed in #16 — `00ec4fb`,
+`8f9713e`). Each stands on its own; the third is the one to read.
+
+### PROCESS — A LOUD FAULT HIDES A QUIET ONE ON THE SAME PATH, AND THE
+### FIX'S OWN NUMBERS ARE WHAT SEPARATE THEM
+
+Two independent defects sat on the drain grace. The loud one: with the
+child reaped and both pipes closed there was nothing to poll and
+nothing to sleep on, so `avra_proc_ready` answered instantly and the
+loop spun — a core, for the whole grace. The quiet one: the loop asked
+the CLOCK alone, so a command with no holder at all still paid the
+full floor.
+
+NO MEASUREMENT OF THE ORIGINAL COULD HAVE SEPARATED THEM. Before the
+fix the suite read real 329.81s / user 322.70s — wall and CPU within
+2%, which says "it is computing", and the quiet fault contributed
+nothing visible because the loud one was already consuming every
+millisecond of the same window.
+
+WHAT EXPOSED IT WAS THE FIRST FIX'S OWN NUMBERS: real 349.57s against
+user 22.66s. A 15x gap between wall and CPU is a WAIT NOBODY ASKED
+FOR, and that pair of columns is the whole instrument — cheaper than a
+profiler and available in `/usr/bin/time`. Both fixed: 108/108, real
+15.42s, user 9.17s (21x the wall, 35x the CPU).
+
+THE ASK, and it is a habit rather than a tool: read wall and CPU
+TOGETHER, before and after, and treat a change in their RATIO as a
+finding of its own. A fix that cuts CPU and leaves wall alone has not
+finished; it has uncovered.
+
+### DEFECT — A MEASUREMENT THAT MEASURED NOTHING PRINTS A NUMBER
+
+Two runs of the before/after measurement reported `real 0.00 user 0.00
+sys 0.00` and looked like results. The subject had never built: the
+fresh worktree had no `build/avra`, `avra test` died at once, and
+`/usr/bin/time` timed the failure faithfully. Caught only by reading
+the output instead of the exit status — the runs "succeeded".
+
+This is the tree's own "a check that examined nothing is not a check
+that passed", arriving in an INSTRUMENT rather than a keeper, and it
+is nastier there: a keeper that examines nothing says success, while a
+measurement that measures nothing says A NUMBER, and a number is what
+everyone quotes. THE ASK, done in this arc and worth generalising: a
+measurement refuses to print a row unless its subject says it ran —
+no `tests passed` line, no number, and the refusal names what it saw.
+
+### DOCTRINE — THE GUARD WAS WRITTEN FOR THE STATE THAT EXISTED
+
+`avra_proc_ready`'s fallback carried the comment "nothing to watch but
+a child still running: a bare wait, since polling no descriptors would
+spin" — the hazard was SEEN and the guard was written for the live
+child. The state that arrives one line later, a reaped child whose
+pipes are closed, was the one nobody wrote, and its condition
+(`p->pid >= 0 && timeout_ms > 0`) fails on its first conjunct there:
+the timeout is never read at all.
+
+FOURTH INSTANCE TODAY of "an assumption nothing has ever tried to
+violate is not a guarantee", after the integrator's missing `mkdir`
+and the uncapped build log (twice). The shape is identical each time:
+correct for the arrangement its author had, silent about the one that
+arrives next. Attributed: LANE-D found this from source with no binary
+and predicted both homes for the fix.
+
+AND IT CORRECTED ME. I wrote that tuning `turn_ms` (20 -> 200) would
+have cut the spin tenfold and left it a spin. False, and checkable in
+four lines: the timeout is never read in that window, so the turn
+length changes nothing measurable. The tempting knob was
+`drain_grace` (`secs(2)`), where cutting it WOULD have cut the burn in
+proportion, left the spin intact, and paid for it by shortening the
+window a grandchild has to speak — a tuned interval standing in for
+the ordering the loop actually needed.
