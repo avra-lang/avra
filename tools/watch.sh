@@ -36,6 +36,14 @@ cap_mb="$1"; shift
 if [ -n "$AVRA_WATCH_HELD" ]; then
     exec "$@"
 fi
+# THE SLOTS: the lock is N directories, not one. A gate peaks at
+# ~0.83 GB on a 16 GB machine, so serialising every heavy step was a
+# cap set for a tree whose gate cost 2.4 GB and leaked — the guard
+# outlived its reason and became the queue. SLOT 1 KEEPS THE OLD PATH
+# so a worktree still running the one-slot script contends for it:
+# during a rollout the two scripts still exclude each other, and the
+# old one simply never sees slots 2..N.
+slots="${AVRA_BUILD_SLOTS:-3}"
 lock=/tmp/avra-build.lock
 floor="${AVRA_MEM_FLOOR:-20}"
 
@@ -56,15 +64,24 @@ if [ -n "$free_mb" ] && [ "$free_mb" -lt "$disk_floor" ]; then
     echo "watch:   links straight at it. Free space first; AVRA_DISK_FLOOR_MB moves the floor." >&2
     exit 2
 fi
-until mkdir "$lock" 2>/dev/null; do
-    holder=$(cat "$lock/pid" 2>/dev/null)
-    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-        rm -rf "$lock"
-        continue
-    fi
-    echo "watch: waiting for the build lock (held by pid ${holder:-?})" >&2
+held=""
+while [ -z "$held" ]; do
+    n=1
+    while [ "$n" -le "$slots" ]; do
+        [ "$n" = 1 ] && cand="$lock" || cand="$lock.$n"
+        if mkdir "$cand" 2>/dev/null; then held="$cand"; break; fi
+        holder=$(cat "$cand/pid" 2>/dev/null)
+        if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+            rm -rf "$cand"
+            continue
+        fi
+        n=$((n + 1))
+    done
+    [ -n "$held" ] && break
+    echo "watch: all $slots build slots busy — waiting" >&2
     sleep 5
 done
+lock="$held"
 echo $$ > "$lock/pid"
 trap 'rm -rf "$lock"' EXIT INT TERM
 while :; do
