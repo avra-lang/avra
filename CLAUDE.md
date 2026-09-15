@@ -1440,6 +1440,19 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   above.)
 
 Runtime facts, ours to ratify:
+- `Bytes` IS NOT A LIST AND `bytes()` HAS TWO ANSWERS. `b[0]` is
+  F2000 "`[...]` indexes a `List`, found `Bytes`" — the octet read is
+  `b.at(i)`, answering `int`, and it TRAPS past the end ("index 99 is
+  out of bounds (length 3)"), so absence is not how a range error
+  arrives. `.length` reads. AND THE ANSWER FOLLOWS THE RECEIVER: a
+  string's `.bytes()` is `Bytes` (every text is octets), a
+  `List<int>`'s is `Bytes?` — an element outside 0..255 makes the
+  whole answer null, so `let b: Bytes = [104, 105].bytes()` is F2024
+  "`b` declares `Bytes`, this is `Bytes?`" and `.at` on the unwrapped
+  value is F2030 "`.at(…)` calls a method, and `Bytes?` has none" —
+  while a `List<Bytes>`'s GATHERS the parts and answers a plain
+  `Bytes`. One name, three receivers, and only the octet reading is
+  nullable.
 - A STRING's `.length` is a LOAD — the header carries the length
   (lane A), as a list's does; `while i < s.length` costs a load per
   turn, and I27 retired with the strlen it ratcheted. WITH ONE
@@ -1800,9 +1813,31 @@ Runtime facts, ours to ratify:
   is polled, or `echo` under `ms(0)` still gets its word out; and a
   timeout's capture must hold everything readable WHEN it fired, so
   the last act before declaring is a DRAIN and the grace is a floor.
-  Stated as order, the process pump's turn length was never tuned
-  once when it moved from C into Avra — A TUNED INTERVAL IS THE SMELL
-  that two orderings are being approximated by one number.
+  A TUNED INTERVAL IS THE SMELL that two orderings are being
+  approximated by one number.
+  THE INSTANCE: a grace waited out after the child was reaped SPUN a
+  core for its whole window, because the poll row's guard against
+  spinning asked whether the CHILD WAS ALIVE where the question is
+  whether the CALLER ASKED TO WAIT — so with nothing left to poll it
+  returned at once and the driver looped hot. The fix moved no
+  number: the row now waits whenever it is asked to, in every state
+  of the child.
+  AND THAT FIX ALONE LEFT THE WALL TIME WHERE IT WAS, which is the
+  law demonstrating itself in two steps. With the burn gone the grace
+  still waited its floor out for every command, because the loop's
+  exit asked the CLOCK alone where the question needs TWO facts: the
+  floor bounds how long a grandchild MAY still speak, and the pipe
+  state says whether anyone is left to speak at all. The loop already
+  asked the second question — AFTER itself. One invariant fixed the
+  burn; only both fixed the wait.
+  AND THE TEMPTING NUMBER WAS NOT THE TURN BUT THE GRACE — the turn
+  was never consulted on that path, so shortening it would have
+  measured nothing, while the spin lasted exactly the GRACE, so
+  cutting that cuts the burn IN PROPORTION and pays for it
+  by shortening the window a grandchild has to speak. A tuning that
+  works is the dangerous one.
+  AND ONLY A WITNESS THAT SEPARATES THEM CAN PIN IT: a wait and a
+  spin take the same WALL time, so the law is tested in CPU.
 - AN ASSUMPTION NOTHING HAS EVER TRIED TO VIOLATE IS NOT A GUARANTEE.
   A check that passes proves the arrangement it was handed happened
   to work; it does not prove the check would NOTICE. Two shapes,

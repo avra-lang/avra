@@ -14995,3 +14995,197 @@ features, defects, performance empty. Not surveyed: any tree but
   #11's stripping sweeps (io's two verbs; the std manifests' rows)
   wait on one `make seed` on main; filed as one recorded trigger in
   CLAUDE.md each, both naming the same event.
+
+## Feedback survey — 2026-09-15 lane/d (the Bytes re-probe, and the process-spin read)
+
+Counted per axis: friction 1, sugar 1, features 0, defects 0,
+doctrine 3, performance 0, process 3. The top three by cost: a held
+fact that recorded half a signature; a held fact that was false in
+this tree rather than merely unlanded; a law whose own evidence
+argued against it. Not surveyed: anything needing a package (the
+grammar claim was settled from the tree's own suite instead).
+
+### FRICTION — what cost time
+
+- **A HELD FACT CANNOT BE PROBED WITHOUT THE FEATURE, AND THAT IS THE
+  POINT.** Three facts sat held for eight days because the section's
+  standard is that every entry quotes a refusal probed against THIS
+  compiler. When Bytes landed, one probe each settled them — and two
+  of the three were wrong in ways no amount of re-reading the fact
+  would have shown. THE ASK: none. The hold was correct and the
+  eight days were the feature's, not the process's.
+
+### SUGAR — a construct the compiler's own users will want
+
+- **A REFUSAL THAT NAMES THE WRONG SHAPE SHOULD NAME THE RIGHT VERB.**
+  `b[0]` on a `Bytes` answers "`[...]` indexes a `List`, found
+  `Bytes`" — true, and silent about `.at(i)`, which is the thing the
+  writer wanted. Every other refusal in this tree that removes a form
+  names its replacement. WANTING SITE: features/bytes, the index
+  seat. THE ASK: a help line naming `.at(i)`.
+
+### DOCTRINE
+
+- **A FACT RECORDED FROM HALF A SIGNATURE DECAYS LIKE A COUNT.** The
+  held fact said "`List<int>.bytes()` answers `Bytes?`, not `Bytes`".
+  True, and one third of the method: `bytes()` answers by RECEIVER —
+  `Bytes` from a string, `Bytes?` from a `List<int>`, and a plain
+  `Bytes` from a `List<Bytes>`, which GATHERS. I found the other two
+  halves by reading `check_of_list` before the compiler existed to
+  probe, and the probe then confirmed all three. A fact taken from
+  one call site is a count in different clothes.
+- **"UNLANDED" AND "FALSE HERE" ARE DIFFERENT VERDICTS.** The third
+  held fact ("a grammar with no holes is refused") was filed as
+  describing an unlanded feature. It is contradicted: no such refusal
+  exists anywhere in the tree, and the suite EXERCISES a hole-less
+  sublang block expecting it to work. A held fact is re-probed, never
+  promoted on the strength of its having waited.
+- **THE SECTION'S OWN CHARTER DECIDED WHERE THESE GO.** "The subset
+  today" is for what the compiler REFUSES THAT THE LANGUAGE WILL
+  WANT — a sugar-backlog candidate. A nullable answer for a
+  non-octet is correct design and will never be closed, so all of
+  this landed under "Runtime facts, ours to ratify" instead. Filing a
+  permanent design in the gap list would have put a line there that
+  no future slice can ever delete.
+
+### PROCESS
+
+- **KEEP: read the source, then probe — in that order, once.** The
+  two-answer correction came from reading `check_of_list` while no
+  Bytes-aware binary existed, and was labelled unconfirmed until the
+  probe. Reading found the question; the probe answered it. Neither
+  alone would have.
+- **KEEP: a build slot asked for, not queued into.** The machine was
+  under a P0 spin fix and two integrations; asking for the lock and
+  waiting cost nothing, and the bootstrap then ran on a tree that
+  waits instead of spinning.
+- **THE THIRD INSTANCE OF THE CLAIM UNDER TEST, and it is mine.**
+  Correcting a peer's unrun magnitude, I wrote an unrun magnitude
+  into a law three paragraphs later. A peer's retraction sent me back
+  to my own sentence. Recorded rather than quietly fixed, because a
+  rule breached in the hour it was enforced is the strongest evidence
+  the rule needs enforcing.
+
+### PROCESS — a prediction from source, and what the numbers said
+
+TWO FIXES PREDICTED FROM SOURCE, BOTH NEEDED, NO BINARY. Reading the
+pre-fix pump I named two places the honest fix could go: ask the pipe
+question INSIDE the grace loop, or make the poll row sleep when there
+is nothing to poll regardless of whether the child is alive — the
+second called the better home, because that row's own comment already
+states the law it fails to keep. Both turned out to be REQUIRED, and
+the second alone was not enough: with the burn gone the wall time
+stood, because the loop still asked the clock alone. Measured by
+STD-SUBSTRATE (00ec4fb, 8f9713e; theirs, quoted): 349.57 s wall and
+22.66 s user with the spin fixed alone, 15.42 s and 9.17 s with both,
+against a 7.38 s / 1.04 s pre-substrate baseline — 21x wall and 35x
+CPU recovered, and the suite 104/106 -> 108/108.
+
+THE RECEIPT THAT MATTERS IS NOT THE VERDICT. A prediction that named
+the SHAPE of a fix nobody had written yet, timestamped before the
+branch existed, is a different kind of evidence from a verdict on a
+diff — and this tree has no entry for it. It is the inverse of "the
+prediction did not come true, and here is the mechanism": same
+discipline, opposite outcome, and both beat a verdict delivered after
+the fact.
+
+AND THE TEST WOULD HAVE CAUGHT THE ORIGINAL, which is rare enough to
+state: the CPU cases shipped with the fix FAIL on main as it stands.
+A test written after a fix usually cannot fail for the real reason —
+this one can, because it measures CPU, the only witness that
+separates a wait from a spin. The control I asked for is in the suite
+too: the old body with a grandchild still holding a pipe, which is
+what makes "the defect was the missing state, never the grace loop"
+a proof instead of an assertion.
+
+AND I HAD TO APPLY MY OWN CORRECTION TO MYSELF. Correcting their
+unrun "a 200 ms turn would have cut the spin tenfold", I wrote into
+the law that cutting the grace "would have bought a real tenfold" —
+a counterfactual magnitude I had not run either, three paragraphs
+later. It now states the mechanism (the spin lasted exactly the
+grace, so cutting it cuts the burn in proportion) and carries no
+number. The seconds above live here, in a dated survey, because that
+is where a measurement can decay honestly.
+
+### DOCTRINE — HOW TO WRITE A LAW SO IT SURVIVES (the audit's 99 laws, re-read)
+
+The claim the STD MASTER asked for, tested against the audit's own
+verdicts rather than asserted.
+
+THE RESULT IN ONE SHAPE: 99 / 17 / 0. Ninety-nine laws, seventeen
+carrying a stale decoration, ZERO whose law sentence was wrong — and
+twelve of the seventeen were invisible to every tool this tree has.
+The doctrine is sound and its FOOTNOTES are not, which is a different
+problem from "laws rot" and has a different fix: the laws need no
+rewriting, the decorations need a keeper or deleting.
+
+WHAT THE DATA SAYS. Ninety-nine laws audited across four sections;
+seventeen carried something stale. In every one of the seventeen the
+verdict was MIXED and never SYMPTOM — the LAW SENTENCE was right in
+all ninety-nine. What rotted was always a DECORATION beside it: a
+count, a line number, an attribution, a name, a negative claim.
+
+THE SPLIT THAT MATTERS is not mechanism-versus-instance, which was
+the first wording and is too coarse. It is CHECKABLE versus
+UNCHECKABLE decoration.
+- A NAME is checkable: `printed_value`, `bool_word`, `balanced`,
+  `tag_of(cx, v)`, "all in core/nodes.av". Five rotted; a grep finds
+  every one, and `make doctrine` (avra-if44) would refuse them.
+- A COUNT, a LINE NUMBER, an ATTRIBUTION and a NEGATIVE CLAIM are
+  not: "19 sites", "eight consumers", "four emitters", "three
+  features", "31 `avra_io_` references", `Makefile:59-64`,
+  `ROADMAP:2018`, "the sqlite lane's", "no such fn has ever
+  existed". Twelve rotted and nothing could see any of them —
+  they were found by a person re-deriving each claim by hand.
+
+THE COUNTER-EXAMPLE, which is why the coarse wording fails: the
+header law names a MECHANISM (sixteen bytes before every payload)
+and still described the fourth field wrongly — a size class where
+the runtime stores a length. Naming a mechanism makes a claim
+CHECKABLE; it does not make it true.
+
+SO THE RULE FOR WRITING A LAW: state the law, then decorate it only
+with what a tool or a reader can re-derive. A name, yes. A count, a
+line number or an attribution only with the command that produced
+it, or not at all — and a count that a keeper already holds (the
+`Ins` consumers, the ratcheted idioms) is cited by naming the
+keeper, never copied.
+
+THE SECOND BODY OF EVIDENCE is this citation happening at all: the
+"ORDER, NOT GRANULARITY" law was findable at a live defect two weeks
+later because it named its mechanism (the process pump's turn
+length). A law written as a general principle would not have been
+greppable from the symptom. One instance is not a proof, and it is
+the reason to keep the rule as a claim under test rather than a
+settled law.
+
+THE SECOND BODY OF EVIDENCE, and it adds a SUBCATEGORY the first pass
+missed. The decorations above divide into checkable and uncheckable;
+this one is a third thing — CHECKABLE IN ONE GREP AND FALSE. The
+ORDER law cited, as its proof, that "the process pump's turn length
+was never tuned once when it moved from C into Avra". Three receipts,
+all git-only: the law landed 2026-09-07 and the pump moved into Avra
+2026-09-14, seven days later; on the law's own date the Avra side
+chose a turn PER CALL SITE (100, 50, 0, 100); and the tree carries
+two turn lengths today, a named 20 and a bare 10 at three sites.
+
+WHY THAT RANKS ABOVE THE ROTTED ONES. An uncheckable decoration
+merely decays. A checkable-and-false one ARGUES FOR THE OPPOSITE of
+the law it adorns — this one offered "we never needed to tune" as
+evidence, from a pump that had tuned four times. And the tell is the
+cruel part: the law was believed BECAUSE its evidence was concrete.
+
+SO THE RULE GAINS ITS SECOND HALF: decorate a law only with what can
+be re-derived, AND RE-DERIVE IT. The first half stops the rot; only
+the second stops a law from carrying an argument against itself.
+
+THE CLAUSE ABOUT NUMBERS, which is this rule applied and not a second
+one. A number in a law is either its SUBJECT or its EVIDENCE, and the
+test above decides which: can it be re-derived from a NAMED
+INSTRUMENT? The cold-path law's arithmetic IS its judgement — without
+the ratio worked out nobody can tell a 26% win from an invisible 0.8%
+one — and it names `make census` and `objdump` in the same entry, so
+it stays. A count of the tree or a run's seconds names no instrument,
+and belongs in a dated survey. A standing rule that all measurements
+leave the laws was proposed and WITHDRAWN on exactly this ground: it
+condemned the two laws that use numbers correctly.
