@@ -8058,7 +8058,212 @@ The `/feedback` run for the slice that lifted the two S5b boundaries: a settled 
 
 ---
 
+## Feedback survey — 2026-09-15 (phase G)
+
+Base: worktree `../avra-phase-g` on `phase/g`, branched at `190ae72`.
+Scope: §7 (the C header from `rt_sigs()`) and §8 (diagnostics'
+goldens). NOT SURVEYED: any other phase's files, the packages outside
+std-avrac and cli, and performance beyond the two numbers below.
+
+### Friction
+
+- **A ONE-FILE CHECK INSIDE A PACKAGE IS NOT A ONE-FILE CHECK.**
+  `./avra check packages/std-avrac/src/core/tests/runtime_header_test.av`
+  compiled the whole package (>2 min) and then reported F0902 for every
+  OTHER package's program tests, because naming a file makes it the
+  entry and the entry-only law refuses everyone else's top level. The
+  output is ~40 refusals about files I did not touch and none about
+  mine. Cost: two detours before I stopped using it to check a file.
+  THE ASK: a `--file` reading that analyses the named file in its
+  package WITHOUT making it the entry (`caseless_program` already has
+  the shape — `avra test` uses it for exactly this reason).
+  EVIDENCE: task `bfsvp3yex` output, this tree, 2026-09-15.
+
+- **A GENERATED ARTIFACT COSTS A FULL COMPILER BUILD TO EDIT.** The
+  witness table and the header text are compiled INTO the product, so
+  every wording change is `make avra` (~4 min) before the artifact can
+  be regenerated. Seven builds went to this. It is inherent to
+  self-hosting and I am not asking for it to change; the finding is
+  that a lane should BATCH generated-artifact wording, which I did not
+  and should have.
+
+- **`zsh` MULTIOS MADE AN INSTRUMENT LIE.**
+  `./avra runtime-header 2>&1 1>/dev/null | wc -l` answered 218, which
+  reads as "the header goes to stderr too". Redirecting to two files
+  says stdout=218, stderr=0. Cost: one wrong conclusion, caught by
+  re-measuring. THE ASK: none on the tree — recorded because CLAUDE.md
+  already says to know what an instrument does to a measurement, and
+  this is that law with a shell in the instrument's place.
+
+### Sugar
+
+- Filed above: **A MULTI-LINE CELL** (the witness wants to ride the
+  `DiagCode` row and cannot, because a `table` cell spends its
+  alignment on `"enum E {\n    a(int)\n ..."`). Wanting site
+  `packages/std-avrac/src/language/witnesses.av`.
+- **A TYPED `DiagId`.** The witness registry keys on the F-code as a
+  STRING, which is avra-9cbe's trap one domain over. It is safe here
+  only because both directions of the key are refused
+  (`stray_witnesses`, `shadowed_witnesses`, both witnessed failing).
+  A typed id would make the key structural and delete both keepers.
+  Wanting site: `witnesses.av`'s `CodeWitness { code: string, … }`.
+
+### Features
+
+- **`avra runtime-header`** and **`avra diagnostics`** landed here;
+  both are bare projections of a registry, and they are the second and
+  third of that family after `avra grammar`. When §10.8's `avra doc`
+  lands there will be four, at which point "print a projection of the
+  language" is a concept with four instances and one file each.
+  RECORDED TRIGGER: `avra doc`.
+
+### Defects
+
+Swept and EMPTY for this slice: no `defect:`, no trap, no crash, no
+engine divergence. The one wrong answer found was in a witness I wrote
+(two codes sharing one source, so each entry pinned the other's
+wording) and the idioms ratchet caught it as an I11 duplicate before
+the gate did.
+
+### Doctrine
+
+- **§7's "`tools/externs.py` retires" WAS FALSE and is corrected in
+  place** (the design doc, with the 83/230/32 counts and the six
+  checks that are not widths). Two more stale claims corrected in the
+  same doc: §8's row shape and §10.6's kill list.
+- **CLAUDE.md's `it`-binding law is correct and I still hit it.**
+  `avra().rows.codes.all(text.contains("## ${it.id}"))` — `it` binds
+  to the NEAREST call, which is `contains`. The compiler's help writes
+  the fix (`(k) -> …`) and the law is already in "The subset today";
+  confirming, not re-filing. Cost: one gate.
+
+### Performance
+
+- `avra diagnostics` runs 72 whole compiles in **0.172s total**
+  (`time`, this tree) and peaks at **1 MB** (`AVRA_MEM_STATS=1`), so
+  the error index is free to put in the gate.
+- The header adds 83 `_Static_assert`s to one TU and did not move the
+  runtime's compile time out of the noise (`make gate` peak 856–911 MB
+  across five runs, unchanged from the 823–860 MB before it).
+
+### Process
+
+- **KEEP: making the keeper fail before trusting it.** Five failure
+  classes for the header and three for the witness keeper were
+  witnessed failing, and two of the three probe holes I found would
+  have shipped — the null-pointer-constant one silently.
+- **KEEP: the three-slot lock.** Every heavy run queued; "all 3 build
+  slots busy — waiting (ticket N)" appeared four times and nothing
+  raced.
+- **CHANGE: a gate log piped through `tail` is not a gate log.** My
+  first green gate was read from the last 80 lines, which cut every
+  keeper line; `watch: status 0` was the only real evidence. Redirect
+  to a file, always.
+
 ## Sugar backlog — dogfooding asks
+
+ANSWERED, NOT COLLAPSED (phase G, 2026-09-15) — A REGISTRY SUMMARY AND
+A VOICE'S HEADLINE ARE DIFFERENT THINGS. Asked whether the two spell
+one law twice (avra-5m62, from phase C's side). MEASURED over the 72
+codes docs/DIAGNOSTICS.md now witnesses, summary against the rendered
+headline: 6 IDENTICAL, 6 where the headline is the summary PLUS the
+offending fact, and 60 genuinely different. So nine sites agreeing was
+never the goal, and neither side may derive from the other:
+  - the SUMMARY is the law with NO PROGRAM attached, which is exactly
+    what `avra explain F2035` needs when there is no program to point
+    at ("a map's keys are strings");
+  - the HEADLINE is that law AS IT APPLIES HERE, carrying the value
+    that broke it ("a map's keys are strings, not `int`") — which is
+    CLAUDE.md's voice law, and 60 of 72 carry a fact the summary
+    cannot hold.
+The 6 identical ones are the PLACEMENT rules (F3004, F3007, F3025 and
+kin): the violation has no extra fact beyond WHERE, which the span
+already carries, so the law IS the whole message. That is correct, not
+duplicated.
+WHAT THE WITNESS ACTUALLY BUYS HERE: both now stand side by side in
+one generated document, so a drift between them is READABLE where it
+was invisible. That is the fix the duplication question wanted.
+
+ATTRIBUTION CORRECTED: the "9 of 120 codes spell their law twice"
+figure reached me as mine and is not — I measured 292 voices over 118
+kinds, 135 registered codes and 23 appearing in any test, and never
+compared summaries to headlines until asked. The numbers above are
+that comparison, made here, over 72 codes rather than 120. A count
+offered as a correction names its base (CLAUDE.md).
+
+CONSOLIDATION LEDGER (phase G, 2026-09-15) — counted, per the standing
+order. COLLAPSED: `explain`'s example and the error index are ONE
+derivation (both are `shown_code`/`shown_codes` over the same registry
+— before, `explain` printed a summary and the index did not exist);
+inside the header generator, `c_kind(s.ret)` called three times per row
+became once, a one-use `said` projection became a `CKind` method, and
+a `preamble()` verb became the `const` it always was.
+NOT COLLAPSED, WITH TRIGGERS:
+  - The runtime C still spells its own 83 signatures beside the rows.
+    The header CHECKS rather than collapses them, because collapsing
+    needs the extern seat to carry the C spelling (the doc's §7 move 1)
+    — ~117 C edits and a const-stripping cast at every text row.
+    TRIGGER: when an extern seat's type can carry its C spelling.
+  - 5 codes now carry BOTH a hand-written golden in a spec test and a
+    generated one (F0100, F2000, F3000, F3001, F3002); 9 more are
+    hand-only (F0900, F2061, F2069, F2075, F2079 and four manifest
+    codes). Two copies may wait. TRIGGER: a third rendering of the
+    same code — §10.8's `avra doc` is the one that will mint it — or
+    a manifest witness reaching the four F40xx codes, at which point
+    the hand-written set is wholly covered and goes.
+  - The 21 feature `table<DiagCode>`s are untouched; see the
+    multi-line-cell WANT above.
+KEYED ON A STRING, DELIBERATELY: the witness registry keys on the
+F-code, which is the trap avra-9cbe names one domain over. It is safe
+here only because BOTH directions of the key are refused — a row
+naming no registered code (`stray_witnesses`) and a second row for one
+code (`shadowed_witnesses`), both witnessed failing. A typed `DiagId`
+would make the key structural and is the honest ask.
+
+
+DEAD ROW (phase G, 2026-09-15) — `avra_int_not` IS CALLED BY NOTHING.
+Measured while answering "how many runtime rows does anything reach":
+of 83 rows, 59 are emitted by the compiler's own lowering as a quoted
+callee and 32 are reached through an `extern fn` wall in a std
+package; `avra_int_not` is reached by NEITHER. `~v` desugars in the
+builder to `v ^ -1` (expr_spine/builders.av's `build_bitnot`, which
+says so), there is no `BitNot` in `UnOp`, and the interpreter declares
+`avra_int_and/or/xor` and not this one. So the row, its C body and now
+its header assertion are all carried for a call that cannot happen.
+NOT REMOVED HERE: deleting the C body removes a runtime symbol, and
+the receipt for that is `make bootstrap` green plus a seed refresh
+riding the same commit (CLAUDE.md). It is a small slice of its own.
+
+WANT (phase G, 2026-09-15) — A MULTI-LINE CELL, so a witness can ride
+its own row. §8's witness belongs ON the `DiagCode` row — one
+definition, and `explain` reads it from the row it already has. It
+lives in `language/witnesses.av` instead because a witness is a whole
+PROGRAM: `Witness.Source("enum E {\n    a(int)\n    b\n}\nmatch …")`
+in a `table<DiagCode>` cell spends exactly the alignment a `table`
+buys (the vocabulary seam rule), and the 21 feature code tables would
+each have to become struct-literal lists to hold it. WANTING SITE:
+`packages/std-avrac/src/language/witnesses.av`'s row list, against the
+`codes = table<DiagCode>` in every feature's mod.av. PROBED at phase
+G, both true: a `table<T>` header may OMIT a defaulted column (so the
+column could land without touching the 21 tables), and a cell may hold
+an enum WITH a payload (`Witness.Source("…")` type-checks in a cell).
+What is missing is only a readable spelling for a multi-line cell.
+
+MEASUREMENT, NOT A WANT (phase G, 2026-09-15) — A PER-ROW REFCOUNT
+DIFFERENTIAL IS NEW INSTRUMENTATION, not a reuse of the census. The
+idea is to make `owns_result`/`keeps` an executable claim: observe
+each runtime call's refcount effect and compare it to what its row
+says. WHAT THE CENSUS ACTUALLY RECORDS today (runtime/avra_runtime.c,
+`-DAVRA_CENSUS`): five global counters — retains, releases, frees,
+list gets, list pushes — plus three per-CALLER tables keyed by
+`__builtin_return_address` (pushes, copies, retains). Per caller, not
+per runtime ROW, and no per-argument delta anywhere. So the
+differential needs a wrapper per row that snapshots each pointer
+argument's rc across the call — which the generated header (§7) is the
+natural place to emit, since it already spells every row's seats. AND
+THE COVERAGE CAVEAT IS REAL: a row nobody calls is never measured, and
+`avra_int_not` above is the proof that such rows exist here.
+
 
 UNVERIFIED HAZARD (H2, 2026-09-15) — `hush_expansion` INSIDE A
 RE-ENTRANT RUN. `expanded(f)` clears a file's expansion voices as its

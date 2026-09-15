@@ -1,0 +1,65 @@
+// THE WITNESS REGISTRY holds the goldens for every registered code.
+// Its own risk is a green test proving nothing: a witness the
+// compiler has moved under stops producing its code, and the golden
+// pins whatever it produces instead. So the property under test is
+// that every witness FIRED, and both directions of forgetting are
+// asked — a code with no row, and a row naming no code.
+use @std.avrac.language.{avra, shown_codes, shown_code, silent_witnesses, unwitnessed, stray_witnesses, shadowed_witnesses, diagnostics_index, Witness, Shown}
+use @std.avrac.diagnostics.{DiagCode}
+
+fn drifted() -> Shown {
+    Shown { code: DiagCode { kind: "x.y", id: "F9999", summary: "a code" }, witness: Witness.Source("let a = 1\na"), rendered: "", fired: false }
+}
+
+spec "language/witnesses" {
+    given "the registry, run" {
+        then "every witness that runs produces the code it claims" {
+            silent_witnesses(shown_codes()).is_empty()
+        }
+        then "no witness names a code the registry does not register" {
+            stray_witnesses().is_empty()
+        }
+        // the lookup takes the first row, so a second one never runs
+        then "no code carries two witness rows" {
+            shadowed_witnesses().is_empty()
+        }
+        then "every registered code is shown, witnessed or owed" {
+            let runs = shown_codes()
+            runs.length == avra().rows.codes.length &&
+                runs.all(it.fired || it.witness.owed() || !it.witness.runs())
+        }
+    }
+    given "a witness the compiler has moved under" {
+        then "it is named, not counted as covered" {
+            let named = silent_witnesses([drifted()])
+            named.length == 1 && named[0].code.id == "F9999"
+        }
+        then "a code still owed a witness is a debt, not a drift" {
+            let owed = Shown { code: DiagCode { kind: "x.y", id: "F9998", summary: "a code" }, witness: Witness.Absent, rendered: "", fired: false }
+            silent_witnesses([owed]).is_empty() && unwitnessed([owed]).length == 1
+        }
+        // absence has two causes and only one is work
+        then "a code no lone source reaches is not owed one" {
+            let far = Shown { code: DiagCode { kind: "x.y", id: "F9997", summary: "a code" }, witness: Witness.Beyond("it needs a package"), rendered: "", fired: false }
+            unwitnessed([far]).is_empty() && silent_witnesses([far]).is_empty()
+        }
+    }
+    given "one code asked for by name" {
+        then "the witness runs and its rendering carries the code" {
+            let s = shown_code("F3000")
+            s != null && s!.fired && s!.rendered.contains("error[F3000]")
+        }
+        then "a code nothing registers answers nothing" {
+            shown_code("F9999") == null
+        }
+    }
+    given "the index" {
+        then "it names every registered code" {
+            let text = diagnostics_index(shown_codes())
+            avra().rows.codes.all((c: DiagCode) -> text.contains("## ${c.id} — ${c.kind}"))
+        }
+        then "its head counts what it looked at" {
+            diagnostics_index(shown_codes()).contains("${avra().rows.codes.length} codes registered")
+        }
+    }
+}

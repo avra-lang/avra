@@ -132,21 +132,78 @@ export const rt_sigs: table<RtSig> {
 }
 ```
 
-`avra emit runtime-header` writes `runtime/avra_rt.h`; the C includes
-it; a wrong width fails in the C compiler; `tools/externs.py` retires.
+`avra runtime-header` writes `runtime/avra_rt.h`; the C includes it
+last, one `_Static_assert` per row; a wrong width fails in the C
+compiler. LANDED (phase G).
+
+NOT `avra emit runtime-header`: `emit` takes a FILE, so a magic string
+argument makes one word mean two grammars and a real file of that name
+would change what the command did — the split-the-verb law. One verb
+per grammar.
+
+AND `tools/externs.py` DOES NOT RETIRE. Measured at phase G: 83 rows
+against 230 `extern fn` names the tree declares, overlapping in 32. The
+other 198 — the vendored sqlite wall, @std/process, @std/io, the width
+witness — are not rows, and a header generated from `rt_sigs()` has
+nothing to say about them. Six of the keeper's checks are not widths
+and cannot be a C prototype at any size: an extern's answer width over
+VENDORED C, a parameter seat's width and the integer-cannot-fill-a-
+pointer rule, an extern answering `ptr` that no C in the tree declares,
+a C body that MINTS an owned box with no `owns_result` row, a body that
+retains a seat its row does not mark `keeps`, and a row marked `inert`
+whose body resolves a name. A replacement that checks less is a
+regression wearing a simplification's clothes. Retiring the keeper is a
+DIFFERENT slice — making the packages' extern walls rows — and is not a
+consequence of this one.
+
+WHAT THE HEADER HOLDS AND WHAT IT DOES NOT, measured under clang 21
+with the runtime's own `-Wall -Werror`: it holds the answer's C type
+exactly, the seat COUNT, and a word handed to a pointer seat or a
+pointer to a word seat (five failure classes witnessed failing). It
+does NOT hold an `int64_t` seat against a `double` one — C converts
+silently in both directions, so no call expression can tell them apart;
+the float program test covers the one f64 row. The probes are NON-ZERO
+because `((int64_t)0)` is a null pointer constant, so a zero probe
+fills a pointer seat silently and that check would have passed on every
+row while holding nothing — the empty-value law in a C hat.
 
 ## 8. A diagnostic is a row, and its golden is the row rendered
 
-```avra
-diags = table<Diagnostic> {
-    kind               | code    | law                                          | help
-    "type.quote_hole"  | "F2075" | "a hole in ${seat} position takes ${takes}" | "fill the hole with what its seat takes"
-}
-```
+INVERTED AT PHASE G, on two independent measurements — either alone
+carries it.
 
-A voice is `cx.refuse(quote_hole, at, { seat: "name", takes: "a `string`" })`;
-`avra explain F2075` prints the row; the rendering test is generated from
-the row and one witness program.
+THE ROW CANNOT HOLD THE PROSE. A kind keys the F-CODE, not the law:
+292 voices over 118 distinct kinds, and 45 kinds carry more than one
+law. `type.mismatch` alone carries 38, `type.lambda` 12, `type.method`
+10. Keyed by kind the row collapses 38 laws into one; keyed by voice it
+is 292 rows whose `code` column is a second copy of the kind-to-code
+map the 21 feature `table<DiagCode>`s already hold.
+
+THE HOLE MAP IS A WEAKENING. Today a voice writes
+`"`${sname}` has no variant `${v}`"` and the COMPILER checks those
+names are in scope. Under `cx.refuse(kind, at, { seat: … })` the law is
+a string in a table and the holes are a `Map<string, string>`: a
+mistyped hole name is silent, and nothing in the language checks it.
+The tree's own rule is to refuse a shape that makes a voice weaker.
+
+SO THE WITNESS MOVES INTO THE ROW, NOT THE PROSE OUT OF THE VOICE.
+That is where the value was: 135 registered F-codes, 23 appearing in
+any test, 112 in none — "every diagnostic has a golden rendering test"
+is 17% true. The registry row gains a WITNESS, a few lines of Avra that
+trigger the kind, and the golden is the compiler run over the witness,
+rendered and pinned. Every voice stays compiler-checked, every
+registered code gets a golden or is named as uncovered, a voice whose
+wording drifts fails its golden, and `avra explain F2075` prints the
+summary AND a REAL rendered diagnostic with its holes filled — which is
+strictly better than printing a template. §10.7's `at` lands on the
+same row later.
+
+AND THE HAZARD THE SHAPE CREATES: a witness that no longer triggers its
+kind is a green test proving nothing — the compiler moves under it, it
+starts producing some other code, and the golden happily pins that
+instead. So the keeper asserts THE WITNESS PRODUCED THIS CODE, and
+reports coverage as the count of codes whose witness actually fired,
+naming the uncovered ones. A keeper counts what it looked at.
 
 ## 9. The compiler polices itself, in Avra
 
@@ -232,8 +289,10 @@ KILLS: the three lexer paths whose brace and hole accounting diverged
 ### 10.6 The runtime row is the whole binding
 
 One `rt_sigs` row generates the C prototype (§7), the LLVM declaration
-AND the evaluator's call binding. KILLS: `tools/externs.py` and the two
-link sites a hand list let drift.
+AND the evaluator's call binding. KILLS: the two link sites a hand list
+let drift. NOT `tools/externs.py` — see §7: its subject is the extern
+WALL, 198 declarations that are not rows, and six of its checks are not
+widths.
 
 ### 10.7 A diagnostic knows where it points
 
@@ -277,7 +336,7 @@ time cost is the derives, measured per settlement by the budget slice.
 | D | grammar names the node: builders + printer derived, `avra fmt` (§2) | 1–2 weeks |
 | E | type-shape marks, IR roles, dispatch by ownership (§4–6) | 3 days |
 | F | keepers in Avra (§9) | 1 week |
-| G | C header from the runtime rows (§7); diagnostics as rows (§8) | 2 days |
+| G | C header from the runtime rows (§7); diagnostics' goldens generated from a witness row (§8) | 2 days |
 | H | side tables + queries declared (§10.1–2) | 3 days |
 | I | ownership roles on Ins (§10.3) | 2 days |
 | J | one hole-bearing block (§10.5) | 3 days, after D |
