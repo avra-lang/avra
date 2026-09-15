@@ -566,9 +566,19 @@ impl Workspace {
             imports = imports.concat(line.imports)
             diags = diags.concat(line.diagnostics)
         }
-        let names = self.decls.file_names(f, self.namespace(self.decls.file(f).module_id), imports, (path: string) -> self.shown(path))
+        let names = self.decls.file_names(f, self.namespace(self.decls.file(f).module_id), imports, self.prelude_imports(f), (path: string) -> self.shown(path))
         let out = names with { voices: Voices { list: diags.concat(names.voices.list) } }
         self.visibles.finish(f.index, out, self.db.revision())
+    }
+
+    /// THE PRELUDE'S EXPORTS, as every file's implicit imports: the
+    /// toolchain's `@std/prelude`, when the host carries one, seen by
+    /// every file outside the prelude itself. Bound weakly — a file's
+    /// own names and its `use` lines win.
+    fn prelude_imports(f: FileId) -> List<Import> {
+        let from = self.packages[self.holder_of_path(self.decls.file(f).path)]
+        if from.key == prelude_key || !self.std_admitted(prelude_key) { return [] }
+        [Import { decl: d.id, at: null, alias: "" } for d in self.exported_decls(ModulePath { segments: key_spelled(prelude_key).split(".") })]
     }
 
     /// A file's names resolved. RECURSIVE: a whole-program pass asks
@@ -2254,7 +2264,8 @@ impl Workspace {
     }
 
     /// One package entered under a key: listed, its manifest read and
-    /// held to the key, its dependencies admitted.
+    /// held to the key, its dependencies admitted. THE FLOOR: the
+    /// prelude declares no dependency, so the layering has a bottom.
     fn entered(key: string, dir: string, at: Loc?, origin: Origin, chain: List<string>) {
         mut ps = self.packages
         let i = ps.length
@@ -2262,6 +2273,7 @@ impl Workspace {
         ps.push(pkg)
         let m = self.manifest(i)
         if m.name != key { self.speak_package(name_mismatch(at, key, m.name, dir)) }
+        if key == prelude_key && !m.deps.is_empty() { return self.speak_package(prelude_depends(m.deps[0].at)) }
         self.admit_dependencies(i, m, false, chain.concat([key]))
     }
 
@@ -2341,6 +2353,9 @@ impl Workspace {
         refusal("resolve.not_a_dependency", at, "`${k}` is not a dependency of this package", "in this use", "declare it under `[dependencies]` in `${at_file}` — `\"${k}\" = { path = \"…\" }`") with { suggestions: fixes }
     }
 }
+
+/// The one package every file sees without a `use`.
+const prelude_key = "@std/prelude"
 
 /// The chain a dependency's admission extends. A DEV EDGE STARTS ITS
 /// OWN: the tests are the consumer and nothing depends on them, so a
