@@ -16114,3 +16114,81 @@ what the measurement said versus what the task said.
   code, and that is what a regression guard is for. Saying which is
   which is the difference between three tests and one test plus two
   guards.
+## Feedback survey — 2026-09-15 (STD-DATA: the text/blob read, avra-8sb5.6.2)
+
+Scope: `avra-8sb5.6.2` — the adoption door, the row, the evaluator's
+arm and @std/sqlite's `text_at`/`blob_at`. Base: branch
+`data/sqlite-read` on main `2001b36`. NOT surveyed: `.3.2`/`.3.6`,
+still queued.
+
+Counts: friction 2, doctrine 3, process 2, defects 0, sugar 0,
+features 0, performance 0 (not swept — a copy's cost against a
+borrowed view is the trigger's question, not this slice's). Top by
+cost: a grep I let the shell eat, which nearly sent the design down a
+road that did not need building.
+
+### Friction
+
+- **A LAW THAT POSTDATES ITS OWN RULING.** The ruling says the verb
+  "takes (ptr, int)" and that "(null, 0) is the empty box". F2088 —
+  *a runtime row's seat takes no absence* — landed after that was
+  written, so a null cannot reach the row at all. The law did not
+  change, its HOME did: `taken` (stmt.av) answers the empty box for a
+  buffer of no octets and never asks C to read address zero, and the
+  runtime keeps its own null branch as the belt for a direct C caller.
+  A ruling is a claim with a date on it, exactly as a doc is.
+- **THE GENERATION LADDER FOR A NEW REGISTRY ROW, which nothing
+  documents.** A row used by the compiler's OWN source cannot be
+  declared until the compiler knows the row, and the compiler cannot
+  be built while its source is refused. Generation 1 carries the row
+  and a placeholder arm; generation 2 adds the declaration and the
+  real arm; generation 3 proves the fixed point. CLAUDE.md spells the
+  ladder for a new DSL WORD and for codegen; a new `rt_sigs` row is
+  the same shape and is not on that list.
+
+### Doctrine
+
+- **`Bytes` IS THE ANSWER TYPE AND `string` WOULD HAVE DIVERGED.** The
+  evaluator turns a pointer answer into text by reading a
+  NUL-TERMINATED C string at that address (`rt_val`, interp.av), so a
+  door answering `string` would truncate a blob at its first zero
+  byte while the native binary carried the header's full length. Two
+  engines, one green suite, different values — the family this tree
+  already records. Pinned: `x'004100ff00'` reads 5 octets, and text
+  holding a NUL round-trips at length 5.
+- **THE EMPTY CASE IS THE FIRST CASE, AND THE CLASS IS WHY IT CAN BE.**
+  `sqlite3_column_blob` answers a NULL POINTER for SQL NULL and for a
+  ZERO-LENGTH BLOB alike, so a read that branched on the POINTER would
+  spend absence twice and hand an empty blob back as `null`. Asking
+  `sqlite3_column_type` first is what makes "empty" and "absent"
+  different answers, and the five cases written before the code assert
+  exactly that.
+- **`make externs` EARNED ITS KEEP ON A SEAT NOBODY WOULD HAVE
+  QUESTIONED.** The adoption's C seat was `const char*` — the obvious
+  spelling — and the keeper refused it: a `const char*` seat must name
+  the `Text` box, and this one names `Any` because the address is
+  FOREIGN. It is `const void*` now, which is also the honest type: a
+  `char*` invites a terminator, and the length is the whole contract.
+
+### Process
+
+- **A GREP THE SHELL ATE ANSWERED "ABSENT" ABOUT A THING THAT
+  EXISTS.** `grep -rn avra_ptr_at . --include=*.av` died on zsh's
+  glob ("no matches found: --include=*.av") and I read the empty
+  output as absence — then spent a long detour designing around a
+  missing capability that is at `runtime/avra_runtime.c:2257` and used
+  in two test files. CLAUDE.md records this exact miss, with this
+  exact symbol, and I repeated it in the same session I quoted the law
+  in. THE FIX IS MECHANICAL: a grep that finds nothing must be
+  re-run without its filters before "absent" is believed, because a
+  shell error and an empty result look identical.
+- **THE SEED RIDES THIS COMMIT, and the gate is what said so.**
+  `seed-check` failed with "the seed cannot compile HEAD — run `make
+  seed` (a stale seed is a fossil)": the committed seed predates the
+  row, so it refuses the compiler's own declaration of it. The refresh
+  is in the slice rather than a later chore, which is the same rule
+  this file states for a REMOVED runtime symbol — a new row the
+  compiler's own source uses is the same hazard pointing the other
+  way. It is a 45k-line diff and it will conflict with any concurrent
+  refresh; the integrator may prefer to drop it and re-run `make seed`
+  on main.

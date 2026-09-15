@@ -1546,6 +1546,32 @@ static const char* bytes_owned(const void* p, size_t n) {
     return b;
 }
 
+/* THE ONE DOOR A FOREIGN BUFFER ENTERS BY, and the only place the
+   runtime dereferences a pointer the PROGRAM supplied rather than one
+   it allocated or the compiler emitted. A caller hands an address and
+   a LENGTH — the length is the whole contract, because a foreign
+   buffer has no header to ask and no terminator anyone may trust.
+
+   THE EMPTY CASE IS THE FIRST CASE. C spends the null pointer on
+   "nothing to point at"; Avra spends it on "no value". A door that
+   answered nothing for an empty buffer would spend that value twice,
+   and an empty blob would arrive indistinguishable from SQL NULL. So
+   (NULL, 0) is the EMPTY BOX, and only the caller's own absence is
+   absence.
+
+   A NULL WITH A LENGTH IS A CALLER CONTRADICTING ITSELF, and so is a
+   negative one. Both trap here rather than being read: this door
+   cannot tell a wrong length from a right one by looking, so the only
+   lengths it refuses are the ones that cannot be true. */
+const char* avra_bytes_adopted(const void* p, int64_t n) {
+    if (n < 0) avra_trap("a foreign buffer is shorter than nothing");
+    if (p == NULL) {
+        if (n > 0) avra_trap("a foreign buffer claims octets and no address");
+        return bytes_box(0);
+    }
+    return bytes_owned(p, (size_t)n);
+}
+
 int64_t avra_bytes_len(const char* b) { return (int64_t)bytes_len(b); }
 
 // Equality is the reason the kind exists: lengths, then every byte.

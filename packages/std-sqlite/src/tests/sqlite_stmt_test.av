@@ -1,14 +1,73 @@
 // A statement compiled, stepped, read and finalized — the first time
 // this driver reads a VALUE out of a database.
 //
-// What a cell can answer today is an INTEGER and a CLASS. `column_text`
-// and `column_blob` hand back borrowed pointers whose buffers die at
-// the next step, and nothing in the tree can copy foreign text into a
-// box, so `text` and `blob` are ABSENT rather than wrong — and
-// `class_at` is how a caller learns a cell holds text it cannot have.
+// `column_text` and `column_blob` hand back BORROWED pointers whose
+// buffers die at the next step, so every cell that is text or octets is
+// COPIED into a box of ours before the driver answers it. The class is
+// asked first and the copy is made second, which is what lets an empty
+// value and an absent one be different answers.
 use @std.sqlite.open.{Db, open, memory, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, finalize, reset, width, standing, class_at, int_at, real_at}
+use @std.sqlite.stmt.{Stmt, prepare, step, finalize, reset, width, standing, class_at, int_at, real_at, text_at, blob_at}
 use @std.sqlite.error.{Storage, SqlError}
+
+/// A cell's CLASS and what the matching read answers — the length of
+/// the box, or the kind the read was refused with. A class the reads
+/// disagree with shows both refusals, which is the NULL case.
+fn cell(sql: string) -> string { in_memory((db) -> class_and_read(db, sql)) }
+
+fn class_and_read(db: Db, sql: string) -> string {
+    let said = match prepare(db, sql) {
+        .Ok(s) -> cell_of_row(s),
+        .Err(e) -> e.cause.kind(),
+    }
+    let _ = close(db)
+    said
+}
+
+fn cell_of_row(s: Stmt) -> string {
+    let _ = step(s)
+    let word = cell_class_word(class_at(s, 0))
+    let said = match class_at(s, 0) {
+        .Ok(c) -> "${word}|${read_by_class(s, c)}",
+        .Err(e) -> e.cause.kind(),
+    }
+    let _ = finalize(s)
+    said
+}
+
+fn read_by_class(s: Stmt, c: Storage) -> string {
+    match c {
+        .Text -> "text:${text_len_word(text_at(s, 0))}",
+        .Blob -> "blob:${octet_len_word(blob_at(s, 0))}",
+        .Null -> "text:${text_len_word(text_at(s, 0))}|blob:${octet_len_word(blob_at(s, 0))}",
+        .Int or .Real -> "scalar",
+    }
+}
+
+fn text_len_word(r: Result<string, SqlError>) -> string {
+    match r { .Ok(v) -> "${v.length}", .Err(e) -> e.cause.kind() }
+}
+
+fn octet_len_word(r: Result<Bytes, SqlError>) -> string {
+    match r { .Ok(v) -> "${v.length}", .Err(e) -> e.cause.kind() }
+}
+
+fn cell_class_word(r: Result<Storage, SqlError>) -> string {
+    match r {
+        .Ok(c) -> cell_class_named(c),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn cell_class_named(c: Storage) -> string {
+    match c {
+        .Int -> "int",
+        .Real -> "real",
+        .Text -> "text",
+        .Blob -> "blob",
+        .Null -> "null",
+    }
+}
 
 /// One integer out of a one-row query, or the kind it was refused with.
 fn scalar(sql: string) -> string { in_memory((db) -> read_one(db, sql)) }
@@ -170,6 +229,19 @@ spec "std/sqlite statement" {
         then "reading NULL as an integer is refused" { scalar("select null") == "sqlite.mismatch" }
         // A real IS a number, and it is still not an integer.
         then "reading a real as an integer is refused" { scalar("select 1.5") == "sqlite.mismatch" }
+    }
+
+    given "an empty value is an EMPTY BOX, and only SQL NULL is absence" {
+        // THE FIRST CASES WRITTEN FOR THIS READ, and the reason the
+        // class is asked before the pointer: `sqlite3_column_blob`
+        // answers a NULL POINTER for SQL NULL and for a ZERO-LENGTH
+        // BLOB alike, so a read that branched on the pointer would
+        // spend absence twice and hand an empty blob back as `null`.
+        then "an empty text is text, and it is empty" { cell("select ''") == "text|text:0" }
+        then "an empty blob is a blob, and it is empty" { cell("select x''") == "blob|blob:0" }
+        then "SQL NULL is neither, and both reads refuse it by class" { cell("select null") == "null|text:sqlite.mismatch|blob:sqlite.mismatch" }
+        then "text that is there reads its own length" { cell("select 'abc'") == "text|text:3" }
+        then "and octets that are there read theirs" { cell("select x'00ff41'") == "blob|blob:3" }
     }
 
     given "a column index outside the row" {

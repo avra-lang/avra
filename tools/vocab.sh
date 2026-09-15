@@ -53,7 +53,8 @@ Type	packages/std-avrac/src/language/llvm.av	ll_type_of	the LLVM type a shape be
 Type	packages/std-avrac/src/language/llvm.av	slot_form	which conversion a category owes the word slot
 SlotForm	packages/std-avrac/src/language/llvm.av	worded	the cast INTO the slot
 SlotForm	packages/std-avrac/src/language/llvm.av	unworded	the cast back out of it
-SlotForm	packages/std-avrac/src/language/llvm.av	answer_form	which of them survives a non-word answer"
+SlotForm	packages/std-avrac/src/language/llvm.av	answer_form	which of them survives a non-word answer
+RtHost	packages/std-avrac/src/language/interp.av	rt_dispatch	the arm that evaluates a row"
 
 # A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
 # ends the script rather than a subshell the gate never sees.
