@@ -1,7 +1,7 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef}
-use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, lone_workspace, timed_workspace, programs_workspace, no_target, avra, emit_ll}
+use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, lone_workspace, timed_workspace, programs_workspace, no_target, avra, emit_ll, stage_words}
 use @std.avrac.core.{joined, distinct}
 use @std.path.{dir_of, under_dir, joined_path}
 use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit_text, exit}
@@ -256,12 +256,12 @@ fn link(ll_path: string, p: Program) -> int {
 }
 
 /// THE HAND-OFF: every binary a run needs is linked and run by a
-/// FRESH image of this program — `avra staged <plan>...` — so the
-/// workspaces this process holds are gone while clang and the
+/// FRESH image of this program — the stage word, then the plans — so
+/// the workspaces this process holds are gone while clang and the
 /// binaries run, and a suite peaks at the larger of the two, not
 /// their sum. Answers only when the exec failed.
 fn handed_off(plans: List<string>) -> int {
-    let _ = avra_exec_self(["staged"].concat(plans))
+    let _ = avra_exec_self(stage_words(plans))
     eprintln("avra: could not run this program again for the link")
     1
 }
@@ -299,12 +299,12 @@ fn linked(ll_path: string, p: Program, opt: string) -> int {
 
 /// clang over its words, at the terminal: its exit, or the host's
 /// refusal to run it at all.
-fn clang_ran(words: List<string>) -> Result<Exit, ProcessError> {
+export fn clang_ran(words: List<string>) -> Result<Exit, ProcessError> {
     (at_the_terminal(cmd(linker()?, words)).outcome()?).exit
 }
 
 /// The one voice for a child the host would not run.
-fn refused_by_host(e: ProcessError) -> int {
+export fn refused_by_host(e: ProcessError) -> int {
     host_refused(e.describe().message)
 }
 
@@ -331,11 +331,11 @@ fn at_the_terminal(c: Command) -> Command {
 /// A binary a link wrote, run at the terminal — its exit, or the
 /// host's refusal to run it at all. Spelled with a `/`, the path is
 /// the tool, taken as written.
-fn run_binary(binary: string) -> Result<Exit, ProcessError> {
+export fn run_binary(binary: string) -> Result<Exit, ProcessError> {
     (at_the_terminal(cmd(tool(binary)?, [])).outcome()?).exit
 }
 
-fn judged_link(x: Exit, ll_path: string) -> int {
+export fn judged_link(x: Exit, ll_path: string) -> int {
     if x is .Clean { return 0 }
     eprintln("avra: clang failed linking ${ll_path} — exited ${exit_text(x)}")
     1

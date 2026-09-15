@@ -1022,7 +1022,10 @@ engine's spec, written by dogfooding.
 - The CLI: each subcommand is ONE file in
   `packages/cli/src/commands/`, exporting
   `<name>_command() -> Subcommand`; `cli/src/main.av` only composes
-  the list. A new command is a new file plus one line. A command
+  the list — and hands a HAND-OFF's words (the stage word, then the
+  link plans) to `cli/src/stage.av` before the app reads them: the
+  suite's light phase is a re-exec, never a command, so no name
+  reaches it. A new command is a new file plus one line. A command
   that takes a program is `phased(args, "<phase>", act)`
   (commands/phase.av): the act is a NAMED fn answering
   `Result<int, string>` — its exit code, or the report `phased`
