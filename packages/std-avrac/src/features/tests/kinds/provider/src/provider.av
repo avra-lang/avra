@@ -2,7 +2,7 @@
 //! DISPATCHES on `Kind` and never reads a spelling, so the answer it
 //! writes is proof the structure arrived — and `spelled()` beside it
 //! is proof the shape still knows the words.
-use @std.meta.{Type, Fn, Param, Kind, Seat, Directive, literal}
+use @std.meta.{Type, Fn, Param, Field, Variant, Kind, Seat, Directive, literal}
 
 /// A record's fields three ways: STRUCTURALLY (a Kind dispatch), in
 /// the shape's OWN WORDS (`spelled()`), and as the program WROTE
@@ -16,6 +16,34 @@ export trait Shapes {
             fn written() -> string { ${literal(joined([f.ty for f in t.fields]))} }
         } } }]
     }
+}
+
+/// A VARIANT's payload as FIELDS — the names a grammar capture
+/// binds to, beside the spellings `payload` already carried. The two
+/// run together, so `paired` asserts the lengths agree and `named`
+/// asserts each field's `ty` IS its payload spelling: two lists that
+/// disagree positionally are two things wearing one identity.
+export trait Carried {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: quote { impl ${t} {
+            fn carried() -> string { ${literal(joined([variant_fields(v.name, v.fields) for v in t.variants]))} }
+            fn paired() -> string { ${literal(joined(["${v.payload.length}=${v.fields.length}" for v in t.variants]))} }
+            fn named() -> string { ${literal(joined([same_spelling(v) for v in t.variants]))} }
+        } } }]
+    }
+}
+
+fn variant_fields(name: string, fields: List<Field>) -> string {
+    "${name}(${joined(["${f.name}:${shaped(f.kind)}" for f in fields])})"
+}
+
+/// Each field's `ty` against the payload spelling beside it.
+fn same_spelling(v: Variant) -> string {
+    "${v.name}:${agrees(v)}"
+}
+
+fn agrees(v: Variant) -> bool {
+    [j for j, f in v.fields if f.ty != v.payload[j]].is_empty()
 }
 
 /// A FN's seats and answer, shaped — where a `mut` mark, a `Result`
