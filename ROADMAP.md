@@ -15291,6 +15291,19 @@ seed, so its seed-check receipt is the master's.
   compiler writes (`dependency_fix` already adds a row; a `drop row`
   fix and a section-empty rule beside it), so no sweep regexes TOML.
 
+### DEFECTS
+
+- **THE SEED-CHECK BINARY COULD NOT SEE THE STD IT WAS TESTING.**
+  `seed-check` links the seed's compiler into `build/seed-check/`, and
+  `@std/*` resolves from the binary's own directory — so it looked for
+  `build/packages`, found no std root, and reached std only through the
+  manifest rows. It went red the moment this slice removed them, with
+  a diagnostic pointing at `plan_binary` in stage.av and nothing about
+  resolution. The binary links beside `build/avra` now, which is the
+  layout the resolver describes; law in CLAUDE.md. The tell was that
+  the failing call sat in a file whose imports had just changed —
+  and the cause was neither the file nor the imports.
+
 ### DOCTRINE
 
 - **A BRANCH'S BUILD NEEDS A PRODUCT OF ITS MANIFESTS' GENERATION.**

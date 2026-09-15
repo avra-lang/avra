@@ -725,6 +725,14 @@ engine's spec, written by dogfooding.
   after `make seed` on main carries the prelude, drop io's two verbs
   and the 19 `use @std.io.{println…}` lines — an explicit import of
   the prelude's name is legal, so the sweep is deletion only.
+- A COMPILER UNDER TEST MUST STAND WHERE A COMPILER STANDS. `@std/*`
+  resolves from the BINARY'S OWN DIRECTORY, so a harness that links
+  the binary somewhere else changes what it can resolve: `seed-check`
+  linked into `build/seed-check/`, looked for `build/packages`, found
+  no std root, and could reach a std package only through a manifest
+  row. Green for as long as every manifest carried rows, and red the
+  day they went — the assumption-nobody-violated law, wearing a
+  harness's clothes. A binary under test links beside `build/avra`.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
