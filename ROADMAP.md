@@ -15264,3 +15264,42 @@ length changes nothing measurable. The tempting knob was
 proportion, left the spin intact, and paid for it by shortening the
 window a grandchild has to speak — a tuned interval standing in for
 the ordering the loop actually needed.
+
+## Feedback survey — 2026-09-15 #16 (TOOLCHAIN, the redirect audit)
+
+Counted per axis: defects 1 (mine, caught by its own fixture on the
+first run), doctrine 1, process 1; friction, sugar, features,
+performance empty. Not surveyed: any tree but ../avra-lane-caps.
+
+### DEFECTS
+
+- **A CAPTURE WRAPPER THAT ANSWERED GREEN FOR EVERY RED COMMAND.**
+  `tools/capped.sh` runs a command with its output capped and must
+  answer the command's own status, since a bare pipe answers `tail`'s.
+  The status rides the stream as a marker at its end, where `tail`
+  cannot cut it — and `set -e` was inherited by the subshell the
+  pipeline's first element runs in, so a failing command ended that
+  subshell BEFORE the marker was written, the marker's absence read
+  as "no status", and the wrapper answered 0. EVIDENCE: the fixture
+  asserting a red command's status, on its first run, before the tool
+  was wired anywhere. Nothing in the tree would have caught it: every
+  site is `cmd || { show; exit 1; }`, so the failure mode is a build
+  that reports success.
+
+### DOCTRINE
+
+- **A CAP BELONGS ON A LOG, NEVER ON DATA THAT IS COMPARED.** Four of
+  the six redirects are logs read by their tail and take the cap; the
+  two that `witness` and `native-check` DIFF do not, because a `tail`
+  over both can truncate two different outputs into agreement —
+  manufacturing the equality those rules exist to test, with no
+  failing run to reveal it. In CLAUDE.md with the slice.
+
+### PROCESS
+
+- **A KILLED PROBE IS CHEAPER THAN A QUEUED ONE.** A smoke test of a
+  capped site in a born-clean worktree became a heavy run: `./avra`
+  with no `build/avra` bootstraps from the seed and takes the
+  machine-wide lock, so a "light" probe sat in front of another
+  lane's gate. Killed it and ran the checks that need no compiler.
+  Know which probes are light BEFORE the worktree has a binary.
