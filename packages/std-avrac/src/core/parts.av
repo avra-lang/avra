@@ -13,12 +13,12 @@ impl NodeStore {
     /// variants; the trait carries behavior.
     fn let_name(s: StmtId) -> string? {
         match self.stmt(s) {
-            .Let(name, _, _) -> name,
-            .MutLet(name, _, _) -> name,
-            .ConstDecl(name, _, _) -> name,
-            .For(name, _, _, _, _, _) -> name,
-            .ForEach(_, name, _, _) -> name,
-            .LetElse(name, _, _) -> name,
+            .Let(name, _, _) -> name.of,
+            .MutLet(name, _, _) -> name.of,
+            .ConstDecl(name, _, _) -> name.of,
+            .For(name, _, _, _, _, _) -> name.of,
+            .ForEach(_, name, _, _) -> name.of,
+            .LetElse(name, _, _) -> name.of,
             .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _)
                 or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
                 or .Fail(_) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _)
@@ -73,7 +73,7 @@ impl NodeStore {
     /// A construction's type name, when the expression is one.
     fn struct_lit_name(e: ExprId) -> string? {
         match self.expr(e) {
-            .StructLit(name, _, _) -> name,
+            .StructLit(name, _, _) -> name.of,
             _ -> null,
         }
     }
@@ -81,7 +81,7 @@ impl NodeStore {
     /// A method call's pieces, when the expression is one.
     fn method_parts(e: ExprId) -> MethodParts? {
         match self.expr(e) {
-            .MethodCall(subject, name, args) -> MethodParts { subject: subject, name: name, args: args },
+            .MethodCall(subject, name, args) -> MethodParts { subject: subject, name: name.of, args: args },
             _ -> null,
         }
     }
@@ -120,10 +120,10 @@ impl NodeStore {
     /// empty when plain. The ordinal IS the Var identity.
     fn decl_tparams(s: StmtId) -> List<string> {
         match self.stmt(s) {
-            .FnDecl(_, tparams, _, _, _) -> [t.name for t in tparams],
-            .StructDecl(_, tparams, _) -> tparams,
-            .NamedType(_, tparams, _) -> tparams,
-            .EnumDecl(_, tparams, _) -> tparams,
+            .FnDecl(_, tparams, _, _, _) -> [t.name.of for t in tparams],
+            .StructDecl(_, tparams, _) -> [t.of for t in tparams],
+            .NamedType(_, tparams, _) -> [t.of for t in tparams],
+            .EnumDecl(_, tparams, _) -> [t.of for t in tparams],
             .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or
             .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or
@@ -182,7 +182,7 @@ impl NodeStore {
     /// A trait declaration's pieces, when the statement is one.
     fn trait_parts(s: StmtId) -> TraitParts? {
         match self.stmt(s) {
-            .TraitDecl(name, fns) -> TraitParts { name: name, fns: fns },
+            .TraitDecl(name, fns) -> TraitParts { name: name.of, fns: fns },
             _ -> null,
         }
     }
@@ -190,7 +190,7 @@ impl NodeStore {
     /// A sublanguage declaration's pieces, when the statement is one.
     fn syntax_parts(s: StmtId) -> SyntaxParts? {
         match self.stmt(s) {
-            .SyntaxDecl(name, text) -> SyntaxParts { name: name, text: text },
+            .SyntaxDecl(name, text) -> SyntaxParts { name: name.of, text: text },
             _ -> null,
         }
     }
@@ -198,7 +198,7 @@ impl NodeStore {
     /// An impl block's pieces, when the statement is one.
     fn impl_parts(s: StmtId) -> ImplParts? {
         match self.stmt(s) {
-            .ImplDecl(of, target, fns) -> ImplParts { of: of, target: target, fns: fns },
+            .ImplDecl(of, target, fns) -> ImplParts { of: of?.of, target: target.of, fns: fns },
             _ -> null,
         }
     }
@@ -208,7 +208,7 @@ impl NodeStore {
     fn fn_parts(s: StmtId) -> FnParts? {
         match self.stmt(s) {
             .FnDecl(name, tparams, params, ret, body) ->
-                FnParts { name: name, tparams: tparams, params: params, ret: ret, body: body },
+                FnParts { name: name.of, tparams: tparams, params: params, ret: ret, body: body },
             _ -> null,
         }
     }
@@ -217,9 +217,9 @@ impl NodeStore {
     /// records and enums share the ONE type namespace.
     fn type_decl_name(s: StmtId) -> string? {
         match self.stmt(s) {
-            .StructDecl(name, _, _) -> name,
-            .NamedType(name, _, _) -> name,
-            .EnumDecl(name, _, _) -> name,
+            .StructDecl(name, _, _) -> name.of,
+            .NamedType(name, _, _) -> name.of,
+            .EnumDecl(name, _, _) -> name.of,
             .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or
             .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or
             .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or
@@ -230,7 +230,7 @@ impl NodeStore {
     /// An enum declaration's pieces, when the statement is one.
     fn enum_parts(s: StmtId) -> EnumParts? {
         match self.stmt(s) {
-            .EnumDecl(name, tparams, variants) -> EnumParts { name: name, tparams: tparams, variants: variants },
+            .EnumDecl(name, tparams, variants) -> EnumParts { name: name.of, tparams: [t.of for t in tparams], variants: variants },
             _ -> null,
         }
     }
@@ -238,7 +238,7 @@ impl NodeStore {
     /// A NAMED TYPE's pieces, when the statement is one.
     fn named_parts(s: StmtId) -> NamedParts? {
         match self.stmt(s) {
-            .NamedType(name, tparams, of) -> NamedParts { name: name, tparams: tparams, of: of },
+            .NamedType(name, tparams, of) -> NamedParts { name: name.of, tparams: [t.of for t in tparams], of: of },
             _ -> null,
         }
     }
@@ -246,7 +246,7 @@ impl NodeStore {
     /// A struct declaration's pieces, when the statement is one.
     fn struct_parts(s: StmtId) -> StructParts? {
         match self.stmt(s) {
-            .StructDecl(name, tparams, fields) -> StructParts { name: name, tparams: tparams, fields: fields },
+            .StructDecl(name, tparams, fields) -> StructParts { name: name.of, tparams: [t.of for t in tparams], fields: fields },
             _ -> null,
         }
     }
@@ -278,7 +278,7 @@ impl NodeStore {
     /// An extern fn's pieces, when the statement is one.
     fn extern_parts(s: StmtId) -> ExternParts? {
         match self.stmt(s) {
-            .ExternFn(name, params, ret) -> ExternParts { name: name, params: params, ret: ret },
+            .ExternFn(name, params, ret) -> ExternParts { name: name.of, params: params, ret: ret },
             _ -> null,
         }
     }

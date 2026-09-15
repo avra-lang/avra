@@ -187,12 +187,16 @@ is what would reopen the question.
 - **The 16 per-feature `kids()`.** Semantic by construction: each HIDES
   the children it types under its own narrowing, and each already
   carries its one-line reason. Not mechanical, never derivable.
-- **`rebuilt_expr` / `rebuilt_stmt`** (core/rebuild.av). Not mechanical
-  either: a `string` payload is a BINDER (`self.name`, which marks the
-  open node as holed) or a plain name (`self.plain_name`), and the type
-  spelling is `string` for both. TRIGGER: typed name shapes
-  (`type Binder = string`, now spellable since `type Name = Shape`)
-  would put the distinction in the payload where a derive can read it.
+- **`rebuilt_expr` / `rebuilt_stmt`** — **TRIGGER FIRED, DONE**
+  (comptime/names). The payloads wear `Scoped`, `Plain` and `Nominal`
+  now, so the kind IS the type and `@derive(Rebuild)`
+  (core/rebuild_derive.av) reads it. Two variants stay hand-written —
+  `Quote` (a nested body is copied verbatim) and `Sublang` (an
+  expansion stands in place of its holes) — and the derive routes each
+  to its method BY NAME. The payoff is bigger than the deleted arms:
+  a mis-routed verb no longer answers wrongly, it REFUSES
+  ("argument 1 of `.Ident` wants `Scoped`, found `Plain`"), so the
+  verb table is checked rather than trusted.
 - **The IR's eight consumers** (`dst_of`, `body_symbol`,
   `hosted_symbol`, `step`, `memory_ins`, `body_lines`, `emit_ins`,
   `give`). They must stay exhaustive matches — that IS the vocabulary's
