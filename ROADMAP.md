@@ -15855,3 +15855,66 @@ of the slice), and one avoidable gate.
   where the layout suggests. It was correct here because every test fn
   is top-level, and the DIFF was read site by site rather than
   trusted. Recording the check, not the cleverness.
+
+## Feedback survey — 2026-09-15 #19 (TOOLCHAIN, a row's answer)
+
+Counted per axis: defects 1 (live on main, STD-DATA's find), doctrine
+1, process 1; friction, sugar, features, performance empty. Not
+surveyed: any tree but this lane's.
+
+### DEFECTS
+
+- **THE SEAT LAW HELD EVERY ARGUMENT AND NOTHING HELD THE ANSWER.**
+  `row_shape_law` checked a row's arity and each pointer seat's box;
+  an extern naming a row could declare ANY answer.
+  `extern fn avra_array_new() -> bool` checked clean, exit 0, and the
+  engines disagreed — `made=[]` evaluated against `made=true` native.
+  Both halves are refused now: the currency (`extern_kind` against
+  `RtSig.ret`) and, for a pointer, the box (`RtSig.answer`).
+  ATTRIBUTED: found by STD-DATA red-teaming the word-slot registry,
+  filed as avra-kln6 with a complete diagnosis; I wrote the fix.
+
+### DOCTRINE
+
+- **A `defect:` MESSAGE RAISED BY A PROGRAM THE COMPILER ADMITTED IS A
+  MISSING LAW, NOT A BUG IN THE PASS THAT SPEAKS.** The compiler's
+  self-blame channel is for its own invariants, so when a CLEAN
+  program reaches it — "a non-Bytes value reached a byte operation in
+  a clean program" — the pass is telling the truth about a
+  declaration nothing refused. It is the compiler's own voice saying
+  the check is in the wrong place, and it goes on saying so after a
+  fix that satisfies the bug report: `-> bool` refused, `-> Bytes`
+  still admitted. Read a defect message as evidence about the
+  ADMITTING law, never as a defect in the reporting one.
+- **A HALF-FIX LEAVES A TWIN OF THE SAME DEFECT.** The kind check
+  alone closes the reported program and leaves
+  `avra_array_new() -> Bytes` accepted — same kind, different box,
+  and the program reads a list's header as octets: "a non-Bytes value
+  reached a byte operation in a clean program". The complete law
+  needed the answer's BOX as well as its currency, which is the seat
+  column of avra-ihk9 arriving at the other end of the call. When a
+  law is added to one end of a seam, ask what the other end's version
+  of it is before calling the slice done.
+
+### PROCESS
+
+- **A TEST THAT REFUSES YOUR CHANGE MAY BE ENCODING A LAW NOBODY
+  WROTE DOWN.** The first draft spoke twice for
+  `avra_host_env(a, b) -> int` — wrong arity AND wrong answer — and
+  failed an existing case asserting exactly one message. Editing the
+  expectation is the near-universal instinct and would have been
+  wrong: the case wanted one message because a declaration whose
+  ARITY disagrees may be naming a row its writer did not mean, so
+  every complaint beneath it is about a fn they were not declaring.
+  Arity speaks alone; seats and the answer speak once the shape is
+  right. The law is at the site now, where the test can no longer be
+  the only place it lives.
+- **A WARNING THAT CANNOT BECOME AN ERROR IS STILL EVIDENCE.** The
+  native build already printed "avra_array_new redeclared with a
+  different type — stale: ptr (), source: i64 ()" for this exact
+  program, and that channel must stay a warning because it exists for
+  seed/source generation skew. The task said so before I started, and
+  it saved me from the obvious wrong fix — promoting the warning —
+  which would have made every skewed build red. A channel's PURPOSE
+  decides whether its signal can be tightened, not the signal's
+  accuracy.

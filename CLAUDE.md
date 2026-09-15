@@ -415,6 +415,24 @@ engine's spec, written by dogfooding.
   every declaration agree or the gate says which does not. Filled from
   the C in one sweep (46 rows, 141 seats): `const char*` is `Text`;
   the array, map and process rows say `List`/`Map` by name.
+- A ROW'S ANSWER IS THE ROW'S, NOT THE DECLARATION'S — the seat law's
+  other end, and it was unheld while every argument was held. An
+  extern naming a runtime row could answer ANY type:
+  `extern fn avra_array_new() -> bool` checked clean and the engines
+  then disagreed about what it answered (the evaluator printing a
+  list, native printing `true`). The declared answer rides the row's
+  CURRENCY (`extern_kind` against `RtSig.ret`, a narrow width and a
+  word being different), and a POINTER answer names the BOX the C
+  body built (`RtSig.answer`) — without that half, `-> Bytes` on a
+  list-building row still agreed on the kind and the program read a
+  list's header as octets, "a non-Bytes value reached a byte
+  operation in a clean program", the compiler blaming itself for what
+  it accepted. THE NATIVE BUILD ALREADY NOTICED AND COULD NOT SPEAK:
+  it warns "redeclared with a different type — stale: ptr (), source:
+  i64 ()", and that channel exists for seed/source generation SKEW,
+  so it cannot become an error — a name that is IN `rt_sigs`
+  redeclared with a different answer is not skew, and needs its own
+  refusal at the declaration.
 - A RUNTIME ROW BORROWS ITS ARGUMENTS — callee-cleans is the AVRA
   call's convention, not the registry's. `retained_args` retains for
   `.Call` and `.CallPtr` alone; a `CallRt`/`CallRtVoid` argument
