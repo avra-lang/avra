@@ -1159,6 +1159,22 @@ engine's spec, written by dogfooding.
   engines read one instruction stream by construction; I33 ratchets
   the raw brackets, I39 the free verbs, and the vocabulary grows
   with the next shared shape.
+- A DERIVE'S FILE IS TYPED WHILE THE ANNOTATED FILE IS STILL
+  REGISTERING, so it must name nothing that file declares. Running
+  `@derive(X)` over a declaration in file A types the file that
+  declares `X` — the WHOLE file, not just the trait — and A's own
+  impls are half-registered at that moment. The failure is SILENT and
+  accuses an innocent: `@derive(Rebuild)` on `Expr` in core/nodes.av,
+  with the trait beside the walk in core/rebuild.av, made every
+  `impl NodeStore` method in nodes.av VANISH — 51 diagnostics of the
+  form "`NodeStore` has no method `hole_stmt`", all pointing at
+  rebuild.av, none at the annotation. `methods()` already refuses to
+  MEMOIZE a table it cannot complete (workspace.av); what it cannot
+  do is stop the half-table from being READ. The remedy is the shape
+  `core/protocol.av` had by accident and `core/rebuild_derive.av` now
+  has on purpose: A DERIVE STANDS ALONE IN ITS FILE, with `@std/meta`
+  and nothing else. The generated code may still call the annotated
+  file's neighbours — that resolves later, at ordinary typing.
 - A TYPE IN A PASS IS SPELLED, NEVER REBUILT: `cx.type(List<string?>)`,
   `cx.type(Map<string, want>)` — a type literal, the type in its own
   spelling folded ONCE by its receiver's `interned` (core/types.av's

@@ -3,18 +3,18 @@
 // first to the second leaves the same list, and two different nodes
 // wear one identity. Every node kind splicing two sequences is
 // attacked here by moving exactly one item across its boundary.
-use @std.avrac.core.{new_node_store, Expr, Stmt, Pat, Param, TypeRef, SeatMark, named_ref, plain_mark, GrammarSpec}
+use @std.avrac.core.{Scoped, Plain, new_node_store, Expr, Stmt, Pat, Param, TypeRef, SeatMark, named_ref, plain_mark, GrammarSpec}
 
 fn written(name: string, optional: bool) -> TypeRef {
     named_ref(name) with { optional: optional }
 }
 
 fn seat(name: string, t: TypeRef?) -> Param {
-    Param { name: name, ty: t, default: null, mark: plain_mark }
+    Param { name: Scoped(name), ty: t, default: null, mark: plain_mark }
 }
 
 fn seat_marked(name: string, t: TypeRef?, mark: SeatMark) -> Param {
-    Param { name: name, ty: t, default: null, mark: mark }
+    Param { name: Scoped(name), ty: t, default: null, mark: mark }
 }
 
 const mut_mark: SeatMark = SeatMark { mutable: true, settled: false }
@@ -77,8 +77,8 @@ spec "core/nodes adversarial" {
             mut s = new_node_store()
             let subject = s.alloc_expr(Expr.IntLit(1), null)
             let v = s.alloc_expr(Expr.IntLit(2), null)
-            let l = s.alloc_expr(Expr.Catch(subject, ["A", "B"], ["b"], [v]), null)
-            let r = s.alloc_expr(Expr.Catch(subject, ["A"], ["B", "b"], [v]), null)
+            let l = s.alloc_expr(Expr.Catch(subject, [Plain("A"), Plain("B")], [Scoped("b")], [v]), null)
+            let r = s.alloc_expr(Expr.Catch(subject, [Plain("A")], [Scoped("B"), Scoped("b")], [v]), null)
             s.expr_fingerprint(l) != s.expr_fingerprint(r)
         }
         then "a block's statements are not its tail" {

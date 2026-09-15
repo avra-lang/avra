@@ -46,28 +46,28 @@ impl SourceText {
     fn statement_node(s: StmtId, depth: int) -> List<string> {
         let exported = if self.store.is_exported(s) { "export " } else { "" }
         match self.store.stmt(s) {
-            .Let(name, ty, value) -> [source_line(depth, "let ${source_name(name)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}")],
-            .MutLet(name, ty, value) -> [source_line(depth, "mut ${source_name(name)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}")],
-            .ConstDecl(name, ty, value) -> [source_line(depth, "${exported}const ${source_name(name)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}")],
+            .Let(name, ty, value) -> [source_line(depth, "let ${source_name(name.of)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}")],
+            .MutLet(name, ty, value) -> [source_line(depth, "mut ${source_name(name.of)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}")],
+            .ConstDecl(name, ty, value) -> [source_line(depth, "${exported}const ${source_name(name.of)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}")],
             .Assign(target, value) -> [source_line(depth, "${self.expression(target, loosest_tier, depth)} = ${self.expression(value, loosest_tier, depth)}")],
             .ExprStmt(value) -> [source_line(depth, self.expression(value, loosest_tier, depth))],
             .Discard(value) -> [source_line(depth, "let _ = ${self.expression(value, loosest_tier, depth)}")],
-            .FnDecl(name, tparams, params, ret, body) -> [source_line(depth, "${exported}${self.fn_mark(s)}fn ${source_name(name)}${self.type_params(tparams)}(${self.params(params, depth)}) -> ${spelled(ret)} ${self.block(body, depth)}")],
-            .ExternFn(name, params, ret) -> [source_line(depth, "${exported}extern fn ${source_name(name)}(${self.params(params, depth)}) -> ${spelled(ret)}")],
+            .FnDecl(name, tparams, params, ret, body) -> [source_line(depth, "${exported}${self.fn_mark(s)}fn ${source_name(name.of)}${self.type_params(tparams)}(${self.params(params, depth)}) -> ${spelled(ret)} ${self.block(body, depth)}")],
+            .ExternFn(name, params, ret) -> [source_line(depth, "${exported}extern fn ${source_name(name.of)}(${self.params(params, depth)}) -> ${spelled(ret)}")],
             .While(cond, stmts) -> [self.statement_block("while ${self.expression(cond, loosest_tier, depth)}", stmts, depth)],
             .IfStmt(cond, yes, no) -> [self.if_statement(cond, yes, no, depth)],
             .Return(value) -> [source_line(depth, if value == null { "return" } else { "return ${self.expression(value!, loosest_tier, depth)}" })],
             .Fail(value) -> [source_line(depth, "fail ${self.expression(value, loosest_tier, depth)}")],
-            .ImplDecl(of, target, fns) -> [self.impl_decl(exported, of, target, fns, depth)],
-            .TraitDecl(name, fns) -> [self.trait_decl(exported, name, fns, depth)],
-            .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name)} {${text}}")],
-            .LetElse(name, subject, stmts) -> [self.statement_block("let ${source_name(name)}? = ${self.expression(subject, loosest_tier, depth)} else", stmts, depth)],
-            .For(name, from, to, _, _, stmts) -> [self.statement_block("for ${source_name(name)} in ${self.expression(from, loosest_tier, depth)}..${self.expression(to, loosest_tier, depth)}", stmts, depth)],
+            .ImplDecl(of, target, fns) -> [self.impl_decl(exported, of?.of, target.of, fns, depth)],
+            .TraitDecl(name, fns) -> [self.trait_decl(exported, name.of, fns, depth)],
+            .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name.of)} {${text}}")],
+            .LetElse(name, subject, stmts) -> [self.statement_block("let ${source_name(name.of)}? = ${self.expression(subject, loosest_tier, depth)} else", stmts, depth)],
+            .For(name, from, to, _, _, stmts) -> [self.statement_block("for ${source_name(name.of)} in ${self.expression(from, loosest_tier, depth)}..${self.expression(to, loosest_tier, depth)}", stmts, depth)],
             .Use(path, items, aliases) -> [source_line(depth, "use ${joined(path, ".")}.{${joined([import_item(items[j], aliases[j]) for j in 0..items.length], ", ")}}")],
-            .ForEach(index, name, subject, stmts) -> [self.statement_block("for ${self.loop_binds(index, name)} in ${self.expression(subject, loosest_tier, depth)}", stmts, depth)],
-            .StructDecl(name, tparams, fields) -> [self.struct_decl(exported, name, tparams, fields, depth)],
-            .NamedType(name, tparams, of) -> [source_line(depth, "${exported}type ${source_name(name)}${self.named_type_params(tparams)} = ${spelled(of)}")],
-            .EnumDecl(name, tparams, variants) -> [self.enum_decl(exported, name, tparams, variants, depth)],
+            .ForEach(index, name, subject, stmts) -> [self.statement_block("for ${self.loop_binds(index?.of, name.of)} in ${self.expression(subject, loosest_tier, depth)}", stmts, depth)],
+            .StructDecl(name, tparams, fields) -> [self.struct_decl(exported, name.of, [t.of for t in tparams], fields, depth)],
+            .NamedType(name, tparams, of) -> [source_line(depth, "${exported}type ${source_name(name.of)}${self.named_type_params([t.of for t in tparams])} = ${spelled(of)}")],
+            .EnumDecl(name, tparams, variants) -> [self.enum_decl(exported, name.of, [t.of for t in tparams], variants, depth)],
             .Spec(name, cases) -> [self.spec_decl(name, cases, depth)],
             .Defer(body, on_error) -> [source_line(depth, "${if on_error { "errdefer" } else { "defer" }} ${self.deferred(body, depth)}")],
             .Error -> [source_line(depth, "__error")],
@@ -94,7 +94,7 @@ impl SourceText {
 
     fn type_params(params: List<Param>) -> string {
         if params.is_empty() { return "" }
-        "<${joined(["${source_name(p.name)}${self.bound(p.ty)}" for p in params], ", ")}>"
+        "<${joined(["${source_name(p.name.of)}${self.bound(p.ty)}" for p in params], ", ")}>"
     }
 
     fn named_type_params(params: List<string>) -> string {
@@ -111,7 +111,7 @@ impl SourceText {
     }
 
     fn param(p: Param, depth: int) -> string {
-        let name = if p.name.is_empty() { "" } else { "${source_name(p.name)}${if p.ty == null { "" } else { ": " }}" }
+        let name = if p.name.is_empty() { "" } else { "${source_name(p.name.of)}${if p.ty == null { "" } else { ": " }}" }
         let ty = if p.ty == null { "" } else { spelled(p.ty!) }
         "${mark_prefixed(p.mark, name)}${ty}${self.default_value(p.default, depth)}"
     }
@@ -166,7 +166,7 @@ impl SourceText {
     fn trait_member(s: StmtId, depth: int) -> List<string> {
         match self.store.stmt(s) {
             .FnDecl(name, tparams, params, ret, body) -> {
-                let head = "${self.fn_mark(s)}fn ${source_name(name)}${self.type_params(tparams)}(${self.params(params, depth)}) -> ${spelled(ret)}"
+                let head = "${self.fn_mark(s)}fn ${source_name(name.of)}${self.type_params(tparams)}(${self.params(params, depth)}) -> ${spelled(ret)}"
                 self.doc_lines(s, depth).concat(match self.store.expr(body) {
                     .Error -> [source_line(depth, head)],
                     rest -> [source_line(depth, "${head} ${self.block(body, depth)}")],
@@ -189,8 +189,8 @@ impl SourceText {
     }
 
     fn variant(v: Variant, depth: int) -> string {
-        if v.payloads.is_empty() { return source_name(v.name) }
-        "${source_name(v.name)}(${self.params(v.payloads, depth)})"
+        if v.payloads.is_empty() { return source_name(v.name.of) }
+        "${source_name(v.name.of)}(${self.params(v.payloads, depth)})"
     }
 
     fn spec_decl(name: string, cases: List<Case>, depth: int) -> string {
@@ -228,40 +228,40 @@ impl SourceText {
             .FloatLit(bits) -> numeric(avra_float_text_bits(bits), parent),
             .StrLit(value) -> grouped(quoted_text(value), atom_tier, parent),
             .BoolLit(value) -> grouped(if value { "true" } else { "false" }, atom_tier, parent),
-            .Ident(name) -> grouped(source_name(name), atom_tier, parent),
+            .Ident(name) -> grouped(source_name(name.of), atom_tier, parent),
             .Receiver -> grouped("self", atom_tier, parent),
             .Binary(op, left, right) -> self.binary(op, left, right, parent, depth),
             .Not(value) -> grouped("!${self.expression(value, unary_tier, depth)}", unary_tier, parent),
             .ListLit(elems) -> grouped("[${joined([self.expression(e, loosest_tier, depth) for e in elems], ", ")}]", atom_tier, parent),
-            .Comp(elem, index, name, source, hi, cond) -> self.comprehension(elem, index, name, source, hi, cond, parent, depth),
+            .Comp(elem, index, name, source, hi, cond) -> self.comprehension(elem, index?.of, name.of, source, hi, cond, parent, depth),
             .MapLit(keys, values) -> grouped("{${joined(["${self.expression(k, loosest_tier, depth)}: ${self.expression(values[j], loosest_tier, depth)}" for j, k in keys], ", ")}}", atom_tier, parent),
             .Index(subject, index) -> grouped("${self.expression(subject, postfix_tier, depth)}[${self.expression(index, loosest_tier, depth)}]", postfix_tier, parent),
-            .Prop(subject, name) -> grouped("${self.expression(subject, postfix_tier, depth)}.${source_name(name)}", postfix_tier, parent),
+            .Prop(subject, name) -> grouped("${self.expression(subject, postfix_tier, depth)}.${source_name(name.of)}", postfix_tier, parent),
             .Interp(parts, holes) -> grouped(self.interpolation(parts, holes, depth), atom_tier, parent),
             .Quote(parts, _, _, holes) -> grouped(self.quotation(parts, holes, depth), atom_tier, parent),
             .Sublang(word, body, holes, _) -> grouped("${word} {${self.filled_body(body, holes, depth)}}", atom_tier, parent),
             .If(cond, yes, no) -> grouped("if ${self.expression(cond, loosest_tier, depth)} ${self.block(yes, depth)} else ${self.block(no, depth)}", atom_tier, parent),
             .When(conds, values, fallback) -> grouped(self.when_expr(conds, values, fallback, depth), atom_tier, parent),
             .Block(stmts, value) -> grouped(self.braced(stmts, value, depth), atom_tier, parent),
-            .Call(callee, pins, args) -> grouped("${source_name(callee)}${self.pins(pins)}(${self.args(args, depth)})", atom_tier, parent),
-            .StructLit(name, fields, values) -> grouped("${source_name(name)} { ${joined(["${source_name(f)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }", atom_tier, parent),
-            .With(subject, fields, values) -> grouped("${self.expression(subject, 10, depth)} with { ${joined(["${source_name(f)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }", 10, parent),
+            .Call(callee, pins, args) -> grouped("${source_name(callee.of)}${self.pins(pins)}(${self.args(args, depth)})", atom_tier, parent),
+            .StructLit(name, fields, values) -> grouped("${source_name(name.of)} { ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }", atom_tier, parent),
+            .With(subject, fields, values) -> grouped("${self.expression(subject, 10, depth)} with { ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }", 10, parent),
             .Match(subject, arms) -> grouped(self.match_expr(subject, arms, depth), atom_tier, parent),
             .NullLit -> grouped("null", atom_tier, parent),
             .Coalesce(left, right) -> grouped("${self.expression(left, 5, depth)} ?? ${self.expression(right, 6, depth)}", 5, parent),
-            .MatchOpt(subject, bind, present, absent) -> self.match_optional(subject, bind, present, absent, parent, depth),
+            .MatchOpt(subject, bind, present, absent) -> self.match_optional(subject, bind.of, present, absent, parent, depth),
             .Lambda(params, body) -> grouped("(${self.params(params, depth)}) -> ${self.expression(body, loosest_tier, depth)}", atom_tier, parent),
             // Parentheses preserve VALUE application. Without the
             // witness, `(f)(x)` would print `f(x)` and read back as
             // the direct, declaration-resolved Call variant.
             .CallValue(subject, args) -> grouped("(${self.expression(subject, loosest_tier, depth)})(${self.args(args, depth)})", postfix_tier, parent),
-            .Chain(subject, name) -> grouped("${self.expression(subject, postfix_tier, depth)}?.${source_name(name)}", postfix_tier, parent),
+            .Chain(subject, name) -> grouped("${self.expression(subject, postfix_tier, depth)}?.${source_name(name.of)}", postfix_tier, parent),
             .Force(value) -> grouped("${self.expression(value, postfix_tier, depth)}!", postfix_tier, parent),
-            .Is(subject, variant) -> grouped("${self.expression(subject, 5, depth)} is .${source_name(variant)}", 4, parent),
-            .VariantLit(name, args) -> grouped(".${source_name(name)}${if args.is_empty() { "" } else { "(${self.args(args, depth)})" }}", atom_tier, parent),
+            .Is(subject, variant) -> grouped("${self.expression(subject, 5, depth)} is .${source_name(variant.of)}", 4, parent),
+            .VariantLit(name, args) -> grouped(".${source_name(name.of)}${if args.is_empty() { "" } else { "(${self.args(args, depth)})" }}", atom_tier, parent),
             .Propagate(value) -> grouped("${self.expression(value, postfix_tier, depth)}?", postfix_tier, parent),
-            .Catch(subject, variants, binds, values) -> grouped(self.catch_expr(subject, variants, binds, values, depth), 1, parent),
-            .MethodCall(subject, name, args) -> grouped("${self.expression(subject, postfix_tier, depth)}.${source_name(name)}(${self.args(args, depth)})", postfix_tier, parent),
+            .Catch(subject, variants, binds, values) -> grouped(self.catch_expr(subject, [t.of for t in variants], [t.of for t in binds], values, depth), 1, parent),
+            .MethodCall(subject, name, args) -> grouped("${self.expression(subject, postfix_tier, depth)}.${source_name(name.of)}(${self.args(args, depth)})", postfix_tier, parent),
             .Error -> grouped("__error", atom_tier, parent),
         }
     }
@@ -345,7 +345,7 @@ impl SourceText {
             match chained! {
                 .MethodCall(receiver, name, args) -> {
                     if self.store.ident_name(receiver) == chained_binder {
-                        return grouped("${self.expression(subject, postfix_tier, depth)}?.${source_name(name)}(${self.args(args, depth)})", postfix_tier, parent)
+                        return grouped("${self.expression(subject, postfix_tier, depth)}?.${source_name(name.of)}(${self.args(args, depth)})", postfix_tier, parent)
                     }
                 },
                 rest -> { let _ = 0 },
@@ -375,8 +375,8 @@ impl SourceText {
         match self.store.pat(id) {
             .Wild -> "_",
             .Rest -> "rest",
-            .Bind(name) -> source_name(name),
-            .Variant(name, args) -> ".${source_name(name)}${if args.is_empty() { "" } else { "(${joined([self.pattern(p, depth) for p in args], ", ")})" }}",
+            .Bind(name) -> source_name(name.of),
+            .Variant(name, args) -> ".${source_name(name.of)}${if args.is_empty() { "" } else { "(${joined([self.pattern(p, depth) for p in args], ", ")})" }}",
             .Lit(value) -> self.expression(value, loosest_tier, depth),
             .Format(head, parts) -> format_source(head, parts),
         }
