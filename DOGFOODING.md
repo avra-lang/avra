@@ -69,6 +69,14 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
+A CITATION IS RATCHETED TOO, by a different keeper: `make cited`
+refuses a name or a path this file or CLAUDE.md cites that the
+tree cannot answer, and a bare `file.av:NNN`, which the next edit
+of that file moves. It reaches a THIRD of doctrine rot — an audit
+of 99 laws found 17 stale decorations, 5 of them names a grep
+finds and 12 counts, line numbers and attributions no tool can
+see. Licences live in `tools/cited.allow`, each with its reason.
+
 Ratcheted: `python3 tools/idioms.py --rules` answers, from the tool's own
 `RULES` keys — never a hand copy here.
 Unratcheted, read by a human: I5 (a matcher cannot see whether a
@@ -119,12 +127,14 @@ gate — there is no amnesty left to hide in.
       over a RANGE is our own sugar backlog" — both landed, and the
       loops that cited them are comprehensions now.
 - I4  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
-      `index_of_name` is `names.index_of(name)` (returns -1 on a
-      miss — wrap to `int?`). `overlay_hit` stays a loop: reverse
+      the scan is `xs.index_of(x)` (returns -1 on a miss — wrap to
+      `int?`), as `core/modules.av` reads a key's cut. `overlay_hit`
+      stays a loop: reverse
       scan, licensed until a reversed iterator exists.
 - I5  the dedupe/union fold — NAMED: core `distinct(xs)` (STRING-
       only on purpose — `contains` compares non-strings by
-      identity). `Grammar.keywords` and `union_expected` use it;
+      identity). The grammar's own folds use it — `first.av`,
+      `diagnostics.av`, `ast.av`;
       validate's and coherence's `seen` folds are duplicate
       DETECTION (they emit on the dup), a different concept, left.
 - I6  head-plus-tail list builds — `concat`/`flatten` today, spread
@@ -1413,7 +1423,8 @@ finds a sig, mono finds a home. The alternative was found as a
 crash: `impl Pair` on another module's type spoke its refusal and
 then the body walk indexed an empty param list. One mistake, one
 message, no crash downstream — `declare_wreckage(f)` in typing is
-the one verb; `refused_impl` calls it for every method.
+the one verb (`typing_impls.av`), called for every method of a
+refused impl.
 
 ## The hunger protocol: go hungry, be fed, speak when starving
 

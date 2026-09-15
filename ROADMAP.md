@@ -15264,3 +15264,88 @@ length changes nothing measurable. The tempting knob was
 proportion, left the spin intact, and paid for it by shortening the
 window a grandchild has to speak — a tuned interval standing in for
 the ordering the loop actually needed.
+
+## Feedback survey — 2026-09-15 lane/d (`make cited`, the keeper for doctrine citations)
+
+Counted per axis: friction 2, sugar 0, features 1, defects 1 (mine,
+in the keeper's own first draft), doctrine 2, performance 1, process
+2. The top three by cost: a keeper that read its own source and so
+whitelisted its own fixture; a path matcher that stopped at the first
+file of that basename; a worktree carrying another session's
+uncommitted work into my staging area. Not surveyed: ROADMAP.md
+citations, deliberately out of scope.
+
+### FEATURES — what landed
+
+- **`make cited`.** Refuses a name or a path CLAUDE.md or
+  DOGFOODING.md cites that the tree cannot answer, and a bare
+  `file.av:NNN`. In the gate. On its first real run it found five
+  dead names and two unresolved paths; three names were genuine rot
+  (`index_of_name`, `union_expected`, `refused_impl` — sites renamed
+  or removed) and are fixed, two are licensed absences, and both
+  paths were the keeper's own bug.
+  IT REACHES A THIRD, AND ITS NAME SAYS WHICH THIRD. Of the audit's
+  17 stale decorations, 5 were names and 12 were counts, line numbers
+  and attributions. A keeper called `doctrine` would have claimed the
+  other two thirds — the test-name law, in a Makefile target.
+
+### DEFECTS — in the keeper's own first draft
+
+- **A KEEPER THAT READS ITSELF WHITELISTS ITS OWN FIXTURES.** The
+  symbol set is "every lowercase word the tree uses", and the tool
+  lives in `tools/`, so its own fixture name counted as defined and
+  the self-test refused to run. Caught by the self-test on the first
+  execution, which is the only reason it did not ship. THE FIX: the
+  keeper does not read its own source or its allow file. THE
+  GENERAL SHAPE: a tool inside the tree it measures is part of the
+  measurement, and it is the loosest possible whitelist — any name
+  becomes "defined" by being mentioned in the tool.
+
+### FRICTION
+
+- **A PATH MATCHER THAT RETURNS AT THE FIRST CANDIDATE.** The first
+  draft found the first file of a basename, tested it, and returned —
+  so every `mod.av` in the tree but one read as missing. It matches
+  path SEGMENTS IN ORDER now, so `std-sqlite/boundary.av` resolves
+  `packages/std-sqlite/src/boundary.av`: strict about names, tolerant
+  of the middles a reader would skip.
+- **MAIN'S WORKTREE CARRIES ANOTHER SESSION'S WORK.** I branched in
+  it and staged 131 changed lines of DOGFOODING.md, of which ~10 were
+  mine — the rest another session's uncommitted type-syntax edits. I
+  reverse-applied my own four edits, restored the branch, and moved
+  to a clean worktree. THE ASK is the standing one (lane epic .5.3):
+  a lane never branches in the shared worktree. Nothing was lost, and
+  only the line count in `git diff --stat` made it visible.
+
+### DOCTRINE
+
+- **THE SCOPE LINE IS LIVE DOCTRINE VERSUS DATED RECEIPTS.**
+  CLAUDE.md and DOGFOODING.md state what is true now, so a dead name
+  there is a defect. ROADMAP.md is receipts with dates, and checking
+  it would demand edits that falsify the record. The keeper says
+  which files it read and how many source files it read them
+  against.
+- **A LICENCE CARRIES ITS REASON OR THE SELF-TEST FAILS.**
+  `tools/cited.allow` holds four entries, each with why: two negative
+  examples (a shape the law refuses), one sugar-backlog name, one
+  prose shortening. A licence with no reason fails the self-test
+  rather than passing quietly.
+
+### PERFORMANCE
+
+- **ONE PASS, NOT N GREPS.** The first attempt ran a grep per cited
+  name over the tree and was killed at 120 s. Reading the tree once
+  into a symbol set does the same work in about a second, over 686
+  source files.
+
+### PROCESS
+
+- **KEEP: falsify both surfaces before landing.** Four fixtures run
+  by hand against the built keeper: a dead name, a dead path, a bare
+  line citation, and a licence with no reason — each refused, and the
+  tree green again after. The accepted spellings have fixtures in the
+  self-test, which is the defect I found in `tools/idioms.py` this
+  morning and did not want to repeat in a keeper written the same day.
+- **KEEP: the keeper's first run is a measurement, not a formality.**
+  It found three real stale citations in a file nobody suspected,
+  written by people who had every reason to keep it current.
