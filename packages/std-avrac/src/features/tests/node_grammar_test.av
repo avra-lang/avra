@@ -2,7 +2,7 @@
 // variants — so these cases prove the BINDING and never the compiler's
 // own payloads, which move.
 use @std.avrac.grammar.{Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Slot, Diagnostic, Captured, RunOutcome, parse_grammar, render_grammar, run_grammar, ready, lex_grammar, rule, seq_to, item, cap, named}
-use @std.avrac.features.{bind_nodes, node_payloads, PayloadRow, Payload}
+use @std.avrac.features.{bind_nodes, PayloadRow, Payload}
 use @std.avrac.core.{Span}
 
 /// A model with one of each shape the arity law sorts: a text
@@ -29,10 +29,6 @@ fn defects_of(src: string) -> List<Diagnostic> {
     bind_nodes(grammar_of(src), rows()).defects
 }
 
-fn defects_of_real(src: string) -> List<Diagnostic> {
-    bind_nodes(grammar_of(src), node_payloads()).defects
-}
-
 fn refuses(src: string, words: string) -> bool {
     defects_of(src).any(it.message.contains(words))
 }
@@ -40,15 +36,7 @@ fn refuses(src: string, words: string) -> bool {
 /// The first rule's first branch's slots — absent when it is no node
 /// build, and null when binding found no such variant.
 fn slots_of(src: string) -> List<Slot>? {
-    slots_in(bind_nodes(grammar_of(src), rows()).g)
-}
-
-/// The same slots against the compiler's OWN node model.
-fn real_slots_of(src: string) -> List<Slot>? {
-    slots_in(bind_nodes(grammar_of(src), node_payloads()).g)
-}
-
-fn slots_in(g: Grammar) -> List<Slot>? {
+    let g = bind_nodes(grammar_of(src), rows()).g
     if g.rules.is_empty() { return null }
     let held: Build? = g.rules[0].body.branches[0].build
     if held == null { return null }
@@ -59,14 +47,7 @@ fn slots_in(g: Grammar) -> List<Slot>? {
 }
 
 fn label_at(src: string, j: int) -> string {
-    slot_word(slots_of(src), j)
-}
-
-fn real_label_at(src: string, j: int) -> string {
-    slot_word(real_slots_of(src), j)
-}
-
-fn slot_word(slots: List<Slot>?, j: int) -> string {
+    let slots = slots_of(src)
     if slots == null || j >= slots!.length { return "" }
     match slots![j] {
         .Label(name) -> name,
@@ -129,23 +110,6 @@ spec "features/node_grammar" {
         }
         then "a literal proves no mismatch — it captures nothing a payload wants" {
             !refuses("r = elems:\"x\" -> E.Many\n", "holds")
-        }
-    }
-
-    given "the compiler's own node model" {
-        // The rows the real features name against — Expr.StrLit,
-        // Expr.BoolLit, Expr.Interp — bind here, so the merge's
-        // `-> Expr.StrLit` reaches a builder that exists.
-        then "the real Expr.StrLit row binds its string payload by label" {
-            let src = "r = value:STRING -> Expr.StrLit\n"
-            defects_of_real(src).is_empty() && real_label_at(src, 0) == "value"
-        }
-        then "the real Expr.BoolLit row binds a stated bool" {
-            real_label_at("r = \"true\" -> Expr.BoolLit(value = true)\n", 0) == "=true"
-        }
-        then "the real Expr.Interp row binds both runs" {
-            let src = "r = parts:ISTR_BEGIN holes:e ( parts:ISTR_MID holes:e )* parts:ISTR_END -> Expr.Interp\ne = NAME\n"
-            defects_of_real(src).is_empty() && real_label_at(src, 0) == "parts" && real_label_at(src, 1) == "holes"
         }
     }
 

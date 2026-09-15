@@ -3,16 +3,17 @@
 //! feature GROWING: the lexer hands it ISTR pieces and the holes
 //! are ordinary expressions. The text vocabulary is its method
 //! rows, each one runtime call.
-use features.{LanguageFeature, BuilderRow, PropertyRow, MethodRow, ReceiverEffect, measured_reg, lower_is_empty}
+//!
+//! Both rules NAME their node, so this feature has no builders: the
+//! repeated `parts` and `holes` labels each fill one list in source
+//! order, which is also what retired interpolation's hand-written
+//! check that the two lists agree — the payload's arity IS the
+//! grammar's.
+use features.{LanguageFeature, PropertyRow, MethodRow, ReceiverEffect, measured_reg, lower_is_empty}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn str_lit() -> LanguageFeature {
-    let rows = table<BuilderRow> {
-        name      | build
-        "str_lit" | build_str_lit
-        "interp"  | build_interp
-    }
     let codes = table<DiagCode> {
         kind               | id      | summary
         "type.interp_hole" | "F2007" | "an interpolation hole prints as a scalar or string"
@@ -38,9 +39,8 @@ export fn str_lit() -> LanguageFeature {
         name = "str_lit"
         docs = "Double-quoted strings, with dollar-brace interpolation holes; the text vocabulary — `contains`, `starts_with`, `ends_with`, `index_of`, `substring`, `split`, `replace`, `char_code`, `trim`, `is_empty` — is this feature's method rows."
         gram = grammar {
-            primary = s:STRING -> str_lit(s) | b:ISTR_BEGIN e:expression ( m:ISTR_MID e2:expression )* t:ISTR_END -> interp(b, e, m, e2, t)
+            primary = value:STRING -> Expr.StrLit | parts:ISTR_BEGIN holes:expression ( parts:ISTR_MID holes:expression )* parts:ISTR_END -> Expr.Interp
         }
-        builders = rows
         diags = codes
         methods = methods
         properties = properties
