@@ -296,15 +296,23 @@ clean:
 # THE OBJECTS ARE PREREQUISITES, and the link's words are kept: a
 # born-clean worktree once failed here on missing build/*.o with the
 # reason sent to /dev/null, and the gate read red for a green tree.
+# A COMPILER UNDER TEST MUST STAND WHERE A COMPILER STANDS. `@std/*`
+# resolves from the BINARY'S OWN DIRECTORY (`<self>/../packages` in a
+# checkout), so a seed linked into `build/seed-check/` looked for
+# `build/packages`, found no std root, and could resolve a std package
+# only through a manifest row. That was invisible for as long as every
+# manifest still carried its rows, and it fails the day they go. The
+# binary links beside `build/avra`, which is the layout the resolver
+# describes; the scratch keeps its own directory.
 seed-check: $(COMPILER_OBJS)
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
 	@clang -w -O1 build/seed-check/seed.ll $(COMPILER_OBJS) \
-	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/seed-check/avra 2> build/seed-check/link.err \
-	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check; exit 1; }
-	@build/seed-check/avra build packages/cli >> build/seed-check/out 2>&1 \
-	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; tail -c 2000 build/seed-check/out; rm -rf build/seed-check; exit 1; }
-	@rm -rf build/seed-check
+	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra-seed-check 2> build/seed-check/link.err \
+	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check build/avra-seed-check; exit 1; }
+	@build/avra-seed-check build packages/cli >> build/seed-check/out 2>&1 \
+	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; tail -c 2000 build/seed-check/out; rm -rf build/seed-check build/avra-seed-check; exit 1; }
+	@rm -rf build/seed-check build/avra-seed-check
 	@echo "seed-check: the seed compiles HEAD"
 
 check: $(COMPILER_OBJS)
