@@ -15350,6 +15350,37 @@ citations, deliberately out of scope.
   It found three real stale citations in a file nobody suspected,
   written by people who had every reason to keep it current.
 
+## Feedback survey — 2026-09-15 #17 (TOOLCHAIN, the Type registries)
+
+Counted per axis: defects 1, doctrine 2, process 0; friction, sugar,
+features, performance empty. Not surveyed: any tree but this one.
+
+### DEFECTS
+
+- **THE MACHINE PROJECTION ITSELF WAS UNGUARDED.** `ll_type_of` in
+  llvm.av dispatches exhaustively over `Type` and decides the LLVM
+  type every value takes; `make vocab` had never named it, so a new
+  `Type` variant could have reached codegen with no arm and nothing
+  would have said so. It was invisible to the task that found the
+  other two because nobody had asked. The keeper reports Type 6 where
+  it reported Type 3.
+
+### DOCTRINE
+
+- **A KEEPER'S FALSE POSITIVE CAN NAME A MISSING VERB.** Naming
+  `slot_worthy` made `make vocab` refuse it: an arm asked
+  `types.shape_of(inner) is .Var`, which a grep cannot tell from a
+  dispatch on the value being judged. The test was legitimate — it
+  asks about the `Opt`'s INNER type — so the cheap answers were a
+  license or a narrower matcher. The right one was the question the
+  refusal was really asking: that test deserved a name. It is
+  `abstract_yet(id)` on the registry now, beside `opt_rides_pointer`,
+  and the arm reads as prose. Before licensing a keeper's false
+  positive, ask what it was reaching for.
+- **A REGISTRY LAW CAN BE MISAPPLIED, AND THE COST IS CEREMONY.** The
+  six `machine_shape` callers are refused deliberately; the section
+  below carries the argument and the trigger.
+
 ## The `machine_shape` callers — a registry law MISapplied (2026-09-15, TOOLCHAIN)
 
 avra-0fay asked for three unguarded `Type` registries. Two are
