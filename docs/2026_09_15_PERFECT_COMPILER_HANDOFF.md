@@ -24,7 +24,7 @@ do.** This file is the whole workload; keep it current.
 | H side tables, derived identity | **DONE** 2/2 | retired |
 | G runtime header + diagnostic witnesses | **DONE** 2/2 | `../avra-phase-g`, `phase/g` @ `efb1200`, merged, clean — retire it |
 | C children + fingerprints derived | 1/3 | `../avra-phase-c`, `phase/c` @ `1c39ad8` |
-| D grammar names the node, fmt | 2/4 | `../avra-phase-d`, `phase/d` @ `a582dac` |
+| D grammar names the node, fmt | 2/4 | `../avra-phase-d`, `phase/d` @ `75d0946` — **committed, NOT merged, gate RED** |
 | E type marks, IR roles, ownership | 0/3 | `../avra-phase-e`, `phase/e` @ `1c39ad8` |
 | I ownership roles on Ins | **UNSTAFFED** | blocked: marks the same `Ins` payloads as E2 — start only after E2 lands |
 | J one hole-bearing block | not started | after D |
@@ -40,20 +40,29 @@ do.** This file is the whole workload; keep it current.
   Required: make `nodes_test.av`'s content-identity case FAIL first.
   Carries `make seed` (first commit that READS a grown field).
   Also owes: a witness for `F2086` (see G's keeper below).
-- **D2 rung 1** — comments + blank lines as offset-keyed trivia.
-  Receipt over all 548 files: 0 refused, **283 remark lines lost in 41
-  files** (its gap), **527 doc-comment lines lost in 21 files**
-  (PRE-EXISTING — `///` is kept only on a declaration), 497 files differ
-  for reasons not yet explained. RULED: build the **positional cursor**,
-  not ten per-site lookups — the `mut`-through-a-comprehension fear that
-  argued for ten sites was PROBED and unfounded. `--write` stays gated on
-  both counts reaching zero over every file — never a corpus.
-  THE 497 ARE ONE THING: the renderer never preserves a ONE-LINE form,
-  always expanding a braced body. By the same principle as blank lines
-  (the tree holds `{ a }` and a three-line block identically, so the form
-  is the author's), that is invented layout. SCOPED AS RUNG 2 — rung 1
-  finishes on CONTENT loss at zero, with the whitespace-only class
-  counted and deferred. Doc-comment gap is `avra-8sb5.11.104`.
+- **D2 rung 1 — COMMITTED at `75d0946`, NOT MERGED, six goldens RED.**
+  Comments and blank lines are offset-keyed trivia and survive a round
+  trip; `fmt` parses rather than analyses (2:25 -> 0.055s per file).
+  Receipt over all 548 files: 0 refused, remark loss **283 -> 132 lines
+  in 17 files**, doc-comment loss 527 lines in 21 files (PRE-EXISTING,
+  `avra-8sb5.11.104`), 65 whitespace-only diffs (rung 2).
+  **WHY IT IS RED, and it is a finding:** six goldens PINNED THE LOSSY
+  OUTPUT as correct, written when the loss was invisible, so the suite
+  certified it. They need new expectations written deliberately.
+  **THE REMAINING WORK IS THE CURSOR** — consume trivia before each
+  emission, one rule, instead of a lookup per construct. Two per-site
+  consults were built and 132 lines still leak: the ten-sites-nine-
+  chances-to-drift shape, demonstrated rather than argued. The `mut`-
+  through-a-comprehension fear that argued for per-site lookups is
+  PROBED and disproved (`[2][2][1] at=5`).
+  `--write` stays gated on remark AND doc loss reaching zero over every
+  file — never a corpus.
+  DO NOT trust a whitespace-stripped diff as a loss count: it flags
+  legitimate canonicalisation identically to a lost comment.
+  Rung 2 = the one-line form (the renderer always expands a braced body;
+  the tree holds both spellings identically, so the form is the
+  author's). Rung 3 = the derived printer, BLOCKED on `avra-8sb5.11.100`.
+
 - **E2** — role marks on `Ins` payloads. Approved: the payload-mark
   **grammar change** (marks attach to a variant today, not a payload), so
   phase I inherits the honest spelling. §4 DROPPED as a derive — 40
