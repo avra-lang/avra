@@ -213,6 +213,8 @@ export fn node_payload_rows() -> List<PayloadRow> {
 @derive(ValueProtocol)
 @derive(Rebuild)
 @derive(Grammar)
+@derive(Children)
+@derive(Identity)
 export enum Expr {
     IntLit(value: int)
     /// A REAL literal, carried as its IEEE-754 BIT PATTERN rather than
@@ -251,13 +253,13 @@ export enum Expr {
     /// placeholder NAME (`holes.av`); the holes are the expressions
     /// that fill them, in body order; the parts are the runs of
     /// source between holes (one longer), the printing projection.
-    Quote(parts: List<string>, stmts: List<StmtId>, arms: List<Arm>, holes: List<ExprId>)
+    @verbatim Quote(parts: List<string>, stmts: List<StmtId>, arms: List<Arm>, holes: List<ExprId>)
     /// `sql { … ${x} … }` — a SUBLANGUAGE block: the word that names
     /// its grammar, the body's text with holes as placeholders, the
     /// hole expressions in body order, and — once the file resolves —
     /// its EXPANSION, the calls the grammar's actions became, which
     /// every pass reads in its place (`expand_sublang`).
-    Sublang(word: string, body: string, holes: List<ExprId>, expansion: ExprId?)
+    @expands(expansion) Sublang(word: string, body: string, holes: List<ExprId>, expansion: ExprId?)
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
@@ -570,6 +572,8 @@ export type UseParts = { path: List<string>, items: List<string>, aliases: List<
 
 @derive(Rebuild)
 @derive(Grammar)
+@derive(Children)
+@derive(Identity)
 export enum Stmt {
     /// `let name = v`, optionally `let name: T = v` — the written
     /// type, when declared, is what the binding HOLDS; the value
@@ -594,7 +598,7 @@ export enum Stmt {
     /// `tparams` are the declared type parameters, in order — the
     /// ordinal IS the Var identity; a tparam's `ty` names its
     /// BOUND (`<T: Show>`), absent when unconstrained.
-    FnDecl(name: Scoped, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId)
+    @declares FnDecl(name: Scoped, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId)
     /// `extern fn name(params) -> ret` — a fn the host provides: a
     /// signature with no body, called by its bare symbol.
     ExternFn(name: Scoped, params: List<Param>, ret: TypeRef)
@@ -618,11 +622,11 @@ export enum Stmt {
     /// fn lowers under a QUALIFIED name (`Target.method`). `of`
     /// names the TRAIT being implemented — null for an inherent impl
     /// — and an impl-for must answer every trait method.
-    ImplDecl(of: Nominal?, target: Nominal, fns: List<StmtId>)
+    @declares ImplDecl(of: Nominal?, target: Nominal, fns: List<StmtId>)
     /// `trait Name { fn sigs… }` — a nominal behavior contract.
     /// The sigs ride as BODYLESS fn declarations (body = a hole no
     /// pass walks), so declare and totality reuse fn machinery.
-    TraitDecl(name: Scoped, fns: List<StmtId>)
+    @declares TraitDecl(name: Scoped, fns: List<StmtId>)
     /// `let name? = subject else { stmts }` — the bind-fresh form
     /// that KEEPS GOING: a present subject binds its carried value
     /// in the enclosing scope; an absent one runs the else, which
@@ -1200,82 +1204,6 @@ impl NodeStore {
     /// two shapes cannot splice to one sequence. The greppable form of
     /// the law: no `.concat` and no comprehension stands in a parts
     /// list except inside `fp_list`.
-    fn fingerprint_expr(e: Expr) -> int {
-        match e {
-            .IntLit(value) -> fp(1, [value]),
-            .FloatLit(bits) -> fp(60, [bits]),
-            .Ident(name) -> fp(2, [fp_str(name.of)]),
-            .Receiver -> fp(102, []),
-            .Binary(op, left, right) ->
-                fp(3, [fp_binop(op), self.expr_fingerprint(left), self.expr_fingerprint(right)]),
-            .Error -> fp(4, []),
-            .Not(value) -> fp(19, [self.expr_fingerprint(value)]),
-            .ListLit(elems) -> fp(20, self.expr_fps(elems)),
-            .MapLit(keys, values) -> fp(48, [fp_list(self.expr_fps(keys)), fp_list(self.expr_fps(values))]),
-            .Index(subject, index) ->
-                fp(21, [self.expr_fingerprint(subject), self.expr_fingerprint(index)]),
-            .Prop(subject, name) ->
-                fp(22, [self.expr_fingerprint(subject), fp_str(name.of)]),
-            .Interp(parts, holes) ->
-                fp(23, [fp_list(str_fps(parts)), fp_list(self.expr_fps(holes))]),
-            .Quote(parts, stmts, arms, holes) ->
-                fp(116, [fp_list(str_fps(parts)), fp_list(self.stmt_fps(stmts)), fp_list(self.arm_fps(arms)), fp_list(self.expr_fps(holes))]),
-            .Sublang(word, body, holes, _) -> fp(118, [fp_str(word), fp_str(body), fp_list(self.expr_fps(holes))]),
-            .StrLit(value) -> fp(8, [fp_str(value)]),
-            .BoolLit(value) -> fp(9, [if value { 1 } else { 0 }]),
-            .If(cond, on_true, on_false) ->
-                fp(10, [self.expr_fingerprint(cond), self.expr_fingerprint(on_true),
-                        self.expr_fingerprint(on_false)]),
-            .Call(callee, pins, args) ->
-                fp(11, [fp_str(callee.of), fp_list([type_fp(p) for p in pins]),
-                        fp_list(self.expr_fps(args))]),
-            .When(conds, values, fallback) ->
-                fp(13, [fp_list(self.expr_fps(conds)), fp_list(self.expr_fps(values)),
-                        self.expr_fingerprint(fallback)]),
-            .Block(stmts, value) ->
-                fp(14, [fp_list(self.stmt_fps(stmts)), self.opt_fp(value)]),
-            .StructLit(name, fields, values) ->
-                fp(24, [fp_str(name.of), fp_list(plain_fps(fields)),
-                        fp_list(self.expr_fps(values))]),
-            .With(subject, fields, values) ->
-                fp(26, [self.expr_fingerprint(subject),
-                        fp_list(plain_fps(fields)), fp_list(self.expr_fps(values))]),
-            .Match(subject, arms) ->
-                fp(28, [self.expr_fingerprint(subject), fp_list(self.arm_fps(arms))]),
-            .NullLit -> fp(30, []),
-            .Coalesce(l, r) ->
-                fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
-            .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
-            .Is(v, variant) -> fp(49, [self.expr_fingerprint(v), fp_str(variant.of)]),
-            .VariantLit(name, args) -> fp(58, [fp_str(name.of), fp_list(self.expr_fps(args))]),
-            // both ends are OPTIONAL and each folds as one: an absent
-            // guard fingerprinted as the element gave `[x for x in xs]`
-            // and `[x for x in xs if x]` one identity, and the range's
-            // end was told apart by a second tag (61, retired here)
-            // where absence is a value the payload can carry.
-            .Comp(elem, index, name, source, hi, cond) ->
-                fp(55, [self.expr_fingerprint(elem), fp_str(index?.of ?? ""), fp_str(name.of), self.expr_fingerprint(source), self.opt_fp(hi), self.opt_fp(cond)]),
-            .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
-            .MethodCall(subject, name, margs) ->
-                fp(43, [self.expr_fingerprint(subject), fp_str(name.of),
-                        fp_list(self.expr_fps(margs))]),
-            .Lambda(params, body) ->
-                fp(46, [fp_list(self.param_fps(params)), self.expr_fingerprint(body)]),
-            .CallValue(subject, cargs) ->
-                fp(47, [self.expr_fingerprint(subject), fp_list(self.expr_fps(cargs))]),
-            .Catch(subject, variants, binds, values) ->
-                fp(40, [self.expr_fingerprint(subject),
-                        fp_list(plain_fps(variants)),
-                        fp_list(scoped_fps(binds)),
-                        fp_list(self.expr_fps(values))]),
-            .MatchOpt(subject, bind, present, absent) ->
-                fp(33, [self.expr_fingerprint(subject), fp_str(bind.of),
-                        self.expr_fingerprint(present), self.expr_fingerprint(absent)]),
-            .Chain(subject, name) ->
-                fp(34, [self.expr_fingerprint(subject), fp_str(name.of)]),
-        }
-    }
-
     // ── THE COMPLETE WALK ───────────────────────────────────────────
     // `post_order` (features/dispatch.av) walks `kids`, and a feature
     // HIDES the children it types under its own narrowing — an `if`'s
@@ -1295,68 +1223,8 @@ impl NodeStore {
         flatten([self.every_expr(k) for k in self.expr_children(root)]).concat([root])
     }
 
-    /// An expression's direct expression children, ALL of them.
-    fn expr_children(e: ExprId) -> List<ExprId> {
-        match self.expr(e) {
-            .IntLit(_) or .FloatLit(_) or .Ident(_) or .Receiver or .Error or .StrLit(_) or
-            .BoolLit(_) or .NullLit -> [],
-            .Binary(_, left, right) -> [left, right],
-            .Not(value) -> [value],
-            .ListLit(elems) -> elems,
-            .MapLit(keys, values) -> keys.concat(values),
-            .Index(subject, index) -> [subject, index],
-            .Prop(subject, _) -> [subject],
-            .Interp(_, holes) -> holes,
-            .Quote(_, stmts, arms, holes) -> self.stmts_exprs(stmts).concat([a.value for a in arms]).concat(holes),
-            .Sublang(_, _, holes, x) -> if x == null { holes } else { [x!] },
-            .If(cond, on_true, on_false) -> [cond, on_true, on_false],
-            .Call(_, _, args) -> args,
-            .When(conds, values, fallback) -> conds.concat(values).concat([fallback]),
-            .Block(stmts, value) -> self.stmts_exprs(stmts).concat(some_list(value)),
-            .StructLit(_, _, values) -> values,
-            .With(subject, _, values) -> [subject].concat(values),
-            .Match(subject, arms) -> [subject].concat([a.value for a in arms]),
-            .Coalesce(l, r) -> [l, r],
-            .Force(v) -> [v],
-            .Is(v, _) -> [v],
-            .VariantLit(_, args) -> args,
-            .Comp(elem, _, _, source, hi, cond) -> [elem, source].concat(some_list(hi)).concat(some_list(cond)),
-            .Propagate(v) -> [v],
-            .MethodCall(subject, _, margs) -> [subject].concat(margs),
-            .Lambda(_, body) -> [body],
-            .CallValue(subject, cargs) -> [subject].concat(cargs),
-            .Catch(subject, _, _, values) -> [subject].concat(values),
-            .MatchOpt(subject, _, present, absent) -> [subject, present, absent],
-            .Chain(subject, _) -> [subject],
-        }
-    }
-
     fn stmts_exprs(ids: List<StmtId>) -> List<ExprId> {
-        flatten([self.stmt_exprs(s) for s in ids])
-    }
-
-    /// A statement's direct expressions, its nested statements' too.
-    /// A declaration holds a body of its own and is walked from that
-    /// body, never through the statement that declares it.
-    fn stmt_exprs(s: StmtId) -> List<ExprId> {
-        match self.stmt(s) {
-            .Let(_, _, value) -> [value],
-            .MutLet(_, _, value) -> [value],
-            .ConstDecl(_, _, value) -> [value],
-            .Assign(target, value) -> [target, value],
-            .While(cond, stmts) -> [cond].concat(self.stmts_exprs(stmts)),
-            .IfStmt(cond, then_stmts, else_stmts) -> [cond].concat(self.stmts_exprs(then_stmts)).concat(self.stmts_exprs(else_stmts)),
-            .Return(value) -> some_list(value),
-            .Fail(value) -> [value],
-            .LetElse(_, subject, stmts) -> [subject].concat(self.stmts_exprs(stmts)),
-            .For(_, from, to, _, _, stmts) -> [from, to].concat(self.stmts_exprs(stmts)),
-            .ForEach(_, _, subject, stmts) -> [subject].concat(self.stmts_exprs(stmts)),
-            .ExprStmt(value) -> [value],
-            .Discard(value) -> [value],
-            .Defer(body, _) -> [body],
-            .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Use(_, _, _) or .Error or .ExternFn(_, _, _) or
-            .FnDecl(_, _, _, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) -> [],
-        }
+        flatten([self.stmt_children(s) for s in ids])
     }
 
     /// AN OPTIONAL EXPRESSION IS ONE VALUE, absence included — a
@@ -1378,54 +1246,6 @@ impl NodeStore {
         [self.stmt_fingerprint(k) for k in ids]
     }
 
-    fn fingerprint_stmt(s: Stmt) -> int {
-        match s {
-            .Let(name, ty, value) -> fp(5, [fp_str(name.of), type_fp(ty), self.expr_fingerprint(value)]),
-            .MutLet(name, ty, value) -> fp(15, [fp_str(name.of), type_fp(ty), self.expr_fingerprint(value)]),
-            .ConstDecl(name, ty, value) -> fp(109, [fp_str(name.of), type_fp(ty), self.expr_fingerprint(value)]),
-            .Assign(target, value) -> fp(16, [self.expr_fingerprint(target), self.expr_fingerprint(value)]),
-            .While(cond, stmts) ->
-                fp(17, [self.expr_fingerprint(cond), fp_list(self.stmt_fps(stmts))]),
-            .IfStmt(cond, then_stmts, else_stmts) ->
-                fp(35, [self.expr_fingerprint(cond),
-                        fp_list(self.stmt_fps(then_stmts)),
-                        fp_list(self.stmt_fps(else_stmts))]),
-            .Return(value) -> fp(36, [self.opt_fp(value)]),
-            .Fail(value) -> fp(39, [self.expr_fingerprint(value)]),
-            .ImplDecl(of, target, fns) ->
-                fp(44, [fp_str(of?.of ?? ""), fp_str(target.of), fp_list(self.stmt_fps(fns))]),
-            .TraitDecl(name, fns) ->
-                fp(45, [fp_str(name.of), fp_list(self.stmt_fps(fns))]),
-            .SyntaxDecl(name, text) -> fp(119, [fp_str(name.of), fp_str(text)]),
-            .LetElse(name, subject, stmts) ->
-                fp(38, [fp_str(name.of), self.expr_fingerprint(subject), fp_list(self.stmt_fps(stmts))]),
-            // For's cond and step derive from name/from/to — the
-            // identity needs only the sources.
-            .For(name, from, to, _, _, stmts) ->
-                fp(18, [fp_str(name.of), self.expr_fingerprint(from), self.expr_fingerprint(to), fp_list(self.stmt_fps(stmts))]),
-            .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
-            .Discard(value) -> fp(57, [self.expr_fingerprint(value)]),
-            .Defer(body, on_error) -> fp(if on_error { 107 } else { 106 }, [self.expr_fingerprint(body)]),
-            .Use(path, items, aliases) -> fp(108, [fp_list(str_fps(path)), fp_list(str_fps(items)), fp_list(str_fps(aliases))]),
-            .ForEach(index, name, subject, stmts) ->
-                fp(42, [fp_str(index?.of ?? ""), fp_str(name.of), self.expr_fingerprint(subject), fp_list(self.stmt_fps(stmts))]),
-            .Error -> fp(7, []),
-            .ExternFn(name, params, ret) -> fp(59, [fp_str(name.of), fp_list(self.param_fps(params)), type_fp(ret)]),
-            .FnDecl(name, tparams, params, ret, body) ->
-                fp(12, [fp_str(name.of), fp_list(self.param_fps(tparams)),
-                        fp_list(self.param_fps(params)),
-                        type_fp(ret), self.expr_fingerprint(body)]),
-            .StructDecl(name, tparams, fields) ->
-                fp(25, [fp_str(name.of), fp_list(plain_fps(tparams)),
-                        fp_list(self.param_fps(fields))]),
-            .NamedType(name, tparams, of) ->
-                fp(122, [fp_str(name.of), fp_list(plain_fps(tparams)), type_fp(of)]),
-            .EnumDecl(name, tparams, variants) ->
-                fp(27, [fp_str(name.of), fp_list(plain_fps(tparams)),
-                        fp_list(self.variant_fps(variants))]),
-            .Spec(name, cases) -> fp(56, [fp_str(name), fp_list(self.case_fps(cases))]),
-        }
-    }
 }
 
 impl NodeStore {
