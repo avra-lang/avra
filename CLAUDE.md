@@ -392,6 +392,21 @@ engine's spec, written by dogfooding.
   every impl in the compiler's own cli the moment only one side knew.
   A second-generation build that REFUSES its own source is this law's
   symptom as much as a trap is.
+- A POINTER SEAT NAMES ITS BOX. A row's `Ptr` says a header stands
+  there, not WHICH — and `avra_str_len` handed a list answers the
+  list's byte size as a text length, in a clean program (native 40,
+  the evaluator "defect"). `RtSig.boxes` (core/ir.av's `Box`: `Text`,
+  `List`, `Map`, `Any`) says what each pointer seat reads; a row that
+  names none takes `Any` everywhere — unconstrained, never wrongly
+  constrained, since most pointer seats do take any box and
+  `avra_rc_retain` means it. TWO READERS, ONE COLUMN: `checked_extern`
+  refuses an `extern fn` that names a row with the wrong seat count
+  or a type that is not the seat's box (F2084; `ptr` is the raw
+  crossing and fits any), and `make externs` refuses a `Text` box over
+  a C `void*` or a `char*` under any other — so the column, the C and
+  every declaration agree or the gate says which does not. Filled from
+  the C in one sweep (46 rows, 141 seats): `const char*` is `Text`;
+  the array, map and process rows say `List`/`Map` by name.
 - A RUNTIME ROW BORROWS ITS ARGUMENTS — callee-cleans is the AVRA
   call's convention, not the registry's. `retained_args` retains for
   `.Call` and `.CallPtr` alone; a `CallRt`/`CallRtVoid` argument

@@ -13842,3 +13842,34 @@ Avra was written beyond scratch probes.
 - **RECORDED TRIGGER, unchanged:** when `lang/subset/*.av` lands as
   gate-verified program tests, this section becomes a pointer. Its
   first two members are the entries a loose file cannot reach.
+
+## Feedback survey — 2026-09-14 #14 (TOOLCHAIN, the pointer seat's box — PR pending)
+
+Counted per axis: defects 1 (the keeper's, mine, caught by making it
+fail), doctrine 1, process 1; friction, sugar, features, performance
+empty. Not surveyed: any tree but ../avra-lane-a.
+
+### DEFECTS
+
+- **A KEEPER THAT LOOKED UP ONLY WHAT THE WALL NAMED.** The first
+  `wrong_boxes` took the C signatures already in hand, and those are
+  looked up BY THE NAMES `extern fn` DECLARATIONS ASK ABOUT — so a
+  row nobody declares (`avra_str_len`, emitted by the compiler) was
+  never compared and a flipped box passed. Found by flipping one box
+  and watching nothing happen; it reads every row's C now. The
+  "make it fail" law, paid on the day the keeper was written.
+
+### DOCTRINE
+
+- **THE COLUMN IS FILLED FROM THE C, NOT BY HAND.** `const char*` is
+  `Text` and `void*` a box; the sweep that wrote 46 rows read the C
+  bodies' parameter types, and the keeper reads them again on every
+  gate, so the fill and its check are one reading. A hand-filled
+  column would have been a second registry.
+
+### PROCESS
+
+- **A PROBE THAT IMPORTS A KEEPER RUNS IT.** `import externs` ran the
+  keeper's main and exited before the probe's first line; the listing
+  it was meant to produce came from a standalone regex instead. A
+  tool meant to be imported by a probe guards its main.
