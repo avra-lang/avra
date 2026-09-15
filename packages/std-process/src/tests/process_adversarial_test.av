@@ -347,6 +347,25 @@ fn cpu_of_grace(g: int) -> Result<int, ProcessError> {
     avra_proc_cpu_ms() - cpu
 }
 
+/// THE SAME GRACE WITH A GRANDCHILD STILL HOLDING THE PIPE. The child
+/// ends at once and a background sibling keeps stdout open, so the
+/// driver has something to poll for the whole window — the state the
+/// old row handled correctly. Its CPU is the control: the defect was
+/// the state with NOTHING to watch, never the grace loop itself.
+/// The elapsed time of a grace a grandchild holds open — the window
+/// that IS waited out, whole.
+fn held_grace(g: int) -> Result<int, ProcessError> {
+    let began = now_ms()
+    let _ = (shell("sleep 3 & echo done")? with { drain_grace: ms(g) }).run()?
+    now_ms() - began
+}
+
+fn cpu_of_held_grace(g: int) -> Result<int, ProcessError> {
+    let cpu = avra_proc_cpu_ms()
+    let _ = (shell("sleep 3 & echo done")? with { drain_grace: ms(g) }).run()?
+    avra_proc_cpu_ms() - cpu
+}
+
 spec "std/process adversarial" {
     given "a NUL makes a value two values, so the host is never handed one" {
         then "a tool path holding a NUL refuses — it does NOT run the truncated program" {
@@ -561,14 +580,14 @@ spec "std/process adversarial" {
         // default. The row waits whenever it is asked to, so the time
         // is SLEPT — measurable as elapsed time here, and as user time
         // in the suite's own clock.
-        then "the grace is waited out, not raced" {
-            (quick_with_grace(300) catch 0) >= 250
+        then "a holder's grace is waited out, not raced" {
+            (held_grace(300) catch 0) >= 250
         }
         then "a longer grace waits longer — the window is the caller's number" {
-            (quick_with_grace(600) catch 0) >= 550
+            (held_grace(600) catch 0) >= 550
         }
         then "and it is not waited twice — the floor is the grace, not a multiple" {
-            (quick_with_grace(300) catch 9999) < 2000
+            (held_grace(300) catch 9999) < 2000
         }
         // THE ELAPSED TIME CANNOT TELL A WAIT FROM A SPIN: both take the
         // grace. The CPU can, and it is the whole claim — so the law is
@@ -579,6 +598,20 @@ spec "std/process adversarial" {
         }
         then "a longer grace costs no more CPU than a shorter one" {
             (cpu_of_grace(1000) catch 9999) < 100
+        }
+        // THE CONTROL, and it is what makes the claim exact: with a
+        // grandchild holding the pipe there IS something to poll, and
+        // the window was always slept — on the old row too. So the
+        // defect was the state with nothing to watch, never the grace.
+        then "a grace with a grandchild holding the pipe was never the spin" {
+            (cpu_of_held_grace(500) catch 9999) < 100
+        }
+        // AND THE FLOOR IS NOT PAID WHERE NOBODY CAN SPEAK: with both
+        // ends closed the window has nothing to protect, so the wait
+        // ends with the pipes and not with the clock. A holder still
+        // gets its whole floor — the case above proves that one waits.
+        then "a grace with nothing left to hold it ends with the pipes, not the clock" {
+            (quick_with_grace(2000) catch 9999) < 500
         }
     }
 }
