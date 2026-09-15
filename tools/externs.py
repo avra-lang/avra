@@ -1232,6 +1232,97 @@ def wrong_boxes(sigs):
     return out
 
 
+# WHAT ENDS TEXT AT A TERMINATOR. A `string` crossing to C means a
+# PREFIX of itself wherever the callee stops at the first NUL, and the
+# set of rows where that is true is a FACT ABOUT OUR C, derivable from
+# the bodies this keeper already reads. `tools/terminated.allow`
+# records that set with each row's door; the check below keeps the
+# record and the C in step, so a body that gains a `getenv` shows up
+# as unrecorded rather than joining the set in silence.
+#
+# IT CLAIMS NOTHING ABOUT GUARDS, deliberately. A guard is a DOOR at a
+# package's public entry, reached through a call graph, and a grep
+# that accuses a call site of being unguarded is wrong 30 times out of
+# 30 — measured before it shipped. That check wants the compiler
+# (avra-dtdp); this file is the premise it will need.
+TERMINATES = re.compile(
+    r"\b(getenv|setenv|unsetenv|putenv|fopen|freopen|open|openat|creat|stat|lstat|access"
+    r"|mkdir|rmdir|remove|unlink|rename|opendir|execvp|execv|execve|system|popen|realpath"
+    r"|dlopen|dlsym|sqlite3_open|sqlite3_open_v2|sqlite3_bind_text)\s*\(")
+
+
+def text_taking_externs():
+    """Every extern the tree declares with a `string` seat — read from
+    the declarations rather than from `externs()`, whose rows carry a
+    return type where this needs the PARAMETERS. The first draft read
+    the wrong field, found no text seats, and reported all 19 recorded
+    rows as having left the set: a filter over the wrong column
+    answers EMPTY, which reads as "nothing qualifies" rather than as
+    an error."""
+    out = set()
+    for path in declaring_sources():
+        for m in re.finditer(r"^(?:export )?extern fn ([a-z_0-9]+)\(([^)]*)\)", open(path).read(), re.M):
+            if re.search(r":\s*string\??\b", m.group(2)):
+                out.add(m.group(1))
+    return out
+
+
+def terminating_bodies(sources):
+    """Every extern taking text whose C body hands it to a call that
+    ends at the first NUL, by name."""
+    takes_text = text_taking_externs()
+    out = {}
+    for rel in sources:
+        src = open(os.path.join(ROOT, rel)).read()
+        for m in re.finditer(r"^[A-Za-z_][\w \*]*?\b([a-z_0-9]+)\s*\(([^)]*)\)\s*\{", src, re.M):
+            name = m.group(1)
+            if name not in takes_text or "char" not in m.group(2):
+                continue
+            start, depth, i = m.end(), 1, m.end()
+            while i < len(src) and depth:
+                depth += (src[i] == "{") - (src[i] == "}")
+                i += 1
+            calls = sorted(set(TERMINATES.findall(src[start:i])))
+            if calls:
+                out[name] = calls
+    return out
+
+
+def recorded_terminators():
+    """The rows `tools/terminated.allow` records, by name."""
+    path = os.path.join(ROOT, "tools", "terminated.allow")
+    if not os.path.exists(path):
+        return None
+    return {line.split()[0] for line in open(path)
+            if line.strip() and not line.startswith("#")}
+
+
+def row_answers():
+    """Each row's declared ANSWER box, by name — the rows that name
+    one. `Any` is the default and constrains nothing, so it is not
+    here."""
+    return {m.group(1): m.group(2)
+            for m in re.finditer(r'RtSig \{ name: "([a-z_0-9]+)".*?answer: Box\.(\w+)', rt_api())}
+
+
+def wrong_answers(returns):
+    """Every row whose ANSWER box disagrees with what its C body
+    returns. The seat rule, one end over: a row that says it hands
+    back TEXT must return a `char*`, and one that says LIST or MAP
+    must not — an answer box is how a declaration is held to the box
+    the body actually built."""
+    out = []
+    for name, box in row_answers().items():
+        if name not in returns:
+            continue
+        ret = returns[name][0]
+        if "*" not in ret:
+            continue
+        if (box in ("Text", "Bytes")) != ("char" in ret):
+            out.append((name, box, ret))
+    return out
+
+
 def sig_rows():
     """Each `rt_sigs()` row's name, `keeps` seats, and `owns_result`."""
     text = rt_api()
@@ -1486,6 +1577,28 @@ def main():
         print(f"externs: {len(boxed)} row box(es) disagree with their C seat")
         return 1
     print(f"externs: {sum(len(v) for v in row_boxes().values())} row seat(s) name the box their C seat reads")
+    answers = wrong_answers(c_returns(sources))
+    for name, box, ret in answers:
+        print(f"externs: `{name}` answers box {box} and its C body returns `{ret}`")
+    if answers:
+        print(f"externs: {len(answers)} row answer(s) disagree with their C body")
+        return 1
+    print(f"externs: {len(row_answers())} row answer(s) name the box their C body builds")
+    recorded = recorded_terminators()
+    if recorded is None:
+        print("externs: tools/terminated.allow is missing — the terminator set is unrecorded")
+        return 1
+    terminating = terminating_bodies(sources)
+    strayed = sorted(set(terminating) - recorded)
+    gone = sorted(recorded - set(terminating))
+    for name in strayed:
+        print(f"externs: `{name}` ends its text at a terminator ({', '.join(terminating[name][:3])}) and tools/terminated.allow does not record it")
+    for name in gone:
+        print(f"externs: tools/terminated.allow records `{name}`, whose C no longer ends text at a terminator")
+    if strayed or gone:
+        print(f"externs: {len(strayed) + len(gone)} row(s) disagree with tools/terminated.allow — a crossing joined or left the set")
+        return 1
+    print(f"externs: {len(recorded)} extern(s) end their text at a terminator, each recorded with its door")
     print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES) + len(FAULT_CASES) + len(OCTET_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES)} of the keeper's own cases hold")
     return 0
 

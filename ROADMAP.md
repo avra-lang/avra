@@ -15855,3 +15855,117 @@ of the slice), and one avoidable gate.
   where the layout suggests. It was correct here because every test fn
   is top-level, and the DIFF was read site by site rather than
   trusted. Recording the check, not the cleverness.
+
+## Feedback survey — 2026-09-15 #19 (TOOLCHAIN, a row's answer)
+
+Counted per axis: defects 1 (live on main, STD-DATA's find), doctrine
+1, process 1; friction, sugar, features, performance empty. Not
+surveyed: any tree but this lane's.
+
+### DEFECTS
+
+- **THE SEAT LAW HELD EVERY ARGUMENT AND NOTHING HELD THE ANSWER.**
+  `row_shape_law` checked a row's arity and each pointer seat's box;
+  an extern naming a row could declare ANY answer.
+  `extern fn avra_array_new() -> bool` checked clean, exit 0, and the
+  engines disagreed — `made=[]` evaluated against `made=true` native.
+  Both halves are refused now: the currency (`extern_kind` against
+  `RtSig.ret`) and, for a pointer, the box (`RtSig.answer`).
+  ATTRIBUTED: found by STD-DATA red-teaming the word-slot registry,
+  filed as avra-kln6 with a complete diagnosis; I wrote the fix.
+
+### DOCTRINE
+
+- **A `defect:` MESSAGE RAISED BY A PROGRAM THE COMPILER ADMITTED IS A
+  MISSING LAW, NOT A BUG IN THE PASS THAT SPEAKS.** The compiler's
+  self-blame channel is for its own invariants, so when a CLEAN
+  program reaches it — "a non-Bytes value reached a byte operation in
+  a clean program" — the pass is telling the truth about a
+  declaration nothing refused. It is the compiler's own voice saying
+  the check is in the wrong place, and it goes on saying so after a
+  fix that satisfies the bug report: `-> bool` refused, `-> Bytes`
+  still admitted. Read a defect message as evidence about the
+  ADMITTING law, never as a defect in the reporting one.
+- **A HALF-FIX LEAVES A TWIN OF THE SAME DEFECT.** The kind check
+  alone closes the reported program and leaves
+  `avra_array_new() -> Bytes` accepted — same kind, different box,
+  and the program reads a list's header as octets: "a non-Bytes value
+  reached a byte operation in a clean program". The complete law
+  needed the answer's BOX as well as its currency, which is the seat
+  column of avra-ihk9 arriving at the other end of the call. When a
+  law is added to one end of a seam, ask what the other end's version
+  of it is before calling the slice done.
+
+### PROCESS
+
+- **A TEST THAT REFUSES YOUR CHANGE MAY BE ENCODING A LAW NOBODY
+  WROTE DOWN.** The first draft spoke twice for
+  `avra_host_env(a, b) -> int` — wrong arity AND wrong answer — and
+  failed an existing case asserting exactly one message. Editing the
+  expectation is the near-universal instinct and would have been
+  wrong: the case wanted one message because a declaration whose
+  ARITY disagrees may be naming a row its writer did not mean, so
+  every complaint beneath it is about a fn they were not declaring.
+  Arity speaks alone; seats and the answer speak once the shape is
+  right. The law is at the site now, where the test can no longer be
+  the only place it lives.
+- **A WARNING THAT CANNOT BECOME AN ERROR IS STILL EVIDENCE.** The
+  native build already printed "avra_array_new redeclared with a
+  different type — stale: ptr (), source: i64 ()" for this exact
+  program, and that channel must stay a warning because it exists for
+  seed/source generation skew. The task said so before I started, and
+  it saved me from the obvious wrong fix — promoting the warning —
+  which would have made every skewed build red. A channel's PURPOSE
+  decides whether its signal can be tightened, not the signal's
+  accuracy.
+
+## Feedback survey — 2026-09-15 #21 (TOOLCHAIN, what ends text at a terminator)
+
+Counted per axis: defects 1 (mine, in the probe rather than the
+tree), doctrine 2, process 2; friction, sugar, features, performance
+empty. Not surveyed: whether any public verb actually reaches an
+unguarded crossing — that is avra-dtdp and it needs the compiler.
+
+### DOCTRINE
+
+- **A GUARD IS A DOOR AT A PACKAGE'S PUBLIC ENTRY, NOT A SPELLING AT
+  A CALL SITE.** `@std/io` never calls `nul_at`: its door is
+  `one_path`, spelling the scan inline. `@std/process` guards at
+  `tool`, `tool_from_env` and `Env.get`, and its internal `which` and
+  `search_path` hand text straight to C — correctly, because the
+  public entry above them already guarded. So "does this body guard"
+  is the wrong question, and a grep asking it accused 30 sites with 0
+  true positives, measured before shipping. The right question is
+  whether a PUBLIC verb can reach a terminator-consuming row without
+  passing a door, which is a call-graph question the compiler answers
+  and no tool in `tools/` can: P10 from the other end. Split out as
+  avra-dtdp with this column as its premise.
+- **A TASK'S STATED SIZE IS A CLAIM LIKE ANY OTHER.** avra-8tbo asked
+  for a length carried across 109 extern string seats. Derived: 71
+  rows take text, and 19 of them END it at a terminator — the rest
+  cross into our own runtime, which reads the header. The exposure is
+  a quarter of the claim and concentrated in rows the guard law
+  already names, so the migration would not have caught any of the
+  eight defects that prompted it.
+
+### DEFECTS
+
+- **A FILTER OVER THE WRONG COLUMN ANSWERS EMPTY, WHICH READS AS
+  "NOTHING QUALIFIES".** The first wiring took its text seats from
+  `externs()`, whose rows carry a RETURN TYPE where this needed the
+  parameters, so the filter matched nothing and the keeper reported
+  all 19 recorded rows as having left the set. It looked like a
+  finding about the tree and was a finding about my read. A filter
+  that answers empty deserves the same suspicion as one that answers
+  everything.
+
+### PROCESS
+
+- **A PROBE WHOSE OUTPUT IS GARBLED IS A FACT WAITING TO BE QUOTED.**
+  An earlier census printed `f, g, s` where function names belonged —
+  `re.findall` with one group returns strings, and I indexed `[0]`.
+  Caught because "f" is obviously not a function name; the version
+  that ships is the one where the garbling produces PLAUSIBLE names.
+- **MEASURING A CHECK'S RATE BEFORE BUILDING IT COST TEN MINUTES AND
+  SAVED THE HOUR.** F2040 shipped because nobody measured; this one
+  was refused on its own numbers before a line of it was written.
