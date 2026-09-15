@@ -1,9 +1,18 @@
 # The grammar names the node
 
-> DRAFT 2026-09-14, phase D of THE PERFECT COMPILER §2. For the task
-> master's ratification BEFORE code. The claim: a rule that maps its
-> captures into a node's payloads says so, and the builder is derived.
-> What stays hand-written is what COMPUTES.
+> RATIFIED 2026-09-14, phase D of THE PERFECT COMPILER §2. The claim: a
+> rule that maps its captures into a node's payloads says so, and the
+> builder is derived. What stays hand-written is what COMPUTES.
+>
+> STATUS. D0 landed the surface (`05563b4`): the dotted `-> Expr.StrLit`
+> grammar, the binding at assembly, `bool_lit` and `str_lit` converted.
+> D1 landed the rows (2026-09-15): `@derive(Grammar)` on `Expr`, `Pat`
+> and `Stmt`, the row carried on `Builder`, readers by payload NAME, and
+> a differential against the hand transcription. §11's blocking ask is
+> CLOSED. §4's placement decision was REFUTED by implementing it and is
+> corrected in place — read its note before building on it. The three
+> builders in `node_scaffold.av` are what remains, blocked on
+> avra-8sb5.11.100.
 
 ## 1. What is written twice today
 
@@ -161,45 +170,114 @@ its own merits:
 DECIDED: the derive. It generates, per enum,
 
 ```avra
-fn build_Expr_MutLet(mut b: Builder) -> Result<LangNode, string> { … }   // one per variant
-export fn grammar_rows_Expr() -> List<BuilderRow>                        // name -> build
-export fn grammar_payloads_Expr() -> List<PayloadRow>                    // variant -> names, types
+export fn grammar_payloads_Expr() -> List<PayloadRow>   // LANDED in D1
+export fn grammar_rows_Expr() -> List<BuilderRow>       // NOT landed — see §4's note
+fn build_Expr_MutLet(mut b: Builder) -> Result<LangNode, string> { … }
 ```
 
-`PayloadRow` is the mapping's own registry (`{ owner, variant, names:
-List<string>, types: List<string> }`), and it is what §5 reads. It is
-DATA — rows queried by one consumer — so it is a registry, never a
+`PayloadRow` is the mapping's own registry, and it is what §5 reads. It
+is DATA — rows queried by one consumer — so it is a registry, never a
 dispatch (THE VOCABULARY SEAM RULE).
+
+> SHAPE CORRECTED IN D1. This section proposed `{ owner, variant,
+> names: List<string>, types: List<string> }` — TWO PARALLEL LISTS that
+> must stay in step, which is the shape the tree has already paid for
+> twice (the `TypeRef` default-field bug, and the law "a promise added
+> as a second list doubles every mark site and drops silently wherever
+> a site forgets it"). A payload's name and its spelling are ONE value.
+> What landed is `{ owner, variant, payloads: List<Payload> }` with
+> `Payload { name, ty }`, so a payload cannot lose half of itself and
+> the derive writes one run instead of two that could differ in length.
 
 ### WHERE THE DERIVE EMITS, and why it is not where the enum lives
 
+> CORRECTED 2026-09-15, in D1, by the first implementer. What this
+> section decided — "the derive is applied features-side, to a
+> declaration that NAMES the core enum" — HAS NO SPELLING, and the
+> paragraphs below now record what was MEASURED instead. The original
+> reasoning read perfectly and failed on first contact; that is the
+> locally-coherent-defect law, and the section is left standing with
+> its correction rather than deleted, so the next reader sees the trap
+> and not just the answer.
+
 A derive emits at the DECLARATION it annotates. `Expr`, `Stmt` and
-`Pat` live in `core/`, and the code this derive must write names
-`Builder`, `LangNode` and `BuilderRow` — all of them `features/`.
-So the obvious placement is impossible by the layering, and the
-tempting fix is worse than the problem:
+`Pat` live in `core/`, and the code a grammar BUILDER must write names
+`Builder`, `LangNode` and `BuilderRow` — all of them `features/`. Both
+ways out of that were probed, and both are shut:
 
-MOVING `Builder`/`LangNode` INTO CORE IS REFUSED. `core/` is
-infrastructure only, and the layering is one-way — core knows nothing
-of features, and a parse-lowering vocabulary is a feature concern
-wearing an infrastructure address. Moving it would buy this derive a
-convenient home by making every future core file able to reach for a
-features type, which is the whole of what the rule prevents.
+**A DERIVE IS ONLY EVER HANDED THE TYPE IT SITS ON.** There is no
+spelling for annotating a features-side declaration that merely names
+a core enum. Measured at `7ab84f1`:
 
-SO THE DERIVE IS APPLIED FEATURES-SIDE, to a declaration that NAMES
-the core enum. `@derive(Grammar)` sits on a features-side declaration
-whose whole content is the naming, and the generated rows and builders
-land beside it — the same shape `node_scaffold.av` has today, which is
-why the scaffold is a faithful stand-in and its replacement is a
-deletion plus an annotation rather than a move.
+- `@ann` on `type Alias = Expr` is **F2066** — "`peek` takes `Type`,
+  and this is a type", help "`Fn` crosses a fn, `Type` a record or an
+  enum, `Named` any declaration". A named type is not crossed as an
+  enum at all, so it carries no variants.
+- `Named`, the "any declaration" seat, is `{ name: string, at: Loc? }`
+  — identity only.
+- `@std/meta` has no lookup-by-name, so nothing turns the string
+  `"Expr"` into that enum's `Type`.
 
-TWO CONSEQUENCES WORTH WRITING DOWN. The derive reads the CORE enum's
-variants through `@std.meta` (it is handed a `Type`, not a file), so
-naming it features-side costs nothing in fidelity. And a variant
-added to `Expr` still cannot be half-added: the derive regenerates
-from the enum, so the row and the builder appear with nobody typing
-them — the exhaustive guarantee survives the relocation, which is the
-only property that had to.
+The original premise — "it is handed a `Type`, not a file" — is true
+and does not help: it is handed the ANNOTATED declaration's Type, and
+for a naming declaration that Type has no variants.
+
+**AND A DERIVE'S OUTPUT IS FILE-LOCAL**, which the original section did
+not consider at all. Not module-local: a SIBLING FILE in the same
+module cannot call what a derive made — an enum carrying the derive in
+`src/m/a.av` and a sibling `src/m/b.av` calling the generated fn
+answers F3000 "no `fn rows_of_Color` is defined", while the same call
+from the annotated file works. So even a derive that COULD read
+`Expr` from features would still emit into a file that cannot name
+`Expr`'s variants.
+
+MOVING `Builder`/`LangNode` INTO CORE IS REFUSED, and this still
+stands. `core/` is infrastructure only, and the layering is one-way —
+core knows nothing of features, and a parse-lowering vocabulary is a
+feature concern wearing an infrastructure address. Moving it would buy
+one derive a convenient home by making every future core file able to
+reach for a features type, which is the whole of what the rule
+prevents.
+
+SO THE DERIVE SITS ON THE CORE ENUMS AND EMITS WHAT CORE CAN NAME: the
+PAYLOAD ROWS, `@derive(Grammar)` on `Expr`, `Pat` and `Stmt`, with
+`Payload`/`PayloadRow` in `core/` where the node model's own
+declaration belongs. Two consequences are paid in D1 and worth seeing:
+
+- `node_payload_rows()` — the union of the three generated fns — is
+  written BY HAND in `core/nodes.av`, because that is the only file
+  that can see them. Three lines that regenerate nothing when a fourth
+  node enum arrives.
+- The BUILDERS do not move. Each is one expression naming a CORE
+  constructor and FEATURES verbs (`b.make_expr(Expr.StrLit(...))`),
+  which neither layer can write alone, so `node_scaffold.av` shrinks to
+  its builders instead of dying. The exhaustive guarantee survives for
+  the ROWS and not yet for the builders.
+
+**THE CAPABILITY THAT WOULD CLOSE IT** is avra-8sb5.11.100: a derive
+may be handed another declaration's Type by NAMING it in the
+annotation (`@derive(Grammar(Expr))`, the argument a source-spelled
+type name), AND emit where the reader is. Both halves are required —
+reading without emitting buys nothing here. That shape obeys the
+standing law that a declares-annotation's argument comes from the
+source alone, adds no currency, and grows no vocabulary.
+
+**CONSIDERED AND REFUSED: a core-level payload-value union**
+(`fn built_Expr(variant, vs: List<NodeArg>) -> Expr?`), which would let
+one generic features-side builder construct any variant. It is the
+parallel value enum the value protocol already refused, wearing an
+argument's clothes instead of a return's: it would grow with every
+payload type the node model gains, and every constructor would unpack
+it with a RUNTIME check the compiler does STATICALLY today — trading a
+compile-time guarantee for a runtime one, in the phase whose whole
+subject is that the declaration is the source of truth. Recorded here
+so it is not relitigated.
+
+AND THE ORIGINAL SECTION'S OTHER CLAIM SURVIVES INTACT: a generic
+builder cannot replace the per-variant ones, for the reason given
+below — `BuilderRow.build` is a plain `fn(mut Builder) -> …` and a fn
+value carries no captures, so the callee cannot learn which variant it
+is. That objection was right; only the placement was wrong.
 
 ## 5. The seam: the ordering happens at assembly, not at parse
 
@@ -394,7 +472,23 @@ statement/expression split is decided by the node's own kind
 as the check D2 runs first over all ~40 rules; a variant with two
 genuinely ambiguous rules needs a mark, and D2 will name them.
 
-## 11. THE BLOCKING ASK — payload names in `@std/meta`
+## 11. ~~THE BLOCKING ASK~~ — payload names in `@std/meta`: LANDED
+
+> LANDED 2026-09-14 by phase H's B2c (`3cad0d9`), and CONSUMED by D1 on
+> 2026-09-15. `Variant` grows `fields: List<Field>` BESIDE `payload`,
+> rather than replacing it as this section proposed — a growth the rule
+> took in one `make avra`, where the replacement below would have cost
+> the two-commit ladder a SHRINK of a checked shape requires. The
+> section is kept for its reasoning; the ask is closed.
+>
+> Two notes D1 paid for. `payload` and `fields` are built by ONE writer,
+> so the keepers `paired` and `named` assert their agreement and CANNOT
+> currently fail — they are a consistency check between two copies, not
+> an oracle, which is why D1's differential uses the HAND transcription
+> instead. And collapsing `payload` into a projection of `fields` is
+> filed as avra-6ndp with its three consumers named; both lists stand
+> meanwhile.
+
 
 A derive sees a variant through `@std.meta.Variant`:
 
@@ -414,10 +508,13 @@ The change is small and shared: `Variant.payload: List<string>` →
 already crosses), plus its `MetaShape` row and `meta_of_variant` in
 crossing.av, plus `rebuild_derive`'s two readers.
 
-**crossing.av and @std/meta's contract belong to phase H/B2b this
+~~**crossing.av and @std/meta's contract belong to phase H/B2b this
 week.** Phase D is BLOCKED on this one field and will not touch those
 files. The task master routes it: phase H lands it, or phase H hands
-phase D a window. Everything else in this document is phase D's own.
+phase D a window.~~ — SPENT. Phase H landed it at `3cad0d9`; phase D
+consumed it in D1. Struck rather than deleted because it is a ROUTING
+INSTRUCTION, and a stale one does not sit there being wrong, it
+recruits. Everything else in this document is phase D's own.
 
 ## 12. Leave-alones, with triggers
 
