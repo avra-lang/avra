@@ -8060,6 +8060,29 @@ The `/feedback` run for the slice that lifted the two S5b boundaries: a settled 
 
 ## Sugar backlog — dogfooding asks
 
+`continue` — SKIP THIS TURN (asked by the owner, 2026-09-15, phase D).
+A loop that must skip an element has no word for it, so the body
+inverts into a guard and the real work slides a level deeper. WANTING
+SITE: `innermost_holding` and `first_start_after` in
+`language/source_text.av`, both scanning an arena where a span may be
+absent. The form wanted:
+
+    for i in 0..store.stmts.count() {
+        let span: Span? = store.stmts.span_at(i)
+        if span == null { continue }
+        ...the work, at one level of indent
+    }
+
+REFUSED TODAY: F3000 "`continue` is not defined", read as a NAME —
+the word is not reserved, so the refusal arrives as an undefined
+binding rather than as a missing construct, which is worth fixing
+alongside it (`break` reads the same way and is the obvious sibling
+ask). The workaround is a `!= null &&` guard folded into the `if`, or
+a named predicate — both of which push the loop's real condition into
+a helper and read as ceremony at the site. Two sites in one fn pair
+this slice; the shape is common wherever a scan walks an arena.
+
+
 UNVERIFIED HAZARD (H2, 2026-09-15) — `hush_expansion` INSIDE A
 RE-ENTRANT RUN. `expanded(f)` clears a file's expansion voices as its
 first act, and the memo kernel makes a recursive demand COMPUTE

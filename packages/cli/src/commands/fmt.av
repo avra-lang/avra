@@ -2,39 +2,48 @@
 //! written back.
 //!
 //! THERE IS NO `--write` YET, AND THE REASON IS A MEASUREMENT. The
-//! renderer keeps `///` doc comments and DROPS every plain `//` one,
-//! so formatting is LOSSY on any file that carries a remark: a
-//! `--write` would silently delete the author's comments. Reading is
-//! safe and useful today; rewriting is not, and a formatter that
-//! eats comments is worse than no formatter.
+//! renderer replays a file's remarks and its doc comments, but a
+//! TRAILING `//` (one sharing a line with code) is still dropped, so
+//! rewriting would delete those. Reading is safe; rewriting is not
+//! until `fmt(x) == x` holds for every file in the tree.
 //!
-//! AND IDEMPOTENCE DOES NOT CATCH IT — measured, not argued.
-//! `fmt(fmt(x)) == fmt(x)` is GREEN, because the second pass has no
-//! comments left to lose. A suite that checks only idempotence ships
-//! the deleter. The receipt a formatter owes is LOSSLESSNESS, which
-//! is a different question and currently answers no.
+//! AND IDEMPOTENCE DOES NOT PROVE IT — measured, not argued.
+//! `fmt(fmt(x)) == fmt(x)` was GREEN while every plain comment was
+//! being deleted, because the second pass had no comments left to
+//! lose. The receipt a formatter owes is LOSSLESSNESS, a different
+//! question and not a weaker one.
+//!
+//! IT PARSES AND DOES NOT ANALYZE. Formatting moves no token that
+//! typing decides, and the analyzed path cost 2.5 MINUTES for one file
+//! because asking for the entry forces the whole package to type.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.language.{Program, Analysis}
-use @std.io.{println}
+use @std.io.{println, exists}
 
 type FmtCmd = { }
 
 impl Runnable for FmtCmd {
-    fn run(args: CliResult) -> int { phased(args, "fmt", printed) }
-}
-
-/// The canonical text, said.
-fn printed(p: Program) -> Result<int, string> {
-    let a = entered(p)?
-    println(p.formatted_source(a.view.file)?)
-    0
-}
-
-/// The file the command was given, analyzed.
-fn entered(p: Program) -> Result<Analysis, string> {
-    let held: Analysis? = p.entry_file()
-    if held == null { fail "the program is empty" }
-    .Ok(held!)
+    fn run(args: CliResult) -> int {
+        let path = path_arg(args)
+        if !exists(path) {
+            no_such_file(path)
+            return 2
+        }
+        // ONE WORKSPACE. A `FileId` is an INDEX into the workspace that
+        // minted it, so asking a second workspace to read it indexes a
+        // table that never had the file — "index 0 is out of bounds
+        // (length 0)", for every input.
+        let ws = file_workspace(path)
+        match ws.formatted_source(ws.file_id(path)) {
+            .Ok(text) -> {
+                println(text)
+                0
+            },
+            .Err(report) -> {
+                println(report)
+                1
+            },
+        }
+    }
 }
 
 export fn fmt_command() -> Subcommand {

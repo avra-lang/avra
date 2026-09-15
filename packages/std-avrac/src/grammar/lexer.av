@@ -17,7 +17,7 @@
 //! string, or an unclosed hole is recorded and lexing continues, so
 //! one pass reports everything.
 use @std.text.{Text, builder}
-use core.{Span, span_of}
+use core.{Span, span_of, Remark, Trivia}
 use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder}
 
 /// What a token is; Lit-vs-kind matching keys off this. The IStr
@@ -90,7 +90,7 @@ export type LexError = { message: string, span: Span }
 export type DocComment = { lines: List<string>, before: int }
 
 /// Every token, retained doc comment and problem from one pass.
-export type LexResult = { tokens: List<Token>, docs: List<DocComment>, errors: List<LexError> }
+export type LexResult = { tokens: List<Token>, docs: List<DocComment>, remarks: List<Remark>, errors: List<LexError> }
 
 /// Membership in the single-char operator set; `-`, `<`, `>`, `!`,
 /// `.`, and `|` reach here only after their two-char munches have
@@ -383,6 +383,15 @@ fn line_end(src: string, n: int, from: int) -> int {
 
 /// The contents of one `///` line, with its conventional one space
 /// removed. Further indentation is the documentation's own text.
+/// A comment line AS WRITTEN — `//` included, the newline and a
+/// carriage return excluded. The printer replays this verbatim, so
+/// nothing here reconstructs the author's spacing.
+fn comment_line(src: string, n: int, i: int) -> string {
+    let end = line_end(src, n, i)
+    let hi = if end > i && src.char_code(end - 1) == 13 { end - 1 } else { end }
+    src.substring(i, hi)
+}
+
 fn doc_line(src: string, n: int, i: int) -> string {
     let end = line_end(src, n, i)
     let from = if i + 3 < end && src.char_code(i + 3) == 32 { i + 4 } else { i + 3 }
@@ -595,7 +604,7 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
 fn lex_words(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bool, words: List<string>, placeholders: bool) -> LexResult {
     mut lx = Lexing {
         src: src, n: src.length, interpolate: interpolate, words: words, placeholders: placeholders,
-        raw: [], docs: [], pending: [], errors: [], stack: [], frames: [],
+        raw: [], docs: [], remarks: [], blank_run: false, pending: [], errors: [], stack: [], frames: [],
         line_comment: false, line_has_token: false, i: 0,
     }
     lx.run()
@@ -607,7 +616,7 @@ fn lex_words(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: b
         tokens.push(token(TokenKind.Break, "", src.length, src.length))
     }
     tokens.push(token(TokenKind.Eof, "", src.length, src.length))
-    LexResult { tokens: tokens, docs: lx.docs, errors: lx.errors }
+    LexResult { tokens: tokens, docs: lx.docs, remarks: lx.remarks, errors: lx.errors }
 }
 
 /// What the scanner is INSIDE, innermost last: a quote's body, a
@@ -657,6 +666,8 @@ type Lexing = {
     placeholders: bool,
     raw: List<Token>,
     docs: List<DocComment>,
+    remarks: List<Remark>,
+    blank_run: bool,
     pending: List<string>,
     errors: List<LexError>,
     stack: List<Ctx>,
@@ -994,6 +1005,14 @@ impl Lexing {
     /// starts a declaration, and a Break ends a line.
     mut fn push(t: Token) {
         if t.kind == TokenKind.Break {
+            // A BLANK LINE IS THE AUTHOR'S PARAGRAPH BREAK, kept like a
+            // comment. `blank_run` collapses a run to one and is cleared
+            // by any real token, so blanks in two different places stay
+            // two blanks.
+            if !self.line_has_token && !self.line_comment && !self.blank_run {
+                self.remarks.push(Remark { trivia: Trivia.Blank, at: t.span.lo })
+                self.blank_run = true
+            }
             self.line_has_token = false
             if !self.pending.is_empty() && !self.line_comment { self.pending = [] }
             self.line_comment = false
@@ -1004,6 +1023,7 @@ impl Lexing {
             }
             self.line_has_token = true
             self.line_comment = false
+            self.blank_run = false
         }
         // A hole is single-line: a newline inside one is the missing
         // `}`, said once, and lexing recovers to the enclosing body.
@@ -1060,9 +1080,16 @@ impl Lexing {
     mut fn noted_comment() {
         if !line_comment_at(self.src, self.n, self.i) { return }
         self.line_comment = true
-        if !self.line_has_token && self.i + 2 < self.n && self.src.char_code(self.i + 2) == 47 {
+        if self.line_has_token { return }
+        if self.i + 2 < self.n && self.src.char_code(self.i + 2) == 47 {
             self.pending.push(doc_line(self.src, self.n, self.i))
+            return
         }
+        // AN OWN-LINE REMARK IS KEPT WHOLE AND BY POSITION. It becomes
+        // no token — a token would put a skip in every grammar rule —
+        // and it is never dropped, so a comment with no statement
+        // after it survives as much as one with.
+        self.remarks.push(Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, self.i)), at: self.i })
     }
 
     /// What the input ended inside: an open hole or an open quote.

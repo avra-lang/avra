@@ -592,6 +592,30 @@ export enum Stmt {
 
 /// The language AST's arenas plus their fingerprint side tables. A
 /// synthesized node's span is null.
+/// TRIVIA THE AUTHOR WROTE, KEPT BY POSITION. A remark means nothing to
+/// any pass — it is not a node and wears no id — so it lives as a
+/// side table keyed by the OFFSET it was written at, and the printer
+/// replays it between the statements it fell between. `text` is the
+/// line as written, `//` included, so a replay is the author's words
+/// and not a reconstruction of them.
+///
+/// `///` lines are NOT remarks: a doc comment is attached to the
+/// declaration it documents (`docs`) and means something to `explain`.
+export enum Trivia {
+    Comment(text: string)
+    /// A RUN OF BLANK LINES IS ONE `Blank`. Presence and absence are
+    /// the author's paragraphing; HOW MANY is not, and collapsing the
+    /// run is where canonicalising earns its place.
+    ///
+    /// It is a NAMED case and not a `Comment("")`: an empty text is
+    /// the spare value an encoding is always tempted to spend, and
+    /// spending it here would make "a blank line" and "a comment with
+    /// no words" the same row.
+    Blank
+}
+
+export type Remark = { trivia: Trivia, at: int }
+
 export type NodeStore = {
     exprs: Arena<Expr>,
     expr_fingerprints: List<int>,
@@ -605,6 +629,8 @@ export type NodeStore = {
     annotations: List<List<Annotation>>,
     // declaration-leading `///` lines; absent on synthesized nodes
     docs: List<List<string>?>,
+    // plain `//` lines, by source offset — printing only
+    remarks: List<Remark>,
     // `static fn` — a fn under an impl declaring it has NO receiver
     statics: List<bool>,
     pats: List<Pat>,
@@ -631,7 +657,7 @@ export type NodeStore = {
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], statics: [], annotations: [], docs: [],
+        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], statics: [], annotations: [], docs: [], remarks: [],
         pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [], quotes_at: {}, sublangs: [], body_starts: {}, block_voices: [], foreign: [],
     }
 }
@@ -897,6 +923,11 @@ impl NodeStore {
     /// statement's identity: tools observe it, so a doc-only edit
     /// must not be cut off by the parsed-program memo. Lines never
     /// contain a newline, so the joined text is a lossless key.
+    /// The file's plain `//` lines, by the offset each was written at.
+    mut fn keep_remarks(rs: List<Remark>) {
+        self.remarks = rs
+    }
+
     fn document(s: StmtId, lines: List<string>) {
         self.docs.set(s.index, lines)
         self.stmt_fingerprints.set(s.index, fp(115, [self.stmt_fingerprints[s.index], fp_str(lines.join("\n"))]))
