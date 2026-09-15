@@ -641,6 +641,18 @@ engine's spec, written by dogfooding.
   the branch that would dodge it: deduplicating `far_merge`'s
   expected sets measured 3% SLOWER, and skipping an empty
   `concat` measured neutral. Measure before removing an allocation.
+- A CAP BELONGS ON A LOG, NEVER ON DATA THAT IS COMPARED. A build log
+  with no ceiling is a full disk — `make avra` wrote 43 GB into a file
+  whose last 200 KB was all anyone read, twice in one day, and took a
+  compiler binary and every other session's work with it. So every log
+  runs through `tools/capped.sh`, which caps the output and answers
+  the COMMAND's status (a bare pipe answers `tail`'s). But the same
+  `tail` over an artifact that is DIFFED can truncate two different
+  outputs INTO AGREEMENT — `witness` and `native-check` exist to prove
+  two readings agree, and a cap there manufactures the agreement with
+  no failing run to reveal it. Those two stay uncapped, with the
+  reason at the site. Ask of every redirect which it is: read by its
+  tail when something breaks, or compared to another file.
 - A PROCESS STATUS IS A VERDICT, never a count: statuses are eight
   bits, so 256 failures read as success. Exit 0 or 1 and print the
   count. A TRAP is not a verdict either — `avra_trap` exits 2, so a
@@ -725,6 +737,50 @@ engine's spec, written by dogfooding.
   after `make seed` on main carries the prelude, drop io's two verbs
   and the 19 `use @std.io.{println…}` lines — an explicit import of
   the prelude's name is legal, so the sweep is deletion only.
+- A COMPILER UNDER TEST MUST STAND WHERE A COMPILER STANDS. `@std/*`
+  resolves from the BINARY'S OWN DIRECTORY, so a harness that links
+  the binary somewhere else changes what it can resolve: `seed-check`
+  linked into `build/seed-check/`, looked for `build/packages`, found
+  no std root, and could reach a std package only through a manifest
+  row. Green for as long as every manifest carried rows, and red the
+  day they went — the assumption-nobody-violated law, wearing a
+  harness's clothes. A binary under test links beside `build/avra`.
+
+- A REFUSAL THAT EXPLAINS ITSELF ON THE SAME CHANNEL AS ITS CONSENT IS
+  A TRAP FOR THE NEXT CALLER. A verb answering both a VERDICT and
+  PROSE must not send the prose where a reader takes it for the
+  verdict: `receipt_trusts` printed "no receipt in …/build" on STDOUT
+  and returned 1, the caller read stdout and swallowed the status, and
+  a MISSING receipt read as permission to skip a gate — on the
+  feature's first integration. Consent gets its own channel (stdout
+  non-empty if and only if trusted, every reason on stderr), and a
+  status-blind caller then fails SAFE rather than open. AND BOTH
+  BRANCHES ANNOUNCE: moving the reason to stderr silenced the
+  integrator's own log until the caller was taught to read it, so a
+  skip says what it trusted and a gate says what it read instead —
+  neither branch silent is what makes a mechanism auditable rather
+  than merely honest. AND THE TESTS MUST USE THE CALLER'S CONVENTION:
+  four fixtures called the function and checked its EXIT STATUS while
+  the caller read its STDOUT, so they were green over a contract
+  nobody used — "a test with its own copy of the logic tests the
+  copy", one seam over, where the copy is the calling convention.
+- A SELF-TEST MUST NOT BE REACHABLE FROM THE ENTRY POINT IT
+  EXERCISES. "An instrument proves itself before it certifies
+  anything" put the fixtures inside `write`, and the fixtures call
+  `write`: 986 processes in one chain, 2441 of a 2666 fork limit, and
+  every other session's builds died on `fork: Resource temporarily
+  unavailable`. THE FIX IS THE SHAPE, never a depth counter — every
+  verb a function, the fixtures calling the functions, so recursion is
+  unreachable rather than bounded; run the fixtures once at gate time
+  beside the verb, not inside it. A fixture may re-enter the script
+  only where what it checks is a PROCESS's exit status, and only while
+  the path it re-enters runs no fixtures. AND THE SIGNATURE IS THE
+  HALF TO REMEMBER: A RESOURCE EXHAUSTION PRESENTS AS A FAILURE IN
+  WHATEVER ELSE HAPPENS TO BE RUNNING, so the first unexplained
+  "Resource temporarily unavailable" is a question about the MACHINE,
+  never about the command that reported it — it fooled the author of
+  the bomb, holding its own output, ten minutes before anyone else saw
+  it.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the

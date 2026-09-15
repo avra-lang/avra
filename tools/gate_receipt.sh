@@ -48,11 +48,22 @@ receipt_write() {
 # Whether a worktree's receipt names EXACTLY this tree. Every other
 # answer is 1 — no receipt, an unreadable one, another tree — all
 # meaning a gate is owed.
+#
+# STDOUT CARRIES CONSENT AND NOTHING ELSE; every refusal explains
+# itself on STDERR. A REFUSAL THAT EXPLAINS ITSELF ON THE SAME
+# CHANNEL AS ITS CONSENT IS A TRAP FOR THE NEXT CALLER, and this one
+# sprang on its first integration: the reason printed on stdout, the
+# caller read stdout and swallowed the status, so "no receipt in
+# …/build" READ AS PERMISSION and the skip fired exactly where it
+# must not. The caller was fixed to test the status; this makes the
+# CONTRACT fail safe instead — stdout is non-empty if and only if the
+# tree is trusted, so a caller that ignores the status refuses rather
+# than trusts, and the reason still reaches the log.
 receipt_trusts() {
     receipt="$1/build/.gate-green"
-    [ -f "$receipt" ] || { echo "no receipt in $1/build"; return 1; }
-    read -r tree head when < "$receipt" || { echo "the receipt is unreadable"; return 1; }
-    [ -n "$tree" ] && [ "$tree" = "$2" ] || { echo "the receipt names tree ${tree:-?}, this integration takes $2"; return 1; }
+    [ -f "$receipt" ] || { echo "no receipt in $1/build" >&2; return 1; }
+    read -r tree head when < "$receipt" || { echo "the receipt is unreadable" >&2; return 1; }
+    [ -n "$tree" ] && [ "$tree" = "$2" ] || { echo "the receipt names tree ${tree:-?}, this integration takes $2" >&2; return 1; }
     echo "$head at $when"
 }
 
@@ -79,17 +90,29 @@ self_test() {
     git -C "$lane" commit -q -m two
     changed="$(git -C "$lane" rev-parse HEAD^{tree})"
     [ "$changed" != "$tree" ] || { echo "gate_receipt: the fixture changed nothing"; return 1; }
-    if receipt_trusts "$lane" "$changed" > /dev/null; then
+    if receipt_trusts "$lane" "$changed" > /dev/null 2>&1; then
         echo "gate_receipt: a CHANGED tree was trusted — the skip cannot refuse"; return 1
     fi
     rm -f "$lane/build/.gate-green"
     echo "three" > "$lane/a.txt"
     receipt_write "$lane" > /dev/null
     [ ! -f "$lane/build/.gate-green" ] || { echo "gate_receipt: a DIRTY gate wrote a receipt"; return 1; }
-    if receipt_trusts "$lane" "$changed" > /dev/null; then
+    if receipt_trusts "$lane" "$changed" > /dev/null 2>&1; then
         echo "gate_receipt: a MISSING receipt was trusted"; return 1
     fi
-    echo "gate_receipt: self-test passed — 4 fixtures"
+    # THE CALLING CONVENTION IS PART OF THE CONTRACT, and the fixtures
+    # above test only the status — which is how a caller reading
+    # STDOUT shipped a skip that fired on "no receipt". A caller that
+    # ignores the status must refuse, so stdout is checked here the
+    # way that caller read it.
+    said="$(receipt_trusts "$lane" "$changed" 2>/dev/null || true)"
+    [ -z "$said" ] || { echo "gate_receipt: a refusal put words on stdout — a status-blind caller reads them as consent"; return 1; }
+    git -C "$lane" add -A
+    git -C "$lane" commit -q -m three
+    receipt_write "$lane" > /dev/null
+    said="$(receipt_trusts "$lane" "$(git -C "$lane" rev-parse HEAD^{tree})" 2>/dev/null || true)"
+    [ -n "$said" ] || { echo "gate_receipt: consent said nothing on stdout"; return 1; }
+    echo "gate_receipt: self-test passed — 6 fixtures"
 }
 
 case "$1" in
