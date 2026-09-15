@@ -4,9 +4,10 @@
 use @std.avrac.language.{read_manifest, avra, deps_offset}
 use @std.avrac.diagnostics.{new_source_file, render}
 use language.{Manifest}
+use features.{budgets_of}
 
 fn reference() -> string {
-    "[package]\nname    = \"@corpus/app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/main.av\"\n\n[lib]\n\n[dependencies]\n\"@std/http\" = { path = \"../http\" }\n\"@std/toml\" = { path = \"../toml\" }\n\n[dev-dependencies]\n\"@std/test\" = { path = \"../test\" }\n\n[profile.dev]\nopt_level = 0\ndebug = true\n"
+    "[package]\nname    = \"@acme/app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/main.av\"\n\n[lib]\n\n[dependencies]\n\"@std/http\" = { path = \"../http\" }\n\"@std/toml\" = { path = \"../toml\" }\n\n[dev-dependencies]\n\"@std/test\" = { path = \"../test\" }\n\n[profile.dev]\nopt_level = 0\ndebug = true\n"
 }
 
 fn read(text: string) -> Manifest {
@@ -55,7 +56,7 @@ spec "language/manifest" {
     given "the reference manifest" {
         then "its facts are read" {
             let m = read(reference())
-            m.name == "@corpus/app" && m.version == "0.1.0" && m.bin == "src/main.av" && m.lib == "src/lib.av" && m.voices.is_empty()
+            m.name == "@acme/app" && m.version == "0.1.0" && m.bin == "src/main.av" && m.lib == "src/lib.av" && m.voices.is_empty()
         }
         then "its dependencies are keys with paths, tests' marked" {
             let m = read(reference())
@@ -132,6 +133,29 @@ spec "language/manifest" {
             let text = "[package]\nname = \"app\"\nversion = \"1.2\"\n"
             let m = read(text)
             render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).starts_with("error[F4003]: a version is `MAJOR.MINOR.PATCH` — `1.2` is not\n  ╭─[avra.toml:3:1]")
+        }
+    }
+    given "[lifted]" {
+        then "steps and memory are read, memory in MiB" {
+            let m = read(packaged("\n[lifted]\nsteps = 500\nmemory = 2\n"))
+            m.voices.length == 0 && m.budgets.steps == 500 && m.budgets.bytes == 2097152
+        }
+        then "an absent row takes the measured default" {
+            let m = read(packaged("\n[lifted]\nsteps = 500\n"))
+            m.budgets.steps == 500 && m.budgets.bytes == budgets_of(null, null).bytes
+        }
+        then "a row that is not a count of at least 1 is refused and reads as the default" {
+            let m = read(packaged("\n[lifted]\nsteps = 0\nmemory = \"lots\"\n"))
+            m.voices.length == 2 && m.voices.all(it.kind == "manifest.bad_budget") && m.budgets.steps == budgets_of(null, null).steps
+        }
+        then "a memory past what bytes can hold is no ceiling, never a wrapped one" {
+            let m = read(packaged("\n[lifted]\nmemory = 9223372036854775807\n"))
+            m.voices.length == 0 && m.budgets.bytes > 0 && m.budgets.bytes >= budgets_of(null, 8796093022207).bytes
+        }
+        then "the refusal names the row and its units" {
+            let text = packaged("\n[lifted]\nmemory = 0\n")
+            let m = read(text)
+            render(m.voices[0], avra().rows.codes, new_source_file("avra.toml", text)).contains("error[F4017]: `[lifted] memory` is a count of at least 1")
         }
     }
 }

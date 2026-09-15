@@ -29,12 +29,13 @@ export fn memory(l: Lowered) -> Lowered {
 export fn is_managed(types: TypeRegistry, ty: TypeId) -> bool {
     match types.shape_of(ty) {
         .Str or .Bytes -> true,
-        // A FLAT record holds no reference — nothing to count.
-        .Struct(_, _) -> !types.is_flat(ty),
+        // A FLAT RECORD IS ITS FIELD: a record of words holds no
+        // reference, a NAME over a list holds the list's.
+        .Struct(_, _) -> flat_managed(types, ty),
         // EmptyList is the one identity widen whose pointer is a
         // REAL box: the callee's List param releases it, so the
         // caller must own it too, or the seam frees a live name.
-        .List(_) or .Enum(_, _) or .EmptyList or .Map(_, _) or .EmptyMap or
+        .List(_) or .Cell(_) or .Enum(_, _) or .EmptyList or .Map(_, _) or .EmptyMap or
         .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) -> true,
         // a FLAT record's nullable is a one-slot BOX — counted,
         // though the bare record never is
@@ -42,6 +43,13 @@ export fn is_managed(types: TypeRegistry, ty: TypeId) -> bool {
         .Ptr or .Int or .Float or .Bool or .TypeName(_, _) or .Var(_, _, _) or .Null or
         .Error or .Void -> false,
     }
+}
+
+/// A RECORD's own answer: a flat one IS its one field, so it is
+/// managed exactly when the field is; a boxed one always counts.
+fn flat_managed(types: TypeRegistry, ty: TypeId) -> bool {
+    if !types.is_flat(ty) { return true }
+    is_managed(types, types.flat_fields(ty)[0])
 }
 
 /// A fn's managed params — they arrive owned, so its first scope
@@ -76,7 +84,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .ScopeExit(gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
-                for s in settled(scope, gives) { out.push(s) }
+                for s in scope.settled(gives) { out.push(s) }
                 // a yield is retained only where something RECEIVES
                 // it: an enclosing scope adopts, or — at the
                 // outermost — the CALLER takes it as the answer, and
@@ -99,7 +107,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .ArmEnd(gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
-                for s in settled(scope, gives) { out.push(s) }
+                for s in scope.settled(gives) { out.push(s) }
                 // LICENSED I3: the pass's OUTPUT accumulates
                 for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
                 // LICENSED I15: a scope STACK walked by the pass, not a bracket body
@@ -109,7 +117,7 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .RegionEnd(_, gives) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
-                for s in settled(scope, gives) { out.push(s) }
+                for s in scope.settled(gives) { out.push(s) }
                 // LICENSED I3: the pass's OUTPUT accumulates
                 for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
                 manages(types, reg_types, open_scopes, i)
@@ -188,13 +196,24 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .LoopCond(_) -> {
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED I3: the pass's OUTPUT accumulates
-                for s in settled(scope, null) { out.push(s) }
+                for s in scope.settled(null) { out.push(s) }
                 out.push(i)
             }
+            // A FLAT RECORD'S PACK IS IDENTITY, so the destination is
+            // a SECOND NAME for the part's box and takes its OWN
+            // reference — the part keeps the one it had, and the
+            // scope settles both. (Every other pack is a scalar
+            // pair, which owns nothing.) Its twin `Extract` is a
+            // VIEW and owns nothing, which `managed_dst` says.
+            .Pack(dst, _) -> {
+                out.push(i)
+                if is_managed(types, reg_types[dst.index]) { out.push(Ins.Retain(dst)) }
+                manages(types, reg_types, open_scopes, i)
+            }
             .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-            .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or
+            .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or
             .CallRt(_, _, _) or .CallRtVoid(_, _) or .Release(_) or
-            .Pack(_, _) or .Extract(_, _, _) or .LoopEnd or
+            .Extract(_, _, _) or .LoopEnd or
             .Retain(_) or .RetVal(_) or .Ret(_) -> {
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
@@ -297,7 +316,7 @@ fn view_of(i: Ins) -> Reg? {
         // reference, never a view of an argument.
         .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
         .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or
-        .Pack(_, _) or .FnAddr(_, _) or .ScopeEnter(_) or
+        .Pack(_, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .ScopeEnter(_) or
         .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or
         .ArmEnd(_) or .RegionEnd(_, _) or .Call(_, _, _) or
         .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or
@@ -315,7 +334,7 @@ fn exit_releases(open_scopes: Stack<Scope>, kept: Reg) -> List<Reg> {
     mut j = open_scopes.depth() - 1
     while j >= 0 {
         let scope: Scope = open_scopes.at(j)
-        out = out.concat(releases_for(scope, kept))
+        out = out.concat(scope.releases_for(kept))
         j = j - 1
     }
     out
@@ -349,12 +368,14 @@ fn moved_out(types: TypeRegistry, reg_types: List<TypeId>, scope: Scope, gives: 
     [Ins.Retain(r)]
 }
 
-/// The strategy: what a scope owes at its exit. `kept` is a value
-/// that escapes the scope and is owned elsewhere.
-fn releases_for(scope: Scope, kept: Reg?) -> List<Reg> {
-    match scope.tier {
-        .Application -> kept_out(reversed(scope.managed), kept),
-        .Systems or .Bare or .Hardware -> [],
+impl Scope {
+    /// The strategy: what a scope owes at its exit. `kept` is a value
+    /// that escapes the scope and is owned elsewhere.
+    fn releases_for(kept: Reg?) -> List<Reg> {
+        match self.tier {
+            .Application -> kept_out(reversed(self.managed), kept),
+            .Systems or .Bare or .Hardware -> [],
+        }
     }
 }
 
@@ -429,7 +450,23 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
     // answer (bool_text) never earns a release.
     match i {
         .CallRt(_, callee, _) -> if rt_owns(callee) { dst } else { null },
-        _ -> dst,
+        // static data is immortal: nothing to release, ever
+        .StaticAddr(_, _) -> null,
+        // A FLAT RECORD'S EXTRACT IS IDENTITY — the register IS its
+        // field's — so it is a VIEW of a box somebody else already
+        // owns, never a reference of its own (`view_of` says the
+        // same; this arm used to disagree, invisibly, while no flat
+        // record was managed). A PACK owns, because its arm above
+        // retains: the destination is a second holder.
+        .Extract(_, _, _) -> null,
+        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
+        .Bin(_, _, _, _) or .Un(_, _, _) or .Pack(_, _) or
+        .FnAddr(_, _) or .Call(_, _, _) or .CallPtr(_, _, _) or .RegionEnd(_, _) or
+        .Alloca(_) or .Load(_, _) -> dst,
+        .CallRtVoid(_, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
+        .SwitchStart(_, _) or .ArmEnd(_) or .Store(_, _) or .LoopStart or
+        .LoopCond(_) or .LoopEnd or .Release(_) or .Retain(_) or .RetVal(_) or
+        .FnExit(_) or .Ret(_) -> null,
     }
 }
 
@@ -490,10 +527,12 @@ fn exit_cells(open_scopes: Stack<Scope>) -> List<Reg> {
     out
 }
 
-/// What a closing scope owes: its cells settled, last bound first,
-/// then the releases its yield leaves behind.
-fn settled(scope: Scope, gives: Reg?) -> List<Ins> {
-    [cell_settle(c) for c in reversed(scope.cells)].concat([Ins.Release(r) for r in releases_for(scope, gives)])
+impl Scope {
+    /// What a closing scope owes: its cells settled, last bound first,
+    /// then the releases its yield leaves behind.
+    fn settled(gives: Reg?) -> List<Ins> {
+        [cell_settle(c) for c in reversed(self.cells)].concat([Ins.Release(r) for r in self.releases_for(gives)])
+    }
 }
 
 /// The caller's retains for a call's managed arguments.

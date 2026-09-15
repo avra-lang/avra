@@ -11,7 +11,133 @@
 //! `repr_of`, and every consumer asks the verbs below instead of
 //! knowing. A new value CATEGORY joins here, beside the readers
 //! that make its layout nobody else's business.
-use core.{Reg, Ins, BinOp, Type, TypeId, ExprId}
+use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, Expr, NodeStore, filled, QuoteParts, quote_kind, Slot, StaticBox}
+use features.{MetaVal, MetaHeap, TypeFacts, Decls, StructSig, EnumSig}
+
+// ── The source-spelled value ────────────────────────────────────
+// A `const` seat is filled from the SOURCE alone, so its value has a
+// form that never needs the evaluator: scalars, and aggregates whose
+// every part is spelled. That form IS the crossing tree, built here
+// once for typing (does it settle?) and lowering (what is it?).
+
+/// The value the source alone spells at `e`, as the crossing tree
+/// every compile-time value already travels as. Null the moment a
+/// part needs the evaluator — an omitted default, a call, a name.
+export fn literal_meta(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
+    let raw: Expr = store.expr(e)
+    let n: int? = (raw).int_of()
+    if n != null { return MetaVal.Int(n!) }
+    let bits: int? = (raw).bits_of()
+    if bits != null { return MetaVal.Float(bits!) }
+    let t: string? = (raw).text_of()
+    if t != null { return MetaVal.Text(t!) }
+    let b: bool? = (raw).bool_of()
+    if b != null { return MetaVal.Bool(b!) }
+    match raw {
+        .NullLit -> MetaVal.Absent,
+        .ListLit(elems) -> {
+            let slots: List<MetaVal>? = spelled_all(store, decls, facts, elems, heap)
+            if slots == null { return null }
+            heap.node(slots!)
+        },
+        .MapLit(keys, values) -> literal_map(store, decls, facts, keys, values, heap),
+        .StructLit(_, fields, values) -> literal_record(store, decls, facts, e, fields, values, heap),
+        .VariantLit(name, args) -> literal_variant(store, decls, facts, e, name, args, heap),
+        rest -> null,
+    }
+}
+
+/// Every element spelled, in order — null when any one is not.
+fn spelled_all(store: NodeStore, decls: Decls, facts: TypeFacts, es: List<ExprId>, mut heap: MetaHeap) -> List<MetaVal>? {
+    mut out: List<MetaVal> = []
+    for e in es {
+        let v: MetaVal? = literal_meta(store, decls, facts, e, heap)
+        if v == null { return null }
+        out.push(v!)
+    }
+    out
+}
+
+/// A map literal's ordered key/value rows — keys are text, always.
+fn literal_map(store: NodeStore, decls: Decls, facts: TypeFacts, keys: List<ExprId>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+    mut ks: List<string> = []
+    mut vs: List<MetaVal> = []
+    for j, k in keys {
+        let kv: MetaVal? = literal_meta(store, decls, facts, k, heap)
+        if kv == null { return null }
+        let key: string? = match kv! { .Text(s) -> s, rest -> null }
+        if key == null { return null }
+        let vv: MetaVal? = literal_meta(store, decls, facts, values[j], heap)
+        if vv == null { return null }
+        ks.push(key!)
+        vs.push(vv!)
+    }
+    heap.map(ks, vs)
+}
+
+/// A record literal, slots in DECLARATION order. Every field must be
+/// written: an omitted one carries a default, and a default is a body
+/// the evaluator runs — not something the source alone spells.
+fn literal_record(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, fields: List<string>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+    let ty = facts.type_at(e)
+    let sig: StructSig? = decls.fields_of_type(ty)
+    if sig == null { return null }
+    let s = sig!
+    if fields.length != s.names.length { return null }
+    mut by_slot: List<MetaVal?> = filled<MetaVal?>(s.names.length, null)
+    for j, f in fields {
+        let slot: int? = s.slot_of(f)
+        if slot == null { return null }
+        let v: MetaVal? = literal_meta(store, decls, facts, values[j], heap)
+        if v == null { return null }
+        by_slot.set(slot!, v!)
+    }
+    mut slots: List<MetaVal> = []
+    for x in by_slot {
+        if x == null { return null }
+        slots.push(x!)
+    }
+    // A FLAT record travels as its one field — the crossing shape
+    // `materialized` rebuilds a Pack from.
+    if decls.types.is_flat(ty) { return slots[0] }
+    heap.node(slots)
+}
+
+/// A variant literal: the tag first, the payloads after — the tagged
+/// slot array both engines already read.
+fn literal_variant(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, name: string, args: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+    let sig: EnumSig? = decls.variants_of_type(facts.type_at(e))
+    if sig == null { return null }
+    let tag: int = sig!.names.index_of(name)
+    if tag < 0 { return null }
+    let payloads: List<MetaVal>? = spelled_all(store, decls, facts, args, heap)
+    if payloads == null { return null }
+    heap.node([MetaVal.Int(tag)].concat(payloads!))
+}
+
+/// A hole-less quote as the crossing tree — a `Template` naming this
+/// file and the quote's offset, with nothing to fill, under the kind
+/// its body parsed as. Null for anything else, a quote with holes
+/// included: a hole is a body the evaluator runs.
+export fn quote_meta(store: NodeStore, decls: Decls, path: string, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
+    let held: QuoteParts? = (store.expr(e)).quote_of()
+    if held == null || !held!.holes.is_empty() { return null }
+    let q = held!
+    let node_decl = decls.meta_named("Node")
+    if node_decl == null { return null }
+    let sig: EnumSig? = decls.variants_of_type(decls.self_type_of(node_decl!))
+    let tag: int? = sig?.tag_of("Template")
+    if tag == null { return null }
+    let at: int = (store.expr_span(e))?.lo ?? 0
+    let template = heap.node([MetaVal.Int(tag!), MetaVal.Text(path), MetaVal.Int(at), heap.node([MetaVal.Text(p) for p in q.parts]), heap.node([])])
+    let kind: string = match quote_kind(store, q) {
+        .Expr -> "Code",
+        .Stmts or .Holes -> "Stmts",
+        .Arms -> "Arms",
+        .Decls -> "Decls",
+    }
+    decls.meta_record(kind, heap, { "node": template })
+}
 
 // ── The slot array, behind its verbs ────────────────────────────
 // Every aggregate — a struct, an enum's box, a list, a dyn box, a
@@ -22,182 +148,477 @@ use core.{Reg, Ins, BinOp, Type, TypeId, ExprId}
 /// A fresh box, its slots pushed in order. `dst` is minted by the
 /// caller, before the first instruction is emitted — registers are
 /// numbered in emission order.
-use features.{MethodCall, arm_end, open_region, const_int, const_bool, close_region_as}
+use features.{MethodCall}
 
-/// The slots a box will hold, as a register — minted BEFORE the box
-/// it sizes, so the box's register is minted last. Zero is a
-/// builder's box: it grows.
-export fn box_size(mut cx: LowerCx, n: int) -> Reg {
-    const_int(cx, n)
-}
-
-export fn grown_box(mut cx: LowerCx, dst: Reg, size: Reg, slots: List<Reg>) {
-    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
-    for r in slots { push_slot(cx, dst, r) }
-}
-
-/// A method answered by ONE runtime call: the receiver, the
-/// arguments, then `extra` — the answer minted last.
-export fn rt_method(mut cx: LowerCx, mc: MethodCall, callee: string, extra: List<Reg>) -> Reg {
-    let args = [cx.reg_of(mc.subject)].concat([cx.reg_of(a) for a in mc.args]).concat(extra)
-    let dst = cx.result(mc.e)
-    cx.emit(Ins.CallRt(dst, callee, args))
-    dst
-}
-
-/// One more slot.
-export fn push_slot(mut cx: LowerCx, box: Reg, v: Reg) {
-    cx.emit(Ins.CallRtVoid("avra_array_push", [box, v]))
-}
-
-/// Equality of two values of one type as a bool register — an enum
-/// by its tag, a managed value by its equality word, a scalar by
-/// the Eq operator.
-export fn same_value(mut cx: LowerCx, a: Reg, b: Reg, ty: TypeId) -> Reg {
-    let sh = cx.view.types.shape_of(ty)
-    if sh is .Enum { return same_tag(cx, a, b) }
-    let dst = cx.mint_shape(Type.Bool)
-    let word: string? = equality_word(sh)
-    cx.emit(if word == null { Ins.Bin(dst, BinOp.Eq, a, b) } else { Ins.CallRt(dst, word!, [a, b]) })
-    dst
-}
-
-/// The runtime word that compares two values of a shape by VALUE, or
-/// null where the operator itself is the comparison.
-export fn equality_word(sh: Type) -> string? {
-    match sh {
-        .Str -> "avra_streq",
-        .Bytes -> "avra_bytes_eq",
-        .Int or .Float or .Bool or .Ptr or .List(_) or .Map(_, _) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Null or
-        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or
-        .EmptyList or .EmptyMap or .Error or .Void -> null,
+impl LowerCx {
+    /// A value that crossed out of the compile-time evaluator, as a
+    /// REGISTER under its static type: a scalar pair packed here, every
+    /// other value one slot of the static fold — a word emitted, or the
+    /// address of data laid out under `name`. This is the ONE outbound
+    /// value codec for consts and settled seats.
+    mut fn materialized(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
+        if self.pair_shaped(ty) { return self.meta_pair(v, heap, ty, name) }
+        mut build = StaticBuild { decls: self.view.decls }
+        let slot: Slot? = build.slot_of(v, heap, ty)
+        if slot == null { return self.meta_defect(ty) }
+        self.crossed_reg(slot!, ty, name, build.boxes)
     }
-}
 
-/// Two enum values of one type compare by TAG — what a unit enum's
-/// equality means.
-fn same_tag(mut cx: LowerCx, a: Reg, b: Reg) -> Reg {
-    let ta = tag_of(cx, a)
-    let tb = tag_of(cx, b)
-    let dst = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(dst, BinOp.Eq, ta, tb))
-    dst
-}
+    /// A scalar nullable lives in registers as its flag beside its
+    /// value — the one crossing shape that is not a slot.
+    fn pair_shaped(ty: TypeId) -> bool {
+        self.view.types.shape_of(ty) is .Opt && self.repr_of(ty) is .Pair
+    }
 
-/// THE TAGGED VALUE: an enum's variant is a slot array holding its
-/// TAG at slot 0 and its payloads, in order, at slots 1... `dst` is
-/// minted by the caller — the box verbs' shared contract.
-export fn tagged_value(mut cx: LowerCx, dst: Reg, size: Reg, tag: int, payloads: List<Reg>) {
-    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
-    let slot = const_int(cx, tag)
-    push_slot(cx, dst, slot)
-    for p in payloads { push_slot(cx, dst, p) }
-}
+    mut fn meta_pair(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
+        if v is .Absent { return self.absent_of(ty) }
+        let slots = heap.slots(v)
+        if slots.length != 2 { return self.meta_defect(ty) }
+        match slots[0] {
+            .Bool(false) -> self.absent_of(ty),
+            .Bool(true) -> self.adopted(ty, false, self.materialized(slots[1], heap, self.carried_type(ty), name)),
+            rest -> self.meta_defect(ty),
+        }
+    }
 
-/// The TAG a tagged value carries. Slot 0, always an int — asking
-/// here is how a consumer avoids knowing the number.
-export fn tag_of(mut cx: LowerCx, v: Reg) -> Reg {
-    slot_read(cx, v, 0, null)
-}
+    /// A slot as a register of `ty`: a word is its constant, a box the
+    /// address of the static its boxes make.
+    mut fn crossed_reg(c: Slot, ty: TypeId, name: string, boxes: List<StaticBox>) -> Reg {
+        let r = self.mint_ty(ty)
+        match c {
+            .Int(n) -> self.emit(Ins.ConstInt(r, n)),
+            .Float(bits) -> self.emit(Ins.ConstFloat(r, bits)),
+            .Bool(b) -> self.emit(Ins.ConstBool(r, b)),
+            .Text(s) -> self.emit(Ins.ConstStr(r, s)),
+            .Null -> self.emit(Ins.ConstInt(r, 0)),
+            .Box(_) -> self.static_read(r, name, boxes),
+        }
+        r
+    }
 
-/// The PAYLOAD a tagged value carries, as the type it was written
-/// with. Slot 1 — the other half of `tagged_value`'s shape.
-export fn payload_of(mut cx: LowerCx, v: Reg, ty: TypeId) -> Reg {
-    payload_at(cx, v, 0, ty)
-}
+    mut fn meta_defect(ty: TypeId) -> Reg {
+        self.defect("a compile-time value did not cross as `${self.view.types.name_of(ty)}`")
+        self.hollow_of(ty)
+    }
 
-/// The Kth payload a tagged value carries — slot K + 1.
-export fn payload_at(mut cx: LowerCx, v: Reg, k: int, ty: TypeId) -> Reg {
-    slot_read(cx, v, k + 1, ty)
-}
+    /// The slots a box will hold, as a register — minted BEFORE the box
+    /// it sizes, so the box's register is minted last. Zero is a
+    /// builder's box: it grows.
+    mut fn box_size(n: int) -> Reg {
+        self.const_int(n)
+    }
 
-/// Whether the value an expression names IS its one field.
-export fn flat_at(cx: LowerCx, e: ExprId) -> bool {
-    cx.view.types.is_flat(cx.type_at(e))
-}
+    mut fn grown_box(dst: Reg, size: Reg, slots: List<Reg>) {
+        self.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
+        for r in slots { self.push_slot(dst, r) }
+    }
 
-/// A RECORD's field. A flat record IS its one field, so the read is
-/// the record's own register and costs nothing; a boxed record reads
-/// its slot. The subject's STATIC type decides — a register's
-/// recorded type is the wrong witness under mono, where it may still
-/// name a type parameter.
-export fn field_read(mut cx: LowerCx, subject: Reg, subject_ty: TypeId, n: int, ty: TypeId?) -> Reg {
-    if !cx.view.types.is_flat(subject_ty) { return slot_read(cx, subject, n, ty) }
-    let dst = if ty == null { cx.mint_shape(Type.Int) } else { cx.mint_ty(ty!) }
-    cx.emit(Ins.Extract(dst, subject, n))
-    dst
-}
+    /// A value's TEXT register, by its shape: a string as it is, a
+    /// scalar spelled by the runtime. Only the scalars and strings
+    /// pass the hole laws; every other arm stands on the raw register.
+    mut fn texted(h: ExprId) -> Reg {
+        let v = self.reg_of(h)
+        match self.seen_at(h) {
+            .Str -> v,
+            .Int -> self.spelled_by("avra_int_text", v),
+            .Float -> self.spelled_by("avra_float_text", v),
+            .Bool -> self.spelled_by("avra_bool_text", v),
+            .Ptr or .Bytes or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or
+            .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or
+            .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> v,
+        }
+    }
 
-/// One slot read: the index is a constant, so it is minted and
-/// emitted BEFORE the read that uses it — registers are numbered in
-/// emission order. An absent type reads as an int.
-export fn slot_read(mut cx: LowerCx, v: Reg, n: int, ty: TypeId?) -> Reg {
-    let at = const_int(cx, n)
-    let got = if ty == null { cx.mint_shape(Type.Int) } else { cx.mint_ty(ty!) }
-    cx.emit(Ins.CallRt(got, "avra_array_get", [v, at]))
-    got
-}
+    mut fn spelled_by(callee: string, v: Reg) -> Reg {
+        let dst = self.mint_shape(Type.Str)
+        self.emit(Ins.CallRt(dst, callee, [v]))
+        dst
+    }
 
-// ── The Result, behind its verbs ────────────────────────────────
-// The built-in enum rides the tagged value above: tag 0 = Ok,
-// tag 1 = Err, the live side at slot 1. An `.Err` box is therefore
-// a valid `.Err` of EVERY `Result<_, E>` — propagation moves the
-// pointer and repacks nothing. (ROADMAP: the error spine.)
+    /// A method answered by ONE runtime call: the receiver, the
+    /// arguments, then `extra` — the answer minted last.
+    mut fn rt_method(mc: MethodCall, callee: string, extra: List<Reg>) -> Reg {
+        let args = [self.reg_of(mc.subject)].concat([self.reg_of(a) for a in mc.args]).concat(extra)
+        let dst = self.result(mc.e)
+        self.emit(Ins.CallRt(dst, callee, args))
+        dst
+    }
 
-/// A success, wrapped — the auto-Ok lift's mint.
-export fn okayed(mut cx: LowerCx, into: TypeId, r: Reg) -> Reg {
-    let size = box_size(cx, 2)
-    let dst = cx.mint_ty(into)
-    tagged_value(cx, dst, size, 0, [r])
-    dst
-}
+    /// One more slot.
+    mut fn push_slot(box: Reg, v: Reg) {
+        self.emit(Ins.CallRtVoid("avra_array_push", [box, v]))
+    }
 
-/// A failure, wrapped — what `fail` exits with.
-export fn failed(mut cx: LowerCx, into: TypeId, r: Reg) -> Reg {
-    let size = box_size(cx, 2)
-    let dst = cx.mint_ty(into)
-    tagged_value(cx, dst, size, 1, [r])
-    dst
-}
+    /// Equality of two values of one type as a bool register — an enum
+    /// by its tag, a managed value by its equality word, a scalar by
+    /// the Eq operator.
+    mut fn same_value(a: Reg, b: Reg, ty: TypeId) -> Reg {
+        let sh = self.view.types.seen_shape(ty)
+        if sh is .Enum { return self.same_tag(a, b) }
+        let dst = self.mint_shape(Type.Bool)
+        let word: string? = equality_word(sh)
+        self.emit(if word == null { Ins.Bin(dst, BinOp.Eq, a, b) } else { Ins.CallRt(dst, word!, [a, b]) })
+        dst
+    }
 
-/// Is the result an ANSWER — its tag read against Ok's, as an i1.
-export fn okness_of(mut cx: LowerCx, v: Reg) -> Reg {
-    let tag = tag_of(cx, v)
-    let zero = const_int(cx, 0)
-    let ok = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(ok, BinOp.Eq, tag, zero))
-    ok
-}
+    /// Two enum values of one type compare by TAG — what a unit enum's
+    /// equality means.
+    mut fn same_tag(a: Reg, b: Reg) -> Reg {
+        let ta = self.tag_of(a)
+        let tb = self.tag_of(b)
+        let dst = self.mint_shape(Type.Bool)
+        self.emit(Ins.Bin(dst, BinOp.Eq, ta, tb))
+        dst
+    }
 
-// ── The fn value, behind its verbs ──────────────────────────────
-// A closure or boxed fn is a slot array: the CODE ADDRESS at slot
-// 0, captures after. Every call rides CallPtr with the box at seat
-// 0 — the env is `self` by another name. The lanes are this
-// file's business alone.
+    /// THE TAGGED VALUE: an enum's variant is a slot array holding its
+    /// TAG at slot 0 and its payloads, in order, at slots 1... `dst` is
+    /// minted by the caller — the box verbs' shared contract.
+    mut fn tagged_value(dst: Reg, size: Reg, tag: int, payloads: List<Reg>) {
+        self.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
+        let slot = self.const_int(tag)
+        self.push_slot(dst, slot)
+        for p in payloads { self.push_slot(dst, p) }
+    }
 
-/// The box, minted: the code address first, the captures in lane
-/// order — the lifted body reads them back by `capture_lane`.
-export fn fn_box(mut cx: LowerCx, dst: Reg, size: Reg, sym: string, caps: List<Reg>) {
-    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
-    let ad = cx.mint_shape(Type.Int)
-    cx.emit(Ins.FnAddr(ad, sym))
-    push_slot(cx, dst, ad)
-    for r in caps { push_slot(cx, dst, r) }
+    /// The TAG a tagged value carries. Slot 0, always an int — asking
+    /// here is how a consumer avoids knowing the number.
+    mut fn tag_of(v: Reg) -> Reg {
+        self.slot_read(v, 0, null)
+    }
+
+    /// The PAYLOAD a tagged value carries, as the type it was written
+    /// with. Slot 1 — the other half of `tagged_value`'s shape.
+    mut fn payload_of(v: Reg, ty: TypeId) -> Reg {
+        self.payload_at(v, 0, ty)
+    }
+
+    /// The Kth payload a tagged value carries — slot K + 1.
+    mut fn payload_at(v: Reg, k: int, ty: TypeId) -> Reg {
+        self.slot_read(v, k + 1, ty)
+    }
+
+    /// Whether the value an expression names IS its one field.
+    fn flat_at(e: ExprId) -> bool {
+        self.view.types.is_flat(self.type_at(e))
+    }
+
+    /// A RECORD's field. A flat record IS its one field, so the read is
+    /// the record's own register and costs nothing; a boxed record reads
+    /// its slot. The subject's STATIC type decides — a register's
+    /// recorded type is the wrong witness under mono, where it may still
+    /// name a type parameter.
+    mut fn field_read(subject: Reg, subject_ty: TypeId, n: int, ty: TypeId?) -> Reg {
+        if !self.view.types.is_flat(subject_ty) { return self.slot_read(subject, n, ty) }
+        let dst = if ty == null { self.mint_shape(Type.Int) } else { self.mint_ty(ty!) }
+        self.emit(Ins.Extract(dst, subject, n))
+        dst
+    }
+
+    /// One slot read: the index is a constant, so it is minted and
+    /// emitted BEFORE the read that uses it — registers are numbered in
+    /// emission order. An absent type reads as an int.
+    mut fn slot_read(v: Reg, n: int, ty: TypeId?) -> Reg {
+        let at = self.const_int(n)
+        let got = if ty == null { self.mint_shape(Type.Int) } else { self.mint_ty(ty!) }
+        self.emit(Ins.CallRt(got, "avra_array_get", [v, at]))
+        got
+    }
+
+    // ── The Result, behind its verbs ────────────────────────────────
+    // The built-in enum rides the tagged value above: tag 0 = Ok,
+    // tag 1 = Err, the live side at slot 1. An `.Err` box is therefore
+    // a valid `.Err` of EVERY `Result<_, E>` — propagation moves the
+    // pointer and repacks nothing. (ROADMAP: the error spine.)
+    /// A success, wrapped — the auto-Ok lift's mint.
+    mut fn okayed(into: TypeId, r: Reg) -> Reg {
+        let size = self.box_size(2)
+        let dst = self.mint_ty(into)
+        self.tagged_value(dst, size, 0, [r])
+        dst
+    }
+
+    /// A failure, wrapped — what `fail` exits with.
+    mut fn failed(into: TypeId, r: Reg) -> Reg {
+        let size = self.box_size(2)
+        let dst = self.mint_ty(into)
+        self.tagged_value(dst, size, 1, [r])
+        dst
+    }
+
+    /// Is the result an ANSWER — its tag read against Ok's, as an i1.
+    mut fn okness_of(v: Reg) -> Reg {
+        let tag = self.tag_of(v)
+        let zero = self.const_int(0)
+        let ok = self.mint_shape(Type.Bool)
+        self.emit(Ins.Bin(ok, BinOp.Eq, tag, zero))
+        ok
+    }
+
+    // ── The fn value, behind its verbs ──────────────────────────────
+    // A closure or boxed fn is a slot array: the CODE ADDRESS at slot
+    // 0, captures after. Every call rides CallPtr with the box at seat
+    // 0 — the env is `self` by another name. The lanes are this
+    // file's business alone.
+    /// The box, minted: the code address first, the captures in lane
+    /// order — the lifted body reads them back by `capture_lane`.
+    mut fn fn_box(dst: Reg, size: Reg, sym: string, caps: List<Reg>) {
+        self.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
+        let ad = self.mint_shape(Type.Int)
+        self.emit(Ins.FnAddr(ad, sym))
+        self.push_slot(dst, ad)
+        for r in caps { self.push_slot(dst, r) }
+    }
+
+    /// The call THROUGH a box: slot 0 is the code, the box rides seat
+    /// 0, and the arguments follow. The answer register mints LAST —
+    /// registers are numbered in emission order.
+    mut fn called_through(e: ExprId, box: Reg, args: List<Reg>) -> Reg {
+        let fp = self.slot_read(box, 0, null)
+        let dst = self.result(e)
+        self.emit(Ins.CallPtr(dst, fp, [box].concat(args)))
+        dst
+    }
+
+    /// The representation of a nullable TYPE — a projection, and the
+    /// catch-all is honest: a non-`Opt` shape is the absorbing error
+    /// path, which lowers nothing, so the pair it names is never built.
+    fn repr_of(opt: TypeId) -> Repr {
+        // A NAME over a nullable IS that nullable — the layout is the
+        // shape's, so the read door answers here too.
+        match self.view.types.seen_shape(opt) {
+            .Opt(inner) -> self.inner_repr(inner),
+            _ -> Repr.Pair,
+        }
+    }
+
+    /// A FLAT record is a machine word with no spare value — index 0 is
+    /// a real index — so its nullable cannot be a niche and a pair no
+    /// slot holds. It takes a ONE-SLOT BOX, whose null pointer is the
+    /// absence: slot-worthy, and sound for every value the field can
+    /// take. The registry decides, not the bare shape: `rides_pointer`
+    /// sees through an `Opt` to what it carries where `ptr_shape` cannot,
+    /// and the machine type asks the same question (`opt_rides_pointer`).
+    /// The two answers must never disagree — they are the same layout.
+    fn inner_repr(inner: TypeId) -> Repr {
+        if self.view.types.rides_pointer(inner) { return Repr.Niche }
+        if self.view.types.is_flat(inner) { return Repr.Boxed }
+        Repr.Pair
+    }
+
+    /// What a nullable type carries — the `Opt`'s inner, with the
+    /// catch-all pinned to the asker's own type on the error path.
+    fn carried_type(opt: TypeId) -> TypeId {
+        match self.view.types.seen_shape(opt) {
+            .Opt(inner) -> inner,
+            _ -> opt,
+        }
+    }
+
+    /// Is the value THERE — an i1: the niche compares itself against
+    /// the null constant, the pair already CARRIES its answer.
+    mut fn presence_of(v: Reg, opt: TypeId) -> Reg {
+        match self.repr_of(opt) {
+            .Niche or .Boxed -> self.nonzero(v, self.zeroed(self.mint_ty(opt))),
+            .Pair -> self.extracted(v, 0, self.mint_shape(Type.Bool)),
+        }
+    }
+
+    /// A value PACKED into the expression's own register. A FLAT
+    /// record IS its one field, so each engine renders a one-part
+    /// pack as identity — which is how a NAMED TYPE costs nothing.
+    mut fn packed(e: ExprId, parts: List<Reg>) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.Pack(dst, parts))
+        dst
+    }
+
+    /// One element of a packed value, into a caller-typed register.
+    mut fn extracted(v: Reg, at: int, dst: Reg) -> Reg {
+        self.emit(Ins.Extract(dst, v, at))
+        dst
+    }
+
+    /// The zero of the register's own type, emitted — the null pointer
+    /// for pointer shapes, the absent tag for ints.
+    mut fn zeroed(z: Reg) -> Reg {
+        self.emit(Ins.ConstInt(z, 0))
+        z
+    }
+
+    /// `a != z`, as an i1.
+    mut fn nonzero(a: Reg, z: Reg) -> Reg {
+        let p = self.mint_shape(Type.Bool)
+        self.emit(Ins.Bin(p, BinOp.Ne, a, z))
+        p
+    }
+
+    /// What the nullable CARRIES, once presence is settled: a niche
+    /// nullable IS its value — identity, no instruction — and a pair
+    /// holds it beside the flag.
+    mut fn carried_of(v: Reg, opt: TypeId) -> Reg {
+        match self.repr_of(opt) {
+            .Niche -> v,
+            .Boxed -> self.boxed_carried(v, self.carried_type(opt)),
+            .Pair -> self.extracted(v, 1, self.mint_ty(self.carried_type(opt))),
+        }
+    }
+
+    /// A BOXED nullable's value: the one slot of its one-slot box.
+    mut fn boxed_carried(v: Reg, ty: TypeId) -> Reg {
+        self.slot_read(v, 0, ty)
+    }
+
+    /// A value ADOPTED by a nullable — the widening edge's runtime
+    /// form, and the ONE place absence takes a layout: `from_null`
+    /// marks the null literal, which arrives already absent (a null
+    /// constant). A niche adoption is IDENTITY both ways — the pointer
+    /// is the nullable, the null constant is the absence — so widening
+    /// a pointer costs nothing.
+    mut fn adopted(into: TypeId, from_null: bool, r: Reg) -> Reg {
+        match self.repr_of(into) {
+            .Niche -> r,
+            .Boxed -> self.boxed_adoption(into, from_null, r),
+            .Pair -> self.pair_adoption(into, from_null, r),
+        }
+    }
+
+    /// A flat value adopted: absence is the null pointer, presence a
+    /// one-slot box holding it.
+    mut fn boxed_adoption(into: TypeId, from_null: bool, r: Reg) -> Reg {
+        if from_null { return self.absent_of(into) }
+        let size = self.box_size(1)
+        let dst = self.mint_ty(into)
+        self.grown_box(dst, size, [r])
+        dst
+    }
+
+    mut fn pair_adoption(into: TypeId, from_null: bool, r: Reg) -> Reg {
+        if from_null { return self.absent_of(into) }
+        self.flagged_pair(into, true, r)
+    }
+
+    /// ONE region on PRESENCE — the shape every consumer of absence
+    /// opens: the present arm's value, then the absent arm's, merged
+    /// into the node's register. Thunks keep each arm's instructions
+    /// INSIDE its brackets, which is what makes the absent side lazy.
+    /// A region on PRESENCE opens here; the present arm's register is
+    /// given by `present_arm`, the absent arm's by `close_presence`,
+    /// which mints the region's answer. Spelled at the site so each
+    /// arm's instructions land between the brackets.
+    /// A presence region: the arm taken when `v` is present, then the
+    /// absent arm — `arm_end` and `close_region` finish it.
+    mut fn open_presence(v: Reg, held: TypeId) {
+        self.open_region(self.presence_of(v, held))
+    }
+
+    /// A region on PRESENCE as the node's value, in one expression:
+    /// `present` receives what `v` carries, `absent` answers the
+    /// other arm.
+    mut fn presence(v: Reg, held: TypeId, e: ExprId, present: fn(mut LowerCx, Reg) -> Reg, absent: fn(mut LowerCx) -> Reg) -> Reg {
+        self.open_presence(v, held)
+        self.arm_end(present(self, self.carried_of(v, held)))
+        self.close_region(e, absent(self))
+    }
+
+    /// The ABSENT value of a nullable type, minted fresh — the niche's
+    /// null constant, or the pair whose flag says no.
+    mut fn absent_of(opt: TypeId) -> Reg {
+        match self.repr_of(opt) {
+            .Niche or .Boxed -> self.zeroed(self.mint_ty(opt)),
+            .Pair -> self.absent_pair(opt),
+        }
+    }
+
+    mut fn absent_pair(opt: TypeId) -> Reg {
+        self.flagged_pair(opt, false, self.hollow_of(self.carried_type(opt)))
+    }
+
+    /// A pair packed under its flag — the ONE builder the present and
+    /// absent forms share.
+    mut fn flagged_pair(opt: TypeId, present: bool, payload: Reg) -> Reg {
+        let flag = self.const_bool(present)
+        let dst = self.mint_ty(opt)
+        self.emit(Ins.Pack(dst, [flag, payload]))
+        dst
+    }
+
+    /// AN ARM'S YIELD: the register the arm built — or, when the arm
+    /// LEFT the fn, a hollow of the region's own type. Nothing reads a
+    /// departed arm's value (the exit already happened), and the merge
+    /// stays one type across every arm.
+    mut fn arm_yield(value: ExprId, r: Reg, want: TypeId) -> Reg {
+        if self.view.store.leaves(value) { return self.hollow_of(want) }
+        r
+    }
+
+    /// A slot of a type that will NEVER be read, but must be total:
+    /// the type's zero. An absent pair's payload rides one, and so
+    /// does the yield of an arm that already EXITED the fn.
+    mut fn hollow_of(inner: TypeId) -> Reg {
+        if self.view.types.seen_shape(inner) is .Bool {
+            let z = self.mint_ty(inner)
+            self.emit(Ins.ConstBool(z, false))
+            return z
+        }
+        self.zeroed(self.mint_ty(inner))
+    }
+
+    /// `v!` — the carried value, with the runtime insisting the value
+    /// is PRESENT. Each repr asks its own runtime word; both refuse in
+    /// the same words, and the check cannot be elided — absence is
+    /// exactly what the writer claimed would not happen.
+    mut fn insisted(e: ExprId, v: Reg, opt: TypeId) -> Reg {
+        match self.repr_of(opt) {
+            .Niche -> self.insisted_niche(e, v),
+            // the BOX is what must be present; its slot is read after
+            .Boxed -> self.insisted_boxed(v, opt),
+            .Pair -> self.insisted_pair(e, v, opt),
+        }
+    }
+
+    /// A BOXED nullable insisted on: the BOX is what must be present,
+    /// so its register wears the NULLABLE — the memory pass owns and
+    /// releases what `avra_insist` hands back — and the one slot is read
+    /// after. A register that wore the CARRIED type would be unmanaged,
+    /// and the box would never be released.
+    mut fn insisted_boxed(v: Reg, opt: TypeId) -> Reg {
+        let box = self.mint_ty(opt)
+        self.emit(Ins.CallRt(box, "avra_insist", [v]))
+        self.boxed_carried(box, self.carried_type(opt))
+    }
+
+    mut fn insisted_niche(e: ExprId, v: Reg) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.CallRt(dst, "avra_insist", [v]))
+        dst
+    }
+
+    mut fn insisted_pair(e: ExprId, v: Reg, opt: TypeId) -> Reg {
+        let flag = self.extracted(v, 0, self.mint_shape(Type.Bool))
+        let payload = self.extracted(v, 1, self.mint_ty(self.carried_type(opt)))
+        let dst = self.result(e)
+        self.emit(Ins.CallRt(dst, "avra_insist_scalar", [flag, payload]))
+        dst
+    }
+
+    /// An effects-only ARM closes on a throwaway zero — shared with
+    /// the statement-if's lowering; every valueless region speaks
+    /// these two verbs.
+    mut fn void_arm() {
+        let td = self.const_int(0)
+        self.arm_end(td)
+    }
+
+    /// The valueless region's LAST arm and merge — nothing reads dst.
+    mut fn void_close() {
+        let _ = self.close_region_as(self.type(int), self.const_int(0))
+    }
 }
 
 /// A capture's slot — lane j lives past the code address.
 export fn capture_lane(j: int) -> int {
     1 + j
-}
-
-/// The call THROUGH a box: slot 0 is the code, the box rides seat
-/// 0, and the arguments follow. The answer register mints LAST —
-/// registers are numbered in emission order.
-export fn called_through(mut cx: LowerCx, e: ExprId, box: Reg, args: List<Reg>) -> Reg {
-    let fp = slot_read(cx, box, 0, null)
-    let dst = cx.result(e)
-    cx.emit(Ins.CallPtr(dst, fp, [box].concat(args)))
-    dst
 }
 
 // ── The nullable, behind its verbs ──────────────────────────────
@@ -218,219 +639,16 @@ enum Repr {
     Boxed
 }
 
-/// The representation of a nullable TYPE — a projection, and the
-/// catch-all is honest: a non-`Opt` shape is the absorbing error
-/// path, which lowers nothing, so the pair it names is never built.
-fn repr_of(cx: LowerCx, opt: TypeId) -> Repr {
-    match cx.view.types.shape_of(opt) {
-        .Opt(inner) -> inner_repr(cx, inner),
-        _ -> Repr.Pair,
+/// The runtime word that compares two values of a shape by VALUE, or
+/// null where the operator itself is the comparison.
+export fn equality_word(sh: Type) -> string? {
+    match sh {
+        .Str -> "avra_streq",
+        .Bytes -> "avra_bytes_eq",
+        .Int or .Float or .Bool or .Ptr or .List(_) or .Cell(_) or .Map(_, _) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Null or
+        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or
+        .EmptyList or .EmptyMap or .Error or .Void -> null,
     }
-}
-
-/// A FLAT record is a machine word with no spare value — index 0 is
-/// a real index — so its nullable cannot be a niche and a pair no
-/// slot holds. It takes a ONE-SLOT BOX, whose null pointer is the
-/// absence: slot-worthy, and sound for every value the field can
-/// take. The registry decides, not the bare shape: `rides_pointer`
-/// sees through an `Opt` to what it carries where `ptr_shape` cannot,
-/// and the machine type asks the same question (`opt_rides_pointer`).
-/// The two answers must never disagree — they are the same layout.
-fn inner_repr(cx: LowerCx, inner: TypeId) -> Repr {
-    if cx.view.types.is_flat(inner) { return Repr.Boxed }
-    if cx.view.types.rides_pointer(inner) { return Repr.Niche }
-    Repr.Pair
-}
-
-/// What a nullable type carries — the `Opt`'s inner, with the
-/// catch-all pinned to the asker's own type on the error path.
-export fn carried_type(cx: LowerCx, opt: TypeId) -> TypeId {
-    match cx.view.types.shape_of(opt) {
-        .Opt(inner) -> inner,
-        _ -> opt,
-    }
-}
-
-/// Is the value THERE — an i1: the niche compares itself against
-/// the null constant, the pair already CARRIES its answer.
-export fn presence_of(mut cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
-    match repr_of(cx, opt) {
-        .Niche or .Boxed -> nonzero(cx, v, zeroed(cx, cx.mint_ty(opt))),
-        .Pair -> extracted(cx, v, 0, cx.mint_shape(Type.Bool)),
-    }
-}
-
-/// One element of a packed value, into a caller-typed register.
-fn extracted(mut cx: LowerCx, v: Reg, at: int, dst: Reg) -> Reg {
-    cx.emit(Ins.Extract(dst, v, at))
-    dst
-}
-
-/// The zero of the register's own type, emitted — the null pointer
-/// for pointer shapes, the absent tag for ints.
-fn zeroed(mut cx: LowerCx, z: Reg) -> Reg {
-    cx.emit(Ins.ConstInt(z, 0))
-    z
-}
-
-/// `a != z`, as an i1.
-fn nonzero(mut cx: LowerCx, a: Reg, z: Reg) -> Reg {
-    let p = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(p, BinOp.Ne, a, z))
-    p
-}
-
-/// What the nullable CARRIES, once presence is settled: a niche
-/// nullable IS its value — identity, no instruction — and a pair
-/// holds it beside the flag.
-export fn carried_of(mut cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
-    match repr_of(cx, opt) {
-        .Niche -> v,
-        .Boxed -> boxed_carried(cx, v, carried_type(cx, opt)),
-        .Pair -> extracted(cx, v, 1, cx.mint_ty(carried_type(cx, opt))),
-    }
-}
-
-/// A BOXED nullable's value: the one slot of its one-slot box.
-fn boxed_carried(mut cx: LowerCx, v: Reg, ty: TypeId) -> Reg {
-    slot_read(cx, v, 0, ty)
-}
-
-/// A value ADOPTED by a nullable — the widening edge's runtime
-/// form, and the ONE place absence takes a layout: `from_null`
-/// marks the null literal, which arrives already absent (a null
-/// constant). A niche adoption is IDENTITY both ways — the pointer
-/// is the nullable, the null constant is the absence — so widening
-/// a pointer costs nothing.
-export fn adopted(mut cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
-    match repr_of(cx, into) {
-        .Niche -> r,
-        .Boxed -> boxed_adoption(cx, into, from_null, r),
-        .Pair -> pair_adoption(cx, into, from_null, r),
-    }
-}
-
-/// A flat value adopted: absence is the null pointer, presence a
-/// one-slot box holding it.
-fn boxed_adoption(mut cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
-    if from_null { return absent_of(cx, into) }
-    let size = box_size(cx, 1)
-    let dst = cx.mint_ty(into)
-    grown_box(cx, dst, size, [r])
-    dst
-}
-
-fn pair_adoption(mut cx: LowerCx, into: TypeId, from_null: bool, r: Reg) -> Reg {
-    if from_null { return absent_of(cx, into) }
-    flagged_pair(cx, into, true, r)
-}
-
-/// ONE region on PRESENCE — the shape every consumer of absence
-/// opens: the present arm's value, then the absent arm's, merged
-/// into the node's register. Thunks keep each arm's instructions
-/// INSIDE its brackets, which is what makes the absent side lazy.
-/// A region on PRESENCE opens here; the present arm's register is
-/// given by `present_arm`, the absent arm's by `close_presence`,
-/// which mints the region's answer. Spelled at the site so each
-/// arm's instructions land between the brackets.
-/// A presence region: the arm taken when `v` is present, then the
-/// absent arm — `arm_end` and `close_region` finish it.
-export fn open_presence(mut cx: LowerCx, v: Reg, held: TypeId) {
-    open_region(cx, presence_of(cx, v, held))
-}
-
-/// The ABSENT value of a nullable type, minted fresh — the niche's
-/// null constant, or the pair whose flag says no.
-export fn absent_of(mut cx: LowerCx, opt: TypeId) -> Reg {
-    match repr_of(cx, opt) {
-        .Niche or .Boxed -> zeroed(cx, cx.mint_ty(opt)),
-        .Pair -> absent_pair(cx, opt),
-    }
-}
-
-fn absent_pair(mut cx: LowerCx, opt: TypeId) -> Reg {
-    flagged_pair(cx, opt, false, hollow_of(cx, carried_type(cx, opt)))
-}
-
-/// A pair packed under its flag — the ONE builder the present and
-/// absent forms share.
-fn flagged_pair(mut cx: LowerCx, opt: TypeId, present: bool, payload: Reg) -> Reg {
-    let flag = const_bool(cx, present)
-    let dst = cx.mint_ty(opt)
-    cx.emit(Ins.Pack(dst, [flag, payload]))
-    dst
-}
-
-/// AN ARM'S YIELD: the register the arm built — or, when the arm
-/// LEFT the fn, a hollow of the region's own type. Nothing reads a
-/// departed arm's value (the exit already happened), and the merge
-/// stays one type across every arm.
-export fn arm_yield(mut cx: LowerCx, value: ExprId, r: Reg, want: TypeId) -> Reg {
-    if cx.view.store.leaves(value) { return hollow_of(cx, want) }
-    r
-}
-
-/// A slot of a type that will NEVER be read, but must be total:
-/// the type's zero. An absent pair's payload rides one, and so
-/// does the yield of an arm that already EXITED the fn.
-export fn hollow_of(mut cx: LowerCx, inner: TypeId) -> Reg {
-    if cx.view.types.shape_of(inner) is .Bool {
-        let z = cx.mint_ty(inner)
-        cx.emit(Ins.ConstBool(z, false))
-        return z
-    }
-    zeroed(cx, cx.mint_ty(inner))
-}
-
-/// `v!` — the carried value, with the runtime insisting the value
-/// is PRESENT. Each repr asks its own runtime word; both refuse in
-/// the same words, and the check cannot be elided — absence is
-/// exactly what the writer claimed would not happen.
-export fn insisted(mut cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
-    match repr_of(cx, opt) {
-        .Niche -> insisted_niche(cx, e, v),
-        // the BOX is what must be present; its slot is read after
-        .Boxed -> insisted_boxed(cx, v, opt),
-        .Pair -> insisted_pair(cx, e, v, opt),
-    }
-}
-
-/// A BOXED nullable insisted on: the BOX is what must be present,
-/// so its register wears the NULLABLE — the memory pass owns and
-/// releases what `avra_insist` hands back — and the one slot is read
-/// after. A register that wore the CARRIED type would be unmanaged,
-/// and the box would never be released.
-fn insisted_boxed(mut cx: LowerCx, v: Reg, opt: TypeId) -> Reg {
-    let box = cx.mint_ty(opt)
-    cx.emit(Ins.CallRt(box, "avra_insist", [v]))
-    boxed_carried(cx, box, carried_type(cx, opt))
-}
-
-fn insisted_niche(mut cx: LowerCx, e: ExprId, v: Reg) -> Reg {
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_insist", [v]))
-    dst
-}
-
-fn insisted_pair(mut cx: LowerCx, e: ExprId, v: Reg, opt: TypeId) -> Reg {
-    let flag = extracted(cx, v, 0, cx.mint_shape(Type.Bool))
-    let payload = extracted(cx, v, 1, cx.mint_ty(carried_type(cx, opt)))
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_insist_scalar", [flag, payload]))
-    dst
-}
-
-/// An effects-only ARM closes on a throwaway zero — shared with
-/// the statement-if's lowering; every valueless region speaks
-/// these two verbs.
-export fn void_arm(mut cx: LowerCx) {
-    let td = const_int(cx, 0)
-    arm_end(cx, td)
-}
-
-/// The valueless region's LAST arm and merge — nothing reads dst.
-export fn void_close(mut cx: LowerCx) {
-    let _ = close_region_as(cx, cx.view.types.intern(Type.Int), const_int(cx, 0))
 }
 
 /// THE `length` table: the runtime word that measures a shape, or
@@ -442,7 +660,7 @@ export fn length_word(sh: Type) -> string? {
         .Bytes -> "avra_bytes_len",
         .List(_) -> "avra_array_len",
         .Map(_, _) -> "avra_map_len",
-        .Ptr or .Int or .Float or .Bool or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or
+        .Ptr or .Int or .Float or .Bool or .Cell(_) or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or
         .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .Error or .Void or .EmptyMap or
         .Struct(_, _) or .Enum(_, _) -> null,
     }

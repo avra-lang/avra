@@ -10,7 +10,11 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, RtKind, opens_region, closes_region, filled, joined, rt_index}
+use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, RtKind, Reach, opens_region, closes_region, filled, joined, reversed, rt_index, hosted_symbol, fp, fp_list, fp_str, Static, StaticBox, Slot, debug}
+use @std.path.{joined_path}
+use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing, Budgets}
+
+extern fn avra_mem_live() -> int
 
 /// A runtime value: the interpreter's whole vocabulary.
 enum Val {
@@ -50,6 +54,8 @@ type Machine = {
     cells: List<Val>,
     // a `once fn`'s answer, settled for this run under its symbol
     onces: Map<string, Val>,
+    // a static's value, built once per run under its name
+    statics: Map<string, Val>,
     out: List<string>,
     failures: List<string>,
     // BOXES MINTED FOR A CROSSING, HELD UNTIL IT RETURNS. The frame
@@ -69,6 +75,21 @@ type Machine = {
     /// and the lookup runs on EVERY extern call, so without this a
     /// loop calling one extern pays a `dlsym` per handle per turn.
     symbols: Map<string, int>,
+    // instructions this run may still execute; below zero it traps
+    budget: int,
+    // the instruction budget as asked, for the refusal's words
+    asked: int,
+    // bytes of the compiler's heap this run may hold beyond what
+    // stood when it began, the live bytes then, and the most it held
+    bytes: int,
+    mem_base: int,
+    mem_peak: int,
+    // the ceiling crossed, in the refusal's words — null while within
+    exhausted: string?,
+    // a settlement's own directory, which `embed` reads beside — and
+    // the files it read; null outside a settlement, where embed traps
+    base: string?,
+    embeds: List<string>,
 }
 
 /// One package's library as the machine holds it: the package that
@@ -96,7 +117,7 @@ fn opened(stem: string) -> int {
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, out: [], failures: [], staged: [], libs: opened_libraries(l), symbols: {} }
+    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], failures: [], budget: unbudgeted, asked: unbudgeted, bytes: unbudgeted, mem_base: avra_mem_live(), mem_peak: 0, exhausted: null, base: null, embeds: [], staged: [], libs: opened_libraries(l), symbols: {} }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -104,7 +125,7 @@ export fn run_lowered(l: Lowered) -> Result<string, string> {
     .Ok(printed(ran(l, l.entry)?))
 }
 
-/// One PROGRAM of a corpus binary, run in the evaluator: its body by
+/// One PROGRAM of a programs binary, run in the evaluator: its body by
 /// symbol, its printed lines as the answer — what `run_lowered` does
 /// for the entry.
 export fn run_program(l: Lowered, symbol: string) -> Result<string, string> {
@@ -135,7 +156,7 @@ fn ran(l: Lowered, target: Body) -> Result<Ran, string> {
 /// The body a symbol names, or the refusal.
 fn named_body(l: Lowered, symbol: string) -> Result<Body, string> {
     let target: Body? = body_named(l, symbol)
-    if target == null { return .Err("no body named `${symbol}`") }
+    if target == null { return .Err(no_body_named(symbol)) }
     .Ok(target!)
 }
 
@@ -145,6 +166,7 @@ fn printed(r: Ran) -> string {
 }
 
 fn body_named(l: Lowered, name: string) -> Body? {
+    if l.entry.name == name { return l.entry }
     l.fns.find(it.name == name)
 }
 
@@ -155,22 +177,237 @@ fn truth_of(symbol: string, v: Val) -> Result<bool, string> {
     }
 }
 
+/// How often the memory ceiling is read, in steps: a read is a load,
+/// and a settlement's heap moves by whole boxes.
+const memory_stride: int = 1024
+
+impl Machine {
+    /// The memory the run holds beyond its start, against the ceiling.
+    fn held_within() {
+        let held = avra_mem_live() - self.mem_base
+        if held > self.mem_peak { self.mem_peak = held }
+        if held > self.bytes { self.spent_out(over_memory(self.bytes)) }
+    }
+
+    /// A ceiling crossed: the run stops, and the refusal knows which.
+    fn spent_out(label: string) {
+        if self.exhausted == null { self.exhausted = label }
+        self.trapped("ran past its budget")
+    }
+
+    /// What the run spent, on the debug channel: the measurement the
+    /// defaults are set from (`AVRA_DEBUG=1`, grep `settle:`).
+    fn spent(name: string, budgets: Budgets) {
+        self.held_within()
+        debug("settle: ${name} steps=${budgets.steps - self.budget} bytes=${self.mem_peak}\n")
+    }
+}
+
+/// A slot's value — a box's by the handle already built for it.
+fn slot_val(c: Slot, built: List<Val>) -> Val {
+    match c {
+        .Int(n) -> Val.I(n),
+        .Float(bits) -> Val.F(bits),
+        .Bool(b) -> Val.B(b),
+        .Text(s) -> Val.S(s),
+        .Box(at) -> built[at],
+        .Null -> Val.N,
+    }
+}
+
+/// A run nobody budgets: a program runs to its end.
+const unbudgeted: int = 1000000000000000
+
+/// A const's initializer run to its compiler-owned value tree.
+/// Refused BEFORE running when any body reaches the world, DURING
+/// it when the budget runs out or a body traps, and AFTER it when
+/// the body answers nothing.
+export fn run_settle(l: Lowered, budgets: Budgets, base: string) -> Result<Settled, Unsettled> {
+    // Every answer crosses into compiler-owned data now, so embed is
+    // safe for aggregates as well as values with a source literal.
+    let world: string? = world_reached(l, true)
+    if world != null { return .Err(Unsettled.Reach(world!)) }
+    mut m = budgeted_machine(l, budgets)
+    m.base = base
+    let answer: Val? = m.run_body(l.entry, [])
+    m.spent(l.entry.name, budgets)
+    if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
+    if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
+    let fingerprint = m.value_hash(answer)
+    if answer == null { return .Err(Unsettled.Trap("answered nothing")) }
+    mut heap = new_meta_heap()
+    let crossed = m.meta_of(answer!, heap)
+    .Ok(Settled { answer: crossed, heap: heap, embeds: m.embeds, fingerprint: fingerprint })
+}
+
+/// What a lifted call answered, with the heap its records live in.
+
+fn crossed_answer(answer: MetaVal, heap: MetaHeap) -> Lifted {
+    Lifted { answer: answer, heap: heap }
+}
+
+/// A fn run at compile time over crossing values: the body under its
+/// arguments, its answer crossed back. The reach law holds here — no
+/// world, no embed.
+export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: MetaHeap, budgets: Budgets) -> Result<Lifted, Unsettled> {
+    let world: string? = world_reached(l, false)
+    if world != null { return .Err(Unsettled.Reach(world!)) }
+    let target: Body? = body_named(l, symbol)
+    if target == null { return .Err(Unsettled.Trap(no_body_named(symbol))) }
+    mut m = budgeted_machine(l, budgets)
+    let vals = [m.val_of(heap, a) for a in args]
+    let answer: Val? = m.run_body(target!, vals)
+    m.spent(symbol, budgets)
+    if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
+    if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
+    mut out = new_meta_heap()
+    let crossed = m.meta_of(answer ?? Val.I(0), out)
+    .Ok(crossed_answer(crossed, out))
+}
+
+/// An isolated expression run directly into the crossing transport.
+/// Unlike scalar const settlement, no source literal is synthesized:
+/// nested records, lists and maps remain values. Embed is permitted
+/// because the result exists only while the compiler call runs.
+export fn run_crossed(l: Lowered, budgets: Budgets, base: string) -> Result<Lifted, Unsettled> {
+    let world: string? = world_reached(l, true)
+    if world != null { return .Err(Unsettled.Reach(world!)) }
+    mut m = budgeted_machine(l, budgets)
+    m.base = base
+    let answer: Val? = m.run_body(l.entry, [])
+    m.spent(l.entry.name, budgets)
+    if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
+    if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
+    if answer == null { return .Err(Unsettled.Trap("answered nothing")) }
+    mut out = new_meta_heap()
+    let crossed = m.meta_of(answer!, out)
+    .Ok(crossed_answer(crossed, out))
+}
+
+/// A machine under a settlement's budgets.
+fn budgeted_machine(l: Lowered, budgets: Budgets) -> Machine {
+    fresh_machine(l) with { budget: budgets.steps, asked: budgets.steps, bytes: budgets.bytes }
+}
+
+/// The first row a compile-time call reaches that it may not, with
+/// the body it sits in. Embed is admitted only to calls whose result
+/// crosses back into compiler-owned data.
+fn world_reached(l: Lowered, permits_embed: bool) -> string? {
+    let rows = rt_index()
+    for b in l.fns.concat([l.entry]) {
+        let hit: string? = world_in(rows, b, permits_embed)
+        // The refusal names each CALL LINK, not only the body the
+        // world row stands in: `f` called from `g` called from the
+        // const's entry reads as the chain the reader wrote.
+        if hit != null {
+            let said = hit!
+            return "${said}${callers_from(l, b.name)}"
+        }
+    }
+    null
+}
+
+/// The callers between the entry and `offender`, nearest first, as
+/// prose — `, called from `f`, called from `X``. "" at the entry.
+fn callers_from(l: Lowered, offender: string) -> string {
+    let path: List<string>? = call_path(l, offender)
+    if path == null { return "" }
+    let p = path!
+    if p.length <= 1 { return "" }
+    let callers = reversed([p[i] for i in 0..p.length - 1])
+    ", " + joined(["called from `${c}`" for c in callers], ", ")
+}
+
+/// The bodies by name, the entry included.
+fn body_index(l: Lowered) -> Map<string, Body> {
+    mut by: Map<string, Body> = {}
+    for b in l.fns { by.set(b.name, b) }
+    by.set(l.entry.name, l.entry)
+    by
+}
+
+/// The call path from the entry to `offender`, `[entry, …, offender]`,
+/// or null when no direct-call path reaches it.
+fn call_path(l: Lowered, offender: string) -> List<string>? {
+    let by = body_index(l)
+    if l.entry.name == offender { return [offender] }
+    walk_calls(by, l.entry.name, offender, [l.entry.name])
+}
+
+fn walk_calls(by: Map<string, Body>, from: string, to: string, seen: List<string>) -> List<string>? {
+    let b: Body? = by.get(from)
+    if b == null { return null }
+    for i in b!.ins {
+        match i {
+            .Call(_, callee, _) -> {
+                if callee == to { return [from, to] }
+                if !seen.contains(callee) {
+                    let sub: List<string>? = walk_calls(by, callee, to, seen.concat([callee]))
+                    if sub != null { return [from].concat(sub!) }
+                }
+            },
+            rest -> nothing(),
+        }
+    }
+    null
+}
+
+fn world_in(rows: Map<string, RtSig>, b: Body, permits_embed: bool) -> string? {
+    let hit: Ins? = b.ins.find((i: Ins) -> reaches_out(rows, i, permits_embed))
+    if hit == null { return null }
+    let row = hosted_symbol(hit!) ?? ""
+    let reach: Reach = rows.get(row)?.reach ?? Reach.World
+    if reach is .Embed { return "embeds a file in `${b.name}`, but this compile-time call cannot return build inputs" }
+    "reaches `${row}` in `${b.name}`"
+}
+
+/// A row a compile-time call may not run: one the registry marks
+/// World, an embed without an input-carrying result — or one unknown,
+/// which is a program's own extern and reaches whatever it likes.
+fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
+    let h: string? = hosted_symbol(i)
+    if h == null { return false }
+    let row: RtSig? = rows.get(h!)
+    if row == null { return true }
+    match row!.reach {
+        .Pure -> false,
+        .Embed -> !permits_embed,
+        .World -> true,
+    }
+}
+
+
 /// The deepest call the machine runs before it refuses: the machine
 /// recurses on the host's stack, and a runaway recursion must answer
 /// as a trap naming its case, never as a crash of the run. The bound
 /// is what a test worker's thread stack holds with margin (its
 /// ceiling measured between 600 and 700 nested calls); a machine
 /// with a frame stack of its own lifts it.
-fn call_limit() -> int {
-    400
-}
+const call_limit: int = 400
 
 impl Machine {
+    /// A value's structural identity, independent of its run's heap
+    /// handles. Settlement queries use it for exact early cutoff.
+    fn value_hash(v: Val?) -> int {
+        if v == null { return fp(1, []) }
+        match v! {
+            .I(n) -> fp(2, [n]),
+            .F(bits) -> fp(3, [bits]),
+            .B(b) -> fp(4, [if b { 1 } else { 0 }]),
+            .S(s) -> fp(5, [fp_str(s)]),
+            .Y(data) -> fp(10, data),
+            .A(id) -> fp(6, [self.value_hash(x) for x in self.arrays[id]]),
+            .C(id) -> fp(7, [self.value_hash(self.cells[id])]),
+            .M(id) -> fp(8, [fp_list([fp_str(k) for k in self.maps[id].keys]), fp_list([self.value_hash(x) for x in self.maps[id].vals])]),
+            .N -> fp(9, []),
+        }
+    }
+
     /// One body under its argument values; params ARE registers 0..N-1.
     /// The answer is RetVal's register, when one fires.
     fn run_body(b: Body, args: List<Val>) -> Val? {
-        if self.frames.length >= call_limit() {
-            self.trapped("recursion too deep — ${call_limit()} nested calls")
+        if self.frames.length >= call_limit {
+            self.trapped("recursion too deep — ${call_limit} nested calls")
             return null
         }
         self.frames.push(filled<Val?>(b.reg_types.length, null))
@@ -179,8 +416,11 @@ impl Machine {
         mut answer: Val? = null
         mut pc = 0
         while pc < b.ins.length && self.failures.is_empty() {
+            self.budget = self.budget - 1
+            if self.budget % memory_stride == 0 { self.held_within() }
+            if self.budget < 0 { self.spent_out(over_budget(self.asked)) }
             // everything else DELEGATES to `step`, which is exhaustive
-            match b.ins[pc] {
+            else { match b.ins[pc] {
                 .RetVal(r) -> {
                     answer = self.at(r)
                     pc = b.ins.length
@@ -195,7 +435,7 @@ impl Machine {
                 rest -> {
                     pc = self.step(b, pc)
                 }
-            }
+            } }
         }
         let _ = self.frames.pop()
         answer
@@ -215,14 +455,15 @@ impl Machine {
             .CallRtVoid(callee, args) -> self.rt_void(callee, args, pc),
             .Call(d, callee, args) -> self.put_at(d, self.call_val(callee, args), pc),
             .FnAddr(d, sym) -> self.put_at(d, self.fn_addr_val(sym), pc),
+            .StaticAddr(d, sym) -> self.put_at(d, self.static_val(sym), pc),
             .CallPtr(d, f, args) -> self.put_at(d, self.call_ptr_val(f, args), pc),
-            .IfStart(c) -> if self.truth(c) { pc + 1 } else { past_else(b, pc) },
-            .SwitchStart(sel, cases) -> arm_start(b, pc, self.chosen_arm(sel, cases)),
+            .IfStart(c) -> if self.truth(c) { pc + 1 } else { b.past_else(pc) },
+            .SwitchStart(sel, cases) -> b.arm_start(pc, self.chosen_arm(sel, cases)),
             .ArmEnd(gives) -> self.merge_then(b, gives, pc),
             .RegionEnd(d, gives) -> self.put_at(d, self.at(gives) ?? Val.I(0), pc),
             .LoopStart -> pc + 1,
-            .LoopCond(c) -> if self.truth(c) { pc + 1 } else { past_loop(b, pc) },
-            .LoopEnd -> loop_header(b, pc) + 1,
+            .LoopCond(c) -> if self.truth(c) { pc + 1 } else { b.past_loop(pc) },
+            .LoopEnd -> b.loop_header(pc) + 1,
             .Alloca(d) -> self.put_at(d, self.fresh_cell(), pc),
             .Load(d, slot) -> self.put_at(d, self.cell_read(slot), pc),
             .Store(slot, src) -> self.store_step(slot, src, pc),
@@ -231,7 +472,6 @@ impl Machine {
         }
     }
 
-
     /// The backend's twin rule: a POINTER-RIDING destination makes the
     /// constant the null pointer — the absence value. The two engines
     /// must read one instruction alike.
@@ -239,7 +479,6 @@ impl Machine {
         if self.l.types.rides_pointer(b.reg_types[d.index]) { return Val.N }
         Val.I(v)
     }
-
 
     /// A packed value rides the same table an aggregate does — the
     /// interpreter's bookkeeping, not the machine's layout.
@@ -251,11 +490,9 @@ impl Machine {
         self.fresh_array([self.value(r) for r in elems])
     }
 
-
     fn flat_reg(b: Body, r: Reg) -> bool {
         self.l.types.is_flat(b.reg_types[r.index])
     }
-
 
     fn extract_val(b: Body, src: Reg, at: int) -> Val {
         if self.flat_reg(b, src) { return self.value(src) }
@@ -269,7 +506,6 @@ impl Machine {
         arr[at]
     }
 
-
     /// A register written in the TOP frame — the frame is a value, so
     /// the frame that holds the write is stored back over the old one.
     fn put(d: Reg, v: Val) {
@@ -278,7 +514,6 @@ impl Machine {
         regs.set(d.index, v)
         self.frames.set(at, regs)
 
-
     }
 
     fn put_at(d: Reg, v: Val, pc: int) -> int {
@@ -286,16 +521,71 @@ impl Machine {
         pc + 1
     }
 
-
     fn at(r: Reg) -> Val? {
         self.frames.last()![r.index]
     }
 
+    /// A crossing value as the machine holds it: a node becomes an
+    /// array of its slots, minted in the table.
+    fn val_of(heap: MetaHeap, m: MetaVal) -> Val {
+        match m {
+            .Int(n) -> Val.I(n),
+            .Float(bits) -> Val.F(bits),
+            .Text(s) -> Val.S(s),
+            .Bool(b) -> Val.B(b),
+            .Absent -> Val.N,
+            .Node(id) -> {
+                self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]])
+            },
+            .Map(id) -> {
+                let row = heap.maps[id]
+                self.maps.push(MapVal { keys: row.keys, vals: [self.val_of(heap, x) for x in row.values] })
+                Val.M(self.maps.length - 1)
+            },
+        }
+    }
+
+    /// A machine value crossed back: an array becomes a node and a
+    /// map an ordered map in the heap handed in; a float crosses as
+    /// its bits. A storage cell itself has no crossing.
+    fn meta_of(v: Val, mut heap: MetaHeap) -> MetaVal {
+        match v {
+            .I(n) -> MetaVal.Int(n),
+            .F(bits) -> MetaVal.Float(bits),
+            .B(b) -> MetaVal.Bool(b),
+            .S(s) -> MetaVal.Text(s),
+            .Y(data) -> MetaVal.Text(self.decoded(data)),
+            .N -> MetaVal.Absent,
+            .A(id) -> {
+                heap.node([self.meta_of(x, heap) for x in self.arrays[id]])
+            },
+            .M(id) -> {
+                let row = self.maps[id]
+                heap.map(row.keys, [self.meta_of(x, heap) for x in row.vals])
+            },
+            .C(_) -> MetaVal.Absent,
+        }
+    }
+
+    /// `embed`: the file beside the settlement's source, read whole —
+    /// and recorded, so the build knows what the const read.
+    fn embedded(rel: string) -> Val {
+        if self.base == null {
+            self.trapped("`embed` reads a file at compile time, into a const — this run reached it outside one")
+            return Val.S("")
+        }
+        let path = if rel.starts_with("/") { rel } else { joined_path(self.base!, rel) }
+        if avra_selfhost_file_exists(path) == 0 {
+            self.trapped("`embed` finds no `${rel}` beside the source")
+            return Val.S("")
+        }
+        self.embeds.push(path)
+        Val.S(avra_selfhost_read_file(path))
+    }
 
     fn trapped(msg: string) {
         self.failures.push(msg)
     }
-
 
     /// A register's value, which a clean program guarantees present.
     fn value(r: Reg) -> Val {
@@ -307,7 +597,6 @@ impl Machine {
         v!
     }
 
-
     fn truth(r: Reg) -> bool {
         match self.value(r) {
             .B(v) -> v,
@@ -317,7 +606,6 @@ impl Machine {
             }
         }
     }
-
 
     fn int_val(r: Reg) -> int {
         self.whole(self.value(r))
@@ -394,7 +682,6 @@ impl Machine {
         }
     }
 
-
     /// IEEE-754 through the SAME C bodies the compiled program uses,
     /// so the two engines cannot drift on a rounding.
     fn float_bin_val(op: BinOp, l: int, r: int) -> Val {
@@ -410,11 +697,10 @@ impl Machine {
             .Gt -> Val.B(avra_float_gt(l, r) != 0),
             .Ge -> Val.B(avra_float_ge(l, r) != 0),
             .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr ->
-                self.defect_val(int_only_on_floats()),
-            .And or .Or -> self.defect_val(lazy_in_eager()),
+                self.defect_val(int_only_on_floats),
+            .And or .Or -> self.defect_val(lazy_in_eager),
         }
     }
-
 
     fn bin_val(op: BinOp, a: Reg, x: Reg) -> Val {
         let nulls: bool = self.value(a) is .N || self.value(x) is .N
@@ -441,7 +727,7 @@ impl Machine {
             .Ge -> Val.B(l >= r),
             .Eq -> Val.B(l == r),
             .Ne -> Val.B(l != r),
-            .And or .Or -> self.defect_val(lazy_in_eager()),
+            .And or .Or -> self.defect_val(lazy_in_eager),
             // THE SAME C BODIES the backend calls for the shifts, and
             // the same ones for the rest: the evaluator reaches the
             // machine only through C, so a bitwise answer here and a
@@ -453,7 +739,6 @@ impl Machine {
             .Shr -> Val.I(avra_int_shr(l, r)),
         }
     }
-
 
     /// `==`/`!=` where an operand is the ABSENCE — the presence test a
     /// niche nullable lowers to. Two absences agree; an absence and a
@@ -469,7 +754,6 @@ impl Machine {
         }
     }
 
-
     /// `==`/`!=` over two bool registers — the one non-int Bin.
     fn bool_eq_val(op: BinOp, a: Reg, x: Reg) -> Val {
         let l = self.truth(a)
@@ -483,13 +767,11 @@ impl Machine {
         }
     }
 
-
     fn un_val(op: UnOp, src: Reg) -> Val {
         match op {
             .Not -> Val.B(!self.truth(src)),
         }
     }
-
 
     /// THE defect phrase, worded once: everything here is impossible
     /// past the gate, so each site says only what it saw.
@@ -497,12 +779,10 @@ impl Machine {
         self.trapped("defect: ${what} in a clean program")
     }
 
-
     fn defect_val(what: string) -> Val {
         self.defect(what)
         Val.I(0)
     }
-
 
     /// Which arm the selector chooses: the case that matches, else the
     /// LAST arm (the default). A semantic scan — `index_of` compares
@@ -515,12 +795,11 @@ impl Machine {
         cases.length
     }
 
-
     /// At an ArmEnd after the then-branch ran: seal the merge at the
     /// matching RegionEnd with the then-value and continue past it.
     fn merge_then(b: Body, gives: Reg, pc: int) -> int {
         let v: Val? = self.at(gives)
-        let end = ahead(b, pc, opens_region, closes_region, closes_region)
+        let end = b.ahead(pc, opens_region, closes_region, closes_region)
         if end < b.ins.length {
             let d: Reg? = match b.ins[end] {
                 .RegionEnd(dst, _) -> dst,
@@ -531,7 +810,6 @@ impl Machine {
         end + 1
     }
 
-
     /// A fn address in EVAL-land is the body's index — opaque, like
     /// the machine address it stands in for.
     fn fn_addr_val(sym: string) -> Val {
@@ -541,6 +819,32 @@ impl Machine {
         self.defect_val("a fn address without a body survived lowering")
     }
 
+    /// A static's value: built from its boxes on first read, child-
+    /// first so every slot's box already stands, and the same handle
+    /// on every read after — the evaluator's copy of what the backend
+    /// lays out.
+    fn static_val(sym: string) -> Val {
+        let held: Val? = self.statics.get(sym)
+        if held != null { return held! }
+        let st: Static? = self.l.statics.find((s: Static) -> s.name == sym)
+        if st == null { return self.defect_val("a static read names no data") }
+        mut built: List<Val> = []
+        // LICENSED I3: a fold — each box reads the ones built before it
+        for b in st!.boxes { built.push(self.box_val(b, built)) }
+        let v = built.last() ?? Val.N
+        self.statics.set(sym, v)
+        v
+    }
+
+    fn box_val(b: StaticBox, built: List<Val>) -> Val {
+        match b {
+            .Slots(cells) -> self.fresh_array([slot_val(c, built) for c in cells]),
+            .Table(keys, values) -> {
+                self.maps.push(MapVal { keys: keys, vals: [slot_val(c, built) for c in values] })
+                Val.M(self.maps.length - 1)
+            },
+        }
+    }
 
     fn call_ptr_val(f: Reg, args: List<Reg>) -> Val {
         let held: Val = self.value(f)
@@ -554,18 +858,15 @@ impl Machine {
         self.run_call(self.l.fns[at], args)
     }
 
-
     fn non_address() -> Val {
         self.defect_val("an indirect call through a non-address")
     }
-
 
     fn call_val(callee: string, args: List<Reg>) -> Val {
         let target: Body? = body_named(self.l, callee)
         if target == null { return self.defect_val("a call without a body survived lowering") }
         self.run_call(target!, args)
     }
-
 
     /// Both call shapes land here: arguments read, the body run, an
     /// answerless body a defect.
@@ -574,12 +875,10 @@ impl Machine {
         answer ?? self.defect_val("a fn body answered nothing")
     }
 
-
     fn fresh_cell() -> Val {
         self.cells.push(Val.I(0))
         Val.C(self.cells.length - 1)
     }
-
 
     fn cell_read(slot: Reg) -> Val {
         match self.value(slot) {
@@ -587,7 +886,6 @@ impl Machine {
             _ -> self.defect_val("a load through a non-cell"),
         }
     }
-
 
     fn store_step(slot: Reg, src: Reg, pc: int) -> int {
         let v = self.value(src)
@@ -599,7 +897,6 @@ impl Machine {
         }
         pc + 1
     }
-
 
     /// A value's printed text — the twin of the runtime's projections.
     fn val_text(v: Val) -> string {
@@ -616,18 +913,16 @@ impl Machine {
         }
     }
 
-
     fn rt_void(callee: string, args: List<Reg>, pc: int) -> int {
         let _ = self.rt_dispatch(callee, [self.value(r) for r in args])
         pc + 1
     }
 
-
     /// A value-producing runtime call; a Bool-typed destination narrows
     /// the runtime's i64 answer, exactly as the backend does.
     fn rt_val(b: Body, d: Reg, callee: string, args: List<Reg>) -> Val {
         let raw = self.rt_dispatch(callee, [self.value(r) for r in args])
-        let shape = self.l.types.shape_of(b.reg_types[d.index])
+        let shape = self.l.types.machine_shape(b.reg_types[d.index])
         if shape is .Bool {
             return match raw {
                 .I(n) -> Val.B(n != 0),
@@ -647,7 +942,6 @@ impl Machine {
         }
         raw
     }
-
 
     /// The registry's host column, hosted — exhaustive over RtHost, so
     /// a row with a new host demands its arm here.
@@ -727,6 +1021,7 @@ impl Machine {
             .HostEnv -> Val.S(avra_host_env(self.text_val(vals[0]))),
             .Eputs -> self.eputs_row(vals),
             .IoList -> self.io_list_val(vals),
+            .Embed -> self.embedded(self.text_val(vals[0])),
             .StrFromCodepoint -> Val.S(avra_str_from_codepoint(self.whole(vals[0]))),
             .ExecSelf -> self.exec_self_val(vals),
             .SpawnStatus -> self.spawn_status_val(vals),
@@ -1019,7 +1314,6 @@ impl Machine {
         self.fresh_array([])
     }
 
-
     /// A new array in the table, holding these values.
     fn fresh_array(elems: List<Val>) -> Val {
         self.arrays.push(elems)
@@ -1037,12 +1331,10 @@ impl Machine {
         }
     }
 
-
     fn array_pop_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a pop from a non-array") }
         self.popped(id)
     }
-
 
     fn popped(id: int) -> Val {
         mut arr = self.arrays[id]
@@ -1054,7 +1346,6 @@ impl Machine {
         self.arrays.set(id, arr)
         last
 
-
     }
 
     fn array_concat_val(vals: List<Val>) -> Val {
@@ -1064,13 +1355,11 @@ impl Machine {
         self.fresh_array(self.arrays[a!].concat(self.arrays[b!]))
     }
 
-
     /// The slots from lo up to hi, clamped — worded like the runtime's.
     fn array_slice_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a slice of a non-array") }
         self.sliced(id, self.whole(vals[1]), self.whole(vals[2]))
     }
-
 
     fn sliced(id: int, from: int, to: int) -> Val {
         let xs = self.arrays[id]
@@ -1078,7 +1367,6 @@ impl Machine {
         let hi = clamped(to, 0, xs.length)
         self.fresh_array(if lo < hi { xs.slice(lo, hi) } else { [] })
     }
-
 
     /// The bytes from lo up to hi, clamped — worded like the runtime's.
     fn str_substring_val(vals: List<Val>) -> Val {
@@ -1097,7 +1385,6 @@ impl Machine {
         if i < 0 || i >= n { return self.out_of_bounds(i, n) }
         Val.I(self.byte_at(vals[0], i))
     }
-
 
     /// VALUE SEMANTICS, spelled as the spec: the interpreter has no
     /// counts, so opening a place for writing ALWAYS copies the box —
@@ -1119,12 +1406,10 @@ impl Machine {
         }
     }
 
-
     fn map_new_val() -> Val {
         self.maps.push(MapVal { keys: [], vals: [] })
         Val.M(self.maps.length - 1)
     }
-
 
     fn map_slot(id: int, key: string) -> int {
         self.maps[id].keys.index_of(key)
@@ -1135,18 +1420,15 @@ impl Machine {
         Val.I(self.maps[id].keys.length)
     }
 
-
     fn map_has_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.defect_val("a lookup in a non-map") }
         Val.B(self.map_slot(id, self.text_val(vals[1])) >= 0)
     }
 
-
     fn map_get_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.defect_val("a read from a non-map") }
         self.map_read(id, self.text_val(vals[1]))
     }
-
 
     fn map_read(id: int, key: string) -> Val {
         let s = self.map_slot(id, key)
@@ -1154,12 +1436,10 @@ impl Machine {
         self.maps[id].vals[s]
     }
 
-
     fn map_set_val(vals: List<Val>) -> Val {
         let id? = map_id(vals[0]) else { return self.defect_val("a write into a non-map") }
         self.map_write(id, self.text_val(vals[1]), vals[2])
     }
-
 
     fn map_write(id: int, key: string, v: Val) -> Val {
         let s = self.map_slot(id, key)
@@ -1168,7 +1448,6 @@ impl Machine {
                       else { entry with { keys: entry.keys.concat([key]), vals: entry.vals.concat([v]) } }
         self.maps.set(id, written)
         Val.I(0)
-
 
     }
 
@@ -1182,7 +1461,6 @@ impl Machine {
             _ -> self.defect_val("a place opened through a non-cell"),
         }
 
-
     }
 
     fn slot_unique_val(vals: List<Val>) -> Val {
@@ -1192,12 +1470,10 @@ impl Machine {
         fresh
     }
 
-
     fn slot_set_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a non-array slot write") }
         self.slot_written(id, self.whole(vals[1]), vals[2])
     }
-
 
     fn slot_written(id: int, at: int, v: Val) -> Val {
         mut arr = self.arrays[id]
@@ -1212,12 +1488,10 @@ impl Machine {
         Val.I(0)
     }
 
-
     fn array_push_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a push into a non-array") }
         self.pushed(id, vals[1])
     }
-
 
     fn pushed(id: int, v: Val) -> Val {
         mut arr = self.arrays[id]
@@ -1230,7 +1504,6 @@ impl Machine {
         self.trapped("unwrapped an absent value")
         Val.I(0)
     }
-
 
     /// `v!` on a NICHE nullable — identity through the presence guard.
     /// The once cache asked: this run's answer for the symbol, or
@@ -1251,7 +1524,6 @@ impl Machine {
         vals[0]
     }
 
-
     /// `v!` on a PAIR nullable — the flag guards, the value passes.
     fn insist_scalar_val(vals: List<Val>) -> Val {
         let present: bool = match vals[0] {
@@ -1262,12 +1534,10 @@ impl Machine {
         vals[1]
     }
 
-
     fn array_get_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a read from a non-array") }
         self.slot_read_val(id, self.whole(vals[1]))
     }
-
 
     fn slot_read_val(id: int, at: int) -> Val {
         let arr = self.arrays[id]
@@ -1275,18 +1545,15 @@ impl Machine {
         arr[at]
     }
 
-
     fn array_len_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a length of a non-array") }
         Val.I(self.arrays[id].length)
     }
 
-
     fn str_join_val(vals: List<Val>) -> Val {
         let id? = array_id(vals[0]) else { return self.defect_val("a join over a non-array") }
         Val.S(joined([self.text_val(e) for e in self.arrays[id]], self.text_val(vals[1])))
     }
-
 
     /// One printed line lands in the machine's output.
     fn puts_val(vals: List<Val>) -> Val {
@@ -1350,6 +1617,10 @@ impl Machine {
         verdict(self.text_val(vals[0]) == self.text_val(vals[1]))
     }
 }
+
+fn no_body_named(symbol: string) -> string { "no body named `${symbol}`" }
+fn over_budget(steps: int) -> string { "took more than ${steps} steps" }
+fn over_memory(bytes: int) -> string { "held more than ${bytes} bytes" }
 // ── The host seam the evaluator reaches through ─────────────────
 // The process substrate, the io rows and the clock are the runtime's
 // own C; the evaluator calls the same functions the native program
@@ -1367,6 +1638,8 @@ extern fn avra_str_from_codepoint(code: int) -> string
 extern fn avra_exec_self(args: List<string>) -> int
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_selfhost_file_exists(path: string) -> int
+extern fn avra_selfhost_read_file(path: string) -> string
 extern fn avra_fd_taken(token: int) -> Bytes
 extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
 // `avra_host_env` is the module's already — workspace.av declares it.
@@ -1383,54 +1656,56 @@ fn eputs_val(line: string) -> Val {
 
 // ── Control-flow bracket scans ──────────────────────────────────
 
-/// Where arm `k` of the region opened at `from` begins: just past
-/// the k-th arm separator at depth 0.
-fn arm_start(b: Body, from: int, k: int) -> int {
-    mut at = from
-    for j in 0..k { at = ahead(b, at, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) }
-    at + 1
-}
-
-/// Forward from `from`+1: the pc of the first `target` at depth 0,
-/// with `opens`/`closes` tracking nesting. Target wins over close
-/// at depth 0, so a closer can BE the target.
-fn ahead(b: Body, from: int, opens: fn(Ins) -> bool, closes: fn(Ins) -> bool, target: fn(Ins) -> bool) -> int {
-    mut depth = 0
-    mut j = from + 1
-    while j < b.ins.length {
-        let i = b.ins[j]
-        if depth == 0 && target(i) { return j }
-        if opens(i) { depth = depth + 1 }
-        if closes(i) { depth = depth - 1 }
-        j = j + 1
+impl Body {
+    /// Where arm `k` of the region opened at `from` begins: just past
+    /// the k-th arm separator at depth 0.
+    fn arm_start(from: int, k: int) -> int {
+        mut at = from
+        for j in 0..k { at = self.ahead(at, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) }
+        at + 1
     }
-    b.ins.length
-}
 
-/// From an IfStart: the pc just past its matching ArmEnd.
-fn past_else(b: Body, from: int) -> int {
-    ahead(b, from, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) + 1
-}
-
-/// From a false LoopCond: the pc just past the matching LoopEnd.
-fn past_loop(b: Body, from: int) -> int {
-    ahead(b, from, (i: Ins) -> i is .LoopStart, (i: Ins) -> i is .LoopEnd, (i: Ins) -> i is .LoopEnd) + 1
-}
-
-/// From a LoopEnd: its matching LoopStart — the back edge. The
-/// one backward scan, shaped exactly as `ahead`: target first at
-/// depth 0, then the open/close bookkeeping.
-fn loop_header(b: Body, from: int) -> int {
-    mut depth = 0
-    mut j = from - 1
-    while j >= 0 {
-        let i = b.ins[j]
-        if depth == 0 && i is .LoopStart { return j }
-        if i is .LoopEnd { depth = depth + 1 }
-        if i is .LoopStart { depth = depth - 1 }
-        j = j - 1
+    /// Forward from `from`+1: the pc of the first `target` at depth 0,
+    /// with `opens`/`closes` tracking nesting. Target wins over close
+    /// at depth 0, so a closer can BE the target.
+    fn ahead(from: int, opens: fn(Ins) -> bool, closes: fn(Ins) -> bool, target: fn(Ins) -> bool) -> int {
+        mut depth = 0
+        mut j = from + 1
+        while j < self.ins.length {
+            let i = self.ins[j]
+            if depth == 0 && target(i) { return j }
+            if opens(i) { depth = depth + 1 }
+            if closes(i) { depth = depth - 1 }
+            j = j + 1
+        }
+        self.ins.length
     }
-    0
+
+    /// From an IfStart: the pc just past its matching ArmEnd.
+    fn past_else(from: int) -> int {
+        self.ahead(from, opens_region, closes_region, (i: Ins) -> i is .ArmEnd) + 1
+    }
+
+    /// From a false LoopCond: the pc just past the matching LoopEnd.
+    fn past_loop(from: int) -> int {
+        self.ahead(from, (i: Ins) -> i is .LoopStart, (i: Ins) -> i is .LoopEnd, (i: Ins) -> i is .LoopEnd) + 1
+    }
+
+    /// From a LoopEnd: its matching LoopStart — the back edge. The
+    /// one backward scan, shaped exactly as `ahead`: target first at
+    /// depth 0, then the open/close bookkeeping.
+    fn loop_header(from: int) -> int {
+        mut depth = 0
+        mut j = from - 1
+        while j >= 0 {
+            let i = self.ins[j]
+            if depth == 0 && i is .LoopStart { return j }
+            if i is .LoopEnd { depth = depth + 1 }
+            if i is .LoopStart { depth = depth - 1 }
+            j = j - 1
+        }
+        0
+    }
 }
 
 // ── Calls ───────────────────────────────────────────────────────

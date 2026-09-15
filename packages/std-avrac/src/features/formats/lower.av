@@ -23,7 +23,7 @@
 //! reads them back and cuts the values inside the arm's region, so
 //! an untaken arm mints no managed value at all.
 use core.{Reg, Ins, PatId, ExprId, Type, TypeId, BinOp, FormatPart, GrammarSpec, binds}
-use features.{LowerCx, MethodCall, const_int, const_bool, open_region, arm_end, close_region, close_region_as, seeded_cell, loop_start, loop_cond, loop_end, box_size, grown_box, adopted, absent_of, carried_type, carried_of, open_presence, field_read, lower_defect}
+use features.{LowerCx, MethodCall}
 
 /// Whether the subject matches. The walk's octets and span cells are
 /// left in the pattern's slot for the binds — written once here,
@@ -63,15 +63,15 @@ type Walked = { ok: Reg, subject: Reg, spans: List<Reg> }
 fn walked(mut cx: LowerCx, head: string, parts: List<FormatPart>, v: Reg, vty: TypeId) -> Walked {
     let subject = octets(cx, v, vty)
     let len = measured(cx, subject)
-    let int_ty = cx.view.types.intern(Type.Int)
+    let int_ty = cx.type(int)
     let last = parts.last()!.piece
-    let stop = seeded_cell(cx, int_ty, minus(cx, len, const_int(cx, byte_length(last))))
-    let cur = seeded_cell(cx, int_ty, const_int(cx, byte_length(head)))
+    let stop = cx.seeded_cell(int_ty, minus(cx, len, cx.const_int(byte_length(last))))
+    let cur = cx.seeded_cell(int_ty, cx.const_int(byte_length(head)))
     mut spans: List<Reg> = []
     // LICENSED I3: a lo and a hi per hole, minted in hole order before any step writes one
     for part in parts {
-        spans.push(seeded_cell(cx, int_ty, const_int(cx, 0)))
-        spans.push(seeded_cell(cx, int_ty, const_int(cx, 0)))
+        spans.push(cx.seeded_cell(int_ty, cx.const_int(0)))
+        spans.push(cx.seeded_cell(int_ty, cx.const_int(0)))
     }
     let w = Walked { ok: anchored(cx, subject, len, head, last), subject: subject, spans: spans }
     w with { ok: spanned(cx, w, parts, cur, stop, 0) }
@@ -81,29 +81,29 @@ fn walked(mut cx: LowerCx, head: string, parts: List<FormatPart>, v: Reg, vty: T
 /// enough to hold the head and the last piece without them
 /// overlapping, the head is a prefix, and the last piece a suffix.
 fn anchored(mut cx: LowerCx, subject: Reg, len: Reg, head: string, last: string) -> Reg {
-    let need = const_int(cx, byte_length(head) + byte_length(last))
+    let need = cx.const_int(byte_length(head) + byte_length(last))
     let room = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(room, BinOp.Ge, len, need))
-    open_region(cx, room)
-    let zero = const_int(cx, 0)
-    let hlen = const_int(cx, byte_length(head))
-    arm_end(cx, at_span(cx, subject, zero, hlen, head))
-    let short = const_bool(cx, false)
-    let prefix = close_region_as(cx, cx.view.types.intern(Type.Bool), short)
-    open_region(cx, prefix)
-    arm_end(cx, tail_span(cx, subject, len, last))
-    let no = const_bool(cx, false)
-    close_region_as(cx, cx.view.types.intern(Type.Bool), no)
+    cx.open_region(room)
+    let zero = cx.const_int(0)
+    let hlen = cx.const_int(byte_length(head))
+    cx.arm_end(at_span(cx, subject, zero, hlen, head))
+    let short = cx.const_bool(false)
+    let prefix = cx.close_region_as(cx.type(bool), short)
+    cx.open_region(prefix)
+    cx.arm_end(tail_span(cx, subject, len, last))
+    let no = cx.const_bool(false)
+    cx.close_region_as(cx.type(bool), no)
 }
 
 /// SPAN I, inside the verdict so far. A skipped step answers false,
 /// so the chain short-circuits and no later call reads the cursor.
 fn spanned(mut cx: LowerCx, w: Walked, parts: List<FormatPart>, cur: Reg, stop: Reg, i: int) -> Reg {
     if i == parts.length { return w.ok }
-    open_region(cx, w.ok)
-    arm_end(cx, hole_span(cx, w, parts, i, cur, stop))
-    let no = const_bool(cx, false)
-    spanned(cx, w with { ok: close_region_as(cx, cx.view.types.intern(Type.Bool), no) }, parts, cur, stop, i + 1)
+    cx.open_region(w.ok)
+    cx.arm_end(hole_span(cx, w, parts, i, cur, stop))
+    let no = cx.const_bool(false)
+    spanned(cx, w with { ok: cx.close_region_as(cx.type(bool), no) }, parts, cur, stop, i + 1)
 }
 
 /// WHICH SPAN THIS HOLE TAKES. The last hole runs to the suffix
@@ -138,19 +138,19 @@ fn hole_span(mut cx: LowerCx, w: Walked, parts: List<FormatPart>, i: int, cur: R
 fn greedy_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, piece: string) -> Reg {
     let from = loaded_from(cx, cur)
     cx.emit(Ins.Store(w.spans[2 * i], from))
-    let int_ty = cx.view.types.intern(Type.Int)
+    let int_ty = cx.type(int)
     let needle = literal(cx, piece)
     let first = cx.mint_shape(Type.Int)
     cx.emit(Ins.CallRt(first, "avra_bytes_index_of", [w.subject, needle, from]))
-    let probe = seeded_cell(cx, int_ty, first)
-    let miss = const_int(cx, 0 - 1)
-    let best = seeded_cell(cx, int_ty, miss)
+    let probe = cx.seeded_cell(int_ty, first)
+    let miss = cx.const_int(0 - 1)
+    let best = cx.seeded_cell(int_ty, miss)
     farthest(cx, w, best, probe, needle)
     let hi = loaded_from(cx, best)
     cx.emit(Ins.Store(w.spans[2 * i + 1], hi))
-    let width = const_int(cx, byte_length(piece))
+    let width = cx.const_int(byte_length(piece))
     cx.emit(Ins.Store(cur, plus(cx, hi, width)))
-    let zero = const_int(cx, 0)
+    let zero = cx.const_int(0)
     let hit = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(hit, BinOp.Ge, hi, zero))
     hit
@@ -158,20 +158,20 @@ fn greedy_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, piece: string) -> R
 
 /// While the probe holds a hit, keep it and look one past it.
 fn farthest(mut cx: LowerCx, w: Walked, best: Reg, probe: Reg, needle: Reg) {
-    loop_start(cx)
+    cx.loop_start()
     let seen = loaded_from(cx, probe)
-    let zero = const_int(cx, 0)
+    let zero = cx.const_int(0)
     let more = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(more, BinOp.Ge, seen, zero))
-    loop_cond(cx, more)
+    cx.loop_cond(more)
     let here = loaded_from(cx, probe)
     cx.emit(Ins.Store(best, here))
-    let one = const_int(cx, 1)
+    let one = cx.const_int(1)
     let after = plus(cx, here, one)
     let next = cx.mint_shape(Type.Int)
     cx.emit(Ins.CallRt(next, "avra_bytes_index_of", [w.subject, needle, after]))
     cx.emit(Ins.Store(probe, next))
-    loop_end(cx)
+    cx.loop_end()
 }
 
 /// An INTERIOR hole's span: it begins at the cursor and ends where
@@ -184,9 +184,9 @@ fn next_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, piece: string) -> Reg
     let found = cx.mint_shape(Type.Int)
     cx.emit(Ins.CallRt(found, "avra_bytes_index_of", [w.subject, needle, from]))
     cx.emit(Ins.Store(w.spans[2 * i + 1], found))
-    let width = const_int(cx, byte_length(piece))
+    let width = cx.const_int(byte_length(piece))
     cx.emit(Ins.Store(cur, plus(cx, found, width)))
-    let zero = const_int(cx, 0)
+    let zero = cx.const_int(0)
     let hit = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(hit, BinOp.Ge, found, zero))
     hit
@@ -245,7 +245,7 @@ fn at_span(mut cx: LowerCx, subject: Reg, lo: Reg, hi: Reg, text: string) -> Reg
 
 /// The last piece sits at the end: `len - |piece|` up to `len`.
 fn tail_span(mut cx: LowerCx, subject: Reg, len: Reg, last: string) -> Reg {
-    at_span(cx, subject, minus(cx, len, const_int(cx, byte_length(last))), len, last)
+    at_span(cx, subject, minus(cx, len, cx.const_int(byte_length(last))), len, last)
 }
 
 /// A literal as octets. The conversion runs per attempt: the IR
@@ -298,11 +298,11 @@ export fn lower_parse(mut cx: LowerCx, mc: MethodCall) -> Reg {
 /// door rather than at the caller.
 fn from_octets(mut cx: LowerCx, mc: MethodCall, read: GrammarSpec, want: TypeId) -> Reg {
     let octets = cx.reg_of(mc.args[0])
-    let w = walked(cx, read.head, read.parts, octets, cx.view.types.intern(Type.Bytes))
-    open_region(cx, w.ok)
-    arm_end(cx, crossed_into(cx, w, read, octets, want))
-    let none = absent_of(cx, want)
-    close_region(cx, mc.e, none)
+    let w = walked(cx, read.head, read.parts, octets, cx.type(Bytes))
+    cx.open_region(w.ok)
+    cx.arm_end(crossed_into(cx, w, read, octets, want))
+    let none = cx.absent_of(want)
+    cx.close_region(mc.e, none)
 }
 
 /// THE CROSSING, PAID ONLY ON A HIT: the spans are found, so the
@@ -312,44 +312,44 @@ fn from_octets(mut cx: LowerCx, mc: MethodCall, read: GrammarSpec, want: TypeId)
 /// capture — one crossing rather than one per hole, and the same
 /// answer.
 fn crossed_into(mut cx: LowerCx, w: Walked, read: GrammarSpec, octets: Reg, want: TypeId) -> Reg {
-    let str_opt = cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Str)))
+    let str_opt = cx.type(string?)
     let crossed = cx.mint_ty(str_opt)
     cx.emit(Ins.CallRt(crossed, "avra_str_of_bytes", [octets]))
-    open_presence(cx, crossed, str_opt)
-    let text = carried_of(cx, crossed, str_opt)
-    arm_end(cx, adopted(cx, want, false, gathered(cx, w, read.parts, text, want)))
-    let none = absent_of(cx, want)
-    close_region_as(cx, want, none)
+    cx.open_presence(crossed, str_opt)
+    let text = cx.carried_of(crossed, str_opt)
+    cx.arm_end(cx.adopted(want, false, gathered(cx, w, read.parts, text, want)))
+    let none = cx.absent_of(want)
+    cx.close_region_as(want, none)
 }
 
 /// The scan over text in hand, and the record it fills.
 fn read_into(mut cx: LowerCx, read: GrammarSpec, text: Reg, want: TypeId) -> Reg {
-    let w = walked(cx, read.head, read.parts, text, cx.view.types.intern(Type.Str))
-    open_region(cx, w.ok)
-    arm_end(cx, adopted(cx, want, false, gathered(cx, w, read.parts, text, want)))
-    let none = absent_of(cx, want)
-    close_region_as(cx, want, none)
+    let w = walked(cx, read.head, read.parts, text, cx.type(string))
+    cx.open_region(w.ok)
+    cx.arm_end(cx.adopted(want, false, gathered(cx, w, read.parts, text, want)))
+    let none = cx.absent_of(want)
+    cx.close_region_as(want, none)
 }
 
 /// The record the holes fill, slot by slot in declaration order —
 /// which is hole order, because the fields ARE the holes.
 fn gathered(mut cx: LowerCx, w: Walked, parts: List<FormatPart>, text: Reg, want: TypeId) -> Reg {
-    let held = carried_type(cx, want)
+    let held = cx.carried_type(want)
     mut slots: List<Reg> = []
     // LICENSED I3: the cuts must be EMITTED in hole order, each minting its own answer
     for i, part in parts {
-        if binds(part.hole) { slots.push(cut(cx, w.subject, w.spans[2 * i], w.spans[2 * i + 1], text, cx.view.types.intern(Type.Str))) }
+        if binds(part.hole) { slots.push(cut(cx, w.subject, w.spans[2 * i], w.spans[2 * i + 1], text, cx.type(string))) }
     }
-    let size = box_size(cx, slots.length)
+    let size = cx.box_size(slots.length)
     let dst = cx.mint_ty(held)
-    grown_box(cx, dst, size, slots)
+    cx.grown_box(dst, size, slots)
     dst
 }
 
 /// A door's format lives on its DECLARATION, so a door reached
 /// without one is the admission rule broken.
 fn doorless(mut cx: LowerCx, e: ExprId) -> Reg {
-    lower_defect(cx, e, "a grammar door without its declaration survived typing")
+    cx.lower_defect(e, "a grammar door without its declaration survived typing")
 }
 
 /// The grammar a type-name receiver stands for.
@@ -374,10 +374,10 @@ export fn lower_print(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let read = found!
     let fields = read_fields(cx, mc.args[0], read.parts)
     let want = cx.type_at(mc.e)
-    open_region(cx, survives(cx, read.parts, fields, 0))
-    arm_end(cx, adopted(cx, want, false, woven(cx, read, fields)))
-    let none = absent_of(cx, want)
-    close_region(cx, mc.e, none)
+    cx.open_region(survives(cx, read.parts, fields, 0))
+    cx.arm_end(cx.adopted(want, false, woven(cx, read, fields)))
+    let none = cx.absent_of(want)
+    cx.close_region(mc.e, none)
 }
 
 /// Every hole's value, read from the record in hole order — the same
@@ -385,11 +385,11 @@ export fn lower_print(mut cx: LowerCx, mc: MethodCall) -> Reg {
 fn read_fields(mut cx: LowerCx, subject: ExprId, parts: List<FormatPart>) -> List<Reg> {
     let v = cx.reg_of(subject)
     let vty = cx.type_at(subject)
-    let str_ty = cx.view.types.intern(Type.Str)
+    let str_ty = cx.type(string)
     mut out: List<Reg> = []
     // LICENSED I3: the reads must be EMITTED in slot order, each minting its own answer
     for i, part in parts {
-        out.push(field_read(cx, v, vty, i, str_ty))
+        out.push(cx.field_read(v, vty, i, str_ty))
     }
     out
 }
@@ -398,12 +398,12 @@ fn read_fields(mut cx: LowerCx, subject: ExprId, parts: List<FormatPart>) -> Lis
 /// check runs only while the earlier ones hold. The LAST hole carries
 /// no condition — the suffix anchor fixes its end positionally.
 fn survives(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int) -> Reg {
-    if i >= parts.length - 1 { return const_bool(cx, true) }
+    if i >= parts.length - 1 { return cx.const_bool(true) }
     let here = holds(cx, parts, fields, i)
-    open_region(cx, here)
-    arm_end(cx, survives(cx, parts, fields, i + 1))
-    let no = const_bool(cx, false)
-    close_region_as(cx, cx.view.types.intern(Type.Bool), no)
+    cx.open_region(here)
+    cx.arm_end(survives(cx, parts, fields, i + 1))
+    let no = cx.const_bool(false)
+    cx.close_region_as(cx.type(bool), no)
 }
 
 /// WHICH CONDITION THIS HOLE OWES, and they are mirrors: a LAZY hole
@@ -430,10 +430,10 @@ fn unpassed(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int)
     let after = trailing(cx, parts, fields, i)
     let octets = rt1(cx, Type.Bytes, "avra_bytes_of_str", after)
     let needle = literal(cx, parts[i].piece)
-    let one = const_int(cx, 1)
+    let one = cx.const_int(1)
     let at = cx.mint_shape(Type.Int)
     cx.emit(Ins.CallRt(at, "avra_bytes_index_of", [octets, needle, one]))
-    let zero = const_int(cx, 0)
+    let zero = cx.const_int(0)
     let alone = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(alone, BinOp.Lt, at, zero))
     alone
@@ -461,7 +461,7 @@ fn unmoved(mut cx: LowerCx, value: Reg, piece: string) -> Reg {
     let joined = rt2(cx, Type.Str, "avra_str_concat", value, text_const(cx, piece))
     let octets = rt1(cx, Type.Bytes, "avra_bytes_of_str", joined)
     let needle = literal(cx, piece)
-    let zero = const_int(cx, 0)
+    let zero = cx.const_int(0)
     let at = cx.mint_shape(Type.Int)
     cx.emit(Ins.CallRt(at, "avra_bytes_index_of", [octets, needle, zero]))
     let width = rt1(cx, Type.Int, "avra_str_len", value)
@@ -484,9 +484,9 @@ fn woven(mut cx: LowerCx, read: GrammarSpec, fields: List<Reg>) -> Reg {
 
 /// Text registers joined into one, in the order they were minted.
 fn glued(mut cx: LowerCx, pieces: List<Reg>) -> Reg {
-    let size = box_size(cx, pieces.length)
-    let arr = cx.mint_ty(cx.view.types.intern(Type.List(cx.view.types.intern(Type.Str))))
-    grown_box(cx, arr, size, pieces)
+    let size = cx.box_size(pieces.length)
+    let arr = cx.mint_ty(cx.type(List<string>))
+    cx.grown_box(arr, size, pieces)
     let sep = text_const(cx, "")
     let dst = cx.mint_shape(Type.Str)
     cx.emit(Ins.CallRt(dst, "avra_str_join", [arr, sep]))

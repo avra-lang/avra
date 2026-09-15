@@ -8,8 +8,8 @@
 //! has a declared type along its whole path, so no body is typed to
 //! learn it. Asked through the declaration table's hook, remembered
 //! by the kernel (ROADMAP: the inout receiver).
-use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, Binding, MethodParts, PlaceStep, fp, touch, filled, flatten, marked}
-use features.{NameFacts, Decls, Decl, StructSig, fields_of_type, bound_decl_of, row_writes, trait_named, trait_member, self_type_of, fn_sig_of, FnSig, nothing, property_row}
+use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, Binding, MethodParts, AppliedParts, PlaceStep, fp, fp_list, touch, filled, flatten, SeatMark, mut_mark}
+use features.{NameFacts, Decls, Decl, StructSig, bound_decl_of, row_writes, FnSig, nothing, property_row}
 
 /// One fn's own evidence: which of its seats the body writes
 /// directly, and the flows from its seats into other fns' seats —
@@ -19,20 +19,28 @@ type Summary = { own: List<bool>, edges: List<Flow> }
 /// A place rooted in seat `from` fills seat `to` of `callee`.
 type Flow = { from: int, callee: DeclId, to: int }
 
-/// The pass: every fn's written seats, settled once per program
-/// state. Declared bits (`mut fn`, a `mut` seat, a trait's word)
-/// are recorded at declare; this pass adds the INFERRED ones.
-export fn receivers(ws: Workspace) -> int {
-    let k = key(Family.Receivers, 0)
-    if !(ws.db.ask(k) is .Compute) { return 0 }
-    ws.db.begin(k)
-    let fns = [x.id for x in ws.decls.decls if seated(x)]
-    for d in fns { touch(sig(ws, d)) }
-    ws.decls.clear_written()
-    let sums = [summary(ws, d) for d in fns]
-    settle_writers(ws.decls, fns, sums)
-    ws.db.settle(k, fp(17, flatten([written_bits(ws.decls, d) for d in fns])))
-    fns.length
+impl Workspace {
+    /// The pass: every fn's written seats, settled once per program
+    /// state. Declared bits (`mut fn`, a `mut` seat, a trait's word)
+    /// are recorded at declare; this pass adds the INFERRED ones.
+    fn receivers() -> int {
+        // A WHOLE-PROGRAM PASS MUST NOT RUN INSIDE A RESOLVE: a lifted
+        // call runs inside one, and every sig this pass asks of the
+        // file in flight would be computed from a smaller view and
+        // kept. The declared bits answer until the resolve closes;
+        // the pass runs whole at the first ask after.
+        if self.db.family_active(ordinal(Family.Resolved)) { return 0 }
+        let k = key(Family.Receivers, 0)
+        if !(self.db.ask(k) is .Compute) { return 0 }
+        self.db.begin(k)
+        let fns = [x.id for x in self.decls.decls if seated(x)]
+        for d in fns { touch(self.sig(d)) }
+        self.decls.clear_written()
+        let sums = [self.summary(d) for d in fns]
+        self.decls.settle_writers(fns, sums)
+        self.db.settle(k, fp(17, [fp_list(self.decls.written_bits(d)) for d in fns]))
+        fns.length
+    }
 }
 
 /// The declarations with seats to write through.
@@ -40,55 +48,59 @@ fn seated(x: Decl) -> bool {
     x.kind is .Fn || x.kind is .Method
 }
 
-/// A fn's written seats for the fingerprint — one digit per seat,
-/// in seat order, so no two states share a word.
-fn written_bits(decls: Decls, d: DeclId) -> List<int> {
-    [if decls.seat_written_so_far(d, i) { 1 } else { 0 } for i in 0..decls.seat_count(d)]
-}
+impl Decls {
+    /// A fn's written seats for the fingerprint — one digit per seat,
+    /// in seat order, so no two states share a word.
+    fn written_bits(d: DeclId) -> List<int> {
+        [if self.seat_written_so_far(d, i) { 1 } else { 0 } for i in 0..self.seat_count(d)]
+    }
 
-/// Kleene iteration: a seat is written when its fn writes it, or
-/// hands it to a seat another fn writes — until no bit moves.
-/// Deterministic and order-free; cycles resolve to the least
-/// answer, which is the true one.
-fn settle_writers(decls: Decls, fns: List<DeclId>, sums: List<Summary>) {
-    mut changed = true
-    while changed {
-        changed = false
-        for j, d in fns {
-            if settle_one(decls, d, sums[j]) { changed = true }
+    /// Kleene iteration: a seat is written when its fn writes it, or
+    /// hands it to a seat another fn writes — until no bit moves.
+    /// Deterministic and order-free; cycles resolve to the least
+    /// answer, which is the true one.
+    fn settle_writers(fns: List<DeclId>, sums: List<Summary>) {
+        mut changed = true
+        while changed {
+            changed = false
+            for j, d in fns {
+                if self.settle_one(d, sums[j]) { changed = true }
+            }
         }
+    }
+
+    /// One fn's seats settled against its summary — true when a bit
+    /// moved.
+    fn settle_one(d: DeclId, s: Summary) -> bool {
+        mut moved = false
+        for i, own in s.own {
+            if !self.seat_written_so_far(d, i) && (own || self.flows_write(s, i)) {
+                self.record_seat_written(d, i)
+                moved = true
+            }
+        }
+        moved
+    }
+
+    fn flows_write(s: Summary, i: int) -> bool {
+        s.edges.any((f: Flow) -> f.from == i && self.seat_writes_so_far(f.callee, f.to))
     }
 }
 
-/// One fn's seats settled against its summary — true when a bit
-/// moved.
-fn settle_one(decls: Decls, d: DeclId, s: Summary) -> bool {
-    mut moved = false
-    for i, own in s.own {
-        if !decls.seat_written_so_far(d, i) && (own || flows_write(decls, s, i)) {
-            decls.record_seat_written(d, i)
-            moved = true
-        }
+impl Workspace {
+    /// A fn's own evidence, read from its resolved body and the
+    /// declarations its seat-rooted places name.
+    fn summary(d: DeclId) -> Summary {
+        let x = self.decls.decl(d)
+        let n = self.decls.seat_count(d)
+        if x.root == null { return Summary { own: filled(n, false), edges: [] } }
+        let receiver: TypeId? = self.receiver_type(x)
+        let seats: List<TypeId> = (self.decls.sig(d))?.fn_sig()?.params ?? []
+        mut cx = Survey { ws: self, decls: self.decls, store: self.decls.store(d), names: self.resolved(x.file), receiver: receiver, seats: seats, lo: x.lo, hi: x.hi, own: filled(n, false), edges: [] }
+        cx.assigns()
+        for i in x.lo..x.hi { cx.site_evidence(ExprId { index: i }) }
+        Summary { own: cx.own, edges: cx.edges }
     }
-    moved
-}
-
-fn flows_write(decls: Decls, s: Summary, i: int) -> bool {
-    s.edges.any((f: Flow) -> f.from == i && decls.seat_writes_so_far(f.callee, f.to))
-}
-
-/// A fn's own evidence, read from its resolved body and the
-/// declarations its seat-rooted places name.
-fn summary(ws: Workspace, d: DeclId) -> Summary {
-    let x = ws.decls.decl(d)
-    let n = ws.decls.seat_count(d)
-    if x.root == null { return Summary { own: filled(n, false), edges: [] } }
-    let receiver: TypeId? = receiver_type(ws, x)
-    let seats: List<TypeId> = fn_sig_of(ws.decls.sig(d))?.params ?? []
-    mut cx = Survey { ws: ws, decls: ws.decls, store: ws.decls.store(d), names: resolved(ws, x.file), receiver: receiver, seats: seats, lo: x.lo, hi: x.hi, own: filled(n, false), edges: [] }
-    assigns(cx)
-    for i in x.lo..x.hi { site_evidence(cx, ExprId { index: i }) }
-    Summary { own: cx.own, edges: cx.edges }
 }
 
 /// What one fn's summary reads and gathers: the body's file, its
@@ -96,148 +108,325 @@ fn summary(ws: Workspace, d: DeclId) -> Summary {
 /// range — and the evidence as it accrues.
 type Survey = { ws: Workspace, decls: Decls, store: NodeStore, names: NameFacts, receiver: TypeId?, seats: List<TypeId>, lo: int, hi: int, own: List<bool>, edges: List<Flow> }
 
-/// Every assignment in the range rooted in a seat writes it.
-fn assigns(mut cx: Survey) {
-    mut i = 0
-    let n = cx.store.stmts.count()
-    while i < n {
-        let t: ExprId? = cx.store.assign_target(StmtId { index: i })
-        if t != null && in_range(cx, t!) { mark(cx, seat_of(cx, t!)) }
-        i = i + 1
-    }
-}
-
-fn in_range(cx: Survey, e: ExprId) -> bool {
-    e.index >= cx.lo && e.index < cx.hi
-}
-
-/// The seat a place is rooted in — asked of the BINDING: the
-/// receiver is seat 0, a parameter its own seat; null for a value
-/// and for every other binding.
-fn seat_of(cx: Survey, e: ExprId) -> int? {
-    let root: ExprId? = cx.store.place_root(e)
-    if root == null { return null }
-    let b: Binding? = cx.names.binding(root!)
-    if b == null { return null }
-    match b! {
-        .Receiver -> 0,
-        .Param(i) -> i,
-        .Def(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
-    }
-}
-
-fn mark(mut cx: Survey, seat: int?) {
-    if seat != null && seat! < cx.own.length { cx.own.set(seat!, true) }
-}
-
-fn flow(mut cx: Survey, seat: int?, callee: DeclId, to: int) {
-    if seat != null { cx.edges.push(Flow { from: seat!, callee: callee, to: to }) }
-}
-
-/// One expression's evidence: a method call on a seat-rooted place
-/// (a mutating row, a declared method's edge, a contract's word),
-/// and any call handing a seat-rooted place to a callee's seat.
-fn site_evidence(mut cx: Survey, e: ExprId) {
-    let mp: MethodParts? = cx.store.method_parts(e)
-    if mp != null { return method_evidence(cx, mp!) }
-    let callee: DeclId? = bound_decl_of(cx.names, e)
-    if callee != null { feed(cx, callee!, call_args(cx, e), 0) }
-}
-
-/// A named call's arguments; empty for every other node.
-fn call_args(cx: Survey, e: ExprId) -> List<ExprId> {
-    // one arm answers — a projection over the core node
-    match cx.store.expr(e) {
-        .Call(_, _, args) -> args,
-        _ -> [],
-    }
-}
-
-fn method_evidence(mut cx: Survey, mp: MethodParts) {
-    let seat: int? = seat_of(cx, mp.subject)
-    let ty: TypeId? = place_type(cx, mp.subject)
-    // A SUBJECT THIS PASS CANNOT TYPE: every seat-rooted argument is
-    // taken as written — the conservative side, so the never-written
-    // warning never contradicts the seat law at a call. A subject it
-    // CAN type names its callee, or has none with a seat to write
-    // (a fn-typed field's seats are never `mut`).
-    if ty == null {
-        for a in mp.args { if writable(cx, a) { mark(cx, seat_of(cx, a)) } }
-        return
-    }
-    match callee_of(cx, ty!, mp.name) {
-        .Row(writes) -> if writes { mark(cx, seat) } else { nothing() },
-        .Method(d) -> {
-            flow(cx, seat, d, 0)
-            feed(cx, d, mp.args, 1)
-        }
-        .Static(d) -> feed(cx, d, mp.args, 0),
-        .FnSeats(held) -> feed_marks(cx, held.muts, mp.args),
-        .Contract(d) -> {
-            if cx.decls.declares_writing(d) { mark(cx, seat) }
-            feed(cx, d, mp.args, 1)
-        }
-        .None -> nothing(),
-    }
-}
-
-/// Whether a handed place could be written through by a callee: a
-/// scalar is copied at the seat, so only a managed value — or one
-/// this pass cannot type — can carry a write back.
-fn writable(cx: Survey, a: ExprId) -> bool {
-    if measured(cx, a) { return false }
-    let ty: TypeId? = place_type(cx, a)
-    if ty == null { return true }
-    match cx.decls.types.shape_of(ty!) {
-        .Int or .Float or .Bytes or .Bool or .Str or .Null or .Void or .Ptr -> false,
-        .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Map(_, _) or
-        .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .EmptyList or .EmptyMap or .TypeName(_, _) or
-        .Var(_, _, _) or .Error -> true,
-    }
-}
-
-/// A MEASURED property (`xs.length`) — a scalar the vocabulary
-/// answers, never a slot: copied at any seat.
-fn measured(cx: Survey, a: ExprId) -> bool {
-    let step: PlaceStep? = cx.store.place_step(a)
-    if step == null { return false }
-    match step! {
-        .Field(subject, name) -> {
-            let holder: TypeId? = place_type(cx, subject)
-            holder != null && property_row(cx.ws.lang.rows.properties, name, cx.decls.types.shape_of(holder!)) != null
-        }
-        .Root(_) or .At(_, _) -> false,
-    }
-}
-
-/// Every argument rooted in a seat flows into the callee's seat it
-/// fills, the callee's seats numbered from `base` (1 past a
-/// method's own receiver seat). A CONTRACT's seat has no body to
-/// infer from: its declared `mut` is the write, by permission.
-fn feed(mut cx: Survey, callee: DeclId, args: List<ExprId>, base: int) {
-    let contract = under_trait(cx, callee)
-    for j, a in args {
-        if cx.decls.mut_seat(callee, base + j) {
-            if contract { mark(cx, seat_of(cx, a)) } else { flow(cx, seat_of(cx, a), callee, base + j) }
+impl Survey {
+    /// Every assignment in the range rooted in a seat writes it.
+    mut fn assigns() {
+        mut i = 0
+        let n = self.store.stmts.count()
+        while i < n {
+            let t: ExprId? = self.store.assign_target(StmtId { index: i })
+            if t != null && self.in_range(t!) { self.mark(self.seat_of(t!)) }
+            i = i + 1
         }
     }
-}
 
-/// `feed`'s twin over MARKS rather than a declaration's seats: a fn
-/// VALUE names no callee to flow into, so a marked seat MARKS its
-/// argument — the conservative answer, and the right one, since any
-/// fn of that type may fill the field.
-fn feed_marks(mut cx: Survey, muts: List<bool>, args: List<ExprId>) {
-    for j, a in args {
-        if marked(muts, j) { mark(cx, seat_of(cx, a)) }
+    fn in_range(e: ExprId) -> bool {
+        e.index >= self.lo && e.index < self.hi
     }
-}
 
-/// Whether a declaration is a trait's bodiless member — a sig; a
-/// DEFAULT has a body to infer from, like any method.
-fn under_trait(cx: Survey, d: DeclId) -> bool {
-    let parent: DeclId? = cx.decls.decl(d).parent
-    parent != null && cx.decls.is_trait(parent!) && !cx.decls.has_body(d)
+    /// The seat a place is rooted in — asked of the BINDING: the
+    /// receiver is seat 0, a parameter its own seat; null for a value
+    /// and for every other binding.
+    fn seat_of(e: ExprId) -> int? {
+        let root: ExprId? = self.store.place_root(e)
+        if root == null { return null }
+        let b: Binding? = self.names.binding(root!)
+        if b == null { return null }
+        match b! {
+            .Receiver -> 0,
+            .Param(i) -> i,
+            .Def(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
+        }
+    }
+
+    mut fn mark(seat: int?) {
+        if seat != null && seat! < self.own.length { self.own.set(seat!, true) }
+    }
+
+    mut fn flow(seat: int?, callee: DeclId, to: int) {
+        if seat != null { self.edges.push(Flow { from: seat!, callee: callee, to: to }) }
+    }
+
+    /// One expression's evidence: a method call on a seat-rooted place
+    /// (a mutating row, a declared method's edge, a contract's word),
+    /// and any call handing a seat-rooted place to a callee's seat.
+    mut fn site_evidence(e: ExprId) {
+        let mp: MethodParts? = self.store.method_parts(e)
+        if mp != null { return self.method_evidence(mp!) }
+        let callee: DeclId? = bound_decl_of(self.names, e)
+        if callee != null { return self.feed(callee!, self.call_args(e), 0) }
+        self.valued_evidence(e)
+    }
+
+    /// A call THROUGH A FN VALUE the pass can type — a fn-typed seat
+    /// called by name, or a seat-rooted place applied: no declaration
+    /// to flow into, so the value's marks mark their arguments, as a
+    /// fn-typed field's do.
+    mut fn valued_evidence(e: ExprId) {
+        let seat: int? = self.called_seat(e)
+        if seat != null && seat! < self.seats.length { return self.feed_marks(self.arrow_marks(self.seats[seat!]), self.call_args(e)) }
+        let ap: AppliedParts? = self.store.applied_parts(e)
+        if ap == null { return }
+        let ty: TypeId? = self.place_type(ap!.subject)
+        if ty != null { self.feed_marks(self.arrow_marks(ty!), ap!.args) }
+    }
+
+    /// The seat a named call reads its callee from, when the name is a
+    /// parameter.
+    fn called_seat(e: ExprId) -> int? {
+        if self.call_args(e).is_empty() { return null }
+        let b: Binding? = self.names.binding(e)
+        if b == null { return null }
+        match b! {
+            .Param(i) -> i,
+            _ -> null,
+        }
+    }
+
+    /// A fn type's marks — none for any other type.
+    fn arrow_marks(ty: TypeId) -> List<SeatMark> {
+        let held: Arrow? = self.decls.types.arrow_parts(ty)
+        if held == null { return [] }
+        held!.marks
+    }
+
+    /// A named call's arguments; empty for every other node.
+    fn call_args(e: ExprId) -> List<ExprId> {
+        // one arm answers — a projection over the core node
+        match self.store.expr(e) {
+            .Call(_, _, args) -> args,
+            _ -> [],
+        }
+    }
+
+    mut fn method_evidence(mp: MethodParts) {
+        let seat: int? = self.seat_of(mp.subject)
+        let ty: TypeId? = self.place_type(mp.subject)
+        // A SUBJECT THIS PASS CANNOT TYPE: every seat-rooted argument is
+        // taken as written — the conservative side, so the never-written
+        // warning never contradicts the seat law at a call. A subject it
+        // CAN type names its callee, or has none with a seat to write
+        // (a fn-typed field's seats are never `mut`).
+        if ty == null {
+            for a in mp.args { if self.writable(a) { self.mark(self.seat_of(a)) } }
+            return
+        }
+        match self.callee_of(ty!, mp.name) {
+            .Row(writes) -> if writes { self.mark(seat) } else { nothing() },
+            .Method(d) -> {
+                self.flow(seat, d, 0)
+                self.feed(d, mp.args, 1)
+            }
+            .Static(d) -> self.feed(d, mp.args, 0),
+            .FnSeats(held) -> self.feed_marks(held.marks, mp.args),
+            .Contract(d) -> {
+                if self.decls.declares_writing(d) { self.mark(seat) }
+                self.feed(d, mp.args, 1)
+            }
+            .None -> nothing(),
+        }
+    }
+
+    /// Whether a handed place could be written through by a callee: a
+    /// scalar is copied at the seat, so only a managed value — or one
+    /// this pass cannot type — can carry a write back.
+    fn writable(a: ExprId) -> bool {
+        if self.measured(a) { return false }
+        let ty: TypeId? = self.place_type(a)
+        if ty == null { return true }
+        match self.decls.types.shape_of(ty!) {
+            .Int or .Float or .Bytes or .Bool or .Str or .Null or .Void or .Ptr -> false,
+            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Map(_, _) or
+            .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .EmptyList or .EmptyMap or .TypeName(_, _) or
+            .Var(_, _, _) or .Error -> true,
+        }
+    }
+
+    /// A MEASURED property (`xs.length`) — a scalar the vocabulary
+    /// answers, never a slot: copied at any seat.
+    fn measured(a: ExprId) -> bool {
+        let step: PlaceStep? = self.store.place_step(a)
+        if step == null { return false }
+        match step! {
+            .Field(subject, name) -> {
+                let holder: TypeId? = self.place_type(subject)
+                holder != null && property_row(self.ws.lang.rows.properties, name, self.decls.types.shape_of(holder!)) != null
+            }
+            .Root(_) or .At(_, _) -> false,
+        }
+    }
+
+    /// Every argument rooted in a seat flows into the callee's seat it
+    /// fills, the callee's seats numbered from `base` (1 past a
+    /// method's own receiver seat). A CONTRACT's seat has no body to
+    /// infer from: its declared `mut` is the write, by permission.
+    mut fn feed(callee: DeclId, args: List<ExprId>, base: int) {
+        let contract = self.under_trait(callee)
+        for j, a in args {
+            if self.decls.seat_mark(callee, base + j).mutable {
+                let seat: int? = self.seat_of(a)
+                if contract { self.mark(seat) } else { self.flow(seat, callee, base + j) }
+            }
+        }
+    }
+
+    /// `feed`'s twin over MARKS rather than a declaration's seats: a fn
+    /// VALUE names no callee to flow into, so a marked seat MARKS its
+    /// argument — the conservative answer, and the right one, since any
+    /// fn of that type may fill the field.
+    mut fn feed_marks(marks: List<SeatMark>, args: List<ExprId>) {
+        for j, a in args {
+            if mut_mark(marks, j) { self.mark(self.seat_of(a)) }
+        }
+    }
+
+    /// Whether a declaration is a trait's bodiless member — a sig; a
+    /// DEFAULT has a body to infer from, like any method.
+    fn under_trait(d: DeclId) -> bool {
+        let parent: DeclId? = self.decls.decl(d).parent
+        parent != null && self.decls.is_trait(parent!) && !self.decls.has_body(d)
+    }
+
+    fn callee_of(ty: TypeId, name: string) -> Callee {
+        // A NAME IS TRANSPARENT AT A READ, and a writing row reached
+        // through one writes its receiver exactly as the shape's
+        // does — a survey blind to that infers "never writes".
+        let sh: Type = self.decls.types.seen_shape(ty)
+        match sh {
+            .List(_) or .Cell(_) or .Map(_, _) or .Bytes or .Str -> Callee.Row(row_writes(self.ws.lang.rows.methods, name, sh)),
+            .Struct(d, _) -> self.field_or_method(ty, d, name),
+            .Enum(d, _) -> self.declared_method(d, name),
+            .App(d, _, _) -> self.field_or_method(ty, d, name),
+            .Var(d, j, _) -> self.bounded_member(d, j, name),
+            .Dyn(d, _) -> self.contract_member(d, name),
+            .TypeName(d, _) -> self.static_member(d, name),
+            .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or
+            .EmptyList or .Error or .Void or .EmptyMap -> Callee.None,
+        }
+    }
+
+    /// A FN-TYPED FIELD ANSWERS BEFORE THE IMPL TABLE, as it does at
+    /// typing: the capability-record pattern puts a callee in a field,
+    /// and its `mut` seats write their arguments exactly as a declared
+    /// callee's do. Without this the write is invisible to the survey
+    /// and a `mut fn` that writes only through such a call is inferred
+    /// non-writing — silently.
+    fn field_or_method(ty: TypeId, d: DeclId, name: string) -> Callee {
+        let held: Arrow? = self.fn_field_arrow(ty, name)
+        if held == null { return self.declared_method(d, name) }
+        Callee.FnSeats(held!)
+    }
+
+    /// The arrow a fn-typed field of that name holds.
+    fn fn_field_arrow(ty: TypeId, name: string) -> Arrow? {
+        let ft: TypeId? = self.decls.field_type_named(ty, name)
+        if ft == null { return null }
+        self.decls.types.arrow_parts(ft!)
+    }
+
+    fn declared_method(d: DeclId, name: string) -> Callee {
+        let m: DeclId? = self.decls.method(d, name)
+        if m == null { return Callee.None }
+        Callee.Method(m!)
+    }
+
+    /// A TYPE NAME's callee: a `static fn` of its impl. A variant
+    /// construction names no callee — its payload is a value.
+    fn static_member(d: DeclId, name: string) -> Callee {
+        let m: DeclId? = self.decls.method(d, name)
+        if m == null { return Callee.None }
+        if !self.store.is_static(self.decls.decl(m!).stmt) { return Callee.None }
+        Callee.Static(m!)
+    }
+
+    /// A method on a BOUNDED type parameter: the bound's trait's member.
+    fn bounded_member(d: DeclId, j: int, name: string) -> Callee {
+        let tb = self.decls.tbounds(d)
+        if j >= tb.length || tb[j].ty == null { return Callee.None }
+        let tdecl: DeclId? = self.decls.trait_named(self.names, tb[j].ty!.name)
+        if tdecl == null { return Callee.None }
+        self.contract_member(tdecl!, name)
+    }
+
+    fn contract_member(tdecl: DeclId, name: string) -> Callee {
+        let member: DeclId? = self.decls.trait_member(tdecl, name)
+        if member == null { return Callee.None }
+        Callee.Contract(member!)
+    }
+
+    /// The declared type along a seat-rooted place: the seat's type at
+    /// the root, a field's declared type per field step, the element
+    /// per index step — null when a step names nothing declared.
+    fn place_type(e: ExprId) -> TypeId? {
+        let step: PlaceStep? = self.store.place_step(e)
+        if step == null { return null }
+        match step! {
+            .Root(_) -> self.root_type(e),
+            .Field(subject, name) -> self.field_type(self.place_type(subject), name),
+            .At(subject, _) -> self.element_type(self.place_type(subject)),
+        }
+    }
+
+    /// A root's declared type: the receiver's for `self`, the seat's
+    /// for a parameter, a local's from what it was bound to — when that
+    /// is a named call's answer, a construction, or a place — nothing
+    /// for any other binding.
+    fn root_type(e: ExprId) -> TypeId? {
+        let b: Binding? = self.names.binding(e)
+        if b == null { return null }
+        match b! {
+            .Receiver -> self.receiver,
+            .Param(i) -> if i < self.seats.length { self.seats[i] } else { null },
+            .Def(s) -> self.bound_type(s),
+            .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
+        }
+    }
+
+    /// What a `let`/`mut` holds, by its value's declared answer.
+    fn bound_type(s: StmtId) -> TypeId? {
+        let v: ExprId? = self.store.stmt_value(s)
+        if v == null { return null }
+        let value = v!
+        let placed: TypeId? = self.place_type(value)
+        if placed != null { return placed }
+        let callee: DeclId? = bound_decl_of(self.names, value)
+        if callee != null { return (self.decls.sig(callee!))?.fn_sig()?.ret }
+        let mp: MethodParts? = self.store.method_parts(value)
+        if mp == null { return self.constructed_type(value) }
+        let m = mp!
+        let subject: TypeId? = self.place_type(m.subject)
+        if subject == null { return null }
+        match self.callee_of(subject!, m.name) {
+            .Method(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
+            .Static(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
+            .FnSeats(held) -> held.answer,
+            .Contract(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
+            .Row(_) or .None -> null,
+        }
+    }
+
+    /// A construction's type — the record it names, in the file's
+    /// namespace.
+    fn constructed_type(v: ExprId) -> TypeId? {
+        let name: string? = self.store.struct_lit_name(v)
+        if name == null { return null }
+        let d: DeclId? = self.names.names.types.get(name!)
+        if d == null { return null }
+        self.decls.self_type_of(d!)
+    }
+
+    fn field_type(holder: TypeId?, name: string) -> TypeId? {
+        if holder == null { return null }
+        self.decls.field_type_named(holder!, name)
+    }
+
+    fn element_type(holder: TypeId?) -> TypeId? {
+        if holder == null { return null }
+        match self.decls.types.shape_of(holder!) {
+            .List(elem) -> elem,
+            _ -> null,
+        }
+    }
 }
 
 /// What a name on a shape calls: the vocabulary's row, a declared
@@ -255,156 +444,14 @@ enum Callee {
     None
 }
 
-fn callee_of(cx: Survey, ty: TypeId, name: string) -> Callee {
-    let sh: Type = cx.decls.types.shape_of(ty)
-    match sh {
-        .List(_) or .Map(_, _) or .Bytes or .Str -> Callee.Row(row_writes(cx.ws.lang.rows.methods, name, sh)),
-        .Struct(d, _) -> field_or_method(cx, ty, d, name),
-        .Enum(d, _) -> declared_method(cx, d, name),
-        .App(d, _, _) -> field_or_method(cx, ty, d, name),
-        .Var(d, j, _) -> bounded_member(cx, d, j, name),
-        .Dyn(d, _) -> contract_member(cx, d, name),
-        .TypeName(d, _) -> static_member(cx, d, name),
-        .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or
-        .EmptyList or .Error or .Void or .EmptyMap -> Callee.None,
+impl Workspace {
+    /// A method's receiver type: its impl's target's instance type —
+    /// null for a free fn, a trait's sig, and a method whose impl was
+    /// refused.
+    fn receiver_type(x: Decl) -> TypeId? {
+        if x.parent == null { return null }
+        let target: DeclId? = self.decls.target_of(x.parent!)
+        if target == null { return null }
+        self.decls.self_type_of(target!)
     }
-}
-
-/// A FN-TYPED FIELD ANSWERS BEFORE THE IMPL TABLE, as it does at
-/// typing: the capability-record pattern puts a callee in a field,
-/// and its `mut` seats write their arguments exactly as a declared
-/// callee's do. Without this the write is invisible to the survey
-/// and a `mut fn` that writes only through such a call is inferred
-/// non-writing — silently.
-fn field_or_method(cx: Survey, ty: TypeId, d: DeclId, name: string) -> Callee {
-    let held: Arrow? = fn_field_arrow(cx, ty, name)
-    if held == null { return declared_method(cx, d, name) }
-    Callee.FnSeats(held!)
-}
-
-/// The arrow a fn-typed field of that name holds.
-fn fn_field_arrow(cx: Survey, ty: TypeId, name: string) -> Arrow? {
-    let sig: StructSig? = fields_of_type(cx.decls, ty)
-    if sig == null { return null }
-    let slot: int? = sig!.slot_of(name)
-    if slot == null { return null }
-    cx.decls.types.arrow_parts(sig!.types[slot!])
-}
-
-fn declared_method(cx: Survey, d: DeclId, name: string) -> Callee {
-    let m: DeclId? = cx.decls.method(d, name)
-    if m == null { return Callee.None }
-    Callee.Method(m!)
-}
-
-/// A TYPE NAME's callee: a `static fn` of its impl. A variant
-/// construction names no callee — its payload is a value.
-fn static_member(cx: Survey, d: DeclId, name: string) -> Callee {
-    let m: DeclId? = cx.decls.method(d, name)
-    if m == null { return Callee.None }
-    if !cx.store.is_static(cx.decls.decl(m!).stmt) { return Callee.None }
-    Callee.Static(m!)
-}
-
-/// A method on a BOUNDED type parameter: the bound's trait's member.
-fn bounded_member(cx: Survey, d: DeclId, j: int, name: string) -> Callee {
-    let tb = cx.decls.tbounds(d)
-    if j >= tb.length || tb[j].ty == null { return Callee.None }
-    let tdecl: DeclId? = trait_named(cx.decls, cx.names, tb[j].ty!.name)
-    if tdecl == null { return Callee.None }
-    contract_member(cx, tdecl!, name)
-}
-
-fn contract_member(cx: Survey, tdecl: DeclId, name: string) -> Callee {
-    let member: DeclId? = trait_member(cx.decls, tdecl, name)
-    if member == null { return Callee.None }
-    Callee.Contract(member!)
-}
-
-/// The declared type along a seat-rooted place: the seat's type at
-/// the root, a field's declared type per field step, the element
-/// per index step — null when a step names nothing declared.
-fn place_type(cx: Survey, e: ExprId) -> TypeId? {
-    let step: PlaceStep? = cx.store.place_step(e)
-    if step == null { return null }
-    match step! {
-        .Root(_) -> root_type(cx, e),
-        .Field(subject, name) -> field_type(cx, place_type(cx, subject), name),
-        .At(subject, _) -> element_type(cx, place_type(cx, subject)),
-    }
-}
-
-/// A root's declared type: the receiver's for `self`, the seat's
-/// for a parameter, a local's from what it was bound to — when that
-/// is a named call's answer, a construction, or a place — nothing
-/// for any other binding.
-fn root_type(cx: Survey, e: ExprId) -> TypeId? {
-    let b: Binding? = cx.names.binding(e)
-    if b == null { return null }
-    match b! {
-        .Receiver -> cx.receiver,
-        .Param(i) -> if i < cx.seats.length { cx.seats[i] } else { null },
-        .Def(s) -> bound_type(cx, s),
-        .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
-    }
-}
-
-/// What a `let`/`mut` holds, by its value's declared answer.
-fn bound_type(cx: Survey, s: StmtId) -> TypeId? {
-    let v: ExprId? = cx.store.stmt_value(s)
-    if v == null { return null }
-    let value = v!
-    let placed: TypeId? = place_type(cx, value)
-    if placed != null { return placed }
-    let callee: DeclId? = bound_decl_of(cx.names, value)
-    if callee != null { return fn_sig_of(cx.decls.sig(callee!))?.ret }
-    let mp: MethodParts? = cx.store.method_parts(value)
-    if mp == null { return constructed_type(cx, value) }
-    let m = mp!
-    let subject: TypeId? = place_type(cx, m.subject)
-    if subject == null { return null }
-    match callee_of(cx, subject!, m.name) {
-        .Method(d) -> fn_sig_of(cx.decls.sig(d))?.ret,
-        .Static(d) -> fn_sig_of(cx.decls.sig(d))?.ret,
-        .FnSeats(held) -> held.answer,
-        .Contract(d) -> fn_sig_of(cx.decls.sig(d))?.ret,
-        .Row(_) or .None -> null,
-    }
-}
-
-/// A construction's type — the record it names, in the file's
-/// namespace.
-fn constructed_type(cx: Survey, v: ExprId) -> TypeId? {
-    let name: string? = cx.store.struct_lit_name(v)
-    if name == null { return null }
-    let d: DeclId? = cx.names.names.types.get(name!)
-    if d == null { return null }
-    self_type_of(cx.decls, d!)
-}
-
-fn field_type(cx: Survey, holder: TypeId?, name: string) -> TypeId? {
-    if holder == null { return null }
-    let sig: StructSig? = fields_of_type(cx.decls, holder!)
-    if sig == null { return null }
-    let slot: int? = sig!.slot_of(name)
-    if slot == null { return null }
-    sig!.types[slot!]
-}
-
-fn element_type(cx: Survey, holder: TypeId?) -> TypeId? {
-    if holder == null { return null }
-    match cx.decls.types.shape_of(holder!) {
-        .List(elem) -> elem,
-        _ -> null,
-    }
-}
-
-/// A method's receiver type: its impl's target's instance type —
-/// null for a free fn, a trait's sig, and a method whose impl was
-/// refused.
-fn receiver_type(ws: Workspace, x: Decl) -> TypeId? {
-    if x.parent == null { return null }
-    let target: DeclId? = ws.decls.target_of(x.parent!)
-    if target == null { return null }
-    self_type_of(ws.decls, target!)
 }

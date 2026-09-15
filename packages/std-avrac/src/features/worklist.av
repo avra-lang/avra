@@ -4,21 +4,280 @@
 //! worklist (a fresh value in its context, handed back with the
 //! body), so an enqueue is a write in place, never through a shared
 //! box; `seen` keys by mangled name, once per body.
-use core.{ExprId, TypeId, DeclId, FileId}
+use core.{ExprId, TypeId, DeclId, FileId, StmtId, TypeRef, Param, Span, joined, filled, Static}
+use @std.errors.{Loc}
+
+/// A settled (`const`) seat's VALUE carried into the unit it selects:
+/// the seat's index (past a method's receiver), its fingerprint (the
+/// settlement key), and the value the unit's own consts read — the
+/// crossing tree every compile-time value already travels as, so a
+/// forwarded or aggregate seat binds exactly like a scalar.
+export type SeatValue = { index: int, fp: string, ty: TypeId, value: MetaVal, heap: MetaHeap }
 
 /// One body WANTED — the unit of lowering: a declaration's body (or
 /// a file's main, when `decl` is absent), under concrete Vars when
 /// it is generic, named by its symbol or mangling, in its file.
-export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub? }
+export type Wanted = { file: FileId, decl: DeclId?, name: string, sub: Sub?, seats: List<SeatValue> = [], root: ExprId? = null }
+
+/// What a settlement may spend: instructions, and bytes of the
+/// compiler's own heap it holds. The defaults are MEASURED — the
+/// largest settlement in the compiler's derives and every gated
+/// program, times ten (design §4.4 names the run) — and a package
+/// raises either under `[lifted]` in its manifest.
+export type Budgets = { steps: int, bytes: int }
+
+export const default_steps: int = 600000
+export const default_memory_mib: int = 5
+
+export fn budgets_of(steps: int?, memory_mib: int?) -> Budgets {
+    Budgets { steps: steps ?? default_steps, bytes: bytes_of_mib(memory_mib ?? default_memory_mib) }
+}
+
+/// MiB as bytes, SATURATING: a count past what bytes can hold means
+/// no ceiling, never a wrapped one that refuses everything.
+fn bytes_of_mib(mib: int) -> int {
+    if mib > mib_ceiling { return mib_ceiling * 1048576 }
+    mib * 1048576
+}
+
+/// The most MiB a byte count holds.
+const mib_ceiling: int = 8796093022207
+
+/// Why a const did not SETTLE — three laws, each its own voice: the
+/// value reached the world, ran past its budget, or trapped. And
+/// `Spoken`: an earlier read already said so, and this one is silent.
+export enum Unsettled { Reach(string), Budget(string), Trap(string), Param(string), Spoken }
+
+impl Unsettled {
+    /// Why, in the words a refusal's label carries.
+    fn words() -> string {
+        match self {
+            .Reach(label) -> label,
+            .Budget(label) -> label,
+            .Trap(words) -> words,
+            .Param(runtime) -> "reads `${runtime}`",
+            .Spoken -> "",
+        }
+    }
+}
+
+/// What a settlement runs: a `const`'s initializer, or an expression
+/// of its own — a `const` seat's argument, spelled from literals and
+/// consts, settled so the unit keys on its VALUE.
+export enum SettleRoot {
+    Const(StmtId)
+    Expr(ExprId)
+}
+
+/// The unit a const's initializer lowers as, named for its statement.
+export fn const_symbol(f: FileId, s: StmtId) -> string {
+    "const$${f.index}$${s.index}"
+}
+
+/// A const's PER-UNIT name: its plain symbol, plus the settled seats'
+/// fingerprints when a unit fixes them. The settlement key AND the
+/// materialized unit's name — so one unit's settled value never serves
+/// another.
+export fn settled_symbol(base: string, seats: List<SeatValue>) -> string {
+    if seats.is_empty() { return base }
+    "${base}@${joined([sv.fp for sv in seats], "_")}"
+}
+
+/// A settled SEAT's static data, named by the seat's type and its
+/// value's fingerprint — one layout per value, however many units
+/// read it.
+export fn seat_symbol(ty: TypeId, fp: string) -> string {
+    "seat$${ty.index}$${fp}"
+}
+
+/// A generated declaration's table key — under no WRITTEN name can
+/// collide, so a twin mints once and re-minting is identity.
+/// `name` is the generated fn's TWIN name.
+export fn generated_key(f: FileId, name: string) -> string {
+    "generated$${f.index}$${name}"
+}
+
+/// The unit an expression lowers as on its own — an annotation's
+/// argument, settled like a const's value.
+export fn expr_symbol(f: FileId, e: ExprId) -> string {
+    "expr$${f.index}$${e.index}"
+}
+
+/// A value CROSSING between the compiler and a lifted call: scalar,
+/// text and absence by value; records and lists as NODEs; maps as
+/// ordered key/value rows. A record's slots and a list's elements
+/// share one shape because the evaluator represents both alike.
+export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, Node(int), Map(int) }
+
+export type MetaMap = { keys: List<string>, values: List<MetaVal> }
+
+export type MetaHeap = { nodes: List<List<MetaVal>>, maps: List<MetaMap> }
+
+/// One transport for every value that crosses out of the evaluator.
+/// Const settlement and lifted calls share this type-driven tree.
+export type Settled = { answer: MetaVal, heap: MetaHeap, embeds: List<string> = [], fingerprint: int }
+
+/// What a LIFTED call answered, with the heap its records live in —
+/// the crossing's answer side, shared by validation and generated
+/// declarations.
+export type Lifted = { answer: MetaVal, heap: MetaHeap }
+
+/// A settlement query's held answer. A refusal remains in full for
+/// fingerprinting; repeated reads turn it into silent `Spoken`.
+export enum Settlement { Held(Settled), Refused(Unsettled) }
+
+export fn new_meta_heap() -> MetaHeap { MetaHeap { nodes: [], maps: [] } }
+
+impl MetaHeap {
+    /// A record or list of these values, as the node that names it.
+    fn node(slots: List<MetaVal>) -> MetaVal {
+        self.nodes.push(slots)
+        MetaVal.Node(self.nodes.length - 1)
+    }
+
+    fn map(keys: List<string>, values: List<MetaVal>) -> MetaVal {
+        self.maps.push(MetaMap { keys: keys, values: values })
+        MetaVal.Map(self.maps.length - 1)
+    }
+
+    /// A value from another crossing heap copied into this one,
+    /// rebasing every nested handle as it crosses.
+    fn adopt(from: MetaHeap, v: MetaVal) -> MetaVal {
+        match v {
+            .Node(id) -> self.node([self.adopt(from, x) for x in from.nodes[id]]),
+            .Map(id) -> {
+                let row = from.maps[id]
+                self.map(row.keys, [self.adopt(from, x) for x in row.values])
+            },
+            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Absent -> v,
+        }
+    }
+
+    fn slots(v: MetaVal) -> List<MetaVal> {
+        match v {
+            .Node(id) -> self.nodes[id],
+            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Absent or .Map(_) -> [],
+        }
+    }
+}
+
+/// What a lifted call SAID about a declaration: one diagnostic, in
+/// the annotation's own words, at the place it chose. A WARNING is
+/// the declaration's word for its users, kept and spoken at each use.
+export type Said = { message: string, help: string?, at: Loc?, warning: bool, kind: string? = null }
+
+/// A DIRECTIVE a Declares annotation asked the compiler to fulfil —
+/// a fn's wrapped twin, an impl's projection. The compiler's own
+/// view of the crossing: `@std/meta`'s spellable `Directive` ships
+/// the same fields; the materializer mints a twin from them. (NOT
+/// `Decl` — that is the compiler's own declaration record.)
+export type Directive = { twin: string, name: string, at: Loc?, source: Generated }
+
+/// WHAT A DIRECTIVE'S `source` CROSSED AS. Absence and failure are
+/// DIFFERENT VALUES and `Node?` spent one on both: a directive that
+/// declares no source and one whose source this compiler cannot read
+/// answered alike, and the second generated nothing with nobody told.
+export enum Generated {
+    /// the directive asks for no declarations
+    None
+    Made(node: Node)
+    /// the value is there and this compiler cannot read it — the two
+    /// `Node` enums agree by the VARIANT'S NAME, so a name it does
+    /// not mirror is an `@std/meta` it was not built against
+    Foreign
+}
+
+/// Generated code as a tree — the compiler's view of `@std.meta.Node`,
+/// variant for variant. A `Template` names a quote (the file that
+/// wrote it, the offset it starts at) and carries its fills; the
+/// body is that quote's own, in that file's store.
+export enum Node {
+    Template(file: string, at: int, parts: List<string>, fills: List<Node>)
+    Name(text: string)
+    Text(text: string)
+    Int(value: int)
+    Float(bits: int)
+    Bool(value: bool)
+    Interp(parts: List<string>, holes: List<Node>)
+    Many(items: List<Node>)
+}
+
+/// Where a generated node was WRITTEN: in the file it stands in (a
+/// hole's fill, a hole-named node) or in the file whose template it
+/// was copied from.
+export enum Origin {
+    Here
+    Written(file: FileId)
+}
+
+/// A file's generated nodes' origins, dense by arena index — a node
+/// past the table's end is written here.
+export type Origins = { exprs: List<Origin>, stmts: List<Origin>, pats: List<Origin> }
+
+export fn no_origins() -> Origins { Origins { exprs: [], stmts: [], pats: [] } }
+
+impl Origins {
+    /// The origin at an index, when the table reaches it.
+    fn at(rows: List<Origin>, i: int) -> FileId? {
+        if i >= rows.length { return null }
+        match rows[i] {
+            .Written(f) -> f,
+            .Here -> null,
+        }
+    }
+
+    /// The table grown to hold `i`, then set — the filler is `Here`.
+    fn set_at(rows: List<Origin>, i: int, o: Origin) -> List<Origin> {
+        mut grown = if i < rows.length { rows } else { rows.concat([Origin.Here for j in rows.length..i + 1]) }
+        grown.set(i, o)
+        grown
+    }
+}
+
+/// A half-open run of arena indexes.
+export type IndexRange = { lo: int, hi: int }
+
+/// The arenas' counts at one moment — where a generation's nodes
+/// begin, and where they end.
+export type ArenaMarks = { exprs: int, stmts: int, pats: int }
+
+impl ArenaMarks {
+    /// The ranges between this moment and a later one.
+    fn until(after: ArenaMarks) -> List<IndexRange> {
+        [IndexRange { lo: self.exprs, hi: after.exprs }, IndexRange { lo: self.stmts, hi: after.stmts }, IndexRange { lo: self.pats, hi: after.pats }]
+    }
+}
+
+/// One admitted GENERATION of a file: the arena ranges its nodes
+/// occupy and the annotation that asked for it. Where each node was
+/// WRITTEN is the node's own fact (`Decls.origin_of`).
+export type Generation = { exprs: IndexRange, stmts: IndexRange, pats: IndexRange, at: Span? }
+
+/// A record under a seat: one slot per field, in the seat's own
+/// order, filled by NAME from a keyed map — the one WRITE across the
+/// meta boundary; absence for a name the map does not carry. The
+/// reader (`field_of`) agrees by the name, never by a position.
+export fn meta_row(heap: MetaHeap, shape: StructSig, filled: Map<string, MetaVal>) -> MetaVal {
+    heap.node([filled.get(n) ?? MetaVal.Absent for n in shape.names])
+}
+
+/// Where a generated declaration came from — the annotation fn that
+/// asked for it, the declaration it wraps, the annotation's site, and
+/// the template that wrote it.
+export type Provenance = { ann: string, original: string, at: Span?, template: Loc? = null }
+
+/// One generated fn's materializer inputs, gathered from a written
+/// declaration and its Declares annotation.
+export type DeclareWork = { ann: DeclId, stmt: StmtId, callee: ExprId, args: List<ExprId>, ret: TypeId, tparams: List<Param>, params: List<Param>, answer: TypeRef, original: string, at: Span? }
 
 /// One body's worklist: the bodies it wants, the lambdas it lifted,
 /// the wrappers it minted, and the names it has already asked for.
-export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, externs: List<string> }
+export type Jobs = { pending: List<Wanted>, seen: Map<string, bool>, lifts: List<Lift>, wraps: List<Wrap>, statics: List<Static>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> }
 
 /// A fresh worklist over the program's extern symbols — what every
 /// body's emitter refuses an unknown callee against.
-export fn new_jobs(externs: List<string>) -> Jobs {
-    Jobs { pending: [], seen: {}, lifts: [], wraps: [], externs: externs }
+export fn new_jobs(externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> Jobs {
+    Jobs { pending: [], seen: {}, lifts: [], wraps: [], statics: [], externs: externs, settle: settle }
 }
 
 /// A NAMED fn boxed as a value calls through a generated WRAPPER

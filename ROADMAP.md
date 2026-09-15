@@ -7086,6 +7086,1258 @@ additions get siblings, nothing changes shape:
       to merge a tree that changed under the gate. Worth designing
       rather than patching.
 
+- [ ] A TRAP NAMES ITS SITE, AND A COUNT-BORN TABLE IS GUARDED. The
+      2026-09-11 feedback survey (lane/comptime) found the highest-cost
+      friction in the slice: two `index N out of bounds (length M)`
+      aborts that named no file, pass or declaration (roughly two
+      hours bisecting with hand-added prints; `lldb` named the fault in
+      minutes), a `defect:` that read `family 5 key 0` instead of
+      `Resolved`/file 0, and a debug print that cost an extern
+      declaration (F3017, module-wide). The capability: every
+      `avra_trap` / `trap_bounds` / `missing_value` prints the current
+      PASS and the declaration in hand, a `--trace-passes` breadcrumb,
+      and a keeper that names a per-file table sized from
+      `store.exprs.count()` or `store.stmts.count()` at pass start —
+      the class that bit TWICE in one slice and was found only by
+      lldb. FIRES when the next bounds abort costs more than a minute
+      to localize, or at the next pass added, whichever comes first.
+      Evidence: ROADMAP "Feedback survey — 2026-09-11".
+
+## Feedback survey — 2026-09-14 (NAMED TYPES, comptime/types)
+
+One slice on 9d0f331: `type Name = Shape` — a DISTINCT named type
+over any shape, the design doc's §7 q1 law landed whole
+(docs/2026_09_14_NAMED_TYPES.md). Gate green, idioms debt 0, fixed
+point identical, seed refreshed. Everything below was met writing it;
+nothing was surveyed outside this worktree, and no other lane's tree
+was read.
+
+### FRICTION — what cost time
+
+- **A SPEC CASE CANNOT PRINT.** Twenty-two `shown(...)` cases went red
+  while every CLI probe of the same source passed, and a spec case
+  answers a bool — so there was no way to see what `analyze_source`
+  actually said. The debug loop was: build a THROWAWAY PACKAGE
+  depending on `@std/avrac`, write `println(a.report())` into its
+  entry, `avra build` it, run it. ~25 minutes and three heavy builds
+  for one question. EVIDENCE: /tmp/avra-probes/dbg, built twice
+  because the first copy was a generation behind the fix. THE ASK: a
+  failing spec case should print the two sides it compared, as a
+  program test's diff does — or `avra test --explain <case>` should
+  re-run one case with its intermediate values shown.
+- **A PROGRAM TEST INSIDE THE TREE CANNOT BE RUN BY HAND.** `./avra
+  run packages/.../tests/named/named.av` reads the file as a MODULE
+  of std-avrac and answers F0902 once per statement. Every iteration
+  went through a `cp` to /tmp. THE ASK: `avra run` on a file the
+  harness would treat as a program test should treat it as one.
+- **THE PRODUCT AND THE PROBE GO STALE SEPARATELY.** A debug package
+  built against `@std/avrac` keeps the OLD compiler's behaviour until
+  it is rebuilt, and nothing says so — one round was spent concluding
+  a fix had not worked when the probe was simply a generation behind.
+  THE ASK: nothing structural; the entry belongs in the working
+  discipline (below).
+
+### SUGAR — a construct the language should have
+
+- **AN IDEMPOTENT CONVERSION.** `Name(v)` where `v` already wears the
+  name refuses ("argument 1 of `A` wants `int`, found `A`"), so a
+  generic-ish helper that normalises its input cannot write
+  `Rows(xs)` unconditionally. WANTING SITE: the first draft of
+  `named_managed.av`'s `widened`. The ask is small — accept the
+  identity conversion, or refuse it in its own words ("`xs` is
+  already a `Rows`").
+- **A PAIRED COMPREHENSION**, confirmed again (already filed, I3
+  licences): `[f(j, p) for j, p in ps]` does not parse, so
+  `seat_words` and three sites in this slice kept accumulator loops.
+- **A `mut` METHOD ON A NAMED TYPE'S SHAPE WITHOUT AN IMPL.**
+  `rows.push(v)` works; `rows.sorted()` does not exist because the
+  LIST has no such verb. Not this slice's ask, but the named type
+  makes the gap visible: a name is where a user would naturally hang
+  the verb, and `impl Rows { … }` is the answer — which works today.
+  Confirmation, not a new row.
+
+### FEATURES — a capability, larger than sugar
+
+- **A NAME OVER AN ENUM SHOULD FORWARD `match` AND `is`.** `type K =
+  Color` declares, constructs and compares; `k is .Red` refuses
+  cleanly. Forwarding needs `variants_of_type` and `fields_of_type`
+  to see through, which also lets `K { … }` and `w with { … }` reach
+  a shape the LAYOUT laws do not follow — so it is a slice, not a
+  line. RECORDED TRIGGER below.
+- **A NAMED CONSTRUCTION AT A `const` SEAT.** `seat(A(3))` is F2073:
+  the settled-seat law reads the SOURCE, and `A(3)` is a call. The
+  fix is to teach `literal_meta` that a named construction over a
+  literal is source-spelled. RECORDED TRIGGER below.
+
+### DEFECTS — the compiler blaming itself
+
+All four were found IN THIS SLICE, by the red team, and all four are
+fixed with a permanent case in `named_adversarial_test.av`:
+
+- **A DOUBLE RELEASE AT THE IDENTITY PACK.** A fn answering a named
+  value released the part and handed the caller freed memory. The
+  ENGINES DISAGREED ON THE VALUE while agreeing on the verdict — `xq`
+  evaluated, empty natively — and `AVRA_RC_GUARD=1` named it
+  ("released an already-dead box"). CAUSE: `Ins.Pack` was read as a
+  VIEW; the outermost scope's yield carries the reference the scope
+  already holds, so a pack that owns nothing leaves the answer dead.
+- **A ROW READING A RECEIVER IT COULD NOT SEE THROUGH.** `Counts.get`
+  over `type Counts = Map<string, int>` answered the ABSORBING error
+  type with NO diagnostic — a clean analysis that then wrecked the
+  run ("defect: a non-string reached text"). CAUSE: `value_held` read
+  `shape_at`, which answers `.Struct` for every named value.
+- **A NULLABLE'S LAYOUT READ OFF THE BARE SHAPE.** `type Maybe =
+  string?` took the scalar-pair representation and text came out of a
+  register holding a pointer.
+- **THE PROGRAM'S ANSWER LAW.** A named answer refused with "no text
+  projection yet" though its value is an int.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **A LAW IS NOT APPLIED UNTIL ITS LIST IS ENUMERATED.** The slice's
+  own sentence names the READS — "a property, a method, an index, a
+  `for` head, an interpolation hole" — and a LITERAL PATTERN is one
+  and was not on the list, so `match id { 5 -> … }` over a `UserId`
+  refused F2038 "a `int` never matches `UserId`". FOUND IN REVIEW,
+  not by the red team, which had attacked every vocabulary a name can
+  stand over and never written a pattern. THE LESSON: a law stated as
+  a LIST is applied by ENUMERATING the sites, not by reading the
+  list — the gap is invisible to anyone holding the same list.
+- **A REFUSAL THAT NAMES A RELATIONSHIP THAT DOES NOT EXIST.** One
+  voice served every mixed operand, so `A == B` (two names over
+  `int`) said "a named type never mixes with its SHAPE" and offered
+  `A(b)` — a wrap that cannot be honest, because `B` is not `A`'s
+  shape. FOUND IN REVIEW. Three refusals now, chosen by what the
+  OTHER side is. THE LESSON: when a voice takes one argument and the
+  truth depends on two, it will be wrong on some pair — and the pair
+  it is wrong about is the one nobody wrote a case for.
+- **A CLOSER NEVER CONTINUES A LINE** — new, filed in CLAUDE.md.
+  `>` was in the lexer's continuation set and closes a type argument
+  list, so `type Rows = List<int>` swallowed the statement below it.
+  No statement in the tree had ever ENDED in `>` (a trait's bodiless
+  `fn a() -> List<T>` does, and parsed only because a `}` supplied
+  its END), so the rule had never been tested.
+- **A NAMED TYPE'S MARK IS MADE AT ITS DECLARATION** — the flat law's
+  own declaration-ORDER hazard, one type over, filed in CLAUDE.md.
+  The CLI signs types first and every probe was green;
+  `analyze_source` types the entry first and refused every literal
+  fill. ONE TREE, TWO ANSWERS — and the CLI is the instrument a lane
+  reaches for first, so the hazard hides behind a green probe.
+- **THE FLAT LAW'S COMMENTS WERE STALE THE MOMENT IT GENERALISED.**
+  `flat_fields`, `mark_flat` and `unflatten` each said "a record of
+  scalars, which rides REGISTERS and holds no reference" — true of
+  every flat record that existed, and false of the first one that
+  did not. Rewritten in the same change that generalised them.
+- **A "VIEW" AND AN "OWNER" ARE NOT THE ONLY TWO ANSWERS.**
+  `view_of` and `managed_dst` disagreed about `Extract` for as long
+  as no flat record was managed, and the disagreement read as a bug
+  in one of them. It was not: `Extract` IS a view and `Pack` IS an
+  owner, and they share a shape only by accident.
+
+### PERFORMANCE — a measured cost
+
+- **THE SEE-THROUGH DOOR COSTS 0.1–0.2%**, measured. `make census
+  CMD="check packages/std-cli"`, same compiler generation, HEAD's
+  source as the control (stash, `make avra`, census, pop):
+
+      control  19,581,050 retains  23,476,926 releases  14,867,956 list reads
+      slice    19,609,090 retains  23,505,650 releases  14,898,556 list reads
+      delta        +28,040 (+0.14%)   +28,724 (+0.12%)     +30,600 (+0.21%)
+
+  The cost is one list index and a null test inside `element`,
+  `carried`, `cell_inner`, `res_parts`, `arrow_parts` and
+  `rides_pointer`. No allocation was added. Gate peak moved inside
+  its usual band (679–802 MB across the slice's runs).
+
+### PROCESS — the working discipline itself
+
+- **KEEP: the front-end ladder, exactly as written.** `cp build/avra
+  build/avra.pre`, build twice, `cmp`. The grammar change compiled
+  happily on the first build and the `>` defect appeared only on the
+  second — the "build that succeeded was the build that lied", on
+  schedule.
+- **KEEP: `AVRA_RC_GUARD=1` on a small native program.** It named the
+  double release in one run, after the differential had already gone
+  green on the interpreter. The guard is the only instrument that saw
+  it.
+- **ADD TO THE DISCIPLINE: A PROBE PACKAGE IS A PRODUCT TOO.** A
+  debug package built against `@std/avrac` carries the compiler
+  generation it was built with, and nothing says so. A round was lost
+  reading a stale probe as evidence that a fix had failed. Rebuild
+  the probe after every `make avra`, or treat its answer as dated.
+
+## Feedback survey — 2026-09-13 (COMPTIME STATIC, comptime/static)
+
+Three slices on acb3a93: static data for aggregate consts (025366f),
+budgets from measurement (7846d89), package-namespaced diagnostic
+kinds (uncommitted at survey time). Each red-teamed and reviewed;
+probes name the base `comptime/static` unless said otherwise. NOT
+SURVEYED: the templates lane's files, the sqlite packages beyond
+their gated suite, any lane but this one.
+
+### FRICTION — what cost time
+
+- A `mut`-SEAT WRITE-THROUGH SURFACED AS A NUMBER, NOT A CHANNEL.
+  The law-correct fix (open every `mut`-seat argument unique) trapped
+  the product's own `check` with "index 304 is out of bounds (length
+  303)" — an hour to learn the compiler's source rides that channel.
+  EVIDENCE: H3b (this ledger); the pre-fix product checking the same
+  source clean was the tell. THE ASK: a trap in the compiler's own
+  body names the BODY it trapped in (a symbol beside the index), so a
+  second-generation trap reads as "this body" rather than "the tree".
+- `./avra test <subdir>` RUNS THE WHOLE PACKAGE SUITE. A measurement
+  loop over 26 test subdirs ran the std-avrac suite 26 times and was
+  killed by the low-memory guard (10 GB swap). EVIDENCE: 165 identical
+  `settle:` lines per subdir in the measurement log. THE ASK: a subdir
+  argument runs that module's cases alone, or the runner says at the
+  top which suite it is about to run.
+- A PACKAGE-ROOT TEST RUN DROPS ITS CHILDREN'S STDERR: `./avra test
+  packages/std-avrac` printed no `settle:` line while a subdir run
+  printed 165 — the sharded runner does not forward a child's stderr.
+  THE ASK: forward it, or say the run is sharded.
+- A PROGRAM TEST INSIDE A PACKAGE CANNOT BE BUILT ALONE: `./avra build
+  <pkg>/src/…/tests/nested/nested.av` refused "move it into the entry"
+  (the file reads as a module of the package); a copy in scratch
+  built. THE ASK: `build` of a program-test file builds that program.
+- `avra explain @name` AND `explain process` NEVER SAW THE CALLER'S
+  PACKAGE: the `avra` shim `cd`s to the tree's root and `root_program
+  (".")` analysed the tree, so `explain @deprecated` from
+  packages/std-meta answered "no fn `deprecated` is declared in this
+  package" on the old product too. FIXED with task 3: the shim exports
+  `AVRA_CWD`, commands root at `here()`. Cost: two rebuilds and a
+  debug line to see `files=0`. THE ASK: a command's "here" is a
+  library verb, never a `.`.
+- `Cell` IS A BUILT-IN TYPE NAME (F3008), so the static slot enum was
+  renamed `Slot` after a full patch; F3008 fires only at check, not at
+  the declaration. Cost: a rename sweep. THE ASK: none — the refusal
+  was right; noting the name is reserved.
+
+### SUGAR — a construct the language should have
+
+- A NULLABLE SCALAR STRUCT FIELD (`{ steps: int? }`): F2008 "a struct
+  field cannot hold this yet". WANTING SITES: language/manifest.av's
+  `[lifted]` rows (resolved to defaults at read time instead), the
+  static-data red team's `optfield` fixture. CLAUDE.md "The subset
+  today" now carries the refusal. THE ASK: the pair repr in a slot (a
+  two-cell layout, or a boxed pair) so a record can carry `int?`.
+- UNARY MINUS ON A FLOAT LITERAL: `[1.5, -2.25]` is F2000 "`-` needs
+  `int` operands, found `float`". WANTING SITE: consts/tests/
+  static_shapes (spelled `0.0 - 2.25`). Base comptime/static.
+- A FOLD THAT READS ITS OWN ACCUMULATOR (`built.push(box_val(b,
+  built))`) has no comprehension form and is LICENSED I3 at
+  interp.av's `static_val`. THE ASK: a `fold`/`scan` verb over lists.
+
+### FEATURES — a capability, larger than sugar
+
+- (LANDED 2026-09-14, `every_expr` in core/nodes.av) ONE COMPLETE
+  EXPRESSION WALK. `post_order` walks
+  `kids`, and `if`/`match`/`catch`/nullable arms/lambda bodies hide
+  theirs; three consumers want the whole body: `runtime_read` (the
+  F0900 defect below), `reads_settled_seat`, and the package-kind
+  registry (`Program.kind_rows`, which therefore registers a
+  conditional `refuse_as` only by being spoken). Recorded trigger in
+  this ledger (the walk entry beside H3b). Owner unconfirmed.
+- A KINDED WARNING CONSTRUCTOR: `refuse_as`/`refuse_as_at` exist; a
+  warning with a kind is spelled as a literal `Diagnostic { …,
+  warning: true, kind: "W1" }` today. THE ASK: `warn_as(kind,
+  message)` in @std/meta — one line, when a warning wants a kind.
+- `avra explain` OVER A PACKAGE KIND analyzes the package it stands in
+  (a full analysis for one lookup). Fine today; the ask is the
+  registry cached per workspace revision when explain runs inside an
+  LSP.
+
+### DEFECTS — the compiler blaming itself
+
+- A CONST READING A RUN-TIME PARAMETER INSIDE A HIDDEN BRANCH:
+  `fn g(n: int) -> int { const C = if true { n } else { 0 }  C }` is
+  not refused F2074 and `./avra check` prints `error[F0900]: defect:
+  a compile-time value did not cross as `int`` (F0900). Pre-existing on
+  acb3a93; reproduced on comptime/static 2026-09-13. Fix: the
+  complete walk above.
+- H3b: A `mut` SEAT'S ARGUMENT IS NEVER OPENED (this ledger, beside
+  H3): a const's box and another binding's list written through a
+  `mut` local on BOTH engines; under static data the runtime now moves
+  a laid-out buffer's cells out rather than freeing the binary's
+  memory. Reproducer pinned in the entry.
+- THE ROOT PACKAGE HAD NO NAME IN THE DECLARATION TABLE: `package_of`
+  answered "" for a root module while the manifest named it, so a
+  kind spoken by a root package's annotation stood bare, and giving
+  the root its name in one read and not the other made the orphan-impl
+  law refuse every impl in the compiler's own cli (a second-generation
+  build refusing its own source). FIXED with task 3: `Decls.
+  package_named` is the one read; `impls_test` and the cli build pin
+  it.
+- A SETTLED STRING HOLDING A NUL WAS TRUNCATED NATIVELY (eval 3,
+  native 1): the string-constant seam measured with `strlen`. FIXED
+  025366f — the length crosses the seam (`avra_llvm_build_text`);
+  consts/tests/static_nul pins it on both engines.
+- A STATIC MAP PAST 11 KEYS HUNG NATIVELY: the lazy index was sized 16
+  regardless of keys. FIXED 025366f; consts/tests/static_map pins it.
+- `[lifted] memory = 9223372036854775807` WRAPPED NEGATIVE and refused
+  every settlement. FIXED 7846d89 (saturating MiB); manifest_test pins
+  it.
+- AN EMPTY OR NON-WORD KIND RENDERED `error[@acme/audit: ]`. FIXED
+  (task 3): a kind is a word, F2079 speaks in place of the verdict.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- CLAUDE.md gained: static data's law and the second-generation-trap
+  diagnostic step; the nullable-scalar-field subset entry. Design §4.4
+  carries the measured budgets and the run; §4.5 the static-data
+  landing; §7 q4/q5 decided.
+- "A COPY IS A COPY" IS STATED FOR PLACES AND NOT FOR SEATS: the
+  places doctrine (a write through a shared value clones) does not
+  say that a `mut` SEAT's argument is handed as read, so a copy of a
+  const handed to a `mut` seat writes the const. H3b names it; the
+  doctrine line belongs beside the borrow law once H3 closes.
+
+### PERFORMANCE — a measured cost
+
+- STATIC DATA (`make census CMD="check packages/std-avrac"`, task 1's
+  tree vs acb3a93): once reads 296,938 → 182,033; retains
+  4,675,242,720 → 4,650,927,372; releases 4,844,261,186 →
+  4,820,834,453. `AVRA_MEM_STATS=1` on a const program: every category
+  0 MB (nothing allocated for the consts; the `.ll` holds the globals).
+- THE ALWAYS-ON LIVE-BYTE COUNT (`avra_mem_live`, one add per alloc
+  and free): `check packages/std-avrac` under the watchdog 34.29 /
+  33.83 / 34.18 s with it on, 34.89 / 35.48 / 34.36 s with it gated —
+  inside the noise; `objdump` shows no leaf grew a prologue (the add
+  sits in bodies that already call malloc/free).
+- BUDGET MEASUREMENT: 164 distinct successful settlements across the
+  compiler's own checks and every package's test module; max 60,027
+  steps and 445,314 bytes (a 5,000-element const list); the compiler's
+  largest derive 3,824 steps (`Eq`), largest const 4,339 steps /
+  120,517 bytes (`builtin_codes`). Defaults set at ×10.
+
+### PROCESS — the working discipline itself
+
+- KEEP: `cp build/avra build/avra.pre` before every risky build — it
+  was the way back twice (the seat-fix trap; an accidental `git
+  checkout` of the runtime while timing).
+- KEEP: the pre-fix product checking the same source before reading a
+  second-generation trap as the tree's (now in CLAUDE.md).
+- CHANGE: `git checkout HEAD -- <file>` as a "restore" step in a
+  measurement script reverted a whole slice's runtime changes; a
+  measurement toggle is a patch and its inverse, never a checkout.
+- CHANGE: the two-commit split of one tree by hunk (task 1 vs task 2
+  shared six files) was done by inverting the second slice's patches
+  by hand; commit each slice before starting the next when the task
+  master allows.
+- NOTED: a lane's loop that runs a package suite per subdir is the
+  same bypass as three concurrent gates — it was serialized under the
+  lock and still took the machine to the low-memory guard.
+
+## Feedback survey — 2026-09-11 (lane/comptime)
+
+The first run of `/feedback` (`.claude/skills/feedback`): a survey of
+the two-tier namespace slice (S3f) — the compiler recovery, the
+`@traced` materializer, and the debugging it took. Every row carries
+its evidence; the base is `c48a4e6` unless noted. Counts: FRICTION 5,
+SUGAR 4, FEATURES 4, DEFECTS 3 (all fixed in the slice), DOCTRINE 2,
+PERFORMANCE 1, PROCESS 2.
+
+### FRICTION — what cost time
+
+- **A TRAP NAMES ITS SITE.** `index 5 is out of bounds (length 4)`
+  (the `decl_ids` table) and `index 12 is out of bounds (length 12)`
+  (the resolver's tables) aborted the compile with NO file, pass or
+  declaration. Roughly two hours went to bisecting with hand-added
+  `avra_eputs` prints; `lldb -o 'breakpoint set -n trap_bounds' -o bt`
+  named it in minutes (`TypeCx.decl_of` -> `avra_array_get_owned` ->
+  the unguarded read). THE ASK: `trap_bounds` / `missing_value` /
+  `avra_trap` print the current PASS and the declaration in hand, and a
+  `--trace-passes` breadcrumb keeps the last few pass entries reachable
+  from a backtrace. (Routed: FEATURES "a trap breadcrumb".)
+- **AN INTERNAL DEFECT NAMES ITS SYMBOL.** `defect: memo family 5
+  reused missing key 0` (query/memo.av:148) — family 5 is `Resolved`
+  and key 0 is file 0, but neither is named. THE ASK: the family's
+  registered NAME and the key's symbol, not two ints.
+- **A DEBUG PRINT NEEDS NO DECLARATION DANCE.** Adding `extern fn
+  avra_eputs(line: string)` to `features/decls.av` was F3017
+  "`avra_eputs` is declared twice in this module — here and in
+  `language/interp.av`": the extern wall is MODULE-wide, and a
+  `core`/`features` file cannot see the `language` module's row. THE
+  ASK: one always-available debug verb (a `core`-level `say` builtin),
+  so instrumenting a pass never edits an import or an extern.
+- **A SCRATCH PROBE OF AN IMPORTED FEATURE NEEDS A PACKAGE.** `use
+  @std.meta.{traced}` in a loose file is F3015 "this file is not in a
+  package — `use` needs a root", so every probe of the annotation had
+  to build a package dir (`tests/traced/`). THE ASK: a scratch/lone
+  mode (`avra check --root <pkg> <file>`), or a synthesized root for a
+  lone file that reaches a dependency by path.
+- **THE BUILD ADVANCES ONE GENERATION, SILENTLY.** `make avra`
+  compiles with the standing binary, so a front-end/lowering change
+  needs a SECOND build (CLAUDE.md doctrine) — and the FIRST build
+  PASSED while the new behavior was absent, which reads as "the fix
+  did not work". CONFIRMS the doctrine; the ask is a one-line "built
+  with generation N, source is N+1" notice.
+
+### SUGAR — a construct the language should have
+
+- **GROW A LIST TO SIZE.** `mint_generated` needs `decl_ids[f]` to
+  reach a new statement: `by_stmt.concat(filled<DeclId?>(n -
+  by_stmt.length, null))` (features/decls.av). THE ASK: `xs.resize(n,
+  v)` (a List method) so a sized table extends in one verb.
+- **A GUARD THAT STILL COUNTS ARMS.** The `is`-catch-all law
+  (CLAUDE.md) forced `match effect! { .Declares -> …, .Records or
+  .Validates -> false }` where `effect! is .Declares` was the obvious
+  draft (features/annotations/check.av). THE ASK: a spelling that
+  reads as a guard yet discharges the registry obligation — an
+  equality over a payload-free enum, or an `is` the compiler proves
+  exhaustive.
+- **INTERPOLATE A VALUE, NOT ONLY A SCALAR.** Instrumentation wanted
+  `${r.answer}` (a `MetaVal`); F2007 "an interpolation hole prints as
+  a scalar or string, found `MetaVal`". THE ASK: a derived `Show` (S4
+  `@derive`) reachable from interpolation, or a `--debug` form.
+- **SHORTEN THE IMPORT WALL.** Every new helper edits a 40-name `use
+  core.{…}` (language/workspace.av:17). THE ASK: a module-qualified
+  reference or a glob form, so a helper's home does not cost a
+  line-long edit.
+
+### FEATURES — a capability
+
+- **`avra explain` / `avra expand`** — wanted to SEE the generated
+  twin's AST and IR; already S3g (docs/2026_09_09_COMPTIME_DESIGN.md).
+  CONFIRMS the design; the survey adds the wanting site (debugging
+  `mint_generated`).
+- **DUMP ONE DECL'S IR WHILE ANOTHER IS BROKEN.** `avra ir` traps on
+  a bad program, so the twin's IR could not be read to check the mint
+  order. THE ASK: `avra ir <decl>` lowers only that declaration (or
+  prints what it can), so a broken sibling does not hide a good one.
+- **A TRAP BREADCRUMB ON EVERY PATH.** `avra_case_begin` is set only
+  by language/test_run.av, so a trap under `avra run`/`check` names
+  no case; the test runner proves the machinery works. THE ASK: every
+  driver announces the declaration/statement in hand, so a wreck names
+  where it died (FRICTION "a trap names its site", reused).
+- **A KEEPER FOR COUNT-SIZED TABLES.** The slice's two bounds bugs
+  were ONE class: a per-file table sized from `store.exprs.count()` or
+  `store.stmts.count()` at pass start, then a GENERATED node grows the
+  arena past it. THE ASK: a keeper that names a table born from a
+  count that can later grow, so the third instance is caught by `make
+  gate`, not by lldb.
+
+### DEFECTS — the compiler blaming itself (all fixed in the slice)
+
+- **`decl_ids` BORN BEFORE THE TWIN.** `decl_of` read past the table
+  (`TypeCx.decl_of` -> `index 5 out of bounds (length 4)`); fixed by
+  growing the table in `mint_generated`.
+- **RESOLVER TABLES BORN BEFORE THE EXPANSION.** `bindings` sized to
+  the pre-twin arena; fixed by materializing expansions in
+  `resolved(f)` before the resolver sizes its tables and resolving the
+  generated statements after the written ones.
+- **`@traced([1, 2])` -> `defect: memo family 5 reused missing key
+  0`.** Fixed into F2067: a `Declares` annotation reaches literals
+  only.
+
+### DOCTRINE
+
+- **THE DECLARES PHASE LAW** (new this slice): a name-generating
+  annotation runs inside the resolve its generated names serve, so its
+  arguments cross from the parse tree alone. Filed at CLAUDE.md "The
+  subset today", the design doc's S3f, and the sugar backlog.
+- **PROFILE, DON'T REASON, proved again.** Two hours of reasoning
+  about which table could not name it; the `lldb` backtrace did, in
+  minutes.
+
+### PERFORMANCE
+
+- **THE GATE'S PEAK** — `watch: peak ~600 MB` for `make gate` (the
+  compiler compiling itself). Recorded, not a new finding; the
+  instrument is `tools/watch.sh`.
+
+### PROCESS
+
+- **THE SEED IS A FOSSIL UNLESS REFRESHED.** Recovery took the
+  bootstrap ladder (CLAUDE.md, ROADMAP). `make seed-check` is now in
+  the gate and `make clean` preserves `build/avra`. CONFIRMS.
+- **`/feedback` IS A SKILL NOW.** This section is its first run; the
+  survey lands with the change that ran it.
+
+### ADDENDUM — S3g (`explain @name`), same day
+
+- **A CONDITIONAL PROGRAM NEED HAS NO CLEAN SHAPE.** `avra explain`
+  takes a registry key OR needs a program (`@name`). `phased`/`on_program`
+  read the `file` arg (`explain` has none), and `phased`'s act is
+  `fn(Program) -> Result<int,string>` — it cannot receive the name
+  argument. The workaround: `root_program(".")` and a name-only fn.
+  THE ASK: a command helper for "a program when the argument asks for
+  one", or a `phased` that passes the command's own args through.
+- **DOC COMMENTS ARE NOT STORED.** `avra explain @name` should print
+  the annotation fn's doc comment (§4.6), but the lexer drops them.
+  THE ASK: a doc-comment side table on the declaration.
+- **`explain @name` PRINTS THE SIGNATURE ALONE**, which is honest (the
+  signature IS the effect) but the doc half is owed. REMAINING S3g:
+  stored doc comments, now that `avra expand` + the node source
+  printer landed at `bc5a7a7`.
+- **A SAME-FILE `Declares` ANNOTATION WAS SILENT, AND IS REFUSED NOW.**
+  The provider-only guard (`declared_work`) skipped an annotation fn
+  that stood in the file it annotated — no twin, no diagnostic (found
+  writing the S3g test). Now `check_annotation` refuses it: "`gen`
+  generates declarations and stands in this file — declare the
+  annotation fn in another file". The boundary is honest: expanding
+  needs the annotation fn's signature, which needs this file's names,
+  which are the very thing being resolved.
+
+### ADDENDUM — S3g node source printer, same day (`bc5a7a7`)
+
+- **FEATURES — `AVRA EXPAND` NOW SHOWS THE FILE, CLOSED.** The earlier
+  survey's request is landed: `language/source_text.av` exhaustively
+  projects the AST, and `Program.expanded_source` inserts generated
+  declarations immediately after their annotated origins. Evidence:
+  `./avra expand …/annotations/tests/traced/src/main.av` printed the
+  written `sum`, its provenance, the
+  complete `sum_traced` wrapper, and the final expression.
+- **DEFECTS — TWO PRECEDENCE WRONG ANSWERS, FIXED.** Structural
+  round-trip tests first failed for `(-3).magnitude` (printed as
+  `-3.magnitude`) and `(a & b) | (c ^ d)` (printed without the groups
+  the mixed-bitwise law requires). `numeric` now gives a negative
+  folded literal unary precedence, and mixed bitwise left children
+  retain their group. Both witnesses are permanent in
+  `language/tests/source_text_test.av`.
+- **DOCTRINE — A SOURCE PROJECTION PROVES ITS TREE, NOT ONLY ITS
+  TEXT.** The printer suite reparses every fixture, reaches a textual
+  fixed point, and compares top-level statement fingerprints before
+  and after. This caught semantic regrouping that a pretty golden
+  alone would miss. The direct value-call witness also pins `(f)(1)`
+  so it never becomes declaration call `f(1)`.
+- **FRICTION / PERFORMANCE — CONFIRMED, ALREADY ROUTED.** Targeted
+  printer specs took about 20.5 s and peaked near 318 MB under
+  `tools/watch.sh`, while emitting the already-recorded F2047 warning
+  flood; the final gate peaked at 572 MB. F2047 remains routed to S2,
+  and the survey adds no duplicate backlog row.
+- **PROCESS — THE IDIOM KEEPER PAID FOR ITSELF.** The first gate found
+  11 violations in the new slice; all were removed with no baseline
+  increase, including quadratic interpolation assembly (now the
+  `@std/text` builder) and a hand-rolled DeclId comparison (now
+  `same_decl`). `make gate`: 2236/2236 compiler tests and 88 compiler
+  programs, plus both annotation programs, green.
+- **SUGAR, NEW FEATURE ASKS, OWNERSHIP, REFUSAL QUALITY:** swept; no
+  new evidence beyond the already-filed doc-comment, trap-breadcrumb,
+  and count-sized-table asks. The next S3g work is stored doc comments.
+
+### ADDENDUM — S3g stored doc comments, same day (`f868c2f`)
+
+- **FEATURES — DOC COMMENTS ARE STORED, PRINTED, AND EXPLAINED.** The
+  lexer retains a contiguous declaration-leading `///` group as its
+  LINES with the anchor `before` (the first token after the group);
+  `NodeStore.docs` holds it per statement, `statement_after` lands the
+  anchor on the earliest statement beginning at or after it, the source
+  projection re-emits the group above its declaration, and
+  `avra explain @name` appends it to the signature. The doc rides the
+  statement fingerprint, so a doc-only edit cannot be cut off by the
+  parsed-program memo. Evidence: `avra expand` reproduces all 31 doc
+  lines of `@std/meta/src/meta.av` and all 321 of
+  `language/workspace.av`, and a doc-bearing program is `eval == native`.
+- **DEFECTS — TWO SILENT DOC LOSSES, FOUND BY THE RED TEAM AND FIXED.**
+  (1) An EMPTY doc line vanished: the printer re-split a joined string,
+  and `split` drops a trailing empty segment while `""` splits to `[]`,
+  so `///` alone and a trailing `///` line were lost — the group is now
+  stored as lines, never round-tripped through a join. (2) An ordinary
+  comment between a doc group and its declaration DETACHED it, so
+  `/// doc` + `// LICENSED I23: …` + `fn` lost the doc — measured on the
+  compiler's OWN `grammar/lexer.av` (2 lines) and `features/mod.av` (5).
+  A comment is now transparent; only a BLANK line (or a non-declaration
+  token) detaches. `avra expand` on `grammar/lexer.av` now reproduces
+  all 122 doc lines (was 120). Witnesses:
+  `language/tests/docs_adversarial_test.av`, `grammar/tests/lexer_test.av`,
+  `language/tests/source_text_test.av`.
+- **DEFECT (OPEN, ATTRIBUTED, PRE-EXISTING AT `eb35bea`) — `avra
+  expand` ON A STATEMENT-LESS PROGRAM TRAPS.** `avra: index 0 is out of
+  bounds (length 0)`, exit 2, where the command's own guard says "the
+  program is empty". Reached by an empty file, a file holding only a
+  doc comment, an unclosed interpolation hole, and a CR-only file whose
+  single line is a comment. Attributed by stashing the doc work and
+  rebuilding at `eb35bea`, where it reproduces identically. THE ASK:
+  `Program.entry_file` answers null when no file was parsed, so
+  `expand`'s existing message speaks.
+- **LIMITATION, RECORDED (A DEADLINE, NOT A STYLE CHOICE) — DOCS WITH
+  NO TABLE ARE DROPPED.** A module's `//!`, an enum variant's and a
+  struct field's `///` are not retained: they are not
+  declaration-leading, and the printer walks statements. Measured over
+  the compiler's own source: `core/nodes.av` loses 158 doc lines (all
+  variant docs) and `features/mod.av` 5. The day `fmt` consumes the
+  projection it will DELETE those lines. Pinned by the
+  `docs_adversarial_test.av` row that must fail when the tables land.
+- **DOCTRINE — A FLAT JOIN IS NOT A ROUND TRIP WHEN THE TAIL IS EMPTY.**
+  An instance of CLAUDE.md's arity law: `join("\n")`/`split("\n")`
+  round-trips only while no line is empty; the empty tail is what
+  `split` spends, so the lens was discarded and the join kept as the
+  fingerprint key alone.
+- **SURVIVED (no finding).** 57 attack programs: every `///`-prefix
+  position (`/`, `//`, `//!`, `////`, `/// `, `///\t`, trailing after
+  tokens, inside `(`/`[` continuations, CRLF, CR-only, EOF, inside a
+  string, inside an interpolation hole); every cross-feature seat (fn
+  body, `while`/`match` arm, impl, trait, `spec`, `const`, `extern`,
+  `once`, `static`, a local `type`, struct/enum members); doc text
+  carrying keywords, `${}`, braces, quotes, semicolons, unicode and
+  trailing spaces (opaque and byte-preserved); ownership
+  (`AVRA_MEM_STATS=1 ./avra check` settles every category to zero at
+  exit); and refusal quality (zero `defect:` lines). One class is N/A:
+  a comment takes no value, so "every slot, every wrong type" has no
+  seats.
+
+## Feedback survey — 2026-09-11 #2 (lane/comptime, S3h–S4f)
+
+The second `/feedback` run: the slice that took `@deprecated` through a
+working `@derive(Show, Eq)` — quote literals, `${}` holes, generated
+source parsed into the asking file, and two shipped traits. Every row
+carries its evidence; the base is `c451cb0` plus this lane's commits
+unless noted. Counts: FRICTION 4, SUGAR 2 (+3 confirms), FEATURES 3,
+DEFECTS 4 (all fixed in the slice), DOCTRINE 4, PERFORMANCE 0 (empty),
+PROCESS 4.
+
+### FRICTION — what cost time
+
+- **A POISONED PRODUCT CANNOT REBUILD ITSELF, AND `make bootstrap` IS
+  NOT A CLEAN-BINARY TARGET.** A probe (`avra_trap`) left in an
+  analysis path fired during the compiler's SELF-compile, so `make
+  avra` aborted and left `build/avra` holding the probe; every retry
+  then aborted the same way. `make bootstrap` links the seed and THEN
+  runs `make avra`, so it too produced the probe binary. The only way
+  back was to link the seed by hand and keep it: `clang -w -O1
+  bootstrap/seed.ll build/llvm_wrapper.o build/avra_runtime.o
+  -L$LLVM_PREFIX/lib -lLLVM -o build/avra.clean`, then `cp
+  build/avra.clean build/avra` before each build. Cost: ~20 minutes
+  and several false "the fix did not work" reads. CONFIRMS the
+  `cp build/avra build/avra.pre` doctrine; THE ASK: a `make recover`
+  that links `bootstrap/seed.ll` and STOPS (no `make avra`), so a
+  clean compiler is one command. **LANDED** in this slice: `make
+  recover` is that target, and `make bootstrap` now depends on it.
+- **A DEBUG TRAP IN AN ANALYSIS PATH IS A TRAP ON EVERY BUILD.** The
+  compiler walks its own passes while compiling itself, so
+  `avra_trap("marker")` placed in `computed_marks` aborted the build.
+  THE ASK (the prior survey's "a debug print needs no declaration
+  dance", trap variant): a `core`-level debug verb that is a no-op
+  unless an env flag is set, so instrumenting a pass never breaks
+  `make avra`. **LANDED** in this slice: `core.debug` (`core/debug.av`)
+  over the runtime's `avra_debug`, live only under `AVRA_DEBUG`
+  (verified: a probe at `built` printed under `AVRA_DEBUG=1` and was
+  silent without).
+- **THE IDIOM BASELINE IS BY SITE, SO ANY NEARBY EDIT RE-FILES OLD
+  DEBT.** Refactoring `declared_work` moved a pre-existing I26
+  violation and `make idioms` reported it as NEW
+  (`workspace.av:948`, later `check.av:13`); no violation had
+  changed. CONFIRMS the baseline's design (CLAUDE.md: "sites, never
+  counts"); THE ASK: key a baseline entry by a stable identity (fn
+  name + the offending expression's text) so a line shift is not a
+  new debt.
+- **A KERNEL DEFECT NAMES NEITHER FAMILY NOR KEY.** Hit again this
+  slice: `defect: memo family 5 reused missing key 0`. It cost a
+  hand-built mental model until `lldb -o 'breakpoint set -n
+  avra_trap' -o bt build/avra` named the path (`crossed_fields` ->
+  `fields_of_type` -> `sig` -> `type_cx_for` -> `resolved`).
+  CONFIRMS the prior survey's row; the family was `Resolved`, key
+  file 0, and neither word appeared.
+
+### SUGAR — a construct the language should have
+
+- **A LIST SEAT FILLED BY MANY ARGUMENTS.** `@derive(Show, Eq)` should
+  hand one list seat two traits, but an annotation is arity-exact, so
+  `@std/meta.derive` takes ONE `Trait` and stacks. Wanting site:
+  `packages/std-meta/src/meta.av` (`derive(what: Named, tr: Trait)`).
+  FILED in the sugar backlog below; confirms.
+- **ESCAPING A LITERAL `${` IN A GENERATED STRING MISDIRECTS.** A
+  derive that wants the GENERATED code to interpolate writes
+  `"\${self.${f.name}}"`; forgetting the `\` is F3000 "`self.` is not
+  defined" pointing at the derive, not at the stray `${`. Wanting
+  sites: `packages/std-derive/src/derive.av`,
+  `packages/std-meta/src/meta.av`. THE ASK: a diagnostic at a `${`
+  with no binding that names the escape (`\${`), or a quote-aware
+  string. FILED in the sugar backlog below.
+- **TYPE ALIASES** would let `Named` and `Trait` share one shape
+  (`packages/std-meta/src/meta.av:73,76`). CONFIRMS the subset entry;
+  no new evidence.
+- **A GUARD THAT STILL COUNTS ARMS.** CONFIRMS the prior survey's row
+  (`act is .Derives` beside a two-arm `match`); no new evidence.
+
+### FEATURES — a capability
+
+- **A LONE-FILE ANNOTATION PROBE.** `use @std.meta.{derive}` in a loose
+  file is F3015 "this file is not in a package", so a probe of the
+  derive machinery built a package and, for the spec harness, a COPY
+  of `@std.meta` (`annotations_adversarial_test.av`'s `packaged`
+  vendor string). CONFIRMS the prior survey's ask; adds the
+  wanting site and the copy-the-dependency smell.
+- **A `TRAIT` META VERB.** S4a makes a trait's associated fn callable
+  through a TYPE (`P.derive(3)`), but not through the trait itself
+  (`Show.derive(t)`); `@derive` dispatch was landed as a compiler
+  `.Derives` effect instead. THE ASK: if the design keeps `tr.derive(t)`
+  as a meta verb, a way to call a trait's associated fn on a meta
+  value; otherwise the effect is the seam and the design should say so.
+- **`avra expand` SHOWS THE DERIVED SOURCE — TRUE BY CONSTRUCTION.**
+  Because generated code is parsed INTO the asking file's store, the
+  landed source printer shows it with no new work. No ask; recorded
+  as a win for the parse-into-store choice.
+
+### DEFECTS — the compiler blaming itself (all fixed in the slice)
+
+- **THE CROSSING ASKED A SIGNATURE DURING RESOLVE.** `crossed_fields`
+  / `crossed_variants` used `fields_of_type`/`variants_of_type`
+  (a signature) to read a type's members; a `Type`-receiver derive
+  runs inside the resolve it serves, so this re-entered the file's
+  own resolve: `defect: memo family 5 reused missing key 0`. Fixed by
+  reading `declared_fields`/`declared_variants` and the written
+  `TypeRef` spellings — which is what the crossing's own doc claimed.
+  Reproduction: `@derive(Show)` with a `Type`-receiver trait on a
+  struct, `./avra check` of the derive test package.
+- **TWO DERIVES ON ONE TYPE MINTED ONE IMPL.** The generated key for an
+  impl was `generated$<file>$Point$$impl` for BOTH `Show` and `Eq`, so
+  the second reused the first's DeclId and `eq` never registered —
+  `@derive(Show) @derive(Eq)` silently produced only `show`. Fixed by
+  carrying the generated source's fingerprint in the key.
+  Reproduction: the `derive` program test before the fix
+  (`Point has no method eq`).
+- **`@derive` WAS A SILENT NO-OP** for an argument that is not a trait
+  and for a trait that declares no `derive`. Fixed as F2072.
+  Reproduction: `@derive(Point)` (a record) compiled clean before the
+  law.
+- **A BUILTIN HAS NO STATEMENT RECORD.** `computed_marks` read
+  `p.store.annotations_of(x.stmt)` for a builtin/synthetic
+  declaration, trapping `index 0 is out of bounds (length 0)` during
+  the self-compile. Fixed with a `stmt.index` guard; a builtin is
+  unannotated by construction.
+
+### DOCTRINE
+
+- **A DOC THAT WAS RIGHT AND CODE THAT DRIFTED.** `crossed_decl`'s doc
+  said "Reads the PARSE store only: an expanded sibling is generated
+  before this file's typed facts exist", while the body asked the
+  signature. The doc was the law; the code was the defect. THE LESSON
+  (CLAUDE.md-shaped): a crossing that runs INSIDE resolve must read
+  the parse tree, never a signature — encode it as a review question.
+- **A GENERATED DECLARATION IS KEYED BY ITS SOURCE, NOT ITS TARGET.**
+  Two derivations on one type are two declarations; a target-keyed
+  generated key silently drops one. Adjacent to CLAUDE.md's
+  flat-concatenation/arity law: the key must carry the discriminating
+  value.
+- **THE PROVIDER LAW GENERALIZES.** "A Declares annotation's fn stands
+  in another file" became "a `@derive` trait's `derive` stands in
+  another file" (F2072 covers the trait half; the same-file half
+  speaks). Filed in the design doc's S4 status.
+- **A SILENT NO-OP IS WORSE THAN A REFUSAL.** `@derive(NonTrait)` and
+  `@derive(NoDerive)` both did nothing; the boundary must speak
+  (F2072). This is the annotation-level instance of "a check that
+  examined nothing is not a check that passed".
+
+### PERFORMANCE
+
+- EMPTY. No new measurement this session; `make gate` peaked 556–688
+  MB across runs (instrument `tools/watch.sh`), already recorded.
+
+### PROCESS
+
+- **THE RECOVERY PROTOCOL NEEDS A CLEAN-BINARY TARGET.** See FRICTION
+  row one: `cp build/avra build/avra.pre` works only if a clean
+  `build/avra` WAS saved; a source that traps at self-compile has no
+  such binary on a cold tree. `make recover` (seed link, stop) is the
+  missing rung.
+- **PROBE-FIRST PAID, AGAIN.** `./avra check`/`./avra run` on a scratch
+  file confirmed `P.derive(3)` (S4a), `@uses(Show)` (S4b), and
+  `quote { a${n}b }` (S4f) in seconds each, before any test package
+  existed. Confirms.
+- **THE IDIOM KEEPER IS THE CHEAPEST REVIEWER.** `make idioms` (24–25
+  MB peak, sub-second source scan) caught every nullable-local and
+  unused-parameter drift this slice; each fix was a guard-once
+  rewrite. Confirms.
+- **A COMMIT MESSAGE WITH BACKTICKS NEEDS `-F`.** `git commit -m
+  "...`Decls.marks`..."` ran the backticks through the shell and
+  mangled the message; `git commit --amend -F - <<'MSG'` is the
+  safe form. (Agent-tooling, not the tree — recorded once.)
+
+### NOT SURVEYED
+
+No runtime, backend, LLVM, ownership, or performance work happened
+this slice; the std packages other than `@std/meta`/`@std/derive`, the
+sqlite/process/http lanes, and S5 (`const` seats) were not opened. The
+survey is bounded to the comptime lane, `c451cb0..877bf6c`.
+
+## Feedback survey — 2026-09-12 (lane/comptime, S5a)
+
+The `/feedback` run for the seat-mark slice: the `const` seat mark, and
+the unified `SeatMark` channel it landed on. Base `f33e64e` plus this
+lane's four commits (`01e03f4`, `c3dc862`, `2cd3dff`, `a0e6686`);
+every row quotes its command. Counts: FRICTION 3, SUGAR 1 (+1 confirm),
+FEATURES 2, DEFECTS 0 (empty), DOCTRINE 2, PERFORMANCE 0 (empty),
+PROCESS 2. Top three by cost: the front-end generation ordering (one
+wasted gate cycle + a confusing refusal), full-suite granularity when
+only four cases were new, and the param-grammar repetition (design
+debt, filed).
+
+### FRICTION — what cost time
+
+- **A FRONT-END ARITY CHANGE FAILS ON THE NEXT GATE, IN A USER'S
+  FIXTURE.** `TypeLit.Fn` gained a fourth field (`consts`), so the
+  `.type(…)` desugaring emits `.Fn(params, muts, consts, ret)`; the
+  gate then refused `fns`/`type_lit` with "`.Fn` takes 3 arguments,
+  found 4" — a correct refusal, but its SITE was the test's own
+  `Spelling` enum, not the contract that moved. Cost: one gate cycle
+  and a re-read to find it was the desugaring. CONFIRMS CLAUDE.md's
+  generation law; THE ASK: the `interned` receiver's variant SHAPES
+  (today the 3-arg `Fn`, and now 4) are an undocumented contract — see
+  DOCTRINE below.
+- **THE LANE BRIEF NAMES `./avra test <dir>`, SO A SINGLE SPEC RUN WAS
+  NOT KNOWN.** Four new `const` cases cost a full `std-avrac` run
+  (2275 cases, ~40s) each iteration; `./avra test
+  packages/std-avrac/src/features/fns/tests/fns_test.av` runs 57/57 in
+  a moment. Probe (base `c3dc862`): the file form exists and works.
+  THE ASK: name the file form beside the directory form in the brief
+  and in CLAUDE.md's test recipe.
+- **A FRONT-END CHANGE RESTRICTED TO TESTS NEEDS NO GUARD COMPILER.**
+  The `const` params appeared only in `*_test.av` files, and `make avra`
+  does NOT compile test files, so the standing binary built the new
+  grammar with no `guardN` dance; the tests then ran under the fresh
+  binary. THE ASK: state the carve-out in the brief's gotcha list (see
+  PROCESS).
+
+### SUGAR — a construct the language should have
+
+- **A REUSABLE `param` GRAMMAR RULE.** Every param list spells
+  `( "const" )? ( "mut" )?` by hand — 10 sites
+  (`fns/mod.av:33-35`, `impls/mod.av:50-52`, `closures/mod.av:24-25`,
+  `expr_spine/mod.av:36`) — while the LOGIC is one place
+  (`marked_seats`). The DSL has no parameter rule the fragments can
+  reference. Filed in the design doc's queue as a leave-alone with its
+  trigger (a THIRD mark or a new param-taking form); re-filed here per
+  the routing rule, wanting site named. THE ASK: a `param` rule whose
+  builder answers `List<Param>`, so the window alignment dies with it.
+
+### FEATURES — a capability, larger than sugar
+
+- **S5b + S5c — settled seats widen `Sub`, and fold per instantiation.**
+  Today a `const` seat is a TYPE contract with no call-site
+  enforcement: `matches(compute(), s)` is accepted, because the
+  settlement law is not landed. The seams, mapped so the next lane
+  does not re-derive: `Sub` (`features/contract.av`), its record
+  `record_subst` (`features/facts.av:192`), the name/mangle
+  `symbol_at`/`wanted`/`mangle` (`language/lower_state.av:45`,
+  `language/lower.av:448`), the call entry `dispatched_call`
+  (`features/fns/check.av:87`), the view `viewed`
+  (`features/contexts.av:275`). S5b widens `Sub` and the mangling; S5c
+  binds the seat's value in the unit so `const prog = compile(pattern)`
+  folds. Queued in the design doc.
+- **A SINGLE-SPEC test filter.** The file form covers one FILE; there
+  is no way to run one `given`/`then` (the `fns_test.av` run is 57
+  cases). Low cost, real loop value for a red team iterating one
+  class. THE ASK: `avra test <file> --filter <substring>`.
+
+### DEFECTS — the compiler blaming itself
+
+EMPTY. No `defect:`, `avra_trap`, wrong answer, or engine divergence
+in the slice: `./avra check` refused in its own words, the differential
+`const_seat` program read eval == native == expected, and the red team's
+~20 programs produced no crash.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **THE `.type(…)` RECEIVER'S VARIANT SHAPES ARE AN UNDOCUMENTED
+  CONTRACT.** A user `interned` receiver matches the compiler's
+  desugaring by variant name and arity (`Fn`, `Map`, …); S5a changed
+  `Fn` from 3 to 4 payloads, and the only place that records the
+  contract is `features/expr_spine/type_lit.av`'s builder. THE ASK:
+  document the surface (the variant names and their arities) beside
+  the type-literal docs, so the next shape change is not archaeology.
+- **CONFIRM: CLAUDE.md's "`const` in a MODULE file … F0902" is stale.**
+  The design doc's S5 queue says a module's `const` is already accepted
+  and names that entry. UNVERIFIED here (needs a two-file package
+  probe); filed as a question, not a finding. CONFIRMED and rewritten
+  2026-09-13 (comptime/const): a module const is a declaration.
+
+### PERFORMANCE — a measured cost
+
+EMPTY / NOT MEASURED. The slice is representation-neutral (a `List<bool>`
+became a `List<SeatMark>`; no algorithm changed), so no `census` was
+run. The gate's peak stayed in its established band (671-807 MB across
+the four runs). A `census` of the seat-mark readers would be measuring
+the instrument, not the change.
+
+### PROCESS — the working discipline itself
+
+- **`make avra` EXCLUDES TEST FILES.** The front-end generation gotcha
+  ("a new syntax the compiler reads cannot be built by a binary that
+  predates it") has a carve-out: syntax used ONLY in `*_test.av` does
+  not block the build, because tests are compiled later by `make test`.
+  Evidence: `make avra` green at `c3dc862` with `const` params present
+  only in tests. THE ASK: add the carve-out to the brief's gotcha list,
+  so a lane does not reach for the `guardN` protocol needlessly.
+- **KEEP: the committed-seed + `make recover` backstop was not needed.**
+  Every build was green; `cp build/avra build/avra.pre` was taken once
+  as insurance and never used. A clean slice is a real result.
+
+---
+
+## Feedback survey — 2026-09-12 #2 (lane/comptime, S5b)
+
+The `/feedback` run for the settled-seat slice. Base `6ff814b` plus
+this lane's two commits (`001259c`, `572456c`). Counts: FRICTION 2,
+SUGAR 0 (empty), FEATURES 1, DEFECTS 0 (empty), DOCTRINE 1,
+PERFORMANCE 0 (not measured), PROCESS 1. Top by cost: the per-unit
+settlement input S5c needs (found, not filed anywhere), then the
+idiom gate's first-draft catch (the gate working).
+
+### FRICTION — what cost time
+
+- **THE SETTLEMENT MACHINERY IS SINGLE-UNIT BY CONSTRUCTION, WHICH IS
+  S5c'S WHOLE PROBLEM.** `settlement_of`/`isolated`
+  (`language/workspace.av:793`) lower a const's initializer as a
+  standalone program with `Wanted { sub: null, root }`, so a `const`
+  inside a specialized body (`const prog = compile(pattern)`) is
+  lowered WITHOUT the unit's settled-seat values: the parameter has no
+  binding in a params-less root, and `run_settle` has nothing to read.
+  Cost: mapping S5c to the mechanism took reading three layers
+  (`defined_reg` → `jobs.settle` → `isolated`), and the design doc's
+  queue did not name this seam. THE ASK: S5c threads the unit's
+  settled values into the isolation — `Wanted` gains a settled-seat
+  environment (the values, not only `Sub.consts` fingerprints), and
+  the substituted initializer is what gets isolated. Filed in the
+  design doc's S5c pick-up map.
+- **THE IDIOM RATCHET CAUGHT THE FIRST DRAFT.** `const_seats` shipped
+  with an unread `e` param (I23) and `symbol_at`/`dispatched_call`
+  with a nullable local forced open 3+ times (I26); `make gate`
+  refused all three and named the lines. CONFIRMS the gate's value —
+  no user-visible cost, one build cycle. No ask.
+
+### FEATURES — a capability, larger than sugar
+
+- **S5c — per-unit folding.** The last S5 piece: inside a unit a
+  settled seat IS a const, so its dependents fold and both pinned S5b
+  boundaries (forwarding a settled seat; an aggregate literal inline)
+  lift. Depends on the per-unit settlement input above; queued in the
+  design doc with its seams.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **A RECORD FIELD ADDED WITH A DEFAULT IS THE BREAK-FREE WAY INTO AN
+  EXISTING CURRENCY.** `Sub` gained `consts: List<string> = []`, so
+  every existing `Sub { target, args }` construction compiled
+  untouched, and only the sites that READ the new field changed. Worth
+  recording beside the `TypeRef` default-field hazard: a default can
+  drop silently on RECONSTRUCTION, but it lets a new field land without
+  a 5-site sweep when the field is genuinely additive. (No file: it is
+  a note for the next currency change.)
+
+### PROCESS — the working discipline itself
+
+- **KEEP: a call-site law (F2073) landed in the SAME slice as the
+  mechanism it guards.** S5b keys units by VALUE, so a runtime value at
+  a settled seat had to refuse at once; deferring the refusal would have
+  made the stored fingerprint a lie. The staged slices did NOT force a
+  staged law here — worth keeping as the default when a mechanism makes
+  a value meaningful.
+
+---
+
+## Feedback survey — 2026-09-12 #3 (lane/comptime, S5c)
+
+The `/feedback` run for the per-unit folding slice (base `0179e9f`
+plus `8c487e7`, `419d29a`). Counts: FRICTION 3, SUGAR 0 (empty),
+FEATURES 1, DEFECTS 1 (a P1 wrong answer, fixed), DOCTRINE 1,
+PERFORMANCE 0 (not measured), PROCESS 2. The top finding is the
+DEFECT: a `const` that read a PLAIN parameter was silently
+mis-settled and cached.
+
+### DEFECTS — the compiler blaming itself
+
+- **A CONST THAT READ A RUN-TIME PARAMETER ANSWERED A WRONG VALUE,**
+  SILENTLY. `fn f(x: int) -> int { const y = x + 1; y }` settled `y`
+  from an uninitialized register and cached it: `f(10)` answered `2`,
+  `f(3) + f(5)` answered `4`, `f(1)+f(2)+f(3)` with `x + 10` answered
+  `60`. No diagnostic, both engines agreeing on the wrong number. The
+  settlement had no notion of which parameters it could read, so it
+  read `Reg{i}` for a param that was never a register in a params-less
+  root. FIXED in S5c: a const may depend only on its fn's `const`
+  seats, and any other parameter refuses F2074 "a const cannot read a
+  run-time parameter". THE LESSON: an isolated computation over a
+  subtree must know its FREE VARIABLES — "the initializer lowers as a
+  program" said nothing about which of the body's names exist in it.
+
+### FRICTION — what cost time
+
+- **A SILENT OFF-BY-ONE SURVIVED ONE RED-TEAM ROUND.** `call_seats`
+  tested `settled_mark(marks, j)` where the argument fills `base + j`,
+  so every free-fn case passed and every METHOD case carried no value
+  (and a gap would have folded). It surfaced only through the debug
+  instrument (`core.debug`, S4) printing `subnull`/`seats`/`marks`:
+  the F2074 refusal looked like a law failure, not an index bug. THE
+  ASK: none — it is the red team's second round, doing its job.
+- **THE IDIOM KEEPER READS A `quote { }` BODY AS CODE.** Confirmed
+  again: converting one test to `quote` produced 11 false I23s. Filed
+  in the sugar backlog with the two asks; the tests keep escaped
+  strings until the keeper learns quote bodies.
+- **A MEMO KEY AND THE ARTIFACT IT NAMES DESYNCED.** The settlement
+  was keyed per unit while the materialized const unit was named by
+  the plain statement, so the first unit's folded value served every
+  other (`x!ay!b` came back `y!ay!b`). Fixed by one `settled_symbol`
+  for both; the law is pinned in CLAUDE.md.
+
+### FEATURES — a capability, larger than sugar
+
+- **S5 REFINEMENTS.** Forwarding a settled seat to another fn, and a
+  direct aggregate literal at a settled seat, still refuse; both want
+  the value carried through the OUTER unit's template. Queued in the
+  design doc.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **AN ISOLATED COMPUTATION OWES ITS FREE-VARIABLE LAW.** S1's "a
+  const's initializer lowered as a program of its own" was silent on
+  parameters, and silence became a wrong answer. Recorded as the
+  CLAUDE.md memo-key law's sibling paragraph and in the design doc.
+
+### PROCESS — the working discipline itself
+
+- **`core.debug` (S4) EARNED ITS KEEP.** The receiver off-by-one was
+  invisible from the source; one temporary `debug` line plus
+  `AVRA_DEBUG=1` named it in a single build. KEEP: the debug verb
+  reaches any module, is inert without the flag, and never breaks the
+  self-compile.
+- **THE COMMITTED `build/avra.pre` RECOVERY WAS READY, NOT USED.** The
+  S5c slice had a poisoned-binary scare earlier (the eager `seat_names`
+  cross-file crash in the S5b review) and recovered cleanly; S5c
+  itself never needed it. A clean slice, again.
+
+---
+
+## Feedback survey — 2026-09-12 #4 (lane/comptime, S1 `export const`)
+
+A short survey for the slice that made an exported top-level `const`
+a declaration (base `bea9e9f` plus `93eff83`). Counts: FRICTION 2,
+SUGAR 0, FEATURES 0, DEFECTS 0, DOCTRINE 1, PERFORMANCE 0,
+PROCESS 0.
+
+### FRICTION — what cost time
+
+- **A DECLARATION-KIND WIDENING IS A WHOLE-TREE SEMANTIC MOVE.**
+  Adding `DeclKind.Const` broke every exhaustive `DeclKind` match (8
+  sites, by design) AND — the expensive half — changed
+  `declared_kind`/`is_declaration` for EVERY `const`, including
+  NESTED ones, so a fn body's `const prog = compile(pattern)` became
+  a "declaration" its own walk skipped (`index 0 out of bounds
+  (length 0)`). The fix: admit a const Decl ONLY for an EXPORTED
+  top-level const, and leave `declared_kind` a projection over the
+  STATEMENT (it has no top-level context) — `admit`, `runtime_stmts`
+  and `runs_at_top` apply the position test. THE LESSON: a store
+  projection asked "is this a declaration" cannot know WHERE the
+  statement stands; the admit and run walks can, so the position test
+  lives there.
+- **THE CONST TYPE IS ASKED AND ENSURED, NOT STORED LOCALLY.** A
+  cross-file read needed `decl_type_of` to answer a Const declaration
+  from the shared const-type query, and that query had to type the
+  const's OWN declaration (a const left Main's statement list, so
+  touching Main no longer ran `check_const`). Two queries, one value.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **"RE-PROBE X" WRITTEN AS A CONCLUSION IS A CLAIM, NOT A PROBE.**
+  The design doc's S1 bullet read "A module's `const` is ALREADY
+  accepted (re-probe CLAUDE.md: a module const is not F0902 today)" —
+  the parenthetical names a probe nobody ran, and the claim is FALSE:
+  a plain module const IS F0902, which is why the scoping is
+  `is_exported` and why CLAUDE.md's own subset entry was right all
+  along. The doc now records the correction. THE ASK: a "re-probe" in
+  a design doc is a TODO, not evidence — run it or drop it.
+
+---
+
+## Feedback survey — 2026-09-12 #5 (lane/comptime, const dogfooding)
+
+The `/feedback` run for the sweep that turned the compiler's own
+constant-shaped functions into `export const` (base `c34254d` plus
+`e3762a4`..`548289a`). Counts: FRICTION 4, SUGAR 1, FEATURES 2,
+DEFECTS 0, DOCTRINE 2, PERFORMANCE 1 (measured effect named), PROCESS
+2. The headline is a LANGUAGE GAP the sweep exposed: a private
+top-level `const` is file-local and ORDER-SENSITIVE, so every
+internal constant had to be `export`ed.
+
+### SUGAR — a construct the language should have
+
+- **A PRIVATE TOP-LEVEL `const` SHOULD BE MODULE-SCOPED, LIKE A FN.**
+  A `fn` in a module file is visible to every file of that module and
+  may be called before its textual definition; a non-exported `const`
+  is FILE-LOCAL and F3001 "used before its definition" (probed:
+  `receiver_law` at `features/annotations/check.av:163`). The sweep
+  converted 86 functions; ~60 of them were PRIVATE and only compiled
+  once every one was written `export const`, widening `@std.avrac`'s
+  public API with `unit_ceiling`, `settle_steps`, `open_readonly` and
+  kin. THE ASK: a non-exported top-level `const` is a module
+  DECLARATION (visible within its module, not importable outside),
+  exactly as a private `fn` is — so order does not matter and no
+  `export` is owed. THE TRADE the ask settles: admitting EVERY
+  top-level const as a module Decl (private included) changes
+  same-name shadowing (`const N = 1; let N = 2; fn f { N }` now reads
+  the const; two `const N` clash), which the const adversarial suite
+  pins the other way — so this is a deliberate semantic migration, not
+  a one-line fix, and it is WHY the sweep exported instead.
+  LANDED 2026-09-13 (comptime/const): every top-level const is a
+  module declaration; the suite was rewritten deliberately; the 58
+  private exports came off.
+- **A TEMPLATE CANNOT NAME WHAT IT GENERATES** (found by the
+  private-const red team, 2026-09-13; pre-existing, both binaries).
+  Origin hygiene resolves a template's names in the file that WROTE
+  the quote, and `generated_named` is "never asked for a template's
+  own name" — so two declarations generated by one quote cannot see
+  each other (`const G_SUM = G_LIT + …` where the same quote
+  generates `G_LIT`: F3000 at the template line). Every real derive
+  so far generates ONE impl, whose methods find each other through
+  `self`, which is why it never bit. THE ASK: a template's generated
+  names join the lookup for reads whose origin is that template — the
+  expansion's own declarations, keyed by origin, tried after the
+  writing file's namespace. Wanting site: a `@consts`-shaped
+  annotation generating a computed const from a sibling.
+
+### FRICTION — what cost time
+
+- **THE TRANSFORM IS ABOUT SCOPES, NOT NAMES.** A global `NAME()` →
+  `NAME` replace hit three innocent DEFINITIONS: a test's own
+  `fn halver`, `sqlite_open_adversarial_test`'s own `fn words`, and
+  `@std.process`'s `fn words` METHOD. A rename must respect the scope
+  the name resolves in; a finder that reports "0 fn-value uses" is
+  silent about a SAME-NAME definition elsewhere.
+- **A SINGLE-LINE COLLAPSE EATS `//` COMMENTS.** Converting
+  `grammar_of_grammars` by collapsing its 140-line body to one line
+  put every `// rule = …` comment before the rest of the grammar, so
+  the const ended at the first comment and the whole 150-rule grammar
+  vanished — 326 cascading "no `fn seq`/`item`/`named` is defined".
+  The fix: keep the body MULTI-LINE after `=` (`=` continues the
+  line). A mechanical collapse must know what a `//` does.
+- **USING NEW SYNTAX IN THE COMPILER'S OWN SOURCE STALES THE SEED.**
+  `seed-check` refuses the moment `export const` appears in the
+  source, because the committed seed predates the feature (`F3014`,
+  plus a `text_of` cascade from the broken module). `make seed`
+  refreshed in the same commit, as the lane brief requires.
+
+### FEATURES — a capability, more than sugar
+
+- **THE MODULE-SCOPED PRIVATE CONST** (above) is the language change
+  the dogfooding asks for; it is filed in the sugar backlog with its
+  wanting sites.
+- **AN `avra consts` INSTRUMENT.** The finder used here is a throwaway
+  Python script; a compiler command that lists zero-arg single-value
+  fns (`avra consts`) would make the next sweep one command and catch
+  new candidates at review time.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **F0902 WAS ABOUT EFFECTS, NOT VALUES.** A module file may now hold
+  a private top-level `const`: it never runs, so the entry-only rule
+  did not reach it. `runs_at_top` excludes every const.
+- **"A CONST IS A DECLARATION" HAS A HOLE AT PRIVATE SCOPE.** The
+  model is complete for EXPORTED consts (module namespace, cross-file
+  reads, the const-type query) and incomplete for private ones. The
+  sweep is the evidence; the sugar ask is the repair.
+
+### PERFORMANCE — a measured effect
+
+- **THE GRAMMAR IS BUILT ONCE.** `grammar_of_grammars` was rebuilt on
+  every `ready(...)` call (150 `rule(...)` constructions); it is a
+  settled constant now. Not timed in isolation, so the claim is
+  shape-level: the rebuild is gone from the parse path.
+
+### PROCESS — the working discipline itself
+
+- **AN INDEPENDENT AUDIT FOUND WHAT A GREP MISSED.** The finder
+  could not judge MUTATION or FN-VALUE use; a subagent that read every
+  use site classified all 114 candidates and its KEEP list (fresh
+  `new_*`/`empty_*` accumulators, `dyn`-carrying values, every world
+  reader) is what kept the sweep safe. Delegate the CLASSIFICATION,
+  keep the TRANSFORM — the two need different tools.
+- **RECOVERY WAS ONE `git checkout`.** The grammar collapse and two
+  bad renames were reverted cleanly because each conversion round was
+  its own commit; the seed refresh rode the same commit as the source
+  that needed it.
+
+---
+
+## Feedback survey — 2026-09-13 #7 (lane/comptime, S4r origin hygiene)
+
+The `/feedback` run for the slice that made a quote a `Code` VALUE with origins, keyed the resolver by them, homed every generated diagnostic, and red-teamed the result (base `693d8f5` -> this tree; 50 attack programs). Counts: FRICTION 5, SUGAR 2, FEATURES 2, DEFECTS 6 (all FIXED and pinned), DOCTRINE 3, PERFORMANCE 1, PROCESS 3. The headline: a META SHAPE CHANGE broke the compiler's own derives in the standing binary through two WHOLE-PROGRAM leaks into a resolve, and nothing in the tree could say so — eight blind builds before a one-line trace named the chain.
+
+### FRICTION — what cost time
+
+- **A WHOLE-PROGRAM PASS LEAKED INTO A RESOLVE, AND NOTHING SPOKE.** Adding `source: Code? = null` to `@std.meta.Directive` made the cli build refuse "`Expr` has no method `int_of`" and "no property `index` on `ExprId`" — the derive had RUN, its generated impl was there under `avra expand`, and the package alone checked clean. The receivers pass (`receivers()`) asked every fn's sig from inside the lifted derive and signed `nodes.av`'s decls from a smaller view; `impls_by_name["Code"]` dragged `features/worklist.av` into the same resolve. Eight builds bisecting the diff found nothing; one `debug("sig mid-resolve …")` line in `sig()` printed the open-query chain (`6/1954 5/64 17/64 14/0 13/1 11/232 10/232 8/4280 16/0`) and named it in one run. ASK: a KEEPER — a whole-program family (`Receivers`, `Methods` over all decls, `method_diagnostics`) beginning while a `Resolved` key is open is a defect the kernel can assert (`Db.begin` knows both). The three guards today are hand-placed. (lane/comptime, 2026-09-13)
+- **A FAILED TRAIT DERIVE WAS SILENT.** `trait_directives` answered `[]` on `.Err` and the user read "no method `show`". FIXED: `derive_law` re-asks the memoized lifted call and voices its `Unsettled`. Confirmation of survey #3's silence finding, one seam over.
+- **`;` IS NOT A STATEMENT SEPARATOR, AND THE FIRST TEMPLATE SPELLED ONE.** `let tmp = 1; let picked = ${body}` was refused as "unexpected character" — at the time SILENTLY (generated source did not speak), so the symptom was "no `fn go_wrapped` is defined". Filed in "The subset today"; the refusal speaks at the template line now. Probe `fn f() -> int { let a = 1; a + 1 }`, base this tree.
+- **TEST FILES IN ONE DIRECTORY ARE ONE MODULE, EVEN IN A SINGLE-FILE RUN.** `quote_adversarial_test.av` duplicating `quote_test.av`'s `packaged`/`clean` helpers refused F3017 "declared twice in this module" when run ALONE. The fixtures had to be shared by name across the two files. ASK: say so in DOGFOODING's test section, and give `@std.avrac.testing` a Program-level `packaged(files)` so the in-memory `@std/meta` mock (now in TWO test files: annotations_adversarial, quote_test) has one home before a third copies it.
+- **THE STANDING BINARY DOES NOT READ THE NEW META, SO A META CHANGE IS A TWO-COMMIT LADDER.** `Directive.code: string?` had to stay one build as a bridge so the seed could compile HEAD; S2 removed it. Confirmation of the four-generation-ladder rule (sugar1 memory) for META types, not just syntax.
+
+### SUGAR — a construct the language should have
+
+- **`join` OVER `List<Code>`.** `joined(arms, ", ")` is a free fn because `join` is a `List<string>` row (`str_lit`'s method table). A derive reads `arms.join(", ")` more naturally. Wanting sites: `packages/std-derive/src/derive.av:25,38,43`. ASK: method rows keyed by a TRAIT (`Joinable`) rather than by one element type — the same door `Show`-typed printing would use.
+- **A HOLE IN NAME POSITION COMPLETES THE NAME.** `quote { l${i} }` makes ONE identifier `l0` whose origin is its first byte's (the template's), while `${spliced("l${i}")}` makes a hole-origin one — the same name, two colours, and a derive that mixes them binds a name it cannot read. Today's rule ("a name's origin is its first byte") is pinned in the design doc; the honest fix is a parsed template where a hole IN a name is one token. Wanting site: `derive.av`'s `eq_arm` (spliced both ends). Recorded under the parsed-templates trigger.
+
+### FEATURES — a capability, more than sugar
+
+- **`avra expand` NAMES WHERE A GENERATED RUN WAS WRITTEN.** Diagnostics are homed now; `expand` still prints a generated declaration with only `// from @derive on Point`. ASK: a second line per generated declaration naming the template's file and line (the `Generation`'s first origin segment), so a reader of the expansion can open the quote that wrote it. P7.
+- **PARSED TEMPLATES (the campaign).** Typed holes by position, `Code<T>`, and a hole completing a name all wait on parsing a quote where it is written (design §3.5). Every origin mechanism landed here (generations, segments, keyed binders) is what it sits on. Recorded trigger in the handoff.
+
+### DEFECTS — the compiler blaming itself (all FIXED this slice, each pinned)
+
+- **A SIG SIGNED MID-RESOLVE, KEPT.** "no property `index` on `ExprId`" from `features/worklist.av:51` under a clean tree — the receivers-pass leak above. Guard in `receivers.av`; pinned by the cli build itself (`make gate`'s seed-check).
+- **`const C: Code = quote { k }` — TWO DEFECTS** ("an unresolved name survived a clean analysis", "register r1 defines out of mint order"): a hole-less quote claimed `is_literal`, and the const fast-path (`lower_state.av:238`) read it through the value protocol. `is_literal` is the protocol's again; annotation gates ask `source_spelled`. Pinned: `quote_adversarial_test` "a `const` holds a quote".
+- **A SPAN TRAP ON A DEPENDENCY'S LOC.** "a span reaches outside its own text — offset 252 of 135 in main.av": a homed Loc named the provider's file and `Analysis.report` rendered it against the target's source (`source_named` fell back to `sources[0]`). `Program.rendered` now renders every file over EVERY loaded source. Pinned: the homed-refusal cases in `quote_test`.
+- **A RAW BODY INSIDE A HOLE NEVER CLOSED** (`"${quote { x }}"`, `quote { ${quote { y }} }`): "unterminated string" / "a `quote` block is never closed". `balanced` pays the enclosing hole's count. Pinned: `quote_adversarial_test` "the raw body inside a hole".
+- **A `}` IN A `//` COMMENT ENDED A QUOTE OR GRAMMAR BODY.** Both raw scans skip line comments. Pinned.
+- **A GENERATED FN LOST TO A WRITTEN ONE IN SILENCE** (`fn go_wrapped` written + `@wrapped` generating it answered the written 5). F2077 at the annotation. Pinned.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **A PREDICATE OVER THE VALUE PROTOCOL IS A REGISTRY CONSUMER.** `is_literal` was widened to quotes for one consumer (the annotation gate) and broke another (the const fast-path) that dispatches on what `is_literal` promises. The law: a predicate that says "the protocol answers this" may not be widened past the protocol; a wider question gets its own name (`source_spelled`). Filed here; CLAUDE.md's registry law covers the match half, not the predicate half.
+- **A NAME-KEYED TABLE CROSSES MODULES** — pinned in CLAUDE.md (`impls_by_name`, `aims_at`).
+- **A RAW BODY'S CLOSING BRACE IS A TOKEN**, and a raw body inside a hole pays the hole's count — pinned in CLAUDE.md's grammar-authoring rules.
+
+### PERFORMANCE — a measured cost
+
+- **THE GATE'S PEAK MOVED 706 -> 694-749 MB** across the slice's three gate runs (`tools/watch.sh`), inside the run-to-run swing; the compiler's spec count went 2294 -> 2309. No census was run: the quote lowering is three `Ins.Call`s per template run (`quoted`, `spliced`, one `joined`), and `meta_named` was found rescanning `@std/meta`'s declarations on every call by the review round and memoized (`Decls.meta_ids`). NOT MEASURED: a derive-heavy package; the cost of `visible(origin)` per template name read (memoized, one map lookup).
+
+### PROCESS — the working discipline itself
+
+- **KEEP: PROFILE, DON'T REASON, extended to QUERY CHAINS.** Eight bisecting builds explained nothing; one inert trace line did. The line is permanent now (`AVRA_DEBUG=1` prints "sig mid-resolve: <name> in <file>"), because "a generated impl's methods went missing" will recur and this is the first thing to look at.
+- **CHANGE: A WORKTREE TWO SESSIONS WRITE TO NEEDS A LOCK ON TEST FILES.** `quote_test.av` changed on disk mid-slice (a `spoken` helper appeared, `refused_n` vanished, 16:00) while this session was editing it; the merge was by hand. The gate's watchdog serialises builds, not edits.
+- **CHANGE: THE HARNESS SCRATCHPAD CAN VANISH MID-SESSION** ("no longer available"); probes moved to `build/scratch/` (gitignored). A lane's probe harness belongs under `build/`, never under a session temp.
+
+NOT SURVEYED: the private-const ask (item 4 of the handoff, unchanged), `@std/derive` beyond `Show`/`Eq`, and any package outside std-avrac/std-meta/std-derive.
+
+---
+
+## Feedback survey — 2026-09-13 #6 (lane/comptime, S5 refinements)
+
+The `/feedback` run for the slice that lifted the two S5b boundaries: a settled seat FORWARDED to another fn, and a direct AGGREGATE literal at a settled seat (base `6134110`; the S5c mechanism extended, not a second channel). Counts: FRICTION 2, SUGAR 2, FEATURES 1, DEFECTS 0, DOCTRINE 3, PERFORMANCE 0 (compile-time only), PROCESS 1. The headline is a WORKFLOW GAP the slice fell into: `avra run` and `avra build` lower only REACHED units, while `avra test` lowers EVERY declared body — and the two disagreed.
+
+### FRICTION — what cost time
+
+- **`run`/`build` GREEN, `test` RED — `every`-mode lowers TEMPLATES.** `programs_checked`/`cases_checked` call `lowered_as(entry, every=true, programs=true)` (workspace.av:1674-1693), so EVERY declared body lowers; `run`/`build` use `lowered_checked` (`every=false`) and lower only what the entry REACHES. A forwarded seat cannot resolve in a TEMPLATE body, so a call there enqueued a specialization with EMPTY seats, and the callee's const refused F2074 — a message that pointed at the callee, never at the template. Two rebuild cycles to find. A probe over `run`/`build` does NOT cover `test`.
+- **THE `./avra` SHIM CHANGES DIRECTORY, so a RELATIVE `.av` PATH FAILS** (`avra: no such file`) with no clue it is a cwd effect. A whole eval-vs-native sweep first read as "all diffs" until every path was made absolute. Probes should pass absolute paths.
+
+### SUGAR — a construct the language should have
+
+- **A `const` NESTED IN AN AGGREGATE LITERAL AT A SETTLED SEAT.** `const N: int = 5; take(P { x: N })` refuses F2073 because `literal_meta` (the source-spelling check) has no bindings table, so a NAME inside an aggregate is not source-spelled. The top-level name itself settles (`take(N)` works, via the `const` branch); only the nested one does not. Wanting site: `features/values.av`'s `literal_record`. Either `literal_meta` takes `NameFacts` and resolves a `const` ident, or the aggregate crosses through the evaluator.
+  LANDED 2026-09-13 (comptime/const): the second — typing's law is a
+  source walk (`spelled_by_source`) and lowering settles the argument
+  as an expression (`SettleRoot.Expr`, on the unit's seats).
+- **AN INLINE VARIANT LITERAL AT A SETTLED SEAT.** `take(.B)` refuses F2073 with the misleading "computed at run time" — `.B`'s enum type is only known AFTER the call's seat WANTS are fed, and the const-seat check runs BEFORE `seats_fit`/`accepts` feeds them (`dispatched_call`, features/fns/check.av:93 -> features/checks.av:615). The real fix is an ORDER change: feed the seats before judging the settled fills. A struct literal works only because its type name is explicit. Wanting site: `take(.B)`, probed 2026-09-13.
+  LANDED 2026-09-13 (comptime/const) WITHOUT the order change: the
+  seat law reads the source and the bindings, never the facts, so the
+  variant's type need not be known when it is judged. `K.B` and
+  `K.B(1)` (a qualified variant — a method-call node on the enum's
+  name) settle too.
+
+### FEATURES — a capability, more than sugar
+
+- **AN `every`-MODE PROBE.** A command that lowers EVERY declared body the way `avra test` does (`avra check --every`, or have `check` lower every body when no entry runs) would let a lane catch template-body defects without a package test. The gap cost the F2074 detour above.
+  LANDED 2026-09-13 (comptime/const): `avra check --every`
+  (`Program.check_every`, one `check_bodies(every)` behind both).
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **THE S5b NOTE UNDER-SPECIFIED THE FILL.** It said "a literal or a `const` (computed ones included)"; it did not say a SETTLED SEAT of the ENCLOSING fn may be FORWARDED, nor that an AGGREGATE must be fully written (an omitted default is a body the evaluator runs, so it is not source-spelled). Both are now pinned in the design doc's queue.
+- **A TEMPLATE BODY FALLS BACK TO THE PLAIN CALLEE.** A forwarded seat is per-unit; a template has none, so it calls the plain body (whose consts are already skipped). That is now a comment at `seats_complete` (language/lower_state.av).
+- **A SEAT FINGERPRINT CARRIES ITS KIND.** A source-spelled fill `e`s and a settled fill `v`s the hash, so the `_` join of a call's seats can never read one seat's role as another's — the flat-concatenation law applied to `settled_symbol`'s join.
+
+### PROCESS — the working discipline itself
+
+- **KEEP:** the S5c mechanism carried BOTH boundaries with no second channel — `SeatValue` widened to the crossing tree, `lower_root` seeding, per-unit keys. A refactor that reuses the existing seam is cheaper than a parallel one, three times now.
+
+---
+
 ## Sugar backlog — dogfooding asks
 
 - A LOOP THAT DIVERGES STILL OWES A TAIL VALUE (filed 2026-09-08, the
@@ -7114,6 +8366,135 @@ additions get siblings, nothing changes shape:
   reads, but the language already has the word for "I am deliberately
   not naming this" and a seat is the one place it refuses it. Cheap,
   and it makes I23's licensed case spell itself the way I22's does.
+
+DECIDED 2026-09-14 (owner + task master), for type operators: `type
+Name = Shape` is always DISTINCT (a name that counts); no alias form.
+Literals fill it, the shape's methods forward, `Name(value)` converts
+and the refusal suggests it. Typed ids shorten to `type UserId = int`.
+Design doc §7 q1 carries the reasoning; the wanting site is every
+`{ index: int }` id in core/nodes.av and the type-operator later row.
+LANDED 2026-09-14 (comptime/types), whole: the grammar, the
+construction, the literal fill, read forwarding, the named operand
+law and the `Name(v)` suggestion. The model, the seams and the exact
+refusal words are docs/2026_09_14_NAMED_TYPES.md; the law is
+CLAUDE.md's "A NAME IS OPAQUE AT A SEAT AND TRANSPARENT AT A READ",
+the idiom DOGFOODING's I42, the proof
+`features/structs/tests/named{,_managed}` plus 64 spec cases in
+`named_test.av` and `named_adversarial_test.av`. Recorded triggers
+below.
+
+RECORDED TRIGGERS from that slice (comptime/types, 2026-09-14) — each
+REFUSES cleanly today, so none is a silent hole:
+
+- A GENERIC NAMED TYPE (`type Box<T> = List<T>`): F2083 "`Box` is a
+  named type with type parameters, which is recorded, not landed".
+  The record form's tparams do NOT carry over — `App(decl, name,
+  args)` interns per instantiation, so the name's mark would have to
+  be SUBSTITUTED and made at `applied_decl` rather than at declare.
+  FIRES at the first site that wants a generic typed id.
+- A NAME OVER AN ENUM OR A RECORD FORWARDING `match`/`is`/`with`:
+  `k is .Red` over `type K = Color` is F2013 "`is` asks an enum for
+  its variant, found `K`", and `w with { … }` over `type W = P` is
+  F2011. Forwarding means `variants_of_type` and `fields_of_type`
+  seeing through, which also lets `K { … }` and a field read reach a
+  LAYOUT the flat law does not follow — a slice, not a line. FIRES at
+  the first site that wants a named enum or a named record.
+- A NAMED CONSTRUCTION AT A `const` SEAT: `seat(A(3))` is F2073
+  "computed at run time" — the settled-seat law reads the SOURCE and
+  `A(3)` is a call. FIRES at the first `const` seat that wants a
+  named type; the fix is `literal_meta` reading a named construction
+  over a literal as source-spelled.
+- AN IDEMPOTENT CONVERSION: `Name(v)` where `v` already wears the
+  name refuses in the seat's words. FIRES when a normalising helper
+  wants to write it unconditionally.
+- THE SWEEP OF THE COMPILER'S OWN `*Id = { index: int }` IDS (seven
+  declarations, `.index` read thousands of times). FIRES when those
+  reads can be replaced mechanically — by a forwarding property or a
+  scripted rewrite with a gated diff. Deliberately NOT done in the
+  landing slice: the representation is already identical, so the
+  sweep buys spelling and nothing else, and it would have hidden the
+  four defects the red team found.
+- A LITERAL PATTERN OVER A NAMED ENUM (`match k { .Red -> … }`) —
+  the VARIANT half of the `match` trigger above. The SCALAR half
+  landed 2026-09-14: a literal pattern reads its subject through the
+  name, exactly as `==` does.
+
+FROM THE 2026-09-13 #8 FEEDBACK SURVEY (comptime/templates; rows and
+evidence under "Feedback survey — 2026-09-13 #8"): a hole in a
+STRING's literal run (site `std-derive`'s `Show`); a PARAMETER-LIST
+hole (no site yet); a FLOAT in a hole (`quote/lower.av`'s
+`fill_reg`); PEG lookahead in the grammar DSL (`quote/mod.av`).
+PAID by that campaign: "a hole in NAME position completing the name"
+from survey #7 (`l${i}` is one `Hole` token now); `join` over
+`List<Code>` is moot — a list fills a seat directly.
+
+FROM THE 2026-09-13 #7 FEEDBACK SURVEY (lane/comptime): `join` over
+`List<Code>` (a trait-keyed method row; sites `std-derive/src/derive.av`),
+and a hole in NAME position completing the name (waits on parsed
+templates; site `derive.av`'s `eq_arm`).
+
+FROM THE 2026-09-11 FEEDBACK SURVEY (lane/comptime; full rows and
+evidence under "Feedback survey — 2026-09-11"):
+
+- GROW A LIST TO SIZE — `xs.resize(n, v)` (a List method). Wanting
+  site: `Decls.record_generated`'s `by_stmt.concat(filled<DeclId?>(n -
+  by_stmt.length, null))`.
+- A LIST SEAT FILLED BY MANY ARGUMENTS — `@derive(Show, Eq)` should
+  hand one `List<Trait>` seat two traits, as the design writes it
+  (`derive(t: Type, traits: List<Trait>)`), but an annotation is
+  arity-exact, so `@std/meta.derive` takes ONE `Trait` and stacks
+  instead. Wanting site: `@std/meta.derive` (`packages/std-meta/src/
+  meta.av`); the shape is a REST/LIST seat any call may fill with
+  several written arguments.
+- A STRAY `${` IN A STRING NAMES ITS ESCAPE — a derive whose GENERATED
+  code interpolates writes `"\\${self.${f.name}}"`, and forgetting the
+  `\\` is F3000 "`self.` is not defined" pointing at the derive, never
+  at the interpolation. Wanting sites: `packages/std-derive/src/
+  derive.av`, `packages/std-meta/src/meta.av`. The ask: at a `${` with
+  no binding, name the escape (`\${`) in the help. Survey
+  2026-09-11 #2, SUGAR.
+- A GUARD THAT STILL COUNTS ARMS — `effect! is .Declares` was the
+  obvious draft but violates the registry law, so a two-arm `match`
+  stands (features/annotations/check.av). Wants a guard spelling the
+  compiler can still prove exhaustive.
+- INTERPOLATE A VALUE, NOT ONLY A SCALAR — `${r.answer}` on a
+  `MetaVal` is F2007. Wants a derived `Show` (S4 `@derive`) reachable
+  from interpolation.
+- SHORTEN THE IMPORT WALL — every new helper edits a 40-name `use
+  core.{…}` (language/workspace.av:17). Wants a module-qualified
+  reference or a glob form.
+- MEMBER AND MODULE DOCS HAVE NO TABLE — a `///` on an enum variant or
+  a struct field, and a module's `//!`, are dropped by the source
+  projection (`core/nodes.av` loses 158 lines, `features/mod.av` 5).
+  WANTING SITE: `fmt`, which would delete them the day it consumes
+  `language/source_text.av`. Needs a doc seat on `Variant`/`Param` (or
+  an anchor-keyed table) and one for the module header.
+
+
+- AN AGGREGATE ARGUMENT TO A DECLARATION-GENERATING ANNOTATION. A
+  `Declares` annotation's generated name must exist while the file's
+  names are still being resolved, so its arguments cross from the
+  PARSE tree alone: `@traced([1, 2])` refuses with F2067 "generates
+  declarations, so its arguments come from the source alone", where
+  a `Records`/`Validates` annotation takes aggregates because it runs
+  after resolve. The ask is the quote phase (S4) — a template that
+  yields a meta value without the declaration's typed answers.
+  Wanting site: `@traced`'s label is a literal `"sum"` today; a
+  computed label is the first shape the quotes unblock. Landed as a
+  law and an adversarial test (2026-09-10, lane/comptime).
+
+- EMBED OUTSIDE COMPILER EVALUATION IS A RUN-TIME TRAP TODAY, not a compile-time
+  refusal: `let t = embed("x")` at the top level compiles and traps
+  when it runs (both engines, the same words). The static law is a
+  effect-graph check from each runtime root. A `Jobs.settling` bit was
+  tried and REFUSED during the comptime memo review: `meta.embed` is
+  phase-polymorphic, so marking its memoized body makes the answer
+  depend on which phase lowered it first and rejects the std package
+  when bodies are checked independently. The call graph must carry
+  `Reach.Embed`; runtime roots refuse it, while settlement and crossed
+  annotation roots admit and track it. RECORDED TRIGGER: lands with
+  the expansion/effect graph, before declaration-producing annotations.
+  Probed 2026-09-10 on lane/comptime.
 
 - PROCESS-WIDE MUTABLE STATE — a package cannot own a handle table.
   MEASURED: `once fn slots() -> List<int> { [] }` then three pushes
@@ -7158,16 +8539,137 @@ additions get siblings, nothing changes shape:
   any later move of a type between files breaks every caller. The
   wanting site is packages/std-sqlite/src/sqlite.av, ATTRIBUTED —
   that package is not in this tree.
-- TRAILING LAMBDAS for the bracket verbs (filed 2026-09-05, lane D
-  from the sqlite driver lane's ask). `tx { 42 }` is "expected BREAK
-  while parsing `stmt`" at the `{`; the argument seat is fine, so a
-  scoped-resource verb is spelled `db.tx(() -> { … })` today. THE
-  WANTING SITE is ATTRIBUTED, not in this tree: the driver's
-  transaction and scoped-handle verbs (`../avra-sq-driver`). The
-  refusal itself is probed here. Worth weighing on P1 grounds rather
-  than taste — the braced form is what gets generated first, so the
-  sugar's absence costs a correction on every bracket verb a caller
-  writes.
+- ~~TRAILING LAMBDAS for the bracket verbs~~ — LANDED 2026-09-09 as
+  sugar 1's level two (docs/2026_09_09_SUGAR_1_CONTEXT_RECEIVER.md):
+  `f(a) { x -> body }` is `f(a, (x) -> body)`, `else { … }` after it
+  fills the next fn seat (PROVISIONAL — the word is positional and
+  reads as a branch, a lie wherever the seat is not a choice's other
+  arm; sugar 5 retires it for the seat's name, `other: { … }`, docs/
+  2026_09_09_SUGAR_5_NAMED_ARGUMENTS.md), `{ … }` with no arrow takes no seat (or `it`
+  when the body reads it, its statements included), a name or a field
+  read takes one as a call with no parentheses (`run { … }`, `db.tx {
+  … }`), and the block is a POSTFIX like the rest (`xs.find { it > 1
+  } ?? 0`, `xs.filter { … }.length`). A seat HEARS its slot's `mut`
+  mark as it hears its type, so a block on `fn(mut Cx) -> R` writes
+  through the context it is handed; a lambda may write `mut` on its
+  own seats. THE HEAD LAW paid for it: `if f(a) { … }` keeps its
+  brace because a head (`if`, `while`, `for`, `match`, `if let`,
+  `let … else`) is matched with trailers CLOSED until a delimiter
+  opens — two DSL marks (`@head(c)`, `@trailer(tb)`) and an executor
+  cap, memoized per cursor; a block on a call in a head is
+  parenthesised (`if (f(a) { … }) { … }`), Swift's rule. NOT
+  spelled: a trailer on a `?.` chain (`a?.m { … }` — the chain lowers
+  to a match, so the block goes in the parentheses), and `(f(a)) {
+  … }` widens `f(a)` — a paren group mints no node, so the trailer
+  cannot tell it from `f(a) { … }` — while `f(a)() { … }` applies the
+  answer. THE EXPANSION LESSON: a `grammar { }` literal is expanded
+  into constructor code by the COMPILING compiler, spelling `Item`'s
+  fields by hand, so the two new marks reached no product for one
+  generation ("every field is spelled", grammar_lit/builders.av) —
+  and a DSL word is a syntax change to the compiler's own source:
+  the ladder was seed -> a product that knows the words with no rule
+  using them -> the full grammar -> the fixed point. Filed 2026-09-05
+  (lane D from the sqlite driver lane's ask); the wanting site was
+  attributed (`../avra-sq-driver`'s `db.tx(() -> { … })`), and the
+  compiler's own regions were the first sweep: `cx.region(c, e) { cx
+  -> … } else { cx -> … }`, `cx.presence(v, held, e) { cx, carried ->
+  … } else { … }`, `cx.void_region(c) { cx -> … }` at 22 sites, IR
+  byte-identical.
+- THE RED TEAM ON TRAILING BLOCKS (2026-09-09, 90 programs across the
+  eight classes, eval == native on every accepted one — no wrong
+  answer, no divergence). Six survivors, each a test now
+  (closures/tests/trailing_adversarial_test.av): a block with no
+  seats on a slot whose answer already REFUSED cascaded a second
+  message (`fn_fits` absorbs an errored answer, as every Error does);
+  `{ x, x -> x }` bound one name to two seats silently — a fn refuses
+  it, and a paren lambda did not either (pre-existing, fixed for
+  both); a second BARE block (`f { 1 } { 2 }`) filled a third seat
+  silently, where `else { }` is the spelling and the misread is a
+  block statement — refused in those words; `run { it }` on a
+  seatless fn slot said "not a fn" of a fn (the pronoun voice assumed
+  a scalar seat); `noop { }` is a RECORD LITERAL by the grammar (a
+  name before an empty brace pair), so the remedy names `noop() { }`.
+  TWO FOUND AND LEFT, named: a CALL BY NAME resolves the declared fn
+  before a fn-typed local of the same name — `fn f() …` then `fn run(f:
+  fn() -> int) -> int { f() }` calls the declared `f` (`use_call`, "the
+  pinned arm law", by design and documented; the red team's own
+  fixture fell into it, and a seat named like a top-level fn is the
+  trap); and a head with an unparenthesised block (`for v in xs.map {
+  … } { }`) refuses as "expected `..`" — the farthest failure names
+  the range branch, not the head law; the cure would be a head's own
+  voice, unbuilt. AND THE F2051 GAP the sweep closed: a `mut` seat
+  handed to a fn VALUE's `mut` seat (`f(c)` with `f: fn(mut C)`)
+  counted as never written (`valued_evidence`, receivers.av).
+- ~~TYPE LITERALS~~ — LANDED 2026-09-09 as sugar 2
+  (docs/2026_09_09_SUGAR_2_TYPE_LITERALS.md): `v.type(T)` is a
+  postfix like the rest, expanded at PARSE time to ONE call,
+  `v.interned(<T as a TypeLit value>)` — bare variants heard from
+  the seat, so no site imports anything and the receiver is read
+  once (`cx.type(List<string?>)` is `cx.interned(.List(.Opt(.Str)))`).
+  The words and `List`/`Map`/`Result`/`fn(…) -> R` spell shapes; any
+  other NAME is a HOLE, the binding it names (`cx.type(Map<string,
+  want>)`). THE WORD IS `type`, not the doc's `ty`: a new keyword
+  reserves a name, and `ty` names 273 bindings in the tree while
+  `type` was reserved already. THE RECEIVER IS EXPLICIT, not "the
+  context in scope": the 128 sites spelled ten receivers
+  (`cx.view.types`, `self.types`, `types`, `reg`, `e.types`,
+  `a.view.decls.types`…), so no one binding was "the" table;
+  TypeCx, LowerCx and Decls carry `interned` so `cx.type(int)` reads
+  as the doc wanted. 87 sites swept, 37 left — every one a shape the
+  literal cannot spell (a declared type, `Error`, `Null`, the empty
+  literals) or a part that is an expression. I40 ratchets it.
+  DOGFOODING ASKS FROM THE SWEEP: (1) AN EXPRESSION HOLE —
+  `cx.type(List<${elem_of(x)}>)`: four sites keep `intern(Type.Opt(
+  seat!.elem))` because a hole is a NAME, so a computed part binds a
+  name first; (2) a TYPE PARAMETER is no hole in a program —
+  `x.type(T)` in `fn g<T>` refuses as "`T` is not defined", true and
+  misdirecting, and the compiler's own bodies never wanted it; (3)
+  `int??` is unspellable in the type grammar (one `?` per name), so a
+  doubly-nullable literal is `List<T?>?`-shaped or nothing.
+- THE RED TEAM ON TYPE LITERALS (2026-09-09, 142 programs across the
+  eight classes, eval == native on every accepted one — no wrong
+  answer, no divergence). Eleven survivors, every one a refusal's
+  WORDS, each a test now (expr_spine/tests/type_lit_adversarial_
+  test.av): a value in the slot (`n.type(1)`) fell through to a
+  method call named `type` and said "declare `fn type`" — a keyword
+  can never be declared, so a dot-call NAMED BY A KEYWORD that no
+  method answers speaks as the grammar form it failed to be
+  (`form_refusal`, impls/check.av); `?.type(T)` read `int` as an
+  expression — the chain is spelled now, lowered to the same match
+  every `?.` link is; `N.type(int)` on a type NAME spoke as a variant
+  construction; a hole holding the wrong type said "argument 1 of
+  `.Id` wants `int`" — the expansion's seat leaked, so a hole is
+  MARKED and refuses as a hole; a trailing block after a literal
+  widened the expansion's call ("`N.interned` takes 1 arguments…") —
+  refused in the literal's words. FOUND AND LEFT, named: a parser
+  hole plus the statement's "expected BREAK" is two messages for one
+  mistake at nine malformed shapes (`fn(mut)`, `List<int>>`, `f()`
+  in the slot) — the hole law's, not the literal's; `n.type(List<>)`
+  is the hole plus the arity law, both true; and an `interned` that
+  is a FN FIELD or takes an `int` seat says "`.Int` builds a variant,
+  and `int` has none" — the receiver's contract in the variant's
+  words.
+- A BOUND METHOD AS A VALUE (filed 2026-09-09, the sugar 1 sweep).
+  `xs.any(self.stmt_rides)` is F2003 "no field `stmt_rides` on
+  `NodeStore`" — a method name read without parentheses is a property
+  read, and typing asks the record for a field. A free fn IS a value
+  (`xs.any(big)` answers), so the gap is the receiver: the method
+  plus the `self` it closes over. The spelling today is the wrapper
+  lambda `(k) -> self.stmt_rides(k)`, which the sweep wrote at ten
+  sites (the pronoun trap forced it: `xs.any(self.verb(it))` rebinds
+  `it` to the nearest method call). WANTING SITES: core/nodes.av's
+  `any_rides` and `any_stmt_rides`, features/unify.av's three
+  `all`/`find` folds, workspace.av's `parse_clean`. THE SHAPE: a
+  method read on a receiver answers `fn(seats) -> answer` with the
+  receiver captured — the same fn box a lambda mints, seat 0 the
+  receiver — so it is the pronoun's wrapper minted by the reader
+  rather than the writer, and the lambda feature owns it.
+- THE PRONOUN INSIDE A BLOCK'S STATEMENTS (landed with the above):
+  `pronoun_rides` read a block's VALUE alone, recorded as a
+  limitation; a trailing block exists for multi-statement bodies, so
+  `it` now rides a block's statements too (`stmt_rides`, exhaustive
+  over Stmt). Strictly more programs compile; an unbound `it` was
+  F3000 before and is bound now.
 - `pop` ANSWERS `T?`, SO THE TRAP IS SPELLED (filed 2026-09-05, lane
   D; the change is lane C's files and lane A's db.av). `xs.pop()`
   answers the ELEMENT today and traps on an empty list ("pop on an
@@ -7589,6 +9091,170 @@ recorded here so the wanting sites are named.
   `avra_str_from_codepoint` — the row exists; `@std/text`'s
   `from_codepoint(65533)` is the spelling until then. Wanting sites:
   the json specs' surrogate and control-character cases.
+
+- A PRE-COMMIT GATE RUNS THE CHEAP KEEPERS. The lane's own history
+  proves agents commit past the bar: 82a7ecd (the MetaVal crossing)
+  landed five new idiom violations, an unused import, and a settle
+  test that passed vacuously — all caught only by a later `make gate`
+  (2026-09-10, lane/comptime). The cheap keepers (`idioms`, `vocab`,
+  `fingerprints`, `externs`) are sub-second; wire hooks.json to refuse
+  on them, and the full gate stays the merge bar.
+
+- THE IDIOM REPORT NAMES THE LOCAL IT FLAGS. tools/idioms.py's I26
+  matcher already computes `[name! xN]` and truncates it away, so the
+  site reads "one nullable local forced open 3+ times" and the reader
+  greps the tool to learn which local. Print the binding's name
+  (`held! x4`) in the site line — the difference between acting and
+  investigating. Wanting site: every I26 fix (values.av's
+  meta_record/meta_enum exemplars).
+
+- `??` GUARD-BINDING, SO "GUARD ONCE, BIND ONCE" IS ONE LINE. The
+  idiom's own cure is the three-line
+  `let held = f(); if held == null { return … }; let sig = held!` —
+  longer than the smell, so the ratchet punishes
+  the commonest pass stanza (values.av's meta_record/meta_enum; the
+  compiled compiler holds dozens). THE ASK, probed before assuming:
+  a guarded bind — `let sig = self.fields_of(ty) ?? { return … }` —
+  or a failure-lane `or`, so the idiomatic form is SHORTER than the
+  violation and the class collapses by construction.
+
+- AN EMPTY AGGREGATE LITERAL ADOPTS A PLANTED NON-NULLABLE WANT.
+  `[]` under a `List<int>` want types as `List<int>`, `{}` under
+  `Map<string, int>` as that map — never `.EmptyList`/`.EmptyMap`
+  when the seat knows its element. Today only the BINDING's declared
+  type rescues the literal (`let xs: List<int> = []` works by
+  declared type), so a const's materializer had to carry the const's
+  type in a new `Wanted.answer` field to route AROUND the literal's
+  own shape (lane/comptime 422fe46, 2026-09-10) — the wart this ask
+  removes at its root. The NULLABLE want stays refused (F2024, the
+  subset cache's entry). Probe before assuming: want-less `[]` method
+  refusals (`unmeasurable_empty`, lists/methods.av) and
+  `empty_adopted`'s identity widen (checks.av) both rest on the
+  literal NOT adopting, and `plant_want` must keep flowing to heirs
+  (a lambda in the seat hears it).
+
+- `avra probe` — BASE-STAMPED PROBE RECORDS. A probe result names
+  the base that answered it (the Attribution law, CLAUDE.md), and
+  today the stamping is hand prose. THE ASK: `avra probe <file>`
+  writes one row — source, refusal F-codes, base commit, compiler
+  binary — into the probe log, so a re-probe after a merge shows its
+  own age instead of reading current forever. Companion to `avra
+  query`/`avra impact`; the subset cache's recorded-trigger (probe
+  logs as gate-verified program tests) is the natural home.
+
+- `avra check <file>` SCOPES TO THE FILE WHEN IT IS ONE FILE IN A
+  PACKAGE. Checking `packages/std-avrac/…/aggregate.av` surfaced
+  dozens of F0902 module-file refusals from OTHER files (sweep.av),
+  the named file's two real defects buried at the tail — signal
+  drowning hides findings (2026-09-10, lane/comptime). The named
+  file's defects come first, or a single-file argument checks only
+  that file.
+
+- `avra impact <symbol>` — THE COMPILER ANSWERS "WHAT DOES THIS
+  TOUCH" TODAY. Which program tests cover the fn, which bodies lower
+  it, who settles it: the workspace's memo graph (declaration → body
+  → settlement → lift) already IS the dependency index, and `explain`
+  is the seed. Ends grep-guessing test scope; P10/P11 own the
+  premise — the compiler is the semantic index agents grep around.
+
+- `avra query <file>:<line> --json` — type-at-point, the binding, the
+  law that refused and why, from the facts tables the compiler
+  already holds. The one probe result an agent asks for fastest;
+  today it is grep plus reading, the floor P10 was meant to raise.
+
+- A SESSION HANDOFF ARTIFACT PER LANE. Resuming a dropped agent
+  session cost a 26 MB JSONL mine plus reconstructing intent from a
+  staged/unstaged split (2026-09-10, lane/comptime). The dated STATUS
+  paragraphs in docs/2026_09_09_COMPTIME_DESIGN.md were the best
+  orientation available — make that pattern first-class: a
+  `docs/<date>_HANDOFF_<lane>.md` (entry / mid / next, human- and
+  agent-readable) touched at each checkpoint commit, so the resume
+  reads one file.
+
+- DOCS SPELL `rg`, NEVER GNU-ONLY `grep -g`. Two commands copied
+  verbatim from CLAUDE.md/subset failed on macOS BSD grep this
+  session; an agent copies, so the tax is real. Standardize the
+  examples on `rg` (or spell both forms).
+
+- REVIEW-ROUND CHECKLIST: NAME THE ROW A TEST TRIPS ON. The staged
+  settle_test embed case "passed" while refusing on `avra_puts`,
+  never exercising the embed admission — an instance of "A TEST'S
+  NAME IS READ AS ITS SCOPE", caught by assertion surgery rather than
+  the green (2026-09-10, lane/comptime). A review-round item: for
+  each via-the-machine case, say which runtime row it actually trips.
+
+FROM THE 2026-09-12 COMPTIME S5 SLICES (lane/comptime; wanting sites
+and probes in the same commit):
+
+- A REUSABLE `param` GRAMMAR RULE. Every param list spells
+  `( "const" )? ( "mut" )?` by hand — TEN sites (`fns/mod.av:33-35`,
+  `impls/mod.av:50-52`, `closures/mod.av:24-25`,
+  `expr_spine/mod.av:36`) — while the LOGIC is one place
+  (`marked_seats`). The DSL has no parameter rule a fragment can
+  reference, so a third mark is 10 more spellings. THE ASK: a `param`
+  rule the declaration fragments reference, its builder answering
+  `List<Param>` so the span-window alignment dies with it.
+
+- `quote { }` FOR TEST SOURCES, AND A KEEPER THAT KNOWS A QUOTE BODY IS
+  TEXT. Every spec case spells Avra source as an escaped `"…"` with
+  `\n` and `\"` (e.g. `features/fns/tests/fns_test.av`). Probe: one
+  const-seat case rewritten as a `quote { … }` block compiled and
+  passed (64/64) — then `make idioms` flagged ELEVEN false I23s,
+  because the line-based scanner reads the quote body as real code.
+  Two asks: teach `tools/idioms.py` brace-depth-aware quote skipping
+  (and the same for any `grammar { }`/`table { }` body it scans), then
+  spell test sources as quote blocks. The readability win is large.
+
+- A `Seat` RECORD — NEVER PARALLEL `params`/`marks`. S5a made seat
+  promises ONE `SeatMark` currency, but the marks still travel as a
+  list PARALLEL to `List<TypeId> params`, zipped by index at every
+  reader (`core/types.av` `seat_words`, `features/checks.av`
+  `declared_marks`, the `for j, p in params { mark_at(marks, j) }`
+  shape). That is CLAUDE.md's moving-boundary hazard living in the
+  type currency. THE ASK: `Fn(seats: List<Seat>, ret)` with
+  `Seat = { ty: TypeId, mark: SeatMark }`, so an off-by-one is
+  unspellable. (Wanting site: `core/types.av`, `Arrow`, `Type.Fn`.)
+
+- `continue`, OR A GUARDED ITERATION. `const_seats` wanted "skip the
+  unmarked seats" and had to nest an `if` around the whole body
+  (`features/checks.av`), because `continue` is not a statement. THE
+  ASK: `continue` in a `for` (the comprehension bar still prefers a
+  filter; this is for a fold with a skip), or a `for x in xs if
+  <cond>` head.
+
+- FLAGS, OR A SET OF AN ENUM. `SeatMark { mutable, settled }` is a
+  two-bit flag set; building and reading it is a struct literal and
+  nested `if`s (`core/types.av` `mark_prefixed`/`mark_word`). THE ASK:
+  a combinable enum value (`SeatMark.mutable | .settled`, `.has(…)`)
+  or a `Set<E>` — the honest shape for "some of these hold".
+
+- ONE DECLARATION-PARAM READ. A declaration's parameters are read
+  three ways: `store.fn_parts(stmt)?.params` (`features/checks.av`
+  `seat_names`), `declared_params(store, stmt)`
+  (`language/workspace.av:1977`), and `written_seats(keywords, params)`
+  (`features/contexts.av:125`, a filter). THE ASK: one
+  `Decls.params(d)` verb (reading the DECLARATION's own store — the
+  cross-file read that crashed S5b), with the receiver-implicit truth
+  stated once.
+
+- A PRIVATE TOP-LEVEL `const` IS MODULE-SCOPED. A private `fn` in a
+  module file is visible to every file of that module and callable
+  before its textual definition; a private `const` is FILE-LOCAL and
+  F3001 "used before its definition". The const-dogfooding sweep
+  (survey 2026-09-12 #5) converted 86 fns and had to export ~60
+  PRIVATE ones to compile at all, widening `@std.avrac`'s API with
+  `unit_ceiling`, `settle_steps`, `open_readonly` and kin. WANTING
+  SITES: `features/annotations/check.av` (`receiver_law`, read at
+  :163), `std-sqlite/src/script.av` (`semicolon`, read at :37),
+  `std-io/src/io.av` (`enoent`, read at :72). THE ASK: a non-exported
+  top-level `const` is a module DECLARATION (module-visible, not
+  importable outside), exactly as a private `fn` is — order-free, no
+  `export` owed. NOTE: admitting EVERY top-level const as a Decl
+  changes same-name shadowing (`const N = 1; let N = 2; fn f { N }`)
+  and turns two `const N` into a clash, so the migration must update
+  `features/consts/tests/consts_adversarial_test.av` deliberately —
+  which is why the sweep exported instead of doing it inside the
+  dogfooding.
 
 ## The error spine (rung 10 — designed 2026-08-31, from the epic)
 
@@ -9290,6 +10956,57 @@ by meaning; each is a slice for lane D unless a lane is named.
   local is invisible to it, so 100 is what the lint reaches and not
   what the law covers.
 
+- PAID 2026-09-14 (comptime/static): `NodeStore.every_expr` in
+  core/nodes.av, a registry beside the fingerprints; `runtime_read`,
+  `reads_settled_seat` and `Program.kind_rows` walk it; the F0900
+  below is F2074 in consts_adversarial. THE EXPRESSION WALK STOPS AT
+  HIDDEN BRANCHES, and two consumers want the whole body (found
+  2026-09-13 by the COMPTIME STATIC red team). `post_order` walks `kids`, and `if`, `match`, `catch`, the
+  nullable arms and a lambda's body hide theirs (each types under its
+  own narrowing), so a walk written for "every expression a body
+  holds" sees the unconditional ones only. (1) A DEFECT SHOWN TO A
+  USER: `fn g(n: int) -> int { const C = if true { n } else { 0 }  C }`
+  is not refused F2074 (`runtime_read` never sees `n` inside the
+  branch), settles, and `./avra check` prints `error[F0900]: defect: a
+  compile-time value did not cross as `int``. (2) The package-kind
+  registry (`Program.kind_rows`) registers `refuse_as("E1", …)` only
+  where the walk reaches, so a conditional kind — most kinded
+  refusals — registers by being spoken and `avra explain` misses an
+  unspoken one; its miss says so. RECORDED TRIGGER: land ONE complete
+  walk (`every_expr`: kids plus each feature's hidden children, and a
+  statement list's expressions) and point `runtime_read`,
+  `reads_settled_seat` and `kind_rows_in` at it — the third consumer
+  names the concept, and the first fixes (1). Owner unconfirmed.
+- H3b. A `mut` SEAT'S ARGUMENT IS NEVER OPENED (found 2026-09-13 by
+  the COMPTIME STATIC red team, both engines, native and evaluated).
+  A `mut` local handed whole to a `mut` seat is LOADED, not opened
+  unique, so the callee writes the box the local still shares:
+    fn big() -> List<int> { [i for i in 0..40] }
+    const BIG = big()
+    fn grow(mut xs: List<int>) -> int { xs.push(9)  xs.length }
+    mut ys = BIG
+    let g1 = grow(ys)
+    let shared = [1, 2]
+    mut alias = shared
+    let g3 = grow(alias)
+    "${g1} ${BIG.length} ${g3} ${shared.length}"
+  answers `41 41 3 3` on both engines where a copy is a copy demands
+  `41 40 3 2` — the const's own data and the `let`'s list are written.
+  Under static data (comptime/static) BIG is a laid-out global, so the
+  write grows a static buffer; the runtime's `array_grow` moves the
+  cells out (`laid_out`) rather than freeing or reallocating memory
+  that is the binary's, which keeps the hole exactly the once path's
+  and no worse. THE FIX IS ONE VERB AND IT IS BLOCKED: opening every
+  `mut`-seat argument unique at the call (`seated_regs`, probed in
+  places.av — a `.Root` cell through `unique_box`, a path through
+  `slot_opened`) TRAPS THE COMPILER'S OWN `check` ("index 304 is out
+  of bounds (length 303)"), and so does the narrower form that opens
+  only handed LOCALS: the compiler's source hands `mut` locals whose
+  box another holder shares and relies on the write reaching both.
+  So H3b closes with H3 — after the sites that ride the channel are
+  converted — and not before; the reproducer above is its test, and
+  the F2048 law (a `mut` seat wants a `mut` place) already names the
+  seats to audit.
 - H3. THE BORROW CHANNEL IS SILENT — H2'S SIBLING WITH NO WARNING AT
   ALL (found 2026-09-05 by lane C; verified here). H2 at least warns.
   Borrow the field into a local first and there is NO diagnostic:
@@ -12228,3 +13945,295 @@ local could shadow.
 
 Update this file whenever a slice lands or the plan changes — the
 roadmap lives HERE, not in conversation.
+
+---
+
+## Feedback survey — 2026-09-13 #7 (comptime/const, the private const and survey #6's leftovers)
+
+The `/feedback` run for the lane that made a top-level `const` a
+module declaration (c0e5cb8), made a `const` seat take what the source
+spells (d92cda0) and landed `avra check --every` (300de49). Counts:
+FRICTION 5, SUGAR 2 (both confirmations), FEATURES 1 (confirmation),
+DEFECTS 4 (all fixed in-lane), DOCTRINE 4, PERFORMANCE 0 (one
+unmeasured note), PROCESS 3. Top three by cost: the cross-family
+cycle (one build cycle and a design), the F0900 on assigning a const
+(a defect users would have read), and the two one-run stalls (a
+keeper's false positive, a test string's own interpolation). NOT
+SURVEYED: the std packages beyond the 58-export sweep, the docs
+campaign's files, and the templates lane's regions of workspace.av.
+
+### FRICTION — what cost time
+
+- **A CYCLE ACROSS TWO QUERY FAMILIES IS SEEN BY WHICHEVER IS ENTERED
+  FIRST.** `const X = X`: asked from Main, the const-type family
+  cycled and spoke; asked by the report typing the const's own
+  declaration first, the TYPED family re-entered itself through
+  `start_recursive`, answered a smaller view in silence, and the
+  const-type ask never cycled — the first fix worked in one ordering
+  and not the other. One build cycle. THE ASK, PAID: `Memo.open(arg)`
+  — a family asks whether the OTHER family's query is in flight before
+  touching it (workspace.av `const_type_at`). Attributed:
+  comptime/const c0e5cb8.
+- **THE I18 MATCHER FLAGS ANY `_of(` FOLLOWED BY `??`.**
+  `settled_type(self.store_of(f), …) ?? known_const_type(…)` was
+  named "a payload the dispatch GUARANTEES, papered over with a
+  default" — `store_of` is a table read, not the value protocol. One
+  gate run; the site was reshaped into two statements. THE ASK: the
+  matcher names the protocol's verbs (`int_of`, `text_of`, `bool_of`,
+  `bits_of`, `pairs_of`, `elems_of`, `quote_of`), not the suffix —
+  its true-positive rate is its spec (CLAUDE.md, "A LINT COUNTS WHAT
+  ITS DOCTRINE COUNTS"). tools/idioms.py:445.
+- **A `${}` INSIDE A TEST'S SOURCE STRING IS THE TEST FILE'S OWN
+  HOLE.** `shown("…\"${f()} ${N}\"")` interpolated `f()` in the
+  test module — F3000 "no `fn f` is defined" AT THE TEST'S LINE, which
+  read as the feature being broken. One suite run. The spelling is
+  `\${…}` (the const adversarial suite already does it once). No ask:
+  a fact worth one line where tests are written.
+- **A CHECK-TIME HELPER ASSERTS NOTHING ABOUT A LOWERING-TIME
+  REFUSAL.** Two cycle cases were written with `refused_with` (analysis
+  only) for a settlement trap that speaks at lowering; both failed
+  until rewritten as `refused_at_run`. Minor; the names say it.
+- **A GREP FILTER MANUFACTURED A DIVERGENCE.** A red-team harness
+  filtered eval output with a character class that excluded spaces, so
+  `4 6` vanished and read as eval=[] against native=[4 6] — the most
+  serious finding available, for one probe, false. Compare RAW outputs
+  and filter after; the differential harness in `tools/` should own
+  this rather than each lane's shell.
+
+### SUGAR — a construct the language should have
+
+- **A TEMPLATE CANNOT NAME WHAT IT GENERATES** — filed above under
+  survey #5's section this lane extended; routed to COMPTIME
+  TEMPLATES by the task master. Confirmation only.
+- **`it` BINDS TO THE NEAREST CALL** — `all_defs.any(it.name == name
+  && store.const_value(it.stmt) == null)` refused F2033 inside the
+  nested call; the lambda was written out. Already in CLAUDE.md's
+  subset ("`it` through a self-method wrapper"). Confirmation only.
+
+### FEATURES — a capability, more than sugar
+
+- **`avra check --every`** — survey #6's ask, LANDED 300de49.
+  Confirmation only.
+
+### DEFECTS — the compiler blaming itself, or silent
+
+- **`const X = X` COMPILED CLEAN AND ANSWERED NOTHING** (found on
+  c0e5cb8's first build, latent before it only because a plain const's
+  own name did not resolve inside its value). The type cycle was
+  swallowed as an Error type; `check_const` treated Error as "already
+  spoken". FIXED: F2078 at the const, both orderings.
+- **ASSIGNING A CONST WAS F0900** "defect: an assignment to a
+  non-place survived a clean analysis" — the assignment law's `Decl`
+  arm answered nothing for a const. Found by the red team (class 2).
+  FIXED: F3005 in the const's words.
+- **A GENERATED TOP-LEVEL `const` WAS NEVER ADMITTED** (pre-existing:
+  `mint_code_stmt` minted fns, types and impls). FIXED:
+  `mint_code_const`; consts/tests/generated_const.
+- **`take(K.B(5))` REFUSED AS "COMPUTED AT RUN TIME"** — a qualified
+  payload variant is a method-call node on the enum's name. FIXED in
+  d92cda0's source walk.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **CLAUDE.md's "`const` in a MODULE file … F0902" WAS STALE TWICE
+  OVER** — F0902 had been relaxed for consts, then the migration made
+  a const a declaration. REWRITTEN as the top-level-const law.
+- **THE DESIGN DOC'S "ONLY WHEN EXPORTED" SCOPING** (S1 `export
+  const`) is SUPERSEDED; marked at the entry.
+- **A CROSS-FAMILY CYCLE NEEDS THE OPEN CHECK** (the friction row
+  above, as a law): a query that touches another family's query must
+  ask `open` first when the two can re-enter each other, because
+  `start_recursive` on the other side answers a smaller view rather
+  than a cycle. Worth a keeper the day a third family joins the
+  const/typed pair.
+- **THE SEAT LAW READS THE SOURCE, NOT THE FACTS** — survey #6's
+  proposed ORDER change was a fix to a symptom; a law about what the
+  source spells must not consult typing facts at all. Pinned in the
+  design doc's queue.
+
+### PERFORMANCE — a measured cost
+
+- None measured. UNMEASURED NOTE: a `const`-seat argument that is not
+  a bare literal now costs one isolated lowering plus an evaluator run
+  per distinct argument expression per unit (memoized under
+  `expr$<file>$<expr>` plus the seats). `make census` over a program
+  dense in such calls would size it; none exists in the tree today.
+
+### PROCESS — the working discipline itself
+
+- **THE WATCHDOG LOCK SERIALIZED TWO LANES' BUILDS** without anyone
+  coordinating ("waiting for the build lock (held by pid …)" four
+  times this lane). Keep.
+- **A FAILING TEST MUST FAIL FOR THE RIGHT REASON** before the fix: the
+  `check_every` spec first failed on a fixture typo (`unreached` vs
+  `unused`) — a test that fails for a typo proves nothing about the
+  law. Read the failure's words, not its colour.
+- **"ONE COMMIT EACH" BENT WHERE ONE MECHANISM PAID TWO ASKS**: the
+  nested-const and inline-variant leftovers were one law (the source
+  walk) and landed as one commit, reported as such rather than split
+  into a commit whose second half changes nothing.
+
+## Feedback survey — 2026-09-13 #8 (comptime/templates, parsed templates slice a)
+
+Counted per axis: friction 4, sugar 4, features 2, defects 3 (mine,
+found by the red team, fixed), doctrine 2, performance 0, process 3.
+The top three by cost: the two-binary ladder (each boundary crossed
+by hand-writing the compiler's own derived accessors), the `it`
+pronoun binding to the nearest call, and the arm-vs-statement
+ordered choice with no lookahead. Not surveyed: the sqlite and http
+lanes' trees; this tree at the merge points only.
+
+### FRICTION — what cost time
+
+- **THE LADDER HAS NO TOOL.** Crossing a syntax boundary in the
+  compiler's own source (twice today: mine, then CONST's order-free
+  consts against my lexer) is: strip the two `@derive`s to
+  hand-written accessors, build, restore, build twice, `make seed`.
+  Four edits and five builds, by hand, each time. EVIDENCE: this
+  lane's session, `protocol.av`/`projections.av`/`nodes.av`/
+  `contract.av` edited twice. THE ASK: `make ladder` — a target that
+  builds with the derives stubbed from a checked-in stub file, then
+  restores and builds to the fixed point.
+- **`it` BINDS TO THE NEAREST CALL.** `xs.all(store.hole_stmt(it) !=
+  null)` is F2033 at the inner call; seven sites wrote the lambda
+  instead. EVIDENCE: `core/rebuild.av:59`, `quote/check.av:38`,
+  `quote/lower.av:31`. Already in "The subset today"; CONFIRMS.
+- **NO STATEMENT SEPARATOR.** `if x { a(); return s }` is F0001
+  "unexpected character" at the `;`, three lines each. EVIDENCE:
+  `grammar/lexer.av`'s `routed`. THE ASK: none — the line law is the
+  design; a subset-today row so the next writer knows.
+- **A SPEC ASSERTION'S LINE ANCHOR IS FRAGILE.** The quote spec pins
+  `prov.av:7`; adding a doc line to the vendored provider moved every
+  anchor. EVIDENCE: `quote_test.av`'s `provider()`. THE ASK: assert
+  the LINE by a marker search of the vendored text, not a number.
+
+### SUGAR — a construct the language should have
+
+- **A HOLE IN A STRING'S LITERAL RUN.** `"${f.name}: …"` as generated
+  text has no spelling; `interpolated(parts, holes)` builds it.
+  Wanting site: `std-derive/src/derive.av`'s `Show` (`shown_parts`).
+- **A PARAMETER-LIST HOLE.** `fn f(${params})` is not a seat; a
+  derive that forwards a fn's seats has no spelling. Wanting site:
+  none yet in tree — the `@traced` twin would want it.
+- **A FLOAT IN A HOLE.** No `float_node` row: a `float` in an
+  expression seat is refused. Wanting site: `quote/lower.av`'s
+  `fill_reg` (`rest ->`).
+- **PEG LOOKAHEAD IN THE GRAMMAR DSL.** `( a:arm | s:stmt | BREAK )*`
+  tries the arm first, so every statement-shaped line of a quote body
+  leaks one pattern node from the failed attempt. `&`/`!` would let
+  the arm branch require its `->` before committing a node. Wanting
+  site: `features/quote/mod.av`'s grammar.
+
+### FEATURES — a capability, larger than sugar
+
+- **`Type` CARRIES `Kind`.** A type hole filled from a SPELLING parses
+  the text with the `type` rule (`program.av`'s `parse_type_ref`) —
+  the one text the splice still reads, because `Variant.payload` and
+  `Field.ty` are strings. Retires with §3.6's `Kind`.
+- **A REBUILDER-SHAPED DERIVE.** `core/rebuild.av` is 420 lines of
+  exhaustive arms that a `@derive(Walk)` could write from the enums —
+  the inventory's class D/E, now with a real consumer.
+
+### DEFECTS — the compiler blaming itself (all fixed in the slice)
+
+- **A HOLE-ONLY QUOTE TYPED BY ITS FIRST HOLE'S NAME.** `quote {
+  ${parts} }` with `parts: List<Decls>` answered `Code`; a scalar in
+  it lowered as a NAME. Found by the red team's `twice`; fixed by
+  `seat_of`/`kind_word` in `quote/check.av`.
+- **TWO IMPLS OF ONE TARGET IN ONE GENERATION MINTED ONE.** The
+  generated key was the whole generation's tag plus the target, so
+  the second `impl P` took the first's slot. Found by `two_impls`;
+  fixed by keying per statement (`mint_generated_code`).
+- **A TEMPLATE'S OWN DECLARATION WAS INVISIBLE TO ITS OWN READS**
+  (CONST's finding, left for this lane): `fn plain_base` generated
+  from a template, `plain_base()` in the same template was F3000.
+  Fixed: `generated_named` answers a template-origin read with the
+  generated declarations its template wrote (`resolve.av`). Pinned:
+  `quote/tests/self_read`.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **"A HOLE HAS NO POSITION UNTIL THE SPLICE PARSES" WAS A PROPERTY
+  OF THE TEXT MODEL, WRITTEN AS A LAW.** §7 q2 decided `Code`
+  untyped on it; the tree model retired it the same day. Amended in
+  the design doc with the by-kind answer.
+- **"THE NEXT BUILD IS `make bootstrap`" ASSUMES THE SEED KNOWS YOUR
+  SYNTAX.** After a lexer change, the committed seed predates it and
+  bootstrap builds a compiler that cannot read the compiler's own
+  templates; the way through was `make seed` from the fixed point
+  FIRST, then bootstrap as the receipt. Recorded in the design doc's
+  ladder.
+
+### SUBLANGUAGES (2026-09-14, the same lane's second campaign) — appended rows
+
+- **DEFECT, FIXED: AN EXPANSION AFTER ADMISSION CANNOT BE TYPED.** The
+  first draft expanded a block inside `resolved`; the typer's
+  per-declaration table, sized from the declaration's range at
+  admission, could not reach the nodes ("index 22 is out of bounds
+  (length 20)", `TypeCx.type_node` via `checked_fn`). Moved to the
+  PARSE, where `table<R>` expands. The general law: a node minted
+  after admission belongs to no declaration's range — mint at the
+  parse, or mint a declaration.
+- **DOCTRINE: A FEATURE'S GRAMMAR FRAGMENT IS ITS KEYWORD CLAIM, AND
+  THE CLAIM LANDS ON THE COMPILER'S OWN NAMES.** `stmt = "syntax" …`
+  made `syntax` a keyword and refused `Language.syntax` in the
+  product's second build — the build that succeeded was the build
+  that lied, again. Check `grep -rn "\b<word>\b" packages` before
+  claiming a word; the declaration is `grammar <word> { … }` for that
+  reason.
+- **DEFECT, FILED: THE GRAMMAR DSL SWALLOWS AN UNCLOSED GROUP AND AN
+  UNCLOSED ACTION.** `where = ( c:NAME` and `-> eq(c, v` both parse
+  with no word and ready with no defect (`sublang_test.av` probes;
+  `where: c:NAME` is what refuses). EVIDENCE: `./avra check` of a
+  library declaring them, 2026-09-14. THE ASK: `parse_grammar` refuses
+  an unclosed `(` and an action missing its `)`.
+- **FRICTION: `table` IS A KEYWORD.** A `Select { table: string }`
+  field refused F3002 three lines down; `relation` instead. Already
+  in "The subset today" as a reserved word; CONFIRMS.
+- **FRICTION: A PRESENT-BIND ARM AFTER A COMMA-ENDED ARM**, twice in
+  one afternoon (`null -> "", h? -> …`, `null -> [], b? -> …`) — each
+  read as "expected `}` to close the match" and cost a build.
+  CONFIRMS the subset row; the ask stands.
+- **SUGAR: A LEXER MODE PER SUBLANGUAGE.** A body's lexing is Avra's;
+  `'x'` in an SQL block refuses as two unexpected characters at the
+  block (pinned). Wanting site: `sublang_adversarial_test.av`'s
+  lexing-limit case. THE ASK: a `tokens { }` layer beside a named
+  grammar.
+- **DEFECT, FIXED: A PARSE THAT READS ANOTHER FILE'S ITEMS IS A
+  CYCLE THE DAY THAT FILE IMPORTS BACK.** The block pre-scan read the
+  provider's `surface` (items → parsed → its own pre-scan → the
+  consumer's parse, in flight): "memo family 2 reused missing key 0"
+  at the workspace's mutual-recursion case, which no sublanguage test
+  reached because every one had a one-way import. A parse may read
+  another file's SOURCE, never its items: `Family.Plain` is the
+  word-less parse, and the pre-scan reads exported `grammar`
+  statements from it. THE LAW: a memo family's dependencies point
+  strictly down the pipeline, and the PARSE is the floor — anything
+  it reads of another file must be that file's source or its plain
+  parse. Pinned: two modules importing each other, one's block of the
+  other's grammar.
+- **DEFECT, FIXED: A FILE ENTERS THE TABLE AT FIRST MENTION, AND
+  `cases()` WALKS THE TABLE.** The plain read minted the provider's
+  FileId with no store; the test command's `cases()` walked every
+  file and unwrapped the store ("unwrapped an absent value", found
+  only by `avra test` on the sql program ALONE — the package sweep's
+  green did not reach it, because there every provider had already
+  been resolved). `file_cases` mints the file's items first. THE
+  GENERAL SHAPE: a table that fills "as files are first asked for"
+  carries an unstated invariant about WHAT an ask does; the second
+  kind of ask broke it silently.
+
+### PROCESS — the working discipline itself
+
+- **KEEP:** the red team's on-disk attack packages — 19 programs in
+  the scratchpad, 10 promoted to `quote/tests/*` as eval == native
+  program tests; the two real defects came from `twice` and
+  `selfread_plain`, neither of which the spec suite had a shape for.
+- **KEEP:** the expand byte-identity receipt — `avra expand` over the
+  derive test and the compiler's own two derives, diffed against
+  lane/comptime's binary; it caught the right-fold `&&` (semantically
+  equal, textually not) before it shipped.
+- **CHANGE:** a guard that says "no expected text may change" should
+  name the CONTRACT it protects; two spec assertions changed because
+  the mechanism moved (a refusal's seat words, a parse error now at
+  the library) and were reported, not hidden.

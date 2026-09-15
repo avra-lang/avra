@@ -1,0 +1,195 @@
+//! A template's HOLES: a hole is a NAME no program can write — `${k}`,
+//! `k` its index in the quote — so every builder mints its ordinary
+//! node with a placeholder name, and the seat that name sits in is
+//! the hole's kind.
+
+/// A hole-bearing name's runs and the holes between them: `l${2}_x`
+/// is `parts: ["l", "_x"], holes: [2]`. A LONE hole has two empty
+/// parts.
+export type HoleName = { parts: List<string>, holes: List<int> }
+
+impl HoleName {
+    /// Whether the name is the hole and nothing else.
+    fn lone() -> bool { self.holes.length == 1 && self.parts.all(it.is_empty()) }
+}
+
+/// The name a hole-bearing token wears — the inverse of `hole_name`.
+export fn placeholder(parts: List<string>, holes: List<int>) -> string {
+    let woven = [parts[j] + "\${${k}}" for j, k in holes]
+    woven.join("") + parts[holes.length]
+}
+
+/// The holes a name carries, or null for a written name. `$` spells
+/// no written name, so the test is one character.
+export fn hole_name(text: string) -> HoleName? {
+    if !text.contains("$") { return null }
+    mut parts: List<string> = []
+    mut holes: List<int> = []
+    mut run = 0
+    mut i = 0
+    while i < text.length {
+        if text.char_code(i) == 36 && i + 1 < text.length && text.char_code(i + 1) == 123 {
+            let close = closing(text, i + 2)
+            parts.push(text.substring(run, i))
+            holes.push(digits(text.substring(i + 2, close)))
+            i = close + 1
+            run = i
+        } else {
+            i = i + 1
+        }
+    }
+    parts.push(text.substring(run, text.length))
+    HoleName { parts: parts, holes: holes }
+}
+
+/// The `}` at or after `from` — a hole's index has no other closer.
+fn closing(text: string, from: int) -> int {
+    mut j = from
+    while j < text.length && text.char_code(j) != 125 { j = j + 1 }
+    j
+}
+
+fn digits(s: string) -> int {
+    mut v = 0
+    for i in 0..s.length { v = v * 10 + (s.char_code(i) - 48) }
+    v
+}
+
+/// What a hole's seat takes — typed by POSITION at the quote.
+export enum HoleKind {
+    /// a lone name where an expression stands
+    Expression
+    /// a name, or part of one: a declaration's, a field's, a
+    /// variant's, a property's
+    Name
+    /// a lone binder in a pattern
+    Binder
+    /// a written type's name
+    Type
+    /// a lone name standing as a whole statement
+    Statement
+    /// a lone name standing as a whole match arm
+    Arm
+}
+
+/// The kind a template VALUE wears — one per `@std/meta` type.
+export enum MetaKind { Code, Stmts, Arms, Decls }
+
+/// The `@std/meta` declaration a kind names — the one projection to
+/// text, for the door that finds declarations by name.
+export fn meta_name(k: MetaKind) -> string {
+    match k {
+        .Code -> "Code",
+        .Stmts -> "Stmts",
+        .Arms -> "Arms",
+        .Decls -> "Decls",
+    }
+}
+
+/// Several of a kind: expressions side by side are statements.
+export fn many_of(k: MetaKind) -> MetaKind {
+    match k {
+        .Code -> MetaKind.Stmts,
+        .Stmts -> MetaKind.Stmts,
+        .Arms -> MetaKind.Arms,
+        .Decls -> MetaKind.Decls,
+    }
+}
+
+/// What a hole's VALUE is, as the seat law sees it: a template of a
+/// kind, a list of them, an int, a bool, text, a list of texts, a
+/// named meta value.
+export enum FillClass {
+    Template(kind: MetaKind)
+    Templates(kind: MetaKind)
+    Int
+    Bool
+    Text
+    Texts
+    Named
+}
+
+/// THE SEAT LAW, one registry read by typing and by the splice: what
+/// each seat takes. A text in an expression seat is refused for
+/// AMBIGUITY (`literal` or `name`), which is its own voice.
+export fn fits(class: FillClass, kind: HoleKind) -> bool {
+    match kind {
+        .Expression -> match class {
+            .Template(k) -> k is .Code,
+            .Int or .Bool -> true,
+            .Templates(_) or .Text or .Texts or .Named -> false,
+        },
+        .Name -> match class {
+            .Text or .Int or .Named -> true,
+            .Template(_) or .Templates(_) or .Bool or .Texts -> false,
+        },
+        .Binder -> match class {
+            .Text or .Int or .Named or .Texts -> true,
+            .Template(_) or .Templates(_) or .Bool -> false,
+        },
+        .Type -> match class {
+            .Text or .Named -> true,
+            .Template(_) or .Templates(_) or .Int or .Bool or .Texts -> false,
+        },
+        .Statement -> match class {
+            .Template(k) -> !(k is .Arms),
+            .Templates(k) -> !(k is .Arms),
+            .Int or .Bool or .Text or .Texts or .Named -> false,
+        },
+        .Arm -> match class {
+            .Template(k) -> k is .Arms,
+            .Templates(k) -> k is .Arms,
+            .Int or .Bool or .Text or .Texts or .Named -> false,
+        },
+    }
+}
+
+/// The kind a body of NOTHING BUT HOLES wears: its first hole's —
+/// several expressions being statements — and every other hole must
+/// agree, or the quote refuses a mix.
+export fn holes_kind(classes: List<FillClass>) -> MetaKind? {
+    let first: FillClass? = classes.first()
+    if first == null { return MetaKind.Stmts }
+    let own = class_kind(first!)
+    if own == null { return null }
+    let kind = if classes.length == 1 { own! } else { many_of(own!) }
+    if classes.all((c: FillClass) -> agrees(c, kind)) { kind } else { null }
+}
+
+/// The kind a fill alone would make a quote of holes.
+export fn class_kind(c: FillClass) -> MetaKind? {
+    match c {
+        .Template(k) -> k,
+        .Templates(k) -> many_of(k),
+        .Int or .Bool -> MetaKind.Code,
+        .Text or .Texts or .Named -> null,
+    }
+}
+
+fn agrees(c: FillClass, kind: MetaKind) -> bool {
+    let own: MetaKind? = class_kind(c)
+    own != null && many_of(own!) == many_of(kind)
+}
+
+/// The seat a hole of a body of holes stands in, by the body's kind.
+export fn holes_seat(kind: MetaKind, count: int) -> HoleKind {
+    match kind {
+        .Arms -> HoleKind.Arm,
+        .Code -> if count == 1 { HoleKind.Expression } else { HoleKind.Statement },
+        .Stmts or .Decls -> HoleKind.Statement,
+    }
+}
+
+/// What a quote's body PARSED as — the kind its value wears.
+export enum QuoteKind {
+    /// statements whose tail is an expression: one expression
+    Expr
+    /// statements with no value
+    Stmts
+    /// match arms
+    Arms
+    /// declarations only
+    Decls
+    /// nothing but holes: the kind is what fills them
+    Holes
+}

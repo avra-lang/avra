@@ -19,7 +19,9 @@
 //! values.av the runtime VALUE representation, builder.av the
 //! parse-time authoring surface. A feature-named fn has no place
 //! in any of them.
-use core.{Expr, ExprId, StmtId, PatId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
+use @std.meta.{derive}
+use core.{Expr, ExprId, StmtId, PatId, FileId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
+use core.{SeatMark}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 
@@ -48,11 +50,11 @@ export type ResolveCx = {
     // the open lambda frames; the open fn bodies' floors; one entry
     // per open impl or trait body (inside, `self` names the receiver
     // seat and the written params start at seat 1); the open fn
-    // body's `mut` seats, by written position
+    // body's seat contracts, by written position
     lframes: List<LFrame>,
     floors: List<int>,
     receivers: List<bool>,
-    muts: List<List<bool>>,
+    marks: List<List<SeatMark>>,
     // a name resolves ONCE; a scoped binder never counts as a later
     // definition
     walked: List<bool>,
@@ -61,10 +63,25 @@ export type ResolveCx = {
     // the statement in hand stands inside a block
     scope: List<string>,
     in_block: bool,
+    // the two looks past the written file
+    elsewhere: Elsewhere,
 }
+
+/// The resolver's two looks PAST the written file. A name the
+/// written namespace lacks may be a GENERATED declaration of this
+/// file, materialized on demand (the two-tier lookup's second tier);
+/// and a template's own name lives in the namespace of the file that
+/// WROTE the quote — origin hygiene.
+export type Elsewhere = { generated: fn(string) -> DeclId?, written_in: fn(FileId) -> Namespace }
+
 
 /// One `let` definition of the program, in order.
 export type Def = { name: string, stmt: StmtId }
+
+/// A binder an arm opens, with the file that WROTE its text — a
+/// generated pattern's name and its arm's value may come from
+/// different runs, and the binder wears its own.
+export type Bound = { name: string, origin: FileId? }
 
 /// One OPEN lambda during the walk: its params, and the overlay
 /// depth at entry — an overlay at or above the floor is
@@ -74,15 +91,20 @@ export type LFrame = { lam: ExprId, params: List<string>, floor: int }
 /// A fn's typed signature, as the type pass computed it.
 export type FnSig = { params: List<TypeId>, ret: TypeId }
 
-/// A recorded INSTANTIATION: which generic fn a call targets and
-/// what each of its Vars bound to, by ordinal. Typing records it;
-/// mono lowers one body per distinct binding.
-export type Sub = { target: DeclId, args: List<TypeId> }
+/// A recorded INSTANTIATION: which generic fn a call targets, what
+/// each of its Vars bound to by ordinal, and the VALUE fingerprints
+/// of its settled (`const`) seats. Typing records it; mono lowers one
+/// body per distinct binding AND per distinct settled value.
+export type Sub = { target: DeclId, args: List<TypeId>, consts: List<string> = [] }
 
 /// A struct's typed field table, in declaration order — the index
 /// IS the runtime slot; a default is the declaration whose body
 /// fills it.
 export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?> }
+
+/// A NAMED TYPE's table: the ONE shape it stands over. The name is
+/// its own type at every seat; this says what it travels as.
+export type NamedSig = { of: TypeId }
 
 /// A declared enum's variant table, in declaration order — the
 /// index IS the runtime tag, and a payload (when the variant
@@ -148,35 +170,12 @@ export fn res_enum_sig(ok: TypeId, err: TypeId) -> EnumSig {
 /// the parallel resolve tables became one Binding. A new declared
 /// kind is a new VARIANT, and the projections below break at
 /// compile time until it is handled.
+@derive(Projections)
 export enum DeclSig {
     Fn(sig: FnSig)
     Record(sig: StructSig)
-    Variants(sig: EnumSig)
-}
-
-/// The projections beside the enum — consumers ask, never match.
-export fn fn_sig_of(d: DeclSig?) -> FnSig? {
-    if d == null { return null }
-    match d! {
-        .Fn(s) -> s,
-        _ -> null,
-    }
-}
-
-export fn record_sig_of(d: DeclSig?) -> StructSig? {
-    if d == null { return null }
-    match d! {
-        .Record(s) -> s,
-        _ -> null,
-    }
-}
-
-export fn variant_sig_of(d: DeclSig?) -> EnumSig? {
-    if d == null { return null }
-    match d! {
-        .Variants(s) -> s,
-        _ -> null,
-    }
+    Enum(sig: EnumSig)
+    Named(sig: NamedSig)
 }
 
 /// Typing capabilities: read children's computed types (post-order —
@@ -250,6 +249,18 @@ export type LowerCx = {
     out: Emitter,
     body: BodyRegs,
     sub: Sub?,
+    // THE UNIT'S SETTLED SEATS: the values its `const` seats were
+    // called with, so a `const` in the body folds to them. Empty for
+    // a plain body.
+    seats: List<SeatValue>,
+    // The register each seeded seat was materialized into — a scalar
+    // is its own seat's index, an aggregate spans several, so a read
+    // asks here. Empty for a body whose seats are its runtime params.
+    seat_regs: List<Reg>,
+    // THE ENCLOSING FN'S DECLARED MARKS, by seat — a `const` seat is
+    // legal to read (a unit supplies it); any other parameter is a
+    // run-time value a const cannot depend on.
+    seat_marks: List<SeatMark>,
     fn_ret: TypeId?,
     jobs: Jobs,
     // THE FRAMES: every `defer` registered in an open frame — a
@@ -327,9 +338,7 @@ export fn nothing() {
 /// The impossible-past-the-gate PHRASE, worded once — every rule
 /// that meets a recovery hole says exactly this, and `lower_defect`
 /// supplies the "defect:" that fronts it.
-export fn hole_defect() -> string {
-    "a hole survived a clean analysis"
-}
+export const hole_defect: string = "a hole survived a clean analysis"
 
 /// Every REPEATED name in a declaration, one refusal per extra
 /// copy. The FIRST position wins, so `a, a, a` speaks twice — at the
@@ -349,20 +358,22 @@ export fn duplicate_member(kind: string, owner: string, member: string, at: Loc?
     refusal(kind, at, "`${owner}` declares `${member}` more than once", "in this declaration", "rename one of them")
 }
 
-/// A lowering defect: record it and stand on a fresh register — the
-/// driver refuses the whole build afterward. THE answer when a
-/// payload the dispatch GUARANTEES comes back absent; never a
-/// plausible default, which would compile a wrong program silently.
-export fn lower_defect(mut cx: LowerCx, e: ExprId, what: string) -> Reg {
-    cx.defect(what)
-    cx.result(e)
-}
+impl LowerCx {
+    /// A lowering defect: record it and stand on a fresh register — the
+    /// driver refuses the whole build afterward. THE answer when a
+    /// payload the dispatch GUARANTEES comes back absent; never a
+    /// plausible default, which would compile a wrong program silently.
+    mut fn lower_defect(e: ExprId, what: string) -> Reg {
+        self.defect(what)
+        self.result(e)
+    }
 
-/// A node another feature owns reached this one's lowering: the
-/// dispatch map is wrong, and the answer is a recorded defect on a
-/// fresh register — never a silent register with nothing behind it.
-export fn foreign_node(mut cx: LowerCx, e: ExprId) -> Reg {
-    lower_defect(cx, e, hole_defect())
+    /// A node another feature owns reached this one's lowering: the
+    /// dispatch map is wrong, and the answer is a recorded defect on a
+    /// fresh register — never a silent register with nothing behind it.
+    mut fn foreign_node(e: ExprId) -> Reg {
+        self.lower_defect(e, hole_defect)
+    }
 }
 
 /// A declaration that must live at the TOP LEVEL, refused where it
@@ -373,13 +384,23 @@ export fn nested_decl(kind: string, what: string, at: Loc?) -> Diag {
     refusal(kind, at, "${what} live at the top level", "declared inside a block", "move it out of the block")
 }
 
-/// THE nested-declaration guard every declaring statement opens
-/// with: inside a block it refuses and answers true, so the rule
-/// returns; at the top level it answers false.
-export fn refuses_nested(mut cx: ResolveCx, s: StmtId, kind: string, what: string) -> bool {
-    if !cx.in_block { return false }
-    cx.emit(nested_decl(kind, what, cx.stmt_loc(s)))
-    true
+impl ResolveCx {
+    /// THE nested-declaration guard every declaring statement opens
+    /// with: inside a block it refuses and answers true, so the rule
+    /// returns; at the top level it answers false.
+    mut fn refuses_nested(s: StmtId, kind: string, what: string) -> bool {
+        if !self.in_block { return false }
+        self.emit(nested_decl(kind, what, self.stmt_loc(s)))
+        true
+    }
+
+    // ── The statement-value rituals: one verb per shape, so no rule
+    // ever spells the stmt_value-guard two-step. ──
+    /// Walk the statement's value expression, when it carries one.
+    mut fn walk_value(s: StmtId) {
+        let v: ExprId? = self.view.store.stmt_value(s)
+        if v != null { self.walk(v!) }
+    }
 }
 
 /// The parallel-capture mismatch, worded once — every zip builder
@@ -390,9 +411,7 @@ export fn zip_defect_of(what: string) -> string {
 }
 
 /// The common zip: names against values — arms and fields both.
-export fn zip_defect() -> string {
-    zip_defect_of("names and values")
-}
+export const zip_defect: string = zip_defect_of("names and values")
 
 /// The help EVERY "no such variant" refusal gives — what there IS.
 /// Construction and `match` both name a variant, so both offer the
@@ -415,20 +434,7 @@ export fn build_a_record(tname: string) -> string {
 
 /// A variant that typing accepted and lowering cannot find: the
 /// two lowering paths that construct one share the words.
-export fn variant_defect() -> string {
-    "an undeclared variant survived typing"
-}
-
-// ── The statement-value rituals: one verb per shape, so no rule
-// ever spells the stmt_value-guard two-step. ──
-
-impl ResolveCx {
-    /// Walk the statement's value expression, when it carries one.
-    mut fn walk_value(s: StmtId) {
-        let v: ExprId? = self.view.store.stmt_value(s)
-        if v != null { self.walk(v!) }
-    }
-}
+export const variant_defect: string = "an undeclared variant survived typing"
 
 impl TypeCx {
     /// Walk the statement's value expression, when it carries one —
@@ -438,7 +444,7 @@ impl TypeCx {
         let v: ExprId? = self.view.store.stmt_value(s)
         if v == null { return }
         self.walk(v!)
-        let _ = refuses_type_value(self, v!)
+        let _ = self.refuses_type_value(v!)
     }
 }
 

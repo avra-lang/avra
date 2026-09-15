@@ -1,0 +1,36 @@
+// proves: the widened slot law — aggregate slots hold unmanaged
+// words: an enum in an enum, a record in an enum, an enum in a
+// record, and an enum's own self (recursion rides the box). The
+// slot is a pointer; nothing tracks it yet, and nothing needs to.
+type Point = { x: int, y: int }
+
+enum Tree {
+    leaf(int)
+    pair(Tree)
+}
+
+enum Shape {
+    dot(Point)
+    empty
+}
+
+type Holder = { tag: int, shape: Shape }
+
+fn depth(t: Tree) -> int {
+    match t {
+        .leaf(n) -> n
+        .pair(inner) -> 1 + depth(inner)
+    }
+}
+
+fn size(s: Shape) -> int {
+    match s {
+        .dot(p) -> p.x * p.y
+        .empty -> 0
+    }
+}
+
+let deep = Tree.pair(Tree.pair(Tree.leaf(40)))
+let boxed = Holder { tag: 7, shape: Shape.dot(Point { x: 6, y: 5 }) }
+let hollow = Holder { tag: 8, shape: Shape.empty }
+"d ${depth(deep)} s ${size(boxed.shape)} h ${size(hollow.shape)} t ${boxed.tag}"

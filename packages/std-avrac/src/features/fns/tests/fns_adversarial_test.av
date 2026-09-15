@@ -2,7 +2,7 @@
 // params, returns. Every program here was written to BREAK the
 // feature, not to use it.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{refused_with, refused_at_run, shown, refusals, halver}
+use @std.avrac.testing.{refused_with, refused_at_run, shown, refusals, ir_of, halver}
 
 spec "features/fns (adversarial)" {
     given "`return` under attack — depths, tails, boundaries" {
@@ -15,7 +15,7 @@ spec "features/fns (adversarial)" {
                              "the body answers `string` but `f` declares `int`")
         }
         then "the guard-then-bang reads straight: absence answered, then insisted" {
-            shown("${halver()}fn f(v: int?) -> int {\n    if v == null {\n        return 0 - 1\n    }\n    v!\n}\nf(half(4)) + f(half(3))") == "1"
+            shown("${halver}fn f(v: int?) -> int {\n    if v == null {\n        return 0 - 1\n    }\n    v!\n}\nf(half(4)) + f(half(3))") == "1"
         }
         then "a return at the TOP LEVEL is told where answers live" {
             refused_with("mut i = 0\nwhile i < 3 {\n    return 5\n    i = i + 1\n}\ni",
@@ -25,7 +25,7 @@ spec "features/fns (adversarial)" {
             // The trigger fired with the error spine: a block that
             // LEAVES needs no tail, and answers what the fn
             // promises — so it joins only where that type fits.
-            shown("${halver()}fn f(id: int) -> int {\n    let got = if let v? = half(id) {\n        v\n    } else {\n        return 0 - 1\n    }\n    got * 10\n}\nf(8) + f(3)") == "39"
+            shown("${halver}fn f(id: int) -> int {\n    let got = if let v? = half(id) {\n        v\n    } else {\n        return 0 - 1\n    }\n    got * 10\n}\nf(8) + f(3)") == "39"
         }
     }
     given "the parameter list, at every size" {
@@ -208,16 +208,16 @@ spec "features/fns (adversarial)" {
     }
     given "the extern host crossed with every other feature" {
         then "a loop calls it every turn — the symbol memo answers the same address" {
-            shown("extern fn avra_host_is_dir(p: string) -> int\nmut n = 0\nmut i = 0\nwhile i < 3 {\n    n = n + avra_host_is_dir(\"corpus\")\n    i = i + 1\n}\nn") == "3"
+            shown("extern fn avra_host_is_dir(p: string) -> int\nmut n = 0\nmut i = 0\nwhile i < 3 {\n    n = n + avra_host_is_dir(\"packages\")\n    i = i + 1\n}\nn") == "3"
         }
         then "a comprehension over a list of paths" {
-            shown("extern fn avra_host_is_dir(p: string) -> int\nlet xs = [avra_host_is_dir(p) for p in [\"corpus\", \"no-such-directory\"]]\nxs[0] - xs[1]") == "1"
+            shown("extern fn avra_host_is_dir(p: string) -> int\nlet xs = [avra_host_is_dir(p) for p in [\"packages\", \"no-such-directory\"]]\nxs[0] - xs[1]") == "1"
         }
         then "recursion reaches it at the floor" {
-            shown("extern fn avra_host_is_dir(p: string) -> int\nfn down(n: int) -> int {\n    if n <= 0 {\n        return avra_host_is_dir(\"corpus\")\n    }\n    down(n - 1)\n}\ndown(20)") == "1"
+            shown("extern fn avra_host_is_dir(p: string) -> int\nfn down(n: int) -> int {\n    if n <= 0 {\n        return avra_host_is_dir(\"packages\")\n    }\n    down(n - 1)\n}\ndown(20)") == "1"
         }
         then "a lambda holds the call" {
-            shown("extern fn avra_host_is_dir(p: string) -> int\nlet f = (p: string) -> avra_host_is_dir(p)\nf(\"corpus\")") == "1"
+            shown("extern fn avra_host_is_dir(p: string) -> int\nlet f = (p: string) -> avra_host_is_dir(p)\nf(\"packages\")") == "1"
         }
         then "one extern's ANSWER fills another's seat" {
             shown("extern fn avra_selfhost_get_arg_cstr(i: int) -> string\nextern fn avra_str_len(s: string) -> int\navra_str_len(avra_selfhost_get_arg_cstr(0)) > 0") == "true"
@@ -243,6 +243,79 @@ spec "features/fns (adversarial)" {
         }
         then "octets minted only to be staged outlive the call" {
             shown("extern fn avra_bytes_len(b: Bytes) -> int\navra_bytes_len((\"ab\" + \"cd\").bytes())") == "4"
+        }
+    }
+    given "the `const` seat under attack" {
+        then "N=0 — `fn(const)` marks no name, and refuses" {
+            refusals("fn f(const) -> int {\n    0\n}") == 2
+        }
+        then "a settled seat with NO type is the ordinary missing-type law" {
+            refused_with("fn f(const x) -> int {\n    0\n}", "parameter `x` declares no type")
+        }
+        then "the marks have ONE order — `mut const` is not `const mut`" {
+            refusals("fn f(mut const x: int) -> int {\n    x\n}") == 2
+        }
+        then "`const` is not a TYPE — it cannot stand where one belongs" {
+            refused_with("fn f(x: const) -> int {\n    0\n}", "`const` names no type")
+        }
+        then "a `const mut` seat is a mark AND a write — both laws still speak" {
+            refusals("fn f(const mut x: int) -> int {\n    x\n}\nf(1)") == 2
+        }
+        then "a plain seat refuses a settled callee in a CALL argument too" {
+            refused_with("fn takes(f: fn(int) -> int) -> int {\n    f(1)\n}\nfn needs(const x: int) -> int {\n    x\n}\ntakes(needs)",
+                         "argument 1 of `takes` wants `fn(int) -> int`, found `fn(const int) -> int`")
+        }
+        then "a `once fn` with a settled seat meets the arity law, not a parse error" {
+            refused_with("once fn f(const x: int) -> int {\n    x\n}\n1", "takes arguments")
+        }
+        then "an extern `const` seat is no INOUT — the ABI stays a plain width" {
+            extern_shape("extern fn c_abs(const n: i32) -> i32\nc_abs(1)", "c_abs") == "i32 -> i32"
+        }
+        then "a settled mark inside a type argument is a parse error, as `mut` is" {
+            refusals("let x: List<const int> = []\n0") == 1
+        }
+        then "a settled seat keys on THE VALUE alone — other arguments do not split it" {
+            let src = "fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet a = pick(\"x\", \"1\")\nlet b = pick(\"x\", \"2\")\na + b"
+            ir_of(src).fns.filter(it.name.starts_with("pick$@")).length == 1
+        }
+        then "an aggregate literal settles inline — every field is source-spelled" {
+            shown("type P = { x: int, y: int }\nfn take(const p: P) -> int {\n    p.x + p.y\n}\ntake(P { x: 3, y: 4 })") == "7"
+        }
+        then "a `const` NESTED in the aggregate settles — a body's own, and a declared one" {
+            shown("type P = { x: int, y: int }\nconst N: int = 5\nfn take(const p: P) -> int {\n    p.x + p.y\n}\nfn f() -> int {\n    const m = 2\n    take(P { x: N, y: m })\n}\nf()") == "7"
+        }
+        then "a FORWARDED seat nested in the aggregate settles per outer value" {
+            shown("type P = { x: int }\nfn take(const p: P) -> int {\n    p.x\n}\nfn outer(const n: int) -> int {\n    take(P { x: n })\n}\nouter(3) + outer(4)") == "7"
+        }
+        then "an inline variant literal settles — the seat's want names the enum" {
+            shown("enum K { A, B }\nfn take(const k: K) -> int {\n    match k { .A -> 1, .B -> 2 }\n}\ntake(.B)") == "2"
+        }
+        then "a qualified variant settles too" {
+            shown("enum K { A, B }\nfn take(const k: K) -> int {\n    match k { .A -> 1, .B -> 2 }\n}\ntake(K.B) + take(K.A)") == "3"
+        }
+        then "a variant with a PAYLOAD settles, bare and qualified" {
+            shown("enum K { A, B(int) }\nfn take(const k: K) -> int {\n    match k { .A -> 1, .B(n) -> n }\n}\ntake(.B(4)) + take(K.B(5))") == "9"
+        }
+        then "a variant nested in a record settles" {
+            shown("enum K { A, B }\ntype P = { k: K, n: int }\nfn take(const p: P) -> int {\n    match p.k { .A -> p.n, .B -> p.n * 10 }\n}\ntake(P { k: .B, n: 3 })") == "30"
+        }
+        then "a field read of a const still refuses — the seat takes what the source spells" {
+            refused_with("type P = { x: int }\nconst O: P = P { x: 1 }\nfn take(const n: int) -> int {\n    n\n}\ntake(O.x)", "`n` is a `const` seat")
+        }
+        then "a call nested in the aggregate refuses" {
+            refused_with("type P = { x: int }\nfn g() -> int {\n    1\n}\nfn take(const p: P) -> int {\n    p.x\n}\ntake(P { x: g() })", "`p` is a `const` seat")
+        }
+        then "an operator over a const refuses — a const, not an expression of one" {
+            refused_with("const N: int = 1\nfn take(const n: int) -> int {\n    n\n}\ntake(N + 1)", "`n` is a `const` seat")
+        }
+        then "an aggregate with a run-time field still refuses" {
+            refused_with("type P = { x: int }\nfn take(const p: P) -> int {\n    p.x\n}\nfn f(n: int) -> int {\n    take(P { x: n })\n}\nf(3)", "`p` is a `const` seat")
+        }
+        then "a dyn method's settled seat is enforced too" {
+            refused_with("trait T { fn val(const x: int) -> int }\ntype A = { n: int }\nimpl T for A {\n    fn val(const x: int) -> int {\n        x + self.n\n    }\n}\nlet xs: List<dyn T> = [A { n: 1 }]\nlet v = 5\nxs[0].val(v)", "`x` is a `const` seat")
+        }
+        then "an INDIRECT call through a fn VALUE obeys the law too" {
+            refused_with("fn takes(const x: int) -> int {\n    x + 1\n}\nlet g: fn(const int) -> int = takes\nlet v = 5\ng(v)", "`seat 1` is a `const` seat")
         }
     }
 }

@@ -3,381 +3,845 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, marked}
+use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, NodeStore, FnParts, SeatMark, mut_mark, settled_mark, is_literal, literal_form, Span, some_list}
 use diagnostics.{Diag, refusal, warning}
+use @std.errors.{Confidence, Edit, Suggestion}
 
-/// Speak and ABSORB: the diagnostic lands and the answer is the
-/// interned Error — the standard refusal tail of a typing law.
-export fn spoken(mut cx: TypeCx, d: Diag) -> TypeId {
-    // LICENSED I14: this IS `spoken` — the pair's one home
-    cx.emit(d)
-    cx.error_type
-}
+impl TypeCx {
+    /// Speak and ABSORB: the diagnostic lands and the answer is the
+    /// interned Error — the standard refusal tail of a typing law.
+    mut fn spoken(d: Diag) -> TypeId {
+        // LICENSED I14: this IS `spoken` — the pair's one home
+        self.emit(d)
+        self.error_type
+    }
 
-/// The condition law: `subject` names the site ("an `if`
-/// condition"), `label` points at it ("this decides the branch").
-export fn require_bool(mut cx: TypeCx, e: ExprId, subject: string, label: string) {
-    if !(cx.shape_at(e) is .Bool) { require_spoken(cx, e, subject, "bool", label) }
-}
+    /// A use of a declaration speaks the declaration's warnings —
+    /// the one place a `@deprecated` reaches its callers, at the use
+    /// itself. Spoken once per use, however often the node is typed.
+    mut fn warn_use(e: ExprId) {
+        if !self.facts.owns(e) { return }
+        if self.facts.spoke_warning(e) { return }
+        let b: Binding? = self.names.binding(e)
+        if b == null { return }
+        match b! {
+            .Decl(d) -> {
+                let held = self.view.decls.marks(d)
+                if held.is_empty() { return }
+                self.facts.mark_warned(e)
+                for x in held {
+                    // LICENSED I18: a kind the annotation did not name is not a missing payload — the warning wears this feature's own code
+                    let _ = self.spoken(warning(x.kind ?? "annotation.warning", x.at ?? self.loc_of(e), x.message, "used here", x.help))
+                }
+            },
+            .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> nothing(),
+        }
+    }
 
-/// The counting law, the condition law's twin: a bound or an index
-/// is an int.
-export fn require_int(mut cx: TypeCx, e: ExprId, subject: string, label: string) {
-    if !(cx.shape_at(e) is .Int) { require_spoken(cx, e, subject, "int", label) }
-}
+    /// The condition law: `subject` names the site ("an `if`
+    /// condition"), `label` points at it ("this decides the branch").
+    mut fn require_bool(e: ExprId, subject: string, label: string) {
+        if !(self.shape_at(e) is .Bool) { self.require_spoken(e, subject, "bool", label) }
+    }
 
-fn require_spoken(mut cx: TypeCx, e: ExprId, subject: string, wanted: string, label: string) {
-    if cx.errored(e) { return }
-    cx.emit(refusal("type.mismatch", cx.loc_of(e), "${subject} is a `${wanted}`, found `${cx.name_at(e)}`", label, null))
-}
+    /// The counting law, the condition law's twin: a bound or an index
+    /// is an int.
+    mut fn require_int(e: ExprId, subject: string, label: string) {
+        if !(self.shape_at(e) is .Int) { self.require_spoken(e, subject, "int", label) }
+    }
 
-/// The agreement law: an Error on EITHER side absorbs (its cause
-/// already spoke); otherwise interned ids must match. True means
-/// the site speaks, in its own words.
-export fn types_disagree(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
-    if cx.errored_ty(got) || cx.errored_ty(want) { return false }
-    // LICENSED I9: this IS the agreement law's body
-    if got.index == want.index { return false }
-    !fn_fits(cx, got, want)
-}
+    mut fn require_spoken(e: ExprId, subject: string, wanted: string, label: string) {
+        if self.errored(e) { return }
+        self.emit(refusal("type.mismatch", self.loc_of(e), "${subject} is a `${wanted}`, found `${self.name_at(e)}`", label, null))
+    }
 
-/// A FN VALUE FITS A FN SEAT when its seats and its answer are the
-/// seat's and it writes through NO seat the seat withheld. The
-/// asymmetry IS the law: a seat that permits writing accepts a
-/// callee that does not write, and a seat that promised not to
-/// write refuses one that does. Nothing else about a type widens.
-fn fn_fits(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
-    let seat: Arrow? = cx.view.types.arrow_parts(want)
-    let value: Arrow? = cx.view.types.arrow_parts(got)
-    if seat == null || value == null { return false }
-    let w = seat!
-    let g = value!
-    // LICENSED I9: type identity — interned ids ARE the agreement
-    if w.answer.index != g.answer.index || w.seats.length != g.seats.length { return false }
-    mut fits = true
-    for j, ws in w.seats {
+    /// The agreement law: an Error on EITHER side absorbs (its cause
+    /// already spoke); otherwise interned ids must match. True means
+    /// the site speaks, in its own words.
+    fn types_disagree(got: TypeId, want: TypeId) -> bool {
+        if self.errored_ty(got) || self.errored_ty(want) { return false }
+        // LICENSED I9: this IS the agreement law's body
+        if got.index == want.index { return false }
+        !self.fn_fits(got, want)
+    }
+
+    /// A FN VALUE FITS A FN SEAT when its seats and its answer are the
+    /// seat's and it demands through NO seat the seat withheld. The
+    /// asymmetry IS the law: a seat that permits writing (or promises
+    /// settlement) accepts a callee that asks for less, and a seat
+    /// that promised neither refuses one that asks for more. Nothing
+    /// else about a type widens.
+    fn fn_fits(got: TypeId, want: TypeId) -> bool {
+        let seat: Arrow? = self.view.types.arrow_parts(want)
+        let value: Arrow? = self.view.types.arrow_parts(got)
+        if seat == null || value == null { return false }
+        let w = seat!
+        let g = value!
+        // an answer that already refused absorbs, as every Error does
+        if self.errored_ty(g.answer) || self.errored_ty(w.answer) { return true }
         // LICENSED I9: type identity — interned ids ARE the agreement
-        if ws.index != g.seats[j].index { fits = false }
-        if marked(g.muts, j) && !marked(w.muts, j) { fits = false }
+        if w.answer.index != g.answer.index || w.seats.length != g.seats.length { return false }
+        mut fits = true
+        for j, ws in w.seats {
+            // LICENSED I9: type identity — interned ids ARE the agreement
+            if ws.index != g.seats[j].index { fits = false }
+            if mut_mark(g.marks, j) && !mut_mark(w.marks, j) { fits = false }
+            if settled_mark(g.marks, j) && !settled_mark(w.marks, j) { fits = false }
+        }
+        fits
     }
-    fits
-}
 
-/// THE ONE AGREEMENT DOOR for a UNIFIED seat. `unify` binds the
-/// declaration's Vars; `accepts` is what RECORDS the lift lowering
-/// mints, and a seat whose Vars are all bound is concrete NOW. A
-/// seat still naming a free Var is re-judged at instantiation.
-export fn unified_lift(mut cx: TypeCx, e: ExprId, want: TypeId, decl: DeclId, bound: Pins) -> bool {
-    if !fully_bound(cx, want, decl, bound) { return false }
-    accepts(cx, e, cx.view.types.substituted(want, decl, bound_args(cx, bound)))
-}
-
-/// THE SLOT VOICES, shared by every aggregate seat: `what` names the
-/// seat ("a list element", "a map value").
-export fn unslottable(mut cx: TypeCx, head: ExprId, what: string) -> TypeId {
-    if cx.shape_at(head) is .Void {
-        return spoken(cx, refusal("type.list_scalar", cx.loc_of(head), "${what} cannot hold nothing — this answers no value", "answers nothing", null))
+    /// THE ONE AGREEMENT DOOR for a UNIFIED seat. `unify` binds the
+    /// declaration's Vars; `accepts` is what RECORDS the lift lowering
+    /// mints, and a seat whose Vars are all bound is concrete NOW. A
+    /// seat still naming a free Var is re-judged at instantiation.
+    mut fn unified_lift(e: ExprId, want: TypeId, decl: DeclId, bound: Pins) -> bool {
+        if !self.fully_bound(want, decl, bound) { return false }
+        self.accepts(e, self.view.types.substituted(want, decl, self.bound_args(bound)))
     }
-    spoken(cx, refusal("type.list_scalar", cx.loc_of(head), "${what} cannot hold this yet", this_is(cx.name_at(head)), slice_promise("elements")))
+
+    /// THE SLOT VOICES, shared by every aggregate seat: `what` names the
+    /// seat ("a list element", "a map value").
+    mut fn unslottable(head: ExprId, what: string) -> TypeId {
+        if self.shape_at(head) is .Void {
+            return self.spoken(refusal("type.list_scalar", self.loc_of(head), "${what} cannot hold nothing — this answers no value", "answers nothing", null))
+        }
+        self.spoken(refusal("type.list_scalar", self.loc_of(head), "${what} cannot hold this yet", this_is(self.name_at(head)), slice_promise("elements")))
+    }
+
+    mut fn unslottable_want(e: ExprId, want: TypeId, what: string) -> TypeId {
+        self.spoken(refusal("type.list_scalar", self.loc_of(e), "${what} cannot hold `${self.view.types.name_of(want)}` yet", "this slot", slice_promise("elements")))
+    }
+
+    mut fn chain_writes(e: ExprId, name: string) {
+        self.emit(warning("type.receiver", self.loc_of(e), "a `?.` chain hands a COPY of what it carries — `${name}` writes through the copy, and the write is lost", "the copy", "bind the value first — `if let v? = … { v.${name}(…) }`"))
+    }
+
+    /// A UNIFIED SEAT AGREES, or not — BOTH halves, always: `unify` binds
+    /// the declaration's Vars and `unified_lift` RECORDS the widen
+    /// lowering mints. Short-circuit either way and a hit drops its lift,
+    /// or a miss never binds. The one door for a call argument, a struct
+    /// field and an enum payload alike.
+    mut fn agreed(e: ExprId, want: TypeId, decl: DeclId, mut bound: Pins) -> bool {
+        let matched = self.unify(want, self.type_at(e), decl, bound)
+        let took = self.unified_lift(e, want, decl, bound)
+        matched || took
+    }
+
+    /// THE ASSIGNMENT LAW: what a slot of type `want` accepts from the
+    /// expression `e`. A guarantee widens INTO a nullable — an `int` IS
+    /// a valid `int?` — and the widening is RECORDED so lowering wraps
+    /// it. Absence never widens back: `int?` into `int` refuses, which
+    /// is the whole point of opting in. True means ACCEPTED.
+    mut fn accepts(e: ExprId, want: TypeId) -> bool {
+        self.heard(e, want)
+        // still hungry after the seat had its say: the seat can never
+        // feed it. Recorded, and the door closes quietly — the walk's
+        // end speaks once, in the seat's words
+        if self.starve(e, want) { return true }
+        let got = self.type_at(e)
+        if !self.types_disagree(got, want) { return true }
+        let inner: TypeId? = self.view.types.carried(want)
+        if inner == null { return self.other_accepts(e, got, want) }
+        // `null` inhabits every nullable; a present value must be the
+        // carried type. Either way the lift is RECORDED, in this one
+        // place — absence has no layout of its own, and lowering's
+        // adoption edge mints each form from this record.
+        let absent: bool = self.view.types.shape_of(got) is .Null
+        // a LITERAL fills a named type through the absence too:
+        // `let rows: Rows? = [1]` writes the shape and means the name
+        if !absent && self.types_disagree(got, inner!) && !self.named_accepts(e, inner!) { return false }
+        self.widen(e, want)
+        true
+    }
+
+    /// A success LIFTS into its Result at the boundary — the auto-Ok
+    /// wrap (ROADMAP: the error spine). THE GUARD RULE: only a value of
+    /// exactly the ok side wraps; a value already Result-shaped met the
+    /// identity case above and never wraps again, so `Ok(Ok(x))` cannot
+    /// happen silently. Recorded at the same one widening edge as the
+    /// nullable lift.
+    mut fn res_accepts(e: ExprId, got: TypeId, want: TypeId) -> bool {
+        let sides: ResSides? = self.view.types.res_parts(want)
+        if sides == null { return false }
+        let ok = sides!.ok
+        // the ONE compound lift whose inner step is identity: `[]` Ok-wraps raw
+        if self.types_disagree(got, ok) && !self.empty_adopted(got, ok) { return false }
+        self.widen(e, want)
+        true
+    }
+
+    /// `[]` is adopted by any list, `{}` by any map — the two identity
+    /// widens.
+    fn empty_adopted(got: TypeId, want: TypeId) -> bool {
+        (self.view.types.shape_of(got) is .EmptyList && self.view.types.shape_of(want) is .List) ||
+            (self.view.types.shape_of(got) is .EmptyMap && self.view.types.shape_of(want) is .Map)
+    }
+
+    /// The non-nullable lifts share one door: the auto-Ok wrap, and the
+    /// empty list adopted by whatever list claims it (`[]` is to List
+    /// what `null` is to Opt — and the VALUE needs no lift at all).
+    mut fn other_accepts(e: ExprId, got: TypeId, want: TypeId) -> bool {
+        if self.empty_adopted(got, want) {
+            self.widen(e, want)
+            return true
+        }
+        if self.named_accepts(e, want) { return true }
+        if self.dyn_accepts(e, got, want) { return true }
+        self.res_accepts(e, got, want)
+    }
+
+    /// A LITERAL FILLS A NAMED SEAT: the name's shape becomes the
+    /// want and the ordinary law judges the form against it, so
+    /// `let id: UserId = 5` and `let rows: Rows = [1, 2]` read
+    /// straight. NO LIFT IS RECORDED and none is needed — a name
+    /// travels as its shape, so the two machine forms are the same
+    /// one. A COMPUTED value never fills: that is the opacity half,
+    /// and `Name(v)` is how it crosses.
+    mut fn named_accepts(e: ExprId, want: TypeId) -> bool {
+        let of: TypeId? = self.view.types.stands_for(want)
+        if of == null || !literal_form(self.view.store.expr(e)) { return false }
+        self.accepts(e, of!)
+    }
+
+    /// A signatory LIFTS into its contract — the boxing widen, the
+    /// fourth form at the one edge (nullable, auto-Ok, empty-list,
+    /// dyn). Only a type that can SIGN boxes; a value already
+    /// dyn-shaped met the identity case and never re-boxes.
+    mut fn dyn_accepts(e: ExprId, got: TypeId, want: TypeId) -> bool {
+        let tname: string? = dyn_contract(self.view.types.shape_of(want))
+        if tname == null { return false }
+        if !self.boxable(got, tname!) { return false }
+        self.widen(e, want)
+        true
+    }
+
+    /// Whether a value can sign the contract: a concrete implementor,
+    /// or a type parameter whose BOUND is the very trait — each
+    /// instantiation re-proves the bound, so the abstract body may box
+    /// (an instantiation that arrives ALREADY dyn lifts by identity).
+    fn boxable(got: TypeId, tname: string) -> bool {
+        if self.implements(got, tname) { return true }
+        match self.view.types.shape_of(got) {
+            .Var(decl, j, _) -> self.bound_name(decl, j) == tname,
+            _ -> false,
+        }
+    }
+
+    /// The bound a tparam SEAT declares — "" when unconstrained. The
+    /// one law both the bounded-call and the boxing widen read.
+    fn bound_name(decl: DeclId, j: int) -> string {
+        let tb = self.view.decls.tbounds(decl)
+        if j >= tb.length { return "" }
+        let ann: TypeRef? = tb[j].ty
+        if ann == null { return "" }
+        ann!.name
+    }
+
+    /// The channel's RESCUE at the one assignment door: a hungry
+    /// lambda meeting a fn-shaped slot re-types under its seats — the
+    /// facts converge as if the annotations had been written — and any
+    /// other hungry expression is FED the want; the comparison then
+    /// judges the real type.
+    mut fn heard(e: ExprId, want: TypeId) {
+        let arrow: Arrow? = self.view.types.arrow_parts(want)
+        if arrow != null { let _ = self.retype_seated(e, arrow!.seats, arrow!.marks) }
+        self.feed(e, want)
+    }
+
+    /// A WANT THE TYPE LAW ALREADY REFUSED — the value beneath it adds
+    /// nothing: one mistake, one voice. Every aggregate rule asks this
+    /// before judging its own parts.
+    fn want_refused(e: ExprId) -> bool {
+        let w: TypeId? = self.want_at(e)
+        w != null && self.errored_ty(w!)
+    }
+
+    /// Whether an arm's value stays to answer — every value but a
+    /// leaving block.
+    fn stays(v: ExprId) -> bool {
+        !self.view.store.leaves(v)
+    }
+
+    /// THE JOIN: the one type two branches can BOTH answer with, or
+    /// absent when there is none. Equal types join to themselves; a
+    /// value beside an ABSENCE joins to the nullable covering both.
+    /// PURE — `accepts` does the recording, so every branching
+    /// construct joins the same way by asking this and then accepting.
+    mut fn join_of(a: TypeId, b: TypeId) -> TypeId? {
+        if !self.types_disagree(a, b) { return a }
+        if self.empty_adopted(a, b) { return b }
+        if self.empty_adopted(b, a) { return a }
+        if self.view.types.shape_of(b) is .Null { return self.nullable_over(a) }
+        if self.view.types.shape_of(a) is .Null { return self.nullable_over(b) }
+        // A guarantee beside ITS OWN nullable joins wide — a narrowed
+        // branch meeting the un-narrowed name is the natural case, and
+        // `accepts` then lifts the guarantee side.
+        if self.carries(b, a) { return b }
+        if self.carries(a, b) { return a }
+        // A value beside ITS OWN Result joins to the Result — a branch
+        // that LEAVES answers the fn's promise, and the other branch's
+        // guarantee auto-Ok-wraps at the same one edge.
+        if self.answers(b, a) { return b }
+        if self.answers(a, b) { return a }
+        null
+    }
+
+    /// Does the Result `res` carry exactly `ok` on its answer side?
+    fn answers(res: TypeId, ok: TypeId) -> bool {
+        let sides: ResSides? = self.view.types.res_parts(res)
+        sides != null && !self.types_disagree(sides!.ok, ok)
+    }
+
+    /// Does the nullable `opt` carry exactly `inner`?
+    fn carries(opt: TypeId, inner: TypeId) -> bool {
+        let held: TypeId? = self.view.types.carried(opt)
+        held != null && !self.types_disagree(held!, inner)
+    }
+
+    /// `T` covered by an absence: `T?`. An already-nullable type
+    /// stands — nothing is lifted twice, which is also why a chain
+    /// FLATTENS: `a?.b` over a nullable member answers ONE absence.
+    mut fn nullable_over(ty: TypeId) -> TypeId {
+        if self.view.types.carried(ty) != null { return ty }
+        self.type(ty?)
+    }
+
+    /// THE member law: what a type answers to a property name — a
+    /// record's field, or `length` on the measurable shapes. The bare
+    /// read (`a.b`) and the chain (`a?.b`) both ask HERE, so the two
+    /// spellings can never drift; `shown` is the subject as the caller
+    /// displays it.
+    mut fn member_type_of(e: ExprId, shown: string, ty: TypeId, name: string) -> TypeId {
+        // Members live on GUARANTEES: a nullable subject's remedy is
+        // the chain, never a property list it does not have.
+        if self.view.types.shape_of(ty) is .Opt { return self.reads_a_guarantee(e, shown, name) }
+        let sig: StructSig? = self.fields_of(ty)
+        if sig != null { return self.field_member(e, shown, sig!, name) }
+        let row: PropertyRow? = property_row(self.view.lang.properties, name, self.view.types.shape_of(ty))
+        if row != null { return row!.check(self, e, ty) }
+        // A NAME IS TRANSPARENT AT A READ: nothing of the name's own
+        // answered, so the shape it stands over does — and the
+        // refusal, if any, still shows the name the writer wrote.
+        let of: TypeId? = self.view.types.stands_for(ty)
+        if of != null { return self.member_type_of(e, shown, of!, name) }
+        self.no_such_property(e, shown, name)
+    }
+
+    mut fn reads_a_guarantee(e: ExprId, shown: string, name: string) -> TypeId {
+        self.spoken(refusal("type.mismatch", self.loc_of(e), "`.${name}` reads a guarantee, this is `${shown}`", this_is(shown), "`?.${name}` reaches through the absence — or answer it first with `??`"))
+    }
+
+    mut fn no_such_property(e: ExprId, shown: string, name: string) -> TypeId {
+        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "no property `${name}` on `${shown}`", "read here", "a property is a record's field, or a measure like `length` on the shapes that have one"))
+    }
+
+    /// A record's property IS a declared field; a miss names the
+    /// fields that exist.
+    mut fn field_member(e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
+        let i: int? = sig.slot_of(name)
+        if i != null { return sig.types[i!] }
+        self.no_such_field(e, shown, sig, name)
+    }
+
+    mut fn no_such_field(e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
+        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "no field `${name}` on `${shown}`", "read here", fields_are(sig)))
+    }
+
+    /// THE DECLARED-BINDING LAW: an annotated binding holds what it
+    /// declares — the value must be ACCEPTED by the written type, its
+    /// widening recorded like any other slot's. Every annotated
+    /// binding form asks here, so the wording never drifts.
+    mut fn declared_binding(v: ExprId, name: string, declared: TypeId) {
+        if self.errored_ty(declared) { return }
+        // a hungry lambda is not yet an error — the seat records itself
+        if self.starve(v, declared) { return }
+        if self.errored(v) { return }
+        // A TYPE standing where the value belongs already spoke through
+        // the value law — a second refusal would be a cascade.
+        if self.shape_at(v) is .TypeName { return }
+        if self.accepts(v, declared) { return }
+        let n = self.name_at(v)
+        self.emit(self.named_fix(refusal("type.binding", self.loc_of(v), "`${name}` declares `${self.view.types.name_of(declared)}`, this is `${n}`", this_is(n), null), declared, v))
+    }
+
+    /// The VALUE law: a type NAME is not a value. `Color` alone is
+    /// legal only as a property subject (`Color.red`), so anywhere a
+    /// value is consumed it refuses here — and no type-name shape ever
+    /// reaches lowering, where it could only be a defect. True means
+    /// refused.
+    mut fn refuses_type_value(e: ExprId) -> bool {
+        let sh: Type = self.shape_at(e)
+        let tname: string? = match sh {
+            .TypeName(_, n) -> n,
+            _ -> null,
+        }
+        if tname == null { return false }
+        let n = tname!
+        self.emit(refusal("type.type_value", self.loc_of(e), "`${n}` is a type, not a value", "used as a value here", "name a variant (`${n}.<variant>`) or build a record (`${n} { ... }`)"))
+        true
+    }
+
+    /// The ARMS law: every arm agrees with the anchor, or each
+    /// disagreeing arm speaks for itself; the answer is the anchor's
+    /// type, or Error when any disagreed. `subject` names the construct
+    /// and `anchor_name` says where the anchor came from, so each site
+    /// keeps its own words.
+    mut fn arms_agree(kind: string, subject: string, anchor_name: string,
+                         anchor: ExprId, values: List<ExprId>) -> TypeId {
+        // an arm that LEAVES answers nothing and joins with anything
+        let answering = [v for v in values if self.stays(v)]
+        let want = self.arms_answer(anchor, answering)
+        mut agreed = true
+        for v in answering {
+            if !self.accepts(v, want) {
+                self.arms_disagree(kind, subject, anchor_name, v, want)
+                agreed = false
+            }
+        }
+        if !agreed { return self.error_type }
+        // The anchor lands in the answer too — it may be the side that
+        // lifts when another arm is an absence.
+        let _ = self.accepts(anchor, want)
+        want
+    }
+
+    mut fn arms_disagree(kind: string, subject: string, anchor_name: string, v: ExprId, want: TypeId) {
+        let n = self.name_at(v)
+        self.emit(refusal(kind, self.loc_of(v), "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${self.view.types.name_of(want)}`", this_is(n), null))
+    }
+
+    /// The type every arm can answer with: the anchor's, JOINED with
+    /// each arm in turn. One absent arm makes the whole answer nullable.
+    mut fn arms_answer(anchor: ExprId, values: List<ExprId>) -> TypeId {
+        mut want = self.type_at(anchor)
+        for v in values {
+            let both: TypeId? = self.join_of(want, self.type_at(v))
+            if both != null { want = both! }
+        }
+        want
+    }
+
+    /// A FN VALUE's seats judge a call — the one law the indirect
+    /// call, the fn-field call, and the lambda share, refusing in the
+    /// same words every call does.
+    mut fn seats_judged(e: ExprId, callee: string, ps: List<TypeId>, marks: List<SeatMark>, ret: TypeId, args: List<ExprId>) -> TypeId {
+        if !self.seats_fit(e, callee, args, ps) { return self.error_type }
+        // A FN TYPE CARRIES ITS SEATS' CONTRACT, so an INDIRECT call is
+        // judged by the same law a direct one is: a marked seat is
+        // filled by a `mut` place, and a settled seat by a value that
+        // settles at compile time. No declaration stands behind a fn
+        // VALUE, so the fingerprints are judged and dropped — a call
+        // through a box does not specialize.
+        self.mut_seats_law(e, callee, marks, args, null)
+        if self.const_seats(callee, [], marks, args) == null { return self.error_type }
+        ret
+    }
+
+    /// THE SEAT LAW every call shape shares: exactly `wants.length`
+    /// arguments, each accepted by its seat — a wrong argument speaks
+    /// and the caller still answers; a wrong count absorbs.
+    mut fn seats_fit(e: ExprId, callee: string, args: List<ExprId>, wants: List<TypeId>) -> bool {
+        if args.length != wants.length {
+            let blocks = [a for a in args if self.view.store.is_trailing(a)]
+            if blocks.is_empty() { self.wrong_arity(e, callee, wants.length, args.length) } else { self.block_unseated(e, callee, wants.length, args.length - blocks.length, blocks.length) }
+            return false
+        }
+        for j, a in args {
+            if !self.accepts(a, wants[j]) { self.wrong_argument(callee, j, wants[j], a) }
+        }
+        true
+    }
+
+    /// THE PLACE LAW's structural half: every step of a target is a
+    /// SLOT — a field a struct declares, an index into a list — rooted
+    /// in a value binding. A measured property (`length`) and a type
+    /// name refuse here, in their own words; the target's own typing
+    /// already refused unknown fields and non-list indexes. True means
+    /// lawful.
+    mut fn place_lawful(e: ExprId) -> bool {
+        let step: PlaceStep? = self.view.store.place_step(e)
+        if step == null { return true }
+        match step! {
+            .Root(name) -> if self.shape_at(e) is .TypeName { self.type_not_place(e, name) } else { true },
+            .Field(subject, name) -> self.place_lawful(subject) && self.field_slot_lawful(e, subject, name),
+            .At(subject, _) -> self.place_lawful(subject),
+        }
+    }
+
+    mut fn field_slot_lawful(e: ExprId, subject: ExprId, name: string) -> bool {
+        let sig: StructSig? = self.fields_of(self.type_at(subject))
+        if sig != null && sig!.slot_of(name) != null { return true }
+        if self.errored(subject) { return false }
+        self.measured_not_stored(e, name, self.name_at(subject))
+    }
+
+    /// THE VOID LAW: a value that is nothing cannot be bound. True
+    /// means refused.
+    mut fn refuses_void_value(e: ExprId) -> bool {
+        if !(self.shape_at(e) is .Void) { return false }
+        self.spoken(refusal("type.mismatch", self.loc_of(e), "this answers nothing — there is nothing to bind", "answers nothing", "a mutation is a statement; drop the binding"))
+        true
+    }
+
+    /// THE SEATS every method row shares: exactly `wants.length`
+    /// arguments, each accepted by its seat — a wrong argument speaks
+    /// and the row still answers; a wrong count absorbs.
+    mut fn seated(mc: MethodCall, name: string, wants: List<TypeId>) -> bool {
+        self.seats_fit(mc.e, name, mc.args, wants)
+    }
+
+    /// A method row's seats, then its answer — the shape every
+    /// runtime-backed method check takes.
+    mut fn worded(mc: MethodCall, name: string, wants: List<Type>, answers: Type) -> TypeId {
+        if !self.seated(mc, name, [self.view.types.intern(w) for w in wants]) { return self.error_type }
+        self.view.types.intern(answers)
+    }
+
+/// The by-value law over a TYPE: the scalars and text, and an enum
+    /// whose variants carry nothing — it compares by variant.
+    fn compares_by_value(ty: TypeId) -> bool {
+        comparable(self.view.types.shape_of(ty)) || self.unit_enum(ty)
+    }
+
+    /// An enum every variant of which carries nothing — a tag alone.
+    fn unit_enum(ty: TypeId) -> bool {
+        if !(self.view.types.shape_of(ty) is .Enum) { return false }
+        let sig: EnumSig? = self.variants_of(ty)
+        sig != null && sig!.payloads.all(it.is_empty())
+    }
+
+    // ── The voices: every refusal worded HERE, once ──
+    /// THE arity refusal — every call shape shares the words.
+    mut fn wrong_arity(e: ExprId, callee: string, want: int, found: int) {
+        self.emit(refusal("type.mismatch", self.loc_of(e), "`${callee}` takes ${want} arguments, found ${found}", "this call", null))
+    }
+
+    /// A trailing block with no seat left for it — the arity refusal in
+    /// the block's words: the parentheses already fill the callee.
+    mut fn block_unseated(e: ExprId, callee: string, want: int, written: int, blocks: int) {
+        self.emit(refusal("type.mismatch", self.loc_of(e), "`${callee}` takes ${want} arguments, and the parentheses give ${written} — a trailing block fills a fn seat, and there is no seat left for ${block_word(blocks)}", "this call", "a trailing block is the call's LAST argument: declare a fn seat for it, or move the value into the parentheses"))
+    }
+
+    /// THE argument refusal — every call shape shares the words.
+    mut fn wrong_argument(callee: string, j: int, want: TypeId, a: ExprId) {
+        let n = self.name_at(a)
+        if self.view.store.is_trailing(a) { return self.block_misseated(callee, j, want, n, a) }
+        if self.view.store.is_hole(a) { return self.hole_misseated(n, a) }
+        self.emit(self.named_fix(refusal("type.mismatch", self.loc_of(a), "argument ${j + 1} of `${callee}` wants `${self.view.types.name_of(want)}`, found `${n}`", this_is(n), null), want, a))
+    }
+
+    /// THE NAME'S REMEDY, worded once. A NAMED TYPE is its own type —
+    /// that is the whole of it — so a value of the shape it stands
+    /// over crosses by CONSTRUCTION, and the fix wraps the value
+    /// where it is written. Every seat's refusal and the operand law
+    /// pass a want through here; a want that is no name comes back
+    /// untouched.
+    fn named_fix(d: Diag, want: TypeId, at: ExprId) -> Diag {
+        if self.view.types.stands_for(want) == null { return d }
+        let name = self.view.types.name_of(want)
+        let shown = self.written_text(at)
+        if shown == null { return d with { help: "`${name}` is its own type — write `${name}(<value>)`" } }
+        let call = "${name}(${shown!})"
+        let fix = Suggestion { confidence: Confidence.High, description: "write `${call}`", edits: [Edit { loc: l, replacement: call } for l in some_list(self.loc_of(at))] }
+        d with { help: "`${name}` is its own type — write `${call}`", suggestions: [fix] }
+    }
+
+    /// The SOURCE a node was written as — absent for one this file
+    /// did not write, where no span of ours names its text.
+    fn written_text(e: ExprId) -> string? {
+        if self.view.origin_of(e) != null { return null }
+        let span: Span? = self.view.store.expr_span(e)
+        if span == null { return null }
+        self.view.source.text.substring(span!.lo, span!.hi)
+    }
+
+    /// A type literal's HOLE holding the wrong thing — the argument
+    /// refusal in the literal's words: a hole names a binding holding an id.
+    mut fn hole_misseated(n: string, a: ExprId) {
+        // a hole IS a name: the mark is set on the identifier alone
+        let name = self.view.store.ident_name(a)!
+        self.emit(refusal("type.mismatch", self.loc_of(a), "`${name}` is a type literal's hole — it names an id, and this `${name}` holds `${n}`", "named here", "spell the shape (`int?`, `List<T>`), or name a binding that holds an id"))
+    }
+
+    /// A trailing block at a seat that does not take it — the argument
+    /// refusal in the block's words: a block is a fn, and a fn seat
+    /// says which.
+    mut fn block_misseated(callee: string, j: int, want: TypeId, n: string, a: ExprId) {
+        let seat = self.view.types.name_of(want)
+        let help = if self.view.types.arrow_parts(want) == null { "a trailing block is a fn — move the value into the parentheses, or declare seat ${j + 1} as a fn" } else { "match the seat's parameters — `{ x -> … }` names them, `{ … }` takes none (or `it`)" }
+        self.emit(refusal("type.mismatch", self.loc_of(a), "the trailing block fills seat ${j + 1} of `${callee}`, which takes `${seat}`, and the block is `${n}`", this_is(n), help))
+    }
+
+    mut fn type_not_place(e: ExprId, name: string) -> bool {
+        let _ = self.spoken(refusal("type.place", self.loc_of(e), "`${name}` is a type — a mutation lands on a `mut` binding", "a type", null))
+        false
+    }
+
+    mut fn measured_not_stored(e: ExprId, name: string, subject: string) -> bool {
+        let _ = self.spoken(refusal("type.place", self.loc_of(e), "`${name}` is measured, not stored — `${subject}` has no such slot", "not a slot", "a place is a field a struct declares, or an index into a list"))
+        false
+    }
+
+    mut fn not_a_place_call(e: ExprId, name: string) -> TypeId {
+        self.spoken(refusal("type.place", self.loc_of(e), "`${name}` mutates a place, and this list is a value", "a value", "bind it first — `mut xs = …` — then `xs.${name}(…)`; or build a new list with `concat`"))
+    }
+
+    mut fn not_mut_call(e: ExprId, name: string, root: string) -> TypeId {
+        self.spoken(refusal("type.place", self.loc_of(e), "`${root}` is not `mut` — `${name}` mutates it", "mutated here", "declare it `mut ${root} = ...` — or build a changed copy"))
+    }
+
+    // ── THE INOUT SEATS (ROADMAP: the inout receiver) ──
+    /// Whether an expression is a PLACE rooted in a `mut` binding — what
+    /// a `mut` seat, and a writing method's receiver, must be handed.
+    fn mut_place(e: ExprId) -> bool {
+        let root: ExprId? = self.place_binding_root(e)
+        root != null && self.is_mut(root!)
+    }
+
+    /// A place's root when it is a BINDING — a type name at the root
+    /// (`G.a`, a variant) makes the whole a value.
+    fn place_binding_root(e: ExprId) -> ExprId? {
+        let root: ExprId? = self.view.store.place_root(e)
+        if root == null || self.shape_at(root!) is .TypeName { return null }
+        root
+    }
+
+    /// THE RECEIVER LAW: a writing method is called on a `mut` place. A
+    /// WARNING while the tree's own call sites become places; then the
+    /// refusal `not_mut_call` speaks here (ROADMAP: the inout receiver,
+    /// S4).
+    mut fn receiver_law(e: ExprId, subject: ExprId, name: string, writes: bool) {
+        if !writes || self.mut_place(subject) { return }
+        let root: ExprId? = self.place_binding_root(subject)
+        if root == null { return self.emit(warning("type.receiver", self.loc_of(e), "`${name}` writes its receiver, and this is a value", "a value", "bind it `mut` first — the receiver becomes the caller's own place")) }
+        let n = self.root_word(root!)
+        if n == chained_binder { return self.chain_writes(e, name) }
+        if self.captured(root!) { return self.emit(warning("type.receiver", self.loc_of(e), "`${n}` is captured by value — `${name}` writes through the lambda's copy", "a copy", "a capture is a copy: write outside the lambda, or answer the new value")) }
+        self.emit(warning("type.receiver", self.loc_of(e), "`${n}` is not `mut` — `${name}` writes through it", "aliased here", "declare it `mut ${n} = …`"))
+    }
+
+    /// A root's word for a voice: its name, or `self` for the receiver
+    /// (through any capture of it).
+    fn root_word(root: ExprId) -> string {
+        let named: string? = self.view.store.ident_name(root)
+        named ?? "self"
+    }
+
+    /// Whether a root is a lambda's CAPTURE — a copy, never a place.
+    fn captured(root: ExprId) -> bool {
+        let b: Binding? = self.names.binding(root)
+        b != null && b! is .Capture
+    }
+
+    /// THE SEAT LAW: every `mut` seat of a call is filled by a `mut`
+    /// place, and no two `mut` seats (the receiver counted) share a
+    /// root — the exclusivity law. Seats are numbered from `base` (1
+    /// past a method's receiver seat).
+    mut fn mut_seats_law(e: ExprId, callee: string, marks: List<SeatMark>, args: List<ExprId>, receiver: ExprId?) {
+        mut roots: List<ExprId> = if receiver == null { [] } else { [receiver!] }
+        for j, a in args {
+            if mut_mark(marks, j) { roots = self.judged_seat(e, callee, a, j, roots) }
+        }
+    }
+
+    /// A DECLARATION'S marks for the seats its ARGUMENTS fill — from
+    /// `base`, which is 1 past a method's own receiver. The law itself
+    /// reads MARKS, so a declared callee and a fn-typed value are one
+    /// rule and not two.
+    fn declared_marks(decl: DeclId, base: int, n: int) -> List<SeatMark> {
+        mut out: List<SeatMark> = []
+        mut j = 0
+        while j < n {
+            out.push(self.view.decls.seat_mark(decl, base + j))
+            j = j + 1
+        }
+        out
+    }
+
+    // ── THE SEAT CONTRACTS ──
+    /// A call's seat contracts, in ONE place: the callee's marks for
+    /// the seats `args` fill (from `base`), the `mut` places judged,
+    /// and the settled (`const`) seats' fingerprints recorded on the
+    /// call's `Sub`. False means a seat broke its contract — the
+    /// refusal was already spoken — so every call shape returns its
+    /// error type. `receiver` is the subject a writing method judged
+    /// for exclusivity, or null.
+    mut fn seat_contracts(e: ExprId, callee: string, d: DeclId, base: int, args: List<ExprId>, receiver: ExprId?) -> bool {
+        let marks = self.declared_marks(d, base, args.length)
+        self.mut_seats_law(e, callee, marks, args, receiver)
+        let fps: List<string>? = self.const_seats(callee, self.seat_names(d), marks, args)
+        if fps == null { return false }
+        if !fps!.is_empty() { self.record_subst(e, d, [], fps!) }
+        true
+    }
+
+    // ── THE `const` SEATS ──
+    /// A call's settled (`const`) seats, as VALUE fingerprints — or
+    /// null, with the refusal spoken, when one is filled by a value
+    /// computed at run time. The fingerprints ride the call's `Sub`,
+    /// so mono lowers one unit per distinct settled value.
+    mut fn const_seats(callee: string, names: List<string>, marks: List<SeatMark>, args: List<ExprId>) -> List<string>? {
+        mut out: List<string> = []
+        mut ok = true
+        for j, a in args {
+            if settled_mark(marks, j) {
+                let fp: string? = self.settled_fp(a)
+                if fp == null {
+                    self.const_seat_unsettled(a, callee, seat_word(names, j))
+                    ok = false
+                } else {
+                    out.push(fp!)
+                }
+            }
+        }
+        if ok { return out }
+        null
+    }
+
+    /// A `const` seat's argument, when the SOURCE settles it: its
+    /// fingerprint is a placeholder key — lowering rebuilds the unit's
+    /// key from the VALUE, so two spellings of one value share a unit.
+    fn settled_fp(e: ExprId) -> string? {
+        if self.spelled_by_source(e) { return "${self.view.store.expr_fingerprint(e)}" }
+        null
+    }
+
+    /// THE SEAT LAW'S TEST: every node of the argument is a literal,
+    /// an aggregate or variant of such, a `const`'s name, a settled
+    /// seat FORWARDED from the enclosing fn, or a variant's enum. A
+    /// `let`, a call, an operator, a field read is computed at run
+    /// time — a const's field included: the seat takes what the
+    /// source spells, never what it would compute.
+    fn spelled_by_source(e: ExprId) -> bool {
+        post_order(self.dispatch, self.view.store, e).all((k: ExprId) -> self.spelled_node(k))
+    }
+
+    fn spelled_node(k: ExprId) -> bool {
+        let node: Expr = self.view.store.expr(k)
+        if is_literal(node) { return true }
+        match node {
+            .NullLit or .ListLit(_) or .MapLit(_, _) or .StructLit(_, _, _) or .VariantLit(_, _) -> true,
+            .Ident(_) -> self.settled_name(k),
+            // a qualified variant — `K.B`, `K.B(1)` — reads its enum, never a value
+            .Prop(subject, _) -> self.names_enum(subject),
+            .MethodCall(subject, _, _) -> self.names_enum(subject),
+            rest -> false,
+        }
+    }
+
+    /// A name that settles: a `const` (a body's own or a declared one),
+    /// a forwarded settled seat, or an enum's name under a variant.
+    fn settled_name(k: ExprId) -> bool {
+        let b: Binding? = self.names.binding(k)
+        if b == null { return false }
+        match b! {
+            .Def(s) -> self.view.store.const_value(s) != null,
+            .Decl(d) -> self.view.decls.decl(d).kind is .Const || self.names_enum(k),
+            .Param(_) -> self.names.reads_settled_seat(k),
+            .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+        }
+    }
+
+    fn names_enum(k: ExprId) -> bool {
+        let b: Binding? = self.names.binding(k)
+        if b == null { return false }
+        match b! {
+            .Decl(d) -> self.view.decls.decl(d).kind is .Enum,
+            rest -> false,
+        }
+    }
+
+    /// A declaration's written seat names, for a voice — read from
+    /// the DECLARATION's own store, since a callee may live in another
+    /// file than the call.
+    fn seat_names(d: DeclId) -> List<string> {
+        let store: NodeStore = self.view.decls.store(d)
+        let parts: FnParts? = store.fn_parts(self.view.decls.decl(d).stmt)
+        [p.name for p in parts?.params ?? []]
+    }
+
+    mut fn const_seat_unsettled(a: ExprId, callee: string, name: string) {
+        self.emit(refusal("type.const_seat", self.loc_of(a), "`${name}` is a `const` seat — `${callee}` settles it at compile time, and this is computed at run time", "computed here", "fill it with a literal or a `const` — a value that settles at compile time"))
+    }
+
+    /// One `mut` seat judged; the roots handed so far, grown by this
+    /// one when it is lawful.
+    mut fn judged_seat(e: ExprId, callee: string, a: ExprId, j: int, roots: List<ExprId>) -> List<ExprId> {
+        let root: ExprId? = self.place_binding_root(a)
+        if root == null {
+            self.value_in_mut_seat(a, callee, j)
+            return roots
+        }
+        let r = root!
+        let n = self.root_word(r)
+        if self.captured(r) {
+            self.captured_in_mut_seat(a, callee, j, n)
+            return roots
+        }
+        if !self.is_mut(r) {
+            self.not_mut_seat(a, callee, j, n)
+            return roots
+        }
+        if roots.any((x) -> self.same_root(x, r)) { self.shared_root(e, callee, n) }
+        roots.concat([r])
+    }
+
+    fn same_root(a: ExprId, b: ExprId) -> bool {
+        let x: ExprId? = self.view.store.place_root(a)
+        let ba: Binding? = if x == null { null } else { self.names.binding(x!) }
+        let bb: Binding? = self.names.binding(b)
+        ba != null && bb != null && same_binding(ba!, bb!)
+    }
+
+    mut fn value_in_mut_seat(a: ExprId, callee: string, j: int) {
+        self.emit(refusal("type.seat", self.loc_of(a), "seat ${j + 1} of `${callee}` is `mut`, and this is a value", "a value", "bind it `mut` first — `mut x = …` — then hand `x`"))
+    }
+
+    /// A WARNING while the contexts' closure fields become methods
+    /// (ROADMAP: the inout receiver, S4b) — 70 sites in the compiler's
+    /// own source hand a captured driver to a seat; then a refusal.
+    mut fn captured_in_mut_seat(a: ExprId, callee: string, j: int, root: string) {
+        self.emit(refusal("type.seat", self.loc_of(a), "`${root}` is captured by value — a lambda's copy cannot fill seat ${j + 1} of `${callee}`", "a copy", "a capture is a copy: call outside the lambda, or answer the new value"))
+    }
+
+    mut fn not_mut_seat(a: ExprId, callee: string, j: int, root: string) {
+        self.emit(refusal("type.seat", self.loc_of(a), "`${root}` is not `mut` — seat ${j + 1} of `${callee}` writes through it", "handed here", "declare it `mut ${root} = …`"))
+    }
+
+    mut fn shared_root(e: ExprId, callee: string, root: string) {
+        self.emit(refusal("type.seat", self.loc_of(e), "`${root}` is handed `mut` twice in one call to `${callee}`", "this call", "bind `mut b = ${root}…` first, and write it back after"))
+    }
+
+    /// THE SETTLEMENT LAW: a call refused as a whole absorbs its
+    /// arguments' hunger — the call spoke, and a hungry lambda's own
+    /// voice would be a second one for the same mistake. Every call
+    /// shape (named, valued, method) settles here.
+    mut fn settled_call(args: List<ExprId>, answer: TypeId) -> TypeId {
+        if self.errored_ty(answer) {
+            for a in args { self.absorb_hunger(a) }
+        }
+        answer
+    }
+
+    /// An empty literal has no measure until a declared type adopts
+    /// it — the shared voice for `[]` and `{}`.
+    mut fn unmeasurable_empty(e: ExprId, lit: string, example: string) -> TypeId {
+        self.spoken(refusal("type.mismatch", self.loc_of(e), "`${lit}` has no length yet — a declared type gives it one", "measured here", "bind it first — `let xs: ${example} = ${lit}`"))
+    }
 }
 
-export fn unslottable_want(mut cx: TypeCx, e: ExprId, want: TypeId, what: string) -> TypeId {
-    spoken(cx, refusal("type.list_scalar", cx.loc_of(e), "${what} cannot hold `${cx.view.types.name_of(want)}` yet", "this slot", slice_promise("elements")))
+/// A settled seat's word for a voice — its written name, or `seat N`.
+fn seat_word(names: List<string>, i: int) -> string {
+    if i < names.length { return names[i] }
+    "seat ${i + 1}"
 }
 
 /// The binder a chained call (`a?.m(args)`) reads its subject
 /// through — a name no program can spell, so the sugar adds no node
 /// and no rule; the voices that would print it speak the chain's
 /// words instead.
-export fn chained_binder() -> string { "chained value" }
-
-fn chain_writes(mut cx: TypeCx, e: ExprId, name: string) {
-    cx.emit(warning("type.receiver", cx.loc_of(e), "a `?.` chain hands a COPY of what it carries — `${name}` writes through the copy, and the write is lost", "the copy", "bind the value first — `if let v? = … { v.${name}(…) }`"))
-}
-
-/// A UNIFIED SEAT AGREES, or not — BOTH halves, always: `unify` binds
-/// the declaration's Vars and `unified_lift` RECORDS the widen
-/// lowering mints. Short-circuit either way and a hit drops its lift,
-/// or a miss never binds. The one door for a call argument, a struct
-/// field and an enum payload alike.
-export fn agreed(mut cx: TypeCx, e: ExprId, want: TypeId, decl: DeclId, mut bound: Pins) -> bool {
-    let matched = unify(cx, want, cx.type_at(e), decl, bound)
-    let took = unified_lift(cx, e, want, decl, bound)
-    matched || took
-}
-
-/// THE ASSIGNMENT LAW: what a slot of type `want` accepts from the
-/// expression `e`. A guarantee widens INTO a nullable — an `int` IS
-/// a valid `int?` — and the widening is RECORDED so lowering wraps
-/// it. Absence never widens back: `int?` into `int` refuses, which
-/// is the whole point of opting in. True means ACCEPTED.
-export fn accepts(mut cx: TypeCx, e: ExprId, want: TypeId) -> bool {
-    heard(cx, e, want)
-    // still hungry after the seat had its say: the seat can never
-    // feed it. Recorded, and the door closes quietly — the walk's
-    // end speaks once, in the seat's words
-    if cx.starve(e, want) { return true }
-    let got = cx.type_at(e)
-    if !types_disagree(cx, got, want) { return true }
-    let inner: TypeId? = cx.view.types.carried(want)
-    if inner == null { return other_accepts(cx, e, got, want) }
-    // `null` inhabits every nullable; a present value must be the
-    // carried type. Either way the lift is RECORDED, in this one
-    // place — absence has no layout of its own, and lowering's
-    // adoption edge mints each form from this record.
-    let absent: bool = cx.view.types.shape_of(got) is .Null
-    if !absent && types_disagree(cx, got, inner!) { return false }
-    cx.widen(e, want)
-    true
-}
-
-/// A success LIFTS into its Result at the boundary — the auto-Ok
-/// wrap (ROADMAP: the error spine). THE GUARD RULE: only a value of
-/// exactly the ok side wraps; a value already Result-shaped met the
-/// identity case above and never wraps again, so `Ok(Ok(x))` cannot
-/// happen silently. Recorded at the same one widening edge as the
-/// nullable lift.
-fn res_accepts(mut cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
-    let sides: ResSides? = cx.view.types.res_parts(want)
-    if sides == null { return false }
-    let ok = sides!.ok
-    // the ONE compound lift whose inner step is identity: `[]` Ok-wraps raw
-    if types_disagree(cx, got, ok) && !empty_adopted(cx, got, ok) { return false }
-    cx.widen(e, want)
-    true
-}
-
-/// `[]` is adopted by any list, `{}` by any map — the two identity
-/// widens.
-export fn empty_adopted(cx: TypeCx, got: TypeId, want: TypeId) -> bool {
-    (cx.view.types.shape_of(got) is .EmptyList && cx.view.types.shape_of(want) is .List) ||
-        (cx.view.types.shape_of(got) is .EmptyMap && cx.view.types.shape_of(want) is .Map)
-}
-
-/// The non-nullable lifts share one door: the auto-Ok wrap, and the
-/// empty list adopted by whatever list claims it (`[]` is to List
-/// what `null` is to Opt — and the VALUE needs no lift at all).
-fn other_accepts(mut cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
-    if empty_adopted(cx, got, want) {
-        cx.widen(e, want)
-        return true
-    }
-    if dyn_accepts(cx, e, got, want) { return true }
-    res_accepts(cx, e, got, want)
-}
-
-/// A signatory LIFTS into its contract — the boxing widen, the
-/// fourth form at the one edge (nullable, auto-Ok, empty-list,
-/// dyn). Only a type that can SIGN boxes; a value already
-/// dyn-shaped met the identity case and never re-boxes.
-fn dyn_accepts(mut cx: TypeCx, e: ExprId, got: TypeId, want: TypeId) -> bool {
-    let tname: string? = dyn_contract(cx.view.types.shape_of(want))
-    if tname == null { return false }
-    if !boxable(cx, got, tname!) { return false }
-    cx.widen(e, want)
-    true
-}
-
-/// Whether a value can sign the contract: a concrete implementor,
-/// or a type parameter whose BOUND is the very trait — each
-/// instantiation re-proves the bound, so the abstract body may box
-/// (an instantiation that arrives ALREADY dyn lifts by identity).
-fn boxable(cx: TypeCx, got: TypeId, tname: string) -> bool {
-    if cx.implements(got, tname) { return true }
-    match cx.view.types.shape_of(got) {
-        .Var(decl, j, _) -> bound_name(cx, decl, j) == tname,
-        _ -> false,
-    }
-}
-
-/// The bound a tparam SEAT declares — "" when unconstrained. The
-/// one law both the bounded-call and the boxing widen read.
-export fn bound_name(cx: TypeCx, decl: DeclId, j: int) -> string {
-    let tb = cx.view.decls.tbounds(decl)
-    if j >= tb.length { return "" }
-    let ann: TypeRef? = tb[j].ty
-    if ann == null { return "" }
-    ann!.name
-}
-
-/// The channel's RESCUE at the one assignment door: a hungry
-/// lambda meeting a fn-shaped slot re-types under its seats — the
-/// facts converge as if the annotations had been written — and any
-/// other hungry expression is FED the want; the comparison then
-/// judges the real type.
-fn heard(mut cx: TypeCx, e: ExprId, want: TypeId) {
-    let arrow: Arrow? = cx.view.types.arrow_parts(want)
-    if arrow != null { let _ = cx.retype_seated(e, arrow!.seats) }
-    cx.feed(e, want)
-}
-
-/// A WANT THE TYPE LAW ALREADY REFUSED — the value beneath it adds
-/// nothing: one mistake, one voice. Every aggregate rule asks this
-/// before judging its own parts.
-export fn want_refused(cx: TypeCx, e: ExprId) -> bool {
-    let w: TypeId? = cx.want_at(e)
-    w != null && cx.errored_ty(w!)
-}
-
-/// Whether an arm's value stays to answer — every value but a
-/// leaving block.
-export fn stays(cx: TypeCx, v: ExprId) -> bool {
-    !cx.view.store.leaves(v)
-}
-
-/// THE JOIN: the one type two branches can BOTH answer with, or
-/// absent when there is none. Equal types join to themselves; a
-/// value beside an ABSENCE joins to the nullable covering both.
-/// PURE — `accepts` does the recording, so every branching
-/// construct joins the same way by asking this and then accepting.
-export fn join_of(mut cx: TypeCx, a: TypeId, b: TypeId) -> TypeId? {
-    if !types_disagree(cx, a, b) { return a }
-    if empty_adopted(cx, a, b) { return b }
-    if empty_adopted(cx, b, a) { return a }
-    if cx.view.types.shape_of(b) is .Null { return nullable_over(cx, a) }
-    if cx.view.types.shape_of(a) is .Null { return nullable_over(cx, b) }
-    // A guarantee beside ITS OWN nullable joins wide — a narrowed
-    // branch meeting the un-narrowed name is the natural case, and
-    // `accepts` then lifts the guarantee side.
-    if carries(cx, b, a) { return b }
-    if carries(cx, a, b) { return a }
-    // A value beside ITS OWN Result joins to the Result — a branch
-    // that LEAVES answers the fn's promise, and the other branch's
-    // guarantee auto-Ok-wraps at the same one edge.
-    if answers(cx, b, a) { return b }
-    if answers(cx, a, b) { return a }
-    null
-}
-
-/// Does the Result `res` carry exactly `ok` on its answer side?
-fn answers(cx: TypeCx, res: TypeId, ok: TypeId) -> bool {
-    let sides: ResSides? = cx.view.types.res_parts(res)
-    sides != null && !types_disagree(cx, sides!.ok, ok)
-}
-
-/// Does the nullable `opt` carry exactly `inner`?
-fn carries(cx: TypeCx, opt: TypeId, inner: TypeId) -> bool {
-    let held: TypeId? = cx.view.types.carried(opt)
-    held != null && !types_disagree(cx, held!, inner)
-}
-
-/// `T` covered by an absence: `T?`. An already-nullable type
-/// stands — nothing is lifted twice, which is also why a chain
-/// FLATTENS: `a?.b` over a nullable member answers ONE absence.
-export fn nullable_over(mut cx: TypeCx, ty: TypeId) -> TypeId {
-    if cx.view.types.carried(ty) != null { return ty }
-    cx.view.types.intern(Type.Opt(ty))
-}
-
-/// THE member law: what a type answers to a property name — a
-/// record's field, or `length` on the measurable shapes. The bare
-/// read (`a.b`) and the chain (`a?.b`) both ask HERE, so the two
-/// spellings can never drift; `shown` is the subject as the caller
-/// displays it.
-export fn member_type_of(mut cx: TypeCx, e: ExprId, shown: string, ty: TypeId, name: string) -> TypeId {
-    // Members live on GUARANTEES: a nullable subject's remedy is
-    // the chain, never a property list it does not have.
-    if cx.view.types.shape_of(ty) is .Opt { return reads_a_guarantee(cx, e, shown, name) }
-    let sig: StructSig? = cx.fields_of(ty)
-    if sig != null { return field_member(cx, e, shown, sig!, name) }
-    let row: PropertyRow? = property_row(cx.view.lang.properties, name, cx.view.types.shape_of(ty))
-    if row != null { return row!.check(cx, e, ty) }
-    no_such_property(cx, e, shown, name)
-}
-
-fn reads_a_guarantee(mut cx: TypeCx, e: ExprId, shown: string, name: string) -> TypeId {
-    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`.${name}` reads a guarantee, this is `${shown}`", this_is(shown), "`?.${name}` reaches through the absence — or answer it first with `??`"))
-}
-
-fn no_such_property(mut cx: TypeCx, e: ExprId, shown: string, name: string) -> TypeId {
-    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "no property `${name}` on `${shown}`", "read here", "a property is a record's field, or a measure like `length` on the shapes that have one"))
-}
-
-/// A record's property IS a declared field; a miss names the
-/// fields that exist.
-fn field_member(mut cx: TypeCx, e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
-    let i: int? = sig.slot_of(name)
-    if i != null { return sig.types[i!] }
-    no_such_field(cx, e, shown, sig, name)
-}
-
-fn no_such_field(mut cx: TypeCx, e: ExprId, shown: string, sig: StructSig, name: string) -> TypeId {
-    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "no field `${name}` on `${shown}`", "read here", fields_are(sig)))
-}
-
-/// THE DECLARED-BINDING LAW: an annotated binding holds what it
-/// declares — the value must be ACCEPTED by the written type, its
-/// widening recorded like any other slot's. Every annotated
-/// binding form asks here, so the wording never drifts.
-export fn declared_binding(mut cx: TypeCx, v: ExprId, name: string, declared: TypeId) {
-    if cx.errored_ty(declared) { return }
-    // a hungry lambda is not yet an error — the seat records itself
-    if cx.starve(v, declared) { return }
-    if cx.errored(v) { return }
-    // A TYPE standing where the value belongs already spoke through
-    // the value law — a second refusal would be a cascade.
-    if cx.shape_at(v) is .TypeName { return }
-    if accepts(cx, v, declared) { return }
-    let n = cx.name_at(v)
-    cx.emit(refusal("type.binding", cx.loc_of(v), "`${name}` declares `${cx.view.types.name_of(declared)}`, this is `${n}`", this_is(n), null))
-}
-
-/// The VALUE law: a type NAME is not a value. `Color` alone is
-/// legal only as a property subject (`Color.red`), so anywhere a
-/// value is consumed it refuses here — and no type-name shape ever
-/// reaches lowering, where it could only be a defect. True means
-/// refused.
-export fn refuses_type_value(mut cx: TypeCx, e: ExprId) -> bool {
-    let sh: Type = cx.shape_at(e)
-    let tname: string? = match sh {
-        .TypeName(_, n) -> n,
-        _ -> null,
-    }
-    if tname == null { return false }
-    let n = tname!
-    cx.emit(refusal("type.type_value", cx.loc_of(e), "`${n}` is a type, not a value", "used as a value here", "name a variant (`${n}.<variant>`) or build a record (`${n} { ... }`)"))
-    true
-}
-
-/// The ARMS law: every arm agrees with the anchor, or each
-/// disagreeing arm speaks for itself; the answer is the anchor's
-/// type, or Error when any disagreed. `subject` names the construct
-/// and `anchor_name` says where the anchor came from, so each site
-/// keeps its own words.
-export fn arms_agree(mut cx: TypeCx, kind: string, subject: string, anchor_name: string,
-                     anchor: ExprId, values: List<ExprId>) -> TypeId {
-    // an arm that LEAVES answers nothing and joins with anything
-    let answering = [v for v in values if stays(cx, v)]
-    let want = arms_answer(cx, anchor, answering)
-    mut agreed = true
-    for v in answering {
-        if !accepts(cx, v, want) {
-            arms_disagree(cx, kind, subject, anchor_name, v, want)
-            agreed = false
-        }
-    }
-    if !agreed { return cx.error_type }
-    // The anchor lands in the answer too — it may be the side that
-    // lifts when another arm is an absence.
-    let _ = accepts(cx, anchor, want)
-    want
-}
-
-fn arms_disagree(mut cx: TypeCx, kind: string, subject: string, anchor_name: string, v: ExprId, want: TypeId) {
-    let n = cx.name_at(v)
-    cx.emit(refusal(kind, cx.loc_of(v), "a `${subject}`'s arms disagree: `${n}` vs ${anchor_name}'s `${cx.view.types.name_of(want)}`", this_is(n), null))
-}
-
-/// The type every arm can answer with: the anchor's, JOINED with
-/// each arm in turn. One absent arm makes the whole answer nullable.
-fn arms_answer(mut cx: TypeCx, anchor: ExprId, values: List<ExprId>) -> TypeId {
-    mut want = cx.type_at(anchor)
-    for v in values {
-        let both: TypeId? = join_of(cx, want, cx.type_at(v))
-        if both != null { want = both! }
-    }
-    want
-}
+export const chained_binder: string = "chained value"
 
 /// The pointing label every mismatch uses: the offender, named.
 /// NO ARTICLE. `n` is a TYPE NAME the compiler does not choose, so
@@ -389,70 +853,6 @@ export fn this_is(n: string) -> string {
     "this is `${n}`"
 }
 
-/// A FN VALUE's seats judge a call — the one law the indirect
-/// call, the fn-field call, and the lambda share, refusing in the
-/// same words every call does.
-export fn seats_judged(mut cx: TypeCx, e: ExprId, callee: string, ps: List<TypeId>, muts: List<bool>, ret: TypeId, args: List<ExprId>) -> TypeId {
-    if !seats_fit(cx, e, callee, args, ps) { return cx.error_type }
-    // A FN TYPE CARRIES ITS SEATS' CONTRACT, so an INDIRECT call is
-    // judged by the same law a direct one is: a marked seat is
-    // filled by a `mut` place, and no two seats share a root.
-    mut_seats_law(cx, e, callee, muts, args, null)
-    ret
-}
-
-/// THE SEAT LAW every call shape shares: exactly `wants.length`
-/// arguments, each accepted by its seat — a wrong argument speaks
-/// and the caller still answers; a wrong count absorbs.
-export fn seats_fit(mut cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, wants: List<TypeId>) -> bool {
-    if args.length != wants.length {
-        wrong_arity(cx, e, callee, wants.length, args.length)
-        return false
-    }
-    for j, a in args {
-        if !accepts(cx, a, wants[j]) { wrong_argument(cx, callee, j, wants[j], a) }
-    }
-    true
-}
-
-/// THE PLACE LAW's structural half: every step of a target is a
-/// SLOT — a field a struct declares, an index into a list — rooted
-/// in a value binding. A measured property (`length`) and a type
-/// name refuse here, in their own words; the target's own typing
-/// already refused unknown fields and non-list indexes. True means
-/// lawful.
-export fn place_lawful(mut cx: TypeCx, e: ExprId) -> bool {
-    let step: PlaceStep? = cx.view.store.place_step(e)
-    if step == null { return true }
-    match step! {
-        .Root(name) -> if cx.shape_at(e) is .TypeName { type_not_place(cx, e, name) } else { true },
-        .Field(subject, name) -> place_lawful(cx, subject) && field_slot_lawful(cx, e, subject, name),
-        .At(subject, _) -> place_lawful(cx, subject),
-    }
-}
-
-fn field_slot_lawful(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> bool {
-    let sig: StructSig? = cx.fields_of(cx.type_at(subject))
-    if sig != null && sig!.slot_of(name) != null { return true }
-    if cx.errored(subject) { return false }
-    measured_not_stored(cx, e, name, cx.name_at(subject))
-}
-
-/// THE VOID LAW: a value that is nothing cannot be bound. True
-/// means refused.
-export fn refuses_void_value(mut cx: TypeCx, e: ExprId) -> bool {
-    if !(cx.shape_at(e) is .Void) { return false }
-    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "this answers nothing — there is nothing to bind", "answers nothing", "a mutation is a statement; drop the binding"))
-    true
-}
-
-/// THE SEATS every method row shares: exactly `wants.length`
-/// arguments, each accepted by its seat — a wrong argument speaks
-/// and the row still answers; a wrong count absorbs.
-export fn seated(mut cx: TypeCx, mc: MethodCall, name: string, wants: List<TypeId>) -> bool {
-    seats_fit(cx, mc.e, name, mc.args, wants)
-}
-
 /// What the runtime tests BY VALUE — what `==` compares and a scan
 /// finds. Everything else holds a pointer, and comparing pointers
 /// answers a question nobody asked.
@@ -460,199 +860,19 @@ export fn comparable(sh: Type) -> bool {
     match sh {
         .Int or .Float or .Bool or .Str or .Bytes -> true,
         .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or
-        .List(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or
+        .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or
         .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or
         .Var(_, _, _) or .Error -> false,
     }
 }
 
-/// A method row's seats, then its answer — the shape every
-/// runtime-backed method check takes.
-export fn worded(mut cx: TypeCx, mc: MethodCall, name: string, wants: List<Type>, answers: Type) -> TypeId {
-    if !seated(cx, mc, name, [cx.view.types.intern(w) for w in wants]) { return cx.error_type }
-    cx.view.types.intern(answers)
-}
-
-/// The by-value law over a TYPE: the scalars and text, and an enum
-/// whose variants carry nothing — it compares by variant.
-export fn compares_by_value(cx: TypeCx, ty: TypeId) -> bool {
-    comparable(cx.view.types.shape_of(ty)) || unit_enum(cx, ty)
-}
-
-/// An enum every variant of which carries nothing — a tag alone.
-fn unit_enum(cx: TypeCx, ty: TypeId) -> bool {
-    if !(cx.view.types.shape_of(ty) is .Enum) { return false }
-    let sig: EnumSig? = cx.variants_of(ty)
-    sig != null && sig!.payloads.all(it.is_empty())
-}
-
-// ── The voices: every refusal worded HERE, once ──
-
-/// THE arity refusal — every call shape shares the words.
-export fn wrong_arity(mut cx: TypeCx, e: ExprId, callee: string, want: int, found: int) {
-    cx.emit(refusal("type.mismatch", cx.loc_of(e), "`${callee}` takes ${want} arguments, found ${found}", "this call", null))
-}
-
-/// THE argument refusal — every call shape shares the words.
-export fn wrong_argument(mut cx: TypeCx, callee: string, j: int, want: TypeId, a: ExprId) {
-    let n = cx.name_at(a)
-    cx.emit(refusal("type.mismatch", cx.loc_of(a), "argument ${j + 1} of `${callee}` wants `${cx.view.types.name_of(want)}`, found `${n}`", this_is(n), null))
-}
-
-fn type_not_place(mut cx: TypeCx, e: ExprId, name: string) -> bool {
-    let _ = spoken(cx, refusal("type.place", cx.loc_of(e), "`${name}` is a type — a mutation lands on a `mut` binding", "a type", null))
-    false
-}
-
-fn measured_not_stored(mut cx: TypeCx, e: ExprId, name: string, subject: string) -> bool {
-    let _ = spoken(cx, refusal("type.place", cx.loc_of(e), "`${name}` is measured, not stored — `${subject}` has no such slot", "not a slot", "a place is a field a struct declares, or an index into a list"))
-    false
-}
-
-export fn not_a_place_call(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    spoken(cx, refusal("type.place", cx.loc_of(e), "`${name}` mutates a place, and this list is a value", "a value", "bind it first — `mut xs = …` — then `xs.${name}(…)`; or build a new list with `concat`"))
-}
-
-export fn not_mut_call(mut cx: TypeCx, e: ExprId, name: string, root: string) -> TypeId {
-    spoken(cx, refusal("type.place", cx.loc_of(e), "`${root}` is not `mut` — `${name}` mutates it", "mutated here", "declare it `mut ${root} = ...` — or build a changed copy"))
-}
-
-// ── THE INOUT SEATS (ROADMAP: the inout receiver) ──
-
-/// Whether an expression is a PLACE rooted in a `mut` binding — what
-/// a `mut` seat, and a writing method's receiver, must be handed.
-export fn mut_place(cx: TypeCx, e: ExprId) -> bool {
-    let root: ExprId? = place_binding_root(cx, e)
-    root != null && cx.is_mut(root!)
-}
-
-/// A place's root when it is a BINDING — a type name at the root
-/// (`G.a`, a variant) makes the whole a value.
-fn place_binding_root(cx: TypeCx, e: ExprId) -> ExprId? {
-    let root: ExprId? = cx.view.store.place_root(e)
-    if root == null || cx.shape_at(root!) is .TypeName { return null }
-    root
-}
-
-/// THE RECEIVER LAW: a writing method is called on a `mut` place. A
-/// WARNING while the tree's own call sites become places; then the
-/// refusal `not_mut_call` speaks here (ROADMAP: the inout receiver,
-/// S4).
-export fn receiver_law(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, writes: bool) {
-    if !writes || mut_place(cx, subject) { return }
-    let root: ExprId? = place_binding_root(cx, subject)
-    if root == null { return cx.emit(warning("type.receiver", cx.loc_of(e), "`${name}` writes its receiver, and this is a value", "a value", "bind it `mut` first — the receiver becomes the caller's own place")) }
-    let n = root_word(cx, root!)
-    if n == chained_binder() { return chain_writes(cx, e, name) }
-    if captured(cx, root!) { return cx.emit(warning("type.receiver", cx.loc_of(e), "`${n}` is captured by value — `${name}` writes through the lambda's copy", "a copy", "a capture is a copy: write outside the lambda, or answer the new value")) }
-    cx.emit(warning("type.receiver", cx.loc_of(e), "`${n}` is not `mut` — `${name}` writes through it", "aliased here", "declare it `mut ${n} = …`"))
-}
-
-/// A root's word for a voice: its name, or `self` for the receiver
-/// (through any capture of it).
-fn root_word(cx: TypeCx, root: ExprId) -> string {
-    let named: string? = cx.view.store.ident_name(root)
-    named ?? "self"
-}
-
-/// Whether a root is a lambda's CAPTURE — a copy, never a place.
-fn captured(cx: TypeCx, root: ExprId) -> bool {
-    let b: Binding? = cx.names.binding(root)
-    b != null && b! is .Capture
-}
-
-/// THE SEAT LAW: every `mut` seat of a call is filled by a `mut`
-/// place, and no two `mut` seats (the receiver counted) share a
-/// root — the exclusivity law. Seats are numbered from `base` (1
-/// past a method's receiver seat).
-export fn mut_seats_law(mut cx: TypeCx, e: ExprId, callee: string, muts: List<bool>, args: List<ExprId>, receiver: ExprId?) {
-    mut roots: List<ExprId> = if receiver == null { [] } else { [receiver!] }
-    for j, a in args {
-        if marked(muts, j) { roots = judged_seat(cx, e, callee, a, j, roots) }
-    }
-}
-
-/// A DECLARATION'S marks for the seats its ARGUMENTS fill — from
-/// `base`, which is 1 past a method's own receiver. The law itself
-/// reads MARKS, so a declared callee and a fn-typed value are one
-/// rule and not two.
-export fn declared_marks(cx: TypeCx, decl: DeclId, base: int, n: int) -> List<bool> {
-    mut out: List<bool> = []
-    mut j = 0
-    while j < n {
-        out.push(cx.view.decls.mut_seat(decl, base + j))
-        j = j + 1
-    }
-    out
-}
-
-/// One `mut` seat judged; the roots handed so far, grown by this
-/// one when it is lawful.
-fn judged_seat(mut cx: TypeCx, e: ExprId, callee: string, a: ExprId, j: int, roots: List<ExprId>) -> List<ExprId> {
-    let root: ExprId? = place_binding_root(cx, a)
-    if root == null {
-        value_in_mut_seat(cx, a, callee, j)
-        return roots
-    }
-    let r = root!
-    let n = root_word(cx, r)
-    if captured(cx, r) {
-        captured_in_mut_seat(cx, a, callee, j, n)
-        return roots
-    }
-    if !cx.is_mut(r) {
-        not_mut_seat(cx, a, callee, j, n)
-        return roots
-    }
-    if roots.any(same_root(cx, it, r)) { shared_root(cx, e, callee, n) }
-    roots.concat([r])
-}
-
-fn same_root(cx: TypeCx, a: ExprId, b: ExprId) -> bool {
-    let x: ExprId? = cx.view.store.place_root(a)
-    let ba: Binding? = if x == null { null } else { cx.names.binding(x!) }
-    let bb: Binding? = cx.names.binding(b)
-    ba != null && bb != null && same_binding(ba!, bb!)
-}
-
-fn value_in_mut_seat(mut cx: TypeCx, a: ExprId, callee: string, j: int) {
-    cx.emit(refusal("type.seat", cx.loc_of(a), "seat ${j + 1} of `${callee}` is `mut`, and this is a value", "a value", "bind it `mut` first — `mut x = …` — then hand `x`"))
-}
-
-/// A WARNING while the contexts' closure fields become methods
-/// (ROADMAP: the inout receiver, S4b) — 70 sites in the compiler's
-/// own source hand a captured driver to a seat; then a refusal.
-fn captured_in_mut_seat(mut cx: TypeCx, a: ExprId, callee: string, j: int, root: string) {
-    cx.emit(refusal("type.seat", cx.loc_of(a), "`${root}` is captured by value — a lambda's copy cannot fill seat ${j + 1} of `${callee}`", "a copy", "a capture is a copy: call outside the lambda, or answer the new value"))
-}
-
-fn not_mut_seat(mut cx: TypeCx, a: ExprId, callee: string, j: int, root: string) {
-    cx.emit(refusal("type.seat", cx.loc_of(a), "`${root}` is not `mut` — seat ${j + 1} of `${callee}` writes through it", "handed here", "declare it `mut ${root} = …`"))
-}
-
-fn shared_root(mut cx: TypeCx, e: ExprId, callee: string, root: string) {
-    cx.emit(refusal("type.seat", cx.loc_of(e), "`${root}` is handed `mut` twice in one call to `${callee}`", "this call", "bind `mut b = ${root}…` first, and write it back after"))
+/// One block, or two: how the arity voice counts them.
+fn block_word(n: int) -> string {
+    if n == 1 { "it" } else { "the ${n} blocks" }
 }
 
 /// THE PROMISE every nullable-in-a-slot refusal makes — one fn, so
 /// the day the slice lands there is one place to keep it.
 export fn slice_promise(what: string) -> string {
     "nullable ${what} arrive with ownership's next slice"
-}
-
-/// THE SETTLEMENT LAW: a call refused as a whole absorbs its
-/// arguments' hunger — the call spoke, and a hungry lambda's own
-/// voice would be a second one for the same mistake. Every call
-/// shape (named, valued, method) settles here.
-export fn settled_call(mut cx: TypeCx, args: List<ExprId>, answer: TypeId) -> TypeId {
-    if cx.errored_ty(answer) {
-        for a in args { cx.absorb_hunger(a) }
-    }
-    answer
-}
-
-/// An empty literal has no measure until a declared type adopts
-/// it — the shared voice for `[]` and `{}`.
-export fn unmeasurable_empty(mut cx: TypeCx, e: ExprId, lit: string, example: string) -> TypeId {
-    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${lit}` has no length yet — a declared type gives it one", "measured here", "bind it first — `let xs: ${example} = ${lit}`"))
 }

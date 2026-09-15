@@ -1,55 +1,209 @@
-//! `avra test` — run every spec case of a package root or a file:
-//! one analysis, one lowering, and a BINARY whose entry calls each
-//! case by its symbol. Native, because a suite that interprets the
+//! `avra test` — EVERY PROOF A PACKAGE CARRIES. Its spec cases become
+//! a BINARY whose entry calls each by its symbol; its PROGRAM tests
+//! are the same thing with a second engine — each run under the
+//! evaluator here and native there, both answers held against the
+//! text the program must print. One image lowers them all; a fresh
+//! one links and runs. Native, because a suite that interprets the
 //! compiler takes an hour where the machine takes seconds.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.language.{Program, TestCase, Lowered, CaseCall, cases_entry, runner_rows, emit_ll, case_words}
-use @std.path.{joined_path}
-use @std.io.{println, eprintln, make_dirs}
+use @std.avrac.language.{Program, Workspace, TestCase, Lowered, CaseCall, ProgramCall, cases_entry, program_entry, runner_rows, program_rows, emit_ll, case_words, program_symbol, programs_workspace, timed_workspace, run_program, avra}
+use @std.avrac.core.{sorted_texts, joined, flatten}
+use @std.path.{joined_path, dir_of, stem_of}
+use @std.io.{println, eprintln, read_text, exists, is_dir, list_dir, make_dirs}
 use @std.time.{now_ns}
 
 type TestCmd = { }
 
 impl Runnable for TestCmd {
     fn run(args: CliResult) -> int {
-        on_cases(args, (p: Program, cases: List<TestCase>) -> {
-            let t0 = now_ns()
-            warn(p)
-            let made = p.cases_checked()
-            if timed(args) { eprintln(timings(p, "lower", now_ns() - t0)) }
-            match made {
-                .Ok(lo) -> staged_suite(p, lo, cases),
-                .Err(text) -> {
-                    println(text)
-                    1
-                }
-            }
-        })
+        on_cases(args, (p: Program, cases: List<TestCase>) -> proved(args, p, cases))
     }
 }
 
-/// The cases as a binary, run by a fresh image of this program.
-fn staged_suite(p: Program, lo: Lowered, cases: List<TestCase>) -> int {
+/// The suite lowered here, then handed off once.
+fn proved(args: CliResult, p: Program, cases: List<TestCase>) -> int {
+    let t0 = now_ns()
+    warn(p)
+    let made = p.cases_checked()
+    if timed(args) { eprintln(timings(p, "lower", now_ns() - t0)) }
+    match made {
+        .Ok(lo) -> staged_suite(args, p, lo, cases),
+        .Err(text) -> {
+            println(text)
+            1
+        }
+    }
+}
+
+fn staged_suite(args: CliResult, p: Program, lo: Lowered, cases: List<TestCase>) -> int {
+    match suite_plans(args, p, lo, cases) {
+        .Ok(plans) -> if plans.is_empty() { nothing_to_prove() } else { handed_off(plans) },
+        .Err(text) -> {
+            println(text)
+            1
+        }
+    }
+}
+
+/// The cases' module when the package has cases, then its program
+/// tests. A PROGRAM TEST IS A PACKAGE'S PROOF: `avra test <file>`
+/// runs that file's cases and nothing else.
+fn suite_plans(args: CliResult, p: Program, lo: Lowered, cases: List<TestCase>) -> Result<List<string>, string> {
+    let head: List<string> = if cases.is_empty() { [] } else { [cases_plan(p, lo, cases)?] }
+    let programs: List<string> = if is_dir(path_arg(args)) { program_plans(p)? } else { [] }
+    .Ok(head.concat(programs))
+}
+
+/// The cases as ONE module: an entry that calls each by its symbol.
+fn cases_plan(p: Program, lo: Lowered, cases: List<TestCase>) -> Result<string, string> {
     let calls = [CaseCall { symbol: c.symbol, label: case_words(c) } for c in cases]
-    let staged = lo with { entry: cases_entry(lo.types, calls), externs: lo.externs.concat(runner_rows()) }
-    let path = staged_path(p)
-    let failure: string? = emit_ll(staged, path)
-    if failure != null {
-        println(failure!)
-        return 1
-    }
-    staged(path, p)
+    planned_module(lo with { entry: cases_entry(lo.types, calls), externs: lo.externs.concat(runner_rows) }, p, "cases.av.ll")
 }
 
-/// Where the test binary is written — under the root's `build/`,
-/// never beside the source it tests.
-fn staged_path(p: Program) -> string {
+/// A PACKAGE'S PROGRAM TESTS: a file in a `tests/` directory with the
+/// text it must print beside it. The package's own are proved in ONE
+/// binary; a nested package there — a module tree, a vendored
+/// dependency, a test that reaches past the library's own
+/// dependencies: what a flat program cannot say — is proved on its
+/// own. No programs is no plans, never a refusal.
+fn program_plans(p: Program) -> Result<List<string>, string> {
+    let own = program_files(p)
+    let flat: List<string> = if own.is_empty() { [] } else { [proved_programs(p, own)?] }
+    .Ok(flat.concat([nested_plan(root)? for root in nested_roots(joined_path(p.ws.root, "src"))]))
+}
+
+/// A nested package proved on its own: a root with a `src/` is a
+/// package, one without is a DIRECTORY OF PROGRAMS — every file there
+/// its own module, so one program's names are never another's.
+fn nested_plan(root: string) -> Result<string, string> {
+    let p: Program = nested_workspace(root).program(null)
+    proved_programs(p, program_files(p))
+}
+
+fn nested_workspace(root: string) -> Workspace {
+    if is_dir(joined_path(root, "src")) { return timed_workspace(disk_host(), root, avra(), () -> now_ns()) }
+    programs_workspace(disk_host(), root, avra(), () -> now_ns())
+}
+
+/// EVERY PROOF IS BOTH ENGINES: the evaluator's leg runs HERE and
+/// stops the run when it disagrees, so a green suite is never the
+/// binary's alone; the plan carries the native leg.
+fn proved_programs(p: Program, paths: List<string>) -> Result<string, string> {
+    let unproved = [unproved_program(path) for path in paths if !is_program(path)]
+    if !unproved.is_empty() { return .Err(joined(unproved, "\n")) }
+    if paths.is_empty() { return .Err(no_programs(p.ws.root)) }
+    let programs = [call_of(path) for path in paths]
+    let lo = p.programs_checked()?
+    let quarrels = eval_quarrels(lo, programs)
+    if !quarrels.is_empty() { return .Err(joined(quarrels, "\n")) }
+    planned_module(lo with { entry: program_entry(lo.types, programs), externs: lo.externs.concat(program_rows) }, p, "programs.av.ll")
+}
+
+/// One program as the binary needs it: the `.expected` beside it with
+/// its final newline dropped — the shape the capture answers.
+fn call_of(path: string) -> ProgramCall {
+    let text = read_text(expected_path(path)) catch ""
+    ProgramCall {
+        symbol: program_symbol(path),
+        label: joined_path(dir_of(path), stem_of(path)),
+        expected: if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text },
+        evaluated: !native_only(path),
+    }
+}
+
+/// Every program the evaluator did not say, in its own words.
+fn eval_quarrels(lo: Lowered, programs: List<ProgramCall>) -> List<string> {
+    flatten([quarrel(lo, pr) for pr in programs if pr.evaluated])
+}
+
+/// One program's disagreement with the evaluator, as none or one.
+fn quarrel(lo: Lowered, pr: ProgramCall) -> List<string> {
+    match run_program(lo, pr.symbol) {
+        .Ok(out) -> if out == pr.expected { [] } else { [said_otherwise(pr, out)] },
+        .Err(why) -> [eval_wrecked(pr, why)],
+    }
+}
+
+/// A lowered module written under the root's `build/`, never beside
+/// the source it proves, and the link plan a fresh image runs it by.
+fn planned_module(lo: Lowered, p: Program, name: string) -> Result<string, string> {
     let dir = joined_path(p.ws.root, "build")
     let _ = make_dirs(dir)
-    joined_path(dir, "cases.av.ll")
+    let path = joined_path(dir, name)
+    let failure: string? = emit_ll(lo, path)
+    if failure != null { return .Err(failure!) }
+    plan_for(path, p)
+}
+
+/// The programs a package carries, in name order: its own source
+/// files with the text they must print beside them.
+fn program_files(p: Program) -> List<string> {
+    sorted_texts([f for f in p.ws.root_files() if is_program(f)])
+}
+
+/// Every nested package under a directory: one holding its own
+/// manifest is a package, and nothing under it is asked again.
+fn nested_roots(dir: string) -> List<string> {
+    flatten([nested_at(joined_path(dir, name)) for name in listed(dir) if is_dir(joined_path(dir, name))])
+}
+
+fn nested_at(dir: string) -> List<string> {
+    if exists(joined_path(dir, "avra.toml")) { return [dir] }
+    nested_roots(dir)
+}
+
+/// Whether a package carries any program test — one of its own, or a
+/// nested package holding one.
+fn has_program_tests(ws: Workspace) -> bool {
+    ws.root_files().any((f) -> is_program(f)) || !nested_roots(joined_path(ws.root, "src")).is_empty()
+}
+
+/// A directory's names, in order — a directory that is not there
+/// holds nothing.
+fn listed(dir: string) -> List<string> {
+    sorted_texts(list_dir(dir) catch [])
+}
+
+/// Whether a file is a program test: the text it must print sits
+/// beside it.
+fn is_program(path: string) -> bool {
+    exists(expected_path(path))
+}
+
+fn expected_path(path: string) -> string {
+    joined_path(dir_of(path), "${stem_of(path)}.expected")
+}
+
+/// A marker beside a program drops the evaluator's leg — the seam is
+/// the host's, and the marker's text says why.
+fn native_only(path: string) -> bool {
+    exists(joined_path(dir_of(path), "${stem_of(path)}.native-only"))
 }
 
 export fn test_command() -> Subcommand {
     let body: TestCmd = TestCmd { }
-    Subcommand { meta: file_command("test", "Run a package's or a file's spec cases"), body: body }
+    Subcommand { meta: file_command("test", "Run a package's spec cases and its program tests"), body: body }
+}
+
+// ── The voices ──
+
+fn nothing_to_prove() -> int {
+    println("no spec cases here")
+    0
+}
+
+fn unproved_program(path: string) -> string {
+    "avra: ${path} has no ${stem_of(path)}.expected beside it — a program test is proved by the text it must print"
+}
+
+fn no_programs(dir: string) -> string {
+    "avra: ${dir} holds no programs — a program test is an `.av` file beside its `.expected`"
+}
+
+fn said_otherwise(pr: ProgramCall, out: string) -> string {
+    "${pr.label}: eval != expected\n${out}"
+}
+
+fn eval_wrecked(pr: ProgramCall, why: string) -> string {
+    "${pr.label}: eval FAILED\n${why}"
 }

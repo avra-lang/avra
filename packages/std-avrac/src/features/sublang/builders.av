@@ -1,0 +1,146 @@
+//! Parse-time lowering. A named grammar keeps its notation as text
+//! (readied by the workspace; refused here if it does not parse). A
+//! block EXPANDS here: its word's grammar runs over the body's tokens
+//! and every action mints a call of the library's fn, the captures as
+//! arguments — so the expansion's nodes stand right before the block's,
+//! as a parsed child does, and every range law holds.
+use core.{Expr, Stmt, ExprId, NodeStore, Span, HoleName, hole_name, flatten, some_list, BlockVoice}
+use features.{LangNode, Builder, BlockGrammar, zip_defect_of}
+use grammar.{run_from, lex_body, Captured, TokenKind, Token, Grammar, Seq, Item, Prim, Build}
+
+/// The declaration always mints; its notation is judged by its typing
+/// (`check_syntax`), which speaks the DSL's own words at the statement.
+fn build_syntax_decl(mut b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let t = b.token(1)?
+    b.make_stmt(Stmt.SyntaxDecl(n.text, t.text))
+}
+
+fn build_sublang(mut b: Builder) -> Result<LangNode, string> {
+    let w = b.token(0)?
+    let body = b.token(1)?
+    let begins = b.tokens(2)?
+    let holes = b.exprs(3)?
+    let ends = b.tokens(4)?
+    if begins.length != holes.length { return .Err("a hole is empty — `\${e}` takes an expression") }
+    if ends.length != holes.length { return .Err(zip_defect_of("block holes")) }
+    let expansion: ExprId? = expanded(b, w.text, body, holes)
+    let e = b.store.alloc_expr(Expr.Sublang(w.text, body.text, holes, expansion), b.span)
+    b.store.mark_sublang(e, body.span.lo)
+    .Ok(LangNode.NExpr(e))
+}
+
+/// The block's body run through its word's grammar: the root the
+/// actions minted, or null with the refusal spoken at the block.
+fn expanded(mut b: Builder, word: string, body: Token, holes: List<ExprId>) -> ExprId? {
+    let held: BlockGrammar? = b.blocks.find((g: BlockGrammar) -> g.word == word)
+    if held == null { return null }
+    let block = held!
+    let at = body.span.lo
+    let lexed = lex_body(body.text)
+    for x in lexed.errors { b.store.speak_block(BlockVoice { message: x.message, lo: x.span.lo + at, hi: x.span.hi + at, expected: [], in_rule: "(lexing)" }) }
+    if !lexed.errors.is_empty() { return null }
+    let lo = b.store.exprs.count()
+    let sink = b.store
+    let g = block.ready.g
+    let build = (name: string, args: List<Captured<ExprId>>, span: Span?) -> sink.minted_action(name, listed_seats(g, name, args.length), args, span, holes)
+    let tokens = [t with { span: t.span.shifted(at) } for t in lexed.tokens if t.kind != TokenKind.Break]
+    let o = run_from<ExprId>(block.ready, block.ready.g.start, tokens, build)
+    b.store.note_foreign(lo, b.store.exprs.count(), block.origin)
+    for d in o.diagnostics { b.store.speak_block(BlockVoice { message: d.message, lo: d.span?.lo ?? at, hi: d.span?.hi ?? at, expected: d.expected, in_rule: d.in_rule }) }
+    if !o.diagnostics.is_empty() || o.result == null { return null }
+    sink.captured_expr(o.result!, holes)
+}
+
+/// Which of an action's seats take a LIST — the labels captured under
+/// a `*` or `+` in the branch that names the action. One element or
+/// none arrives from the engine as a scalar or an absence, and the
+/// seat's shape says it is a list of one or of none.
+fn listed_seats(g: Grammar, name: string, arity: int) -> List<bool> {
+    let seqs = flatten([r.body.branches for r in g.rules])
+    let held: Seq? = seqs.find((s: Seq) -> calls(s, name, arity))
+    if held == null { return [false for i in 0..arity] }
+    let seq = held!
+    [accumulates(seq.items, l, false) for l in action_labels(seq.build)]
+}
+
+/// The labels an action hands its fn — none for a pass-through.
+fn action_labels(b: Build?) -> List<string> {
+    if b == null { return [] }
+    match b! {
+        .Call(_, args) -> args,
+        .Var(_) -> [],
+    }
+}
+
+fn calls(s: Seq, name: string, arity: int) -> bool {
+    if s.build == null { return false }
+    match s.build! {
+        .Call(n, args) -> n == name && args.length == arity,
+        .Var(_) -> false,
+    }
+}
+
+/// Whether a label is captured under a repetition among these items —
+/// its own, or a group's that holds it.
+fn accumulates(items: List<Item>, label: string, under: bool) -> bool {
+    items.any((it: Item) -> item_accumulates(it, label, under))
+}
+
+fn item_accumulates(it: Item, label: string, under: bool) -> bool {
+    let repeated = under || it.rep is .Star || it.rep is .Plus
+    if it.label == label && repeated { return true }
+    match it.prim {
+        .Group(inner) -> inner.branches.any((s: Seq) -> accumulates(s.items, label, repeated)),
+        .Ref(_) or .Lit(_) or .Named(_) -> false,
+    }
+}
+
+impl NodeStore {
+    /// A grammar's action minted as a call of the library's fn, its
+    /// captures as the arguments — a listed seat's one or none as a
+    /// list of one or of none.
+    mut fn minted_action(name: string, listed: List<bool>, args: List<Captured<ExprId>>, span: Span?, holes: List<ExprId>) -> Result<Captured<ExprId>, string> {
+        let ids = [self.seated(a, listed[j], span, holes) for j, a in args]
+        .Ok(Captured.Node(self.alloc_expr(Expr.Call(name, [], ids), span)))
+    }
+
+    mut fn seated(a: Captured<ExprId>, listed: bool, span: Span?, holes: List<ExprId>) -> ExprId {
+        if !listed { return self.captured_expr(a, holes) ?? self.alloc_expr(Expr.NullLit, span) }
+        match a {
+            .Many(_) -> self.captured_expr(a, holes) ?? self.alloc_expr(Expr.ListLit([]), span),
+            .Absent -> self.alloc_expr(Expr.ListLit([]), span),
+            .Terminal(_) or .Node(_) -> {
+                let one: ExprId? = self.captured_expr(a, holes)
+                self.alloc_expr(Expr.ListLit(some_list(one)), span)
+            },
+        }
+    }
+
+    /// A capture as the expression it hands the action: a hole the
+    /// user's expression, a number a literal, any other token its text
+    /// as a string literal, a repeated capture a list, an absent one
+    /// null.
+    mut fn captured_expr(c: Captured<ExprId>, holes: List<ExprId>) -> ExprId? {
+        match c {
+            .Node(e) -> e,
+            .Absent -> null,
+            .Many(items) -> self.alloc_expr(Expr.ListLit(flatten([some_list(self.captured_expr(x, holes)) for x in items])), null),
+            .Terminal(t) -> match t.kind {
+                .Hole -> hole_expr(t.text, holes),
+                .Num -> self.alloc_expr(Expr.IntLit(t.int_value() ?? 0), t.span),
+                .Name or .Str or .IStrBegin or .IStrMid or .IStrEnd or .Op or .Break or .Eof or .Pkg or .HoleBegin or .HoleEnd or .Block or .Body ->
+                    self.alloc_expr(Expr.StrLit(t.text), t.span),
+            },
+        }
+    }
+}
+
+/// The user's expression a placeholder names.
+fn hole_expr(text: string, holes: List<ExprId>) -> ExprId? {
+    let held: HoleName? = hole_name(text)
+    if held == null { return null }
+    let k: int? = held!.holes.first()
+    if k == null || k! >= holes.length { return null }
+    holes[k!]
+}

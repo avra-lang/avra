@@ -1,0 +1,46 @@
+//! THE VALUE PROTOCOL, derived — `Expr`'s literal payload projections.
+//! Five categories take the variant's one payload; the map and the
+//! quote take their payloads and build a record. A feature reads a
+//! payload through these methods instead of matching a variant.
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Decls}
+
+/// The five single-payload categories: variant -> accessor.
+fn accessor(name: string) -> string? {
+    match name {
+        "BoolLit" -> "bool_of",
+        "IntLit" -> "int_of",
+        "FloatLit" -> "bits_of",
+        "StrLit" -> "text_of",
+        "ListLit" -> "elems_of",
+        _ -> null,
+    }
+}
+
+/// The compiler's derive for the value protocol.
+trait ValueProtocol {
+    static fn derive(t: MetaType) -> List<Directive> {
+        let methods = [projection_of(v) for v in t.variants if accessor(v.name) != null].concat([pairs_of_method(), quote_of_method(), sublang_of_method()])
+        [Directive { twin: "", name: t.name, at: t.at, source: quote { impl ${t} { ${methods} } } }]
+    }
+}
+
+/// One category's accessor: the payload, or null.
+fn projection_of(v: MetaVariant) -> Decls {
+    let method = accessor(v.name)!
+    let payload = v.payload[0]
+    quote { fn ${method}() -> ${payload}? { match self { .${v}(s) -> s, _ -> null } } }
+}
+
+/// The two categories with SEVERAL payloads — a record each, not a
+/// payload.
+fn pairs_of_method() -> Decls {
+    quote { fn pairs_of() -> MapPairs? { match self { .MapLit(keys, values) -> MapPairs { keys: keys, values: values }, _ -> null } } }
+}
+
+fn quote_of_method() -> Decls {
+    quote { fn quote_of() -> QuoteParts? { match self { .Quote(parts, stmts, arms, holes) -> QuoteParts { parts: parts, stmts: stmts, arms: arms, holes: holes }, _ -> null } } }
+}
+
+fn sublang_of_method() -> Decls {
+    quote { fn sublang_of() -> SublangParts? { match self { .Sublang(word, body, holes, expansion) -> SublangParts { word: word, body: body, holes: holes, expansion: expansion }, _ -> null } } }
+}

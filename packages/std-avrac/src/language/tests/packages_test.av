@@ -1,23 +1,23 @@
 // Packages over an in-memory host: a root manifest names a path
 // dependency, `use @scope.name.a.{x}` reaches its module, the graph's
 // laws refuse in their own words, and the entry is the manifest's.
-use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, program, Program, module_of, root_files, entry_of}
+use @std.avrac.language.{avra, new_workspace, memory_host, Program}
 use @std.avrac.diagnostics.{suggested}
 use diagnostics.{Diag}
 use language.{Workspace}
 
-/// A program (`app`) with a vendored dependency (`@corpus/greet`)
-/// that itself depends on a second one (`@corpus/words`), and a
+/// A program (`app`) with a vendored dependency (`@acme/greet`)
+/// that itself depends on a second one (`@acme/words`), and a
 /// nested package under the root's own sources.
 fn files() -> Map<string, string> {
     {
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@corpus/greet\" = { path = \"vendor/greet\" }\n",
-        "/w/src/main.av": "use @corpus.greet.{greet}\ngreet(2)\n",
-        "/w/src/tools/avra.toml": "[package]\nname = \"@corpus/tools\"\nversion = \"0.1.0\"\n",
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/greet\" = { path = \"vendor/greet\" }\n",
+        "/w/src/main.av": "use @acme.greet.{greet}\ngreet(2)\n",
+        "/w/src/tools/avra.toml": "[package]\nname = \"@acme/tools\"\nversion = \"0.1.0\"\n",
         "/w/src/tools/src/t.av": "export fn t() -> int {\n    1\n}\n",
-        "/w/vendor/greet/avra.toml": "[package]\nname = \"@corpus/greet\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@corpus/words\" = { path = \"../words\" }\n",
-        "/w/vendor/greet/src/greet.av": "use @corpus.words.{word}\nexport fn greet(n: int) -> int {\n    n + word()\n}\n",
-        "/w/vendor/words/avra.toml": "[package]\nname = \"@corpus/words\"\nversion = \"0.1.0\"\n",
+        "/w/vendor/greet/avra.toml": "[package]\nname = \"@acme/greet\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/words\" = { path = \"../words\" }\n",
+        "/w/vendor/greet/src/greet.av": "use @acme.words.{word}\nexport fn greet(n: int) -> int {\n    n + word()\n}\n",
+        "/w/vendor/words/avra.toml": "[package]\nname = \"@acme/words\"\nversion = \"0.1.0\"\n",
         "/w/vendor/words/src/words.av": "export fn word() -> int {\n    40\n}\n",
     }
 }
@@ -55,7 +55,7 @@ fn with_two(p1: string, t1: string, p2: string, t2: string) -> Workspace {
 }
 
 fn both_deps() -> string {
-    root_manifest("\"@corpus/greet\" = { path = \"vendor/greet\" }\n\"@corpus/words\" = { path = \"vendor/words\" }")
+    root_manifest("\"@acme/greet\" = { path = \"vendor/greet\" }\n\"@acme/words\" = { path = \"vendor/words\" }")
 }
 
 fn root_manifest(deps: string) -> string {
@@ -63,7 +63,7 @@ fn root_manifest(deps: string) -> string {
 }
 
 fn ran(ws: Workspace) -> string? {
-    match program(ws, "/w/src/main.av").run() {
+    match ws.program("/w/src/main.av").run() {
         .Ok(text) -> text,
         .Err(_) -> null,
     }
@@ -71,7 +71,7 @@ fn ran(ws: Workspace) -> string? {
 
 /// The root file's ONE diagnostic.
 fn main_diag(ws: Workspace) -> Diag? {
-    let a = analyze_file(ws, "/w/src/main.av")
+    let a = ws.analyze_file("/w/src/main.av")
     if a.diagnostics.length != 1 { return null }
     a.diagnostics[0]
 }
@@ -84,9 +84,16 @@ fn fixes(ws: Workspace) -> List<string> {
     suggested(d!)
 }
 
+/// The root reaching `@acme/greet` under the named dependency section,
+/// with greet depending BACK on the root.
+fn back_edge(section: string) -> Workspace {
+    with_two("/w/avra.toml", "[package]\nname = \"@acme/app\"\nversion = \"0.1.0\"\n\n[${section}]\n\"@acme/greet\" = { path = \"vendor/greet\" }\n",
+             "/w/vendor/greet/avra.toml", "[package]\nname = \"@acme/greet\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/words\" = { path = \"../words\" }\n\"@acme/app\" = { path = \"../..\" }\n")
+}
+
 /// The packages' ONE voice, saying this.
 fn package_voice(ws: Workspace, saying: string) -> bool {
-    let p = program(ws, "/w/src/main.av")
+    let p = ws.program("/w/src/main.av")
     p.voices.length == 1 && p.rendered(p.voices).contains(saying)
 }
 
@@ -97,69 +104,75 @@ spec "language/packages" {
             out == "42"
         }
         then "a package's own files reach it by its name" {
-            ran(with_two("/w/vendor/greet/src/twice.av", "use @corpus.greet.greet.{greet}\nexport fn twice(n: int) -> int {\n    greet(n) * 2\n}\n",
-                         "/w/src/main.av", "use @corpus.greet.twice.{twice}\ntwice(2)\n")) == "84"
+            ran(with_two("/w/vendor/greet/src/twice.av", "use @acme.greet.greet.{greet}\nexport fn twice(n: int) -> int {\n    greet(n) * 2\n}\n",
+                         "/w/src/main.av", "use @acme.greet.twice.{twice}\ntwice(2)\n")) == "84"
         }
         then "a dependency file's module carries its package" {
             let ws = workspace()
-            module_of(ws, "/w/vendor/greet/src/greet.av") == "@corpus.greet" &&
-                module_of(ws, "/w/vendor/greet/src/deep/x.av") == "@corpus.greet.deep" &&
-                module_of(ws, "/w/src/main.av") == ""
+            ws.module_of("/w/vendor/greet/src/greet.av") == "@acme.greet" &&
+                ws.module_of("/w/vendor/greet/src/deep/x.av") == "@acme.greet.deep" &&
+                ws.module_of("/w/src/main.av") == ""
         }
         then "a nested package is not a module of the package above it" {
             let ws = workspace()
             let kind: string? = main_diag(with_file("/w/src/main.av", "use tools.src.t.{t}\n1\n"))?.kind
-            root_files(ws).length == 1 && kind == "resolve.no_module"
+            ws.root_files().length == 1 && kind == "resolve.no_module"
         }
     }
     given "a package sees only what its manifest declares" {
         then "a transitive dependency is invisible, and the fix writes the line" {
-            let ws = with_file("/w/src/main.av", "use @corpus.words.{word}\n1\n")
+            let ws = with_file("/w/src/main.av", "use @acme.words.{word}\n1\n")
             let kind: string? = main_diag(ws)?.kind
             let fix = fixes(ws)
             kind == "resolve.not_a_dependency" && fix.length == 1 &&
-                fix[0] == "/w/avra.toml: \n\"@corpus/words\" = { path = \"vendor/words\" }"
+                fix[0] == "/w/avra.toml: \n\"@acme/words\" = { path = \"vendor/words\" }"
         }
         then "an unknown package has no fix to offer" {
             let d: Diag? = main_diag(with_file("/w/src/main.av", "use @nope.thing.{x}\n1\n"))
             d != null && d!.kind == "resolve.not_a_dependency" && fixes(with_file("/w/src/main.av", "use @nope.thing.{x}\n1\n")).is_empty()
         }
         then "a package is two segments" {
-            let kind: string? = main_diag(with_file("/w/src/main.av", "use @corpus.{greet}\n1\n"))?.kind
+            let kind: string? = main_diag(with_file("/w/src/main.av", "use @acme.{greet}\n1\n"))?.kind
             kind == "resolve.package_form"
         }
         then "a diamond over one directory is one package" {
-            let ws = with_two("/w/avra.toml", both_deps(), "/w/src/main.av", "use @corpus.greet.{greet}\nuse @corpus.words.{word}\ngreet(1) + word()\n")
+            let ws = with_two("/w/avra.toml", both_deps(), "/w/src/main.av", "use @acme.greet.{greet}\nuse @acme.words.{word}\ngreet(1) + word()\n")
             let out: string? = ran(ws)
-            program(ws, "/w/src/main.av").voices.is_empty() && out == "81"
+            ws.program("/w/src/main.av").voices.is_empty() && out == "81"
         }
     }
     given "the graph's laws" {
         then "a cycle refuses naming it" {
-            package_voice(with_file("/w/vendor/words/avra.toml", "[package]\nname = \"@corpus/words\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@corpus/greet\" = { path = \"../greet\" }\n"),
-                          "packages depend in a cycle: app -> @corpus/greet -> @corpus/words -> @corpus/greet")
+            package_voice(with_file("/w/vendor/words/avra.toml", "[package]\nname = \"@acme/words\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/greet\" = { path = \"../greet\" }\n"),
+                          "packages depend in a cycle: app -> @acme/greet -> @acme/words -> @acme/greet")
+        }
+        then "a dev dependency closes no cycle through the package it tests" {
+            back_edge("dev-dependencies").program("/w/src/main.av").voices.is_empty()
+        }
+        then "the same edge as a library dependency refuses" {
+            package_voice(back_edge("dependencies"), "packages depend in a cycle: @acme/app -> @acme/greet -> @acme/app")
         }
         then "a dependency calls itself what it was keyed as" {
-            package_voice(with_file("/w/vendor/greet/avra.toml", "[package]\nname = \"@corpus/greeting\"\nversion = \"0.1.0\"\n"),
-                          "calls itself `@corpus/greeting`, not `@corpus/greet`")
+            package_voice(with_file("/w/vendor/greet/avra.toml", "[package]\nname = \"@acme/greeting\"\nversion = \"0.1.0\"\n"),
+                          "calls itself `@acme/greeting`, not `@acme/greet`")
         }
         then "a path dependency points at a package directory" {
-            package_voice(with_file("/w/avra.toml", root_manifest("\"@corpus/greet\" = { path = \"vendor/nothing\" }")), "holds no `avra.toml`")
+            package_voice(with_file("/w/avra.toml", root_manifest("\"@acme/greet\" = { path = \"vendor/nothing\" }")), "holds no `avra.toml`")
         }
         then "one key is one directory" {
-            let ws = with_two("/w/avra.toml", root_manifest("\"@corpus/greet\" = { path = \"vendor/greet\" }\n\"@corpus/words\" = { path = \"vendor/words2\" }"),
-                              "/w/vendor/words2/avra.toml", "[package]\nname = \"@corpus/words\"\nversion = \"0.1.0\"\n")
-            package_voice(ws, "`@corpus/words` is claimed by two directories: `/w/vendor/words` and `/w/vendor/words2`")
+            let ws = with_two("/w/avra.toml", root_manifest("\"@acme/greet\" = { path = \"vendor/greet\" }\n\"@acme/words\" = { path = \"vendor/words2\" }"),
+                              "/w/vendor/words2/avra.toml", "[package]\nname = \"@acme/words\"\nversion = \"0.1.0\"\n")
+            package_voice(ws, "`@acme/words` is claimed by two directories: `/w/vendor/words` and `/w/vendor/words2`")
         }
     }
     given "the entry and the warnings" {
         then "the entry is `[bin]`, else src/main.av" {
-            let plain: string? = entry_of(workspace())
-            let binned: string? = entry_of(with_file("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/app.av\"\n"))
+            let plain: string? = workspace().entry_of()
+            let binned: string? = with_file("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[bin]\npath = \"src/app.av\"\n").entry_of()
             plain == "/w/src/main.av" && binned == "/w/src/app.av"
         }
         then "an unknown section warns and never blocks" {
-            let p = program(with_file("/w/avra.toml", root_manifest("\"@corpus/greet\" = { path = \"vendor/greet\" }") + "\n[grants]\nnetwork = []\n"), "/w/src/main.av")
+            let p = with_file("/w/avra.toml", root_manifest("\"@acme/greet\" = { path = \"vendor/greet\" }") + "\n[grants]\nnetwork = []\n").program("/w/src/main.av")
             p.voices.length == 1 && p.voices[0].severity is .Warning && p.clean() && p.report().contains("warning[F4030]")
         }
     }
@@ -168,8 +181,27 @@ spec "language/packages" {
             let ws = with_two("/w/vendor/greet/src/greet.av",
                               "export type P = { v: int }\nimpl P {\n    fn who() -> int {\n        2\n    }\n}\nexport fn make() -> P {\n    P { v: 0 }\n}\n",
                               "/w/src/main.av",
-                              "use @corpus.greet.{make}\ntype P = { v: int }\nimpl P {\n    fn who() -> int {\n        1\n    }\n}\nlet mine = P { v: 0 }\nlet theirs = make()\n\"\${mine.who()} \${theirs.who()}\"\n")
-            answered(program(ws, "/w/src/main.av")) == "1 2"
+                              "use @acme.greet.{make}\ntype P = { v: int }\nimpl P {\n    fn who() -> int {\n        1\n    }\n}\nlet mine = P { v: 0 }\nlet theirs = make()\n\"\${mine.who()} \${theirs.who()}\"\n")
+            answered(ws.program("/w/src/main.av")) == "1 2"
+        }
+    }
+    given "[lifted] budgets" {
+        then "a settlement past the manifest's steps is refused, and the refusal names the row" {
+            let ws = with_two("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[lifted]\nsteps = 500\n",
+                              "/w/src/main.av", "fn spin() -> int {\n    mut i = 0\n    while i < 1000 { i = i + 1 }\n    i\n}\nconst N = spin()\nN\n")
+            let report = answered(ws.program("/w/src/main.av"))
+            report.contains("error[F2061]") && report.contains("took more than 500 steps") && report.contains("raise `[lifted] steps")
+        }
+        then "a settlement past the manifest's memory is refused in bytes" {
+            let ws = with_two("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[lifted]\nmemory = 1\n",
+                              "/w/src/main.av", "fn heavy() -> List<int> {\n    [i for i in 0..300000]\n}\nconst H = heavy()\nH.length\n")
+            let report = answered(ws.program("/w/src/main.av"))
+            report.contains("error[F2061]") && report.contains("held more than 1048576 bytes")
+        }
+        then "within both, the const settles" {
+            let ws = with_two("/w/avra.toml", "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[lifted]\nsteps = 100000\nmemory = 1\n",
+                              "/w/src/main.av", "fn spin() -> int {\n    mut i = 0\n    while i < 1000 { i = i + 1 }\n    i\n}\nconst N = spin()\nN\n")
+            answered(ws.program("/w/src/main.av")) == "1000"
         }
     }
 }

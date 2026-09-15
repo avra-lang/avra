@@ -4,7 +4,7 @@
 //! enum's `.Err` and exits — `FnExit` settles every open scope's
 //! debts at the site, exactly as `return` does.
 use core.{StmtId, ExprId, TypeId, Reg, Ins, ResSides}
-use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, accepts, this_is, failed}
+use features.{StmtSemantics, ResolveCx, TypeCx, LowerCx, this_is}
 use diagnostics.{refusal}
 
 export type FailSemantics = { }
@@ -44,7 +44,7 @@ fn check_fail(mut cx: TypeCx, s: StmtId) {
         return
     }
     if cx.errored(v) { return }
-    if accepts(cx, v, sides!.err) { return }
+    if cx.accepts(v, sides!.err) { return }
     let gn = cx.name_at(v)
     cx.emit(refusal("type.fail", cx.stmt_loc(s), "`fail` raises a `${cx.view.types.name_of(sides!.err)}`, this is `${gn}`", this_is(gn), null))
 }
@@ -60,7 +60,7 @@ fn lower_fail(mut cx: LowerCx, s: StmtId) -> Reg? {
         cx.defect("a `fail` without an enclosing fn survived typing")
         return null
     }
-    let raised = failed(cx, ret!, v!)
+    let raised = cx.failed(ret!, v!)
     cx.failing()
     cx.emit(Ins.FnExit(raised))
     null

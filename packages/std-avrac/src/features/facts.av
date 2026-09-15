@@ -3,7 +3,8 @@
 //! (`FileView`), and the pass values that are pure data with the
 //! verbs that read and write their own columns. The reads that
 //! cross values, and the contexts' forwarders, live in contexts.av.
-use core.{FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of, package_of_module}
+use core.{FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, Span, NodeStore, TypeRegistry, Binding, Param, filled, Reg, Ins, dst_of, rt_sig_of}
+use core.{SeatMark}
 use diagnostics.{SourceFile, DiagCode, Diag, Voices, no_voices, loc_at, refusal, defect_at}
 use @std.errors.{Loc}
 
@@ -24,16 +25,27 @@ export type FileView = { file: FileId, store: NodeStore, stmts: List<StmtId>, so
 
 impl FileView {
     /// Where an expression is — THE source position, every context
-    /// forwards here.
-    fn loc_of(e: ExprId) -> Loc? { loc_at(self.source.file, self.store.expr_span(e)) }
+    /// forwards here. A GENERATED node is homed: a template's run
+    /// points into the file that wrote the quote, a hole's at the
+    /// annotation that asked for the code.
+    fn loc_of(e: ExprId) -> Loc? { self.decls.homed(self.file, self.origin_of(e), self.decls.generation_of(self.file, e), self.store.expr_span(e)) }
 
-    fn pat_loc(p: PatId) -> Loc? { loc_at(self.source.file, self.store.pat_span(p)) }
+    fn pat_loc(p: PatId) -> Loc? { self.decls.homed(self.file, self.origin_of_pat(p), self.decls.generation_of_pat(self.file, p), self.store.pat_span(p)) }
 
-    fn stmt_loc(s: StmtId) -> Loc? { loc_at(self.source.file, self.store.stmt_span(s)) }
+    fn stmt_loc(s: StmtId) -> Loc? { self.decls.homed(self.file, self.origin_of_stmt(s), self.decls.generation_of_stmt(self.file, s), self.store.stmt_span(s)) }
+
+    /// The file a generated node was WRITTEN in, when it is another
+    /// than this one — a template's own node. Null for a written node
+    /// and for one whose name came through a hole: both resolve here.
+    fn origin_of(e: ExprId) -> FileId? { self.decls.origin_of_expr(self.file, e) }
+
+    fn origin_of_stmt(s: StmtId) -> FileId? { self.decls.origin_of_stmt(self.file, s) }
+
+    fn origin_of_pat(p: PatId) -> FileId? { self.decls.origin_of_pat(self.file, p) }
 
     /// The module this file belongs to.
     fn module() -> string { self.decls.module_name(self.decls.file(self.file).module_id) }
-    fn package() -> string { package_of_module(self.module()) }
+    fn package() -> string { self.decls.package_named(self.module()) }
 }
 
 /// A lambda's captures: the names it reached outside itself and the
@@ -44,7 +56,7 @@ export type Cap = { names: List<string>, sources: List<Binding> }
 /// A file's names: what each expression's name resolves to, each
 /// lambda's captures, the namespace they were resolved in, and the
 /// voices resolving earned.
-export type NameFacts = { bindings: List<Binding?>, captures: List<Cap?>, mut_reads: List<bool>, names: Namespace, voices: Voices }
+export type NameFacts = { bindings: List<Binding?>, captures: List<Cap?>, mut_reads: List<bool>, settled_reads: List<bool>, names: Namespace, voices: Voices }
 
 impl NameFacts {
     fn binding(e: ExprId) -> Binding? {
@@ -58,6 +70,14 @@ impl NameFacts {
 
     fn mark_mut_read(e: ExprId) {
         self.mut_reads.set(e.index, true)
+    }
+
+    /// Whether this parameter read names a `const` (settled) seat —
+    /// the resolver marks it as it binds, the way it marks `mut`.
+    fn reads_settled_seat(e: ExprId) -> bool { self.settled_reads[e.index] }
+
+    fn mark_settled_read(e: ExprId) {
+        self.settled_reads.set(e.index, true)
     }
 
     fn capture(lam: ExprId) -> Cap? {
@@ -87,6 +107,8 @@ export type TypeFacts = {
     asks: List<Asked?>,
     substs: List<Sub?>,
     lambda_params: List<List<TypeId>?>,
+    // the seat CONTRACTS those seats wear — written, or heard from the slot
+    lambda_marks: List<List<SeatMark>?>,
     // what each lambda CAPTURED, typed in lane order — the type a
     // capture read wears, wherever the lane is read
     captures: List<List<TypeId>?>,
@@ -101,6 +123,9 @@ export type TypeFacts = {
     // a `mut` binding that BORROWS a parameter's field (bs2's
     // aliasing, honored until self-host — ROADMAP: the bs2 debt ledger)
     borrows: List<bool>,
+    // a use whose declaration's warnings were already spoken — one
+    // voice per use, however often the node is typed
+    warned: List<bool>,
     voices: Voices,
 }
 
@@ -115,9 +140,11 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         asks: filled<Asked?>(exprs, null),
         substs: filled<Sub?>(exprs, null),
         lambda_params: filled<List<TypeId>?>(exprs, null),
+        lambda_marks: filled<List<SeatMark>?>(exprs, null),
         captures: filled<List<TypeId>?>(exprs, null),
         wants: filled<TypeId?>(exprs, null),
         hungry: filled(exprs, false),
+        warned: filled(exprs, false),
         starved: filled<TypeId?>(exprs, null),
         scopes: filled<ParamScope?>(exprs, null),
         pattern_types: empty_lists_ty(exprs),
@@ -129,6 +156,9 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
 
 impl TypeFacts {
     fn type_at(e: ExprId) -> TypeId { self.of_expr[e.index - self.lo] }
+    /// Whether this table's range holds the expression — an
+    /// expression is typed by the body that OWNS it, never another.
+    fn owns(e: ExprId) -> bool { e.index >= self.lo && e.index - self.lo < self.of_expr.length }
 
     fn hungry_at(e: ExprId) -> bool { self.hungry[e.index - self.lo] }
 
@@ -178,8 +208,8 @@ impl TypeFacts {
         held
     }
 
-    fn record_subst(e: ExprId, target: DeclId, targs: List<TypeId>) {
-        self.substs.set(e.index - self.lo, Sub { target: target, args: targs })
+    fn record_subst(e: ExprId, target: DeclId, targs: List<TypeId>, consts: List<string>) {
+        self.substs.set(e.index - self.lo, Sub { target: target, args: targs, consts: consts })
     }
 
     fn subst_at(e: ExprId) -> Sub? {
@@ -241,6 +271,13 @@ impl TypeFacts {
         self.borrows.set(s.index, true)
     }
 
+    /// Whether this use already spoke its declaration's warnings.
+    fn spoke_warning(e: ExprId) -> bool { self.warned[e.index - self.lo] }
+
+    fn mark_warned(e: ExprId) {
+        self.warned.set(e.index - self.lo, true)
+    }
+
     fn is_borrow(s: StmtId) -> bool { self.borrows[s.index] }
 
     /// Another body's facts laid into this table over its range,
@@ -259,6 +296,7 @@ impl TypeFacts {
         for (j, v) in other.asks.enumerate() { self.asks.set(at + j, v) }
         for (j, v) in other.substs.enumerate() { self.substs.set(at + j, v) }
         for (j, v) in other.lambda_params.enumerate() { self.lambda_params.set(at + j, v) }
+        for (j, v) in other.lambda_marks.enumerate() { self.lambda_marks.set(at + j, v) }
         for (j, v) in other.captures.enumerate() { self.captures.set(at + j, v) }
         for (j, v) in other.wants.enumerate() { self.wants.set(at + j, v) }
         for (j, v) in other.pattern_types.enumerate() { self.pattern_types.set(at + j, v) }
@@ -275,8 +313,14 @@ impl TypeFacts {
         held
     }
 
-    fn seat_lambda(lam: ExprId, tys: List<TypeId>) {
+    fn seat_lambda(lam: ExprId, tys: List<TypeId>, marks: List<SeatMark>) {
         self.lambda_params.set(lam.index - self.lo, tys)
+        self.lambda_marks.set(lam.index - self.lo, marks)
+    }
+
+    fn heard_marks(lam: ExprId) -> List<SeatMark>? {
+        let held: List<SeatMark>? = self.lambda_marks[lam.index - self.lo]
+        held
     }
 
     fn lambda_seats(lam: ExprId) -> List<TypeId>? {
@@ -300,9 +344,11 @@ impl TypeFacts {
 
 }
 
-fn decl_named(decls: Decls, f: DeclId, mname: string) -> bool {
-    let n: string? = decls.fn_name(f)
-    n == mname
+impl Decls {
+    fn decl_named(f: DeclId, mname: string) -> bool {
+        let n: string? = self.fn_name(f)
+        n == mname
+    }
 }
 
 /// A body's instruction list under construction: registers mint in
@@ -340,7 +386,7 @@ impl Emitter {
             .CallRtVoid(c, _) -> c,
             .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
             .Bin(_, _, _, _) or .Un(_, _, _) or .Call(_, _, _) or
-            .FnAddr(_, _) or .CallPtr(_, _, _) or
+            .FnAddr(_, _) or .StaticAddr(_, _) or .CallPtr(_, _, _) or
             .Pack(_, _) or .Extract(_, _, _) or
             .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
             .SwitchStart(_, _) or .ArmEnd(_) or .RegionEnd(_, _) or

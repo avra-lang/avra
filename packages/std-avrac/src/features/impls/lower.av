@@ -3,11 +3,11 @@
 //! derives from the receiver's type both here and at the fn loop,
 //! so no fact table carries it.
 use core.{ExprId, Reg, Ins, DeclId, TypeId}
-use features.{LowerCx, lower_defect, foreign_node, EnumSig, tagged_value, called_through, slot_read, MethodCall, box_size}
+use features.{LowerCx, EnumSig, MethodCall}
 
 /// The receiver's value: seat 0 of the body, as its binding says.
 fn receiver_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    cx.def_reg(e) ?? lower_defect(cx, e, "a receiver outside a method survived resolve")
+    cx.def_reg(e) ?? cx.lower_defect(e, "a receiver outside a method survived resolve")
 }
 
 fn method_call_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -16,14 +16,14 @@ fn method_call_reg(mut cx: LowerCx, e: ExprId) -> Reg {
         .MethodCall(subject, name, args) -> match callee_of(cx.view, cx.type_at(subject), name) {
             .Variant(_, _) -> built_variant(cx, e, name, args),
             .Static(m, _) -> static_dispatch(cx, e, m, args),
-            .Bounded(_, _, _) -> lower_defect(cx, e, "a bounded receiver survived mono"),
+            .Bounded(_, _, _) -> cx.lower_defect(e, "a bounded receiver survived mono"),
             .Contract(tdecl, _) -> dyn_dispatch(cx, e, subject, tdecl, name, args),
             .FnField(slot, fty) -> fielded_dispatch(cx, e, subject, slot, fty, args),
             .Row(r) -> r.lower(cx, MethodCall { e: e, subject: subject, args: args }),
             .Declared(decl, _) -> declared_dispatch(cx, e, subject, decl, name, args),
-            .Nameless -> lower_defect(cx, e, "a method on a nameless receiver survived typing"),
+            .Nameless -> cx.lower_defect(e, "a method on a nameless receiver survived typing"),
         },
-        _ -> foreign_node(cx, e),
+        _ -> cx.foreign_node(e),
     }
 }
 
@@ -32,11 +32,11 @@ fn method_call_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 /// 1+ordinal holds the code pointer.
 fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, tdecl: DeclId, name: string, args: List<ExprId>) -> Reg {
     let ordinal = cx.view.decls.trait_method_names(tdecl).index_of(name)
-    if ordinal < 0 { return lower_defect(cx, e, "a dyn method outside its trait survived typing") }
+    if ordinal < 0 { return cx.lower_defect(e, "a dyn method outside its trait survived typing") }
     let box = cx.reg_of(subject)
     let regs = [cx.reg_of(a) for a in args]
-    let data = slot_read(cx, box, 0, cx.type_at(subject))
-    let fp = slot_read(cx, box, 1 + ordinal, null)
+    let data = cx.slot_read(box, 0, cx.type_at(subject))
+    let fp = cx.slot_read(box, 1 + ordinal, null)
     let dst = cx.result(e)
     cx.emit(Ins.CallPtr(dst, fp, [data].concat(regs)))
     dst
@@ -46,8 +46,8 @@ fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, tdecl: DeclId, name
 /// box's slot 0 — the code address — and go through the pointer,
 /// the box riding seat 0.
 fn fielded_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, slot: int, fty: TypeId, args: List<ExprId>) -> Reg {
-    let box = slot_read(cx, cx.reg_of(subject), slot, fty)
-    called_through(cx, e, box, [cx.reg_of(a) for a in args])
+    let box = cx.slot_read(cx.reg_of(subject), slot, fty)
+    cx.called_through(e, box, [cx.reg_of(a) for a in args])
 }
 
 /// The impl table's dispatch: a direct Call to the method's
@@ -56,7 +56,7 @@ fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, 
     let recv = cx.reg_of(subject)
     let regs = [cx.reg_of(a) for a in args]
     let m: DeclId? = cx.view.decls.method(decl, name)
-    if m == null { return lower_defect(cx, e, "a method with no symbol survived typing") }
+    if m == null { return cx.lower_defect(e, "a method with no symbol survived typing") }
     let dst = cx.result(e)
     cx.emit(Ins.Call(dst, cx.method_symbol(m!, e, cx.type_at(subject)), [recv].concat(regs)))
     dst
@@ -76,12 +76,12 @@ fn static_dispatch(mut cx: LowerCx, e: ExprId, m: DeclId, args: List<ExprId>) ->
 /// same shape enums' own lowering mints, through the same verbs.
 fn built_variant(mut cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> Reg {
     let sig: EnumSig? = cx.variants_at(e)
-    if sig == null { return lower_defect(cx, e, "a variant built without an enum type") }
+    if sig == null { return cx.lower_defect(e, "a variant built without an enum type") }
     let which: int? = sig!.tag_of(name)
-    if which == null || args.is_empty() { return lower_defect(cx, e, "an undeclared variant survived typing") }
+    if which == null || args.is_empty() { return cx.lower_defect(e, "an undeclared variant survived typing") }
     let carried = [cx.reg_of(a) for a in args]
-    let size = box_size(cx, 1 + carried.length)
+    let size = cx.box_size(1 + carried.length)
     let dst = cx.result(e)
-    tagged_value(cx, dst, size, which!, carried)
+    cx.tagged_value(dst, size, which!, carried)
     dst
 }

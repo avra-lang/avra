@@ -5,13 +5,13 @@
 //! catch's default arm exits with the SUBJECT'S OWN BOX, exactly
 //! as `?` does: the unmatched failure propagates by pointer move.
 use core.{ExprId, TypeId, Reg, Ins, ResSides}
-use features.{LowerCx, foreign_node, EnumSig, okness_of, payload_of, tag_of, hollow_of, lower_defect, arm_end, open_region, close_region}
+use features.{LowerCx, EnumSig}
 
 fn catch_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Catch(s, vs, bs, arms) -> catched_reg(cx, e, s, vs, bs, arms),
-        _ -> foreign_node(cx, e),
+        _ -> cx.foreign_node(e),
     }
 }
 
@@ -19,11 +19,9 @@ fn catched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, variants: List<strin
                binds: List<string>, values: List<ExprId>) -> Reg {
     let r = cx.reg_of(subject)
     let sides: ResSides? = cx.view.types.res_parts(cx.type_at(subject))
-    if sides == null { return lower_defect(cx, e, "a catch without a Result survived typing") }
-    open_region(cx, okness_of(cx, r))
-    arm_end(cx, payload_of(cx, r, sides!.ok))
-    let recovered = failure_reg(cx, e, r, sides!, variants, binds, values)
-    close_region(cx, e, recovered)
+    if sides == null { return cx.lower_defect(e, "a catch without a Result survived typing") }
+    let held = sides!
+    cx.region(cx.okness_of(r), e) { cx -> cx.payload_of(r, held.ok) } else { cx -> failure_reg(cx, e, r, held, variants, binds, values) }
 }
 
 /// The failure arm's whole story. A single catch-all arm answers
@@ -39,7 +37,7 @@ fn failure_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
 /// The catch-all arm: the whole error binds (when named), the value
 /// answers.
 fn all_arm_reg(mut cx: LowerCx, r: Reg, sides: ResSides, bind: string, value: ExprId) -> Reg {
-    if bind != "" { cx.bind_patterns(value, [payload_of(cx, r, sides.err)]) }
+    if bind != "" { cx.bind_patterns(value, [cx.payload_of(r, sides.err)]) }
     cx.reg_of(value)
 }
 
@@ -50,33 +48,33 @@ fn all_arm_reg(mut cx: LowerCx, r: Reg, sides: ResSides, bind: string, value: Ex
 fn switched_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
                 variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
     let held: EnumSig? = cx.variants_of(sides.err)
-    if held == null { return lower_defect(cx, e, "catch arms without variants survived typing") }
+    if held == null { return cx.lower_defect(e, "catch arms without variants survived typing") }
     let sig = held!
-    let err = payload_of(cx, r, sides.err)
+    let err = cx.payload_of(r, sides.err)
     let selective = !total(sig, variants)
     let tags = arm_tags(sig, variants, selective)
-    cx.emit(Ins.SwitchStart(tag_of(cx, err), tags))
+    cx.emit(Ins.SwitchStart(cx.tag_of(err), tags))
     // LICENSED I4: the running yield closes each PRIOR arm's bracket — an emit fold, not a scan
     mut answer: Reg? = null
     for j, v in values {
-        if answer != null { arm_end(cx, answer!) }
+        if answer != null { cx.arm_end(answer!) }
         if binds[j] != "" { bind_payload(cx, err, sig, variants[j], v) }
         answer = cx.reg_of(v)
     }
     if selective {
-        arm_end(cx, answer!)
+        cx.arm_end(answer!)
         cx.failing()
         cx.emit(Ins.FnExit(r))
-        answer = hollow_of(cx, cx.type_at(e))
+        answer = cx.hollow_of(cx.type_at(e))
     }
-    close_region(cx, e, answer!)
+    cx.close_region(e, answer!)
 }
 
 /// One arm's bind: the payload read INSIDE the arm's bracket.
 fn bind_payload(mut cx: LowerCx, err: Reg, sig: EnumSig, vn: string, value: ExprId) {
     let carried: TypeId? = sig.payload_of(vn)
     if carried == null { return }
-    cx.bind_patterns(value, [payload_of(cx, err, carried!)])
+    cx.bind_patterns(value, [cx.payload_of(err, carried!)])
 }
 
 /// Every variant named — the switch needs no propagating default.

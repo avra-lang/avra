@@ -90,7 +90,7 @@ export fn begin_read(db: Db) -> Result<int, SqlError> { started(db, "begin defer
 /// work the caller believes was ended.
 export fn commit(db: Db) -> Result<int, SqlError> {
     let _ = barred(closed_fault(db))?
-    if !in_transaction(db) { fail nothing_to_keep() }
+    if !in_transaction(db) { fail nothing_to_keep }
     run(db, "commit")
 }
 
@@ -157,18 +157,12 @@ fn rolled_back(db: Db) -> int {
 
 fn started(db: Db, sql: string) -> Result<int, SqlError> {
     let _ = barred(closed_fault(db))?
-    if in_transaction(db) { fail already_open() }
+    if in_transaction(db) { fail already_open }
     run(db, sql)
 }
 
 // ── The voices ──────────────────────────────────────────────────
 
-fn nothing_to_keep() -> SqlError {
-    refused(Cause.NoTransaction,
-        "`commit` found no transaction open — either none was begun, or the database ended it under you after the error it already reported")
-}
+const nothing_to_keep: SqlError = refused(Cause.NoTransaction, "`commit` found no transaction open — either none was begun, or the database ended it under you after the error it already reported")
 
-fn already_open() -> SqlError {
-    refused(Cause.TransactionOpen,
-        "a transaction is already open on this connection — nesting wants a savepoint, which is a later slice")
-}
+const already_open: SqlError = refused(Cause.TransactionOpen, "a transaction is already open on this connection — nesting wants a savepoint, which is a later slice")

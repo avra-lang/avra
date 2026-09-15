@@ -27,6 +27,10 @@ export enum GrammarNode {
 export enum PendingAnnot {
     AExpect(tok: string, message: string)
     ARecover(sync_to: string)
+    /// `@head(label)` — the labeled item is matched with trailers closed.
+    AHead(label: string)
+    /// `@trailer(label)` — the labeled item never matches inside a head.
+    ATrailer(label: string)
 }
 
 /// All-caps-and-underscores: the convention marking a lexer terminal
@@ -191,9 +195,31 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
                 if rec != null { return .Err("duplicate @recover on one branch") }
                 rec = Recover { sync_to: sync_to }
             }
+            .AHead(label) -> { out = marked_by_label(out, label, "@head", true)? }
+            .ATrailer(label) -> { out = marked_by_label(out, label, "@trailer", false)? }
         }
     }
     .Ok(Seq { items: out, build: null, recover: rec })
+}
+
+/// The items with every one carrying `label` marked as a head or a
+/// trailer, groups opened — a label is captured at any depth. One
+/// the branch does not capture is the author's mistake, named.
+fn marked_by_label(items: List<Item>, label: string, word: string, as_head: bool) -> Result<List<Item>, string> {
+    if !seq(items).labels().contains(label) { return .Err("${word} names `${label}` but the branch captures no such label") }
+    .Ok([marked_item(m, label, as_head) for m in items])
+}
+
+fn marked_item(m: Item, label: string, as_head: bool) -> Item {
+    if m.label == label { return head_or_trailer(m, as_head) }
+    match m.prim {
+        .Group(inner) -> m with { prim: Prim.Group(Alt { branches: [s with { items: [marked_item(x, label, as_head) for x in s.items] } for s in inner.branches] }) },
+        .Ref(_) or .Lit(_) or .Named(_) -> m,
+    }
+}
+
+fn head_or_trailer(m: Item, as_head: bool) -> Item {
+    if as_head { m with { head: true } } else { m with { trailer: true } }
 }
 
 /// The parsed grammar inside a run outcome, when one was built.
@@ -283,6 +309,14 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
         "build_recover" -> {
             let target = want(tok_of(args[0]), "the sync target")?
             ok(GrammarNode.NAnnot(PendingAnnot.ARecover(target.text)))
+        }
+        "build_head" -> {
+            let label = want(tok_of(args[0]), "the head's label")?
+            ok(GrammarNode.NAnnot(PendingAnnot.AHead(label.text)))
+        }
+        "build_trailer" -> {
+            let label = want(tok_of(args[0]), "the trailer's label")?
+            ok(GrammarNode.NAnnot(PendingAnnot.ATrailer(label.text)))
         }
         _ -> .Err("unknown builder `${name}`")
     }

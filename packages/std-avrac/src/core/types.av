@@ -50,6 +50,9 @@ export enum Type {
     // ── The built-in boxes — STRUCTURAL: interned by their parts. ──
     /// A homogeneous aggregate.
     List(elem: TypeId)
+    /// Explicit shared interior mutability. Copies share one slot;
+    /// `get` reads a value snapshot and `set` replaces the shared slot.
+    Cell(inner: TypeId)
     /// A string-keyed, insertion-ordered map — order is BY DESIGN,
     /// so iterating one never needs a rule. Other key types are
     /// recorded.
@@ -62,11 +65,12 @@ export enum Type {
     /// A FN VALUE — `fn(int) -> bool`: what a lambda or a named fn
     /// wears. The runtime shape is a box `[code address,
     /// captures…]`; a call rides CallPtr with the box at seat 0.
-    /// A fn as a VALUE. `muts` marks the seats the callee WRITES
-    /// THROUGH, seat by seat — a fn's contract travels with its
-    /// type, so a writing fn cannot sit in a seat that promised not
-    /// to write.
-    Fn(params: List<TypeId>, muts: List<bool>, ret: TypeId)
+    /// A fn as a VALUE. `marks` carries each seat's CONTRACT — the
+    /// seats the callee writes through, and the seats it demands be
+    /// settled at compile time. A fn's contract travels with its
+    /// type, so a writing or const-demanding fn cannot sit in a seat
+    /// that promised neither.
+    Fn(params: List<TypeId>, marks: List<SeatMark>, ret: TypeId)
     /// The answer of a mutation — a value that is nothing. Spec 4.2.
     Void
 
@@ -101,24 +105,49 @@ export enum Type {
     Error
 }
 
-/// The interner: shapes in, ids out — assigned once, compared as
-/// ints forever. The index map is keyed by each shape's CANONICAL
-/// form — deterministic structural content, children by interned id —
-/// A record's layout row: the fields it IS when flat, and whether an
-/// impl SEALED it boxed. A record's declaration and its impl block
-/// are ordered only by demand — two memoized queries, possibly in
-/// different files — so the conservative answer is STICKY.
-export type FlatRow = { fields: List<TypeId>, sealed: bool }
+/// A type as a program SPELLS it — what `v.type(List<string?>)`
+/// expands to, one value the receiver's `interned` folds to an id.
+/// Structural shapes only: a declared name has no spelling here,
+/// its id is a binding named in the literal (`Id`).
+export enum TypeLit {
+    Int
+    Float
+    Bool
+    Str
+    Bytes
+    Ptr
+    Void
+    Opt(inner: TypeLit)
+    List(elem: TypeLit)
+    Cell(inner: TypeLit)
+    Map(key: TypeLit, value: TypeLit)
+    Res(ok: TypeLit, err: TypeLit)
+    /// The spelling keeps the grammar's two marks apart — they are
+    /// written as separate words — and `interned` zips them into the
+    /// one `SeatMark` currency. A spelling, never an identity.
+    Fn(params: List<TypeLit>, muts: List<bool>, consts: List<bool>, ret: TypeLit)
+    /// A hole: an id already in hand, named in the literal.
+    Id(id: TypeId)
+}
+
+/// A type's REPRESENTATION row: the fields it IS when flat, whether
+/// an impl SEALED it boxed, and the shape a NAMED type stands for.
+/// A record's declaration and its impl block are ordered only by
+/// demand — two memoized queries, possibly in different files — so
+/// the sealed answer is STICKY. `stands_for` is kept BESIDE the
+/// fields, not read out of them: sealing empties the fields and a
+/// name must outlive that.
+export type RepRow = { fields: List<TypeId>, sealed: bool, stands_for: TypeId? = null }
 
 /// The interner: shapes in, ids out — assigned once, compared as
 /// ints forever. The index map is keyed by each shape's CANONICAL
 /// form — deterministic structural content, children by interned id —
 /// which is exactly what content-addressing later hashes: the key
 /// derivation swaps, the map and its callers do not.
-export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId>, flats: List<FlatRow> }
+export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId>, reps: List<RepRow> }
 
 export fn new_type_registry() -> TypeRegistry {
-    TypeRegistry { shapes: [], ids: {}, flats: [] }
+    TypeRegistry { shapes: [], ids: {}, reps: [] }
 }
 
 /// A heap-shaped value: it rides POINTERS, and it waits on
@@ -129,7 +158,7 @@ export fn new_type_registry() -> TypeRegistry {
 /// truth the machine projections ask.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Bytes or .Str or .Ptr or .List(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
+        .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
         .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or
         .Map(_, _) or .EmptyMap -> true,
         .Int or .Float or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
@@ -149,6 +178,7 @@ impl TypeRegistry {
             .Bytes -> "19",
             .Bool -> "3",
             .List(elem) -> "4:${elem.index}",
+            .Cell(inner) -> "19:${inner.index}",
             .Struct(decl, _) -> "5:${decl.index}",
             .Enum(decl, _) -> "6:${decl.index}",
             .TypeName(decl, _) -> "7:${decl.index}",
@@ -161,7 +191,7 @@ impl TypeRegistry {
             .Var(decl, ordinal, _) -> "11:${decl.index}.${ordinal}",
             .App(decl, _, args) -> "12:${decl.index}.${joined(["${a.index}" for a in args], ".")}",
             .Dyn(decl, _) -> "14:${decl.index}",
-            .Fn(params, muts, ret) -> "15:${joined(["${a.index}" for a in params], ".")}:${mark_word(muts)}:${ret.index}",
+            .Fn(params, marks, ret) -> "15:${joined(["${a.index}" for a in params], ".")}:${mark_words(marks)}:${ret.index}",
             .Void -> "16",
         }
     }
@@ -170,30 +200,101 @@ impl TypeRegistry {
     fn intern(raw: Type) -> TypeId {
         // A FN TYPE'S MARKS ARE NORMALIZED HERE, so `fn(T)` interns
         // as one type however it was built: an unmarked seat list is
-        // empty, and `marked` reads absence as unwritten.
+        // empty, and `mark_at` reads absence as plain.
         let t = trimmed_marks(raw)
+        self.keep_seats_boxed(t)
         let key = self.canon(t)
         let hit: TypeId? = self.ids.get(key)
         if hit != null { return hit! }
         self.shapes.push(t)
-        // the flat table runs PARALLEL to the shapes: every type has
-        // a row, and only a declared record of words fills one
-        let blank = FlatRow { fields: [], sealed: false }
-        self.flats.push(blank)
+        // the representation table runs PARALLEL to the shapes:
+        // every type has a row, and only a declared record fills one
+        let blank = RepRow { fields: [], sealed: false }
+        self.reps.push(blank)
         let id = TypeId { index: self.shapes.length - 1 }
         self.ids.set(key, id)
         id
     }
 
+    /// The id a spelled type names — `.type(T)`'s answer: every
+    /// part interned, children first, through the one `intern`.
+    fn interned(t: TypeLit) -> TypeId {
+        match t {
+            .Int -> self.intern(Type.Int),
+            .Float -> self.intern(Type.Float),
+            .Bool -> self.intern(Type.Bool),
+            .Str -> self.intern(Type.Str),
+            .Bytes -> self.intern(Type.Bytes),
+            .Ptr -> self.intern(Type.Ptr),
+            .Void -> self.intern(Type.Void),
+            .Opt(inner) -> self.intern(Type.Opt(self.interned(inner))),
+            .List(elem) -> self.intern(Type.List(self.interned(elem))),
+            .Cell(inner) -> self.intern(Type.Cell(self.interned(inner))),
+            .Map(k, v) -> self.intern(Type.Map(self.interned(k), self.interned(v))),
+            .Res(ok, err) -> self.intern(Type.Res(self.interned(ok), self.interned(err))),
+            .Fn(ps, muts, consts, ret) -> self.intern(Type.Fn([self.interned(p) for p in ps], zip_marks(muts, consts), self.interned(ret))),
+            .Id(id) -> id,
+        }
+    }
+
     fn shape_of(id: TypeId) -> Type { self.shapes[id.index] }
 
-    /// A FLAT record's fields, in slot order — a record of scalars
-    /// alone, which rides REGISTERS and is never a heap box. Empty
-    /// for every other type; the flat ones are marked at
-    /// declaration, where the fields are known.
-    fn flat_fields(id: TypeId) -> List<TypeId> { self.flats[id.index].fields }
+    /// A FLAT record's fields, in slot order — a value that IS its
+    /// fields, with no box of its own: a record of scalars, which
+    /// rides REGISTERS, or a NAME over any shape, which rides
+    /// whatever that shape rides. Empty for every other type; the
+    /// flat ones are marked at declaration, where the fields are
+    /// known.
+    fn flat_fields(id: TypeId) -> List<TypeId> { self.reps[id.index].fields }
 
-    fn is_flat(id: TypeId) -> bool { !self.flats[id.index].fields.is_empty() }
+    fn is_flat(id: TypeId) -> bool { !self.reps[id.index].fields.is_empty() }
+
+    /// THE SHAPE A NAME STANDS FOR — `type Rows = List<int>` answers
+    /// `List<int>`; every other type answers absence. A NAME IS
+    /// OPAQUE AT A SEAT AND TRANSPARENT AT A READ, and this is the
+    /// read's door: the seat law compares ids and never asks here.
+    fn stands_for(id: TypeId) -> TypeId? { self.reps[id.index].stands_for }
+
+    /// `stands_for` all the way down — a name over a name over a
+    /// shape is that shape. Itself when the type names nothing.
+    fn seen_through(id: TypeId) -> TypeId {
+        let under: TypeId? = self.stands_for(id)
+        if under == null { return id }
+        self.seen_through(under!)
+    }
+
+    /// THE READ'S SHAPE — a named type's stands-over shape, every
+    /// other type's own. Every rule that DISPATCHES ON A SHAPE to
+    /// read, print, measure or compare asks here; a SEAT law asks
+    /// `shape_of` and keeps the name.
+    fn seen_shape(id: TypeId) -> Type { self.shape_of(self.seen_through(id)) }
+
+    /// A NAME's shape, recorded once at declare. The name keeps its
+    /// own identity — this says only what it travels as.
+    fn mark_named(id: TypeId, of: TypeId) {
+        self.reps.set(id.index, self.reps[id.index] with { stands_for: of })
+    }
+
+    /// Whether naming `id` over `of` would CLOSE A CIRCLE — a name
+    /// standing for itself, however many names away. The guard that
+    /// keeps `seen_through` finite; the declaration is its only
+    /// caller, so the recorded graph is acyclic by construction.
+    fn names_itself(id: TypeId, of: TypeId) -> bool {
+        // LICENSED I9: type IDENTITY, not agreement — the same interned type
+        if of.index == id.index { return true }
+        let under: TypeId? = self.stands_for(of)
+        if under == null { return false }
+        self.names_itself(id, under!)
+    }
+
+    /// THE MACHINE FORM a value of this type takes. A FLAT record IS
+    /// its one field, all the way down, so every seam that COERCES
+    /// by shape — a word into an i64 slot, a bool's zext, a double's
+    /// bitcast, an LLVM type — asks here and never `shape_of`.
+    fn machine_shape(id: TypeId) -> Type {
+        if self.is_flat(id) { return self.machine_shape(self.flat_fields(id)[0]) }
+        self.shape_of(id)
+    }
 
     /// Whether a NULLABLE of `inner` rides a pointer — the question
     /// the slot law and the machine type ask. A flat record answers
@@ -203,29 +304,50 @@ impl TypeRegistry {
         self.rides_pointer(inner) || self.is_flat(inner)
     }
 
+    /// A `mut` SEAT KEEPS ITS BOX whichever fn type names it — a
+    /// lambda's, a written `fn(mut C)`, a declared fn worn as a value
+    /// — since a write must reach a box and a flat record has none.
+    /// A declaration's own seats seal at declare (`keep_boxed`); this
+    /// is the same law at the type's seam.
+    fn keep_seats_boxed(t: Type) {
+        match t {
+            .Fn(params, marks, _) -> {
+                for j, p in params {
+                    if mut_mark(marks, j) { self.unflatten(p) }
+                }
+            }
+            _ -> nothing_sealed(),
+        }
+    }
+
     /// A record KEEPS its box: an impl may write through `self`, and
     /// a value in a register has no identity to write through
     /// (ROADMAP: RECEIVER ALIASING). STICKY — a later `mark_flat`
     /// must not undo it, because the two run in demand order.
+    /// A NAMED TYPE never seals: it has no field to write through,
+    /// and its whole promise is that it travels as its shape. A
+    /// `mut` seat and a `mut fn` receiver of one still work — they
+    /// alias exactly as a record's receiver does (ROADMAP: RECEIVER
+    /// ALIASING), which the adversarial suite pins as a PARITY.
     fn unflatten(id: TypeId) {
-        let shut = FlatRow { fields: [], sealed: true }
-        self.flats.set(id.index, shut)
+        if self.stands_for(id) != null { return }
+        self.reps.set(id.index, RepRow { fields: [], sealed: true })
     }
 
-    /// Mark a declared record flat. Its fields hold no reference, so
-    /// nothing counts them and nothing frees them: the value IS its
-    /// fields. A SEALED record refuses.
+    /// Mark a type FLAT: the value IS its fields, with no box of its
+    /// own. A record of scalars holds no reference at all; a NAME
+    /// holds exactly what its shape holds, and the memory pass asks
+    /// the field. A SEALED record refuses.
     fn mark_flat(id: TypeId, fields: List<TypeId>) {
-        if self.flats[id.index].sealed { return }
-        let row = FlatRow { fields: fields, sealed: false }
-        self.flats.set(id.index, row)
+        if self.reps[id.index].sealed { return }
+        self.reps.set(id.index, self.reps[id.index] with { fields: fields })
     }
 
     /// What a nullable carries, or absent when the id is not one —
     /// THE projection (values.av's `carried_type` is its cx-space
     /// mirror).
     fn carried(id: TypeId) -> TypeId? {
-        match self.shape_of(id) {
+        match self.shape_of(self.seen_through(id)) {
             .Opt(inner) -> inner,
             _ -> null,
         }
@@ -234,8 +356,15 @@ impl TypeRegistry {
     /// A list's element, or absent when the id is not one — the
     /// projection every walk and index reads.
     fn element(id: TypeId) -> TypeId? {
-        match self.shape_of(id) {
+        match self.shape_of(self.seen_through(id)) {
             .List(t) -> t,
+            _ -> null,
+        }
+    }
+
+    fn cell_inner(id: TypeId) -> TypeId? {
+        match self.shape_of(self.seen_through(id)) {
+            .Cell(t) -> t,
             _ -> null,
         }
     }
@@ -243,7 +372,7 @@ impl TypeRegistry {
     /// A Result's two sides, or absent when the id is not one —
     /// `carried`'s twin for the failure channel.
     fn res_parts(id: TypeId) -> ResSides? {
-        match self.shape_of(id) {
+        match self.shape_of(self.seen_through(id)) {
             .Res(ok, err) -> ResSides { ok: ok, err: err },
             _ -> null,
         }
@@ -251,8 +380,8 @@ impl TypeRegistry {
 
     /// A fn type's seats and answer — res_parts' twin.
     fn arrow_parts(id: TypeId) -> Arrow? {
-        match self.shape_of(id) {
-            .Fn(params, muts, ret) -> Arrow { seats: params, muts: muts, answer: ret },
+        match self.shape_of(self.seen_through(id)) {
+            .Fn(params, marks, ret) -> Arrow { seats: params, marks: marks, answer: ret },
             _ -> null,
         }
     }
@@ -261,15 +390,27 @@ impl TypeRegistry {
     /// `ptr_shape` with `Opt` answering as what it CARRIES: a niche
     /// nullable IS its pointer, a scalar pair is registers and no
     /// pointer at all. The machine projections ask here.
-    fn rides_pointer(id: TypeId) -> bool {
-        // a FLAT record is a machine word — its NULLABLE is the box,
-        // and `opt_rides_pointer` is the question that asks about it
-        if self.is_flat(id) { return false }
+    /// A value the compiler SPELLS as a literal — a scalar or text —
+    /// so a settled const of it is a constant at every use; any other
+    /// value is built once and called for.
+    fn spells(id: TypeId) -> bool {
         match self.shape_of(id) {
+            .Int or .Float or .Bool or .Str -> true,
+            _ -> false,
+        }
+    }
+
+    fn rides_pointer(id: TypeId) -> bool {
+        // A FLAT RECORD IS ITS FIELD, so it rides whatever the field
+        // rides — a name over `int` is a word, a name over a list is
+        // that list's pointer. Its NULLABLE is the question
+        // `opt_rides_pointer` asks.
+        let m: Type = self.machine_shape(id)
+        match m {
             // a nullable answers as ITS OWN machine form: a flat
             // record's nullable is the box, though the record is not
             .Opt(inner) -> self.opt_rides_pointer(inner),
-            _ -> ptr_shape(self.shape_of(id)),
+            _ -> ptr_shape(m),
         }
     }
 
@@ -282,14 +423,15 @@ impl TypeRegistry {
             .Var(decl, j, _) ->
                 if decl.index == target.index { args[j] } else { ty },
             .List(elem) -> self.intern(Type.List(self.substituted(elem, target, args))),
+            .Cell(inner) -> self.intern(Type.Cell(self.substituted(inner, target, args))),
             .Map(k, v) -> self.intern(Type.Map(self.substituted(k, target, args), self.substituted(v, target, args))),
             .Opt(inner) -> self.intern(Type.Opt(self.substituted(inner, target, args))),
             .Res(ok, err) -> self.intern(Type.Res(self.substituted(ok, target, args),
                                                   self.substituted(err, target, args))),
             .App(decl, name, aa) ->
                 self.intern(Type.App(decl, name, [self.substituted(a, target, args) for a in aa])),
-            .Fn(ps, muts, ret) ->
-                self.intern(Type.Fn([self.substituted(a, target, args) for a in ps], muts,
+            .Fn(ps, marks, ret) ->
+                self.intern(Type.Fn([self.substituted(a, target, args) for a in ps], marks,
                                     self.substituted(ret, target, args))),
             .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
             .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> ty,
@@ -306,9 +448,10 @@ impl TypeRegistry {
             .Bytes -> "Bytes",
             .Bool -> "bool",
             .List(elem) -> "List<${self.name_of(elem)}>",
+            .Cell(inner) -> "Cell<${self.name_of(inner)}>",
             .Struct(_, name) -> name,
             .Dyn(_, name) -> "dyn ${name}",
-            .Fn(params, muts, ret) -> "fn(${joined(self.seat_words(params, muts), ", ")})${self.answer_word(ret)}",
+            .Fn(params, marks, ret) -> "fn(${joined(self.seat_words(params, marks), ", ")})${self.answer_word(ret)}",
             .Void -> "void",
             .Enum(_, name) -> name,
             .TypeName(_, name) -> "type ${name}",
@@ -331,6 +474,7 @@ impl TypeRegistry {
             .App(_, _, args) -> args,
             .Res(ok, err) -> [ok, err],
             .List(t) -> [t],
+            .Cell(t) -> [t],
             .Map(k, v) -> [k, v],
             .Opt(t) -> [t],
             .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
@@ -339,14 +483,12 @@ impl TypeRegistry {
     }
 
     /// A fn type's written answer — nothing when it answers `void`.
-    /// Each seat spelled, its `mut` in front when the callee writes
-    /// through it.
-    fn seat_words(params: List<TypeId>, muts: List<bool>) -> List<string> {
+    /// Each seat spelled, its marks in front when it carries any.
+    fn seat_words(params: List<TypeId>, marks: List<SeatMark>) -> List<string> {
         mut out: List<string> = []
         // LICENSED I3: a PAIRED comprehension is our own sugar backlog — `[f(j, p) for j, p in ps]` does not parse
         for j, p in params {
-            let word = self.name_of(p)
-            out.push(if marked(muts, j) { "mut ${word}" } else { word })
+            out.push(mark_prefixed(mark_at(marks, j), self.name_of(p)))
         }
         out
     }
@@ -357,49 +499,105 @@ impl TypeRegistry {
     }
 }
 
-
 /// What a `Result` carries on each side — res_parts' answer.
 export type ResSides = { ok: TypeId, err: TypeId }
 
 /// What a fn type promises — arrow_parts' answer.
-export type Arrow = { seats: List<TypeId>, muts: List<bool>, answer: TypeId }
+export type Arrow = { seats: List<TypeId>, marks: List<SeatMark>, answer: TypeId }
 
-/// A fn type's seats, spelled — a written seat wears its `mut`.
-fn mark_word(muts: List<bool>) -> string {
-    joined([if m { "m" } else { "p" } for m in muts], "")
+/// A fn seat's contract, ONE value per seat. `mutable` lets the
+/// callee write through the seat; `settled` demands the caller
+/// settle the seat's value at compile time. Both ride the fn type's
+/// identity, so a writing or const-demanding callee cannot sit in a
+/// seat that promised neither — and a new promise is a field here,
+/// never a parallel list at every mark site.
+export type SeatMark = { mutable: bool, settled: bool }
+
+/// The unmarked seat — a lambda's, a wrapper's, a trailing seat's.
+export const plain_mark: SeatMark = SeatMark { mutable: false, settled: false }
+
+/// A flag list's seat, absent read false — the spelling's list may
+/// be shorter than its seats.
+fn flag_at(flags: List<bool>, j: int) -> bool {
+    j < flags.length && flags[j]
 }
 
-/// A fn type with its trailing unwritten marks dropped — the ONE
-/// normal form, so `fn(T, U)` built with no marks and with two
-/// false ones are the same type.
+/// The spelling's two mark lists, zipped into the one currency —
+/// the ONLY place the two representations meet.
+fn zip_marks(muts: List<bool>, consts: List<bool>) -> List<SeatMark> {
+    [SeatMark { mutable: flag_at(muts, j), settled: flag_at(consts, j) } for j in 0..muts.length]
+}
+
+/// Seat `j`'s mark — absent marks read plain, so a fn type built
+/// before the marks existed is a plain one.
+export fn mark_at(marks: List<SeatMark>, j: int) -> SeatMark {
+    if j < marks.length { return marks[j] }
+    plain_mark
+}
+
+/// Whether seat `j` is written through.
+export fn mut_mark(marks: List<SeatMark>, j: int) -> bool {
+    mark_at(marks, j).mutable
+}
+
+/// Whether seat `j` demands compile-time settlement.
+export fn settled_mark(marks: List<SeatMark>, j: int) -> bool {
+    mark_at(marks, j).settled
+}
+
+/// A seat's written prefix — `const`, `mut`, or both.
+export fn mark_prefixed(m: SeatMark, word: string) -> string {
+    if m.settled { return if m.mutable { "const mut ${word}" } else { "const ${word}" } }
+    if m.mutable { return "mut ${word}" }
+    word
+}
+
+/// The canonical word for a mark set — ONE spelling in the
+/// interner's key, so two mark sets are one type exactly when their
+/// words agree.
+fn mark_words(marks: List<SeatMark>) -> string {
+    joined([mark_word(m) for m in marks], "")
+}
+
+fn mark_word(m: SeatMark) -> string {
+    if m.mutable { if m.settled { "b" } else { "m" } }
+    else if m.settled { "c" }
+    else { "p" }
+}
+
+/// A fn type with its trailing PLAIN marks dropped — the ONE normal
+/// form, so `fn(T, U)` built with no marks and with two plain ones
+/// are the same type.
 fn trimmed_marks(t: Type) -> Type {
     match t {
-        .Fn(ps, muts, ret) -> Type.Fn(ps, trimmed(muts), ret),
+        .Fn(ps, marks, ret) -> Type.Fn(ps, trimmed(marks), ret),
         _ -> t,
     }
 }
 
-fn trimmed(muts: List<bool>) -> List<bool> {
-    mut last = muts.length
-    while last > 0 && !muts[last - 1] {
+fn is_plain(m: SeatMark) -> bool {
+    !m.mutable && !m.settled
+}
+
+fn trimmed(marks: List<SeatMark>) -> List<SeatMark> {
+    mut last = marks.length
+    while last > 0 && is_plain(marks[last - 1]) {
         last = last - 1
     }
-    muts.slice(0, last)
+    marks.slice(0, last)
 }
 
-/// Seat `j`'s mark — absent marks read as unwritten, so a fn type
-/// built before the marks existed is a plain one.
-export fn marked(muts: List<bool>, j: int) -> bool {
-    j < muts.length && muts[j]
-}
-
-/// Marks for a seat count, all unwritten — a lambda's, a wrapper's.
-export fn no_marks(n: int) -> List<bool> {
-    mut out: List<bool> = []
+/// Marks for a seat count, all plain — a lambda's, a wrapper's.
+export fn no_marks(n: int) -> List<SeatMark> {
+    mut out: List<SeatMark> = []
     mut j = 0
     while j < n {
-        out.push(false)
+        out.push(plain_mark)
         j = j + 1
     }
     out
+}
+
+/// A shape with no seats to seal.
+fn nothing_sealed() {
 }

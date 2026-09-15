@@ -4,7 +4,7 @@
 //! method, like `push`.
 use core.{ExprId, Reg, Ins, Type, TypeId, TypeRegistry}
 use diagnostics.{refusal}
-use features.{TypeCx, LowerCx, MethodCall, spoken, accepts, wrong_argument, wrong_arity, not_a_place_call, not_mut_call, absent_of, adopted, carried_type, void_arm, void_close, unique_box, Refusal, unmeasurable_empty, TypeArgs, open_region}
+use features.{TypeCx, LowerCx, MethodCall, Refusal, TypeArgs}
 
 /// The empty literal takes the rows too — it is refused in the
 /// map's own words.
@@ -32,13 +32,15 @@ export fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
 }
 
 /// THE PRELUDE both rows share: the value type the receiver holds.
-/// The empty literal refuses in the row's words and absorbs.
+/// The empty literal refuses in the row's words and absorbs. A ROW
+/// READS ITS RECEIVER THROUGH THE READ DOOR — a NAMED type reached
+/// this row by standing over a map, so the map is what it holds.
 fn value_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
-    if cx.shape_at(mc.subject) is .EmptyMap {
+    if cx.seen_at(mc.subject) is .EmptyMap {
         let _ = unknowable_map(cx, mc.e, name)
         return null
     }
-    let held: TypeId? = match cx.shape_at(mc.subject) {
+    let held: TypeId? = match cx.seen_at(mc.subject) {
         .Map(_, v) -> v,
         _ -> null,
     }
@@ -47,24 +49,26 @@ fn value_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
 
 fn got_type(mut cx: TypeCx, e: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
     if args.length != 1 {
-        wrong_arity(cx, e, "get", 1, args.length)
+        cx.wrong_arity(e, "get", 1, args.length)
         return cx.error_type
     }
-    if !accepts(cx, args[0], cx.view.types.intern(Type.Str)) { wrong_argument(cx, "get", 0, cx.view.types.intern(Type.Str), args[0]) }
-    cx.view.types.intern(Type.Opt(value))
+    let key = cx.type(string)
+    if !cx.accepts(args[0], key) { cx.wrong_argument("get", 0, key, args[0]) }
+    cx.type(value?)
 }
 
 fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, value: TypeId) -> TypeId {
     if args.length != 2 {
-        wrong_arity(cx, e, "set", 2, args.length)
+        cx.wrong_arity(e, "set", 2, args.length)
         return cx.error_type
     }
     let root: ExprId? = cx.view.store.place_root(subject)
-    if root == null { return not_a_place_call(cx, e, "set") }
-    if !cx.is_mut(root!) { return not_mut_call(cx, e, "set", cx.view.store.ident_name(root!) ?? "this name") }
-    if !accepts(cx, args[0], cx.view.types.intern(Type.Str)) { wrong_argument(cx, "set", 0, cx.view.types.intern(Type.Str), args[0]) }
-    if !accepts(cx, args[1], value) { wrong_argument(cx, "set", 1, value, args[1]) }
-    cx.view.types.intern(Type.Void)
+    if root == null { return cx.not_a_place_call(e, "set") }
+    if !cx.is_mut(root!) { return cx.not_mut_call(e, "set", cx.view.store.ident_name(root!) ?? "this name") }
+    let key = cx.type(string)
+    if !cx.accepts(args[0], key) { cx.wrong_argument("set", 0, key, args[0]) }
+    if !cx.accepts(args[1], value) { cx.wrong_argument("set", 1, value, args[1]) }
+    cx.type(void)
 }
 
 /// `m.get(k)`: presence asked first, the value adopted into the
@@ -75,15 +79,14 @@ fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
     let k = cx.reg_of(key)
     let cell = cx.mint_ty(opt)
     cx.emit(Ins.Alloca(cell))
-    cx.emit(Ins.Store(cell, absent_of(cx, opt)))
+    cx.emit(Ins.Store(cell, cx.absent_of(opt)))
     let has = cx.mint_shape(Type.Bool)
     cx.emit(Ins.CallRt(has, "avra_map_has", [m, k]))
-    open_region(cx, has)
-    let raw = cx.mint_ty(carried_type(cx, opt))
-    cx.emit(Ins.CallRt(raw, "avra_map_get", [m, k]))
-    cx.emit(Ins.Store(cell, adopted(cx, opt, false, raw)))
-    void_arm(cx)
-    void_close(cx)
+    cx.void_region(has) { cx ->
+        let raw = cx.mint_ty(cx.carried_type(opt))
+        cx.emit(Ins.CallRt(raw, "avra_map_get", [m, k]))
+        cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
+    }
     let dst = cx.result(e)
     cx.emit(Ins.Load(dst, cell))
     dst
@@ -92,17 +95,15 @@ fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
 /// `m.set(k, v)`: the place opens unique, the runtime stores, and
 /// the answer is nothing.
 fn set_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: ExprId) -> Reg {
-    let box = unique_box(cx, subject)
+    let box = cx.unique_box(subject)
     cx.emit(Ins.CallRtVoid("avra_map_set", [box, cx.reg_of(key), cx.reg_of(value)]))
-    let dst = cx.result(e)
-    cx.emit(Ins.ConstInt(dst, 0))
-    dst
+    cx.zero(e)
 }
 
 // ── The voices ──
 
 fn unknowable_map(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    spoken(cx, refusal("type.map_value", cx.loc_of(e), "`{}.${name}` cannot know its values", "asked here", "bind the map under a declared type first — `let m: Map<string, int> = {}`"))
+    cx.spoken(refusal("type.map_value", cx.loc_of(e), "`{}.${name}` cannot know its values", "asked here", "bind the map under a declared type first — `let m: Map<string, int> = {}`"))
 }
 
 // ── The constructor and property rows' rules ──
@@ -122,7 +123,7 @@ export fn string_keys(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
 }
 
 export fn check_map_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
-    if cx.view.types.shape_of(ty) is .EmptyMap { return unmeasurable_empty(cx, e, "{}", "Map<string, int>") }
-    cx.view.types.intern(Type.Int)
+    if cx.view.types.shape_of(ty) is .EmptyMap { return cx.unmeasurable_empty(e, "{}", "Map<string, int>") }
+    cx.type(int)
 }
 

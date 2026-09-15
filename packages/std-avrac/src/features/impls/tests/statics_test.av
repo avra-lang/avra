@@ -40,8 +40,14 @@ spec "features/impls/statics" {
         then "`static fn` at the top level is a plain fn already" {
             refused_with("static fn f() -> int { 1 }\nf()", "`static fn` marks a method with no receiver — `f` is already a plain fn")
         }
-        then "`static fn` in a trait waits on `Self`" {
-            refused_with("trait Show {\n    static fn make() -> int\n}\n1", "`static fn` in a trait would answer `Self`, which has no name in a signature yet")
+        then "a trait's associated fn is answered by the impl and called through the type" {
+            shown("trait Show {\n    fn show() -> string\n    static fn derive(t: int) -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> string { \"p\" }\n    static fn derive(t: int) -> int { t + 1 }\n}\nP.derive(3)") == "4"
+        }
+        then "an associated fn's signature names no `Self`" {
+            refused_with("trait T {\n    static fn make() -> Self\n}\n1", "`Self` names no type")
+        }
+        then "an unanswered associated fn is the contract's refusal" {
+            refused_with("trait T {\n    static fn make() -> int\n}\ntype P = { x: int }\nimpl T for P {\n}\n1", "`impl T for P` must answer `make`")
         }
     }
     given "a call that does not fit" {

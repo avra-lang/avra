@@ -28,6 +28,7 @@ cd "$(dirname "$0")/.."
 CONSUMERS="Ins	packages/std-avrac/src/core/ir.av	dst_of	the register it defines
 Ins	packages/std-avrac/src/language/interp.av	step	its MEANING, interpreted
 Ins	packages/std-avrac/src/language/memory.av	memory_ins	its ownership effect
+Ins	packages/std-avrac/src/language/memory.av	managed_dst	whether its answer is the caller's to release
 Ins	packages/std-avrac/src/language/ir_text.av	body_lines	its human projection
 Ins	packages/std-avrac/src/language/llvm.av	emit_ins	its machine projection
 Ins	packages/std-avrac/src/features/facts.av	give	whether the runtime registry validates it

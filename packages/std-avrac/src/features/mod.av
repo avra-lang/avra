@@ -43,14 +43,20 @@ export type MethodCall = { e: ExprId, subject: ExprId, args: List<ExprId> }
 /// these rows — declared by the feature that owns the receiver,
 /// assembled with the language, queried by the dot-call — never
 /// a chain of forks.
-export type MethodRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, MethodCall) -> TypeId, lower: fn(mut LowerCx, MethodCall) -> Reg, writes: bool }
+export enum ReceiverEffect {
+    Read
+    Write
+    Shared
+}
+
+export type MethodRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, MethodCall) -> TypeId, lower: fn(mut LowerCx, MethodCall) -> Reg, effect: ReceiverEffect }
 
 /// Whether the vocabulary's method of this name WRITES its receiver
 /// on this shape — the registry fact the receiver law reads.
 export fn row_writes(rows: List<MethodRow>, name: string, sh: Type) -> bool {
     let row: MethodRow? = method_row(rows, name, sh)
     if row == null { return false }
-    row!.writes
+    row!.effect is .Write
 }
 
 /// The row a receiver shape and a name select; null when the

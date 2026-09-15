@@ -1,0 +1,118 @@
+//! The hole law, by SEAT: a hole takes what its position takes
+//! (`core/holes.av`'s `fits`, the one registry), and the quote answers
+//! the meta kind its body parsed as — both judged HERE, in the file
+//! that wrote the template, with no user of it.
+use core.{ExprId, TypeId, DeclId, StmtId, Type, QuoteParts, HoleKind, MetaKind, FillClass, hole_kinds, quote_kind, fits, holes_kind, holes_seat, meta_name}
+use features.{TypeCx, Decls, this_is}
+use diagnostics.{refusal, Diag}
+use @std.errors.{Loc}
+
+fn quote_type(mut cx: TypeCx, e: ExprId) -> TypeId {
+    let held: QuoteParts? = (cx.view.store.expr(e)).quote_of()
+    if held == null { return cx.error_type }
+    let q = held!
+    // a body that did not parse has spoken already
+    if q.stmts.any((s: StmtId) -> cx.view.store.stmt(s) is .Error) { return cx.error_type }
+    let classes = [class_of(cx.view.decls, cx.type_at(h), cx.shape_at(h)) for h in q.holes]
+    let whole = quote_kind(cx.view.store, q)
+    let kinds = hole_kinds(cx.view.store, q)
+    // a value no seat takes refuses in its seat's words where the
+    // seat is known; a body of holes has no seat until its kind is
+    for k, h in q.holes {
+        if classes[k] == null {
+            let at = cx.loc_of(h)
+            let found = cx.name_at(h)
+            return cx.spoken(if whole is .Holes { unfillable(at, found) } else { hole_refused(at, kinds[k], found) })
+        }
+    }
+    let answered: MetaKind? = match whole {
+        .Expr -> MetaKind.Code,
+        .Stmts -> MetaKind.Stmts,
+        .Arms -> MetaKind.Arms,
+        .Decls -> MetaKind.Decls,
+        .Holes -> holes_kind([c! for c in classes]),
+    }
+    if answered == null { return cx.spoken(mixed_holes(cx.loc_of(e))) }
+    let answer = answered!
+    for k, h in q.holes {
+        let kind = if whole is .Holes { holes_seat(answer, q.holes.length) } else { kinds[k] }
+        let class = classes[k]!
+        if class is .Text && kind is .Expression { return cx.spoken(ambiguous_text(cx.loc_of(h))) }
+        if !fits(class, kind) { return cx.spoken(hole_refused(cx.loc_of(h), kind, cx.name_at(h))) }
+    }
+    let d: DeclId? = cx.view.decls.meta_named(meta_name(answer))
+    if d == null { return cx.spoken(no_meta(cx.loc_of(e), meta_name(answer))) }
+    cx.view.decls.self_type_of(d!)
+}
+
+/// The template kind a type names, when it does.
+export fn template_kind(decls: Decls, ty: TypeId) -> MetaKind? {
+    let kinds = [MetaKind.Code, MetaKind.Stmts, MetaKind.Arms, MetaKind.Decls]
+    kinds.find((k: MetaKind) -> decls.meta_type(ty, meta_name(k)))
+}
+
+/// What a hole's value IS, as the seat law reads it — null for a
+/// value no seat takes.
+export fn class_of(decls: Decls, ty: TypeId, shape: Type) -> FillClass? {
+    let own: MetaKind? = template_kind(decls, ty)
+    if own != null { return FillClass.Template(own!) }
+    let elem: TypeId? = decls.elem_of(ty)
+    if elem != null {
+        let inner: MetaKind? = template_kind(decls, elem!)
+        if inner != null { return FillClass.Templates(inner!) }
+        return if decls.types.shape_of(elem!) is .Str { FillClass.Texts } else { null }
+    }
+    if decls.meta_names_one(ty) { return FillClass.Named }
+    match shape {
+        .Str -> FillClass.Text,
+        .Int -> FillClass.Int,
+        .Bool -> FillClass.Bool,
+        .Ptr or .Bytes or .Float or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or
+        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or
+        .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+    }
+}
+
+// ── voices ──
+
+fn no_meta(at: Loc?, answer: string) -> Diag {
+    refusal("type.quote_meta", at, "a `quote` answers `@std.meta.${answer}`, and this program does not load `@std/meta`", "the quote", "add `\"@std/meta\"` to the package's dependencies")
+}
+
+fn ambiguous_text(at: Loc?) -> Diag {
+    refusal("type.quote_hole", at, "a string in expression position is ambiguous — `literal(s)` spells a string literal, `name(s)` a name", "this hole", "say which: `\${literal(s)}` or `\${name(s)}`")
+}
+
+fn hole_refused(at: Loc?, kind: HoleKind, n: string) -> Diag {
+    refusal("type.quote_hole", at, "a hole in ${seat_word(kind)} position takes ${takes_word(kind)}, found `${n}`", this_is(n), "fill the hole with what its seat takes")
+}
+
+fn unfillable(at: Loc?, n: string) -> Diag {
+    refusal("type.quote_hole", at, "a hole takes a template, a number, a name, a list of names or of templates, found `${n}`", this_is(n), "splice a `quote { … }` of it, or its name")
+}
+
+fn mixed_holes(at: Loc?) -> Diag {
+    refusal("type.quote_hole", at, "a quote of nothing but holes takes ONE kind — its first hole's — and these disagree", "the quote", "give every hole the first's kind, or write the body around them")
+}
+
+fn seat_word(kind: HoleKind) -> string {
+    match kind {
+        .Expression -> "expression",
+        .Name -> "name",
+        .Binder -> "binder",
+        .Type -> "type",
+        .Statement -> "statement",
+        .Arm -> "arm",
+    }
+}
+
+fn takes_word(kind: HoleKind) -> string {
+    match kind {
+        .Expression -> "`Code`, an `int` or a `bool`",
+        .Name -> "a `string`, an `int` or a named meta value",
+        .Binder -> "a name, or a `List<string>` of them",
+        .Type -> "a `Type`, a `Field`'s or a `string` spelling",
+        .Statement -> "`Code`, `Stmts` or `Decls`, or a list of them",
+        .Arm -> "`Arms` or a `List<Arms>`",
+    }
+}

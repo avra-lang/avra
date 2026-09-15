@@ -5,7 +5,7 @@
 //! names through the naming law and walks each field default as a
 //! body of its own.
 use core.{Expr, ExprId, StmtId, TypeId, Reg, NodeStore, StructParts}
-use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing, refuses_nested}
+use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing}
 
 export type StructsSemantics = { }
 
@@ -52,7 +52,7 @@ impl StmtSemantics for StructDeclSemantics {
 /// The declaration's field names run the naming law; the driver
 /// owns the namespace and the field table.
 fn decl_resolve(mut cx: ResolveCx, s: StmtId) {
-    if refuses_nested(cx, s, "resolve.nested_type", "type declarations") { return }
+    if cx.refuses_nested(s, "resolve.nested_type", "type declarations") { return }
     match cx.view.store.stmt(s) {
         .StructDecl(_, _, fields) -> cx.check_params(fields, s),
         _ -> nothing(),
@@ -64,4 +64,16 @@ fn default_exprs(store: NodeStore, s: StmtId) -> List<ExprId> {
     let sp: StructParts? = store.struct_parts(s)
     if sp == null { return [] }
     [f.default! for f in sp!.fields if f.default != null]
+}
+
+/// A NAMED TYPE declares nothing to walk: no field names to run the
+/// naming law over, and no default bodies. The nesting law and the
+/// shape's own laws speak at declare (typing_declare's
+/// `declare_named`).
+export type NamedTypeSemantics = { }
+
+impl StmtSemantics for NamedTypeSemantics {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        let _ = cx.refuses_nested(s, "resolve.nested_type", "type declarations")
+    }
 }

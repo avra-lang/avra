@@ -7,10 +7,9 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_row, inout_row, no_marks, ExternParts, Param, TypeRef}
-use @std.path.{stem_of}
+use core.{StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_row, inout_row, no_marks, ExternParts, Param, TypeRef, SeatMark, Static}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
-use features.{LowerCx, FnSig, fn_sig_of, Sub, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap}
+use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot}
 
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
@@ -45,48 +44,52 @@ export type Lowered = {
     /// The program's OWN closure, as libraries the evaluator may open.
     /// Empty for a bare file, which has no packages and no closure.
     libraries: List<LinkedPackage> = [],
+    // the settled aggregates its bodies read by address, each once
+    statics: List<Static>,
 }
 
-/// The program's extern fns by symbol — what every emitter refuses
-/// an unknown callee against. A whole-table walk: gathered once per
-/// lowering, never per body.
-export fn extern_names(decls: Decls) -> List<string> {
-    [decls.symbol(d.id) for d in decls.decls if decls.is_extern(d.id)]
-}
+impl Decls {
+    /// The program's extern fns by symbol — what every emitter refuses
+    /// an unknown callee against. A whole-table walk: gathered once per
+    /// lowering, never per body.
+    fn extern_names() -> List<string> {
+        [self.symbol(d.id) for d in self.decls if self.is_extern(d.id)]
+    }
 
-/// The program's extern fns as registry rows.
-fn extern_rows(decls: Decls) -> List<RtSig> {
-    [extern_row_of(decls, d) for d in decls.decls if decls.is_extern(d.id)]
-}
+    /// The program's extern fns as registry rows.
+    fn extern_rows() -> List<RtSig> {
+        [self.extern_row_of(d) for d in self.decls if self.is_extern(d.id)]
+    }
 
-/// An extern's runtime row. The WIDTHS are read back from the
-/// program — the annotation the seat wrote — because the signature
-/// carries the type that crosses (`int`) and never the machine
-/// width: a width is a property of a SEAT, and the store is where
-/// the seats are.
-fn extern_row_of(decls: Decls, d: Decl) -> RtSig {
-    let sig: FnSig? = fn_sig_of(decls.sig(d.id))
-    let host: ExternParts? = decls.store(d.id).extern_parts(d.stmt)
-    let params: List<TypeId> = sig?.params ?? []
-    inout_row(decls.symbol(d.id),
-              extern_kind(decls.types, host?.ret, sig?.ret ?? decls.types.intern(Type.Void)),
-              [host_seat_kind(decls, d.id, host, j, p) for j, p in params],
-              [host_cell_kind(decls, d.id, host, j, p) for j, p in params])
-}
+    /// An extern's runtime row. The WIDTHS are read back from the
+    /// program — the annotation the seat wrote — because the signature
+    /// carries the type that crosses (`int`) and never the machine
+    /// width: a width is a property of a SEAT, and the store is where
+    /// the seats are.
+    fn extern_row_of(d: Decl) -> RtSig {
+        let sig: FnSig? = (self.sig(d.id))?.fn_sig()
+        let host: ExternParts? = self.store(d.id).extern_parts(d.stmt)
+        let params: List<TypeId> = sig?.params ?? []
+        inout_row(self.symbol(d.id),
+                  extern_kind(self.types, host?.ret, sig?.ret ?? self.type(void)),
+                  [self.host_seat_kind(d.id, host, j, p) for j, p in params],
+                  [self.host_cell_kind(d.id, host, j, p) for j, p in params])
+    }
 
-/// A host seat's ABI kind. A `mut` seat is an INOUT — it carries the
-/// ADDRESS of the caller's cell, so it is a POINTER whatever the
-/// cell holds; every other seat is its width or its type's kind.
-fn host_seat_kind(decls: Decls, d: DeclId, host: ExternParts?, j: int, p: TypeId) -> RtKind {
-    if decls.mut_seat(d, j) { return RtKind.Ptr }
-    extern_kind(decls.types, seat_written(host, j), p)
-}
+    /// A host seat's ABI kind. A `mut` seat is an INOUT — it carries the
+    /// ADDRESS of the caller's cell, so it is a POINTER whatever the
+    /// cell holds; every other seat is its width or its type's kind.
+    fn host_seat_kind(d: DeclId, host: ExternParts?, j: int, p: TypeId) -> RtKind {
+        if self.seat_mark(d, j).mutable { return RtKind.Ptr }
+        extern_kind(self.types, seat_written(host, j), p)
+    }
 
-/// The width of the CELL behind an inout seat — what the backend
-/// normalises after the call. `Void` for every seat that is not one.
-fn host_cell_kind(decls: Decls, d: DeclId, host: ExternParts?, j: int, p: TypeId) -> RtKind {
-    if !decls.mut_seat(d, j) { return RtKind.Void }
-    extern_kind(decls.types, seat_written(host, j), p)
+    /// The width of the CELL behind an inout seat — what the backend
+    /// normalises after the call. `Void` for every seat that is not one.
+    fn host_cell_kind(d: DeclId, host: ExternParts?, j: int, p: TypeId) -> RtKind {
+        if !self.seat_mark(d, j).mutable { return RtKind.Void }
+        extern_kind(self.types, seat_written(host, j), p)
+    }
 }
 
 /// The annotation seat `j` wrote, when the declaration is an extern
@@ -101,26 +104,26 @@ fn seat_written(host: ExternParts?, j: int) -> TypeRef? {
 /// (null for main) and `sub` its instantiation (null when the body
 /// is not a specialization), which is why they are fields, not
 /// stacks.
-fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, jobs: Jobs) -> LowerCx {
+fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, seats: List<SeatValue>, seat_marks: List<SeatMark>, jobs: Jobs) -> LowerCx {
     LowerCx {
         view: a.view, names: a.names, facts: a.facts, dispatch: a.lang.dispatch,
         out: new_emitter(jobs.externs),
         body: new_body_regs(a.view.store.exprs.count(), a.view.store.stmts.count(), a.view.store.pats.length),
-        sub: sub, fn_ret: fn_ret, jobs: jobs, deferred: [], depth: 0,
+        sub: sub, seats: seats, seat_regs: [], seat_marks: seat_marks, fn_ret: fn_ret, jobs: jobs, deferred: [], depth: 0,
     }
 }
 
 /// A lone file's program, lowered without a memo — the tests' seam.
 export fn lower(a: Analysis) -> Lowered {
-    let externs = extern_names(a.view.decls)
-    union(a.view.decls, [a], 0, false, false, (w: Wanted) -> lower_unit(a, externs, w))
+    let externs = a.view.decls.extern_names()
+    a.view.decls.union([a], 0, false, false, (w: Wanted) -> lower_unit(a, externs, w, no_settle))
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
 /// wrappers it minted (they never escape it), the bodies of OTHER
 /// declarations it wants — the program asks for those, and asking
 /// twice reuses — and every voice lowering earned.
-export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices }
+export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, statics: List<Static> }
 
 /// A unit lowered in its file's analysis: the body, then its own
 /// lifts and wrappers drained locally — a lambda's body may mint
@@ -129,18 +132,19 @@ export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices }
 /// program's extern symbols, gathered once per program by the
 /// workspace: every body's emitter refuses a callee it does not
 /// know against it.
-export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted) -> Unit {
+export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> Unit {
     if w.decl != null && !a.view.decls.has_body(w.decl!) {
         mut out = new_emitter(externs)
         out.defect("a unit without a body was asked for — `${w.name}`")
-        return Unit { bodies: [], wants: [], voices: out.voices }
+        return Unit { bodies: [], wants: [], voices: out.voices, statics: [] }
     }
-    let first = if w.decl == null { lower_main(a, w.name, externs) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, externs) }
+    let first = if w.root != null { lower_root(a, w.root!, w.name, w.seats, externs, settle) } else if w.decl == null { lower_main(a, w.name, externs, settle) } else { lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle) }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
     mut wants: List<Wanted> = first.jobs.pending
     mut lifts: List<Lift> = first.jobs.lifts
     mut wraps: List<Wrap> = first.jobs.wraps
+    mut statics: List<Static> = first.jobs.statics
     // a wrapper may be wanted by several of the unit's bodies — once
     mut wrapped: Map<string, bool> = {}
     while !lifts.is_empty() || !wraps.is_empty() {
@@ -151,48 +155,82 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted) -> Unit {
                 bodies.push(wrapped_body(a, wj))
             }
         } else {
-            let lf = lower_lambda(a, lifts.pop(), externs)
+            let lf = lower_lambda(a, lifts.pop(), externs, settle)
             bodies.push(lf.body)
             spoken = spoken.concat(lf.voices.list)
             wants = wants.concat(lf.jobs.pending)
             lifts = lifts.concat(lf.jobs.lifts)
             wraps = wraps.concat(lf.jobs.wraps)
+            statics = statics.concat(lf.jobs.statics)
         }
     }
-    Unit { bodies: bodies, wants: wants, voices: Voices { list: spoken } }
+    Unit { bodies: bodies, wants: wants, voices: Voices { list: spoken }, statics: statics }
 }
 
-/// The whole program as IR: the entry's main and every body it
-/// reaches, transitively — each unit through `unit_of`, which the
-/// workspace memoizes. A program only CHECKED has no entry: every
-/// declared body lowers instead, so each speaks its refusals; a
-/// test run asks for `every` declared body under its entry, whose
-/// laws (a module file runs nothing) still hold. A unit is asked
-/// once per symbol; the guard is the polymorphic-recursion refusal.
-export fn union(decls: Decls, files: List<Analysis>, entry: int?, every: bool, programs: bool, unit_of: fn(Wanted) -> Unit) -> Lowered {
+impl Decls {
+    /// The whole program as IR: the entry's main and every body it
+    /// reaches, transitively — each unit through `unit_of`, which the
+    /// workspace memoizes. A program only CHECKED has no entry: every
+    /// declared body lowers instead, so each speaks its refusals; a
+    /// test run asks for `every` declared body under its entry, whose
+    /// laws (a module file runs nothing) still hold. A unit is asked
+    /// once per symbol; the guard is the polymorphic-recursion refusal.
+    fn union(files: List<Analysis>, entry: int?, every: bool, programs: bool, unit_of: fn(Wanted) -> Unit) -> Lowered {
+        mut fns: List<Body> = []
+        mut spoken: List<Diag> = []
+        let at: int = entry ?? 0
+        let bodies: List<Wanted> = if entry == null || every { flatten([declared(a) for a in files]) } else { [] }
+        // EVERY FILE A PROGRAM: each file's run-time statements lower as
+        // a body under the program's own symbol, for a runner's entry to
+        // call in turn — every program in one binary
+        mut wants: List<Wanted> = if programs { bodies.concat([program_main(a) for a in files]) } else { bodies }
+        for i, a in files {
+            if entry != null && i != at { spoken = spoken.concat(entry_only(a, files[at])) }
+        }
+        let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: "main", sub: null }) }
+        mut entry_body: Body = empty_main(self.types).body
+        mut statics: List<Static> = []
+        if main_unit != null {
+            let mu = main_unit!
+            entry_body = mu.bodies.first() ?? entry_body
+            fns = fns.concat(mu.bodies.slice(1, mu.bodies.length))
+            spoken = spoken.concat(mu.voices.list)
+            wants = wants.concat(mu.wants)
+            statics = mu.statics
+        }
+        let d = drained(wants, unit_of)
+        fns = fns.concat(d.fns)
+        spoken = spoken.concat(d.spoken)
+        spoken = spoken.concat(minted_pointers(self.types, fns.concat([entry_body])))
+        Lowered { fns: fns, entry: entry_body, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(statics.concat(d.statics)) }
+    }
+
+    /// A const's initializer as a program of its own: the root unit's
+    /// first body is the entry, and everything it reaches follows —
+    /// through the same `unit_of`, so a body the program also runs
+    /// lowers once.
+    fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit) -> Lowered {
+        let ru = unit_of(root)
+        let d = drained(ru.wants, unit_of)
+        let entry = ru.bodies.first() ?? empty_main(self.types).body
+        let fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
+        let spoken = ru.voices.list.concat(d.spoken).concat(minted_pointers(self.types, fns.concat([entry])))
+        Lowered { fns: fns, entry: entry, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(ru.statics.concat(d.statics)) }
+    }
+}
+
+/// The bodies a worklist reaches, each name once, the statics they
+/// read, and what they spoke.
+type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static> }
+
+fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit) -> Drained {
+    mut wants = pending
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
-    let at: int = entry ?? 0
-    let bodies: List<Wanted> = if entry == null || every { flatten([declared(a) for a in files]) } else { [] }
-    // EVERY FILE A PROGRAM: each file's run-time statements lower as
-    // a body under the program's own symbol, for a runner's entry to
-    // call in turn — the corpus in one binary
-    mut wants: List<Wanted> = if programs { bodies.concat([program_main(a) for a in files]) } else { bodies }
-    for i, a in files {
-        if entry != null && i != at { spoken = spoken.concat(entry_only(a, files[at])) }
-    }
-    let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: "main", sub: null }) }
-    mut entry_body: Body = empty_main(decls.types).body
-    if main_unit != null {
-        let mu = main_unit!
-        entry_body = mu.bodies.first() ?? entry_body
-        fns = fns.concat(mu.bodies.slice(1, mu.bodies.length))
-        spoken = spoken.concat(mu.voices.list)
-        wants = wants.concat(mu.wants)
-    }
+    mut statics: List<Static> = []
     mut seen: Map<string, bool> = {}
     mut minted = 0
-    while !wants.is_empty() && minted < unit_ceiling() {
+    while !wants.is_empty() && minted < unit_ceiling {
         let w = wants.pop()
         if seen.get(w.name) == null {
             seen.set(w.name, true)
@@ -201,13 +239,27 @@ export fn union(decls: Decls, files: List<Analysis>, entry: int?, every: bool, p
             fns = fns.concat(u.bodies)
             spoken = spoken.concat(u.voices.list)
             wants = wants.concat(u.wants)
+            statics = statics.concat(u.statics)
         }
     }
     if !wants.is_empty() {
-        spoken.push(defect_at(null, "specializations exploded past ${unit_ceiling()} — polymorphic recursion is not supported"))
+        spoken.push(defect_at(null, "specializations exploded past ${unit_ceiling} — polymorphic recursion is not supported"))
     }
-    spoken = spoken.concat(minted_pointers(decls.types, fns.concat([entry_body])))
-    Lowered { fns: fns, entry: entry_body, types: decls.types, diagnostics: spoken, externs: extern_rows(decls) }
+    Drained { fns: fns, spoken: spoken, statics: statics }
+}
+
+/// Each static once: units read one const independently and each
+/// lays it out, so the program keeps the first of a name.
+fn distinct_statics(xs: List<Static>) -> List<Static> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<Static> = []
+    for s in xs {
+        if seen.get(s.name) == null {
+            seen.set(s.name, true)
+            out.push(s)
+        }
+    }
+    out
 }
 
 /// THE POINTER-CONSTANT LAW. A `ConstInt` aimed at a pointer-riding
@@ -241,7 +293,7 @@ fn pointer_constant(name: string) -> Diag {
 /// The ceiling on DISTINCT bodies one program mints. A source
 /// bounds its own count; only polymorphic recursion — each turn a
 /// wider substitution, none ever repeated — climbs forever.
-fn unit_ceiling() -> int { 100000 }
+const unit_ceiling: int = 100000
 
 /// A file's declared bodies to ask for, plain — a generic one waits
 /// for an instantiation to want it.
@@ -250,10 +302,15 @@ fn program_main(a: Analysis) -> Wanted {
     Wanted { file: a.view.file, decl: null, name: program_symbol(a.view.decls.file(a.view.file).path), sub: null }
 }
 
-/// The symbol a program's body wears in a corpus binary: its file's
-/// stem, so two programs never collide and a wreck names its file.
+/// The symbol a program's body wears in a programs binary: its whole
+/// PATH, every separator written as `_`, so a wreck names its file
+/// and no two programs collide. A STEM ALONE COLLIDED: a package's
+/// program test is named after the module it proves
+/// (`std-path/src/tests/path/path.av` beside `std-path/src/path.av`), both
+/// wanted `program$path`, and the one the worklist minted was the
+/// module's — an empty body that printed nothing.
 export fn program_symbol(path: string) -> string {
-    "program\$${stem_of(path)}"
+    "program\$${path.replace("/", "_").replace(".", "_")}"
 }
 
 fn declared(a: Analysis) -> List<Wanted> {
@@ -282,13 +339,14 @@ type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
 /// One body — a fn's, a method's, a default's: params pre-minted as
 /// registers 0..N-1, the body inside one scope, the answer after
 /// the scope settles.
-fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, externs: List<string>) -> LoweredBody {
+fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
     let root: ExprId = x.root!
-    let sig: FnSig? = fn_sig_of(a.view.decls.sig(x.id))
+    let sig: FnSig? = (a.view.decls.sig(x.id))?.fn_sig()
     let raw: List<TypeId> = sig?.params ?? []
     let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
     let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
-    mut lo = new_lower_cx(a, rt, sub, new_jobs(externs))
+    let seat_marks: List<SeatMark> = a.view.decls.marks_of(x.id, raw.length)
+    mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle))
     // the params ARE registers 0..N-1, minted in order
     for pt in ptypes { let _ = lo.out.mint_ty(pt) }
     lo.out.seeded()
@@ -306,13 +364,13 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, externs: List<string
 /// lambda's own fn type — a pointer, managed, released by the
 /// callee per the ABI), registers 1..N its params; the body reads
 /// captures through slot 1+j of the env.
-fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>) -> LoweredBody {
+fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
     let lam_ty = viewed(a.view.decls.types, lj.sub, a.facts.type_at(lj.lam))
     let held: Arrow? = a.view.decls.types.arrow_parts(lam_ty)
     let seats: List<TypeId> = held?.seats ?? []
     let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
-    mut lo = new_lower_cx(a, rt, lj.sub, new_jobs(externs))
+    mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle))
     // register 0 is the env box, 1..N the seats
     let _ = lo.out.mint_ty(lam_ty)
     for pt in seats { let _ = lo.out.mint_ty(pt) }
@@ -353,8 +411,39 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
 
 /// A file's run-time statements as a body under `name` — `main` for
 /// the entry, a program's own symbol when every file is a program.
-fn lower_main(a: Analysis, name: string, externs: List<string>) -> LoweredBody {
-    mut lo = new_lower_cx(a, null, null, new_jobs(externs))
+/// An EXPRESSION as a body of its own — a const's initializer, an
+/// annotation's argument: no params, the value inside the seats'
+/// bracket, the answer after it settles. The evaluator runs it to
+/// settle the value; a program never calls it — a settled value is
+/// spelled or laid out at its reads.
+fn lower_root(a: Analysis, root: ExprId, name: string, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
+    let rt: TypeId = a.facts.type_at(root)
+    mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle))
+    lo.out.seeded()
+    // THE SETTLED SEATS ARE CONSTANTS HERE: the initializer reads a
+    // `const` seat as its called value, so the settlement computes on
+    // the value the unit was made for.
+    lo.seed_seats()
+    lo.seats_enter()
+    // a value no literal spells is answered ONCE per run, as a
+    // `once fn` is; a scalar or text is spelled at its uses
+    let r = if a.view.decls.types.spells(rt) { lo.reg_of(root) } else { lo.once_body(name, root, rt) }
+    lo.seats_exit(r)
+    lo.out.give(Ins.RetVal(r))
+    LoweredBody {
+        body: Body { name: name, params: [], ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types },
+        voices: lo.out.voices, jobs: lo.jobs,
+    }
+}
+
+/// Where no workspace stands behind the lowering, no const settles.
+// LICENSED I23: a fn VALUE filling the settle seat — its parameters are the seat's contract, and the answer needs none of them
+fn no_settle(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
+    .Err(Unsettled.Trap("nothing here evaluates a const"))
+}
+
+fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
+    mut lo = new_lower_cx(a, null, null, [], [], new_jobs(externs, settle))
     lo.scope_enter()
     lo.lower_stmts(a.view.stmts)
     let shown: ExprId? = program_answer(a)
@@ -364,7 +453,7 @@ fn lower_main(a: Analysis, name: string, externs: List<string>) -> LoweredBody {
     lo.out.give(Ins.Ret(0))
     LoweredBody {
         body: Body {
-            name: name, params: [], ret: a.view.decls.types.intern(Type.Int),
+            name: name, params: [], ret: a.view.decls.types.type(int),
             gives: null, ins: lo.out.ins, reg_types: lo.out.reg_types,
         },
         voices: lo.out.voices, jobs: lo.jobs,
@@ -385,15 +474,18 @@ fn program_answer(a: Analysis) -> ExprId? {
 fn empty_main(types: TypeRegistry) -> LoweredBody {
     let ins: List<Ins> = [Ins.ScopeEnter(Level.Application), Ins.ScopeExit(null), Ins.Ret(0)]
     LoweredBody {
-        body: Body { name: "main", params: [], ret: types.intern(Type.Int), gives: null, ins: ins, reg_types: [] },
-        voices: no_voices(), jobs: new_jobs([]),
+        body: Body { name: "main", params: [], ret: types.type(int), gives: null, ins: ins, reg_types: [] },
+        voices: no_voices(), jobs: new_jobs([], no_settle),
     }
 }
 
-/// The specialization's name: uncollidable (`$` is unwritable) and
-/// stable per run — interned ids in ordinal order.
+/// The specialization's name: uncollidable (`$`, `@` are
+/// unwritable) and stable per run — interned ids in ordinal order,
+/// then the settled seats' value fingerprints after `@`.
 fn mangle(name: string, sub: Sub) -> string {
-    "${name}$${joined(["${a.index}" for a in sub.args], "_")}"
+    let ids = joined(["${a.index}" for a in sub.args], "_")
+    if sub.consts.is_empty() { return "${name}$${ids}" }
+    "${name}$${ids}@${joined(sub.consts, "_")}"
 }
 
 // ── voices ──

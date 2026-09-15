@@ -1,12 +1,18 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, flatten, some_list}
-use grammar.{Captured, Token}
+use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, flatten, some_list, SeatMark, plain_mark}
+use grammar.{Captured, Token, Ready}
 
 /// One build call's world: the store, the captured arguments in
-/// grammar order, and the engine-attributed span of the branch that
-/// matched. Builders read arguments and make nodes through this.
-export type Builder = { store: NodeStore, args: List<Captured<LangNode>>, span: Span? }
+/// grammar order, the engine-attributed span of the branch that
+/// matched, and the source being parsed — a template keeps its
+/// runs of source as its printing projection. Builders read
+/// arguments and make nodes through this.
+export type Builder = { store: NodeStore, args: List<Captured<LangNode>>, span: Span?, text: string = "", blocks: List<BlockGrammar> = [] }
+
+/// A sublanguage the file imports: its block word, its grammar
+/// readied, and the file whose fns its actions name.
+export type BlockGrammar = { word: string, ready: Ready, origin: string }
 
 impl Builder {
     /// The token argument at `i`.
@@ -37,7 +43,7 @@ impl Builder {
 
     /// The answer written at `i` — `void` when none.
     fn answer(i: int) -> TypeRef {
-        type_ref_at(self.args, i) ?? void_ref()
+        type_ref_at(self.args, i) ?? void_ref
     }
 
     /// The repeated capture at `i`, as written types.
@@ -108,6 +114,31 @@ impl Builder {
         .Ok(LangNode.NExpr(id))
     }
 
+    /// A head WIDENED by its trailing blocks — each marked as one,
+    /// the call given them as its last arguments through the call
+    /// protocol. A head that is no call refuses in the block's words.
+    fn trailed(h: ExprId, blocks: List<ExprId>) -> Result<ExprId, string> {
+        if blocks.is_empty() { return .Ok(h) }
+        for k in blocks { self.store.mark_trailing(k) }
+        let widened: Expr? = self.store.called_with(h, blocks)
+        if widened == null { return .Err("a trailing block follows this expression, and only a call takes one — `f(…) { … }`, `a.m(…) { … }`, a name, a field read") }
+        .Ok(self.expr_node(widened!))
+    }
+
+    /// THE BLOCK LAW: statements as a scope answering with its tail.
+    /// A block's value is its final expression; one that ends in any
+    /// other statement (or is empty) has none, and TYPING says what
+    /// that means — void, or the fn's promise when the statement
+    /// leaves. A scope holding nothing but its value IS the value: no
+    /// node is minted for it.
+    fn block_of(stmts: List<StmtId>) -> ExprId {
+        if stmts.is_empty() { return self.expr_node(Expr.Block(stmts, null)) }
+        let value: ExprId? = self.store.answer_of(stmts.last()!)
+        if value == null { return self.expr_node(Expr.Block(stmts, null)) }
+        if stmts.length == 1 { return value! }
+        self.expr_node(Expr.Block(stmts.slice(0, stmts.length - 1), value!))
+    }
+
     /// Where this build's branch ENDED — the bound a positional
     /// reconstruction measures against. Absent for a synthesized
     /// branch, and a caller that needs it must say so.
@@ -151,9 +182,7 @@ export fn type_ref_at(args: List<Captured<LangNode>>, i: int) -> TypeRef? {
 }
 
 /// The answer a fn declares by writing none: `void`.
-export fn void_ref() -> TypeRef {
-    named_ref("void")
-}
+export const void_ref: TypeRef = named_ref("void")
 
 /// The pattern at `args[i]`, when that capture is one.
 export fn pat_id_at(args: List<Captured<LangNode>>, i: int) -> PatId? {
@@ -253,27 +282,29 @@ fn token_between(tokens: List<Token>, after: int, before: int) -> string {
     hit!.text
 }
 
-/// Field names, their types, and the DEFAULTS some carry, zipped —
-/// captures arrive per slot, so a default finds its field by
-/// POSITION: the last name that starts before it.
-export fn fields_zipped(b: Builder, fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>) -> Result<List<Param>, string> {
-    if fs.length != ft.length {
-        return .Err(zip_defect_of("field names and types"))
+impl Builder {
+    /// Field names, their types, and the DEFAULTS some carry, zipped —
+    /// captures arrive per slot, so a default finds its field by
+    /// POSITION: the last name that starts before it.
+    fn fields_zipped(fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>) -> Result<List<Param>, string> {
+        if fs.length != ft.length {
+            return .Err(zip_defect_of("field names and types"))
+        }
+        .Ok([Param { name: f.text, ty: ft[j], default: self.default_before(fs, fds, j), mark: plain_mark, span: f.span } for j, f in fs])
     }
-    .Ok([Param { name: f.text, ty: ft[j], default: default_before(b, fs, fds, j), mutable: false } for j, f in fs])
-}
 
-/// The default whose position falls between field `j`'s name and
-/// the next field's — null when none does.
-fn default_before(b: Builder, fs: List<Token>, fds: List<ExprId>, j: int) -> ExprId? {
-    let lo = fs[j].span.lo
-    let hi: int = if j + 1 < fs.length { fs[j + 1].span.lo } else { 1000000000 }
-    fds.find(starts_between(b, it, lo, hi))
-}
+    /// The default whose position falls between field `j`'s name and
+    /// the next field's — null when none does.
+    fn default_before(fs: List<Token>, fds: List<ExprId>, j: int) -> ExprId? {
+        let lo = fs[j].span.lo
+        let hi: int = if j + 1 < fs.length { fs[j + 1].span.lo } else { 1000000000 }
+        fds.find((d) -> self.starts_between(d, lo, hi))
+    }
 
-fn starts_between(b: Builder, e: ExprId, lo: int, hi: int) -> bool {
-    let sp: Span? = b.store.expr_span(e)
-    sp != null && within(sp!.lo, lo, hi)
+    fn starts_between(e: ExprId, lo: int, hi: int) -> bool {
+        let sp: Span? = self.store.expr_span(e)
+        sp != null && within(sp!.lo, lo, hi)
+    }
 }
 
 /// Strictly inside the window `after..before`.
@@ -285,13 +316,24 @@ export fn within(at: int, after: int, before: int) -> bool {
 /// types they aligned to — with no defaults: what every fn-shaped
 /// declaration zips.
 export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
-    marked_seats(ps, tys, [], 0)
+    marked_seats(ps, tys, [], [], 0)
 }
 
-/// Seats with their `mut` marks: a mark token between the previous
-/// name (or `from`, before the first) and a name marks that seat.
-export fn marked_seats(ps: List<Token>, tys: List<TypeRef?>, marks: List<Token>, from: int) -> List<Param> {
-    [Param { name: p.text, ty: tys[j], default: null, mutable: marks.any(mark_within(it, seat_since(ps, j, from), p.span.lo)) } for j, p in ps]
+/// Seats with their marks: a `mut` or `const` token between the
+/// previous name (or `from`, before the first) and a name marks that
+/// seat. ONE window law, so every param list — a fn's, a method's, a
+/// lambda's, a fn type's — reads the same marks the same way.
+export fn marked_seats(ps: List<Token>, tys: List<TypeRef?>, muts: List<Token>, consts: List<Token>, from: int) -> List<Param> {
+    [Param { name: p.text, ty: tys[j], default: null, mark: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo), span: p.span } for j, p in ps]
+}
+
+/// One seat's contract: the `mut` and `const` tokens written in its
+/// window — the window a mark shares with the name it precedes.
+fn seat_mark_of(muts: List<Token>, consts: List<Token>, after: int, before: int) -> SeatMark {
+    SeatMark {
+        mutable: muts.any(mark_within(it, after, before)),
+        settled: consts.any(mark_within(it, after, before)),
+    }
 }
 
 /// Where seat `j`'s mark may start: after the previous name, or `from`.

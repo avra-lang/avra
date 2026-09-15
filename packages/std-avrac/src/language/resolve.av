@@ -8,10 +8,15 @@
 //! pass: `let` visibility is sequential and a later `let` shadows an
 //! earlier one; `fn` names are program-wide, so recursion and mutual
 //! recursion are free. Inside a body, params bind innermost.
-use core.{StmtId, ExprId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore}
-use diagnostics.{Diag, error_at, loc_at, pointed, refusal, Voices, no_voices}
+//! ORIGIN HYGIENE: a generated node's binders and reads are KEYED by
+//! the file that wrote its text, so a template's `let tmp` and a
+//! hole's `tmp` never meet, and a template's module names resolve in
+//! the namespace of the file that wrote the quote.
+use core.{StmtId, ExprId, FileId, PatId, Param, closest, Closest, some_list, filled, DeclId, flatten, Binding, found_at, NodeStore, LambdaParts, Annotation, same_file}
+use core.{SeatMark, Binder}
+use diagnostics.{Diag, error_at, pointed, refusal, Voices, no_voices}
 use features.modules.{module_laws}
-use features.{ResolveCx, Def, LFrame, Dispatch, self_word, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats, nothing, semantics_of, stmt_semantics_of, post_order}
+use features.{ResolveCx, Def, LFrame, Dispatch, self_word, Cap, Namespace, NameFacts, FileView, remedy_for, written_seats, nothing, semantics_of, stmt_semantics_of, post_order, Elsewhere, Bound}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 
 /// Words the spec reserves for future levels, memory, and
@@ -19,13 +24,9 @@ use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 /// keywords tomorrow without breaking any program. (Today's ACTUAL
 /// keywords derive from the grammar — `p.keywords` — never a list
 /// kept by hand.)
-fn reserved() -> List<string> {
-    ["systems", "bare", "hardware", "owned", "borrow", "move",
-     "level", "unsafe", "extern", "async", "spawn", "await",
-     "channel", "select"]
-}
+export const reserved: List<string> = ["systems", "bare", "hardware", "owned", "borrow", "move", "level", "unsafe", "extern", "async", "spawn", "await", "channel", "select"]
 
-export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, scope: Namespace) -> NameFacts {
+export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, scope: Namespace, elsewhere: Elsewhere, generated: List<StmtId>) -> NameFacts {
     let defs = defs_of(view.store, view.stmts)
     mut r = ResolveCx {
         view: view, dispatch: dispatch, keywords: keywords, all_defs: defs,
@@ -33,16 +34,22 @@ export fn resolve(dispatch: Dispatch, keywords: List<string>, view: FileView, sc
             bindings: filled<Binding?>(view.store.exprs.count(), null),
             captures: filled<Cap?>(view.store.exprs.count(), null),
             mut_reads: filled(view.store.exprs.count(), false),
+            settled_reads: filled(view.store.exprs.count(), false),
             names: scope, voices: no_voices(),
         },
         def_names: [d.name for d in defs],
-        visible: {}, overlays: [], lframes: [], floors: [], receivers: [], muts: [],
+        visible: {}, overlays: [], lframes: [], floors: [], receivers: [], marks: [],
         walked: filled(view.store.exprs.count(), false),
         scoped: filled(view.store.stmts.count(), false),
-        scope: [], in_block: false,
+        scope: [], in_block: false, elsewhere: elsewhere,
     }
     r.name_laws()
     r.resolve_stmts(false, view.stmts)
+    // A GENERATED DECLARATION'S BODY IS WRITTEN TO THE ARENA, NOT TO
+    // THE PARSE TREE — its statement joins no `p.stmts`, so the walk
+    // above never reaches it. Resolve it here, after the written
+    // bodies, so its names are bound as any declared fn's are.
+    r.resolve_stmts(false, generated)
     r.facts with { voices: Voices { list: flatten([scope.voices.list, module_laws(view.store, view.source.file, view.stmts), r.facts.voices.list]) } }
 }
 
@@ -58,7 +65,10 @@ impl ResolveCx {
     mut fn resolve_stmts(in_block: bool, stmts: List<StmtId>) {
         let was = self.in_block
         self.in_block = in_block
-        for s in stmts { stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).resolve_stmt(self, s) }
+        for s in stmts {
+            stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).resolve_stmt(self, s)
+            for a in self.view.store.annotations_of(s) { self.walk_annotation(a) }
+        }
         self.in_block = was
     }
 
@@ -108,17 +118,29 @@ impl ResolveCx {
     /// One match arm's scope: its binds (in pattern order) hold for
     /// the arm's value and die with it — the first scope in the
     /// language opened by an EXPRESSION rather than a statement.
-    mut fn arm_scope(binds: List<string>, value: ExprId) {
+    mut fn arm_scope(binds: List<Bound>, value: ExprId) {
         self.open_overlay()
         self.arm_body(binds, value)
         self.close_overlay()
     }
 
-    mut fn arm_body(binds: List<string>, value: ExprId) {
+    mut fn arm_body(binds: List<Bound>, value: ExprId) {
         for j, b in binds {
-            if !self.refused_name(b, self.loc_of(value)) { self.bind(b, Binding.Pattern(value, j)) }
+            if !self.refused_binder(b.name, self.loc_of(value)) { self.bind(keyed(b.name, b.origin), Binding.Pattern(value, j)) }
         }
         self.walk(value)
+    }
+
+    /// Binders NAMED ON a node — a comprehension's, a catch's, a
+    /// nullable match's — wear the node's origin.
+    fn bound_at(e: ExprId, names: List<string>) -> List<Bound> {
+        let origin: FileId? = self.view.origin_of(e)
+        [Bound { name: n, origin: origin } for n in names]
+    }
+
+    /// A pattern's binders, each wearing the origin of its own text.
+    fn bound_pats(binders: List<Binder>) -> List<Bound> {
+        [Bound { name: b.name, origin: self.view.origin_of_pat(b.pat) } for b in binders]
     }
 
     /// A lambda's body under its own frame: params bind, outer names
@@ -127,15 +149,22 @@ impl ResolveCx {
         // a refused param name still BINDS (declare the wreckage) — the
         // body resolves quietly and the one refusal stands alone
         for pp in params {
-            let _ = self.refused_name(pp.name, self.loc_of(lam))
+            let _ = self.refused_binder(pp.name, self.loc_of(lam))
         }
+        let origin: FileId? = self.view.origin_of(lam)
         // LICENSED I15: this IS the bracket
-        self.lframes.push(LFrame { lam: lam, params: [pp.name for pp in params], floor: self.overlays.length })
+        self.lframes.push(LFrame { lam: lam, params: [keyed(pp.name, origin) for pp in params], floor: self.overlays.length })
         self.walk(body)
         let _ = self.lframes.pop()
     }
 
     /// One subtree's resolution, children before owners.
+    /// An annotation's callee and arguments resolve as expressions do.
+    mut fn walk_annotation(a: Annotation) {
+        self.walk(a.callee)
+        for e in a.args { self.walk(e) }
+    }
+
     mut fn walk(root: ExprId) {
         for e in post_order(self.dispatch, self.view.store, root) { semantics_of(self.dispatch, self.view.store.expr(e)).resolve(self, e) }
     }
@@ -169,13 +198,14 @@ impl ResolveCx {
     mut fn walk_under(ps: List<Param>, body: ExprId) {
         let seats = written_seats(self.keywords, ps)
         let outer = self.scope
+        let origin: FileId? = self.view.origin_of(body)
         // LICENSED I15: this IS the bracket
         self.floors.push(self.overlays.length)
-        self.muts.push([pp.mutable for pp in seats])
-        self.scope = [pp.name for pp in seats]
+        self.marks.push([pp.mark for pp in seats])
+        self.scope = [keyed(pp.name, origin) for pp in seats]
         self.walk(body)
         self.scope = outer
-        let _ = self.muts.pop()
+        let _ = self.marks.pop()
         let _ = self.floors.pop()
     }
 }
@@ -206,9 +236,7 @@ fn overlay_at(overlays: List<Map<string, Binding>>, at: int, name: string) -> Bi
 }
 
 /// The home of a name that lives OUTSIDE every lambda frame.
-fn no_frame() -> int {
-    0 - 1
-}
+const no_frame: int = 0 - 1
 
 /// The innermost frame whose FLOOR admits the overlay — the frame
 /// the overlay was opened inside.
@@ -219,7 +247,7 @@ fn overlay_home(lframes: List<LFrame>, ohit: int) -> int {
         if lframes[k].floor <= ohit { return k }
         k = k - 1
     }
-    no_frame()
+    no_frame
 }
 
 /// The innermost frame whose PARAMS hold `name`, or null.
@@ -254,15 +282,6 @@ fn defs_of(store: NodeStore, stmts: List<StmtId>) -> List<Def> {
 }
 
 impl ResolveCx {
-    /// A scoped name, whichever namespace holds it — a fn's before
-    /// a type's.
-    fn scope_named(name: string) -> DeclId? {
-        let as_fn: DeclId? = self.facts.names.fns.get(name)
-        if as_fn != null { return as_fn }
-        let as_type: DeclId? = self.facts.names.types.get(name)
-        as_type
-    }
-
     /// The naming law over this file's declarations: keywords and
     /// reserved words refuse as names, and a built-in type name
     /// refuses at its declaration — it resolves to its SHAPE in
@@ -271,7 +290,7 @@ impl ResolveCx {
     fn name_laws() {
         for s in self.view.stmts {
             let fname: string? = self.view.store.fn_parts(s)?.name
-            if fname != null { let _ = self.refused_name(fname!, self.stmt_loc(s)) }
+            if fname != null { let _ = self.refused_binder(fname!, self.stmt_loc(s)) }
             let tname: string? = self.view.store.type_decl_name(s)
             if tname != null { self.type_name_law(tname!, s) }
         }
@@ -279,7 +298,7 @@ impl ResolveCx {
 
     fn type_name_law(name: string, s: StmtId) {
         let at = self.stmt_loc(s)
-        if self.refused_name(name, at) { return }
+        if self.refused_binder(name, at) { return }
         if builtin_type_name(self.view.lang.types, name) {
             self.emit(refusal("resolve.builtin_type", at, "`${name}` is a built-in type", "declared here", "choose another name — `int`, `string` and `bool` are the language's"))
         }
@@ -288,16 +307,29 @@ impl ResolveCx {
     /// The naming law, in one place: keywords and reserved words
     /// refuse as names. True means refused — the site keeps its
     /// hands off the name.
+    /// THE BLOCK WORD IS THE FILE'S ALONE: `w {` is also a struct
+    /// literal and a name before a block, so no binder or declaration
+    /// of the file may wear a sublanguage's word. A READ is not a
+    /// binder: `sql` alone is the unresolved name it always was.
+    fn refused_binder(name: string, at: Loc?) -> bool {
+        if self.refused_name(name, at) { return true }
+        if self.facts.names.syntaxes.get(name) != null {
+            self.emit(refusal("resolve.block_word", at, "`${name}` is a sublanguage's block word here, and nothing else in this file may wear it", "this name", "rename it, or import the sublanguage under another name"))
+            return true
+        }
+        false
+    }
+
     fn refused_name(name: string, at: Loc?) -> bool {
         if self.keywords.contains(name) {
             self.refuse_keyword(name, at, null)
             return true
         }
-        if name == self_word() {
+        if name == self_word {
             self.refuse_self(at)
             return true
         }
-        if reserved().contains(name) {
+        if reserved.contains(name) {
             self.refuse_reserved(name, at)
             return true
         }
@@ -313,7 +345,7 @@ impl ResolveCx {
             if self.keywords.contains(pp.name) {
                 self.refuse_keyword(pp.name, at, remedy_for(self.view.lang, pp.name))
             } else {
-                let _ = self.refused_name(pp.name, at)
+                let _ = self.refused_binder(pp.name, at)
             }
         }
     }
@@ -324,16 +356,19 @@ impl ResolveCx {
         // never be a name, so "not defined" would send the reader
         // hunting for a definition that could not exist.
         if self.refused_name(name, self.loc_of(e)) { return }
-        let found: Binding? = self.value_binding(name)
+        let origin: FileId? = self.view.origin_of(e)
+        let found: Binding? = self.value_binding(name, origin)
         if found != null {
-            self.bind_use(e, found!)
-            self.note_mut_seat(e, found!)
+            let b = found!
+            self.bind_use(e, b)
+            self.note_mut_seat(e, b)
+            self.note_settled_seat(e, b)
             return
         }
         let at = self.loc_of(e)
         if name == "it" { return self.unbound_pronoun(at) }
-        if self.hidden_def(name) { return self.runtime_binding(name, at) }
-        let later: StmtId? = self.later_def(name)
+        if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, at) }
+        let later: StmtId? = self.later_def(keyed(name, origin))
         if later != null {
             // A loc-less frame renders no window — absence stays quiet.
             let defined = [Frame { label: "defined here", loc: self.stmt_loc(later!) }]
@@ -367,7 +402,7 @@ impl ResolveCx {
         if self.met(e) { return }
         if self.receivers.is_empty() { return self.no_receiver(self.loc_of(e)) }
         if !self.in_a_method() { return self.static_has_none(self.loc_of(e)) }
-        self.bind_use(e, self.chained(0, receiver_key(), Binding.Receiver))
+        self.bind_use(e, self.chained(0, receiver_key, Binding.Receiver))
     }
 
     /// The seat the written parameters start at: after the
@@ -379,19 +414,52 @@ impl ResolveCx {
     /// A parameter read of a `mut` seat is marked as one — the
     /// place law asks the read, never the name.
     fn note_mut_seat(e: ExprId, b: Binding) {
-        // one arm answers — a projection; every other binding is not a seat
-        let seat: int? = match b {
-            .Param(i) -> i,
-            _ -> null,
+        if self.seat_written_mut(b) { self.facts.mark_mut_read(e) }
+    }
+
+    /// A parameter read of a `const` seat is marked too — the settled
+    /// seat's value is per-unit, so the type pass accepts the read and
+    /// lowering supplies the fingerprint.
+    fn note_settled_seat(e: ExprId, b: Binding) {
+        match b {
+            .Param(i) -> {
+                if self.seat_is_settled(i) { self.facts.mark_settled_read(e) }
+            },
+            rest -> nothing(),
         }
-        if seat != null && self.seat_is_mut(seat!) { self.facts.mark_mut_read(e) }
+    }
+
+    /// Whether a binding is a seat WRITTEN `mut` — a fn's, by the open
+    /// body's marks; a lambda's, by its own declaration.
+    fn seat_written_mut(b: Binding) -> bool {
+        match b {
+            .Param(i) -> self.seat_is_mut(i),
+            .LambdaParam(l, i) -> self.lambda_seat_mut(l, i),
+            .Receiver or .Def(_) or .Pattern(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> false,
+        }
+    }
+
+    fn lambda_seat_mut(l: ExprId, i: int) -> bool {
+        let parts: LambdaParts? = self.view.store.lambda_parts(l)
+        if parts == null { return false }
+        parts!.params[i].mark.mutable
     }
 
     fn seat_is_mut(i: int) -> bool {
-        let open: List<bool>? = self.muts.last()
+        self.at_seat(i, (m: SeatMark) -> m.mutable)
+    }
+
+    fn seat_is_settled(i: int) -> bool {
+        self.at_seat(i, (m: SeatMark) -> m.settled)
+    }
+
+    /// The mark of the enclosing body's seat `i`, past the receiver
+    /// offset — a lambda's seats are its own declaration's.
+    fn at_seat(i: int, asks: fn(SeatMark) -> bool) -> bool {
+        let open: List<SeatMark>? = self.marks.last()
         if open == null { return false }
         let at = i - self.seat_base()
-        at >= 0 && at < open!.length && open![at]
+        at >= 0 && at < open!.length && asks(open![at])
     }
 
     /// A name resolves ONCE — the first walk wins, diagnostics
@@ -404,17 +472,21 @@ impl ResolveCx {
         false
     }
 
-    /// A literal's type name resolves in the type namespace alone.
+    /// A literal's type name resolves in the type namespace alone. A
+    /// FN's name here is the empty-block trap: `run {}` reads as a
+    /// record literal, so the remedy names the call.
     mut fn use_type(e: ExprId, name: string) {
         if self.met(e) { return }
-        let found: DeclId? = self.facts.names.types.get(name)
+        let names = self.names_at(e)
+        let found: DeclId? = names.types.get(name)
         if found != null {
             self.bind_use(e, Binding.Decl(found!))
             return
         }
+        if names.fns.get(name) != null { return self.emit(refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared — `${name}` is a fn, and a name before `{ }` reads as a record literal", "used here", "a call taking an empty block writes its parentheses: `${name}() { }`")) }
         self.emit(self.suggested(
             refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared", "used here", null),
-            e, name, self.facts.names.type_names))
+            e, name, names.type_names))
     }
 
     /// A callee resolves in the fn namespace alone.
@@ -423,24 +495,64 @@ impl ResolveCx {
         // A keyword can never NAME a fn, so "no `fn if` is defined"
         // would offer a remedy the naming law itself forbids.
         if self.refused_name(name, self.loc_of(e)) { return }
-        let found: DeclId? = self.facts.names.fns.get(name)
+        let origin: FileId? = self.view.origin_of(e)
+        let names = self.names_in(origin)
+        let found: DeclId? = names.fns.get(name)
         if found != null {
             self.bind_use(e, Binding.Decl(found!))
+            return
+        }
+        // THE TWO-TIER SECOND LOOK: a generated twin is a fn the
+        // written namespace never declared — ask the file's expansions.
+        let gen: DeclId? = self.generated_named(name, origin)
+        if gen != null {
+            self.bind_use(e, Binding.Decl(gen!))
             return
         }
         // no declared fn wears the name: the call may go through a
         // fn-typed LOCAL value (typing judges its shape). Declared
         // fns stay first — a pattern bind shadows READS, never the
         // call (the pinned arm law).
-        let local: Binding? = self.local_binding(name)
+        let local: Binding? = self.local_binding(keyed(name, origin))
         if local != null {
             self.bind_use(e, local!)
             return
         }
-        if self.hidden_def(name) { return self.runtime_binding(name, self.loc_of(e)) }
+        // A NAMED TYPE CONSTRUCTS BY CALL — `UserId(5)`. The type
+        // namespace answers LAST, so no declared fn and no local
+        // value is ever shadowed by a type of the same name; typing
+        // judges the one seat.
+        let as_type: DeclId? = names.types.get(name)
+        if as_type != null {
+            self.bind_use(e, Binding.Decl(as_type!))
+            return
+        }
+        if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, self.loc_of(e)) }
         self.emit(self.suggested(
             refusal("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined", "called here", null),
-            e, name, self.facts.names.fn_names))
+            e, name, names.fn_names))
+    }
+
+    /// The namespace a node's names resolve in: this file's, or the
+    /// one of the file that WROTE a template's run.
+    fn names_at(e: ExprId) -> Namespace { self.names_in(self.view.origin_of(e)) }
+
+    fn names_in(origin: FileId?) -> Namespace {
+        if origin == null { return self.facts.names }
+        let written_in = self.elsewhere.written_in
+        written_in(origin!)
+    }
+
+    /// A generated declaration of THIS file by name. A read of the
+    /// file's own text sees every generated name; a template's read
+    /// sees the declarations ITS template wrote — the declaration's
+    /// identity is the template's, not the target's.
+    fn generated_named(name: string, origin: FileId?) -> DeclId? {
+        let generated = self.elsewhere.generated
+        let found: DeclId? = generated(name)
+        if found == null || origin == null { return found }
+        let wrote: FileId? = self.view.origin_of_stmt(self.view.decls.decl(found!).stmt)
+        if wrote != null && same_file(wrote!, origin!) { found } else { null }
     }
 
     /// One use's resolved binding lands in the fact table.
@@ -453,28 +565,35 @@ impl ResolveCx {
     /// params, then the program scope, then a TYPE used as a value
     /// (`Color` in `Color.red`, which typing gives the compile-only
     /// TypeName shape).
-    fn value_binding(name: string) -> Binding? {
-        let local: Binding? = self.local_binding(name)
+    fn value_binding(name: string, origin: FileId?) -> Binding? {
+        let local: Binding? = self.local_binding(keyed(name, origin))
         if local != null { return local }
         // a type's name, then a NAMED FN as a value — both global,
         // so no capture chains
-        let named_type: DeclId? = self.facts.names.types.get(name)
+        let names = self.names_in(origin)
+        let named_type: DeclId? = names.types.get(name)
         if named_type != null { return Binding.Decl(named_type!) }
-        let f: DeclId? = self.facts.names.fns.get(name)
-        if f == null { return null }
-        Binding.Decl(f!)
+        let f: DeclId? = names.fns.get(name)
+        if f != null { return Binding.Decl(f!) }
+        // THE TWO-TIER SECOND LOOK: a written program knows no such
+        // name; a GENERATED declaration may. The workspace's oracle
+        // materializes on demand and answers, or says none.
+        let gen: DeclId? = self.generated_named(name, origin)
+        if gen == null { return null }
+        Binding.Decl(gen!)
     }
 
     /// The LOCAL half of the name chain, lambda-aware: the
     /// innermost hit wins — a lambda param or an overlay inside a
     /// frame is frame-local; anything below the innermost floor is
     /// the outer world, and every frame between records a CAPTURE
-    /// (nesting chains Capture through Capture).
+    /// (nesting chains Capture through Capture). Asked with the
+    /// name's KEY, so a template's binders and a hole's never meet.
     fn local_binding(name: string) -> Binding? {
         let ohit: int? = overlay_index(self.overlays, name)
         let fhit: int? = frame_param_hit(self.lframes, name)
-        let ohome = if ohit == null { no_frame() } else { overlay_home(self.lframes, ohit!) }
-        let fhome = fhit ?? no_frame()
+        let ohome = if ohit == null { no_frame } else { overlay_home(self.lframes, ohit!) }
+        let fhome = fhit ?? no_frame
         // the deeper home wins; a tie is the overlay's — a `let`
         // after the params shadows them
         if ohit != null && ohome >= fhome {
@@ -489,47 +608,25 @@ impl ResolveCx {
         if idx != null { return self.chained(0, name, Binding.Param(idx! + self.seat_base())) }
         let outer: Binding? = self.outer_binding(name)
         if outer == null { return null }
-        // A CONST IS NEVER CAPTURED: a lambda's env holds run-time
-        // values, and a const has none to hold — its use emits the
-        // value the compiler settled, inside a lambda as anywhere.
-        if self.settled_binding(outer!) { return outer }
         self.chained(0, name, outer!)
     }
 
     /// The top level's binding for a name — unless a fn body is
-    /// asking: its floor hides the run-time values around it.
-    /// The world OUTSIDE the innermost body: a fn sees no run-time
-    /// binding of the top level — but a CONST is not one. The
-    /// compiler settled it, so it crosses the floor like a
-    /// declaration does.
+    /// asking: its floor hides the run-time values around it. (A
+    /// `const` is a declaration, found in the namespace after this.)
     fn outer_binding(name: string) -> Binding? {
-        let held: Binding? = self.visible.get(name)
-        if self.floors.is_empty() { return held }
-        if held == null { return null }
-        if self.settled_binding(held!) { return held }
+        if self.floors.is_empty() { return self.visible.get(name) }
         null
-    }
-
-    /// Whether a binding is a CONST's — asked of the BINDING IN
-    /// HAND, never of the name: a `let` may shadow a const, and then
-    /// the name's first definition and the binding in hand are
-    /// different statements. Every other binding kind is a run-time
-    /// value — a parameter, a pattern's bind, a capture — and any
-    /// kind added later will be one too.
-    fn settled_binding(b: Binding) -> bool {
-        match b {
-            .Def(s) -> settled_stmt(self.view.store, s),
-            _ -> false,
-        }
     }
 
     /// A name a body cannot see: the top level's RUN-TIME binding —
     /// declared before the body or after it, all the same. A const
-    /// is not one; the compiler settled it, so it crosses.
+    /// is not one; it is a declaration, and the namespace answered
+    /// for it before this is asked.
     fn hidden_def(name: string) -> bool {
         if self.floors.is_empty() { return false }
         let store = self.view.store
-        self.all_defs.any(it.name == name && !settled_stmt(store, it.stmt))
+        self.all_defs.any((d) -> d.name == name && store.const_value(d.stmt) == null)
     }
 
     /// Wrap a binding in Capture links for every frame from
@@ -559,16 +656,6 @@ impl ResolveCx {
         if at >= 0 { return at }
         self.facts.captures.set(lam.index, cap with { names: cap.names.concat([name]), sources: cap.sources.concat([source]) })
         cap.names.length
-    }
-
-    /// The chain's STATEMENT-shaped half — overlays, then the
-    /// program scope. Params are not definitions, so assignment
-    /// refuses them through `is_param` instead.
-    fn binding_of(name: string) -> Binding? {
-        let inner: Binding? = overlay_hit(self.overlays, name)
-        if inner != null { return inner }
-        let outer: Binding? = self.outer_binding(name)
-        outer
     }
 
     fn unbound_pronoun(at: Loc?) {
@@ -617,9 +704,9 @@ impl ResolveCx {
         let ix: string? = self.view.store.loop_index(s)
         if ix == null { return }
         let name = ix!
-        if self.refused_name(name, self.stmt_loc(s)) { return }
+        if self.refused_binder(name, self.stmt_loc(s)) { return }
         if name == (self.view.store.let_name(s) ?? "") { return self.paired_alike(s, name) }
-        self.bind(name, Binding.Index(s))
+        self.bind(keyed(name, self.view.origin_of_stmt(s)), Binding.Index(s))
     }
 
     /// A pairing loop names its index and its element apart — one
@@ -631,11 +718,16 @@ impl ResolveCx {
     fn bind_checked(s: StmtId) {
         let binds: string? = self.view.store.let_name(s)
         if binds == null { return }
-        if !self.refused_name(binds!, self.stmt_loc(s)) { self.bind(binds!, Binding.Def(s)) }
+        if self.refused_binder(binds!, self.stmt_loc(s)) { return }
+        // a DECLARED statement (a top-level `const`) is the namespace's:
+        // order-free and module-wide, it binds nowhere in the sequence
+        if self.view.decls.decl_of(self.view.file, s) != null { return }
+        self.bind(keyed(binds!, self.view.origin_of_stmt(s)), Binding.Def(s))
     }
 
     /// Latest binding wins — Map.set IS shadowing. Inside a block,
     /// the binding lives in the innermost overlay and dies with it.
+    /// Bound by the name's KEY.
     fn bind(name: string, b: Binding) {
         if self.overlays.is_empty() {
             self.visible.set(name, b)
@@ -647,13 +739,9 @@ impl ResolveCx {
         }
     }
 
-    fn loc_of(e: ExprId) -> Loc? {
-        loc_at(self.view.source.file, self.view.store.expr_span(e))
-    }
+    fn loc_of(e: ExprId) -> Loc? { self.view.loc_of(e) }
 
-    fn stmt_loc(s: StmtId) -> Loc? {
-        loc_at(self.view.source.file, self.view.store.stmt_span(s))
-    }
+    fn stmt_loc(s: StmtId) -> Loc? { self.view.stmt_loc(s) }
 
     /// A "did you mean" from the given candidates — later and
     /// shadowed names are honest candidates for a typo.
@@ -672,14 +760,15 @@ impl ResolveCx {
     }
 }
 
-/// Whether a program-scope definition is a const's — the one
-/// question both the crossing law and the hiding law ask.
 /// The capture table's key for the receiver — a word no NAME can
 /// spell, `self` being a keyword, so it collides with nothing.
-fn receiver_key() -> string {
-    "self"
-}
+const receiver_key: string = "self"
 
-fn settled_stmt(store: NodeStore, s: StmtId) -> bool {
-    store.const_value(s) != null
+/// A binder's KEY in the scope tables: the name, marked with the file
+/// that wrote a template's text. `@` is unwritable, so a marked key
+/// collides with no written name — a template's `tmp` and a hole's
+/// `tmp` are two keys, which is the whole of hygiene.
+fn keyed(name: string, origin: FileId?) -> string {
+    if origin == null { return name }
+    "${name}@${origin!.index}"
 }

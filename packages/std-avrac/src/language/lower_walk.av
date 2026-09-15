@@ -5,7 +5,7 @@
 //! printed answer.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, Deferred, push_slot, slot_read, adopted, carried_of, okayed, hollow_of, okness_of, void_arm, void_close, semantics_of, stmt_semantics_of, presence_of, open_region, arm_end, close_region_as}
+use features.{LowerCx, Deferred, semantics_of, stmt_semantics_of}
 
 impl LowerCx {
     /// One subtree's register, lowered at first request and
@@ -28,7 +28,7 @@ impl LowerCx {
     mut fn narrowed(e: ExprId, r: Reg) -> Reg {
         let worn: TypeId? = self.facts.narrowed_at(e)
         if worn == null { return r }
-        carried_of(self, r, self.concrete(worn!))
+        self.carried_of(r, self.concrete(worn!))
     }
 
     /// A value a boundary LIFTED — into a nullable, or into a
@@ -43,12 +43,12 @@ impl LowerCx {
         if worn == null { return r }
         let into = self.concrete(worn!)
         let sh: Type = self.view.decls.types.shape_of(into)
-        if sh is .Res { return okayed(self, into, r) }
+        if sh is .Res { return self.okayed(into, r) }
         // an empty array IS a valid list of anything, an empty map a
         // valid map of anything — identity lifts
         if sh is .List || sh is .Map { return r }
         if sh is .Dyn { return self.boxed_into(into, r) }
-        adopted(self, into, self.shape_at(e) is .Null, r)
+        self.adopted(into, self.shape_at(e) is .Null, r)
     }
 
     /// The dyn lift: the box is [value, methods…] in trait order — an
@@ -69,16 +69,16 @@ impl LowerCx {
         }
         let dst = self.out.mint_ty(into)
         self.out.give(Ins.CallRt(dst, "avra_array_new", []))
-        push_slot(self, dst, r)
+        self.push_slot(dst, r)
         for mn in self.view.decls.trait_method_names(tdecl!) {
             let m: DeclId? = self.view.decls.method(target!, mn)
             if m == null {
                 self.defect("an unanswered trait method survived typing")
                 return r
             }
-            let addr = self.out.mint_ty(self.view.decls.types.intern(Type.Int))
+            let addr = self.out.mint_ty(self.view.decls.types.type(int))
             self.out.give(Ins.FnAddr(addr, self.method_symbol(m!, null, self.out.reg_types[r.index])))
-            push_slot(self, dst, addr)
+            self.push_slot(dst, addr)
         }
         dst
     }
@@ -88,7 +88,7 @@ impl LowerCx {
         match self.view.decls.types.shape_of(self.out.reg_types[r.index]) {
             .Struct(d, _) -> d,
             .Enum(d, _) -> d,
-            .Int or .Float or .Bytes or .Ptr or .Str or .Bool or .List(_) or .Opt(_) or .Null or
+            .Int or .Float or .Bytes or .Ptr or .Str or .Bool or .List(_) or .Cell(_) or .Opt(_) or .Null or
             .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or
             .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
@@ -105,14 +105,14 @@ impl LowerCx {
         // the cache answers `T?` — under the niche the nullable IS
         // the pointer, so the guard is the presence protocol and the
         // present arm's carry is identity
-        let maybe = self.view.decls.types.intern(Type.Opt(answer))
+        let maybe = self.view.decls.types.type(answer?)
         let held = self.mint_ty(maybe)
         self.emit(Ins.CallRt(held, "avra_once_get", [key]))
-        open_region(self, presence_of(self, held, maybe))
-        arm_end(self, carried_of(self, held, maybe))
-        let made = self.reg_of(root)
-        self.emit(Ins.CallRtVoid("avra_once_set", [key, made]))
-        close_region_as(self, answer, made)
+        self.region_as(self.presence_of(held, maybe), answer) { cx -> cx.carried_of(held, maybe) } else { cx ->
+            let made = cx.reg_of(root)
+            cx.emit(Ins.CallRtVoid("avra_once_set", [key, made]))
+            made
+        }
     }
 
     /// Statements in order, each through its own StmtSemantics — the
@@ -131,7 +131,9 @@ impl LowerCx {
     /// answer with NO projection refuses HERE, before either engine —
     /// so eval and native cannot diverge on it.
     mut fn print_lowering(last: Reg) -> Diag? {
-        let sh = self.view.decls.types.shape_of(self.out.reg_types[last.index])
+        // A NAME IS TRANSPARENT AT A READ, and printing is one: a
+        // `UserId` prints as its number.
+        let sh = self.view.decls.types.seen_shape(self.out.reg_types[last.index])
         let unprintable: string? = match sh {
             .Struct(_, n) -> n,
             .Enum(_, n) -> n,
@@ -140,7 +142,7 @@ impl LowerCx {
             .TypeName(_, n) -> n,
             .Var(_, _, n) -> n,
             .EmptyList -> "[]",
-            .Opt(_) or .Null or .Dyn(_, _) or .Fn(_, _, _) or .Ptr or .Bytes -> self.view.decls.types.name_of(self.out.reg_types[last.index]),
+            .Opt(_) or .Cell(_) or .Null or .Dyn(_, _) or .Fn(_, _, _) or .Ptr or .Bytes -> self.view.decls.types.name_of(self.out.reg_types[last.index]),
             .Int or .Float or .Str or .Bool or .List(_) or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
         if unprintable != null { return self.no_projection(unprintable!) }
@@ -150,7 +152,7 @@ impl LowerCx {
             .Float -> self.text_call("avra_float_text", last),
             .Bool -> self.text_call("avra_bool_text", last),
             .List(elem) -> self.text_call(self.list_text_callee(elem), last),
-            .Ptr or .Bytes or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or
+            .Ptr or .Bytes or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) -> null,
             .Opt(_) or .Null or .EmptyList -> null,
             .Error or .Void or .Map(_, _) or .EmptyMap -> null,
@@ -166,7 +168,7 @@ impl LowerCx {
     }
 
     mut fn text_call(callee: string, v: Reg) -> Reg {
-        let t = self.out.mint_ty(self.view.decls.types.intern(Type.Str))
+        let t = self.out.mint_ty(self.view.decls.types.type(string))
         self.out.give(Ins.CallRt(t, callee, [v]))
         t
     }
@@ -187,7 +189,7 @@ impl LowerCx {
     mut fn lower_block(stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> Reg {
         self.scope_enter()
         self.lower_stmts(stmts)
-        let r = if value == null { hollow_of(self, ty) } else { self.reg_of(value!) }
+        let r = if value == null { self.hollow_of(ty) } else { self.reg_of(value!) }
         self.scope_exit(r)
         r
     }
@@ -289,10 +291,10 @@ impl LowerCx {
     /// the auto-Ok wrap lifts past this frame — it never does.
     mut fn run_if_failed(d: Deferred, answer: Reg) {
         if !(self.view.types.shape_of(self.out.reg_types[answer.index]) is .Res) { return }
-        self.out.give(Ins.IfStart(okness_of(self, answer)))
-        void_arm(self)
+        self.out.give(Ins.IfStart(self.okness_of(answer)))
+        self.void_arm()
         self.run_deferred(d)
-        void_close(self)
+        self.void_close()
     }
 
     /// One deferred box called — the code address at slot 0, the
@@ -303,9 +305,8 @@ impl LowerCx {
             self.defect("a deferred box without a fn type survived typing")
             return
         }
-        let fp = slot_read(self, d.box, 0, null)
+        let fp = self.slot_read(d.box, 0, null)
         let dst = self.out.mint_ty(held!.answer)
         self.out.give(Ins.CallPtr(dst, fp, [d.box]))
     }
 }
-

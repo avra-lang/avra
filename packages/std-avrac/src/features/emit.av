@@ -1,89 +1,232 @@
 //! THE EMISSION VOCABULARY — the IR's control, constant and measure
-//! shapes, spoken once. A feature's lowering says what its VALUES
-//! are (values.av) and emits its own value shape; a region, an arm,
-//! a constant or a measure it speaks through these verbs, so the two
-//! engines read one instruction stream by construction, never by
-//! two features happening to emit matching brackets.
+//! shapes, spoken once, as methods of the lowering context. A
+//! feature's lowering says what its VALUES are (values.av) and emits
+//! its own value shape; a region, an arm, a constant or a measure it
+//! speaks through these verbs, so the two engines read one
+//! instruction stream by construction, never by two features
+//! happening to emit matching brackets. A two-armed region is ONE
+//! expression whose arms are trailing blocks (`cx.region(c, e) { cx
+//! -> … } else { cx -> … }`), so a site cannot open a bracket it
+//! does not close; the open/arm/close verbs remain for the folds and
+//! switches whose arms are not two.
 use core.{Reg, Ins, Type, TypeId, ExprId, BinOp}
 use features.{MethodCall}
 
 // ── Constants ───────────────────────────────────────────────────
 
-export fn const_int(mut cx: LowerCx, n: int) -> Reg {
-    let r = cx.mint_shape(Type.Int)
-    cx.emit(Ins.ConstInt(r, n))
-    r
+impl LowerCx {
+    mut fn const_int(n: int) -> Reg {
+        let r = self.mint_shape(Type.Int)
+        self.emit(Ins.ConstInt(r, n))
+        r
+    }
+
+    mut fn const_bool(b: bool) -> Reg {
+        let r = self.mint_shape(Type.Bool)
+        self.emit(Ins.ConstBool(r, b))
+        r
+    }
+
+    mut fn const_str(text: string) -> Reg {
+        let r = self.mint_shape(Type.Str)
+        self.emit(Ins.ConstStr(r, text))
+        r
+    }
+
+    /// The node's ANSWER register set to integer zero — a void word's
+    /// answer, a null niche's, an API's "wrote nothing" answer. The
+    /// answer is the only register, written by the constant.
+    mut fn zero(e: ExprId) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.ConstInt(dst, 0))
+        dst
+    }
+
+    // ── Regions ─────────────────────────────────────────────────────
+    // `cond.open_region()`, one `value.arm_end()` per arm but the last,
+    // then `last.close_region()` — the region's value is the arm taken.
+    // The answer register is minted LAST, after every arm's (I29).
+    mut fn open_region(cond: Reg) {
+        self.emit(Ins.IfStart(cond))
+    }
+
+    mut fn arm_end(value: Reg) {
+        self.emit(Ins.ArmEnd(value))
+    }
+
+    /// The region closed as the node's own value.
+    mut fn close_region(e: ExprId, last: Reg) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.RegionEnd(dst, last))
+        dst
+    }
+
+    /// The region closed as a value of `ty` — a scratch region inside a
+    /// node's lowering, not the node's own answer.
+    mut fn close_region_as(ty: TypeId, last: Reg) -> Reg {
+        let dst = self.mint_ty(ty)
+        self.emit(Ins.RegionEnd(dst, last))
+        dst
+    }
+
+    // ── Regions as ONE expression: the brackets spoken here, once,
+    // so a site cannot open a region it does not close. Each arm is
+    // a block handed the context it writes through. ──
+
+    /// A two-armed region as the node's value: `taken` when `cond`
+    /// holds, else `other`.
+    mut fn region(cond: Reg, e: ExprId, taken: fn(mut LowerCx) -> Reg, other: fn(mut LowerCx) -> Reg) -> Reg {
+        self.open_region(cond)
+        self.arm_end(taken(self))
+        self.close_region(e, other(self))
+    }
+
+    /// The same, closed as a value of `ty`.
+    mut fn region_as(cond: Reg, ty: TypeId, taken: fn(mut LowerCx) -> Reg, other: fn(mut LowerCx) -> Reg) -> Reg {
+        self.open_region(cond)
+        self.arm_end(taken(self))
+        self.close_region_as(ty, other(self))
+    }
+
+    /// A valueless region: `body` runs when `cond` holds, and
+    /// nothing reads the merge.
+    mut fn void_region(cond: Reg, body: fn(mut LowerCx)) {
+        self.open_region(cond)
+        body(self)
+        self.void_arm()
+        self.void_close()
+    }
+
+    /// A valueless region with both arms.
+    mut fn void_branches(cond: Reg, taken: fn(mut LowerCx), other: fn(mut LowerCx)) {
+        self.open_region(cond)
+        taken(self)
+        self.void_arm()
+        other(self)
+        self.void_close()
+    }
+
+    // ── Cells ───────────────────────────────────────────────────────
+    /// A cell of `ty`, seeded — the seed minted before the cell.
+    mut fn seeded_cell(ty: TypeId, seed: Reg) -> Reg {
+        let cell = self.mint_ty(ty)
+        self.emit(Ins.Alloca(cell))
+        self.emit(Ins.Store(cell, seed))
+        cell
+    }
+
+    /// The node's answer, read out of its cell.
+    mut fn loaded(e: ExprId, cell: Reg) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.Load(dst, cell))
+        dst
+    }
+
+    // ── Loops ───────────────────────────────────────────────────────
+    // `loop_start`, the condition's instructions, `more.loop_cond()` —
+    // which opens the turn's scope — the body, then `loop_end`.
+    mut fn loop_start() {
+        self.emit(Ins.LoopStart)
+    }
+
+    /// The condition, then the turn's scope — a `defer` frame, so the
+    /// turn's deferred work runs as the turn ends.
+    mut fn loop_cond(more: Reg) {
+        self.emit(Ins.LoopCond(more))
+        self.scope_enter()
+    }
+
+    mut fn loop_end() {
+        self.scope_exit(null)
+        self.emit(Ins.LoopEnd)
+    }
+
+    mut fn opened(subject: ExprId, elem: TypeId) -> Walk {
+        let xs = self.reg_of(subject)
+        let len = self.measure_of(subject, xs, self.type_at(subject))
+        let idx = self.seeded_cell(self.type(int), self.const_int(0))
+        Walk { xs: xs, len: len, idx: idx, elem: elem }
+    }
+
+    /// `lo..hi` — the count starts at `lo` and stops before `hi`.
+    mut fn counted(lo: ExprId, hi: ExprId) -> Walk {
+        let int = self.type(int)
+        Walk { xs: null, len: self.reg_of(hi), idx: self.seeded_cell(int, self.reg_of(lo)), elem: int }
+    }
+
+    /// LoopStart, the condition, and the turn's scope.
+    mut fn turn_open(w: Walk) {
+        self.loop_start()
+        let at = self.mint_shape(Type.Int)
+        self.emit(Ins.Load(at, w.idx))
+        let more = self.mint_shape(Type.Bool)
+        self.emit(Ins.Bin(more, BinOp.Lt, at, w.len))
+        self.loop_cond(more)
+    }
+
+    /// This turn's count, read out of the cell.
+    mut fn turn_index(w: Walk) -> Reg {
+        let here = self.mint_shape(Type.Int)
+        self.emit(Ins.Load(here, w.idx))
+        here
+    }
+
+    /// This turn's element — a RUNTIME index, so the read stays raw.
+    /// Asked of a list's walk only; a range's has no box.
+    mut fn turn_elem(w: Walk, here: Reg) -> Reg {
+        let v = self.mint_ty(w.elem)
+        self.emit(Ins.CallRt(v, "avra_array_get", [w.xs!, here]))
+        v
+    }
+
+    /// The step, and the turn's close.
+    mut fn turn_close(w: Walk) {
+        let again = self.mint_shape(Type.Int)
+        self.emit(Ins.Load(again, w.idx))
+        let one = self.const_int(1)
+        let next = self.mint_shape(Type.Int)
+        self.emit(Ins.Bin(next, BinOp.Add, again, one))
+        self.emit(Ins.Store(w.idx, next))
+        self.loop_end()
+    }
+
+    /// The BREAK idiom: an index past the length ends the walk.
+    mut fn early_exit(w: Walk) {
+        self.emit(Ins.Store(w.idx, w.len))
+    }
+
+    /// The length of a register already in hand, as a scratch int — the
+    /// same word, the same defect; `e` locates the defect.
+    mut fn measure_of(e: ExprId, r: Reg, ty: TypeId) -> Reg {
+        let word: string? = length_word(self.view.types.seen_shape(ty))
+        if word == null { return self.unmeasurable(e) }
+        let len = self.mint_shape(Type.Int)
+        self.emit(Ins.CallRt(len, word!, [r]))
+        len
+    }
+
+    mut fn unmeasurable(e: ExprId) -> Reg {
+        self.lower_defect(e, "a length on an unmeasurable shape survived typing")
+    }
+
+    /// Whether a measured subject (a `List`, `Map` or string) is
+    /// EMPTY — its length against zero. The subject lowers FIRST, the
+    /// answer mints last (I29), as every measure does.
+    mut fn measured_zero(e: ExprId, subject: ExprId) -> Reg {
+        let len = self.measure_of(subject, self.reg_of(subject), self.type_at(subject))
+        let zero = self.const_int(0)
+        let dst = self.result(e)
+        self.emit(Ins.Bin(dst, BinOp.Eq, len, zero))
+        dst
+    }
 }
 
-export fn const_bool(mut cx: LowerCx, b: bool) -> Reg {
-    let r = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.ConstBool(r, b))
-    r
-}
-
-// ── Regions ─────────────────────────────────────────────────────
-// `open_region(cond)`, one `arm_end(value)` per arm but the last,
-// then `close_region(last)` — the region's value is the arm taken.
-// The answer register is minted LAST, after every arm's (I29).
-
-export fn open_region(mut cx: LowerCx, cond: Reg) {
-    cx.emit(Ins.IfStart(cond))
-}
-
-export fn arm_end(mut cx: LowerCx, value: Reg) {
-    cx.emit(Ins.ArmEnd(value))
-}
-
-/// The region closed as the node's own value.
-export fn close_region(mut cx: LowerCx, e: ExprId, last: Reg) -> Reg {
-    let dst = cx.result(e)
-    cx.emit(Ins.RegionEnd(dst, last))
-    dst
-}
-
-/// The region closed as a value of `ty` — a scratch region inside a
-/// node's lowering, not the node's own answer.
-export fn close_region_as(mut cx: LowerCx, ty: TypeId, last: Reg) -> Reg {
-    let dst = cx.mint_ty(ty)
-    cx.emit(Ins.RegionEnd(dst, last))
-    dst
-}
-
-// ── Cells ───────────────────────────────────────────────────────
-
-/// A cell of `ty`, seeded — the seed minted before the cell.
-export fn seeded_cell(mut cx: LowerCx, ty: TypeId, seed: Reg) -> Reg {
-    let cell = cx.mint_ty(ty)
-    cx.emit(Ins.Alloca(cell))
-    cx.emit(Ins.Store(cell, seed))
-    cell
-}
-
-/// The node's answer, read out of its cell.
-export fn loaded(mut cx: LowerCx, e: ExprId, cell: Reg) -> Reg {
-    let dst = cx.result(e)
-    cx.emit(Ins.Load(dst, cell))
-    dst
-}
-
-// ── Loops ───────────────────────────────────────────────────────
-// `loop_start`, the condition's instructions, `loop_cond(more)` —
-// which opens the turn's scope — the body, then `loop_end`.
-
-export fn loop_start(mut cx: LowerCx) {
-    cx.emit(Ins.LoopStart)
-}
-
-/// The condition, then the turn's scope — a `defer` frame, so the
-/// turn's deferred work runs as the turn ends.
-export fn loop_cond(mut cx: LowerCx, more: Reg) {
-    cx.emit(Ins.LoopCond(more))
-    cx.scope_enter()
-}
-
-export fn loop_end(mut cx: LowerCx) {
-    cx.scope_exit(null)
-    cx.emit(Ins.LoopEnd)
+/// `x.is_empty()` — its length, by the shape's measure word, is zero.
+/// Among the control verbs because it is the ONE method every
+/// measurable shape shares — text, lists, bytes.
+// LICENSED I39: a method ROW holds this fn as a value, and a method is none
+export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    cx.measured_zero(mc.e, mc.subject)
 }
 
 // ── The walk ────────────────────────────────────────────────────
@@ -97,98 +240,18 @@ export fn loop_end(mut cx: LowerCx) {
 /// turn reads at the count, and a range has no box to read.
 export type Walk = { xs: Reg?, len: Reg, idx: Reg, elem: TypeId }
 
-export fn opened(mut cx: LowerCx, subject: ExprId, elem: TypeId) -> Walk {
-    let xs = cx.reg_of(subject)
-    let len = measure_of(cx, subject, xs, cx.type_at(subject))
-    let idx = seeded_cell(cx, cx.view.types.intern(Type.Int), const_int(cx, 0))
-    Walk { xs: xs, len: len, idx: idx, elem: elem }
-}
-
-/// `lo..hi` — the count starts at `lo` and stops before `hi`.
-export fn counted(mut cx: LowerCx, lo: ExprId, hi: ExprId) -> Walk {
-    let int = cx.view.types.intern(Type.Int)
-    Walk { xs: null, len: cx.reg_of(hi), idx: seeded_cell(cx, int, cx.reg_of(lo)), elem: int }
-}
-
-/// LoopStart, the condition, and the turn's scope.
-export fn turn_open(mut cx: LowerCx, w: Walk) {
-    loop_start(cx)
-    let at = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Load(at, w.idx))
-    let more = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(more, BinOp.Lt, at, w.len))
-    loop_cond(cx, more)
-}
-
-/// This turn's count, read out of the cell.
-export fn turn_index(mut cx: LowerCx, w: Walk) -> Reg {
-    let here = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Load(here, w.idx))
-    here
-}
-
-/// This turn's element — a RUNTIME index, so the read stays raw.
-/// Asked of a list's walk only; a range's has no box.
-export fn turn_elem(mut cx: LowerCx, w: Walk, here: Reg) -> Reg {
-    let v = cx.mint_ty(w.elem)
-    cx.emit(Ins.CallRt(v, "avra_array_get", [w.xs!, here]))
-    v
-}
-
-/// The step, and the turn's close.
-export fn turn_close(mut cx: LowerCx, w: Walk) {
-    let again = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Load(again, w.idx))
-    let one = const_int(cx, 1)
-    let next = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Bin(next, BinOp.Add, again, one))
-    cx.emit(Ins.Store(w.idx, next))
-    loop_end(cx)
-}
-
-/// The BREAK idiom: an index past the length ends the walk.
-export fn early_exit(mut cx: LowerCx, w: Walk) {
-    cx.emit(Ins.Store(w.idx, w.len))
-}
-
 // ── Measures ────────────────────────────────────────────────────
 
 /// `x.length` on a list, a map or a string — the word the one
 /// measure table gives the shape; the subject lowers FIRST, the
 /// answer mints last. A shape nothing measures is a defect typing
 /// let through.
+// LICENSED I39: a property ROW holds this fn as a value, and a method is none
 export fn measured_reg(mut cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
     let s = cx.reg_of(subject)
-    let word: string? = length_word(cx.view.types.shape_of(cx.type_at(subject)))
-    if word == null { return unmeasurable(cx, e) }
+    let word: string? = length_word(cx.view.types.seen_shape(cx.type_at(subject)))
+    if word == null { return cx.unmeasurable(e) }
     let dst = cx.result(e)
     cx.emit(Ins.CallRt(dst, word!, [s]))
-    dst
-}
-
-/// The length of a register already in hand, as a scratch int — the
-/// same word, the same defect; `e` locates the defect.
-export fn measure_of(mut cx: LowerCx, e: ExprId, r: Reg, ty: TypeId) -> Reg {
-    let word: string? = length_word(cx.view.types.shape_of(ty))
-    if word == null { return unmeasurable(cx, e) }
-    let len = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(len, word!, [r]))
-    len
-}
-
-fn unmeasurable(mut cx: LowerCx, e: ExprId) -> Reg {
-    lower_defect(cx, e, "a length on an unmeasurable shape survived typing")
-}
-
-/// `x.is_empty()` — its length, by the shape's measure word, is zero.
-/// The subject lowers FIRST: `reg_of` may mint, and the answer is
-/// minted last (I29). A method lowering among the control verbs
-/// because it is the ONE method every measurable shape shares —
-/// text, lists, bytes — not a precedent for the rest.
-export fn lower_is_empty(mut cx: LowerCx, mc: MethodCall) -> Reg {
-    let len = measure_of(cx, mc.subject, cx.reg_of(mc.subject), cx.type_at(mc.subject))
-    let zero = const_int(cx, 0)
-    let dst = cx.result(mc.e)
-    cx.emit(Ins.Bin(dst, BinOp.Eq, len, zero))
     dst
 }

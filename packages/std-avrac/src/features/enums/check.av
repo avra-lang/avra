@@ -5,7 +5,7 @@
 //! that spelled them, and a hole under two or more ANSWERING arms
 //! is warned — under one it is a projection, and `rest` is quiet.
 use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined, filled, flatten}
-use features.{TypeCx, EnumSig, spoken, this_is, nothing, duplicate_names, arms_agree, variants_are, types_disagree, seats_fit, stays, pat_semantics_of}
+use features.{TypeCx, EnumSig, this_is, nothing, duplicate_names, variants_are, pat_semantics_of}
 use features.enums.{all_irrefutable, hole_of}
 use diagnostics.{refusal, warning, defect_at}
 
@@ -44,7 +44,7 @@ fn asked_type(mut cx: TypeCx, e: ExprId, subject: ExprId, variant: string) -> Ty
     let declared: EnumSig? = cx.variants_of(cx.type_at(subject))
     if declared == null { return not_askable(cx, subject) }
     if declared!.tag_of(variant) == null { no_variant_asked(cx, e, cx.name_at(subject), variant, declared!) }
-    cx.view.types.intern(Type.Bool)
+    cx.type(bool)
 }
 
 /// THE LITERAL LAW: `.name(args)` is the variant of the enum the
@@ -59,7 +59,7 @@ fn literal_type(mut cx: TypeCx, e: ExprId, name: string, args: List<ExprId>) -> 
     if declared == null { return unenumerated_want(cx, e, name, want) }
     let sig = declared!
     if sig.tag_of(name) == null { return no_variant_wanted(cx, e, cx.view.types.name_of(want), name, sig) }
-    if !seats_fit(cx, e, ".${name}", args, sig.payloads_of(name)) { return cx.error_type }
+    if !cx.seats_fit(e, ".${name}", args, sig.payloads_of(name)) { return cx.error_type }
     want
 }
 
@@ -142,9 +142,14 @@ fn variant_types(mut cx: TypeCx, p: PatId, name: string, args: List<PatId>, expe
 
 /// A literal in a pattern is typed like any literal, then judged
 /// against the subject: a string never matches an int.
+///
+/// A PATTERN READS ITS SUBJECT, so it reads through a NAME: `match
+/// id { 5 -> … }` over a `UserId` compares the number, exactly as
+/// `id == 5` does. The refusal still names the type the writer
+/// WROTE — the subject is a `UserId`, whatever it is read as.
 fn lit_types(mut cx: TypeCx, p: PatId, v: ExprId, expected: TypeId) -> List<TypeId> {
     let got = cx.walk_type(v)
-    if types_disagree(cx, got, expected) { literal_mismatch(cx, p, got, expected) }
+    if cx.types_disagree(got, cx.seen(expected)) { literal_mismatch(cx, p, got, expected) }
     []
 }
 
@@ -349,10 +354,10 @@ fn hidden_checks(mut cx: TypeCx, hole: PatId, answering: int, hidden: List<strin
 }
 
 fn arms_type(mut cx: TypeCx, values: List<ExprId>) -> TypeId {
-    let head: ExprId? = values.find(stays(cx, it))
+    let head: ExprId? = values.find((v) -> cx.stays(v))
     if head == null { return cx.error_type }
     if cx.errored(head!) { return cx.error_type }
-    arms_agree(cx, "type.match", "match", "the first arm", head!, values)
+    cx.arms_agree("type.match", "match", "the first arm", head!, values)
 }
 
 /// `v.ordinal` — the variant's place in the declaration, an int. The
@@ -360,7 +365,7 @@ fn arms_type(mut cx: TypeCx, values: List<ExprId>) -> TypeId {
 /// row, so a non-enum never reaches here.
 // LICENSED I23: a property row's check names the node and the type; the answer needs neither
 export fn check_ordinal(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
-    cx.view.types.intern(Type.Int)
+    cx.type(int)
 }
 
 // ── The voices ──
@@ -371,7 +376,7 @@ fn no_variants(mut cx: TypeCx, s: StmtId, name: string) {
 
 fn not_askable(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
-    spoken(cx, refusal("type.match", cx.loc_of(subject), "`is` asks an enum for its variant, found `${n}`", this_is(n), null))
+    cx.spoken(refusal("type.match", cx.loc_of(subject), "`is` asks an enum for its variant, found `${n}`", this_is(n), null))
 }
 
 fn no_variant_asked(mut cx: TypeCx, e: ExprId, sname: string, v: string, sig: EnumSig) {
@@ -380,20 +385,20 @@ fn no_variant_asked(mut cx: TypeCx, e: ExprId, sname: string, v: string, sig: En
 
 fn not_matchable(mut cx: TypeCx, subject: ExprId) -> TypeId {
     let n = cx.name_at(subject)
-    spoken(cx, refusal("type.match", cx.loc_of(subject), "`match` chooses over an enum, found `${n}`", this_is(n), null))
+    cx.spoken(refusal("type.match", cx.loc_of(subject), "`match` chooses over an enum, found `${n}`", this_is(n), null))
 }
 
 fn unwanted_literal(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
-    spoken(cx, refusal("type.variant_lit", cx.loc_of(e), "`.${name}` needs a known enum — nothing here says which", "built here", "annotate the binding, return it from a fn that declares the type, or write `Type.${name}`"))
+    cx.spoken(refusal("type.variant_lit", cx.loc_of(e), "`.${name}` needs a known enum — nothing here says which", "built here", "annotate the binding, return it from a fn that declares the type, or write `Type.${name}`"))
 }
 
 fn unenumerated_want(mut cx: TypeCx, e: ExprId, name: string, want: TypeId) -> TypeId {
     let n = cx.view.types.name_of(want)
-    spoken(cx, refusal("type.variant_lit", cx.loc_of(e), "`.${name}` builds a variant, and `${n}` has none", this_is(n), null))
+    cx.spoken(refusal("type.variant_lit", cx.loc_of(e), "`.${name}` builds a variant, and `${n}` has none", this_is(n), null))
 }
 
 fn no_variant_wanted(mut cx: TypeCx, e: ExprId, tname: string, name: string, sig: EnumSig) -> TypeId {
-    spoken(cx, refusal("type.variant_lit", cx.loc_of(e), "`${tname}` has no variant `${name}`", "built here", variants_are(sig)))
+    cx.spoken(refusal("type.variant_lit", cx.loc_of(e), "`${tname}` has no variant `${name}`", "built here", variants_are(sig)))
 }
 
 fn unknown_arm(mut cx: TypeCx, p: PatId, sname: string, v: string, sig: EnumSig) -> List<TypeId> {

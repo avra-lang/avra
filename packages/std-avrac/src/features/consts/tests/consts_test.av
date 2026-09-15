@@ -1,8 +1,9 @@
 // `const` — the value the compiler settles. What is proved here:
-// the use IS the value (no slot, no load), the settled law refuses
-// what the compiler cannot compute, an annotation is held to, and a
-// const crosses into a fn body where a top-level `let` cannot.
-use @std.avrac.testing.{shown, refused_with, refusals, ir_of}
+// the use IS the value (no slot, no load), the evaluator SETTLES a
+// computed value at compile time and refuses what traps, runs away
+// or reaches the world, an annotation is held to, and a const
+// crosses into a fn body where a top-level `let` cannot.
+use @std.avrac.testing.{shown, refused_with, refused_at_run, refusals, ir_of}
 use @std.avrac.language.{render_ir}
 
 spec "features/consts — a value the compiler settles" {
@@ -34,17 +35,54 @@ spec "features/consts — a value the compiler settles" {
         then "a NEGATIVE LITERAL is settled — the parse folds it, so `-1` IS a literal" {
             shown("const N: int = -1\nN") == "-1"
         }
-        then "a negated NAME is not — that wants a general folder, which consts cannot write" {
-            refusals("const A: int = 1\nconst B: int = -A\nB") == 1
+        then "a negated NAME settles — the evaluator folds what the parse cannot" {
+            shown("const A: int = 1\nconst B: int = -A\nB") == "-1"
         }
         then "the smallest int stays refused at the lexer, which reads the positive literal first" {
             refused_with("const N: int = -9223372036854775808\nN", "does not fit an `int`")
         }
-        then "a call is not settled" {
-            refused_with("fn f() -> int {\n    3\n}\nconst N = f()\nN", "a const's value must be known at compile time")
+        then "a CALL settles: the evaluator runs it at compile time" {
+            shown("fn f() -> int {\n    3\n}\nconst N: int = f()\nN") == "3"
         }
-        then "a name is not settled either — not yet" {
-            refusals("const A = 1\nconst B = A\nB") == 1
+        then "a const of a const settles" {
+            shown("const A: int = 2 + 3\nconst B: int = A * A\nB") == "25"
+        }
+        then "the settled use is a CONSTANT — no call survives into the program" {
+            let text = render_ir(ir_of("fn f() -> int {\n    3\n}\nconst N: int = f()\nN + 1"))
+            !text.contains("call f") && text.contains("int 3")
+        }
+        then "a computed const infers what it settles to" {
+            shown("fn f() -> int {\n    3\n}\nconst N = f()\nN") == "3"
+        }
+        then "a trap while settling is refused when the const is LOWERED — analysis is clean" {
+            refused_at_run("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nZ", "trapped while settling")
+        }
+        then "a runaway settlement is refused at its budget" {
+            refused_at_run("fn spin() -> int {\n    mut i = 0\n    while i >= 0 { i = i + 1 }\n    i\n}\nconst W: int = spin()\nW", "ran past its budget")
+        }
+    }
+    given "a value that rides a pointer" {
+        then "a list settles, and its uses share ONE box" {
+            shown("fn xs() -> List<int> {\n    [1, 2]\n}\nconst XS: List<int> = xs()\nXS.length + XS.length") == "4"
+        }
+        then "a map settles" {
+            shown("fn m() -> Map<string, int> {\n    mut d: Map<string, int> = {}\n    d.set(\"k\", 5)\n    d\n}\nconst M: Map<string, int> = m()\nM.get(\"k\") ?? 0") == "5"
+        }
+        then "text under `?` settles, present or absent" {
+            shown("fn w(k: int) -> string? {\n    if k > 0 { \"w\" } else { null }\n}\nconst A: string? = w(1)\nconst B: string? = w(0)\n(A ?? \"-\") + (B ?? \"-\")") == "w-"
+        }
+        then "a copy taken from a const is a copy" {
+            shown("fn xs() -> List<int> {\n    [1, 2]\n}\nconst XS: List<int> = xs()\nmut ys = XS\nys.push(3)\n\"\${XS.length} \${ys.length}\"") == "2 3"
+        }
+        then "the use reads static data: no call, no once cache, no initializer" {
+            let text = render_ir(ir_of("fn xs() -> List<int> {\n    [1, 2]\n}\nconst XS: List<int> = xs()\nXS.length"))
+            text.contains("r0 = static const$0$2") && text.contains("static const$0$2 {\n  0: [1, 2]\n}") && !text.contains("avra_once_get") && !text.contains("call const$") && !text.contains("call xs")
+        }
+        then "`?` over a scalar has no compile-time value form yet" {
+            refused_with("fn m() -> int? {\n    3\n}\nconst M = m()\nM ?? 9", "compile-time value form")
+        }
+        then "a named managed aggregate type is inferred" {
+            shown("type P = { x: int, y: int }\nfn p() -> P {\n    P { x: 1, y: 2 }\n}\nconst X = p()\nX.x + X.y") == "3"
         }
     }
     given "an annotation" {

@@ -1,0 +1,257 @@
+// The AST source projection: its output parses, reaches a fixed point
+// after one projection, and keeps the structure readers depend on.
+use @std.avrac.language.{parse_source, render_source, render_statement, render_expression}
+use @std.avrac.core.{Expr, Stmt, new_node_store}
+
+fn canonical(source: string) -> string {
+    let parsed = parse_source(source)
+    if !parsed.voices.list.is_empty() { return "<parse refused>" }
+    render_source(parsed.store, parsed.stmts)
+}
+
+fn stable(source: string) -> bool {
+    let projected = canonical(source)
+    projected != "<parse refused>" && canonical(projected) == projected && same_tree(source, projected)
+}
+
+fn same_tree(source: string, projected: string) -> bool {
+    let before = parse_source(source)
+    let after = parse_source(projected)
+    if !before.voices.list.is_empty() || !after.voices.list.is_empty() || before.stmts.length != after.stmts.length { return false }
+    for j, stmt in before.stmts {
+        if before.store.stmt_fingerprint(stmt) != after.store.stmt_fingerprint(after.stmts[j]) { return false }
+    }
+    true
+}
+
+spec "source text" {
+    given "a small program" {
+        then "layout and precedence have one canonical spelling" {
+            canonical("let x=1+2*3\nif x>2 {\nlet y=x\ny\n} else {\n0\n}") ==
+                "let x = 1 + 2 * 3\n\nif x > 2 {\n    let y = x\n    y\n} else {\n    0\n}"
+        }
+    }
+
+    given "the statement surface" {
+        then "a doc-only edit changes the statement fingerprint" {
+            let before = parse_source("/// a\nfn f() -> int { 1 }")
+            let after = parse_source("/// b\nfn f() -> int { 1 }")
+            before.store.stmt_fingerprint(before.stmts[0]) != after.store.stmt_fingerprint(after.stmts[0])
+        }
+        then "an empty documentation line survives as `///`" {
+            canonical("///\nfn a() -> int { 1 }") == "///\nfn a() -> int {\n    1\n}" &&
+                stable("///\nfn a() -> int { 1 }") &&
+                canonical("/// a\n///\nfn a() -> int { 1 }") == "/// a\n///\nfn a() -> int {\n    1\n}" &&
+                stable("/// a\n///\nfn a() -> int { 1 }")
+        }
+        then "documentation survives annotations, modifiers, and nested trait members" {
+            let source = "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int { 1 }\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}"
+            canonical(source) == "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int {\n    1\n}\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}" && stable(source)
+        }
+        then "declarations, control flow and effects reach a fixed point" {
+            stable("""
+@memo("key", 3)
+export fn choose<T: Show>(mut x: int, f: fn(mut int) -> bool) -> int {
+    let plain = 1
+    mut changing: int = 2
+    const local: int = 3
+    changing = changing + local
+    let _ = f(changing)
+    while changing < 5 {
+        changing = changing + 1
+    }
+    if changing == 5 {
+        changing = 6
+    } else {
+        changing = 7
+    }
+    let found? = maybe else {
+        return 0
+    }
+    for i in 0..3 {
+        changing = changing + i
+    }
+    for j, item in items {
+        changing = changing + j
+    }
+    defer cleanup()
+    errdefer report(changing)
+    return changing
+}
+
+extern fn host(mut value: i64) -> i64
+
+type Pair<T> = {
+    left: T,
+    right: T = fallback,
+}
+
+enum Choice<T> {
+    none
+    one(T)
+    named(value: T)
+}
+
+trait Measure {
+    fn size(self) -> int
+    static fn empty() -> int { 0 }
+}
+
+impl Measure for Pair {
+    fn size(self) -> int { self.left }
+}
+
+use @std.math.{min, max}
+let least = min(1, 2)
+let most = max(1, 2)
+
+spec "printer fixture" {
+    given "a group" {
+        then "one case" { true }
+    }
+    then "top case" { true }
+}
+
+fail problem
+""")
+        }
+    }
+
+    given "the expression surface" {
+        then "literals, aggregates, branches and postfixes reach a fixed point" {
+            stable("""
+let scalar = 12 + 3.5 * 2
+let text = "before ${value} after"
+let truth = !false || true && false
+let list = [1, 2, 3]
+let each = [x * 2 for i, x in list if i > 0]
+let range = [x for x in 0..4]
+let map = {"a": 1, "b": 2}
+let access = map["a"] + point.x
+let branch = if truth { 1 } else { 2 }
+let choice = when {
+    truth -> 1
+    false -> 2
+    _ -> 3
+}
+let record = Pair { left: 1, right: 2 }
+let changed = record with { right: 4 }
+let variant = .named(4)
+let matched = match variant {
+    .none -> 0
+    .one(x) or .named(x) -> x
+    true -> 1
+    "x" -> 2
+    7 -> 3
+    rest -> 4
+}
+let absent = null
+let fallback = absent ?? 9
+let optional = match absent {
+    value? -> value
+    null -> 0
+}
+let closure = (mut x: int) -> x + 1
+let called = closure(2)
+let chained = absent?.size()
+let forced = absent!
+let tagged = variant is .named
+let propagated = result?
+let caught = result catch error -> 0
+let selected = result catch .bad(reason) -> reason
+let many = result catch {
+    .bad(reason) -> reason
+    .worse -> 0
+}
+let pinned = convert<int>(called)
+""")
+        }
+        then "arithmetic and comparisons reach a fixed point" {
+            stable("""
+let sub = 8 - 3
+let div = 8 / 2
+let mod = 8 % 3
+let ne = a != b
+let lt = a < b
+let le = a <= b
+let ge = a >= b
+""")
+        }
+        then "bitwise operators reach a fixed point" {
+            stable("""
+let bits = (a & b) | (c ^ d)
+let left = a << 2
+let right = a >> 2
+""")
+        }
+        then "binary grouping edges reach a fixed point" {
+            stable("""
+let product = (1 + 2) * 3
+let association = 1 - (2 - 3)
+""")
+        }
+        then "rest patterns, optional properties and catch-any reach a fixed point" {
+            stable("""
+let rest_arm = match value {
+    .one(rest) -> 1
+    _ -> 0
+}
+let chained_property = optional?.field
+let recovered = result catch 0
+""")
+        }
+    }
+
+    given "degenerate shapes" {
+        then "an empty program is already canonical" {
+            stable("")
+        }
+        then "empty and singleton containers and bodies reach a fixed point" {
+            stable("""
+fn empty() {}
+fn bare_return() {
+    return
+}
+type Empty<T> = {}
+enum Nothing<T> {}
+trait Marker {}
+impl Empty {}
+spec "empty" {}
+while false {}
+if true {}
+for item in [] {}
+let empty_list = []
+let one_list = [1]
+let empty_map = {}
+let one_map = {"one": 1}
+let one_when = when { _ -> 1 }
+""")
+        }
+    }
+
+    given "recovery nodes" {
+        then "their projection is explicit and parseable" {
+            mut store = new_node_store()
+            let expr = store.alloc_expr(Expr.Error, null)
+            let stmt = store.alloc_stmt(Stmt.Error, null)
+            render_expression(store, expr) == "__error" && render_statement(store, stmt) == "__error" &&
+                stable(render_statement(store, stmt))
+        }
+    }
+
+    given "a value call whose subject is a name" {
+        then "parentheses keep it distinct from a direct declaration call" {
+            mut store = new_node_store()
+            let callee = store.alloc_expr(Expr.Ident("f"), null)
+            let arg = store.alloc_expr(Expr.IntLit(1), null)
+            let call = store.alloc_expr(Expr.CallValue(callee, [arg]), null)
+            render_expression(store, call) == "(f)(1)"
+        }
+    }
+
+    given "a folded negative literal under a postfix" {
+        then "its group survives projection" {
+            stable("let field = (-3).magnitude")
+        }
+    }
+}

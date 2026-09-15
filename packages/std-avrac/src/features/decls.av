@@ -8,11 +8,12 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, GrammarSpec}
+use core.{DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, GrammarSpec}
+use core.{SeatMark, mark_at, plain_mark}
 use @std.path.{stem_of}
-use diagnostics.{loc_at}
+use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
-use features.{TypeRow, TypeArgs}
+use features.{TypeRow, TypeArgs, Said, Unsettled, Lifted, MetaHeap, MetaVal, StructSig, EnumSig, generated_key, Decl, Node, Generated, Origin, Origins, no_origins}
 
 /// A file's path facts — known at first mention, before its parse.
 export type FileInfo = { id: FileId, path: string, module_id: ModuleId }
@@ -44,6 +45,28 @@ export type Decls = {
     decls: List<Decl>,
     keys: Map<string, DeclId>,
     sigs: List<DeclSig?>,
+    // a GENERATED declaration's origin — null for every written one
+    provenance: List<Provenance?>,
+    // a file's admitted GENERATIONS, in order — the arena ranges each
+    // took and the annotation that asked; dense by FileId
+    generations: List<List<Generation>>,
+    // a generated node's ORIGIN — the file whose template wrote it;
+    // `Here` for a written node and for one whose name came through a
+    // hole; dense by FileId, then by arena index
+    origins: List<Origins>,
+    // what a file's expansions REFUSED — generated source that did not
+    // parse, spoken at the template that wrote it; dense by FileId
+    expansion_voices: List<List<Diag>>,
+    // `@std/meta`'s declarations by name, found once each
+    meta_ids: Map<string, DeclId>,
+    // a declaration's WARNINGS: the words it keeps for its users,
+    // computed on first ask through `ensure_marks` (null = unasked)
+    marks: List<List<Said>?>,
+    ensure_marks: List<fn(DeclId)>,
+    // the ROOT package's manifest name — its modules carry no package
+    // prefix, and a kind spoken there still wears the package
+    root_name: List<string>,
+    const_types: Map<string, TypeId>,
     children: List<List<DeclId>>,
     methods: List<List<DeclId>>,
     impls: List<List<DeclId>>,
@@ -52,6 +75,12 @@ export type Decls = {
     // without walking every declaration in the workspace
     impls_by_name: Map<string, List<DeclId>>,
     ensure: List<fn(DeclId)>,
+    // the workspace's const-type hook: types the const, and answers
+    // whether this ask closed a cycle
+    ensure_const: List<fn(FileId, StmtId) -> bool>,
+    // the workspace's lifting hook: an annotation fn run over a
+    // declaration at compile time, what it said back
+    lifter: List<fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>>,
     ensure_methods: List<fn(DeclId)>,
     // the language's own type declarations, one per row that is an
     // enum — and the rows they read their parts from
@@ -60,22 +89,47 @@ export type Decls = {
     // an impl block's target type, once typing found it — dense by
     // DeclId; a method's instantiation is its target's
     targets: List<DeclId?>,
-    // THE INOUT SEATS, dense by DeclId: which seats a fn declared
-    // `mut` (a method's receiver seat included), whether a method
-    // DECLARED `mut fn`, and whether the receivers pass found it
-    // WRITING through `self` — asked through the armed hook
-    seat_muts: List<List<bool>>,
+    // THE INOUT SEATS, dense by DeclId: each seat's CONTRACT a fn
+    // declared (`mut`, `const`), whether a method DECLARED `mut fn`,
+    // and whether the receivers pass found it WRITING through `self`
+    // — asked through the armed hook
+    seat_marks: List<List<SeatMark>>,
     declared_writes: List<bool>,
     written_seats: List<List<bool>>,
     ensure_writes: List<fn(DeclId)>,
 }
 
+/// Where no workspace stands behind the table, nothing lifts.
+// LICENSED I23: a fn VALUE filling the lifter seat — its parameters are the seat's contract, and the answer needs none of them
+fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
+    .Err(Unsettled.Trap("nothing here lifts an annotation"))
+}
+
+// LICENSED I23: the hook's contract carries the declaration
+fn no_marks(d: DeclId) {
+}
+
+// LICENSED I23: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
+fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
+
+/// A const's type as the program answers it — or why it has none:
+/// the const REFUSED (spoken at its own value), or its value asks
+/// for its own type, which only the asking read can speak.
+export enum ConstType {
+    Known(TypeId)
+    Refused
+    Cyclic
+}
+
+fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
+
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
-        stores: [], decl_ids: [], file_decls: [], decls: [], keys: {}, sigs: [], children: [], methods: [], impls: [], impls_by_name: {},
-        ensure: [no_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
-        seat_muts: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
+        stores: [], decl_ids: [], file_decls: [], generations: [], origins: [], expansion_voices: [], meta_ids: {}, decls: [], keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], root_name: [""], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
+        ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
+        seat_marks: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
+        lifter: [no_lifter],
     }
 }
 
@@ -100,14 +154,16 @@ fn no_ensure(d: DeclId) {
 export fn kind_word(k: DeclKind) -> string {
     match k {
         .Fn -> "fn",
-        .Record -> "type",
+        .Record or .Named -> "type",
         .Enum -> "enum",
         .Trait -> "trait",
+        .Syntax -> "syntax",
         .Method -> "method",
         .Default -> "default",
         .Impl -> "impl",
         .Main -> "main",
         .Case -> "case",
+        .Const -> "const",
         .Builtin -> "builtin",
     }
 }
@@ -129,6 +185,9 @@ impl Decls {
         self.stores.push(null)
         self.decl_ids.push([])
         self.file_decls.push([])
+        self.generations.push([])
+        self.origins.push(no_origins())
+        self.expansion_voices.push([])
         self.mains.push(null)
         id
     }
@@ -190,6 +249,18 @@ impl Decls {
                     if fd.default != null { made.push(self.mint_default(key, f, s, fd, name, d)) }
                 }
             }
+            // a top-level `const` is a declaration like a fn: module-wide,
+            // order-free, exported only when it says so.
+            if store.const_value(s) != null {
+                let name = store.let_name(s) ?? ""
+                let key = fresh_key("${path}::const::${name}", s, seen)
+                seen.push(key)
+                let d = self.mint(key, f, s, name, DeclKind.Const, store.is_exported(s), "", null, false, null)
+                by_stmt.set(s.index, d)
+                out.push(d)
+                made.push(d)
+                self.orphan(d)
+            }
             let sp: SpecParts? = store.spec_parts(s)
             if sp != null {
                 let suite = sp!
@@ -214,7 +285,7 @@ impl Decls {
                 }
             }
         }
-        let main = self.mint("${path}::main", f, stmts.first() ?? no_stmt(), "main", DeclKind.Main, false, "", null, false, null)
+        let main = self.mint("${path}::main", f, stmts.first() ?? no_stmt, "main", DeclKind.Main, false, "", null, false, null)
         made.push(main)
         self.mains.set(f.index, main)
         // A declaration NESTED in a body is refused by its feature, but
@@ -245,13 +316,21 @@ impl Decls {
         // range is the empty 0..0
         mut lo: List<int> = filled(self.decls.length, 0 - 1)
         mut hi: List<int> = filled(self.decls.length, 0)
+        // A SYNTHESIZED NODE HAS NO SPAN, AND A RANGE THAT SKIPS IT
+        // STOPS SHORT OF IT. A desugaring is minted where it is used,
+        // so source order is ownership order: a span-less expression
+        // belongs to whoever owned the one before it. Skipping them
+        // left a range-headed `for` — whose condition and step are
+        // minted span-less — reaching PAST its own declaration's
+        // window, and `type_at` trapped instead of answering. A fn
+        // hid it, because its body is a block expression allocated
+        // after them and its span carries the range over.
+        mut owner = main
         for i in 0..store.exprs.count() {
             let sp: Span? = store.expr_span(ExprId { index: i })
-            if sp != null {
-                let owner = self.innermost(owners, sp!) ?? main
-                if lo[owner.index] < 0 { lo.set(owner.index, i) }
-                hi.set(owner.index, i + 1)
-            }
+            if sp != null { owner = self.innermost(owners, sp!) ?? main }
+            if lo[owner.index] < 0 { lo.set(owner.index, i) }
+            hi.set(owner.index, i + 1)
         }
         for d in [o.d for o in owners].concat([main]) {
             let i = d.index
@@ -338,8 +417,10 @@ impl Decls {
             self.decls.push(d)
             self.keys.set(key, id)
             self.sigs.push(null)
+            self.provenance.push(null)
+            self.marks.push(null)
             self.targets.push(null)
-            self.seat_muts.push([])
+            self.seat_marks.push([])
             self.declared_writes.push(false)
             self.written_seats.push([])
             self.children.push([])
@@ -364,9 +445,206 @@ impl Decls {
         held
     }
 
+    // ── generated source, parsed and admitted ──
+
+    /// Generated SOURCE admitted beside the declaration that asked for
+    /// it: the code was parsed INTO this file's store (no copy), so the
+    /// declarations mint from the same arena every pass already reads.
+    fn mint_generated_code(f: FileId, store: NodeStore, stmts: List<StmtId>, lo: int, tag: string, ann: string, at: Span?) -> List<DeclId> {
+        // each statement keys under its place, so two impls of one
+        // target in one generation mint two
+        let made = flatten([self.mint_code_stmt(f, store, s, "${tag}$${j}", ann, at, lo) for j, s in stmts])
+        self.record_generated(f, made)
+        made
+    }
+
+    /// One generated statement: its declaration and members, or its
+    /// impl block and methods.
+    fn mint_code_stmt(f: FileId, store: NodeStore, s: StmtId, tag: string, ann: string, at: Span?, lo: int) -> List<DeclId> {
+        let kind: DeclKind? = store.declared_kind(s)
+        if kind != null { return self.mint_code_decl(f, store, s, kind!, tag, ann, at, lo) }
+        if store.const_value(s) != null { return [self.mint_code_const(f, store, s, tag, ann, at, lo)] }
+        let ip: ImplParts? = store.impl_parts(s)
+        if ip != null { return self.mint_code_impl(f, store, s, ip!, tag, ann, at, lo) }
+        []
+    }
+
+    /// A generated top-level `const`: a declaration like a written one,
+    /// wearing the range of its own value.
+    fn mint_code_const(f: FileId, store: NodeStore, s: StmtId, tag: string, ann: string, at: Span?, lo: int) -> DeclId {
+        let name = store.let_name(s) ?? ""
+        let d = self.mint(generated_key(f, "${tag}$${name}"), f, s, name, DeclKind.Const, false, "", null, false, null)
+        self.note_provenance(d, ann, name, at)
+        self.decls.set(d.index, self.decl(d) with { lo: lo, hi: store.const_value(s)!.index + 1 })
+        d
+    }
+
+    /// A generated declaration, under the key no written name can take,
+    /// with its trait members beside it. EVERY generated declaration
+    /// wears its OWN expression range, not the block's: its body is the
+    /// last node of a contiguous subtree (children mint before their
+    /// owner), so the range runs from the previous sibling's end to its
+    /// own body — exactly the window `range_bodies` gives a written
+    /// impl's methods, and the range whose absence left a generated
+    /// pattern without its enum.
+    fn mint_code_decl(f: FileId, store: NodeStore, s: StmtId, kind: DeclKind, tag: string, ann: string, at: Span?, lo: int) -> List<DeclId> {
+        let name = store.declared_name(s) ?? ""
+        let key = generated_key(f, "${tag}$${name}")
+        let body: ExprId? = store.fn_parts(s)?.body
+        let d = self.mint(key, f, s, name, kind, false, "", null, false, body)
+        self.note_provenance(d, ann, name, at)
+        let fns: List<StmtId> = store.trait_parts(s)?.fns ?? []
+        mut cursor = lo
+        mut members: List<DeclId> = []
+        for m in fns {
+            let mb: ExprId? = declared_body(store, m)
+            let hi: int = if mb == null { cursor } else { mb!.index + 1 }
+            let md = self.mint_method(key, f, store, m, name, d, mb)
+            self.decls.set(md.index, self.decl(md) with { lo: cursor, hi: hi })
+            members.push(md)
+            cursor = hi
+        }
+        let own_hi: int = if body == null { cursor } else { body!.index + 1 }
+        self.decls.set(d.index, self.decl(d) with { lo: lo, hi: own_hi })
+        [d].concat(members)
+    }
+
+    /// A generated impl block, with its methods under it, each wearing
+    /// its own expression range (see `mint_code_decl`).
+    fn mint_code_impl(f: FileId, store: NodeStore, s: StmtId, block: ImplParts, tag: string, ann: string, at: Span?, lo: int) -> List<DeclId> {
+        let key = generated_key(f, "${tag}$${block.target}$$impl")
+        let block_decl = self.mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
+        self.note_provenance(block_decl, ann, block.target, at)
+        mut cursor = lo
+        mut methods: List<DeclId> = []
+        for m in block.fns {
+            let mb: ExprId? = store.fn_parts(m)?.body
+            let hi: int = if mb == null { cursor } else { mb!.index + 1 }
+            let md = self.mint_method(key, f, store, m, block.target, block_decl, mb)
+            self.decls.set(md.index, self.decl(md) with { lo: cursor, hi: hi })
+            methods.push(md)
+            cursor = hi
+        }
+        self.decls.set(block_decl.index, self.decl(block_decl) with { lo: lo, hi: cursor })
+        [block_decl].concat(methods)
+    }
+
+    /// A generated declaration joins the file's LIST and its statement
+    /// table, so `items`, the namespace, resolve and lowering read it
+    /// as written. The statement table is grown to the arena first —
+    /// `decl_of` reads it by statement, and a miss reads past its end.
+    fn record_generated(f: FileId, made: List<DeclId>) {
+        mut by_stmt = self.decl_ids[f.index]
+        let stmts = self.store_of(f).stmts.count()
+        if by_stmt.length < stmts { by_stmt = by_stmt.concat(filled<DeclId?>(stmts - by_stmt.length, null)) }
+        for d in made { by_stmt.set(self.decl(d).stmt.index, d) }
+        self.decl_ids.set(f.index, by_stmt)
+        self.file_decls.set(f.index, self.file_decls[f.index].concat(made))
+    }
+
+    /// A GENERATED declaration — an annotation's traced twin — minted
+    /// into its file's store and decl table under a key no WRITTEN
+    /// name can take. The body is the wrap: the original's own call,
+    /// bound and answered. The twin carries the original's type
+    /// parameters and parameter seats, so it answers like the original,
+    /// and its own expression range, so typing, resolution and lowering
+    /// read it as written.
+    fn mint_generated(f: FileId, name: string, tparams: List<Param>, params: List<Param>, ret: TypeRef, original: string, ann: string, at: Span?) -> DeclId {
+        let key = generated_key(f, name)
+        let known: DeclId? = self.known_id(key)
+        if known != null { return known! }
+        mut store = self.store_of(f)
+        // THE GENERATED RANGE's LO: the arena's edge BEFORE any of the
+        // twin's nodes mint — its subtree is allocated first (children
+        // before the block that holds them), then the FnDecl stmt.
+        let lo = store.exprs.count()
+        // THE WRAP: let v = original(args); v — the twin answers the
+        // original's call. The temp's name carries the twin's own
+        // mark, which no WRITTEN binding can collide with. (The enter
+        // / exit puts wrap is a later directive; v1 proves the seam.)
+        let v = "${name}$$v"
+        let arg_ids = [store.alloc_expr(Expr.Ident(p.name), at) for p in params]
+        let call = store.alloc_expr(Expr.Call(original, [], arg_ids), at)
+        let bound = store.alloc_expr(Expr.Ident(v), at)
+        let l2 = store.alloc_stmt(Stmt.Let(v, null, call), at)
+        let body = store.alloc_expr(Expr.Block([l2], bound), at)
+        let s = store.alloc_stmt(Stmt.FnDecl(name, tparams, params, ret, body), at)
+        let d = self.mint(key, f, s, name, DeclKind.Fn, false, "", null, false, body)
+        // THE GENERATED RANGE: the twin's own nodes, minted last, so
+        // its body's exprs sit at the arena's end — lo its first, hi
+        // the arena's edge (nothing after it is another's). Typing,
+        // resolution and lowering read it exactly as a written fn.
+        let hi = store.exprs.count()
+        self.decls.set(d.index, self.decl(d) with { lo: lo, hi: hi })
+        self.record_generated(f, [d])
+        self.note_provenance(d, ann, original, at)
+        d
+    }
+
     // ── declarations ──
 
     fn decl(d: DeclId) -> Decl { self.decls[d.index] }
+
+    /// A generated declaration's origin, or null for a written one.
+    fn provenance_of(d: DeclId) -> Provenance? { self.provenance[d.index] }
+
+    /// Record a generated declaration's origin: who asked, what it
+    /// wraps or names, and where.
+    fn note_provenance(d: DeclId, ann: string, original: string, at: Span?) {
+        self.provenance.set(d.index, Provenance { ann: ann, original: original, at: at })
+    }
+
+    /// The template a generated declaration was copied from — the
+    /// quote's file and offset — beside who asked.
+    fn note_template(d: DeclId, template: Loc?) {
+        let held: Provenance? = self.provenance[d.index]
+        if held == null { return }
+        self.provenance.set(d.index, held! with { template: template })
+    }
+
+    /// One more generation admitted to a file.
+    fn note_generation(f: FileId, g: Generation) {
+        self.generations.set(f.index, self.generations[f.index].concat([g]))
+    }
+
+    /// Nodes copied from a template: each wears the file that wrote it.
+    fn note_origins(f: FileId, exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, origin: FileId) {
+        mut known = self.origins[f.index]
+        let wrote = Origin.Written(origin)
+        for e in exprs { known.exprs = known.set_at(known.exprs, e.index, wrote) }
+        for s in stmts { known.stmts = known.set_at(known.stmts, s.index, wrote) }
+        for p in pats { known.pats = known.set_at(known.pats, p.index, wrote) }
+        self.origins.set(f.index, known)
+    }
+
+    /// The file a generated node was WRITTEN in, when it is another
+    /// than the node's own.
+    fn origin_of_expr(f: FileId, e: ExprId) -> FileId? { self.origins[f.index].at(self.origins[f.index].exprs, e.index) }
+    fn origin_of_stmt(f: FileId, s: StmtId) -> FileId? { self.origins[f.index].at(self.origins[f.index].stmts, s.index) }
+    fn origin_of_pat(f: FileId, p: PatId) -> FileId? { self.origins[f.index].at(self.origins[f.index].pats, p.index) }
+
+    /// What a file's expansion refused, kept for its resolve to speak.
+    fn speak_expansion(f: FileId, ds: List<Diag>) {
+        self.expansion_voices.set(f.index, self.expansion_voices[f.index].concat(ds))
+    }
+
+    /// A file's expansion begins with nothing refused.
+    fn hush_expansion(f: FileId) {
+        self.expansion_voices.set(f.index, [])
+    }
+
+    /// The generation a file's node came from — null for a written one.
+    fn generation_of(f: FileId, e: ExprId) -> Generation? {
+        self.generations[f.index].find(it.exprs.lo <= e.index && e.index < it.exprs.hi)
+    }
+
+    fn generation_of_stmt(f: FileId, s: StmtId) -> Generation? {
+        self.generations[f.index].find(it.stmts.lo <= s.index && s.index < it.stmts.hi)
+    }
+
+    fn generation_of_pat(f: FileId, p: PatId) -> Generation? {
+        self.generations[f.index].find(it.pats.lo <= p.index && p.index < it.pats.hi)
+    }
 
     /// The declaration a statement of a file makes, when it does.
     fn decl_of(f: FileId, s: StmtId) -> DeclId? {
@@ -377,7 +655,72 @@ impl Decls {
     fn store(d: DeclId) -> NodeStore { self.store_of(self.decl(d).file) }
 
     fn module_of(d: DeclId) -> string { self.module_name(self.file(self.decl(d).file).module_id) }
-    fn package_of(d: DeclId) -> string { package_of_module(self.module_of(d)) }
+    /// A declaration's package — its module's, by `package_named`.
+    fn package_of(d: DeclId) -> string { self.package_named(self.module_of(d)) }
+
+    /// A module's package in the DOTTED spelling every package read
+    /// compares (`@std.meta`): the prefix a dependency's module carries,
+    /// or the root's manifest name for a root module, which none
+    /// prefixes — "" for a lone file, which has no package.
+    fn package_named(module: string) -> string {
+        let named = package_of_module(module)
+        if named.is_empty() { self.root_name[0] } else { named }
+    }
+
+    /// The root package's manifest name, kept in the dotted spelling.
+    fn name_root(name: string) { self.root_name.set(0, name.replace("/", ".")) }
+
+    /// Whether a meta seat takes a declaration WHOLE — the three
+    /// receiver kinds and the metadata-only `Named`. The annotation
+    /// boundary's ONE spelling, read by typing and by the crossing.
+    fn takes_a_decl(ty: TypeId) -> bool {
+        self.meta_type(ty, "Type") || self.meta_type(ty, "Trait") ||
+            self.meta_type(ty, "Fn") || self.meta_type(ty, "Named")
+    }
+
+    /// Whether a meta value CARRIES A NAME — a declaration's, a
+    /// field's, a variant's, a parameter's — which is what a quote's
+    /// hole splices of it.
+    fn meta_names_one(ty: TypeId) -> bool {
+        self.takes_a_decl(ty) || self.meta_type(ty, "Field") || self.meta_type(ty, "Variant") || self.meta_type(ty, "Param")
+    }
+
+    /// A declaration of `@std/meta` by name — the compiler's own door
+    /// to the meta vocabulary (`Code`, `quoted`, `joined`); null when
+    /// the program does not load the package.
+    fn meta_named(name: string) -> DeclId? {
+        let known: DeclId? = self.meta_ids.get(name)
+        if known != null { return known }
+        let ms = [ModuleId { index: j } for j, m in self.modules if package_of_module(m) == "@std.meta"]
+        if ms.is_empty() { return null }
+        let ds: List<DeclId> = flatten([self.file_decls[f.index] for f in self.module_files[ms[0].index]])
+        let found: DeclId? = ds.find((d: DeclId) -> self.decl(d).name == name)
+        if found != null { self.meta_ids.set(name, found!) }
+        found
+    }
+
+    /// A `@std/meta` record crossed, filled by NAME — null when the
+    /// program does not load the package.
+    fn meta_record(name: string, heap: MetaHeap, filled: Map<string, MetaVal>) -> MetaVal? {
+        let d: DeclId? = self.meta_named(name)
+        if d == null { return null }
+        let sig: StructSig? = self.fields_of_type(self.self_type_of(d!))
+        if sig == null { return null }
+        meta_row(heap, sig!, filled)
+    }
+
+    /// Whether a type is one declaration exported by `@std/meta`.
+    /// The DeclId is the identity; the package and export name locate
+    /// that identity without accepting an equal-shaped user record.
+    fn meta_type(ty: TypeId, name: string) -> bool {
+        match self.types.shape_of(ty) {
+            // THE DECLARATION'S name, never the WRITTEN spelling: a
+            // `use @std.meta.{Fn as F}` gives the type the alias in its
+            // written name, and the boundary must still read `Fn`.
+            .Struct(d, _) -> self.decl(d).name == name && self.package_of(d) == "@std.meta",
+            rest -> false,
+        }
+    }
 
     /// A declaration's signature — asking it IS the query: the hook
     /// the workspace arms computes it on first ask and records the
@@ -395,13 +738,228 @@ impl Decls {
     /// sig asked after that is held or, loudly, absent.
     fn disarm() {
         self.ensure.set(0, no_ensure)
+        self.ensure_const.set(0, no_const_ensure)
         self.ensure_methods.set(0, no_ensure)
         self.ensure_writes.set(0, no_ensure)
+        self.ensure_marks.set(0, no_marks)
+        self.lifter.set(0, no_lifter)
     }
 
     /// The workspace arms the sig hook once.
     fn arm(ensure: fn(DeclId)) {
         self.ensure.set(0, ensure)
+    }
+
+    fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(0, ensure) }
+
+    fn const_type(f: FileId, s: StmtId) -> ConstType {
+        let ensure = self.ensure_const[0]
+        if ensure(f, s) { return ConstType.Cyclic }
+        let held: TypeId? = self.held_const_type(f, s)
+        if held == null { return ConstType.Refused }
+        ConstType.Known(held!)
+    }
+
+    fn held_const_type(f: FileId, s: StmtId) -> TypeId? { self.const_types.get(const_type_key(f, s)) }
+
+    fn record_const_type(f: FileId, s: StmtId, ty: TypeId) {
+        self.const_types.set(const_type_key(f, s), ty)
+    }
+
+    /// The workspace arms the lifting hook once.
+    fn arm_lifter(lift: fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>) {
+        self.lifter.set(0, lift)
+    }
+
+    /// The workspace arms the marks hook once — a declaration's
+    /// use-site warnings are a query of the program, never a table
+    /// an earlier walk happened to fill.
+    fn arm_marks(ensure: fn(DeclId)) {
+        self.ensure_marks.set(0, ensure)
+    }
+
+    /// A declaration's warnings, asked at a use. Asking IS the
+    /// computation; the table only holds.
+    fn marks(d: DeclId) -> List<Said> {
+        let ensure = self.ensure_marks[0]
+        ensure(d)
+        let held: List<Said>? = self.marks[d.index]
+        held ?? []
+    }
+
+    fn record_marks(d: DeclId, xs: List<Said>) {
+        self.marks.set(d.index, xs)
+    }
+
+    /// An annotation fn `d` run over the declaration at `s` in file
+    /// `f`, with these settled arguments — asking IS the run.
+    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
+        let lift = self.lifter[0]
+        lift(d, f, s, call, args)
+    }
+
+    /// What a lifted call SAID: each `Diagnostic` of its answer, read
+    /// by the element record's field names.
+    fn saids(r: Lifted, ret: TypeId) -> List<Said> {
+        let sig: StructSig? = self.elem_sig(ret)
+        if sig == null { return [] }
+        [self.said_of(r.heap, sig!, item) for item in r.heap.slots(r.answer)]
+    }
+
+    /// A Declares answer's rows: each `Directive` of the crossed list,
+    /// read by its field names — the same field protocol `said_of` uses.
+    fn directives_of(r: Lifted, ret: TypeId) -> List<Directive> {
+        let sig: StructSig? = self.elem_sig(ret)
+        if sig == null { return [] }
+        [self.directive_of(r.heap, sig!, item) for item in r.heap.slots(r.answer)]
+    }
+
+    /// The element record's sig of a list answer, or null for none.
+    fn elem_sig(ret: TypeId) -> StructSig? {
+        let elem: TypeId? = self.elem_of(ret)
+        if elem == null { return null }
+        self.fields_of_type(elem!)
+    }
+
+    /// A crossed `Directive` row: the twin's name, the original's, and
+    /// the site — the three fields the materializer mints from.
+    fn directive_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Directive {
+        Directive {
+            twin: self.text_of_meta(self.field_of(heap, sig, item, "twin")),
+            name: self.text_of_meta(self.field_of(heap, sig, item, "name")),
+            at: self.loc_of_meta(heap, self.field_of(heap, sig, item, "at")),
+            source: self.source_of(heap, sig, item),
+        }
+    }
+
+    /// What a directive's `source` crossed as. THE TWO ABSENCES ARE
+    /// DIFFERENT: a directive declaring none, and one whose value is
+    /// there and does not cross — which used to answer null and
+    /// generate nothing quietly, beside a sibling law that says a
+    /// fill the compiler cannot place is spoken, never spliced.
+    fn source_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Generated {
+        let at = sig.names.index_of("source")
+        if at < 0 { return Generated.None }
+        let held = self.field_of(heap, sig, item, "source")
+        if held is .Absent { return Generated.None }
+        let made: Node? = self.node_of_meta(heap, sig.types[at], held)
+        if made == null { return Generated.Foreign }
+        Generated.Made(made!)
+    }
+
+    /// A list type's element, or null for any other shape.
+    fn elem_of(ty: TypeId) -> TypeId? {
+        match self.types.shape_of(ty) {
+            .List(e) -> e,
+            _ -> null,
+        }
+    }
+
+    fn said_of(heap: MetaHeap, sig: StructSig, item: MetaVal) -> Said {
+        Said {
+            message: self.text_of_meta(self.field_of(heap, sig, item, "message")),
+            help: self.optional_text(self.field_of(heap, sig, item, "help")),
+            at: self.loc_of_meta(heap, self.field_of(heap, sig, item, "at")),
+            warning: self.bool_of_meta(self.field_of(heap, sig, item, "warning")),
+            kind: self.optional_text(self.field_of(heap, sig, item, "kind")),
+        }
+    }
+
+    /// A crossed row's slot by its seat's field name — the ONE read
+    /// across the meta boundary; absence for a name the seat lacks.
+    fn field_of(heap: MetaHeap, sig: StructSig, item: MetaVal, name: string) -> MetaVal {
+        let i = sig.names.index_of(name)
+        if i < 0 { return MetaVal.Absent }
+        heap.slots(item)[i]
+    }
+
+    fn int_of_meta(v: MetaVal) -> int {
+        match v {
+            .Int(n) -> n,
+            .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> 0,
+        }
+    }
+
+    /// A crossed template value (`Code`, `Stmts`, `Arms`, `Decls`):
+    /// its one field, the node.
+    fn node_of_meta(heap: MetaHeap, ty: TypeId, v: MetaVal) -> Node? {
+        if v is .Absent { return null }
+        let held: StructSig? = self.fields_of_type(self.types.carried(ty) ?? ty)
+        if held == null { return null }
+        let sig = held!
+        let at = sig.names.index_of("node")
+        if at < 0 { return null }
+        self.node_value(heap, sig.types[at], self.field_of(heap, sig, v, "node"))
+    }
+
+    /// A crossed `@std.meta.Node`: the tag names the variant, the
+    /// slots after it are the payloads — the meta enum and the
+    /// compiler's mirror agree by the VARIANT'S NAME, never a position.
+    fn node_value(heap: MetaHeap, ty: TypeId, v: MetaVal) -> Node? {
+        let sig: EnumSig? = self.variants_of_type(ty)
+        let slots = heap.slots(v)
+        if sig == null || slots.is_empty() { return null }
+        let tag = self.int_of_meta(slots[0])
+        if tag < 0 || tag >= sig!.names.length { return null }
+        match sig!.names[tag] {
+            "Template" -> Node.Template(self.text_of_meta(slots[1]), self.int_of_meta(slots[2]), self.texts_of_meta(heap, slots[3]), self.nodes_of_meta(heap, ty, slots[4])),
+            "Name" -> Node.Name(self.text_of_meta(slots[1])),
+            "Text" -> Node.Text(self.text_of_meta(slots[1])),
+            "Int" -> Node.Int(self.int_of_meta(slots[1])),
+            "Float" -> Node.Float(self.bits_of_meta(slots[1])),
+            "Bool" -> Node.Bool(self.bool_of_meta(slots[1])),
+            "Interp" -> Node.Interp(self.texts_of_meta(heap, slots[1]), self.nodes_of_meta(heap, ty, slots[2])),
+            "Many" -> Node.Many(self.nodes_of_meta(heap, ty, slots[1])),
+            _ -> null,
+        }
+    }
+
+    fn texts_of_meta(heap: MetaHeap, v: MetaVal) -> List<string> {
+        [self.text_of_meta(x) for x in heap.slots(v)]
+    }
+
+    fn nodes_of_meta(heap: MetaHeap, ty: TypeId, v: MetaVal) -> List<Node> {
+        flatten([some_list(self.node_value(heap, ty, x)) for x in heap.slots(v)])
+    }
+
+    fn bits_of_meta(v: MetaVal) -> int {
+        match v {
+            .Float(bits) -> bits,
+            .Int(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> 0,
+        }
+    }
+
+    fn bool_of_meta(v: MetaVal) -> bool {
+        match v {
+            .Bool(b) -> b,
+            .Int(_) or .Float(_) or .Text(_) or .Absent or .Node(_) or .Map(_) -> false,
+        }
+    }
+
+    fn optional_text(v: MetaVal) -> string? {
+        match v {
+            .Text(s) -> s,
+            .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
+        }
+    }
+
+    fn text_of_meta(v: MetaVal) -> string {
+        match v {
+            .Text(s) -> s,
+            .Int(_) or .Float(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> "",
+        }
+    }
+
+    fn loc_of_meta(heap: MetaHeap, v: MetaVal) -> Loc? {
+        let slots = heap.slots(v)
+        if slots.length < 3 { return null }
+        match slots[1] {
+            .Int(lo) -> match slots[2] {
+                .Int(hi) -> Loc { file: if slots[0] is .Absent { null } else { self.text_of_meta(slots[0]) }, lo: lo, hi: hi },
+                .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
+            },
+            .Float(_) or .Text(_) or .Bool(_) or .Absent or .Node(_) or .Map(_) -> null,
+        }
     }
 
     fn declare(d: DeclId, sig: DeclSig) {
@@ -415,7 +973,7 @@ impl Decls {
         // A TRAIT DECLARES ONE TYPE PARAMETER, `Self` — its
         // implementor — and its members wear it: a default body is
         // a generic method over `Self`, lowered per signatory.
-        if x.kind is .Trait { return [self_word()] }
+        if x.kind is .Trait { return [self_word] }
         self.store(d).decl_tparams(x.stmt)
     }
 
@@ -429,36 +987,35 @@ impl Decls {
 
     // ── the inout seats ──
 
-    /// A declaration's `mut` seats, as declared — a method's seat 0
-    /// is its receiver and is never declared here. The written bits
+    /// A declaration's seat CONTRACTS, as declared — a method's seat
+    /// 0 is its receiver and is never declared here. The written bits
     /// take the same shape, all false until the pass runs.
-    fn record_seats(d: DeclId, muts: List<bool>) {
-        self.seat_muts.set(d.index, muts)
-        self.written_seats.set(d.index, filled(muts.length, false))
+    fn record_seats(d: DeclId, marks: List<SeatMark>) {
+        self.seat_marks.set(d.index, marks)
+        self.written_seats.set(d.index, filled(marks.length, false))
     }
 
     /// How many seats a declaration has — the receiver's included.
-    fn seat_count(d: DeclId) -> int { self.seat_muts[d.index].length }
+    fn seat_count(d: DeclId) -> int { self.seat_marks[d.index].length }
 
     /// Asking IS the query: the sig hook declares `d` first, so a
     /// callee named before its own declaration answers truly.
     /// A declaration's seats' marks, sized to its seats — the
     /// contract a fn VALUE of it carries.
-    fn seat_marks(d: DeclId, n: int) -> List<bool> {
-        mut out: List<bool> = []
+    fn marks_of(d: DeclId, n: int) -> List<SeatMark> {
+        mut out: List<SeatMark> = []
         mut j = 0
         while j < n {
-            out.push(self.mut_seat(d, j))
+            out.push(self.seat_mark(d, j))
             j = j + 1
         }
         out
     }
 
-    fn mut_seat(d: DeclId, i: int) -> bool {
+    fn seat_mark(d: DeclId, i: int) -> SeatMark {
         let ensure = self.ensure[0]
         ensure(d)
-        let muts = self.seat_muts[d.index]
-        i < muts.length && muts[i]
+        mark_at(self.seat_marks[d.index], i)
     }
 
     /// `mut fn` — the method (or trait sig) declared its receiver
@@ -543,7 +1100,7 @@ impl Decls {
         if x.kind is .Builtin { return [] }
         // `Self` is bounded by the trait itself: inside a default,
         // `self` answers the trait's own members
-        if x.kind is .Trait { return [Param { name: self_word(), ty: named_ref(x.name), default: null, mutable: false }] }
+        if x.kind is .Trait { return [Param { name: self_word, ty: named_ref(x.name), default: null, mark: plain_mark, span: null }] }
         self.store(d).decl_tbounds(x.stmt)
     }
 
@@ -551,20 +1108,17 @@ impl Decls {
 
     fn is_enum(d: DeclId) -> bool { self.decl(d).kind is .Enum }
 
+    fn is_named(d: DeclId) -> bool { self.decl(d).kind is .Named }
+
     /// The language's own type declarations, minted once from the
-    /// rows that are enums — `Result` — so their variants construct
-    /// through the one enum path. A row's parts come from the row.
+    /// type rows. Enum rows also declare their variants; structural
+    /// rows still need a value-level name for static vocabulary.
     fn admit_builtins() {
-        let hole = self.types.intern(Type.Error)
-        for r in self.rows {
-            let holes = TypeArgs { parts: filled<TypeId>(r.arity, hole) }
-            let answers: EnumSig? = r.variants(holes)
-            if answers != null { self.admit_builtin(r) }
-        }
+        for r in self.rows { self.admit_builtin(r) }
     }
 
     fn admit_builtin(r: TypeRow) {
-        let id = self.mint("builtin::${r.name}", FileId { index: 0 }, no_stmt(), r.name, DeclKind.Builtin, true, "", null, false, null)
+        let id = self.mint("builtin::${r.name}", FileId { index: 0 }, no_stmt, r.name, DeclKind.Builtin, true, "", null, false, null)
         self.builtins.push(id)
         self.declare_builtin(id, r)
     }
@@ -574,7 +1128,7 @@ impl Decls {
     fn declare_builtin(d: DeclId, r: TypeRow) {
         let vars = TypeArgs { parts: [self.types.intern(Type.Var(d, j, n)) for j, n in builtin_tparams(r.arity)] }
         let sig: EnumSig? = r.variants(vars)
-        if sig != null { self.declare(d, DeclSig.Variants(sig!)) }
+        if sig != null { self.declare(d, DeclSig.Enum(sig!)) }
     }
 
     fn builtin_decls() -> List<DeclId> { self.builtins }
@@ -607,9 +1161,9 @@ impl Decls {
     fn type_name(d: DeclId) -> string? {
         let x = self.decl(d)
         match x.kind {
-            .Record or .Enum -> x.name,
+            .Record or .Named or .Enum -> x.name,
             .Builtin -> x.name,
-            .Fn or .Trait or .Method or .Default or .Impl or .Main or .Case -> null,
+            .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const -> null,
         }
     }
 
@@ -618,7 +1172,7 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Fn or .Method -> x.name,
-            .Record or .Enum or .Trait or .Default or .Impl or .Main or .Case or .Builtin -> null,
+            .Record or .Named or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const -> null,
         }
     }
 
@@ -650,8 +1204,22 @@ impl Decls {
         null
     }
 
+    /// Where a declaration is — a generated one homed at the template
+    /// that wrote it, or at the annotation that asked.
     fn loc(d: DeclId) -> Loc? {
-        loc_at(self.file(self.decl(d).file).path, self.decl_span(d))
+        let x = self.decl(d)
+        self.homed(x.file, self.origin_of_stmt(x.file, x.stmt), self.generation_of_stmt(x.file, x.stmt), self.decl_span(d))
+    }
+
+    /// A span of a file homed. A copied template node keeps the span
+    /// it was written with, so its place is that span in its origin
+    /// file; a generated node of this file's own text is at its span
+    /// here; a node minted with no span is at the annotation that
+    /// asked for it.
+    fn homed(f: FileId, origin: FileId?, g: Generation?, sp: Span?) -> Loc? {
+        if origin != null && sp != null { return loc_at(self.file(origin!).path, sp) }
+        if g == null || sp != null { return loc_at(self.file(f).path, sp) }
+        loc_at(self.file(f).path, g!.at)
     }
 
     /// THE symbol a declaration lowers to — its name under its
@@ -663,7 +1231,7 @@ impl Decls {
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
             .Case -> "spec$${x.id.index}",
-            .Fn or .Record or .Enum or .Trait or .Impl or .Main or .Builtin -> x.name,
+            .Fn or .Const or .Record or .Named or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
     }
@@ -694,6 +1262,12 @@ impl Decls {
     /// A trait's method names — the vtable's order.
     fn trait_method_names(d: DeclId) -> List<string> {
         [self.decl(m).name for m in self.trait_fns(d)]
+    }
+
+    /// A trait's associated `derive` member, or none — the ONE name
+    /// the compiler runs for `@derive`.
+    fn trait_derive(d: DeclId) -> DeclId? {
+        self.trait_fns(d).find((m: DeclId) -> self.fn_name(m) == "derive")
     }
 
     /// A type's method by name — asking IS the query: the hook fills
@@ -787,9 +1361,7 @@ fn started_at(i: int) -> int {
 
 /// The name a trait gives its implementor — the one type parameter
 /// every trait declares.
-export fn self_word() -> string {
-    "Self"
-}
+export const self_word: string = "Self"
 
 /// A member's body, when it wrote one — a sig's is a HOLE no pass
 /// walks, and declares nothing to type.

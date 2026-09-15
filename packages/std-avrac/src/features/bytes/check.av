@@ -1,31 +1,31 @@
 //! Seats and answers for the byte vocabulary; the one law with words
 //! of its own is that `[ints].bytes()` reads a list of `int`.
 use core.{Type, TypeId, ExprId, TypeRegistry}
-use features.{TypeCx, MethodCall, worded, seated, spoken, this_is}
+use features.{TypeCx, MethodCall, this_is}
 use diagnostics.{refusal}
 
 fn on_bytes(t: Type) -> bool { t is .Bytes }
 fn on_str(t: Type) -> bool { t is .Str }
 fn on_ints(t: Type) -> bool { t is .List || t is .EmptyList }
 
-fn check_of_str(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "bytes", [], Type.Bytes) }
-fn check_at(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "at", [Type.Int], Type.Int) }
-fn check_slice(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "slice", [Type.Int, Type.Int], Type.Bytes) }
-fn check_concat(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "concat", [Type.Bytes], Type.Bytes) }
-fn check_index_of(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "index_of", [Type.Bytes, Type.Int], Type.Int) }
-fn check_is_empty(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "is_empty", [], Type.Bool) }
-fn check_text(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "text", [], Type.Opt(cx.view.types.intern(Type.Str))) }
-fn check_run(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "run", [Type.Int, Type.Bytes], Type.Int) }
-fn check_eq_at(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "eq_at", [Type.Int, Type.Int, Type.Bytes], Type.Bool) }
-fn check_ieq_at(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "ieq_at", [Type.Int, Type.Int, Type.Bytes], Type.Bool) }
+fn check_of_str(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "bytes", [], Type.Bytes) }
+fn check_at(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "at", [Type.Int], Type.Int) }
+fn check_slice(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "slice", [Type.Int, Type.Int], Type.Bytes) }
+fn check_concat(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "concat", [Type.Bytes], Type.Bytes) }
+fn check_index_of(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "index_of", [Type.Bytes, Type.Int], Type.Int) }
+fn check_is_empty(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "is_empty", [], Type.Bool) }
+fn check_text(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "text", [], Type.Opt(cx.type(string))) }
+fn check_run(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "run", [Type.Int, Type.Bytes], Type.Int) }
+fn check_eq_at(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "eq_at", [Type.Int, Type.Int, Type.Bytes], Type.Bool) }
+fn check_ieq_at(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "ieq_at", [Type.Int, Type.Int, Type.Bytes], Type.Bool) }
 
 /// `[ints].bytes()` — octets, or null when an element is not a byte;
 /// `[parts].bytes()` over `Bytes` — the parts gathered into one, total.
 fn check_of_list(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    if !seated(cx, mc, "bytes", []) { return cx.error_type }
+    if !cx.seated(mc, "bytes", []) { return cx.error_type }
     if gathers(cx.view.types, cx.type_at(mc.subject)) { return cx.view.types.intern(Type.Bytes) }
     if !int_elements(cx, cx.type_at(mc.subject)) { return not_octets(cx, mc.subject) }
-    cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Bytes)))
+    cx.type(Bytes?)
 }
 
 fn int_elements(cx: TypeCx, ty: TypeId) -> bool {
@@ -45,11 +45,11 @@ export fn gathers(types: TypeRegistry, ty: TypeId) -> bool {
 }
 
 // LICENSED I23: a property row's signature
-fn check_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId { cx.view.types.intern(Type.Int) }
+fn check_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId { cx.type(int) }
 
 // ── voices ──────────────────────────────────────────────────────
 
 fn not_octets(mut cx: TypeCx, e: ExprId) -> TypeId {
     let name = cx.name_at(e)
-    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`bytes` reads a `List<int>` or a `List<Bytes>`, this is `${name}`", this_is(name), "an element is one byte, 0..255, or a Bytes to gather"))
+    cx.spoken(refusal("type.mismatch", cx.loc_of(e), "`bytes` reads a `List<int>` or a `List<Bytes>`, this is `${name}`", this_is(name), "an element is one byte, 0..255, or a Bytes to gather"))
 }

@@ -20,6 +20,7 @@ export fn enums() -> LanguageFeature {
         "enum_decl"   | build_enum_decl
         "match_expr"  | build_match
         "match_arm"   | build_arm
+        "hole_arm"    | build_hole_arm
         "variant_pat" | build_variant_pat
         "wild_pat"    | build_wild_pat
         "bind_pat"    | build_bind_pat
@@ -49,8 +50,9 @@ export fn enums() -> LanguageFeature {
         gram = grammar {
             stmt = "enum" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "{" ( BREAK | "," | vs:NAME ( po:"(" ( pn:NAME ":" )? pt:type ( "," ( pn:NAME ":" )? pt:type )* ","? ")" )? )* "}" END @recover(sync_to: "END") -> enum_decl(n, tp, vs, po, pn, pt)
             primary = "." vn:NAME ( "(" ( a:expression ( "," a:expression )* ","? )? ")" )? -> variant_lit(vn, a)
-            primary = "match" subj:expression "{" ( BREAK | "," | a:arm )* "}" @expect("}", "expected `}` to close the `match`") -> match_expr(subj, a)
+            primary = "match" subj:expression "{" ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the `match`") -> match_expr(subj, a) @head(subj)
             arm = p:pattern ( "or" p:pattern )* "->" v:expression -> match_arm(p, v)
+            hole_arm = h:HOLE -> hole_arm(h)
             pattern = "." vn:NAME ( "(" sub:pattern ( "," sub:pattern )* ")" )? -> variant_pat(vn, sub) | "_" -> wild_pat() | "true" -> true_pat() | "false" -> false_pat() | v:NUMBER -> num_pat(v) | n:NAME -> bind_pat(n)
         }
         builders = rows
@@ -64,7 +66,7 @@ export fn enums() -> LanguageFeature {
 fn on_enum(sh: Type) -> bool {
     match sh {
         .Enum(_, _) or .App(_, _, _) -> true,
-        .Struct(_, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Map(_, _) or .Res(_, _) or
+        .Struct(_, _) or .Int or .Float or .Bytes or .Bool or .Str or .Ptr or .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or
         .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or
         .Var(_, _, _) or .Dyn(_, _) or .Error or .Void -> false,
     }

@@ -1,8 +1,10 @@
 // The workspace over an in-memory host: a module is a directory or a
 // file, siblings see each other, `use` reaches a module's exports,
 // and every failed `use` speaks in its own words.
-use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, visible, file_id, module_of, all_files, program, link_words, parsed_cases, lone_workspace, parse_clean}
-use language.{Workspace}
+use @std.avrac.language.{avra, new_workspace, memory_host, lone_workspace}
+use language.{Workspace, sig_hash}
+use @std.avrac.core.{TypeId, DeclId}
+use @std.avrac.features.{DeclSig, EnumSig, StructSig, NamedSig}
 
 /// A small package: a root file, a root sibling, a directory module
 /// with two ws_files, and a lone-file module.
@@ -57,21 +59,21 @@ fn holed_manifest() -> string {
 /// transitive manifest; this is what it could carry.
 fn borrowing_workspace() -> Workspace {
     let files = {
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@corpus/dep\" = { path = \"vendor/dep\" }\n",
-        "/w/src/main.av": "use @corpus.dep.{d}\nd(1)\n",
-        "/w/vendor/dep/avra.toml": "[package]\nname = \"@corpus/dep\"\nversion = \"0.1.0\"\n\n[link]\nlibs = [\"m\"]\n\n[link.raw]\nflags = [\"-o\", \"/tmp/PWNED\"]\n",
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/dep\" = { path = \"vendor/dep\" }\n",
+        "/w/src/main.av": "use @acme.dep.{d}\nd(1)\n",
+        "/w/vendor/dep/avra.toml": "[package]\nname = \"@acme/dep\"\nversion = \"0.1.0\"\n\n[link]\nlibs = [\"m\"]\n\n[link.raw]\nflags = [\"-o\", \"/tmp/PWNED\"]\n",
         "/w/vendor/dep/src/dep.av": "export fn d(n: int) -> int {\n    n\n}\n",
     }
     new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/dep/avra.toml", "/w/vendor/dep/src/dep.av"]), "/w", avra())
 }
 
 fn main_report(text: string) -> string {
-    analyze_file(with_main(text), "/w/src/main.av").report()
+    with_main(text).analyze_file("/w/src/main.av").report()
 }
 
 /// ONE refusal for the root file, saying this.
 fn main_refuses(text: string, saying: string) -> bool {
-    let a = analyze_file(with_main(text), "/w/src/main.av")
+    let a = with_main(text).analyze_file("/w/src/main.av")
     a.diagnostics.length == 1 && a.report().contains(saying)
 }
 
@@ -87,25 +89,25 @@ spec "language/workspace" {
     given "modules are directories, or a file" {
         then "a root file belongs to the root module; a nested one to its directory" {
             let ws = ws_of()
-            module_of(ws, "/w/src/main.av") == "" && module_of(ws, "/w/src/util/mathx.av") == "util"
+            ws.module_of("/w/src/main.av") == "" && ws.module_of("/w/src/util/mathx.av") == "util"
         }
         then "every file under the root is found" {
-            all_files(ws_of(), "/w/src").length == 5
+            ws_of().all_files("/w/src").length == 5
         }
     }
     given "what a file sees" {
         then "a root sibling's fn, a directory module's exports, and a lone-file module resolve" {
             let ws = ws_of()
-            let f = visible(ws, file_id(ws, "/w/src/main.av"))
+            let f = ws.visible(ws.file_id("/w/src/main.av"))
             f.fns.get("helper") != null && f.fns.get("twice") != null && f.types.get("Pair") != null &&
                 f.fns.get("only") != null && f.voices.list.is_empty()
         }
         then "a module's private fn is not on its surface" {
             let ws = ws_of()
-            visible(ws, file_id(ws, "/w/src/main.av")).fns.get("hidden") == null
+            ws.visible(ws.file_id("/w/src/main.av")).fns.get("hidden") == null
         }
         then "the whole file analyzes with nothing unresolved" {
-            analyze_file(ws_of(), "/w/src/main.av").report() == ""
+            ws_of().analyze_file("/w/src/main.av").report() == ""
         }
     }
     given "typed across ws_files — the table is one" {
@@ -128,33 +130,33 @@ spec "language/workspace" {
             main_report("use util.{Box}\nfn peek(b: Box<int>) -> int {\n    b.v\n}\npeek(Box { v: 7 })\n") == ""
         }
         then "a foreign generic fn types, and its specialization lowers in its home" {
-            ran_as(program(with_main("use util.{ident}\nident(3)\n"), "/w/src/main.av").run(), "3")
+            ran_as(with_main("use util.{ident}\nident(3)\n").program("/w/src/main.av").run(), "3")
         }
         then "a nested module's fn lowers under its qualified symbol" {
-            program(with_main("use util.{twice}\ntwice(2)\n"), "/w/src/main.av").lowered().fns.any(it.name == "util.twice")
+            with_main("use util.{twice}\ntwice(2)\n").program("/w/src/main.av").lowered().fns.any(it.name == "util.twice")
         }
         then "the program lowers what the entry reaches — an unreached body stays out" {
-            program(with_main("use util.{twice}\ntwice(2)\n"), "/w/src/main.av").lowered().fns.any(it.name == "util.ident") == false
+            with_main("use util.{twice}\ntwice(2)\n").program("/w/src/main.av").lowered().fns.any(it.name == "util.ident") == false
         }
     }
     given "the program runs across ws_files — one worklist" {
         then "a sibling, a directory module, a lone-file module, and a generic specialized in its home" {
-            ran_as(program(with_main("use util.{twice, ident}\nuse solo.{only}\ntwice(20) + ident(1) + only(1) + helper(1)\n"), "/w/src/main.av").run(), "43")
+            ran_as(with_main("use util.{twice, ident}\nuse solo.{only}\ntwice(20) + ident(1) + only(1) + helper(1)\n").program("/w/src/main.av").run(), "43")
         }
         then "a foreign fn worn as a value calls through its wrapper" {
-            ran_as(program(with_main("use util.{twice}\nlet f = twice\nf(21)\n"), "/w/src/main.av").run(), "42")
+            ran_as(with_main("use util.{twice}\nlet f = twice\nf(21)\n").program("/w/src/main.av").run(), "42")
         }
         then "a foreign enum matches by its variants" {
-            ran_as(program(with_main("use util.{Shape}\nlet s = Shape.Line(7)\nmatch s {\n    .Dot -> 0\n    .Line(n) -> n\n}\n"), "/w/src/main.av").run(), "7")
+            ran_as(with_main("use util.{Shape}\nlet s = Shape.Line(7)\nmatch s {\n    .Dot -> 0\n    .Line(n) -> n\n}\n").program("/w/src/main.av").run(), "7")
         }
         then "a foreign generic record instantiates and reads" {
-            ran_as(program(with_main("use util.{Box}\nlet b = Box { v: 9 }\nb.v\n"), "/w/src/main.av").run(), "9")
+            ran_as(with_main("use util.{Box}\nlet b = Box { v: 9 }\nb.v\n").program("/w/src/main.av").run(), "9")
         }
         then "a run-time statement outside the entry refuses, naming the entry" {
             mut fs = ws_files()
             fs.set("/w/src/helper.av", "fn helper(n: int) -> int {\n    n\n}\nhelper(2)\n")
             let ws = new_workspace(memory_host(fs, ws_names()), "/w", avra())
-            let p = program(ws, "/w/src/main.av")
+            let p = ws.program("/w/src/main.av")
             p.clean() && p.lowered().diagnostics.length == 1 &&
                 p.rendered(p.lowered().diagnostics).contains("only the entry `/w/src/main.av` runs statements")
         }
@@ -173,55 +175,55 @@ spec "language/workspace" {
     }
     given "the host seam carries words, never a shell line" {
         then "a link flag with shell metacharacters is ONE word, verbatim" {
-            let words = link_words(spec_package(poisoned_manifest()))
+            let words = spec_package(poisoned_manifest()).link_words()
             words.contains("; touch /tmp/PWNED ;") && words.contains("-lm") && words.length == 2
         }
         then "an environment hole in a search row is filled from the environment" {
-            let words = link_words(spec_package(holed_manifest()))
+            let words = spec_package(holed_manifest()).link_words()
             !words.any(it.contains("$" + "{")) && words.any(it.starts_with("-L/"))
         }
         then "a hole naming nothing leaves no empty word behind" {
-            let words = link_words(spec_package(holed_manifest()))
+            let words = spec_package(holed_manifest()).link_words()
             !words.any(it.is_empty()) && words.length == 1
         }
         then "a hole naming nothing leaves no BARE `-L` either — it would eat the word after it" {
-            !link_words(spec_package(holed_manifest())).any(it == "-L")
+            !spec_package(holed_manifest()).link_words().any(it == "-L")
         }
         then "the option letter is ours: a library is named, never spelled as an option" {
-            link_words(spec_package(poisoned_manifest())).contains("-lm")
+            spec_package(poisoned_manifest()).link_words().contains("-lm")
         }
     }
     given "a dependency cannot put an option on the linker's line" {
         then "the dependency's raw options never reach the words" {
-            let words = link_words(borrowing_workspace())
+            let words = borrowing_workspace().link_words()
             !words.contains("-o") && !words.contains("/tmp/PWNED")
         }
         then "its TYPED row is still honoured — the rule refuses options, not needs" {
-            link_words(borrowing_workspace()).contains("-lm")
+            borrowing_workspace().link_words().contains("-lm")
         }
         then "and it is told, by name" {
-            let spoken = program(borrowing_workspace(), null).voices
+            let spoken = borrowing_workspace().program(null).voices
             spoken.any(it.kind == "manifest.borrowed_raw")
         }
         then "the root's own raw hatch still carries its word" {
-            link_words(spec_package(poisoned_manifest())).contains("; touch /tmp/PWNED ;")
+            spec_package(poisoned_manifest()).link_words().contains("; touch /tmp/PWNED ;")
         }
     }
     given "a case is selected by the path it MEANS, not the text typed" {
         then "the file as listed" {
-            program(spec_package(poisoned_manifest()), null).cases_at("/w/src/main.av").length == 1
+            spec_package(poisoned_manifest()).program(null).cases_at("/w/src/main.av").length == 1
         }
         then "a `./` in the path" {
-            program(spec_package(poisoned_manifest()), null).cases_at("/w/src/./main.av").length == 1
+            spec_package(poisoned_manifest()).program(null).cases_at("/w/src/./main.av").length == 1
         }
         then "a doubled slash" {
-            program(spec_package(poisoned_manifest()), null).cases_at("/w//src/main.av").length == 1
+            spec_package(poisoned_manifest()).program(null).cases_at("/w//src/main.av").length == 1
         }
         then "a `..` folded into the path" {
-            program(spec_package(poisoned_manifest()), null).cases_at("/w/src/util/../main.av").length == 1
+            spec_package(poisoned_manifest()).program(null).cases_at("/w/src/util/../main.av").length == 1
         }
         then "another file selects nothing" {
-            program(spec_package(poisoned_manifest()), null).cases_at("/w/src/helper.av").is_empty()
+            spec_package(poisoned_manifest()).program(null).cases_at("/w/src/helper.av").is_empty()
         }
     }
 }
@@ -230,15 +232,39 @@ spec "cases known from parsing" {
     given "a workspace nothing has analyzed" {
         then "a source with a spec has its cases — a package with cases is never told it has none" {
             mut ws = lone_workspace("with.av", "spec \"s\" {\n    given \"g\" {\n        then \"t\" { true }\n    }\n}\n", avra())
-            parsed_cases(ws).length == 1
+            ws.parsed_cases().length == 1
         }
         then "a source without has none" {
             mut ws = lone_workspace("without.av", "let x = 1\nx\n", avra())
-            parsed_cases(ws).is_empty()
+            ws.parsed_cases().is_empty()
         }
         then "a spec that does not parse has none either — and did not parse clean, so nobody says so" {
             mut ws = lone_workspace("broken.av", "spec \"s\" {\n    given \"g\" {\n", avra())
-            parsed_cases(ws).is_empty() && !parse_clean(ws)
+            ws.parsed_cases().is_empty() && !ws.parse_clean()
+        }
+    }
+    given "a signature's fingerprint covers the whole signature" {
+        then "a variant's payloads are not the next variant's — `A(x, y) B` vs `A(x) B(y)`" {
+            let x = TypeId { index: 1 }
+            let y = TypeId { index: 2 }
+            let together = DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[x, y], []] })
+            let apart = DeclSig.Enum(EnumSig { names: ["A", "B"], payloads: [[x], [y]] })
+            sig_hash(together) != sig_hash(apart)
+        }
+        then "a field's default is part of the record that declares it" {
+            let x = TypeId { index: 1 }
+            // a struct-literal field seat plants no want, so the
+            // nullable lists are bound at their own type first
+            let absent: List<DeclId?> = [null]
+            let present: List<DeclId?> = [DeclId { index: 0 }]
+            let held = StructSig { names: ["a"], types: [x], defaults: absent }
+            let seeded = StructSig { names: ["a"], types: [x], defaults: present }
+            sig_hash(DeclSig.Record(held)) != sig_hash(DeclSig.Record(seeded))
+        }
+        then "a named type's shape is its signature — `type Id = int` is not `type Id = string`" {
+            let over_int = DeclSig.Named(NamedSig { of: TypeId { index: 1 } })
+            let over_text = DeclSig.Named(NamedSig { of: TypeId { index: 2 } })
+            sig_hash(over_int) != sig_hash(over_text)
         }
     }
 }

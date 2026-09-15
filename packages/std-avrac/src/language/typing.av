@@ -7,11 +7,13 @@
 //! never an option and never an Unknown — a hole or unresolved
 //! name types as the interned Error, which ABSORBS: the causing
 //! pass already spoke, so no diagnostic cascades from it.
-use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId, FnParts, Binding, same_expr, flatten, LambdaParts, no_marks}
+use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, NodeStore, FileId, DeclId, FnParts, Binding, same_expr, flatten, LambdaParts, mut_mark, Annotation}
+use core.{SeatMark}
 use diagnostics.{Diag, loc_at, refusal}
-use features.{TypeCx, NarrowFrame, Dispatch, semantics_of, stmt_semantics_of, post_order, FnSig, DeclSig, fn_sig_of, TypeRow, type_row, Decls, Decl, Cap, new_type_facts, decl_type_of, def_type_of, type_named, TypeFacts, NameFacts, FileView, nothing}
+use features.{TypeCx, NarrowFrame, Dispatch, semantics_of, stmt_semantics_of, post_order, FnSig, DeclSig, TypeRow, type_row, Decls, Decl, Cap, new_type_facts, def_type_of, type_named, TypeFacts, NameFacts, FileView, nothing, scalar_named}
 use features.structs.{fits_default}
 use features.specs.{fits_case}
+use features.annotations.{check_annotation}
 use @std.errors.{Loc}
 
 /// A type context over one expression range of a file, reading the
@@ -29,83 +31,90 @@ export fn new_type_cx(dispatch: Dispatch, keywords: List<string>, view: FileView
     }
 }
 
-/// One declaration typed, then its facts: a fn's or method's body
-/// under its signature (asked lazily), a default's under its field,
-/// Main's run-time statements in order, a type's statement-level
-/// law. A trait's and an impl's members are declarations of their
-/// own.
-export fn type_decl(mut t: TypeCx, x: Decl) -> TypeFacts {
-    match x.kind {
-        .Main -> t.type_stmts(runtime_stmts(t.view)),
-        // a bodyless fn is an EXTERN, and its declaration has laws
-        // of its own — `stmt_semantics_of` already routes it home
-        .Fn -> if x.root == null { t.type_stmts([x.stmt]) } else { fn_body(t, x) },
-        .Method -> if x.root == null { nothing() } else { method_body(t, x) },
-        .Default -> default_body(t, x),
-        .Case -> case_body(t, x),
-        .Record or .Enum -> t.type_stmts([x.stmt]),
-        .Trait or .Impl or .Builtin -> nothing(),
-    }
-    t.speak_hungry()
-    t.facts
-}
-
-/// A fn's body, then its seats' contract — every `mut` seat judged
-/// against what the body does.
-fn fn_body(mut t: TypeCx, x: Decl) {
-    t.type_stmts([x.stmt])
-    t.seat_contract(x, 0)
-}
-
-/// A method's body, then its receiver's contract — the trait's word
-/// and the `mut fn` word judged against what the body does.
-fn method_body(mut t: TypeCx, x: Decl) {
-    t.type_stmts([x.stmt])
-    t.receiver_contract(x)
-}
-
-/// A file's statements that RUN — everything that declares nothing.
-fn runtime_stmts(view: FileView) -> List<StmtId> {
-    [s for s in view.stmts if !view.store.is_declaration(s)]
-}
-
-/// A default walks under its field's want, in the record's type
-/// scope, and the field judges it.
-fn default_body(mut t: TypeCx, x: Decl) {
-    let root: ExprId = x.root!
-    let want: TypeId = fn_sig_of(t.view.decls.sig(x.id))?.ret ?? t.error_type
-    t.enter_tscope(x.stmt)
-    t.plant_want(root, want)
-    t.walk(root)
-    t.leave_tscope()
-    fits_default(t, root, x.name, want)
-}
-
-/// A test case's body walks under the bool it declared — a
-/// `return` inside answers it — and its feature judges the answer.
-fn case_body(mut t: TypeCx, x: Decl) {
-    let root: ExprId = x.root!
-    let want: TypeId = fn_sig_of(t.view.decls.sig(x.id))?.ret ?? t.error_type
-    // LICENSED I15: this IS the bracket
-    t.fn_ret.push(want)
-    t.plant_want(root, want)
-    t.walk(root)
-    let _ = t.fn_ret.pop()
-    fits_case(t, root, want)
-}
-
-/// THE WALK — the context's own verbs, which every feature's rule
-/// reaches through the contract: statements in order through their
-/// StmtSemantics (the ONE statement loop, top level and blocks
-/// alike), a subtree's nodes in post-order through their
-/// NodeSemantics, and the scoped walks a rule asks for. `scope` is
-/// the seats in force; a fn body sets it for exactly its walk.
 impl TypeCx {
+    /// One declaration typed, then its facts: a fn's or method's body
+    /// under its signature (asked lazily), a default's under its field,
+    /// Main's run-time statements in order, a type's statement-level
+    /// law. A trait's and an impl's members are declarations of their
+    /// own.
+    mut fn type_decl(x: Decl) -> TypeFacts {
+        match x.kind {
+            .Main -> {
+                self.type_stmts(runtime_stmts(self.view))
+                // a top-level declaration's annotations sit ABOVE it,
+                // so the entry's body owns them, and types them here
+                for s in self.view.stmts {
+                    if self.view.store.is_declaration(s) { self.type_annotations(s) }
+                }
+            },
+            // a bodyless fn is an EXTERN, and its declaration has laws
+            // of its own — `stmt_semantics_of` already routes it home
+            .Fn -> if x.root == null { self.type_stmts([x.stmt]) } else { self.fn_body(x) },
+            .Method -> if x.root == null { nothing() } else { self.method_body(x) },
+            .Default -> self.default_body(x),
+            .Case -> self.case_body(x),
+            .Record or .Named or .Enum -> self.type_stmts([x.stmt]),
+            .Const -> self.type_stmts([x.stmt]),
+            .Syntax -> self.type_stmts([x.stmt]),
+            .Trait or .Impl or .Builtin -> nothing(),
+        }
+        self.speak_hungry()
+        self.facts
+    }
+
+    /// A fn's body, then its seats' contract — every `mut` seat judged
+    /// against what the body does.
+    mut fn fn_body(x: Decl) {
+        self.type_stmts([x.stmt])
+        self.seat_contract(x, 0)
+    }
+
+    /// A method's body, then its receiver's contract — the trait's word
+    /// and the `mut fn` word judged against what the body does.
+    mut fn method_body(x: Decl) {
+        self.type_stmts([x.stmt])
+        self.receiver_contract(x)
+    }
+
+    /// A default walks under its field's want, in the record's type
+    /// scope, and the field judges it.
+    mut fn default_body(x: Decl) {
+        let root: ExprId = x.root!
+        let want: TypeId = (self.view.decls.sig(x.id))?.fn_sig()?.ret ?? self.error_type
+        self.enter_tscope(x.stmt)
+        self.plant_want(root, want)
+        self.walk(root)
+        self.leave_tscope()
+        fits_default(self, root, x.name, want)
+    }
+
+    /// A test case's body walks under the bool it declared — a
+    /// `return` inside answers it — and its feature judges the answer.
+    mut fn case_body(x: Decl) {
+        let root: ExprId = x.root!
+        let want: TypeId = (self.view.decls.sig(x.id))?.fn_sig()?.ret ?? self.error_type
+        // LICENSED I15: this IS the bracket
+        self.fn_ret.push(want)
+        self.plant_want(root, want)
+        self.walk(root)
+        let _ = self.fn_ret.pop()
+        fits_case(self, root, want)
+    }
+
+    /// THE WALK — the context's own verbs, which every feature's rule
+    /// reaches through the contract: statements in order through their
+    /// StmtSemantics (the ONE statement loop, top level and blocks
+    /// alike), a subtree's nodes in post-order through their
+    /// NodeSemantics, and the scoped walks a rule asks for. `scope` is
+    /// the seats in force; a fn body sets it for exactly its walk.
     /// Statements in order, each through its own StmtSemantics.
     mut fn type_stmts(stmts: List<StmtId>) {
         let was = self.starving
         self.starving = false
-        for s in stmts { stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).type_stmt(self, s) }
+        for s in stmts {
+            stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).type_stmt(self, s)
+            self.type_annotations(s)
+        }
         self.starving = was
     }
 
@@ -133,6 +142,26 @@ impl TypeCx {
     /// goes hungry as any walk does, so the brackets here and in
     /// `type_stmts` and `feed` clear the word for exactly the
     /// nested work.
+    /// A statement's annotations, each typed by the body that OWNS its
+    /// expressions: an annotation sits above its declaration, outside
+    /// the declaration's own span, so the enclosing body holds it and
+    /// a declaration's own context passes it by.
+    mut fn type_annotations(s: StmtId) {
+        for a in self.view.store.annotations_of(s) {
+            if self.facts.owns(a.callee) {
+                self.walk_annotation(a)
+                check_annotation(self, s, a)
+            }
+        }
+    }
+
+    /// An annotation's callee types as an expression does. Its
+    /// arguments type inside `check_annotation`, where the seats are
+    /// known: a declaration's NAME is its meta value there.
+    mut fn walk_annotation(a: Annotation) {
+        self.walk(a.callee)
+    }
+
     mut fn walk(root: ExprId) {
         let was = self.starving
         self.starving = false
@@ -163,14 +192,14 @@ impl TypeCx {
     fn valueless_type(stmts: List<StmtId>) -> TypeId {
         let last: StmtId? = stmts.last()
         if last != null && self.view.store.diverges(last!) { return self.fn_ret.last() ?? self.error_type }
-        self.view.decls.types.intern(Type.Void)
+        self.view.decls.types.type(void)
     }
 
     /// A lambda's body typed under its params, behind the BARRIER —
     /// `return`/`?`/`fail` inside see no enclosing fn. Params and
     /// captures register FIRST so the body's reads answer.
-    mut fn lambda_body(lam: ExprId, ptys: List<TypeId>, body: ExprId) -> TypeId {
-        self.facts.seat_lambda(lam, ptys)
+    mut fn lambda_body(lam: ExprId, ptys: List<TypeId>, marks: List<SeatMark>, body: ExprId) -> TypeId {
+        self.facts.seat_lambda(lam, ptys, marks)
         self.facts.seat_captures(lam, self.capture_seats(lam))
         // LICENSED I15: this IS the bracket
         self.lam_bar.push(self.fn_ret.length)
@@ -191,14 +220,14 @@ impl TypeCx {
     /// in — the judging boundary hands them over, the body walks
     /// once, and every fact (of_expr, lambda_params) converges as if
     /// the annotations had been written.
-    mut fn retype_seated(a: ExprId, seats: List<TypeId>) -> TypeId? {
+    mut fn retype_seated(a: ExprId, seats: List<TypeId>, marks: List<SeatMark>) -> TypeId? {
         if !self.facts.hungry_at(a) { return null }
         let parts: LambdaParts? = self.view.store.lambda_parts(a)
         if parts == null { return null }
         if parts!.params.length != seats.length { return null }
         self.facts.absorb_hunger(a)
-        let ret = self.lambda_body(a, seats, parts!.body)
-        let ty = self.view.types.intern(Type.Fn(seats, no_marks(seats.length), ret))
+        let ret = self.lambda_body(a, seats, marks, parts!.body)
+        let ty = self.view.types.intern(Type.Fn(seats, marks, ret))
         self.facts.set_type(a, ty)
         ty
     }
@@ -298,37 +327,7 @@ impl TypeCx {
         }
         self.starving = false
     }
-}
 
-/// Which narrowing stack a frame lives on — the defs' or the
-/// params'; a selector, so the bracket writes the context's own
-/// field and never a copy of it.
-enum Narrowing {
-    Defs
-    Params
-}
-
-/// Every name the LANGUAGE owns — a scalar shape or a constructor
-/// row. A declaration may take none of them.
-export fn builtin_type_name(rows: List<TypeRow>, name: string) -> bool {
-    shape_named(name) != null || type_row(rows, name) != null
-}
-
-/// The type an annotation names, or null.
-fn shape_named(name: string) -> Type? {
-    match name {
-        "int" -> Type.Int,
-        "float" -> Type.Float,
-        "string" -> Type.Str,
-        "Bytes" -> Type.Bytes,
-        "bool" -> Type.Bool,
-        "void" -> Type.Void,
-        "ptr" -> Type.Ptr,
-        _ -> null,
-    }
-}
-
-impl TypeCx {
     /// An ident's type, by its binding kind — NARROWED when a
     /// presence test proved this binding present in the branch
     /// being walked (the narrow is recorded for lowering, which
@@ -348,7 +347,7 @@ impl TypeCx {
             .LambdaParam(l, i) -> self.lambda_param_ty(l, i),
             // captures never narrow — the box holds the wide value
             .Capture(l, j) -> self.capture_ty(l, j),
-            .Index(_) -> self.view.types.intern(Type.Int),
+            .Index(_) -> self.type(int),
             .Decl(d) -> self.decl_type(d),
         }
     }
@@ -411,7 +410,7 @@ impl TypeCx {
     /// A foreign name read as a value: a type's name, or a fn worn
     /// as a value — the answers a local declaration gives.
     fn decl_type(d: DeclId) -> TypeId {
-        decl_type_of(self.view.decls, self.facts.voices, self.error_type, d)
+        self.view.decls.decl_type_of(self.facts.voices, self.error_type, d)
     }
 
     /// A declaring statement's identity in the shared table.
@@ -432,6 +431,12 @@ impl TypeCx {
     fn enclosing_ret() -> TypeId? {
         if self.behind_lambda() { return null }
         self.fn_ret.last()
+    }
+
+    /// Whether a lambda's seat HEARD a `mut` mark from its slot — the
+    /// half of `is_mut` only typing can answer.
+    fn heard_mut(l: ExprId, i: int) -> bool {
+        mut_mark(self.facts.heard_marks(l) ?? [], i)
     }
 
     /// A lambda param's declared type, by seat.
@@ -459,7 +464,7 @@ impl TypeCx {
             .Pattern(v, j) -> self.facts.pattern_type(v, j) ?? self.error_type,
             .LambdaParam(l, i) -> self.lambda_param_ty(l, i),
             .Capture(l, j) -> self.capture_ty(l, j),
-            .Index(_) -> self.view.types.intern(Type.Int),
+            .Index(_) -> self.type(int),
             .Decl(d) -> self.decl_type(d),
         }
     }
@@ -479,6 +484,46 @@ impl TypeCx {
         self.full_type(self.view.loc_of(e), tr)
     }
 
+    /// A declared generic's arity by NAME, for the applied-type path —
+    /// null when the name is not a generic declaration.
+    fn declared_arity(name: string) -> int? {
+        let decl: DeclId? = type_named(self.names, name)
+        if decl == null { return null }
+        let arity = self.view.decls.tparams(decl!).length
+        if arity == 0 { return null }
+        arity
+    }
+}
+
+/// A file's statements that RUN — everything that declares nothing.
+fn runtime_stmts(view: FileView) -> List<StmtId> {
+    [s for s in view.stmts if !view.store.is_declaration(s)]
+}
+
+/// Which narrowing stack a frame lives on — the defs' or the
+/// params'; a selector, so the bracket writes the context's own
+/// field and never a copy of it.
+enum Narrowing {
+    Defs
+    Params
+}
+
+/// Every name the LANGUAGE owns — a scalar shape or a constructor
+/// row. A declaration may take none of them.
+export fn builtin_type_name(rows: List<TypeRow>, name: string) -> bool {
+    shape_named(name) != null || type_row(rows, name) != null
+}
+
+/// The type an annotation names, or null.
+fn shape_named(name: string) -> Type? {
+    // The scalar half is the ONE spelling (`features.scalar_named`);
+    // the language adds the non-settlement shapes beside it.
+    match name {
+        "void" -> Type.Void,
+        "ptr" -> Type.Ptr,
+        "Bytes" -> Type.Bytes,
+        _ -> scalar_named(name),
+    }
 }
 
 /// Whether an interned id is the Var wearing this name.
@@ -489,21 +534,9 @@ fn var_named(types: TypeRegistry, id: TypeId, name: string) -> bool {
     }
 }
 
-/// A declared generic's arity by NAME, for the applied-type path —
-/// null when the name is not a generic declaration.
-fn declared_arity(t: TypeCx, name: string) -> int? {
-    let decl: DeclId? = type_named(t.names, name)
-    if decl == null { return null }
-    let arity = t.view.decls.tparams(decl!).length
-    if arity == 0 { return null }
-    arity
-}
-
 /// The slot-law help, worded once — every slot that must wait says
 /// exactly this.
-fn slots_await_ownership() -> string {
-    "nullable slots arrive with ownership's next slice"
-}
+const slots_await_ownership: string = "nullable slots arrive with ownership's next slice"
 
 /// Two method sigs agree seat by seat past the receiver — the
 /// trait's wears `Self` there, the signatory's its own type.

@@ -1,0 +1,85 @@
+//! `@std/derive` — traits that write their own `impl`.
+//!
+//!     use @std.meta.{derive}
+//!     use @std.derive.{Show, Eq}
+//!
+//!     @derive(Show)
+//!     @derive(Eq)
+//!     type Point = { x: int, y: string }
+//!
+//! Each trait carries an ASSOCIATED `derive(t: Type) -> List<Directive>`:
+//! the compiler runs it over the annotated type and admits the code it
+//! answers beside it. The templates are quotes, parsed in THIS file,
+//! so their own names resolve here and a hole's (`${t}`, `${f}`) at
+//! the type's. A trait's `derive` must stand in another file than the
+//! type — expanding needs the type's file while its names are still
+//! being made — which `@std/derive` satisfies.
+use @std.meta.{Type, Variant, Field, Directive, Code, Decls, Arms, name, literal, interpolated}
+
+/// `@derive(Show)` gives a type `fn show() -> string` — a struct
+/// interpolates its fields, an enum names its variant.
+export trait Show {
+    static fn derive(t: Type) -> List<Directive> {
+        if !t.variants.is_empty() {
+            let arms = [quote { .${v} -> ${literal("${t.name}.${v.name}")} } for v in t.variants]
+            return [directive(t, quote { impl ${t} { fn show() -> string { match self { ${arms} } } } })]
+        }
+        let reads = [quote { self.${f} } for f in t.fields]
+        let shown = interpolated(shown_parts(t), reads)
+        [directive(t, quote { impl ${t} { fn show() -> string { ${shown} } } })]
+    }
+}
+
+/// The literal runs of `"T { a: ${self.a}, b: ${self.b} }"` — one
+/// more than the fields.
+fn shown_parts(t: Type) -> List<string> {
+    if t.fields.is_empty() { return ["${t.name} {  }"] }
+    [labelled(t, j, f) for j, f in t.fields].concat([" }"])
+}
+
+fn labelled(t: Type, j: int, f: Field) -> string {
+    if j == 0 { "${t.name} { ${f.name}: " } else { ", ${f.name}: " }
+}
+
+/// `@derive(Eq)` gives a type `fn eq(other: T) -> bool` — every field
+/// equal, or the same variant with equal payloads.
+export trait Eq {
+    static fn derive(t: Type) -> List<Directive> {
+        if !t.variants.is_empty() {
+            let arms = [eq_arm(v) for v in t.variants]
+            return [directive(t, quote { impl ${t} { fn eq(other: ${t}) -> bool { match self { ${arms} } } } })]
+        }
+        let checks = [quote { self.${f} == other.${f} } for f in t.fields]
+        let all = conj(checks)
+        [directive(t, quote { impl ${t} { fn eq(other: ${t}) -> bool { ${all} } } })]
+    }
+}
+
+/// A generated impl the compiler admits beside the type — the one
+/// shape both traits answer.
+fn directive(t: Type, code: Decls) -> Directive {
+    Directive { twin: "", name: t.name, at: t.at, source: code }
+}
+
+/// The checks joined by `&&`, left to right — `true` when there are
+/// none.
+fn conj(checks: List<Code>) -> Code {
+    if checks.is_empty() { return quote { true } }
+    mut all = checks[0]
+    for c in checks.slice(1, checks.length) {
+        let sofar = all
+        all = quote { ${sofar} && ${c} }
+    }
+    all
+}
+
+/// One enum arm of `eq`: the same variant, its payloads compared
+/// position by position. The binders and their reads are both the
+/// derive's own names, so they wear one origin.
+fn eq_arm(v: Variant) -> Arms {
+    if v.payload.is_empty() { return quote { .${v} -> match other { .${v} -> true, _ -> false } } }
+    let ls = ["l${i}" for i in 0..v.payload.length]
+    let rs = ["r${i}" for i in 0..v.payload.length]
+    let same = conj([quote { ${name(ls[i])} == ${name(rs[i])} } for i in 0..v.payload.length])
+    quote { .${v}(${ls}) -> match other { .${v}(${rs}) -> ${same}, _ -> false } }
+}

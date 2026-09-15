@@ -4,8 +4,8 @@
 //! the type namespace, so its own passes do nothing. A match is
 //! CONTROL-OWNING: its arms are hidden from `kids` and walked
 //! through the driver, each under its own bind.
-use core.{Expr, ExprId, StmtId, TypeId, Reg, Arm, PatId, NodeStore}
-use features.{NodeSemantics, StmtSemantics, PatSemantics, ResolveCx, TypeCx, LowerCx, nothing, refuses_nested}
+use core.{Expr, ExprId, StmtId, TypeId, Reg, Arm, PatId, NodeStore, Binder}
+use features.{NodeSemantics, StmtSemantics, PatSemantics, ResolveCx, TypeCx, LowerCx, nothing}
 use features.enums.{bind_types, pat_reg, bind_regs}
 
 export type EnumsSemantics = { }
@@ -61,7 +61,7 @@ export type EnumDeclSemantics = { }
 
 impl StmtSemantics for EnumDeclSemantics {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
-        let _ = refuses_nested(cx, s, "resolve.nested_type", "type declarations")
+        let _ = cx.refuses_nested(s, "resolve.nested_type", "type declarations")
     }
 
     fn type_stmt(mut cx: TypeCx, s: StmtId) {
@@ -75,7 +75,7 @@ impl StmtSemantics for EnumDeclSemantics {
 /// typing enforces). A match is a CONTROL-OWNING node, so `kids`
 /// hides the arm values and this walks them instead.
 fn resolve_arms(mut cx: ResolveCx, arms: List<Arm>) {
-    for a in arms { cx.arm_scope(arm_binds(cx.view.store, a), a.value) }
+    for a in arms { cx.arm_scope(cx.bound_pats(arm_binds(cx.view.store, a)), a.value) }
 }
 
 /// Whether every pattern is irrefutable — spelled as a scan: a
@@ -96,7 +96,7 @@ export fn hole_of(store: NodeStore, ids: List<PatId>) -> PatId? {
 }
 
 /// The names an arm binds: its first pattern's, in pre-order.
-export fn arm_binds(store: NodeStore, a: Arm) -> List<string> {
+export fn arm_binds(store: NodeStore, a: Arm) -> List<Binder> {
     let first: PatId? = a.pats.first()
     if first == null { return [] }
     store.pattern_binds(first!)

@@ -106,7 +106,7 @@ COMPILER_OBJS = $(TREE_STEM_LAW)build/avra_runtime.o build/llvm_wrapper.o \
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
 # target that RUNS programs may need, since any package's suite or
-# corpus can link its own C.
+# program tests can link its own C.
 PACKAGE_OBJS = $(TREE_STEM_LAW)$(sort $(foreach o,$(shell sed -n \
   's/.*objects *= *\[\(.*\)\].*/\1/p' packages/*/avra.toml | tr ',' '\n' \
   | tr -d ' "'),build/$(notdir $(o))))
@@ -130,9 +130,9 @@ build/%.o: %.c build/%.sha
 -include $(patsubst %.o,%.d,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS)))
 
 # Every package that carries spec cases, in dependency order.
-SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite packages/std-net packages/std-http
+SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-meta packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite packages/std-net packages/std-http
 
-.PHONY: census traps test tested clean corpus gate externs idioms idioms-accept bench fuzz scaffold-check vocab stems sweep seed bootstrap libs libscope \
+.PHONY: census traps test tested clean seed-check gate externs idioms idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap libs libscope \
         check run ir emit build-native native-check avra
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
@@ -159,12 +159,21 @@ seed: $(COMPILER_OBJS)
 # So the object list is named ONCE: a prerequisite and a link line
 # spelling it twice were two definitions nothing kept in step, and the
 # gap opens silently the instant the variable grows.
-bootstrap: $(COMPILER_OBJS)
+#
+# AND RECOVERY STOPS HERE. `make bootstrap` continues into `make avra`,
+# which overwrites this clean compiler with one built from the CURRENT
+# source — so a source that traps while compiling itself (a probe in an
+# analysis path, a broken pass) has no way back: every rebuild traps
+# again. `make recover` is that way back.
+recover: $(COMPILER_OBJS)
 	@mkdir -p build
 	@clang -w -O1 bootstrap/seed.ll $(COMPILER_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
-	@echo "bootstrap: build/avra from the seed — rebuilding from source"
+	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
+
+bootstrap: recover
+	@echo "bootstrap: rebuilding build/avra from source"
 	@$(MAKE) -s avra
 
 # A REFUSAL MUST SPEAK: the build's own words went to /dev/null, so a compiler
@@ -183,7 +192,8 @@ avra: $(COMPILER_OBJS)
 # Scratch a run leaves behind: the test binaries each package's
 # cases were linked into.
 sweep:
-	@rm -rf packages/*/build build/test_shards
+	@find packages -type d -name build -prune -exec rm -rf {} +
+	@rm -rf build/test_shards
 
 test: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@for p in $(SUITES); do \
@@ -228,7 +238,7 @@ build/%.sha: %.c FORCE
 	@rm -f $@.tmp
 
 # The runtime's trap contract: the words and the verdict (exit 2).
-# No corpus program can hold it — the corpus runs every program in
+# No program test can hold it — a suite runs every program in
 # one process, and a trap ends it. AFTER `tested`, because a row may
 # depend on a package: a broken package should fail its OWN suite
 # first, not this keeper, which would name the harness for someone
@@ -248,10 +258,34 @@ stems: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/stems.sh
 
 clean:
+	@mkdir -p build
+	@cp build/avra /tmp/avra_clean_save 2>/dev/null || true
 	rm -rf build scratch packages/cli/src/main_stamped.av
-	find packages corpus -name "*.av.ll" -delete
-	find corpus -type f ! -name "*.av" ! -name "*.expected" ! -name "expected" ! -name "avra.toml" ! -name "native-only" -delete
-	rm -rf packages/*/build
+	find packages -name "*.av.ll" -delete
+	find packages -type d -name build -prune -exec rm -rf {} +
+	@mkdir -p build
+	# THE WORKING COMPILER SURVIVES A CLEAN: `build/avra` is the
+	# compiler itself, not build debris — deleting it strands the tree
+	# (its seed may predate HEAD), and it rebuilds from itself on the
+	# next `make avra`. Rescue it before the build directory goes, and
+	# restore it after.
+	@mv /tmp/avra_clean_save build/avra 2>/dev/null || true
+
+# THE SEED MUST COMPILE HEAD — a seed that cannot is a fossil, and a
+# fossil is discovered only on the day it is needed (bootstrap/README.md).
+# This gate step cold-bootstraps into a throwaway BUILD and refuses a
+# latent drift: a seed that fails here fails the gate, not a future
+# `make clean` + `make bootstrap`.
+seed-check: $(COMPILER_OBJS)
+	@mkdir -p build/seed-check
+	@cp bootstrap/seed.ll build/seed-check/seed.ll
+	@clang -w -O1 build/seed-check/seed.ll $(COMPILER_OBJS) \
+	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/seed-check/avra 2>/dev/null \
+	 || { echo "seed-check: seed links — FAILED"; exit 1; }
+	@build/seed-check/avra build packages/cli >> build/seed-check/out 2>&1 \
+	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; tail -c 2000 build/seed-check/out; rm -rf build/seed-check; exit 1; }
+	@rm -rf build/seed-check
+	@echo "seed-check: the seed compiles HEAD"
 
 check: $(COMPILER_OBJS)
 	@./avra check $(FILE)
@@ -268,31 +302,14 @@ emit: $(COMPILER_OBJS)
 build-native: $(COMPILER_OBJS)
 	@./avra build $(FILE)
 
-# The corpus gate: every corpus/*.av must say its .expected — first
-# through the evaluator, then through ONE native binary holding them
-# all (`avra corpus`). A feature's end-to-end proof is one tiny
-# program plus one tiny expected file.
-# A PACKAGE proves the same as corpus/<name>/main.av (its avra.toml
-# marks the root) beside corpus/<name>/expected. corpus/native/ holds
-# programs the evaluator cannot run — extern fns — proved native only.
-#
-# A PACKAGE corpus may be native-only too, and it needs its own mark:
-# corpus/native/ takes LOOSE files, which cannot `use` a package at all
-# ("this file is not in a package — `use` needs a root"), so a driver
-# built ON a package can only be proved in the package form. A `native-only`
-# file beside `expected` drops the evaluator leg, and the gate's own line
-# then SAYS "native == expected" rather than claiming a differential it
-# never ran. The label travels with the artifact: a reader of the gate's
-# output learns the program is single-engine without opening a document.
-# THE PACKAGE LIBRARIES the evaluator opens. `tools/libs.py` is the ONE
-# definition of what each is made of — `tools/stems.sh` consumes that
-# answer rather than re-deriving it; the manifests it reads beside it
-# are the DECLARATION the answer is held to. The roster is
-# the linking packages MINUS the ones `build/avra` already carries, so
-# it needs the compiler built first and says so as a prerequisite.
+# THE PACKAGE LIBRARIES the evaluator opens, one per package that
+# owns native code and is not already inside `build/avra`.
+# `tools/libs.py` is the ONE definition of what each is made of —
+# `tools/stems.sh` consumes that answer rather than re-deriving it;
+# the manifests it reads beside it are the DECLARATION the answer is
+# held to. The roster needs the compiler built first and says so.
 # THE LIBRARY SCOPE, KEPT — a package's library is reached by its
-# dependents and by nobody else. One program, no ordering: see the
-# harness for why an ordered PAIR is not expressible here.
+# dependents and by nobody else (`tools/libscope.sh`).
 libscope: avra libs
 	@sh tools/libscope.sh
 
@@ -301,26 +318,6 @@ libs: avra $(PACKAGE_OBJS)
 	  python3 tools/libs.py --build $$n || exit 1; \
 	done
 	@echo "libs: `python3 tools/libs.py --names | wc -w | tr -d ' '` package librar(y|ies) built"
-
-corpus: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
-	@./avra corpus corpus
-	@./avra corpus --native-only corpus/native
-	@for d in corpus/*/; do \
-	  d=$${d%/}; [ -f $$d/src/main.av ] || continue; \
-	  if [ -f $$d/native-only ]; then legs="native"; else \
-	    ./avra run $$d/src/main.av > build/corpus-eval.out 2>&1 \
-	      || { echo "$$d: eval FAILED"; cat build/corpus-eval.out; exit 1; }; \
-	    diff $$d/expected build/corpus-eval.out \
-	      || { echo "$$d: eval != expected"; exit 1; }; \
-	    legs="eval == native"; \
-	  fi; \
-	  ./avra build $$d/src/main.av > build/corpus-bin.path 2> build/corpus-bin.err \
-	    || { echo "$$d: build FAILED"; cat build/corpus-bin.err build/corpus-bin.path; exit 1; }; \
-	  "$$(cat build/corpus-bin.path)" > build/corpus-native.out; \
-	  diff $$d/expected build/corpus-native.out \
-	    || { echo "$$d: native != expected"; exit 1; }; \
-	  echo "$$d: $$legs == expected"; \
-	done
 
 # The idiom bar: the baseline LISTS sites and only ever shrinks —
 # `idioms-accept` prunes what is fixed and can never add. A new
@@ -344,7 +341,7 @@ fingerprints:
 # THE EXTERN WALL'S WIDTH: Avra's `int` is 64 bits and C's is 32, so a
 # C body answering a narrow type writes only the low half and a
 # negative value reads as a large positive one. Both engines agree on
-# that wrong answer, so the corpus cannot catch it.
+# that wrong answer, so a program test cannot catch it.
 externs:
 	@python3 tools/externs.py
 
@@ -395,8 +392,8 @@ SQLITE_FLAGS := \
 # under a rule whose whole claim is "Avra == C on the SAME object".
 # The build LOCK stays in /tmp by design: it is machine-wide.
 witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
-	@./avra build packages/width-witness > build/witness.path 2>&1 \
-	  || { echo "witness: build FAILED"; cat build/witness.path; exit 1; }
+	@./avra build packages/width-witness > build/witness.path 2> build/witness.err \
+	  || { echo "witness: build FAILED"; cat build/witness.err; cat build/witness.path; exit 1; }
 	@$$(tail -1 build/witness.path) > build/witness-avra.out
 	@cc -O2 -o build/witness-c packages/width-witness/src/reader.c build/width_witness.o
 	@build/witness-c > build/witness-c.out
@@ -404,15 +401,16 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	  || { echo "witness: Avra and C disagree on the same object — the extern seam lost a width"; exit 1; }
 	@echo "witness: Avra == C on the same object — $$(cat build/witness-avra.out)"
 
-# The whole gate: the vocabulary's guarantee, idioms, unit specs,
-# then the corpus end to end.
+# The whole gate: the vocabulary's guarantee, idioms, then every
+# proof a package carries — its spec cases and its program tests,
+# both inside its own suite.
 # THE GATE: the suites run with the scaffolder's template in place —
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
-gate: stems vocab fingerprints externs idioms tested traps corpus witness
+gate: seed-check stems vocab fingerprints externs idioms tested traps witness
 
-tested: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
 	@rm -rf packages/std-avrac/src/features/zz_probe
 	@./avra new feature zz_probe > build/scaffold-new.out 2>&1 || { cat build/scaffold-new.out; exit 1; }
 	@trap 'rm -rf packages/std-avrac/src/features/zz_probe' EXIT INT TERM; $(MAKE) -s test
@@ -425,11 +423,11 @@ native-check: $(COMPILER_OBJS)
 	@"$$(cat build/native-check-bin.path)" > build/native-check-native.out
 	@diff build/native-check-eval.out build/native-check-native.out && echo "native == eval"
 
-# The measured curve: suite + native corpus wall times.
+# The measured curve: the suites' wall time.
 bench: $(COMPILER_OBJS)
 	@sh tools/bench.sh
 
-# Mutated corpus through `avra check`: diagnose, never crash.
+# Mutated program tests through `avra check`: diagnose, never crash.
 fuzz: $(COMPILER_OBJS)
 	@sh tools/fuzz.sh
 

@@ -1,0 +1,339 @@
+//! THE ANNOTATION LAW: `@name(args)` is the call `name(<the
+//! declaration>, args)` made at compile time. So `name` is a fn; its
+//! FIRST seat says what it takes — `Fn` for a fn, `Type` for a record
+//! or enum; the written arguments fill the seats after it, settled
+//! like a const's value; and what it ANSWERS is its effect — `void`
+//! records, `List<Diagnostic>` validates. The law
+//! satisfied, the call runs, and what it said is spoken here.
+use core.{StmtId, ExprId, TypeId, DeclId, DeclKind, Annotation, same_stmt, source_spelled, same_file, user_kind, is_kind_word}
+use features.{TypeCx, kind_word, FnSig, Said, Unsettled, nothing}
+use diagnostics.{refusal, loc_at}
+use @std.errors.{Loc}
+
+export fn check_annotation(mut cx: TypeCx, s: StmtId, a: Annotation) {
+    if cx.errored(a.callee) { return }
+    let found: DeclId? = cx.bound_decl(a.callee)
+    if found == null {
+        not_a_fn(cx, a)
+        return
+    }
+    let d = found!
+    if cx.view.decls.fn_name(d) == null {
+        not_a_fn(cx, a)
+        return
+    }
+    let found_sig: FnSig? = (cx.view.decls.sig(d))?.fn_sig()
+    if found_sig == null { return }
+    let sig = found_sig!
+    let seats = sig.params
+    // THE ARGUMENT POSITION: a declaration's NAME is its meta value,
+    // typed as the seat; every other argument types as an expression.
+    // A genuinely failed argument is absorbed here, its cause spoken.
+    type_arguments(cx, a, seats)
+    if a.args.any((e: ExprId) -> cx.errored(e)) { return }
+    if seats.is_empty() {
+        takes_no_declaration(cx, a)
+        return
+    }
+    let kind: DeclKind? = declared_kind(cx, s)
+    if !receiver_fits(cx, seats.first()!, kind) {
+        wrong_receiver(cx, a, seats.first()!, kind)
+        return
+    }
+    if seats.length - 1 != a.args.length {
+        wrong_count(cx, a, seats.length - 1)
+        return
+    }
+    if !arguments_fit(cx, a, seats) { return }
+    let effect: Effect? = effect_of(cx, sig.ret)
+    if effect == null {
+        wrong_answer(cx, a, sig.ret)
+        return
+    }
+    // A DECLARES ANNOTATION runs inside the resolve its generated
+    // names serve, so it reaches only what the parse tree holds — and
+    // its fn must stand in ANOTHER file, or it would need this file's
+    // names while they are still being made.
+    let act = effect!
+    let declares = match act {
+        .Declares or .Derives -> true,
+        .Records or .Validates -> false,
+    }
+    if declares && same_file(cx.view.decls.decl(d).file, cx.view.file) {
+        same_file_annotation(cx, a)
+        return
+    }
+    // A declaration's NAME is source-known too: `@derive(Show)` must
+    // reach the trait while the file's names are still being made.
+    if declares && a.args.any((e: ExprId) -> !source_spelled(cx.view.store.expr(e)) && cx.bound_decl(e) == null) {
+        computed_argument(cx, a)
+        return
+    }
+    if act is .Derives && derive_law(cx, a, s) { return }
+    match cx.view.decls.lifted(d, cx.view.file, s, a.callee, a.args) {
+        .Ok(crossed) -> {
+            match act {
+                .Records or .Validates -> { for x in cx.view.decls.saids(crossed, sig.ret) { if !x.warning { spoken_said(cx, a, d, s, x) } } },
+                .Declares or .Derives -> nothing(),
+            }
+        },
+        .Err(why) -> unsettled(cx, a, why),
+    }
+}
+
+/// The kind of declaration the annotation crosses, or null for a
+/// statement that declares nothing.
+fn declared_kind(cx: TypeCx, s: StmtId) -> DeclKind? {
+    let d: DeclId? = cx.view.decls.decls_of_file(cx.view.file).find((c: DeclId) -> same_stmt(cx.view.decls.decl(c).stmt, s))
+    if d == null { return null }
+    cx.view.decls.decl(d!).kind
+}
+
+/// `Fn` takes a fn; `Type` takes a record or an enum; `Named` takes
+/// any declaration, for an annotation that only names it.
+fn receiver_fits(cx: TypeCx, seat: TypeId, kind: DeclKind?) -> bool {
+    if kind == null { return false }
+    let declared = kind!
+    if cx.view.decls.meta_type(seat, "Named") { return true }
+    if cx.view.decls.meta_type(seat, "Fn") { return declared is .Fn }
+    cx.view.decls.meta_type(seat, "Type") && (declared is .Record || declared is .Enum)
+}
+
+/// Each written argument accepted by the seat after the declaration's.
+fn arguments_fit(mut cx: TypeCx, a: Annotation, seats: List<TypeId>) -> bool {
+    mut fit = true
+    for i, e in a.args {
+        if cx.errored(e) { fit = false }
+        else if !cx.accepts(e, seats[i + 1]) {
+            wrong_argument(cx, a, e, seats[i + 1])
+            fit = false
+        }
+    }
+    fit
+}
+
+/// An annotation's ANSWER as what it does — the effect census the
+/// gate and the voice share. A new answer effect is one arm here,
+/// one row in `effect_census`, and one sentence in `effect_words`.
+enum Effect { Records, Validates, Declares, Derives }
+
+/// The effect an answer has, or null when it has none.
+fn effect_of(cx: TypeCx, ret: TypeId) -> Effect? {
+    match cx.view.types.shape_of(ret) {
+        .Void -> Effect.Records,
+        .List(e) -> if cx.view.decls.meta_type(e, "Diagnostic") { Effect.Validates } else if cx.view.decls.meta_type(e, "Directive") { Effect.Declares } else { null },
+        .Struct(_, _) -> if cx.view.decls.meta_type(ret, "Derived") { Effect.Derives } else { null },
+        rest -> null,
+    }
+}
+
+/// The effects in census order — consumers enumerate through this,
+/// never by hand.
+const effect_census: List<Effect> = [Effect.Records, Effect.Validates, Effect.Declares, Effect.Derives]
+
+/// The written arguments: a DECLARATION'S NAME in a meta seat is its
+/// meta value, typed as the seat; anything else is an expression.
+fn type_arguments(mut cx: TypeCx, a: Annotation, seats: List<TypeId>) {
+    for i, e in a.args {
+        let want: TypeId = if i + 1 < seats.length { seats[i + 1] } else { cx.error_type }
+        if cx.view.decls.takes_a_decl(want) && cx.bound_decl(e) != null {
+            cx.facts.set_type(e, want)
+        } else {
+            cx.walk(e)
+        }
+    }
+}
+
+// ── The voices ──
+
+fn at_annotation(cx: TypeCx, a: Annotation) -> Loc? {
+    if a.span == null { return null }
+    loc_at(cx.view.source.file, a.span!)
+}
+
+fn not_a_fn(mut cx: TypeCx, a: Annotation) {
+    let _ = cx.spoken(refusal("annotation.callee", at_annotation(cx, a),
+                       "an annotation names a fn over a declaration",
+                       "`@${a.name}` names no fn",
+                       "write `fn ${a.name}(f: Fn) -> List<Diagnostic>` — or `t: Type` for a record or enum — and import it"))
+}
+
+fn takes_no_declaration(mut cx: TypeCx, a: Annotation) {
+    let _ = cx.spoken(refusal("annotation.receiver", at_annotation(cx, a),
+                       receiver_law,
+                       "`${a.name}` takes nothing",
+                       "its first parameter is the declaration: `f: Fn`, or `t: Type` for a record or enum"))
+}
+
+fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) {
+    let took = cx.view.types.name_of(seat)
+    let this = if kind == null { "not a declaration" } else { "a ${kind_word(kind!)}" }
+    let found = if ["Fn", "Type", "Named"].contains(took) && !cx.view.decls.meta_type(seat, took) {
+        "`${a.name}` takes `${took}` from another module, not `@std.meta.${took}`"
+    } else {
+        "`${a.name}` takes `${took}`, and this is ${this}"
+    }
+    let _ = cx.spoken(refusal("annotation.receiver", at_annotation(cx, a),
+                       receiver_law,
+                       found,
+                       "`Fn` crosses a fn, `Type` a record or an enum, `Named` any declaration"))
+}
+
+fn wrong_count(mut cx: TypeCx, a: Annotation, wanted: int) {
+    let _ = cx.spoken(refusal("annotation.seats", at_annotation(cx, a),
+                       seats_law,
+                       "`${a.name}` takes ${wanted} after the declaration, this writes ${a.args.length}",
+                       null))
+}
+
+fn wrong_argument(mut cx: TypeCx, a: Annotation, e: ExprId, want: TypeId) {
+    let _ = cx.spoken(refusal("annotation.seats", cx.loc_of(e),
+                       seats_law,
+                       "this seat of `${a.name}` takes `${cx.view.types.name_of(want)}`",
+                       "an argument is evaluated at compile time and must fit the written seat"))
+}
+
+/// A declaration-GENERATING annotation reaches only literals: its
+/// generated names must exist before the file's names are known, so
+/// its arguments run at the same moment, before any typed answer.
+fn computed_argument(mut cx: TypeCx, a: Annotation) {
+    let _ = cx.spoken(refusal("annotation.seats", at_annotation(cx, a),
+                       seats_law,
+                       "`${a.name}` generates declarations, so its arguments come from the source alone",
+                       "a computed argument needs typed answers that do not exist until the name it makes is known"))
+}
+
+/// A declaration-generating annotation's fn must stand in another
+/// file: expanding needs its signature, which needs this file's names,
+/// which are the very thing still being resolved.
+fn same_file_annotation(mut cx: TypeCx, a: Annotation) {
+    let _ = cx.spoken(refusal("annotation.seats", at_annotation(cx, a),
+                       seats_law,
+                       "`${a.name}` generates declarations and stands in this file",
+                       "declare the annotation fn in another file — expanding it needs this file's names, which are still being made"))
+}
+
+/// THE `@derive` PROVIDER LAW, asked of every trait argument: its
+/// associated `derive` must stand in ANOTHER file, for the same reason
+/// a Declares annotation's fn must — expanding needs this file's
+/// names, which are still being made. Answers whether it spoke.
+fn derive_law(mut cx: TypeCx, a: Annotation, s: StmtId) -> bool {
+    for e in a.args {
+        let tr: DeclId? = cx.bound_decl(e)
+        if tr != null {
+            let trait_id = tr!
+            let named = cx.view.decls.decl(trait_id)
+            if !(named.kind is .Trait) {
+                not_a_trait(cx, a, e, named.name)
+                return true
+            }
+            let member: DeclId? = cx.view.decls.trait_derive(trait_id)
+            if member == null {
+                no_derive(cx, e, named.name)
+                return true
+            }
+            let m = member!
+            if same_file(cx.view.decls.decl(m).file, cx.view.file) {
+                derived_same_file(cx, a)
+                return true
+            }
+            // THE TRAIT'S OWN `derive` RAN during this file's resolve;
+            // asking again hits the memo, and a run that failed is
+            // spoken here — silence would leave "no method `show`".
+            match cx.view.decls.lifted(m, cx.view.file, s, a.callee, []) {
+                .Ok(_) -> nothing(),
+                .Err(why) -> {
+                    unsettled(cx, a, why)
+                    return true
+                },
+            }
+        }
+    }
+    false
+}
+
+/// A `@derive` argument that names something other than a trait.
+fn not_a_trait(mut cx: TypeCx, a: Annotation, e: ExprId, name: string) {
+    let _ = cx.spoken(refusal("annotation.derive", cx.loc_of(e),
+                       derive_law_words,
+                       "`${name}` is not a trait",
+                       "`@${a.name}` names a trait — `trait ${name} { static fn derive(t: Type) -> List<Directive> }`"))
+}
+
+/// A trait named by `@derive` that ships no associated `derive`.
+fn no_derive(mut cx: TypeCx, e: ExprId, name: string) {
+    let _ = cx.spoken(refusal("annotation.derive", cx.loc_of(e),
+                       derive_law_words,
+                       "`${name}` declares no `derive`",
+                       "add `static fn derive(t: Type) -> List<Directive>` to the trait"))
+}
+
+/// A `@derive` trait's associated `derive` must stand in another
+/// file: expanding needs this file's names, which are still being made.
+fn derived_same_file(mut cx: TypeCx, a: Annotation) {
+    let _ = cx.spoken(refusal("annotation.seats", at_annotation(cx, a),
+                       seats_law,
+                       "`${a.name}` derives from a trait whose `derive` stands in this file",
+                       "declare the trait — with its `derive` — in another file; expanding it needs this file's names, which are still being made"))
+}
+
+fn wrong_answer(mut cx: TypeCx, a: Annotation, ret: TypeId) {
+    let shown = match cx.view.types.shape_of(ret) {
+        .List(e) -> if cx.view.types.name_of(e) == "Diagnostic" {
+            "`List<Diagnostic>` from another module, not `List<@std.meta.Diagnostic>`"
+        } else { "`${cx.view.types.name_of(ret)}`" },
+        rest -> "`${cx.view.types.name_of(ret)}`",
+    }
+    let _ = cx.spoken(refusal("annotation.answer", at_annotation(cx, a),
+                       "an annotation answers an effect",
+                       "`${a.name}` answers ${shown}",
+                       [effect_words(x) for x in effect_census].join("; ")))
+}
+
+/// The effects' words, one sentence per arm.
+fn effect_words(e: Effect) -> string {
+    match e {
+        .Records -> "`void` records the annotation and says nothing",
+        .Validates -> "`List<Diagnostic>` validates the declaration",
+        .Declares -> "`List<Directive>` generates declarations beside the one stood under",
+        .Derives -> "`Derived` runs each named trait's `derive` over the declaration",
+    }
+}
+
+/// What the annotation SAID about the declaration itself, at the
+/// place it named — the declaration when it named none. A WARNING is
+/// the declaration's word for its users, kept and spoken at each use
+/// (`warn_use`), never here. A kind the annotation NAMED wears its
+/// package's namespace; a kind-less refusal wears this feature's.
+fn spoken_said(mut cx: TypeCx, a: Annotation, d: DeclId, s: StmtId, x: Said) {
+    if x.kind != null && !is_kind_word(x.kind!) { return bad_kind(cx, a, x) }
+    let here: Loc? = x.at ?? cx.view.stmt_loc(s)
+    // LICENSED I18: a kind the annotation did not name is not a missing payload — the refusal wears this feature's own code
+    let kind = user_kind(cx.view.decls.package_of(d), x.kind) ?? "annotation.said"
+    let _ = cx.spoken(refusal(kind, here, x.message, "refused by `@${a.name}`", x.help))
+}
+
+/// A kind that is not a word is the ANNOTATION's mistake, spoken in
+/// place of the verdict it carried — one message for one mistake.
+fn bad_kind(mut cx: TypeCx, a: Annotation, x: Said) {
+    let _ = cx.spoken(refusal("annotation.kind", at_annotation(cx, a), "an annotation's kind is a word", "`@${a.name}` named `${x.kind!}`, saying: ${x.message}", "spell the kind `[A-Za-z0-9_-]+`, like `E1`"))
+}
+
+fn unsettled(mut cx: TypeCx, a: Annotation, why: Unsettled) {
+    let label = match why {
+        .Reach(words) -> "`${a.name}` ${words}",
+        .Budget(words) -> "`${a.name}` ${words}",
+        .Trap(words) -> "`${a.name}` ${words}",
+        .Param(words) -> "`${a.name}` reads ${words}",
+        .Spoken -> "",
+    }
+    if label.is_empty() { return }
+    let _ = cx.spoken(refusal("annotation.unsettled", at_annotation(cx, a),
+                       "an annotation could not run",
+                       label,
+                       "an annotation runs at compile time from pure computation alone"))
+}
+
+const derive_law_words: string = "an annotation derives through a trait that declares `derive`"
+export const receiver_law: string = "an annotation's first seat says what it takes"
+const seats_law: string = "an annotation's arguments fill its seats"

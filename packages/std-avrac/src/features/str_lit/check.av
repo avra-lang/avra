@@ -1,52 +1,52 @@
 //! The hole law: an interpolation hole prints as a scalar or a
 //! string; the answer is always a string.
 use core.{ExprId, Type, TypeId}
-use features.{TypeCx, MethodCall, spoken, this_is, worded}
+use features.{TypeCx, MethodCall, this_is}
 use diagnostics.{refusal}
 
 fn interp_type(mut cx: TypeCx, holes: List<ExprId>) -> TypeId {
     for h in holes {
-        let sh = cx.shape_at(h)
+        let sh = cx.seen_at(h)
         let ok = printable(sh)
         if !ok {
             let n = cx.name_at(h)
-            return spoken(cx, refusal("type.interp_hole", cx.loc_of(h), "an interpolation hole prints as a scalar or string, found `${n}`", this_is(n), "interpolate an element or the `length` instead"))
+            return cx.spoken(refusal("type.interp_hole", cx.loc_of(h), "an interpolation hole prints as a scalar or string, found `${n}`", this_is(n), "interpolate an element or the `length` instead"))
         }
     }
-    cx.view.types.intern(Type.Str)
+    cx.type(string)
 }
 
 // ── The method rows' rules: the seats, then the answer ──
 
 /// `s.contains(t)`, `s.starts_with(t)`, `s.ends_with(t)` — verdicts.
-export fn check_contains(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "contains", [Type.Str], Type.Bool) }
-export fn check_starts_with(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "starts_with", [Type.Str], Type.Bool) }
-export fn check_ends_with(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "ends_with", [Type.Str], Type.Bool) }
+export fn check_contains(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "contains", [Type.Str], Type.Bool) }
+export fn check_starts_with(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "starts_with", [Type.Str], Type.Bool) }
+export fn check_ends_with(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "ends_with", [Type.Str], Type.Bool) }
 
 /// `s.index_of(t)` — the first position, or -1.
-export fn check_index_of(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "index_of", [Type.Str], Type.Int) }
+export fn check_index_of(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "index_of", [Type.Str], Type.Int) }
 
 /// `s.substring(lo, hi)` — the bytes from lo up to hi.
-export fn check_substring(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "substring", [Type.Int, Type.Int], Type.Str) }
+export fn check_substring(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "substring", [Type.Int, Type.Int], Type.Str) }
 
 /// `s.split(sep)` — the pieces between separators.
 export fn check_split(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    worded(cx, mc, "split", [Type.Str], Type.List(cx.view.types.intern(Type.Str)))
+    cx.worded(mc, "split", [Type.Str], Type.List(cx.type(string)))
 }
 
 /// `s.replace(from, to)` — every occurrence.
-export fn check_replace(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "replace", [Type.Str, Type.Str], Type.Str) }
+export fn check_replace(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "replace", [Type.Str, Type.Str], Type.Str) }
 
 /// `s.char_code()` / `s.char_code(i)` — the byte at the start, or
 /// at `i`, as a code.
 export fn check_char_code(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    if mc.args.is_empty() { return cx.view.types.intern(Type.Int) }
-    worded(cx, mc, "char_code", [Type.Int], Type.Int)
+    if mc.args.is_empty() { return cx.type(int) }
+    cx.worded(mc, "char_code", [Type.Int], Type.Int)
 }
 
 /// `s.trim()` — the text without its surrounding blanks.
-export fn check_trim(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "trim", [], Type.Str) }
-export fn check_is_empty(mut cx: TypeCx, mc: MethodCall) -> TypeId { worded(cx, mc, "is_empty", [], Type.Bool) }
+export fn check_trim(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "trim", [], Type.Str) }
+export fn check_is_empty(mut cx: TypeCx, mc: MethodCall) -> TypeId { cx.worded(mc, "is_empty", [], Type.Bool) }
 
 // ── The property row's rules ──
 
@@ -56,7 +56,7 @@ export fn on_str(t: Type) -> bool {
 
 // LICENSED I23: a row's rule wears the row's signature
 export fn check_str_length(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
-    cx.view.types.intern(Type.Int)
+    cx.type(int)
 }
 
 /// WHAT A HOLE CAN PRINT. Two or more shapes answer, so this is a
@@ -67,7 +67,7 @@ fn printable(sh: Type) -> bool {
     match sh {
         .Int or .Float or .Bool or .Str or .Error -> true,
         .Ptr or .Bytes or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or
-        .List(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or
+        .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or
         .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or
         .Var(_, _, _) -> false,
     }

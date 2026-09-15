@@ -111,7 +111,7 @@ spec "features/fns" {
                          "seat 1 of `avra_str_len` wears `Bytes?`, and a runtime row's seat takes no absence")
         }
         then "the row's absence law renders whole" {
-            analyze_source("extern fn avra_host_env(name: string?) -> string\n1").report().starts_with("error[F2066]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_env(name: string?) -> string\n  · ┬\n  · ╰── declared here\n──╯\nhelp: core's rows are the compiler's own C and every one of them READS the pointer it is handed")
+            analyze_source("extern fn avra_host_env(name: string?) -> string\n1").report().starts_with("error[F2088]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_env(name: string?) -> string\n  · ┬\n  · ╰── declared here\n──╯\nhelp: core's rows are the compiler's own C and every one of them READS the pointer it is handed")
         }
         then "a PACKAGE's C keeps the capability — a nullable seat it may test" {
             refusals("extern fn zz(name: string?, p: ptr?, n: int?) -> int\n1") == 0
@@ -300,6 +300,67 @@ ret 0"""
         }
         then "a `once` fn is a fn: a plain fn calls it like any other" {
             shown("once fn tag() -> string {\n    \"x\"\n}\nfn twice() -> string {\n    \"\${tag()}\${tag()}\"\n}\ntwice()") == "xx"
+        }
+    }
+    given "a `const` seat — settled at compile time" {
+        then "a plain seat refuses a settled callee — the two fn types differ" {
+            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(int) -> int = takes\n0",
+                         "`bad` declares `fn(int) -> int`, this is `fn(const int) -> int`")
+        }
+        then "a settled seat refuses a writing callee — `const` is not `mut`" {
+            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(mut int) -> int = takes\n0",
+                         "`bad` declares `fn(mut int) -> int`, this is `fn(const int) -> int`")
+        }
+        then "a settled seat accepts a callee that settles nothing — the sound direction" {
+            shown("fn plain(x: int) -> int {\n    x\n}\nlet good: fn(const int) -> int = plain\ngood(2)") == "2"
+        }
+        then "a method may demand settlement" {
+            shown("type C = { n: int }\nimpl C {\n    fn m(const x: int) -> int {\n        x + self.n\n    }\n}\nlet c = C { n: 4 }\nc.m(3)") == "7"
+        }
+        then "two distinct settled values lower TWO units; a repeated one shares" {
+            let src = "fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet a = pick(\"x\", \"1\")\nlet b = pick(\"y\", \"2\")\nlet c = pick(\"x\", \"3\")\na + b + c"
+            ir_of(src).fns.filter(it.name.starts_with("pick$@")).length == 2
+        }
+        then "a settled seat refuses a value computed at run time" {
+            refused_with("fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet p = \"x\"\npick(p, \"1\")",
+                         "`pattern` is a `const` seat")
+        }
+        then "a settled seat accepts a `const` — computed or written" {
+            shown("fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nconst P: string = \"a\" + \"b\"\npick(P, \"1\")") == "ab1"
+        }
+        then "a METHOD's settled seat obeys the same law" {
+            refused_with("type C = { n: int }\nimpl C {\n    fn m(const x: int) -> int {\n        x + self.n\n    }\n}\nlet c = C { n: 1 }\nlet v = 5\nc.m(v)",
+                         "`x` is a `const` seat")
+        }
+        then "a generic fn's settled seat specializes like a plain one" {
+            let src = "fn first<T>(const x: T, y: T) -> T {\n    x\n}\nlet a = first(1, 2)\nlet b = first(1, 3)\nlet c = first(2, 4)\na + b + c"
+            ir_of(src).fns.filter(it.name.starts_with("first$")).length == 2
+        }
+        then "two settled seats keep their ORDER — (1,2) and (2,1) are distinct units" {
+            let src = "fn pair(const a: int, const b: int) -> int {\n    a * 10 + b\n}\npair(1, 2) + pair(2, 1)"
+            ir_of(src).fns.filter(it.name.starts_with("pair$@")).length == 2
+        }
+        then "a settled seat FORWARDS — the inner unit keys on the outer's value" {
+            shown("fn inner(const x: int) -> int {\n    x + 1\n}\nfn outer(const y: int) -> int {\n    inner(y)\n}\nouter(3) + outer(4)") == "9"
+        }
+        then "forwarded units split PER VALUE — inner is lowered once per outer value" {
+            let src = "fn inner(const x: int) -> int {\n    x + 1\n}\nfn outer(const y: int) -> int {\n    inner(y)\n}\nouter(3) + outer(4)"
+            ir_of(src).fns.filter(it.name.starts_with("inner$@")).length == 2
+        }
+        then "a `const` in the body folds to the settled seat's value" {
+            shown("fn compile(p: string) -> string {\n    p + \"!\"\n}\nfn matches(const pattern: string, s: string) -> string {\n    const prog = compile(pattern)\n    prog + s\n}\nmatches(\"x\", \"y\")") == "x!y"
+        }
+        then "two units fold to THEIR OWN value — the materialized const is per-unit" {
+            shown("fn compile(p: string) -> string {\n    p + \"!\"\n}\nfn matches(const pattern: string, s: string) -> string {\n    const prog = compile(pattern)\n    prog + s\n}\nmatches(\"x\", \"a\") + matches(\"y\", \"b\")") == "x!ay!b"
+        }
+        then "a const that reads a RUN-TIME parameter refuses — the value only exists while running" {
+            refused_at_run("fn f(x: int) -> int {\n    const y = x + 1\n    y\n}\nf(3)", "a const cannot read a run-time parameter")
+        }
+        then "a METHOD's settled seat folds in its body too — receiver offset and all" {
+            shown("type C = { n: int }\nimpl C {\n    fn m(const p: int) -> int {\n        const y = p * 2\n        y + self.n\n    }\n}\nlet c = C { n: 10 }\nc.m(4)") == "18"
+        }
+        then "a STATIC method's settled seat folds — no receiver seat to offset" {
+            shown("type C = { n: int }\nimpl C {\n    static fn m(const p: int) -> int {\n        const y = p * 2\n        y\n    }\n}\nC.m(4)") == "8"
         }
     }
 }

@@ -3,15 +3,22 @@
 // first to the second leaves the same list, and two different nodes
 // wear one identity. Every node kind splicing two sequences is
 // attacked here by moving exactly one item across its boundary.
-use @std.avrac.core.{new_node_store, Expr, Stmt, Pat, Param, TypeRef, named_ref, GrammarSpec}
+use @std.avrac.core.{new_node_store, Expr, Stmt, Pat, Param, TypeRef, SeatMark, named_ref, plain_mark, GrammarSpec}
 
 fn written(name: string, optional: bool) -> TypeRef {
     named_ref(name) with { optional: optional }
 }
 
 fn seat(name: string, t: TypeRef?) -> Param {
-    Param { name: name, ty: t, default: null, mutable: false }
+    Param { name: name, ty: t, default: null, mark: plain_mark }
 }
+
+fn seat_marked(name: string, t: TypeRef?, mark: SeatMark) -> Param {
+    Param { name: name, ty: t, default: null, mark: mark }
+}
+
+const mut_mark: SeatMark = SeatMark { mutable: true, settled: false }
+const const_mark: SeatMark = SeatMark { mutable: false, settled: true }
 
 spec "core/nodes adversarial" {
     given "a boundary between two spliced sequences" {
@@ -24,8 +31,8 @@ spec "core/nodes adversarial" {
         }
         then "a module path is not an item list — `use a.b` vs `use a.{b}`" {
             mut s = new_node_store()
-            let deep = s.alloc_stmt(Stmt.Use(["a", "b"], []), null)
-            let item = s.alloc_stmt(Stmt.Use(["a"], ["b"]), null)
+            let deep = s.alloc_stmt(Stmt.Use(["a", "b"], [], []), null)
+            let item = s.alloc_stmt(Stmt.Use(["a"], ["b"], [""]), null)
             s.stmt_fingerprint(deep) != s.stmt_fingerprint(item)
         }
         then "a type parameter is not a value parameter" {
@@ -107,7 +114,7 @@ spec "core/nodes adversarial" {
         then "a zero-payload pattern and statement cannot share one" {
             mut s = new_node_store()
             let wild = s.alloc_pat(Pat.Wild, null)
-            let empty_use = s.alloc_stmt(Stmt.Use([], []), null)
+            let empty_use = s.alloc_stmt(Stmt.Use([], [], []), null)
             s.pat_fingerprint(wild) != s.stmt_fingerprint(empty_use)
         }
         then "a written type and an expression cannot share one — `f<B?>()` vs `f(B)`" {
@@ -139,6 +146,59 @@ spec "core/nodes adversarial" {
             let d = s.stmt_fingerprint(fixed)
             let e = s.stmt_fingerprint(read)
             a != b && a != c && a != d && a != e && b != c && b != d && b != e && c != d && c != e && d != e
+        }
+    }
+    given "a payload the fingerprint must not forget" {
+        then "`export fn` is not `fn`" {
+            mut s = new_node_store()
+            let body = s.alloc_expr(Expr.IntLit(1), null)
+            let unmarked = s.alloc_stmt(Stmt.FnDecl("f", [], [], written("int", false), body), null)
+            let shown = s.alloc_stmt(Stmt.FnDecl("f", [], [], written("int", false), body), null)
+            s.mark_exported(shown)
+            s.stmt_fingerprint(unmarked) != s.stmt_fingerprint(shown)
+        }
+        then "a `mut` seat is not a plain seat" {
+            mut s = new_node_store()
+            let body = s.alloc_expr(Expr.IntLit(1), null)
+            let t = written("int", false)
+            let unmarked = s.alloc_stmt(Stmt.FnDecl("f", [], [seat("x", t)], t, body), null)
+            let writes = s.alloc_stmt(Stmt.FnDecl("f", [], [seat_marked("x", t, mut_mark)], t, body), null)
+            s.stmt_fingerprint(unmarked) != s.stmt_fingerprint(writes)
+        }
+        then "a `const` seat is not a plain seat" {
+            mut s = new_node_store()
+            let body = s.alloc_expr(Expr.IntLit(1), null)
+            let t = written("int", false)
+            let unmarked = s.alloc_stmt(Stmt.FnDecl("f", [], [seat("x", t)], t, body), null)
+            let settled = s.alloc_stmt(Stmt.FnDecl("f", [], [seat_marked("x", t, const_mark)], t, body), null)
+            s.stmt_fingerprint(unmarked) != s.stmt_fingerprint(settled)
+        }
+        then "a field's default belongs to its field" {
+            mut s = new_node_store()
+            let one = s.alloc_expr(Expr.IntLit(1), null)
+            let t = written("int", false)
+            let a_def = Param { name: "a", ty: t, default: one, mark: plain_mark }
+            let b_def = Param { name: "b", ty: t, default: one, mark: plain_mark }
+            let first = s.alloc_stmt(Stmt.StructDecl("S", [], [a_def, seat("b", t)]), null)
+            let second = s.alloc_stmt(Stmt.StructDecl("S", [], [seat("a", t), b_def]), null)
+            s.stmt_fingerprint(first) != s.stmt_fingerprint(second)
+        }
+        then "`dyn Show` is not `Show`" {
+            mut s = new_node_store()
+            let v = s.alloc_expr(Expr.IntLit(1), null)
+            let unmarked = s.alloc_stmt(Stmt.Let("x", named_ref("Show"), v), null)
+            let boxed = s.alloc_stmt(Stmt.Let("x", named_ref("Show") with { dynamic: true }, v), null)
+            s.stmt_fingerprint(unmarked) != s.stmt_fingerprint(boxed)
+        }
+        then "a fn type's seat marks ride its identity" {
+            mut s = new_node_store()
+            let v = s.alloc_expr(Expr.IntLit(1), null)
+            let t = written("int", false)
+            let unmarked = named_ref("fn") with { args: [t, t], arrow: true, marks: [plain_mark, plain_mark] }
+            let writes = unmarked with { marks: [mut_mark, plain_mark] }
+            let a = s.alloc_stmt(Stmt.Let("f", unmarked, v), null)
+            let b = s.alloc_stmt(Stmt.Let("f", writes, v), null)
+            s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
     }
 }

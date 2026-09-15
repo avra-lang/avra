@@ -3,7 +3,7 @@
 //! must be nullable, and the right must be what that nullable
 //! carries; the answer is the carried type, never nullable again.
 use core.{ExprId, StmtId, Type, TypeId, ResSides}
-use features.{TypeCx, accepts, join_of, spoken, this_is, member_type_of, nullable_over, types_disagree, chained_binder}
+use features.{TypeCx, this_is, chained_binder}
 use diagnostics.{refusal, warning, Diag}
 
 fn nullable_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -27,12 +27,12 @@ fn chain_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeI
     if cx.errored(subject) { return cx.error_type }
     let held: TypeId? = cx.view.types.carried(cx.type_at(subject))
     if held == null { return not_chainable(cx, subject, name) }
-    let member = member_type_of(cx, e, cx.view.types.name_of(held!), held!, name)
+    let member = cx.member_type_of(e, cx.view.types.name_of(held!), held!, name)
     if cx.errored_ty(member) { return cx.error_type }
     // a member that is itself nullable IS the chain's answer — the
     // flatten rule: `a?.b` never nests absence
     if cx.view.types.shape_of(member) is .Opt { return member }
-    nullable_over(cx, member)
+    cx.nullable_over(member)
 }
 
 /// `l ?? r`: `l` is nullable and `r` fits what it carries — or is
@@ -49,9 +49,9 @@ fn coalesce_type(mut cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
     }
     if held == null { return never_absent(cx, l) }
     let carried = held!
-    if accepts(cx, r, carried) { return carried }
+    if cx.accepts(r, carried) { return carried }
     let whole = cx.type_at(l)
-    if !types_disagree(cx, cx.type_at(r), whole) { return whole }
+    if !cx.types_disagree(cx.type_at(r), whole) { return whole }
     wrong_answer(cx, r, carried)
 }
 
@@ -73,7 +73,7 @@ fn match_opt_type(mut cx: TypeCx, subject: ExprId, bind: string,
     if cx.errored(subject) { return cx.error_type }
     let held: TypeId? = cx.view.types.carried(cx.type_at(subject))
     if held == null {
-        if bind == chained_binder() {
+        if bind == chained_binder {
             return not_absent_able(cx, subject, "type.chain", "`?.` reaches into", "`?.` reaches into what is never absent", "write `.` — the value is a guarantee")
         }
         return not_absent_able(cx, subject, "type.match_opt", "`${bind}?` asks",
@@ -84,11 +84,11 @@ fn match_opt_type(mut cx: TypeCx, subject: ExprId, bind: string,
     cx.bind_types(present, [held!])
     let pt = cx.walk_type(present)
     let at = cx.walk_type(absent)
-    let both: TypeId? = join_of(cx, pt, at)
+    let both: TypeId? = cx.join_of(pt, at)
     if both == null { return arms_disagree(cx, present, absent) }
     let answer = both!
-    let _ = accepts(cx, present, answer)
-    let _ = accepts(cx, absent, answer)
+    let _ = cx.accepts(present, answer)
+    let _ = cx.accepts(absent, answer)
     answer
 }
 
@@ -183,30 +183,30 @@ fn coalesce_never_fires(cx: TypeCx, v: ExprId) -> Diag {
 fn not_absent_able(mut cx: TypeCx, v: ExprId, kind: string, asks: string,
                    so: string, remedy: string) -> TypeId {
     if cx.shape_at(v) is .Null {
-        return spoken(cx, refusal(kind, cx.loc_of(v), "this is always absent, so ${so}", "always absent", remedy))
+        return cx.spoken(refusal(kind, cx.loc_of(v), "this is always absent, so ${so}", "always absent", remedy))
     }
     let n = cx.name_at(v)
-    spoken(cx, refusal(kind, cx.loc_of(v), "${asks} a nullable, this is `${n}`", this_is(n), "`${n}` is a guarantee — it is never absent"))
+    cx.spoken(refusal(kind, cx.loc_of(v), "${asks} a nullable, this is `${n}`", this_is(n), "`${n}` is a guarantee — it is never absent"))
 }
 
 /// `?.` on a guarantee, or on absence itself — the same two
 /// refusals `!` and `??` give, in the chain's words.
 fn not_chainable(mut cx: TypeCx, subject: ExprId, name: string) -> TypeId {
     if cx.shape_at(subject) is .Null {
-        return spoken(cx, refusal("type.chain", cx.loc_of(subject), "this is always absent, so `?.${name}` never reaches anything", "always absent", "there is nothing here to reach into"))
+        return cx.spoken(refusal("type.chain", cx.loc_of(subject), "this is always absent, so `?.${name}` never reaches anything", "always absent", "there is nothing here to reach into"))
     }
     let n = cx.name_at(subject)
-    spoken(cx, refusal("type.chain", cx.loc_of(subject), "`?.` reaches into a nullable, this is `${n}`", this_is(n), "`${n}` is a guarantee — write `.${name}`"))
+    cx.spoken(refusal("type.chain", cx.loc_of(subject), "`?.` reaches into a nullable, this is `${n}`", this_is(n), "`${n}` is a guarantee — write `.${name}`"))
 }
 
 fn wrong_answer(mut cx: TypeCx, r: ExprId, carried: TypeId) -> TypeId {
     let n = cx.name_at(r)
-    spoken(cx, refusal("type.coalesce", cx.loc_of(r), "`??` answers with a `${cx.view.types.name_of(carried)}`, this is `${n}`", this_is(n), "a chain groups to the RIGHT — `a ?? (b ?? c)`"))
+    cx.spoken(refusal("type.coalesce", cx.loc_of(r), "`??` answers with a `${cx.view.types.name_of(carried)}`, this is `${n}`", this_is(n), "a chain groups to the RIGHT — `a ?? (b ?? c)`"))
 }
 
 fn arms_disagree(mut cx: TypeCx, present: ExprId, absent: ExprId) -> TypeId {
     let n = cx.name_at(absent)
-    spoken(cx, refusal("type.match_opt", cx.loc_of(absent), "the arms disagree: `${cx.name_at(present)}` vs `${n}`", this_is(n), null))
+    cx.spoken(refusal("type.match_opt", cx.loc_of(absent), "the arms disagree: `${cx.name_at(present)}` vs `${n}`", this_is(n), null))
 }
 
 fn else_falls_through(mut cx: TypeCx, s: StmtId, bind: string) {
@@ -215,7 +215,7 @@ fn else_falls_through(mut cx: TypeCx, s: StmtId, bind: string) {
 
 fn absence_unpromised(mut cx: TypeCx, v: ExprId, promised: TypeId) -> TypeId {
     let promise = cx.view.types.name_of(promised)
-    spoken(cx, refusal("type.propagate", cx.loc_of(v), "`?` makes this fn answer `null`, but it promises a `${promise}`", "propagates here", propagate_remedy(cx, promised, promise)))
+    cx.spoken(refusal("type.propagate", cx.loc_of(v), "`?` makes this fn answer `null`, but it promises a `${promise}`", "propagates here", propagate_remedy(cx, promised, promise)))
 }
 
 /// The nullable channel's remedy — shape-aware: a fn promising a
@@ -231,16 +231,16 @@ fn propagate_remedy(cx: TypeCx, ret: TypeId, promise: string) -> string {
 /// whose answer is inferred and so promises nothing.
 fn no_caller(mut cx: TypeCx, v: ExprId, what: string, help: string) -> TypeId {
     if cx.behind_lambda() {
-        return spoken(cx, refusal("type.propagate", cx.loc_of(v), "`?` passes ${what} to a caller, and a lambda promises none — its answer is inferred", "inside this lambda", help))
+        return cx.spoken(refusal("type.propagate", cx.loc_of(v), "`?` passes ${what} to a caller, and a lambda promises none — its answer is inferred", "inside this lambda", help))
     }
-    spoken(cx, refusal("type.propagate", cx.loc_of(v), "`?` passes ${what} to a caller, and the top level has none", "at the top level", help))
+    cx.spoken(refusal("type.propagate", cx.loc_of(v), "`?` passes ${what} to a caller, and the top level has none", "at the top level", help))
 }
 
 fn failure_unpromised(mut cx: TypeCx, v: ExprId, promised: TypeId, sides: ResSides) -> TypeId {
     let promise = cx.view.types.name_of(promised)
-    spoken(cx, refusal("type.propagate", cx.loc_of(v), "`?` makes this fn answer the failure, but it promises a `${promise}`", "propagates here", "declare the answer fallible — `-> Result<${promise}, ${cx.view.types.name_of(sides.err)}>`"))
+    cx.spoken(refusal("type.propagate", cx.loc_of(v), "`?` makes this fn answer the failure, but it promises a `${promise}`", "propagates here", "declare the answer fallible — `-> Result<${promise}, ${cx.view.types.name_of(sides.err)}>`"))
 }
 
 fn failures_disagree(mut cx: TypeCx, v: ExprId, sides: ResSides, promised: ResSides) -> TypeId {
-    spoken(cx, refusal("type.propagate", cx.loc_of(v), "the failures disagree: this raises `${cx.view.types.name_of(sides.err)}`, the fn promises `${cx.view.types.name_of(promised.err)}`", "propagates here", "error unions arrive later — today the channels must carry the same type"))
+    cx.spoken(refusal("type.propagate", cx.loc_of(v), "the failures disagree: this raises `${cx.view.types.name_of(sides.err)}`, the fn promises `${cx.view.types.name_of(promised.err)}`", "propagates here", "error unions arrive later — today the channels must carry the same type"))
 }

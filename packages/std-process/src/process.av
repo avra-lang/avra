@@ -48,35 +48,35 @@ extern fn avra_puts(s: string)
 // The substrate's spawn flags — one bit each, summed — and the events
 // read back from a finished handle. Fns, because a module file holds
 // declarations only.
-fn pipe_in() -> int { 1 }
-fn pipe_out() -> int { 2 }
-fn pipe_err() -> int { 4 }
-fn null_in() -> int { 16 }
-fn inherit_in() -> int { 128 }
-fn inherit_out() -> int { 256 }
-fn inherit_err() -> int { 512 }
-fn new_pgroup() -> int { 1024 }
-fn inherit_env() -> int { 8192 }
+const pipe_in: int = 1
+const pipe_out: int = 2
+const pipe_err: int = 4
+const null_in: int = 16
+const inherit_in: int = 128
+const inherit_out: int = 256
+const inherit_err: int = 512
+const new_pgroup: int = 1024
+const inherit_env: int = 8192
 // What `ready` reports — bits, since more than one can be true.
-fn ready_out() -> int { 1 }
-fn ready_err() -> int { 2 }
-fn ready_in() -> int { 4 }
+const ready_out: int = 1
+const ready_err: int = 2
+const ready_in: int = 4
 
 /// The pump's turn. Short enough that a deadline is not overshot by
 /// much, long enough that a quiet child is not spun on — and its size
 /// is not a correctness question, because the three invariants the
 /// pump holds are about ORDER (`pumped`).
-fn turn_ms() -> int { 20 }
+const turn_ms: int = 20
 
 /// The read's bite, the descriptor scratch's own size.
-fn chunk() -> int { 1048576 }
+const chunk: int = 1048576
 /// The status word's tag lives above the low 32 bits.
-fn tag_base() -> int { 4294967296 }
-fn enoent() -> int { 2 }
-fn eacces() -> int { 13 }
-fn enotdir() -> int { 20 }
-fn sigterm() -> int { 15 }
-fn sigkill() -> int { 9 }
+const tag_base: int = 4294967296
+export const enoent: int = 2
+export const eacces: int = 13
+export const enotdir: int = 20
+const sigterm: int = 15
+const sigkill: int = 9
 
 // ── The types ───────────────────────────────────────────────────
 
@@ -314,17 +314,15 @@ fn is_absolute(d: string) -> bool {
 /// `--`: mint by name wherever the tool has a word of its own.
 type Terminator = { name: string, word: string? }
 
-fn terminators() -> List<Terminator> {
-    table<Terminator> {
-        name   | word
-        "git"  | "--end-of-options"
-        "find" | null
-        "dd"   | null
-    }
+const terminators: List<Terminator> = table<Terminator> {
+    name   | word
+    "git"  | "--end-of-options"
+    "find" | null
+    "dd"   | null
 }
 
 fn terminator_of(name: string) -> string? {
-    let row: Terminator? = terminators().find(it.name == name)
+    let row: Terminator? = terminators.find(it.name == name)
     if row == null { return "--" }
     row!.word
 }
@@ -503,18 +501,18 @@ impl Command {
 
     /// The substrate's flags for this wiring.
     fn flags() -> int {
-        let group = if self.own_group { new_pgroup() } else { 0 }
-        let world = if self.env is .Inherit { inherit_env() } else { 0 }
-        let out = if self.streams is .Inherited { inherit_out() + inherit_err() } else { pipe_out() + pipe_err() }
+        let group = if self.own_group { new_pgroup } else { 0 }
+        let world = if self.env is .Inherit { inherit_env } else { 0 }
+        let out = if self.streams is .Inherited { inherit_out + inherit_err } else { pipe_out + pipe_err }
         stdin_flag(self.stdin) + out + group + world
     }
 }
 
 fn stdin_flag(s: Stdin) -> int {
     match s {
-        .Closed -> null_in(),
-        .Inherit -> inherit_in(),
-        .Open or .Text(_) or .Lines(_) -> pipe_in(),
+        .Closed -> null_in,
+        .Inherit -> inherit_in,
+        .Open or .Text(_) or .Lines(_) -> pipe_in,
     }
 }
 
@@ -553,17 +551,17 @@ fn has_bit(word: int, bit: int) -> bool {
 /// The status word decoded once: the tag above (1 exited, 2 signalled),
 /// the payload below. A signal's payload carries the core-dump bit at 256.
 fn exit_of(word: int) -> Exit {
-    let tag = word / tag_base()
-    let payload = word - tag * tag_base()
+    let tag = word / tag_base
+    let payload = word - tag * tag_base
     if tag == 2 { return Exit.Signal(payload % 256, (payload / 256) % 2 == 1) }
     if payload == 0 { return Exit.Clean }
     Exit.Code(payload)
 }
 
 fn spawn_error(t: Tool, cwd: string, errno: int) -> ProcessError {
-    if errno == enotdir() { return ProcessError.NoCwd(cwd) }
-    if errno == enoent() { return ProcessError.NotFound(t.name, t.path) }
-    if errno == eacces() { return ProcessError.Denied(t.name, t.path) }
+    if errno == enotdir { return ProcessError.NoCwd(cwd) }
+    if errno == enoent { return ProcessError.NotFound(t.name, t.path) }
+    if errno == eacces { return ProcessError.Denied(t.name, t.path) }
     ProcessError.Host(errno, "posix_spawn")
 }
 
@@ -635,7 +633,7 @@ impl Child {
     fn ended_with(began: int) -> Outcome {
         let word = avra_proc_reap(self.stage.h)
         let _ = avra_proc_close(self.stage.h)
-        let o = Outcome { exit: if word <= 0 { Exit.Signal(sigkill(), false) } else { exit_of(word) },
+        let o = Outcome { exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
                           out: Output { stdout: self.out, stderr: self.err, truncated: self.stage.truncated },
                           took_ms: now_ms() - began }
         self.out = ""
@@ -736,10 +734,10 @@ impl Child {
     fn stop() -> Exit {
         if self.ended != null { return self.ended!.exit }
         let began = now_ms()
-        let _ = avra_proc_signal(self.stage.h, sigterm(), 1)
+        let _ = avra_proc_signal(self.stage.h, sigterm, 1)
         self.until_gone(self.command.stop_grace.ms)
         if avra_proc_reap(self.stage.h) == 0 {
-            let _ = avra_proc_signal(self.stage.h, sigkill(), 1)
+            let _ = avra_proc_signal(self.stage.h, sigkill, 1)
             self.until_gone(self.command.stop_grace.ms)
         }
         self.ended_with(began).exit
@@ -850,9 +848,9 @@ fn landed(fd: int, have: int, cap: int) -> Landed {
 /// is a divergence in a value the caller reads. Asking for one byte
 /// past what is left bounds the overshoot to that byte.
 fn bite(have: int, cap: int) -> int {
-    if cap <= 0 { return chunk() }
+    if cap <= 0 { return chunk }
     let left = cap - have + 1
-    if left < chunk() { left } else { chunk() }
+    if left < chunk { left } else { chunk }
 }
 
 /// A command launched; `upstream` is the handle whose stdout feeds
@@ -920,12 +918,12 @@ fn ticked(s: Stage, ms: int) -> Stage {
 }
 
 fn drawn(s: Stage, ready: int) -> Stage {
-    let a = if has_bit(ready, ready_out()) { taken_out(s) } else { s }
-    if has_bit(ready, ready_err()) { taken_err(a) } else { a }
+    let a = if has_bit(ready, ready_out) { taken_out(s) } else { s }
+    if has_bit(ready, ready_err) { taken_err(a) } else { a }
 }
 
 fn fed_on(s: Stage, ready: int) -> Stage {
-    if !has_bit(ready, ready_in()) { return s }
+    if !has_bit(ready, ready_in) { return s }
     shut_when_fed(poured(s))
 }
 
@@ -973,7 +971,7 @@ fn pumped(start: Stage, grace_ms: int) -> Stage {
         if past(s) {
             s = swept(s) with { timed: true }
         } else {
-            s = ticked(s, turn_ms())
+            s = ticked(s, turn_ms)
         }
     }
     if s.timed || s.capped_out || s.capped_err { return stopped_tree(s) }
@@ -989,7 +987,7 @@ fn past(s: Stage) -> bool {
 /// more — what it managed to say before it died is still the
 /// caller's.
 fn stopped_tree(s: Stage) -> Stage {
-    let _ = avra_proc_signal(s.h, sigkill(), 1)
+    let _ = avra_proc_signal(s.h, sigkill, 1)
     swept(s) with { truncated: true }
 }
 
@@ -1000,7 +998,7 @@ fn grace(s: Stage, grace_ms: int) -> Stage {
     let until = now_ms() + grace_ms
     mut g = s
     while now_ms() < until {
-        g = swept(ticked(g, turn_ms()))
+        g = swept(ticked(g, turn_ms))
     }
     let last = swept(g)
     if avra_proc_fd(last.h, 1) < 0 && avra_proc_fd(last.h, 2) < 0 { return last }
@@ -1008,7 +1006,7 @@ fn grace(s: Stage, grace_ms: int) -> Stage {
     // gone and its end is not. The GROUP goes, or the run leaves a
     // process behind that outlives it; then one last sweep, because
     // what it managed to say before it died is still the caller's.
-    let _ = avra_proc_signal(last.h, sigkill(), 1)
+    let _ = avra_proc_signal(last.h, sigkill, 1)
     swept(last) with { truncated: true }
 }
 
@@ -1044,13 +1042,13 @@ fn is_sigpipe(e: Exit) -> bool {
 fn collected(s: Stage, began: int) -> Outcome {
     let word = avra_proc_reap(s.h)
     let _ = avra_proc_close(s.h)
-    Outcome { exit: if word <= 0 { Exit.Signal(sigkill(), false) } else { exit_of(word) }, out: gathered(s), took_ms: now_ms() - began }
+    Outcome { exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) }, out: gathered(s), took_ms: now_ms() - began }
 }
 
 /// Every stage still running killed with its tree and released.
 fn abandoned(live: List<Stage>) {
     for s in live {
-        if !s.stopped { let _ = avra_proc_signal(s.h, sigkill(), 1) }
+        if !s.stopped { let _ = avra_proc_signal(s.h, sigkill, 1) }
         let _ = avra_proc_close(s.h)
     }
 }
@@ -1121,7 +1119,7 @@ impl Pipeline {
                     // declaring holds what the stage had said.
                     let t = if past(s) { swept(s) with { timed: true } } else { ticked(s, 10) }
                     if overdue(t) || capped(t) {
-                        let _ = avra_proc_signal(s.h, sigkill(), 1)
+                        let _ = avra_proc_signal(s.h, sigkill, 1)
                         if failure == null { failure = broken(self.stages[i], t) }
                     }
                     grown.push(t)
@@ -1139,9 +1137,7 @@ impl Pipeline {
 // ── Many at once ────────────────────────────────────────────────
 
 /// An outcome slot not yet filled.
-fn nothing_yet() -> Outcome? {
-    null
-}
+const nothing_yet: Outcome? = null
 
 /// The commands run at most `limit` at a time — never unbounded by
 /// accident: a list of a thousand is not a fork bomb — and their
@@ -1150,7 +1146,7 @@ fn nothing_yet() -> Outcome? {
 export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, ProcessError> {
     let width = if limit < 1 { 1 } else { limit }
     let began = now_ms()
-    mut outs: List<Outcome?> = [nothing_yet() for c in cs]
+    mut outs: List<Outcome?> = [nothing_yet for c in cs]
     mut live: List<Stage> = []
     mut owners: List<int> = []
     mut next = 0

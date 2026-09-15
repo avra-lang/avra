@@ -69,7 +69,7 @@ Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I38 I39 I35 I36.
+Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I35 I36 I38 I39 I40 I43.
 Unratcheted, read by a human: I5 (a matcher cannot see whether a
 predicate has effects), I31 (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
@@ -343,10 +343,15 @@ form the SHORT one: it pins the count at one and the phrase together,
 replacing a shape hand-spelled at 131 sites. A `refused_n` for the
 shapes where a cascade is today's truth — pinning the count so a
 later improvement is VISIBLE, every malformed fn signature being
-exactly 2 — is a WANT and has never landed: `testing/mod.av` exports
-`shown`, `refusals`, `refused_with`, `refused_at_run`, `ir_of`,
-`makers`, `finder` and `halver`, and nothing else. Spell a cascade
-`refusals(src) == n` until it does.
+exactly 2 — LANDED with the comptime lane, and HOW it landed is the
+lesson: THREE test modules each wrote their own (two over a `Program`,
+one over a source) while this paragraph still said it had never
+landed. A WANT RECORDED AS ABSENT IS READ AS ABSENT — nobody greps
+for a fn the rulebook says does not exist — so three authors wrote it
+instead of one moving it. `testing/mod.av` exports it now, with
+`said` (everything a program said — its files' diagnostics, the
+workspace's voices, its defects) and `refused_in` beside it. Spell a
+cascade `refused_n(p, phrase, n)` or `refusals(src) == n`.
 
 The remainder is no longer a hand-kept tally: I30 ratchets the
 `>= 1` spelling and I20's guard demands a real count, so the number
@@ -463,7 +468,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       sibling and quietly diverging, which is how two of the three
       `fn`-shaped rules came to differ on `mut`. Lane B named the
       class; this is the first tool that can see an instance of it.
-- I39 (ratcheted) A COMPREHENSION OVER A LIST, BUILT ONLY TO BE
+- I43 (ratcheted) A COMPREHENSION OVER A LIST, BUILT ONLY TO BE
       FOLDED TO A BOOL. `[writable(h) for h in r.headers].all(it)`
       builds every element and then measures what it built;
       `r.headers.all((h) -> writable(h))` stops at the first answer
@@ -623,6 +628,76 @@ reintroducing I3's blind spot names the two spellings it lost.
       the four verbs that ARE the spelling; an Emitter's own `give`
       in a synthesized body (test_run.av) has no context and is not
       the smell.
+- I39 (ratcheted) A VOCABULARY VERB AS A FREE FN TAKING A PASS
+      STATE FIRST — `open_region(cx, c)`, `accepts(cx, e, want)`,
+      `sig(ws, d)`. A state struct's impl IS its vocabulary, so the
+      verb is a method (`cx.open_region(c)`, `ws.sig(d)`) and the
+      context reads as the receiver it is: eight of nine lines of a
+      lowering rule once carried `cx` as a first argument. Landed
+      as sugar 1's level one (docs/2026_09_09_SUGAR_1_CONTEXT_
+      RECEIVER.md): 320 verbs across the shared vocabularies
+      (checks, values, emit, unify, variants, places, contexts,
+      contract, namespace, builder) and the drivers (workspace,
+      receivers, typing, lower, interp) became methods in one
+      scripted sweep, every call site with them; the IR of 88
+      programs was byte-identical before and after. THE REACH is
+      the pass's own files — features/*.av and language/*.av —
+      where the shared vocabularies live; a feature dir's rule
+      bodies (`call_type(cx, e)`) are dispatch targets and stay
+      free. NOT the smell: a pass ENTRY POINT taking the pass's
+      INPUT (`lower(a: Analysis)`, `memory(l: Lowered)`,
+      `render_ir(l)`) — that is a pass's one standard signature,
+      and a constructor taking a `Host`. LICENSED where a TABLE
+      ROW holds the fn as a value (`measured_reg`): a method is no
+      value. THE PRONOUN TRAP the sweep hit ten times: `xs.any(
+      verb(cx, it))` rewritten to `xs.any(cx.verb(it))` rebinds
+      `it` to the NEAREST method call — the wrapper lambda `(k) ->
+      cx.verb(k)` is the spelling, as the subset already says of
+      `self.rides(it)`. And a `..` before a name is not a field's
+      dot: a rewrite that refused `.name` refused `0..name` too,
+      and one site read `decls` as undefined.
+- I40 (ratcheted) A STRUCTURAL TYPE INTERNED BY HAND —
+      `cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Str)))`,
+      the type rebuilt inside out, one `intern` per level. The
+      TYPE LITERAL spells it as a program does: `cx.type(string?)`,
+      `cx.type(Map<string, want>)`, `types.type(fn(int) -> bool)`.
+      Landed as sugar 2 (docs/2026_09_09_SUGAR_2_TYPE_LITERALS.md):
+      87 sites in one scripted sweep. THE REACH is every file but
+      core/types.av, whose `interned` IS the fold. NOT the smell: a
+      shape the literal cannot spell — a declared type (`Enum`,
+      `Struct`, `App`, `Var`, `Dyn`, `TypeName`), `Error`, `Null`,
+      the empty literals' own types — and a part that is an
+      EXPRESSION rather than a name (`Type.Opt(seat!.elem)`): a hole
+      is a NAME, so those four sites bind a name first or stay.
+
+- I41 (unratcheted) AN UNWRITABLE SPELLING IS A KEY — a name or a
+      key that must never collide with what a program writes is
+      spelled with a character the lexer refuses in that position,
+      and the reader tests that one character. Three instances name
+      the concept: the resolver's scope keys (`name@<file>`, `@`),
+      generated declaration keys (`$`), and a template's hole
+      placeholders (`${k}`, `l${2}` — `core/holes.av`, read by
+      `hole_name`, whose test is `contains("$")`). THE SMELL: an
+      in-band tag a program COULD write (a `__gen_` prefix, a
+      numbered suffix) or a parallel side table asked "is this
+      synthetic". Not ratcheted: the smell is a naming choice, not a
+      shape a grep can see.
+
+- I42 (unratcheted) A READ ASKS THE SEEN SHAPE, A SEAT ASKS THE
+      TYPE — the named-type law (`type Rows = List<int>`) written as
+      a code shape. A rule that DISPATCHES ON A SHAPE to read,
+      print, measure, walk, index or compare asks `cx.seen_at(e)` /
+      `types.seen_shape(ty)`; a rule that JUDGES AGREEMENT asks
+      `cx.shape_at(e)` / `types.shape_of(ty)` and keeps the name.
+      THE SMELL: a vocabulary row, a property row, a walk head or an
+      operand law reading `shape_at` — it answers `.Struct` for
+      every named value and the row then absorbs, sometimes with NO
+      diagnostic (the map rows did exactly that). Every instance
+      found in this slice was a READ. Not ratcheted: no grep tells a
+      read site from a seat site, and both spellings are correct
+      somewhere. The keeper is the adversarial suite —
+      `named_adversarial_test.av` reaches every vocabulary a name
+      can stand over.
 
 ## Lowering: MINT IN EMISSION ORDER
 
@@ -1248,25 +1323,36 @@ resolution, provably); a `trait Pass` erases that and has no
 consumer until the query engine memoizes passes uniformly — that is
 its trigger, not before.
 
-## Capability contexts: data + driver-wired fns
+## Capability contexts: the state's impl is its vocabulary
 
-A context struct crosses layers DOWNWARD carrying fn fields the
-driver wires at construction — features call capabilities without
-importing the pass, and pass state stays with the pass. The engine's
-`MatchContext.build` and every pass Cx are the same pattern:
+A pass context (`TypeCx`, `LowerCx`, `ResolveCx`) is the pass's own
+STATE, declared in features/contract.av and given its verbs as
+METHODS: the walk's verbs where the walk lives (language/typing.av's
+`impl TypeCx`), the reads over facts (features/contexts.av), and the
+shared vocabularies every feature speaks (checks.av, emit.av,
+values.av, unify.av, variants.av, places.av) — so a feature's rule
+reads as prose on its receiver, `cx.accepts(e, want)`,
+`cx.open_region(c)`, `cx.presence(v, held, e) { cx, carried -> … }
+else { … }`, and never as `accepts(cx, e, want)`. I39 ratchets it
+(the pass's own files); a feature dir's rule bodies dispatch on the
+context and stay free.
 
 ```avra
-let cx = TypeCx {
-    store: p.store,
-    type_at: (e: ExprId) -> t.of_expr[e.index],
-    intern: (sh: Type) -> t.types.intern(sh),
-    emit: (d: Diag) -> t.speak(d),
-    ...
+fn coalesce_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
+    let v = cx.reg_of(l)
+    let held = cx.type_at(l)
+    if cx.view.types.carried(held) == null { return v }
+    cx.region(cx.presence_of(v, held), e) { cx -> cx.carried_of(v, held) } else { cx -> cx.reg_of(r) }
 }
 ```
 
-Closures capture the LET-bound state struct (never a `mut` local) and
-mutate through it — the rebind-alias idiom underneath.
+A block handed the context takes it as a `mut` seat — heard from the
+slot's `fn(mut LowerCx) -> Reg`, never captured: a capture is a copy,
+and a copy's `depth` diverges from the box's list. The earlier shape
+— fn fields wired at construction, captured by every closure — is
+gone with the sweep (the engine's `MatchContext.build` keeps one such
+field, the builder dispatch, because a grammar run IS parameterised
+by its builders).
 
 ## One semantics: lowering IS the meaning
 

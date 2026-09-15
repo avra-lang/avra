@@ -1,0 +1,38 @@
+//! `@name(args)` before a declaration — a call the COMPILER makes
+//! over the declaration at compile time. The annotation is a fact of
+//! the declaration it crosses (the store's `annotations_of`), never a
+//! node of its own: its callee is an ident and its arguments are
+//! expressions, so every pass reads them as it reads any expression.
+use features.{LanguageFeature, BuilderRow}
+use diagnostics.{DiagCode}
+use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+
+export fn annotations() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name        | build
+        "annotated" | build_annotated
+    }
+    let codes = table<DiagCode> {
+        kind                    | id      | summary
+        "annotation.callee"     | "F2065" | "an annotation names a fn over a declaration"
+        "annotation.receiver"   | "F2066" | "an annotation's first seat says what it takes"
+        "annotation.seats"      | "F2067" | "an annotation's arguments fill its seats"
+        "annotation.answer"     | "F2068" | "an annotation answers an effect"
+        "annotation.said"       | "F2069" | "an annotation refused this declaration"
+        "annotation.kind"       | "F2079" | "an annotation's kind is a word — `[A-Za-z0-9_-]+`, like `E1`"
+        "annotation.generated_taken" | "F2077" | "an annotation generates a name the file already declares"
+        "annotation.warning"    | "F2071" | "a declaration's warning, spoken at a use"
+        "annotation.derive"     | "F2072" | "`@derive` names a trait that declares `derive`"
+        "annotation.unsettled"  | "F2070" | "an annotation could not run"
+    }
+    component LanguageFeature f {
+        name = "annotations"
+        docs = "`@name(args)` above a declaration — the compiler calls `name` over the declaration at compile time."
+        gram = grammar {
+            stmt = a:PKG ( "(" ( e:expression ( "," e:expression )* ","? )? ")" )? BREAK? d:stmt -> annotated(a, e, d)
+        }
+        diags = codes
+        builders = rows
+    }
+    f
+}

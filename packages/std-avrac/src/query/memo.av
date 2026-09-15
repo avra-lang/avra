@@ -1,0 +1,154 @@
+//! Typed values over the query kernel. A family owns one memo; copies
+//! share both its database and its value table, so higher-order query
+//! bodies may safely capture either handle.
+use core.{Table, new_table}
+
+export enum MemoAsk<T> {
+    Reuse(T)
+    Compute
+    Cycle
+}
+
+export enum MemoStart<T> { Reuse(T), Compute }
+
+/// One input read with the fingerprint of the bytes that produced it.
+export type Loaded<T> = { value: T, fingerprint: int }
+
+export type Memo<T> = { db: Db, family: int, values: Cell<Table<T>> }
+
+export fn new_memo<T>(db: Db, family: int) -> Memo<T> {
+    Memo { db: db, family: family, values: Cell.new(new_table<T>()) }
+}
+
+impl Memo<T> {
+    fn query_key(arg: int) -> Key { Key { family: self.family, arg: arg } }
+
+    fn ask(arg: int) -> MemoAsk<T> {
+        match self.db.ask(self.query_key(arg)) {
+            .Reuse -> match self.values.get().entry(arg) {
+                .Present(value) -> MemoAsk.Reuse(value),
+                .Missing -> missing_value(self.family, arg),
+            },
+            .Compute -> MemoAsk.Compute,
+            .Cycle -> MemoAsk.Cycle,
+        }
+    }
+
+    /// Open an acyclic query unless its typed value is reusable. The
+    /// explicit answer remains sound when `T` itself is nullable.
+    fn start(arg: int) -> MemoStart<T> {
+        match self.ask(arg) {
+            .Reuse(value) -> MemoStart.Reuse(value),
+            .Cycle -> MemoStart.Reuse(self.cycle_value(arg)),
+            .Compute -> {
+                self.db.begin(self.query_key(arg))
+                MemoStart.Compute
+            }
+        }
+    }
+
+    /// Open a query whose computation deliberately makes progress on
+    /// re-entry. Lowering uses this while its annotation is hidden by
+    /// the recursive view; that smaller view is the cycle answer.
+    fn start_recursive(arg: int) -> MemoStart<T> {
+        match self.ask(arg) {
+            .Reuse(value) -> MemoStart.Reuse(value),
+            .Cycle -> {
+                self.db.begin(self.query_key(arg))
+                MemoStart.Compute
+            },
+            .Compute -> {
+                self.db.begin(self.query_key(arg))
+                MemoStart.Compute
+            }
+        }
+    }
+
+    fn finish(arg: int, value: T, fingerprint: int) -> T {
+        self.settle(arg, value, fingerprint)
+    }
+
+    fn begin(arg: int) { self.db.begin(self.query_key(arg)) }
+
+    /// Whether the query at `arg` is in flight — asked by a query that
+    /// would otherwise re-enter it from another family.
+    fn open(arg: int) -> bool { self.db.active(self.query_key(arg)) }
+
+    /// Release this family's values and matching kernel cells
+    /// together. Used to break retained closure cycles at shutdown.
+    fn evict() {
+        self.values.set(new_table())
+        self.db.evict_family(self.family)
+    }
+
+    fn settle(arg: int, value: T, fingerprint: int) -> T {
+        self.db.settle(self.query_key(arg), fingerprint)
+        mut values = self.values.get()
+        values.keep(arg, value)
+        self.values.set(values)
+        value
+    }
+
+    /// A once-read input. Its loader runs on first sight; later reads
+    /// record the dependency and return the shared typed value.
+    fn input(arg: int, load: fn() -> T, fingerprint: fn(T) -> int) -> T {
+        match self.values.get().entry(arg) {
+            .Present(value) -> {
+                self.db.record_dep(self.query_key(arg))
+                return value
+            },
+            .Missing -> {},
+        }
+        let value = load()
+        self.db.set_input(self.query_key(arg), fingerprint(value))
+        self.db.record_dep(self.query_key(arg))
+        mut values = self.values.get()
+        values.keep(arg, value)
+        self.values.set(values)
+        value
+    }
+
+    /// An input whose semantic value does not retain its source bytes.
+    /// The loader reads once and returns both products of that read.
+    fn input_loaded(arg: int, load: fn() -> Loaded<T>) -> T {
+        match self.values.get().entry(arg) {
+            .Present(value) -> {
+                self.db.record_dep(self.query_key(arg))
+                return value
+            },
+            .Missing -> {},
+        }
+        let loaded = load()
+        self.db.set_input(self.query_key(arg), loaded.fingerprint)
+        self.db.record_dep(self.query_key(arg))
+        mut values = self.values.get()
+        values.keep(arg, loaded.value)
+        self.values.set(values)
+        loaded.value
+    }
+
+    /// The whole protocol for an acyclic derived family.
+    fn demand(arg: int, compute: fn() -> T, fingerprint: fn(T) -> int) -> T {
+        match self.ask(arg) {
+            .Reuse(value) -> value,
+            .Cycle -> self.cycle_value(arg),
+            .Compute -> {
+                self.db.begin(self.query_key(arg))
+                let value = compute()
+                self.settle(arg, value, fingerprint(value))
+            }
+        }
+    }
+
+    fn cycle_value(arg: int) -> T {
+        match self.values.get().entry(arg) {
+            .Present(value) -> value,
+            .Missing -> missing_value(self.family, arg),
+        }
+    }
+}
+
+fn missing_value<T>(family: int, arg: int) -> T {
+    avra_trap("defect: memo family ${family} reused missing key ${arg}")
+    missing_value<T>(family, arg)
+}

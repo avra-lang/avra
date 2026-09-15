@@ -1,0 +1,41 @@
+//! `@derive(Projections)` — the compiler derives its own accessor
+//! families: one `<variant>_sig` method per enum variant, each the
+//! one-arm projection a hand-written `*_sig_of` free fn spelled.
+//!
+//! It is the S4 payday: a METHOD-shaped derive rides `Decls.methods`
+//! program-wide, so a generated accessor crosses files with no
+//! namespace widening and no call-site shape but `d.fn_sig()`.
+use @std.meta.{Type, Variant, Directive as MetaDirective, Decls as MetaDecls}
+use @std.text.{from_codepoints}
+
+/// The compiler's own derive: the accessors of the annotated enum,
+/// one method per variant, answering the variant's payload or null.
+/// The meta `Directive` wears an alias here: `features` holds the
+/// compiler's own mirror of that name.
+trait Projections {
+    static fn derive(t: Type) -> List<MetaDirective> {
+        let methods = [projection_of(v) for v in t.variants]
+        [MetaDirective { twin: "", name: t.name, at: t.at, source: quote { impl ${t} { ${methods} } } }]
+    }
+}
+
+/// One variant's accessor: `<name>_sig`, the payload, or null.
+fn projection_of(v: Variant) -> MetaDecls {
+    let method = method_name(v.name)
+    let payload = v.payload[0]
+    quote { fn ${method}() -> ${payload}? { match self { .${v}(s) -> s, _ -> null } } }
+}
+
+/// `Fn` -> `fn_sig`, `Record` -> `record_sig`, `Enum` -> `enum_sig`.
+fn method_name(variant: string) -> string {
+    "${lowercase(variant)}_sig"
+}
+
+/// A single-word variant name, lowered — `Fn` -> `fn`.
+fn lowercase(s: string) -> string {
+    from_codepoints([lowered(s.char_code(i)) for i in 0..s.length])
+}
+
+fn lowered(c: int) -> int {
+    if c >= 65 && c <= 90 { c + 32 } else { c }
+}

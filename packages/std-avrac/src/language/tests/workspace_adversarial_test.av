@@ -3,7 +3,7 @@
 // module's line, and the crossings that must simply work. The
 // vertical story lives in workspace_test.av; these are the programs
 // that tried to break it.
-use @std.avrac.language.{avra, new_workspace, memory_host, analyze_file, program, analyze_source}
+use @std.avrac.language.{avra, new_workspace, memory_host, analyze_source}
 use language.{Workspace}
 
 /// A root file plus whatever the attack adds.
@@ -13,12 +13,12 @@ fn package(files: Map<string, string>, names: List<string>) -> Workspace {
 
 /// The root file's ONE refusal, saying this.
 fn refuses_once(files: Map<string, string>, names: List<string>, saying: string) -> bool {
-    let a = analyze_file(package(files, names), "/w/src/main.av")
+    let a = package(files, names).analyze_file("/w/src/main.av")
     a.diagnostics.length == 1 && a.report().contains(saying)
 }
 
 fn runs(files: Map<string, string>, names: List<string>) -> string? {
-    match program(package(files, names), "/w/src/main.av").run() {
+    match package(files, names).program("/w/src/main.av").run() {
         .Ok(text) -> text,
         .Err(_) -> null,
     }
@@ -32,25 +32,25 @@ fn pair() -> string {
     "export type Pair = { a: int, b: int }\n"
 }
 
-/// The root program over a vendored `@corpus/util` whose one file
+/// The root program over a vendored `@acme/util` whose one file
 /// is `p` — the main file's text is the attack, its `use` included.
 fn vendored_over(p: string, main: string) -> Map<string, string> {
     {
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@corpus/util\" = { path = \"vendor/util\" }\n",
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@acme/util\" = { path = \"vendor/util\" }\n",
         "/w/src/main.av": main,
-        "/w/vendor/util/avra.toml": "[package]\nname = \"@corpus/util\"\nversion = \"0.1.0\"\n",
+        "/w/vendor/util/avra.toml": "[package]\nname = \"@acme/util\"\nversion = \"0.1.0\"\n",
         "/w/vendor/util/src/p.av": p,
     }
 }
 
 /// The vendored `Pair`, used by the main file.
 fn vendored(main: string) -> Map<string, string> {
-    vendored_over(pair(), "use @corpus.util.{Pair}\n${main}")
+    vendored_over(pair(), "use @acme.util.{Pair}\n${main}")
 }
 
 /// The vendored `Pair` beside a vendored trait.
 fn vendored_show(main: string) -> Map<string, string> {
-    vendored_over("${pair()}export trait Show {\n    fn show() -> string\n}\n", "use @corpus.util.{Pair, Show}\n${main}")
+    vendored_over("${pair()}export trait Show {\n    fn show() -> string\n}\n", "use @acme.util.{Pair, Show}\n${main}")
 }
 
 fn vendored_names() -> List<string> {
@@ -114,22 +114,22 @@ spec "language/workspace (adversarial)" {
         }
         then "an impl of a dependency's type is an orphan — and its body does not crash the walk" {
             refuses_once(vendored("impl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\n1\n"), vendored_names(),
-                         "`impl Pair` belongs in package `@corpus.util`, where `Pair` is declared")
+                         "`impl Pair` belongs in package `@acme.util`, where `Pair` is declared")
         }
         then "an orphan's method reading a param does not crash the walk either" {
             refuses_once(vendored("impl Pair {\n    fn plus(n: int) -> int {\n        self.a + n\n    }\n}\n1\n"), vendored_names(),
-                         "`impl Pair` belongs in package `@corpus.util`")
+                         "`impl Pair` belongs in package `@acme.util`")
         }
         then "an orphan's method, called, speaks the orphan alone" {
             refuses_once(vendored("impl Pair {\n    fn sum() -> int {\n        self.a + self.b\n    }\n}\nPair { a: 1, b: 2 }.sum()\n"), vendored_names(),
-                         "`impl Pair` belongs in package `@corpus.util`")
+                         "`impl Pair` belongs in package `@acme.util`")
         }
         then "a dependency's type takes a LOCAL trait's methods" {
             runs(vendored("trait Show {\n    fn show() -> string\n}\nimpl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\nPair { a: 1, b: 2 }.show()\n"), vendored_names()) == "pair"
         }
         then "a dependency's trait for a dependency's type is an orphan — the impl named as written" {
             refuses_once(vendored_show("impl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\n1\n"), vendored_names(),
-                         "`impl Show for Pair` belongs in package `@corpus.util`, where `Pair` is declared")
+                         "`impl Show for Pair` belongs in package `@acme.util`, where `Pair` is declared")
         }
         then "a local trait may be implemented for a foreign type" {
             runs({ "/w/src/main.av": "use util.{Pair}\ntrait Show {\n    fn show() -> string\n}\nimpl Show for Pair {\n    fn show() -> string {\n        \"pair\"\n    }\n}\nPair { a: 1, b: 2 }.show()\n", "/w/src/util/p.av": pair() },
@@ -178,16 +178,16 @@ spec "language/workspace (adversarial)" {
         }
         then "a default reading its file's top-level binding refuses in ITS file, not the literal's" {
             let ws = package({ "/w/src/main.av": "use util.{Q}\nQ {}.y\n", "/w/src/util/shapes.av": "let k = 3\nexport type Q = { y: int = k }\n" }, ["/w/src/main.av", "/w/src/util/shapes.av"])
-            let shapes = analyze_file(ws, "/w/src/util/shapes.av")
-            analyze_file(ws, "/w/src/main.av").clean() &&
+            let shapes = ws.analyze_file("/w/src/util/shapes.av")
+            ws.analyze_file("/w/src/main.av").clean() &&
                 shapes.diagnostics.length == 1 && shapes.report().contains("`k` is a run-time binding of the top level")
         }
     }
     given "a type's methods are one namespace across its module's files" {
         then "the same method in two files of one module clashes at the LATER file, only" {
             let ws = package({ "/w/src/main.av": "use util.{P}\nP { x: 1 }.show()\n", "/w/src/util/a.av": "export type P = { x: int }\nimpl P {\n    fn show() -> int {\n        self.x\n    }\n}\n", "/w/src/util/b.av": "impl P {\n    fn show() -> int {\n        self.x + 1\n    }\n}\n" }, ["/w/src/main.av", "/w/src/util/a.av", "/w/src/util/b.av"])
-            let later = analyze_file(ws, "/w/src/util/b.av")
-            analyze_file(ws, "/w/src/util/a.av").clean() &&
+            let later = ws.analyze_file("/w/src/util/b.av")
+            ws.analyze_file("/w/src/util/a.av").clean() &&
                 later.diagnostics.length == 1 && later.report().contains("`P.show` is declared twice")
         }
     }

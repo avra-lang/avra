@@ -1,17 +1,7 @@
-//! Parse-time lowering: captured statements -> the Block node. A
-//! block's value is its final expression; a block that ends in any
-//! other statement (or is empty) has none, and TYPING says what that
-//! means — void, or the fn's promise when the statement leaves.
-use core.{Expr, ExprId}
+//! Parse-time lowering: captured statements -> the Block node,
+//! under the Builder's one block law.
 use features.{LangNode, Builder}
 
 fn build_block(mut b: Builder) -> Result<LangNode, string> {
-    let stmts = b.stmts(0)?
-    if stmts.is_empty() { return b.make_expr(Expr.Block(stmts, null)) }
-    let value: ExprId? = b.store.answer_of(stmts.last()!)
-    if value == null { return b.make_expr(Expr.Block(stmts, null)) }
-    // a scope holding nothing but its value IS the value — no
-    // bracket is opened for it
-    if stmts.length == 1 { return b.wrap_expr(value!) }
-    b.make_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value!))
+    b.wrap_expr(b.block_of(b.stmts(0)?))
 }

@@ -1,0 +1,78 @@
+// A sublanguage block is the calls its grammar's actions name: the
+// library's fns resolve in the library, the user's holes in the user's
+// file, and every refusal speaks where its mistake is.
+use @std.avrac.testing.{refused_n}
+use @std.avrac.language.{avra, new_workspace, memory_host, Program}
+
+/// The toy SQL provider: a named grammar whose actions are its fns.
+fn provider() -> string {
+    "export type Select = { cols: List<string>, relation: string, cond: Where? }\nexport type Where = { col: string, value: int }\nexport fn query(cols: List<string>, relation: string, cond: Where?) -> Select { Select { cols: cols, relation: relation, cond: cond } }\nexport fn eq(col: string, value: int) -> Where { Where { col: col, value: value } }\nexport grammar sql {\n    select = \"SELECT\" c:NAME ( \",\" c:NAME )* \"FROM\" t:NAME ( \"WHERE\" w:where )? -> query(c, t, w)\n    where = c:NAME \"=\" v:NAME -> eq(c, v)\n}\n"
+}
+
+/// A program with the provider package `@x/sql` beside it.
+fn packaged(main: string, prov: string) -> Program {
+    let files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@x/sql\" = { path = \"vendor/sql\" }\n",
+        "/w/src/main.av": main,
+        "/w/vendor/sql/avra.toml": "[package]\nname = \"@x/sql\"\nversion = \"0.1.0\"\n",
+        "/w/vendor/sql/src/sql.av": prov,
+    }
+    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/sql/avra.toml", "/w/vendor/sql/src/sql.av"]), "/w", avra())
+    ws.program("/w/src/main.av")
+}
+
+fn clean(p: Program) -> bool { p.check() is .Ok }
+
+fn use_sql() -> string { "use @x.sql.{sql, Select, Where}\n" }
+
+spec "features/sublang — a block is its grammar's actions" {
+    given "the block" {
+        then "a block with a hole, a repeated capture and an optional checks as the calls it names" {
+            clean(packaged(use_sql() + "let uid = 7\nlet q: Select = sql { SELECT name, age FROM users WHERE id = \${uid} }\nq.cols.length", provider()))
+        }
+        then "a hole is an argument: its value must fit the action's seat, refused at the hole" {
+            refused_n(packaged(use_sql() + "let uid = \"seven\"\nlet q: Select = sql { SELECT name FROM users WHERE id = \${uid} }\n1", provider()), "argument 2 of `eq` wants `int`, found `string`", 1)
+        }
+        then "the block's type is the entry action's answer, refused at the block when it does not fit" {
+            refused_n(packaged(use_sql() + "let w: Where = sql { SELECT name FROM users }\n1", provider()), "`w` declares `Where`, this is `Select`", 1)
+        }
+        then "a body its grammar refuses speaks at the block, in the grammar's expected words, once" {
+            let p = packaged(use_sql() + "let q: Select = sql { SELCT name FROM users }\n1", provider())
+            refused_n(p, "expected `SELECT`", 1) && p.report().contains("main.av:2")
+        }
+        then "the library's fns resolve in the library, not in the user's scope" {
+            clean(packaged("use @x.sql.{sql, Select}\nlet q: Select = sql { SELECT id FROM t }\nq.relation", provider()))
+        }
+        then "a block prints as written" {
+            let p = packaged(use_sql() + "let uid = 7\nlet q: Select = sql { SELECT name FROM users WHERE id = \${uid} }\n1", provider())
+            p.expanded_source(p.ws.file_id("/w/src/main.av")).contains("sql { SELECT name FROM users WHERE id = \${uid} }")
+        }
+    }
+
+    given "the declaration" {
+        then "an action naming no fn of the module refuses at the library's grammar" {
+            refused_n(packaged(use_sql() + "1", provider().replace("-> eq(c, v)", "-> equal(c, v)")), "`grammar sql` names an action `equal`, and this module declares no fn `equal`", 1)
+        }
+        then "an action of the wrong arity refuses at the library's grammar" {
+            refused_n(packaged(use_sql() + "1", provider().replace("-> eq(c, v)", "-> eq(c)")), "action `eq` hands 1 captures, and `fn eq` takes 2", 1)
+        }
+        then "notation that does not parse refuses at the library" {
+            refused_n(packaged(use_sql() + "1", provider().replace("where = c:NAME", "where: c:NAME")), "`grammar sql` does not parse", 1)
+        }
+        then "notation that readies with a defect refuses at the library — an undefined rule" {
+            refused_n(packaged(use_sql() + "1", provider().replace("where = c:NAME", "where = = c:NAME")), "references undefined rule `where`", 1)
+        }
+    }
+
+    given "the word" {
+        then "a type wearing the block word refuses once, at the file" {
+            refused_n(packaged(use_sql() + "type sql = { n: int }\n1", provider()), "`sql` is a sublanguage's block word here, and nothing else in this file may wear it", 1)
+        }
+        then "a binding wearing the block word refuses once" {
+            refused_n(packaged(use_sql() + "let sql = 1\n1", provider()), "`sql` is a sublanguage's block word here, and nothing else in this file may wear it", 1)
+        }
+        then "a file that does not import the word reads `sql {` as the language always did — a name, then a block it cannot parse" {
+            refused_n(packaged("let q = sql { SELECT name FROM users }\n1", provider()), "expected BREAK", 2)
+        }
+    }
+}

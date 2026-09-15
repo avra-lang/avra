@@ -4,7 +4,7 @@
 //! re-derived from the node by the reader's own functions, so the
 //! literal and the pattern it became are judged once.
 use core.{PatId, Type, TypeId, FormatPart, bound_names}
-use features.{TypeCx, MethodCall, worded, seated, this_is}
+use features.{TypeCx, MethodCall, this_is}
 use features.formats.{adjacent_fault, repeated_fault, Fault}
 use diagnostics.{refusal}
 
@@ -25,8 +25,8 @@ export fn format_types(mut cx: TypeCx, p: PatId, parts: List<FormatPart>, expect
 /// when the subject is neither.
 fn span_type(mut cx: TypeCx, expected: TypeId) -> TypeId? {
     match cx.view.types.shape_of(expected) {
-        .Str -> cx.view.types.intern(Type.Str),
-        .Bytes -> cx.view.types.intern(Type.Bytes),
+        .Str -> cx.type(string),
+        .Bytes -> cx.type(Bytes),
         rest -> null,
     }
 }
@@ -78,7 +78,7 @@ export fn on_grammar(t: Type) -> bool {
 export fn check_parse(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let named: TypeId? = record_of(cx, cx.type_at(mc.subject))
     if named == null { return cx.error_type }
-    worded(cx, mc, "parse", [read_seat(cx, mc)], Type.Opt(named!))
+    cx.worded(mc, "parse", [read_seat(cx, mc)], Type.Opt(named!))
 }
 
 /// ONE DOOR, TWO SEATS: a grammar reads TEXT, or the OCTETS the text
@@ -106,6 +106,6 @@ fn record_of(mut cx: TypeCx, ty: TypeId) -> TypeId? {
 export fn check_print(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let named: TypeId? = record_of(cx, cx.type_at(mc.subject))
     if named == null { return cx.error_type }
-    if !seated(cx, mc, "print", [named!]) { return cx.error_type }
-    cx.view.types.intern(Type.Opt(cx.view.types.intern(Type.Str)))
+    if !cx.seated(mc, "print", [named!]) { return cx.error_type }
+    cx.type(string?)
 }

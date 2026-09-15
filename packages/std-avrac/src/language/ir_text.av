@@ -1,10 +1,33 @@
 //! The human projection of Lowered IR (P7): brackets as braces, one
 //! instruction per line, registers by mint order. What `avra ir`
 //! prints and the golden tests pin.
-use core.{quoted_text, Ins, Reg, Level, joined, flatten, filled, op_symbol, un_symbol}
+use core.{quoted_text, Ins, Reg, Level, joined, flatten, filled, op_symbol, un_symbol, Static, StaticBox, Slot}
 
 export fn render_ir(l: Lowered) -> string {
-    joined(flatten([fn_block(l, b) for b in l.fns]).concat(body_lines(l.entry.ins)), "\n")
+    joined(flatten([fn_block(l, b) for b in l.fns]).concat(flatten([static_block(s) for s in l.statics])).concat(body_lines(l.entry.ins)), "\n")
+}
+
+/// One static as its lines: each box by index, the root last.
+fn static_block(s: Static) -> List<string> {
+    ["static ${s.name} {"].concat([line(1, "${j}: ${box_text(b)}") for j, b in s.boxes]).concat(["}", ""])
+}
+
+fn box_text(b: StaticBox) -> string {
+    match b {
+        .Slots(cells) -> "[${joined([slot_text(c) for c in cells], ", ")}]",
+        .Table(keys, values) -> "{${joined(["${quoted_text(k)}: ${slot_text(values[j])}" for j, k in keys], ", ")}}",
+    }
+}
+
+fn slot_text(c: Slot) -> string {
+    match c {
+        .Int(n) -> "${n}",
+        .Float(bits) -> avra_float_text_bits(bits),
+        .Bool(b) -> if b { "true" } else { "false" },
+        .Text(s) -> quoted_text(s),
+        .Box(at) -> "@${at}",
+        .Null -> "null",
+    }
 }
 
 /// One fn as its lines: signature, body, a separating blank.
@@ -73,6 +96,7 @@ fn body_lines(ins: List<Ins>) -> List<string> {
             .CallRtVoid(callee, args) -> lines.push(line(depth, "call ${callee}(${reg_list(args)})")),
             .Call(d, callee, args) -> lines.push(call_line(depth, d, callee, args)),
             .FnAddr(d, sym) -> lines.push(line(depth, "r${d.index} = addr ${sym}")),
+            .StaticAddr(d, sym) -> lines.push(line(depth, "r${d.index} = static ${sym}")),
             .CallPtr(d, f, args) -> lines.push(line(depth, "r${d.index} = callptr r${f.index}(${reg_list(args)})")),
             .Alloca(d) -> lines.push(line(depth, "r${d.index} = slot")),
             .Load(d, slot) -> lines.push(line(depth, "r${d.index} = load r${slot.index}")),

@@ -1,6 +1,10 @@
 //! Structs — the first user-defined type. `type Name = { field: ty,
 //! ... }` declares a nominal record; `Name { field: value, ... }`
 //! builds one; reads ride the spine's postfix ladder (`p.x`).
+//! `type Name = <type>` declares a NAMED TYPE over a shape — always
+//! DISTINCT from it, never an alias. ONE `stmt` rule carries both
+//! forms as an ordered choice, so one keyword claim and one
+//! recovery stand where two branches on `type` could not.
 //! Fields are scalars until ownership analysis covers managed
 //! values. The literal branch merges into `primary` BEFORE the
 //! spine's bare NAME; a non-literal brace falls through by
@@ -12,7 +16,7 @@ use diagnostics.{DiagCode}
 export fn structs() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name          | build
-        "struct_decl" | build_struct_decl
+        "type_decl"   | build_type_decl
         "struct_lit"  | build_struct_lit
     }
     let codes = table<DiagCode> {
@@ -22,12 +26,13 @@ export fn structs() -> LanguageFeature {
         "type.duplicate_field"   | "F2009" | "a struct's fields have distinct names"
         "type.struct_fields"     | "F2010" | "a literal provides each declared field exactly once"
         "type.with_struct"       | "F2011" | "`with` copies a struct value"
+        "type.named"             | "F2083" | "a named type stands over one written shape"
     }
     component LanguageFeature f {
         name = "structs"
-        docs = "`type Name = { field: ty, ... }` declares; `Name { field: value, ... }` builds; `value.field` reads; `value with { field: v }` copies."
+        docs = "`type Name = { field: ty, ... }` declares a record; `Name { field: value, ... }` builds; `value.field` reads; `value with { field: v }` copies. `type Name = <type>` declares a NAMED TYPE — its own type over that shape, never an alias: a literal fills it, the shape answers its reads, and `Name(value)` converts."
         gram = grammar {
-            stmt = "type" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "=" "{" BREAK? ( fs:NAME ":" ft:type ( "=" fd:expression )? ( "," BREAK? fs:NAME ":" ft:type ( "=" fd:expression )? )* ","? BREAK? )? "}" END @recover(sync_to: "END") -> struct_decl(n, tp, fs, ft, fd)
+            stmt = "type" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "=" ( "{" BREAK? ( fs:NAME ":" ft:type ( "=" fd:expression )? ( "," BREAK? fs:NAME ":" ft:type ( "=" fd:expression )? )* ","? BREAK? )? "}" | nt:type ) END @recover(sync_to: "END") -> type_decl(n, tp, fs, ft, fd, nt)
             primary = t:NAME "{" BREAK? ( vn:NAME ":" ve:expression ( "," BREAK? vn:NAME ":" ve:expression )* ","? BREAK? )? "}" -> struct_lit(t, vn, ve)
         }
         builders = rows

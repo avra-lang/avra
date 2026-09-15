@@ -6,8 +6,8 @@
 //! generic call INSTANTIATES: pins pre-fill, arguments unify, a
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
-use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, marked, RtSig, rt_sig_of, extern_kind, TypeRegistry}
-use features.{no_pins, Pins, TypeCx, FnSig, nothing, accepts, this_is, spoken, seats_judged, wrong_arity, wrong_argument, unlawful_side, tparams_refused, unpinned_of, bound_closed, settled_call, slice_promise, mut_seats_law, agreed, unify, hungry, declared_marks}
+use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, SeatMark, mut_mark, RtSig, rt_sig_of, extern_kind, TypeRegistry}
+use features.{no_pins, Pins, TypeCx, FnSig, nothing, this_is, tparams_refused, unpinned_of, slice_promise, type_name_decl}
 use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
@@ -26,7 +26,7 @@ export fn check_fn(mut cx: TypeCx, s: StmtId) {
 /// the top half stale, which is B3's defect wearing the other hat.
 fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, hret: TypeRef) {
     for j, pp in hparams {
-        if pp.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
+        if pp.mark.mutable && !inout_able(pp.ty) { seat_not_inout_able(cx, s, hname, j, pp) }
     }
     crossing_law(cx, s, hname, hparams)
     row_law(cx, s, hname, hparams, hret)
@@ -54,7 +54,7 @@ fn crossing_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) 
     if declared == null { return nothing() }
     let sig = declared!
     for j, p in sig.params {
-        if !hparams[j].mutable && !crossable(cx.view.types, p) { seat_cannot_cross(cx, s, hname, j, p) }
+        if !hparams[j].mark.mutable && !crossable(cx.view.types, p) { seat_cannot_cross(cx, s, hname, j, p) }
     }
     if !answerable(cx.view.types, sig.ret) { answer_cannot_cross(cx, s, hname, sig.ret) }
 }
@@ -130,7 +130,7 @@ fn row_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, hret:
 /// take a pointer-or-NULL and mean it.
 fn row_absence_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>, sig: FnSig) {
     for j, p in sig.params {
-        if !hparams[j].mutable && cx.view.types.carried(p) != null { row_seat_takes_no_absence(cx, s, hname, j, p) }
+        if !hparams[j].mark.mutable && cx.view.types.carried(p) != null { row_seat_takes_no_absence(cx, s, hname, j, p) }
     }
 }
 
@@ -166,15 +166,24 @@ fn checked_fn(mut cx: TypeCx, s: StmtId, fname: string, fret: TypeRef, body: Exp
     cx.walk_under(s, body)
     let want: TypeId = sig?.ret ?? cx.error_type
     let got: TypeId = cx.type_at(body)
-    if !accepts(cx, body, want) { body_disagrees(cx, body, fname, fret, got) }
+    // a body that did not parse has spoken already; its answer is
+    // whatever the hole left, not a second mistake
+    if !cx.accepts(body, want) && !holds_error(cx, body) { body_disagrees(cx, body, fname, fret, got) }
+}
+
+/// Whether a body's statements hold a parse recovery.
+fn holds_error(cx: TypeCx, body: ExprId) -> bool {
+    let stmts: List<StmtId> = match cx.view.store.expr(body) { .Block(ss, _) -> ss, _ -> [] }
+    stmts.any((s: StmtId) -> cx.view.store.stmt(s) is .Error)
 }
 
 fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
         .Call(callee, pins, args) -> {
+            cx.warn_use(e)
             let sig: FnSig? = cx.sig_of(e)
-            if sig == null { return settled_call(cx, args, valued_call(cx, e, callee, pins, args)) }
-            settled_call(cx, args, dispatched_call(cx, e, callee, pins, args, sig!))
+            if sig == null { return cx.settled_call(args, valued_call(cx, e, callee, pins, args)) }
+            cx.settled_call(args, dispatched_call(cx, e, callee, pins, args, sig!))
         }
         _ -> cx.error_type,
     }
@@ -185,13 +194,31 @@ fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, args: List<ExprId>) -> TypeId {
     if !pins.is_empty() { return value_takes_no_pins(cx, e, callee) }
     let bound = cx.target_type(e)
+    let made: TypeId? = named_construction(cx, e, callee, args, bound)
+    if made != null { return made! }
     let held: Arrow? = cx.view.types.arrow_parts(bound)
     if held != null {
         let arrow = held!
-        return seats_judged(cx, e, callee, arrow.seats, arrow.muts, arrow.answer, args)
+        return cx.seats_judged(e, callee, arrow.seats, arrow.marks, arrow.answer, args)
     }
     if cx.errored_ty(bound) { return cx.error_type }
     not_callable(cx, e, callee, bound)
+}
+
+/// A NAMED TYPE CONSTRUCTS BY CALL — `UserId(5)`. It takes ONE
+/// argument of the shape it stands over, judged by the ORDINARY
+/// SEAT LAW, so arity and the value refuse in the call's own words
+/// and this rule owes no voice of its own. Absent when the callee
+/// names no type, or names one that stands over nothing.
+fn named_construction(mut cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, bound: TypeId) -> TypeId? {
+    let d: DeclId? = type_name_decl(cx.view.types.shape_of(bound))
+    if d == null { return null }
+    // the DECLARATION first: the name's mark is made when it is
+    let _ = cx.view.decls.sig(d!)
+    let named = cx.view.decls.self_type_of(d!)
+    let of: TypeId? = cx.view.types.stands_for(named)
+    if of == null { return null }
+    cx.seats_judged(e, callee, [of!], [], named, args)
 }
 
 /// A GENERIC callee unifies; a plain one type-checks directly. The
@@ -200,15 +227,14 @@ fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, a
 fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                    args: List<ExprId>, s: FnSig) -> TypeId {
     let decl: DeclId? = cx.bound_decl(e)
-    if decl == null { return seats_judged(cx, e, callee, s.params, [], s.ret, args) }
+    if decl == null { return cx.seats_judged(e, callee, s.params, [], s.ret, args) }
     let d = decl!
-    let marks = declared_marks(cx, d, 0, args.length)
-    mut_seats_law(cx, e, callee, marks, args, null)
-    if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, marks, args) }
+    if !cx.seat_contracts(e, callee, d, 0, args, null) { return cx.error_type }
+    if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, d, args) }
     let tp: List<string> = cx.tparams(d)
     if tp.is_empty() {
         if !pins.is_empty() { takes_no_pins(cx, e, callee) }
-        return seats_judged(cx, e, callee, s.params, [], s.ret, args)
+        return cx.seats_judged(e, callee, s.params, [], s.ret, args)
     }
     generic_call(cx, e, callee, pins, args, s, d, tp)
 }
@@ -220,7 +246,7 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                 args: List<ExprId>, s: FnSig, decl: DeclId, tp: List<string>) -> TypeId {
     if tparams_refused(tp) { return cx.error_type }
     if args.length != s.params.length {
-        wrong_arity(cx, e, callee, s.params.length, args.length)
+        cx.wrong_arity(e, callee, s.params.length, args.length)
         return cx.error_type
     }
     mut bound = pinned_slots(cx, e, callee, pins, decl, tp)
@@ -235,11 +261,12 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
     if spoke { return cx.error_type }
     if unpinned_of(tp, bound) != null { pinned_by_answer(cx, e, s.ret, decl, bound) }
     let missing: string? = unpinned_of(tp, bound)
-    if missing != null { return if cx.starving { unpinned_by_arguments(cx, e, callee, missing!) } else { hungry(cx, e) } }
-    let concrete = bound_closed(cx, bound)
+    if missing != null { return if cx.starving { unpinned_by_arguments(cx, e, callee, missing!) } else { cx.hungry(e) } }
+    let concrete = cx.bound_closed(bound)
     if !bounds_hold(cx, e, decl, concrete) { return cx.error_type }
     if !lawful_instantiation(cx, e, s, decl, concrete) { return cx.error_type }
-    cx.record_subst(e, decl, concrete)
+    let settled: List<string> = cx.subst_at(e)?.consts ?? []
+    cx.record_subst(e, decl, concrete, settled)
     cx.view.types.substituted(s.ret, decl, concrete)
 }
 
@@ -252,7 +279,7 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
 fn pinned_by_answer(cx: TypeCx, e: ExprId, ret: TypeId, decl: DeclId, mut bound: Pins) {
     let wanted: TypeId? = cx.want_at(e)
     if wanted == null { return }
-    let _ = unify(cx, ret, wanted!, decl, bound)
+    let _ = cx.unify(ret, wanted!, decl, bound)
 }
 
 /// The representation laws re-judge every substituted slot — a
@@ -266,7 +293,7 @@ fn lawful_instantiation(mut cx: TypeCx, e: ExprId, s: FnSig, decl: DeclId, concr
 
 /// One substituted type checked against the representation laws.
 fn refused_instantiation(mut cx: TypeCx, e: ExprId, raw: TypeId, decl: DeclId, concrete: List<TypeId>) -> bool {
-    let offender: TypeId? = unlawful_side(cx, cx.view.types.substituted(raw, decl, concrete))
+    let offender: TypeId? = cx.unlawful_side(cx.view.types.substituted(raw, decl, concrete))
     if offender == null { return false }
     side_unholdable(cx, e, offender!)
     true
@@ -293,12 +320,12 @@ fn pinned_slots(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
 /// which is what lets `null` and widening ride a pinned `T?`.
 fn generic_argument(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId,
                     decl: DeclId, mut bound: Pins) -> bool {
-    if agreed(cx, a, param, decl, bound) { return true }
+    if cx.agreed(a, param, decl, bound) { return true }
     if cx.shape_at(a) is .Null {
         null_cannot_pin(cx, callee, j, param, a)
         return false
     }
-    wrong_argument(cx, callee, j, param, a)
+    cx.wrong_argument(callee, j, param, a)
     false
 }
 
@@ -317,7 +344,7 @@ export fn check_return(mut cx: TypeCx, s: StmtId) {
         return
     }
     if cx.errored(v) { return }
-    if accepts(cx, v, want!) { return }
+    if cx.accepts(v, want!) { return }
     wrong_return(cx, s, v, want!)
 }
 
@@ -346,9 +373,10 @@ fn bounds_hold(mut cx: TypeCx, e: ExprId, decl: DeclId, concrete: List<TypeId>) 
 /// a capture, a pattern bind and a receiver are registers with
 /// nothing behind them, so handing one over would pass the VALUE and
 /// the callee's write would land in a copy nobody reads.
-fn inout_args_law(mut cx: TypeCx, callee: string, marks: List<bool>, args: List<ExprId>) {
+fn inout_args_law(mut cx: TypeCx, callee: string, d: DeclId, args: List<ExprId>) {
+    let marks = cx.declared_marks(d, 0, args.length)
     for j, a in args {
-        if marked(marks, j) && cellless_place(cx, a) { seat_wants_a_local(cx, a, callee, j) }
+        if mut_mark(marks, j) && cellless_place(cx, a) { seat_wants_a_local(cx, a, callee, j) }
     }
 }
 
@@ -372,11 +400,11 @@ fn body_disagrees(mut cx: TypeCx, body: ExprId, fname: string, fret: TypeRef, go
 }
 
 fn value_takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) -> TypeId {
-    spoken(cx, refusal("type.lambda", cx.loc_of(e), "`${callee}` is a fn VALUE — it takes no type arguments", "pinned here", null))
+    cx.spoken(refusal("type.lambda", cx.loc_of(e), "`${callee}` is a fn VALUE — it takes no type arguments", "pinned here", null))
 }
 
 fn not_callable(mut cx: TypeCx, e: ExprId, callee: string, bound: TypeId) -> TypeId {
-    spoken(cx, refusal("type.lambda", cx.loc_of(e), "`${callee}` is not callable — it holds a `${cx.view.types.name_of(bound)}`", "called here", "only fns and fn-typed values take arguments"))
+    cx.spoken(refusal("type.lambda", cx.loc_of(e), "`${callee}` is not callable — it holds a `${cx.view.types.name_of(bound)}`", "called here", "only fns and fn-typed values take arguments"))
 }
 
 fn takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) {
@@ -384,7 +412,7 @@ fn takes_no_pins(mut cx: TypeCx, e: ExprId, callee: string) {
 }
 
 fn unpinned_by_arguments(mut cx: TypeCx, e: ExprId, callee: string, tparam: string) -> TypeId {
-    spoken(cx, refusal("type.mismatch", cx.loc_of(e), "`${tparam}` is not pinned by the arguments", "in this call", "write the type explicitly — `${callee}<...>(...)`"))
+    cx.spoken(refusal("type.mismatch", cx.loc_of(e), "`${tparam}` is not pinned by the arguments", "in this call", "write the type explicitly — `${callee}<...>(...)`"))
 }
 
 fn side_unholdable(mut cx: TypeCx, e: ExprId, offender: TypeId) {
@@ -421,7 +449,7 @@ fn bound_unheld(mut cx: TypeCx, e: ExprId, tname: string, ty: TypeId) {
 }
 
 fn seat_not_inout_able(mut cx: TypeCx, s: StmtId, hname: string, j: int, pp: Param) {
-    cx.emit(refusal("type.host_seat", cx.stmt_loc(s), "seat ${j + 1} of `${hname}` is `mut` and wears `${spelled(pp.ty ?? void_written())}` — a `mut` host seat hands C the ADDRESS of the caller's cell", "declared here", "a cell C may write is `ptr`, `ptr?`, or an integer at its DECLARED WIDTH — `i32` for a C `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`. A bare `int` is refused here alone, because it is right for `int64_t*` and silently wrong for `int*`, and only the declaration knows which. A managed value (`string`, a list, a map, a record) cannot cross at all — C keeps no refcount for what it writes."))
+    cx.emit(refusal("type.host_seat", cx.stmt_loc(s), "seat ${j + 1} of `${hname}` is `mut` and wears `${spelled(pp.ty ?? void_written)}` — a `mut` host seat hands C the ADDRESS of the caller's cell", "declared here", "a cell C may write is `ptr`, `ptr?`, or an integer at its DECLARED WIDTH — `i32` for a C `int*`, `u32` for `unsigned*`, `i64` for `int64_t*`. A bare `int` is refused here alone, because it is right for `int64_t*` and silently wrong for `int*`, and only the declaration knows which. A managed value (`string`, a list, a map, a record) cannot cross at all — C keeps no refcount for what it writes."))
 }
 
 fn seat_cannot_cross(mut cx: TypeCx, s: StmtId, hname: string, j: int, p: TypeId) {
@@ -446,6 +474,4 @@ fn seat_wants_a_local(mut cx: TypeCx, a: ExprId, callee: string, j: int) {
 
 /// The stand-in when a seat wrote no type at all — the declare pass
 /// already refused it; the voice must still name something.
-fn void_written() -> TypeRef {
-    TypeRef { name: "void", args: [], optional: false, dynamic: false, arrow: false, span: null }
-}
+const void_written: TypeRef = TypeRef { name: "void", args: [], optional: false, dynamic: false, arrow: false, span: null }

@@ -7,6 +7,8 @@
 //! Ids are opaque: compared or looked up, never inspected. All
 //! allocation goes through the one `alloc_*` seam per arena, so
 //! interning can arrive without call-site churn.
+use @std.meta.{derive}
+
 
 /// Typed index into the expression arena. A single-field struct, not
 /// an int newtype — see the subset note on newtypes in generic flows.
@@ -24,9 +26,7 @@ export type StmtId = { index: int }
 /// The statement a declaration stands on when it has none — an
 /// empty file's main, a builtin: the first slot, which a builtin
 /// never reads.
-export fn no_stmt() -> StmtId {
-    StmtId { index: 0 }
-}
+export const no_stmt: StmtId = StmtId { index: 0 }
 
 /// A DECLARATION's identity across the workspace — a fn, type, enum,
 /// trait or method — minted once per declaration; every type shape
@@ -114,14 +114,21 @@ export enum DeclKind {
     Builtin
     Fn
     Record
+    /// `type Name = <type>` — a name over a shape, distinct from it.
+    Named
     Enum
     Trait
+    /// a sublanguage — a block word and its grammar
+    Syntax
     Method
     Default
     Impl
     Main
     /// One `then` of a spec — a bodied declaration answering a bool.
     Case
+    /// A settled value the compiler computes — a declaration whose
+    /// READ is its value, cross-file like any other.
+    Const
 }
 
 /// A MODULE's identity — a directory under the root, interned.
@@ -163,15 +170,12 @@ export fn op_symbol(op: BinOp) -> string {
 }
 
 /// Every binary operator — the roster symbol->op derivations scan.
-export fn all_binops() -> List<BinOp> {
-    let ops: List<BinOp> =
-        [BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Div, BinOp.Mod,
-         BinOp.Eq, BinOp.Ne, BinOp.Lt, BinOp.Le, BinOp.Gt, BinOp.Ge,
-         BinOp.And, BinOp.Or,
-         BinOp.BitAnd, BinOp.BitOr, BinOp.BitXor, BinOp.Shl, BinOp.Shr]
-    ops
-}
+export const all_binops: List<BinOp> = [BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Div, BinOp.Mod,
+     BinOp.Eq, BinOp.Ne, BinOp.Lt, BinOp.Le, BinOp.Gt, BinOp.Ge,
+     BinOp.And, BinOp.Or,
+     BinOp.BitAnd, BinOp.BitOr, BinOp.BitXor, BinOp.Shl, BinOp.Shr]
 
+@derive(ValueProtocol)
 export enum Expr {
     IntLit(value: int)
     /// A REAL literal, carried as its IEEE-754 BIT PATTERN rather than
@@ -205,6 +209,18 @@ export enum Expr {
     Prop(subject: ExprId, name: string)
     /// `"a ${x} b"` — parts always one longer than holes.
     Interp(parts: List<string>, holes: List<ExprId>)
+    /// `quote { a ${x} b }` — a TEMPLATE: its body parsed here, into
+    /// this store, as statements or as match arms, every hole a
+    /// placeholder NAME (`holes.av`); the holes are the expressions
+    /// that fill them, in body order; the parts are the runs of
+    /// source between holes (one longer), the printing projection.
+    Quote(parts: List<string>, stmts: List<StmtId>, arms: List<Arm>, holes: List<ExprId>)
+    /// `sql { … ${x} … }` — a SUBLANGUAGE block: the word that names
+    /// its grammar, the body's text with holes as placeholders, the
+    /// hole expressions in body order, and — once the file resolves —
+    /// its EXPANSION, the calls the grammar's actions became, which
+    /// every pass reads in its place (`expand_sublang`).
+    Sublang(word: string, body: string, holes: List<ExprId>, expansion: ExprId?)
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
@@ -279,67 +295,84 @@ export enum Expr {
     /// A parse failure's placeholder — the tree survives bad input.
     Error
 }
+/// Whether the parse tree already HOLDS this value — an int, float,
+/// bool or string literal. A computed expression is not a literal:
+/// reading it needs typed answers that do not exist before analysis.
+export fn is_literal(e: Expr) -> bool {
+    (e).int_of() != null || (e).bits_of() != null || (e).bool_of() != null || (e).text_of() != null
+}
 
-/// The VALUE PROTOCOL: a literal node's payload, one projection per
-/// value category — what features read instead of matching a
-/// variant, their own included.
-export fn bool_of(e: Expr) -> bool? {
+/// A FORM THE SOURCE SPELLS AS A VALUE — a scalar, text, a list, a
+/// map, a variant, `null`. The parts inside may be computed; the
+/// FORM is what this asks about.
+///
+/// A NAMED TYPE'S SEAT TAKES ONE DIRECTLY (`let id: UserId = 5`):
+/// the name's shape becomes the want and the literal fills it.
+/// Nothing COMPUTED wears a name it was not given, which is the
+/// opacity half of the named-type law and what makes the name worth
+/// having. A REGISTRY, every arm spelled: the day a new value form
+/// lands it must decide whether a name adopts it.
+export fn literal_form(e: Expr) -> bool {
     match e {
-        .BoolLit(v) -> v,
-        _ -> null,
+        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Interp(_, _) or
+        .ListLit(_) or .Comp(_, _, _, _, _, _) or .MapLit(_, _) or .NullLit or
+        .VariantLit(_, _) or .StructLit(_, _, _) -> true,
+        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or
+        .Quote(_, _, _, _) or .Sublang(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or
+        .Block(_, _) or .Call(_, _, _) or .With(_, _, _) or .Match(_, _) or
+        .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or
+        .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or
+        .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
     }
 }
 
-/// An int literal's value. The second reader earns the projection:
-/// a const's use emits what the literal holds without dispatching
-/// on the node itself.
-export fn int_of(e: Expr) -> int? {
-    match e {
-        .IntLit(v) -> v,
-        _ -> null,
-    }
+/// What the SOURCE alone spells: a literal, or a quote with no
+/// holes — code that needs no evaluation to cross.
+export fn source_spelled(e: Expr) -> bool {
+    is_literal(e) || hole_free(e)
 }
 
-export fn text_of(e: Expr) -> string? {
+/// A quote with no holes is source-spelled code.
+fn hole_free(e: Expr) -> bool {
     match e {
-        .StrLit(v) -> v,
-        _ -> null,
+        .Quote(_, _, _, holes) -> holes.is_empty(),
+        _ -> false,
     }
 }
 
 /// A map literal's keys and values, in written order.
 export type MapPairs = { keys: List<ExprId>, values: List<ExprId> }
-
-/// The map-literal projection of the value protocol.
-export fn pairs_of(e: Expr) -> MapPairs? {
-    match e {
-        .MapLit(keys, values) -> MapPairs { keys: keys, values: values },
-        _ -> null,
-    }
-}
-
-export fn elems_of(e: Expr) -> List<ExprId>? {
-    match e {
-        .ListLit(elems) -> elems,
-        _ -> null,
-    }
-}
-
+/// A quote's parts, its parsed body, and the holes between the parts.
+export type QuoteParts = { parts: List<string>, stmts: List<StmtId>, arms: List<Arm>, holes: List<ExprId> }
+/// A sublanguage block's word, body, holes, and expansion once made.
+export type SublangParts = { word: string, body: string, holes: List<ExprId>, expansion: ExprId? }
+/// What a block's grammar refused, in the file's offsets — spoken
+/// with the parse's own words.
+export type BlockVoice = { message: string, lo: int, hi: int, expected: List<string>, in_rule: string }
+/// A run of nodes minted from a sublanguage's actions, and the file
+/// whose fns they name — their origin.
+export type ForeignRange = { lo: int, hi: int, path: string }
 /// A WRITTEN type: its name, its arguments (`List<int>`), and
 /// whether it was written nullable (`int?`). An annotation is DATA,
 /// not a node — no pass walks one — so its span rides here rather
 /// than in a side table.
-export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, muts: List<bool> = [] }
+/// `@name(args)` on a declaration: the call the compiler makes over
+/// it at compile time. The callee is an ident NODE and the arguments
+/// are expression nodes, so resolution and typing read them as any
+/// expression — no second name law.
+export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, span: Span? }
+
+export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [] }
 
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
-/// field rides across: a fn type's `muts` are part of its identity
+/// field rides across: a fn type's `marks` are part of its identity
 /// (`fn(mut Cx)` is not `fn(Cx)`), so dropping them here would hand
 /// the seat law a type that had quietly lost its contract.
 /// A RECONSTRUCTION NAMES WHAT CHANGES, never the rest — spelling
 /// the others out drops the NEXT field silently, and a field with a
-/// DEFAULT drops without even a compile error. `muts` was lost here
-/// exactly so, from the day it was added.
+/// DEFAULT drops without even a compile error. `marks` was lost here
+/// exactly so, from the day `mut` was added.
 /// A written type naming a declaration, bare — THE ONE PLACE the
 /// seven fields are spelled. Every other shape is this `with` what
 /// differs, so a field added to `TypeRef` reaches every site through
@@ -354,18 +387,30 @@ export fn plain(t: TypeRef) -> TypeRef {
 
 /// A written type, spelled back — what a diagnostic quotes.
 export fn spelled(t: TypeRef) -> string {
-    let base = if t.args.is_empty() { t.name }
+    let base = if t.arrow { spelled_arrow(t) }
+               else if t.args.is_empty() { "${if t.dynamic { "dyn " } else { "" }}${t.name}" }
                else { "${t.name}<${joined([spelled(a) for a in t.args], ", ")}>" }
     if t.optional { return "${base}?" }
     base
 }
+
+/// A fn type's arguments are its seats followed by its answer.
+fn spelled_arrow(t: TypeRef) -> string {
+    let n = t.args.length
+    if n == 0 { return "fn()" }
+    let seats = [mark_prefixed(mark_at(t.marks, j), spelled(a)) for j, a in t.args.slice(0, n - 1)]
+    "fn(${joined(seats, ", ")}) -> ${spelled(t.args[n - 1])}"
+}
+
+/// The pronoun's own seat — what an implicit `it` lambda declares.
+export const pronoun_param: Param = Param { name: "it", ty: null, default: null, mark: plain_mark, span: null }
 
 /// One declared parameter: its name and its written type. An ABSENT
 /// type IS a unit enum variant, so one shape covers both and no arm
 /// has to ask which kind it is.
 /// A declared seat — a fn's param, a lambda's, a struct's field, an
 /// enum variant's payload — with the DEFAULT a field may declare.
-export type Param = { name: string, ty: TypeRef?, default: ExprId?, mutable: bool }
+export type Param = { name: string, ty: TypeRef?, default: ExprId?, mark: SeatMark, span: Span? = null }
 
 /// A pattern's identity in the store's pattern table.
 export type PatId = { index: int }
@@ -408,6 +453,9 @@ export type FormatPart = { hole: Hole, piece: string }
 /// so the format is kept beside the statement that declared it.
 export type GrammarSpec = { head: string, parts: List<FormatPart> }
 
+/// One name a pattern binds, and the pattern node it binds under.
+export type Binder = { pat: PatId, name: string }
+
 /// The word a name takes when it binds nothing.
 export fn nothing_bound() -> string { "_" }
 
@@ -430,7 +478,7 @@ export type Arm = { pats: List<PatId>, value: ExprId }
 
 /// One declared variant: its name and what it carries, in order —
 /// a single positional payload, or named fields.
-export type Variant = { name: string, payloads: List<Param> }
+export type Variant = { name: string, payloads: List<Param>, span: Span? = null }
 
 /// One test case: its `given` group's name, its own name (the
 /// `then`'s), and its body — a block answering a bool.
@@ -447,7 +495,7 @@ export enum PlaceStep {
 export type MethodParts = { subject: ExprId, name: string, args: List<ExprId> }
 
 /// A `use` statement's projection: the path, the items, the site.
-export type UseParts = { path: List<string>, items: List<string>, stmt: StmtId }
+export type UseParts = { path: List<string>, items: List<string>, aliases: List<string>, stmt: StmtId }
 
 export enum Stmt {
     /// `let name = v`, optionally `let name: T = v` — the written
@@ -515,13 +563,18 @@ export enum Stmt {
     For(name: string, from: ExprId, to: ExprId, cond: ExprId, step: ExprId, stmts: List<StmtId>)
     /// `use a.b.{x, y}` — the path's segments (a `@pkg` head kept
     /// as written) and the items brought into scope.
-    Use(path: List<string>, items: List<string>)
+    Use(path: List<string>, items: List<string>, aliases: List<string>)
     /// `for x in xs` — or `for i, x in xs`, the index beside the
     /// element, the loop's own counter with a name.
     ForEach(index: string?, name: string, subject: ExprId, stmts: List<StmtId>)
     /// `type Name = { field: ty, ... }` — a nominal record; the
     /// name lives in the TYPE namespace, program-wide like fns.
     StructDecl(name: string, tparams: List<string>, fields: List<Param>)
+    /// `type Name = <type>` — a DISTINCT type over a written shape,
+    /// never an alias: the name counts at every seat and the shape
+    /// answers every read. It travels AS its shape (a flat record
+    /// of one anonymous field), so the name is free at runtime.
+    NamedType(name: string, tparams: List<string>, of: TypeRef)
     /// `enum Name { A B(payload: int) }` — a nominal closed set
     /// sharing the TYPE namespace with records. A variant is a
     /// Param: an ABSENT `ty` IS a unit variant.
@@ -529,6 +582,9 @@ export enum Stmt {
     /// `spec "name" { given "…" { then "…" { … } } }` — a test
     /// suite; each case is a declaration of its own.
     Spec(name: string, cases: List<Case>)
+    /// `syntax sql { … }` — a sublanguage declared: the block word and
+    /// the grammar notation, kept as text; the workspace readies it.
+    SyntaxDecl(name: string, text: string)
     /// `defer e` — the body runs when the enclosing scope ends or
     /// the fn exits early, last-registered first; `on_error` marks
     /// an `errdefer`, which runs only when the fn exits through its
@@ -551,18 +607,38 @@ export type NodeStore = {
     onces: List<bool>,
     // the format a `grammar` declaration read, by its statement
     grammars: List<GrammarSpec?>,
+    // `@name(args)` marks per statement, in written order
+    annotations: List<List<Annotation>>,
+    // declaration-leading `///` lines; absent on synthesized nodes
+    docs: List<List<string>?>,
     // `static fn` — a fn under an impl declaring it has NO receiver
     statics: List<bool>,
     pats: List<Pat>,
     pat_spans: List<Span?>,
     pat_fingerprints: List<int>,
+    // a lambda written as a TRAILING BLOCK (`f(a) { x -> … }`)
+    trailing: List<bool>,
+    // a call written as a TYPE LITERAL (`v.type(T)`), and a NAME
+    // written inside one — a hole
+    type_lits: List<bool>,
+    holes: List<bool>,
+    // each quote by the offset it starts at — how a template VALUE
+    // names its node
+    quotes_at: Map<string, int>,
+    // the file's sublanguage blocks, in order, and each one's body
+    // offset in the source; what their grammars refused; the node
+    // runs their actions minted, with the library each names
+    sublangs: List<ExprId>,
+    body_starts: Map<string, int>,
+    block_voices: List<BlockVoice>,
+    foreign: List<ForeignRange>,
 }
 
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], grammars: [], statics: [],
-        pats: [], pat_spans: [], pat_fingerprints: [],
+        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], grammars: [], statics: [], annotations: [], docs: [],
+        pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [], quotes_at: {}, sublangs: [], body_starts: {}, block_voices: [], foreign: [],
     }
 }
 
@@ -570,7 +646,125 @@ impl NodeStore {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span?) -> ExprId {
         self.expr_fingerprints.push(self.fingerprint_expr(e))
+        self.trailing.push(false)
+        self.type_lits.push(false)
+        self.holes.push(false)
         ExprId { index: self.exprs.add(e, span) }
+    }
+
+    /// A lambda written as a TRAILING BLOCK — the mark is part of the
+    /// node: the block's refusals speak in the block's words.
+    fn mark_trailing(e: ExprId) {
+        self.trailing.set(e.index, true)
+        self.expr_fingerprints.set(e.index, fp(111, [self.expr_fingerprints[e.index]]))
+    }
+
+    fn is_trailing(e: ExprId) -> bool {
+        self.trailing[e.index]
+    }
+
+    /// A call written as a TYPE LITERAL — the mark is part of the
+    /// node: a receiver that cannot answer refuses in the literal's words.
+    fn mark_type_lit(e: ExprId) {
+        self.type_lits.set(e.index, true)
+        self.expr_fingerprints.set(e.index, fp(112, [self.expr_fingerprints[e.index]]))
+    }
+
+    fn is_type_lit(e: ExprId) -> bool {
+        self.type_lits[e.index]
+    }
+
+    /// A name written inside a type literal — a HOLE, the id it
+    /// names: a binding of the wrong type refuses as a hole.
+    fn mark_hole(e: ExprId) {
+        self.holes.set(e.index, true)
+        self.expr_fingerprints.set(e.index, fp(113, [self.expr_fingerprints[e.index]]))
+    }
+
+    fn is_hole(e: ExprId) -> bool {
+        self.holes[e.index]
+    }
+
+    /// Where a quote's runs of text start in the source, one per part.
+    fn mark_quote_at(e: ExprId) {
+        let sp: Span? = self.expr_span(e)
+        if sp != null { self.quotes_at.set("${sp!.lo}", e.index) }
+    }
+
+    /// The quote starting at a source offset, when one does.
+    fn quote_at(offset: int) -> ExprId? {
+        let i: int? = self.quotes_at.get("${offset}")
+        if i == null { return null }
+        ExprId { index: i! }
+    }
+
+    /// A sublanguage block and where its body starts in the source.
+    fn mark_sublang(e: ExprId, body_at: int) {
+        self.sublangs.push(e)
+        self.body_starts.set("${e.index}", body_at)
+    }
+
+    fn body_start(e: ExprId) -> int { self.body_starts.get("${e.index}") ?? 0 }
+
+    fn speak_block(v: BlockVoice) { self.block_voices.push(v) }
+
+    fn note_foreign(lo: int, hi: int, path: string) { self.foreign.push(ForeignRange { lo: lo, hi: hi, path: path }) }
+
+    /// The block words the file's blocks wear.
+    fn sublang_words() -> List<string> {
+        [(self.expr(e)).sublang_of()?.word ?? "" for e in self.sublangs]
+    }
+
+    fn expansion_of(e: ExprId) -> ExprId? {
+        match self.expr(e) {
+            .Sublang(_, _, _, x) -> x,
+            _ -> null,
+        }
+    }
+
+    /// The hole a statement IS — a lone placeholder standing as a
+    /// whole statement — by index, or null.
+    fn hole_stmt(s: StmtId) -> int? {
+        let v: ExprId? = match self.stmt(s) { .ExprStmt(v) -> v, _ -> null }
+        if v == null { return null }
+        let hole: HoleName? = hole_name(self.ident_name(v!) ?? "")
+        if hole == null || !hole!.lone() { return null }
+        hole!.holes[0]
+    }
+
+    /// Whether a statement DECLARES: a fn, a type, an enum, a trait,
+    /// an impl, a top-level const.
+    fn declares(s: StmtId) -> bool {
+        self.declared_kind(s) != null || self.impl_parts(s) != null || self.const_value(s) != null
+    }
+
+    /// THE CALL PROTOCOL: the node with `blocks` appended to its
+    /// arguments — a trailing block is a call's LAST argument, and a
+    /// name or a field read with no parentheses is a call with none.
+    /// Null for every shape that is not a call.
+    fn called_with(e: ExprId, blocks: List<ExprId>) -> Expr? {
+        match self.expr(e) {
+            .Call(callee, pins, args) -> Expr.Call(callee, pins, args.concat(blocks)),
+            .MethodCall(subject, name, args) -> Expr.MethodCall(subject, name, args.concat(blocks)),
+            .CallValue(subject, args) -> Expr.CallValue(subject, args.concat(blocks)),
+            .Ident(name) -> Expr.Call(name, [], blocks),
+            .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or
+            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .Quote(_, _, _, _) or .Sublang(_, _, _, _) or .If(_, _, _) or .Receiver or
+            .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or
+            .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
+            .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or
+            .Lambda(_, _) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) -> null,
+        }
+    }
+
+    /// An argument the PRONOUN rides becomes an implicit one-param
+    /// lambda — `xs.map(it * 2)` is `xs.map((it) -> it * 2)`, and the
+    /// expected-type channel seats it like any other. The wrap is the
+    /// pronoun's WHOLE mechanism: nothing downstream knows it exists.
+    fn pronouned(a: ExprId) -> ExprId {
+        if !self.pronoun_rides(a) { return a }
+        self.alloc_expr(Expr.Lambda([pronoun_param], a), self.expr_span(a))
     }
 
     /// The value a tail statement answers with: an expression
@@ -582,10 +776,10 @@ impl NodeStore {
             .ExprStmt(v) -> v,
             .Discard(_) -> null,
             .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or
             .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or
-            .LetElse(_, _, _) or .StructDecl(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or
-            .TraitDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> null,
+            .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or
+            .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Error -> null,
         }
     }
 
@@ -645,12 +839,23 @@ impl NodeStore {
 
     /// The names a pattern binds, in pre-order — the arm's bind
     /// order, which every pass keys by index.
-    fn pattern_binds(id: PatId) -> List<string> {
+    /// A pattern's BINDERS in pre-order — the order that indexes
+    /// `Binding.Pattern`. A format's holes bind under the format's own
+    /// node: a hole is not a sub-pattern.
+    fn pattern_binds(id: PatId) -> List<Binder> {
         match self.pat(id) {
-            .Bind(name) -> [name],
+            .Bind(name) -> [Binder { pat: id, name: name }],
             .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
-            .Format(_, parts) -> bound_names(parts),
+            .Format(_, parts) -> [Binder { pat: id, name: n } for n in bound_names(parts)],
             .Wild or .Rest or .Lit(_) -> [],
+        }
+    }
+
+    /// A binding pattern's name; absence for any other pattern.
+    fn bind_name(id: PatId) -> string? {
+        match self.pat(id) {
+            .Bind(name) -> name,
+            _ -> null,
         }
     }
 
@@ -669,9 +874,9 @@ impl NodeStore {
             .Wild -> fp(50, []),
             .Rest -> fp(51, []),
             .Bind(name) -> fp(52, [fp_str(name)]),
-            .Variant(name, args) -> fp(53, [fp_str(name)].concat([self.pat_fingerprint(a) for a in args])),
+            .Variant(name, args) -> fp(53, [fp_str(name), fp_list([self.pat_fingerprint(a) for a in args])]),
             .Lit(v) -> fp(54, [self.expr_fingerprint(v)]),
-            .Format(head, parts) -> fp(112, [fp_str(head)].concat([hole_fp(p) for p in parts])),
+            .Format(head, parts) -> fp(129, [fp_str(head), fp_list([hole_fp(p) for p in parts])]),
         }
     }
 
@@ -682,7 +887,7 @@ impl NodeStore {
     /// sequence and the same fingerprint. Two different programs,
     /// one identity, and the memo kernel cannot tell them apart.
     fn arm_fps(arms: List<Arm>) -> List<int> {
-        [fp(29, [self.pat_fingerprint(p) for p in a.pats].concat([self.expr_fingerprint(a.value)])) for a in arms]
+        [fp(29, [fp_list([self.pat_fingerprint(p) for p in a.pats]), self.expr_fingerprint(a.value)]) for a in arms]
     }
 
     /// The one statement-allocation seam.
@@ -693,14 +898,63 @@ impl NodeStore {
         self.onces.push(false)
         self.grammars.push(null)
         self.statics.push(false)
+        self.annotations.push([])
+        self.docs.push(null)
         StmtId { index: self.stmts.add(s, span) }
+    }
+
+    /// Store the declaration-leading documentation as part of the
+    /// statement's identity: tools observe it, so a doc-only edit
+    /// must not be cut off by the parsed-program memo. Lines never
+    /// contain a newline, so the joined text is a lossless key.
+    fn document(s: StmtId, lines: List<string>) {
+        self.docs.set(s.index, lines)
+        self.stmt_fingerprints.set(s.index, fp(115, [self.stmt_fingerprints[s.index], fp_str(lines.join("\n"))]))
+    }
+
+    fn doc_comment(s: StmtId) -> List<string>? {
+        self.docs[s.index]
+    }
+
+    /// The statement whose span begins at or after `at`, earliest
+    /// first — where a doc group's anchor lands.
+    fn statement_after(at: int) -> StmtId? {
+        // LICENSED I4: a min-by fold; the subset has no min_by
+        mut best: StmtId? = null
+        mut best_lo = 0
+        for i in 0..self.stmts.count() {
+            let s = StmtId { index: i }
+            let span = self.stmt_span(s)
+            if span != null {
+                let lo = span!.lo
+                if lo >= at && (best == null || lo < best_lo) {
+                    best = s
+                    best_lo = lo
+                }
+            }
+        }
+        best
+    }
+
+    /// `@name(args)` crossed this declaration: the call the compiler
+    /// makes over it, recorded as a fact of the declaration — its
+    /// callee an ident node, so every pass reads it as one.
+    fn annotate(s: StmtId, a: Annotation) {
+        mut held = self.annotations[s.index]
+        held.push(a)
+        self.annotations.set(s.index, held)
+        self.stmt_fingerprints.set(s.index, fp(114, [self.stmt_fingerprints[s.index], self.expr_fingerprint(a.callee), fp_list(self.expr_fps(a.args))]))
+    }
+
+    fn annotations_of(s: StmtId) -> List<Annotation> {
+        self.annotations[s.index]
     }
 
     /// `mut fn` crossed this declaration — it says its receiver is
     /// written; a trait sig's word is the contract.
     fn mark_mutating(s: StmtId) {
         self.mutating.set(s.index, true)
-        self.restamp(s, 103, [])
+        self.restamp(s, 103)
     }
 
     fn is_mutating(s: StmtId) -> bool {
@@ -711,7 +965,7 @@ impl NodeStore {
     /// the process.
     fn mark_once(s: StmtId) {
         self.onces.set(s.index, true)
-        self.restamp(s, 104, [])
+        self.restamp(s, 104)
     }
 
     fn is_once(s: StmtId) -> bool {
@@ -723,7 +977,7 @@ impl NodeStore {
     /// word `fn` and `mut fn` are the first two of.
     fn mark_static(s: StmtId) {
         self.statics.set(s.index, true)
-        self.restamp(s, 110, [])
+        self.restamp(s, 110)
     }
 
     fn is_static(s: StmtId) -> bool {
@@ -732,32 +986,37 @@ impl NodeStore {
 
     /// `grammar Name = "…"` declared this record — the format it
     /// reads, which the record's fields cannot spell. The mark's code
-    /// is 113 and the format is its PAYLOAD, whole: a second tag here
-    /// would be a second reservation, and fingerprint codes have no
-    /// coherence law to catch a repeated one.
+    /// is 113 and the format is its PAYLOAD: the head, then the holes
+    /// folded to one value.
     fn mark_grammar(s: StmtId, read: GrammarSpec) {
         self.grammars.set(s.index, read)
-        self.restamp(s, 113, [fp_str(read.head)].concat([hole_fp(p) for p in read.parts]))
+        self.restamp_carrying(s, 113, [fp_str(read.head), fp_list([hole_fp(p) for p in read.parts])])
     }
 
     fn grammar_of(s: StmtId) -> GrammarSpec? {
         self.grammars[s.index]
     }
 
-    /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()` and
-    /// `once fn f()` declare different things, so no two of them
-    /// may wear one fingerprint. The tag is the mark's reserved
-    /// CODE and nothing else; a mark that CARRIES something folds it
-    /// in as `carried`, so the codes stay a registry a reader can
-    /// scan for the next free one.
-    fn restamp(s: StmtId, tag: int, carried: List<int>) {
-        self.stmt_fingerprints.set(s.index, fp(tag, [self.stmt_fingerprints[s.index]].concat(carried)))
+    /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()`,
+    /// `once fn f()`, `static fn f()` and `export fn f()` declare
+    /// different things, so no two of them may wear one fingerprint.
+    fn restamp(s: StmtId, tag: int) {
+        self.restamp_carrying(s, tag, [])
+    }
+
+    /// The tag is the mark's reserved CODE and nothing else; a mark
+    /// that CARRIES something folds what it carries to ONE value, so
+    /// the codes stay a registry and no run's boundary can move.
+    fn restamp_carrying(s: StmtId, tag: int, carried: List<int>) {
+        self.stmt_fingerprints.set(s.index, fp(tag, [self.stmt_fingerprints[s.index], fp_list(carried)]))
     }
 
     /// `export` crossed this declaration — the module's surface
-    /// carries it.
+    /// carries it, so it is part of the statement like every other
+    /// mark.
     fn mark_exported(s: StmtId) {
         self.exported.set(s.index, true)
+        self.restamp(s, 127)
     }
 
     fn is_exported(s: StmtId) -> bool {
@@ -767,7 +1026,7 @@ impl NodeStore {
     /// A `use` statement's parts, when the statement is one.
     fn use_parts(s: StmtId) -> UseParts? {
         match self.stmt(s) {
-            .Use(path, items) -> UseParts { path: path, items: items, stmt: s },
+            .Use(path, items, aliases) -> UseParts { path: path, items: items, aliases: aliases, stmt: s },
             _ -> null,
         }
     }
@@ -798,7 +1057,7 @@ impl NodeStore {
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or
-            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .If(_, _, _) or .Call(_, _, _) or
+            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .Quote(_, _, _, _) or .Sublang(_, _, _, _) or .If(_, _, _) or .Call(_, _, _) or
             .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or
             .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
             .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _) or
@@ -836,60 +1095,38 @@ impl NodeStore {
     }
 
     /// Does the PRONOUN ride this subtree unbound? `it` belongs to
-    /// the nearest enclosing METHOD call: a lambda binds its own
-    /// scope (false), a nested method call's arguments started
-    /// fresh scopes at their own build (subject only), and every
-    /// other node asks its children. A block's STATEMENTS do not
-    /// carry the pronoun (recorded) — only its answering value.
-    /// Exhaustive: a new expression must answer.
+    /// the nearest enclosing METHOD call or trailing block, so six
+    /// nodes answer for themselves and every other asks the children
+    /// the walk already names: a bare name IS the pronoun; a lambda
+    /// binds its own scope; a method call and a call by name started
+    /// fresh scopes for their arguments at their own build; and a
+    /// template's body belongs to the code it generates, so only its
+    /// holes are read here.
     fn pronoun_rides(id: ExprId) -> bool {
         match self.expr(id) {
             .Ident(name) -> name == "it",
             .Lambda(_, _) -> false,
             .MethodCall(subject, _, _) -> self.pronoun_rides(subject),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Receiver -> false,
-            .Binary(_, left, right) -> self.pronoun_rides(left) || self.pronoun_rides(right),
-            .Not(v) -> self.pronoun_rides(v),
-            .Force(v) -> self.pronoun_rides(v),
-            .Is(v, _) -> self.pronoun_rides(v),
-            .VariantLit(_, args) -> self.any_rides(args),
-            .Comp(elem, _, _, source, hi, cond) -> self.pronoun_rides(elem) || self.pronoun_rides(source) || (hi != null && self.pronoun_rides(hi!)) || (cond != null && self.pronoun_rides(cond!)),
-            .Propagate(v) -> self.pronoun_rides(v),
-            .ListLit(elems) -> self.any_rides(elems),
-            .MapLit(keys, values) -> self.any_rides(keys) || self.any_rides(values),
-            .Index(subject, index) -> self.pronoun_rides(subject) || self.pronoun_rides(index),
-            .Prop(subject, _) -> self.pronoun_rides(subject),
-            .Chain(subject, _) -> self.pronoun_rides(subject),
-            .Interp(_, holes) -> self.any_rides(holes),
-            .If(cond, on_true, on_false) ->
-                self.pronoun_rides(cond) || self.pronoun_rides(on_true) || self.pronoun_rides(on_false),
             .Call(callee, _, args) -> callee == "it" || self.any_rides(args),
-            .CallValue(subject, cargs) -> self.pronoun_rides(subject) || self.any_rides(cargs),
-            .When(conds, values, fallback) ->
-                self.any_rides(conds) || self.any_rides(values) || self.pronoun_rides(fallback),
-            .Block(_, value) -> if value == null { false } else { self.pronoun_rides(value!) },
-            .StructLit(_, _, values) -> self.any_rides(values),
-            .With(subject, _, values) -> self.pronoun_rides(subject) || self.any_rides(values),
-            .Match(subject, arms) -> self.pronoun_rides(subject) || self.any_rides([a.value for a in arms]),
-            .Catch(subject, _, _, values) -> self.pronoun_rides(subject) || self.any_rides(values),
-            .MatchOpt(subject, _, present, absent) ->
-                self.pronoun_rides(subject) || self.pronoun_rides(present) || self.pronoun_rides(absent),
-            .Coalesce(l, r) -> self.pronoun_rides(l) || self.pronoun_rides(r),
+            .Quote(_, _, _, holes) -> self.any_rides(holes),
+            .Sublang(_, _, holes, _) -> self.any_rides(holes),
+            rest -> self.any_rides(self.expr_children(id)),
         }
     }
 
     fn any_rides(ids: List<ExprId>) -> bool {
-        // LICENSED I4: `it` binds to the NEAREST call, so a self-method
-        // predicate is F2033 — the scan is spelled
-        for k in ids {
-            if self.pronoun_rides(k) { return true }
-        }
-        false
+        ids.any((k) -> self.pronoun_rides(k))
     }
 
     /// Content identity: a stable variant tag folded with payloads
     /// and child fingerprints, in order. Spans never participate.
-    /// Tags are never reused; the next free tag is 52.
+    /// Tags are never reused; `make fingerprints` names the next.
+    ///
+    /// A PARTS LIST IS FIXED ARITY. Every variable-length run folds
+    /// through `fp_list` first, so no payload's boundary can move and
+    /// two shapes cannot splice to one sequence. The greppable form of
+    /// the law: no `.concat` and no comprehension stands in a parts
+    /// list except inside `fp_list`.
     fn fingerprint_expr(e: Expr) -> int {
         match e {
             .IntLit(value) -> fp(1, [value]),
@@ -908,6 +1145,9 @@ impl NodeStore {
                 fp(22, [self.expr_fingerprint(subject), fp_str(name)]),
             .Interp(parts, holes) ->
                 fp(23, [fp_list(str_fps(parts)), fp_list(self.expr_fps(holes))]),
+            .Quote(parts, stmts, arms, holes) ->
+                fp(116, [fp_list(str_fps(parts)), fp_list(self.stmt_fps(stmts)), fp_list(self.arm_fps(arms)), fp_list(self.expr_fps(holes))]),
+            .Sublang(word, body, holes, _) -> fp(118, [fp_str(word), fp_str(body), fp_list(self.expr_fps(holes))]),
             .StrLit(value) -> fp(8, [fp_str(value)]),
             .BoolLit(value) -> fp(9, [if value { 1 } else { 0 }]),
             .If(cond, on_true, on_false) ->
@@ -920,7 +1160,7 @@ impl NodeStore {
                 fp(13, [fp_list(self.expr_fps(conds)), fp_list(self.expr_fps(values)),
                         self.expr_fingerprint(fallback)]),
             .Block(stmts, value) ->
-                fp(14, [fp_list(self.stmt_fps(stmts)), fp_list(self.tail_fp(value))]),
+                fp(14, [fp_list(self.stmt_fps(stmts)), self.opt_fp(value)]),
             .StructLit(name, fields, values) ->
                 fp(24, [fp_str(name), fp_list(str_fps(fields)),
                         fp_list(self.expr_fps(values))]),
@@ -928,27 +1168,28 @@ impl NodeStore {
                 fp(26, [self.expr_fingerprint(subject),
                         fp_list(str_fps(fields)), fp_list(self.expr_fps(values))]),
             .Match(subject, arms) ->
-                fp(28, [self.expr_fingerprint(subject)].concat(self.arm_fps(arms))),
+                fp(28, [self.expr_fingerprint(subject), fp_list(self.arm_fps(arms))]),
             .NullLit -> fp(30, []),
             .Coalesce(l, r) ->
                 fp(31, [self.expr_fingerprint(l), self.expr_fingerprint(r)]),
             .Force(v) -> fp(32, [self.expr_fingerprint(v)]),
             .Is(v, variant) -> fp(49, [self.expr_fingerprint(v), fp_str(variant)]),
-            .VariantLit(name, args) -> fp(58, [fp_str(name)].concat(self.expr_fps(args))),
-            // an ABSENT guard contributes NOTHING: fingerprinting it as
-            // the element gave `[x for x in xs]` and `[x for x in xs if x]`
-            // ONE identity. The 55/61 tag already tells an absent range
-            // end from a present one, so `hi` needs no such care.
+            .VariantLit(name, args) -> fp(58, [fp_str(name), fp_list(self.expr_fps(args))]),
+            // both ends are OPTIONAL and each folds as one: an absent
+            // guard fingerprinted as the element gave `[x for x in xs]`
+            // and `[x for x in xs if x]` one identity, and the range's
+            // end was told apart by a second tag (61, retired here)
+            // where absence is a value the payload can carry.
             .Comp(elem, index, name, source, hi, cond) ->
-                fp(if hi == null { 55 } else { 61 }, [self.expr_fingerprint(elem), fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(source), self.expr_fingerprint(hi ?? source)].concat(self.expr_fps(some_list(cond)))),
+                fp(55, [self.expr_fingerprint(elem), fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(source), self.opt_fp(hi), self.opt_fp(cond)]),
             .Propagate(v) -> fp(37, [self.expr_fingerprint(v)]),
             .MethodCall(subject, name, margs) ->
-                fp(43, flatten([[self.expr_fingerprint(subject)], [fp_str(name)],
-                                self.expr_fps(margs)])),
+                fp(43, [self.expr_fingerprint(subject), fp_str(name),
+                        fp_list(self.expr_fps(margs))]),
             .Lambda(params, body) ->
-                fp(46, [fp_list(param_fps(params)), self.expr_fingerprint(body)]),
+                fp(46, [fp_list(self.param_fps(params)), self.expr_fingerprint(body)]),
             .CallValue(subject, cargs) ->
-                fp(47, [self.expr_fingerprint(subject)].concat(self.expr_fps(cargs))),
+                fp(47, [self.expr_fingerprint(subject), fp_list(self.expr_fps(cargs))]),
             .Catch(subject, variants, binds, values) ->
                 fp(40, [self.expr_fingerprint(subject),
                         fp_list(str_fps(variants)),
@@ -962,11 +1203,96 @@ impl NodeStore {
         }
     }
 
-    /// A block tail's fingerprint contribution — nothing when the
-    /// block leaves instead of answering.
-    fn tail_fp(value: ExprId?) -> List<int> {
-        if value == null { return [] }
-        [self.expr_fingerprint(value!)]
+    // ── THE COMPLETE WALK ───────────────────────────────────────────
+    // `post_order` (features/dispatch.av) walks `kids`, and a feature
+    // HIDES the children it types under its own narrowing — an `if`'s
+    // branches, a `match`'s arms, a `catch`'s, a nullable's, a lambda's
+    // body — and a block's statements are not expressions at all. THE
+    // HIDDEN-BRANCH LAW: a question about EVERY expression a body holds
+    // (does it read a run-time parameter; which kinds does it spell)
+    // walks here, where every variant names all its children and a
+    // statement its expressions — a registry, like the fingerprints.
+    // IT IS ALSO THE ONE PLACE THE FACT LIVES: a second walk states
+    // only where it DIFFERS and delegates the rest here, so no two
+    // registries can disagree about which payloads are children.
+
+    /// Every expression at and under `root`, children before owners,
+    /// hidden branches and statement bodies included.
+    fn every_expr(root: ExprId) -> List<ExprId> {
+        flatten([self.every_expr(k) for k in self.expr_children(root)]).concat([root])
+    }
+
+    /// An expression's direct expression children, ALL of them.
+    fn expr_children(e: ExprId) -> List<ExprId> {
+        match self.expr(e) {
+            .IntLit(_) or .FloatLit(_) or .Ident(_) or .Receiver or .Error or .StrLit(_) or
+            .BoolLit(_) or .NullLit -> [],
+            .Binary(_, left, right) -> [left, right],
+            .Not(value) -> [value],
+            .ListLit(elems) -> elems,
+            .MapLit(keys, values) -> keys.concat(values),
+            .Index(subject, index) -> [subject, index],
+            .Prop(subject, _) -> [subject],
+            .Interp(_, holes) -> holes,
+            .Quote(_, stmts, arms, holes) -> self.stmts_exprs(stmts).concat([a.value for a in arms]).concat(holes),
+            .Sublang(_, _, holes, x) -> if x == null { holes } else { [x!] },
+            .If(cond, on_true, on_false) -> [cond, on_true, on_false],
+            .Call(_, _, args) -> args,
+            .When(conds, values, fallback) -> conds.concat(values).concat([fallback]),
+            .Block(stmts, value) -> self.stmts_exprs(stmts).concat(some_list(value)),
+            .StructLit(_, _, values) -> values,
+            .With(subject, _, values) -> [subject].concat(values),
+            .Match(subject, arms) -> [subject].concat([a.value for a in arms]),
+            .Coalesce(l, r) -> [l, r],
+            .Force(v) -> [v],
+            .Is(v, _) -> [v],
+            .VariantLit(_, args) -> args,
+            .Comp(elem, _, _, source, hi, cond) -> [elem, source].concat(some_list(hi)).concat(some_list(cond)),
+            .Propagate(v) -> [v],
+            .MethodCall(subject, _, margs) -> [subject].concat(margs),
+            .Lambda(_, body) -> [body],
+            .CallValue(subject, cargs) -> [subject].concat(cargs),
+            .Catch(subject, _, _, values) -> [subject].concat(values),
+            .MatchOpt(subject, _, present, absent) -> [subject, present, absent],
+            .Chain(subject, _) -> [subject],
+        }
+    }
+
+    fn stmts_exprs(ids: List<StmtId>) -> List<ExprId> {
+        flatten([self.stmt_exprs(s) for s in ids])
+    }
+
+    /// A statement's direct expressions, its nested statements' too.
+    /// A declaration holds a body of its own and is walked from that
+    /// body, never through the statement that declares it.
+    fn stmt_exprs(s: StmtId) -> List<ExprId> {
+        match self.stmt(s) {
+            .Let(_, _, value) -> [value],
+            .MutLet(_, _, value) -> [value],
+            .ConstDecl(_, _, value) -> [value],
+            .Assign(target, value) -> [target, value],
+            .While(cond, stmts) -> [cond].concat(self.stmts_exprs(stmts)),
+            .IfStmt(cond, then_stmts, else_stmts) -> [cond].concat(self.stmts_exprs(then_stmts)).concat(self.stmts_exprs(else_stmts)),
+            .Return(value) -> some_list(value),
+            .Fail(value) -> [value],
+            .LetElse(_, subject, stmts) -> [subject].concat(self.stmts_exprs(stmts)),
+            .For(_, from, to, _, _, stmts) -> [from, to].concat(self.stmts_exprs(stmts)),
+            .ForEach(_, _, subject, stmts) -> [subject].concat(self.stmts_exprs(stmts)),
+            .ExprStmt(value) -> [value],
+            .Discard(value) -> [value],
+            .Defer(body, _) -> [body],
+            .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Use(_, _, _) or .Error or .ExternFn(_, _, _) or
+            .FnDecl(_, _, _, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .Spec(_, _) -> [],
+        }
+    }
+
+    /// AN OPTIONAL EXPRESSION IS ONE VALUE, absence included — a
+    /// block that leaves instead of answering, a comprehension with
+    /// no guard, a field with no default. Fixed arity, so it stands
+    /// in a parts list directly, as `type_fp` does for a type.
+    fn opt_fp(value: ExprId?) -> int {
+        if value == null { return 0 }
+        fp(128, [self.expr_fingerprint(value!)])
     }
 
     /// The fingerprints of expression children, in order.
@@ -986,67 +1312,80 @@ impl NodeStore {
             .ConstDecl(name, ty, value) -> fp(109, [fp_str(name), type_fp(ty), self.expr_fingerprint(value)]),
             .Assign(target, value) -> fp(16, [self.expr_fingerprint(target), self.expr_fingerprint(value)]),
             .While(cond, stmts) ->
-                fp(17, [self.expr_fingerprint(cond)].concat(self.stmt_fps(stmts))),
+                fp(17, [self.expr_fingerprint(cond), fp_list(self.stmt_fps(stmts))]),
             .IfStmt(cond, then_stmts, else_stmts) ->
                 fp(35, [self.expr_fingerprint(cond),
                         fp_list(self.stmt_fps(then_stmts)),
                         fp_list(self.stmt_fps(else_stmts))]),
-            .Return(value) -> fp(36, [self.expr_fingerprint(v) for v in some_list(value)]),
+            .Return(value) -> fp(36, [self.opt_fp(value)]),
             .Fail(value) -> fp(39, [self.expr_fingerprint(value)]),
             .ImplDecl(of, target, fns) ->
-                fp(44, [fp_str(of ?? ""), fp_str(target)].concat(self.stmt_fps(fns))),
+                fp(44, [fp_str(of ?? ""), fp_str(target), fp_list(self.stmt_fps(fns))]),
             .TraitDecl(name, fns) ->
-                fp(45, [fp_str(name)].concat(self.stmt_fps(fns))),
+                fp(45, [fp_str(name), fp_list(self.stmt_fps(fns))]),
+            .SyntaxDecl(name, text) -> fp(119, [fp_str(name), fp_str(text)]),
             .LetElse(name, subject, stmts) ->
-                fp(38, [fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
+                fp(38, [fp_str(name), self.expr_fingerprint(subject), fp_list(self.stmt_fps(stmts))]),
             // For's cond and step derive from name/from/to — the
             // identity needs only the sources.
             .For(name, from, to, _, _, stmts) ->
-                fp(18, [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to)].concat(self.stmt_fps(stmts))),
+                fp(18, [fp_str(name), self.expr_fingerprint(from), self.expr_fingerprint(to), fp_list(self.stmt_fps(stmts))]),
             .ExprStmt(value) -> fp(6, [self.expr_fingerprint(value)]),
             .Discard(value) -> fp(57, [self.expr_fingerprint(value)]),
             .Defer(body, on_error) -> fp(if on_error { 107 } else { 106 }, [self.expr_fingerprint(body)]),
-            .Use(path, items) -> fp(108, [fp_list(str_fps(path)), fp_list(str_fps(items))]),
+            .Use(path, items, aliases) -> fp(108, [fp_list(str_fps(path)), fp_list(str_fps(items)), fp_list(str_fps(aliases))]),
             .ForEach(index, name, subject, stmts) ->
-                fp(42, [fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(subject)].concat(self.stmt_fps(stmts))),
+                fp(42, [fp_str(index ?? ""), fp_str(name), self.expr_fingerprint(subject), fp_list(self.stmt_fps(stmts))]),
             .Error -> fp(7, []),
-            .ExternFn(name, params, ret) -> fp(59, [fp_str(name), fp_list(param_fps(params)), type_fp(ret)]),
+            .ExternFn(name, params, ret) -> fp(59, [fp_str(name), fp_list(self.param_fps(params)), type_fp(ret)]),
             .FnDecl(name, tparams, params, ret, body) ->
-                fp(12, [fp_str(name), fp_list(param_fps(tparams)),
-                        fp_list(param_fps(params)),
+                fp(12, [fp_str(name), fp_list(self.param_fps(tparams)),
+                        fp_list(self.param_fps(params)),
                         type_fp(ret), self.expr_fingerprint(body)]),
             .StructDecl(name, tparams, fields) ->
                 fp(25, [fp_str(name), fp_list(str_fps(tparams)),
-                        fp_list(param_fps(fields)),
-                        fp_list(self.expr_fps([f.default! for f in fields if f.default != null]))]),
+                        fp_list(self.param_fps(fields))]),
+            .NamedType(name, tparams, of) ->
+                fp(122, [fp_str(name), fp_list(str_fps(tparams)), type_fp(of)]),
             .EnumDecl(name, tparams, variants) ->
                 fp(27, [fp_str(name), fp_list(str_fps(tparams)),
-                        fp_list(variant_fps(variants))]),
-            .Spec(name, cases) -> fp(56, [fp_str(name)].concat(self.case_fps(cases))),
+                        fp_list(self.variant_fps(variants))]),
+            .Spec(name, cases) -> fp(56, [fp_str(name), fp_list(self.case_fps(cases))]),
         }
     }
 }
 
 impl NodeStore {
-    /// A case list's fingerprint parts: each group, name and body.
+    /// A case list's fingerprint parts — one value per case.
     fn case_fps(cases: List<Case>) -> List<int> {
-        flatten([[fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)] for c in cases])
+        [fp(125, [fp_str(c.group), fp_str(c.name), self.expr_fingerprint(c.body)]) for c in cases]
+    }
+
+    /// A param list's fingerprint parts — ONE VALUE PER SEAT. A seat
+    /// IS its name, its written type, its contract and the default it
+    /// declares: `{ a: int = 1, b: int }` and `{ a: int, b: int = 1 }`
+    /// are different records, and a defaults list beside the fields
+    /// says which defaults exist without saying whose they are.
+    fn param_fps(params: List<Param>) -> List<int> {
+        [fp(123, [fp_str(p.name), type_fp(p.ty), mark_fp(p.mark), self.opt_fp(p.default)]) for p in params]
+    }
+
+    /// A variant list's fingerprint parts — ONE VALUE PER VARIANT.
+    /// Spliced flat, a variant's payload run and the next variant's
+    /// name share a boundary that moves.
+    fn variant_fps(variants: List<Variant>) -> List<int> {
+        [fp(124, [fp_str(v.name), fp_list(self.param_fps(v.payloads))]) for v in variants]
     }
 }
 
-/// A variant list's fingerprint parts: each name, then its payloads.
-fn variant_fps(variants: List<Variant>) -> List<int> {
-    flatten([[fp_str(v.name)].concat(param_fps(v.payloads)) for v in variants])
-}
-
-/// A param list's fingerprint parts: name, type, in declaration order.
 /// A string list's fingerprint parts, in order.
 fn str_fps(texts: List<string>) -> List<int> {
     [fp_str(t) for t in texts]
 }
 
-fn param_fps(params: List<Param>) -> List<int> {
-    flatten([[fp_str(p.name), type_fp(p.ty)] for p in params])
+/// A bool as a fingerprint part.
+fn flagged(b: bool) -> int {
+    if b { 1 } else { 0 }
 }
 
 /// A format part's identity: what it binds, what it parses through,
@@ -1055,7 +1394,7 @@ fn param_fps(params: List<Param>) -> List<int> {
 /// One hole folded to ONE value, so a run of holes has no boundary
 /// that can move whatever a hole comes to carry — the pattern and
 /// the grammar mark fold each hole through this one door.
-fn hole_fp(p: FormatPart) -> int { fp(111, hole_fps(p)) }
+fn hole_fp(p: FormatPart) -> int { fp(130, hole_fps(p)) }
 
 fn hole_fps(p: FormatPart) -> List<int> {
     [fp_str(p.hole.name), type_fp(p.hole.ty), fp_str(p.piece), greed_fp(p.hole.greedy)]
@@ -1066,13 +1405,25 @@ fn hole_fps(p: FormatPart) -> List<int> {
 /// dropped it would hand them one hash.
 fn greed_fp(greedy: bool) -> int { if greedy { 1 } else { 0 } }
 
-/// A written type's identity: absence is its own value, and the `?`
-/// is part of what the type IS.
+/// A SEAT'S CONTRACT IS PART OF WHAT THE SEAT IS: `fn(mut Cx)` is a
+/// different type from `fn(Cx)`, and `const x` a different seat from
+/// `x`, so the marks ride the identity as the interner's key already
+/// says they ride the type.
+fn mark_fp(m: SeatMark) -> int {
+    fp(126, [flagged(m.mutable), flagged(m.settled)])
+}
+
+/// A written type's identity: absence is its own value, and the `?`,
+/// the `dyn`, the arrow and the seats' marks are all part of what the
+/// type IS — a fingerprint that forgets one of them certifies a
+/// changed program as unchanged.
 fn type_fp(t: TypeRef?) -> int {
     if t == null { return 0 }
     let written = t!
     fp(if written.optional { 101 } else { 100 },
-       [fp_str(written.name)].concat([type_fp(a) for a in written.args]))
+       [fp_str(written.name), flagged(written.dynamic), flagged(written.arrow),
+        fp_list([mark_fp(m) for m in written.marks]),
+        fp_list([type_fp(a) for a in written.args])])
 }
 
 fn fp_binop(op: BinOp) -> int {
@@ -1109,8 +1460,9 @@ export fn fp(tag: int, parts: List<int>) -> int {
 /// A SEQUENCE FOLDS TO ONE VALUE, so a payload's ARITY is fixed and
 /// the boundary between two of them cannot move. Spliced flat,
 /// `f<A>(B)` and `f<A, B?>()` wore one fingerprint — a pinned type
-/// and an argument are the same value in a flat list.
-fn fp_list(parts: List<int>) -> int { fp(105, parts) }
+/// and an argument are the same value in a flat list. SHARED across
+/// every fold space, so tag 105 is claimed wherever it is called.
+export fn fp_list(parts: List<int>) -> int { fp(105, parts) }
 
 /// In-process rolling hash; both operands normalized under a prime so
 /// mixing never overflows, negative payloads included. The crypto

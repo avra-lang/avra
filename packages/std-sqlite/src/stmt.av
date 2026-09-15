@@ -31,8 +31,8 @@ use c.{sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, 
 export type Stmt = { raw: ptr?, done: bool = false }
 
 /// The result codes this driver reads by name rather than by number.
-fn row_code() -> int { 100 }
-fn done_code() -> int { 101 }
+const row_code: int = 100
+const done_code: int = 101
 
 /// One statement compiled from `sql`.
 ///
@@ -100,8 +100,8 @@ export fn step(mut s: Stmt) -> Result<bool, SqlError> {
     if s.raw == null { fail refused(Cause.Finalized, "this statement was finalized — prepare it again") }
     if s.done { fail refused(Cause.Done, "this statement already answered DONE — stepping it again RE-RUNS it from the start; `reset` it if that is what you mean") }
     let rc = sqlite3_step(s.raw)
-    if rc == row_code() { return true }
-    if rc == done_code() {
+    if rc == row_code { return true }
+    if rc == done_code {
         s.done = true
         return false
     }
@@ -316,7 +316,6 @@ export fn real_at(s: Stmt, col: int) -> Result<float, SqlError> {
     if !(class is .Real) { fail wrong_class(col, Storage.Real, class) }
     sqlite3_column_double(s.raw, col)
 }
-
 
 /// A cell's class, or a `NoColumn` when the index is outside the row.
 /// The WIDTH is the witness: `data_count` is zero with no row standing,

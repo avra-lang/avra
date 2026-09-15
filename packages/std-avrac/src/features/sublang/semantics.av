@@ -1,0 +1,30 @@
+//! The block's semantics: its EXPANSION is the node every pass reads —
+//! typing answers its type, lowering its register — and a block not
+//! yet expanded (its word unresolved) is its holes alone. A `syntax`
+//! declaration's typing readies its grammar and holds every action to
+//! a fn of its module.
+use core.{Expr, ExprId, StmtId, TypeId, Reg}
+use features.{NodeSemantics, StmtSemantics, TypeCx, LowerCx}
+
+export type SublangSemantics = { }
+
+impl NodeSemantics for SublangSemantics {
+    /// Once expanded, the expansion holds the holes; before, the holes
+    /// stand alone so they still resolve and type.
+    fn kids(e: Expr) -> List<ExprId> {
+        match e {
+            .Sublang(_, _, holes, x) -> if x == null { holes } else { [x!] },
+            _ -> [],
+        }
+    }
+
+    fn type_of(mut cx: TypeCx, e: ExprId) -> TypeId { block_type(cx, e) }
+
+    fn lower(mut cx: LowerCx, e: ExprId) -> Reg { block_reg(cx, e) }
+}
+
+export type SyntaxSemantics = { }
+
+impl StmtSemantics for SyntaxSemantics {
+    fn type_stmt(mut cx: TypeCx, s: StmtId) { check_syntax(cx, s) }
+}

@@ -1,0 +1,134 @@
+// A quote is `Code`: its runs remember the file that wrote them, a
+// hole's text resolves where it is spliced, and a template's own
+// names resolve in the file that wrote the quote — origin hygiene.
+use @std.avrac.language.{avra, new_workspace, memory_host, parse_source, render_source, Program}
+use @std.avrac.testing.{vendored_meta, vendored_meta_as, vendored_meta_paths, real_meta_source, said, refused_n, refused_in}
+
+/// A program with `@std/meta` and a PROVIDER package (`@x/prov`) whose
+/// templates the program's annotations run.
+fn packaged(main: string, prov: string) -> Program {
+    let files = vendored_meta({
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
+        "/w/src/main.av": main,
+        "/w/vendor/prov/avra.toml": "[package]\nname = \"@x/prov\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+        "/w/vendor/prov/src/prov.av": prov,
+    })
+    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/prov/avra.toml", "/w/vendor/prov/src/prov.av"].concat(vendored_meta_paths())), "/w", avra())
+    ws.program("/w/src/main.av")
+}
+
+/// The same program under an `@std/meta` THIS COMPILER WAS NOT BUILT
+/// AGAINST: every template wrapper names its node field `blob`, so a
+/// crossed `Directive`'s source is a shape the compiler cannot read.
+/// Built from the real source, one thing changed.
+fn packaged_under(main: string, prov: string, meta: string) -> Program {
+    let files = vendored_meta_as({
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/prov\" = { path = \"vendor/prov\" }\n",
+        "/w/src/main.av": main,
+        "/w/vendor/prov/avra.toml": "[package]\nname = \"@x/prov\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
+        "/w/vendor/prov/src/prov.av": prov,
+    }, meta)
+    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/prov/avra.toml", "/w/vendor/prov/src/prov.av"].concat(vendored_meta_paths())), "/w", avra())
+    ws.program("/w/src/main.av")
+}
+
+/// `@std/meta` with the template wrappers' one field RENAMED — the
+/// crossing looks for `node` and this package has none.
+fn renamed_node_field() -> string {
+    real_meta_source().replace("node: ", "blob: ").replace(".node", ".blob")
+}
+
+/// A program WITHOUT `@std/meta` — where a quote has no `Code` to answer.
+fn meta_less(main: string) -> Program {
+    let files = {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n",
+        "/w/src/main.av": main,
+    }
+    mut ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av"]), "/w", avra())
+    ws.program("/w/src/main.av")
+}
+
+fn report(p: Program) -> string {
+    match p.check() {
+        .Ok(warned) -> warned,
+        .Err(words) -> words,
+    }
+}
+
+fn clean(p: Program) -> bool { p.check() is .Ok }
+
+/// The provider: a trait whose template names this file's PRIVATE
+/// helper unqualified, and an annotation that splices the user's code
+/// beside a template `tmp`.
+fn provider() -> string {
+    "use @std.meta.{Type, Fn, Directive, Code, literal}\nfn shout(s: string) -> string { \"\${s}!\" }\n/// A template naming this file's private helper.\nexport trait Loud {\n    static fn derive(t: Type) -> List<Directive> {\n        let name = literal(t.name)\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn loud() -> string { shout(\${name}) } } } }]\n    }\n}\nexport fn wrapped(f: Fn, body: Code) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_wrapped() -> int {\n            let tmp = 1\n            let picked = \${body}\n            picked() + tmp\n        }\n    } }]\n}\nexport fn holed(f: Fn, x: string) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_holed() -> int {\n            let \${x} = 1\n            x + 1\n        }\n    } }]\n}\n"
+}
+
+fn loud_program() -> string {
+    "use @std.meta.{derive}\nuse @x.prov.{Loud}\n@derive(Loud)\ntype Point = { x: int }\nPoint { x: 1 }.loud()"
+}
+
+fn wrapped_program() -> string {
+    "use @std.meta.{derive}\nuse @x.prov.{wrapped}\nfn tmp() -> int { 10 }\n@wrapped(quote { tmp })\nfn go() -> int { 0 }\ngo_wrapped()"
+}
+
+fn canonical(source: string) -> string {
+    let parsed = parse_source(source)
+    if !parsed.voices.list.is_empty() { return "<parse refused>" }
+    render_source(parsed.store, parsed.stmts)
+}
+
+spec "features/quote — a quote is `Code`" {
+    given "the hole law" {
+        then "text, a scalar, a named meta value and `Code` all splice" {
+            clean(packaged("use @std.meta.{Code, Decls, name}\nlet n = 7\nlet tname = \"P\"\nlet inner: Code = name(\"x\")\nlet c: Decls = quote { impl \${tname} { fn get() -> int { \${n} + \${inner} } } }\nc.text()", provider()))
+        }
+        then "a list in a hole refuses at the hole" {
+            refused_in(packaged("use @std.meta.{Code}\nlet xs = [1, 2]\nlet c: Code = quote { \${xs} }\nc.text()", provider()), "a hole takes a template, a number, a name, a list of names or of templates, found `List<int>`")
+        }
+        then "a quote without `@std/meta` has no `Code` to answer" {
+            refused_in(meta_less("let c = quote { 1 }\n1"), "a `quote` answers `@std.meta.Code`, and this program does not load `@std/meta`")
+        }
+        then "a quote prints back as written" {
+            canonical("let c = quote { impl \${name} { fn get() -> int { \${n} } } }") == "let c = quote { impl \${name} { fn get() -> int { \${n} } } }"
+        }
+    }
+
+    given "origin hygiene" {
+        then "a template's unqualified private helper is found in the file that wrote the quote" {
+            clean(packaged(loud_program(), provider()))
+        }
+        then "a template's `let tmp` never captures the user's `tmp` arriving through a hole" {
+            clean(packaged(wrapped_program(), provider()))
+        }
+        then "a template's own read does not see a binder whose name came through a hole" {
+            refused_n(packaged("use @std.meta.{derive}\nuse @x.prov.{holed}\n@holed(\"x\")\nfn go() -> int { 0 }\ngo_holed()", provider()), "`x` is not defined", 1)
+        }
+        then "`avra expand` names the template beside the annotation that asked" {
+            let p = packaged(loud_program(), provider())
+            p.expanded_source(p.ws.file_id("/w/src/main.av")).contains("// from @derive on Point — template /w/vendor/prov/src/prov.av:7")
+        }
+        then "the user's code is spliced as written" {
+            let p = packaged(wrapped_program(), provider())
+            p.expanded_source(p.ws.file_id("/w/src/main.av")).contains("fn go_wrapped() -> int {\n    let tmp = 1\n    let picked = tmp\n    picked() + tmp\n}")
+        }
+        then "a name a template does not know refuses in the template's own file" {
+            let p = packaged(loud_program(), provider().replace("shout(\${name})", "missing(\${name})"))
+            let diagnostics = said(p)
+            diagnostics.length == 1 && p.report().contains("no `fn missing` is defined") && p.report().contains("/w/vendor/prov/src/prov.av:7")
+        }
+    }
+
+    given "a template's own mistakes speak at the template" {
+        then "a template that does not parse refuses at the library's own parse, and the target says nothing more" {
+            let p = packaged(loud_program(), provider().replace("shout(\${name})", "let = 3"))
+            let diagnostics = said(p)
+            diagnostics.length == 1 && p.report().contains("expected NAME") && p.report().contains("/w/vendor/prov/src/prov.av:7")
+        }
+        then "a type error inside a template blames the template, not the user" {
+            let p = packaged(loud_program(), provider().replace("shout(\${name})", "shout(1)"))
+            let diagnostics = said(p)
+            diagnostics.length == 1 && p.report().contains("argument 1 of `shout` wants `string`, found `int`") && p.report().contains("/w/vendor/prov/src/prov.av:7")
+        }
+    }
+}

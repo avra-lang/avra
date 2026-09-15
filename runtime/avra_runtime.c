@@ -14,7 +14,7 @@
 // header does not carry it (a raw scalar, a foreign address) is
 // left alone. THE LAW THE TAG BACKS: every pointer Avra holds
 // carries a header — the backend's string constants (see
-// avra_llvm_build_global_string_ptr), the runtime's own literals,
+// avra_llvm_build_text), the runtime's own literals,
 // argv and the environment included — so a retain never reads
 // before an address that is not ours. A STATIC box is immortal:
 // its header is read and never written, so a constant may live in
@@ -40,39 +40,11 @@
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
 #endif
+#include "avra_box.h"
 
 // ── The box header ──────────────────────────────────────────────
-
-// A box's KIND decides how it reclaims and clones: 0 a plain
-// allocation, 1 an array, 2 a map, 3 text, 4 octets. Below zero it
-// is not counted: STATIC is immortal, DEAD is the guard's mark on a
-// reclaimed box.
-enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MAP = 2, KIND_STR = 3, KIND_BYTES = 4 };
-
-// AN IMMORTAL BOX KEEPS ITS SHAPE. A `once` answer lives for the
-// process, so retain and release must no-op on it — which the
-// `kind < 0` test already gives free — but `box_clone` still has to
-// know whether it is a MAP, because a write through a shared value
-// CLONES it, and a map cloned as an array is memory corruption.
-// Overwriting the kind with KIND_STATIC loses exactly that. So
-// immortality is a REFLECTION of the kind and never a replacement:
-// negative for every shape, and it decodes back.
-#define KIND_IMMORTAL(k) (-((k) + 4))
-#define IS_IMMORTAL(k)   ((k) <= -4)
-#define KIND_SHAPE(k)    (IS_IMMORTAL(k) ? -(k) - 4 : (k))
-
-// "AVRA" — the bytes that say a header is this runtime's.
-#define AVRA_TAG 0x41565241u
-
-// A string box also carries its LENGTH, so `.length`, a byte read
-// and a substring cost no walk; zero means "not recorded" (a
-// constant emitted before lengths were), and the text is measured.
-typedef struct {
-    uint32_t tag;
-    int32_t kind;
-    int32_t rc;
-    uint32_t len;
-} Header;
+// The layouts are avra_box.h's — shared with the backend, which lays
+// them out as static data.
 
 // The payload's header. NULL for a pointer that is not a box: the
 // null pointer, an unaligned or low address (a box is sixteen-
@@ -336,7 +308,17 @@ static void acc_settled(void) {
 
 static inline int accounting(void) { return g_acc_on; }
 
+// EVERY BOX AND BUFFER ALIVE, in bytes, counted whether or not the
+// report is on: a settlement's memory ceiling reads it, so it is
+// never a guess and never a sampler's number. Measured free: the add
+// sits in bodies that call malloc or free and already keep a frame,
+// and `check packages/std-avrac` timed the same with it gated.
+static int64_t g_live_bytes = 0;
+
+int64_t avra_mem_live(void) { return g_live_bytes; }
+
 static void acc_add(int k, int64_t bytes) {
+    g_live_bytes += bytes;
     if (!accounting()) return;
     g_acc_live[k] += bytes;
     g_acc_total_live += bytes;
@@ -717,17 +699,6 @@ const char* avra_bool_text(int64_t b) {
 // pointers cast down by the compiler (rt_arg). An array is a box
 // of kind 1 — see the memory model note.
 
-typedef struct {
-    int64_t cap;
-    int64_t len;
-    int64_t* data;
-    // Which slots hold OWNED managed values — marked at pack time
-    // by the compiler, walked at reclaim. Parallel to data.
-    uint8_t* owned;
-    // where it was made — the accounting's return address, else NULL
-    void* site;
-} AvraArray;
-
 // ONE BUFFER holds a list's cells and, after them, its owned marks:
 // one allocation per list, not two. A buffer of a small capacity —
 // one to eight exactly (a record's slots, a literal's elements),
@@ -846,15 +817,27 @@ static void array_reclaim(void* p) {
 // Doubles the capacity: a classed buffer moves to the next class, a
 // big one grows in place; the marks follow the cells to their new
 // place, the new marks zero.
+// STATIC DATA'S CELLS LIE INSIDE ITS OWN BOX (the backend lays the
+// buffer right after the AvraArray), so its buffer is the binary's
+// and never the allocator's: a grow moves the cells out and leaves
+// the laid-out ones where they are. Nothing in the language writes a
+// const, but a `mut` seat handed a copy of one still writes through
+// the shared box (ROADMAP: H3), and that write must not hand a
+// static buffer to `free`.
+static int laid_out(AvraArray* a) {
+    return a->data == (int64_t*)(a + 1);
+}
+
 static void array_grow(AvraArray* a) {
     int64_t old_cap = a->cap;
     int64_t cap = old_cap < ARRAY_FIRST ? ARRAY_FIRST : old_cap * 2;
     int64_t* buf;
-    if (buf_class(old_cap) >= 0) {
+    int fixed = laid_out(a);
+    if (fixed || buf_class(old_cap) >= 0) {
         buf = buf_alloc(cap);
         memcpy(buf, a->data, (size_t)old_cap * sizeof(int64_t));
         memcpy((uint8_t*)(buf + cap), a->owned, (size_t)old_cap);
-        buf_free(a->data, old_cap);
+        if (!fixed) buf_free(a->data, old_cap);
     } else {
         buf = (int64_t*)realloc(a->data, buf_bytes(cap));
         acc_add(ACC_BUF, (int64_t)(buf_bytes(cap) - buf_bytes(old_cap)));
@@ -1207,12 +1190,6 @@ void avra_slot_set_owned(void* arr, int64_t i, void* v) {
 // Two arrays keep the written order (keys owned — the map holds
 // its own reference to every key; values marked owned at set) and
 // an open-addressing index over key hashes finds a slot. Kind 2.
-typedef struct {
-    AvraArray* keys;
-    AvraArray* vals;
-    int64_t* index;   // slot + 1, 0 when empty
-    int64_t icap;
-} AvraMap;
 
 static uint64_t str_hash(const char* s) {
     uint64_t h = 1469598103934665603ull;
@@ -1254,8 +1231,26 @@ static void map_reclaim(void* p) {
     box_free(m);
 }
 
+// A STATIC map arrives with no index: the backend lays out its keys
+// and values and leaves the hash to the runtime, so there is ONE
+// hash and not a copy of it in the compiler. Built on the first
+// lookup, out of line — a hot lookup pays one predictable compare —
+// and SIZED FOR ITS KEYS under the load factor a set keeps: a table
+// too small for them has no empty slot and a probe never ends.
+__attribute__((noinline, cold))
+static void map_index_first(AvraMap* m) {
+    int64_t icap = 16;
+    while (m->keys->len * 10 >= icap * 7) icap *= 2;
+    map_index_rebuild(m, icap);
+}
+
+static inline void map_indexed(AvraMap* m) {
+    if (__builtin_expect(m->icap == 0, 0)) map_index_first(m);
+}
+
 // The slot a key names, or -1.
 static int64_t map_find(AvraMap* m, const char* key) {
+    map_indexed(m);
     uint64_t i = str_hash(key) & (uint64_t)(m->icap - 1);
     while (m->index[i] != 0) {
         int64_t s = m->index[i] - 1;
@@ -1314,6 +1309,7 @@ void avra_map_set_owned(void* map, const char* key, void* v) {
 // A map's shallow clone: both arrays cloned (their owned slots
 // retained), the index rebuilt. A fresh box, rc 1.
 static void* map_clone(AvraMap* m) {
+    map_indexed(m);
     AvraMap* c = (AvraMap*)box_alloc(sizeof(AvraMap), KIND_MAP);
     c->keys = (AvraArray*)array_clone(m->keys);
     c->vals = (AvraArray*)array_clone(m->vals);
@@ -2133,6 +2129,22 @@ int64_t avra_selfhost_write_file(const char* path, const char* content) {
 void avra_eputs(const char* s) {
     if (s) fwrite(s, 1, str_len(s), stderr);
     fputc('\n', stderr);
+}
+
+// A DEBUG LINE, only under AVRA_DEBUG — the compiler's own instrument.
+// A no-op otherwise, so a probe can stand in any pass without breaking
+// the self-compile, whose environment has no such flag.
+void avra_debug(const char* s) {
+    if (s && getenv("AVRA_DEBUG")) fputs(s, stderr);
+}
+
+/* `embed` is answered by the compiler, at compile time, under the
+   const's own directory; a program that reaches this body called it
+   outside a const. */
+const char* avra_embed(const char* path) {
+    (void)path;
+    avra_trap("`embed` reads a file at compile time, into a const — this program reached it at run time");
+    return "";
 }
 
 static int by_text(const void* a, const void* b) {

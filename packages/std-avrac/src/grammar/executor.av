@@ -43,7 +43,6 @@ export type RunOutcome<N> = { result: Captured<N>?, diagnostics: List<Diagnostic
 /// One capture binding in a branch's scope.
 type Binding<N> = { label: string, value: Captured<N> }
 
-
 /// The farthest point speculation reached: what would have matched
 /// there, inside which rule.
 type FarthestFailure = { cursor: int, expected: List<string>, in_rule: string }
@@ -90,11 +89,11 @@ type MatchContext<N> = {
     memo: Memo<N>,
 }
 
-/// The memo: one table of `rules x (tokens + 1)` slots, a slot
-/// holding one past the index of its answer in `results` (0 is
-/// unanswered), so a rule attempt costs two reads and no key is
-/// ever spelled. A struct because a write reaches a place through
-/// its field.
+/// The memo: one table of `rules x (tokens + 1) x 2` slots — a rule
+/// at a cursor, capped or open — a slot holding one past the index
+/// of its answer in `results` (0 is unanswered), so a rule attempt
+/// costs two reads and no key is ever spelled. A struct because a
+/// write reaches a place through its field.
 type Memo<N> = { slots: List<int>, results: List<MatchResult<N>>, stride: int }
 
 /// Captured.Absent with its type parameter pinned.
@@ -255,13 +254,13 @@ fn expected_word(term: string) -> string {
     if is_end(term) { "BREAK" } else { term }
 }
 
-fn match_rule<N>(mut cx: MatchContext<N>, name: string, cursor: int) -> MatchResult<N> {
+fn match_rule<N>(mut cx: MatchContext<N>, name: string, cursor: int, capped: bool) -> MatchResult<N> {
     let ordinal: int? = cx.ordinals.get(name)
     if ordinal == null { return undefined_rule<N>(cx, name, cursor) }
-    let at = ordinal! * cx.memo.stride + cursor
+    let at = (ordinal! * cx.memo.stride + cursor) * 2 + if capped { 1 } else { 0 }
     let known = cx.memo.slots[at]
     if known > 0 { return cx.memo.results[known - 1] }
-    let fresh = match_alt<N>(cx, name, cx.g.rules[ordinal!].body, cursor, [], false)
+    let fresh = match_alt<N>(cx, name, cx.g.rules[ordinal!].body, cursor, [], false, capped)
     cx.memo.results.push(fresh)
     cx.memo.slots.set(at, cx.memo.results.length)
     fresh
@@ -277,13 +276,13 @@ fn undefined_rule<N>(cx: MatchContext<N>, name: string, cursor: int) -> MatchRes
 /// stands only when nothing hits. A wholly-uncommitted failure
 /// carries the merged farthest point of every branch.
 fn match_alt<N>(mut cx: MatchContext<N>, rule_name: string, a: Alt,
-                cursor: int, bindings: List<Binding<N>>, acc: bool) -> MatchResult<N> {
+                cursor: int, bindings: List<Binding<N>>, acc: bool, capped: bool) -> MatchResult<N> {
     // LICENSED I4: a merge fold (far_merge), not a scan
     mut farthest: FarthestFailure? = null
     // LICENSED I4: the first break's words, held while the fold runs on
     mut fb_diags: List<Diagnostic>? = null
     for br in a.branches {
-        let r = match_seq<N>(cx, rule_name, br, cursor, bindings, acc)
+        let r = match_seq<N>(cx, rule_name, br, cursor, bindings, acc, capped)
         farthest = far_merge(farthest, r.farthest)
         if r.status == MatchStatus.Hit || r.status == MatchStatus.Fatal {
             return r with { farthest: farthest }
@@ -317,7 +316,7 @@ fn committed_failure<N>(cx: MatchContext<N>, rule_name: string, member: Item,
 }
 
 fn match_seq<N>(mut cx: MatchContext<N>, rule_name: string, s: Seq,
-                entry: int, entry_bindings: List<Binding<N>>, acc: bool) -> MatchResult<N> {
+                entry: int, entry_bindings: List<Binding<N>>, acc: bool, capped: bool) -> MatchResult<N> {
     mut cursor = entry
     mut bindings = entry_bindings
     mut vals: List<Captured<N>> = []
@@ -325,12 +324,16 @@ fn match_seq<N>(mut cx: MatchContext<N>, rule_name: string, s: Seq,
     // LICENSED I4: a merge fold (far_merge), not a scan
     mut farthest: FarthestFailure? = null
     mut anchored = false
+    // THE HEAD LAW: a trailer never matches under a cap, and a
+    // delimiter the sequence consumes opens the rest of it
+    mut open = !capped
     for member in s.items {
-        let r = match_item<N>(cx, rule_name, member, cursor, bindings, acc)
+        let r = if member.trailer && !open { missed<N>(cx, cursor, bindings, cx.silence, null) } else { match_item<N>(cx, rule_name, member, cursor, bindings, acc, !open) }
         farthest = far_merge(farthest, r.farthest)
         if r.status == MatchStatus.Hit {
             diagnostics = diagnostics.concat(r.diagnostics)
             if r.cursor > cursor { anchored = true }
+            if opens(member.prim) { open = true }
             cursor = r.cursor
             bindings = r.bindings
             vals.push(r.value)
@@ -404,6 +407,15 @@ fn consumed_span(tokens: List<Token>, from: int, until: int) -> Span? {
     tokens[from].span.cover(tokens[until - 1].span)
 }
 
+/// A delimiter that OPENS what follows it in its sequence: inside
+/// parentheses, brackets or braces a head's cap no longer holds.
+fn opens(p: Prim) -> bool {
+    match p {
+        .Lit(text) -> text == "(" || text == "[" || text == "{",
+        .Ref(_) or .Named(_) or .Group(_) -> false,
+    }
+}
+
 /// The result with this item's label bound, when it carries one.
 fn with_label<N>(member: Item, r: MatchResult<N>, acc: bool) -> MatchResult<N> {
     if member.label == null { return r }
@@ -411,23 +423,23 @@ fn with_label<N>(member: Item, r: MatchResult<N>, acc: bool) -> MatchResult<N> {
 }
 
 fn match_item<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
-                 cursor: int, bindings: List<Binding<N>>, acc: bool) -> MatchResult<N> {
+                 cursor: int, bindings: List<Binding<N>>, acc: bool, capped: bool) -> MatchResult<N> {
     match member.rep {
         .One -> {
-            let r = match_prim<N>(cx, rule_name, member, cursor, bindings, acc)
+            let r = match_prim<N>(cx, rule_name, member, cursor, bindings, acc, capped)
             if r.status != MatchStatus.Hit { return r }
             with_label<N>(member, r, acc)
         }
         .Opt -> {
             // An option is a speculation boundary: even a committed
             // sub-failure means not-taken, surviving only in `farthest`.
-            let r = match_prim<N>(cx, rule_name, member, cursor, bindings, acc)
+            let r = match_prim<N>(cx, rule_name, member, cursor, bindings, acc, capped)
             if r.status == MatchStatus.Hit { return with_label<N>(member, r, acc) }
             if r.status == MatchStatus.Fatal { return r }
             matched<N>(cursor, bindings, cx.absent, cx.silence, r.farthest)
         }
-        .Star -> match_repetition<N>(cx, rule_name, member, cursor, bindings, 0),
-        .Plus -> match_repetition<N>(cx, rule_name, member, cursor, bindings, 1),
+        .Star -> match_repetition<N>(cx, rule_name, member, cursor, bindings, 0, capped),
+        .Plus -> match_repetition<N>(cx, rule_name, member, cursor, bindings, 1, capped),
     }
 }
 
@@ -435,7 +447,7 @@ fn match_item<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
 /// iteration failure ends the loop cleanly), committed failures
 /// propagate, and every iteration must consume input.
 fn match_repetition<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
-                       entry: int, entry_bindings: List<Binding<N>>, min: int) -> MatchResult<N> {
+                       entry: int, entry_bindings: List<Binding<N>>, min: int, capped: bool) -> MatchResult<N> {
     mut cursor = entry
     mut bindings = entry_bindings
     mut collected: List<Captured<N>> = []
@@ -445,7 +457,7 @@ fn match_repetition<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
     mut count = 0
     mut going = true
     while going {
-        let r = match_prim<N>(cx, rule_name, member, cursor, bindings, true)
+        let r = match_prim<N>(cx, rule_name, member, cursor, bindings, true, capped)
         farthest = far_merge(farthest, r.farthest)
         // A repetition is a speculation boundary: a failed iteration
         // (committed included) ends the loop; its story lives in `farthest`.
@@ -471,7 +483,7 @@ fn match_repetition<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
 }
 
 fn match_prim<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
-                 cursor: int, bindings: List<Binding<N>>, acc: bool) -> MatchResult<N> {
+                 cursor: int, bindings: List<Binding<N>>, acc: bool, capped: bool) -> MatchResult<N> {
     match member.prim {
         .Lit(text) -> {
             let t = cx.tokens[cursor]
@@ -485,7 +497,7 @@ fn match_prim<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
         .Named(term) -> {
             let t = cx.tokens[cursor]
             let k = term_kind(term)
-            if k != null && t.kind == k! {
+            if k != null && t.kind_is(k!) {
                 // Eof is a position, not a token: match without consuming.
                 let step = if t.kind == TokenKind.Eof { 0 } else { 1 }
                 matched<N>(cursor + step, bindings, captured_terminal<N>(t), cx.silence, null)
@@ -499,7 +511,7 @@ fn match_prim<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
             }
         }
         .Ref(target) -> {
-            let r = match_rule<N>(cx, target, cursor)
+            let r = match_rule<N>(cx, target, cursor, capped || member.head)
             if r.status == MatchStatus.Hit {
                 matched<N>(r.cursor, bindings, r.value, r.diagnostics, r.farthest)
             } else {
@@ -509,7 +521,7 @@ fn match_prim<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
         .Group(inner) -> {
             // Captures inside a group escape to the branch's scope; the
             // group's own value exists only when the item is labeled.
-            let r = match_alt<N>(cx, rule_name, inner, cursor, bindings, acc)
+            let r = match_alt<N>(cx, rule_name, inner, cursor, bindings, acc, capped)
             if r.status != MatchStatus.Hit { return r }
             let v = if member.label != null { r.value } else { cx.absent }
             r with { value: v }
@@ -576,19 +588,26 @@ fn nothing_noted() {
 /// (error holes inside) is a result.
 export fn run_grammar<N>(rd: Ready, tokens: List<Token>,
                          build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>) -> RunOutcome<N> {
+    run_from<N>(rd, rd.g.start, tokens, build)
+}
+
+/// Run `rd` from the rule named `start` — a FRAGMENT parse, for a
+/// spelling that is one type or one expression rather than a program.
+export fn run_from<N>(rd: Ready, start: string, tokens: List<Token>,
+                      build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>) -> RunOutcome<N> {
     if !rd.defects.is_empty() {
         return RunOutcome { result: null, diagnostics: rd.defects }
     }
     let g = rd.g
     let stride = tokens.length + 1
     let answers: List<MatchResult<N>> = []
-    let memo: Memo<N> = Memo { slots: filled(g.rules.length * stride, 0), results: answers, stride: stride }
+    let memo: Memo<N> = Memo { slots: filled(g.rules.length * stride * 2, 0), results: answers, stride: stride }
     let silence: List<Diagnostic> = []
     mut cx: MatchContext<N> = MatchContext {
         g: g, tokens: tokens, ordinals: rd.ordinals, lit_expects: rd.lit_expects, kind_expects: rd.kind_expects,
         absent: captured_absent<N>(), silence: silence, build: build, memo: memo,
     }
-    let r = match_rule<N>(cx, g.start, 0)
+    let r = match_rule<N>(cx, start, 0, false)
     mut diagnostics = [d for d in r.diagnostics]
     if r.status != MatchStatus.Hit {
         if diagnostics.is_empty() { diagnostics.push(overall_failure<N>(cx, r)) }
@@ -596,8 +615,8 @@ export fn run_grammar<N>(rd: Ready, tokens: List<Token>,
     }
     if cx.tokens[r.cursor].kind != TokenKind.Eof {
         diagnostics.push(Diagnostic {
-            cause: Cause.Trailing, message: "unexpected input after `${g.start}`",
-            span: cx.tokens[r.cursor].span, expected: [], in_rule: g.start,
+            cause: Cause.Trailing, message: "unexpected input after `${start}`",
+            span: cx.tokens[r.cursor].span, expected: [], in_rule: start,
         })
     }
     RunOutcome { result: r.value, diagnostics: diagnostics }

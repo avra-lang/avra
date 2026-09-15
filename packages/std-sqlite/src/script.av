@@ -29,12 +29,12 @@ use c.{sqlite3_complete}
 /// The script's statements, in order. A segment may still hold no
 /// statement — that is `prepare`'s answer, not this one's.
 export fn statements(script: string) -> Result<List<string>, SqlError> {
-    if has_nul(script) { fail script_holds_a_nul() }
+    if has_nul(script) { fail script_holds_a_nul }
     mut out: List<string> = []
     mut from = 0
     mut i = 0
     while i < script.length {
-        if script.char_code(i) == semicolon() && complete_bytes(script.substring(from, i + 1)) {
+        if script.char_code(i) == semicolon && complete_bytes(script.substring(from, i + 1)) {
             out.push(script.substring(from, i + 1))
             from = i + 1
         }
@@ -69,7 +69,7 @@ fn tail_of(script: string, from: int) -> Result<List<string>, SqlError> {
 /// NUL — `sqlite3_complete` takes no length, so C stops at the first one
 /// and the answer would be about a prefix.
 export fn completes(sql: string) -> Result<bool, SqlError> {
-    if has_nul(sql) { fail script_holds_a_nul() }
+    if has_nul(sql) { fail script_holds_a_nul }
     complete_bytes(sql)
 }
 
@@ -78,17 +78,14 @@ export fn completes(sql: string) -> Result<bool, SqlError> {
 /// once per candidate.
 fn complete_bytes(sql: string) -> bool { sqlite3_complete(sql) == 1 }
 
-fn semicolon() -> int { 59 }
+export const semicolon: int = 59
 
 // ── The voices ──────────────────────────────────────────────────
 
 /// A script holding a NUL is refused whole, because C would read only
 /// the bytes before it and the statements found would not be the
 /// statements written.
-fn script_holds_a_nul() -> SqlError {
-    refused(Cause.HoldsNul,
-        "a script holds a NUL, and C reads only the bytes before it — the statements SQLite would see are not the ones you wrote")
-}
+const script_holds_a_nul: SqlError = refused(Cause.HoldsNul, "a script holds a NUL, and C reads only the bytes before it — the statements SQLite would see are not the ones you wrote")
 
 fn unterminated(rest: string) -> SqlError {
     refused(Cause.Syntax,

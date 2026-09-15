@@ -2,18 +2,19 @@
 //! TYPE. A param's annotation is optional in the PARSE (the typing
 //! law demands it until the expected-type channel lands); spans
 //! re-align them, the same window law fns use.
-use core.{Expr, TypeRef, Param}
+use core.{Expr, TypeRef, SeatMark}
 use grammar.{Token}
-use features.{LangNode, Builder, aligned_param_types, within}
+use features.{LangNode, Builder, aligned_param_types, within, marked_seats}
 
 fn build_lambda(mut b: Builder) -> Result<LangNode, string> {
-    let ps = b.tokens(0)?
-    let body = b.expr(2)?
+    let consts = b.tokens(0)?
+    let muts = b.tokens(1)?
+    let ps = b.tokens(2)?
+    let body = b.expr(4)?
     let ends: int? = b.span_end()
     if ends == null { return .Err("defect: a lambda without a span — the arena and the grammar disagree") }
-    let tys = aligned_param_types(ps, b.type_refs(1)?, ends!)
-    let params = [Param { name: p.text, ty: tys[j], default: null, mutable: false } for j, p in ps]
-    b.make_expr(Expr.Lambda(params, body))
+    let from: int = b.span?.lo ?? 0
+    b.make_expr(Expr.Lambda(marked_seats(ps, aligned_param_types(ps, b.type_refs(3)?, ends!), muts, consts, from), body))
 }
 
 /// `fn(mut int, bool) -> bool` — the LAST arg is the return
@@ -22,20 +23,26 @@ fn build_lambda(mut b: Builder) -> Result<LangNode, string> {
 /// previous seat and this one is this seat's, the same window law
 /// a fn's own parameters obey.
 fn build_fn_type(b: Builder) -> Result<LangNode, string> {
-    let marks = b.tokens(0)?
-    let ps = b.type_refs(1)?
-    let r = b.answer(2)
+    let consts = b.tokens(0)?
+    let muts = b.tokens(1)?
+    let ps = b.type_refs(2)?
+    let r = b.answer(3)
     let from: int = b.span?.lo ?? 0
-    b.make_type(TypeRef { name: "fn", args: ps.concat([r]), optional: false, dynamic: false, arrow: true, span: b.span, muts: seat_marks(marks, ps, from) })
+    b.make_type(TypeRef { name: "fn", args: ps.concat([r]), optional: false, dynamic: false, arrow: true, span: b.span, marks: seat_marks(muts, consts, ps, from) })
 }
 
-/// Each written seat's mark: a `mut` between the seat before it (or
-/// the `fn` word, for the first) and the seat's own start.
-fn seat_marks(marks: List<Token>, ps: List<TypeRef>, from: int) -> List<bool> {
-    mut out: List<bool> = []
+/// Each written seat's mark: a `mut` or `const` between the seat
+/// before it (or the `fn` word, for the first) and the seat's own
+/// start.
+fn seat_marks(muts: List<Token>, consts: List<Token>, ps: List<TypeRef>, from: int) -> List<SeatMark> {
+    mut out: List<SeatMark> = []
     for j, p in ps {
         let after = if j == 0 { from } else { ps[j - 1].span?.lo ?? from }
-        out.push(marks.any(within(it.span.lo, after, p.span?.lo ?? after)))
+        let before = p.span?.lo ?? after
+        out.push(SeatMark {
+            mutable: muts.any(within(it.span.lo, after, before)),
+            settled: consts.any(within(it.span.lo, after, before)),
+        })
     }
     out
 }

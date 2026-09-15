@@ -24,103 +24,193 @@ impl Pins {
     }
 }
 
-/// UNIFICATION, exact: bind the callee's Vars from an argument's
-/// computed type, recursing through the composites. No widening
-/// rides through a generic param — a lift needs a visible concrete
-/// target (the recorded G1 law). Errors absorb.
-export fn unify(cx: TypeCx, want: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
-    if cx.errored_ty(got) { return true }
-    if cx.errored_ty(want) { return true }
-    match cx.view.types.shape_of(want) {
-        .Var(decl, j, _) -> var_binds(cx, decl, j, got, target, bound),
-        .List(w) -> elem_unifies(cx, w, got, target, bound),
-        .Map(_, wv) -> value_unifies(cx, wv, got, target, bound),
-        .Opt(w) -> carried_unifies(cx, w, got, target, bound),
-        .Res(wo, we) -> sides_unify(cx, wo, we, got, target, bound),
-        .App(wd, _, wa) -> app_unifies(cx, wd, wa, got, target, bound),
-        .Fn(wp, _, wr) -> fn_unifies(cx, wp, wr, got, target, bound),
+impl TypeCx {
+    /// UNIFICATION, exact: bind the callee's Vars from an argument's
+    /// computed type, recursing through the composites. No widening
+    /// rides through a generic param — a lift needs a visible concrete
+    /// target (the recorded G1 law). Errors absorb.
+    fn unify(want: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
+        if self.errored_ty(got) { return true }
+        if self.errored_ty(want) { return true }
+        match self.view.types.shape_of(want) {
+            .Var(decl, j, _) -> self.var_binds(decl, j, got, target, bound),
+            .List(w) -> self.elem_unifies(w, got, target, bound),
+            .Cell(w) -> self.cell_unifies(w, got, target, bound),
+            .Map(_, wv) -> self.value_unifies(wv, got, target, bound),
+            .Opt(w) -> self.carried_unifies(w, got, target, bound),
+            .Res(wo, we) -> self.sides_unify(wo, we, got, target, bound),
+            .App(wd, _, wa) -> self.app_unifies(wd, wa, got, target, bound),
+            .Fn(wp, _, wr) -> self.fn_unifies(wp, wr, got, target, bound),
+            // LICENSED I9: type identity — interned ids ARE the agreement
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+            .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> want.index == got.index,
+        }
+    }
+
+    fn cell_unifies(w: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
+        let g: TypeId? = self.view.types.cell_inner(got)
+        g != null && self.unify(w, g!, target, bound)
+    }
+
+    /// A fn type unifies STRUCTURALLY: seat by seat, then the answer —
+    /// `fn(T) -> T` meets `fn(int) -> int` and binds T. Invariant in
+    /// every seat (v1 — variance is recorded).
+    fn fn_unifies(wp: List<TypeId>, wr: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
+        let held: Arrow? = self.view.types.arrow_parts(got)
+        if held == null { return false }
+        let g = held!
+        if g.seats.length != wp.length { return false }
+        for j, w in wp {
+            if !self.unify(w, g.seats[j], target, bound) { return false }
+        }
+        self.unify(wr, g.answer, target, bound)
+    }
+
+    /// One Var meets one concrete type: first sight binds — through the
+    /// PINS, whose field is a place the caller shares — and a second
+    /// sight must agree.
+    fn var_binds(decl: DeclId, j: int, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
+        // a sig speaks only its OWN fn's Vars; anything else is no match
+        // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
+        if decl.index != target.index { return false }
+        // absence never pins a Var — `null` and `[]` have no one type;
+        // the pin (or another argument) must land first
+        if self.view.types.shape_of(got) is .Null { return false }
+        let g = self.view.types.shape_of(got)
+        if g is .EmptyList || g is .EmptyMap { return false }
+        let seen: TypeId? = bound.slots[j]
+        if seen == null {
+            bound.pin(j, got)
+            return true
+        }
         // LICENSED I9: type identity — interned ids ARE the agreement
-        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> want.index == got.index,
+        seen!.index == got.index
     }
-}
 
-/// A fn type unifies STRUCTURALLY: seat by seat, then the answer —
-/// `fn(T) -> T` meets `fn(int) -> int` and binds T. Invariant in
-/// every seat (v1 — variance is recorded).
-fn fn_unifies(cx: TypeCx, wp: List<TypeId>, wr: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
-    let held: Arrow? = cx.view.types.arrow_parts(got)
-    if held == null { return false }
-    let g = held!
-    if g.seats.length != wp.length { return false }
-    for j, w in wp {
-        if !unify(cx, w, g.seats[j], target, bound) { return false }
+    /// `[]` is a list of anything — it unifies without pinning.
+    fn elem_unifies(w: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
+        match self.view.types.shape_of(got) {
+            .List(g) -> self.unify(w, g, target, bound),
+            .EmptyList -> true,
+            .Opt(_) or .Null or .Cell(_) or .Map(_, _) or .EmptyMap or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+            .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
+        }
     }
-    unify(cx, wr, g.answer, target, bound)
-}
 
-/// One Var meets one concrete type: first sight binds — through the
-/// PINS, whose field is a place the caller shares — and a second
-/// sight must agree.
-fn var_binds(cx: TypeCx, decl: DeclId, j: int, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
-    // a sig speaks only its OWN fn's Vars; anything else is no match
-    // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
-    if decl.index != target.index { return false }
-    // absence never pins a Var — `null` and `[]` have no one type;
-    // the pin (or another argument) must land first
-    if cx.view.types.shape_of(got) is .Null { return false }
-    let g = cx.view.types.shape_of(got)
-    if g is .EmptyList || g is .EmptyMap { return false }
-    let seen: TypeId? = bound.slots[j]
-    if seen == null {
-        bound.pin(j, got)
-        return true
+    /// `{}` is a map of anything — it unifies without pinning.
+    fn value_unifies(w: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
+        match self.view.types.shape_of(got) {
+            .Map(_, g) -> self.unify(w, g, target, bound),
+            .EmptyMap -> true,
+            .Opt(_) or .Null or .Cell(_) or .List(_) or .EmptyList or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+            .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
+        }
     }
-    // LICENSED I9: type identity — interned ids ARE the agreement
-    seen!.index == got.index
-}
 
-/// `[]` is a list of anything — it unifies without pinning.
-fn elem_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
-    match cx.view.types.shape_of(got) {
-        .List(g) -> unify(cx, w, g, target, bound),
-        .EmptyList -> true,
-        .Opt(_) or .Null or .Map(_, _) or .EmptyMap or
-        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
-        .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
+    /// A nullable seat takes its own nullable, `null` (which inhabits
+    /// every CONCRETE nullable — against a Var it cannot pin, and the
+    /// caller says so), or a PRESENT value of a CONCRETE carried type —
+    /// the niche's identity widen; a value against `T?` waits for the
+    /// pin, whose fallback records the widen the pair needs.
+    fn carried_unifies(w: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
+        match self.view.types.shape_of(got) {
+            .Opt(g) -> self.unify(w, g, target, bound),
+            .Null -> !(self.view.types.shape_of(w) is .Var),
+            .List(_) or .Cell(_) or .EmptyList or .Map(_, _) or .EmptyMap or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+            .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> !(self.view.types.shape_of(w) is .Var) && self.unify(w, got, target, bound),
+        }
     }
-}
 
-/// `{}` is a map of anything — it unifies without pinning.
-fn value_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
-    match cx.view.types.shape_of(got) {
-        .Map(_, g) -> unify(cx, w, g, target, bound),
-        .EmptyMap -> true,
-        .Opt(_) or .Null or .List(_) or .EmptyList or
-        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
-        .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
+    fn sides_unify(wo: TypeId, we: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
+        let sides: ResSides? = self.view.types.res_parts(got)
+        if sides == null { return false }
+        self.unify(wo, sides!.ok, target, bound) && self.unify(we, sides!.err, target, bound)
     }
-}
 
-/// A nullable seat takes its own nullable, `null` (which inhabits
-/// every CONCRETE nullable — against a Var it cannot pin, and the
-/// caller says so), or a PRESENT value of a CONCRETE carried type —
-/// the niche's identity widen; a value against `T?` waits for the
-/// pin, whose fallback records the widen the pair needs.
-fn carried_unifies(cx: TypeCx, w: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
-    match cx.view.types.shape_of(got) {
-        .Opt(g) -> unify(cx, w, g, target, bound),
-        .Null -> !(cx.view.types.shape_of(w) is .Var),
-        .List(_) or .EmptyList or .Map(_, _) or .EmptyMap or
-        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
-        .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> !(cx.view.types.shape_of(w) is .Var) && unify(cx, w, got, target, bound),
+    /// The representation laws, re-judged on a SUBSTITUTED type: every
+    /// `Result` side must still be slot-worthy once T is concrete — a
+    /// call binding `T` to `int?` cannot smuggle a pair into a box's
+    /// word slot. Answers the offending side, or absence when lawful.
+    fn unlawful_side(ty: TypeId) -> TypeId? {
+        match self.view.types.shape_of(ty) {
+            .Res(ok, err) -> self.res_side_unlawful(ok, err),
+            .List(elem) -> self.unlawful_side(elem),
+            .Cell(inner) -> self.unlawful_side(inner),
+            .Opt(inner) -> self.unlawful_side(inner),
+            .Map(_, v) -> self.unlawful_side(v),
+            .EmptyMap -> null,
+            .App(_, _, args) -> args.find((a) -> self.unlawful_side(a) != null),
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or
+            .Void -> null,
+        }
     }
-}
 
-fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
-    let sides: ResSides? = cx.view.types.res_parts(got)
-    if sides == null { return false }
-    unify(cx, wo, sides!.ok, target, bound) && unify(cx, we, sides!.err, target, bound)
+    fn res_side_unlawful(ok: TypeId, err: TypeId) -> TypeId? {
+        if !slot_worthy(self.view.types, self.view.types.shape_of(ok)) { return ok }
+        if !slot_worthy(self.view.types, self.view.types.shape_of(err)) { return err }
+        self.unlawful_side(ok) ?? self.unlawful_side(err)
+    }
+
+    /// Whether every Var of `target` inside `ty` is already bound —
+    /// when true, the param is effectively concrete and the ordinary
+    /// assignment law (widening included) can judge the argument.
+    fn fully_bound(ty: TypeId, target: DeclId, bound: Pins) -> bool {
+        match self.view.types.shape_of(ty) {
+            // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
+            .Var(decl, j, _) ->
+                if decl.index == target.index { bound.slots[j] != null } else { true },
+            .List(elem) -> self.fully_bound(elem, target, bound),
+            .Cell(inner) -> self.fully_bound(inner, target, bound),
+            .Map(k, v) -> self.fully_bound(k, target, bound) && self.fully_bound(v, target, bound),
+            .EmptyMap -> true,
+            .Opt(inner) -> self.fully_bound(inner, target, bound),
+            .Res(ok, err) -> self.fully_bound(ok, target, bound) && self.fully_bound(err, target, bound),
+            .App(_, _, args) -> args.all((a) -> self.fully_bound(a, target, bound)),
+            .Fn(ps, _, ret) -> ps.all((p) -> self.fully_bound(p, target, bound)) && self.fully_bound(ret, target, bound),
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+            .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void -> true,
+        }
+    }
+
+    /// The bound slots as a full substitution — unbound slots absorb.
+    fn bound_args(bound: Pins) -> List<TypeId> {
+        [b ?? self.error_type for b in bound.slots]
+    }
+
+    /// Two instantiations of the SAME declaration unify argument by
+    /// argument; anything else is no match.
+    fn app_unifies(wd: DeclId, wa: List<TypeId>, got: TypeId,
+                   target: DeclId, mut bound: Pins) -> bool {
+        match self.view.types.shape_of(got) {
+            // LICENSED I9: DECLARATION identity, not type agreement — whose instantiation this is
+            .App(gd, _, ga) ->
+                gd.index == wd.index && self.paired_unify(wa, ga, target, bound),
+            _ -> false,
+        }
+    }
+
+    fn paired_unify(want: List<TypeId>, got: List<TypeId>,
+                    target: DeclId, mut bound: Pins) -> bool {
+        if want.length != got.length { return false }
+        // LICENSED I37: a FOLD, not a scan — `all` short-circuits, and
+        // every pair must unify for its SIDE EFFECT of binding the
+        // declaration's Vars, including the pairs after the first miss
+        mut ok = true
+        for j, w in want {
+            if !self.unify(w, got[j], target, bound) { ok = false }
+        }
+        ok
+    }
+
+    /// Every binding, closed — ask ONLY after `unpinned_of` answered
+    /// absence; an open slot here is the caller's defect.
+    fn bound_closed(bound: Pins) -> List<TypeId> {
+        [b ?? self.error_type for b in bound.slots]
+    }
 }
 
 /// A shape a SLOT may hold: a scalar word, or an unmanaged
@@ -131,7 +221,7 @@ fn sides_unify(cx: TypeCx, wo: TypeId, we: TypeId, got: TypeId, target: DeclId, 
 export fn slot_worthy(types: TypeRegistry, sh: Type) -> bool {
     match sh {
         .Ptr or .Int or .Float or .Bytes or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
-        .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Var(_, _, _) or .Fn(_, _, _) or
+        .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Cell(_) or .Var(_, _, _) or .Fn(_, _, _) or
         .Map(_, _) -> true,
         // a nullable POINTER is its own nullable — the slot holds
         // the pointer, absence the null one (the niche); a scalar
@@ -140,80 +230,6 @@ export fn slot_worthy(types: TypeRegistry, sh: Type) -> bool {
         .Opt(inner) -> types.opt_rides_pointer(inner) || types.shape_of(inner) is .Var,
         .Null or .EmptyList or .Error or .Void or .EmptyMap -> false,
     }
-}
-
-/// The representation laws, re-judged on a SUBSTITUTED type: every
-/// `Result` side must still be slot-worthy once T is concrete — a
-/// call binding `T` to `int?` cannot smuggle a pair into a box's
-/// word slot. Answers the offending side, or absence when lawful.
-export fn unlawful_side(cx: TypeCx, ty: TypeId) -> TypeId? {
-    match cx.view.types.shape_of(ty) {
-        .Res(ok, err) -> res_side_unlawful(cx, ok, err),
-        .List(elem) -> unlawful_side(cx, elem),
-        .Opt(inner) -> unlawful_side(cx, inner),
-        .Map(_, v) -> unlawful_side(cx, v),
-        .EmptyMap -> null,
-        .App(_, _, args) -> args.find(unlawful_side(cx, it) != null),
-        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or
-        .Void -> null,
-    }
-}
-
-fn res_side_unlawful(cx: TypeCx, ok: TypeId, err: TypeId) -> TypeId? {
-    if !slot_worthy(cx.view.types, cx.view.types.shape_of(ok)) { return ok }
-    if !slot_worthy(cx.view.types, cx.view.types.shape_of(err)) { return err }
-    unlawful_side(cx, ok) ?? unlawful_side(cx, err)
-}
-
-/// Whether every Var of `target` inside `ty` is already bound —
-/// when true, the param is effectively concrete and the ordinary
-/// assignment law (widening included) can judge the argument.
-export fn fully_bound(cx: TypeCx, ty: TypeId, target: DeclId, bound: Pins) -> bool {
-    match cx.view.types.shape_of(ty) {
-        // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
-        .Var(decl, j, _) ->
-            if decl.index == target.index { bound.slots[j] != null } else { true },
-        .List(elem) -> fully_bound(cx, elem, target, bound),
-        .Map(k, v) -> fully_bound(cx, k, target, bound) && fully_bound(cx, v, target, bound),
-        .EmptyMap -> true,
-        .Opt(inner) -> fully_bound(cx, inner, target, bound),
-        .Res(ok, err) -> fully_bound(cx, ok, target, bound) && fully_bound(cx, err, target, bound),
-        .App(_, _, args) -> args.all(fully_bound(cx, it, target, bound)),
-        .Fn(ps, _, ret) -> ps.all(fully_bound(cx, it, target, bound)) && fully_bound(cx, ret, target, bound),
-        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-        .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void -> true,
-    }
-}
-
-/// The bound slots as a full substitution — unbound slots absorb.
-export fn bound_args(cx: TypeCx, bound: Pins) -> List<TypeId> {
-    [b ?? cx.error_type for b in bound.slots]
-}
-
-/// Two instantiations of the SAME declaration unify argument by
-/// argument; anything else is no match.
-fn app_unifies(cx: TypeCx, wd: DeclId, wa: List<TypeId>, got: TypeId,
-               target: DeclId, mut bound: Pins) -> bool {
-    match cx.view.types.shape_of(got) {
-        // LICENSED I9: DECLARATION identity, not type agreement — whose instantiation this is
-        .App(gd, _, ga) ->
-            gd.index == wd.index && paired_unify(cx, wa, ga, target, bound),
-        _ -> false,
-    }
-}
-
-fn paired_unify(cx: TypeCx, want: List<TypeId>, got: List<TypeId>,
-                target: DeclId, mut bound: Pins) -> bool {
-    if want.length != got.length { return false }
-    // LICENSED I37: a FOLD, not a scan — `all` short-circuits, and
-    // every pair must unify for its SIDE EFFECT of binding the
-    // declaration's Vars, including the pairs after the first miss
-    mut ok = true
-    for j, w in want {
-        if !unify(cx, w, got[j], target, bound) { ok = false }
-    }
-    ok
 }
 
 /// A declaration naming T twice already refused at the declaration
@@ -238,10 +254,4 @@ export fn unpinned_of(tp: List<string>, bound: Pins) -> string? {
         if bound.slots[j] == null { return n }
     }
     null
-}
-
-/// Every binding, closed — ask ONLY after `unpinned_of` answered
-/// absence; an open slot here is the caller's defect.
-export fn bound_closed(cx: TypeCx, bound: Pins) -> List<TypeId> {
-    [b ?? cx.error_type for b in bound.slots]
 }

@@ -1,0 +1,33 @@
+//! `quote { … }` — a TEMPLATE: generated code as a value, parsed
+//! where it is written. The body is ordinary Avra — statements,
+//! declarations, or match arms — and `${e}` is a hole typed by the
+//! seat it stands in (`core/holes.av`). The value names this quote
+//! and carries its fills: `@std.meta.Code`, `Stmts`, `Arms` or
+//! `Decls`, by what the body parsed as. The template's own names
+//! resolve here; a name arriving through a hole resolves where the
+//! code is spliced.
+use features.{LanguageFeature, BuilderRow}
+use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn quote_lit() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name    | build
+        "quote" | build_quote
+    }
+    let codes = table<DiagCode> {
+        kind               | id      | summary
+        "type.quote_hole"  | "F2075" | "a hole takes what its seat takes"
+        "type.quote_meta"  | "F2076" | "a `quote` answers a `@std.meta` value, which this program does not load"
+    }
+    component LanguageFeature f {
+        name = "quote"
+        docs = "`quote { … }` — a template parsed here: statements, declarations or arms; \${e} is a hole typed by its seat."
+        gram = grammar {
+            primary = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:expression )? he:HOLE_END )* -> quote(o, a, s, c, hb, h, he)
+        }
+        builders = rows
+        diags = codes
+    }
+    f
+}

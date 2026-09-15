@@ -1,53 +1,69 @@
 //! THE SETTLED LAW: a const's value is known when the COMPILER
-//! runs, so what may stand there is what the compiler can settle —
-//! today a literal, tomorrow anything the evaluator finishes. And
-//! an annotated const holds what it declares, like any binding.
-use core.{StmtId, ExprId, TypeId, TypeRef}
-use features.{TypeCx, declared_binding, refuses_void_value, spoken}
+//! runs — a literal as written, or what the evaluator finishes; the
+//! lowering asks it and speaks its refusals. Its type is recorded as
+//! a workspace fact; an annotation still holds what it declares.
+use core.{StmtId, ExprId, TypeId, TypeRef, Expr}
+use features.{TypeCx, declared_decl}
 use diagnostics.{refusal}
 
-/// The value walks under its declaration's want, then two laws: it
-/// SETTLES, and — when annotated — it holds what it declares.
+/// The value walks under its declaration's want, then records the
+/// inferred or declared type where every body can ask for it.
 export fn check_const(mut cx: TypeCx, s: StmtId) {
     let held: ExprId? = cx.view.store.stmt_value(s)
     if held == null { return }
     let v = held!
     let ann: TypeRef? = cx.view.store.binding_ty(s)
-    // THE DECLARED type, held here rather than asked back: a const's
-    // TYPE is its settled value's, so the annotation is the only
-    // thing that can disagree with the value — and asking the const
-    // for its type would compare the value against itself.
+    // Hold the declaration here: asking the const's shared type while
+    // computing that same fact would compare the value against itself.
     let declared: TypeId? = if ann == null { null } else { cx.bind_declared(s, ann!) }
     if declared != null { cx.plant_want(v, declared!) }
     cx.walk_value(s)
-    if !settles(cx, v) { return }
-    if refuses_void_value(cx, v) { return }
-    if declared == null { return }
-    declared_binding(cx, v, cx.view.store.let_name(s) ?? "this const", declared!)
+    // a value or an annotation the walk already refused is spoken for
+    if cx.errored(v) || refused_annotation(cx, declared) { return }
+    if cx.refuses_void_value(v) { return }
+    let held = declared ?? cx.type_at(v)
+    if !written(cx.view.store.expr(v)) && !materializable(cx, held) {
+        unformed(cx, v, cx.view.store.let_name(s) ?? "this const", held)
+        return
+    }
+    if declared != null { cx.declared_binding(v, cx.view.store.let_name(s) ?? "this const", declared!) }
+    cx.view.decls.record_const_type(cx.view.file, s, held)
 }
 
-/// Whether the compiler can settle this value TODAY. A literal it
-/// can; everything else waits for the evaluator to run at compile
-/// time, and says so rather than pretending.
-fn settles(mut cx: TypeCx, v: ExprId) -> bool {
-    if literal(cx, v) { return true }
-    unsettled(cx, v)
-    false
+/// A value read straight off the page.
+fn written(value: Expr) -> bool {
+    (value).int_of() != null || (value).text_of() != null || (value).bool_of() != null || (value).bits_of() != null
 }
 
-/// A value the compiler reads straight off the page.
-fn literal(cx: TypeCx, v: ExprId) -> bool {
-    match cx.view.store.expr(v) {
-        .IntLit(_) or .StrLit(_) or .BoolLit(_) -> true,
-        _ -> false,
+/// Whether the annotation's own walk already spoke.
+fn refused_annotation(cx: TypeCx, declared: TypeId?) -> bool {
+    declared != null && cx.view.types.shape_of(declared!) is .Error
+}
+
+/// A scalar is emitted at every read. A managed value is built by
+/// the const's guarded unit and kept for the process.
+fn materializable(cx: TypeCx, ty: TypeId) -> bool {
+    // Flatness is a declaration fact. Demand it before judging so
+    // query order cannot turn the same record from kept into copied.
+    let named = declared_decl(cx.view.types.shape_of(ty))
+    if named != null { let _ = cx.view.decls.sig(named!) }
+    match cx.view.types.shape_of(ty) {
+        .Int or .Float or .Bool or .Str or .List(_) or .Map(_, _) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) -> true,
+        .Opt(inner) -> cx.view.types.rides_pointer(ty) && materializable(cx, inner),
+        .Ptr or .Bytes or .Cell(_) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or
+        .Null or .EmptyList or .Error or .Void or .EmptyMap -> false,
     }
 }
 
 // ── The voices ──
 
-fn unsettled(mut cx: TypeCx, v: ExprId) {
-    let _ = spoken(cx, refusal("type.const", cx.loc_of(v),
-                       "a const's value must be known at compile time",
-                       "computed here",
-                       "today that means a literal — `let` holds what the program computes"))
+/// A computed const needs a compile-time value form: a literal the
+/// lowering spells, or a type the materializer can rebuild from the
+/// evaluator's crossed tree.
+fn unformed(mut cx: TypeCx, v: ExprId, name: string, held: TypeId) {
+    let form = "`${cx.view.types.name_of(held)}`"
+    let _ = cx.spoken(refusal("const.form", cx.loc_of(v),
+                       "a computed const needs a compile-time value form",
+                       "`${name}` declares ${form}",
+                       "use a scalar, text, list, map, record, enum, result, or an optional over one of them"))
 }

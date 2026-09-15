@@ -1,0 +1,96 @@
+// proves: a `const` seat is a COMPILE-TIME promise on the fn type.
+// The callee's seat travels with its type — a plain `fn(int)->int`
+// value fills a `fn(const int)->int` seat (the sound direction), and
+// the runtime ABI is unchanged: a `const` seat is neither a pointer
+// nor a cell. Each distinct settled value gets its own unit, and a
+// repeated value shares one. Both engines agree.
+fn scaled(const n: int, factor: int) -> int {
+    n * factor
+}
+
+fn tagged(const label: string) -> string {
+    "${label}!"
+}
+
+fn apply(f: fn(const int) -> int) -> int {
+    f(4)
+}
+
+fn twice(x: int) -> int {
+    x * 2
+}
+
+fn compile(p: string) -> string {
+    p + "!"
+}
+
+fn matches(const pattern: string, s: string) -> string {
+    const prog = compile(pattern)
+    prog + s
+}
+
+const K: int = 7
+
+// a settled seat FORWARDED through another fn — per outer value
+fn forward_inner(const x: int) -> int {
+    x + 1
+}
+
+fn forward_outer(const y: int) -> int {
+    forward_inner(y)
+}
+
+// a computed `const` forwarded — the unit keys on its SETTLED value
+type Pt = { x: int, y: int }
+
+fn take_point(const p: Pt) -> int {
+    p.x + p.y
+}
+
+// a forwarded seat read by a `const` inside the callee — the unit's
+// value must seed the isolated settlement, not just the call site
+fn fold_inner(const x: int) -> int {
+    const z = x + 1
+    z
+}
+
+fn fold_outer(const n: int) -> int {
+    fold_inner(n)
+}
+
+// a LITERAL seat inside an ordinary fn — the template body must still
+// specialize it, never fall back to the plain body
+fn wrapped(x: int) -> int {
+    scaled(3, x)
+}
+
+// a forwarded seat into a METHOD's const seat — the receiver offset
+// rides the same forwarding law
+type Ctr = { base: int }
+
+impl Ctr {
+    fn mul(const p: int) -> int {
+        p * self.base
+    }
+}
+
+fn ctr_outer(const y: int) -> int {
+    let c = Ctr { base: 2 }
+    c.mul(y)
+}
+
+// the seat takes what the SOURCE spells: a const nested in an
+// aggregate (a body's own and a declared one), a forwarded seat
+// nested in one, a variant bare, qualified, and with a payload
+enum Kind { Plain, Loud(int) }
+
+fn volume(const k: Kind) -> int {
+    match k { .Plain -> 1, .Loud(n) -> n }
+}
+
+fn nested_outer(const n: int) -> int {
+    const m = n * 2
+    take_point(Pt { x: K, y: m }) + take_point(Pt { x: n, y: 0 })
+}
+
+"${scaled(21, 2)} ${scaled(20, 2)} ${scaled(21, 2)} ${scaled(K, 3)} ${tagged("hi")} ${apply(twice)} ${matches("x", "y")} ${matches("z", "w")} ${forward_outer(3)} ${forward_outer(4)} ${take_point(Pt { x: 3, y: 4 })} ${fold_outer(3)} ${wrapped(5)} ${ctr_outer(4)} ${volume(.Plain)} ${volume(Kind.Loud(3))} ${volume(.Loud(4))} ${nested_outer(1)} ${nested_outer(2)}"

@@ -6,150 +6,152 @@
 use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, PlaceStep, DeclId, same_decl}
 use diagnostics.{Diag, refusal}
 
-/// The one law, at the call — the module's header states it.
-export fn construct_variant(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, variant: string, args: List<ExprId>) -> TypeId {
-    let declared: EnumSig? = variants_declared(cx, decl, tname)
-    if declared == null { return no_variants_here(cx, e, decl, tname, variant) }
-    let sig = declared!
-    if sig.tag_of(variant) == null { return no_such_variant(cx, e, tname, variant, sig) }
-    let tp = cx.view.decls.tparams(decl)
-    if tparams_refused(tp) { return cx.error_type }
-    let carried = sig.payloads_of(variant)
-    if carried.is_empty() { return unit_variant(cx, e, tname, variant, tp) }
-    if args.is_empty() { return given_nothing(cx, e, tname, variant, carried[0]) }
-    if args.length != carried.length { return wrong_payload_count(cx, e, tname, variant, carried.length, args.length) }
-    mut bound = no_pins(tp.length)
-    for k, a in args {
-        if !agreed(cx, a, carried[k], decl, bound) { return wrong_payload(cx, a, tname, variant, carried[k]) }
+impl TypeCx {
+    /// The one law, at the call — the module's header states it.
+    mut fn construct_variant(e: ExprId, decl: DeclId, tname: string, variant: string, args: List<ExprId>) -> TypeId {
+        let declared: EnumSig? = self.variants_declared(decl, tname)
+        if declared == null { return self.no_variants_here(e, decl, tname, variant) }
+        let sig = declared!
+        if sig.tag_of(variant) == null { return self.no_such_variant(e, tname, variant, sig) }
+        let tp = self.view.decls.tparams(decl)
+        if tparams_refused(tp) { return self.error_type }
+        let carried = sig.payloads_of(variant)
+        if carried.is_empty() { return self.unit_variant(e, tname, variant, tp) }
+        if args.is_empty() { return self.given_nothing(e, tname, variant, carried[0]) }
+        if args.length != carried.length { return self.wrong_payload_count(e, tname, variant, carried.length, args.length) }
+        mut bound = no_pins(tp.length)
+        for k, a in args {
+            if !self.agreed(a, carried[k], decl, bound) { return self.wrong_payload(a, tname, variant, carried[k]) }
+        }
+        self.instantiated(e, tname, decl, tp, bound)
     }
-    instantiated(cx, e, tname, decl, tp, bound)
-}
 
-fn wrong_payload_count(mut cx: TypeCx, e: ExprId, tname: string, variant: string, carries: int, found: int) -> TypeId {
-    spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries ${count_word(carries)}, given ${found}", "built here", "a variant's payload is a single value — wrap several in a record"))
-}
-
-/// A unit variant given an argument list: the plain one carries
-/// nothing; a generic one has nothing to PIN from either.
-fn unit_variant(mut cx: TypeCx, e: ExprId, tname: string, variant: string, tp: List<string>) -> TypeId {
-    if !tp.is_empty() { return cannot_pin(cx, e, tname, variant, tp[0]) }
-    carries_nothing(cx, e, tname, variant)
-}
-
-/// A bare generic unit variant — `Opt.none` — pins from the want
-/// alone; with none, nothing carries the type and it says so.
-export fn unit_instantiated(mut cx: TypeCx, e: ExprId, tname: string, variant: string, decl: DeclId, tp: List<string>) -> TypeId {
-    let pinned = pinned_by_want(cx, e, decl, no_pins(tp.length))
-    let missing: string? = unpinned_of(tp, pinned)
-    if missing != null { return if cx.starving { cannot_pin(cx, e, tname, variant, missing!) } else { hungry(cx, e) } }
-    instantiated(cx, e, tname, decl, tp, pinned)
-}
-
-/// The answer: the plain enum, or the App the bindings close into.
-/// A Var no payload pinned is read from the WANT — the type the
-/// site is expected to be, when it is this declaration's — and a
-/// builtin declaration builds its type through its row.
-fn instantiated(mut cx: TypeCx, e: ExprId, tname: string, decl: DeclId,
-                tp: List<string>, bound: Pins) -> TypeId {
-    if tp.is_empty() { return cx.view.types.intern(Type.Enum(decl, tname)) }
-    let pinned = pinned_by_want(cx, e, decl, bound)
-    let missing: string? = unpinned_of(tp, pinned)
-    if missing != null { return if cx.starving { unpinned_by_payload(cx, e, missing!) } else { hungry(cx, e) } }
-    let concrete = bound_closed(cx, pinned)
-    let row: TypeRow? = cx.view.decls.row_of(decl)
-    let args = TypeArgs { parts: concrete }
-    if row != null { return cx.view.types.intern(row!.builds(args)) }
-    cx.record_subst(e, decl, concrete)
-    cx.view.types.intern(Type.App(decl, tname, concrete))
-}
-
-/// Whether a type is THIS declaration's: an App naming it, or a
-/// builtin's row rebuilt over the type's own arguments.
-fn wants_decl(mut cx: TypeCx, want: TypeId, decl: DeclId) -> bool {
-    let row: TypeRow? = cx.view.decls.row_of(decl)
-    if row != null {
-        let args = TypeArgs { parts: cx.view.types.args_of(want) }
-        return args.parts.length == row!.arity && !types_disagree(cx, cx.view.types.intern(row!.builds(args)), want)
+    mut fn wrong_payload_count(e: ExprId, tname: string, variant: string, carries: int, found: int) -> TypeId {
+        self.spoken(refusal("type.variant_arity", self.loc_of(e), "`${tname}.${variant}` carries ${count_word(carries)}, given ${found}", "built here", "a variant's payload is a single value — wrap several in a record"))
     }
-    match cx.view.types.shape_of(want) {
-        .App(d, _, _) -> same_decl(d, decl),
-        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) or .Var(_, _, _) or
-        .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .List(_) or .Map(_, _) or .EmptyMap -> false,
+
+    /// A unit variant given an argument list: the plain one carries
+    /// nothing; a generic one has nothing to PIN from either.
+    mut fn unit_variant(e: ExprId, tname: string, variant: string, tp: List<string>) -> TypeId {
+        if !tp.is_empty() { return self.cannot_pin(e, tname, variant, tp[0]) }
+        self.carries_nothing(e, tname, variant)
     }
-}
 
-/// A construction nothing pinned goes HUNGRY — silently, the hole —
-/// unless the walk is already starving, when the site speaks for
-/// itself.
-export fn hungry(mut cx: TypeCx, e: ExprId) -> TypeId {
-    cx.go_hungry(e)
-    cx.error_type
-}
+    /// A bare generic unit variant — `Opt.none` — pins from the want
+    /// alone; with none, nothing carries the type and it says so.
+    mut fn unit_instantiated(e: ExprId, tname: string, variant: string, decl: DeclId, tp: List<string>) -> TypeId {
+        let pinned = self.pinned_by_want(e, decl, no_pins(tp.length))
+        let missing: string? = unpinned_of(tp, pinned)
+        if missing != null { return if self.starving { self.cannot_pin(e, tname, variant, missing!) } else { self.hungry(e) } }
+        self.instantiated(e, tname, decl, tp, pinned)
+    }
 
-/// The bindings with every empty slot filled from the want's type
-/// arguments, when the want has as many.
-export fn pinned_by_want(mut cx: TypeCx, e: ExprId, decl: DeclId, bound: Pins) -> Pins {
-    let wanted: TypeId? = cx.want_at(e)
-    if wanted == null { return bound }
-    let want = cx.view.types.carried(wanted!) ?? wanted!
-    if !wants_decl(cx, want, decl) { return bound }
-    let args = cx.view.types.args_of(want)
-    if args.length != bound.slots.length { return bound }
-    // the typed let plants the nullable slot's want; a field seat does not
-    let slots: List<TypeId?> = [b ?? args[j] for j, b in bound.slots]
-    Pins { slots: slots }
-}
+    /// The answer: the plain enum, or the App the bindings close into.
+    /// A Var no payload pinned is read from the WANT — the type the
+    /// site is expected to be, when it is this declaration's — and a
+    /// builtin declaration builds its type through its row.
+    mut fn instantiated(e: ExprId, tname: string, decl: DeclId,
+                    tp: List<string>, bound: Pins) -> TypeId {
+        if tp.is_empty() { return self.view.types.intern(Type.Enum(decl, tname)) }
+        let pinned = self.pinned_by_want(e, decl, bound)
+        let missing: string? = unpinned_of(tp, pinned)
+        if missing != null { return if self.starving { self.unpinned_by_payload(e, missing!) } else { self.hungry(e) } }
+        let concrete = self.bound_closed(pinned)
+        let row: TypeRow? = self.view.decls.row_of(decl)
+        let args = TypeArgs { parts: concrete }
+        if row != null { return self.view.types.intern(row!.builds(args)) }
+        self.record_subst(e, decl, concrete, [])
+        self.view.types.intern(Type.App(decl, tname, concrete))
+    }
 
-/// The raw declared table — Vars intact — or absence when the
-/// declaration is a record. The REAL name interns: the registry
-/// keeps the FIRST shape it sees for a key, so a throwaway name
-/// here would poison every later printing of this enum.
-fn variants_declared(mut cx: TypeCx, decl: DeclId, tname: string) -> EnumSig? {
-    cx.variants_of(cx.view.types.intern(Type.Enum(decl, tname)))
-}
+    /// Whether a type is THIS declaration's: an App naming it, or a
+    /// builtin's row rebuilt over the type's own arguments.
+    mut fn wants_decl(want: TypeId, decl: DeclId) -> bool {
+        let row: TypeRow? = self.view.decls.row_of(decl)
+        if row != null {
+            let args = TypeArgs { parts: self.view.types.args_of(want) }
+            return args.parts.length == row!.arity && !self.types_disagree(self.view.types.intern(row!.builds(args)), want)
+        }
+        match self.view.types.shape_of(want) {
+            .App(d, _, _) -> same_decl(d, decl),
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+            .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .List(_) or .Cell(_) or .Map(_, _) or .EmptyMap -> false,
+        }
+    }
 
-/// A type name that names no enum: a GRAMMAR is told about its
-/// doors, every other record about records. Both fire exactly where
-/// the record refusal fired before, so nothing that reads well today
-/// reads differently.
-fn no_variants_here(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
-    if cx.view.decls.grammar_of(decl) == null { return not_an_enum(cx, e, tname) }
-    no_such_door(cx, e, tname, name)
+    /// A construction nothing pinned goes HUNGRY — silently, the hole —
+    /// unless the walk is already starving, when the site speaks for
+    /// itself.
+    mut fn hungry(e: ExprId) -> TypeId {
+        self.go_hungry(e)
+        self.error_type
+    }
+
+    /// The bindings with every empty slot filled from the want's type
+    /// arguments, when the want has as many.
+    mut fn pinned_by_want(e: ExprId, decl: DeclId, bound: Pins) -> Pins {
+        let wanted: TypeId? = self.want_at(e)
+        if wanted == null { return bound }
+        let want = self.view.types.carried(wanted!) ?? wanted!
+        if !self.wants_decl(want, decl) { return bound }
+        let args = self.view.types.args_of(want)
+        if args.length != bound.slots.length { return bound }
+        // the typed let plants the nullable slot's want; a field seat does not
+        let slots: List<TypeId?> = [b ?? args[j] for j, b in bound.slots]
+        Pins { slots: slots }
+    }
+
+    /// The raw declared table — Vars intact — or absence when the
+    /// declaration is a record. The REAL name interns: the registry
+    /// keeps the FIRST shape it sees for a key, so a throwaway name
+    /// here would poison every later printing of this enum.
+    mut fn variants_declared(decl: DeclId, tname: string) -> EnumSig? {
+        self.variants_of(self.view.types.intern(Type.Enum(decl, tname)))
+    }
 }
 
 // ── The voices ──
 
-fn no_such_door(mut cx: TypeCx, e: ExprId, tname: string, name: string) -> TypeId {
-    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` is a `grammar`, not an enum", "built here", "`${tname}.${name}` is a call only where the grammar declares a door of that name"))
-}
+impl TypeCx {
+    /// A type name that names no enum: a GRAMMAR is told about its
+    /// doors, every other record about records.
+    mut fn no_variants_here(e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
+        if self.view.decls.grammar_of(decl) == null { return self.not_an_enum(e, tname) }
+        self.no_such_door(e, tname, name)
+    }
 
-fn not_an_enum(mut cx: TypeCx, e: ExprId, tname: string) -> TypeId {
-    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` is a record, not an enum", "built here", build_a_record(tname)))
-}
+    mut fn no_such_door(e: ExprId, tname: string, name: string) -> TypeId {
+        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}` is a `grammar`, not an enum", "built here", "`${tname}.${name}` is a call only where the grammar declares a door of that name"))
+    }
 
-fn no_such_variant(mut cx: TypeCx, e: ExprId, tname: string, variant: string, sig: EnumSig) -> TypeId {
-    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}` has no variant `${variant}`", "built here", variants_are(sig)))
-}
+    mut fn not_an_enum(e: ExprId, tname: string) -> TypeId {
+        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}` is a record, not an enum", "built here", build_a_record(tname)))
+    }
 
-fn carries_nothing(mut cx: TypeCx, e: ExprId, tname: string, variant: string) -> TypeId {
-    spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries nothing", "given an argument here", "write `${tname}.${variant}` on its own"))
-}
+    mut fn no_such_variant(e: ExprId, tname: string, variant: string, sig: EnumSig) -> TypeId {
+        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}` has no variant `${variant}`", "built here", variants_are(sig)))
+    }
 
-fn cannot_pin(mut cx: TypeCx, e: ExprId, tname: string, variant: string, tparam: string) -> TypeId {
-    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tname}.${variant}` cannot pin `${tparam}` — nothing carries it", "built here", "a payload pins the type; the pinned unit surface is recorded"))
-}
+    mut fn carries_nothing(e: ExprId, tname: string, variant: string) -> TypeId {
+        self.spoken(refusal("type.variant_arity", self.loc_of(e), "`${tname}.${variant}` carries nothing", "given an argument here", "write `${tname}.${variant}` on its own"))
+    }
 
-fn wrong_payload(mut cx: TypeCx, v: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
-    let n = cx.name_at(v)
-    spoken(cx, refusal("type.variant_arity", cx.loc_of(v), "`${tname}.${variant}` carries `${cx.view.types.name_of(carried)}`, found `${n}`", this_is(n), null))
-}
+    mut fn cannot_pin(e: ExprId, tname: string, variant: string, tparam: string) -> TypeId {
+        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}.${variant}` cannot pin `${tparam}` — nothing carries it", "built here", "a payload pins the type; the pinned unit surface is recorded"))
+    }
 
-fn given_nothing(mut cx: TypeCx, e: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
-    spoken(cx, refusal("type.variant_arity", cx.loc_of(e), "`${tname}.${variant}` carries `${cx.view.types.name_of(carried)}`, given nothing", "built empty here", "write `${tname}.${variant}(<value>)`"))
-}
+    mut fn wrong_payload(v: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
+        let n = self.name_at(v)
+        self.spoken(refusal("type.variant_arity", self.loc_of(v), "`${tname}.${variant}` carries `${self.view.types.name_of(carried)}`, found `${n}`", this_is(n), null))
+    }
 
-fn unpinned_by_payload(mut cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
-    spoken(cx, refusal("type.unknown_prop", cx.loc_of(e), "`${tparam}` is not pinned by the payload", "built here", "the pinned unit surface is recorded — carry `${tparam}` for now"))
+    mut fn given_nothing(e: ExprId, tname: string, variant: string, carried: TypeId) -> TypeId {
+        self.spoken(refusal("type.variant_arity", self.loc_of(e), "`${tname}.${variant}` carries `${self.view.types.name_of(carried)}`, given nothing", "built empty here", "write `${tname}.${variant}(<value>)`"))
+    }
+
+    mut fn unpinned_by_payload(e: ExprId, tparam: string) -> TypeId {
+        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tparam}` is not pinned by the payload", "built here", "the pinned unit surface is recorded — carry `${tparam}` for now"))
+    }
 }
 
 /// "ONE value" or "N values" — the arity as the refusal spells it.

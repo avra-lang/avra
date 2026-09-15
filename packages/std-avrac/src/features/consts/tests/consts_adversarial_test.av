@@ -3,7 +3,8 @@
 // the feature, not to use it. Grouped by attack class. A case that
 // once produced a wrong answer, a crash, an internal defect, or an
 // engine divergence keeps its place here forever.
-use @std.avrac.testing.{shown, refusals, refused_with}
+use @std.avrac.testing.{refused_at_run, shown, refusals, refused_with}
+use @std.avrac.language.{analyze_source}
 
 spec "features/consts (adversarial)" {
     given "a lambda's env" {
@@ -21,15 +22,20 @@ spec "features/consts (adversarial)" {
         }
     }
     given "a name a `let` also claims" {
-        // The crossing law asked whether the name's FIRST definition
-        // was a const, then handed back the binding CURRENTLY
-        // visible — a different statement once a `let` shadowed it.
-        // The fn read a top-level slot it cannot see: index -1.
-        then "a `let` shadowing a const is refused inside a fn, not trapped" {
-            refused_with("const N = 1\nlet N = 2\nfn f() -> int {\n    N\n}\nf()", "run-time")
+        // A top-level const is a DECLARATION: order-free and
+        // module-wide, like a fn. A `let` of the same name shadows it
+        // from that line on, in the sequence alone — a fn body sees
+        // no `let`, so it reads the declaration. (Before the const was
+        // a declaration, the crossing law once handed a fn the
+        // shadowing `let`'s slot: index -1.)
+        then "a `let` shadows a const in the sequence; a fn body still reads the const" {
+            shown("const N = 1\nlet N = 2\nfn f() -> int {\n    N\n}\n\"\${f()} \${N}\"") == "1 2"
         }
         then "the const still crosses when the shadow comes after the body" {
             shown("const N = 1\nfn f() -> int {\n    N\n}\nlet N = 2\nf()") == "1"
+        }
+        then "a `let` before the const shadows it too — a declaration has no line" {
+            shown("let N = 2\nconst N = 1\nfn f() -> int {\n    N\n}\n\"\${N} \${f()}\"") == "2 1"
         }
         then "a shadow INSIDE the body wins over the const" {
             shown("const N = 1\nfn f() -> int {\n    let N = 5\n    N\n}\nf()") == "5"
@@ -37,8 +43,11 @@ spec "features/consts (adversarial)" {
         then "a parameter of the same name wins over the const" {
             shown("const N = 1\nfn f(N: int) -> int {\n    N\n}\nf(9)") == "9"
         }
-        then "a later const of the same name is the one that reads" {
-            shown("const N = 1\nconst N = 2\nN") == "2"
+        then "two consts of one name in one file clash, as two fns do" {
+            refused_with("const N = 1\nconst N = 2\nN", "defined more than once")
+        }
+        then "a const is read before its line, as a fn is" {
+            shown("let a = N\nconst N = 1\na") == "1"
         }
     }
     given "an annotation that changes the value's SHAPE" {
@@ -75,21 +84,149 @@ spec "features/consts (adversarial)" {
         }
     }
 
-    given "a const that never settled" {
-        // A const whose value is not a literal is refused (F2045) —
-        // but a fn body READING it asked the const for its type,
-        // which fell through to the asker's fact table indexed by
-        // ANOTHER body's expression: `index -1 is out of bounds`,
-        // no diagnostic, no location. A const's type is the
-        // program's answer or the hole; it is never a body's.
-        then "an unsettled const read in a fn body is refused, not trapped" {
-            refused_with("fn g() -> int {\n    3\n}\nconst N = g()\nfn f() -> int {\n    N\n}\nf()", "known at compile time")
+    given "an inferred const across body floors" {
+        // A const's type is a workspace fact. Reading it from another
+        // body must never index that body's local expression facts.
+        then "an inferred const reads in a fn body" {
+            shown("fn g() -> int {\n    3\n}\nconst N = g()\nfn f() -> int {\n    N\n}\nf()") == "3"
         }
-        then "an unsettled const read in a lambda is refused, not trapped" {
-            refused_with("fn g() -> int {\n    3\n}\nconst N = g()\nlet f = () -> N\nf()", "known at compile time")
+        then "an inferred const reads in a lambda" {
+            shown("fn g() -> int {\n    3\n}\nconst N = g()\nlet f = () -> N\nf()") == "3"
         }
-        then "the refusal names the CONSTRUCT, not the value's type" {
-            refused_with("const N = g()\nfn g() -> int {\n    3\n}\nN", "computed here")
+        then "inference resolves a later declaration" {
+            shown("const N = g()\nfn g() -> int {\n    3\n}\nN") == "3"
         }
     }
+
+    // red team, comptime S1: the evaluator settles a computed const
+    given "degenerate settlements" {
+        then "the evaluator's call depth is the settlement's, and its words say so" {
+            refused_at_run("fn d(n: int) -> int { if n == 0 { 0 } else { 1 + d(n - 1) } }\nconst D: int = d(500)\nD", "recursion too deep")
+        }
+        then "an overflow wraps as the program's would" {
+            shown("fn m() -> int { 9223372036854775807 + 1 }\nconst M: int = m()\nM") == "-9223372036854775808"
+        }
+        then "an empty text settles as empty" {
+            shown("fn e() -> string { \"\" }\nconst E: string = e()\nlet t = \"[\${E}]\"\nt") == "[]"
+        }
+        then "a float settles by its bits" {
+            shown("fn h() -> float { 1.5 * 2.0 }\nconst H: float = h()\nH") == "3.0"
+        }
+    }
+    given "what a settlement cannot spell" {
+        then "a flat record crosses through the shared value transport" {
+            shown("type P = { x: int }\nfn p() -> P { P { x: 1 } }\nconst X = p()\nX.x") == "1"
+        }
+        then "a scalar optional is refused before its unsupported pair settles" {
+            refused_with("fn n() -> int? { null }\nconst X = n()\nX ?? 9", "compile-time value form")
+        }
+        then "a list carrying a nominal type crosses too" {
+            shown("type P = { x: int }\nfn p() -> List<P> { [P { x: 1 }] }\nconst X = p()\nX.length") == "1"
+        }
+        then "a record's SCALAR field settles" {
+            shown("type P = { x: int }\nfn p() -> P { P { x: 1 } }\nconst X: int = p().x\nX") == "1"
+        }
+    }
+    // red team, the private const: a top-level const is a DECLARATION
+    given "a const as a place" {
+        // The assignment law asks the BINDING; a declared const is a
+        // `Decl`, and the arm for one once answered nothing — the
+        // lowering then met a non-place and blamed itself.
+        then "an assignment to a const is refused in the const's own words" {
+            refused_with("const K = 1\nK = 2\nK", "is a const")
+        }
+        then "and a path under one too" {
+            refused_with("type P = { x: int }\nconst K = P { x: 1 }\nK.x = 2\nK.x", "is a const")
+        }
+    }
+    // red team, comptime S2: a boxed const is one box, called for
+    given "boxed consts" {
+        then "a push on a const is refused as on any `let`" {
+            refused_with("fn xs() -> List<int> {\n    [1]\n}\nconst XS: List<int> = xs()\nXS.push(4)\nXS.length", "is not `mut`")
+        }
+        then "so is a map's set" {
+            refused_with("fn m() -> Map<string, int> {\n    mut d: Map<string, int> = {}\n    d\n}\nconst M: Map<string, int> = m()\nM.set(\"k\", 1)\nM.length", "is not `mut`")
+        }
+        then "and a `mut` seat" {
+            refused_with("fn xs() -> List<int> {\n    [1]\n}\nconst XS: List<int> = xs()\nfn bump(mut ys: List<int>) -> int {\n    ys.push(9)\n    ys.length\n}\nbump(XS)", "writes through it")
+        }
+        then "an empty list settles as empty" {
+            shown("fn e() -> List<int> {\n    []\n}\nconst E: List<int> = e()\nE.length") == "0"
+        }
+        then "a boxed const of a boxed const settles" {
+            shown("fn xs() -> List<int> {\n    [1, 2, 3]\n}\nconst XS: List<int> = xs()\nfn more() -> List<int> {\n    XS.concat([4])\n}\nconst YS: List<int> = more()\nXS.length + YS.length") == "7"
+        }
+        then "a lambda reads one" {
+            shown("fn xs() -> List<int> {\n    [1, 2, 3]\n}\nconst XS: List<int> = xs()\nlet f = () -> XS.length\nf()") == "3"
+        }
+    }
+    given "the world's reach" {
+        then "the refusal names each link of the call chain" {
+            refused_at_run("extern fn avra_puts(s: string)\nfn g() -> int {\n    avra_puts(\"x\")\n    1\n}\nfn f() -> int {\n    g() + 1\n}\nconst X = f()\nX", "reaches `avra_puts` in `g`, called from `f`")
+        }
+    }
+    given "a const that asks for itself" {
+        // A const is a declaration, so its own name resolves inside
+        // its value. The TYPE cycle speaks once, at the const; an
+        // annotated one types without asking and traps while
+        // settling instead.
+        then "a value that reads its own const is refused ONCE, at the const" {
+            refusals("const X =\nX") == 1
+        }
+        then "and the refusal names the law" {
+            refused_with("const X = X\nX", "asks for its own type")
+        }
+        then "an annotated one settles, and the settlement traps" {
+            refused_at_run("const X: int = X\nX", "trapped while settling")
+        }
+        then "two consts reading each other are refused, not recursed" {
+            refused_with("const A = B + 1\nconst B = A + 1\nA", "asks for its own type")
+        }
+        then "a const reading itself through a fn traps while settling" {
+            refused_at_run("fn f() -> int {\n    X\n}\nconst X: int = f()\nX", "trapped while settling")
+        }
+    }
+    given "cascades" {
+        then "a const that trapped is refused ONCE, however many reads" {
+            let a = analyze_source("fn boom(n: int) -> int {\n    n / 0\n}\nconst Z: int = boom(1)\nfn twice() -> int {\n    Z + Z\n}\ntwice() + Z")
+            match a.run() {
+                .Err(msg) -> a.diagnostics.is_empty() && spoken_once(msg, "F2062"),
+                .Ok(_) -> false,
+            }
+        }
+        then "nor does an annotation that names no type" {
+            refusals("fn f() -> int { 3 }\nconst X: Nope = f()\nX") == 1
+        }
+        then "a computed const read in a fn body settles there too" {
+            shown("fn f() -> int { 3 }\nconst A: int = f()\nfn twice() -> int { A * 2 }\nconst B: int = twice()\nB") == "6"
+        }
+    }
+    given "a run-time read hidden in a branch" {
+        then "a const reading a parameter inside an `if` branch is refused F2074, never a defect" {
+            let src = "fn g(n: int) -> int {\n    const C = if true { n } else { 0 }\n    C\n}\ng(1)\n"
+            refused_at_run(src, "`C` reads `parameter 1`") && !run_words(src).contains("defect")
+        }
+        then "inside a `match` arm" {
+            let src = "fn g(n: int) -> int {\n    const C = match 1 {\n        1 -> n\n        _ -> 0\n    }\n    C\n}\ng(1)\n"
+            refused_at_run(src, "`C` reads `parameter 1`") && !run_words(src).contains("defect")
+        }
+        then "inside a block's statement" {
+            let src = "fn g(n: int) -> int {\n    const C = {\n        let t = n\n        t\n    }\n    C\n}\ng(1)\n"
+            refused_at_run(src, "`C` reads `parameter 1`") && !run_words(src).contains("defect")
+        }
+    }
+}
+
+/// What running the program said, or "" when it ran.
+fn run_words(source: string) -> string {
+    match analyze_source(source).run() {
+        .Err(msg) -> msg,
+        .Ok(_) -> "",
+    }
+}
+
+/// The code appears in the report exactly once.
+fn spoken_once(report: string, code: string) -> bool {
+    let at = report.index_of(code)
+    at >= 0 && !report.substring(at + code.length, report.length).contains(code)
 }

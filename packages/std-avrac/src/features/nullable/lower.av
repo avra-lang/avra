@@ -5,7 +5,7 @@
 //! side, the absent arm, and the chain's absence all run only when
 //! the value is not there.
 use core.{ExprId, StmtId, TypeId, Reg, Ins}
-use features.{LowerCx, StructSig, foreign_node, presence_of, carried_of, carried_type, adopted, absent_of, insisted, hollow_of, okness_of, payload_of, lower_defect, open_presence, field_read, arm_end, open_region, close_region, close_region_as, measure_of}
+use features.{LowerCx, StructSig}
 
 fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
@@ -16,7 +16,7 @@ fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
         .Propagate(v) -> propagate_reg(cx, e, v),
         .MatchOpt(s, _, p, a) -> match_opt_reg(cx, e, s, p, a),
         .Chain(s, name) -> chain_reg(cx, e, s, name),
-        rest -> foreign_node(cx, e),
+        rest -> cx.foreign_node(e),
     }
 }
 
@@ -24,9 +24,7 @@ fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 /// carried layout — the ADOPTING edge gives it one (values.av,
 /// `adopted`), and for a niche this very value already is it.
 fn null_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    let dst = cx.result(e)
-    cx.emit(Ins.ConstInt(dst, 0))
-    dst
+    cx.zero(e)
 }
 
 /// `l ?? r` — the present arm unwraps what `l` carries; the absent
@@ -38,16 +36,14 @@ fn coalesce_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
     if cx.view.types.carried(held) == null { return v }
     // a nullable answer (the chain's middle) keeps the value whole
     let whole = cx.view.types.carried(cx.type_at(e)) != null
-    open_presence(cx, v, held)
-    arm_end(cx, if whole { v } else { carried_of(cx, v, held) })
-    close_region(cx, e, cx.reg_of(r))
+    cx.region(cx.presence_of(v, held), e) { cx -> if whole { v } else { cx.carried_of(v, held) } } else { cx -> cx.reg_of(r) }
 }
 
 /// `v!` — the carried value, insisted on; a read a narrowing made
 /// present is that value already.
 fn forced_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
     if cx.view.types.carried(cx.type_at(v)) == null { return cx.reg_of(v) }
-    insisted(cx, e, cx.reg_of(v), cx.type_at(v))
+    cx.insisted(e, cx.reg_of(v), cx.type_at(v))
 }
 
 /// `match v { b? -> p, null -> a }` — the bind receives what the
@@ -57,10 +53,10 @@ fn match_opt_reg(mut cx: LowerCx, e: ExprId, subject: ExprId,
                  present: ExprId, absent: ExprId) -> Reg {
     let v = cx.reg_of(subject)
     let held = cx.type_at(subject)
-    open_presence(cx, v, held)
-    cx.bind_patterns(present, [carried_of(cx, v, held)])
-    arm_end(cx, cx.reg_of(present))
-    close_region(cx, e, cx.reg_of(absent))
+    cx.region(cx.presence_of(v, held), e) { cx ->
+        cx.bind_patterns(present, [cx.carried_of(v, held)])
+        cx.reg_of(present)
+    } else { cx -> cx.reg_of(absent) }
 }
 
 /// `v?` — the present arm unwraps what the nullable carries; the
@@ -72,9 +68,7 @@ fn propagate_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
     let r = cx.reg_of(v)
     let held = cx.type_at(v)
     if cx.view.types.shape_of(held) is .Res { return propagate_res_reg(cx, e, r) }
-    open_presence(cx, r, held)
-    arm_end(cx, carried_of(cx, r, held))
-    close_region(cx, e, departed(cx, e))
+    cx.presence(r, held, e) { cx, carried -> carried } else { cx -> departed(cx, e) }
 }
 
 /// `v?` on a RESULT: one region on OKNESS. The ok arm unwraps the
@@ -82,21 +76,20 @@ fn propagate_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
 /// `.Err` of `Result<_, E>` is a valid `.Err` of every `Result<_,
 /// E>`, so propagation moves the pointer and repacks nothing.
 fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
-    open_region(cx, okness_of(cx, r))
-    arm_end(cx, payload_of(cx, r, cx.type_at(e)))
-    cx.failing()
-    cx.emit(Ins.FnExit(r))
-    let hollow = hollow_of(cx, cx.type_at(e))
-    close_region(cx, e, hollow)
+    cx.region(cx.okness_of(r), e) { cx -> cx.payload_of(r, cx.type_at(e)) } else { cx ->
+        cx.failing()
+        cx.emit(Ins.FnExit(r))
+        cx.hollow_of(cx.type_at(e))
+    }
 }
 
 /// The absent arm's whole story: the enclosing fn answers absence.
 fn departed(mut cx: LowerCx, e: ExprId) -> Reg {
     let ret: TypeId? = cx.enclosing_ret()
-    if ret == null { return lower_defect(cx, e, "a propagation without an enclosing fn survived typing") }
+    if ret == null { return cx.lower_defect(e, "a propagation without an enclosing fn survived typing") }
     cx.leaving(null)
-    cx.emit(Ins.FnExit(absent_of(cx, ret!)))
-    hollow_of(cx, cx.type_at(e))
+    cx.emit(Ins.FnExit(cx.absent_of(ret!)))
+    cx.hollow_of(cx.type_at(e))
 }
 
 /// `let v? = e else { ... }` — the same presence region, with the
@@ -109,11 +102,10 @@ fn let_else_reg(mut cx: LowerCx, s: StmtId) -> Reg? {
     if subject == null { return null }
     let v = cx.reg_of(subject!)
     let held = cx.type_at(subject!)
-    open_region(cx, presence_of(cx, v, held))
-    arm_end(cx, carried_of(cx, v, held))
-    cx.arm_stmts(else_stmts_of(cx.view.store.stmt(s)))
-    let hollow = hollow_of(cx, carried_type(cx, held))
-    close_region_as(cx, carried_type(cx, held), hollow)
+    cx.region_as(cx.presence_of(v, held), cx.carried_type(held)) { cx -> cx.carried_of(v, held) } else { cx ->
+        cx.arm_stmts(else_stmts_of(cx.view.store.stmt(s)))
+        cx.hollow_of(cx.carried_type(held))
+    }
 }
 
 /// `a?.b` — the member of the CARRIED value on the present arm,
@@ -122,9 +114,7 @@ fn chain_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string) -> Reg {
     let v = cx.reg_of(subject)
     let held = cx.type_at(subject)
     let answer = cx.type_at(e)
-    open_presence(cx, v, held)
-    arm_end(cx, lifted_member(cx, e, v, held, name, answer))
-    close_region(cx, e, absent_of(cx, answer))
+    cx.region(cx.presence_of(v, held), e) { cx -> lifted_member(cx, e, v, held, name, answer) } else { cx -> cx.absent_of(answer) }
 }
 
 /// The present arm: read the member of what the subject carries,
@@ -132,7 +122,7 @@ fn chain_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, name: string) -> Reg {
 /// nullable already (the flatten rule), when it IS the answer.
 fn lifted_member(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
                  name: string, answer: TypeId) -> Reg {
-    member_reg(cx, e, carried_of(cx, v, held), carried_type(cx, held), name, answer)
+    member_reg(cx, e, cx.carried_of(v, held), cx.carried_type(held), name, answer)
 }
 
 /// The member read on the carried value: a field's slot, or the
@@ -144,17 +134,17 @@ fn lifted_member(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
 fn member_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
               name: string, answer: TypeId) -> Reg {
     let sig: StructSig? = cx.fields_of(held)
-    if sig == null { return adopted(cx, answer, false, measure_of(cx, e, carried, held)) }
+    if sig == null { return cx.adopted(answer, false, cx.measure_of(e, carried, held)) }
     let fields = sig!
     let slot: int? = fields.slot_of(name)
-    if slot == null { return lower_defect(cx, e, "a memberless chain survived typing") }
+    if slot == null { return cx.lower_defect(e, "a memberless chain survived typing") }
     let at = slot!
     let own = fields.types[at]
-    if !types_differ(own, answer) { return field_read(cx, carried, held, at, own) }
-    if types_differ(own, carried_type(cx, answer)) {
-        return lower_defect(cx, e, "a chain's member wears a type its lift does not expect")
+    if !types_differ(own, answer) { return cx.field_read(carried, held, at, own) }
+    if types_differ(own, cx.carried_type(answer)) {
+        return cx.lower_defect(e, "a chain's member wears a type its lift does not expect")
     }
-    adopted(cx, answer, false, field_read(cx, carried, held, at, own))
+    cx.adopted(answer, false, cx.field_read(carried, held, at, own))
 }
 
 fn types_differ(a: TypeId, b: TypeId) -> bool {

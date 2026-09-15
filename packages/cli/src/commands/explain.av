@@ -16,6 +16,8 @@ impl Runnable for ExplainCmd {
     fn run(args: CliResult) -> int {
         let q = args.arg("code")
         if q == "process" { return explained_process(args.arg("at")) }
+        if q.contains(":") { return explained_kind(q) }
+        if q.starts_with("@") { return explained_annotation(q.substring(1, q.length)) }
         let hit: DiagCode? = avra().rows.codes.find(it.id == q || it.kind == q)
         if hit == null {
             eprintln("avra: nothing registered under `${q}`")
@@ -27,11 +29,46 @@ impl Runnable for ExplainCmd {
     }
 }
 
+/// `avra explain @scope/name:E1` — a PACKAGE's diagnostic kind, from
+/// the annotation fns the package you stand in reaches: registered by
+/// spelling the kind as a literal in `refuse_as`.
+fn explained_kind(q: string) -> int {
+    // the package's own refusals are not in the way: the kind asked
+    // about may be the one they wear
+    let p = root_program(here())
+    let hit: DiagCode? = p.kind_rows().find(it.kind == q || it.id == q)
+    if hit == null {
+        eprintln("avra: no annotation this package reaches registers `${q}` — a kind registers when `refuse_as` spells it as a literal, or when an annotation speaks it")
+        return 1
+    }
+    println("${hit!.id} — ${hit!.summary}")
+    0
+}
+
+/// `avra explain @name` — the annotation fn's signature, which IS
+/// its effect (§3.3 of the comptime design). The package is the
+/// directory the command stands in, as `explain process` reads its
+/// manifest.
+fn explained_annotation(name: string) -> int {
+    let p = root_program(here())
+    if !p.clean() {
+        eprintln(p.report())
+        return 1
+    }
+    let sig = p.explain_annotation(name)
+    if sig == null {
+        eprintln("avra: no fn `${name}` is declared in this package")
+        return 1
+    }
+    println(sig!)
+    0
+}
+
 /// The package's declared tools, minted as the library mints them, and
 /// what a child inherits — the set of doors, before any opens. `at` is
 /// the package's directory; the front door stands at the root.
 fn explained_process(at: string) -> int {
-    let manifest = joined_path(if at.length == 0 { "." } else { at }, "avra.toml")
+    let manifest = joined_path(if at.length == 0 { here() } else { at }, "avra.toml")
     if !exists(manifest) {
         eprintln("avra: no ${manifest} — `explain process` reads a package's manifest")
         return 1
@@ -86,6 +123,6 @@ fn terminator_text(t: string?) -> string {
 
 export fn explain_command() -> Subcommand {
     let body: ExplainCmd = ExplainCmd { }
-    let args = [ArgDef { name: "code", description: "an F-code, a kind, or `process`", required: true, variadic: false }, ArgDef { name: "at", description: "for `process`: the package directory (the root when absent)", required: false, variadic: false }]
+    let args = [ArgDef { name: "code", description: "an F-code, a kind, a package kind (`@scope/name:E1`), or `process`", required: true, variadic: false }, ArgDef { name: "at", description: "for `process`: the package directory (the root when absent)", required: false, variadic: false }]
     Subcommand { meta: arg_command("explain", "What a diagnostic code means; `process` — what this package may run", args), body: body }
 }

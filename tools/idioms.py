@@ -45,6 +45,24 @@ SKIP = ("spec_test",)
 # lines — the old single-line greps caught the rare shape and
 # reported success. ──
 
+# I40: a shape a TYPE LITERAL spells — a word, or Opt/List/Map/Res
+# over words and plain names — interned by hand. The fold that gives
+# the literal its meaning (core/types.av's `interned`) is the one
+# place that spells the shapes; everywhere else is the smell.
+SPELLED_PART = r"(?:\w+|Type\.(?:Int|Float|Bool|Str|Ptr|Void))"
+SPELLED_SHAPE = re.compile(
+    r"\.intern\(Type\.(?:Int|Float|Bool|Str|Ptr|Void)\)"
+    r"|\.intern\(Type\.(?:Opt|List)\(" + SPELLED_PART + r"\)\)"
+    r"|\.intern\(Type\.(?:Map|Res)\(" + SPELLED_PART + r", " + SPELLED_PART + r"\)\)")
+
+def spelled_shape(lines):
+    """A structural shape interned by hand where `.type(T)` spells it (I40)."""
+    if CURRENT["path"].endswith("core/types.av"):
+        return
+    for i, l in enumerate(lines):
+        if SPELLED_SHAPE.search(l):
+            yield i, l.strip()
+
 def line_rx(pattern):
     p = re.compile(pattern)
     def f(lines):
@@ -125,7 +143,7 @@ def index_walk(lines):
 
 # A REAL count pins a number: `== n`, or the testing verbs that pin
 # it for you. `>= 1` is not a count — it is I30's smell.
-COUNTED = re.compile(r"diagnostics\.length ==|voices\.length ==|refusals\(.*\) ==|refused_with\(")
+COUNTED = re.compile(r"diagnostics\.length ==|voices\.length ==|refusals\(.*\) ==|refused_with\(|refused_n\(")
 
 def uncounted_refusal(lines):
     """A refusal test asserting only `contains` — the shape that lets
@@ -352,9 +370,11 @@ def unused_import(lines):
         m = re.match(r"^use [a-z@][\w.@]*\.\{(.+)\}$", l.strip())
         if not m:
             continue
-        for name in (n.strip() for n in m.group(1).split(",")):
-            if not name:
+        for item in (n.strip() for n in m.group(1).split(",")):
+            if not item:
                 continue
+            # `use a.{X as Y}` binds Y: the LOCAL name is what must be read.
+            name = item.split(" as ")[-1].strip()
             if expands and name in GRAMMAR_BLOCK_NAMES:
                 continue
             if not re.search(rf"\b{re.escape(name)}\b", MODULE_BODY["text"]):
@@ -428,6 +448,26 @@ def comma_list_open(lines):
             if not l[m.end():].lstrip().startswith('","?'):
                 yield i, l.strip()[:60] + " … " + m.group(0)[:40]
 
+# THE PASS STATES: the structs whose impl IS their vocabulary. A verb
+# over one is a method (`cx.open_region(c)`), never a free fn taking
+# the state first (`open_region(cx, c)`) — the rule reaches the pass's
+# own files (features/*.av, language/*.av), where the shared
+# vocabularies live; a feature dir's rule bodies dispatch on the
+# state and stay free. A new state struct joins here when its impl
+# becomes its vocabulary.
+STATES = r"TypeCx|LowerCx|ResolveCx|Survey|Workspace|Decls|Builder|Body|Scope"
+STATE_VERB = re.compile(r"^(?:export )?fn \w+\((?:mut )?\w+: (?:" + STATES + r")\b")
+PASS_FILES = re.compile(r"packages/std-avrac/src/(features|language)/[^/]+\.av$")
+
+def state_verb(lines):
+    """A vocabulary verb written as a free fn taking a pass state
+    first — the state's impl is where it belongs (I39)."""
+    if CURRENT["path"] and not PASS_FILES.search(CURRENT["path"]):
+        return
+    for i, l in enumerate(lines):
+        if STATE_VERB.match(l):
+            yield i, l.strip()
+
 def restrlen(lines):
     """A loop condition that re-measures a STRING's length. Hoist it:
     `let n = s.length` before the loop, then test `i < n`."""
@@ -475,7 +515,7 @@ RULES = {
             "a long string duplicated in one file — shared messages are fns"),
     "I13": (line_rx(r"([a-z_]+\.[a-z_]+\(([a-z_]+)\)).*\1"),
             "the same projection computed twice on one line — bind it"),
-    "I39": (bool_comprehension,
+    "I43": (bool_comprehension,
             "a comprehension over a LIST folded to a bool — that is a scan: "
             "`xs.all(pred)` stops at the first answer and builds nothing"),
     "I14": (emit_then_error,
@@ -503,7 +543,7 @@ RULES = {
             "a refusal test with no diagnostics COUNT — a cascade can hide behind it"),
     "I30": (line_rx(AT_LEAST_ONE.pattern),
             "a refusal asserted as `>= 1` — a cascade of five passes it; pin the "
-            "count (`refused_with`, or `== n`)"),
+            "count (`refused_with`, `refused_n`, or `== n`)"),
     "I21": (unmutated_mut,
             "a `mut` nothing mutates — say `let`"),
     "I38": (comma_list_open,
@@ -526,9 +566,23 @@ RULES = {
     "I36": (line_rx(r"^\s*(\w+) = \1 \+ (\"|\(|\w+\.substring\()"),
             "text grown by `s = s + piece` — quadratic; a `@std/text` builder "
             "(`builder()`, `push`, `built`) or `repeat`/`pad_*` says it in linear time"),
+    "I39": (state_verb,
+            "a vocabulary verb as a free fn taking a pass state first — the state's "
+            "impl is its vocabulary: write `mut fn verb(…)` there and call `cx.verb(…)`"),
+    "I40": (spelled_shape,
+            "a structural type interned by hand — `intern(Type.Opt(intern(Type.Str)))` — "
+            "where a type literal spells it: `cx.type(string?)`, `types.type(List<elem>)`"),
 }
 
 UNRATCHETED = {
+    "I42": "no grep tells a READ site from a SEAT site — `shape_at` is correct at\n"
+           "           one and a defect at the other, and both spellings live beside each\n"
+           "           other in the same file. The keeper is the adversarial suite:\n"
+           "           named_adversarial_test.av reaches every vocabulary a name can\n"
+           "           stand over, and a row reading the wrong door fails there",
+    "I41": "an unwritable spelling as a key is a NAMING choice — the smell is\n"
+           "           an in-band tag a program could write, which no grep tells from\n"
+           "           an honest name; the review round hunts it",
     "I27": "RETIRED: a string's `.length` is a load — the header carries the\n"
            "           length — so a re-measure in a loop condition costs nothing and\n"
            "           the hoists that stand are harmless",
@@ -588,7 +642,7 @@ SPECIMENS = {
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
-    "I39": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
+    "I43": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
             ["    [b.ieq_at(0, b.length, w) for w in written_by].any(it)"],
             ["    ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)"]],
     "I14": [["    cx.emit(d)", "    cx.intern(Type.Error)"]],
@@ -626,6 +680,12 @@ SPECIMENS = {
     "I36": [['        out = out + " "'],
             ["            text = text + src.substring(j, j + 1)"],
             ["            out = out + (unescaped(text.char_code(j + 1)) ?? text.substring(j, j + 2))"]],
+    "I39": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
+            ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
+            ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
+    "I40": [["    let str = cx.view.types.intern(Type.Str)"],
+            ["    cx.view.types.intern(Type.Opt(held))"],
+            ["    self.types.intern(Type.Map(cx.view.types.intern(Type.Str), want))"]],
 }
 
 def next_free_code():
@@ -683,7 +743,7 @@ CLEAN = {
             ["    mut w = held()",
              "    w.c.buf = grown"]],
     "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"]],
-    "I39": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
+    "I43": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
 }
@@ -721,8 +781,16 @@ def selftest():
 def sources():
     for base in SRC:
         for path in glob.glob(os.path.join(ROOT, base, "**", "*.av"), recursive=True):
-            if not any(s in path for s in SKIP):
+            if not any(s in path for s in SKIP) and not is_program(path):
                 yield path
+
+
+def is_program(path):
+    """A PROGRAM TEST IS A PROOF, NOT COMPILER CODE: the text it must
+    print sits beside it, and the shape it proves is often the very
+    one the bar forbids — `mut.av`'s subject IS a `mut`, `lists.av`'s
+    IS an index walk. The bar reads what the compiler is written in."""
+    return os.path.exists(path[: -len(".av")] + ".expected")
 
 def licensed(lines, i, code):
     """A license lives AT the site: on the line or just above it."""
