@@ -56,17 +56,48 @@ if [ -n "$free_mb" ] && [ "$free_mb" -lt "$disk_floor" ]; then
     echo "watch:   links straight at it. Free space first; AVRA_DISK_FLOOR_MB moves the floor." >&2
     exit 2
 fi
-until mkdir "$lock" 2>/dev/null; do
+# THE LOCK IS A QUEUE, NOT A RACE. A bare `until mkdir` poll serves
+# whoever happens to call it at the right instant, so a lane running
+# back-to-back steps re-takes the lock before a waiting lane's next
+# poll: one lane lost 161 times while queueing correctly. A waiter
+# takes a TICKET above every ticket outstanding and runs only when no
+# older one is alive, so arrival order is service order. A ticket
+# whose holder died is reaped, or it would block the queue forever.
+qdir=$lock.q
+mkdir -p "$qdir"
+last=$(ls "$qdir" 2>/dev/null | sort -n | tail -1)
+mine=$(( ${last:--1} + 1 ))
+while ! mkdir "$qdir/$mine" 2>/dev/null; do mine=$(( mine + 1 )); done
+echo $$ > "$qdir/$mine/pid"
+trap 'rm -rf "$qdir/$mine" "$lock"' EXIT INT TERM
+said=no
+while :; do
+    ahead=no
+    for t in "$qdir"/*; do
+        [ -d "$t" ] || continue
+        h=$(cat "$t/pid" 2>/dev/null)
+        if [ -n "$h" ] && ! kill -0 "$h" 2>/dev/null; then
+            rm -rf "$t"
+            continue
+        fi
+        n=${t##*/}
+        [ "$n" -lt "$mine" ] 2>/dev/null && ahead=yes
+    done
     holder=$(cat "$lock/pid" 2>/dev/null)
     if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
         rm -rf "$lock"
-        continue
+        holder=
     fi
-    echo "watch: waiting for the build lock (held by pid ${holder:-?})" >&2
+    if [ "$ahead" = no ] && mkdir "$lock" 2>/dev/null; then
+        break
+    fi
+    if [ "$said" = no ]; then
+        echo "watch: waiting for the build lock (held by pid ${holder:-?}, ticket $mine)" >&2
+        said=yes
+    fi
     sleep 5
 done
 echo $$ > "$lock/pid"
-trap 'rm -rf "$lock"' EXIT INT TERM
 while :; do
     level=$(sysctl -n kern.memorystatus_level 2>/dev/null || echo 100)
     [ "$level" -ge "$floor" ] && break
