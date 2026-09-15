@@ -40,7 +40,10 @@ RtKind	packages/std-avrac/src/language/llvm.av	answers_word	how an answer crosse
 RtKind	packages/std-avrac/src/language/llvm.av	answered	the SIGN a narrow answer widens with
 RtKind	packages/std-avrac/src/language/llvm.av	narrow_sign	the SIGN an inout cell normalises with
 Type	packages/std-avrac/src/features/checks.av	comparable	which shapes equality may compare
-Type	packages/std-avrac/src/features/str_lit/check.av	printable	which shapes an interpolation hole may show"
+Type	packages/std-avrac/src/features/str_lit/check.av	printable	which shapes an interpolation hole may show
+Type	packages/std-avrac/src/features/crossing.av	kind_of	which @std/meta shape it crosses as
+Kind	packages/std-avrac/src/features/crossing.av	meta_of_kind	how it crosses into the evaluator
+Kind	packages/std-meta/src/meta.av	spelled	the words it is written with"
 
 # A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
 # ends the script rather than a subshell the gate never sees.
@@ -73,8 +76,15 @@ EOF
 # variant found 44 exhaustive matches across 19 files and read the
 # line as a census — the label-wider-than-its-coverage species, in the
 # output of the keeper that exists to catch it.
+# AND THE ENUMS ARE READ FROM THE TABLE, NEVER LISTED AGAIN. This
+# loop named `Ins RtKind Type` by hand — a SECOND spelling of the
+# table's first column — and it went stale the moment a fourth
+# registry was named: the rows were guarded and the summary said
+# nothing about them, so the keeper was doing work it did not
+# report. A label NARROWER than its coverage, in the tool whose own
+# comment warns about the wider kind.
 line=""
-for e in Ins RtKind Type; do
+for e in $(echo "$CONSUMERS" | cut -f1 | sort -u); do
   line="$line $e $(echo "$CONSUMERS" | grep -c "^$e	")"
 done
 echo "vocab: consumers GUARDED —$line"

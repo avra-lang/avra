@@ -17,6 +17,19 @@
 # the primary is fast-forwarded onto the result at the end.
 # The first red stops everything, with main untouched past that point.
 set -e
+
+# A COMPILER'S ERROR STREAM IS READ FROM THE FRONT. A `tail` keeps
+# the LAST lines and the last are the cascade; the FIRST are the
+# causing ones — a bad manifest, a boundary that refused, the parse
+# error every later refusal follows from. So: every distinct code
+# (which cannot lie by omission), then the head.
+first_errors() {
+    printf 'integrate: codes '
+    grep -oE 'F[0-9]{4}' "$1" | sort -u | tr '\n' ' '
+    echo
+    head -c "${2:-3000}" "$1"
+}
+
 lane="$1"; msg="$2"
 [ -n "$lane" ] && [ -f "$msg" ] || { echo "usage: integrate.sh <lane> <message-file>" >&2; exit 2; }
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -62,7 +75,7 @@ rebuilt_lane() {
     echo "integrate:   two slices: drop the uses, \`make bootstrap\`, restore them, \`make avra\`"
     echo "integrate:   with that product, then gate. (CLAUDE.md, A SYNTAX CHANGE TO THE COMPILER'S"
     echo "integrate:   OWN SOURCE.) Main is untouched."
-    tail -12 "$tmp-bootstrap.out"
+    first_errors "$tmp-bootstrap.out" 2000
     return 1
 }
 
@@ -118,6 +131,7 @@ before="$(pinned)"
 
 sh tools/watch.sh $cap make gate > "$gate_out" 2>&1 || {
     echo "integrate: the gate is RED on lane/$lane — main untouched ($gate_out)"
+    printf 'integrate: codes '; grep -oE 'F[0-9]{4}' "$gate_out" | sort -u | tr '\n' ' '; echo
     grep -n "✗\|FAILED\|error" "$gate_out" | head -12
     exit 1
 }
@@ -207,7 +221,7 @@ fi
 # the old codegen, and only the second product's own body wears the
 # change — so up to three builds are allowed before the point is
 # called missing.
-sh tools/watch.sh $cap make -s avra > "$tmp-avra1.out" 2>&1 || { echo "integrate: main does not build after the merge"; tail -20 "$tmp-avra1.out"; echo "integrate:   by hand: cp $worktree/build/avra $main/build/avra && cd $main && make -s avra && make -s avra && make -s seed"; exit 1; }
+sh tools/watch.sh $cap make -s avra > "$tmp-avra1.out" 2>&1 || { echo "integrate: main does not build after the merge"; first_errors "$tmp-avra1.out"; echo "integrate:   by hand: cp $worktree/build/avra $main/build/avra && cd $main && make -s avra && make -s avra && make -s seed"; exit 1; }
 cp build/avra "$tmp-avra1"
 builds=1
 until sh tools/watch.sh $cap make -s avra > "$tmp-avra2.out" 2>&1 && cmp -s build/avra "$tmp-avra1"; do
@@ -218,7 +232,7 @@ done
 echo "integrate: the fixed point after $((builds + 1)) builds"
 sh tools/watch.sh $cap make -s seed > "$tmp-seed.out" 2>&1
 cp build/avra "$tmp-preboot"
-sh tools/watch.sh $cap make -s bootstrap > "$tmp-boot.out" 2>&1 || { echo "integrate: the refreshed seed does not bootstrap"; tail -20 "$tmp-boot.out"; exit 1; }
+sh tools/watch.sh $cap make -s bootstrap > "$tmp-boot.out" 2>&1 || { echo "integrate: the refreshed seed does not bootstrap"; first_errors "$tmp-boot.out"; exit 1; }
 cmp -s build/avra "$tmp-preboot" || { echo "integrate: the seed does not CYCLE (bootstrap differs)"; exit 1; }
 # a merge that touched no compiler source leaves the seed as it was
 git add bootstrap/seed.ll

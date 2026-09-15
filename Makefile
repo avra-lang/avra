@@ -161,7 +161,9 @@ seed-check:
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/seed-check/avra 2>/dev/null \
 	 || { echo "seed-check: seed links — FAILED"; exit 1; }
 	@build/seed-check/avra build packages/cli >> build/seed-check/out 2>&1 \
-	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; tail -c 2000 build/seed-check/out; rm -rf build/seed-check; exit 1; }
+	 || { echo "seed-check: the seed cannot compile HEAD — run \`make seed\` (a stale seed is a fossil)"; \
+	      printf 'seed-check: codes '; grep -oE 'F[0-9]{4}' build/seed-check/out | sort -u | tr '\n' ' '; echo; \
+	      head -c 3000 build/seed-check/out; rm -rf build/seed-check; exit 1; }
 	@rm -rf build/seed-check
 	@echo "seed-check: the seed compiles HEAD"
 
