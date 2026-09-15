@@ -23,6 +23,16 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 main="$(dirname "$root")/avra"
 worktree="$(dirname "$root")/avra-lane-$lane"
 [ -d "$main/.git" ] && [ -d "$worktree" ] || { echo "integrate: no main at $main or no worktree at $worktree" >&2; exit 2; }
+
+# THE WORKTREE MUST BE ON `lane/<name>`, or this is not the lane's
+# worktree. The path is derived from the name, so a directory that
+# merely matches the pattern — another session's, on its own branch —
+# would be rebased in place. Checked, not assumed.
+on="$(git -C "$worktree" branch --show-current)"
+[ "$on" = "lane/$lane" ] || {
+    echo "integrate: $worktree is on '${on:-a detached HEAD}', not lane/$lane — refusing to touch a worktree that is not this lane's" >&2
+    exit 2
+}
 cap=4000
 # EVERY TEMP PATH CARRIES THE LANE. They were shared across worktrees —
 # and three of them are BINARIES: `-lane-product` is copied straight
