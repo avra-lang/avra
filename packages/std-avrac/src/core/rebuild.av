@@ -11,7 +11,10 @@
 //! nested quote's body is copied verbatim, a sublanguage's expansion
 //! replaces its holes.
 
-/// What a hole is filled with — one shape per `HoleKind`.
+/// What a hole is filled with — one shape per `HoleKind`, and ONE
+/// for a fill that no seat can hold. `Unplaceable` carries the words
+/// rather than a flag: the splice cannot re-derive why, and a fill
+/// the compiler cannot place is SPOKEN and never spliced quietly.
 export enum Filled {
     Expr(e: ExprId)
     Name(text: string)
@@ -19,7 +22,11 @@ export enum Filled {
     Type(t: TypeRef)
     Stmts(ss: List<StmtId>)
     Arms(arms: List<Arm>)
+    Unplaceable(why: string)
 }
+
+/// A hole no seat can hold: which hole, and the words for it.
+export type Unplaced = { hole: int, why: string }
 
 export type Rebuilder = {
     src: NodeStore,
@@ -47,6 +54,9 @@ export type Rebuilder = {
     // the holes whose fill did not fit their seat — a defect the
     // splice speaks, never a program that compiles wrong
     misfits: List<int>,
+    // the holes whose fill no seat can hold, each with the words the
+    // splice speaks — a LAW the writer broke, not a defect
+    unplaceable: List<Unplaced>,
     // the open nodes, innermost last: whether a name of each came
     // through a hole
     holed: List<bool>,
@@ -54,12 +64,12 @@ export type Rebuilder = {
 
 /// A classifying walk over a store's quote body of `count` holes.
 export fn classifier(store: NodeStore, count: int) -> Rebuilder {
-    Rebuilder { src: store, dst: store, fills: [], copying: false, verbatim: false, kinds: [HoleKind.Name for i in 0..count], made_exprs: [], made_from: [], made_stmts: [], made_pats: [], misfits: [], holed: [] }
+    Rebuilder { src: store, dst: store, fills: [], copying: false, verbatim: false, kinds: [HoleKind.Name for i in 0..count], made_exprs: [], made_from: [], made_stmts: [], made_pats: [], misfits: [], unplaceable: [], holed: [] }
 }
 
 /// A copying walk from `src` into `dst`, the holes filled.
 export fn copier(src: NodeStore, dst: NodeStore, fills: List<fn(HoleKind) -> Filled>) -> Rebuilder {
-    Rebuilder { src: src, dst: dst, fills: fills, copying: true, verbatim: false, kinds: [], made_exprs: [], made_from: [], made_stmts: [], made_pats: [], misfits: [], holed: [] }
+    Rebuilder { src: src, dst: dst, fills: fills, copying: true, verbatim: false, kinds: [], made_exprs: [], made_from: [], made_stmts: [], made_pats: [], misfits: [], unplaceable: [], holed: [] }
 }
 
 /// A quote's holes classified — the kind of each, by its index.
@@ -363,6 +373,10 @@ impl Rebuilder {
     mut fn fill_expr(k: int) -> ExprId {
         match self.filled(k, HoleKind.Expression) {
             .Expr(e) -> e,
+            .Unplaceable(why) -> {
+                self.unplaced(k, why)
+                self.dst.alloc_expr(Expr.Error, null)
+            },
             .Name(_) or .Names(_) or .Type(_) or .Stmts(_) or .Arms(_) -> {
                 self.misfits.push(k)
                 self.dst.alloc_expr(Expr.Error, null)
@@ -375,6 +389,7 @@ impl Rebuilder {
             .Name(t) -> t,
             .Type(t) -> t.name,
             .Names(ts) -> ts.first() ?? "",
+            .Unplaceable(why) -> self.unplaced_name(k, why),
             .Expr(_) or .Stmts(_) or .Arms(_) -> self.misfit(k),
         }
     }
@@ -384,6 +399,7 @@ impl Rebuilder {
             .Names(ts) -> ts,
             .Name(t) -> [t],
             .Type(t) -> [t.name],
+            .Unplaceable(why) -> [self.unplaced_name(k, why)],
             .Expr(_) or .Stmts(_) or .Arms(_) -> [self.misfit(k)],
         }
     }
@@ -392,6 +408,7 @@ impl Rebuilder {
         match self.filled(k, HoleKind.Type) {
             .Type(t) -> t,
             .Name(t) -> named_ref(t),
+            .Unplaceable(why) -> named_ref(self.unplaced_name(k, why)),
             .Names(_) or .Expr(_) or .Stmts(_) or .Arms(_) -> named_ref(self.misfit(k)),
         }
     }
@@ -400,6 +417,10 @@ impl Rebuilder {
         match self.filled(k, HoleKind.Statement) {
             .Stmts(ss) -> ss,
             .Expr(e) -> [self.dst.alloc_stmt(Stmt.ExprStmt(e), null)],
+            .Unplaceable(why) -> {
+                self.unplaced(k, why)
+                []
+            },
             .Name(_) or .Names(_) or .Type(_) or .Arms(_) -> {
                 self.misfits.push(k)
                 []
@@ -410,6 +431,10 @@ impl Rebuilder {
     mut fn fill_arms(k: int) -> List<Arm> {
         match self.filled(k, HoleKind.Arm) {
             .Arms(arms) -> arms,
+            .Unplaceable(why) -> {
+                self.unplaced(k, why)
+                []
+            },
             .Expr(_) or .Name(_) or .Names(_) or .Type(_) or .Stmts(_) -> {
                 self.misfits.push(k)
                 []
@@ -420,6 +445,16 @@ impl Rebuilder {
     /// A misfit recorded; the name no program writes stands in.
     mut fn misfit(k: int) -> string {
         self.misfits.push(k)
+        placeholder(["", ""], [k])
+    }
+
+    /// A fill no seat can hold, recorded with its words.
+    mut fn unplaced(k: int, why: string) {
+        self.unplaceable.push(Unplaced { hole: k, why: why })
+    }
+
+    mut fn unplaced_name(k: int, why: string) -> string {
+        self.unplaced(k, why)
         placeholder(["", ""], [k])
     }
 }

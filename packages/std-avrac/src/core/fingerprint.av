@@ -1,0 +1,144 @@
+//! `@derive(Fingerprint)` — a value's identity as ONE number, folded
+//! by the ARITY LAW: a tag, the type's NAME, then exactly one value
+//! per field or payload, so two shapes collide only if their parts
+//! do. What every `finish(key, value, HASH)` hand-wrote, derived.
+//!
+//! IT DISPATCHES ON `Kind`, NEVER ON A SPELLING. A field's shape is
+//! what decides its fold — `List<T>` folds through `fp_list`, `T?`
+//! folds to one value, a declared name folds through its own
+//! `fingerprint()`. A registry over type TEXT is a registry nothing
+//! checks, and telling `List<int>` from a type named `Listen` would
+//! be a substring test.
+//!
+//! THE TAG IS ONE RESERVED NUMBER AND THE TYPE'S NAME SEPARATES.
+//! Generated code lands in the ANNOTATED file, whose own source
+//! spells no fold call for `make fingerprints` to read — so a
+//! per-type tag would be invisible. ONE literal tag lives HERE,
+//! where the keeper sees it, and the type's name folded first is
+//! what keeps two derived types apart. `fp` seeds with `fp_mix(tag,
+//! parts.length)` and mixes multiplicatively, so this is not the
+//! additive renumbering that separates nothing.
+//!
+//! A FIELD WITH NO STRUCTURAL READING IS REFUSED BY THE COMPILER,
+//! not skipped here. Every shape `Kind` does not fold defers to the
+//! value's own `fingerprint()`, so a `Voices`, a fn value or a map
+//! is F2030 "`Voices` has no method `fingerprint`" at the generated
+//! code, homed to the annotation. The two exits are the trait's:
+//! implement it by hand (what a type carrying its own identity does)
+//! or stop deriving. SKIPPING a field silently is the one thing this
+//! must never do — that is "a hash that forgets a payload", and the
+//! forgetting leaves no mark at the site.
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Kind, Code, Arms, Directive as MetaDirective, Decls as MetaDecls, name, as_code, int_node}
+
+export trait Fingerprint {
+    static fn derive(t: MetaType) -> List<MetaDirective> {
+        [MetaDirective { twin: "", name: t.name, at: t.at, source: quote { impl ${t} { ${body_of(t)} } } }]
+    }
+}
+
+/// A record folds its fields; an enum chooses, then folds a
+/// variant's payload. A type that is neither has nothing to fold and
+/// answers its name alone, which is still an identity.
+fn body_of(t: MetaType) -> MetaDecls {
+    if !t.variants.is_empty() { return quote { fn fingerprint() -> int { match self { ${arms_of(t)} } } } }
+    quote { fn fingerprint() -> int { ${record_fold(t)} } }
+}
+
+/// `fp(tag, [name, f1, f2, …])` over `self.<field>`.
+fn record_fold(t: MetaType) -> Code {
+    parted(t.name, [folded(f.kind, quote { self.${f.name} }) for f in t.fields])
+}
+
+/// One arm per variant: its INDEX pins the arity, so two variants of
+/// one type cannot fold alike however their payloads line up.
+fn arms_of(t: MetaType) -> List<Arms> {
+    [variant_arm(t.name, v, j) for j, v in t.variants]
+}
+
+fn variant_arm(owner: string, v: MetaVariant, at: int) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> ${parted_at(owner, at, [])} } }
+    quote { .${v}(${binders(v)}) -> ${parted_at(owner, at, payload_folds(v))} }
+}
+
+/// A payload's own FIELD NAMES are the binders — the names the
+/// declaration wrote, so an arm reads as the declaration does. A
+/// BINDER HOLE TAKES NAMES, not templates.
+fn binders(v: MetaVariant) -> List<string> {
+    [f.name for f in v.fields]
+}
+
+fn payload_folds(v: MetaVariant) -> List<Code> {
+    [folded(f.kind, name(f.name)) for f in v.fields]
+}
+
+/// The type's NAME folded first, then its parts. THE NAME IS FOLDED
+/// WHERE THE DERIVE RUNS, not where the value does: the derive knows
+/// the name at compile time, so it spends `fp_str` ONCE and splices
+/// the number. A generated fold that walked a constant string on
+/// every call would cost what the hand hashes it replaces do not.
+fn parted(owner: string, parts: List<Code>) -> Code {
+    mixed(int_lit(fp_str(owner)), parts)
+}
+
+/// A variant's fold: the name, then the variant's INDEX, then its
+/// payload.
+fn parted_at(owner: string, at: int, parts: List<Code>) -> Code {
+    mixed(int_lit(fp_str(owner)), [int_lit(at)].concat(parts))
+}
+
+/// THE ONE SITE THAT WRITES THE TAG, and it writes it as a LITERAL.
+/// `make fingerprints` reads the tag space from what the source
+/// SPELLS, so a tag spelled through a fn is invisible to the one
+/// instrument that guards it — and the keeper reads the space
+/// correctly, which is why the honest way to claim a number is to
+/// let it see one.
+fn int_lit(v: int) -> Code { as_code(int_node(v)) }
+
+fn mixed(head: Code, rest: List<Code>) -> Code {
+    quote { fp(1, ${listed(head, rest)}) }
+}
+
+/// A LIST OF TEMPLATES IS NOT AN EXPRESSION HOLE — a hole in
+/// expression position takes ONE `Code`. The list is built HERE
+/// instead, one hole per element, so the generated literal's length
+/// is fixed at derive time and the arity law holds by construction.
+/// The seed is the HEAD rather than `[]`, which cannot know its
+/// elements.
+fn listed(head: Code, rest: List<Code>) -> Code {
+    mut acc = quote { [${head}] }
+    for p in rest { acc = quote { ${acc}.concat([${p}]) } }
+    acc
+}
+
+/// ONE FOLD PER SHAPE, every variant answering. A shape this does
+/// not spell structurally defers to the value's own `fingerprint()`,
+/// which the compiler refuses when the type has none — naming the
+/// type and the method, which is the honest refusal.
+fn folded(k: Kind, e: Code) -> Code {
+    match k {
+        .Int -> e,
+        .Bool -> quote { (if ${e} { 1 } else { 0 }) },
+        .Str -> quote { fp_str(${e}) },
+        .List(elem) -> quote { fp_list([${folded(elem, quote { each })} for each in ${e}]) },
+        .Opt(inner) -> optional(inner, e),
+        .Result(ok, err) -> answered(ok, err, e),
+        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Named(_, _) or .Fn(_, _) or
+        .Dyn(_) or .Var(_) or .Unspelled(_) -> quote { ${e}.fingerprint() },
+    }
+}
+
+/// ABSENCE IS ITS OWN VALUE, and it is told apart BY ARITY: absence
+/// folds one part, presence folds two. An additive offset would be
+/// the renumbering that separates nothing — a present value whose own
+/// fold is -1 reads as null.
+fn optional(inner: Kind, e: Code) -> Code {
+    quote { (if ${e} == null { ${mixed(int_lit(0), [])} } else { ${mixed(int_lit(1), [folded(inner, quote { ${e}! })])} }) }
+}
+
+/// The SIDE is a part, not a tag: two tags under a multiplicative
+/// fold would separate the sides, and one tag with the side as the
+/// first part separates them the same way every other choice here
+/// does — so the file claims ONE number and the keeper sees it.
+fn answered(ok: Kind, err: Kind, e: Code) -> Code {
+    quote { (match ${e} { .Ok(held) -> ${mixed(int_lit(0), [folded(ok, name("held"))])}, .Err(held) -> ${mixed(int_lit(1), [folded(err, name("held"))])} }) }
+}

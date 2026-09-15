@@ -624,8 +624,24 @@ impl Decls {
     fn origin_of_pat(f: FileId, p: PatId) -> FileId? { self.origins[f.index].at(self.origins[f.index].pats, p.index) }
 
     /// What a file's expansion refused, kept for its resolve to speak.
+    /// IDEMPOTENT, BECAUSE THE EXPANSION RUNS TWICE BY DESIGN.
+    /// `expanded` is demanded from INSIDE a resolve's miss, and the
+    /// memo kernel turns that cycle into a COMPUTE, not a reuse
+    /// (`start_recursive`: `.Cycle -> Compute`) — so every directive
+    /// of a file is materialized by the re-entrant run and again by
+    /// the outer one. The DECLARATIONS already survive that: minting
+    /// is keyed by the generated fingerprint, so a second walk mints
+    /// nothing new. The voices had no key — a list that is appended to
+    /// — so the same refusal was spoken once per walk. This gives them
+    /// the idempotence the declarations have had all along; it is not
+    /// a filter over noise, and removing it doubles every refusal the
+    /// splice can raise.
     fn speak_expansion(f: FileId, ds: List<Diag>) {
-        self.expansion_voices.set(f.index, self.expansion_voices[f.index].concat(ds))
+        mut held = self.expansion_voices[f.index]
+        for d in ds {
+            if !held.any((h: Diag) -> same_voice(h, d)) { held = held.concat([d]) }
+        }
+        self.expansion_voices.set(f.index, held)
     }
 
     /// A file's expansion begins with nothing refused.
@@ -1201,3 +1217,21 @@ fn declared_body(store: NodeStore, m: StmtId) -> ExprId? {
     if body == null || store.expr(body!) is .Error { return null }
     body
 }
+
+/// Two voices identical in every part a reader can see. The place is
+/// compared by FILE AND SPAN rather than by identity, because a
+/// template's refusal carries the template's own place and two walks
+/// of it mint two `Loc` values saying the same thing.
+fn same_voice(a: Diag, b: Diag) -> bool {
+    a.kind == b.kind && a.message == b.message &&
+        (a.help ?? "") == (b.help ?? "") &&
+        (a.primary.label ?? "") == (b.primary.label ?? "") &&
+        same_place(a.primary.loc, b.primary.loc)
+}
+
+fn same_place(a: Loc?, b: Loc?) -> bool {
+    if a == null || b == null { return a == null && b == null }
+    placed(a!, b!)
+}
+
+fn placed(a: Loc, b: Loc) -> bool { a.file == b.file && a.lo == b.lo && a.hi == b.hi }
