@@ -3,7 +3,7 @@
 //! while node order, operator grouping, declaration marks and payloads
 //! are preserved. `avra expand` and the future formatter share this one
 //! renderer.
-use core.{NodeStore, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Variant, Case, Annotation, TypeRef, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed}
+use core.{NodeStore, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Variant, Case, Annotation, TypeRef, FormatPart, Hole, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed}
 use features.{chained_binder}
 use @std.text.{Text, builder}
 
@@ -378,6 +378,7 @@ impl SourceText {
             .Bind(name) -> source_name(name),
             .Variant(name, args) -> ".${source_name(name)}${if args.is_empty() { "" } else { "(${joined([self.pattern(p, depth) for p in args], ", ")})" }}",
             .Lit(value) -> self.expression(value, loosest_tier, depth),
+            .Format(head, parts) -> format_source(head, parts),
         }
     }
 
@@ -457,4 +458,20 @@ fn binary_precedence(op: BinOp) -> int {
 fn import_item(name: string, alias: string) -> string {
     if alias.is_empty() { return name }
     "${name} as ${alias}"
+}
+
+/// A format pattern as the literal that spells it: literal text with
+/// its braces doubled, each hole as `{name}`, `{name...}` or
+/// `{name: Type}`.
+fn format_source(head: string, parts: List<FormatPart>) -> string {
+    "\"${braced(head)}${joined([hole_source(p.hole) + braced(p.piece) for p in parts], "")}\""
+}
+
+fn braced(text: string) -> string {
+    text.replace("{", "{{").replace("}", "}}")
+}
+
+fn hole_source(h: Hole) -> string {
+    let ty: TypeRef? = h.ty
+    "{${h.name}${if h.greedy { "..." } else { "" }}${if ty == null { "" } else { ": ${spelled(ty!)}" }}}"
 }

@@ -1,0 +1,62 @@
+//! Formats — a string literal with holes. `"{method} {path}"` in
+//! PATTERN position parses: each `{name}` binds the span up to the
+//! next literal, by ONE anchored left-to-right pass with no
+//! backtracking. This feature owns the PARSE of a string in pattern
+//! position, and the MEANING of `Pat.Format`; a literal with no
+//! holes is still the equality pattern it always was, built here.
+//!
+//! A `grammar Name = "…"` declaration names the same shape once: its
+//! holes ARE a record's fields, so the format and the type it yields
+//! cannot drift.
+//!
+//! The declaration's branch does NOT recover: it shares the `grammar`
+//! anchor with the compiler's own `grammar { … }` expression, and a
+//! recovering branch on a shared anchor commits the miss and eats the
+//! line the other form owns.
+//!
+//! THE MODULES:
+//!   mod.av      this manifest, and the two branches it claims
+//!   format.av   the reader: text -> a head and its parts
+//!   builders.av parse lowering: a STRING token -> the pattern, and
+//!               the three BRACE faults, which refuse in the
+//!               builder's own words: a literal that cannot be split
+//!               into a head and its parts has no node to carry a
+//!               code, and the parse channel is where it belongs
+//!   semantics.av the PatSemantics impl — dispatch one-liners
+//!   check.av    the laws a format must keep
+//!   lower.av    the scan, emitted
+use features.{LanguageFeature, BuilderRow, MethodRow, ReceiverEffect}
+use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn formats() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name           | build
+        "format_pat"   | build_format_pat
+        "grammar_decl" | build_grammar_decl
+    }
+    let doors = table<MethodRow> {
+        name    | takes       | check       | lower       | effect
+        "parse" | on_grammar  | check_parse | lower_parse | ReceiverEffect.Read
+        "print" | on_grammar  | check_print | lower_print | ReceiverEffect.Read
+    }
+    let codes = table<DiagCode> {
+        kind                  | id      | summary
+        "type.format"         | "F2089" | "a format pattern reads text — a `string` or a `Bytes`"
+        "type.format_repeat"  | "F2064" | "one name binds one span"
+        "type.format_parse"   | "F2085" | "a typed hole parses through a type that reads text"
+        "type.format_shape"   | "F2086" | "two holes need a literal between them to be split"
+    }
+    component LanguageFeature f {
+        name = "formats"
+        docs = "A string literal in pattern position: `\"{method} {path}\"` binds each hole to the span up to the next literal, by one anchored left-to-right pass. `{{` and `}}` are literal braces; a literal with no holes matches by equality, as it always did."
+        gram = grammar {
+            stmt = "grammar" n:NAME "=" s:STRING END -> grammar_decl(n, s)
+            pattern = s:STRING -> format_pat(s)
+        }
+        builders = rows
+        diags = codes
+        methods = doors
+    }
+    f
+}

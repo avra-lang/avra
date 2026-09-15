@@ -2,7 +2,7 @@
 // the backend compiles, and anything diagnosed REFUSES to run — the
 // report is the refusal.
 use @std.avrac.language.{analyze_source}
-use @std.avrac.testing.{shown}
+use @std.avrac.testing.{shown, refused_at_run}
 
 spec "language/run" {
     given "arithmetic" {
@@ -28,6 +28,18 @@ spec "language/run" {
         }
         then "a type mismatch refuses the same way" {
             shown("let x = 1 + \"a\"\nx") == "<refused>"
+        }
+    }
+    given "a `Bytes` handed to a text row through an extern" {
+        then "UTF-8 octets are the text they spell — the evaluator answers what native does" {
+            shown("extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim(\" hi \".bytes()).length") == "2"
+        }
+        then "octets that are not UTF-8 are refused by name, never approximated" {
+            refused_at_run("extern fn avra_str_trim(b: Bytes) -> string\navra_str_trim([255].bytes()!)",
+                "octets that are not UTF-8 reached a text seat")
+        }
+        then "a length reads the header and never decodes, so octets that are not UTF-8 still answer" {
+            shown("extern fn avra_str_len(b: Bytes) -> int\navra_str_len([255, 254].bytes()!)") == "2"
         }
     }
     given "an empty program" {

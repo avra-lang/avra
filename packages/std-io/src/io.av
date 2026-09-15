@@ -14,16 +14,32 @@
 use @std.errors.{Error, ErrorInfo, info}
 use @std.text.{nul_at}
 
-extern fn avra_puts(line: string)
-extern fn avra_eputs(line: string)
+// THIS PACKAGE'S OWN C (src/c/std_io.c) — every one answers an int: a
+// status, a descriptor, a handle, a kind, or a negative errno. No text
+// and no bytes cross here.
 extern fn avra_io_kind(path: string) -> int
-extern fn avra_io_read(path: string) -> int
-extern fn avra_io_write(path: string, text: string) -> int
-extern fn avra_io_list(path: string) -> int
+extern fn avra_io_open(path: string) -> int
+extern fn avra_io_close(fd: int) -> int
 extern fn avra_io_mkdir(path: string) -> int
 extern fn avra_io_remove(path: string) -> int
-extern fn avra_io_env(name: string) -> int
-extern fn avra_io_taken() -> string
+extern fn avra_io_temp(path: string) -> int
+extern fn avra_io_temp_fd(h: int) -> int
+extern fn avra_io_commit(h: int) -> int
+extern fn avra_io_drop(h: int) -> int
+extern fn avra_io_env_set(name: string) -> int
+
+// THE RUNTIME'S OWN, which mint or answer immortal text — the only
+// doors through which bytes become a value. `avra_io_list` is the one
+// io row core keeps, because a directory entry's name flows through no
+// descriptor; it leaves the day the adoption row lands.
+extern fn avra_puts(line: string)
+extern fn avra_eputs(line: string)
+extern fn avra_io_list(path: string) -> int
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_fd_taken(token: int) -> Bytes
+extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
+extern fn avra_utf8_bad_at(b: Bytes) -> int
+extern fn avra_host_env(name: string) -> string
 extern fn avra_errno_text(err: int) -> string
 
 // ── Streams ─────────────────────────────────────────────────────
@@ -46,6 +62,8 @@ export enum IoError {
     Denied(path: string)
     IsDirectory(path: string)
     NotDirectory(path: string)
+    NotText(path: string, at: int)
+    Holed(path: string, at: int)
     Failed(path: string, errno: int)
 }
 
@@ -56,9 +74,29 @@ impl Error for IoError {
             .Denied(p) -> info("io.denied", "`${p}` may not be accessed"),
             .IsDirectory(p) -> info("io.is_directory", "`${p}` is a directory"),
             .NotDirectory(p) -> info("io.not_directory", "`${p}` is not a directory"),
+            .NotText(p, at) -> info("io.not_text", "`${p}` is not UTF-8 — byte ${at}"),
+            .Holed(p, at) -> info("io.holed", "a path holding a NUL is two paths — the host reads to byte ${at} and no further"),
             .Failed(p, e) -> info("io.failed", "`${p}`: ${avra_errno_text(e)}"),
         }
     }
+}
+
+/// A PATH THE HOST WILL READ AS ONE PATH, or a refusal. A NUL makes
+/// it TWO: this face measures the header's length and C stops at the
+/// NUL, so a caller who checked the visible text checked something
+/// the host never sees. Measured before this door existed — a
+/// 79-byte path ending `/../../etc/passwd` read a 5-byte file and
+/// `exists` answered true for a path that does not exist, on BOTH
+/// engines, which is agreement rather than correctness.
+///
+/// JUDGED OVER THE BYTES. A door built from `==`, `is_empty` or
+/// `contains` reads the C string and stops at the same NUL it is
+/// there to catch — the guard and the guarded must read the same
+/// bytes.
+fn one_path(path: string) -> Result<string, IoError> {
+    let at = path.bytes().index_of([0].bytes()!, 0)
+    if at >= 0 { fail IoError.Holed(path, at) }
+    path
 }
 
 /// The host's status judged: a refusal raises, naming the path.
@@ -93,7 +131,7 @@ export enum Entry {
 }
 
 export fn kind_of(path: string) -> Result<Entry, IoError> {
-    entry_of(done(path, avra_io_kind(path))?)
+    entry_of(done(path, avra_io_kind(one_path(path)?))?)
 }
 
 fn entry_of(kind: int) -> Entry {
@@ -126,22 +164,104 @@ fn standing(path: string) -> Entry {
 // ── Files ───────────────────────────────────────────────────────
 
 /// The whole file as text.
+///
+/// READING A FIFO OR A DEVICE WITH NO WRITER BLOCKS, and there is no
+/// timeout — ask `kind_of` what stands there first.
 export fn read_text(path: string) -> Result<string, IoError> {
-    done(path, avra_io_read(path))?
-    avra_io_taken()
+    text_of(path, read_bytes(path)?)
 }
+
+/// The whole file as OCTETS — the lossless door, and the one to
+/// reach for when the file is not text. `read_text` is this verb plus
+/// a UTF-8 check, so the two can never drift about what a file holds.
+///
+/// READING A FIFO OR A DEVICE WITH NO WRITER BLOCKS, and there is no
+/// timeout — ask `kind_of` what stands there first.
+export fn read_bytes(path: string) -> Result<Bytes, IoError> {
+    let fd = done(path, avra_io_open(one_path(path)?))?
+    defer avra_io_close(fd)
+    drained(path, fd)
+}
+
+/// Every byte the descriptor gives, to its end. A read answers a
+/// TOKEN and the take mints from it once, so the loop takes each
+/// landing before asking for the next — a token held across a second
+/// read is stale and traps.
+///
+/// THE LANDINGS ARE KEPT AND GATHERED ONCE, never concatenated as
+/// they arrive: growing one box per landing re-copies everything
+/// before it, which is quadratic in the file and invisible on a file
+/// small enough to land in one turn. One gather allocates the exact
+/// total and copies each byte once.
+fn drained(path: string, fd: int) -> Result<Bytes, IoError> {
+    mut parts: List<Bytes> = []
+    mut token = done(path, avra_fd_read(fd, chunk()))?
+    while token > 0 {
+        parts.push(avra_fd_taken(token))
+        token = done(path, avra_fd_read(fd, chunk()))?
+    }
+    parts.bytes()
+}
+
+/// A file's bytes as text. TEXT THAT IS NOT TEXT IS A REFUSAL, and
+/// the refusal CARRIES THE OFFSET: `at` is the first byte that is not
+/// UTF-8, which is what a reader needs when one file among hundreds
+/// is wrong. Asking `.text()` and failing on its null would throw
+/// exactly that away.
+///
+/// IT IS ONE WALK OVER THE ASSEMBLED BYTES, not one per chunk read.
+/// A multi-byte character may STRADDLE a chunk boundary, and
+/// `utf8_bad_at` cannot tell a truncated sequence from an invalid
+/// one — so validating each landing would refuse a good file whose
+/// character fell across the seam. A resumable validator would let
+/// this fold into the read; there is none, and the ask is recorded.
+fn text_of(path: string, raw: Bytes) -> Result<string, IoError> {
+    let at = avra_utf8_bad_at(raw)
+    if at >= 0 { fail IoError.NotText(path, at) }
+    raw.text()!
+}
+
+/// The read's bite. A megabyte is the descriptor scratch's own size,
+/// so a whole small file lands in one turn and a large one in as few
+/// as the scratch allows.
+fn chunk() -> int { 1048576 }
 
 /// The text written whole — a reader sees the old file or the new,
 /// never half. Answers the path.
 export fn write_text(path: string, text: string) -> Result<string, IoError> {
-    done(path, avra_io_write(path, text))?
+    write_bytes(path, text.bytes())
+}
+
+/// OCTETS written whole, the same publish-or-remove as `write_text`
+/// and its lossless twin: bytes that are not text still reach a file.
+/// Answers the path.
+export fn write_bytes(path: string, bytes: Bytes) -> Result<string, IoError> {
+    let h = done(path, avra_io_temp(one_path(path)?))?
+    // DROPPING IS THE DEFAULT AND COMMITTING THE DELIBERATE ACT: a
+    // `?` below runs this before it leaves, and an uncommitted temp
+    // is REMOVED. A deferred commit here would publish a truncated
+    // file over the reader's data, in code that reads as careful.
+    defer avra_io_drop(h)
+    let fd = done(path, avra_io_temp_fd(h))?
+    poured(path, fd, bytes)?
+    done(path, avra_io_commit(h))?
     path
+}
+
+/// The bytes handed to the descriptor from the front, however many
+/// turns it takes — a short write is normal and not an error.
+fn poured(path: string, fd: int, bytes: Bytes) -> Result<int, IoError> {
+    mut at = 0
+    while at < bytes.length {
+        at = at + done(path, avra_fd_write(fd, bytes, at))?
+    }
+    at
 }
 
 /// The directory's entries in byte order, `.` and `..` left out.
 export fn list_dir(path: string) -> Result<List<string>, IoError> {
-    done(path, avra_io_list(path))?
-    names_of(avra_io_taken())
+    let token = done(path, avra_io_list(one_path(path)?))?
+    names_of(text_of(path, avra_fd_taken(token))?)
 }
 
 /// The stash's names, joined on `/` — the one byte a name cannot
@@ -154,13 +274,13 @@ fn names_of(joined: string) -> List<string> {
 /// Every directory along the path made; one already standing is
 /// fine. Answers the path.
 export fn make_dirs(path: string) -> Result<string, IoError> {
-    done(path, avra_io_mkdir(path))?
+    done(path, avra_io_mkdir(one_path(path)?))?
     path
 }
 
 /// A file, or an empty directory, gone. Answers the path.
 export fn remove(path: string) -> Result<string, IoError> {
-    done(path, avra_io_remove(path))?
+    done(path, avra_io_remove(one_path(path)?))?
     path
 }
 
@@ -176,8 +296,17 @@ export fn remove(path: string) -> Result<string, IoError> {
 /// design — absence IS its answer — which is why this refuses by
 /// answering null where the file verbs answer `io.holed`.
 export fn env(name: string) -> string? {
-    if nul_at(name) >= 0 || name.contains("=") || avra_io_env(name) < 0 { return null }
-    avra_io_taken()
+    if nul_at(name) >= 0 || name.contains("=") || avra_io_env_set(name) < 0 { return null }
+    // THE PREDICATE CARRIES WHAT THE VALUE CANNOT. The host answers
+    // the empty string for a variable that is unset AND for one set
+    // to nothing, so the value alone cannot tell them apart.
+    //
+    // IT IS TWO READS OF THE ENVIRONMENT, atomic only while the
+    // environment is READ-ONLY to Avra — true today, since nothing in
+    // the runtime or any package sets, puts or unsets one. The day a
+    // `set_env` verb lands this becomes a check-then-use with a
+    // window between, and the answer is one C call returning both.
+    avra_host_env(name)
 }
 
 export fn env_or(name: string, default: string) -> string {

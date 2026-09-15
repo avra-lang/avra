@@ -171,8 +171,13 @@ def unmutated_mut(lines):
         # a `mut` handed to a call may fill a `mut` seat, and one
         # receiving a method may be a writing method's place — the
         # compiler refuses a `let` at both, which a grep cannot see
-        if not (re.search(rf"\b{name} *=[^=]", body)
-                or re.search(rf"\b{name}\.[a-z_][a-z_0-9]*\(", body)
+        # and a PATH is a place: `pr.s.turn(...)` writes through `pr`
+        # exactly as `pr.turn(...)` does, and `pr.buf = x` writes to
+        # it — a rule that reads one segment refuses the `mut` the
+        # compiler demands
+        seg = r"\.[a-z_][a-z_0-9]*"
+        if not (re.search(rf"\b{name}({seg})* *=[^=]", body)
+                or re.search(rf"\b{name}({seg})+\(", body)
                 or re.search(rf"[(,] *{name} *[,)]", body)):
             yield i, l.strip()
 
@@ -230,6 +235,64 @@ def fn_body(lines, start):
             break
     return out
 
+def balanced(text, at):
+    """What sits between the paren at `at` and the one that closes
+    it, or None when the line does not close it."""
+    depth = 0
+    for j in range(at, len(text)):
+        if text[j] == "(":
+            depth = depth + 1
+        elif text[j] == ")":
+            depth = depth - 1
+            if depth == 0:
+                return text[at + 1:j]
+    return None
+
+def split_seats(seats):
+    """`seats` cut at its TOP-LEVEL commas — a seat's own type may
+    hold one (`fn(A, B) -> C`)."""
+    out, depth, start = [], 0, 0
+    for j, c in enumerate(seats):
+        if c in "(<":
+            depth = depth + 1
+        elif c in ")>":
+            depth = depth - 1
+        elif c == "," and depth == 0:
+            out.append(seats[start:j])
+            start = j + 1
+    return out + [seats[start:]]
+
+def opening_bracket(text, at):
+    """Where the `[` that `text[at]` closes was opened, or None."""
+    depth = 0
+    for j in range(at, -1, -1):
+        if text[j] == "]":
+            depth = depth + 1
+        elif text[j] == "[":
+            depth = depth - 1
+            if depth == 0:
+                return j
+    return None
+
+def bool_comprehension(lines):
+    """A comprehension over a LIST, built only to be folded to a
+    bool, is a SCAN. `xs.all(pred)` stops at the first answer and
+    allocates nothing; the comprehension builds every element first
+    and then measures what it built. Over a RANGE it is the only form
+    the language has — a range takes no methods — and a PAIRED head
+    needs an index the native scan does not hand over, so both are
+    licensed by the matcher rather than by an annotation."""
+    tail = re.compile(r"\]\.(any|all)\(it\)")
+    for i, l in enumerate(lines):
+        for m in tail.finditer(l):
+            at = opening_bracket(l, m.start())
+            if at is None:
+                continue
+            head = re.search(r" for [a-z_][a-z_0-9]* in (.+)$", l[at + 1:m.start()])
+            if not head or ".." in head.group(1) or " if " in head.group(1):
+                continue
+            yield i, l[at:m.end()][-58:]
+
 def dead_parameter(lines):
     """A parameter nothing reads — the signature lies about what the
     fn needs, and every call site carries the lie. Methods count,
@@ -253,12 +316,19 @@ def dead_parameter(lines):
         # A head with no `{` is a trait's signature: nothing reads
         # its params by design. String contents are not a head.
         bare = re.sub(r'"(\\.|[^"\\])*"', '""', l)
-        m = re.match(r"\s*(?:export )?(?:mut )?fn ([a-z_]+)\(([^)]*)\)", bare)
+        m = re.match(r"\s*(?:export )?(?:mut )?fn ([a-z_]+)\(", bare)
         if not m or "{" not in bare:
+            continue
+        # THE LIST ENDS AT ITS MATCHING PAREN, never at the line's
+        # last one: a one-line body holding a lambda (`f(x, (q: T) ->
+        # ...)`) put that lambda's seat in the fn's own parameter list
+        # and the rule accused a parameter the fn never declared.
+        seats = balanced(bare, m.end() - 1)
+        if seats is None:
             continue
         # a `mut` seat is still a parameter: the mark is not its name
         params = [p.strip().split(":")[0].strip().removeprefix("mut ")
-                  for p in m.group(2).split(",") if ":" in p]
+                  for p in split_seats(seats) if ":" in p]
         body = "\n".join(fn_body(lines, i)[1:]) or l[l.index(")") + 1:]
         for p in params:
             if p == "self" or p.startswith("_"):
@@ -438,6 +508,9 @@ RULES = {
             "a long string duplicated in one file — shared messages are fns"),
     "I13": (line_rx(r"([a-z_]+\.[a-z_]+\(([a-z_]+)\)).*\1"),
             "the same projection computed twice on one line — bind it"),
+    "I43": (bool_comprehension,
+            "a comprehension over a LIST folded to a bool — that is a scan: "
+            "`xs.all(pred)` stops at the first answer and builds nothing"),
     "I14": (emit_then_error,
             "emit-then-intern(Error) — that pair is `spoken(cx, d)`"),
     "I15": (bracket_ritual,
@@ -575,6 +648,9 @@ SPECIMENS = {
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
+    "I43": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
+            ["    [b.ieq_at(0, b.length, w) for w in written_by].any(it)"],
+            ["    ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)"]],
     "I14": [["    cx.emit(d)", "    cx.intern(Type.Error)"]],
     "I15": [["    v.push(name)", "    let f = go()", "    let _ = v.pop()"]],
     "I16": [["    mut seen: List<string> = []", "    if seen.contains(x) { }", "    seen.push(x)"]],
@@ -660,6 +736,23 @@ def duplicate_numbers():
         if entries.count(code) > 1:
             out.append(code + " is claimed " + str(entries.count(code)) + " times in DOGFOODING.md's registry — a license naming it is ambiguous")
     return out
+
+# WHAT A RULE MUST *NOT* FIRE ON. A keeper has two surfaces, and
+# making it fail exercises only one: every spelling a rule ACCEPTS is
+# a claim too, and the accepted shape nobody fixtured is exactly where
+# a false positive lives unseen — the rule is working, so nobody
+# looks. Both entries below were live accusations against code the
+# compiler REQUIRES.
+CLEAN = {
+    "I21": [["    mut pr = attacked()?",
+             "    pr.s.turn(ms(20))?"],
+            ["    mut w = held()",
+             "    w.c.buf = grown"]],
+    "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"]],
+    "I43": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
+            ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
+            ["    [f(x) for x in xs if p(x)].any(it)"]],
+}
 
 def selftest():
     """Every rule catches EVERY specimen, or the tool refuses to run.
@@ -844,8 +937,12 @@ def main():
         by_code[fp.split("\t")[0]] = by_code.get(fp.split("\t")[0], 0) + 1
     tally = " ".join(f"{c}={n}" for c, n in sorted(by_code.items()))
     note = f"; {len(gone)} fixed — `make idioms-accept` banks it" if gone else ""
+    # A KEEPER COUNTS WHAT IT LOOKED AT AND SAYS SO. A check that
+    # examined nothing is not a check that passed, and the only way a
+    # reader can tell the two apart is the number.
+    files = list(sources())
     print(f"idioms: no new violations. debt {len(base) - len(gone)} ({tally}){note}"
-          f" — next free I{next_free_code()}")
+          f" — {len(files)} file(s) in {len(SRC)} package(s), next free I{next_free_code()}")
     return 0
 
 sys.exit(main())

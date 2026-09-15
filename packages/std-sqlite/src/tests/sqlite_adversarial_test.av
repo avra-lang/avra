@@ -110,27 +110,35 @@ spec "std/sqlite adversarial" {
         // lets C measure an Avra string.
         then "Avra measures the whole text" { with_nul().length == 8 }
         then "the face passes the honest length, so it is no keyword" { !is_keyword(with_nul()) }
-        then "the same bytes cut at the NUL ARE a keyword" { sqlite3_keyword_check(with_nul(), 6) != 0 }
+        then "the same bytes cut at the NUL ARE a keyword" { sqlite3_keyword_check(with_nul().bytes(), 6) != 0 }
         then "a lone NUL is one byte to us" { from_codepoint(0).length == 1 }
         then "and one byte to the wall too, so it is no keyword" { !is_keyword(from_codepoint(0)) }
     }
 
-    given "a `const char*` seat with NO length — it truncates, silently" {
-        // THE WALL'S HALF OF THE NUL LAW. Avra's string carries its
-        // length; C's ends at the first NUL. A seat with no companion
-        // length reads the C half, so a longer Avra string smuggles a
-        // shorter C one across and the wall cannot tell them apart.
-        then "a name holding a NUL is refused, not read as the name it hides" { guard_kind(compiled_with("DQS=0${from_codepoint(0)}x")) == "sqlite.holds_nul" }
-        then "which is the same answer as the name it hides" { held(compiled_with("DQS=0")) }
-        then "and the two Avra strings are NOT the same length" { "DQS=0${from_codepoint(0)}x".length != "DQS=0".length }
-        // THE WALL TRUNCATES — that is C, and this is where it is
-        // asserted, against `sqlite3_complete` itself. The FACE refuses
-        // the same bytes instead, because it cannot answer truthfully
-        // about text SQLite reads less of than we do.
-        then "the wall judges only the bytes before a NUL" { wall_completes("select 1;${from_codepoint(0)} select") }
-        then "though Avra still sees every byte of it" { "select 1;${from_codepoint(0)} select".length == 17 }
+    given "a `const char*` seat with NO length — the language refuses the crossing" {
+        // THE WALL'S HALF OF THE NUL LAW, AND WHAT BECAME OF IT. Avra's
+        // string carries its length; C's ends at the first NUL, so a
+        // seat with no companion length read the C half and a longer
+        // Avra string smuggled a shorter C one across. THE SEAM NOW
+        // TRAPS THAT CROSSING — a bare `const char*` seat is checked
+        // against the header's length — so the wall-level cases that
+        // ASSERTED the truncation cannot be asserted from a suite any
+        // more: they end the process. They live in `tools/traps.sh`,
+        // which exists for exactly that, and what stays here is the
+        // half a suite can hold.
+        //
+        // A LIBRARY REFUSES BEFORE THE LANGUAGE TRAPS. These faces
+        // answer a `Result` with a named cause, because the driver
+        // knows WHY the seat resolves; the seam's trap is the floor
+        // for a package that has not thought about it. Neither makes
+        // the other redundant — and the trap firing inside a package
+        // that has guards is a bug in the guards.
+        then "a name holding a NUL is refused, not read as the option it hides" { guard_kind(compiled_with("DQS=0${from_codepoint(0)}x")) == "sqlite.holds_nul" }
+        then "while the option it hides is real, so a truncation would have answered about it" { held(compiled_with("DQS=0")) }
         then "the face refuses those bytes rather than answering about a prefix" { complete_kind("select 1;${from_codepoint(0)} select") == "sqlite.holds_nul" }
         then "and answers ordinary text as before" { complete_kind("select 1;") == "ANSWERED" }
+        then "though Avra still sees every byte of it" { "select 1;${from_codepoint(0)} select".length == 17 }
+        then "and the two Avra strings the wall could not tell apart are still different lengths" { "DQS=0${from_codepoint(0)}x".length != "DQS=0".length }
     }
 
     given "codes and options nobody promised" {
@@ -173,7 +181,7 @@ spec "std/sqlite adversarial" {
         then "the version survives the same traffic" { version_survives() }
     }
 
-    given "the three verbs that stop at a NUL, pinned so they cannot drift" {
+    given "the three verbs that stopped at a NUL — their trigger fired" {
         // `strlike`, `strglob` and `stricmp` are C string calls with no
         // length, so C would end both arguments at the first NUL and
         // answer about a PREFIX. THE TRIGGER RECORDED HERE HAS FIRED —
@@ -182,7 +190,8 @@ spec "std/sqlite adversarial" {
         // than truncating, and these cases assert the REFUSAL where
         // they used to pin the lie. The C behaviour they documented is
         // unchanged and still true; it is asserted at the wall, not
-        // through a face that now guards.
+        // through a face that now guards — and the seam traps the crossing
+        // beneath these guards, so a trap here is a bug in them.
         then "text holding a NUL is refused, not held equal to its own prefix" { guard_kind(equal_nocase("ab${from_codepoint(0)}cd", "ab")) == "sqlite.holds_nul" }
         then "though Avra sees five bytes against two" { "ab${from_codepoint(0)}cd".length == 5 }
         then "LIKE refuses rather than matching only the bytes before a NUL" { guard_kind(like("ab", "ab${from_codepoint(0)}cd")) == "sqlite.holds_nul" }

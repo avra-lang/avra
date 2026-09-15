@@ -78,6 +78,15 @@ I32 = re.compile(r"^(signed\s+)?(int|int32_t)$")
 U32 = re.compile(r"^(unsigned(\s+int)?|uint32_t)$")
 PTR = re.compile(r"(\*|\bLLVM[A-Za-z]*Ref\b)")
 
+# THE FLOATING CLASS IS A REGISTER FILE, not a width, so a rule that
+# only weighs bits cannot see it: an integer answer read from `v0` and
+# a double staged into `x0` both "fill the register" and neither
+# arrives. `double` is the ONE C type the frame reads whole — a C
+# `float` writes the LOW HALF of `v0`, so a body answering `1.5f`
+# through an `f64` seat read as `5.28426686e-315` on BOTH engines, and
+# an agreeing pair of engines is not an oracle.
+F64 = re.compile(r"^(const\s+|volatile\s+)*double$")
+
 # what each DECLARED Avra answer demands of the C body it names
 DEMANDS = {
     "int":    (lambda t: bool(WIDE.search(t)), "fills the 64-bit register",
@@ -92,7 +101,25 @@ DEMANDS = {
                "the seat says `ptr`, so the body must answer one"),
     "string": (lambda t: bool(PTR.search(t)), "is a pointer",
                "the seat says `string`, so the body must answer a `char*`"),
+    "f64":    (lambda t: bool(F64.match(t)), "is a C `double`",
+               "the frame reads `v0` WHOLE — a C `float` writes only its low half, "
+               "and an integer body never touches that file at all"),
+    "float":  (lambda t: bool(F64.match(t)), "is a C `double`",
+               "the frame reads `v0` WHOLE — a C `float` writes only its low half, "
+               "and an integer body never touches that file at all"),
+    # A `bool` crosses as the machine word the runtime words it with,
+    # so it demands exactly what an `int` demands. Abstaining left a
+    # bool seat free to fill a `char*` the body then dereferenced.
+    "bool":   (lambda t: bool(WIDE.search(t)), "fills the 64-bit register",
+               "a `bool` crosses as a word — answer `int64_t`, or declare the seat "
+               "at the width the body uses"),
 }
+
+# EVERY AVRA TYPE THAT IS NOT A POINTER ON THE FAR SIDE. Read as a set
+# rather than spelled at each rule: `points_at` named four of these
+# seven and the three it missed — `bool`, `float`, `f64` — filled a
+# `const char*` the body dereferenced, with the keeper green.
+NOT_A_POINTER = ("int", "i64", "i32", "u32", "f64", "float", "bool")
 
 
 # C THE TREE DID NOT WRITE names its widths through TYPEDEFS and
@@ -391,6 +418,20 @@ def seat_fits(seat, ctype, tds):
     return agrees(declared, ctype, tds)
 
 
+# WHICH LAW A DISAGREEING SEAT BROKE. Three, and only the third is
+# about bits: a value that is not a pointer cannot fill one, a value
+# that rides the FLOATING file cannot fill an integer seat or be
+# filled by one, and what is left is the width. A voice states the law
+# it broke — telling a `bool` seat over a C `double` that "a C `int`
+# is 32 bits" names a symptom that is not even present.
+def seat_fault(seat, declared, ctype):
+    if not seat.strip().startswith("mut ") and points_at(declared, ctype):
+        return "pointer"
+    if (declared in ("f64", "float")) != bool(F64.match(ctype)):
+        return "file"
+    return "width"
+
+
 # AN INTEGER SEAT CANNOT FILL A POINTER, and the width demands could
 # not see it: they ask whether a seat FILLS THE 64-BIT REGISTER, and a
 # pointer fills one — so `int` over `char*` agreed about width and
@@ -404,7 +445,7 @@ def seat_fits(seat, ctype, tds):
 # A `mut` SEAT IS EXEMPT BY CONSTRUCTION, above: the out-parameter
 # convention spends the star, so `mut a: i32` over `int*` is right.
 def points_at(declared, ctype):
-    return declared in ("int", "i64", "i32", "u32") and "*" in ctype
+    return declared in NOT_A_POINTER and "*" in ctype
 
 
 # AN EXTERN WHOSE C BODY MINTS AN OWNED BOX MUST BE A ROW. `owns_result`
@@ -534,6 +575,12 @@ def wrong_seats(wall, sigs, tds):
         if name not in sigs:
             continue
         cargs, crel, cline = sigs[name]
+        # A VARIADIC BODY IS THE VARIADIC RULE'S, not this one's. Its
+        # arity always "disagrees" — the ellipsis counts as a seat —
+        # and reporting that beside the real law is a cascade: one
+        # mistake, one message, and the arity is the symptom.
+        if is_variadic(cargs):
+            continue
         cp, ap = split_params(cargs), split_params(params)
         if len(ap) != len(cp):
             out.append((name, where, crel, cline, None, len(ap), len(cp), "arity"))
@@ -542,8 +589,351 @@ def wrong_seats(wall, sigs, tds):
             bare = PARAM_NAME.sub("", c).strip() or c
             if not seat_fits(a, bare, tds):
                 d = a.partition(":")[2].strip().rstrip("?")
-                why = "pointer" if (not a.strip().startswith("mut ") and points_at(d, bare)) else "width"
+                why = seat_fault(a, d, bare)
                 out.append((name, where, crel, cline, (a, c), 0, 0, why))
+    return out
+
+
+# A `Bytes` SEAT IS THE CROSSING CHECK'S ONE EXEMPTION, and the
+# PROTOTYPE EARNS IT — never the author's intention. A text seat the
+# callee RESOLVES is scanned for an interior NUL and traps; a seat
+# whose C prototype CARRIES ITS OWN LENGTH is `Bytes` and pays
+# nothing. So the question is structural: can the body know where the
+# bytes end?
+#
+# A prototype with NO integer seat after the pointer cannot know — it
+# must scan for a NUL — so a `Bytes` there is the truncation the check
+# exists to stop, wearing the exemption. `sqlite3_stricmp(const char*,
+# const char*)` declared with `Bytes` seats answers EQUAL for "ab\0cd"
+# and "ab\0ce"; `memcmp(a, b, n)` over the same five bytes does not.
+#
+# A PROTOTYPE IS NOT THE ONLY WAY A CALLEE KNOWS THE LENGTH, which
+# this rule learned from the tree the hour it was written: three of
+# our own seats carry no length and are RIGHT — `avra_str_len`,
+# `avra_utf8_bad_at` and the frame's own `avra_ffi_set_bytes` read the
+# Avra box's HEADER, which is core's C doing what §2.1 says only core
+# may. So the exemption is earned by the callee KNOWING the length,
+# from the prototype OR from the box; and a body this tree did not
+# write knows only what its prototype says. The scope is vendored C.
+#
+# TWO LIMITS, STATED HERE RATHER THAN DISCOVERED LATER. An integer
+# after the pointer may be a length or a flag and no spelling tells
+# them apart, so `open(const char *, int)` passes. And a package's own
+# C is trusted the way core's is, though nothing certifies it — the
+# day a package writes a scanning body of its own, this abstains. The
+# keeper refuses what PROVABLY scans and abstains where it cannot
+# tell, which is the posture `seat_fits` takes one rule over.
+def integer_seat(ctype):
+    """Whether a C seat is an integer — a pointer never is."""
+    if PTR.search(ctype):
+        return False
+    bare = ctype.strip()
+    return bool(WIDE.search(bare) or I32.match(bare) or U32.match(bare))
+
+
+def declared_of(seat):
+    """The type an Avra seat names, without its `mut` or its `?`."""
+    _, _, declared = seat.partition(":")
+    return declared.strip().rstrip("?")
+
+
+def foreign_body(crel):
+    """Whether a C body is one this tree did not write — vendored
+    under a package, by §3's own layout rule."""
+    return "/vendor/" in crel.replace(os.sep, "/")
+
+
+# THE KEEPER'S OTHER SURFACE, AND WHY IT IS A COUNT AND NOT A REFUSAL.
+# The refusing half above is SOUND IN ONE DIRECTION ONLY: no integer
+# after the pointer PROVES the body must scan, while an integer after
+# it proves nothing — it may be a length or a flag, and
+# `open(const char *, int)` declared `string` is correct and would be
+# refused by the mirror rule. Measured on this tree: the mirror would
+# fire ZERO times, because @std/sqlite's four length-carrying seats are
+# already `Bytes`. A rule with no measurable true-positive rate and a
+# known false-positive shape is F2040 again, so the other surface is
+# WITNESSED rather than enforced — the count makes the migration
+# visible and goes up when a seat earns its exemption.
+def earned_octets(wall, sigs):
+    out = []
+    for name, params, where in wall:
+        if name not in sigs:
+            continue
+        cargs, crel, cline = sigs[name]
+        if is_variadic(cargs):
+            continue
+        cp, ap = split_params(cargs), split_params(params)
+        if len(ap) != len(cp):
+            continue
+        for i, seat in enumerate(ap):
+            if declared_of(seat) != "Bytes":
+                continue
+            after = [PARAM_NAME.sub("", c).strip() or c for c in cp[i + 1:]]
+            if any(integer_seat(c) for c in after):
+                out.append((name, seat))
+    return out
+
+
+def bytes_without_length(wall, sigs):
+    out = []
+    for name, params, where in wall:
+        if name not in sigs:
+            continue
+        cargs, crel, cline = sigs[name]
+        if not foreign_body(crel):
+            continue
+        if is_variadic(cargs):
+            continue
+        cp, ap = split_params(cargs), split_params(params)
+        if len(ap) != len(cp):
+            continue          # the arity rule speaks first
+        for i, seat in enumerate(ap):
+            if declared_of(seat) != "Bytes":
+                continue
+            after = [PARAM_NAME.sub("", c).strip() or c for c in cp[i + 1:]]
+            if not any(integer_seat(c) for c in after):
+                out.append((name, seat, where, crel, cline))
+    return out
+
+
+# A VARIADIC BODY CANNOT BE CALLED BY A FIXED DECLARATION, in either
+# engine. Apple's arm64 ABI reads a variadic callee's arguments from
+# the STACK while a fixed call puts them in REGISTERS, so the callee
+# reads a slot nobody wrote — no link error, no trap, a wrong answer.
+# The trailing `...` is the whole test: a `va_list` seat is an ordinary
+# pointer and calls correctly, so it is NOT variadic here.
+#
+# THE NARROWING CONDITION, written where the keeper is rather than in a
+# paper: this refuses for BOTH engines only while the grammar cannot
+# spell a variadic seat. `declare` already takes LLVM's vararg flag and
+# both call sites pass false, so today the native path is as wrong as
+# the evaluator. The day an ellipsis seat exists and the backend passes
+# that flag, this narrows to the interpreter alone and the wording
+# above loses its last four words.
+def is_variadic(cargs):
+    """Whether a C parameter list ends in an ellipsis. Takes the list
+    as written, newlines and all — a prototype spread over lines is
+    the same list."""
+    seats = split_params(" ".join(cargs.split()))
+    return bool(seats) and seats[-1] == "..."
+
+
+# (a C parameter list, variadic?) — both surfaces, because a keeper
+# watched only refusing is half tested.
+VARIADIC_CASES = [
+    ("int op, ...", True),                          # sqlite3_test_control, the measured case
+    ("sqlite3 *db, int op, ...", True),             # sqlite3_db_config
+    ("...", True),                                  # the degenerate list
+    ("const char *zFormat,\n  ...", True),          # spread over lines
+    ("int op, va_list ap", False),                   # a va_list rides a pointer
+    ("sqlite3 *db, int op, int a, int b", False),
+    ("void", False),
+    ("", False),
+    ("void (*xFunc)(void*, int, char**)", False),   # parens are a fn-pointer seat
+    ("const char *zDots", False),                    # a name is not an ellipsis
+    ("struct dots ...x", False),                     # not a bare `...`
+]
+
+
+def variadic_self_test():
+    """The readings above. A failure means the ellipsis model moved."""
+    bad = [(c, want) for c, want in VARIADIC_CASES if is_variadic(c) != want]
+    for cargs, want in bad:
+        # THE MESSAGE COLLAPSES THE WHITESPACE THE CASE KEEPS. One case
+        # spreads its list over lines to prove the newline does not
+        # matter; printed as written, its failure is the one place it
+        # looks like it does.
+        print(f"externs: SELF-TEST — C `({' '.join(cargs.split())})` should read as "
+              f"{'variadic' if want else 'fixed'}")
+    return len(bad)
+
+
+def variadic_walls(wall, sigs):
+    """Every declaration whose C body is variadic — the fixed spelling
+    that cannot call it."""
+    return [(name, where, sigs[name][1], sigs[name][2], len(split_params(params)))
+            for name, params, where in wall
+            if name in sigs and is_variadic(sigs[name][0])]
+
+
+# SHAPES ONE UNIFORM FRAME CANNOT CARRY, refused at the declaration
+# for the same reason a variadic body is: the evaluator calls through
+# ONE fully applied prototype of int64 and double slots, so a seat that
+# rides another class, another width, or memory is read from a place
+# nobody wrote. Each is detected POSITIVELY and by name — never as
+# "not a scalar I recognise", which would refuse every typedef the
+# keeper has not met and make the rule's true-positive rate its
+# author's imagination.
+#
+# WHAT IS NOT COVERED, said out loud: a struct passed by value behind
+# a TYPEDEF (`sqlite3_value v`) reads as an ordinary name here and
+# passes. Catching it needs the typedef's target resolved to a struct,
+# which `typedefs()` does not record. RECORDED TRIGGER: the first
+# declaration that faces one — which cannot happen while an Avra seat
+# can only be `int`, `ptr`, a width word or `float`, since none of
+# those can name a struct.
+UNFRAMEABLE = [
+    # (a regex over one C seat or return, the words that name the law)
+    (re.compile(r"\blong\s+double\b"),
+     "a `long double` rides its own class, which the frame has no slot for"),
+    (re.compile(r"\b__int128\b"),
+     "an `__int128` rides a register PAIR, which the frame passes as one"),
+    (re.compile(r"__attribute__\s*\(\s*\(\s*vector_size|\b__m(64|128|256|512)\b|\bfloat(32|64)x\d+_t\b"),
+     "a vector rides its own file, which the frame does not fill"),
+    (re.compile(r"^(const\s+|volatile\s+)*(struct|union)\s+[A-Za-z_]\w*\s*$"),
+     "a struct or union BY VALUE classifies by field — it may split registers or ride memory"),
+]
+
+# An f32 SEAT is half of a `v` register and a double written there is
+# read as a different number.
+#
+# AN f32 RETURN WAS RECORDED AS FINE AND IS NOT. The reasoning was
+# "the answer is read back through the declared width" — but there IS
+# no f32 width word, so `avra_ffi_call_f64` reads `v0` WHOLE and a C
+# `float` wrote only its low half. Measured: a body answering `1.5f`
+# read as `5.28426686e-315` in BOTH engines, so `eval == native` was
+# green over a wrong number. The answer side is `DEMANDS["f64"]`'s
+# now, which asks for a C `double` and names the `float` that is not
+# one; this stays the SEAT's rule alone.
+F32_SEAT = re.compile(r"^(const\s+|volatile\s+)*float\s*$")
+
+
+def unframeable(seat):
+    """The law a C seat breaks, or None. Takes the seat with its name
+    already stripped, as the width rules take it."""
+    bare = " ".join(seat.split())
+    if F32_SEAT.match(bare):
+        return "an `f32` seat is half of a `v` register — a double written there reads as another number"
+    for pattern, law in UNFRAMEABLE:
+        if pattern.search(bare):
+            return law
+    return None
+
+
+# (a C seat, the law it breaks or None) — both surfaces, as the
+# variadic cases are.
+FRAME_CASES = [
+    ("long double", "long double"),
+    ("const long double", "long double"),
+    ("__int128", "__int128"),
+    ("unsigned __int128", "__int128"),
+    ("float", "f32"),
+    ("const float", "f32"),
+    ("struct sqlite3_index_info", "by value"),
+    ("union u_tag", "by value"),
+    ("double", None),                    # the class the frame DOES carry
+    ("float *", None),                   # a pointer to f32 is a pointer
+    ("struct sqlite3_index_info *", None),  # by reference is a pointer
+    ("int", None),
+    ("const char *", None),
+    ("sqlite3_int64", None),             # a typedef to a word
+    ("long", None),
+]
+
+
+def frame_self_test():
+    """The readings above. A failure means the frame's model moved."""
+    bad = []
+    for seat, want in FRAME_CASES:
+        got = unframeable(seat)
+        hit = got is not None
+        if hit != (want is not None) or (want and want not in got and want != "by value" and want != "f32"):
+            bad.append((seat, want, got))
+    for seat, want, got in bad:
+        print(f"externs: SELF-TEST — C seat `{seat}` should "
+              f"{'break the frame (' + want + ')' if want else 'ride the frame'}"
+              f"; it reads as {got!r}")
+    return len(bad)
+
+
+def unframeable_walls(wall, sigs):
+    """Every declaration whose C body has a seat the frame cannot
+    carry."""
+    out = []
+    for name, params, where in wall:
+        if name not in sigs:
+            continue
+        cargs, crel, cline = sigs[name]
+        for c in split_params(cargs):
+            law = unframeable(PARAM_NAME.sub("", c).strip() or c)
+            if law:
+                out.append((name, where, crel, cline, c.strip(), law))
+                break
+    return out
+
+
+# A SYMBOL WITH NO READABLE SOURCE MAY NOT TAKE A DEFAULTED WIDTH.
+# Every rule above reads the C BODY — the return's width, each seat's
+# width, the ellipsis, the shapes one frame cannot carry. For a symbol
+# this tree has no source for (libc, a system library, anything the
+# manifest links but does not carry), all of them abstain, and the
+# declaration is the only thing standing. So a bare `int` there is a
+# 64-bit GUESS about a body nobody here compiled — and the guess is
+# silent in both directions, since a C `int` answer of -1 read as a
+# 64-bit `int` is 4294967295 and a 64-bit argument in an `int` seat
+# arrives truncated. Naming the width converts an unverifiable default
+# into a deliberate statement, which is the most the seam allows.
+#
+# ONLY `int` IS REFUSED. `ptr`, `string`, `float` and `bool` name no
+# integer width, and `i32`/`u32`/`i64` name one already.
+DEFAULTED = re.compile(r"^int$")
+
+# The type a seat declares, with `mut` and the name stripped — a seat
+# is written `name: type` and an inout `mut name: type`.
+SEAT_TYPE = re.compile(r":\s*([^:]+)$")
+
+
+def seat_type(seat):
+    m = SEAT_TYPE.search(seat.strip())
+    return m.group(1).strip() if m else seat.strip()
+
+
+# (a declared Avra type, is it a defaulted width?) — both surfaces.
+WIDTH_CASES = [
+    ("int", True),
+    ("i32", False), ("u32", False), ("i64", False),
+    ("ptr", False), ("ptr?", False),
+    ("string", False), ("string?", False),
+    ("float", False), ("bool", False),
+    ("List<string>", False),
+]
+
+# (a written seat, its type) — the stripping the rule depends on.
+SEAT_TYPE_CASES = [
+    ("a: int", "int"),
+    ("mut out: i64", "i64"),
+    ("vfs: string?", "string?"),
+    ("mut db: ptr?", "ptr?"),
+]
+
+
+def width_self_test():
+    """The readings above. A failure means the default's model moved."""
+    bad = [(t, want) for t, want in WIDTH_CASES if bool(DEFAULTED.match(t)) != want]
+    for t, want in bad:
+        print(f"externs: SELF-TEST — a declared `{t}` should "
+              f"{'be' if want else 'not be'} a defaulted width")
+    stripped = [(w, want) for w, want in SEAT_TYPE_CASES if seat_type(w) != want]
+    for written, want in stripped:
+        print(f"externs: SELF-TEST — seat `{written}` should read its type as `{want}`, "
+              f"read `{seat_type(written)}`")
+    return len(bad) + len(stripped)
+
+
+def defaulted_walls(wall, walls, bodies, sigs):
+    """Every declaration over a symbol with NO readable source that
+    leaves a width to the default."""
+    out = []
+    for name, declared, where in wall:
+        if name not in bodies and DEFAULTED.match(declared):
+            out.append((name, where, "its answer", declared))
+    for name, params, where in walls:
+        if name in sigs:
+            continue
+        for seat in split_params(params):
+            t = seat_type(seat)
+            if DEFAULTED.match(t):
+                out.append((name, where, f"seat `{seat.strip()}`", t))
     return out
 
 
@@ -571,6 +961,21 @@ CASES = [
     # and a return type that is ONLY a macro resolves to nothing, which
     # is not agreement — the teeth the abstention must not file down
     ("int",  "SQLITE_API SOME_WIDTH", False),
+    # THE FLOATING ANSWERS. A `double` is the only C return the frame
+    # reads back whole: `avra_ffi_call_f64` reads `v0` as a double, and
+    # a C `float` writes only its LOW HALF. Measured on this tree — a
+    # body answering `1.5f` read as `5.28426686e-315` in BOTH engines,
+    # so the differential cannot see it.
+    ("f64",   "double",           True),
+    ("f64",   "SQLITE_API double", True),
+    ("float", "double",           True),
+    ("f64",   "float",            False),
+    ("f64",   "int64_t",          False),   # a word answer read from the FP file
+    ("float", "sqlite_int64",     False),
+    # A `bool` crosses as the machine word it is worded with, so it
+    # demands what an `int` demands.
+    ("bool",  "int64_t",          True),
+    ("bool",  "SQLITE_API int",   False),
 ]
 # THE SEAT CASES, pinned for the same reason the answer cases are: the
 # parameter side arrived with a vendored wall and its two hard readings
@@ -596,7 +1001,91 @@ SEAT_CASES = [
     ("mut a: i32",    "int *a",                  True),
     ("mut a: i32",    "int a",                   False),  # nothing to write through
     ("ms: i32",       "int ms",                  True),
+    # THE SCALARS THE POINTER RULE DID NOT NAME. `points_at` listed
+    # four of the seven non-pointer scalar seats, so `bool`, `float`
+    # and `f64` over a C pointer read as "the widths agree" and passed
+    # — the same hole `int` over `char*` closed, three types over.
+    ("s: bool",       "const char *s",           False),
+    ("v: float",      "void *h",                 False),
+    ("v: f64",        "const char *s",           False),
+    # AND THE REGISTER FILE, which no width rule can see. A `f64` seat
+    # rides `v0`; a word seat rides `x0`. Neither abstains now.
+    ("x: f64",        "double x",                True),
+    ("x: float",      "double v",                True),
+    ("x: f64",        "int v",                   False),
+    ("x: i64",        "double v",                False),
+    ("x: bool",       "int64_t v",               True),
+    ("x: bool",       "int v",                   False),   # 64 over 32
 ]
+
+
+OCTET_CASES = [
+    # (Avra seats, the C seats they fill, refused?)
+    # Both surfaces: what the rule REFUSES and what it must ACCEPT.
+    # An accepting path with no fixture is a dead alternative that
+    # widens the keeper silently.
+    ("a: Bytes, b: Bytes",         "const char *a, const char *b",           True),
+    ("s: Bytes",                   "const char *s",                          True),
+    ("b: Bytes, f: ptr",           "const void *b, FILE *f",                 True),
+    ("a: Bytes, b: Bytes, n: i64", "const void *a, const void *b, size_t n", False),
+    ("t: Bytes, n: i32",           "const char *t, int n",                   False),
+    ("s: string, t: string",       "const char *s, const char *t",           False),
+    ("d: ptr, t: Bytes, n: i32",   "sqlite3 *d, const char *t, int n",       False),
+]
+
+# The abstaining path needs its own fixture, or it is a dead
+# alternative: a `Bytes` seat with no length over C THIS TREE WROTE
+# passes, because the body may read the box's header.
+OWN_OCTET_CASE = ("b: Bytes", "const char *s", "runtime/avra_runtime.c")
+
+
+def octet_self_test():
+    """The `Bytes` rule against whole prototypes, through the SAME
+    function the tree runs — a fixture built from a copy of the rule
+    would test the copy."""
+    bad = []
+    for params, cargs, want in OCTET_CASES:
+        found = bytes_without_length([("f", params, "fixture.av:1")],
+                                     {"f": (cargs, "packages/p/vendor/lib.c", 1)})
+        if bool(found) != want:
+            bad.append((params, cargs, want))
+    params, cargs, crel = OWN_OCTET_CASE
+    if bytes_without_length([("f", params, "fixture.av:1")], {"f": (cargs, crel, 1)}):
+        bad.append((params, cargs, False))
+    for params, cargs, want in bad:
+        print(f"externs: SELF-TEST — `{params}` over C `{cargs}` should "
+              f"{'be refused' if want else 'pass'}")
+    return len(bad)
+
+
+# (a written seat, its declared type, the C seat, the law it broke) —
+# one fixture per answer `seat_fault` can give, because an answer no
+# fixture reaches is a wording nobody has ever read.
+FAULT_CASES = [
+    ("s: bool",    "bool",  "const char *", "pointer"),
+    ("v: f64",     "f64",   "void *",       "pointer"),
+    ("x: f64",     "f64",   "int",          "file"),
+    ("x: i64",     "i64",   "double",       "file"),
+    ("col: int",   "int",   "int",          "width"),
+    ("mut a: i32", "i32",   "int *",        "pointer" ),
+]
+
+
+def fault_self_test():
+    """Every law `seat_fault` can name, reached. A `mut` seat spends
+    the star, so its row is the one that must NOT read as a pointer
+    fault."""
+    bad = []
+    for seat, declared, ctype, want in FAULT_CASES:
+        got = seat_fault(seat, declared, ctype)
+        if seat.strip().startswith("mut "):
+            want = "width"
+        if got != want:
+            bad.append((seat, ctype, want, got))
+    for seat, ctype, want, got in bad:
+        print(f"externs: SELF-TEST — seat `{seat}` over C `{ctype}` breaks the "
+              f"{want} law; it reads as {got}")
+    return len(bad)
 
 
 def seat_self_test():
@@ -729,7 +1218,8 @@ def row_boxes():
 
 def wrong_boxes(sigs):
     """Every row whose declared box disagrees with the C seat: `Text`
-    is a `char*` and nothing else is; a `void*` is never `Text`."""
+    and `Bytes` are a `char*` and nothing else is; a `void*` is never
+    either."""
     out = []
     for name, boxes in row_boxes().items():
         if name not in sigs:
@@ -737,7 +1227,7 @@ def wrong_boxes(sigs):
         cp = split_params(sigs[name][0])
         for j, (b, c) in enumerate(zip(boxes, cp)):
             bare = PARAM_NAME.sub("", c).strip() or c
-            if "*" in bare and (b == "Text") != ("char" in bare):
+            if "*" in bare and (b in ("Text", "Bytes")) != ("char" in bare):
                 out.append((name, j + 1, b, bare))
     return out
 
@@ -844,7 +1334,7 @@ def inert_self_test():
     return 0
 
 def main():
-    if self_test() + seat_self_test() + mint_self_test() + ptr_self_test() + keep_self_test() + inert_self_test():
+    if self_test() + seat_self_test() + fault_self_test() + octet_self_test() + variadic_self_test() + frame_self_test() + width_self_test() + mint_self_test() + ptr_self_test() + keep_self_test() + inert_self_test():
         print("externs: the keeper's own cases fail — its verdicts are not to be trusted")
         return 1
     vendored, packages = package_sources()
@@ -870,6 +1360,30 @@ def main():
         print(f"externs:   {remedy}")
     walls = wall_seats()
     sigs = c_signatures(sources, {n for n, _, _ in walls})
+    varargs = variadic_walls(walls, sigs)
+    for name, where, crel, cline, an in varargs:
+        print(f"externs: {name} declares {an} fixed seat(s) in {where}, "
+              f"its C body is VARIADIC at {crel}:{cline}")
+        print(f"externs:   a variadic callee reads its arguments from the stack and a")
+        print(f"externs:   fixed call passes them in registers, so no fixed declaration")
+        print(f"externs:   calls this body correctly — in either engine.")
+        print(f"externs:   One fixed extern per argument shape is NOT the way out: it")
+        print(f"externs:   was measured reading 12345 back as -298729216.")
+    guessed = defaulted_walls(wall, walls, bodies, sigs)
+    for name, where, at, declared in guessed:
+        print(f"externs: {name} in {where} leaves {at} as `{declared}`, "
+              f"and this tree has no C source for it")
+        print(f"externs:   nothing checks a width the keeper cannot read, so a bare `int`")
+        print(f"externs:   is a 64-bit guess about a body nobody here compiled — a C `int`")
+        print(f"externs:   answer of -1 reads as 4294967295, and a 64-bit argument in an")
+        print(f"externs:   `int` seat arrives truncated. Name it: `i64` where the C says")
+        print(f"externs:   `long` or `int64_t`, `i32`/`u32` where it says `int`/`unsigned`.")
+    unframed = unframeable_walls(walls, sigs)
+    for name, where, crel, cline, seat, law in unframed:
+        print(f"externs: {name} in {where} faces C seat `{seat}` at {crel}:{cline}, "
+              f"which one frame cannot carry")
+        print(f"externs:   {law} — so the evaluator would read a slot nobody wrote.")
+        print(f"externs:   Pass it by pointer, or leave the symbol to the native path.")
     seats = wrong_seats(walls, sigs, tds)
     for name, where, crel, cline, pair, an, cn, why in seats:
         if pair is None:
@@ -880,21 +1394,41 @@ def main():
         a, c = pair
         print(f"externs: {name} seats `{a}` in {where} over C `{c}` at {crel}:{cline}")
         if why == "pointer":
-            print(f"externs:   an INTEGER cannot fill a POINTER. Both are 64 bits, so the widths")
+            print(f"externs:   A VALUE CANNOT FILL A POINTER. Both are 64 bits, so the widths")
             print(f"externs:   agree and nothing else does — the body DEREFERENCES what it is")
             print(f"externs:   handed. Declare the seat `ptr` or `string`, or take a `mut` seat")
             print(f"externs:   if the body writes through it.")
+        elif why == "file":
+            print(f"externs:   A REGISTER FILE IS NOT A WIDTH. A `f64` seat rides `v0` and a word")
+            print(f"externs:   seat rides `x0`, so the callee reads a slot nobody wrote and the")
+            print(f"externs:   number that comes back was never related to the one sent. Declare")
+            print(f"externs:   the seat `f64` where the C says `double`, and a width word elsewhere.")
         else:
             print(f"externs:   the seat and the body must name the same width — a C `int` is 32 bits")
+    earned = earned_octets(walls, sigs)
+    octets = bytes_without_length(walls, sigs)
+    for name, seat, where, crel, cline in octets:
+        print(f"externs: {name} seats `{seat}` in {where} over C at {crel}:{cline}")
+        print(f"externs:   its C carries no length after that pointer, so the body must scan")
+        print(f"externs:   to a NUL — a `Bytes` seat there wears the crossing check's exemption")
+        print(f"externs:   without earning it. Declare the seat `string` and let it be checked.")
     minting = unread_pointers(wall, bodies)
     for name, declared, where in minting:
         print(f"externs: {name} answers `ptr` in {where} and no C in the tree declares it")
         print(f"externs:   a pointer from a body this keeper cannot read is an address minted")
         print(f"externs:   from whatever the register held — the width check abstains and the")
         print(f"externs:   abstention is what grants it. Name it in tree C, or answer its width.")
-    if narrow or voids or seats or minting:
+    if narrow or voids or seats or varargs or unframed or guessed or minting or octets:
+        if octets:
+            print(f"externs: {len(octets)} `Bytes` seat(s) face a C body that carries no length")
         if minting:
             print(f"externs: {len(minting)} extern(s) answer a pointer no C body here declares")
+        if guessed:
+            print(f"externs: {len(guessed)} declaration(s) guess a width over a symbol this tree cannot read")
+        if unframed:
+            print(f"externs: {len(unframed)} extern(s) face a C seat one frame cannot carry")
+        if varargs:
+            print(f"externs: {len(varargs)} extern(s) face a variadic C body with a fixed spelling")
         if seats:
             print(f"externs: {len(seats)} parameter seat(s) disagree with their C body")
         if narrow:
@@ -913,6 +1447,8 @@ def main():
         print(f"externs: {len(loud)} row(s) claim `inert` over a body that resolves")
         return 1
 
+    if earned:
+        print(f"externs: {len(earned)} `Bytes` seat(s) earn the exemption from a length in the prototype")
     unsaid = unsaid_keeps(seated_bodies(sources), sig_rows())
     for name, held, marked, _ in unsaid:
         print(f"externs: {name} retains seat(s) {held} in C, its row marks {marked or 'none'}")
@@ -934,9 +1470,9 @@ def main():
         return 1
 
     unchecked = len(wall) - len(ours)
-    note = f"; {unchecked} bind C we do not own (the sized types are their answer)" if unchecked else ""
+    note = f"; {unchecked} bind C we do not own, every width named" if unchecked else ""
     widths = sum(1 for _, t, _ in wall if t in ("i32", "u32", "i64"))
-    scanned = f"{len(sources)} C source(s)"
+    scanned = f"{len(declaring_sources())} declaring source(s) and {len(sources)} C source(s)"
     if packages:
         scanned += f", {len(vendored)} of them owned by {len(packages)} linking package(s)"
     extra = f"; {widths} name a width" if widths else ""
@@ -950,7 +1486,7 @@ def main():
         print(f"externs: {len(boxed)} row box(es) disagree with their C seat")
         return 1
     print(f"externs: {sum(len(v) for v in row_boxes().values())} row seat(s) name the box their C seat reads")
-    print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES)} of the keeper's own cases hold")
+    print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES) + len(FAULT_CASES) + len(OCTET_CASES) + len(VARIADIC_CASES) + len(FRAME_CASES) + len(WIDTH_CASES) + len(SEAT_TYPE_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES)} of the keeper's own cases hold")
     return 0
 
 sys.exit(main())
