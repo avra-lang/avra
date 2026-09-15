@@ -254,6 +254,10 @@ fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {
     avra_llvm_type_array_free(arr)
 }
 
+/// HOW A VALUE CATEGORY RIDES THE RUNTIME'S 64-BIT CELLS. `Word` is
+/// the identity: the value is already the slot, or is no slot at all.
+enum SlotForm { Address, Widened, Reinterpreted, Word }
+
 /// A shape's LLVM type.
 fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
     // THE MACHINE FORM decides, never the bare shape: a FLAT record
@@ -473,27 +477,32 @@ impl Emit {
     }
 
     /// A runtime call, generic over every callee declare_runtime names.
-    /// The runtime speaks i64 for truth; a bool-shaped register narrows
-    /// to i1 (icmp 33, ne 0).
+    /// The answer crosses back out of the slot it rode in.
     fn call_rt_value(dst: Reg, callee: string, args: List<Reg>) -> ptr {
         let called = self.call(callee, self.rt_args(callee, args))
         self.normalized_cells(callee, args)
-        let raw = self.answered(callee, called)
-        if self.types.machine_shape(self.tys[dst.index]) is .Bool {
-            return avra_llvm_build_icmp(self.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(self.lc), 0, 0), "b")
+        self.unworded(self.answer_form(dst, callee), self.answered(callee, called))
+    }
+
+    /// HOW A CALLEE'S ANSWER CROSSES BACK: the destination's slot form,
+    /// unless the callee answered outside a word. An address and a
+    /// double are only ever IN a word, so a callee answering otherwise
+    /// hands its value back untouched.
+    ///
+    /// A BOOL NARROWS WHATEVER THE CALLEE ANSWERED, and that rests on
+    /// `rt_kind_of`: a bool is neither void, float nor pointer-riding,
+    /// so it rides I64, and a width word carries `int` and never
+    /// `bool`. A bool destination's callee therefore answers an
+    /// integer. The day a width carries `bool`, this arm owes the
+    /// narrower question — which kinds arrive in an integer register —
+    /// instead of `answers_word`.
+    fn answer_form(dst: Reg, callee: string) -> SlotForm {
+        let form = self.slot_form(self.tys[dst.index])
+        if self.answers_word(callee) { return form }
+        match form {
+            .Widened -> SlotForm.Widened,
+            .Address or .Reinterpreted or .Word -> SlotForm.Word,
         }
-        // The result coercion, rt_arg's mirror: an I64 answer is a WORD,
-        // and a pointer-shaped destination rides back out of it.
-        if self.types.rides_pointer(self.tys[dst.index]) && self.answers_word(callee) {
-            return avra_llvm_build_int_to_ptr(self.b, raw, avra_llvm_pointer_type(self.lc), "boxed")
-        }
-        // A DOUBLE IS NOT A WORD. Every container keeps its elements in
-        // an i64 slot, so a float coming back out of one is
-        // REINTERPRETED, not converted. `worded` is the twin.
-        if self.types.machine_shape(self.tys[dst.index]) is .Float && self.answers_word(callee) {
-            return avra_llvm_build_bitcast(self.b, raw, avra_llvm_double_type(self.lc), "unslotted")
-        }
-        raw
     }
 
     /// Whether the registry declares an I64 answer for this callee.
@@ -674,20 +683,47 @@ impl Emit {
         }
     }
 
-    /// A value cast into the I64 slot every category rides.
+    /// A value cast INTO the I64 slot every category rides.
     fn worded(r: Reg, v: ptr) -> ptr {
         let i64t = avra_llvm_int64_type(self.lc)
-        if self.types.rides_pointer(self.tys[r.index]) {
-            return avra_llvm_build_ptr_to_int(self.b, v, i64t, "slot")
+        match self.slot_form(self.tys[r.index]) {
+            .Address -> avra_llvm_build_ptr_to_int(self.b, v, i64t, "slot"),
+            .Widened -> avra_llvm_build_zext(self.b, v, i64t, "slot"),
+            .Reinterpreted -> avra_llvm_build_bitcast(self.b, v, i64t, "slot"),
+            .Word -> v,
         }
-        if self.types.machine_shape(self.tys[r.index]) is .Bool {
-            return avra_llvm_build_zext(self.b, v, i64t, "slot")
+    }
+
+    /// The slot read BACK OUT — `worded` inverted, arm for arm from the
+    /// same table, so a pack and an unpack cannot disagree about a
+    /// category.
+    fn unworded(form: SlotForm, raw: ptr) -> ptr {
+        match form {
+            .Address -> avra_llvm_build_int_to_ptr(self.b, raw, avra_llvm_pointer_type(self.lc), "boxed"),
+            .Widened -> avra_llvm_build_icmp(self.b, 33, raw, avra_llvm_const_int(avra_llvm_int64_type(self.lc), 0, 0), "b"),
+            .Reinterpreted -> avra_llvm_build_bitcast(self.b, raw, avra_llvm_double_type(self.lc), "unslotted"),
+            .Word -> raw,
         }
-        // Its twin in `call_rt_value`: the bits go in as they come out.
-        if self.types.machine_shape(self.tys[r.index]) is .Float {
-            return avra_llvm_build_bitcast(self.b, v, i64t, "slot")
+    }
+
+    /// WHICH CONVERSION A VALUE CATEGORY OWES THE WORD SLOT, asked in
+    /// both directions so neither can be written alone. A CHAIN of `is`
+    /// tests answers "no conversion" for every category nobody thought
+    /// of, and an unconverted value is not a refusal: a double filed as
+    /// a word rides an integer seat and the callee reads a different
+    /// number.
+    fn slot_form(ty: TypeId) -> SlotForm {
+        match self.types.machine_shape(ty) {
+            .Bool -> SlotForm.Widened,
+            .Float -> SlotForm.Reinterpreted,
+            .Int or .Error or .Void or .TypeName(_, _) or .Var(_, _, _) -> SlotForm.Word,
+            // a nullable is two machine forms: the niche IS the box's
+            // pointer, a scalar pair is a register pair no slot holds
+            .Opt(inner) -> if self.types.opt_rides_pointer(inner) { SlotForm.Address } else { SlotForm.Word },
+            .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or
+            .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or
+            .Map(_, _) or .EmptyMap -> SlotForm.Address,
         }
-        v
     }
 
     fn released(r: Reg) {

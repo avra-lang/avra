@@ -568,6 +568,11 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "I44": "no grep links two fns as INVERSES, so nothing textual sees a pack\n"
+           "           learning a category its unpack has not. The keeper is `make\n"
+           "           vocab`: both directions are named as consumers of the SAME\n"
+           "           registry enum, and a catch-all or an `is` test inside either\n"
+           "           fails the gate whichever direction grew the hole",
     "I42": "no grep tells a READ site from a SEAT site — `shape_at` is correct at\n"
            "           one and a defect at the other, and both spellings live beside each\n"
            "           other in the same file. The keeper is the adversarial suite:\n"
