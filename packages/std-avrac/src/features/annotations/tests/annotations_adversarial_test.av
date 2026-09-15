@@ -1,6 +1,6 @@
 // The annotation boundary: its callee, receiver, remaining seats,
 // answer effect, execution, and one-message discipline.
-use @std.avrac.language.{avra, new_workspace, memory_host, parse_source, Program, Workspace}
+use @std.avrac.language.{avra, new_workspace, memory_host, parse_source, analyze_source, render_source, Program, Workspace}
 use @std.avrac.testing.{said, refused_n, refused_in, refused_with, refusals, vendored_meta, vendored_meta_paths}
 
 fn meta_use() -> string {
@@ -30,6 +30,13 @@ fn collect_use() -> string {
 /// declares none, and an annotation taking a list.
 fn meta_probes() -> string {
     "use @std.errors.{Loc}\nexport type Decl = { twin: string, name: string, at: Loc? }\nexport trait Show {\n    static fn derive(what: Named) -> List<Directive> { [Directive { twin: \"gen_\" + what.name, name: what.name, at: what.at }] }\n}\nexport trait Empty {\n    fn mark() -> int\n}\nexport trait Tagged {\n    static fn derive(t: Type) -> List<Directive> { [] }\n    static fn marks(t: Type) -> List<string> { [\"verbatim\", \"expands\"] }\n}\nexport trait Plainly {\n    static fn derive(t: Type) -> List<Directive> { [] }\n}\nexport fn collect(f: Fn, xs: List<int>) -> List<Directive> { [] }\n"
+}
+
+/// A source through the printer — the parse read back, so a mark's
+/// ALIGNMENT is visible as the member it came out attached to.
+fn formatted(source: string) -> string {
+    let a = analyze_source(source)
+    render_source(a.view.store, a.view.stmts)
 }
 
 fn packaged(source: string) -> Program {
@@ -288,6 +295,65 @@ spec "features/annotations — the compile-time call's laws" {
         }
         then "a mark AFTER its member is not a mark" {
             refused_with("enum E { A(x: int) @m }\n0", "expected `}`")
+        }
+    }
+    // A PAYLOAD IS A MEMBER TOO, and its marks are aligned by the same
+    // windows. These attack the seam where a payload's mark could be
+    // read as its SUCCESSOR's — the last payload of one variant
+    // against the next variant's name, a middle payload against the
+    // one after it — which is what a mark set short of the payload
+    // anchors would do.
+    given "payload marks — alignment" {
+        then "the LAST payload's mark is not the NEXT variant's" {
+            let src = formatted("enum E {\n    A(x: int, @m y: int)\n    B(z: int)\n}\n0")
+            src.contains("A(x: int, @m y: int)") && !src.contains("@m B")
+        }
+        then "a MIDDLE payload's mark is not the next payload's" {
+            let src = formatted("enum E {\n    A(@m x: int, y: int)\n}\n0")
+            src.contains("A(@m x: int, y: int)") && !src.contains("@m y")
+        }
+        then "a variant's mark and its first payload's are told apart" {
+            formatted("enum E {\n    @outer A(@inner x: int)\n}\n0").contains("@outer A(@inner x: int)")
+        }
+        then "a payload-free variant between two marked ones takes neither" {
+            let src = formatted("enum E {\n    @a A(x: int)\n    B\n    @c C(@d y: int)\n}\n0")
+            src.contains("@a A(x: int)") && src.contains("@c C(@d y: int)") && !src.contains("@a B") && !src.contains("@c B")
+        }
+        then "a one-line declaration aligns as the spread one does" {
+            let src = formatted("enum E { @a A(@b x: int) @c C(@d y: int) }\n0")
+            src.contains("@a A(@b x: int)") && src.contains("@c C(@d y: int)")
+        }
+        then "a payload's ANGLE BRACKETS do not move the window" {
+            formatted("enum E {\n    A(@m x: Map<string, int>, @n y: List<int>)\n}\n0").contains("A(@m x: Map<string, int>, @n y: List<int>)")
+        }
+    }
+    // ONE LINE EACH, DELIBERATELY: spread over three lines every one
+    // of these refuses TWICE — the member list ends at the stray `@`
+    // and the enum's brace then goes missing, so "expected EOF"
+    // follows. That cascade is the variant-level surface's too
+    // (`@m(1) A(x: int)` says both), so it is pinned where the word
+    // slot's wording is and not re-litigated here.
+    given "payload marks — malformed surface" {
+        then "a mark AFTER the payload name is not a mark" {
+            refused_with("enum E { A(x @m: int) }\n0", "expected `}`")
+        }
+        then "a mark AFTER the colon is not a mark" {
+            refused_with("enum E { A(x: @m int) }\n0", "expected `}`")
+        }
+        then "a mark AFTER the type is not a mark" {
+            refused_with("enum E { A(x: int @m) }\n0", "expected `}`")
+        }
+        then "a mark with no payload behind it refuses" {
+            refused_with("enum E { A(x: int, @m) }\n0", "expected `}`")
+        }
+        then "a mark inside a TYPE ARGUMENT is not a mark" {
+            refused_with("enum E { A(x: List<@m int>) }\n0", "expected `}`")
+        }
+        then "FIVE marks on one payload are five mistakes, not one" {
+            refusals("enum E { A(@a @b @c @d @e x: int) }\n0") == 5
+        }
+        then "a POSITIONAL payload carries one" {
+            refused_with("enum E { A(@m int) }\n0", "`@m` — nothing on this declaration reads it")
         }
     }
     given "a derive's own seat" {
