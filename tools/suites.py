@@ -16,6 +16,7 @@ import glob, os, re, shutil, sys, tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SECTION = re.compile(r"^\[([^\]]+)\]", re.M)
 DEP = re.compile(r'^\s*"(@[^"]+)"\s*=\s*\{\s*path\s*=\s*"([^"]+)"', re.M)
+USE = re.compile(r'^use @std\.([a-z_0-9]+)[.{]', re.M)
 
 
 def has_tests(pkg):
@@ -23,12 +24,40 @@ def has_tests(pkg):
                for path in glob.glob(os.path.join(pkg, "**", "*"), recursive=True))
 
 
-def deps(pkg):
-    """The `[dependencies]` rows alone: a dev-dependency may point UP
-    (a text package's tests print through io), so it orders nothing."""
+def deps(pkg, root):
+    """What a package's LIBRARY reaches: its `[dependencies]` rows, and
+    the `@std/*` its own sources import.
+
+    THE ROWS ALONE STOPPED BEING THE ANSWER when `@std/*` became the
+    toolchain's: a std package needs no row, so the manifests carry no
+    edges and the order fell back to the alphabet — `@std/http` sorted
+    ahead of the `@std/net` it reads. The source is where the edge
+    lives now, and it is the same rule one file down.
+
+    TESTS ORDER NOTHING, as a dev-dependency never did: a package's
+    tests may point UP (the prelude's own proof, a driver's suite
+    reaching io), and an edge from them would close a cycle that is
+    not there.
+    """
     parts = SECTION.split(open(os.path.join(pkg, "avra.toml")).read())
     body = "".join(parts[i + 1] for i in range(1, len(parts), 2) if parts[i] == "dependencies")
-    return [os.path.normpath(os.path.join(pkg, rel)) for _, rel in DEP.findall(body)]
+    out = [os.path.normpath(os.path.join(pkg, rel)) for _, rel in DEP.findall(body)]
+    return out + std_imports(pkg, root)
+
+
+def std_imports(pkg, root):
+    """The `@std/*` packages this one's library sources import, as
+    directories under `packages/` — never itself, never from `tests/`."""
+    here = os.path.basename(pkg)
+    found = set()
+    for path in glob.glob(os.path.join(pkg, "src", "**", "*.av"), recursive=True):
+        if os.sep + "tests" + os.sep in path:
+            continue
+        for name in USE.findall(open(path).read()):
+            named = f"std-{name}"
+            if named != here and os.path.exists(os.path.join(root, "packages", named, "avra.toml")):
+                found.add(os.path.join(root, "packages", named))
+    return sorted(found)
 
 
 def ordered(packages, root):
@@ -42,7 +71,7 @@ def ordered(packages, root):
             sys.exit("suites: a cycle — " + " -> ".join(os.path.relpath(p, root) for p in trail + [pkg]))
         if not os.path.exists(os.path.join(pkg, "avra.toml")):
             sys.exit(f"suites: {os.path.relpath(pkg, root)} is named as a dependency and is not a package")
-        for d in sorted(deps(pkg)):
+        for d in sorted(deps(pkg, root)):
             visit(d, trail + [pkg])
         done.add(pkg)
         out.append(pkg)
@@ -66,18 +95,29 @@ def suites(root):
 # ── The fixtures: the tool run against trees built to break it ──
 
 def tree(made, spec):
-    """A tree from {name: (deps, dev_deps, has_test)}, on the list of
-    trees to remove; answers its root."""
+    """A tree from {name: (deps, dev_deps, has_test[, lib_uses,
+    test_uses])}, on the list of trees to remove; answers its root.
+
+    `deps`/`dev_deps` are manifest rows; `lib_uses`/`test_uses` are
+    `use @std.<x>` lines in a library source and in a test, which is
+    how a std package's edges are spelled now that it needs no row.
+    """
     root = tempfile.mkdtemp()
     made.append(root)
-    for name, (ds, dev, tested) in spec.items():
+    for name, row in spec.items():
+        ds, dev, tested = row[0], row[1], row[2]
+        lib_uses, test_uses = (list(row) + [[], []])[3:5]
         pkg = os.path.join(root, "packages", name)
         os.makedirs(os.path.join(pkg, "src", "tests"))
         rows = lambda names: "".join(f'"@t/{n}" = {{ path = "../{n}" }}\n' for n in names)
         with open(os.path.join(pkg, "avra.toml"), "w") as f:
             f.write(f'[package]\nname = "@t/{name}"\n[dependencies]\n{rows(ds)}[dev-dependencies]\n{rows(dev)}')
+        uses = lambda names: "".join(f"use @std.{n}.{{x}}\n" for n in names)
+        with open(os.path.join(pkg, "src", f"{name}.av"), "w") as f:
+            f.write(uses(lib_uses))
         if tested:
-            open(os.path.join(pkg, "src", "tests", f"{name}_test.av"), "w").close()
+            with open(os.path.join(pkg, "src", "tests", f"{name}_test.av"), "w") as f:
+                f.write(uses(test_uses))
     return root
 
 
@@ -114,7 +154,14 @@ def fixtures(tree):
     root = tree({"a": ([], [], True)})
     os.symlink(os.path.join(root, "packages", "a"), os.path.join(root, "packages", "alias"))
     refuses(root, "alias is a symlink")
-    print("suites: self-test passed — 7 fixtures")
+    # a library's own `use` line is an edge, with no manifest row at all
+    root = tree({"std-http": ([], [], True, ["net"]), "std-net": ([], [], True)})
+    assert suites(root) == ["packages/std-net", "packages/std-http"], suites(root)
+    # a TEST's `use` line is not: the prelude's own proof prints, and
+    # an edge from it would close a cycle that is not there
+    root = tree({"std-prelude": ([], [], True, [], ["text"]), "std-text": ([], [], True, ["prelude"])})
+    assert suites(root) == ["packages/std-prelude", "packages/std-text"], suites(root)
+    print("suites: self-test passed — 9 fixtures")
 
 
 def main():
