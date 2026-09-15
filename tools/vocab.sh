@@ -49,7 +49,11 @@ Type	packages/std-avrac/src/features/str_lit/check.av	printable	which shapes an 
 Type	packages/std-avrac/src/language/llvm.av	names_a_name	which shapes a callee reads as a NUL-terminated name
 Type	packages/std-avrac/src/core/types.av	ptr_shape	whether a shape travels as a pointer
 Type	packages/std-avrac/src/features/unify.av	slot_worthy	which shapes a slot may hold
-Type	packages/std-avrac/src/language/llvm.av	ll_type_of	the LLVM type a shape becomes"
+Type	packages/std-avrac/src/language/llvm.av	ll_type_of	the LLVM type a shape becomes
+Type	packages/std-avrac/src/language/llvm.av	slot_form	which conversion a category owes the word slot
+SlotForm	packages/std-avrac/src/language/llvm.av	worded	the cast INTO the slot
+SlotForm	packages/std-avrac/src/language/llvm.av	unworded	the cast back out of it
+SlotForm	packages/std-avrac/src/language/llvm.av	answer_form	which of them survives a non-word answer"
 
 # A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
 # ends the script rather than a subshell the gate never sees.
@@ -124,7 +128,7 @@ EOF
 # line as a census — the label-wider-than-its-coverage species, in the
 # output of the keeper that exists to catch it.
 line=""
-for e in Ins RtKind Type; do
+for e in $(printf '%s\n' "$CONSUMERS" | cut -f1 | sort -u); do
   line="$line $e $(echo "$CONSUMERS" | grep -c "^$e	")"
 done
 echo "vocab: consumers GUARDED —$line"

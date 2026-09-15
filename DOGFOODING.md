@@ -694,6 +694,22 @@ reintroducing I3's blind spot names the two spellings it lost.
       synthetic". Not ratcheted: the smell is a naming choice, not a
       shape a grep can see.
 
+- I44 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
+      conversions that are inverses name their categories ONCE, as a
+      registry enum, and each direction is an exhaustive match over
+      it, arm for arm. The word slot is the instance: `slot_form`
+      says which conversion a category owes the runtime's `int64_t`
+      cells, `worded` casts in and `unworded` casts back, and neither
+      can learn a category the other has not. THE SMELL: each
+      direction written as its own chain of `is` tests, so the two
+      drift a category at a time and the gap is not a refusal — an
+      unconverted value rides the wrong register file and the callee
+      reads a different number. Not ratcheted: no grep links two fns
+      as inverses. THE KEEPER IS `make vocab`, which names both
+      directions as consumers of the SAME enum and refuses a
+      catch-all or an `is` test inside either — so a hole in one
+      direction fails the gate whichever direction grew it.
+
 - I42 (unratcheted) A READ ASKS THE SEEN SHAPE, A SEAT ASKS THE
       TYPE — the named-type law (`type Rows = List<int>`) written as
       a code shape. A rule that DISPATCHES ON A SHAPE to read,
