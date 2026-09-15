@@ -15650,3 +15650,31 @@ the integrator's behaviour after my branches left my hands.
   anyone but me, and both generalise past the incident. A lane that
   reports only its fixes hands the next reader a tidier and less
   useful record.
+
+## Feedback survey — 2026-09-15 #20 (TOOLCHAIN, the weak key named)
+
+Counted per axis: doctrine 1, process 1; every other axis empty —
+this slice is the naming of a shape already fixed in each of its
+instances. Not surveyed: whether a fifth instance is live anywhere;
+the three named are the ones with receipts.
+
+### DOCTRINE
+
+- **A KEY THAT DOES NOT IDENTIFY MAKES THE FIRST MATCH A LIE.** Named
+  at the third instance per the two-copies-may-wait rule, and written
+  with all three: `cited.py`'s basename match, a wait-loop firing on
+  a log line that recurs, an integrator deriving a worktree path from
+  a lane name. `impls_by_name` is the same defect inside the
+  compiler, which is why the entry sits beside it. In CLAUDE.md.
+
+### PROCESS
+
+- **I EDITED A WORKTREE WHILE ITS OWN GATE WAS QUEUED.** Deepening
+  survey #19 amended the commit whose gate was waiting for a slot —
+  the exact thing the discipline forbids, and safe only because the
+  gate had not taken a slot yet and would have read the amended tree
+  either way. I killed and restarted it rather than reason about
+  which tree it would have read. THE TELL I MISSED: "queued" felt
+  like "not running", and the rule is about the WORKTREE, not the
+  process state. A gate that has not started is still a gate in
+  flight.

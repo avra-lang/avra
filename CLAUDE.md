@@ -874,6 +874,24 @@ engine's spec, written by dogfooding.
   hole when emitted, and the closer never passes through it. Line
   comments inside a raw body are the generated program's — a `}` in
   one ends nothing.
+- A KEY THAT DOES NOT IDENTIFY MAKES THE FIRST MATCH A LIE, and the
+  lie is SILENT, CONFIDENT AND OFTEN INVERTED — the tool reports
+  ABSENCE for what exists, so it looks strict while it is blind, which
+  is why none of these was caught by anything going red. FOUR
+  instances, three of them in one week: `cited.py`'s path matcher
+  returned at the first file of a basename and read every other
+  `mod.av` as missing (caught by its own self-test before landing); a
+  lane's wait-loop watched a chain's log for `watch: peak` and fired
+  on the BOOTSTRAP's, reading a gate as finished before it started; an
+  integrator derived a worktree PATH from a lane NAME and began a
+  rebase inside another session's live worktree; and `impls_by_name`,
+  below, is the same defect inside the compiler. THE FIX IS ALWAYS ONE
+  OF TWO: match on enough of the key to be unique (`resolves` walks
+  the cited SEGMENTS IN ORDER and demands the last one), or keep
+  searching and fail only when every candidate is exhausted. THE TEST:
+  ask what else answers to this key — a basename, a recurring log
+  line, a lane name, a declaration's name — and if the answer is
+  "several", the first hit is a guess wearing an answer's clothes.
 - A NAME-KEYED TABLE CROSSES MODULES. `impls_by_name` files every
   `impl` under its NAME, so asking `@std.meta.Code`'s methods signed
   the compiler's own `impl Code` and dragged `features` into a
