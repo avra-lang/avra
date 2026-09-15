@@ -1,0 +1,249 @@
+// THE QUERY: keyed fields beside the path, over RAW OCTETS. The three
+// answers this file exists to keep apart are ABSENT, BARE and EMPTY —
+// and the fourth, REPEATED, which is a mistake rather than a value.
+use @std.http.frame.{framed, limits}
+use @std.http.http.{Request}
+use @std.http.query.{Query, Asked, decoded}
+use @std.text.{from_codepoint}
+
+fn q_of(target: string) -> Query { asked_get(target)!.query() }
+
+/// What one scalar ask answers, as a word.
+fn q_said(a: Asked) -> string {
+    match a {
+        .Absent -> "absent",
+        .Bare -> "bare",
+        .Value(v) -> "[" + (v.text() ?? "?") + "]",
+        .Repeated(n) -> "repeated ${n}",
+    }
+}
+
+fn q_one(target: string, name: string) -> string { q_said(q_of(target).one(name)) }
+
+fn q_all(target: string, name: string) -> string {
+    [q_shown(v) for v in q_of(target).all(name)].join(",")
+}
+
+fn q_shown(v: Bytes?) -> string { if v == null { "bare" } else { v!.text() ?? "?" } }
+
+fn q_dec(s: string) -> string { decoded(s.bytes())?.text() ?? "refused" }
+
+fn q_names(target: string) -> string { [n.text() ?? "?" for n in q_of(target).names()].join(",") }
+
+fn q_path(target: string) -> string { asked_get(target)!.path()!.text() ?? "?" }
+
+spec "@std.http query" {
+    given "absent, bare and empty are three answers" {
+        then "a name the query does not carry is absent" {
+            q_one("/x?page=2", "size") == "absent"
+        }
+        then "a name with no `=` at all is bare" {
+            q_one("/x?page", "page") == "bare"
+        }
+        then "a name with an empty value is a value, and it is empty" {
+            q_one("/x?page=", "page") == "[]"
+        }
+        then "a name with a value answers it" {
+            q_one("/x?page=2", "page") == "[2]"
+        }
+        then "a request with no query answers absent for everything" {
+            q_one("/x", "page") == "absent"
+        }
+    }
+
+    given "a scalar is at most once" {
+        then "a name that came twice is a mistake, not a side" {
+            q_one("/x?page=2&page=3", "page") == "repeated 2"
+        }
+        then "the count is how many came" {
+            q_one("/x?p=1&p=2&p=3", "p") == "repeated 3"
+        }
+        then "a bare key and a valued key of one name still repeat" {
+            q_one("/x?p&p=2", "p") == "repeated 2"
+        }
+    }
+
+    given "a list is in encounter order" {
+        then "values arrive in the order they were sent" {
+            q_all("/x?tag=a&tag=b&tag=c", "tag") == "a,b,c"
+        }
+        then "reversing the request reverses the list" {
+            q_all("/x?tag=c&tag=b&tag=a", "tag") == "c,b,a"
+        }
+        then "a bare key contributes an absence, so it is not silently dropped" {
+            q_all("/x?tag=a&tag&tag=b", "tag") == "a,bare,b"
+        }
+        then "other names do not join the list" {
+            q_all("/x?tag=a&other=z&tag=b", "tag") == "a,b"
+        }
+    }
+
+    given "raw octets, and nothing decoded here" {
+        then "AN ESCAPED SEPARATOR IS NOT A SEPARATOR — `%26` is not `&`" {
+            q_one("/x?a=1%262", "a") == "[1%262]"
+        }
+        then "and it does not become a second pair" {
+            q_of("/x?a=1%262").length() == 1
+        }
+        then "`%3D` is not `=`" {
+            q_one("/x?a%3Db=c", "a%3Db") == "[c]"
+        }
+        then "a value is answered exactly as sent, undecoded" {
+            q_one("/x?page=%32", "page") == "[%32]"
+        }
+        then "`;` IS NOT A SEPARATOR — a dead recommendation, and a parser differential" {
+            q_one("/x?a=1;b=2", "a") == "[1;b=2]"
+        }
+        then "and that leaves one pair, not two" {
+            q_of("/x?a=1;b=2").length() == 1
+        }
+        then "`+` is not a space" {
+            q_one("/x?q=a+b", "q") == "[a+b]"
+        }
+    }
+
+    given "where a pair begins and ends" {
+        then "the FIRST `=` splits, and a later one belongs to the value" {
+            q_one("/x?a=b=c", "a") == "[b=c]"
+        }
+        then "a zero-length segment is not a pair" {
+            q_of("/x?&&").length() == 0
+        }
+        then "a trailing separator adds nothing" {
+            q_of("/x?a=1&").length() == 1
+        }
+        then "a pair with no name is not a pair" {
+            q_of("/x?=v").length() == 0
+        }
+        then "an empty query carries no pairs" {
+            q_of("/x?").length() == 0
+        }
+        then "a query of only separators and an empty query agree" {
+            q_of("/x?&&").length() == q_of("/x?").length()
+        }
+    }
+
+    given "the target is split once" {
+        then "the path is what precedes the first `?`" {
+            q_path("/ideas/7?page=2") == "/ideas/7"
+        }
+        then "a target with no `?` is all path" {
+            q_path("/ideas/7") == "/ideas/7"
+        }
+        then "A `/` INSIDE THE QUERY IS NOT A PATH SEGMENT" {
+            q_path("/ideas/7?redirect=/home") == "/ideas/7"
+        }
+        then "a second `?` belongs to the query" {
+            q_one("/x?a=b?c", "a") == "[b?c]"
+        }
+        then "a `?` with nothing after it leaves the path whole" {
+            q_path("/ideas/7?") == "/ideas/7"
+        }
+        then "a query that was sent and a query that was not are told apart" {
+            asked_get("/x?")!.queried() && !asked_get("/x")!.queried()
+        }
+    }
+
+    given "decoding, in the one place it happens" {
+        then "an escape becomes the octet its two hex digits name" {
+            q_dec("a%20b") == "a b"
+        }
+        then "lower-case hex reads the same as upper" {
+            q_dec("%2f") == q_dec("%2F")
+        }
+        then "a separator can be carried through an escape and come out whole" {
+            q_dec("%2F") == "/"
+        }
+        then "`+` IS NOT A SPACE — that is a form encoding, and this is not a form" {
+            q_dec("a+b") == "a+b"
+        }
+        then "A MALFORMED ESCAPE IS NOT A CHARACTER — a trailing `%` is refused" {
+            q_dec("%") == "refused"
+        }
+        then "and so is a `%` not followed by two hex digits" {
+            q_dec("%zz") == "refused"
+        }
+        then "and a `%` with only one digit left" {
+            q_dec("a%4") == "refused"
+        }
+        then "consecutive escapes each decode" {
+            q_dec("%41%42") == "AB"
+        }
+        then "an escaped percent decodes once, never twice" {
+            q_dec("%2525") == "%25"
+        }
+        then "text with no escape is answered as it arrived" {
+            q_dec("plain") == "plain"
+        }
+        then "an empty value decodes to an empty value" {
+            q_dec("") == ""
+        }
+    }
+
+    given "a name is compared exactly" {
+        then "a name that is a PREFIX of another is not that other" {
+            q_one("/x?a=1&ab=2", "a") == "[1]"
+        }
+        then "and the longer name answers its own value" {
+            q_one("/x?a=1&ab=2", "ab") == "[2]"
+        }
+        then "a name that extends one present is absent" {
+            q_one("/x?a=1&ab=2", "abc") == "absent"
+        }
+        then "A QUERY NAME IS CASE-SENSITIVE, unlike a field name" {
+            q_one("/x?Page=2", "page") == "absent"
+        }
+        then "an escaped `=` makes a different name, because nothing is decoded" {
+            q_one("/x?a%3Db=1", "a") == "absent"
+        }
+    }
+
+    given "scale, and where a pair begins" {
+        then "two hundred pairs are two hundred pairs" {
+            q_of("/x?" + ["k${i}=${i}" for i in 0..200].join("&")).length() == 200
+        }
+        then "fifty of one name is fifty repeats, not a value" {
+            q_one("/x?" + ["d=1" for i in 0..50].join("&"), "d") == "repeated 50"
+        }
+        then "a leading separator adds no pair" {
+            q_of("/x?&a=1").length() == 1
+        }
+        then "a doubled `=` puts the second in the value" {
+            q_one("/x?a==b", "a") == "[=b]"
+        }
+        then "a `?` inside a value is part of the value" {
+            q_one("/x?a=b?c?d", "a") == "[b?c?d]"
+        }
+    }
+
+    given "the NUL a URL can carry" {
+        then "`%00` DECODES TO A REAL NUL, and the length counts it" {
+            decoded("a%00b".bytes())!.length == 3
+        }
+        then "and `==` reads every byte, so the text is not its own prefix" {
+            let t = decoded("a%00b".bytes())!.text()!
+            t != "a" && t == "a${from_codepoint(0)}b"
+        }
+        then "a minted NUL cannot move where a pair began, because the split ran first" {
+            q_one("/x?a=1%002", "a") == "[1%002]"
+        }
+        then "and the framer refuses a NUL in the target outright" {
+            asked_get("/x?a=" + from_codepoint(0)) == null
+        }
+    }
+
+    given "the pairs in the order they were sent" {
+        then "every name is answered, in encounter order" {
+            q_names("/x?b=1&a=2&c=3") == "b,a,c"
+        }
+        then "a repeat is kept, because it is what was sent" {
+            q_names("/x?a=1&a=2") == "a,a"
+        }
+        then "a bare key is a name like any other" {
+            q_names("/x?a&b=1") == "a,b"
+        }
+        then "a query with no pairs names nothing" {
+            q_names("/x?&&") == ""
+        }
+    }
+}
