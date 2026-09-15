@@ -1806,10 +1806,23 @@ Runtime facts, ours to ratify:
   unrelated design choice and nothing its author did); `plain`
   dropping a fn type's seat marks, safe only while a nullable fn type
   is unspellable; and @std/sqlite's `close(mut db)`, whose
-  idempotence rests ENTIRELY on `mut b = a` aliasing — the day S2
-  makes copies copy, `close(a)` is a DOUBLE FREE in a shipping std
-  package, and the driver's own test passes because it uses one
-  binding (verified here at `close`, open.av).
+  idempotence rested ENTIRELY on a `mut` SEAT writing through the
+  caller's binding — PAID, and the way it was paid is the second
+  half of the lesson above: NOT by meeting the deadline but by
+  refusing the channel. A seat reaches ONE caller's place by the
+  calling convention's leave; `Db` and `Stmt` hold their handle and
+  their DONE mark in a `Cell` instead, so the write lands in one
+  slot every copy reads and the property belongs to the TYPE rather
+  than to whatever a seat copy comes to mean. A list element, a
+  struct field, an enum payload, a lambda capture and a deeper
+  frame are all carriers a seat could never have reached, and each
+  is a case in the suite now. THE LOST DONE MARK IS THE HALF WORTH
+  CARRYING: a lost handle traps, so it was the one on the register,
+  while the same seat carried `Stmt.done` and losing THAT re-runs
+  the statement and answers rows a second time with nothing in the
+  answer saying so. When a deadline names one value riding a doomed
+  channel, ask what ELSE rides it — the quiet passenger is the one
+  nobody wrote down.
   So NAME THE CONDITION IN THE SAME BREATH — an unstated one is what
   makes the eventual breakage read as a new bug rather than an
   EXPIRY. A sixth instance is a CITATION of this line, never another
