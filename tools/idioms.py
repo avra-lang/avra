@@ -620,10 +620,24 @@ UNRATCHETED = {
 # forever. Every matcher must catch its own specimen, checked on every
 # run — this caught I18 shipping with a regex that could not span a
 # nested call.
-# A KEEPER HAS TWO SURFACES: what it refuses and what it accepts. Each
-# honest spelling a matcher permits is exercised here, or a dead
-# alternative can widen the rule unseen (`refused_n(` was one).
-ACCEPTED = {
+# WHAT A RULE MUST *NOT* FIRE ON — THE KEEPER'S OTHER SURFACE, in one
+# table. Making a rule fail exercises only what it refuses; every
+# spelling it ACCEPTS is a claim too, and the accepted shape nobody
+# fixtured is exactly where a false positive lives unseen, because the
+# rule is working and nobody looks. Two kinds of entry, one concept:
+# an HONEST SPELLING a matcher must permit (a dead alternative widens
+# the rule — `refused_n(` was one), and a CLEAN SHAPE it must not
+# accuse (both I21 entries were live accusations against code the
+# compiler requires).
+#
+# THEY WERE TWO TABLES, `ACCEPTED` and `CLEAN`, AND THE SECOND KILLED
+# THE FIRST: two `CLEAN = {…}` bindings landed in one file a week
+# apart, Python kept the later, and the I21, I23 and I43 fixtures of
+# the earlier one stopped being checked with nothing to see. That is
+# this file's own duplicate-number hazard one level up — the guard
+# below now reads its own source for a table defined twice, as it
+# already does for a number claimed twice.
+CLEAN = {
     "I20": [
         ['        then "k" {', '            a.report().contains("x") && a.diagnostics.length == 1'],
         ['        then "k" {', '            a.report().contains("x") && a.voices.length == 1'],
@@ -631,6 +645,16 @@ ACCEPTED = {
         ['        then "k" {', '            a.report().contains("x") && refused_with(src, "x")'],
         ['        then "k" {', '            a.report().contains("x") && refused_n(p, "x", 1)'],
     ],
+    "I21": [["    mut pr = attacked()?",
+             "    pr.s.turn(ms(20))?"],
+            ["    mut w = held()",
+             "    w.c.buf = grown"]],
+    "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
+            ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
+            ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
+    "I43": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
+            ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
+            ["    [f(x) for x in xs if p(x)].any(it)"]],
 }
 
 SPECIMENS = {
@@ -719,7 +743,14 @@ def duplicate_numbers():
     text — the dict has already dropped the loser by the time it runs."""
     text = open(__file__).read()
     out = []
-    for table in ("RULES", "SPECIMENS", "UNRATCHETED"):
+    # A TABLE DEFINED TWICE IS THE SAME HAZARD ONE LEVEL UP: the later
+    # binding replaces the earlier whole, so every fixture in it stops
+    # being checked and the tool still reports success. It happened to
+    # `CLEAN`.
+    for name in sorted(set(re.findall(r"^([A-Z_]+) = \{", text, re.M))):
+        if len(re.findall(r"^" + name + r" = \{", text, re.M)) > 1:
+            out.append(name + " is defined more than once — the later table silently replaces the earlier")
+    for table in ("RULES", "SPECIMENS", "UNRATCHETED", "CLEAN"):
         start = text.find("\n" + table + " = {")
         if start < 0:
             continue
@@ -736,23 +767,6 @@ def duplicate_numbers():
         if entries.count(code) > 1:
             out.append(code + " is claimed " + str(entries.count(code)) + " times in DOGFOODING.md's registry — a license naming it is ambiguous")
     return out
-
-# WHAT A RULE MUST *NOT* FIRE ON. A keeper has two surfaces, and
-# making it fail exercises only one: every spelling a rule ACCEPTS is
-# a claim too, and the accepted shape nobody fixtured is exactly where
-# a false positive lives unseen — the rule is working, so nobody
-# looks. Both entries below were live accusations against code the
-# compiler REQUIRES.
-CLEAN = {
-    "I21": [["    mut pr = attacked()?",
-             "    pr.s.turn(ms(20))?"],
-            ["    mut w = held()",
-             "    w.c.buf = grown"]],
-    "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"]],
-    "I43": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
-            ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
-            ["    [f(x) for x in xs if p(x)].any(it)"]],
-}
 
 def selftest():
     """Every rule catches EVERY specimen, or the tool refuses to run.
@@ -779,24 +793,10 @@ def selftest():
         for spec in specimens:
             if not list(matcher(spec)):
                 dead.append(f"{code}'s matcher misses `{' / '.join(spec)[:52]}`")
-        for spec in ACCEPTED.get(code, []):
+        for spec in CLEAN.get(code, []):
             if list(matcher(spec)):
-                dead.append(f"{code}'s matcher refuses the honest `{' / '.join(spec)[-52:]}`")
-    for code, clean in CLEAN.items():
-        for spec in clean:
-            if list(RULES[code][0](spec)):
-                dead.append(f"{code}'s matcher fires on the clean `{' / '.join(spec)[:52]}`")
+                dead.append(f"{code}'s matcher accuses the clean `{' / '.join(spec)[:52]}`")
     return dead
-
-
-# THE OTHER SURFACE: what a matcher must ACCEPT. A false positive is a
-# refusal nobody can pay, and the specimens above cannot see it — I23
-# read a one-line fn's `with { mode: … }` as a parameter list for as
-# long as every fn it met spanned lines.
-CLEAN = {
-    "I23": [["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
-            ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
-}
 
 
 def sources():
