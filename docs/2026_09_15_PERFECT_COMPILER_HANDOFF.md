@@ -106,6 +106,8 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
 | `avra-iemo` | a re-entrant expansion's hush may erase a spoken refusal (unwitnessed) |
 | `avra-6ndp` | collapse `Variant.payload` into a projection of `fields` (shrink ladder) |
 | `avra-5m62` | ANSWERED by G: summary and law are different artifacts, 60 of 72 differ |
+| `avra-inr8` | **P1**: two `match` expressions in ONE derive's `Decls` lose their enum — the second's variant patterns arrive without it. Bisected to four runs. **Silent at `make avra`** (an entry lowers only reachable bodies), so a derive can be built and shipped broken. Crossing = C's. |
+| `avra-l4xk` | a derive's `export` is inert at the package surface — module-visible, package-invisible. Phases D and E have each worked around it independently, which is what makes it a defect and not a fact of life. |
 
 ## Laws this program paid for
 
@@ -120,3 +122,7 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
 - A bad pattern propagates by being the **nearest example to copy**.
 - A witness that no longer triggers its code is a green test proving
   nothing — assert the code FIRED.
+- **One consumer adapts to a bad seam; two consumers adapting
+  independently means the seam is wrong.** Phase D worked around
+  `avra-l4xk` and wrote it into a comment as a fact of life; phase E hit
+  it separately. The second adapter is what turns a habit into a defect.
