@@ -16,9 +16,9 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
-use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait}
-use @std.meta.{Diagnostic, Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Decls as MetaDecls}
+use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
+use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
+use @std.meta.{Diagnostic, Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Decls as MetaDecls, Kind}
 use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, copier, quote_kind, all_codes, is_name_cont, SyntaxParts, ForeignRange}
 use grammar.{parse_grammar, ready}
 use diagnostics.{defect_at}
@@ -1132,7 +1132,7 @@ impl Workspace {
         // a loaded `@std/meta` the crossing cannot read generates
         // nothing; the annotation law speaks it
         if self.decls.meta_disagreement() != null { return [] }
-        let directives = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args) }
+        let directives = if self.is_derived(w.ret) { self.derive_directives(w, f, p, vis) } else { self.lifted_directives(w.ann, f, w.stmt, w.callee, w.args, w.at) }
         flatten([self.materialized_directive(f, w, directive, vis) for directive in directives])
     }
 
@@ -1352,11 +1352,25 @@ impl Workspace {
 
     /// A lifted call's directives, or none when it refused — the ONE
     /// read of a `List<Directive>` answer.
-    fn lifted_directives(d: DeclId, f: FileId, stmt: StmtId, call: ExprId, args: List<ExprId>) -> List<Directive> {
+    /// A DECLARING ANNOTATION THAT COULD NOT RUN SPEAKS, in the
+    /// VALIDATING path's own words. This arm answered `[]` and said
+    /// nothing, so a lift that trapped generated no declarations and
+    /// the only evidence was F3000 at the USE SITE of a name nobody
+    /// minted — one mechanism with a loud door and a mute one, and
+    /// the mute one is the door every `@derive` takes.
+    fn lifted_directives(d: DeclId, f: FileId, stmt: StmtId, call: ExprId, args: List<ExprId>, at: Span?) -> List<Directive> {
         match self.lifted(d, f, stmt, call, args) {
             .Ok(crossed) -> crossed.directives(),
-            .Err(_) -> [],
+            .Err(why) -> self.mute_lift(d, f, at, why),
         }
+    }
+
+    /// What the annotation could not do, at the annotation.
+    fn mute_lift(d: DeclId, f: FileId, at: Span?, why: Unsettled) -> List<Directive> {
+        let label = unsettled_label(self.decls.decl(d).name, why)
+        if label.is_empty() { return [] }
+        self.decls.speak_expansion(f, [lift_failed(label, loc_at(self.decls.file(f).path, at))])
+        []
     }
 
     /// A `@derive`'s directives: each named trait's associated
@@ -1407,24 +1421,74 @@ impl Workspace {
         let v = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
         let at = placed(v, v.store.stmt_span(x.stmt))
         match self.decls.meta_seat(want) {
-            .Fn -> meta_of_fn(MetaFn { name: x.name, params: self.crossed_params(v, x.stmt), answer: self.crossed_answer(v, x.stmt), at: at }, heap),
-            .Type -> meta_of_type(MetaType { name: x.name, fields: crossed_fields(v, x.stmt), variants: crossed_variants(v, x.stmt), at: at }, heap),
+            .Fn -> meta_of_fn(MetaFn { name: x.name, params: self.crossed_params(v, x.stmt, d), answer: self.crossed_answer(v, x.stmt), at: at, answers: self.answer_kind(d) }, heap),
+            .Type -> meta_of_type(MetaType { name: x.name, fields: self.crossed_fields(v, x.stmt, d), variants: self.crossed_variants(v, x.stmt, d), at: at }, heap),
             .Named -> meta_of_named(Named { name: x.name, at: at }, heap),
             .Trait -> meta_of_trait(MetaTrait { name: x.name, at: at }, heap),
             .Other -> MetaVal.Absent,
         }
     }
 
-    /// A fn's parameters as `Param` values: name, the type's spelling,
-    /// its `mut` and `const` marks.
-    fn crossed_params(v: FileView, s: StmtId) -> List<MetaParam> {
-        [MetaParam { name: p.name, ty: typed_text(self.decls.types, p.ty), mutable: p.mark.mutable, settled: p.mark.settled, at: placed(v, p.span) } for p in declared_params(v.store, s)]
+    /// A fn's parameters as `Param` values: name, the type's spelling
+    /// AND ITS SHAPE, its `mut` and `const` marks.
+    fn crossed_params(v: FileView, s: StmtId, d: DeclId) -> List<MetaParam> {
+        let kinds = self.seat_kinds(d)
+        [self.crossed_param(v, p, kind_at(kinds, j)) for j, p in declared_params(v.store, s)]
+    }
+
+    fn crossed_param(v: FileView, p: Param, k: Kind) -> MetaParam {
+        MetaParam { name: p.name, ty: typed_text(self.decls.types, p.ty), mutable: p.mark.mutable, settled: p.mark.settled, at: placed(v, p.span), kind: k }
     }
 
     /// A fn's answer, spelled from its declared TypeRef — a store read
     /// alone, so crossing a declaration needs no typed facts.
     fn crossed_answer(v: FileView, s: StmtId) -> string {
         typed_text(self.decls.types, v.store.fn_parts(s)?.ret)
+    }
+
+    /// A record's fields as `Field` values: the spelling the program
+    /// WROTE, and the shape its signature resolved it to.
+    fn crossed_fields(v: FileView, s: StmtId, d: DeclId) -> List<MetaField> {
+        let kinds = self.field_kinds(d)
+        [MetaField { name: p.name, ty: written_spelling(p.ty), at: placed(v, p.span), kind: kind_at(kinds, j) } for j, p in declared_fields(v.store, s)]
+    }
+
+    /// An enum's variants: name, payload spellings, payload shapes.
+    fn crossed_variants(v: FileView, s: StmtId, d: DeclId) -> List<MetaVariant> {
+        let rows = self.payload_kinds(d)
+        [MetaVariant { name: va.name, payload: [written_spelling(p.ty) for p in va.payloads], at: placed(v, va.span), kinds: kinds_at(rows, j) } for j, va in declared_variants(v.store, s)]
+    }
+
+    /// THE SHAPE COMES FROM THE SIGNATURE, NEVER FROM THE SPELLING.
+    /// A written `TypeRef` resolves only the SCALAR words on its own
+    /// (`spelled_type`), so a declared name read that way is no shape
+    /// at all — which is exactly why the string seat beside this one
+    /// answers "" for every declared type and always has. The
+    /// declaration's own signature holds the TypeIds the compiler
+    /// resolved, positionally; a declaration whose signature is not
+    /// earned yet leaves every shape unspelled rather than guessing.
+    fn seat_kinds(d: DeclId) -> List<Kind> {
+        let sig: FnSig? = (self.decls.sig(d))?.fn_sig()
+        if sig == null { return [] }
+        [kind_of(self.decls.types, t) for t in sig!.params]
+    }
+
+    fn answer_kind(d: DeclId) -> Kind {
+        let sig: FnSig? = (self.decls.sig(d))?.fn_sig()
+        if sig == null { return no_kind() }
+        kind_of(self.decls.types, sig!.ret)
+    }
+
+    fn field_kinds(d: DeclId) -> List<Kind> {
+        let sig: StructSig? = (self.decls.sig(d))?.record_sig()
+        if sig == null { return [] }
+        [kind_of(self.decls.types, t) for t in sig!.types]
+    }
+
+    fn payload_kinds(d: DeclId) -> List<List<Kind>> {
+        let sig: EnumSig? = (self.decls.sig(d))?.enum_sig()
+        if sig == null { return [] }
+        [[kind_of(self.decls.types, t) for t in ps] for ps in sig!.payloads]
     }
 
     // ── Modules ──
@@ -2419,20 +2483,22 @@ fn typed_text(types: TypeRegistry, ann: TypeRef?) -> string {
     types.name_of(held!)
 }
 
+/// A shape by position — unspelled past the signature's end, which
+/// is a declaration the crossing reached before its own sig.
+fn kind_at(kinds: List<Kind>, j: int) -> Kind {
+    if j >= kinds.length { return no_kind() }
+    kinds[j]
+}
+
+fn kinds_at(rows: List<List<Kind>>, j: int) -> List<Kind> {
+    if j >= rows.length { return [] }
+    rows[j]
+}
+
 /// A source span as the place a meta value names.
 fn placed(v: FileView, sp: Span?) -> Loc? {
     if sp == null { return null }
     Loc { file: v.source.file, lo: sp!.lo, hi: sp!.hi }
-}
-
-/// A record's fields as `Field` values.
-fn crossed_fields(v: FileView, s: StmtId) -> List<MetaField> {
-    [MetaField { name: p.name, ty: written_spelling(p.ty), at: placed(v, p.span) } for p in declared_fields(v.store, s)]
-}
-
-/// An enum's variants as `Variant` values: name and payload spellings.
-fn crossed_variants(v: FileView, s: StmtId) -> List<MetaVariant> {
-    [MetaVariant { name: va.name, payload: [written_spelling(p.ty) for p in va.payloads], at: placed(v, va.span) } for va in declared_variants(v.store, s)]
 }
 
 /// A type reference as the program WROTE it, "" for a written absence.
@@ -2531,6 +2597,12 @@ fn arena_marks(store: NodeStore) -> ArenaMarks {
 
 /// A generated declaration's name is already the file's — the
 /// annotation is asked to choose another.
+/// An annotation that could not run — the DECLARING path's voice,
+/// the validating path's words.
+fn lift_failed(label: string, at: Loc?) -> Diag {
+    refusal("annotation.unsettled", at, "an annotation could not run", label, "an annotation runs at compile time from pure computation alone")
+}
+
 fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
     refusal("annotation.generated_taken", at, "`@${ann}` generates `${name}`, which this file already declares", "asked here", "rename the written declaration, or the generated one")
 }

@@ -1,0 +1,92 @@
+//! A TYPE CROSSES AS A SHAPE, not as text. Every verb here
+//! DISPATCHES on `Kind` and never reads a spelling, so the answer it
+//! writes is proof the structure arrived — and `spelled()` beside it
+//! is proof the shape still knows the words.
+use @std.meta.{Type, Fn, Param, Kind, Seat, Directive, literal}
+
+/// A record's fields three ways: STRUCTURALLY (a Kind dispatch), in
+/// the shape's OWN WORDS (`spelled()`), and as the program WROTE
+/// them. The last two agreeing is what says the Kind was built from
+/// the type and not from the text beside it.
+export trait Shapes {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: quote { impl ${t} {
+            fn shapes() -> string { ${literal(joined([shaped(f.kind) for f in t.fields]))} }
+            fn words() -> string { ${literal(joined([f.kind.spelled() for f in t.fields]))} }
+            fn written() -> string { ${literal(joined([f.ty for f in t.fields]))} }
+        } } }]
+    }
+}
+
+/// An ENUM's payload shapes, variant by variant — `kinds` runs
+/// beside `payload`, the same length in the same order.
+export trait Carried {
+    static fn derive(t: Type) -> List<Directive> {
+        [Directive { twin: "", name: t.name, at: t.at, source: quote { impl ${t} {
+            fn carried() -> string { ${literal(joined([variant_shape(v.name, v.kinds) for v in t.variants]))} }
+            fn paired() -> string { ${literal(joined(["${v.payload.length}=${v.kinds.length}" for v in t.variants]))} }
+        } } }]
+    }
+}
+
+/// A FN's seats and answer, shaped — where a `mut` mark, a `Result`
+/// and a fn-typed seat live, none of which a struct field carries.
+export fn seated(f: Fn) -> List<Directive> {
+    [Directive { twin: "", name: f.name, at: f.at, source: quote { fn ${seat_reader(f.name)}() -> string { ${literal(fn_shape(f))} } } }]
+}
+
+fn seat_reader(name: string) -> string { "${name}_shape" }
+
+fn fn_shape(f: Fn) -> string {
+    "(${joined([param_shape(p) for p in f.params])})->${shaped(f.answers)}|${f.answers.spelled()}"
+}
+
+fn param_shape(p: Param) -> string {
+    "${mark_word(p.mutable, p.settled)}${shaped(p.kind)}"
+}
+
+/// THE STRUCTURAL SPELLING: every variant answers, so a shape this
+/// vocabulary has no word for cannot pass as one that does.
+export fn shaped(k: Kind) -> string {
+    match k {
+        .Int -> "i",
+        .Float -> "f",
+        .Bool -> "b",
+        .Str -> "s",
+        .Ptr -> "p",
+        .Void -> "v",
+        .List(elem) -> "[${shaped(elem)}]",
+        .Cell(inner) -> "cell(${shaped(inner)})",
+        .Map(key, value) -> "{${shaped(key)}:${shaped(value)}}",
+        .Opt(inner) -> "${shaped(inner)}?",
+        .Result(ok, err) -> "(${shaped(ok)}!${shaped(err)})",
+        .Named(name, args) -> named_shape(name, args),
+        .Fn(seats, answer) -> "fn(${joined([seat_shape(s) for s in seats])})->${shaped(answer)}",
+        .Dyn(name) -> "dyn@${name}",
+        .Var(name) -> "var@${name}",
+        .Unspelled(text) -> "?<${text}>",
+    }
+}
+
+fn named_shape(name: string, args: List<Kind>) -> string {
+    if args.is_empty() { return "@${name}" }
+    "@${name}<${joined([shaped(a) for a in args])}>"
+}
+
+/// A seat carries its promises WITH its shape — one value, never a
+/// parallel list.
+fn seat_shape(s: Seat) -> string {
+    "${mark_word(s.mutable, s.settled)}${shaped(s.kind)}"
+}
+
+fn mark_word(mutable: bool, settled: bool) -> string {
+    if settled { return if mutable { "cm:" } else { "c:" } }
+    if mutable { return "m:" }
+    ""
+}
+
+fn variant_shape(name: string, kinds: List<Kind>) -> string {
+    "${name}(${joined([shaped(k) for k in kinds])})"
+}
+
+fn joined(xs: List<string>) -> string { xs.join(",") }
