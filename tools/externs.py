@@ -707,6 +707,34 @@ def retaining_seats(bodies):
             out[name] = held
     return out
 
+def row_boxes():
+    """Each row's declared boxes, by name: `Text`, `List`, `Map`, `Any`
+    per parameter, `Any` where the row names none."""
+    text = open(os.path.join(ROOT, "packages/std-avrac/src/core/runtime_api.av")).read()
+    out = {}
+    for m in re.finditer(r'RtSig \{ name: "([a-z_0-9]+)".*?params: \[([^\]]*)\](.*?) \},', text, re.S):
+        n = len([p for p in m.group(2).split(",") if p.strip()])
+        named = re.search(r"boxes: \[([^\]]*)\]", m.group(3))
+        boxes = [b.strip().split(".")[-1] for b in named.group(1).split(",") if b.strip()] if named else []
+        out[m.group(1)] = boxes + ["Any"] * (n - len(boxes))
+    return out
+
+
+def wrong_boxes(sigs):
+    """Every row whose declared box disagrees with the C seat: `Text`
+    is a `char*` and nothing else is; a `void*` is never `Text`."""
+    out = []
+    for name, boxes in row_boxes().items():
+        if name not in sigs:
+            continue
+        cp = split_params(sigs[name][0])
+        for j, (b, c) in enumerate(zip(boxes, cp)):
+            bare = PARAM_NAME.sub("", c).strip() or c
+            if "*" in bare and (b == "Text") != ("char" in bare):
+                out.append((name, j + 1, b, bare))
+    return out
+
+
 def sig_rows():
     """Each `rt_sigs()` row's name, `keeps` seats, and `owns_result`."""
     text = open(os.path.join(ROOT, "packages/std-avrac/src/core/runtime_api.av")).read()
@@ -908,6 +936,13 @@ def main():
     print(f"externs: {len(ours)} extern(s) match their C body's width{note}{extra}")
     checked = sum(len(split_params(p)) for n, p, _ in walls if n in sigs)
     print(f"externs: {checked} parameter seat(s) match the C seat they fill")
+    boxed = wrong_boxes(c_signatures(sources, set(row_boxes())))
+    for name, j, b, c in boxed:
+        print(f"externs: `{name}` seat {j} names box {b} and its C seat is `{c}`")
+    if boxed:
+        print(f"externs: {len(boxed)} row box(es) disagree with their C seat")
+        return 1
+    print(f"externs: {sum(len(v) for v in row_boxes().values())} row seat(s) name the box their C seat reads")
     print(f"externs: read {scanned}; {len(CASES) + len(SEAT_CASES) + len(MINT_CASES) + len(PTR_CASES) + len(KEEP_CASES) + len(INERT_CASES)} of the keeper's own cases hold")
     return 0
 
