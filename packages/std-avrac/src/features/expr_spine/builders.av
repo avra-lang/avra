@@ -1,5 +1,5 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, Span, TypeRef, pronoun_param}
+use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, Span, TypeRef, pronoun_param, Plain, Scoped}
 use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, within, chained_binder, marked_seats}
 use grammar.{Token}
 
@@ -15,7 +15,7 @@ fn build_int_lit(mut b: Builder) -> Result<LangNode, string> {
 
 fn build_ident(mut b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
-    b.make_expr(Expr.Ident(t.text))
+    b.make_expr(Expr.Ident(Scoped(t.text)))
 }
 
 /// `l (op r)*` folds left: each pair wraps the accumulator, so
@@ -89,7 +89,7 @@ fn build_bitnot(mut b: Builder) -> Result<LangNode, string> {
 fn build_fold_cmp(mut b: Builder) -> Result<LangNode, string> {
     let l = b.expr(0)?
     let asked: Token? = token_at(b.args, 3)
-    if asked != null { return b.make_expr(Expr.Is(l, asked!.text)) }
+    if asked != null { return b.make_expr(Expr.Is(l, Plain(asked!.text))) }
     let op_tok: Token? = token_at(b.args, 1)
     if op_tok == null { return b.wrap_expr(l) }
     let r = b.expr(2)?
@@ -125,7 +125,7 @@ fn build_fold_with(mut b: Builder) -> Result<LangNode, string> {
     let wv = b.exprs(2)?
     if wn.length != wv.length { return .Err(zip_defect) }
     let names = [k.text for k in wn]
-    b.make_expr(Expr.With(subject, names, wv))
+    b.make_expr(Expr.With(subject, [Plain(t) for t in names], wv))
 }
 
 /// `v ( ! | ? )*` folds left, each link choosing its node: `!`
@@ -225,7 +225,7 @@ fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
                 let called = opens.any(within(it.span.lo, np, upto))
                 if called {
                     let margs_here = [b.store.pronouned(a) for a in args_between(b, margs, np, upto)]
-                    acc = if links[jn].text == "?." { chained_call(b, acc, names[jn].text, margs_here) } else { b.store.alloc_expr(Expr.MethodCall(acc, names[jn].text, margs_here), b.span) }
+                    acc = if links[jn].text == "?." { chained_call(b, acc, names[jn].text, margs_here) } else { b.store.alloc_expr(Expr.MethodCall(acc, Plain(names[jn].text), margs_here), b.span) }
                 } else {
                     acc = b.store.alloc_expr(prop_link(links[jn].text, acc, names[jn].text), b.span)
                 }
@@ -250,10 +250,10 @@ fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
 /// present arm calls the method on what the nullable carries, the
 /// absent arm answers absence, and the match's own typing joins them.
 fn chained_call(mut b: Builder, subject: ExprId, name: string, args: List<ExprId>) -> ExprId {
-    let carried = b.store.alloc_expr(Expr.Ident(chained_binder), b.span)
-    let call = b.store.alloc_expr(Expr.MethodCall(carried, name, args), b.span)
+    let carried = b.store.alloc_expr(Expr.Ident(Scoped(chained_binder)), b.span)
+    let call = b.store.alloc_expr(Expr.MethodCall(carried, Plain(name), args), b.span)
     let absent = b.store.alloc_expr(Expr.NullLit, b.span)
-    b.store.alloc_expr(Expr.MatchOpt(subject, chained_binder, call, absent), b.span)
+    b.store.alloc_expr(Expr.MatchOpt(subject, Scoped(chained_binder), call, absent), b.span)
 }
 
 /// The nearest UNCONSUMED anchor past the cursors — the window's
@@ -288,8 +288,8 @@ fn span_lo(b: Builder, e: ExprId) -> int? {
 
 /// The node a link token names — the chain when absence rides it.
 fn prop_link(link: string, subject: ExprId, name: string) -> Expr {
-    if link == "?." { return Expr.Chain(subject, name) }
-    Expr.Prop(subject, name)
+    if link == "?." { return Expr.Chain(subject, Plain(name)) }
+    Expr.Prop(subject, Plain(name))
 }
 
 /// The operator a source token names — derived from core's roster,
@@ -320,18 +320,18 @@ fn build_trailing(mut b: Builder) -> Result<LangNode, string> {
 fn build_catch(mut b: Builder) -> Result<LangNode, string> {
     let l = b.expr(0)?
     let rv = b.exprs(10)?
-    if !rv.is_empty() { return b.make_expr(Expr.Catch(l, [""], [""], [rv[0]])) }
+    if !rv.is_empty() { return b.make_expr(Expr.Catch(l, [Plain("")], [Scoped("")], [rv[0]])) }
     let eb = b.tokens(8)?
     if !eb.is_empty() {
         let ea = b.expr(9)?
-        return b.make_expr(Expr.Catch(l, [""], [eb[0].text], [ea]))
+        return b.make_expr(Expr.Catch(l, [Plain("")], [Scoped(eb[0].text)], [ea]))
     }
     let sv = b.tokens(5)?
     if !sv.is_empty() {
         let sa = b.expr(7)?
         let sb = b.tokens(6)?
         let bound: Token? = sb.first()
-        return b.make_expr(Expr.Catch(l, [sv[0].text], [bound?.text ?? ""], [sa]))
+        return b.make_expr(Expr.Catch(l, [Plain(sv[0].text)], [Scoped(bound?.text ?? "")], [sa]))
     }
     let cv = b.tokens(2)?
     if cv.is_empty() {
@@ -345,5 +345,5 @@ fn build_catch(mut b: Builder) -> Result<LangNode, string> {
     let ends: int? = b.span_end()
     if cv.length != ca.length { return .Err(zip_defect) }
     if ends == null { return .Err("defect: a catch without a span — the arena and the grammar disagree") }
-    b.make_expr(Expr.Catch(l, [v.text for v in cv], aligned_binds(cv, b.tokens(3)?, ends!), ca))
+    b.make_expr(Expr.Catch(l, [Plain(v.text) for v in cv], [Scoped(t) for t in aligned_binds(cv, b.tokens(3)?, ends!)], ca))
 }

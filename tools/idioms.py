@@ -514,6 +514,11 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "I45": "no grep tells \"declares a derive and nothing else\" from an ordinary\n"
+           "           file with a trait in it — the shape that breaks it is whatever\n"
+           "           ELSE the file holds. The keeper is the law in CLAUDE.md and the\n"
+           "           first build that tries: the annotated file loses its methods and\n"
+           "           every caller is blamed",
     "I44": "no grep tells a BOUNDARY registry from any other list of rows, and a\n"
            "           reader that spells slot names or a writer that spells literal tags\n"
            "           reads as ordinary code. The keeper is the boundary check itself:\n"

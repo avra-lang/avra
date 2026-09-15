@@ -83,10 +83,10 @@ export type TypeRow = { name: string, arity: int, slots: bool, judge: fn(TypeReg
 export type TypeArgs = { parts: List<TypeId> }
 
 /// One PROPERTY a receiver shape answers (`.length` and its kin):
-/// the typing rule takes the read and the receiver's TYPE (the
-/// chain asks with a carried type, no subject), the lowering takes
-/// the read and the subject.
-export type PropertyRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, ExprId, TypeId) -> TypeId, lower: fn(mut LowerCx, ExprId, ExprId) -> Reg }
+/// both rules take the read and the receiver's TYPE, the lowering
+/// its REGISTER too — the chain holds a carried value and no
+/// subject node, and one registry answers both readers.
+export type PropertyRow = { name: string, takes: fn(Type) -> bool, check: fn(mut TypeCx, ExprId, TypeId) -> TypeId, lower: fn(mut LowerCx, ExprId, Reg, TypeId) -> Reg }
 
 /// The constructor a name selects; null when the language owns none.
 export fn type_row(rows: List<TypeRow>, name: string) -> TypeRow? {
@@ -96,6 +96,15 @@ export fn type_row(rows: List<TypeRow>, name: string) -> TypeRow? {
 /// The property a receiver shape and a name select.
 export fn property_row(rows: List<PropertyRow>, name: string, sh: Type) -> PropertyRow? {
     rows.find(it.name == name && it.takes(sh))
+}
+
+/// THE ROW A RECEIVER SELECTS: its OWN shape first, then the shape
+/// it stands over — the order `member_type_of` asks in, so the
+/// lowering and the law that admitted it read the same bytes.
+export fn property_of(types: TypeRegistry, rows: List<PropertyRow>, name: string, ty: TypeId) -> PropertyRow? {
+    let own: PropertyRow? = property_row(rows, name, types.shape_of(ty))
+    if own != null { return own }
+    property_row(rows, name, types.seen_shape(ty))
 }
 
 /// A constructor that is no enum — nothing to construct by name.

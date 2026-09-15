@@ -2,14 +2,15 @@
 //! ... }` declares a nominal record; `Name { field: value, ... }`
 //! builds one; reads ride the spine's postfix ladder (`p.x`).
 //! `type Name = <type>` declares a NAMED TYPE over a shape — always
-//! DISTINCT from it, never an alias. ONE `stmt` rule carries both
+//! DISTINCT from it, never an alias; `Name(v)` wraps and `v.of`
+//! reads the shape back, free at runtime. ONE `stmt` rule carries both
 //! forms as an ordered choice, so one keyword claim and one
 //! recovery stand where two branches on `type` could not.
 //! Fields are scalars until ownership analysis covers managed
 //! values. The literal branch merges into `primary` BEFORE the
 //! spine's bare NAME; a non-literal brace falls through by
 //! backtracking, so conditions like `if x { ... }` stay whole.
-use features.{LanguageFeature, BuilderRow}
+use features.{LanguageFeature, BuilderRow, PropertyRow}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
@@ -28,15 +29,20 @@ export fn structs() -> LanguageFeature {
         "type.with_struct"       | "F2011" | "`with` copies a struct value"
         "type.named"             | "F2083" | "a named type stands over one written shape"
     }
+    let properties = table<PropertyRow> {
+        name | takes      | check          | lower
+        "of" | on_nominal | check_named_of | lower_named_of
+    }
     component LanguageFeature f {
         name = "structs"
-        docs = "`type Name = { field: ty, ... }` declares a record; `Name { field: value, ... }` builds; `value.field` reads; `value with { field: v }` copies. `type Name = <type>` declares a NAMED TYPE — its own type over that shape, never an alias: a literal fills it, the shape answers its reads, and `Name(value)` converts."
+        docs = "`type Name = { field: ty, ... }` declares a record; `Name { field: value, ... }` builds; `value.field` reads; `value with { field: v }` copies. `type Name = <type>` declares a NAMED TYPE — its own type over that shape, never an alias: a literal fills it, the shape answers its reads, `Name(value)` wraps, and `value.of` reads the shape back."
         gram = grammar {
             stmt = "type" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "=" ( "{" BREAK? ( fs:NAME ":" ft:type ( "=" fd:expression )? ( "," BREAK? fs:NAME ":" ft:type ( "=" fd:expression )? )* ","? BREAK? )? "}" | nt:type ) END @recover(sync_to: "END") -> type_decl(n, tp, fs, ft, fd, nt)
             primary = t:NAME "{" BREAK? ( vn:NAME ":" ve:expression ( "," BREAK? vn:NAME ":" ve:expression )* ","? BREAK? )? "}" -> struct_lit(t, vn, ve)
         }
         builders = rows
         diags = codes
+        properties = properties
     }
     f
 }

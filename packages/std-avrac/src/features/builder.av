@@ -1,6 +1,6 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, flatten, some_list, SeatMark, plain_mark}
+use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, flatten, some_list, SeatMark, plain_mark, Scoped}
 use grammar.{Captured, Token, Ready}
 
 /// One build call's world: the store, the captured arguments in
@@ -233,6 +233,14 @@ export fn token_at(args: List<Captured<LangNode>>, i: int) -> Token? {
     }
 }
 
+/// AN OPTIONAL BINDER: the token's text as a scope-keying name,
+/// absent when the token is. An optional name payload arrives from
+/// the grammar this way, so the wrap lives here once.
+export fn scoped_at(t: Token?) -> Scoped? {
+    if t == null { return null }
+    Scoped(t!.text)
+}
+
 /// List delivery for the repeated capture at `args[i]` (scalar and
 /// absent normalize).
 export fn list_at(args: List<Captured<LangNode>>, i: int) -> List<Captured<LangNode>> {
@@ -290,7 +298,7 @@ impl Builder {
         if fs.length != ft.length {
             return .Err(zip_defect_of("field names and types"))
         }
-        .Ok([Param { name: f.text, ty: ft[j], default: self.default_before(fs, fds, j), mark: plain_mark, span: f.span } for j, f in fs])
+        .Ok([Param { name: Scoped(f.text), ty: ft[j], default: self.default_before(fs, fds, j), mark: plain_mark, span: f.span } for j, f in fs])
     }
 
     /// The default whose position falls between field `j`'s name and
@@ -324,7 +332,7 @@ export fn seats(ps: List<Token>, tys: List<TypeRef?>) -> List<Param> {
 /// seat. ONE window law, so every param list — a fn's, a method's, a
 /// lambda's, a fn type's — reads the same marks the same way.
 export fn marked_seats(ps: List<Token>, tys: List<TypeRef?>, muts: List<Token>, consts: List<Token>, from: int) -> List<Param> {
-    [Param { name: p.text, ty: tys[j], default: null, mark: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo), span: p.span } for j, p in ps]
+    [Param { name: Scoped(p.text), ty: tys[j], default: null, mark: seat_mark_of(muts, consts, seat_since(ps, j, from), p.span.lo), span: p.span } for j, p in ps]
 }
 
 /// One seat's contract: the `mut` and `const` tokens written in its
