@@ -1081,12 +1081,12 @@ form the compiler's help names, and when a site wants the missing
 form, add the ask to the ROADMAP's sugar backlog naming the site.
 Every entry was probed with `./avra check` on a scratch file and
 quotes the refusal, so a re-probe is cheap; an entry the compiler
-starts accepting is deleted. THIS SECTION IS A CACHE, and it is 21% of
-this file — every entry is a fact the COMPILER can answer, which is
-why two went stale in one day and both were found by luck. RECORDED
-TRIGGER: when the docs campaign's `lang/subset/*.av` lands as a
-gate-verified program tests, this section becomes a POINTER to them and stops
-being a hand-kept list. Measured 2026-09-06 at 1233 lines. Laws that SPEAK are not listed —
+starts accepting is deleted. THIS SECTION IS A CACHE, and a
+fifth of this file — every entry is a fact the COMPILER can answer,
+which is why entries go stale unseen until a re-probe (nine moved in
+one audit). RECORDED TRIGGER: when the docs campaign's
+`lang/subset/*.av` lands as gate-verified program tests, this section
+becomes a POINTER to them and stops being a hand-kept list. Laws that SPEAK are not listed —
 reserved words (F3002 names the word and its status), a mutating
 method on a non-`mut` binding (F2034), a lambda assigning to a
 capture (F3005: captures are copies), a fn body reading a top-level
