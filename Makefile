@@ -153,8 +153,9 @@ SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 # unread.
 .DEFAULT_GOAL := avra
 
+# The committed seed is replaced only by an emit that succeeded.
 seed: $(COMPILER_OBJS)
-	@./avra emit packages/cli > bootstrap/seed.ll
+	@./avra emit packages/cli > build/seed.ll.new && mv build/seed.ll.new bootstrap/seed.ll
 	@sh tools/sources_hash.sh > bootstrap/seed.sources
 	@echo "seed: bootstrap/seed.ll ($$(wc -l < bootstrap/seed.ll | tr -d ' ') lines)"
 
