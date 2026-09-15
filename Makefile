@@ -36,10 +36,21 @@ SUITES := packages/std-errors packages/std-testing packages/std-text packages/st
 # unread.
 .DEFAULT_GOAL := avra
 
-# The committed seed is replaced only by an emit that succeeded.
+# The committed seed is replaced only by an emit that SUCCEEDED AND IS
+# WHOLE. A write that runs out of disk mid-stream exits 0, so the exit
+# status alone certified a one-line seed as a compiler; the seed is the
+# whole cli, and anything short of six figures is a truncated write
+# reporting success.
+SEED_FLOOR := 100000
 seed: $(RUNTIME_OBJS)
-	@./avra emit packages/cli > build/seed.ll.new && mv build/seed.ll.new bootstrap/seed.ll
-	@echo "seed: bootstrap/seed.ll ($$(wc -l < bootstrap/seed.ll | tr -d ' ') lines)"
+	@./avra emit packages/cli > build/seed.ll.new
+	@n=$$(wc -l < build/seed.ll.new | tr -d ' '); \
+	if [ "$$n" -lt $(SEED_FLOOR) ]; then \
+		echo "seed: refused — the emit wrote $$n lines, under $(SEED_FLOOR); the committed seed stands"; \
+		rm -f build/seed.ll.new; exit 1; \
+	fi; \
+	mv build/seed.ll.new bootstrap/seed.ll; \
+	echo "seed: bootstrap/seed.ll ($$n lines)"
 
 # THE ONLY RULE THAT LINKS BY HAND, and the one a cold tree and every
 # recovery must take — `seed` and `avra` link through the compiler.
