@@ -19,7 +19,8 @@ use boundary.{transient, static_bytes}
 use @std.text.{has_nul}
 use open.{Db, closed_fault}
 use script.{statements}
-use c.{sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset,
+use c.{sqlite3_column_text, sqlite3_column_blob, sqlite3_column_bytes,
+       sqlite3_bind_double, sqlite3_prepare_v3, sqlite3_step, sqlite3_finalize, sqlite3_reset,
        sqlite3_column_count, sqlite3_data_count, sqlite3_column_type,
        sqlite3_column_int64, sqlite3_column_double, sqlite3_errstr, sqlite3_bind_int64,
        sqlite3_bind_null, sqlite3_bind_text, sqlite3_bind_blob,
@@ -332,6 +333,61 @@ export fn real_at(s: Stmt, col: int) -> Result<float, SqlError> {
     sqlite3_column_double(s.raw.get(), col)
 }
 
+// ── Reading text and octets ─────────────────────────────────────
+//
+// THE BUFFER IS SQLITE'S AND IT DIES AT THE NEXT STEP, so a cell that
+// holds text or a blob is COPIED into a box of ours before the driver
+// answers it. `avra_bytes_adopted` is the one door a foreign buffer
+// enters by — the only place the runtime dereferences an address a
+// program supplied — and it is named for what it does rather than for
+// being safe, because it is not: the LENGTH is the whole contract and
+// nothing on this side can check it.
+//
+// THE EMPTY CASE IS THE FIRST CASE, and it is why the class is asked
+// before the pointer. `sqlite3_column_blob` answers a NULL POINTER for
+// SQL NULL and for a ZERO-LENGTH BLOB alike, so a read that branched on
+// the pointer would spend absence twice and hand back `null` for an
+// empty blob. The CLASS says which, and an empty blob is an EMPTY BOX.
+//
+// THE ADOPTION'S SEAT TAKES NO ABSENCE (F2088), so the null decision
+// lives HERE rather than in the runtime: `taken` answers the empty box
+// for a buffer of no octets and never asks C to read address zero.
+
+extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
+
+/// A cell's octets, copied. The CLASS has already said a value is
+/// there; what remains is a pointer that may be absent because the
+/// value is empty, and a length that must be true.
+fn taken(p: ptr?, n: int, col: int) -> Result<Bytes, SqlError> {
+    if n < 0 { fail defect(negative_length_words(col, n)) }
+    let held? = p else { return "".bytes() }
+    if n == 0 { return "".bytes() }
+    avra_bytes_adopted(held, n)
+}
+
+/// A cell as TEXT, refused when it holds another class. The octets are
+/// SQLite's UTF-8, copied and then read as text — so a blob that is
+/// not UTF-8 is refused by `text_at`'s class check and never by a
+/// decoder.
+export fn text_at(s: Stmt, col: int) -> Result<string, SqlError> {
+    let class = class_at(s, col)?
+    if !(class is .Text) { fail wrong_class(col, Storage.Text, class) }
+    let p: ptr? = sqlite3_column_text(s.raw.get(), col)
+    let held = taken(p, sqlite3_column_bytes(s.raw.get(), col), col)?
+    let word? = held.text() else { fail defect(not_utf8_words(col)) }
+    word
+}
+
+/// A cell as OCTETS, refused when it holds another class. A blob of no
+/// octets is an empty `Bytes`; only SQL NULL is absence, and the class
+/// is what says so.
+export fn blob_at(s: Stmt, col: int) -> Result<Bytes, SqlError> {
+    let class = class_at(s, col)?
+    if !(class is .Blob) { fail wrong_class(col, Storage.Blob, class) }
+    let p: ptr? = sqlite3_column_blob(s.raw.get(), col)
+    taken(p, sqlite3_column_bytes(s.raw.get(), col), col)
+}
+
 /// A cell's class, or a `NoColumn` when the index is outside the row.
 /// The WIDTH is the witness: `data_count` is zero with no row standing,
 /// so one guard refuses both "column 7 of 4" and "read before step".
@@ -384,6 +440,14 @@ const statement_finalized: SqlError = refused(Cause.Finalized, "this statement w
 
 fn failed(rc: int, sql: string?) -> SqlError {
     SqlError { cause: cause_of(rc), code: rc % 256, extended: rc, message: sqlite3_errstr(rc), sql: sql }
+}
+
+fn negative_length_words(col: int, n: int) -> string {
+    "column ${col} answered a length of ${n} — a buffer cannot be shorter than nothing"
+}
+
+fn not_utf8_words(col: int) -> string {
+    "column ${col} is TEXT that is not valid UTF-8 — read it as a blob"
 }
 
 fn wrong_class(col: int, wanted: Storage, found: Storage) -> SqlError {
