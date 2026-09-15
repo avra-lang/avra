@@ -152,9 +152,38 @@ fn dead(db: Db) -> string {
     word
 }
 
+/// A LIVE statement read before any step. The finalized door stands in
+/// FRONT of the out-of-row law, so this is the case that proves it did
+/// not swallow it: `width=1` says the statement is there, `standing=0`
+/// says no row is, and the refusal must name the ROW.
+fn live_before_step() -> string {
+    match fresh() {
+        .Ok(db) -> unstepped(db),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn unstepped(db: Db) -> string {
+    let word = match prepare(db, "select 1") {
+        .Ok(s) -> read_early(s),
+        .Err(e) -> e.cause.kind(),
+    }
+    let _ = close(db)
+    word
+}
+
+fn read_early(s: Stmt) -> string {
+    let said = "width=${width(s)} standing=${standing(s)} int=${ik(int_at(s, 0))} bind=${ik(bind_int(s, 1, 1))}"
+    let _ = finalize(s)
+    said
+}
+
 fn used_after(s: Stmt) -> string {
     let rc = finalize(s)
-    "finalize=${rc} step=${sk(step(s))} width=${width(s)} standing=${standing(s)} slots=${slots(s)}"
+    "finalize=${rc} step=${sk(step(s))} reset=${reset(s)}" +
+    " width=${width(s)} standing=${standing(s)} slots=${slots(s)}" +
+    " class=${ck(class_at(s, 0))} int=${ik(int_at(s, 0))}" +
+    " bind_int=${ik(bind_int(s, 1, 1))} bind_text=${ik(bind_text(s, 1, "x"))}"
 }
 
 /// RESET REWINDS AND KEEPS THE BINDINGS.
@@ -343,13 +372,35 @@ spec "std/sqlite statement adversarial" {
     }
 
     given "every verb after finalize" {
-        // `finalize` NULLS the handle, so each verb hands SQLite a NULL.
-        // `step` names it; the three shape verbs answer `int` and cannot
-        // refuse, so they answer 0 — indistinguishable from a statement
-        // that really is empty. That asymmetry is recorded, not hidden.
+        // EVERY VERB THAT CAN REFUSE NAMES THE LAW. `finalize` nulls the
+        // handle, and each read and bind asks the statement before it
+        // asks a count — otherwise a finalized statement is zero columns
+        // wide and the refusal is "column 0 is outside a row 0 wide",
+        // which sends the caller to their column index for a mistake in
+        // their sequence.
+        //
+        // THE FOUR COUNTING VERBS ANSWER `int` AND CANNOT REFUSE, so
+        // they answer 0 — the honest answer for a statement that is
+        // gone. What changed is WHO answers: they test the handle
+        // themselves now instead of handing the null to C and taking
+        // whatever `SQLITE_ENABLE_API_ARMOR` gives back.
         then "finalize itself answers zero" { after_finalize().starts_with("finalize=0") }
-        then "a step on a finalized statement is refused by name" { after_finalize().contains("step=sqlite.finalized") }
-        then "and the shape verbs answer a silent zero" { after_finalize().ends_with("width=0 standing=0 slots=0") }
+        then "a step is refused by name" { after_finalize().contains("step=sqlite.finalized") }
+        then "and so is every read" { after_finalize().contains("class=sqlite.finalized int=sqlite.finalized") }
+        then "and every bind" { after_finalize().contains("bind_int=sqlite.finalized bind_text=sqlite.finalized") }
+        then "the counting verbs answer zero, from the driver" { after_finalize().contains("reset=0 width=0 standing=0 slots=0") }
+        then "the whole sequence, exactly" { after_finalize() == "finalize=0 step=sqlite.finalized reset=0 width=0 standing=0 slots=0 class=sqlite.finalized int=sqlite.finalized bind_int=sqlite.finalized bind_text=sqlite.finalized" }
+    }
+
+    given "a LIVE statement, which the new door must not swallow" {
+        // ZERO COLUMNS IS NOT NO STATEMENT. The finalized door stands in
+        // front of the out-of-row and out-of-slots laws, so a statement
+        // that is present but unstepped must still hear THEM — and the
+        // witness is in the same string: `width=1` says the statement is
+        // there while `standing=0` says no row is.
+        then "the statement is there" { live_before_step().starts_with("width=1 standing=0") }
+        then "and the read names the ROW, not the statement" { live_before_step().contains("int=sqlite.out_of_row") }
+        then "and the bind names the SLOTS" { live_before_step().ends_with("bind=sqlite.out_of_slots") }
     }
 
     given "reset rewinds and KEEPS the bindings" {

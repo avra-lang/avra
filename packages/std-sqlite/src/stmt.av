@@ -99,7 +99,7 @@ fn compiled(db: Db, sql: string) -> Result<Stmt, SqlError> {
 /// the statement rather than the one binding that stepped.
 /// `sqlite_stmt_adversarial_test.av` pins the behaviour.
 export fn step(s: Stmt) -> Result<bool, SqlError> {
-    if s.raw.get() == null { fail refused(Cause.Finalized, "this statement was finalized — prepare it again") }
+    let _ = barred(finalized_fault(s))?
     if s.done.get() { fail refused(Cause.Done, "this statement already answered DONE — stepping it again RE-RUNS it from the start; `reset` it if that is what you mean") }
     let rc = sqlite3_step(s.raw.get())
     if rc == row_code { return true }
@@ -114,6 +114,7 @@ export fn step(s: Stmt) -> Result<bool, SqlError> {
 /// cleared, because rewinding is exactly the caller saying they mean to
 /// run it again.
 export fn reset(s: Stmt) -> int {
+    if dead(s) { return 0 }
     s.done.set(false)
     sqlite3_reset(s.raw.get())
 }
@@ -175,7 +176,10 @@ fn drained(db: Db, s: Stmt) -> Result<int, SqlError> {
 // rebind.
 
 /// How many parameter slots the statement has.
-export fn slots(s: Stmt) -> int { sqlite3_bind_parameter_count(s.raw.get()) }
+export fn slots(s: Stmt) -> int {
+    if dead(s) { return 0 }
+    sqlite3_bind_parameter_count(s.raw.get())
+}
 
 /// An integer bound into the Nth hole, counting from 1.
 export fn bind_int(s: Stmt, index: int, value: int) -> Result<int, SqlError> {
@@ -241,8 +245,11 @@ export fn bind_text_unsafely_borrowed(s: Stmt, index: int, value: Bytes) -> Resu
 }
 
 /// An index inside the statement's slots, or the refusal that names the
-/// off-by-one before SQLite answers a bare SQLITE_RANGE.
+/// off-by-one before SQLite answers a bare SQLITE_RANGE. `in_row`'s
+/// twin, and it asks the statement first for the same reason: a
+/// finalized statement has no slots, and saying so blames the index.
 fn in_slots(s: Stmt, index: int) -> Result<int, SqlError> {
+    let _ = barred(finalized_fault(s))?
     let n = slots(s)
     if index < 1 || index > n { fail refused(Cause.OutOfSlots(index, n), slot_words(index, n)) }
     index
@@ -263,12 +270,18 @@ fn judged(rc: int) -> Result<int, SqlError> {
 /// How many columns the statement's rows have — known at PREPARE time,
 /// which is how a driver tells a row-yielding statement from a writing
 /// one without reading the SQL.
-export fn width(s: Stmt) -> int { sqlite3_column_count(s.raw.get()) }
+export fn width(s: Stmt) -> int {
+    if dead(s) { return 0 }
+    sqlite3_column_count(s.raw.get())
+}
 
 /// How many columns the CURRENT row has: 0 before the first step, 0
 /// after DONE, and 0 after a reset. SQLite's own answer to "is a row
 /// standing", which is why no flag of ours is needed.
-export fn standing(s: Stmt) -> int { sqlite3_data_count(s.raw.get()) }
+export fn standing(s: Stmt) -> int {
+    if dead(s) { return 0 }
+    sqlite3_data_count(s.raw.get())
+}
 
 /// The storage class of a cell. THE FIRST QUESTION ASKED OF ANY CELL.
 export fn class_at(s: Stmt, col: int) -> Result<Storage, SqlError> {
@@ -322,7 +335,12 @@ export fn real_at(s: Stmt, col: int) -> Result<float, SqlError> {
 /// A cell's class, or a `NoColumn` when the index is outside the row.
 /// The WIDTH is the witness: `data_count` is zero with no row standing,
 /// so one guard refuses both "column 7 of 4" and "read before step".
+///
+/// THE STATEMENT IS ASKED FIRST, because a FINALIZED one is zero
+/// columns wide and "column 0 is outside a row 0 wide" sends the
+/// caller to their column index for a mistake in their sequence.
 fn in_row(s: Stmt, col: int) -> Result<int, SqlError> {
+    let _ = barred(finalized_fault(s))?
     let w = standing(s)
     if col < 0 || col >= w { fail refused(Cause.OutOfRow(col, w), out_of_row_words(col, w)) }
     col
@@ -338,6 +356,29 @@ fn storage_of(code: int) -> Result<Storage, SqlError> {
         _ -> { fail defect("SQLite named a storage class this driver does not know: ${code}") },
     }
 }
+
+/// Whether the statement has been finalized. THE COUNTING VERBS ASK IT
+/// AND ANSWER FOR THEMSELVES: they answer a plain `int`, so they have
+/// no channel to refuse through, and zero is the honest answer for a
+/// statement that is gone — no columns, no row standing, no slots,
+/// nothing to rewind.
+///
+/// AND THE ZERO IS THE DRIVER'S, NOT THE LIBRARY'S. A null handed to
+/// `sqlite3_column_count` answers zero only under
+/// `SQLITE_ENABLE_API_ARMOR`, so a driver that let the null cross
+/// would rest on a build flag no reader of this package can see.
+fn dead(s: Stmt) -> bool { s.raw.get() == null }
+
+/// The refusal for a statement that was finalized, or absence when it
+/// still stands. `finalize` NULLS the handle, so the null test IS the
+/// question — `closed_fault`'s twin one level down, and every verb
+/// that can refuse asks it before reading a count.
+export fn finalized_fault(s: Stmt) -> SqlError? {
+    if dead(s) { return statement_finalized }
+    null
+}
+
+const statement_finalized: SqlError = refused(Cause.Finalized, "this statement was finalized — prepare it again")
 
 // ── The voices ──────────────────────────────────────────────────
 
