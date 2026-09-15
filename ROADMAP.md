@@ -15855,3 +15855,96 @@ of the slice), and one avoidable gate.
   where the layout suggests. It was correct here because every test fn
   is top-level, and the DIFF was read site by site rather than
   trusted. Recording the check, not the cleverness.
+## Feedback survey — 2026-09-15 (STD-DATA: the sweep's pacing, avra-0m3d)
+
+Scope: `avra-0m3d` only — @std/process's two turn lengths and what
+measuring them found. Base: branch `data/process-turn` on main
+`ffe0e68`. NOT surveyed: @std/process's other runners, @std/sqlite's
+read half (`.6.2`, fenced pending the owner's own line).
+
+Counts: friction 1, defects 1, doctrine 2, performance 1, process 2,
+sugar 0, features 0. Top by cost: none — the measurement answered in
+two probes and the fix was six lines. The value here is entirely in
+what the measurement said versus what the task said.
+
+### Defects
+
+- **A RACE'S LAUNCHER WAS THROTTLED BY ITS OWN SWEEP, quadratically.**
+  `race` launched ONE command per pass, and a pass waits a turn per
+  live stage — so starting the k-th command waited for a sweep of the
+  k-1 already running. `race(cs, ms(0))`, which asks for all of them
+  at once, paid the most: 33 commands whose winner exits instantly took
+  **5.4 seconds** to report it, all of it before the winner was even
+  started. Fixed by launching every command that is DUE rather than one
+  (`while`, not `if`) — a stagger that is not zero is unaffected,
+  because `next_at` still holds the rest back.
+
+### Performance
+
+- **MEASURED, three runs each, `/usr/bin/time -p` beside the program's
+  own `now_ms`:**
+
+  | | before | after |
+  |---|---|---|
+  | race of 33, winner last, stagger 0 | 5468, 5462, 5452 ms | 98, 53, 73 ms |
+  | race of 9, same shape | 494, 497, 495 ms | 29, 33, 34 ms |
+  | 32 parallel sleepers (500 ms each) | 562, 595, 619 ms | 578, 616, 686 ms |
+  | whole probe, wall | 8.04, 7.81, 7.73 s | 2.13, 1.96, 2.04 s |
+  | user / sys | 0.37 / 0.60 s | 0.29 / 0.45 s |
+
+  **73x on the case that was broken**, 3.9x on the probe as a whole,
+  and CPU DOWN in both columns — fewer waits, no spin. The 32-sleeper
+  row is ~6% slower and that is the honest cost: the one waiting stage
+  now waits the named `turn_ms` (20) where the sweep used a bare 10.
+  ONE value with ONE name was the task's ask, and this is its price.
+  What it buys is that the field's size no longer sets the latency.
+
+### Doctrine
+
+- **A TUNED INTERVAL IS THE SMELL — AND THE NUMBER WAS NEVER THE BUG.**
+  The task offered two options: one name for both values, or two
+  documented constants. Neither was the answer. Halving 20 to 10 was
+  someone keeping a sweep's feel near a single stage's, and the sweep
+  did not want a smaller number — it wanted ONE WAIT instead of N. With
+  `paced`, a sweep spends the turn on the first stage it asks and polls
+  the rest at zero, so a stage that turns ready during that wait is
+  seen one turn later at worst rather than N turns. The bare 10 is gone
+  because there is nothing left for it to pace.
+- **THE HAND-OFF'S DIAGNOSIS WAS RIGHT AND ITS PREDICTION WAS WRONG,
+  and the difference is worth keeping.** STD-SUBSTRATE read the code
+  and said whole-sweep latency GROWS WITH N. Measured, the sweep's
+  throughput cost barely grows — N waits overlap the children's own
+  work, so more stages means fewer passes and the total is bounded by
+  the children, not by N. What grows with N is the LATENCY OF NOTICING,
+  and it grows quadratically in `race` for a reason the reading did not
+  reach: the launcher sits inside the polling loop. A correct reading
+  of a mechanism still owes a measurement of its consequence.
+
+### Friction
+
+- **A CLOCK ASSERTION IN A DIFFERENTIAL PROBE MAKES THE ENGINES
+  DISAGREE ABOUT NOTHING.** `native-check` failed on `ms_under_3s`:
+  16 MB of piped output is under 3 s natively and over it evaluated.
+  The probe was wrong, not the code. `avra-j8o4` — CLOSED IN THIS
+  EPIC — says "a suite that measures the PUMP must not measure the
+  CLOCK", and I wrote one anyway an hour after reading it. A law you
+  have read is not a law you have applied.
+
+### Process
+
+- **KEEP: THE CLOCK-FREE WITNESS.** The fix is about latency, and a
+  latency test wants a stopwatch and a margin. There was a better
+  shape: give the losers a 300 ms deadline and put the instant winner
+  LAST. The old launcher needs longer than that deadline just to REACH
+  the winner, so the losers go overdue and the race REFUSES; the new
+  one starts all seventeen and the winner is home first. A pass/fail
+  difference, no bound, no flake — `refused` before, `winner=won`
+  after. When a timing fix seems to need a timing test, look for the
+  threshold that turns the latency into a REFUSAL.
+- **KEEP: THREE CASES, AND ONLY ONE IS A DISCRIMINATOR.** Run against
+  the old code the suite answers 17/18 and names exactly the case
+  written for the defect. The other two — a stagger still staggers, a
+  stage polled without a wait is still drained whole — PASS on the old
+  code, and that is what a regression guard is for. Saying which is
+  which is the difference between three tests and one test plus two
+  guards.
