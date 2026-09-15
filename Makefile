@@ -135,7 +135,7 @@ build/%.o: %.c build/%.sha
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: census traps test tested clean seed-check gate externs idioms idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap libs libscope \
+.PHONY: census traps test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap libs libscope \
         check run ir emit build-native native-check avra suites install
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
@@ -348,6 +348,12 @@ suites:
 # The idiom bar: the baseline LISTS sites and only ever shrinks —
 # `idioms-accept` prunes what is fixed and can never add. A new
 # violation is written idiomatically or licensed AT the site.
+# THE NAMES THE DOCTRINE CITES RESOLVE — a third of the rot, and it
+# says which third: a count, a line number or an attribution stays
+# invisible to it.
+cited:
+	@python3 tools/cited.py
+
 idioms:
 	@sh tools/idioms.sh
 
@@ -434,7 +440,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
-gate: seed-check stems vocab fingerprints externs idioms tested traps witness
+gate: seed-check stems vocab fingerprints externs idioms cited tested traps witness
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
 	@rm -rf packages/std-avrac/src/features/zz_probe
