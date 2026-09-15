@@ -8,13 +8,27 @@
 set -e
 cd "$(dirname "$0")/.."
 
+# THE SHIPPING COMPILER IS SAVED, NEVER RECOMPUTED. A restore that
+# BUILDS needs the memory and disk a census run has just spent, so it
+# fails exactly when it is needed and leaves a tree with no compiler
+# at all — the third cause of that after a failed link and a full
+# disk, and the worst, because this one deletes the compiler on
+# purpose as its first act. A copy cannot fail that way.
+saved=build/avra.census-saved
 restore() {
-    rm -f build/avra_runtime.o build/avra
-    make --no-print-directory avra > /dev/null 2>&1 || \
-        echo "census: the shipping compiler did NOT rebuild — run \`make avra\`"
+    rm -f build/avra_runtime.o
+    if [ -f "$saved" ]; then
+        mv -f "$saved" build/avra
+    else
+        rm -f build/avra
+        make --no-print-directory avra > /dev/null 2>&1 || \
+            echo "census: the shipping compiler did NOT rebuild — run \`make avra\`"
+    fi
 }
 trap restore EXIT INT TERM
 
+[ -f build/avra ] || { echo "census: no build/avra to put back — run \`make avra\` first"; exit 1; }
+cp build/avra "$saved"
 cc -O2 -Wall -Werror -DAVRA_CENSUS -c runtime/avra_runtime.c -o build/avra_runtime.o
 rm -f build/avra
 make --no-print-directory avra > /dev/null
