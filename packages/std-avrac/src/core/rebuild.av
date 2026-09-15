@@ -264,8 +264,11 @@ impl Rebuilder {
         [hole.parts[j] + self.fill_name(k) for j, k in hole.holes].join("") + hole.parts.last()!
     }
 
+    /// A RECONSTRUCTION NAMES WHAT CHANGES — the rest rides. Spelling
+    /// every field drops the next one silently, and a field with a
+    /// DEFAULT drops without even a compile error.
     mut fn param(p: Param) -> Param {
-        Param { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default), mark: p.mark, span: p.span }
+        p with { name: self.scoped_name(p.name), ty: self.tref_opt(p.ty), default: self.expr_opt(p.default) }
     }
 
     mut fn params(ps: List<Param>) -> List<Param> { [self.param(p) for p in ps] }
@@ -273,7 +276,7 @@ impl Rebuilder {
     mut fn variants(vs: List<Variant>) -> List<Variant> { [self.variant(v) for v in vs] }
 
     mut fn variant(v: Variant) -> Variant {
-        Variant { name: self.plain_name(v.name), payloads: self.params(v.payloads), span: v.span }
+        v with { name: self.plain_name(v.name), payloads: self.params(v.payloads) }
     }
 
     mut fn case(c: Case) -> Case {
@@ -356,8 +359,14 @@ impl Rebuilder {
     // shape is a defect: it is recorded (`misfits`) for the splice to
     // speak, and the seat takes a placeholder.
 
-    /// A hole's fill, materialized now, for the seat that asks.
+    /// A hole's fill, materialized now, for the seat that asks. A hole
+    /// NO FILL ANSWERS is the template's builder having numbered its
+    /// holes and its fills differently — a defect, and the `misfits`
+    /// channel exists precisely so the splice can SAY so. Reading past
+    /// the list traps instead, which blames the program for the
+    /// compiler's arithmetic.
     fn filled(k: int, kind: HoleKind) -> Filled {
+        if k >= self.fills.length { return Filled.Unplaceable(no_fill_for(k, self.fills.length)) }
         let fill = self.fills[k]
         fill(kind)
     }
@@ -449,4 +458,10 @@ impl Rebuilder {
         self.unplaced(k, why)
         placeholder(["", ""], [k])
     }
+}
+
+/// A hole the template carries no fill for — the template's own
+/// arithmetic, spoken where the hole stands.
+fn no_fill_for(k: int, held: int) -> string {
+    "hole ${k} of a template carrying ${held} fill(s) — the template numbered its holes and its fills differently"
 }

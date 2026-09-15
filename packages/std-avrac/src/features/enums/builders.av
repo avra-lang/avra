@@ -6,7 +6,7 @@
 //! and whose successor follows it, and a payload's NAME, when
 //! written, precedes its type inside that window.
 use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, plain_mark, Plain, Scoped}
-use features.{LangNode, Builder, window_end, pat_ids_at, arms_at, ref_within, within}
+use features.{LangNode, Builder, window_end, pat_ids_at, arms_at, ref_within, within, marks_at, aligned_marks}
 use grammar.{Token}
 
 fn build_enum_decl(mut b: Builder) -> Result<LangNode, string> {
@@ -17,10 +17,11 @@ fn build_enum_decl(mut b: Builder) -> Result<LangNode, string> {
     let vs = b.tokens(2)?
     let names = b.tokens(4)?
     let tys = b.type_refs(5)?
+    let marks = aligned_marks(vs, marks_at(b.args, 6), b.span?.lo ?? 0)
     mut variants: List<Variant> = []
     for j, v in vs {
         let upto = window_end(vs, j, ends!)
-        variants.push(Variant { name: Plain(v.text), payloads: payloads_between(names, tys, v.span.lo, upto), span: v.span })
+        variants.push(Variant { name: Plain(v.text), payloads: payloads_between(names, tys, v.span.lo, upto), span: v.span, marks: marks[j] })
     }
     b.make_stmt(Stmt.EnumDecl(Scoped(n.text), [Plain(t.text) for t in tp], variants))
 }
@@ -28,7 +29,7 @@ fn build_enum_decl(mut b: Builder) -> Result<LangNode, string> {
 /// One variant's payloads: the types inside its window, each named
 /// by the field name written just before it, or "" when positional.
 fn payloads_between(names: List<Token>, tys: List<TypeRef>, after: int, before: int) -> List<Param> {
-    [Param { name: Scoped(name_before(names, t, after)), ty: t, default: null, mark: plain_mark, span: t.span } for t in tys if ref_within(t, after, before)]
+    [Param { name: Scoped(name_before(names, t, after)), ty: t, default: null, promises: plain_mark, span: t.span } for t in tys if ref_within(t, after, before)]
 }
 
 /// The field name written between the variant's name and this
