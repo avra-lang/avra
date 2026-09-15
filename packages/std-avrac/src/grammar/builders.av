@@ -20,6 +20,7 @@ export enum GrammarNode {
     NPrim(p: Prim)
     NBuild(b: Build)
     NAnnot(an: PendingAnnot)
+    NArg(a: BuildArg)
 }
 
 /// A parsed-but-unattached annotation. Exists only between a branch's
@@ -152,15 +153,47 @@ fn as_rep(v: Captured<GrammarNode>) -> Result<Rep, string> {
 }
 
 /// The builder-call argument names from a repeated NAME capture.
-fn call_args(v: Captured<GrammarNode>) -> Result<List<string>, string> {
-    .Ok([arg_text(x)? for x in as_list(v)?])
+fn call_args(v: Captured<GrammarNode>) -> Result<List<BuildArg>, string> {
+    .Ok([want(arg_of(x), "a build argument")? for x in as_list(v)?])
+}
+
+/// A branch that NAMES A NODE: its arguments state payloads the rule
+/// carries in its own words, and nothing else — a captured payload
+/// reaches its slot by LABEL.
+fn node_build(owner: string, variant: string, written: List<BuildArg>) -> Result<Captured<GrammarNode>, string> {
+    ok(GrammarNode.NBuild(Build.Node(owner, variant, [fixed_arg(a)? for a in written], null)))
+}
+
+fn fixed_arg(a: BuildArg) -> Result<Fixed, string> {
+    if a.fixed == null { return .Err(capture_is_not_an_argument(a.name)) }
+    .Ok(Fixed { name: a.name, text: a.fixed! })
+}
+
+fn label_arg(a: BuildArg) -> Result<string, string> {
+    if a.fixed != null { return .Err(fixed_needs_a_node(a.name)) }
+    .Ok(a.name)
 }
 
 /// One captured argument's text. (Never `want(...)?.text` — the
 /// `?.`-after-`?` shape corrupts inside a comprehension.)
-fn arg_text(x: Captured<GrammarNode>) -> Result<string, string> {
-    let t = want(tok_of(x), "an argument name")?
-    .Ok(t.text)
+fn arg_of(v: Captured<GrammarNode>) -> BuildArg? {
+    match v {
+        .Node(.NArg(a)) -> a,
+        _ -> null,
+    }
+}
+
+// ── Voices: what a build's own words refuse. ──
+
+/// A node build's captures reach their payloads by LABEL, so a bare
+/// name in its argument list names nothing.
+fn capture_is_not_an_argument(name: string) -> string {
+    "`${name}` names no value here — a node build's captures reach their payloads by label, and its arguments STATE a payload (`value = true`)"
+}
+
+/// A fixed value fills a payload, and only a node build has one.
+fn fixed_needs_a_node(name: string) -> string {
+    "`${name} = …` states a payload, and this build calls a builder — a fixed value fills a NODE's payload (`-> Expr.BoolLit(value = true)`)"
 }
 
 /// Attach each @expect to the first unclaimed matching item; land
@@ -292,14 +325,18 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
         }
         "build_build" -> {
             let t = want(tok_of(args[0]), "a builder name")?
-            match args[1] {
+            let variant: Token? = tok_of(args[1])
+            let written = call_args(args[3])?
+            if variant != null { return node_build(t.text, variant!.text, written) }
+            match args[2] {
                 .Absent -> ok(GrammarNode.NBuild(Build.Var(t.text))),
-                .Terminal(_) -> {
-                    let arg_names = call_args(args[2])?
-                    ok(GrammarNode.NBuild(Build.Call(t.text, arg_names)))
-                }
+                .Terminal(_) -> ok(GrammarNode.NBuild(Build.Call(t.text, [label_arg(a)? for a in written]))),
                 .Node(_) or .Many(_) -> .Err("expected `(`"),
             }
+        }
+        "build_arg" -> {
+            let n = want(tok_of(args[0]), "an argument name")?
+            ok(GrammarNode.NArg(BuildArg { name: n.text, fixed: tok_of(args[1])?.text }))
         }
         "build_expect" -> {
             let token = want(tok_of(args[0]), "the expected token")?
