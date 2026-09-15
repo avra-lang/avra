@@ -493,6 +493,17 @@ engine's spec, written by dogfooding.
   signs types first) was green and `analyze_source` (which types the
   entry first) refused every literal fill — one tree, two answers,
   22 spec cases red while every probe passed.
+- A CONTINUING OPERATOR TRAILS, IT NEVER LEADS. The lexer drops a
+  break AFTER a continuing operator, so the line that continues is the
+  one ENDING in `&&`; a line BEGINNING with `&&` starts a new
+  statement and the parse dies one line later — "expected `}` to close
+  the block" at the `&&`, then "expected EOF while parsing
+  `program`". The habit every other language teaches is the leading
+  form, and the cost is not the parse error: the file fails WHOLE, so
+  the module exports nothing and the symptom lands in the FILES THAT
+  IMPORT IT ("`@std.avrac.features` does not export `Decls`", from
+  three innocent files, with the real error unread above them). Same
+  shape for every binary operator a condition wraps on.
 - A CLOSER NEVER CONTINUES A LINE. The lexer's continuation rule
   listed `>`, which closes a TYPE ARGUMENT LIST as well as wanting a
   right side — so `type Rows = List<int>` dropped its BREAK and
@@ -932,24 +943,24 @@ engine's spec, written by dogfooding.
   lists adjacently; `>>` is TWO tokens the grammar joins, both
   branches capturing ONE token into the same label so the run stays
   aligned. The next `>=`-shaped operator faces the same question.
-- Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `grammar {`
-  and a block word's `{` hand their body over whole, so the lexer emits
-  the `}` that ends it too, and the rule consumes it (`"grammar" "{"
-  s:STRING "}"`). Swallowing it left the line law's bracket stack
-  holding a brace nothing closed. A `quote {` body is NO raw body —
-  tokenized as source, parsed where it stands — and its rule consumes
-  its own `"}"` all the same. AND A RAW BODY OPENED INSIDE A HOLE pays
-  the hole's count too: the opener was counted against the enclosing
-  hole when emitted, and the closer never passes through it. Line
-  comments inside a raw body are the generated program's — a `}` in
-  one ends nothing.
-- A BOUNDARY CHECK MAKES ITS SHAPES UNMOVABLE IN ONE GENERATION.
-  `features/crossing.av` holds `@std/meta`'s shapes as rows the
-  compiler was built against and refuses a loaded package that
-  disagrees; so the STANDING binary refuses a new package while
-  compiling the source that changes it. A change to a checked shape
-  is two commits: one that stops the door refusing, one that moves
-  the shape and restores it.
+- A RUN OF TEMPLATES HAS NO EXPRESSION POSITION, and every OTHER seat
+  takes one. `${xs}` with a `List<Code>` flattens where a RUN belongs
+  — statements, arms, binders each join a `Many` — and an expression
+  seat holds ONE value, where no separator between two of them is the
+  compiler's to choose. That arm answered an `Expr.Error` node, so
+  the only word spoken was the TYPER's about the seat (F2075, "a hole
+  takes what its seat takes"), which names neither the mistake nor
+  its exits; it is F2085 now, homed at the hole, and it carries both.
+  THE FIX IS IN THE GENERATOR, NOT THE TEMPLATE: fold the list where
+  the derive runs, one hole per element (`[a].concat([b])`), so the
+  generated literal's length is fixed per type — which is also what
+  the ARITY law wants, so the two laws agree on one shape. Not listed
+  under "the subset today" because it SPEAKS, which is the whole
+  point of the change. And the hole vocabulary is wider than it
+  looks: an INT hole is native in both positions (`int_node` in an
+  expression, `int_name` in a name), so `${tag()}` needs no
+  hand-rolled `name("${v}")` — a second instrument for a question the
+  compiler already answers.
 - A BOUNDARY CHECK MAKES A MOVED SHAPE UNMOVABLE IN ONE GENERATION,
   AND GROWTH IS NOT A MOVED SHAPE. `features/crossing.av` holds
   `@std/meta`'s shapes as rows the compiler was built against; a
@@ -963,6 +974,20 @@ engine's spec, written by dogfooding.
   seed is a THIRD generation with the same rule: `make seed` rides a
   MOVING commit, and a merge that brings an older seed needs it only
   when a shape moved.
+  AND THAT LAST SENTENCE WAS WRONG, BY ITS OWN AUTHOR, ONE SLICE
+  LATER. Growth needs no refresh WHILE NOTHING READS THE NEW FIELD —
+  and the refresh is owed by the FIRST READER, not by the grower. B2c
+  appended `Variant.fields` and crossed unassisted, which is the rule
+  working; H2's `@derive(Fingerprint)` then READ that field, and the
+  committed seed — older than the growth — refused with
+  "`derive` index 3 is out of bounds (length 3)" at the annotation.
+  Nothing moved; the seed simply writes three slots where the derive
+  reads four. So the obligation does not ride the commit that grows a
+  shape, it rides the commit that first CONSUMES it, and those are
+  usually different commits by different hands. THE TELL IS THE
+  ARITHMETIC IN THE REFUSAL: an index one past a length, named at an
+  annotation, is a seed behind the source — never a defect in the
+  derive.
   WHAT AN OLDER COMPILER OWES A NEWER PACKAGE IS NOTHING, and the
   program hears it: the old compiler writes the slots it knows, so a
   program reading a field it never wrote reads past the row's end and
@@ -987,6 +1012,17 @@ engine's spec, written by dogfooding.
   minted. One mechanism, one loud door and one mute one, and the
   mute one is the door every `@derive` takes. All three doors read
   one `unsettled_label` now.
+- Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `grammar {`
+  and a block word's `{` hand their body over whole, so the lexer emits
+  the `}` that ends it too, and the rule consumes it (`"grammar" "{"
+  s:STRING "}"`). Swallowing it left the line law's bracket stack
+  holding a brace nothing closed. A `quote {` body is NO raw body —
+  tokenized as source, parsed where it stands — and its rule consumes
+  its own `"}"` all the same. AND A RAW BODY OPENED INSIDE A HOLE pays
+  the hole's count too: the opener was counted against the enclosing
+  hole when emitted, and the closer never passes through it. Line
+  comments inside a raw body are the generated program's — a `}` in
+  one ends nothing.
 - A NAME-KEYED TABLE CROSSES MODULES. `impls_by_name` files every
   `impl` under its NAME, so asking `@std.meta.Code`'s methods signed
   the compiler's own `impl Code` and dragged `features` into a
@@ -1633,6 +1669,14 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   F2000 "the body answers `[]` but `f` declares `List<int>?`". Bind the
   empty at its own type first (`let none: List<int> = []`). An
   empty STRING adopts `string?` fine.
+  THE WANT IS WHAT DECIDES, NOT THE NEIGHBOUR — and this entry reads
+  as forbidding more than it does. `parts(k)?.params ?? []` COMPILES
+  at a `List<P>` seat, and so does a chain (`a()?.xs ?? b()?.xs ??
+  []`): a `??`'s want is its NON-nullable answer type, so the literal
+  has an ordinary want to adopt. Probed at phase/c, both engines,
+  answering `1 0 0`. Worth stating because the sentence above sends a
+  reader at a defensive two-arm match for a shape that needs none —
+  which is the trap-fear the probe discipline exists to shrink.
 - A struct-literal FIELD seat does not plant a want on its value
   (the value is walked before the field's want exists): a
   comprehension there types on its own, so `Pins { slots: [b ??
@@ -1863,6 +1907,17 @@ Runtime facts, ours to ratify:
   build/avra.pre` is the whole protocol here too — and RUNNING OUT OF
   DISK is the same destruction by a second cause (2026-09-07: a lane
   stopped on ENOSPC).
+  AND `make census` IS THE THIRD CAUSE, WORSE THAN BOTH, because it
+  removes the compiler DELIBERATELY as step one and restores it with
+  a trap that needs exactly the resources that just ran out. It killed
+  one lane's compiler twice in an hour — once to an OOM kill, once to
+  ENOSPC — and both times the trap's own `make avra` died with it, so
+  the tree held no compiler at the moment the machine was least able
+  to make one. A RECOVERY THAT REBUILDS IS NOT A RECOVERY UNDER THE
+  CONDITIONS THAT BREAK THINGS; the recovery that worked was a COPY
+  taken before the removal (`build/avra.gen1`, two commands back).
+  Hence the tool saves the binary aside and restores by `mv`, and
+  refuses early when there is no compiler to save.
   BUT THE FREE-SPACE NUMBER BREATHES, so ONE `df` READING IS NOT A
   DECISION. It went 4.7 GiB -> 651 MiB -> 3.1 GiB -> 2.1 GiB in
   minutes with NOTHING DELETED: macOS mints and releases swapfiles
@@ -2143,14 +2198,30 @@ Runtime facts, ours to ratify:
 - AND A KEEPER HAS TWO SURFACES: what it REFUSES and what it
   ACCEPTS. Making it fail tests only the first. `tools/idioms.py`'s
   counted-refusal matcher listed `refused_n(` among the honest
-  spellings while no fn of that name existed. A DEAD ALTERNATIVE:
+  spellings while no fn of that name existed — a DEAD ALTERNATIVE:
   accepted by nobody, protecting nothing, quietly widening what the
-  keeper permits, and invisible to every fixture that makes the
-  keeper fail, because the keeper was working. So exercise each
-  alternative a keeper ACCEPTS as well as one that breaks it — a
-  matcher with N spellings needs N positive fixtures, which
-  `ACCEPTED` now holds for all five (a fn of that name landed at
-  c515f04, so the alternative is live).
+  keeper permits, and invisible to every fixture that makes the keeper
+  fail, because the keeper was working. So exercise each alternative a
+  keeper ACCEPTS as well as one that breaks it — a matcher with N
+  spellings needs N positive fixtures.
+  THE LAW STOOD AND ITS EXAMPLE EXPIRED, which is the half worth
+  keeping. `refused_n` LANDED at c515f04; the dead alternative became
+  live and this entry went on naming it as the dead one, reading as
+  current the whole time. And the alternative that was ACTUALLY
+  missing from `COUNTED` was a different one — `refused_in`, the
+  tree's own one-refusal verb (`refused_n(p, phrase, 1)`), which the
+  matcher refused as an uncounted test. Nobody found that by grepping:
+  it took WRITING a test with the honest verb inside a `then` block,
+  which is the new-consumer law one rule over. An entry whose instance
+  is a NAMED ARTIFACT owes a re-check the day that artifact moves —
+  the law is evergreen, the example has a date on it.
+  AND THE MECHANISM THIS LAW CALLS FOR DOES NOT EXIST AS FIRST
+  WRITTEN: there is no `ACCEPTED` table in `tools/idioms.py`. What the
+  tree holds is main's `CLEAN` table — the accept surface for I20,
+  I21, I23 and I48 — and the `COUNTS` list beside `COUNTED`, one
+  matcher's worth of the accept surface; both are self-tested, and
+  every other matcher's accept surface is still unexercised. Do not
+  read this entry as saying every matcher's accept surface is guarded.
 - A TEST WITH ITS OWN COPY OF THE LOGIC TESTS THE COPY, and the
   SYMPTOM IS WHAT MISDIRECTS. The externs keeper's self-test built
   its typedef map from an inline duplicate of the collection it
@@ -2188,6 +2259,19 @@ Runtime facts, ours to ratify:
   and no constant ever aims at one. That non-event with its mechanism
   is the better receipt, and it exists only because someone went back
   to check their own ledger entry against the tree.
+- A DRAFT PARKED IN `packages/` IS IN THE COMPILER'S SOURCE, and the
+  keepers read the TREE, not the commit. `seed-check` compiles the
+  WORKING tree (`build/seed-check/avra build packages/cli`), so one
+  untracked half-written file under `packages/` turned a gate red —
+  GATE-STATUS 2, "the seed cannot compile HEAD — run `make seed`" —
+  thirty-six seconds after it was saved, against a commit whose own
+  gate had been green minutes before. THE SYMPTOM ACCUSES THE COMMIT:
+  the words name HEAD and the seed, and nothing names the file. The
+  isolation needed no build — `git status --porcelain` answered one
+  line — but the reflex it interrupts is `make seed`, which would
+  have rewritten a committed artifact to chase a file that was never
+  in it. Park drafts in `/tmp` or `build/scratch` until they type;
+  `packages/` is for code that compiles.
 - A PROBE THAT TRUNCATES ITS OWN OUTPUT REPORTS THE ABSENCE OF WHAT
   IT CUT. `./avra check … | head -6` showed F3015 alone on an `export
   use` line, so this file recorded that the re-export law is never

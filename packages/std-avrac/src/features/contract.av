@@ -21,7 +21,9 @@
 //! in any of them.
 use @std.meta.{derive}
 use core.{Expr, ExprId, StmtId, PatId, FileId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
-use core.{SeatMark, SideTable}
+use core.{SeatMark, SideTable, Fingerprint}
+// LICENSED I24: the GENERATED impls call these; the keeper reads source, and generated code is not source
+use core.{fp, fp_list, fp_str}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 
@@ -89,6 +91,7 @@ export type Bound = { name: string, origin: FileId? }
 export type LFrame = { lam: ExprId, params: List<string>, floor: int }
 
 /// A fn's typed signature, as the type pass computed it.
+@derive(Fingerprint)
 export type FnSig = { params: List<TypeId>, ret: TypeId }
 
 /// A recorded INSTANTIATION: which generic fn a call targets, what
@@ -100,15 +103,18 @@ export type Sub = { target: DeclId, args: List<TypeId>, consts: List<string> = [
 /// A struct's typed field table, in declaration order — the index
 /// IS the runtime slot; a default is the declaration whose body
 /// fills it.
+@derive(Fingerprint)
 export type StructSig = { names: List<string>, types: List<TypeId>, defaults: List<DeclId?> }
 
 /// A NAMED TYPE's table: the ONE shape it stands over. The name is
 /// its own type at every seat; this says what it travels as.
+@derive(Fingerprint)
 export type NamedSig = { of: TypeId }
 
 /// A declared enum's variant table, in declaration order — the
 /// index IS the runtime tag, and a payload (when the variant
 /// carries one) rides slot 1 of the value.
+@derive(Fingerprint)
 export type EnumSig = { names: List<string>, payloads: List<List<TypeId>> }
 
 /// Names listed for help text — one wording everywhere.
@@ -171,6 +177,7 @@ export fn res_enum_sig(ok: TypeId, err: TypeId) -> EnumSig {
 /// kind is a new VARIANT, and the projections below break at
 /// compile time until it is handled.
 @derive(Projections)
+@derive(Fingerprint)
 export enum DeclSig {
     Fn(sig: FnSig)
     Record(sig: StructSig)

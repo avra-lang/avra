@@ -19,7 +19,7 @@ use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relativ
 use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
 use @std.meta.{Diagnostic, Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Decls as MetaDecls, Kind}
-use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, copier, quote_kind, all_codes, is_name_cont, SyntaxParts, ForeignRange}
+use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, Unplaced, copier, quote_kind, all_codes, is_name_cont, SyntaxParts, ForeignRange}
 use grammar.{parse_grammar, ready}
 use diagnostics.{defect_at}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error, user_code, DiagCode}
@@ -778,27 +778,18 @@ fn program_hash(p: Parsed) -> int {
     fp(17, [p.store.stmt_fingerprint(s) for s in p.stmts])
 }
 
-/// An optional declaration as a fingerprint part — absence is its own
-/// value, which index 0 would otherwise have spent.
-fn decl_fp(d: DeclId?) -> int {
-    if d == null { return 0 }
-    d!.index + 1
-}
-
 /// A signature's fingerprint — everything the signature SAYS, so an
 /// unchanged sig cuts the wave at every caller and a changed one never
-/// can. A REGISTRY, every kind spelled: a kind answering a constant
-/// makes every declaration of that kind one signature, which is what
-/// a named type's `1` did. Exported because the shapes that once
-/// collided here are pinned as cases.
+/// can. DERIVED: the fold is a reading of the declaration's own
+/// shape, so a field added to a sig reaches the hash on the day it
+/// lands rather than whenever someone diffs the parts list against
+/// the record. That diff is what found seven forgotten payloads here,
+/// and every one of them was a field added after its hash was
+/// written. Exported because the shapes that once collided are pinned
+/// as cases.
 export fn sig_hash(s: DeclSig?) -> int {
     if s == null { return 0 }
-    match s! {
-        .Fn(f) -> fp(11, [f.ret.index, fp_list([t.index for t in f.params])]),
-        .Record(r) -> fp(13, [fp_list([t.index for t in r.types]), fp_str(joined(r.names, ",")), fp_list([decl_fp(d) for d in r.defaults])]),
-        .Enum(v) -> fp(5, [fp_list([fp_list([t.index for t in ps]) for ps in v.payloads]), fp_str(joined(v.names, ","))]),
-        .Named(n) -> fp(122, [n.of.index]),
-    }
+    s!.fingerprint()
 }
 
 impl Decls {
@@ -1237,7 +1228,15 @@ impl Workspace {
     // A template is copied from the store that parsed it; the other
     // shapes are minted. ──
 
+    /// A LIST OF TEMPLATES HAS NO EXPRESSION POSITION. Every other
+    /// seat joins a run — statements, arms and binders each flatten a
+    /// `Many` — but an expression seat holds ONE value and no
+    /// separator between two of them is the compiler's to choose. The
+    /// arm that answered an Error node here spliced that choice
+    /// silently and let the typer complain about the SEAT, which
+    /// names neither the mistake nor its exits.
     fn spliced(f: FileId, node: Node, kind: HoleKind) -> Filled {
+        if kind is .Expression && node is .Many { return Filled.Unplaceable(many_in_expression()) }
         match kind {
             .Expression -> Filled.Expr(self.spliced_expr(f, node)),
             .Name -> Filled.Name(self.spliced_names(node).first() ?? ""),
@@ -1347,6 +1346,7 @@ impl Workspace {
         // A fill that did not fit its seat is the compiler's own
         // disagreement with its typing — spoken, never spliced quietly.
         self.decls.speak_expansion(f, [misfit_defect(self.decls.file(origin).path, at, k) for k in rb.misfits])
+        self.decls.speak_expansion(f, [unplaceable_fill(self.decls.file(origin).path, at, u) for u in rb.unplaceable])
         Copied { stmts: stmts, arms: arms }
     }
 
@@ -2621,7 +2621,26 @@ fn template_site(node: Node) -> Loc? {
 fn nothing_copied() -> Copied { Copied { stmts: [], arms: [] } }
 
 fn misfit_defect(template: string, at: int, k: int) -> Diag {
-    defect_at(Loc { file: template, lo: at, hi: at }, "defect: hole ${k} of the template at offset ${at} was filled with a shape its seat does not take")
+    defect_at(at_template(template, at), "defect: hole ${k} of the template at offset ${at} was filled with a shape its seat does not take")
+}
+
+/// A template's own offset as a place — a template has no line.
+fn at_template(template: string, at: int) -> Loc {
+    Loc { file: template, lo: at, hi: at }
+}
+
+/// The words for a fill no seat can hold — the FILL's own, since the
+/// splice cannot re-derive why a shape had nowhere to go.
+fn unplaceable_fill(template: string, at: int, u: Unplaced) -> Diag {
+    refusal("annotation.unplaceable", at_template(template, at),
+            "a hole was filled with something no seat can hold", u.why,
+            "a fill the compiler cannot place is spoken, never spliced")
+}
+
+/// A `List<Code>` — a run of templates — in a seat that holds ONE
+/// value.
+fn many_in_expression() -> string {
+    "a list of templates has no expression position — splice it where a run belongs (statements, arms, binders), or fold the list into one template before the hole"
 }
 
 fn arena_marks(store: NodeStore) -> ArenaMarks {
