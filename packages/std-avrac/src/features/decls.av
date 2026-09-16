@@ -173,7 +173,7 @@ impl Decls {
     // ── files ──
 
     /// A path's identity — minted at first mention.
-    fn file_id(path: string, module: string) -> FileId {
+    mut fn file_id(path: string, module: string) -> FileId {
         let known: FileId? = self.paths.get(path)
         if known != null { return known! }
         let id = FileId { index: self.files.length }
@@ -407,7 +407,7 @@ impl Decls {
 
     /// An id for a key: the existing one (its row refreshed), or the
     /// next; a member joins its parent's children.
-    fn mint(key: string, f: FileId, s: StmtId, name: string, kind: DeclKind, exported: bool, owner: string, parent: DeclId?, nested: bool, root: ExprId?) -> DeclId {
+    mut fn mint(key: string, f: FileId, s: StmtId, name: string, kind: DeclKind, exported: bool, owner: string, parent: DeclId?, nested: bool, root: ExprId?) -> DeclId {
         // the read of `keys` ends with `known_id`'s scope, so the write
         // below finds the map unshared — held to this scope's end, it
         // cloned the map per declaration, a tenth of every compile
@@ -534,7 +534,7 @@ impl Decls {
     /// table, so `items`, the namespace, resolve and lowering read it
     /// as written. The statement table is grown to the arena first —
     /// `decl_of` reads it by statement, and a miss reads past its end.
-    fn record_generated(f: FileId, made: List<DeclId>) {
+    mut fn record_generated(f: FileId, made: List<DeclId>) {
         mut by_stmt = self.decl_ids[f.index]
         by_stmt.grow_to(self.store_of(f).stmts.count())
         for d in made { by_stmt.set(self.decl(d).stmt.index, d) }
@@ -608,7 +608,7 @@ impl Decls {
     }
 
     /// Nodes copied from a template: each wears the file that wrote it.
-    fn note_origins(f: FileId, exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, origin: FileId) {
+    mut fn note_origins(f: FileId, exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, origin: FileId) {
         mut known = self.origins[f.index]
         let wrote = Origin.Written(origin)
         for e in exprs { known.exprs = known.set_at(known.exprs, e.index, wrote) }
@@ -878,7 +878,7 @@ impl Decls {
     }
 
     /// The seats pass found the body writing through seat `i`.
-    fn record_seat_written(d: DeclId, i: int) {
+    mut fn record_seat_written(d: DeclId, i: int) {
         mut row = self.written_seats[d.index]
         if i < row.length { row.set(i, true) }
         self.written_seats.set(d.index, row)
@@ -1173,7 +1173,7 @@ impl Decls {
 
     /// A method registered under its type — the same declaration
     /// again (a recomputed sig) is the same entry.
-    fn declare_method(target: DeclId, m: DeclId) {
+    mut fn declare_method(target: DeclId, m: DeclId) {
         let prior: DeclId? = self.held_method(target, self.decl(m).name)
         if prior != null && same_decl(prior!, m) { return }
         mut ms = self.methods[target.index]
@@ -1181,7 +1181,7 @@ impl Decls {
         self.methods.set(target.index, ms)
     }
 
-    fn record_impl(ty: DeclId, tr: DeclId) {
+    mut fn record_impl(ty: DeclId, tr: DeclId) {
         if self.holds_impl(ty, tr) { return }
         mut ts = self.impls[ty.index]
         ts.push(tr)
