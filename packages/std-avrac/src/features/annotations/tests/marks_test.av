@@ -7,9 +7,9 @@ use @std.avrac.language.{analyze_source}
 spec "features/annotations — marks" {
     given "a mark lands on the member it precedes" {
         then "a variant mark is the variant's" {
-            let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    @verbatim Quote(parts: List<string>)\n}\n1\n")
+            let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    @frozen Quote(parts: List<string>)\n}\n1\n")
             let vs = a.view.store.enum_parts(a.view.stmts[1])?.variants ?? []
-            vs.length == 1 && vs[0].marks.length == 1 && vs[0].marks[0].name == "verbatim"
+            vs.length == 1 && vs[0].marks.length == 1 && vs[0].marks[0].name == "frozen"
         }
         then "a payload mark is the payload's, not the variant's" {
             let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    Const(@dst dst: Reg, v: int)\n}\n1\n")
@@ -27,9 +27,9 @@ spec "features/annotations — marks" {
             vs[0].marks[0].name == "vm" && vs[0].payloads[0].marks[0].name == "pm"
         }
         then "a mark with arguments keeps its words" {
-            let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    @expands(expansion) S(word: string)\n}\n1\n")
+            let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    @widened(wide) S(word: string)\n}\n1\n")
             let vs = a.view.store.enum_parts(a.view.stmts[1])?.variants ?? []
-            vs[0].marks[0].name == "expands" && vs[0].marks[0].args.length == 1 && vs[0].marks[0].args[0] == "expansion"
+            vs[0].marks[0].name == "widened" && vs[0].marks[0].args.length == 1 && vs[0].marks[0].args[0] == "wide"
         }
         then "a mark no reader claims is refused where it was written" {
             let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    @nobody_reads_this Const(v: int)\n}\n1\n")
