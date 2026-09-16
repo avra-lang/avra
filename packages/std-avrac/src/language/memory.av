@@ -8,7 +8,7 @@
 //! RetVal keeps, and the caller owns the call's result. Systems
 //! ownership lands here later as a strategy, touching neither
 //! lowering nor the backend.
-use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, dst_of, reads_of, same_reg, rt_owns, rt_lends, rt_owned_twin, reversed}
+use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, owned_dst, viewed_dst, moved_args, reads_of, same_reg, rt_owns, rt_lends, rt_owned_twin, reversed}
 
 /// Managed registers bound in one open scope, its tier remembered.
 export type Scope = { tier: Level, managed: List<Reg>, cells: List<Reg> }
@@ -129,15 +129,15 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             // callee will release. The indirect call wears the same
             // ABI — a binding cannot ride an or-arm, so the arm is
             // spelled twice; the law once.
-            .Call(_, _, args) -> {
+            .Call(_, _, _) -> {
                 // LICENSED I3: the pass's OUTPUT accumulates
-                for r in retained_args(types, reg_types, args) { out.push(r) }
+                for r in retained_args(types, reg_types, i) { out.push(r) }
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
             }
-            .CallPtr(_, _, args) -> {
+            .CallPtr(_, _, _) -> {
                 // LICENSED I3: the pass's OUTPUT accumulates
-                for r in retained_args(types, reg_types, args) { out.push(r) }
+                for r in retained_args(types, reg_types, i) { out.push(r) }
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
             }
@@ -308,23 +308,15 @@ fn gives_upward(i: Ins) -> bool {
 /// child rides the parent's reference, so its uses are the
 /// parent's. Only a MANAGED child does: a scalar pulled out of a
 /// box is a copied word and holds nothing.
+///
+/// The IR's `@view` role names the declared views; a LENDING runtime
+/// row's answer is the one registry-shaped view (the row still
+/// holds the box it answered), so it stays an arm here. A call's
+/// answer is the caller's own reference, never a view.
 fn view_of(i: Ins) -> Reg? {
     match i {
-        .Extract(d, _, _) -> d,
         .CallRt(d, callee, _) -> if rt_owns(callee) { null } else { d },
-        // A REGISTRY: every arm is spelled, so the day a
-        // value-carrying instruction lands the build refuses until
-        // this answers for it. A call's answer is the caller's own
-        // reference, never a view of an argument.
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-        .Bin(_, _, _, _) or .Un(_, _, _) or .CallRtVoid(_, _) or
-        .Pack(_, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .ScopeEnter(_) or
-        .ScopeExit(_) or .IfStart(_) or .SwitchStart(_, _) or
-        .ArmEnd(_) or .RegionEnd(_, _) or .Call(_, _, _) or
-        .CallPtr(_, _, _) or .RetVal(_) or .FnExit(_) or
-        .Alloca(_) or .Load(_, _) or .Store(_, _) or .LoopStart or
-        .LoopCond(_) or .LoopEnd or .Retain(_) or .Release(_) or
-        .Ret(_) -> null,
+        rest -> viewed_dst(i),
     }
 }
 
@@ -442,33 +434,21 @@ fn manages(types: TypeRegistry, reg_types: List<TypeId>, mut open_scopes: Stack<
 }
 
 /// A defining instruction's destination when the value is MANAGED
-/// (heap-shaped); null for scalars and non-defining instructions.
+/// (heap-shaped) — the IR's `@owns` role, never a second hand list.
+/// Null for a destination that owns nothing: a scalar's word, a cell,
+/// an immortal static address (none carries `@owns`), the `@view`
+/// destination, and every non-defining instruction.
 fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
-    let dst: Reg? = dst_of(i)
+    let dst: Reg? = owned_dst(i)
     if dst == null { return null }
     if !is_managed(types, reg_types[dst!.index]) { return null }
-    // Provenance refines the type: a runtime call's result is
-    // managed only when the REGISTRY says it owns one — a static
-    // answer (bool_text) never earns a release.
+    // Provenance refines the ROLE: a runtime call's answer is managed
+    // only when the REGISTRY says it owns one — a static answer
+    // (bool_text) never earns a release. The one variant-specific
+    // fact, so the rest delegates to the role the declaration holds.
     match i {
         .CallRt(_, callee, _) -> if rt_owns(callee) { dst } else { null },
-        // static data is immortal: nothing to release, ever
-        .StaticAddr(_, _) -> null,
-        // A FLAT RECORD'S EXTRACT IS IDENTITY — the register IS its
-        // field's — so it is a VIEW of a box somebody else already
-        // owns, never a reference of its own (`view_of` says the
-        // same; this arm used to disagree, invisibly, while no flat
-        // record was managed). A PACK owns, because its arm above
-        // retains: the destination is a second holder.
-        .Extract(_, _, _) -> null,
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or
-        .Bin(_, _, _, _) or .Un(_, _, _) or .Pack(_, _) or
-        .FnAddr(_, _) or .Call(_, _, _) or .CallPtr(_, _, _) or .RegionEnd(_, _) or
-        .Alloca(_) or .Load(_, _) -> dst,
-        .CallRtVoid(_, _) or .ScopeEnter(_) or .ScopeExit(_) or .IfStart(_) or
-        .SwitchStart(_, _) or .ArmEnd(_) or .Store(_, _) or .LoopStart or
-        .LoopCond(_) or .LoopEnd or .Release(_) or .Retain(_) or .RetVal(_) or
-        .FnExit(_) or .Ret(_) -> null,
+        rest -> dst,
     }
 }
 
@@ -537,7 +517,8 @@ impl Scope {
     }
 }
 
-/// The caller's retains for a call's managed arguments.
-export fn retained_args(types: TypeRegistry, reg_types: List<TypeId>, args: List<Reg>) -> List<Ins> {
-    [Ins.Retain(ar) for ar in args if is_managed(types, reg_types[ar.index])]
+/// The caller's retains for a call's managed arguments — the seats
+/// the IR declares MOVE IN (`@moves`), never the whole argument list.
+export fn retained_args(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> List<Ins> {
+    [Ins.Retain(ar) for ar in moved_args(i) if is_managed(types, reg_types[ar.index])]
 }
