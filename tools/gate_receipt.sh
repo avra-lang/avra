@@ -116,7 +116,7 @@ self_test() {
 }
 
 case "$1" in
-write)      receipt_write "$(cd "$(dirname "$0")/.." && pwd)" ;;
+write)      receipt_write "${2:-$(cd "$(dirname "$0")/.." && pwd)}" ;;
 trusts)     receipt_trusts "$2" "$3" ;;
 --self-test) self_test ;;
 *)
