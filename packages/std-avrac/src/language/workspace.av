@@ -14,9 +14,10 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, Mark, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Node, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, Said, Directive, bound_decl_of, SeatValue, settled_symbol, meta_row, Node, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar, kind_of, meta_of_kind, no_kind, meta_of_marks}
+use @std.meta.{Kind, Mark as MetaMark}
 use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, copier, quote_kind, all_codes, is_name_cont, SyntaxParts, ForeignRange}
 use grammar.{parse_grammar, ready}
 use diagnostics.{defect_at}
@@ -1427,6 +1428,7 @@ impl Workspace {
                 "params" -> self.crossed_params(v, d, sig.types[i], heap),
                 "fields" -> self.crossed_fields(v, d, sig.types[i], heap),
                 "variants" -> self.crossed_variants(v, d, sig.types[i], heap),
+                "answers" -> meta_of_kind(self.answer_kind(d), heap),
                 _ -> MetaVal.Absent,
             })
         }
@@ -1453,6 +1455,65 @@ impl Workspace {
         self.decls.fields_of_type(item!)
     }
 
+    /// A fn's PARAMETER SHAPES, positionally — the declaration's own
+    /// signature, which is the only source that resolved a declared
+    /// name. A signature not yet earned leaves every shape unspelled.
+    fn seat_kinds(d: DeclId) -> List<Kind> {
+        let sig: FnSig? = (self.decls.sig(d))?.fn_sig()
+        if sig == null { return [] }
+        [kind_of(self.decls.types, t) for t in sig!.params]
+    }
+
+    /// A record's FIELD SHAPES, in declaration order.
+    fn record_kinds(d: DeclId) -> List<Kind> {
+        let sig: StructSig? = (self.decls.sig(d))?.record_sig()
+        if sig == null { return [] }
+        [kind_of(self.decls.types, t) for t in sig!.types]
+    }
+
+    /// An enum's PAYLOAD SHAPES, variant by variant.
+    fn payload_kinds(d: DeclId) -> List<List<Kind>> {
+        let sig: EnumSig? = (self.decls.sig(d))?.enum_sig()
+        if sig == null { return [] }
+        [[kind_of(self.decls.types, t) for t in ps] for ps in sig!.payloads]
+    }
+
+    /// A fn's ANSWER shape.
+    fn answer_kind(d: DeclId) -> Kind {
+        let sig: FnSig? = (self.decls.sig(d))?.fn_sig()
+        if sig == null { return no_kind() }
+        kind_of(self.decls.types, sig!.ret)
+    }
+
+    /// A kind at a position — `no_kind` past the signature's end.
+    fn kind_at(ks: List<Kind>, j: int) -> Kind {
+        if j < ks.length { ks[j] } else { no_kind() }
+    }
+
+    /// A variant's payload shapes at a position.
+    fn kinds_at(rows: List<List<Kind>>, j: int) -> List<Kind> {
+        if j < rows.length { rows[j] } else { [] }
+    }
+
+    /// A member's marks as `@std.meta.Mark` values.
+    fn crossed_marks(v: FileView, ms: List<Mark>, mut heap: MetaHeap) -> MetaVal {
+        meta_of_marks([MetaMark { name: m.name, args: m.args, at: self.placed(v, m.span) } for m in ms], heap)
+    }
+
+    /// A source span as a place, or absent.
+    fn placed(v: FileView, sp: Span?) -> Loc? {
+        if sp == null { return null }
+        Loc { file: v.source.file, lo: sp!.lo, hi: sp!.hi }
+    }
+
+    /// A `Variant` meta record's `fields` slot type, when the record
+    /// carries one.
+    fn variant_fields_type(elem: StructSig) -> TypeId? {
+        let at = elem.names.index_of("fields")
+        if at < 0 { return null }
+        elem.types[at]
+    }
+
     /// A fn's parameters as `Param` values: name, the type's spelling,
     /// its `mut` and `const` marks — built by the `List<Param>` seat's
     /// element type.
@@ -1461,12 +1522,14 @@ impl Workspace {
         if elem == null { return heap.node([]) }
         let shape = elem!
         let params = declared_params(v.store, self.decls.decl(d).stmt)
+        let kinds = self.seat_kinds(d)
         heap.node([meta_row(heap, shape, {
             "name": MetaVal.Text(params[i].name),
             "ty": typed_meta(self.decls.types, params[i].ty),
             "mutable": MetaVal.Bool(params[i].mark.mutable),
             "settled": MetaVal.Bool(params[i].mark.settled),
             "at": self.crossed_loc(v, params[i].span, heap),
+            "kind": meta_of_kind(self.kind_at(kinds, i), heap),
         }) for i in 0..params.length])
     }
 
@@ -1476,11 +1539,14 @@ impl Workspace {
         let elem: StructSig? = self.meta_elem(want)
         if elem == null { return heap.node([]) }
         let shape = elem!
+        let kinds = self.record_kinds(d)
         heap.node([meta_row(heap, shape, {
             "name": MetaVal.Text(f.name),
             "ty": MetaVal.Text(self.spelling(f.ty)),
             "at": self.crossed_loc(v, f.span, heap),
-        }) for f in declared_fields(v.store, x.stmt)])
+            "kind": meta_of_kind(self.kind_at(kinds, j), heap),
+            "marks": self.crossed_marks(v, f.marks, heap),
+        }) for j, f in declared_fields(v.store, x.stmt)])
     }
 
     /// An enum's variants as `Variant` values: name and payload spellings.
@@ -1489,11 +1555,29 @@ impl Workspace {
         let elem: StructSig? = self.meta_elem(want)
         if elem == null { return heap.node([]) }
         let shape = elem!
+        let rows = self.payload_kinds(d)
+        let field_want: TypeId? = self.variant_fields_type(shape)
+        let field_shape: StructSig? = if field_want == null { null } else { self.meta_elem(field_want!) }
         heap.node([meta_row(heap, shape, {
             "name": MetaVal.Text(va.name),
             "payload": heap.node([MetaVal.Text(self.spelling(p.ty)) for p in va.payloads]),
             "at": self.crossed_loc(v, va.span, heap),
-        }) for va in declared_variants(v.store, x.stmt)])
+            "fields": self.crossed_variant_fields(v, va, self.kinds_at(rows, j), field_shape, heap),
+            "marks": self.crossed_marks(v, va.marks, heap),
+        }) for j, va in declared_variants(v.store, x.stmt)])
+    }
+
+    /// A variant's payload as `Field` values — its name, spelling,
+    /// shape and marks, one writer for both lists.
+    fn crossed_variant_fields(v: FileView, va: Variant, kinds: List<Kind>, shape: StructSig?, mut heap: MetaHeap) -> MetaVal {
+        if shape == null { return heap.node([]) }
+        heap.node([meta_row(heap, shape!, {
+            "name": MetaVal.Text(p.name),
+            "ty": MetaVal.Text(self.spelling(p.ty)),
+            "at": self.crossed_loc(v, p.span, heap),
+            "kind": meta_of_kind(self.kind_at(kinds, j), heap),
+            "marks": self.crossed_marks(v, p.marks, heap),
+        }) for j, p in va.payloads])
     }
 
     /// A source span as a `Loc` value — file, lo, hi — or absent.

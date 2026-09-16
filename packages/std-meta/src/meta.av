@@ -31,21 +31,133 @@ use @std.errors.{Loc}
 
 extern fn avra_embed(path: string) -> string
 
+/// A TYPE AS A SHAPE, beside the spelling every seat has always
+/// carried. A rule that DISPATCHES on a type asks this; a rule that
+/// PRINTS one asks `spelled()`, which answers the same words the
+/// string seats do. Every shape the compiler can hand over has a
+/// variant, so a rule over `Kind` is a registry the build checks —
+/// a string seat is a registry nothing checks, and telling
+/// `List<int>` from a type named `Listen` was a substring test
+/// before this.
+export enum Kind {
+    Int
+    Float
+    Bool
+    Str
+    /// an opaque host pointer — what an extern seat carries
+    Ptr
+    Void
+    List(elem: Kind)
+    /// explicit shared interior mutability
+    Cell(inner: Kind)
+    Map(key: Kind, value: Kind)
+    /// `T?` — a value that may be absent
+    Opt(inner: Kind)
+    Result(ok: Kind, err: Kind)
+    /// a DECLARED name — a record or an enum, with its arguments
+    /// when it is generic (`Box<int>` is `Named("Box", [Int])`)
+    Named(name: string, args: List<Kind>)
+    /// `fn(seats) -> answer`. THE SEATS CARRY THEIR OWN CONTRACTS:
+    /// a seat is ONE value holding its shape and its promises, never
+    /// a `List<Kind>` beside a parallel list of marks — a promise
+    /// added as a second list drops silently wherever a site forgets
+    /// it.
+    Fn(seats: List<Seat>, answer: Kind)
+    /// `dyn Trait` — a value known only by its contract
+    Dyn(name: string)
+    /// a generic declaration's own type parameter, by its name
+    Var(name: string)
+    /// A SHAPE THIS VOCABULARY HAS NO WORD FOR, as the compiler
+    /// spells it — a literal's own type, a type used as a value, the
+    /// error absorber. Never a silent absence: a rule over `Kind`
+    /// that meets one must SAY so.
+    Unspelled(text: string)
+}
+
+/// A fn seat: what it carries, and what the callee may do through
+/// it. `mutable` lets the callee write through the seat; `settled`
+/// demands the caller settle its value at compile time.
+export type Seat = { kind: Kind, mutable: bool, settled: bool }
+
+impl Kind {
+    /// The words the compiler spells this shape with — exactly what
+    /// the string seat beside it carries.
+    fn spelled() -> string {
+        match self {
+            .Int -> "int",
+            .Float -> "float",
+            .Bool -> "bool",
+            .Str -> "string",
+            .Ptr -> "ptr",
+            .Void -> "void",
+            .List(elem) -> "List<${elem.spelled()}>",
+            .Cell(inner) -> "Cell<${inner.spelled()}>",
+            .Map(key, value) -> "Map<${key.spelled()}, ${value.spelled()}>",
+            .Opt(inner) -> "${inner.spelled()}?",
+            .Result(ok, err) -> "Result<${ok.spelled()}, ${err.spelled()}>",
+            .Named(name, args) -> named_spelling(name, args),
+            .Fn(seats, answer) -> "fn(${[s.spelled() for s in seats].join(", ")})${answer_spelling(answer)}",
+            .Dyn(name) -> "dyn ${name}",
+            .Var(name) -> name,
+            .Unspelled(text) -> text,
+        }
+    }
+}
+
+impl Seat {
+    /// A seat as a fn type spells it — its marks in front when it
+    /// carries any.
+    fn spelled() -> string {
+        if self.settled { return if self.mutable { "const mut ${self.kind.spelled()}" } else { "const ${self.kind.spelled()}" } }
+        if self.mutable { return "mut ${self.kind.spelled()}" }
+        self.kind.spelled()
+    }
+}
+
+/// A declared name, with its arguments when it has any.
+fn named_spelling(name: string, args: List<Kind>) -> string {
+    if args.is_empty() { return name }
+    "${name}<${[a.spelled() for a in args].join(", ")}>"
+}
+
+/// A fn's written answer — nothing when it answers `void`.
+fn answer_spelling(answer: Kind) -> string {
+    if answer is .Void { return "" }
+    " -> ${answer.spelled()}"
+}
+
 /// A fn's parameter as an annotation sees it: its name, its type's
-/// spelling, whether it is a `mut` seat, and whether it is a `const`
-/// seat — settled at compile time.
-export type Param = { name: string, ty: string, mutable: bool, settled: bool, at: Loc? }
+/// spelling and its SHAPE, whether it is a `mut` seat, and whether
+/// it is a `const` seat — settled at compile time.
+export type Param = { name: string, ty: string, mutable: bool, settled: bool, at: Loc?, kind: Kind = Kind.Unspelled("") }
 
 /// A fn declaration as an annotation's first seat receives it. Types
-/// are SPELLED here — the words the program wrote, resolved — until
-/// a type value of its own arrives.
-export type Fn = { name: string, params: List<Param>, answer: string, at: Loc? }
+/// are SPELLED here and SHAPED beside the spelling: `answer` is the
+/// words, `answers` the shape a rule dispatches on.
+export type Fn = { name: string, params: List<Param>, answer: string, at: Loc?, answers: Kind = Kind.Unspelled("") }
 
-/// A record's field: its name and its type's spelling.
-export type Field = { name: string, ty: string, at: Loc? }
+/// A MARK a declared member carries — `@verbatim`, `@expands(body)`
+/// written before a variant or a field. A MARK IS DATA WHERE AN
+/// ANNOTATION IS A CALL: the compiler records it and hands it here,
+/// and its arguments are WORDS because a mark is read while the
+/// file's names are still resolving.
+///
+/// A READER SAYS WHICH MARKS IT CLAIMS. A trait's `marks` answers the
+/// words its `derive` reads, and a mark no reader on the declaration
+/// claims is refused where it was written — so a misspelled mark
+/// cannot sit there doing nothing.
+export type Mark = { name: string, args: List<string>, at: Loc? }
 
-/// An enum's variant: its name and its payload's spellings.
-export type Variant = { name: string, payload: List<string>, at: Loc? }
+/// A record's field: its name, its type's spelling, its shape, and
+/// the marks written before it.
+export type Field = { name: string, ty: string, at: Loc?, kind: Kind = Kind.Unspelled(""), marks: List<Mark> = [] }
+
+/// An enum's variant: its name, its payload's spellings, and the
+/// payload as FIELDS — each carrying the name a grammar rule's
+/// capture label binds to, beside its spelling and its shape. A
+/// payload IS a parameter compiler-side, so `fields` runs with
+/// `payload` and says what `payload` cannot.
+export type Variant = { name: string, payload: List<string>, at: Loc?, fields: List<Field> = [], marks: List<Mark> = [] }
 
 /// A type declaration as an annotation's first seat receives it: a
 /// record has fields, an enum has variants.

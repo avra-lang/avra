@@ -689,13 +689,21 @@ impl Decls {
     /// to the meta vocabulary (`Code`, `quoted`, `joined`); null when
     /// the program does not load the package.
     fn meta_named(name: string) -> DeclId? {
-        let known: DeclId? = self.meta_ids.get(name)
+        self.package_decl("@std.meta", name)
+    }
+
+    /// A declaration a PACKAGE exports, by name — the door to a
+    /// vocabulary the compiler shares with the programs it compiles;
+    /// null when the program does not load the package.
+    fn package_decl(pkg: string, name: string) -> DeclId? {
+        let key = "${pkg}.${name}"
+        let known: DeclId? = self.meta_ids.get(key)
         if known != null { return known }
-        let ms = [ModuleId { index: j } for j, m in self.modules if package_of_module(m) == "@std.meta"]
+        let ms = [ModuleId { index: j } for j, m in self.modules if package_of_module(m) == pkg]
         if ms.is_empty() { return null }
         let ds: List<DeclId> = flatten([self.file_decls[f.index] for f in self.module_files[ms[0].index]])
         let found: DeclId? = ds.find((d: DeclId) -> self.decl(d).name == name)
-        if found != null { self.meta_ids.set(name, found!) }
+        if found != null { self.meta_ids.set(key, found!) }
         found
     }
 
