@@ -1,0 +1,326 @@
+//! server.av — the LOOP: one poller, one listener, every connection a
+//! value, and a handler that answers a `Request` with a `Response`.
+//!
+//! The loop is a VALUE with a `turn` verb: one wait, every ready
+//! descriptor served, the count answered. `run` turns forever; a test
+//! turns by hand on one thread with a client on the same poller.
+//!
+//! A connection's whole state is a `Link`: its socket, the bytes read
+//! and not yet consumed, how far the head scan reached, the head
+//! awaiting its body, the chunked decoder in flight, the output owed
+//! and how much of it is written, whether the connection closes after
+//! this response, how many requests it has served, and when it was
+//! last heard from. Nothing else is needed (the framing laws, §3.2).
+//!
+//! THE LAWS THE LOOP HOLDS: responses go out in the order requests
+//! came in, so a pipelined tail stays in the buffer and is framed next;
+//! a refusal is answered with its status and `connection: close`, then
+//! the write side is shut and the peer read to its end; a peer's FIN is
+//! not a request delimiter and not disinterest — an owed response is
+//! still written; a `100 Continue` is written when a body is expected
+//! and none of it has arrived; a HEAD carries the body's length and
+//! none of its bytes; an idle connection is dropped at its deadline.
+use @std.net.{Listener, Conn, Poller, Event, Read, NetError, poller}
+use @std.time.{Duration, now_ms, secs}
+use frame.{Head, Body, Method, Framed, Chunker, Chunked, Limits, framed, chunker, fed, status_of, limits}
+use http.{Request, Response, wire, status, read_size, as_sent}
+
+/// The deadlines a server names: a head must complete within `head`
+/// of the first byte, a body must advance within `body` of its last
+/// byte, an idle keep-alive connection lives `idle`, and a connection
+/// serves at most `requests`.
+export type Timing = { head: Duration = secs(10), body: Duration = secs(60), idle: Duration = secs(75), requests: int = 1000 }
+
+/// The default deadlines.
+export fn timing() -> Timing { Timing {} }
+
+/// A live connection.
+type Link = {
+    conn: Conn,
+    peer: string,
+    buf: Bytes,
+    scanned: int,
+    head: Head?,
+    decoder: Chunker?,
+    out: Bytes,
+    written: int,
+    closing: bool,
+    served: int,
+    heard: int,
+}
+
+/// The server: its listener, its poller, the application state the
+/// handler writes through, and every link by descriptor.
+export type Server<A> = {
+    listener: Listener,
+    poll: Poller,
+    app: A,
+    handle: fn(mut A, Request) -> Response,
+    limits: Limits,
+    timing: Timing,
+    links: List<Link?>,
+    live: int,
+    swept_at: int,
+}
+
+/// A server on `l`, its handler watching `app` — the handler is the
+/// last seat, so a call writes it as a trailing block:
+/// `served(l, app, limits(), timing()) { mut app, q -> … }`. The
+/// listener is watched for readiness before the first turn.
+export fn served<A>(l: Listener, app: A, limits: Limits, timing: Timing, handle: fn(mut A, Request) -> Response) -> Result<Server<A>, NetError> {
+    let p = poller()?
+    p.watch(l.fd, .Read)?
+    .Ok(Server { listener: l, poll: p, app: app, handle: handle, limits: limits, timing: timing, links: [], live: 0, swept_at: now_ms() })
+}
+
+once fn continue_line() -> Bytes { "HTTP/1.1 100 Continue\r\n\r\n".bytes() }
+
+/// How long a loaded loop goes between sweeps, in ms.
+fn sweep_gap() -> int { 1000 }
+
+impl Server<A> {
+    /// Turns until the listener fails.
+    mut fn run() -> Result<int, NetError> {
+        mut turns = 0
+        while true {
+            self.turn(null)?
+            turns = turns + 1
+        }
+        .Ok(turns)
+    }
+
+    /// One wait of up to `budget` (null waits for the first event),
+    /// then every ready descriptor served. Idle links are swept on
+    /// every quiet turn and once a second under load: a sweep walks
+    /// every link, and a loop serving thousands must not pay that per
+    /// event. Answers how many events were served.
+    mut fn turn(budget: Duration?) -> Result<int, NetError> {
+        let events = self.poll.wait(budget)?
+        for e in events { self.served_event(e)? }
+        let now = now_ms()
+        if events.is_empty() || now - self.swept_at >= sweep_gap() {
+            self.swept(now)
+            self.swept_at = now
+        }
+        .Ok(events.length)
+    }
+
+    /// How many connections are open.
+    fn connections() -> int { self.live }
+
+    // ── The events ──────────────────────────────────────────────
+
+    mut fn served_event(e: Event) -> Result<int, NetError> {
+        if e.fd == self.listener.fd { return self.accepted() }
+        let l: Link? = self.link_at(e.fd)
+        if l == null { return .Ok(e.fd) }
+        if e.failed { return self.dropped(l!) }
+        if e.readable || e.hangup { self.readable(l!)? }
+        let again: Link? = self.link_at(e.fd)
+        if again != null && e.writable { self.kept(again!)? }
+        .Ok(e.fd)
+    }
+
+    /// Every pending connection accepted and watched for reading.
+    mut fn accepted() -> Result<int, NetError> {
+        mut n = 0
+        while true {
+            let pending: Conn? = self.listener.accept()?
+            if pending == null { return .Ok(n) }
+            let c = pending!
+            self.poll.watch(c.fd, .Read)?
+            self.seated(Link { conn: c, peer: c.peer(), buf: "".bytes(), scanned: 0, head: null, decoder: null, out: "".bytes(), written: 0, closing: false, served: 0, heard: now_ms() })
+            n = n + 1
+        }
+        .Ok(n)
+    }
+
+    /// Bytes read into the link's buffer and every request they
+    /// complete served; a peer's end finishes what is owed and closes.
+    mut fn readable(l: Link) -> Result<int, NetError> {
+        match l.conn.read(read_size()) {
+            .Ok(.Data(b)) -> self.advanced(l with { buf: l.buf.concat(b), heard: now_ms() }),
+            .Ok(.Eof) -> self.ended(l),
+            .Ok(.Pending) -> .Ok(l.conn.fd),
+            .Err(_) -> self.dropped(l),
+        }
+    }
+
+    /// The buffer framed as far as it goes: every complete request in
+    /// it served in order, a partial one left for the next read.
+    mut fn advanced(l: Link) -> Result<int, NetError> {
+        mut cur = l
+        while true {
+            match self.stepped(cur) {
+                .Served(next) -> { cur = next },
+                .Waiting(next) -> { return self.kept(next) },
+            }
+        }
+        .Ok(l.conn.fd)
+    }
+
+    /// One request's worth of progress over the buffer.
+    mut fn stepped(l: Link) -> Progress {
+        if l.closing { return .Waiting(l) }
+        if l.head == null { return self.framing(l) }
+        self.bodied(l, l.head!)
+    }
+
+    /// The head framed from the buffer's start, or waited for, or
+    /// refused with its status and a close.
+    mut fn framing(l: Link) -> Progress {
+        match framed(l.buf, 0, l.scanned, self.limits) {
+            .Partial -> .Waiting(l with { scanned: l.buf.length }),
+            .Refused(why) -> self.refused(l, status_of(why)),
+            .Complete(head) -> self.headed(l with { head: head, scanned: 0 }, head),
+        }
+    }
+
+    /// A head in hand: a body-less request is served now; a body is
+    /// awaited, with `100 Continue` written when it was asked for and
+    /// none of it has arrived.
+    mut fn headed(l: Link, head: Head) -> Progress {
+        match head.body {
+            .None -> self.answered(l, head, "".bytes(), head.end),
+            .Length(_) or .Chunked -> self.bodied(self.continued(l, head), head),
+        }
+    }
+
+    fn continued(l: Link, head: Head) -> Link {
+        if !head.expects_continue || l.buf.length > head.end { return l }
+        l with { out: l.out.concat(continue_line()) }
+    }
+
+    /// The body gathered when the buffer holds it whole.
+    mut fn bodied(l: Link, head: Head) -> Progress {
+        match head.body {
+            .None -> self.answered(l, head, "".bytes(), head.end),
+            .Length(n) -> if l.buf.length < head.end + n { .Waiting(l) } else { self.answered(l, head, l.buf.slice(head.end, head.end + n), head.end + n) },
+            .Chunked -> self.chunked(l, head),
+        }
+    }
+
+    mut fn chunked(l: Link, head: Head) -> Progress {
+        match fed(l.decoder ?? chunker(head.end), l.buf, self.limits) {
+            .More(c) -> .Waiting(l with { decoder: c }),
+            .Refused(why) -> self.refused(l, status_of(why)),
+            .Done(body, end) -> self.answered(l with { decoder: null }, head, body, end),
+        }
+    }
+
+    /// The request answered by the handler and its response queued;
+    /// the consumed bytes leave the buffer so a pipelined tail is
+    /// framed next.
+    mut fn answered(l: Link, head: Head, body: Bytes, end: int) -> Progress {
+        let q = Request { raw: l.buf, head: head, body: body, peer: l.peer }
+        let r = self.handle(self.app, q)
+        let served = l.served + 1
+        let keep = head.keep_alive && served < self.timing.requests
+        let bytes = wired(r, keep, head)
+        .Served(l with { buf: l.buf.slice(end, l.buf.length), scanned: 0, head: null, out: l.out.concat(bytes), closing: !keep, served: served })
+    }
+
+    /// A refused head: its status, `connection: close`, and no more
+    /// requests read from this connection.
+    fn refused(l: Link, code: int) -> Progress {
+        .Served(l with { out: l.out.concat(wire(status(code), false, 1)), closing: true, head: null, buf: "".bytes() })
+    }
+
+    /// The link written as far as the socket takes it, then kept: a
+    /// link owing output watches for writability, one owing nothing
+    /// closes if it was closing. A writable socket comes here too.
+    mut fn kept(l: Link) -> Result<int, NetError> {
+        let flushed = self.flushed(l)?
+        if flushed.written < flushed.out.length {
+            self.poll.watch(flushed.conn.fd, .Both)?
+            self.seated(flushed)
+            return .Ok(flushed.conn.fd)
+        }
+        let settled = flushed with { out: "".bytes(), written: 0 }
+        if settled.closing { return self.parted(settled) }
+        self.poll.watch(settled.conn.fd, .Read)?
+        self.seated(settled)
+        .Ok(settled.conn.fd)
+    }
+
+    fn flushed(l: Link) -> Result<Link, NetError> {
+        if l.written >= l.out.length { return .Ok(l) }
+        let n = l.conn.write(l.out, l.written)?
+        .Ok(l with { written: l.written + n })
+    }
+
+    /// The peer has finished writing: what is owed is still written,
+    /// then the link parts.
+    mut fn ended(l: Link) -> Result<int, NetError> {
+        self.kept(l with { closing: true })
+    }
+
+    /// The write side shut after the last byte, the peer read to its
+    /// end, the socket closed.
+    mut fn parted(l: Link) -> Result<int, NetError> {
+        let _ = l.conn.shutdown_write()
+        self.dropped(l)
+    }
+
+    /// The link's socket closed and its seat emptied.
+    mut fn dropped(l: Link) -> Result<int, NetError> {
+        let _ = self.poll.watch(l.conn.fd, .None)
+        let _ = l.conn.close()
+        self.links.set(l.conn.fd, null)
+        self.live = self.live - 1
+        .Ok(l.conn.fd)
+    }
+
+    // ── The seats ───────────────────────────────────────────────
+
+    fn link_at(fd: int) -> Link? {
+        if fd >= self.links.length { return null }
+        self.links[fd]
+    }
+
+    mut fn seated(l: Link) {
+        while self.links.length <= l.conn.fd { self.links.push(null) }
+        if self.links[l.conn.fd] == null { self.live = self.live + 1 }
+        self.links.set(l.conn.fd, l)
+    }
+
+    /// Every link past its deadline dropped: a head in flight past
+    /// `head`, a body past `body`, an idle connection past `idle`.
+    mut fn swept(now: int) {
+        for l in [x! for x in self.links if x != null] {
+            if now - l.heard > self.deadline(l) { let _ = self.dropped(l) }
+        }
+    }
+
+    /// How long this link may stay silent: a body in flight is owed
+    /// the body deadline, a head half-arrived the head's, an idle
+    /// keep-alive connection the idle one.
+    fn deadline(l: Link) -> int {
+        when {
+            l.head != null -> self.timing.body.ms
+            l.buf.length > 0 -> self.timing.head.ms
+            _ -> self.timing.idle.ms
+        }
+    }
+}
+
+/// Where one step over the buffer left a link: a request served and
+/// its bytes consumed, or nothing more to serve until a read.
+enum Progress {
+    Served(l: Link)
+    Waiting(l: Link)
+}
+
+/// The response on the wire for a request: a HEAD's answer carries
+/// the body's length and none of its bytes.
+///
+/// IT MEASURES THE BODY OF THE RESPONSE THAT WAS WRITTEN, never the
+/// handler's — `wire` answers the server's own 500 for a response no
+/// peer could read, and measuring the handler's body against that
+/// wire cuts the head mid-field.
+fn wired(r: Response, keep: bool, head: Head) -> Bytes {
+    let sent = as_sent(r)
+    let whole = wire(sent, keep, head.minor)
+    if head.method is .Head { return whole.slice(0, whole.length - sent.body.length) }
+    whole
+}

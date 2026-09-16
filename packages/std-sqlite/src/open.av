@@ -221,35 +221,24 @@ fn reads_as_uri(path: string) -> SqlError {
 
 // ── Opening, and closing ────────────────────────────────────────
 
-/// An open connection. The handle is NULLABLE because closing NULLS
-/// it, which is what makes closing twice safe.
+/// An open connection.
 ///
-/// THE DOUBLE-CLOSE, AND HOW MUCH OF IT IS ACTUALLY CLOSED. Two
-/// `close_v2` calls on one pointer are undefined behaviour, and this
-/// type takes the half it can:
+/// THE HANDLE IS A CELL BECAUSE LIVENESS IS SHARED. Two `close_v2`
+/// calls on one pointer are undefined behaviour, so closing must NULL
+/// the handle — and every holder of the connection must see that null,
+/// not only the binding that closed it. A cell is one slot every copy
+/// of the value points at, so `mut b = a` and closing either closes
+/// once. A seat that writes through the caller's binding reaches ONE
+/// other holder and only by the calling convention's leave; this holds
+/// by the type.
 ///
-///   - `close` takes a `mut` receiver and NULLS the handle it closed,
-///     so the same binding closed twice closes once and answers 0.
-///   - The compiler ENFORCES the mutable place: `close(db)` on a `let`
-///     is `F2048: 'db' is not 'mut' — seat 1 of 'close' writes through
-///     it`. A handle can only be closed where it can be nulled.
-///   - What remains is a deliberate COPY — `mut b = a` and both closed.
-///     That is visible at the copy, and it is the only path left.
-///
-/// THE MECHANISM THAT WOULD CLOSE THE REST IS REAL AND NOT AVAILABLE.
-/// `@std/process` catches a stale child handle with a generation tag —
-/// `gen << 32 | idx` into a table, `runtime/avra_runtime.c:1727` — so a
-/// closed slot's handle never names its next tenant. It lives in the C
-/// RUNTIME, not in Avra, and a package cannot build one: Avra has no
-/// process-wide mutable state. Measured, eval == native — a `once fn`
-/// answering a list gives every caller a fresh copy, so three pushes
-/// through it leave the table holding nothing. The alternative is a
-/// sqlite-shaped table inside the language's own runtime, which is the
-/// C shim this campaign refuses by its first rule.
-///
-/// So: a generation-tagged `Db = { id: int }` is the right answer and
-/// it is a LANGUAGE ASK, not a design choice being ducked.
-export type Db = { raw: ptr? }
+/// WHAT IS STILL OPEN is a handle nobody holds — a connection closed
+/// while another part of the program still names a `Db` it got some
+/// other way. `@std/process` catches that with a generation tag
+/// (`gen << 32 | idx` into a table, `runtime/avra_runtime.c:1727`), a
+/// process-wide table a package cannot build. THAT remains the language
+/// ask; the double close does not.
+export type Db = { raw: Cell<ptr?> }
 
 /// A database at a path, opened for reading and writing and created if
 /// it is not there.
@@ -279,11 +268,11 @@ export fn open_with(c: OpenConfig) -> Result<Db, SqlError> {
 /// that closes only on success leaks one per failure, and the leak is
 /// invisible because the caller has an error in hand.
 fn opened(path: string, flags: int) -> Result<Db, SqlError> {
-    mut handle: ptr? = null
+    mut handle: ptr? = null  // LICENSED I4: an out-parameter cell C fills
     let rc = sqlite3_open_v2(path, handle, flags, null)
     if rc != 0 { fail closing(handle, rc) }
     if handle == null { fail refused(Cause.CantOpen, "SQLite answered success and no handle") }
-    mut db = Db { raw: handle }
+    let db = Db { raw: Cell.new(handle) }
     let fault: SqlError? = unreadable(db)
     if fault != null {
         let _ = close(db)
@@ -309,9 +298,8 @@ fn unreadable(db: Db) -> SqlError? {
 /// The probe stepped and finalized, whatever it answered — a statement
 /// left open would hold the connection it was meant to prove.
 fn ran(s: Stmt) -> SqlError? {
-    mut held = s
-    let outcome = step(held)
-    let _ = finalize(held)
+    let outcome = step(s)
+    let _ = finalize(s)
     fault_of(outcome)
 }
 
@@ -341,13 +329,13 @@ fn closing(handle: ptr?, rc: int) -> SqlError {
 /// object goes, rather than answering BUSY and leaving the file locked.
 /// Anything but zero here is a driver defect.
 ///
-/// Closing an already-closed `Db` answers 0 and does nothing, which is
-/// the whole point of the `mut` seat.
-export fn close(mut db: Db) -> int {
-    if db.raw == null { return 0 }
-    let rc = sqlite3_close_v2(db.raw)
-    db.raw = null
-    rc
+/// Closing an already-closed `Db` answers 0 and does nothing — through
+/// the same binding or through any copy of it, since they share a cell.
+export fn close(db: Db) -> int {
+    let handle: ptr? = db.raw.get()
+    if handle == null { return 0 }
+    db.raw.set(null)
+    sqlite3_close_v2(handle)
 }
 
 /// The refusal for a connection that was closed, or absence when it is
@@ -363,7 +351,7 @@ export fn close(mut db: Db) -> int {
 /// otherwise report the caller's own sequence as SQLite's opinion asks
 /// here first.
 export fn closed_fault(db: Db) -> SqlError? {
-    if db.raw == null { return connection_closed }
+    if db.raw.get() == null { return connection_closed }
     null
 }
 

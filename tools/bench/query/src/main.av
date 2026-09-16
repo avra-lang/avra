@@ -1,0 +1,158 @@
+//! WHAT THE SPLIT AND THE QUERY COST A REQUEST.
+//!
+//! THE SPLIT'S COST MUST FOLLOW THE TARGET, NOT THE HEAD. Searching
+//! the buffer for a `?` runs to the END OF THE BUFFER when the target
+//! has none, so a head with no query would be scanned whole on every
+//! request; asking where the PATH CLASS ends stops at the query or at
+//! the target's own end. The two are told apart by MEASURING THE SAME
+//! TARGET UNDER TWO HEAD SIZES: a buffer-bounded split gets slower
+//! with the head, a target-bounded one does not.
+use @std.http.frame.{framed, limits, Method}
+use @std.http.http.{Request, Response, text}
+use @std.http.query.{Query, Asked, decoded}
+use @std.http.route.{Route, Table, routed, compiled, dispatch}
+use @std.time.{now_ns}
+
+grammar Idea = "/ideas/{id}"
+
+fn serve(q: Request, r: Idea) -> Response { text(200, r.id) }
+
+fn rows() -> Table {
+    compiled([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve)])
+}
+
+/// A head of `n` filler fields beside the two a request needs.
+fn padded(target: string, n: int) -> Bytes {
+    let filler = ["x-filler-${i}: 0123456789abcdef0123456789abcdef\r\n" for i in 0..n].join("")
+    ("GET " + target + " HTTP/1.1\r\nHost: h\r\n" + filler + "\r\n").bytes()
+}
+
+fn asked(raw: Bytes) -> Request {
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "b" },
+        .Partial -> asked(raw),
+        .Refused(_) -> asked(raw),
+    }
+}
+
+fn dispatched(t: Table, q: Request, runs: int) -> int {
+    mut ok = 0
+    // LICENSED I3: a timed loop counts, it does not build a list
+    for i in 0..runs {
+        if dispatch(t, q).status == 200 { ok = ok + 1 }
+    }
+    ok
+}
+
+/// Nanoseconds per dispatch, or -1 when a run did not answer 200.
+fn dispatch_cost(raw: Bytes, runs: int) -> int {
+    let q = asked(raw)
+    let t = rows()
+    let start = now_ns()
+    let ok = dispatched(t, q, runs)
+    let spent = now_ns() - start
+    if ok != runs { return 0 - 1 }
+    spent / runs
+}
+
+fn built(q: Request, runs: int) -> int {
+    mut n = 0
+    // LICENSED I3: a timed loop counts, it does not build a list
+    for i in 0..runs {
+        n = n + q.query().length()
+    }
+    n
+}
+
+/// Nanoseconds to build the query value, per request.
+fn build_cost(target: string, runs: int, pairs: int) -> int {
+    let q = asked(padded(target, 0))
+    let start = now_ns()
+    let n = built(q, runs)
+    let spent = now_ns() - start
+    if n != runs * pairs { return 0 - 1 }
+    spent / runs
+}
+
+fn askings(q: Query, runs: int) -> int {
+    mut n = 0
+    // LICENSED I3: a timed loop counts, it does not build a list
+    for i in 0..runs {
+        n = n + named(q.one("page"))
+    }
+    n
+}
+
+fn named(a: Asked) -> int {
+    match a {
+        .Value(v) -> v.length,
+        .Absent -> 0 - 1,
+        .Bare -> 0 - 1,
+        .Repeated(k) -> 0 - 1,
+    }
+}
+
+/// Nanoseconds for ONE scalar ask over an already-built query.
+fn ask_cost(target: string, runs: int) -> int {
+    let q = asked(padded(target, 0)).query()
+    let start = now_ns()
+    let n = askings(q, runs)
+    let spent = now_ns() - start
+    if n != runs { return 0 - 1 }
+    spent / runs
+}
+
+fn splits(q: Request, runs: int) -> int {
+    mut n = 0
+    // LICENSED I3: a timed loop counts, it does not build a list
+    for i in 0..runs {
+        n = n + (q.path()?.length ?? 0)
+    }
+    n
+}
+
+/// Nanoseconds for the SPLIT alone. Run at two head sizes over the
+/// same target: this is the number that tells a target-bounded split
+/// from a buffer-bounded one, because dispatch's own cost hides a
+/// few hundred nanoseconds and this does not.
+fn split_cost(fields: int, runs: int) -> int {
+    let q = asked(padded("/ideas/7", fields))
+    let start = now_ns()
+    let n = splits(q, runs)
+    let spent = now_ns() - start
+    if n != runs * 8 { return 0 - 1 }
+    spent / runs
+}
+
+fn decodings(b: Bytes, runs: int) -> int {
+    mut n = 0
+    // LICENSED I3: a timed loop counts, it does not build a list
+    for i in 0..runs {
+        n = n + (decoded(b)?.length ?? 0 - 1)
+    }
+    n
+}
+
+fn decode_cost(text: string, runs: int, want: int) -> int {
+    let b = text.bytes()
+    let start = now_ns()
+    let n = decodings(b, runs)
+    let spent = now_ns() - start
+    if n != runs * want { return 0 - 1 }
+    spent / runs
+}
+
+let runs = 50000
+let small = dispatch_cost(padded("/ideas/7", 0), runs)
+let large = dispatch_cost(padded("/ideas/7", 12), runs)
+let q_small = dispatch_cost(padded("/ideas/7?page=2&size=10", 0), runs)
+let q_large = dispatch_cost(padded("/ideas/7?page=2&size=10", 12), runs)
+let b0 = build_cost("/ideas/7", runs, 0)
+let b1 = build_cost("/ideas/7?page=2", runs, 1)
+let b4 = build_cost("/ideas/7?page=2&size=10&sort=new&q=cats", runs, 4)
+let ask = ask_cost("/ideas/7?page=2&size=10&sort=new&q=cats", runs)
+let s0 = split_cost(0, runs)
+let s60 = split_cost(60, runs)
+let plain = decode_cost("hello-world", runs, 11)
+let escaped = decode_cost("hello%20world", runs, 11)
+"runs ${runs} | path() at 2 fields ${s0} ns, at 62 fields ${s60} ns | dispatch no query: 2 fields ${small} ns, 14 fields ${large} ns | with query: ${q_small} / ${q_large} ns | query() 0 pairs ${b0}, 1 ${b1}, 4 ${b4} ns | one() ${ask} ns | decoded plain ${plain}, escaped ${escaped} ns"

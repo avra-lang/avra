@@ -81,12 +81,13 @@ static int64_t g_free_len[CLASSES];
 // records, strings, list boxes and their buffers, map boxes and their
 // indexes — with each one's high-water mark, printed at exit. What a
 // 2.4 GB compiler run is MADE OF, category by category.
-enum { ACC_RECORD, ACC_STR, ACC_LIST, ACC_BUF, ACC_MAP, ACC_INDEX, ACC_KINDS };
+enum { ACC_RECORD, ACC_STR, ACC_BYTES, ACC_LIST, ACC_BUF, ACC_MAP, ACC_INDEX, ACC_KINDS };
 // KEYED, never positional: a category inserted mid-enum would take its
 // neighbour's name under a positional initialiser, and the report is
 // read by whoever is asking where the memory went.
 static const char* g_acc_name[ACC_KINDS] = {
     [ACC_RECORD] = "records",    [ACC_STR]   = "strings",
+    [ACC_BYTES] = "bytes",
     [ACC_LIST]   = "list boxes", [ACC_BUF]   = "list buffers",
     [ACC_MAP]    = "map boxes",  [ACC_INDEX] = "map indexes",
 };
@@ -334,6 +335,7 @@ static int acc_kind_of(int32_t kind) {
         case KIND_ARRAY:  return ACC_LIST;
         case KIND_MAP:    return ACC_MAP;
         case KIND_STR:    return ACC_STR;
+        case KIND_BYTES:  return ACC_BYTES;
         case KIND_STATIC: return ACC_STR;
         case KIND_PLAIN:  return ACC_RECORD;
         case KIND_DEAD:   return ACC_RECORD;
@@ -400,6 +402,7 @@ static size_t str_len(const char* s) {
 static size_t box_bytes(Header* h) {
     switch (h->kind) {
         case KIND_STR:
+        case KIND_BYTES:
         case KIND_STATIC: return (size_t)h->len + 1;
         default:          return (size_t)h->len;
     }
@@ -604,8 +607,13 @@ void avra_trap(const char* msg) {
 
 // ── Printing ────────────────────────────────────────────────────
 
+/* A LINE IS AS LONG AS ITS HEADER SAYS. `fputs` stops at the first
+   NUL, so a line holding one was printed truncated with nothing said —
+   and the seam's trap does not govern this seat, because writing bytes
+   RESOLVES nothing and a correct answer exists: write all of them.
+   Making it correct is what lets its row be marked `inert` honestly. */
 static void put_line(const char* s) {
-    if (s) fputs(s, stdout);
+    if (s) fwrite(s, 1, str_len(s), stdout);
     fputc('\n', stdout);
 }
 
@@ -999,11 +1007,67 @@ int64_t avra_insist_scalar(int64_t present, int64_t value) {
 // itself needs no frame: an 80-byte message buffer written into the
 // hot path cost every one of a compile's hundreds of millions of
 // reads a 128-byte stack reservation.
+/* A STRING CROSSING TO C IS ONE STRING. Avra measures text by the
+   header's length and C reads to the first NUL, so a string holding
+   one is TWO VALUES at the seam — the guard and the callee inspect
+   different bytes, and a name that was checked is not the name that
+   is used. Every mature runtime refuses this rather than truncating:
+   Rust's `CString::new` answers a `NulError` carrying the position,
+   Go's `syscall.ByteSliceFromString` answers EINVAL, Python raises
+   `ValueError: embedded null byte`, Node throws
+   `ERR_INVALID_ARG_VALUE`. Avra traps, with the offset, and never
+   truncates and never escapes.
+
+   THE CHECK IS AT THE CROSSING AND NOWHERE ELSE, so both engines
+   share it: the native lowering calls this and so does the extern
+   frame's text staging. A face that refuses earlier with words a
+   program can handle — `@std/io`'s `Holed(path, at)` — is the door;
+   this is the belt behind it.
+
+   `Bytes` IS THE ESCAPE: a seat that carries its own length is for a
+   caller who means octets, and nothing here touches one. */
+__attribute__((noinline, cold, noreturn))
+static void trap_nul(size_t at) {
+    char msg[96];
+    snprintf(msg, sizeof msg,
+             "a string holding a NUL crossed to C as two strings — byte %lld",
+             (long long)at);
+    avra_trap(msg);
+    abort();
+}
+
+const char* avra_str_crossing(const char* s) {
+    /* THE GUARD READS THE SAME BYTES THE CALLEE WILL, so it asks the
+       HEADER directly and never `str_len`. That helper falls back to
+       `strlen` for a pointer that is not ours, and a scan bounded by
+       `strlen` can never find an interior NUL — it would pass every
+       foreign string VACUOUSLY while looking exactly like a check.
+       A foreign pointer has no interior NUL by definition: whatever C
+       handed us ends where C says it ends. So the check is SKIPPED
+       there, deliberately and visibly, rather than performed on a
+       length that makes it meaningless. */
+    Header* h = hdr((void*)s);
+    if (__builtin_expect(h != NULL, 1)) {
+        const char* at = (const char*)memchr(s, 0, (size_t)h->len);
+        if (__builtin_expect(at != NULL, 0)) trap_nul((size_t)(at - s));
+    }
+    return s;
+}
+
 __attribute__((noinline, cold, noreturn))
 static void trap_bounds(int64_t i, int64_t len) {
     char msg[80];
     snprintf(msg, sizeof msg, "index %lld is out of bounds (length %lld)",
              (long long)i, (long long)len);
+    avra_trap(msg);
+    abort();
+}
+
+__attribute__((noinline, cold, noreturn))
+static void trap_slice(int64_t lo, int64_t hi, int64_t len) {
+    char msg[96];
+    snprintf(msg, sizeof msg, "slice %lld..%lld is out of bounds (length %lld)",
+             (long long)lo, (long long)hi, (long long)len);
     avra_trap(msg);
     abort();
 }
@@ -1456,6 +1520,325 @@ int64_t avra_float_le(int64_t a, int64_t b) { return as_double(a) <= as_double(b
 int64_t avra_float_gt(int64_t a, int64_t b) { return as_double(a) >  as_double(b); }
 int64_t avra_float_ge(int64_t a, int64_t b) { return as_double(a) >= as_double(b); }
 
+// ── Bytes ─────────────────────────────────────────────────────────
+// Immutable octets in a box of their own kind. THE HEADER'S LENGTH IS
+// THE LENGTH: no fallback, no scan, no terminator anyone reads. The
+// box is minted at n+1 through `sized_box`, so every sized kind
+// shares one size-class rule and the empty value is a real box. The
+// spare byte holds a NUL: a Bytes lent to C as a string then reads
+// its own content and STOPS — a bounded truncation, never a walk
+// past the box, which on network data is a vulnerability and not a
+// bug. A length crosses the boundary beside the pointer.
+
+static size_t bytes_len(const char* b) { return (size_t)((const Header*)b - 1)->len; }
+
+static char* bytes_box(size_t n) {
+    if (n >= UINT32_MAX) avra_trap("a Bytes value is longer than its header can carry");
+    char* b = sized_box(n, KIND_BYTES);
+    b[n] = '\0';
+    return b;
+}
+
+// An owned copy of n foreign octets: how every byte enters.
+static const char* bytes_owned(const void* p, size_t n) {
+    char* b = bytes_box(n);
+    if (n) memcpy(b, p, n);
+    return b;
+}
+
+/* THE ONE DOOR A FOREIGN BUFFER ENTERS BY, and the only place the
+   runtime dereferences a pointer the PROGRAM supplied rather than one
+   it allocated or the compiler emitted. A caller hands an address and
+   a LENGTH — the length is the whole contract, because a foreign
+   buffer has no header to ask and no terminator anyone may trust.
+
+   THE EMPTY CASE IS THE FIRST CASE. C spends the null pointer on
+   "nothing to point at"; Avra spends it on "no value". A door that
+   answered nothing for an empty buffer would spend that value twice,
+   and an empty blob would arrive indistinguishable from SQL NULL. So
+   (NULL, 0) is the EMPTY BOX, and only the caller's own absence is
+   absence.
+
+   A NULL WITH A LENGTH IS A CALLER CONTRADICTING ITSELF, and so is a
+   negative one. Both trap here rather than being read: this door
+   cannot tell a wrong length from a right one by looking, so the only
+   lengths it refuses are the ones that cannot be true. */
+const char* avra_bytes_adopted(const void* p, int64_t n) {
+    if (n < 0) avra_trap("a foreign buffer is shorter than nothing");
+    if (p == NULL) {
+        if (n > 0) avra_trap("a foreign buffer claims octets and no address");
+        return bytes_box(0);
+    }
+    return bytes_owned(p, (size_t)n);
+}
+
+int64_t avra_bytes_len(const char* b) { return (int64_t)bytes_len(b); }
+
+// Equality is the reason the kind exists: lengths, then every byte.
+int64_t avra_bytes_eq(const char* a, const char* b) {
+    size_t n = bytes_len(a);
+    return n == bytes_len(b) && memcmp(a, b, n) == 0;
+}
+
+// One octet, 0..255. A bad index traps: -1 is not a byte.
+int64_t avra_bytes_at(const char* b, int64_t i) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(i < 0 || i >= n, 0)) trap_bounds(i, n);
+    return (unsigned char)b[i];
+}
+
+// The octets from lo up to hi, owned. Bounds are a precondition: a
+// slice traps and never clamps, because a short answer parses.
+const char* avra_bytes_slice(const char* b, int64_t lo, int64_t hi) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(lo < 0 || hi < lo || hi > n, 0)) trap_slice(lo, hi, n);
+    return bytes_owned(b + lo, (size_t)(hi - lo));
+}
+
+const char* avra_bytes_concat(const char* a, const char* b) {
+    size_t n = bytes_len(a), m = bytes_len(b);
+    char* out = bytes_box(n + m);
+    memcpy(out, a, n);
+    memcpy(out + n, b, m);
+    return out;
+}
+
+// Where `needle` first begins at or after `from`, or -1. `from` may
+// equal the length, and an empty needle is found there.
+int64_t avra_bytes_index_of(const char* b, const char* needle, int64_t from) {
+    int64_t n = (int64_t)bytes_len(b), m = (int64_t)bytes_len(needle);
+    if (__builtin_expect(from < 0 || from > n, 0)) trap_bounds(from, n);
+    if (m == 0) return from;
+    if (m > n - from) return -1;
+    const char* end = b + n - m + 1;
+    for (const char* p = b + from; (p = (const char*)memchr(p, needle[0], (size_t)(end - p))) != NULL; p++)
+        if (memcmp(p, needle, (size_t)m) == 0) return (int64_t)(p - b);
+    return -1;
+}
+
+// Text to octets: total.
+const char* avra_bytes_of_str(const char* s) { return bytes_owned(s, str_len(s)); }
+
+// Ints to octets: null when one of them is not a byte.
+const char* avra_bytes_of_list(void* arr) {
+    AvraArray* a = (AvraArray*)arr;
+    for (int64_t i = 0; i < a->len; i++)
+        if (a->data[i] < 0 || a->data[i] > 255) return NULL;
+    char* out = bytes_box((size_t)a->len);
+    for (int64_t i = 0; i < a->len; i++) out[i] = (char)a->data[i];
+    return out;
+}
+
+// Many values as one box: the lengths summed, one allocation, one copy
+// each — what a body assembled from chunks and a response assembled
+// from its parts both need, so neither is quadratic.
+const char* avra_bytes_gathered(void* arr) {
+    AvraArray* a = (AvraArray*)arr;
+    size_t total = 0;
+    for (int64_t i = 0; i < a->len; i++) total += bytes_len((const char*)(uintptr_t)a->data[i]);
+    char* out = bytes_box(total);
+    size_t at = 0;
+    for (int64_t i = 0; i < a->len; i++) {
+        const char* part = (const char*)(uintptr_t)a->data[i];
+        size_t n = bytes_len(part);
+        memcpy(out + at, part, n);
+        at += n;
+    }
+    return out;
+}
+
+// The offset of the first byte that is not UTF-8, or -1 when the
+// whole buffer is. THE LEAD BYTE'S RANGE DECIDES EVERYTHING: how many
+// continuations follow, and the range the FIRST must fall in, which
+// is where overlongs and surrogates are refused. Every later
+// continuation is 80..BF. U+0000 is text, one byte; its overlong
+// spelling C0 80 is refused at the lead. A truncated sequence is
+// reported at its lead, never at the buffer's end.
+static int64_t utf8_bad_at(const char* p, size_t n) {
+    const unsigned char* b = (const unsigned char*)p;
+    size_t i = 0;
+    while (i < n) {
+        unsigned char c = b[i];
+        size_t need;
+        unsigned char lo, hi;
+        if (c <= 0x7F)                   { i += 1; continue; }
+        else if (c >= 0xC2 && c <= 0xDF) { need = 1; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xE0)              { need = 2; lo = 0xA0; hi = 0xBF; }
+        else if (c >= 0xE1 && c <= 0xEC) { need = 2; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xED)              { need = 2; lo = 0x80; hi = 0x9F; }
+        else if (c >= 0xEE && c <= 0xEF) { need = 2; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xF0)              { need = 3; lo = 0x90; hi = 0xBF; }
+        else if (c >= 0xF1 && c <= 0xF3) { need = 3; lo = 0x80; hi = 0xBF; }
+        else if (c == 0xF4)              { need = 3; lo = 0x80; hi = 0x8F; }
+        else                             { return (int64_t)i; }
+        if (i + need >= n) return (int64_t)i;
+        if (b[i + 1] < lo || b[i + 1] > hi) return (int64_t)i;
+        for (size_t k = 2; k <= need; k++)
+            if (b[i + k] < 0x80 || b[i + k] > 0xBF) return (int64_t)i;
+        i += need + 1;
+    }
+    return -1;
+}
+
+// Octets to text: null when they are not UTF-8, and the row below
+// says where. A NUL is text.
+const char* avra_str_of_bytes(const char* b) {
+    size_t n = bytes_len(b);
+    return utf8_bad_at(b, n) < 0 ? str_owned(b, n) : NULL;
+}
+
+int64_t avra_utf8_bad_at(const char* b) { return utf8_bad_at(b, bytes_len(b)); }
+
+__attribute__((noinline, cold, noreturn))
+static void trap_table(int64_t len) {
+    char msg[80];
+    snprintf(msg, sizeof msg, "a class table holds 256 bytes (length %lld)", (long long)len);
+    avra_trap(msg);
+    abort();
+}
+
+// The end of the run of bytes at or after `from` that `table` admits —
+// a 256-byte table whose non-zero entry says "in the class". The
+// caller asks where a token ENDS, never what each byte is: one scan
+// in C is what makes a byte-at-a-time parser fast.
+int64_t avra_bytes_run(const char* b, int64_t from, const char* table) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(from < 0 || from > n, 0)) trap_bounds(from, n);
+    if (__builtin_expect(bytes_len(table) != 256, 0)) trap_table((int64_t)bytes_len(table));
+    const unsigned char* t = (const unsigned char*)table;
+    const unsigned char* p = (const unsigned char*)b;
+    int64_t i = from;
+    while (i < n && t[p[i]]) i++;
+    return i;
+}
+
+// Whether the bytes from lo up to hi are exactly `needle`.
+int64_t avra_bytes_eq_at(const char* b, int64_t lo, int64_t hi, const char* needle) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(lo < 0 || hi < lo || hi > n, 0)) trap_slice(lo, hi, n);
+    return (size_t)(hi - lo) == bytes_len(needle) && memcmp(b + lo, needle, (size_t)(hi - lo)) == 0;
+}
+
+static unsigned char ascii_lower(unsigned char c) { return c >= 'A' && c <= 'Z' ? c + 32 : c; }
+
+// `eq_at` with ASCII letters folded — how a field name is compared.
+int64_t avra_bytes_ieq_at(const char* b, int64_t lo, int64_t hi, const char* needle) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(lo < 0 || hi < lo || hi > n, 0)) trap_slice(lo, hi, n);
+    if ((size_t)(hi - lo) != bytes_len(needle)) return 0;
+    for (int64_t i = 0; i < hi - lo; i++)
+        if (ascii_lower((unsigned char)b[lo + i]) != ascii_lower((unsigned char)needle[i])) return 0;
+    return 1;
+}
+
+// ── Descriptors ──────────────────────────────────────────────────
+// THE ONE DOOR THROUGH WHICH FOREIGN BYTES BECOME A VALUE. A package's
+// own C opens files and sockets and answers descriptors; what flows
+// through a descriptor becomes a Bytes here and nowhere else, because
+// only the runtime may mint a managed box. A read lands in ONE scratch
+// and answers a TOKEN — the scratch's generation — that the take must
+// present: a take with a stale token traps, so a read landing between
+// a read and its take (a deferred call is how that happens) is a loud
+// wreck and never a stranger's bytes. The count is the box's length;
+// 0 is EOF and needs no take. A write takes a box from an offset and
+// answers what the descriptor accepted; a short count is normal. Both
+// answer -EAGAIN when a nonblocking descriptor has nothing to give or
+// take, and a peer that has gone answers -EPIPE or -ECONNRESET to the
+// caller who armed against SIGPIPE.
+
+#include <unistd.h>
+#include <errno.h>
+
+enum { FD_SCRATCH = 1 << 20 };
+static char g_fd_buf[FD_SCRATCH];
+static int64_t g_fd_len = 0;
+static int64_t g_fd_gen = 0;
+
+// A take presents a token, and three values are not one: 0 is EOF,
+// a negative is the errno the read answered, and a superseded token
+// names bytes another read has replaced. Each refused in its own
+// words, the reserved ones first, so the superseded message is always
+// true when it is spoken.
+__attribute__((noinline, cold, noreturn))
+static void trap_take(int64_t token) {
+    char msg[96];
+    if (token == 0)
+        snprintf(msg, sizeof msg, "a take at EOF — `read` answered 0, which names no bytes");
+    else if (token < 0)
+        snprintf(msg, sizeof msg, "a take of an error — `read` answered %lld, not a token", (long long)token);
+    else
+        snprintf(msg, sizeof msg, "a take of read %lld, but read %lld has landed since", (long long)token, (long long)g_fd_gen);
+    avra_trap(msg);
+    abort();
+}
+
+// Bytes landed in the scratch by whoever produced them: the token the
+// take must present. The runtime's own producers enter through here.
+static int64_t fd_landed(int64_t n) {
+    g_fd_len = n;
+    g_fd_gen++;
+    return g_fd_gen;
+}
+
+// Up to `max` bytes (capped at 1 MiB) into the scratch: the token of
+// what landed, 0 at EOF, -EAGAIN when nothing is ready, -errno
+// otherwise.
+//
+// THE EMPTY CASE IS THE FIRST CASE. `max` is the caller's arithmetic
+// — `read(want - have)` reaches zero the turn a frame is complete —
+// and this answer encoding already spends 0 on EOF, so a zero-length
+// landing has no code of its own. Clamping the ASK to one instead
+// bought a byte off the wire that nobody requested: the next message's
+// first byte, taken and never reported as taken. A zero ask lands zero
+// bytes and presents its token like any other, so the empty answer is
+// an empty box and 0 still means EOF alone. A NEGATIVE ask is a bound,
+// not a question, and answers -EINVAL rather than reading anything.
+int64_t avra_fd_read(int64_t fd, int64_t max) {
+    if (__builtin_expect(max < 0, 0)) return -EINVAL;
+    if (max == 0) return fd_landed(0);
+    size_t n = max > FD_SCRATCH ? FD_SCRATCH : (size_t)max;
+    for (;;) {
+        ssize_t got = read((int)fd, g_fd_buf, n);
+        if (got > 0) return fd_landed(got);
+        if (got == 0) return 0;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return -EAGAIN;
+        if (errno != EINTR) return -errno;
+    }
+}
+
+// The errno a nonblocking descriptor answers when it has nothing to
+// give or take — the platform's, asked rather than assumed.
+int64_t avra_errno_again(void) { return EAGAIN; }
+
+// The errno for an argument that names nothing — the platform's word.
+int64_t avra_errno_invalid(void) { return EINVAL; }
+
+// The bytes a token names, as a fresh box, once: a second take of the
+// same token answers the empty box, and a take of anything that is
+// not the current token traps.
+const char* avra_fd_taken(int64_t token) {
+    if (__builtin_expect(token <= 0 || token != g_fd_gen, 0)) trap_take(token);
+    const char* b = bytes_owned(g_fd_buf, (size_t)g_fd_len);
+    g_fd_len = 0;
+    return b;
+}
+
+// The box's bytes from `from` written as far as the descriptor takes
+// them: the count, -EAGAIN when it takes none, -errno otherwise.
+// `from` past the box traps; `from` at its end writes nothing.
+int64_t avra_fd_write(int64_t fd, const char* bytes, int64_t from) {
+    int64_t n = (int64_t)bytes_len(bytes);
+    if (__builtin_expect(from < 0 || from > n, 0)) trap_bounds(from, n);
+    if (from == n) return 0;
+    for (;;) {
+        ssize_t put = write((int)fd, bytes + from, (size_t)(n - from));
+        if (put >= 0) return put;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return -EAGAIN;
+        if (errno != EINTR) return -errno;
+    }
+}
+
+
 // A list slot holding fresh text — the list owns the one reference.
 static void push_fresh_text(void* arr, const char* s, size_t n) {
     avra_array_push(arr, (int64_t)(uintptr_t)str_owned(s, n));
@@ -1481,8 +1864,15 @@ int64_t avra_str_contains(const char* s, const char* needle) {
     return nl <= sl && memmem(s, sl, needle, nl) != NULL;
 }
 
+// AT EQUAL LENGTH A PREFIX IS EQUALITY, so this and `avra_streq` are
+// answering the same question and may never disagree. `strncmp` made
+// them disagree: it stops at a NUL in either side, so two five-byte
+// texts that differ only past one read as a prefix while `==` reads
+// them as unequal, and a prefix LONGER than the text read as a prefix
+// too. The walk is the length's, as its sibling below already had it.
 int64_t avra_str_starts_with(const char* s, const char* prefix) {
-    return strncmp(s, prefix, str_len(prefix)) == 0;
+    size_t m = str_len(prefix);
+    return m <= str_len(s) && memcmp(s, prefix, m) == 0;
 }
 
 int64_t avra_str_ends_with(const char* s, const char* suffix) {
@@ -1754,29 +2144,16 @@ int64_t avra_selfhost_write_file(const char* path, const char* content) {
     return write_whole(path, content) == 0;
 }
 
-// ── Files, streams and the environment ──────────────────────────
-// The substrate @std/io stands on. Every verb answers a STATUS — 0
-// done, -errno refused — and hands text through ONE stash that
-// avra_io_taken empties: the library judges the status, then takes.
-
-static const char* g_io_text = NULL;
-
-// The stash holds one owned text; a new one releases the last.
-static void io_stash(const char* owned) {
-    if (g_io_text) avra_rc_release((void*)g_io_text);
-    g_io_text = owned;
-}
-
-// The stashed text, handed over once — its reference moves to the
-// caller; "" when nothing waits.
-const char* avra_io_taken(void) {
-    const char* text = g_io_text ? g_io_text : str_owned("", 0);
-    g_io_text = NULL;
-    return text;
-}
+// ── Streams, and the ONE directory listing ──────────────────────
+// What is left of the io substrate after @std/io took its own C. A
+// package opens, stats, makes and removes; only LISTING stays, because
+// a directory entry's name is text that flows through no descriptor
+// and nothing but the runtime may mint a box. RECORDED TRIGGER: the
+// adoption row of docs/2026_09_06_FOREIGN_TEXT_ADOPTION.md, which is
+// the owner's to export — the day it lands this leaves too.
 
 void avra_eputs(const char* s) {
-    if (s) fputs(s, stderr);
+    if (s) fwrite(s, 1, str_len(s), stderr);
     fputc('\n', stderr);
 }
 
@@ -1785,28 +2162,6 @@ void avra_eputs(const char* s) {
 // the self-compile, whose environment has no such flag.
 void avra_debug(const char* s) {
     if (s && getenv("AVRA_DEBUG")) fputs(s, stderr);
-}
-
-// What stands at the path: 0 nothing, 1 a file, 2 a directory, 3
-// something else; -errno when the host will not say.
-int64_t avra_io_kind(const char* path) {
-    struct stat st;
-    if (stat(path, &st) != 0) return errno == ENOENT ? 0 : -errno;
-    if (S_ISREG(st.st_mode)) return 1;
-    if (S_ISDIR(st.st_mode)) return 2;
-    return 3;
-}
-
-// The whole file, stashed.
-int64_t avra_io_read(const char* path) {
-    struct stat st;
-    if (stat(path, &st) != 0) return -errno;
-    if (S_ISDIR(st.st_mode)) return -EISDIR;
-    FILE* f = fopen(path, "rb");
-    if (!f) return -errno;
-    io_stash(read_whole(f));
-    fclose(f);
-    return 0;
 }
 
 /* `embed` is answered by the compiler, at compile time, under the
@@ -1818,16 +2173,14 @@ const char* avra_embed(const char* path) {
     return "";
 }
 
-int64_t avra_io_write(const char* path, const char* content) {
-    return write_whole(path, content);
-}
-
 static int by_text(const void* a, const void* b) {
     return strcmp((const char*)(uintptr_t)*(const int64_t*)a, (const char*)(uintptr_t)*(const int64_t*)b);
 }
 
-// The directory's entries in byte order, joined on `/` — the one
-// byte no name can hold — and stashed; `.` and `..` never among them.
+// The directory's entries in byte order, joined on `/` — the one byte
+// no name can hold — landed in the descriptor scratch; `.` and `..`
+// never among them. Answers the scratch's TOKEN, which avra_fd_taken
+// mints from once.
 int64_t avra_io_list(const char* path) {
     DIR* d = opendir(path);
     if (!d) return -errno;
@@ -1840,9 +2193,17 @@ int64_t avra_io_list(const char* path) {
     closedir(d);
     AvraArray* a = (AvraArray*)names;
     qsort(a->data, (size_t)a->len, sizeof(int64_t), by_text);
-    io_stash(avra_str_join(names, "/"));
+    const char* joined = avra_str_join(names, "/");
     avra_rc_release(names);
-    return 0;
+    size_t n = str_len(joined);
+    // ONE SCRATCH, ONE TAKE. A listing past the scratch is -E2BIG and
+    // never a silent truncation; an EMPTY directory lands zero bytes
+    // and answers a token whose take is the empty box, which is the
+    // first case this had to answer and not the last.
+    if (n > FD_SCRATCH) { avra_rc_release((void*)joined); return -E2BIG; }
+    memcpy(g_fd_buf, joined, n);
+    avra_rc_release((void*)joined);
+    return fd_landed((int64_t)n);
 }
 
 // Every directory along the path made; one already standing is fine,
@@ -1868,548 +2229,13 @@ static int64_t mkdir_all(const char* path) {
     return 0;
 }
 
-int64_t avra_io_mkdir(const char* path) {
-    return mkdir_all(path);
-}
-
-// A file, or an empty directory, gone.
-int64_t avra_io_remove(const char* path) {
-    return remove(path) == 0 ? 0 : -errno;
-}
-
-// The variable's value stashed; -1 when it is not set at all — an
-// empty value is set.
-int64_t avra_io_env(const char* name) {
-    const char* v = getenv(name);
-    if (!v) return -1;
-    io_stash(str_owned(v, strlen(v)));
-    return 0;
-}
-
-// ── Processes ───────────────────────────────────────────────────
-//
-// THE SUBSTRATE @std.process stands on: twelve functions over a
-// handle table. The host seam carries words and pointers only, so a
-// spawn answers ONE integer and C keeps the pid, the pipes and the
-// buffers behind it. ONE PUMP drains stdout, stderr and a pending
-// stdin in one poll set — the only shape that cannot deadlock at a
-// full pipe — and reaps exactly once, after which the pid is -1 and
-// a signal answers -ESRCH: the pid-reuse race cannot be written.
-// A STATUS IS A TAGGED WORD: the tag in the high half (0 running,
-// 1 exited, 2 signalled), the payload below, so success is never
-// zero and a signal death can never read as a small exit code; a
-// spawn that fails answers -errno and mints no handle. Every text
-// answered is a box (str_owned / str_static), never a bare malloc.
-// The program is spawned by ABSOLUTE PATH through posix_spawn —
-// never posix_spawnp, which searches the parent's PATH and, on
-// Darwin, resolves against the parent's cwd.
-
-enum {
-    PROC_PIPE_IN = 0x1, PROC_PIPE_OUT = 0x2, PROC_PIPE_ERR = 0x4, PROC_MERGE_ERR = 0x8,
-    PROC_NULL_IN = 0x10, PROC_NULL_OUT = 0x20, PROC_NULL_ERR = 0x40,
-    PROC_INHERIT_IN = 0x80, PROC_INHERIT_OUT = 0x100, PROC_INHERIT_ERR = 0x200,
-    PROC_NEW_PGROUP = 0x400, PROC_NEW_SESSION = 0x800, PROC_SEARCH_PATH = 0x1000, PROC_INHERIT_ENV = 0x2000
-};
-enum {
-    EV_OUT = 0x1, EV_ERR = 0x2, EV_OUT_EOF = 0x4, EV_ERR_EOF = 0x8, EV_IN_WROTE = 0x10, EV_IN_CLOSED = 0x20,
-    EV_EXITED = 0x40, EV_TIMEOUT = 0x80, EV_CAPPED_OUT = 0x100, EV_CAPPED_ERR = 0x200,
-    EV_TERMED = 0x400, EV_KILLED = 0x800, EV_TRUNCATED = 0x1000
-};
-enum { EXIT_CODE = 1, EXIT_SIGNAL = 2 };
-
-// A captured stream's bytes so far.
-typedef struct { char* buf; size_t len; size_t cap; } Grow;
-
-typedef struct {
-    int live;
-    int64_t gen;
-    pid_t pid;              // -1 once reaped
-    pid_t pgid;             // the group the child leads, outliving its reap
-    int group;              // the child leads its own process group
-    int in_fd, out_fd, err_fd;
-    Grow out, err;
-    char* in_text;          // pending stdin, ours
-    size_t in_len, in_off;
-    int in_close;           // close stdin once the pending text has drained
-    int64_t status;         // the tagged word; 0 while running
-    int64_t sticky;         // events that stay: timeout, capped, termed, killed, truncated
-    size_t max_bytes;
-} Proc;
-
-static Proc* g_procs = NULL;
-static int64_t g_nprocs = 0;
-
-static int64_t mono_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
-}
-
-// A handle is the slot's generation over its index, so a closed
-// slot's handle never names the slot's next tenant.
-static Proc* proc_at(int64_t h) {
-    if (h < 0) return NULL;
-    int64_t idx = h & 0xffffffffLL, gen = h >> 32;
-    if (idx >= g_nprocs || !g_procs[idx].live || g_procs[idx].gen != gen) return NULL;
-    return &g_procs[idx];
-}
-
-static int64_t proc_slot(void) {
-    for (int64_t i = 0; i < g_nprocs; i++) if (!g_procs[i].live) return i;
-    int64_t n = g_nprocs ? g_nprocs * 2 : 16;
-    g_procs = (Proc*)realloc(g_procs, (size_t)n * sizeof(Proc));
-    for (int64_t i = g_nprocs; i < n; i++) { memset(&g_procs[i], 0, sizeof(Proc)); g_procs[i].gen = 1; }
-    int64_t at = g_nprocs;
-    g_nprocs = n;
-    return at;
-}
-
-static void grow_append(Grow* g, const char* s, size_t n) {
-    if (g->len + n + 1 > g->cap) {
-        size_t cap = g->cap ? g->cap : 4096;
-        while (cap < g->len + n + 1) cap *= 2;
-        g->buf = (char*)realloc(g->buf, cap);
-        g->cap = cap;
-    }
-    memcpy(g->buf + g->len, s, n);
-    g->len += n;
-    g->buf[g->len] = '\0';
-}
-
-static void close_fd(int* fd) {
-    if (*fd >= 0) close(*fd);
-    *fd = -1;
-}
-
-// A pipe end above the standard three (a dup2 target must never be
-// one we hold), CLOEXEC so it never leaks into a child.
-static int raised(int fd) {
-    while (fd >= 0 && fd <= 2) {
-        int d = fcntl(fd, F_DUPFD_CLOEXEC, 3);
-        close(fd);
-        fd = d;
-    }
-    if (fd >= 0) fcntl(fd, F_SETFD, FD_CLOEXEC);
-    return fd;
-}
-
-static int make_pipe(int p[2]) {
-    if (pipe(p) != 0) return -errno;
-    p[0] = raised(p[0]);
-    p[1] = raised(p[1]);
-    return (p[0] < 0 || p[1] < 0) ? -EMFILE : 0;
-}
-
-static int executable(const char* path) {
-    struct stat st;
-    return stat(path, &st) == 0 && S_ISREG(st.st_mode) && access(path, X_OK) == 0;
-}
-
-// The program's absolute path: as written when it names a directory,
-// else the first PATH entry holding it — relative and empty entries
-// are skipped, so the current directory is never searched. Ours.
-static char* resolved(const char* file, const char* path) {
-    if (strchr(file, '/')) return executable(file) ? strdup(file) : NULL;
-    if (!path) return NULL;
-    const char* p = path;
-    size_t flen = strlen(file);
-    while (1) {
-        const char* colon = strchr(p, ':');
-        size_t n = colon ? (size_t)(colon - p) : strlen(p);
-        if (n > 0 && p[0] == '/') {
-            char* cand = (char*)malloc(n + flen + 2);
-            memcpy(cand, p, n);
-            cand[n] = '/';
-            memcpy(cand + n + 1, file, flen + 1);
-            if (executable(cand)) return cand;
-            free(cand);
-        }
-        if (!colon) return NULL;
-        p = colon + 1;
-    }
-}
-
-// A NULL-terminated vector over an Avra `List<string>`, the strings
-// borrowed for one call; `head` leads it when given.
-static char** words_of(void* arr, const char* head) {
-    AvraArray* a = (AvraArray*)arr;
-    int64_t n = a ? a->len : 0;
-    char** v = (char**)malloc((size_t)(n + 2) * sizeof(char*));
-    int64_t k = 0;
-    if (head) v[k++] = (char*)head;
-    for (int64_t i = 0; i < n; i++) v[k++] = (char*)(uintptr_t)a->data[i];
-    v[k] = NULL;
-    return v;
-}
-
-static int one_of(int64_t flags, int64_t a, int64_t b, int64_t c, int64_t d) {
-    return !!(flags & a) + !!(flags & b) + !!(flags & c) + !!(flags & d) == 1;
-}
-
-// A child spawned. `max_bytes` caps each captured stream (0 lifts the
-// cap); `from_h` names an upstream child whose stdout becomes this
-// child's stdin through the kernel's own pipe — no bytes through us —
-// or -1 for the stdin the flags say.
-int64_t avra_proc_spawn(const char* file, void* argv, void* envp, const char* cwd, int64_t flags, int64_t max_bytes, int64_t from_h) {
-    Proc* from = from_h >= 0 ? proc_at(from_h) : NULL;
-    if (from_h >= 0 && (!from || from->out_fd < 0)) return -EBADF;
-    if (from) flags = (flags & ~(int64_t)(PROC_NULL_IN | PROC_INHERIT_IN)) | PROC_PIPE_IN;
-    if (!one_of(flags, PROC_PIPE_IN, PROC_NULL_IN, PROC_INHERIT_IN, 0)) return -EINVAL;
-    if (!one_of(flags, PROC_PIPE_OUT, PROC_NULL_OUT, PROC_INHERIT_OUT, 0)) return -EINVAL;
-    if (!one_of(flags, PROC_PIPE_ERR, PROC_NULL_ERR, PROC_INHERIT_ERR, PROC_MERGE_ERR)) return -EINVAL;
-    if ((flags & PROC_MERGE_ERR) && !(flags & PROC_PIPE_OUT)) return -EINVAL;
-    AvraArray* env = (AvraArray*)envp;
-    for (int64_t i = 0; env && i < env->len; i++) {
-        if (!strchr((const char*)(uintptr_t)env->data[i], '=')) return -EINVAL;
-    }
-    if (cwd && cwd[0]) {
-        struct stat st;
-        if (stat(cwd, &st) != 0 || !S_ISDIR(st.st_mode)) return -ENOTDIR;
-    }
-    char* path = ((flags & PROC_SEARCH_PATH) && !strchr(file, '/')) ? resolved(file, getenv("PATH")) : strdup(file);
-    if (!path) return -ENOENT;
-    int in[2] = { -1, -1 }, out[2] = { -1, -1 }, err[2] = { -1, -1 };
-    int rc = 0;
-    if (from) {
-        // the upstream's read end was ours to poll — non-blocking; the
-        // child that inherits it reads as a child does
-        in[0] = from->out_fd;
-        fcntl(in[0], F_SETFL, 0);
-    } else if ((flags & PROC_PIPE_IN) && (rc = make_pipe(in)) != 0) goto fail;
-    if ((flags & PROC_PIPE_OUT) && (rc = make_pipe(out)) != 0) goto fail;
-    if ((flags & PROC_PIPE_ERR) && (rc = make_pipe(err)) != 0) goto fail;
-
-    posix_spawn_file_actions_t fa;
-    posix_spawn_file_actions_init(&fa);
-    if (flags & PROC_PIPE_IN) posix_spawn_file_actions_adddup2(&fa, in[0], 0);
-    if (flags & PROC_NULL_IN) posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
-    if (flags & PROC_PIPE_OUT) posix_spawn_file_actions_adddup2(&fa, out[1], 1);
-    if (flags & PROC_NULL_OUT) posix_spawn_file_actions_addopen(&fa, 1, "/dev/null", O_WRONLY, 0);
-    if (flags & PROC_PIPE_ERR) posix_spawn_file_actions_adddup2(&fa, err[1], 2);
-    if (flags & PROC_MERGE_ERR) posix_spawn_file_actions_adddup2(&fa, out[1], 2);
-    if (flags & PROC_NULL_ERR) posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
-#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
-    // Darwin closes every fd the actions do not name — so the three
-    // a child inherits are named.
-    if (flags & PROC_INHERIT_IN) posix_spawn_file_actions_addinherit_np(&fa, 0);
-    if (flags & PROC_INHERIT_OUT) posix_spawn_file_actions_addinherit_np(&fa, 1);
-    if (flags & PROC_INHERIT_ERR) posix_spawn_file_actions_addinherit_np(&fa, 2);
-#endif
-    if (cwd && cwd[0]) {
-#ifdef AVRA_ADDCHDIR
-        AVRA_ADDCHDIR(&fa, cwd);
-#else
-        posix_spawn_file_actions_destroy(&fa);
-        rc = -ENOTSUP;
-        goto fail;
-#endif
-    }
-    posix_spawnattr_t at;
-    posix_spawnattr_init(&at);
-    short af = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF;
-    sigset_t none, all;
-    sigemptyset(&none);
-    sigfillset(&all);
-    sigdelset(&all, SIGKILL);
-    sigdelset(&all, SIGSTOP);
-    posix_spawnattr_setsigmask(&at, &none);
-    posix_spawnattr_setsigdefault(&at, &all);
-    if (flags & PROC_NEW_PGROUP) { af |= POSIX_SPAWN_SETPGROUP; posix_spawnattr_setpgroup(&at, 0); }
-#ifdef POSIX_SPAWN_SETSID
-    if (flags & PROC_NEW_SESSION) af |= POSIX_SPAWN_SETSID;
-#endif
-#ifdef POSIX_SPAWN_CLOEXEC_DEFAULT
-    af |= POSIX_SPAWN_CLOEXEC_DEFAULT;
-#endif
-    posix_spawnattr_setflags(&at, af);
-
-    char** cargv = words_of(argv, file);
-    char** cenvp = (flags & PROC_INHERIT_ENV) ? environ : words_of(envp, NULL);
-    // what this program printed comes out before the child's words
-    fflush(NULL);
-    pid_t pid = -1;
-    int started = posix_spawn(&pid, path, &fa, &at, cargv, cenvp);
-    posix_spawn_file_actions_destroy(&fa);
-    posix_spawnattr_destroy(&at);
-    free(cargv);
-    if (cenvp != environ) free(cenvp);
-    // the upstream's read end is the child's now; we stop reading it
-    if (from) { in[0] = -1; close_fd(&from->out_fd); }
-    close_fd(&in[0]);
-    close_fd(&out[1]);
-    close_fd(&err[1]);
-    if (started != 0) { rc = -started; goto fail; }
-    if (in[1] >= 0) fcntl(in[1], F_SETFL, O_NONBLOCK);
-    if (out[0] >= 0) fcntl(out[0], F_SETFL, O_NONBLOCK);
-    if (err[0] >= 0) fcntl(err[0], F_SETFL, O_NONBLOCK);
-    free(path);
-
-    int64_t idx = proc_slot();
-    Proc* p = &g_procs[idx];
-    int64_t gen = p->gen;
-    memset(p, 0, sizeof(Proc));
-    p->gen = gen;
-    p->live = 1;
-    p->pid = pid;
-    p->pgid = pid;
-    p->group = (flags & (PROC_NEW_PGROUP | PROC_NEW_SESSION)) != 0;
-    p->in_fd = in[1];
-    p->out_fd = out[0];
-    p->err_fd = err[0];
-    p->max_bytes = max_bytes > 0 ? (size_t)max_bytes : (size_t)-1;
-    return (gen << 32) | idx;
-
-fail:
-    free(path);
-    if (from) in[0] = -1;
-    close_fd(&in[0]); close_fd(&in[1]);
-    close_fd(&out[0]); close_fd(&out[1]);
-    close_fd(&err[0]); close_fd(&err[1]);
-    return rc;
-}
-
-static int64_t encoded(int st) {
-    if (WIFEXITED(st)) return ((int64_t)EXIT_CODE << 32) | (int64_t)WEXITSTATUS(st);
-    int64_t payload = WTERMSIG(st);
-#ifdef WCOREDUMP
-    if (WCOREDUMP(st)) payload |= 0x100;
-#endif
-    return ((int64_t)EXIT_SIGNAL << 32) | payload;
-}
-
-// One stream's readable bytes into its buffer; EOF and the cap both
-// close our end.
-static int64_t drained(Proc* p, int* fd, Grow* g, int64_t got, int64_t eof, int64_t capped) {
-    char chunk[65536];
-    ssize_t n = read(*fd, chunk, sizeof chunk);
-    if (n > 0) {
-        grow_append(g, chunk, (size_t)n);
-        if (g->len > p->max_bytes) { close_fd(fd); p->sticky |= capped; return capped; }
-        return got;
-    }
-    if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return 0;
-    close_fd(fd);
-    return eof;
-}
-
-// Pending stdin fed as far as the pipe takes it; the child closing
-// its end is a normal close, never an error.
-static int64_t fed(Proc* p) {
-    int64_t ev = 0;
-    if (p->in_off < p->in_len) {
-        ssize_t n = write(p->in_fd, p->in_text + p->in_off, p->in_len - p->in_off);
-        if (n > 0) { p->in_off += (size_t)n; ev |= EV_IN_WROTE; }
-        else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) { close_fd(&p->in_fd); return EV_IN_CLOSED; }
-    }
-    if (p->in_off >= p->in_len && p->in_close) { close_fd(&p->in_fd); ev |= EV_IN_CLOSED; }
-    return ev;
-}
-
-static int proc_done(Proc* p) {
-    return p->pid < 0 && p->out_fd < 0 && p->err_fd < 0;
-}
-
-// One tick of the pump: poll every open end at once, move what
-// moves, reap once. Answers the tick's events over the standing
-// state — exited, ends at EOF, the sticky verdicts.
-static int64_t pump_tick(Proc* p, int64_t timeout_ms) {
-    int64_t ev = 0;
-    if (p->in_fd >= 0 && p->in_off >= p->in_len && p->in_close) { close_fd(&p->in_fd); ev |= EV_IN_CLOSED; }
-    struct pollfd fds[3];
-    int n = 0, io = -1, ie = -1, ii = -1;
-    if (p->out_fd >= 0) { fds[n].fd = p->out_fd; fds[n].events = POLLIN; fds[n].revents = 0; io = n++; }
-    if (p->err_fd >= 0) { fds[n].fd = p->err_fd; fds[n].events = POLLIN; fds[n].revents = 0; ie = n++; }
-    if (p->in_fd >= 0 && p->in_off < p->in_len) { fds[n].fd = p->in_fd; fds[n].events = POLLOUT; fds[n].revents = 0; ii = n++; }
-    // a live child is re-checked at least every 100ms, so an exit is
-    // seen while its output is still open
-    int wait = timeout_ms < 0 ? -1 : (int)timeout_ms;
-    if (p->pid > 0 && (wait < 0 || wait > 100)) wait = 100;
-    int r = poll(n ? fds : NULL, (nfds_t)n, wait);
-    if (r < 0 && errno != EINTR) return -errno;
-    if (r > 0) {
-        if (io >= 0 && fds[io].revents) ev |= drained(p, &p->out_fd, &p->out, EV_OUT, EV_OUT_EOF, EV_CAPPED_OUT);
-        if (ie >= 0 && fds[ie].revents) ev |= drained(p, &p->err_fd, &p->err, EV_ERR, EV_ERR_EOF, EV_CAPPED_ERR);
-        if (ii >= 0 && fds[ii].revents) ev |= fed(p);
-    }
-    if (p->pid > 0) {
-        int st;
-        pid_t w = waitpid(p->pid, &st, WNOHANG);
-        if (w == p->pid) { p->status = encoded(st); p->pid = -1; ev |= EV_EXITED; }
-    }
-    if (p->pid < 0) ev |= EV_EXITED;
-    if (p->out_fd < 0) ev |= EV_OUT_EOF;
-    if (p->err_fd < 0) ev |= EV_ERR_EOF;
-    if (p->in_fd < 0) ev |= EV_IN_CLOSED;
-    return ev | p->sticky;
-}
-
-// A signal to the child — its whole group when it leads one. The
-// group id outlives the reap: a pid is never reused while it names a
-// living group, so the tree a finished child left behind is still ours.
-static void signalled(Proc* p, int sig) {
-    if (p->group) { if (p->pgid > 0) killpg(p->pgid, sig); return; }
-    if (p->pid > 0) kill(p->pid, sig);
-}
-
-// Ticks until `until` says stop or `ms` have passed.
-static void pumped_until(Proc* p, int64_t ms, int (*until)(Proc*)) {
-    int64_t deadline = mono_ms() + ms;
-    while (!until(p)) {
-        int64_t remain = deadline - mono_ms();
-        if (remain <= 0) return;
-        if (pump_tick(p, remain) < 0) return;
-    }
-}
-
-static int reaped(Proc* p) { return p->pid < 0; }
-
-// TERM to the tree, a grace, then KILL — which cannot be caught, so
-// the reap follows.
-static void escalated(Proc* p, int64_t grace_ms) {
-    signalled(p, SIGTERM);
-    p->sticky |= EV_TERMED;
-    pumped_until(p, grace_ms, reaped);
-    if (p->pid > 0) {
-        signalled(p, SIGKILL);
-        p->sticky |= EV_KILLED;
-        pumped_until(p, grace_ms > 1000 ? grace_ms : 1000, reaped);
-    }
-}
-
-// THE ONE-SHOT: spawn, pump to the end, escalate past the deadline
-// or the cap, and bound the drain after the exit — a grandchild that
-// keeps the pipe open is a TRUNCATED capture, never a hang. Answers
-// a finished handle, or the spawn's -errno.
-int64_t avra_proc_run(const char* file, void* argv, void* envp, const char* cwd, int64_t flags,
-                      const char* stdin_text, int64_t timeout_ms, int64_t grace_ms, int64_t max_bytes) {
-    int64_t h = avra_proc_spawn(file, argv, envp, cwd, flags, max_bytes, -1);
-    if (h < 0) return h;
-    Proc* p = proc_at(h);
-    if (p->in_fd >= 0) {
-        // the HEADER's length, never strlen: stdin is a byte stream and a
-        // NUL is data — `avra_proc_write` has always read it this way
-        size_t n = stdin_text ? str_len(stdin_text) : 0;
-        if (n > 0) { p->in_text = (char*)malloc(n); memcpy(p->in_text, stdin_text, n); p->in_len = n; }
-        p->in_close = 1;
-    }
-    int64_t deadline = timeout_ms >= 0 ? mono_ms() + timeout_ms : -1;
-    int64_t exited_at = -1;
-    while (!proc_done(p)) {
-        int64_t now = mono_ms();
-        if (deadline >= 0 && now >= deadline) { p->sticky |= EV_TIMEOUT; break; }
-        if (exited_at >= 0 && now - exited_at >= grace_ms) break;
-        int64_t ev = pump_tick(p, 100);
-        if (ev < 0) break;
-        if ((ev & EV_EXITED) && exited_at < 0) exited_at = mono_ms();
-        if (ev & (EV_CAPPED_OUT | EV_CAPPED_ERR)) break;
-    }
-    if (!proc_done(p)) {
-        if (p->pid > 0) escalated(p, grace_ms);
-        pumped_until(p, grace_ms, proc_done);
-        if (!proc_done(p)) {
-            // whoever still holds the pipe is the child's own tree; a
-            // one-shot leaves nothing behind
-            signalled(p, SIGKILL);
-            close_fd(&p->out_fd);
-            close_fd(&p->err_fd);
-            p->sticky |= EV_TRUNCATED;
-        }
-    }
-    close_fd(&p->in_fd);
-    return h;
-}
-
-int64_t avra_proc_poll(int64_t h, int64_t timeout_ms) {
-    Proc* p = proc_at(h);
-    return p ? pump_tick(p, timeout_ms) : -EBADF;
-}
-
-// Text queued for the child's stdin; the pump writes it as the pipe
-// takes it. Answers the bytes queued.
-int64_t avra_proc_write(int64_t h, const char* text) {
-    Proc* p = proc_at(h);
-    if (!p) return -EBADF;
-    if (p->in_fd < 0) return -EPIPE;
-    size_t n = str_len(text);
-    p->in_text = (char*)realloc(p->in_text, p->in_len + n + 1);
-    memcpy(p->in_text + p->in_len, text, n);
-    p->in_len += n;
-    return (int64_t)n;
-}
-
-int64_t avra_proc_stdin_close(int64_t h) {
-    Proc* p = proc_at(h);
-    if (!p) return -EBADF;
-    p->in_close = 1;
-    if (p->in_fd >= 0 && p->in_off >= p->in_len) close_fd(&p->in_fd);
-    return 0;
-}
-
-// Everything a stream buffered since the last take — 1 stdout, 2
-// stderr — as fresh owned text; "" when nothing.
-const char* avra_proc_take(int64_t h, int64_t stream) {
-    Proc* p = proc_at(h);
-    Grow* g = !p ? NULL : stream == 1 ? &p->out : stream == 2 ? &p->err : NULL;
-    if (!g || g->len == 0) return str_owned("", 0);
-    const char* s = str_owned(g->buf, g->len);
-    g->len = 0;
-    return s;
-}
-
-// A signal to the child — the whole group when it leads one and
-// `to_group` asks. -ESRCH once reaped: a recycled pid is never hit.
-int64_t avra_proc_signal(int64_t h, int64_t sig, int64_t to_group) {
-    Proc* p = proc_at(h);
-    if (!p) return -EBADF;
-    if (p->pid <= 0) return -ESRCH;
-    int r = (to_group && p->group) ? killpg(p->pgid, (int)sig) : kill(p->pid, (int)sig);
-    return r == 0 ? 0 : -errno;
-}
-
-// The tagged word — 0 while the child runs.
-int64_t avra_proc_status(int64_t h) {
-    Proc* p = proc_at(h);
-    return p ? p->status : -EBADF;
-}
-
-int64_t avra_proc_pid(int64_t h) {
-    Proc* p = proc_at(h);
-    return p ? (int64_t)p->pid : -1;
-}
-
-// The handle released: a live child is killed with its tree and
-// reaped, every end closed, the slot's generation bumped. Idempotent.
-void avra_proc_close(int64_t h) {
-    Proc* p = proc_at(h);
-    if (!p) return;
-    if (p->pid > 0) {
-        int st;
-        signalled(p, SIGKILL);
-        while (waitpid(p->pid, &st, 0) < 0 && errno == EINTR) {}
-        p->pid = -1;
-    } else if (p->group) {
-        signalled(p, SIGKILL);
-    }
-    close_fd(&p->in_fd);
-    close_fd(&p->out_fd);
-    close_fd(&p->err_fd);
-    free(p->out.buf);
-    free(p->err.buf);
-    free(p->in_text);
-    int64_t gen = p->gen + 1;
-    memset(p, 0, sizeof(Proc));
-    p->gen = gen;
-}
-
-// Where `file` resolves on `path` — the absolute path as owned text,
-// "" when nothing resolves.
-const char* avra_proc_which(const char* file, const char* path) {
-    char* found = resolved(file, path);
-    if (!found) return str_owned("", 0);
-    const char* s = str_owned(found, strlen(found));
-    free(found);
-    return s;
-}
+// ── The process's own life ──────────────────────────────────────
+// What was the PROCESS section is @std/process's own C now
+// (packages/std-process/src/c/std_process.c): the spawn table, the
+// pipes, the signals and the reaping are a package's, answering ints,
+// and a child's streams are DESCRIPTORS the language reads through
+// the rows above. What stays here is what only this process can say
+// about ITSELF.
 
 // AN ADDRESS AS A POINTER. Making one is inert IN THE LANGUAGE:
 // Avra has no dereference, so a `ptr` can be held, compared to null
@@ -2457,7 +2283,13 @@ int64_t avra_spawn_status(const char* prog, void* args) {
     AvraArray* a = (AvraArray*)args;
     char** argv = (char**)malloc((size_t)(a->len + 2) * sizeof(char*));
     argv[0] = (char*)prog;
-    for (int64_t i = 0; i < a->len; i++) argv[i + 1] = (char*)(uintptr_t)a->data[i];
+    /* EVERY WORD IS CHECKED, because the host RESOLVES each one and
+       the seam's per-SEAT check cannot see inside a list: the seat is
+       a pointer to a box, so a NUL in a word would cross unexamined.
+       That is why neither row is `inert` — the flag says a NUL is data
+       to the body, and to these bodies it is two words. */
+    for (int64_t i = 0; i < a->len; i++)
+        argv[i + 1] = (char*)(uintptr_t)avra_str_crossing((const char*)(uintptr_t)a->data[i]);
     argv[a->len + 1] = NULL;
     // what this program printed comes out before the child's words:
     // a buffered stdout is flushed at the seam, or a pipe reorders
@@ -2487,13 +2319,31 @@ static int self_path(char* buf, size_t cap) {
 #endif
 }
 
+// The directory this image stands in — immortal, minted once.
+const char* avra_self_dir(void) {
+    static const char* dir = NULL;
+    if (dir) return dir;
+    char self[4096];
+    if (!self_path(self, sizeof self)) return str_static("");
+    char* slash = strrchr(self, '/');
+    if (slash) *slash = 0;
+    dir = str_static(self);
+    return dir;
+}
+
 int64_t avra_exec_self(void* args) {
     AvraArray* a = (AvraArray*)args;
     char self[4096];
     if (!self_path(self, sizeof self)) return 127;
     char** argv = (char**)malloc((size_t)(a->len + 2) * sizeof(char*));
     argv[0] = self;
-    for (int64_t i = 0; i < a->len; i++) argv[i + 1] = (char*)(uintptr_t)a->data[i];
+    /* EVERY WORD IS CHECKED, because the host RESOLVES each one and
+       the seam's per-SEAT check cannot see inside a list: the seat is
+       a pointer to a box, so a NUL in a word would cross unexamined.
+       That is why neither row is `inert` — the flag says a NUL is data
+       to the body, and to these bodies it is two words. */
+    for (int64_t i = 0; i < a->len; i++)
+        argv[i + 1] = (char*)(uintptr_t)avra_str_crossing((const char*)(uintptr_t)a->data[i]);
     argv[a->len + 1] = NULL;
     if (accounting()) acc_report();
     fflush(NULL);

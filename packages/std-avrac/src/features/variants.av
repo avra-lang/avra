@@ -10,7 +10,7 @@ impl TypeCx {
     /// The one law, at the call — the module's header states it.
     mut fn construct_variant(e: ExprId, decl: DeclId, tname: string, variant: string, args: List<ExprId>) -> TypeId {
         let declared: EnumSig? = self.variants_declared(decl, tname)
-        if declared == null { return self.not_an_enum(e, tname) }
+        if declared == null { return self.no_variants_here(e, decl, tname, variant) }
         let sig = declared!
         if sig.tag_of(variant) == null { return self.no_such_variant(e, tname, variant, sig) }
         let tp = self.view.decls.tparams(decl)
@@ -74,7 +74,7 @@ impl TypeCx {
         }
         match self.view.types.shape_of(want) {
             .App(d, _, _) -> same_decl(d, decl),
-            .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) or .Var(_, _, _) or
             .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .List(_) or .Cell(_) or .Map(_, _) or .EmptyMap -> false,
         }
     }
@@ -113,6 +113,17 @@ impl TypeCx {
 // ── The voices ──
 
 impl TypeCx {
+    /// A type name that names no enum: a GRAMMAR is told about its
+    /// doors, every other record about records.
+    mut fn no_variants_here(e: ExprId, decl: DeclId, tname: string, name: string) -> TypeId {
+        if self.view.decls.grammar_of(decl) == null { return self.not_an_enum(e, tname) }
+        self.no_such_door(e, tname, name)
+    }
+
+    mut fn no_such_door(e: ExprId, tname: string, name: string) -> TypeId {
+        self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}` is a `grammar`, not an enum", "built here", "`${tname}.${name}` is a call only where the grammar declares a door of that name"))
+    }
+
     mut fn not_an_enum(e: ExprId, tname: string) -> TypeId {
         self.spoken(refusal("type.unknown_prop", self.loc_of(e), "`${tname}` is a record, not an enum", "built here", build_a_record(tname)))
     }

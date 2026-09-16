@@ -34,7 +34,7 @@ commit). When a review round or a milestone discovers a NEW idiom,
 it lands here AT DISCOVERY, with its smell, its licensed
 exceptions, and — where greppable — a ratchet rule.
 
-THE BAR (tools/idioms.py) rests on four laws, and the first three
+THE BAR (tools/idioms.py) rests on five laws, and the first three
 exist because the old ratchet had a hole under each:
 
   1. THE BASELINE LISTS SITES, NEVER COUNTS. The old tool compared
@@ -54,12 +54,31 @@ exist because the old ratchet had a hole under each:
      must have a matcher or an entry in the tool's UNRATCHETED with
      its reason; the tool fails otherwise. New idioms arrive with
      enforcement or with a written admission of why they cannot.
+  5. THE ROOTS ARE THE PACKAGES, ASKED OF THE TREE. The scan list was
+     hand-kept, so std-http, std-net and std-sqlite were never on it
+     and the bar reported ZERO DEBT over three packages it had never
+     opened — 71 unlicensed sites, including three `xs[xs.length - 1]`
+     that I7 has ratcheted for four milestones. A check that examined
+     nothing is not a check that passed, so the roots are read from
+     `packages/*/src` and the run PRINTS WHAT IT LOOKED AT (389 files
+     in 16 packages today). The same disease has two other known
+     hosts: the Makefile's two link sites, and any keeper whose
+     subject list a new arrival does not join.
 
 Matchers are MULTI-LINE where the smell is: the old greps required
 the loop and its push on ONE line, catching the rare shape (11
 sites) while 14 ordinary multi-line loops were invisible.
 
-Ratcheted: I3 I4 I7 I9 I11 I12 I13 I14 I15 I16 I18 I19 I20 I21 I22 I23 I24 I26 I28 I30 I33 I38 I35 I36.
+A CITATION IS RATCHETED TOO, by a different keeper: `make cited`
+refuses a name or a path this file or CLAUDE.md cites that the
+tree cannot answer, and a bare `file.av:NNN`, which the next edit
+of that file moves. It reaches a THIRD of doctrine rot — an audit
+of 99 laws found 17 stale decorations, 5 of them names a grep
+finds and 12 counts, line numbers and attributions no tool can
+see. Licences live in `tools/cited.allow`, each with its reason.
+
+Ratcheted: `python3 tools/idioms.py --rules` answers, from the tool's own
+`RULES` keys — never a hand copy here.
 Unratcheted, read by a human: I5 (a matcher cannot see whether a
 predicate has effects), I31 (a stolen doc and a legitimate
 multi-paragraph header are the same shape).
@@ -108,12 +127,14 @@ gate — there is no amnesty left to hide in.
       over a RANGE is our own sugar backlog" — both landed, and the
       loops that cited them are comprehensions now.
 - I4  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
-      `index_of_name` is `names.index_of(name)` (returns -1 on a
-      miss — wrap to `int?`). `overlay_hit` stays a loop: reverse
+      the scan is `xs.index_of(x)` (returns -1 on a miss — wrap to
+      `int?`), as `core/modules.av` reads a key's cut. `overlay_hit`
+      stays a loop: reverse
       scan, licensed until a reversed iterator exists.
 - I5  the dedupe/union fold — NAMED: core `distinct(xs)` (STRING-
       only on purpose — `contains` compares non-strings by
-      identity). `Grammar.keywords` and `union_expected` use it;
+      identity). The grammar's own folds use it — `first.av`,
+      `diagnostics.av`, `ast.av`;
       validate's and coherence's `seen` folds are duplicate
       DETECTION (they emit on the dup), a different concept, left.
 - I6  head-plus-tail list builds — `concat`/`flatten` today, spread
@@ -290,6 +311,20 @@ gate — there is no amnesty left to hide in.
       whose signature the trait owns (fifty `nothing()` pass
       methods would otherwise each carry a license). Bodiless trait
       signatures and template text are skipped the same way.
+      THE LICENSED CASE HAS A SPELLING, and it is I22's lesson one
+      rule over: a parameter a SEAT owns and the body never reads is
+      named `_q`, not annotated. The matcher has always skipped a
+      leading underscore and nothing in the tree had ever written one,
+      so nineteen route handlers — whose signature `routed`/`fixed`/
+      `tailed` owns — were each facing a comment. The spelling says
+      "unread by contract" in the language, where a reader sees it
+      without a tooling footnote.
+      ITS MATCHER READ A LAMBDA'S SEAT AS THE FN'S OWN: the parameter
+      list was taken to the line's LAST `)`, so a one-line body
+      holding `f(line, (q: Request) -> ...)` put `q` in the fn's list
+      and the rule accused a parameter that was never declared. Ten
+      hits across std-http and std-sqlite were that, against nineteen
+      true ones — the list ends at its MATCHING paren now.
 - I herein note why I24 is MODULE-scoped: bs2 merges a module's
       files into one bundle, so an import in `program.av` serves
       `mod.av`. Per-FILE unused-import analysis is wrong and will
@@ -444,6 +479,27 @@ reintroducing I3's blind spot names the two spellings it lost.
       sibling and quietly diverging, which is how two of the three
       `fn`-shaped rules came to differ on `mut`. Lane B named the
       class; this is the first tool that can see an instance of it.
+- I48 (ratcheted) A COMPREHENSION OVER A LIST, BUILT ONLY TO BE
+      FOLDED TO A BOOL. `[writable(h) for h in r.headers].all(it)`
+      builds every element and then measures what it built;
+      `r.headers.all((h) -> writable(h))` stops at the first answer
+      and allocates nothing. Seven sites when the rule landed, five of
+      them in one campaign's two writer laws — and the file holding
+      one of those spelled the scan correctly two lines further down,
+      which is what makes this a habit rather than a belief. Two more
+      were in a suite, where the list is a table of hostile inputs and
+      the scan reads better than the fold did. LICENSED BY THE MATCHER
+      and never by an annotation, in the two shapes where the scan
+      cannot be written: over a RANGE (a range takes no methods, so
+      the comprehension is the only form the language has — seven such
+      sites stand, in route.av, format.av and interp_bytes.av), and
+      under a PAIRED head (`for i, k in xs`), where the element alone
+      is what native `all` hands over. Nothing in the tree matches
+      today, so the ratchet is against DRIFT, as I38's is.
+      THE NEAR RELATION IS NOT THE SMELL: a FILTERED comprehension
+      (`[f(x) for x in xs if p(x)].any(it)`) folds a different
+      question, and converting it inverts the predicate; the matcher
+      does not claim it.
 - I37 a FOLD written as a flag where a scan would short-circuit past
       a needed SIDE EFFECT. `all`/`any` stop at the first answer, so
       a loop whose body must run for every element — `paired_unify`
@@ -637,6 +693,22 @@ reintroducing I3's blind spot names the two spellings it lost.
       numbered suffix) or a parallel side table asked "is this
       synthetic". Not ratcheted: the smell is a naming choice, not a
       shape a grep can see.
+
+- I49 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
+      conversions that are inverses name their categories ONCE, as a
+      registry enum, and each direction is an exhaustive match over
+      it, arm for arm. The word slot is the instance: `slot_form`
+      says which conversion a category owes the runtime's `int64_t`
+      cells, `worded` casts in and `unworded` casts back, and neither
+      can learn a category the other has not. THE SMELL: each
+      direction written as its own chain of `is` tests, so the two
+      drift a category at a time and the gap is not a refusal — an
+      unconverted value rides the wrong register file and the callee
+      reads a different number. Not ratcheted: no grep links two fns
+      as inverses. THE KEEPER IS `make vocab`, which names both
+      directions as consumers of the SAME enum and refuses a
+      catch-all or an `is` test inside either — so a hole in one
+      direction fails the gate whichever direction grew it.
 
 - I42 (unratcheted) A READ ASKS THE SEEN SHAPE, A SEAT ASKS THE
       TYPE — the named-type law (`type Rows = List<int>`) written as
@@ -870,6 +942,19 @@ before it was named. And after a null guard, a value read more than
 once REBINDS (`let es = elems!`) so the `!` happens exactly once —
 flow narrowing is on the sugar backlog; until the language absorbs
 it, the rebind is the pattern.
+
+## A field default is evaluated per construction
+
+A default that CALLS something runs at every construction, so each
+value gets its own:
+
+    type Stmt = { raw: Cell<ptr?>, done: Cell<bool> = Cell.new(false) }
+
+Two `Stmt`s hold two cells; setting one leaves the other alone
+(measured, both engines). So a default may mint a box — the shared
+mutable default that bites in other languages does not exist here, and
+a field whose initial value is a fresh box belongs at the field rather
+than repeated at every construction site.
 
 ## A pure map never mutates
 
@@ -1466,7 +1551,8 @@ finds a sig, mono finds a home. The alternative was found as a
 crash: `impl Pair` on another module's type spoke its refusal and
 then the body walk indexed an empty param list. One mistake, one
 message, no crash downstream — `declare_wreckage(f)` in typing is
-the one verb; `refused_impl` calls it for every method.
+the one verb (`typing_impls.av`), called for every method of a
+refused impl.
 
 ## The hunger protocol: go hungry, be fed, speak when starving
 
