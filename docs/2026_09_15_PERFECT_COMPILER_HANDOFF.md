@@ -34,36 +34,49 @@ macOS-only fixture (`avra_proc_which("sh", "/usr/bin:/bin")` answers
 refreshed ON the Sprite (`make bootstrap seed`, 316312 lines) and
 `seed-check` proves the new seed compiles HEAD.
 
-## Step 1 — the front-end slice (GREEN, awaiting landing on main)
+## Step 1 — the front-end slice (landed on main, NOT the unblock) AND the
+## weak acceptance test that said it was
 
-`feat/lane-front-end` @ `dc809b3` on `main` (`0b88933`), 32 files,
-+1092/-69, gated GREEN on the Sprite (2931/2931 spec tests). It teaches
-MAIN's compiler to parse the lane's front end, which is the unblock:
-the member-mark SURFACE (`( vm:mark )*` + `( pm:mark )*` in
-`features/enums/mod.av`, `( fm:mark )*` in `features/structs/mod.av`, the
-DSL `mark` rule + `build_mark` in `features/annotations/mod.av`, and the
-MarkWindows/payload anchor alignment) plus the node-named capability
-(`05563b4`: node-named rules, the LIST LAW, `Builder.text/texts/flag`).
+`feat/lane-front-end` @ `dc809b3` landed on main at `c5c64d0`. It teaches
+MAIN's compiler to PARSE the lane's front end: the member-mark SURFACE
+(`( vm:mark )*` + `( pm:mark )*` in `features/enums/mod.av`, `( fm:mark )*`
+in `features/structs/mod.av`, the DSL `mark` rule + `build_mark` in
+`features/annotations/mod.av`, MarkWindows/payload alignment) plus the
+node-named capability (`05563b4`). Excluded and verified: the role
+readers, the derives, the crossing, the feature builder deletions, the
+claim law, `SEED_FLOOR`/sprite/parse/capture.
 
-EXCLUDED as instructed and verified by the diff: the role readers, the
-derives, the crossing, the feature builder deletions, the claim law
-F2086, `SEED_FLOOR`/sprite/parse/capture.
+**AND IT IS NOT THE UNBLOCK — because the test I wrote was too weak.**
+I required "main's compiler must PARSE the merge target (F0100 at
+`core/ir.av:55` becomes a parse)". It parses. It cannot TYPECHECK the
+merged tree: F2003 x160 (`x.of` on a nominal), F2030 x10 (`DeclSig` has
+no method `fingerprint` — a DERIVED fingerprint), F3000 x9 (`no fn
+dst_of_role` — `@derive(Roles)`), F2010/F2015 (`Scoped` at a `string`
+seat — phase A's seat law), F3012 x4 (the lane's cli imports
+`println` from @std.io while main uses the PRELUDE — a merge defect of
+mine). Main HAS `TypeName`/`stands_for`; it lacks `on_nominal`,
+`check_named_of`, `lower_named_of` and the `"of"` row, and it has NONE
+of the DERIVE system.
 
-AND ONE CORRECTION THE AGENT MADE TO ME, worth keeping: the six files I
-listed as "node-named spellings in the engine" contain no node build in
-CODE — only comments. My grep had overstated it; the slice needed no
-spelling revert at all. THE LESSON: a grep for a SPELLING finds it in
-prose too, and a slice's own source is the thing to read.
+THE LAW, and it is the doctrine's own, paid for twice now: **AN
+ACCEPTANCE TEST MUST NAME THE WHOLE JOB, NOT ITS FIRST DOOR.** Parsing is
+a door; compiling is the destination. A test that a SUBSET of the work
+can satisfy is a bound on ACCEPTANCE, not on the thing it names — and it
+was written by the person who had just finished warning about exactly
+this shape. The honest wording was one phrase longer: "main's compiler
+must COMPILE the merged tree", and the compiler would have said #2003
+rather than F0100.
 
-AFTER IT LANDS ON MAIN, THERE IS NO LADDER: main's compiler then has
-`Bytes`, the prelude AND the front end, so re-merging main into the lane
-(`make bootstrap` from main's seed -> `make gate`) is the whole sequence.
+STATE: the re-merge is preserved on `merge/main-into-lane-2` @ `9a8fd80`
+(pushed); `lane/comptime` is back at `2556679`. `make recover` SUCCEEDS
+with main's seed; `make avra` fails as measured. The path (B) rebase vs
+(C+) a second capability slice is with the CEO.
 
-RESIDUAL, named rather than hidden (the agent's own note):
-`node_scaffold`'s three builder bodies are BOUND and REGISTERED but never
-EXECUTED until the merge names `Expr.StrLit`/`BoolLit`/`Interp` — their
-binding is tested, their bodies are not. That is honest coverage, not a
-defect, and it closes at the merge.
+RESIDUAL, named rather than hidden: `node_scaffold`'s three builder
+bodies are BOUND and REGISTERED but never EXECUTED until the merge names
+`Expr.StrLit`/`BoolLit`/`Interp` — their binding is tested, their bodies
+are not. That is honest coverage, not a defect, and it closes at the
+merge.
 
 ## The full main→lane merge — RESOLVED, PRESERVED, AND IT CANNOT BOOTSTRAP
 
