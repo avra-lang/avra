@@ -73,8 +73,8 @@ sprite -s "$sprite" file push "$provision_script" "/home/sprite/.avra-provision.
 # gate when one is already built — --prebuild builds it once per hash.
 remote_cmd="cd '$remote' && { test -f tools/sprite-provision.sh || { mkdir -p tools && cp /home/sprite/.avra-provision.sh tools/sprite-provision.sh; }; } && { test -f /usr/lib/llvm-22/lib/libLLVM.so || sh tools/sprite-provision.sh >/dev/null 2>&1 || true; }"
 [ -n "$prebuild" ] && remote_cmd="$remote_cmd && { test -x build/avra || make avra; }"
-remote_cmd="$remote_cmd && exec $*"
-sprite -s "$sprite" exec --no-port-forward -- bash -lc "$remote_cmd" || status=$?
+remote_cmd="$remote_cmd && exec \"\$@\""
+sprite -s "$sprite" exec --no-port-forward -- bash -lc "$remote_cmd" avra-sprite-build "$@" || status=$?
 
 for spec in $pulls; do
     from=${spec%%:*}
@@ -87,8 +87,12 @@ done
 
 # The receipt names the CALLER's clean tree: the Sprite has no history,
 # so a receipt written there could not name the commit the gate read.
-if [ -n "$receipt" ] && [ "$status" = 0 ] && [ -f "$worktree/tools/gate_receipt.sh" ]; then
-    (cd "$worktree" && sh tools/gate_receipt.sh write) || true
+if [ -n "$receipt" ]; then
+    if [ "$status" = 0 ] && [ -f "$worktree/tools/gate_receipt.sh" ]; then
+        (cd "$worktree" && sh tools/gate_receipt.sh write) || true
+    else
+        echo "sprite-build: receipt: no tools/gate_receipt.sh in $worktree — no receipt written" >&2
+    fi
 fi
 
 echo "sprite-build: $slug@$hash on $sprite -> exit $status" >&2
