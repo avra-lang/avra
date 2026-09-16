@@ -105,13 +105,18 @@ done
 # actually happened.
 rows=$((rows + 1))
 looked=0
+seen=0
 if [ -x build/avra ]; then
     compiler_objs=" $(prereqs_of avra) "
     for o in build/*.o; do
         [ -e "$o" ] || continue
-        sym=$(nm -gU "$o" 2>/dev/null | sed -n 's/.* T _//p' | head -1)
+        seen=$((seen + 1))
+        # THE SYMBOL SPELLING IS THE PLATFORM'S: Mach-O prefixes `_`,
+        # ELF does not. A mandatory `_` read NOTHING on Linux and the
+        # rule went green over an empty set.
+        sym=$(nm -gU "$o" 2>/dev/null | sed -n 's/.* T _\?//p' | head -1)
         [ -n "$sym" ] || continue
-        nm -gU build/avra 2>/dev/null | grep -q " T _$sym\$" || continue
+        nm -gU build/avra 2>/dev/null | grep -q " T _\?$sym\$" || continue
         looked=$((looked + 1))
         case "$compiler_objs" in
             *" $o "*) ;;
@@ -124,7 +129,12 @@ fi
 # objects on disk, and on a cold tree there are none — so it says how
 # many it looked at rather than reporting green over an empty set.
 if [ "$looked" = 0 ]; then
-    echo "stems: the compiler's objects were not on disk — that rule examined NOTHING"
+    if [ "$seen" = 0 ]; then
+        echo "stems: no object files on disk — that rule examined NOTHING (a cold tree builds first)"
+    else
+        echo "stems: $seen object file(s) on disk and NOT ONE named a symbol this reader found — the spelling is wrong for this platform, so that rule examined NOTHING"
+        fails=$((fails + 1))
+    fi
 fi
 
 # A MAKEFILE VARIABLE IS ASSIGNED ONCE. Make takes the LAST assignment
