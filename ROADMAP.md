@@ -6693,7 +6693,7 @@ observation and not a measurement.
 - **A DERIVE MUST CLAIM ONLY WHAT IT READS.** Caught by the review
   round, in my own code, one slice after building the claim law:
   `Children` and `Identity` both claimed `@verbatim` and NEITHER read
-  it — claimed purely so F2086 would not fire on a mark no reader had.
+  it — claimed purely so F2092 would not fire on a mark no reader had.
   That makes the law say nothing: a word stops being refused without
   anything having started to read it. THE FIX WAS THE FEATURE: the
   mark's real reader is `Rebuild`, whose `hand_written` keyed the two

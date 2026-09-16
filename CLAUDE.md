@@ -821,7 +821,7 @@ engine's spec, written by dogfooding.
   compiler's to choose. That arm answered an `Expr.Error` node, so
   the only word spoken was the TYPER's about the seat (F2075, "a hole
   takes what its seat takes"), which names neither the mistake nor
-  its exits; it is F2085 now, homed at the hole, and it carries both.
+  its exits; it is F2091 now, homed at the hole, and it carries both.
   THE FIX IS IN THE GENERATOR, NOT THE TEMPLATE: fold the list where
   the derive runs, one hole per element (`[a].concat([b])`), so the
   generated literal's length is fixed per type — which is also what
