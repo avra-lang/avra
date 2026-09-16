@@ -76,14 +76,15 @@ export fn copier(src: NodeStore, dst: NodeStore, fills: List<fn(HoleKind) -> Fil
 export fn hole_kinds(store: NodeStore, e: ExprId) -> List<HoleKind> {
     let held: BodyParts? = (store.expr(e)).body_of()
     if held == null { return [] }
-    match held!.view {
+    let bp = held!
+    match bp.view {
         .Verbatim(ss, arms) -> {
-            mut rb = classifier(store, held!.holes.length)
+            mut rb = classifier(store, bp.holes.length)
             let _ = rb.stmts(ss)
             let _ = rb.arms(arms)
             rb.kinds
         },
-        .None -> [HoleKind.Expression for h in held!.holes],
+        .None -> [HoleKind.Expression for h in bp.holes],
         .Expanded(_) -> [],
     }
 }
@@ -338,8 +339,9 @@ impl Rebuilder {
         if self.src.is_hole(e) { self.dst.mark_hole(id) }
         let bp: BodyParts? = x.body_of()
         if bp != null {
-            if bp!.word == "quote" { self.dst.mark_quote_at(id) }
-            if bp!.word != "quote" && bp!.word != "text" { self.dst.mark_sublang(id, self.src.body_start(e)) }
+            let b = bp!
+            if b.word == "quote" { self.dst.mark_quote_at(id) }
+            if b.word != "quote" && b.word != "text" { self.dst.mark_sublang(id, self.src.body_start(e)) }
         }
         if !holed {
             self.made_exprs.push(id)
