@@ -88,7 +88,9 @@ done
 # The receipt names the CALLER's clean tree: the Sprite has no history,
 # so a receipt written there could not name the commit the gate read.
 if [ -n "$receipt" ]; then
-    if [ "$status" = 0 ] && [ -f "$here/gate_receipt.sh" ]; then
+    if [ "$status" != 0 ]; then
+        echo "sprite-build: receipt: the command failed (exit $status) — no receipt written" >&2
+    elif [ -f "$here/gate_receipt.sh" ]; then
         sh "$here/gate_receipt.sh" write "$worktree" || true
     else
         echo "sprite-build: receipt: no gate_receipt.sh beside the helper — no receipt written" >&2
