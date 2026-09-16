@@ -3,7 +3,7 @@
 //! while node order, operator grouping, declaration marks and payloads
 //! are preserved. `avra expand` and the future formatter share this one
 //! renderer.
-use core.{NodeStore, Remark, Trivia, Span, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Variant, Case, Annotation, TypeRef, FormatPart, Hole, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed, marks_prefixed}
+use core.{NodeStore, Remark, Trivia, Span, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Variant, Case, Annotation, TypeRef, FormatPart, Hole, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed, marks_prefixed, body_behavior}
 use features.{chained_binder}
 use @std.text.{Text, builder}
 
@@ -341,9 +341,7 @@ impl SourceText {
             .MapLit(keys, values) -> grouped("{${joined(["${self.expression(k, loosest_tier, depth)}: ${self.expression(values[j], loosest_tier, depth)}" for j, k in keys], ", ")}}", atom_tier, parent),
             .Index(subject, index) -> grouped("${self.expression(subject, postfix_tier, depth)}[${self.expression(index, loosest_tier, depth)}]", postfix_tier, parent),
             .Prop(subject, name) -> grouped("${self.expression(subject, postfix_tier, depth)}.${source_name(name.of)}", postfix_tier, parent),
-            .Interp(parts, holes) -> grouped(self.interpolation(parts, holes, depth), atom_tier, parent),
-            .Quote(parts, _, _, holes) -> grouped(self.quotation(parts, holes, depth), atom_tier, parent),
-            .Sublang(word, body, holes, _) -> grouped("${word} {${self.filled_body(body, holes, depth)}}", atom_tier, parent),
+            .Body(word, parts, holes, _) -> grouped(self.body_text(word, parts, holes, depth), atom_tier, parent),
             .If(cond, yes, no) -> grouped("if ${self.expression(cond, loosest_tier, depth)} ${self.block(yes, depth)} else ${self.block(no, depth)}", atom_tier, parent),
             .When(conds, values, fallback) -> grouped(self.when_expr(conds, values, fallback, end_of(self.store.expr_span(id)), depth), atom_tier, parent),
             .Block(stmts, value) -> grouped(self.braced(stmts, value, end_of(self.store.expr_span(id)), depth), atom_tier, parent),
@@ -399,10 +397,27 @@ impl SourceText {
     /// `quote { … }` — the runs as written, the holes re-spelled.
     /// A block's body with each `${k}` placeholder shown as the hole it
     /// names.
-    mut fn filled_body(body: string, holes: List<ExprId>, depth: int) -> string {
-        mut out = body
-        for k, h in holes { out = out.replace("\${${k}}", "\${${self.expression(h, loosest_tier, depth)}}") }
-        out
+    /// A hole-bearing body in the surface its WORD names, from the one
+    /// registry: a string, a `quote { … }`, or a word's own block.
+    mut fn body_text(word: string, parts: List<string>, holes: List<ExprId>, depth: int) -> string {
+        match body_behavior(word) {
+            .Text -> self.interpolation(parts, holes, depth),
+            .Quote -> self.quotation(parts, holes, depth),
+            .Foreign -> "${source_name(word)} {${self.filled_parts(parts, holes, depth)}}",
+        }
+    }
+
+    /// A block body's runs with each hole re-spelled as its expression.
+    mut fn filled_parts(parts: List<string>, holes: List<ExprId>, depth: int) -> string {
+        mut out: Text = builder()
+        out.push(parts[0])
+        for j, hole in holes {
+            out.push("\${")
+            out.push(self.expression(hole, loosest_tier, depth))
+            out.push("}")
+            out.push(parts[j + 1])
+        }
+        out.built()
     }
 
     mut fn quotation(parts: List<string>, holes: List<ExprId>, depth: int) -> string {

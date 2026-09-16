@@ -20,13 +20,12 @@
 //! `NodeStore`, as `@derive(Grammar)` answers a free fn rather than a
 //! value method for the same reason.
 //!
-//! TWO MARKS THE TYPES CANNOT SAY. `@expands(f)` means the named
-//! payload holds what the others EXPAND TO, so the walk takes the
-//! expansion when it is present and the rest only until then —
-//! walking both would visit one program twice. `@declares` means the
-//! statement declares a body OF ITS OWN, walked from that body and
-//! never through the statement, so it holds no children whatever its
-//! payloads say.
+//! ONE MARK THE TYPES CANNOT SAY. `@declares` means the statement
+//! declares a body OF ITS OWN, walked from that body and never
+//! through the statement, so it holds no children whatever its
+//! payloads say. A body's PARSED form and EXPANSION are a payload of
+//! their own type (`BodyView`), so the walk reads them through a row
+//! like any other.
 //!
 //! It stands ALONE in this file on purpose: running a derive TYPES
 //! the file that declares it, and a file that also walked the nodes
@@ -50,7 +49,7 @@ export trait Children {
     /// derive that claims a mark it never reads makes the claim law
     /// say nothing: the word stops being refused without anything
     /// having started to read it.
-    static fn marks(t: MetaType) -> List<string> { ["expands", "declares"] }
+    static fn marks(t: MetaType) -> List<string> { ["declares"] }
 }
 
 /// One variant's arm: its payloads bound, the expression-bearing ones
@@ -61,15 +60,13 @@ fn child_arm(v: MetaVariant) -> Arms {
 }
 
 /// What a variant reaches. A DECLARING statement reaches nothing —
-/// its body is walked as the declaration it is. An EXPANDING variant
-/// reaches its expansion once that exists, and its unexpanded parts
-/// until then; walking both would visit one program twice.
+/// its body is walked as the declaration it is. A body's VIEW reaches
+/// through its own payload row (`body_view_children`), so a parsed
+/// quote's statements and a sublanguage's expansion are reached and
+/// its holes are not walked beside them.
 fn reach_of(v: MetaVariant) -> Code {
     if marked(v, "declares") != null { return quote { [] } }
-    let expands: MetaMark? = marked(v, "expands")
-    if expands == null { return concatenated(parts_of(v, "")) }
-    let held = expands!.args.first() ?? ""
-    quote { (if ${name(held)} == null { ${concatenated(parts_of(v, held))} } else { [${name(held)}!] }) }
+    concatenated(parts_of(v))
 }
 
 /// The mark of this name the variant carries, or absence.
@@ -77,14 +74,13 @@ fn marked(v: MetaVariant, word: string) -> MetaMark? {
     v.marks.find(it.name == word)
 }
 
-/// Each expression-bearing payload's reach, in declaration order,
-/// with `except` left out — an expansion is the arm's other half, and
-/// "" excludes nothing. ONE LIST DECIDES: a payload carries
-/// expressions exactly when `reach` answers, so the question "does
-/// this type carry any" and the answer "here is how to reach them"
-/// cannot drift into two lists that disagree.
-fn parts_of(v: MetaVariant, except: string) -> List<Code> {
-    let held = [reach(f) for f in v.fields if f.name != except]
+/// Each expression-bearing payload's reach, in declaration order. ONE
+/// LIST DECIDES: a payload carries expressions exactly when `reach`
+/// answers, so the question "does this type carry any" and the answer
+/// "here is how to reach them" cannot drift into two lists that
+/// disagree.
+fn parts_of(v: MetaVariant) -> List<Code> {
+    let held = [reach(f) for f in v.fields]
     [r! for r in held if r != null]
 }
 
@@ -108,6 +104,7 @@ fn reach(f: Field) -> Code? {
         "List<ExprId>" -> b,
         "List<StmtId>" -> quote { self.stmts_exprs(${b}) },
         "List<Arm>" -> quote { [a.value for a in ${b}] },
+        "BodyView" -> quote { self.body_view_children(${b}) },
         _ -> null,
     }
 }

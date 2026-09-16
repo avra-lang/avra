@@ -3,7 +3,7 @@
 //! yet expanded (its word unresolved) is its holes alone. A `syntax`
 //! declaration's typing readies its grammar and holds every action to
 //! a fn of its module.
-use core.{Expr, ExprId, StmtId, TypeId, Reg}
+use core.{Expr, ExprId, StmtId, TypeId, Reg, BodyParts}
 use features.{NodeSemantics, StmtSemantics, TypeCx, LowerCx}
 
 export type SublangSemantics = { }
@@ -12,9 +12,11 @@ impl NodeSemantics for SublangSemantics {
     /// Once expanded, the expansion holds the holes; before, the holes
     /// stand alone so they still resolve and type.
     fn kids(e: Expr) -> List<ExprId> {
-        match e {
-            .Sublang(_, _, holes, x) -> if x == null { holes } else { [x!] },
-            _ -> [],
+        let bp: BodyParts? = (e).body_of()
+        if bp == null { return [] }
+        match bp!.view {
+            .Expanded(x) -> [x],
+            rest -> bp!.holes,
         }
     }
 

@@ -619,14 +619,14 @@ fn lex_words(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: b
     LexResult { tokens: tokens, docs: lx.docs, remarks: lx.remarks, errors: lx.errors }
 }
 
-/// What the scanner is INSIDE, innermost last: a quote's body, a
-/// string's hole, or a quote's hole — each with the depth its braces
-/// have reached, so the `}` that closes it is told from the braces
-/// the source itself opened.
+/// What the scanner is INSIDE, innermost last: a quote's or block's
+/// body, a string's hole, or a template hole. A hole's brace depth
+/// rides the CONTEXT, never the frame it belongs to, so a hole
+/// nested in a hole counts its own braces.
 enum Ctx {
     Body(frame: int)
     StrHole(depth: int)
-    QuoteHole(frame: int)
+    QuoteHole(frame: int, depth: int)
 }
 
 /// One open `quote { … }` or sublanguage block: its body's brace
@@ -642,12 +642,15 @@ type QuoteFrame = {
     count: int,
     // the open hole's tokens, brace depth, and where its `${` stands
     current: List<Token>,
-    hole_depth: int,
     hole_lo: int,
     // the Hole token in assembly, when one is
     assembling: bool,
     parts: List<string>,
     holes: List<int>,
+    // the hole token's own start — the name run it begins with — while
+    // `lo` is the BODY's start, which the Body token and the unclosed
+    // block's span read. Two starts, two fields.
+    head: int,
     lo: int,
 }
 
@@ -704,7 +707,7 @@ impl Lexing {
     fn in_raw_body() -> bool {
         let top: Ctx? = self.stack.last()
         if top == null { return false }
-        match top! { .Body(f) -> self.frames[f].raw, .StrHole(_) or .QuoteHole(_) -> false }
+        match top! { .Body(f) -> self.frames[f].raw, .StrHole(_) or .QuoteHole(_, _) -> false }
     }
 
     /// One byte of a raw body: a hole opens and leaves its placeholder
@@ -772,19 +775,18 @@ impl Lexing {
         self.opened_blocks(routed.token)
     }
 
-    /// A brace steps the innermost context's depth; the `}` at depth
-    /// zero CLOSES it — a string resumes, a quote hole finishes, a
-    /// quote body ends and its deferred holes follow.
+    /// A `}` steps the innermost context's depth, or CLOSES it at
+    /// depth zero — a string resumes, a template hole finishes, a
+    /// quote body ends and its deferred holes follow. A `{` is NOT
+    /// counted here: whether it opens a body or merely nests is
+    /// decided once the token is pushed (`opened_blocks`), so no
+    /// opener is ever counted against a context it does not belong to.
     mut fn routed(s: ScanStep) -> ScanStep {
         let top: Ctx? = self.stack.last()
         if top == null || s.token == null || !is_brace(s.token!) { return s }
-        let opens = s.token!.text == "{"
+        if s.token!.text == "{" { return s }
         match top! {
             .Body(f) -> {
-                if opens {
-                    self.frame_depth(f, 1)
-                    return s
-                }
                 if self.frames[f].depth > 0 {
                     self.frame_depth(f, -1)
                     return s
@@ -793,10 +795,6 @@ impl Lexing {
                 skip(s.next)
             },
             .StrHole(depth) -> {
-                if opens {
-                    self.str_depth(depth + 1)
-                    return s
-                }
                 if depth > 0 {
                     self.str_depth(depth - 1)
                     return s
@@ -804,13 +802,9 @@ impl Lexing {
                 let _ = self.stack.pop()
                 scan_string(self.src, s.next, false, self.interpolate)
             },
-            .QuoteHole(f) -> {
-                if opens {
-                    self.hole_depth(f, 1)
-                    return s
-                }
-                if self.frames[f].hole_depth > 0 {
-                    self.hole_depth(f, -1)
+            .QuoteHole(f, depth) -> {
+                if depth > 0 {
+                    self.nested(-1)
                     return s
                 }
                 self.close_hole(f, s.next)
@@ -827,32 +821,26 @@ impl Lexing {
         self.frames.set(f, fr)
     }
 
-    mut fn hole_depth(f: int, by: int) {
-        mut fr = self.frames[f]
-        fr.hole_depth = fr.hole_depth + by
-        self.frames.set(f, fr)
-    }
-
     mut fn str_depth(depth: int) {
         self.stack.set(self.stack.length - 1, Ctx.StrHole(depth))
     }
 
-    /// The brace that opened a raw block or a quote body was counted
-    /// against the enclosing context when it was pushed; the block
-    /// consumes its own closer, so the count is undone here.
-    mut fn unopened() {
+    /// THE ONE DEPTH LAW: a brace that neither opens a body nor closes
+    /// the context nests it by one, every context alike.
+    mut fn nested(by: int) {
         let top: Ctx? = self.stack.last()
         if top == null { return }
         match top! {
-            .Body(f) -> self.frame_depth(f, -1),
-            .StrHole(depth) -> self.str_depth(depth - 1),
-            .QuoteHole(f) -> self.hole_depth(f, -1),
+            .Body(f) -> self.frame_depth(f, by),
+            .StrHole(depth) -> self.str_depth(depth + by),
+            .QuoteHole(f, depth) -> { self.stack.set(self.stack.length - 1, Ctx.QuoteHole(f, depth + by)) },
         }
     }
 
     /// A `grammar {` or `syntax w {` body is handed over whole; a
     /// `quote {` opens a frame whose body is tokenized like any
-    /// source; a block word's `{` opens a RAW frame.
+    /// source; a block word's `{` opens a RAW frame. A `{` that opens
+    /// nothing nests the enclosing context — the one depth law.
     mut fn opened_blocks(just: Token?) {
         if opens_grammar(self.sink(), just) || opens_syntax(self.sink(), just) {
             let body = scan_raw_block(self.src, self.n, self.i, "grammar")
@@ -860,21 +848,22 @@ impl Lexing {
             if body_closed(body) { self.push(brace_at(body.next)) }
             if body.err != null { self.errors.push(body.err!) }
             self.i = body.next
-            self.unopened()
+            return
         }
         if opens_quote(self.sink(), just) {
-            self.unopened()
             self.opened_frame(false)
+            return
         }
         if opens_block(self.sink(), just, self.words) {
-            self.unopened()
             self.retagged_word()
             self.opened_frame(true)
+            return
         }
+        if just != null && just!.kind == TokenKind.Op && just!.text == "{" { self.nested(1) }
     }
 
     mut fn opened_frame(raw: bool) {
-        self.frames.push(QuoteFrame { raw: raw, body: builder(), depth: 0, groups: [], count: 0, current: [], hole_depth: 0, hole_lo: 0, assembling: false, parts: [], holes: [], lo: self.i })
+        self.frames.push(QuoteFrame { raw: raw, body: builder(), depth: 0, groups: [], count: 0, current: [], hole_lo: 0, assembling: false, parts: [], holes: [], head: 0, lo: self.i })
         self.stack.push(Ctx.Body(self.frames.length - 1))
     }
 
@@ -912,10 +901,10 @@ impl Lexing {
             if touching != null {
                 self.unpushed()
                 fr.parts = [touching!.text]
-                fr.lo = touching!.span.lo
+                fr.head = touching!.span.lo
             } else {
                 fr.parts = [""]
-                fr.lo = self.i
+                fr.head = self.i
             }
             fr.holes = []
             fr.assembling = true
@@ -923,10 +912,9 @@ impl Lexing {
         fr.holes.push(fr.count)
         fr.count = fr.count + 1
         fr.current = []
-        fr.hole_depth = 0
         fr.hole_lo = self.i
         self.frames.set(f, fr)
-        self.stack.push(Ctx.QuoteHole(f))
+        self.stack.push(Ctx.QuoteHole(f, 0))
         self.i = self.i + 2
     }
 
@@ -961,7 +949,7 @@ impl Lexing {
         if !continues {
             fr.assembling = false
             self.frames.set(f, fr)
-            self.push(token(TokenKind.Hole, placeholder(fr.parts, fr.holes), fr.lo, j))
+            self.push(token(TokenKind.Hole, placeholder(fr.parts, fr.holes), fr.head, j))
             return
         }
         self.frames.set(f, fr)
@@ -994,7 +982,7 @@ impl Lexing {
     fn open_hole_frame() -> int? {
         mut j = self.stack.length - 1
         while j >= 0 {
-            let f: int? = match self.stack[j] { .QuoteHole(f) -> f, .Body(_) or .StrHole(_) -> null }
+            let f: int? = match self.stack[j] { .QuoteHole(f, _) -> f, .Body(_) or .StrHole(_) -> null }
             if f != null { return f }
             j = j - 1
         }
@@ -1058,14 +1046,14 @@ impl Lexing {
     fn in_hole() -> bool {
         let top: Ctx? = self.stack.last()
         if top == null { return false }
-        match top! { .Body(_) -> false, .StrHole(_) or .QuoteHole(_) -> true }
+        match top! { .Body(_) -> false, .StrHole(_) or .QuoteHole(_, _) -> true }
     }
 
     /// Every open hole abandoned, down to the enclosing body.
     mut fn left_holes() {
         while self.in_hole() {
             let top = self.stack.pop()
-            match top { .QuoteHole(f) -> self.dropped_hole(f), .Body(_) or .StrHole(_) -> nothing_noted() }
+            match top { .QuoteHole(f, _) -> self.dropped_hole(f), .Body(_) or .StrHole(_) -> nothing_noted() }
         }
     }
 
@@ -1161,3 +1149,12 @@ extern fn avra_float_bits(text: string) -> int
 
 /// Whether a real fits a `float` — infinity is not the number written.
 extern fn avra_float_fits(text: string) -> int
+
+/// The source runs between holes: one run more than there are holes.
+/// `begins` is each `${`'s opening token and `ends` its closing `}`'s,
+/// in body order.
+export fn runs(text: string, lo: int, hi: int, begins: List<Token>, ends: List<Token>) -> List<string> {
+    let starts = [lo].concat([t.span.hi for t in ends])
+    let stops = [t.span.lo for t in begins].concat([hi])
+    [text.substring(starts[j], stops[j]) for j in 0..starts.length]
+}

@@ -73,21 +73,37 @@ export fn copier(src: NodeStore, dst: NodeStore, fills: List<fn(HoleKind) -> Fil
 }
 
 /// A quote's holes classified — the kind of each, by its index.
-export fn hole_kinds(store: NodeStore, q: QuoteParts) -> List<HoleKind> {
-    mut rb = classifier(store, q.holes.length)
-    let _ = rb.stmts(q.stmts)
-    let _ = rb.arms(q.arms)
-    rb.kinds
+export fn hole_kinds(store: NodeStore, e: ExprId) -> List<HoleKind> {
+    let held: BodyParts? = (store.expr(e)).body_of()
+    if held == null { return [] }
+    let bp = held!
+    match bp.view {
+        .Verbatim(ss, arms) -> {
+            mut rb = classifier(store, bp.holes.length)
+            let _ = rb.stmts(ss)
+            let _ = rb.arms(arms)
+            rb.kinds
+        },
+        .None -> [HoleKind.Expression for h in bp.holes],
+        .Expanded(_) -> [],
+    }
 }
 
 /// What a quote's body PARSED as.
-export fn quote_kind(store: NodeStore, q: QuoteParts) -> QuoteKind {
-    if !q.arms.is_empty() { return QuoteKind.Arms }
-    if q.stmts.is_empty() { return QuoteKind.Stmts }
-    if q.stmts.all((s: StmtId) -> store.hole_stmt(s) != null) { return QuoteKind.Holes }
-    if store.hole_stmt(q.stmts.last()!) == null && store.stmt(q.stmts.last()!) is .ExprStmt { return QuoteKind.Expr }
-    if q.stmts.all((s: StmtId) -> store.declares(s) || store.hole_stmt(s) != null) { return QuoteKind.Decls }
-    QuoteKind.Stmts
+export fn quote_kind(store: NodeStore, e: ExprId) -> QuoteKind {
+    let bp: BodyParts? = (store.expr(e)).body_of()
+    if bp == null { return QuoteKind.Stmts }
+    match bp!.view {
+        .Verbatim(ss, arms) -> {
+            if !arms.is_empty() { return QuoteKind.Arms }
+            if ss.is_empty() { return QuoteKind.Stmts }
+            if ss.all((s: StmtId) -> store.hole_stmt(s) != null) { return QuoteKind.Holes }
+            if store.hole_stmt(ss.last()!) == null && store.stmt(ss.last()!) is .ExprStmt { return QuoteKind.Expr }
+            if ss.all((s: StmtId) -> store.declares(s) || store.hole_stmt(s) != null) { return QuoteKind.Decls }
+            QuoteKind.Stmts
+        },
+        .None or .Expanded(_) -> QuoteKind.Stmts,
+    }
 }
 
 impl Rebuilder {
@@ -285,31 +301,25 @@ impl Rebuilder {
 
     mut fn cases(cs: List<Case>) -> List<Case> { [self.case(c) for c in cs] }
 
-    // ── the semantic pair ──
-    // What a payload's TYPE cannot say. Every other arm is derived;
-    // these two are about MEANING, and the derive routes the variant
-    // here by name.
-
-    /// A quote inside the template: its body is copied as written —
-    /// its placeholders are its own — and its holes are this
-    /// template's expressions.
-    mut fn nested_quote(parts: List<string>, stmts: List<StmtId>, arms: List<Arm>, holes: List<ExprId>) -> Expr {
-        mut sub = self with { verbatim: true, holed: [] }
-        let ss = sub.stmts(stmts)
-        let inner = sub.arms(arms)
-        self.made_exprs = self.made_exprs.concat(sub.made_exprs)
-        self.made_from = self.made_from.concat(sub.made_from)
-        self.made_stmts = self.made_stmts.concat(sub.made_stmts)
-        self.made_pats = self.made_pats.concat(sub.made_pats)
-        Expr.Quote(parts, ss, inner, self.exprs(holes))
-    }
-
-    /// A sublanguage block: once the file resolves, its EXPANSION
-    /// stands in place of its holes, so a copy carries one or the
-    /// other and never both.
-    mut fn rebuilt_sublang(word: string, body: string, holes: List<ExprId>, expansion: ExprId?) -> Expr {
-        if expansion == null { return Expr.Sublang(word, body, self.exprs(holes), null) }
-        Expr.Sublang(word, body, [], self.expr_opt(expansion))
+    // ── the view payload ──
+    // A body's PARSED form and EXPANSION ride the node as its `view`
+    // payload, so the derives read it by type like any other. A quote's
+    // body is copied as written — its placeholders are its own — and a
+    // sublanguage's expansion is copied as the program it became.
+    mut fn rebuilt_view(v: BodyView) -> BodyView {
+        match v {
+            .None -> .None,
+            .Verbatim(ss, arms) -> {
+                mut sub = self with { verbatim: true, holed: [] }
+                let copied = BodyView.Verbatim(sub.stmts(ss), sub.arms(arms))
+                self.made_exprs = self.made_exprs.concat(sub.made_exprs)
+                self.made_from = self.made_from.concat(sub.made_from)
+                self.made_stmts = self.made_stmts.concat(sub.made_stmts)
+                self.made_pats = self.made_pats.concat(sub.made_pats)
+                copied
+            },
+            .Expanded(expansion) -> BodyView.Expanded(self.expr(expansion)),
+        }
     }
 
     /// A hole that binds is renamed as a bind is; `_` stays.
@@ -327,8 +337,12 @@ impl Rebuilder {
         if self.src.is_trailing(e) { self.dst.mark_trailing(id) }
         if self.src.is_type_lit(e) { self.dst.mark_type_lit(id) }
         if self.src.is_hole(e) { self.dst.mark_hole(id) }
-        if x is .Quote { self.dst.mark_quote_at(id) }
-        if x is .Sublang { self.dst.mark_sublang(id, self.src.body_start(e)) }
+        let bp: BodyParts? = x.body_of()
+        if bp != null {
+            let b = bp!
+            if b.word == "quote" { self.dst.mark_quote_at(id) }
+            if b.word != "quote" && b.word != "text" { self.dst.mark_sublang(id, self.src.body_start(e)) }
+        }
         if !holed {
             self.made_exprs.push(id)
             self.made_from.push(e)
