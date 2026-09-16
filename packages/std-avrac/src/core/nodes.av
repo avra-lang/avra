@@ -666,6 +666,10 @@ export type NodeStore = {
     annotations: List<List<Annotation>>,
     // declaration-leading `///` lines; absent on synthesized nodes
     docs: List<List<string>?>,
+    // the offset each doc group's FIRST `///` was written at, and -1
+    // for none, so the printer can put a remark between a doc and its
+    // declaration back in the author's order
+    doc_ats: List<int>,
     // plain `//` lines, by source offset — printing only
     remarks: List<Remark>,
     // `static fn` — a fn under an impl declaring it has NO receiver
@@ -694,7 +698,7 @@ export type NodeStore = {
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], statics: [], annotations: [], docs: [], remarks: [],
+        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], statics: [], annotations: [], docs: [], doc_ats: [], remarks: [],
         pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [], quotes_at: {}, sublangs: [], body_starts: {}, block_voices: [], foreign: [],
     }
 }
@@ -953,6 +957,7 @@ impl NodeStore {
         self.statics.push(false)
         self.annotations.push([])
         self.docs.push(null)
+        self.doc_ats.push(-1)
         StmtId { index: self.stmts.add(s, span) }
     }
 
@@ -965,13 +970,19 @@ impl NodeStore {
     /// statement's identity: tools observe it, so a doc-only edit
     /// must not be cut off by the parsed-program memo. Lines never
     /// contain a newline, so the joined text is a lossless key.
-    fn document(s: StmtId, lines: List<string>) {
+    fn document(s: StmtId, lines: List<string>, at: int) {
         self.docs.set(s.index, lines)
+        self.doc_ats.set(s.index, at)
         self.stmt_fingerprints.set(s.index, fp(115, [self.stmt_fingerprints[s.index], fp_str(lines.join("\n"))]))
     }
 
     fn doc_comment(s: StmtId) -> List<string>? {
         self.docs[s.index]
+    }
+
+    /// Where a declaration's doc group began, or -1 when it has none.
+    fn doc_at(s: StmtId) -> int {
+        self.doc_ats[s.index]
     }
 
     /// The statement whose span begins at or after `at`, earliest

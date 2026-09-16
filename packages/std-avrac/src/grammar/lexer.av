@@ -87,7 +87,7 @@ export type LexError = { message: string, span: Span }
 /// is the first token after the group; parsing uses that source-order
 /// anchor to attach the lines without making comments part of the
 /// grammar.
-export type DocComment = { lines: List<string>, before: int }
+export type DocComment = { lines: List<string>, before: int, at: int }
 
 /// Every token, retained doc comment and problem from one pass.
 export type LexResult = { tokens: List<Token>, docs: List<DocComment>, remarks: List<Remark>, errors: List<LexError> }
@@ -604,7 +604,7 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
 fn lex_words(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bool, words: List<string>, placeholders: bool) -> LexResult {
     mut lx = Lexing {
         src: src, n: src.length, interpolate: interpolate, words: words, placeholders: placeholders,
-        raw: [], docs: [], remarks: [], blank_run: false, pending: [], errors: [], stack: [], frames: [],
+        raw: [], docs: [], remarks: [], blank_run: false, pending: [], pending_at: 0, errors: [], stack: [], frames: [],
         line_comment: false, line_has_token: false, i: 0,
     }
     lx.run()
@@ -669,6 +669,7 @@ type Lexing = {
     remarks: List<Remark>,
     blank_run: bool,
     pending: List<string>,
+    pending_at: int,
     errors: List<LexError>,
     stack: List<Ctx>,
     frames: List<QuoteFrame>,
@@ -1018,7 +1019,7 @@ impl Lexing {
             self.line_comment = false
         } else {
             if !self.pending.is_empty() {
-                if declaration_start(t) { self.docs.push(DocComment { lines: self.pending, before: t.span.lo }) }
+                if declaration_start(t) { self.docs.push(DocComment { lines: self.pending, before: t.span.lo, at: self.pending_at }) }
                 self.pending = []
             }
             self.line_has_token = true
@@ -1082,6 +1083,7 @@ impl Lexing {
         self.line_comment = true
         if self.line_has_token { return }
         if self.i + 2 < self.n && self.src.char_code(self.i + 2) == 47 {
+            if self.pending.is_empty() { self.pending_at = self.i }
             self.pending.push(doc_line(self.src, self.n, self.i))
             return
         }

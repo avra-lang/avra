@@ -11,11 +11,11 @@ fn projected(source: string) -> string {
 
 spec "docs — the declaration-leading `///` surface" {
     given "what detaches a group" {
-        then "an ordinary comment between a doc group and its declaration does not detach it" {
-            projected("/// kept\n// note\nfn a() -> int { 1 }") == "/// kept\nfn a() -> int {\n    1\n}"
+        then "an ordinary comment between a doc group and its declaration is kept in order, and does not detach it" {
+            projected("/// kept\n// note\nfn a() -> int { 1 }") == "/// kept\n// note\nfn a() -> int {\n    1\n}"
         }
-        then "a blank line detaches a doc group" {
-            projected("/// lost\n\nfn a() -> int { 1 }") == "fn a() -> int {\n    1\n}"
+        then "a blank line detaches a doc group and survives as the author's blank" {
+            projected("/// lost\n\nfn a() -> int { 1 }") == "\nfn a() -> int {\n    1\n}"
         }
         then "an orphan before a closing brace cannot drift to the next declaration" {
             !projected("fn a() -> int {\n    /// lost\n    1\n}\n\nfn b() -> int { 2 }").contains("lost")
@@ -25,13 +25,13 @@ spec "docs — the declaration-leading `///` surface" {
         }
     }
 
-    given "docs with no table are dropped" {
-        // A module's `//!` and a variant's or field's `///` have no
-        // table: they are not declaration-leading comments, and the
-        // printer walks statements. ROADMAP records the ask; this row
-        // must fail the day the tables land.
-        then "a module, enum variant, or struct field doc is not retained" {
-            !projected("//! module doc\nfn a() -> int { 1 }").contains("module doc") &&
+    given "docs that no table holds" {
+        // A variant's or a field's `///` has no table — it is not a
+        // declaration-leading doc, and the printer walks statements.
+        // A module's `//!` is a plain remark, so it survives through
+        // the trivia cursor. ROADMAP records the missing tables.
+        then "a module's `//!` survives as a remark, and a variant's or field's `///` is still dropped" {
+            projected("//! module doc\nfn a() -> int { 1 }") == "//! module doc\nfn a() -> int {\n    1\n}" &&
                 !projected("type S = {\n    /// lost\n    v: int,\n}").contains("lost") &&
                 !projected("enum E {\n    /// lost\n    A,\n}").contains("lost")
         }
@@ -40,11 +40,11 @@ spec "docs — the declaration-leading `///` surface" {
     given "where a group lands" {
         then "a doc lands on the nested declaration it precedes, not its owner" {
             projected("fn outer() -> int {\n    /// inner\n    fn b() -> int { 2 }\n    b()\n}\nouter()") ==
-                "fn outer() -> int {\n    /// inner\n    fn b() -> int {\n        2\n    }\n    b()\n}\n\nouter()"
+                "fn outer() -> int {\n    /// inner\n    fn b() -> int {\n        2\n    }\n    b()\n}\nouter()"
         }
         then "a doc on the first declaration cannot bleed onto the second" {
             projected("/// one\nfn a() -> int { 1 }\nfn b() -> int { 2 }") ==
-                "/// one\nfn a() -> int {\n    1\n}\n\nfn b() -> int {\n    2\n}"
+                "/// one\nfn a() -> int {\n    1\n}\nfn b() -> int {\n    2\n}"
         }
         then "a doc survives each declaration prefix the lexer accepts" {
             let out = projected("/// k\nconst K: int = 3\n\n/// e\nextern fn puts(s: string) -> int\n\n/// o\nonce fn seed() -> string { \"x\" }")
