@@ -105,6 +105,8 @@ _Static_assert(__builtin_classify_type(avra_insist(AVRA_RT_PTR)) == AVRA_RT_POIN
     "avra_insist: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_insist_scalar(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
     "avra_insist_scalar: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_classify_type(avra_str_crossing(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_str_crossing: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_int_div(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
     "avra_int_div: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_int_mod(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
@@ -163,57 +165,63 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_str_char_code(AVRA_R
     "avra_str_char_code: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_str_trim(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_str_trim: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_len(AVRA_RT_PTR)), int64_t),
+    "avra_bytes_len: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_eq(AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
+    "avra_bytes_eq: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_at(AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
+    "avra_bytes_at: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_classify_type(avra_bytes_slice(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64)) == AVRA_RT_POINTER,
+    "avra_bytes_slice: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_bytes_concat(AVRA_RT_PTR, AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_bytes_concat: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_index_of(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
+    "avra_bytes_index_of: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_classify_type(avra_bytes_of_str(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_bytes_of_str: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_bytes_of_list(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_bytes_of_list: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_str_of_bytes(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_str_of_bytes: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_utf8_bad_at(AVRA_RT_PTR)), int64_t),
+    "avra_utf8_bad_at: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_run(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
+    "avra_bytes_run: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_eq_at(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
+    "avra_bytes_eq_at: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_ieq_at(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
+    "avra_bytes_ieq_at: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_classify_type(avra_bytes_gathered(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_bytes_gathered: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_bytes_adopted(AVRA_RT_PTR, AVRA_RT_I64)) == AVRA_RT_POINTER,
+    "avra_bytes_adopted: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_fd_read(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_fd_read: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_classify_type(avra_fd_taken(AVRA_RT_I64)) == AVRA_RT_POINTER,
+    "avra_fd_taken: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_fd_write(AVRA_RT_I64, AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
+    "avra_fd_write: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_str_concat(AVRA_RT_PTR, AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_str_concat: its row answers ptr, so its C body answers a pointer");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_proc_spawn(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
-    "avra_proc_spawn: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_proc_run(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
-    "avra_proc_run: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_proc_poll(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
-    "avra_proc_poll: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_proc_write(AVRA_RT_I64, AVRA_RT_PTR)), int64_t),
-    "avra_proc_write: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_proc_stdin_close(AVRA_RT_I64)), int64_t),
-    "avra_proc_stdin_close: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_classify_type(avra_proc_take(AVRA_RT_I64, AVRA_RT_I64)) == AVRA_RT_POINTER,
-    "avra_proc_take: its row answers ptr, so its C body answers a pointer");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_proc_signal(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
-    "avra_proc_signal: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_proc_status(AVRA_RT_I64)), int64_t),
-    "avra_proc_status: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_proc_pid(AVRA_RT_I64)), int64_t),
-    "avra_proc_pid: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_proc_close(AVRA_RT_I64)), void),
-    "avra_proc_close: its row answers void, so its C body answers void");
-_Static_assert(__builtin_classify_type(avra_proc_which(AVRA_RT_PTR, AVRA_RT_PTR)) == AVRA_RT_POINTER,
-    "avra_proc_which: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_errno_text(AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_errno_text: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_now_ns()), int64_t),
     "avra_now_ns: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_host_env(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_host_env: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_selfhost_read_file(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_selfhost_read_file: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_eputs(AVRA_RT_PTR)), void),
     "avra_eputs: its row answers void, so its C body answers void");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_io_kind(AVRA_RT_PTR)), int64_t),
-    "avra_io_kind: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_io_read(AVRA_RT_PTR)), int64_t),
-    "avra_io_read: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_classify_type(avra_embed(AVRA_RT_PTR)) == AVRA_RT_POINTER,
-    "avra_embed: its row answers ptr, so its C body answers a pointer");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_io_write(AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
-    "avra_io_write: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_io_list(AVRA_RT_PTR)), int64_t),
     "avra_io_list: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_io_mkdir(AVRA_RT_PTR)), int64_t),
-    "avra_io_mkdir: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_io_remove(AVRA_RT_PTR)), int64_t),
-    "avra_io_remove: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_types_compatible_p(__typeof__(avra_io_env(AVRA_RT_PTR)), int64_t),
-    "avra_io_env: its row answers i64, so its C body answers int64_t");
-_Static_assert(__builtin_classify_type(avra_io_taken()) == AVRA_RT_POINTER,
-    "avra_io_taken: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_str_from_codepoint(AVRA_RT_I64)) == AVRA_RT_POINTER,
     "avra_str_from_codepoint: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_embed(AVRA_RT_PTR)) == AVRA_RT_POINTER,
+    "avra_embed: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_exec_self(AVRA_RT_PTR)), int64_t),
+    "avra_exec_self: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_spawn_status(AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
+    "avra_spawn_status: its row answers i64, so its C body answers int64_t");
 
 #endif
