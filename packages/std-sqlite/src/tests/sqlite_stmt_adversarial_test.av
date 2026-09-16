@@ -8,7 +8,7 @@
 // stands, one as a refusal that did not exist.
 use @std.text.{from_codepoint}
 use @std.sqlite.open.{Db, memory, close}
-use @std.sqlite.stmt.{Stmt, prepare, step, reset, finalize, run, bind_int, bind_text, slots, width, standing, class_at, int_at}
+use @std.sqlite.stmt.{Stmt, prepare, step, reset, finalize, run, bind_int, bind_text, slots, width, standing, class_at, int_at, text_at, blob_at}
 use @std.sqlite.error.{SqlError, Cause, Storage}
 use @std.sqlite.{memory_used}
 use @std.sqlite.c.{sqlite3_column_type, sqlite3_column_blob, sqlite3_column_bytes,
@@ -184,6 +184,106 @@ fn used_after(s: Stmt) -> string {
     " width=${width(s)} standing=${standing(s)} slots=${slots(s)}" +
     " class=${ck(class_at(s, 0))} int=${ik(int_at(s, 0))}" +
     " bind_int=${ik(bind_int(s, 1, 1))} bind_text=${ik(bind_text(s, 1, "x"))}"
+}
+
+// ── The copy at the boundary ─────────────────────────────────────
+
+/// THE BUFFER DIES AT THE NEXT STEP, which is the whole reason for a
+/// copy. Read row one, step to row two, and row one's text must still
+/// be row one's text.
+fn text_survives_a_step() -> string {
+    match fresh() {
+        .Ok(db) -> two_rows(db),
+        .Err(e) -> e.cause.kind(),
+    }
+}
+
+fn two_rows(db: Db) -> string {
+    let _ = run(db, "insert into t(v) values (11), (22)")
+    let word = match prepare(db, "select cast(v as text) from t order by v") {
+        .Ok(s) -> read_then_step(s),
+        .Err(e) -> e.cause.kind(),
+    }
+    let _ = close(db)
+    word
+}
+
+fn read_then_step(s: Stmt) -> string {
+    let _ = step(s)
+    let first = tk(text_at(s, 0))
+    let _ = step(s)
+    let second = tk(text_at(s, 0))
+    let again = tk(text_at(s, 0))
+    let _ = finalize(s)
+    "first=${first} second=${second} first_still=${again == second} kept=${first}"
+}
+
+/// OCTETS ARE NOT TEXT, and a blob full of NULs is where the two part
+/// company: a door that answered text would stop at the first one.
+fn octets_hold_nuls() -> string { in_memory(holed_blob) }
+
+fn holed_blob(db: Db) -> string {
+    let word = match prepare(db, "select x'004100ff00'") {
+        .Ok(s) -> stepped_blob(s),
+        .Err(e) -> e.cause.kind(),
+    }
+    let _ = close(db)
+    word
+}
+
+fn stepped_blob(s: Stmt) -> string {
+    let _ = step(s)
+    let said = "blob=${bk(blob_at(s, 0))} as_text=${tk(text_at(s, 0))}"
+    let _ = finalize(s)
+    said
+}
+
+/// AND TEXT HOLDS THEM TOO, all the way out and back.
+fn text_holds_a_nul() -> string { in_memory(nul_round_trip) }
+
+fn nul_round_trip(db: Db) -> string {
+    let word = match prepare(db, "select ?") {
+        .Ok(s) -> bound_nul(s),
+        .Err(e) -> e.cause.kind(),
+    }
+    let _ = close(db)
+    word
+}
+
+fn bound_nul(s: Stmt) -> string {
+    let held = "ab" + from_codepoint(0) + "cd"
+    let _ = bind_text(s, 1, held)
+    let _ = step(s)
+    let said = "sent=${held.length} back=${tk(text_at(s, 0))}"
+    let _ = finalize(s)
+    said
+}
+
+/// A MEGABYTE, so the copy is not a copy of nothing.
+fn a_big_blob() -> string { in_memory(big_blob) }
+
+fn big_blob(db: Db) -> string {
+    let word = match prepare(db, "select zeroblob(1048576)") {
+        .Ok(s) -> stepped_big(s),
+        .Err(e) -> e.cause.kind(),
+    }
+    let _ = close(db)
+    word
+}
+
+fn stepped_big(s: Stmt) -> string {
+    let _ = step(s)
+    let said = bk(blob_at(s, 0))
+    let _ = finalize(s)
+    said
+}
+
+fn tk(r: Result<string, SqlError>) -> string {
+    match r { .Ok(v) -> "${v.length}", .Err(e) -> e.cause.kind() }
+}
+
+fn bk(r: Result<Bytes, SqlError>) -> string {
+    match r { .Ok(v) -> "${v.length}", .Err(e) -> e.cause.kind() }
 }
 
 /// RESET REWINDS AND KEEPS THE BINDINGS.
@@ -401,6 +501,19 @@ spec "std/sqlite statement adversarial" {
         then "the statement is there" { live_before_step().starts_with("width=1 standing=0") }
         then "and the read names the ROW, not the statement" { live_before_step().contains("int=sqlite.out_of_row") }
         then "and the bind names the SLOTS" { live_before_step().ends_with("bind=sqlite.out_of_slots") }
+    }
+
+    given "the copy at the boundary" {
+        // SQLite's buffer dies at the next step, reset or finalize.
+        // Every one of these would pass with a BORROWED view until the
+        // moment the buffer was reused, and then answer whatever was
+        // written over it — which is why the lifetime case reads the
+        // first row's text AFTER stepping to the second.
+        then "a cell's text outlives the step that replaced it" { text_survives_a_step().starts_with("first=2 second=2") }
+        then "and it is still the text it was" { text_survives_a_step().ends_with("kept=2") }
+        then "a blob of NULs is five octets, not nothing" { octets_hold_nuls() == "blob=5 as_text=sqlite.mismatch" }
+        then "text holding a NUL comes back whole" { text_holds_a_nul() == "sent=5 back=5" }
+        then "and a megabyte is a megabyte" { a_big_blob() == "1048576" }
     }
 
     given "reset rewinds and KEEPS the bindings" {
