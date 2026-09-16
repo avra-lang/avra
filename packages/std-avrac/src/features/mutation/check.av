@@ -25,16 +25,24 @@ export fn check_mut(mut cx: TypeCx, s: StmtId) {
     }
 }
 
-/// A `mut` bound to a PARAMETER'S FIELD PATH borrows that field —
-/// writes through the binding land in the parameter's record. bs2's
-/// aliasing, which the compiler's own state fns spell; honored until
-/// self-host, then refused (ROADMAP: the bs2 debt ledger).
+/// A `mut` bound to a PARAMETER's or RECEIVER's FIELD PATH borrows
+/// that field, so writes through the binding land in the owner's
+/// record. The borrow is only lawful over a place the body may WRITE:
+/// an immutable parameter or receiver would hand the write to a value
+/// the caller owns, which is the silent channel — there the binding is
+/// a COPY, and the write lands in it.
 fn borrows_field(cx: TypeCx, v: ExprId) -> bool {
-    let root: ExprId? = cx.view.store.place_root(v)
-    if root == null || same_expr(root!, v) { return false }
-    let b: Binding? = cx.names.binding(root!)
-    if b == null { return false }
-    b! is .Param || b! is .Receiver
+    let found: ExprId? = cx.view.store.place_root(v)
+    if found == null { return false }
+    let root = found!
+    if same_expr(root, v) { return false }
+    let held: Binding? = cx.names.binding(root)
+    if held == null { return false }
+    match held! {
+        .Param(_) -> cx.is_mut(root),
+        .Receiver -> cx.receiver_written(),
+        .Def(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> false,
+    }
 }
 
 /// THE PLACE LAW's typing half: the target types as a READ — its

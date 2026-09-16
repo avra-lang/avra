@@ -18033,3 +18033,37 @@ the package root", a guard that does not exist.
 core parse question rather than a data-package one. Performance
 anywhere except the sweep slice: nothing else in these seven slices
 was measured for time or memory, and saying so is the honest bound.
+## Feedback survey — 2026-09-16 (LANE C: H3, the speaking half — avra-2y5c.1)
+
+The claim MEASURED, on a Sprite, before any change: `mut ys = self.xs`
+then `ys.push(v)` inside a non-`mut` method writes through to the
+caller's value, silently. `borrow_param` `1 2 2`, `borrow_local` `2`,
+`borrow_reread` `2 2 2`, against spec 11.5's `1 1 0` / `0` / `1 1 1`.
+Both engines agree on every one, so the differential cannot see it.
+
+THE BRIEF'S PREMISE WAS WRONG, and measuring said so. It read "the
+smallest change that removes the silent channel, with the nine compiler
+sites paid in S2". There is no such change: the borrow is ONE construct
+with ONE meaning, so making the three cases copy makes every non-`mut`
+receiver/param borrow copy — including the 17 the compiler's own body
+leans on. The first attempt (the borrow fix alone) built and then
+trapped `index 0 is out of bounds (length 0)` — S0's exact signature.
+The two expectations are contradictory in the language, which is why
+the ruling already paid this cost with S2.
+
+WHAT LANDED: the borrow is lawful only over a place the body may
+WRITE — a `mut` parameter (`reads_mut_seat`), or a receiver declared
+`mut fn` (`TypeCx.fn_receiver`, pushed with `fn_ret`). Everywhere else
+the binding is a COPY and the write lands in it. The compiler's own 17
+sites that alias today are declared `mut fn`, which is the TRUTH: their
+bodies do write their receiver, and the receivers pass never saw it
+because the write went through a local. One suite case,
+`generic_impls`'s `Arena::add`, wrote through a `let` `Arena` and is
+`mut fn add` over `mut` bindings now; `mutation_test`'s
+"bs2's aliasing, honored until self-host" asserted the hole and now
+asserts the law's two sides (immutable = copy, `mut` = write-through).
+
+THE SPEAKING IS F2047, one level up: with the 17 declared writing, a
+call on a non-`mut` place warns where it was silent. The capture wall
+(`ws.spec_id(w)` inside a lambda) is one such site — the warning is the
+record, and its fix is S2's Cell<T>, not this slice.

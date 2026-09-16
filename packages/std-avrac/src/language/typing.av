@@ -26,7 +26,7 @@ export fn new_type_cx(dispatch: Dispatch, keywords: List<string>, view: FileView
         view: view, names: names,
         facts: new_type_facts(lo, hi, view.store.stmts.count(), hole),
         error_type: hole, dispatch: dispatch, keywords: keywords,
-        scope: [], narrow_defs: [], narrow_params: [], fn_ret: [], lam_bar: [], tscope: [], pairs: [],
+        scope: [], narrow_defs: [], narrow_params: [], fn_ret: [], fn_receiver: [], lam_bar: [], tscope: [], pairs: [],
         starving: false,
     }
 }
@@ -95,9 +95,11 @@ impl TypeCx {
         let want: TypeId = (self.view.decls.sig(x.id))?.fn_sig()?.ret ?? self.error_type
         // LICENSED I15: this IS the bracket
         self.fn_ret.push(want)
+        self.fn_receiver.push(false)
         self.plant_want(root, want)
         self.walk(root)
         let _ = self.fn_ret.pop()
+        let _ = self.fn_receiver.pop()
         fits_case(self, root, want)
     }
 
@@ -127,6 +129,7 @@ impl TypeCx {
         let outer = self.scope
         // LICENSED I15: this IS the bracket
         self.fn_ret.push(sig?.ret ?? self.error_type)
+        self.fn_receiver.push(self.view.store.is_mutating(s))
         self.scope = sig?.params ?? []
         self.enter_tscope(s)
         let ret: TypeId? = sig?.ret
@@ -135,6 +138,7 @@ impl TypeCx {
         self.leave_tscope()
         self.scope = outer
         let _ = self.fn_ret.pop()
+        let _ = self.fn_receiver.pop()
     }
 
     /// One subtree's nodes, children before owners. STARVING is the
