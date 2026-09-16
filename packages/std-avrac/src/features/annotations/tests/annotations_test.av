@@ -72,6 +72,33 @@ spec "features/annotations — a call over a declaration" {
             let a = analyze_source("enum E {\n    @m @m A(x: int)\n}\n0")
             render_source(a.view.store, a.view.stmts).contains("@m @m A(x: int)")
         }
+        then "a payload's mark lands on the payload" {
+            let a = analyze_source("enum E {\n    A(@m x: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("A(@m x: int)")
+        }
+        then "a payload's words ride it, and stack" {
+            let a = analyze_source("enum E {\n    A(@one @by(x, y) p: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("A(@one @by(x, y) p: int)")
+        }
+        then "a variant's mark and its payload's are told apart" {
+            let a = analyze_source("enum E {\n    @outer A(@inner x: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@outer A(@inner x: int)")
+        }
+        then "the LAST payload's mark is not the NEXT variant's" {
+            let a = analyze_source("enum E {\n    A(x: int, @m y: int)\n    B(z: int)\n}\n0")
+            let src = render_source(a.view.store, a.view.stmts)
+            src.contains("A(x: int, @m y: int)") && !src.contains("@m B")
+        }
+        then "a middle payload's mark is not the next payload's" {
+            let a = analyze_source("enum E {\n    A(@m x: int, y: int)\n}\n0")
+            let src = render_source(a.view.store, a.view.stmts)
+            src.contains("A(@m x: int, y: int)") && !src.contains("@m y")
+        }
+        then "a payload mark rides a one-line declaration too" {
+            let a = analyze_source("enum E { A(@m x: int) B }\n0")
+            let src = render_source(a.view.store, a.view.stmts)
+            src.contains("A(@m x: int)") && !src.contains("@m B")
+        }
         then "a RESERVED WORD fills a mark's word list — a mark's argument names no binding" {
             let a = analyze_source("enum E {\n    @by(type) A(x: int)\n}\n0")
             render_source(a.view.store, a.view.stmts).contains("@by(type) A(x: int)")

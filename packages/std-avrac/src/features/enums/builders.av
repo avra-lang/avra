@@ -4,9 +4,12 @@
 //! payloads cannot, because they are optional — spans restore the
 //! truth: a payload belongs to the variant whose name precedes it
 //! and whose successor follows it, and a payload's NAME, when
-//! written, precedes its type inside that window.
+//! written, precedes its type inside that window. A MARK stands
+//! before the member it marks, so a variant NAME and a payload TYPE
+//! are both anchors — a window set short of the payloads reads a
+//! variant's last payload's mark as the NEXT variant's.
 use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, plain_mark, Plain, Scoped}
-use features.{LangNode, Builder, window_end, pat_ids_at, arms_at, ref_within, within, marks_at, aligned_marks}
+use features.{LangNode, Builder, window_end, pat_ids_at, arms_at, ref_within, within, marks_at, type_lo, MarkWindows}
 use grammar.{Token}
 
 fn build_enum_decl(mut b: Builder) -> Result<LangNode, string> {
@@ -17,19 +20,27 @@ fn build_enum_decl(mut b: Builder) -> Result<LangNode, string> {
     let vs = b.tokens(2)?
     let names = b.tokens(4)?
     let tys = b.type_refs(5)?
-    let marks = aligned_marks(vs, marks_at(b.args, 6), b.span?.lo ?? 0)
+    // A VARIANT NAME AND A PAYLOAD TYPE ARE BOTH ANCHORS: a mark
+    // marks the member it precedes, and a set short of the payloads
+    // reads the last payload's mark as the next variant's.
+    let w = MarkWindows {
+        anchors: [v.span.lo for v in vs].concat([type_lo(t) for t in tys]),
+        marks: marks_at(b.args, 6).concat(marks_at(b.args, 7)),
+        from: b.span?.lo ?? 0,
+    }
     mut variants: List<Variant> = []
     for j, v in vs {
         let upto = window_end(vs, j, ends!)
-        variants.push(Variant { name: Plain(v.text), payloads: payloads_between(names, tys, v.span.lo, upto), span: v.span, marks: marks[j] })
+        variants.push(Variant { name: Plain(v.text), payloads: payloads_between(names, tys, w, v.span.lo, upto), span: v.span, marks: w.at(v.span.lo) })
     }
     b.make_stmt(Stmt.EnumDecl(Scoped(n.text), [Plain(t.text) for t in tp], variants))
 }
 
 /// One variant's payloads: the types inside its window, each named
-/// by the field name written just before it, or "" when positional.
-fn payloads_between(names: List<Token>, tys: List<TypeRef>, after: int, before: int) -> List<Param> {
-    [Param { name: Scoped(name_before(names, t, after)), ty: t, default: null, promises: plain_mark, span: t.span } for t in tys if ref_within(t, after, before)]
+/// by the field name written just before it, or "" when positional,
+/// and each carrying the marks written in front of it.
+fn payloads_between(names: List<Token>, tys: List<TypeRef>, w: MarkWindows, after: int, before: int) -> List<Param> {
+    [Param { name: Scoped(name_before(names, t, after)), ty: t, default: null, promises: plain_mark, span: t.span, marks: w.at(type_lo(t)) } for t in tys if ref_within(t, after, before)]
 }
 
 /// The field name written between the variant's name and this
