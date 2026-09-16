@@ -175,7 +175,7 @@ int64_t avra_ffi_symbol_in(int64_t handle, const char* name) {
 
    THE HANDLER IS ASYNC-SIGNAL-SAFE BY CONSTRUCTION. The words are
    composed by the caller BEFORE the call and copied here, so the fault
-   path is one `write` and one `_exit` — no formatting, no allocation,
+   path is writes and an `_exit` — no formatting, no allocation,
    nothing that could fault again. A fault taken OUTSIDE a hosted call
    is none of the frame's business: the disposition goes back to the
    default and the instruction re-faults, so a defect of the compiler's
@@ -186,14 +186,20 @@ static volatile sig_atomic_t g_ffi_words_len = 0;
 static volatile sig_atomic_t g_ffi_in_call = 0;
 static int g_ffi_guarded = 0;
 
+static void ffi_say(const char* s, size_t n) {
+    // A failed write is nothing to do about on the way to _exit.
+    ssize_t said = write(STDERR_FILENO, s, n);
+    (void)said;
+}
+
 static void ffi_faulted(int sig) {
     if (!g_ffi_in_call) {
         signal(sig, SIG_DFL);
         return;
     }
-    (void)write(STDERR_FILENO, "avra: ", 6);
-    (void)write(STDERR_FILENO, g_ffi_words, (size_t)g_ffi_words_len);
-    (void)write(STDERR_FILENO, "\n", 1);
+    ffi_say("avra: ", 6);
+    ffi_say(g_ffi_words, (size_t)g_ffi_words_len);
+    ffi_say("\n", 1);
     _exit(2);
 }
 

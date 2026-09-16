@@ -94,16 +94,14 @@ void avra_llvm_value_array_free(LLVMValueRef* arr) {
 
 LLVMValueRef avra_llvm_const_int(LLVMTypeRef ty, int64_t value, int sign_extend) {
     if (!ty) {
-        fprintf(stderr, "[CRASH] avra_llvm_const_int: ty is NULL (value=%lld)\n", value);
+        fprintf(stderr, "[CRASH] avra_llvm_const_int: ty is NULL (value=%lld)\n", (long long)value);
         abort();
     }
     // Safety: the bootstrap sometimes passes null or non-integer types.
     // Default to i64 (matching the everything-is-i64 model).
     if (!ty || LLVMGetTypeKind(ty) != LLVMIntegerTypeKind) {
-        // Can't get context from a null type; use a global fallback.
-        // This only happens in edge cases where the bootstrap's type
-        // tracking loses the correct LLVM type.
-        ty = LLVMInt64Type();
+        // The fallback keeps the context the caller's type was minted in.
+        ty = LLVMInt64TypeInContext(LLVMGetTypeContext(ty));
     }
     return LLVMConstInt(ty, (unsigned long long)value, sign_extend);
 }
@@ -424,7 +422,7 @@ LLVMValueRef avra_llvm_build_alloca(LLVMBuilderRef b, LLVMTypeRef ty, const char
     LLVMBasicBlockRef entry = LLVMGetEntryBasicBlock(fn);
     LLVMValueRef first_inst = LLVMGetFirstInstruction(entry);
 
-    LLVMBuilderRef entry_builder = LLVMCreateBuilder();
+    LLVMBuilderRef entry_builder = LLVMCreateBuilderInContext(LLVMGetTypeContext(ty));
     if (first_inst) {
         LLVMPositionBuilderBefore(entry_builder, first_inst);
     } else {

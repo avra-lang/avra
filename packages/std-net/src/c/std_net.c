@@ -329,7 +329,11 @@ int64_t avra_net_watch(int64_t pfd, int64_t fd, int64_t interest) {
 #else
 int64_t avra_net_watch(int64_t pfd, int64_t fd, int64_t interest) {
     if (interest == 0) {
-        if (epoll_ctl((int)pfd, EPOLL_CTL_DEL, (int)fd, NULL) == 0 || errno == ENOENT) return 0;
+        // Darwin deletes a knote by ident and answers ENOENT for one it
+        // does not hold; ELF's epoll validates the descriptor first, so
+        // an unknown one answers EBADF. Both mean "no such watch", and
+        // removing a watch that is not held is not an error.
+        if (epoll_ctl((int)pfd, EPOLL_CTL_DEL, (int)fd, NULL) == 0 || errno == ENOENT || errno == EBADF) return 0;
         return -errno;
     }
     struct epoll_event ev;

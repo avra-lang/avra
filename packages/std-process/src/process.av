@@ -77,6 +77,7 @@ export const eacces: int = 13
 export const enotdir: int = 20
 const sigterm: int = 15
 const sigkill: int = 9
+const sigpipe: int = 13
 
 // ── The types ───────────────────────────────────────────────────
 
@@ -1061,10 +1062,13 @@ fn broken(c: Command, s: Stage) -> ProcessError {
     ProcessError.TooMuch(if s.capped_out { Stream.Stdout } else { Stream.Stderr }, c.max_capture, gathered(s))
 }
 
+/// A stage's death by SIGPIPE — as a signal, or as the shell's
+/// 128-plus-signal code, which is how a wrapper reports it.
 fn is_sigpipe(e: Exit) -> bool {
     match e {
-        .Signal(s, _) -> s == 13,
-        rest -> false,
+        .Clean -> false,
+        .Code(n) -> n == 128 + sigpipe,
+        .Signal(s, _) -> s == sigpipe,
     }
 }
 

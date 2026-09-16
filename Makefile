@@ -125,7 +125,7 @@ CFLAGS_sqlite_sentinel := -Ipackages/std-sqlite/vendor
 # include is silent on a cold tree, where no .d exists yet.
 build/%.o: %.c build/%.sha
 	@mkdir -p build
-	cc -c -O2 -MMD -MP $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
+	cc -c -O2 -fPIC -MMD -MP $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
 -include $(patsubst %.o,%.d,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS)))
 
@@ -155,6 +155,7 @@ SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 seed: $(COMPILER_OBJS)
 	@./avra emit packages/cli > bootstrap/seed.ll
+	@sh tools/sources_hash.sh > bootstrap/seed.sources
 	@echo "seed: bootstrap/seed.ll ($$(wc -l < bootstrap/seed.ll | tr -d ' ') lines)"
 
 # THE ONLY RULE THAT LINKS BY HAND, and the one a cold tree and every
@@ -170,7 +171,7 @@ seed: $(COMPILER_OBJS)
 # again. `make recover` is that way back.
 recover: $(COMPILER_OBJS)
 	@mkdir -p build
-	@clang -w -O1 bootstrap/seed.ll $(COMPILER_OBJS) \
+	@clang -w -O1 -rdynamic bootstrap/seed.ll $(COMPILER_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@echo "recover: build/avra from the seed — a clean compiler, not rebuilt from source"
@@ -306,7 +307,7 @@ clean:
 seed-check: $(COMPILER_OBJS)
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
-	@clang -w -O1 build/seed-check/seed.ll $(COMPILER_OBJS) \
+	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(COMPILER_OBJS) \
 	    -L$(LLVM_PREFIX)/lib -lLLVM -o build/avra-seed-check 2> build/seed-check/link.err \
 	 || { echo "seed-check: seed links — FAILED"; cat build/seed-check/link.err; rm -rf build/seed-check build/avra-seed-check; exit 1; }
 	@sh tools/capped.sh build/seed-check/out 200000 build/avra-seed-check build packages/cli \
