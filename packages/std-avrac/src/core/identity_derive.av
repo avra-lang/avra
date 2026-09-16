@@ -17,7 +17,7 @@
 //! `parted_at` writes the tag, folds the type's name at derive time
 //! and pins the variant's index — one fold, one literal tag, in the
 //! one file `make fingerprints` can read it in. What THIS derive owns
-//! is the row per payload TYPE and the two marks; a second copy of
+//! is the row per payload TYPE; a second copy of
 //! the fold would be two tags for one space, which is the collision
 //! the keeper exists to refuse.
 //!
@@ -27,7 +27,7 @@
 //! sequence.
 //!
 //! It stands ALONE in this file on purpose (CLAUDE.md).
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Mark as MetaMark, Directive, Code, Arms, name}
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, Arms, name}
 
 /// The compiler's derive for a node's content identity.
 export trait Identity {
@@ -41,8 +41,9 @@ export trait Identity {
         } }]
     }
 
-    /// The one word this derive reads off a variant, and no others.
-    static fn marks(t: MetaType) -> List<string> { ["expands"] }
+    /// The words this derive reads off a variant — none: a node's
+    /// payloads say everything it folds.
+    static fn marks(t: MetaType) -> List<string> { [] }
 }
 
 /// One variant's arm. Its INDEX pins the arity, so two variants of one
@@ -53,13 +54,10 @@ fn ident_arm(t: MetaType, v: MetaVariant, at: int) -> Arms {
 }
 
 /// The fold: the type's name, the variant's place, then its payloads.
-/// AN EXPANSION IS NOT PART OF WHAT A NODE IS — it is what the other
-/// payloads expand TO, so folding it would make one program wear two
-/// identities either side of its own expansion.
+/// A `BodyView`'s EXPANSION folds to nothing (`view_fp`), so a node
+/// wears one identity either side of its own expansion.
 fn folded_parts(t: MetaType, v: MetaVariant, at: int) -> Code {
-    let expands: MetaMark? = v.marks.find(it.name == "expands")
-    let except = if expands == null { "" } else { expands!.args.first() ?? "" }
-    parted_at(t.name, at, [part(f) for f in v.fields if f.name != except])
+    parted_at(t.name, at, [part(f) for f in v.fields])
 }
 
 /// HOW A PAYLOAD'S TYPE FOLDS — the whole registry, one row per shape
@@ -88,6 +86,7 @@ fn part(f: Field) -> Code {
         "List<Scoped>" -> quote { fp_list(scoped_fps(${b})) },
         "TypeRef" or "TypeRef?" -> quote { type_fp(${b}) },
         "List<TypeRef>" -> quote { fp_list([type_fp(each) for each in ${b}]) },
+        "BodyView" -> quote { self.view_fp(${b}) },
         _ -> quote { a_payload_type_the_identity_derive_has_no_row_for() },
     }
 }

@@ -1900,6 +1900,15 @@ Runtime facts, ours to ratify:
   already says what is true and already has its arm; inventing a
   temporary variant to delete next week is a comment about a point in
   time wearing code's clothes.
+- A RECORD-LITERAL RESOLUTION IS A UNION OF FIELD LISTS, never either
+  side's line. A merge that resolves a struct/record literal by taking
+  ONE side wholesale silently deletes a field the other side added,
+  and the compiler's F2010 ("every declared field appears exactly
+  once") is what catches the loss. A record literal is the one place in
+  a conflict where `--theirs` must never be taken whole: every other
+  shape can be read and picked, but a literal's field list is merged.
+  (Paid assembling phase D onto the milestone: `NodeStore`'s literal
+  took the cursor's line and dropped main's `grammars:` field.)
 - THE RECEIPT FOR A SLICE THAT REMOVES A RUNTIME SYMBOL IS `make
   bootstrap` GREEN, NEVER `make avra` GREEN. `make avra` builds the
   cli with the STANDING binary and copies the result; it never

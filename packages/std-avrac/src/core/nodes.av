@@ -246,20 +246,13 @@ export enum Expr {
     /// `subject.name` — a property read; TYPING refuses unknown
     /// names, so the parse stays generous.
     Prop(subject: ExprId, name: Plain)
-    /// `"a ${x} b"` — parts always one longer than holes.
-    Interp(parts: List<string>, holes: List<ExprId>)
-    /// `quote { a ${x} b }` — a TEMPLATE: its body parsed here, into
-    /// this store, as statements or as match arms, every hole a
-    /// placeholder NAME (`holes.av`); the holes are the expressions
-    /// that fill them, in body order; the parts are the runs of
-    /// source between holes (one longer), the printing projection.
-    @verbatim Quote(parts: List<string>, stmts: List<StmtId>, arms: List<Arm>, holes: List<ExprId>)
-    /// `sql { … ${x} … }` — a SUBLANGUAGE block: the word that names
-    /// its grammar, the body's text with holes as placeholders, the
-    /// hole expressions in body order, and — once the file resolves —
-    /// its EXPANSION, the calls the grammar's actions became, which
-    /// every pass reads in its place (`expand_sublang`).
-    @expands(expansion) Sublang(word: string, body: string, holes: List<ExprId>, expansion: ExprId?)
+    /// A HOLE-BEARING BODY owned by a NAMED grammar — the ONE shape
+    /// behind `"a ${x} b"` (`text`), `quote { … }` (`quote`) and
+    /// `sql { … }` (the word's own grammar). `parts` are the source
+    /// runs between holes (one longer than `holes`), the ONE printing
+    /// projection; `holes` are the expressions that fill them and ARE
+    /// the node's children; `view` is its parsed form or expansion.
+    Body(word: string, parts: List<string>, holes: List<ExprId>, view: BodyView)
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
@@ -353,11 +346,11 @@ export fn is_literal(e: Expr) -> bool {
 /// lands it must decide whether a name adopts it.
 export fn literal_form(e: Expr) -> bool {
     match e {
-        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Interp(_, _) or
+        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Body(_, _, _, _) or
         .ListLit(_) or .Comp(_, _, _, _, _, _) or .MapLit(_, _) or .NullLit or
         .VariantLit(_, _) or .StructLit(_, _, _) -> true,
         .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or
-        .Quote(_, _, _, _) or .Sublang(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or
+        .If(_, _, _) or .When(_, _, _) or
         .Block(_, _) or .Call(_, _, _) or .With(_, _, _) or .Match(_, _) or
         .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or
         .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or
@@ -374,17 +367,26 @@ export fn source_spelled(e: Expr) -> bool {
 /// A quote with no holes is source-spelled code.
 fn hole_free(e: Expr) -> bool {
     match e {
-        .Quote(_, _, _, holes) -> holes.is_empty(),
+        .Body(_, _, holes) -> holes.is_empty(),
         _ -> false,
     }
 }
 
 /// A map literal's keys and values, in written order.
 export type MapPairs = { keys: List<ExprId>, values: List<ExprId> }
-/// A quote's parts, its parsed body, and the holes between the parts.
-export type QuoteParts = { parts: List<string>, stmts: List<StmtId>, arms: List<Arm>, holes: List<ExprId> }
-/// A sublanguage block's word, body, holes, and expansion once made.
-export type SublangParts = { word: string, body: string, holes: List<ExprId>, expansion: ExprId? }
+/// A hole-bearing body's word, its runs between holes, the holes, and
+/// its parsed form or expansion.
+export type BodyParts = { word: string, parts: List<string>, holes: List<ExprId>, view: BodyView }
+/// A body's PARSED form and EXPANSION — a FIXED payload set, so the
+/// derives read it by type like any other. `None` is the honest empty
+/// for a body with no parsed form (`text`), never an empty list.
+export enum BodyView {
+    None
+    /// A quote's body as written: its placeholders are its own.
+    Verbatim(stmts: List<StmtId>, arms: List<Arm>)
+    /// A sublanguage's expansion, which STANDS IN PLACE OF the holes.
+    Expanded(expansion: ExprId)
+}
 /// What a block's grammar refused, in the file's offsets — spoken
 /// with the parse's own words.
 export type BlockVoice = { message: string, lo: int, hi: int, expected: List<string>, in_rule: string }
@@ -820,13 +822,36 @@ impl NodeStore {
 
     /// The block words the file's blocks wear.
     fn sublang_words() -> List<string> {
-        [(self.expr(e)).sublang_of()?.word ?? "" for e in self.sublangs]
+        [(self.expr(e)).body_of()?.word ?? "" for e in self.sublangs]
     }
 
     fn expansion_of(e: ExprId) -> ExprId? {
         match self.expr(e) {
-            .Sublang(_, _, _, x) -> x,
+            .Body(_, _, _, .Expanded(x)) -> x,
             _ -> null,
+        }
+    }
+
+    /// The expressions a body's view holds, for the complete walk: a
+    /// parsed quote's statements and arms, or the expansion that
+    /// STANDS IN PLACE OF the holes once the file resolves.
+    fn body_view_children(v: BodyView) -> List<ExprId> {
+        match v {
+            .None -> [],
+            .Verbatim(stmts, arms) -> self.stmts_exprs(stmts).concat([a.value for a in arms]),
+            .Expanded(expansion) -> self.expr_children(expansion),
+        }
+    }
+
+    /// A body view's content identity. An EXPANSION IS NOT PART OF
+    /// WHAT A NODE IS — it is what the holes expand TO — so it folds
+    /// to nothing and a node wears one identity either side of its
+    /// own expansion.
+    fn view_fp(v: BodyView) -> int {
+        match v {
+            .None -> fp(129, []),
+            .Verbatim(stmts, arms) -> fp(130, [fp_list(self.stmt_fps(stmts)), fp_list(self.arm_fps(arms))]),
+            .Expanded(_) -> fp(131, []),
         }
     }
 
@@ -858,7 +883,7 @@ impl NodeStore {
             .Ident(name) -> Expr.Call(name, [], blocks),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
             .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or
-            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .Quote(_, _, _, _) or .Sublang(_, _, _, _) or .If(_, _, _) or .Receiver or
+            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .Receiver or
             .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or
             .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
             .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or
@@ -1181,7 +1206,7 @@ impl NodeStore {
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or
-            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Interp(_, _) or .Quote(_, _, _, _) or .Sublang(_, _, _, _) or .If(_, _, _) or .Call(_, _, _) or
+            .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .Call(_, _, _) or
             .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or
             .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or
             .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _) or
@@ -1232,8 +1257,7 @@ impl NodeStore {
             .Lambda(_, _) -> false,
             .MethodCall(subject, _, _) -> self.pronoun_rides(subject),
             .Call(callee, _, args) -> callee == "it" || self.any_rides(args),
-            .Quote(_, _, _, holes) -> self.any_rides(holes),
-            .Sublang(_, _, holes, _) -> self.any_rides(holes),
+            .Body(_, _, holes, _) -> self.any_rides(holes),
             rest -> self.any_rides(self.expr_children(id)),
         }
     }
