@@ -16178,3 +16178,53 @@ cannot be isolated while a program test in the same package fails.
   still hears the old law". The witness is in one string: `width=1`
   says the statement is there while `standing=0` says no row is. A
   guard added in front of an existing refusal owes that case, always.
+
+## REFUSED, 2026-09-15 — bounding a `[link] objects` path (avra-8sb5.3.6)
+
+THE ASK: a dependency's `objects` rows are joined to its package root
+and nothing refuses one that climbs out, so a manifest writing
+`objects = ["../../../../somewhere/x.o"]` has that path put on the
+link line. Should there be a boundary?
+
+**REFUSED — no path-shaped boundary exists that admits this tree.**
+Measured, every `objects` row in the tree:
+
+    std-sqlite   ../../build/sqlite3.o, ../../build/sqlite_sentinel.o
+    std-process  ../../build/std_process.o
+    std-io       ../../build/std_io.o
+    std-net      ../../build/std_net.o
+    std-avrac    ../../build/llvm_wrapper.o, ../../build/ffi.o
+    width-witness ../../build/width_witness.o
+
+ALL SIX CLIMB OUT, and not only out of their package root. Building
+`packages/cli` makes that the workspace root (`root_program`,
+cli/src/commands/shared.av), and `<tree>/build/std_io.o` is not under
+it either. So "under the package root" refuses six real rows and
+"under the workspace root" refuses the same six. Any rule of the form
+*stay under X* either refuses `../../build` or permits
+`../../../../anywhere`; there is no X in between, because the
+legitimate target is ABOVE everything the rule could name.
+
+WHAT THE CAPABILITY ACTUALLY IS, since the answer turns on it.
+`link_words` does not COMPILE anything — it puts a named path on the
+link line. A manifest cannot create the content at that path. So an
+`objects` row buys "link a file that is already on this machine",
+which is narrow: the attacker must find an object someone else built
+and want it linked. In THIS tree a package's own C is compiled
+regardless (`TREE_C := $(wildcard packages/*/src/c/*.c …)`, Makefile),
+so a package here already reaches native code by shipping source; the
+row adds nothing it did not have.
+
+FIXED INSTEAD, because it was false whatever the boundary is: the
+refusal's words said `objects` takes "object files UNDER THE PACKAGE
+ROOT" — a claim no row in the tree keeps. They say "by path from the
+package root" now, which is what `joined_path(pkg.root, o)` does.
+A BUILDER'S WORDS ARE ITS CLAIM, and this one was claiming a guard
+that does not exist.
+
+RECORDED TRIGGER: the boundary becomes expressible the day a package's
+build output lives under its own root (`packages/<x>/build/<x>.o`
+rather than `<tree>/build/<x>.o`). Then "under the package root" admits
+every legitimate row and refuses every escape, and it is one check in
+`package_link`. Until then a boundary would have to be an allow-list,
+which is the same trust decision written twice.
