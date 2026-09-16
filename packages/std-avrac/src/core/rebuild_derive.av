@@ -1,17 +1,17 @@
 //! `@derive(Rebuild)` — the arm each node variant takes in the
-//! template rebuilder, read off its payload SPELLINGS: an id is a
-//! child to rebuild, a name goes through the verb its KIND names, a
-//! written type through `tref`, a record list through its walker, and
-//! every other payload is carried through. `@std/meta` hands a
-//! payload's type over as the words the program wrote, so the derive
-//! reads the same declaration a person does — these are DECLARATIONS
-//! read at compile time, never tags read at run time.
+//! template rebuilder, read off its payload SHAPES: an id is a child
+//! to rebuild, a name goes through the verb its KIND names, a written
+//! type through `tref`, a record list through its walker, and every
+//! other payload is carried through. The crossing hands a payload's
+//! shape over beside the words the program wrote, so the derive reads
+//! a declaration structurally rather than parsing its spelling — these
+//! are DECLARATIONS read at compile time, never tags read at run time.
 //!
 //! It stands ALONE in this file on purpose: running a derive TYPES
 //! the file that declares it, and a file that also walked the nodes
 //! would be typed while the annotated file's own impls are still
 //! registering (CLAUDE.md).
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Directive, Arms, Code, name}
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Kind, Directive, Arms, Code, name}
 
 /// The compiler's derive for the template rebuilder.
 trait Rebuild {
@@ -35,16 +35,16 @@ trait Rebuild {
 /// verb, the variant built again.
 fn arm_of(v: MetaVariant) -> Arms {
     let held: string? = hand_written(v)
-    let binders = ["p${i}" for i in 0..v.payload.length]
+    let binders = ["p${i}" for i in 0..v.fields.length]
     if held != null { return handed(v, held!, binders) }
-    built(v, binders, [rebuilt_arg(p, binders[i]) for i, p in v.payload])
+    built(v, binders, [rebuilt_arg(f.kind, binders[i]) for i, f in v.fields])
 }
 
-/// One payload rebuilt: through the verb its TYPE names, or carried
-/// through when the type names none — a literal's value, an
+/// One payload rebuilt: through the verb its SHAPE names, or carried
+/// through when the shape names none — a literal's value, an
 /// operator, a `use` path, a spec's title.
-fn rebuilt_arg(spelling: string, binder: string) -> Code {
-    let verb: string? = verb_of(spelling)
+fn rebuilt_arg(kind: Kind, binder: string) -> Code {
+    let verb: string? = verb_of(kind)
     if verb == null { return name(binder) }
     quote { rb.${verb!}(${name(binder)}) }
 }
@@ -85,30 +85,35 @@ fn built(v: MetaVariant, bs: List<string>, args: List<Code>) -> Arms {
     }
 }
 
-/// THE VERB A PAYLOAD'S TYPE NAMES, or absence when the payload is
-/// carried through — which is what every type that is not a child,
-/// a name or a written type is.
-fn verb_of(spelling: string) -> string? {
-    match spelling {
-        "ExprId" -> "expr",
-        "ExprId?" -> "expr_opt",
-        "List<ExprId>" -> "exprs",
-        "List<StmtId>" -> "stmts",
-        "List<PatId>" -> "pats",
-        "TypeRef" -> "tref",
-        "TypeRef?" -> "tref_opt",
-        "List<TypeRef>" -> "trefs",
-        "List<Arm>" -> "arms",
-        "List<Case>" -> "cases",
-        "List<Param>" -> "params",
-        "List<Variant>" -> "variants",
-        "Scoped" -> "scoped_name",
-        "Scoped?" -> "scoped_name_opt",
-        "List<Scoped>" -> "scoped_names",
-        "Plain" -> "plain_name",
-        "List<Plain>" -> "plain_names",
-        "Nominal" -> "type_name",
-        "Nominal?" -> "type_name_opt",
-        _ -> null,
+/// THE VERB A PAYLOAD'S SHAPE NAMES, or absence when the payload is
+/// carried through — which is what every shape that is not a child,
+/// a name or a written type is. EACH ARM SPELLS ITS SHAPE: a registry
+/// with a catch-all would forget the next kind silently, and the
+/// shape that arrives is a declared name or a run whose ELEMENT is
+/// what the verb is chosen for.
+fn verb_of(kind: Kind) -> string? {
+    match kind {
+        .Named("ExprId", _) -> "expr",
+        .Opt(.Named("ExprId", _)) -> "expr_opt",
+        .List(.Named("ExprId", _)) -> "exprs",
+        .List(.Named("StmtId", _)) -> "stmts",
+        .List(.Named("PatId", _)) -> "pats",
+        .Named("TypeRef", _) -> "tref",
+        .Opt(.Named("TypeRef", _)) -> "tref_opt",
+        .List(.Named("TypeRef", _)) -> "trefs",
+        .List(.Named("Arm", _)) -> "arms",
+        .List(.Named("Case", _)) -> "cases",
+        .List(.Named("Param", _)) -> "params",
+        .List(.Named("Variant", _)) -> "variants",
+        .Named("Scoped", _) -> "scoped_name",
+        .Opt(.Named("Scoped", _)) -> "scoped_name_opt",
+        .List(.Named("Scoped", _)) -> "scoped_names",
+        .Named("Plain", _) -> "plain_name",
+        .List(.Named("Plain", _)) -> "plain_names",
+        .Named("Nominal", _) -> "type_name",
+        .Opt(.Named("Nominal", _)) -> "type_name_opt",
+        .Named(_, _) or .Opt(_) or .List(_) -> null,
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or
+        .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
     }
 }

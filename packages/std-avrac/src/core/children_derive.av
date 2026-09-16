@@ -1,5 +1,5 @@
 //! `@derive(Children)` — THE COMPLETE WALK, read off the node model:
-//! every expression a node holds, named by its payload TYPES. An
+//! every expression a node holds, named by its payload SHAPES. An
 //! `ExprId` is a child, a `List<ExprId>` is children, an `ExprId?` is
 //! a child when present, a `List<StmtId>` reaches through its
 //! statements and a `List<Arm>` through its arms' values. Everything
@@ -88,27 +88,29 @@ fn parts_of(v: MetaVariant, except: string) -> List<Code> {
     [r! for r in held if r != null]
 }
 
-/// HOW A PAYLOAD'S TYPE REACHES THE EXPRESSIONS UNDER IT — the whole
-/// registry, one row per shape the node model spells, and ABSENCE for
-/// a type that carries no expression. `List<Param>` is absent on
-/// purpose: it holds a field's DEFAULT, which is a declaration of its
-/// own and walked from its own root.
+/// HOW A PAYLOAD'S SHAPE REACHES THE EXPRESSIONS UNDER IT — one row
+/// per shape an id-bearing payload takes, and ABSENCE for a shape that
+/// carries no expression. `List<Param>` is absent on purpose: it holds
+/// a field's DEFAULT, which is a declaration of its own and walked
+/// from its own root.
 ///
-/// A NEW ID-BEARING PAYLOAD TYPE GETS NO ROW AND SO CARRIES NOTHING,
+/// A NEW ID-BEARING PAYLOAD SHAPE GETS NO ROW AND SO CARRIES NOTHING,
 /// silently — the one hole this shape has. It is closed from the other
-/// side: `@derive(Identity)` folds the SAME payload types and refuses
-/// an unrowed one at the generated code, so a type added to the model
+/// side: `@derive(Identity)` folds the SAME payload shapes and refuses
+/// an unrowed one at the generated code, so a shape added to the model
 /// without a row here breaks that build before it can quietly shrink
 /// this walk.
 fn reach(f: Field) -> Code? {
     let b = name(f.name)
-    match f.ty {
-        "ExprId" -> quote { [${b}] },
-        "ExprId?" -> quote { some_list(${b}) },
-        "List<ExprId>" -> b,
-        "List<StmtId>" -> quote { self.stmts_exprs(${b}) },
-        "List<Arm>" -> quote { [a.value for a in ${b}] },
-        _ -> null,
+    match f.kind {
+        .Named("ExprId", _) -> quote { [${b}] },
+        .Opt(.Named("ExprId", _)) -> quote { some_list(${b}) },
+        .List(.Named("ExprId", _)) -> b,
+        .List(.Named("StmtId", _)) -> quote { self.stmts_exprs(${b}) },
+        .List(.Named("Arm", _)) -> quote { [a.value for a in ${b}] },
+        .Named(_, _) or .Opt(_) or .List(_) -> null,
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or
+        .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
     }
 }
 

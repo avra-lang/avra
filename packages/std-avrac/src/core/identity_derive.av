@@ -62,33 +62,69 @@ fn folded_parts(t: MetaType, v: MetaVariant, at: int) -> Code {
     parted_at(t.name, at, [part(f) for f in v.fields if f.name != except])
 }
 
-/// HOW A PAYLOAD'S TYPE FOLDS — the whole registry, one row per shape
-/// the node model spells. A type absent here is a payload the model
-/// does not carry, and its arm is a defect the build refuses at the
-/// generated code rather than a silent zero.
+/// HOW A PAYLOAD'S TYPE FOLDS — asked of its SHAPE, never of its
+/// spelling. `Kind` is the structural answer the crossing already
+/// carries beside the words, so "is this a list", "is this absent-able"
+/// and "is this a scalar" are read rather than parsed.
+///
+/// WHAT `Kind` DOES NOT BUY, stated here so nobody re-litigates it:
+/// `ExprId`, `StmtId` and `PatId` are all `Named` single-field
+/// structs, so WHICH ARENA a payload belongs to is a NAME comparison
+/// whatever shape we give this. The structure says list-or-one; only
+/// the name says which store answers. That boundary is the reason the
+/// three name-asking rows below exist and is not a failure to finish
+/// the job.
 fn part(f: Field) -> Code {
     let b = name(f.name)
-    match f.ty {
+    match f.kind {
+        .Int -> b,
+        .Bool -> quote { flagged(${b}) },
+        .Str -> quote { fp_str(${b}) },
+        .Named(n, _) -> one_part(n, b),
+        .Opt(.Named(n, _)) -> absent_part(n, b),
+        .List(.Str) -> quote { fp_list(str_fps(${b})) },
+        .List(.Named(n, _)) -> many_part(n, b),
+        rest -> quote { a_payload_shape_the_identity_derive_has_no_row_for() },
+    }
+}
+
+/// ONE declared value — the arena's own fold, a name's text, or a
+/// written type. The ONLY place a payload's arena is asked by NAME.
+fn one_part(declared: string, b: Code) -> Code {
+    match declared {
         "ExprId" -> quote { self.expr_fingerprint(${b}) },
-        "ExprId?" -> quote { self.opt_fp(${b}) },
-        "List<ExprId>" -> quote { fp_list(self.expr_fps(${b})) },
-        "List<StmtId>" -> quote { fp_list(self.stmt_fps(${b})) },
-        "List<Arm>" -> quote { fp_list(self.arm_fps(${b})) },
-        "List<Param>" -> quote { fp_list(self.param_fps(${b})) },
-        "List<Variant>" -> quote { fp_list(self.variant_fps(${b})) },
-        "List<Case>" -> quote { fp_list(self.case_fps(${b})) },
-        "string" -> quote { fp_str(${b}) },
-        "List<string>" -> quote { fp_list(str_fps(${b})) },
-        "int" -> b,
-        "bool" -> quote { flagged(${b}) },
-        "BinOp" -> quote { fp_binop(${b}) },
         "Scoped" or "Plain" or "Nominal" -> quote { fp_str(${b}.of) },
-        "Scoped?" or "Plain?" or "Nominal?" -> quote { fp_str(${b}?.of ?? "") },
-        "List<Plain>" -> quote { fp_list(plain_fps(${b})) },
-        "List<Scoped>" -> quote { fp_list(scoped_fps(${b})) },
-        "TypeRef" or "TypeRef?" -> quote { type_fp(${b}) },
-        "List<TypeRef>" -> quote { fp_list([type_fp(each) for each in ${b}]) },
-        _ -> quote { a_payload_type_the_identity_derive_has_no_row_for() },
+        "TypeRef" -> quote { type_fp(${b}) },
+        "BinOp" -> quote { fp_binop(${b}) },
+        _ -> quote { a_declared_payload_the_identity_derive_has_no_row_for() },
+    }
+}
+
+/// ONE declared value that may be ABSENT — absence is its own value,
+/// told apart by arity and never by a spare number.
+fn absent_part(declared: string, b: Code) -> Code {
+    match declared {
+        "ExprId" -> quote { self.opt_fp(${b}) },
+        "Scoped" or "Plain" or "Nominal" -> quote { fp_str(${b}?.of ?? "") },
+        "TypeRef" -> quote { type_fp(${b}) },
+        _ -> quote { an_absent_payload_the_identity_derive_has_no_row_for() },
+    }
+}
+
+/// A RUN of declared values, folded to ONE value before it stands in
+/// a parts list — the arity law, applied where a run appears.
+fn many_part(declared: string, b: Code) -> Code {
+    match declared {
+        "ExprId" -> quote { fp_list(self.expr_fps(${b})) },
+        "StmtId" -> quote { fp_list(self.stmt_fps(${b})) },
+        "Arm" -> quote { fp_list(self.arm_fps(${b})) },
+        "Param" -> quote { fp_list(self.param_fps(${b})) },
+        "Variant" -> quote { fp_list(self.variant_fps(${b})) },
+        "Case" -> quote { fp_list(self.case_fps(${b})) },
+        "Plain" -> quote { fp_list(plain_fps(${b})) },
+        "Scoped" -> quote { fp_list(scoped_fps(${b})) },
+        "TypeRef" -> quote { fp_list([type_fp(each) for each in ${b}]) },
+        _ -> quote { a_run_payload_the_identity_derive_has_no_row_for() },
     }
 }
 
