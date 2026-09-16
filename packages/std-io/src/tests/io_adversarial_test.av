@@ -164,6 +164,26 @@ spec "std/io — adversarial" {
             let _ = write_bytes(p, [255].bytes()!)
             said(read_text(p)) == "`${p}` is not UTF-8 — byte 0"
         }
+        then "an empty file through the OCTET door is an EMPTY BOX, and a file" {
+            // THE EMPTY CASE, on the side that can spend it. An octet
+            // door has three ways to get this wrong: answer absence for
+            // an empty file, refuse it, or write no file at all for an
+            // empty box. All three are the same mistake — spending the
+            // empty value on "nothing here".
+            let p = cleared("hollow.bin")
+            let _ = write_bytes(p, "".bytes())
+            (read_bytes(p) catch "x".bytes()).length == 0 && exists(p)
+        }
+        then "a NUL is an octet like any other, all the way to the file" {
+            // 255 is refused as text and never reaches `read_bytes`
+            // as a question; a NUL is VALID UTF-8, so it crosses both
+            // doors and is where a length-carrying box and a
+            // C-terminated one part company.
+            let p = cleared("holed.bin")
+            let _ = write_bytes(p, [97, 0, 98].bytes()!)
+            let back = read_bytes(p) catch "".bytes()
+            back.length == 3 && back.at(1) == 0 && (read_text(p) catch "").length == 3
+        }
         then "the same bytes read back WHOLE through the lossless door" {
             let p = cleared("raw3.bin")
             let raw = [97, 98, 255, 99, 100].bytes()!
