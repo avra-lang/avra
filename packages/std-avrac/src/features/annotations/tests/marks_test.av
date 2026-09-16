@@ -1,6 +1,7 @@
 // A MARK on a declared MEMBER — a variant, a payload — is DATA: it is
 // recorded on the member it precedes and nothing runs. The compiler
-// judges no mark, so a mark no reader claims is carried, never refused.
+// judges no mark's MEANING, but a mark still owes a READER: a word no
+// reader on that declaration claims is refused where it was written.
 use @std.avrac.language.{analyze_source}
 
 spec "features/annotations — marks" {
@@ -30,8 +31,9 @@ spec "features/annotations — marks" {
             let vs = a.view.store.enum_parts(a.view.stmts[1])?.variants ?? []
             vs[0].marks[0].name == "expands" && vs[0].marks[0].args.length == 1 && vs[0].marks[0].args[0] == "expansion"
         }
-        then "a mark no reader claims is carried, never refused" {
-            analyze_source("type Reg = { index: int }\nenum Ins {\n    @nobody_reads_this Const(v: int)\n}\n1\n").clean()
+        then "a mark no reader claims is refused where it was written" {
+            let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    @nobody_reads_this Const(v: int)\n}\n1\n")
+            !a.clean() && a.report().contains("F2092")
         }
     }
 }
