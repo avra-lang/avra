@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, Mark, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped, Digest, new_digest, digest_text, digest_key}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, Mark, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
@@ -32,7 +32,7 @@ use @std.testing.{CaseRef, words}
 extern fn avra_host_env(name: string) -> string
 
 /// The filesystem, as four questions.
-export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, std_root: string? = null, cwd: string = "" }
+export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, std_root: string? = null, cwd: string = "", runtime_object: string = "" }
 
 impl Host {
     /// One spelling for one directory: a relative path rooted at the
@@ -61,13 +61,24 @@ export fn memory_host(files: Map<string, string>, names: List<string>) -> Host {
 /// An in-memory host standing in a directory: a relative path is
 /// looked up under `cwd`, as the disk would.
 export fn memory_host_at(files: Map<string, string>, names: List<string>, cwd: string) -> Host {
+    let held = Cell.new(files)
     Host {
-        exists: (p: string) -> files.get(normalized(joined_path(cwd, p))) != null,
-        read: (p: string) -> files.get(normalized(joined_path(cwd, p))) ?? "",
+        exists: (p: string) -> held.get().get(normalized(joined_path(cwd, p))) != null,
+        read: (p: string) -> held.get().get(normalized(joined_path(cwd, p))) ?? "",
+        write: (p: string, text: string) -> memory_put(held, normalized(joined_path(cwd, p)), text),
         list: (dir: string) -> children_of(names, normalized(joined_path(cwd, dir))),
         is_dir: (dir: string) -> names.any(under_dir(it, normalized(joined_path(cwd, dir)))),
         cwd: cwd,
     }
+}
+
+/// A write through the in-memory table — a named fn because the field's answer is
+/// `string?` and a lambda ending in `null` answers `null` alone.
+fn memory_put(held: Cell<Map<string, string>>, path: string, text: string) -> string? {
+    mut files = held.get()
+    files.set(path, text)
+    held.set(files)
+    null
 }
 
 /// The direct children of `dir` among `names` — the base names, in
@@ -1748,7 +1759,7 @@ impl Workspace {
     /// reaches for the last group, so nothing else would put them in
     /// the key, and a code-generator change must invalidate every
     /// module it could have emitted.
-    fn build_inputs() -> List<string> {
+    export fn build_inputs() -> List<string> {
         let tree = self.toolchain_root()
         let engine: List<string> = if tree == "" { [] } else { [joined_path(tree, "Makefile")].concat(self.engine_sources(joined_path(tree, "backend"))).concat(self.engine_sources(joined_path(tree, "runtime"))) }
         sorted_texts(flatten([self.all_files(r) for r in self.closure_roots()]).concat(self.manifest_paths()).concat(engine))
@@ -1758,27 +1769,6 @@ impl Workspace {
     fn manifest_paths() -> List<string> {
         let at = [joined_path(r, "avra.toml") for r in self.closure_roots()]
         [p for p in at if self.host.exists(p)]
-    }
-
-    /// THE BUILD CACHE'S KEY — the identity of everything a whole-program
-    /// build reads, one derivation used for both the store and the
-    /// lookup. The law it exists under: AN EARLY-CUTOFF HASH MUST COVER
-    /// THE WHOLE VALUE. `parsed` cuts off on structural fingerprints
-    /// while its value carries the source text and every span, so a
-    /// reindent leaves later spans stale and certified fresh; here every
-    /// BYTE of every input is absorbed, so a whitespace-only edit moves
-    /// the key and a wrong reuse is impossible by construction rather
-    /// than by discipline.
-    fn build_key(entry: string?, mode: string, salt: string) -> string {
-        mut d = new_digest()
-        d = digest_text(d, salt)
-        d = digest_text(d, mode)
-        d = digest_text(d, normalized(entry ?? ""))
-        for f in self.build_inputs() {
-            d = digest_text(d, normalized(f))
-            d = digest_text(d, self.host.read(f))
-        }
-        digest_key(d)
     }
 
     /// A module's exported declarations, in file and declaration order.

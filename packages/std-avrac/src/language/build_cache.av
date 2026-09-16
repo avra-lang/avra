@@ -1,0 +1,120 @@
+//! THE BUILD CACHE — a program's inputs hashed, and the module a
+//! previous build of those exact inputs produced reused, so an unchanged
+//! program costs a hash rather than an analysis.
+//!
+//! THE LAW IT EXISTS UNDER: an early-cutoff hash must cover the WHOLE
+//! value it certifies. `parsed` cuts off on structural fingerprints while
+//! its value carries the source text and every span, so a reindent leaves
+//! later spans stale and certified fresh. Here every byte of every input
+//! is absorbed, so a whitespace-only edit moves the key and a wrong reuse
+//! is impossible by construction rather than by discipline.
+//!
+//! The key and the names its artifacts are stored under are ONE
+//! derivation (`key`), so the store and the lookup cannot fall out of
+//! step.
+use core.{new_digest, digest_text, digest_key, joined}
+use @std.path.{joined_path, relative_path}
+
+/// The compiler's format identity, folded first into every key. The
+/// compiler's own sources, its backend and its runtime are already key
+/// inputs (`Workspace.build_inputs`); this covers only what those files
+/// cannot say — a change to how the key itself is derived.
+const CACHE_FORMAT: string = "avra-build-cache-1"
+
+/// A build's result: the words that link it, the binary they produce,
+/// the warnings to speak, and whether a held artifact was reused.
+export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool }
+
+/// Where a program's artifacts are kept — beside the program, so a
+/// worktree's cache dies with the worktree.
+export type BuildCache = { ws: Workspace, root: string }
+
+export fn build_cache(ws: Workspace) -> BuildCache {
+    BuildCache { ws: ws, root: joined_path(ws.root, ".avra-cache") }
+}
+
+impl BuildCache {
+    /// The key these inputs and this mode are stored under.
+    fn key(entry: string, mode: string) -> string {
+        mut d = new_digest()
+        d = digest_text(d, CACHE_FORMAT)
+        d = digest_text(d, mode)
+        d = digest_text(d, self.rooted(entry))
+        for f in self.ws.build_inputs() {
+            d = digest_text(d, self.rooted(f))
+            d = digest_text(d, self.ws.host.read(f))
+        }
+        digest_key(d)
+    }
+
+    /// A path as the key spells it: relative to the program's root, so
+    /// two checkouts of one source share their artifacts.
+    fn rooted(path: string) -> string { relative_path(self.ws.root, path) }
+
+    /// One artifact, or null — `exists` first, because a host that
+    /// refuses a missing read is entitled to say so loudly.
+    fn held(key: string, suffix: string) -> string? {
+        let path = joined_path(self.root, "${key}${suffix}")
+        if !self.ws.host.exists(path) { return null }
+        self.ws.host.read(path)
+    }
+
+    /// A held build put where a fresh one would have written it, or null
+    /// when nothing is held or the module cannot be placed — so a partial
+    /// entry self-heals into a miss rather than a wrong link.
+    fn reuse(entry: string, key: string) -> BuildOutcome? {
+        let module = self.held(key, ".ll")
+        if module == null { return null }
+        let plan = self.held(key, ".plan")
+        if plan == null { return null }
+        let ll = "${entry}.ll"
+        if self.ws.host.write(ll, module!) != null { return null }
+        BuildOutcome { words: plan!.split("\n"), binary: binary_name(ll), warnings: self.held(key, ".warn") ?? "", reused: true }
+    }
+
+    /// Keep a fresh build's module, plan and warnings under its key.
+    fn keep(entry: string, key: string, words: List<string>, warnings: string) {
+        let _ = self.ws.host.write(joined_path(self.root, "${key}.ll"), self.ws.host.read("${entry}.ll"))
+        let _ = self.ws.host.write(joined_path(self.root, "${key}.plan"), joined(words, "\n"))
+        let _ = self.ws.host.write(joined_path(self.root, "${key}.warn"), warnings)
+    }
+}
+
+/// A program built: the words that link it, reused when these exact
+/// inputs were built before, else analyzed, lowered and emitted now.
+/// `.Err` is the refusal to report, and A REFUSAL IS NEVER KEPT — a bad
+/// program is reported on every run and cached never.
+export fn build_program(ws: Workspace, entry: string, mode: string, opt: string) -> Result<BuildOutcome, string> {
+    let cache = build_cache(ws)
+    let key = cache.key(entry, mode)
+    let held = cache.reuse(entry, key)
+    if held != null { return .Ok(held!) }
+    emitted(cache, ws.program(entry), entry, key, opt)
+}
+
+fn emitted(cache: BuildCache, p: Program, entry: string, key: string, opt: string) -> Result<BuildOutcome, string> {
+    if !p.clean() { return .Err(p.report()) }
+    let view = p.entry_file()
+    if view == null { return .Err(p.rendered([no_target(p.ws.root)])) }
+    if view!.view.stmts.is_empty() { return .Err("the program is empty") }
+    let lo = p.lowered_checked()?
+    let ll = "${view!.view.source.file}.ll"
+    let failure = emit_ll(lo, ll)
+    if failure != null { return .Err(failure!) }
+    let words = link_words(ll, p.ws, opt)
+    let warnings = p.warnings()
+    cache.keep(entry, key, words, warnings)
+    .Ok(BuildOutcome { words: words, binary: binary_name(ll), warnings: warnings, reused: false })
+}
+
+/// clang's words for a module: the level, the runtime, the packages' own
+/// objects and flags, then the binary's path.
+fn link_words(ll_path: string, ws: Workspace, opt: string) -> List<string> {
+    ["-w", opt, "-rdynamic", ll_path, ws.host.runtime_object].concat(ws.link_words()).concat(["-o", binary_name(ll_path)])
+}
+
+/// `x.av.ll` builds `x`.
+export fn binary_name(ll_path: string) -> string {
+    let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
+    if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
+}

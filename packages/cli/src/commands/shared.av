@@ -1,7 +1,7 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef}
-use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, lone_workspace, timed_workspace, programs_workspace, no_target, avra, emit_ll, stage_words}
+use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, lone_workspace, timed_workspace, programs_workspace, no_target, avra, emit_ll, stage_words, build_program, binary_name}
 use @std.avrac.core.{joined, distinct}
 use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized}
 use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit_text, exit}
@@ -22,9 +22,21 @@ fn disk_host() -> Host {
         exists: (p: string) -> exists(p),
         read: (p: string) -> read_or_die(p),
         list: (dir: string) -> list_dir(dir) catch [],
+        write: (p: string, text: string) -> write_file(p, text),
         is_dir: (dir: string) -> is_dir(dir),
         std_root: std_root(),
         cwd: env("PWD") ?? ".",
+        runtime_object: runtime_object(),
+    }
+}
+
+/// Write a file, making its directory first — a cache keeps artifacts
+/// where nothing has stood before.
+fn write_file(path: string, text: string) -> string? {
+    let _ = make_dirs(dir_of(path))
+    match write_text(path, text) {
+        .Ok(_) -> null,
+        .Err(e) -> e.describe().message,
     }
 }
 
@@ -322,12 +334,8 @@ fn plan_unwritten(message: string) -> string {
 /// evaluator resolves an extern through `dlsym(RTLD_DEFAULT)`, which
 /// on ELF reaches the executable only when its globals stand in the
 /// dynamic table (Darwin's are there by default).
-fn clang_words(ll_path: string, p: Program, opt: string) -> List<string> { clang_words_ws(ll_path, p.ws, opt) }
-
-/// clang's words for a module whose program is known only by its
-/// workspace — what a cache hit links from, with no analysis run.
-fn clang_words_ws(ll_path: string, ws: Workspace, opt: string) -> List<string> {
-    ["-w", opt, "-rdynamic", ll_path, runtime_object()].concat(ws.link_words()).concat(["-o", binary_name(ll_path)])
+fn clang_words(ll_path: string, p: Program, opt: string) -> List<string> {
+    ["-w", opt, "-rdynamic", ll_path, runtime_object()].concat(p.ws.link_words()).concat(["-o", binary_name(ll_path)])
 }
 
 fn linked(ll_path: string, p: Program, opt: string) -> int {
@@ -388,150 +396,68 @@ fn spoken_link(ll_path: string, p: Program) -> int {
     code
 }
 
-/// `x.av.ll` builds `x`.
-fn binary_name(ll_path: string) -> string {
-    let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
-    if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
-}
-
 // -- THE BUILD CACHE ------------------------------------------------------------------
-// A program's inputs are hashed; the module a previous build of those exact inputs
-// produced is reused; only the link runs. The key is `Workspace.build_key`, ONE
-// derivation used for the store and the lookup, so there is no second stamp to fall
-// out of step with the first.
-
-/// The directory a program's cached modules live in. Beside the program it serves, so
-/// a worktree's cache dies with the worktree. It is named `.avra-cache` and is never a
-/// source root, so the cache is never its own input.
-fn cache_root(ws: Workspace) -> string { "${ws.root}/.avra-cache" }
-
-/// The salt every key is folded under — the build mode's own format identity. A change
-/// here invalidates every artifact at once, which is invalidation's DELIBERATE half;
-/// the structural half is `Workspace.build_inputs`, and its witness proves that even a
-/// whitespace-only edit already moves the key.
-fn cache_salt() -> string { "avra-build-cache-1" }
-
-/// The module a build of this key already produced, or null.
-fn cached_module(ws: Workspace, key: string) -> string? {
-    let path = "${cache_root(ws)}/${key}.ll"
-    if exists(path) { return path }
-    null
-}
-
-/// Keep a freshly emitted module under its key. A failure to keep is silent: the
-/// build it belongs to already succeeded, and a lost artifact costs the NEXT build,
-/// never a wrong one.
-fn store_module(ws: Workspace, key: string, from: string) {
-    let _ = make_dirs(cache_root(ws))
-    let text = match read_text(from) {
-        .Ok(held) -> held,
-        .Err(_) -> "",
-    }
-    if text != "" { let _ = write_text("${cache_root(ws)}/${key}.ll", text) }
-}
+// The cache is @std.avrac's; what a COMMAND owes it is an argued path, a host that
+// can write, and clang run over the words it answers.
 
 /// The workspace a build stands in — a directory is a package root, a file is a lone
-/// program — built WITHOUT analysis, so the key can be taken before a line is typed.
-fn cache_workspace(path: string) -> Workspace {
+/// program — built WITHOUT analysis, so the key is taken before a line is typed.
+fn build_workspace(path: string) -> Workspace {
     if is_dir(path) { timed_workspace(disk_host(), path, avra(), () -> now_ns()) } else { file_workspace(path) }
 }
 
 /// The entry a build of this workspace runs: a package's `[bin]`, or the file itself.
-fn cache_entry(ws: Workspace, path: string) -> string? {
+fn build_entry(ws: Workspace, path: string) -> string? {
     if is_dir(path) { ws.entry_of() } else { path }
 }
 
-/// The link plan a build of this key used, or null — clang's words one
-/// per line. The plan is CACHED WITH THE MODULE because it is part of
-/// the artifact: a hit has no analyzed workspace, and `link_words`
-/// reads the packages a `use` admits, so reconstructing the plan there
-/// would link the program against an empty dependency closure.
-fn cached_plan(ws: Workspace, key: string) -> List<string>? {
-    let path = "${cache_root(ws)}/${key}.link"
-    if !exists(path) { return null }
-    match read_text(path) {
-        .Ok(text) -> text.split("\n"),
-        .Err(_) -> null,
-    }
-}
-
-/// Keep a build's link plan beside its module, so a hit links exactly
-/// what the miss linked.
-fn store_plan(ws: Workspace, key: string, words: List<string>) {
-    let _ = make_dirs(cache_root(ws))
-    let _ = write_text("${cache_root(ws)}/${key}.link", joined(words, "\n"))
-}
-
-/// A hit, linked: the cached module put where a fresh build would have
-/// written it, then the cached plan run. Null when no module or plan is
-/// held, or the held module cannot be read — so a partial cache entry
-/// self-heals into a miss rather than a wrong link.
-fn cached_link(ws: Workspace, key: string, entry: string) -> int? {
-    let words = cached_plan(ws, key)
-    if words == null { return null }
-    let held = cached_module(ws, key)
-    if held == null { return null }
-    let text = match read_text(held!) {
-        .Ok(t) -> t,
-        .Err(_) -> "",
-    }
-    if text == "" { return null }
-    let out = "${entry}.ll"
-    let _ = write_text(out, text)
-    match clang_ran(words!) {
-        .Ok(x) -> judged_link(x, out),
+/// clang over a build's words: 0 clean, else the refusal spoken.
+fn run_words(words: List<string>) -> int {
+    match clang_ran(words) {
+        .Ok(.Clean) -> 0,
+        .Ok(x) -> {
+            eprintln("avra: clang failed linking — exited ${exit_text(x)}")
+            1
+        },
         .Err(e) -> refused_by_host(e),
     }
 }
 
-/// `avra build`, cache-first. A module a previous build of these exact
-/// inputs produced is reused — analysis, typing, lowering and emission
-/// all skipped — and only the link runs. A miss builds the program and
-/// keeps its module and link plan under the key. A REFUSAL IS NEVER
-/// KEPT, so a bad program is reported on every run and cached never.
+fn hit_line(reused: bool) -> string {
+    if reused { "time: lower+emit · cache hit" } else { "time: lower+emit · built" }
+}
+
+/// `avra build`: a program's module reused when these exact inputs were built before,
+/// else analyzed, lowered and emitted. The cache is the library's; the link is the
+/// command's.
 fn cached_build(args: CliResult) -> int {
     let path = path_arg(args)
     if !exists(path) {
         no_such_file(path)
         return 2
     }
-    let ws = cache_workspace(path)
-    let entry = cache_entry(ws, path)
+    let ws = build_workspace(path)
+    let entry = build_entry(ws, path)
     if entry == null {
         eprintln("avra: ${ws.root} declares no entry point")
         return 1
     }
-    let key = ws.build_key(entry, "build", cache_salt())
-    let hit = cached_link(ws, key, entry!)
-    if hit != null {
-        if timed(args) { eprintln("time: lower+emit · cache hit") }
-        if hit! == 0 { println(binary_name("${entry!}.ll")) }
-        return hit!
-    }
-    let t0 = now_ns()
-    let p = ws.program(entry)
-    warn(p)
-    match lowered_or_report(p) {
+    match build_program(ws, entry!, "build", "-O1") {
         .Err(report) -> {
             println(report)
             1
         },
-        .Ok(ll) -> {
-            let words = clang_words_ws(ll, ws, "-O1")
-            store_module(ws, key, ll)
-            store_plan(ws, key, words)
-            let code = match clang_ran(words) {
-                .Ok(x) -> judged_link(x, ll),
-                .Err(e) -> refused_by_host(e),
-            }
-            if timed(args) { eprintln(timings(p, "lower+emit", now_ns() - t0)) }
-            if code == 0 { println(binary_name(ll)) }
+        .Ok(b) -> {
+            if b.warnings != "" { eprintln(b.warnings) }
+            if timed(args) { eprintln(hit_line(b.reused)) }
+            let code = run_words(b.words)
+            if code == 0 { println(b.binary) }
             code
         },
     }
 }
 
-/// A subcommand over exactly one source-file argument.
+
 fn file_command(name: string, description: string) -> CommandSpec {
     CommandSpec {
         name: name,
