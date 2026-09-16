@@ -141,23 +141,48 @@ export const grammar_of_grammars: Grammar =
                 ),
             ]),
 
-            // build = NAME ( "(" ( NAME ("," NAME)* )? ")" )?
+            // build = NAME ( "." NAME )? ( "(" ( arg ("," arg)* ","? )? ")" )?
             // `lp` captures the open paren: absent means `-> e` (a
-            // capture reference), present means a builder call.
+            // capture reference), present means an argument list.
+            // `variant` present means the branch NAMES A NODE
+            // (`-> Expr.StrLit`): its captures reach their payloads by
+            // LABEL, and its arguments may only FIX payloads the rule
+            // states rather than captures.
             rule("build", [seq_to(
                 [
                     cap("name", named("NAME")),
+                    item(group([seq([item(lit(".")), cap("variant", named("NAME"))])]))
+                        with { rep: Rep.Opt },
                     item(group([seq([
                         cap("lp", lit("(")),
                         item(group([seq([
-                            cap("args", named("NAME")),
-                            item(group([seq([item(lit(",")), cap("args", named("NAME"))])]))
+                            cap("args", rule_ref("build_arg")),
+                            item(group([seq([item(lit(",")), cap("args", rule_ref("build_arg"))])]))
                                 with { rep: Rep.Star },
+                            item(lit(",")) with { rep: Rep.Opt },
                         ])])) with { rep: Rep.Opt },
                         expecting(lit(")"), "expected ')' to close the argument list"),
                     ])])) with { rep: Rep.Opt },
                 ],
-                Build.Call("build_build", ["name", "lp", "args"]),
+                Build.Call("build_build", ["name", "variant", "lp", "args"]),
+            )]),
+
+            // build_arg = NAME ( "=" ( NAME | NUMBER | STRING ) )?
+            // A bare name is a capture's label; a name given a value
+            // is a payload the rule STATES.
+            rule("build_arg", [seq_to(
+                [
+                    cap("name", named("NAME")),
+                    item(group([seq([
+                        item(lit("=")),
+                        cap("fixed", group([
+                            seq([item(named("NAME"))]),
+                            seq([item(named("NUMBER"))]),
+                            seq([item(named("STRING"))]),
+                        ])),
+                    ])])) with { rep: Rep.Opt },
+                ],
+                Build.Call("build_arg", ["name", "fixed"]),
             )]),
 
             // annot = "@expect" "(" STRING "," STRING ")"

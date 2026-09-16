@@ -1,6 +1,6 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, flatten, some_list, SeatMark, plain_mark}
+use core.{NodeStore, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, Mark, flatten, some_list, SeatMark, plain_mark}
 use grammar.{Captured, Token, Ready}
 
 /// One build call's world: the store, the captured arguments in
@@ -28,6 +28,27 @@ impl Builder {
     /// The statement argument at `i`.
     fn stmt(i: int) -> Result<StmtId, string> {
         want(stmt_id_at(self.args, i), "a statement argument")
+    }
+
+    /// The text an argument CARRIES — a token's, and a payload the
+    /// rule stated alike: what a value means is decided by the
+    /// payload it fills, never by how it was spelled.
+    fn text(i: int) -> Result<string, string> {
+        .Ok((self.token(i)?).text)
+    }
+
+    /// The repeated capture at `i`, as the text each token carries.
+    fn texts(i: int) -> Result<List<string>, string> {
+        .Ok([t.text for t in self.tokens(i)?])
+    }
+
+    /// The truth a word states. The assembly already refused any other
+    /// word for a `bool` payload, so this is the belt.
+    fn flag(i: int) -> Result<bool, string> {
+        let word = self.text(i)?
+        if word == "true" { return .Ok(true) }
+        if word == "false" { return .Ok(false) }
+        .Err("`${word}` states no truth — a `bool` payload is `true` or `false`")
     }
 
     /// The written-type argument at `i`.
@@ -198,6 +219,20 @@ export fn pat_ids_at(args: List<Captured<LangNode>>, i: int) -> List<PatId> {
     flatten([some_list(pat_id_at(items, j)) for j in 0..items.length])
 }
 
+/// The repeated mark capture at `args[i]`, as marks — in source
+/// order, across every member the rule matched.
+export fn marks_at(args: List<Captured<LangNode>>, i: int) -> List<Mark> {
+    let items = list_at(args, i)
+    flatten([some_list(mark_of(items, j)) for j in 0..items.length])
+}
+
+fn mark_of(args: List<Captured<LangNode>>, i: int) -> Mark? {
+    match args[i] {
+        .Node(.NMark(m)) -> m,
+        _ -> null,
+    }
+}
+
 /// The repeated arm capture at `args[i]`, as arms.
 export fn arms_at(args: List<Captured<LangNode>>, i: int) -> List<Arm> {
     let items = list_at(args, i)
@@ -265,6 +300,42 @@ fn one_between(types: List<TypeRef>, after: int, before: int) -> TypeRef? {
     types.find(ref_within(it, after, before))
 }
 
+/// A MARK MARKS THE MEMBER IT PRECEDES, so it belongs to the nearest
+/// anchor that follows it. `anchors` holds EVERY place on the
+/// declaration a mark may land — an enum's variant names AND its
+/// payload types — in any order; a set short of one anchor reads
+/// that member's marks as its successor's. `from` is the
+/// declaration's own start: nothing before it is a member's mark.
+export type MarkWindows = { anchors: List<int>, marks: List<Mark>, from: int }
+
+impl MarkWindows {
+    /// The marks the anchor at `lo` carries.
+    fn at(lo: int) -> List<Mark> {
+        marks_inside(self.marks, self.opens_before(lo), lo)
+    }
+
+    /// Where an anchor's window opens: the nearest anchor before it,
+    /// or the declaration's start when nothing precedes it.
+    fn opens_before(lo: int) -> int {
+        mut open = self.from
+        for a in self.anchors {
+            if a > open && a < lo { open = a }
+        }
+        open
+    }
+}
+
+/// A WRITTEN TYPE'S START — the anchor a payload's marks precede, and
+/// the projection two enum sites would otherwise spell twice.
+export fn type_lo(t: TypeRef) -> int {
+    t.span?.lo ?? 0
+}
+
+/// The marks whose `@` stands strictly inside a window.
+fn marks_inside(marks: List<Mark>, after: int, before: int) -> List<Mark> {
+    [m for m in marks if m.span != null && within(m.span!.lo, after, before)]
+}
+
 export fn ref_within(t: TypeRef, after: int, before: int) -> bool {
     let lo: int? = t.span?.lo
     if lo == null { return false }
@@ -285,12 +356,15 @@ fn token_between(tokens: List<Token>, after: int, before: int) -> string {
 impl Builder {
     /// Field names, their types, and the DEFAULTS some carry, zipped —
     /// captures arrive per slot, so a default finds its field by
-    /// POSITION: the last name that starts before it.
-    fn fields_zipped(fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>) -> Result<List<Param>, string> {
+    /// POSITION: the last name that starts before it. A MARK stands
+    /// before the member it marks, so each field's marks are the ones
+    /// written in its window.
+    fn fields_zipped(fs: List<Token>, ft: List<TypeRef>, fds: List<ExprId>, marks: List<Mark>) -> Result<List<Param>, string> {
         if fs.length != ft.length {
             return .Err(zip_defect_of("field names and types"))
         }
-        .Ok([Param { name: f.text, ty: ft[j], default: self.default_before(fs, fds, j), mark: plain_mark, span: f.span } for j, f in fs])
+        let w = MarkWindows { anchors: [f.span.lo for f in fs], marks: marks, from: self.span?.lo ?? 0 }
+        .Ok([Param { name: f.text, ty: ft[j], default: self.default_before(fs, fds, j), mark: plain_mark, span: f.span, marks: w.at(f.span.lo) } for j, f in fs])
     }
 
     /// The default whose position falls between field `j`'s name and

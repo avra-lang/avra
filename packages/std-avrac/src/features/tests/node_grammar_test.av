@@ -1,0 +1,236 @@
+// THE GRAMMAR NAMES THE NODE, against a node model of three made-up
+// variants — so these cases prove the BINDING and never the compiler's
+// own payloads, which move.
+use @std.avrac.grammar.{Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Slot, Diagnostic, Captured, RunOutcome, parse_grammar, render_grammar, run_grammar, ready, lex_grammar, rule, seq_to, item, cap, named}
+use @std.avrac.features.{bind_nodes, node_payloads, PayloadRow, Payload}
+use @std.avrac.core.{Span}
+
+/// A model with one of each shape the arity law sorts: a text
+/// payload, two same-typed node payloads, a list and a nullable.
+fn rows() -> List<PayloadRow> {
+    [
+        PayloadRow { owner: "E", variant: "Lit", payloads: [Payload { name: "value", ty: "string" }] },
+        PayloadRow { owner: "E", variant: "Pair", payloads: [
+            Payload { name: "left", ty: "ExprId" },
+            Payload { name: "right", ty: "ExprId" },
+        ] },
+        PayloadRow { owner: "E", variant: "Many", payloads: [
+            Payload { name: "elems", ty: "List<ExprId>" },
+            Payload { name: "tag", ty: "Scoped?" },
+        ] },
+    ]
+}
+
+fn grammar_of(src: string) -> Grammar {
+    parse_grammar(src).built ?? Grammar { name: "unparsed", start: "unparsed", rules: [] }
+}
+
+fn defects_of(src: string) -> List<Diagnostic> {
+    bind_nodes(grammar_of(src), rows()).defects
+}
+
+fn defects_of_real(src: string) -> List<Diagnostic> {
+    bind_nodes(grammar_of(src), node_payloads()).defects
+}
+
+fn refuses(src: string, words: string) -> bool {
+    defects_of(src).any(it.message.contains(words))
+}
+
+/// The first rule's first branch's slots — absent when it is no node
+/// build, and null when binding found no such variant.
+fn slots_of(src: string) -> List<Slot>? {
+    slots_in(bind_nodes(grammar_of(src), rows()).g)
+}
+
+/// The same slots against the compiler's OWN node model.
+fn real_slots_of(src: string) -> List<Slot>? {
+    slots_in(bind_nodes(grammar_of(src), node_payloads()).g)
+}
+
+fn slots_in(g: Grammar) -> List<Slot>? {
+    if g.rules.is_empty() { return null }
+    let held: Build? = g.rules[0].body.branches[0].build
+    if held == null { return null }
+    match held! {
+        .Node(_, _, _, slots) -> slots,
+        .Call(_, _) or .Var(_) -> null,
+    }
+}
+
+fn label_at(src: string, j: int) -> string {
+    slot_word(slots_of(src), j)
+}
+
+fn real_label_at(src: string, j: int) -> string {
+    slot_word(real_slots_of(src), j)
+}
+
+fn slot_word(slots: List<Slot>?, j: int) -> string {
+    if slots == null || j >= slots!.length { return "" }
+    match slots![j] {
+        .Label(name) -> name,
+        .Fixed(text) -> "=${text}",
+        .Empty -> "-",
+    }
+}
+
+spec "features/node_grammar" {
+    given "a rule that names its node" {
+        then "a label fills the payload it names" {
+            label_at("r = value:STRING -> E.Lit\n", 0) == "value"
+        }
+        then "slots come out in PAYLOAD order, not source order" {
+            let src = "r = right:expr \",\" left:expr -> E.Pair\nexpr = NAME\n"
+            label_at(src, 0) == "left" && label_at(src, 1) == "right"
+        }
+        then "a payload the rule states rides as its text" {
+            label_at("r = \"t\" -> E.Lit(value = true)\n", 0) == "=true"
+        }
+        then "a rule with no node build has no slots" {
+            slots_of("r = a:NAME -> made(a)\n") == null
+        }
+    }
+
+    given "the arity law" {
+        then "a list payload nothing names is empty, and refuses nothing" {
+            let src = "r = \"x\" -> E.Many\n"
+            defects_of(src).is_empty() && label_at(src, 0) == "-"
+        }
+        then "a nullable payload nothing names is absent" {
+            label_at("r = \"x\" -> E.Many\n", 1) == "-"
+        }
+        then "any other payload nothing names refuses" {
+            refuses("r = \"x\" -> E.Pair\n", "nothing fills `left: ExprId`")
+        }
+        then "the refusal names the law, not the payload alone" {
+            refuses("r = \"x\" -> E.Pair\n", "only a list or a nullable payload may go unnamed")
+        }
+    }
+
+    given "a rule that names what the model does not have" {
+        then "an undeclared variant refuses" {
+            refuses("r = value:STRING -> E.Nope\n", "no such variant is declared")
+        }
+        then "a label that is no payload refuses, and lists what there is" {
+            refuses("r = wrong:STRING -> E.Lit\n", "has no such payload — it carries `value`")
+        }
+        then "a stated payload that is no payload refuses" {
+            refuses("r = \"x\" -> E.Lit(nope = 1)\n", "has no such payload")
+        }
+    }
+
+    given "a label whose shape the payload cannot hold" {
+        then "a rule reference cannot fill a text payload" {
+            refuses("r = value:expr -> E.Lit\nexpr = NAME\n", "gives `E.Lit`'s `value: string` a built node, and it holds a token's text")
+        }
+        then "a terminal cannot fill a node payload" {
+            refuses("r = left:NAME right:expr -> E.Pair\nexpr = NAME\n", "a token's text, and it holds a built node")
+        }
+        then "a literal proves no mismatch — it captures nothing a payload wants" {
+            !refuses("r = elems:\"x\" -> E.Many\n", "holds")
+        }
+    }
+
+    given "the compiler's own node model" {
+        // The rows the real features name against — Expr.StrLit,
+        // Expr.BoolLit, Expr.Interp — bind here, so the merge's
+        // `-> Expr.StrLit` reaches a builder that exists.
+        then "the real Expr.StrLit row binds its string payload by label" {
+            let src = "r = value:STRING -> Expr.StrLit\n"
+            defects_of_real(src).is_empty() && real_label_at(src, 0) == "value"
+        }
+        then "the real Expr.BoolLit row binds a stated bool" {
+            real_label_at("r = \"true\" -> Expr.BoolLit(value = true)\n", 0) == "=true"
+        }
+        then "the real Expr.Interp row binds both runs" {
+            let src = "r = parts:ISTR_BEGIN holes:e ( parts:ISTR_MID holes:e )* parts:ISTR_END -> Expr.Interp\ne = NAME\n"
+            defects_of_real(src).is_empty() && real_label_at(src, 0) == "parts" && real_label_at(src, 1) == "holes"
+        }
+    }
+
+    given "the notation reads back" {
+        then "a node build renders as it was written" {
+            render_grammar(grammar_of("r = value:STRING -> E.Lit\n")).contains("-> E.Lit")
+        }
+        then "a stated payload renders with its value" {
+            render_grammar(grammar_of("r = \"t\" -> E.Lit(value = true)\n")).contains("-> E.Lit(value = true)")
+        }
+    }
+
+    given "a node build nested in a group" {
+        // The engine resolves an inner build's labels against the
+        // ENCLOSING branch's bindings — a capture escapes its group.
+        // Judged by the inner branch alone, a LIST payload captured
+        // outside would bind empty and nobody would be told.
+        then "it reads a payload the enclosing branch captured" {
+            nested_label("r = elems:e ( \",\" -> E.Many )\ne = NAME\n") == "elems"
+        }
+        then "and refuses nothing for it" {
+            defects_of("r = elems:e ( \",\" -> E.Many )\ne = NAME\n").is_empty()
+        }
+    }
+
+    given "a node build the engine reaches unbound" {
+        // A grammar that never passed through binding — a package's
+        // own sublanguage naming a node, which no model answers.
+        then "the engine refuses it in words, and does not read its slots" {
+            unbound_run().diagnostics.any(it.message.contains("was never resolved into a builder"))
+        }
+        then "the refusal names the variant the rule asked for" {
+            unbound_run().diagnostics.any(it.message.contains("`E.Lit`"))
+        }
+    }
+
+    given "what the notation itself refuses" {
+        then "a bare name in a node build's arguments is no argument" {
+            parse_grammar("r = a:NAME -> E.Lit(a)\n").diagnostics.any(it.message.contains("names no value here"))
+        }
+        then "a stated value in a builder call has no payload to fill" {
+            parse_grammar("r = a:NAME -> made(a = 1)\n").diagnostics.any(it.message.contains("a fixed value fills a NODE's payload"))
+        }
+    }
+}
+
+/// A grammar carrying a node build with NO slots — what binding would
+/// have filled. Run straight at the engine.
+fn unbound_run() -> RunOutcome<string> {
+    let g = Grammar { name: "r", start: "r", rules: [rule("r", [seq_to(
+        [cap("value", named("NAME")), item(named("BREAK"))],
+        Build.Node("E", "Lit", [], null),
+    )])] }
+    run_grammar<string>(ready(g), lex_grammar("x").tokens, never_built)
+}
+
+// LICENSED I23: conforms to a callback signature — the CONTRACT owns
+// the parameter list, not this body
+fn never_built(name: string, args: List<Captured<string>>, span: Span?) -> Result<Captured<string>, string> {
+    .Ok(Captured.Node(name))
+}
+
+/// The first slot of a build carried by a group's first branch.
+fn nested_label(src: string) -> string {
+    let g = bind_nodes(grammar_of(src), rows()).g
+    let held: Build? = group_build(g.rules[0].body.branches[0].items[1].prim)
+    if held == null { return "<no nested build>" }
+    match held! {
+        .Node(_, _, _, slots) -> first_label(slots),
+        .Call(_, _) or .Var(_) -> "<not a node>",
+    }
+}
+
+fn group_build(p: Prim) -> Build? {
+    match p {
+        .Group(inner) -> inner.branches[0].build,
+        .Ref(_) or .Lit(_) or .Named(_) -> null,
+    }
+}
+
+fn first_label(slots: List<Slot>?) -> string {
+    if slots == null { return "<unbound>" }
+    match slots![0] {
+        .Label(name) -> name,
+        .Fixed(text) -> "=${text}",
+        .Empty -> "-",
+    }
+}

@@ -21,7 +21,7 @@
 //! rolling back a speculative attempt is keeping the old one.
 //! Diagnostics are structured (span, expected set, rule); prose
 //! rendering is a projection.
-use core.{Span, filled, flatten}
+use core.{Span, span_of, filled, flatten}
 
 /// What a builder receives and returns. The engine never looks inside
 /// `Node` — `N` belongs to whoever supplies the builders.
@@ -391,11 +391,35 @@ fn built<N>(cx: MatchContext<N>, s: Seq, bindings: List<Binding<N>>,
     }
     match s.build! {
         .Var(name) -> .Ok(binding_for<N>(bindings, name) ?? cx.absent),
-        .Call(name, args) -> {
-            let argv: List<Captured<N>> = [binding_for<N>(bindings, a) ?? cx.absent for a in args]
-            cx.build(name, argv, branch)
-        }
+        .Call(name, args) -> cx.build(name, [binding_for<N>(bindings, a) ?? cx.absent for a in args], branch),
+        .Node(owner, variant, _, slots) ->
+            if slots == null { .Err(unresolved_node(owner, variant)) }
+            else { cx.build(node_builder_name(owner, variant),
+                            [slot_value<N>(cx, bindings, sl, branch) for sl in slots!], branch) },
     }
+}
+
+/// One payload as the builder receives it: the capture its label
+/// bound, the value the rule stated, or nothing.
+fn slot_value<N>(cx: MatchContext<N>, bindings: List<Binding<N>>, sl: Slot, branch: Span?) -> Captured<N> {
+    match sl {
+        .Label(name) -> binding_for<N>(bindings, name) ?? cx.absent,
+        .Fixed(text) -> captured_terminal<N>(stated(text, branch)),
+        .Empty -> cx.absent,
+    }
+}
+
+/// A payload the rule stated, worn as a terminal. It spans the branch
+/// that stated it: no source holds these characters.
+fn stated(text: string, branch: Span?) -> Token {
+    Token { kind: TokenKind.Name, text: text, span: branch ?? span_of(0, 0) }
+}
+
+/// A node build reaching the engine is a DEFECT of the assembly, not
+/// of the input: the engine holds no node model, so whoever does owes
+/// every `-> Owner.Variant` its resolution before a grammar runs.
+fn unresolved_node(owner: string, variant: string) -> string {
+    "`${owner}.${variant}` was never resolved into a builder — a node build is bound where the node model lives"
 }
 
 /// The source range tokens `[from, until)` cover; null when empty.
@@ -416,7 +440,7 @@ fn opens(p: Prim) -> bool {
 /// The result with this item's label bound, when it carries one.
 fn with_label<N>(member: Item, r: MatchResult<N>, acc: bool) -> MatchResult<N> {
     if member.label == null { return r }
-    r with { bindings: bind_label<N>(r.bindings, member.label!, r.value, acc) }
+    r with { bindings: bind_label<N>(r.bindings, member.label!, r.value, acc || member.listed) }
 }
 
 fn match_item<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
@@ -557,7 +581,7 @@ export fn ready(g: Grammar) -> Ready {
             .Ref(_) or .Group(_) -> nothing_noted(),
         }
     }
-    Ready { g: g, ordinals: ordinals, lit_expects: lits, kind_expects: kinds, defects: g.defects() }
+    Ready { g: listed_grammar(g), ordinals: ordinals, lit_expects: lits, kind_expects: kinds, defects: g.defects() }
 }
 
 /// How a literal reads when it was expected.
