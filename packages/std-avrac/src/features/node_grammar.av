@@ -13,7 +13,8 @@
 //! `List<X>` payload nothing names is `[]`, an `X?` payload nothing
 //! names is `null`, and any other unnamed payload REFUSES THE
 //! ASSEMBLY. That is what lets one rule cover `{ }` and `{ k: v }`.
-use core.{flatten, joined, Payload, PayloadRow, row_for}
+use core.{flatten, joined, PayloadRow, row_for}
+use @std.meta.{Field}
 use grammar.{Grammar, Alt, Seq, Item, Prim, Build, Slot, Fixed, Diagnostic, defect}
 
 /// A grammar with every node build bound, and what binding refused.
@@ -71,7 +72,7 @@ fn filled_slots(outer: Seq, owner: string, variant: string, fixed: List<Fixed>, 
 /// One payload's slot: the label that captures it, the value the rule
 /// states, or nothing — which the arity law permits only for a list
 /// or a nullable.
-fn filling(p: Payload, labels: List<string>, fixed: List<Fixed>) -> Slot {
+fn filling(p: Field, labels: List<string>, fixed: List<Fixed>) -> Slot {
     if labels.contains(p.name) { return Slot.Label(p.name) }
     let stated: Fixed? = fixed.find(it.name == p.name)
     if stated != null { return Slot.Fixed(stated!.text) }
@@ -143,7 +144,7 @@ fn shape_defects(rule: string, s: Seq, row: PayloadRow) -> List<Diagnostic> {
     flatten([payload_shape(rule, s, row, p) for p in row.payloads])
 }
 
-fn payload_shape(rule: string, s: Seq, row: PayloadRow, p: Payload) -> List<Diagnostic> {
+fn payload_shape(rule: string, s: Seq, row: PayloadRow, p: Field) -> List<Diagnostic> {
     let hit: Item? = s.deep_items().find(labelled(it, p.name))
     if hit == null { return [] }
     let carried: Carrier? = carrier_of(hit!.prim)
@@ -201,11 +202,11 @@ fn no_such_payload(row: PayloadRow, name: string, names: List<string>) -> string
     "names `${name}`, and `${row.owner}.${row.variant}` has no such payload — it carries ${listed(names)}"
 }
 
-fn nothing_fills(row: PayloadRow, p: Payload) -> string {
+fn nothing_fills(row: PayloadRow, p: Field) -> string {
     "builds `${row.owner}.${row.variant}` and nothing fills `${p.name}: ${p.ty}` — only a list or a nullable payload may go unnamed"
 }
 
-fn wrong_shape(row: PayloadRow, p: Payload, got: Carrier) -> string {
+fn wrong_shape(row: PayloadRow, p: Field, got: Carrier) -> string {
     "gives `${row.owner}.${row.variant}`'s `${p.name}: ${p.ty}` ${carrier_word(got)}, and it holds ${carrier_word(wanted_carrier(p.ty))}"
 }
 
