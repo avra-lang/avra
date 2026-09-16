@@ -19,12 +19,17 @@ TASKS_ACTOR="STD MASTER"`. Epic `avra-ms0j` under `avra-8sb5`.
 - **STD-DATA** — LIVE. `.6.2` (the sqlite read half) is WRITTEN and
   proved (430/430 both engines) but MUST LAND AS TWO PRs: a new
   `rt_sigs` row the compiler's own source declares CANNOT GATE from a
-  seed that predates it. PR A carries the runtime C, the `RtHost`
-  variant with a placeholder arm, the row, the reach law and the
-  vocab entry — no declaration, so it gates alone; merge and seed. PR
-  B adds the declaration, the real arm and the faces. `avra-vvds`
-  holds the ladder. Doing `.3.2` meanwhile; then `.3.6`. Epic
-  `avra-bjkk`.
+  seed that predates it. PR A is **#26** (`data/adopt-row`) and carries
+  the runtime C, the row, the reach law and the vocab entry — NO
+  `RtHost` variant and NO placeholder arm: the row lands
+  `host: RtHost.Unhosted`, which is true while the evaluator has no
+  arm, and whose arm already exists. Gated from a COLD BOOTSTRAP on
+  main's seed (`seed-check: the seed compiles HEAD`, peak 811 MB).
+  Merge it and `make seed`. PR B is **#25** (`data/sqlite-read`),
+  already written and proved 430/430 both engines; it adds the
+  declaration, the `RtHost` variant with its real arm, and the faces,
+  and gates once main's seed knows the row. `avra-vvds` holds the
+  ladder. Doing `.3.2` meanwhile; then `.3.6`. Epic `avra-bjkk`.
 - **TOOLCHAIN** — CLOSED, epic closed, five worktrees retired and
   branches archived. `avra-kpqs` left open and UNASSIGNED for a fresh
   session (it is not in a closed epic by accident).
