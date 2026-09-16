@@ -43,7 +43,7 @@ trap 'rm -f "$tarfile"' EXIT
     find Makefile avra.toml backend runtime packages tools bootstrap corpus \
         -type f ! -path '*/build/*' ! -path '*/.claude/*' 2>/dev/null \
         | LC_ALL=C sort \
-        | tar -cf "$tarfile" -T -
+        | COPYFILE_DISABLE=1 tar --no-mac-metadata -cf "$tarfile" -T -
 )
 hash=$(shasum -a 256 "$tarfile" | cut -d' ' -f1)
 remote="/home/sprite/avra-build/$slug/$hash"
