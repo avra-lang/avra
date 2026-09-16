@@ -1,0 +1,37 @@
+// A MARK on a declared MEMBER — a variant, a payload — is DATA: it is
+// recorded on the member it precedes and nothing runs. The compiler
+// judges no mark, so a mark no reader claims is carried, never refused.
+use @std.avrac.language.{analyze_source}
+
+spec "features/annotations — marks" {
+    given "a mark lands on the member it precedes" {
+        then "a variant mark is the variant's" {
+            let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    @verbatim Quote(parts: List<string>)\n}\n1\n")
+            let vs = a.view.store.enum_parts(a.view.stmts[1])?.variants ?? []
+            vs.length == 1 && vs[0].marks.length == 1 && vs[0].marks[0].name == "verbatim"
+        }
+        then "a payload mark is the payload's, not the variant's" {
+            let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    Const(@dst dst: Reg, v: int)\n}\n1\n")
+            let vs = a.view.store.enum_parts(a.view.stmts[1])?.variants ?? []
+            vs[0].marks.is_empty() && vs[0].payloads[0].marks[0].name == "dst" && vs[0].payloads[1].marks.is_empty()
+        }
+        then "a mark on the SECOND payload stays there" {
+            let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    Pair(a: Reg, @second b: Reg)\n}\n1\n")
+            let vs = a.view.store.enum_parts(a.view.stmts[1])?.variants ?? []
+            vs[0].payloads[0].marks.is_empty() && vs[0].payloads[1].marks[0].name == "second"
+        }
+        then "a variant mark and a payload mark do not trade places" {
+            let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    @vm V(@pm p: Reg)\n}\n1\n")
+            let vs = a.view.store.enum_parts(a.view.stmts[1])?.variants ?? []
+            vs[0].marks[0].name == "vm" && vs[0].payloads[0].marks[0].name == "pm"
+        }
+        then "a mark with arguments keeps its words" {
+            let a = analyze_source("type Reg = { index: int }\nenum Ins {\n    @expands(expansion) S(word: string)\n}\n1\n")
+            let vs = a.view.store.enum_parts(a.view.stmts[1])?.variants ?? []
+            vs[0].marks[0].name == "expands" && vs[0].marks[0].args.length == 1 && vs[0].marks[0].args[0] == "expansion"
+        }
+        then "a mark no reader claims is carried, never refused" {
+            analyze_source("type Reg = { index: int }\nenum Ins {\n    @nobody_reads_this Const(v: int)\n}\n1\n").clean()
+        }
+    }
+}
