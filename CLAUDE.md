@@ -1421,7 +1421,10 @@ Syntax the grammar lacks:
   refusal does not say the loop has no such word. A skip is spelled as
   a guard folded into the body's `if`, or a named predicate. In the
   sugar backlog, asked by the owner, with the wanting sites
-  (`innermost_holding`, `first_start_after` in language/source_text.av).
+  (`innermost_holding`, `first_start_after` in language/source_text.av —
+  both DELETED since, when the trivia cursor replaced the scans they
+  lived in, so the ask now wants a site; each name is licensed in
+  `tools/cited.allow` as historical).
 - A SEMICOLON between statements (`let a = 1; a + 1`): F0001
   "unexpected character" at the `;` — a statement ends at a line
   break, and a one-line body is `{ a }` with one statement. A
