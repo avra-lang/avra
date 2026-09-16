@@ -40,10 +40,15 @@ cd "$(dirname "$0")/.."
 CONSUMERS="Ins	packages/std-avrac/src/core/ir.av	dst_of	derived:Roles	the register it defines
 Ins	packages/std-avrac/src/core/ir.av	reads_of	derived:Roles	the registers it reads
 Ins	packages/std-avrac/src/core/ir.av	seat_regs	derived:Roles	an Avra call's argument seats
+Ins	packages/std-avrac/src/core/ir.av	owned_dst	derived:Roles	the register it defines that owns a reference
+Ins	packages/std-avrac/src/core/ir.av	viewed_dst	derived:Roles	the register that is a view of another box
+Ins	packages/std-avrac/src/core/ir.av	moved_args	derived:Roles	an Avra call's moved-in seats
+Ins	packages/std-avrac/src/core/ir.av	escapes_in	spelled	which uses let a register outlive its instruction
 Ins	packages/std-avrac/src/core/ir.av	call_symbol	derived:Roles	the body an Avra call enters
 Ins	packages/std-avrac/src/language/interp.av	step	spelled	its MEANING, interpreted
 Ins	packages/std-avrac/src/language/memory.av	memory_ins	spelled	its ownership effect
 Ins	packages/std-avrac/src/language/memory.av	managed_dst	spelled	whether its answer is the caller's to release
+Ins	packages/std-avrac/src/language/memory.av	view_of	spelled	which non-owning read borrows a box
 Ins	packages/std-avrac/src/language/ir_text.av	body_lines	spelled	its human projection
 Ins	packages/std-avrac/src/language/llvm.av	emit_ins	spelled	its machine projection
 Ins	packages/std-avrac/src/features/facts.av	give	spelled	whether the runtime registry validates it
@@ -167,6 +172,40 @@ while IFS='	' read -r enum file fn how what; do
 done <<EOF
 $CONSUMERS
 EOF
+
+# A ROLE MARK STANDS ON A DESTINATION. `@owns` and `@view` say what a
+# register the step DEFINES does with its reference; on a payload that
+# is not `@dst` the claim has no subject, and the readers
+# (`owned_dst`/`viewed_dst`) would answer a register the step never
+# defines. `@moves` is the one role that stands on a SOURCE, so it is
+# not asked to carry `@dst`.
+#
+# CHECKED PER PAYLOAD, NEVER PER LINE: a variant's payloads share one
+# line, so a line-scoped grep reads a misplaced `@owns` on the second
+# payload as satisfied by the first payload's `@dst` — the defect the
+# check exists for, witnessed passing. Ins payload types are scalars,
+# `List<…>` and one `Reg?`, so a top-level comma splits them; a payload
+# type carrying its own comma would need this scan to track `<>`.
+roleless=$(awk '
+  /^export enum Ins/ { inside = 1 }
+  inside && /^}/ { inside = 0 }
+  inside && /^    [A-Z]/ {
+    n = split($0, parts, ",")
+    for (j = 1; j <= n; j++) {
+      if (parts[j] ~ /@(owns|view)/ && parts[j] !~ /@dst/) {
+        print FNR ": " $0
+        next
+      }
+    }
+  }
+' packages/std-avrac/src/core/ir.av)
+if [ -n "$roleless" ]; then
+  echo "vocab: a role mark stands on a destination, and these payloads carry @owns/@view without @dst:"
+  echo "$roleless" | sed 's/^/    /'
+  echo "  A role names what a DEFINED register does; without @dst it has no subject, and"
+  echo "  the reader (owned_dst/viewed_dst) answers a register this step never defines."
+  exit 1
+fi
 
 # THE COUNT IS OF THE LIST, NOT OF THE TREE. "Type has 2 exhaustive
 # consumers" was a sentence about Type; what this script knows is a
