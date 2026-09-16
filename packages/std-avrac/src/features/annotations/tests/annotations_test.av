@@ -3,7 +3,7 @@
 // crosses, its callee resolves like any name, its arguments type
 // like any expression, and the declaration stands unchanged.
 use @std.avrac.testing.{refused_with, refusals}
-use @std.avrac.language.{analyze_source}
+use @std.avrac.language.{analyze_source, render_source}
 
 spec "features/annotations — a call over a declaration" {
     given "the surface" {
@@ -23,6 +23,85 @@ spec "features/annotations — a call over a declaration" {
             let a = analyze_source("fn a() -> int {\n    0\n}\nfn b(n: int) -> int {\n    n\n}\n@a\n@b(1)\nfn f() -> int {\n    3\n}\nf()")
             let marks = [a.view.store.annotations_of(s).length for s in a.view.stmts]
             ["${n}" for n in marks].join(",") == "0,0,2,0"
+        }
+    }
+    given "a mark on a declared member" {
+        then "a variant's mark lands on the variant" {
+            let a = analyze_source("enum E {\n    @verbatim Q(x: int)\n    P\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@verbatim Q(x: int)")
+        }
+        then "a field's mark lands on the field" {
+            let a = analyze_source("type R = {\n    @excluded a: int,\n    b: int,\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@excluded a: int")
+        }
+        then "a mark's words ride it" {
+            let a = analyze_source("enum E {\n    @expands(body) S(body: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@expands(body) S(body: int)")
+        }
+        then "a mark marks the member it precedes, never the one before it" {
+            let a = analyze_source("enum E {\n    A(x: int)\n    @verbatim B(y: int)\n}\n0")
+            let src = render_source(a.view.store, a.view.stmts)
+            src.contains("@verbatim B(y: int)") && !src.contains("@verbatim A")
+        }
+        then "marks stack, in written order" {
+            let a = analyze_source("enum E {\n    @one @two(x) A(x: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@one @two(x) A(x: int)")
+        }
+        then "a mark's word list takes a trailing comma" {
+            let a = analyze_source("enum E {\n    @by(a, b,) A(x: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@by(a, b) A(x: int)")
+        }
+        then "a payload-free variant carries one too" {
+            let a = analyze_source("enum E {\n    @verbatim A\n    B\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@verbatim A")
+        }
+        then "empty parentheses mean no words — `@m()` is `@m`" {
+            let a = analyze_source("enum E {\n    @m() A(x: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@m A(x: int)")
+        }
+        then "the LAST field carries one, trailing comma and all" {
+            let a = analyze_source("type R = {\n    a: int,\n    @m b: int,\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@m b: int")
+        }
+        then "a one-line declaration carries one" {
+            let a = analyze_source("enum E { @m A B }\n0")
+            let src = render_source(a.view.store, a.view.stmts)
+            src.contains("@m A") && !src.contains("@m B")
+        }
+        then "the same word twice is TWO marks, not one" {
+            let a = analyze_source("enum E {\n    @m @m A(x: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@m @m A(x: int)")
+        }
+        then "a payload's mark lands on the payload" {
+            let a = analyze_source("enum E {\n    A(@m x: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("A(@m x: int)")
+        }
+        then "a payload's words ride it, and stack" {
+            let a = analyze_source("enum E {\n    A(@one @by(x, y) p: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("A(@one @by(x, y) p: int)")
+        }
+        then "a variant's mark and its payload's are told apart" {
+            let a = analyze_source("enum E {\n    @outer A(@inner x: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@outer A(@inner x: int)")
+        }
+        then "the LAST payload's mark is not the NEXT variant's" {
+            let a = analyze_source("enum E {\n    A(x: int, @m y: int)\n    B(z: int)\n}\n0")
+            let src = render_source(a.view.store, a.view.stmts)
+            src.contains("A(x: int, @m y: int)") && !src.contains("@m B")
+        }
+        then "a middle payload's mark is not the next payload's" {
+            let a = analyze_source("enum E {\n    A(@m x: int, y: int)\n}\n0")
+            let src = render_source(a.view.store, a.view.stmts)
+            src.contains("A(@m x: int, y: int)") && !src.contains("@m y")
+        }
+        then "a payload mark rides a one-line declaration too" {
+            let a = analyze_source("enum E { A(@m x: int) B }\n0")
+            let src = render_source(a.view.store, a.view.stmts)
+            src.contains("A(@m x: int)") && !src.contains("@m B")
+        }
+        then "a RESERVED WORD fills a mark's word list — a mark's argument names no binding" {
+            let a = analyze_source("enum E {\n    @by(type) A(x: int)\n}\n0")
+            render_source(a.view.store, a.view.stmts).contains("@by(type) A(x: int)")
         }
     }
     given "the callee and the arguments are expressions" {

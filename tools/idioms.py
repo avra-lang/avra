@@ -151,7 +151,20 @@ def index_walk(lines):
 
 # A REAL count pins a number: `== n`, or the testing verbs that pin
 # it for you. `>= 1` is not a count — it is I30's smell.
-COUNTED = re.compile(r"diagnostics\.length ==|voices\.length ==|refusals\(.*\) ==|refused_with\(|refused_n\(")
+#
+# EVERY VERB THE TESTING MODULE EXPORTS BELONGS HERE. `refused_in` pins
+# the count at one (it IS `refused_n(p, phrase, 1)`) and was missing
+# from this list for its whole life — a keeper's ACCEPT surface is as
+# much a claim as its refuse surface, and only a test that uses the
+# missing spelling inside a `then` block ever finds the gap.
+COUNTED = re.compile(r"diagnostics\.length ==|voices\.length ==|refusals\(.*\) ==|refused_with\(|refused_n\(|refused_in\(")
+
+# The spellings COUNTED must ACCEPT, each proved below — a matcher
+# with N accepted alternatives needs N positive fixtures, or a dead
+# alternative widens what the keeper permits and no failing fixture
+# can see it.
+COUNTS = ["a.diagnostics.length == 1", "p.voices.length == 2", "refusals(src) == 3",
+          "refused_with(src, \"nope\")", "refused_n(p, \"nope\", 2)", "refused_in(p, \"nope\")"]
 
 def uncounted_refusal(lines):
     """A refusal test asserting only `contains` — the shape that lets
@@ -514,6 +527,20 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "I47": "no grep tells a COMPLETE anchor list from a partial one — the anchors\n"
+           "           are whatever the grammar can put in the range, so a helper taking\n"
+           "           `List<Token>` of names reads identically whether or not the span\n"
+           "           between them holds members of another kind. The keeper is the\n"
+           "           attack: write the optional piece on the LAST member of one group\n"
+           "           with another group following, and read it back through the\n"
+           "           printer (annotations_adversarial_test.av, \"payload marks —\n"
+           "           alignment\")",
+    "I46": "no grep tells a question about a STATEMENT from a question about the\n"
+           "           DECLARATION in hand — both read `decl(d).stmt`, and which one a\n"
+           "           law is asking is semantic. The keeper is a test that pins the\n"
+           "           COUNT over a member carrying a declaration of its own: a record\n"
+           "           field with a DEFAULT is minted on its owner's statement, so a\n"
+           "           per-decl walk asks its owner's question a second time",
     "I45": "no grep tells \"declares a derive and nothing else\" from an ordinary\n"
            "           file with a trait in it — the shape that breaks it is whatever\n"
            "           ELSE the file holds. The keeper is the law in CLAUDE.md and the\n"
@@ -697,6 +724,9 @@ def selftest():
     while this tool reported success. A collapsed dict cannot see its
     own duplicates, so the check reads the SOURCE."""
     dead = duplicate_numbers()
+    for spelling in COUNTS:
+        if not COUNTED.search(spelling):
+            dead.append(f"I20 does not accept the count `{spelling}`")
     for code, (matcher, _) in RULES.items():
         specimens = SPECIMENS.get(code)
         if specimens is None:

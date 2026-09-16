@@ -18,7 +18,7 @@ RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 # Every package that carries spec cases, in dependency order.
 SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-meta packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite
 
-.PHONY: census traps test tested clean seed-check gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed recover bootstrap \
+.PHONY: census traps test tested clean seed-check gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed recover bootstrap rt-header witnesses \
         check run ir emit build-native native-check avra
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
@@ -122,10 +122,10 @@ build/%.sha: FORCE
 	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
 	@rm -f $@.tmp
 
-build/runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h
+build/runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h
 build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c runtime/avra_box.h
 
-build/avra_runtime.o: runtime/avra_runtime.c runtime/avra_box.h build/runtime.sha
+build/avra_runtime.o: runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h build/runtime.sha
 	@mkdir -p build
 	cc -O2 -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
 
@@ -212,6 +212,37 @@ vocab:
 # kinds may wear one number, or they fingerprint alike by construction.
 fingerprints:
 	@python3 tools/fingerprints.py
+
+# THE ROWS' CLAIM ON THE C. `runtime/avra_rt.h` is generated from
+# `rt_sigs()` and included last by the runtime, so a body that answers
+# a width its row does not name is a C compiler error at the line that
+# implements it. A STALE header asserts the OLD rows and says nothing
+# about the new ones — silently, which is the shape a generated
+# artifact fails in — so the gate regenerates it and compares.
+rt-header:
+	@./avra runtime-header > build/avra_rt.h.gen
+	@cmp -s build/avra_rt.h.gen runtime/avra_rt.h || { \
+	  echo "rt-header: runtime/avra_rt.h is not what the rows say — it is generated, never edited:"; \
+	  echo "rt-header:   ./avra runtime-header > runtime/avra_rt.h"; \
+	  diff runtime/avra_rt.h build/avra_rt.h.gen 2>/dev/null | head -20; exit 1; }
+	@echo "rt-header: $$(grep -c '^_Static_assert' runtime/avra_rt.h) row(s) claim a C body, checked by the C compiler that builds the runtime"
+
+# EVERY REGISTERED CODE'S GOLDEN IS THE COMPILER OVER ITS WITNESS.
+# docs/DIAGNOSTICS.md is made by `avra diagnostics` — each entry is a
+# source that triggers the code and the compiler's own words over it —
+# so a voice whose wording drifts shows up as a diff here rather than
+# nowhere. 135 codes are registered and 23 appeared in any test before
+# this existed.
+# AND A WITNESS THAT NO LONGER TRIGGERS ITS KIND IS REFUSED: the
+# compiler moves under it, it starts producing some other code, and a
+# green golden of the wrong words is worse than no golden. The command
+# exits 1 on one, which fails this target at its first line.
+witnesses:
+	@./avra diagnostics > build/DIAGNOSTICS.md.gen
+	@cmp -s build/DIAGNOSTICS.md.gen docs/DIAGNOSTICS.md || { \
+	  echo "witnesses: docs/DIAGNOSTICS.md is not what the compiler says — it is generated, never edited:"; \
+	  echo "witnesses:   ./avra diagnostics > docs/DIAGNOSTICS.md"; \
+	  diff docs/DIAGNOSTICS.md build/DIAGNOSTICS.md.gen 2>/dev/null | head -30; exit 1; }
 
 # THE EXTERN WALL'S WIDTH: Avra's `int` is 64 bits and C's is 32, so a
 # C body answering a narrow type writes only the low half and a
@@ -300,7 +331,7 @@ witness: $(RUNTIME_OBJS) build/width_witness.o
 # scaffolded into std-avrac before, removed after, however the suites
 # end — so the templates' own test is one case of that suite, not a
 # second compile of the whole compiler for one case.
-gate: seed-check vocab fingerprints externs idioms tested traps witness
+gate: seed-check vocab fingerprints rt-header witnesses externs idioms tested traps witness
 
 tested: $(RUNTIME_OBJS)
 	@rm -rf packages/std-avrac/src/features/zz_probe

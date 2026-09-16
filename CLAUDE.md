@@ -1520,6 +1520,14 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   "the body answers `[]?` but … declares `List<int>?`". Bind the
   empty at its own type first (`let none: List<int> = []`). An
   empty STRING adopts `string?` fine.
+  THE WANT IS WHAT DECIDES, NOT THE NEIGHBOUR — and this entry reads
+  as forbidding more than it does. `parts(k)?.params ?? []` COMPILES
+  at a `List<P>` seat, and so does a chain (`a()?.xs ?? b()?.xs ??
+  []`): a `??`'s want is its NON-nullable answer type, so the literal
+  has an ordinary want to adopt. Probed at phase/c, both engines,
+  answering `1 0 0`. Worth stating because the sentence above sends a
+  reader at a defensive two-arm match for a shape that needs none —
+  which is the trap-fear the probe discipline exists to shrink.
 - A struct-literal FIELD seat does not plant a want on its value
   (the value is walked before the field's want exists): a
   comprehension there types on its own, so `Pins { slots: [b ??
@@ -1959,14 +1967,29 @@ Runtime facts, ours to ratify:
 - AND A KEEPER HAS TWO SURFACES: what it REFUSES and what it
   ACCEPTS. Making it fail tests only the first. `tools/idioms.py`'s
   counted-refusal matcher listed `refused_n(` among the honest
-  spellings, and no such fn has ever existed — `testing/mod.av`
-  exports `refused_with` and `refused_at_run` and nothing of that
-  name. A DEAD ALTERNATIVE: accepted by nobody, protecting nothing,
-  quietly widening what the keeper permits, and invisible to every
-  fixture that makes the keeper fail, because the keeper was working.
-  So exercise each alternative a keeper ACCEPTS as well as one that
-  breaks it — a matcher with N spellings needs N positive fixtures,
-  or the dead one sits there for as long as nobody greps it.
+  spellings while no fn of that name existed — a DEAD ALTERNATIVE:
+  accepted by nobody, protecting nothing, quietly widening what the
+  keeper permits, and invisible to every fixture that makes the keeper
+  fail, because the keeper was working. So exercise each alternative a
+  keeper ACCEPTS as well as one that breaks it — a matcher with N
+  spellings needs N positive fixtures.
+  THE LAW STOOD AND ITS EXAMPLE EXPIRED, which is the half worth
+  keeping. `refused_n` LANDED at c515f04; the dead alternative became
+  live and this entry went on naming it as the dead one, reading as
+  current the whole time. And the alternative that was ACTUALLY
+  missing from `COUNTED` was a different one — `refused_in`, the
+  tree's own one-refusal verb (`refused_n(p, phrase, 1)`), which the
+  matcher refused as an uncounted test. Nobody found that by grepping:
+  it took WRITING a test with the honest verb inside a `then` block,
+  which is the new-consumer law one rule over. An entry whose instance
+  is a NAMED ARTIFACT owes a re-check the day that artifact moves —
+  the law is evergreen, the example has a date on it.
+  AND THE MECHANISM THIS LAW CALLS FOR DOES NOT EXIST: there is no
+  `ACCEPTED` table in `tools/idioms.py`, only `SPECIMENS`, which holds
+  the shapes a matcher must FIRE on — the refuse surface alone. The
+  `COUNTS` list beside `COUNTED` is one matcher's worth of the accept
+  surface, self-tested; every other matcher's accept surface is still
+  unexercised. Do not read this entry as saying the table is there.
 - A TEST WITH ITS OWN COPY OF THE LOGIC TESTS THE COPY, and the
   SYMPTOM IS WHAT MISDIRECTS. The externs keeper's self-test built
   its typedef map from an inline duplicate of the collection it

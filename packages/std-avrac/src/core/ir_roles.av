@@ -1,0 +1,183 @@
+//! `@derive(Roles)` — an instruction's register and symbol
+//! projections, read off the ROLE each payload declares. `@dst` is
+//! the register the step DEFINES, and every OTHER reg-shaped payload
+//! is an operand in declaration order, which is the whole of
+//! `reads_of`. `@seats` are an Avra call's arguments (callee-cleans,
+//! so a runtime row's are not seats), `@body` the symbol of a body a
+//! call ENTERS, `@code` a body's address taken as a value, `@host` a
+//! hosted fn's name.
+//!
+//! IT DERIVES PROJECTIONS, NEVER MEANING. The evaluator's `step`, the
+//! memory pass and `emit_ins` stay written: there the exhaustive
+//! match IS the registration, and a new instruction must break them.
+//!
+//! It stands ALONE in this file on purpose: running a derive TYPES
+//! the file that declares it, and a file that also walked the IR
+//! would be typed while the annotated file's own impls are still
+//! registering (CLAUDE.md).
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Kind, Directive, Code, Decls, Arms, name}
+
+/// The compiler's derive for the IR's role projections.
+trait Roles {
+    static fn derive(t: MetaType) -> List<Directive> {
+        // ONE DIRECTIVE PER PROJECTION, NOT ONE QUOTE HOLDING SIX. Two
+        // `match` expressions in one `Decls` alias their pattern nodes:
+        // the second loses its enum and lowering mints out of order.
+        // Probed to a twenty-line case; one match per quote is clean,
+        // and it is the better shape besides — each projection's whole
+        // declaration reads on one line here.
+        [made(t, quote {
+            export fn dst_of_role(i: ${t}) -> Reg? {
+                match i { ${[answering(v, holding(v, "dst"), quote { null }) for v in t.variants]} }
+            }
+         }),
+         made(t, quote {
+            export fn reads_of_role(i: ${t}) -> List<Reg> {
+                match i { ${[arm(v, concatenated(operands(v))) for v in t.variants]} }
+            }
+         }),
+         made(t, quote {
+            export fn seat_regs_role(i: ${t}) -> List<Reg> {
+                match i { ${[answering(v, holding(v, "seats"), quote { [] }) for v in t.variants]} }
+            }
+         }),
+         made(t, quote {
+            export fn call_symbol_role(i: ${t}) -> string? {
+                match i { ${[answering(v, holding(v, "body"), quote { null }) for v in t.variants]} }
+            }
+         }),
+         made(t, quote {
+            export fn body_symbol_role(i: ${t}) -> string? {
+                match i { ${[answering(v, entered_or_addressed(v), quote { null }) for v in t.variants]} }
+            }
+         }),
+         made(t, quote {
+            export fn hosted_symbol_role(i: ${t}) -> string? {
+                match i { ${[answering(v, holding(v, "host"), quote { null }) for v in t.variants]} }
+            }
+         })]
+    }
+
+    /// The words this derive reads off a payload.
+    static fn marks(t: MetaType) -> List<string> { ["dst", "seats", "body", "code", "host"] }
+}
+
+fn made(t: MetaType, code: Decls) -> Directive {
+    Directive { twin: "", name: t.name, at: t.at, source: code }
+}
+
+/// A body NAMED by a step: the one it ENTERS, else the one it takes
+/// the ADDRESS of — a call beats an address where a variant declares
+/// both, since entering is the stronger claim.
+fn entered_or_addressed(v: MetaVariant) -> int? {
+    holding(v, "body") ?? holding(v, "code")
+}
+
+/// An arm answering the payload in that role, or `otherwise` when the
+/// variant declares none.
+///
+/// A ROLE IS A SINGLETON — a step defines ONE register, enters ONE
+/// body, calls ONE hosted fn — and the FIRST payload holds it. The
+/// derive does not refuse a second, because it CANNOT SAY SO WITHOUT
+/// TRAPPING: a name nothing declares carries the derive file's span
+/// into the target's text, and the compiler wrecks with "a span
+/// reaches outside its own text" rather than speaking (avra-9wnh;
+/// `rebuild_derive`'s own arity escape hatch has the same latent
+/// trap and has never fired). So the SOUND DIRECTION is taken
+/// instead, at `operands`: only the payload actually answered is
+/// dropped from the reads, so a duplicate can make a register an
+/// OPERAND — conservative, visible to liveness — and never HIDE one,
+/// which is the leak. The transcription beside this enum is what
+/// catches the mistake itself. When the trap is fixed this refuses.
+fn answering(v: MetaVariant, at: int?, otherwise: Code) -> Arms {
+    if at == null { return arm(v, otherwise) }
+    arm(v, name(binders(v)[at!]))
+}
+
+/// One arm: the variant's payloads bound, and a value. A payload-free
+/// variant takes no parentheses.
+fn arm(v: MetaVariant, value: Code) -> Arms {
+    if v.fields.is_empty() { return quote { .${v} -> ${value} } }
+    quote { .${v}(${binders(v)}) -> ${value} }
+}
+
+/// The payload that HOLDS `word`, or absence when none does — the
+/// FIRST, because a role is a singleton and the arms above answer one
+/// payload.
+fn holding(v: MetaVariant, word: string) -> int? {
+    let at = [j for j, f in v.fields if carries(f, word)]
+    if at.is_empty() { return null }
+    at[0]
+}
+
+fn carries(f: Field, word: string) -> bool {
+    f.marks.any(it.name == word)
+}
+
+/// A step's OPERANDS: every reg-shaped payload but THE ONE `dst_of`
+/// ANSWERS, in declaration order. Keyed on that payload's position
+/// and not on the mark, so a variant marked twice loses no register
+/// to silence.
+fn operands(v: MetaVariant) -> List<Code> {
+    let bs = binders(v)
+    let defines = holding(v, "dst")
+    flatten([some_list(operand(f, bs[j])) for j, f in v.fields if read_at(defines, j)])
+}
+
+/// Whether payload `j` is an OPERAND: every one but the payload
+/// `dst_of` answers.
+fn read_at(defines: int?, j: int) -> bool {
+    defines == null || defines! != j
+}
+
+/// One payload's registers as an expression, or absence when it holds
+/// none — asked of the payload's SHAPE, never of the words it was
+/// written with.
+fn operand(f: Field, b: string) -> Code? {
+    if reg_kind(f.kind) { return quote { [${name(b)}] } }
+    match f.kind {
+        .List(elem) -> reg_list(elem, b),
+        .Opt(inner) -> reg_opt(inner, b),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Named(_, _) or .Cell(_) or
+        .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> null,
+    }
+}
+
+/// THE ONE PLACE THAT SAYS WHAT A REGISTER IS, and it asks the SHAPE:
+/// `Reg` is a declared record of no arguments.
+fn reg_kind(k: Kind) -> bool {
+    match k {
+        .Named(n, args) -> n == "Reg" && args.is_empty(),
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .List(_) or .Cell(_) or
+        .Map(_, _) or .Opt(_) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or
+        .Unspelled(_) -> false,
+    }
+}
+
+/// A `List<Reg>` payload IS the operands it holds; any other list
+/// holds none.
+fn reg_list(elem: Kind, b: string) -> Code? {
+    if !reg_kind(elem) { return null }
+    name(b)
+}
+
+/// A `Reg?` payload is ONE operand or NONE — the absent case, which
+/// is why it flattens and never forces.
+fn reg_opt(inner: Kind, b: string) -> Code? {
+    if !reg_kind(inner) { return null }
+    quote { some_list(${name(b)}) }
+}
+
+/// THE RUNS AS ONE LIST. Each part is itself a LIST expression, and a
+/// hole in expression position takes one `Code` (F2075), so a run of
+/// them is folded rather than spliced. Shared with `@derive(Grammar)`,
+/// whose parts are elements and are wrapped first.
+fn concatenated(parts: List<Code>) -> Code {
+    if parts.is_empty() { return quote { [] } }
+    mut all = parts[0]
+    for p in parts.slice(1, parts.length) {
+        let sofar = all
+        all = quote { ${sofar}.concat(${p}) }
+    }
+    all
+}

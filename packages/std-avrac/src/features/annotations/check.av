@@ -173,11 +173,10 @@ fn takes_no_declaration(mut cx: TypeCx, a: Annotation) {
 
 fn wrong_receiver(mut cx: TypeCx, a: Annotation, seat: TypeId, kind: DeclKind?) {
     let took = cx.view.types.name_of(seat)
-    let this = if kind == null { "not a declaration" } else { "a ${kind_word(kind!)}" }
     let found = if ["Fn", "Type", "Named"].contains(took) && !cx.view.decls.meta_type(seat, took) {
         "`${a.name}` takes `${took}` from another module, not `@std.meta.${took}`"
     } else {
-        "`${a.name}` takes `${took}`, and this is ${this}"
+        "`${a.name}` takes `${took}`, and this is ${a_kind(kind)}"
     }
     let _ = cx.spoken(refusal("annotation.receiver", at_annotation(cx, a),
                        receiver_law,
@@ -243,6 +242,21 @@ fn derive_law(mut cx: TypeCx, a: Annotation, s: StmtId) -> bool {
                 derived_same_file(cx, a)
                 return true
             }
+            // THE SEAT LAW REACHES THE SECOND HOP TOO. `@derive` itself
+            // takes `Named`, which fits every declaration by design, so
+            // the door above passes whatever is written — and the
+            // trait's OWN `derive` is the thing that has to fit. Its
+            // seat goes through the same law, or a `Type` derive lands
+            // on a fn and the crossing hands it a record with no fields
+            // and no variants, which is indistinguishable from an empty
+            // one: nothing is generated and nothing is said, and every
+            // CALLER of the method that was never made is blamed.
+            let takes: TypeId? = derive_seat(cx, m)
+            let kind: DeclKind? = declared_kind(cx, s)
+            if takes != null && !receiver_fits(cx, takes!, kind) {
+                derive_takes_another_kind(cx, e, named.name, takes!, kind)
+                return true
+            }
             // THE TRAIT'S OWN `derive` RAN during this file's resolve;
             // asking again hits the memo, and a run that failed is
             // spoken here — silence would leave "no method `show`".
@@ -256,6 +270,29 @@ fn derive_law(mut cx: TypeCx, a: Annotation, s: StmtId) -> bool {
         }
     }
     false
+}
+
+/// What the trait's own `derive` takes — the seat the `Named` door
+/// above cannot judge, since `Named` fits every declaration.
+fn derive_seat(cx: TypeCx, member: DeclId) -> TypeId? {
+    let sig: FnSig? = (cx.view.decls.sig(member))?.fn_sig()
+    if sig == null { return null }
+    sig!.params.first()
+}
+
+/// A trait whose `derive` takes another kind of declaration than the
+/// one the annotation stands on.
+fn derive_takes_another_kind(mut cx: TypeCx, e: ExprId, name: string, takes: TypeId, kind: DeclKind?) {
+    let _ = cx.spoken(refusal("annotation.receiver", cx.loc_of(e),
+                       receiver_law,
+                       "`${name}`'s `derive` takes `${cx.view.types.name_of(takes)}`, and this is ${a_kind(kind)}",
+                       "`Fn` crosses a fn, `Type` a record or an enum, `Named` any declaration"))
+}
+
+/// A declaration's kind in the words a refusal uses.
+fn a_kind(kind: DeclKind?) -> string {
+    if kind == null { return "not a declaration" }
+    "a ${kind_word(kind!)}"
 }
 
 /// A `@derive` argument that names something other than a trait.

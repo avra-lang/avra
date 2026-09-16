@@ -56,17 +56,74 @@ if [ -n "$free_mb" ] && [ "$free_mb" -lt "$disk_floor" ]; then
     echo "watch:   links straight at it. Free space first; AVRA_DISK_FLOOR_MB moves the floor." >&2
     exit 2
 fi
-until mkdir "$lock" 2>/dev/null; do
-    holder=$(cat "$lock/pid" 2>/dev/null)
-    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-        rm -rf "$lock"
-        continue
+# THE SLOTS, AND THE QUEUE IN FRONT OF THEM. The lock is N
+# directories, not one: a gate peaks at ~0.83 GB on a 16 GB machine,
+# so serialising every heavy step was a cap set for a tree whose gate
+# cost 2.4 GB and leaked, and the guard outlived its reason. SLOT 1
+# KEEPS THE OLD PATH, so a worktree still running the one-slot script
+# contends for it and the two exclude each other during a rollout.
+# AND THE SLOTS ARE ENTERED IN ARRIVAL ORDER, because N slots taken by
+# `mkdir` alone is still a race: a lane running back-to-back steps
+# re-takes a slot before a waiting lane's next poll, and one lane lost
+# 161 times while queueing correctly. A waiter takes a TICKET above
+# every ticket outstanding and tries the slots only when no older
+# ticket is WAITING — a ticket is dropped the moment a slot is taken,
+# or the queue would serve one lane at a time and the slots would buy
+# nothing. A ticket or a slot whose holder died is reaped, or it
+# blocks the queue forever.
+slots="${AVRA_BUILD_SLOTS:-3}"
+qdir=$lock.q
+mkdir -p "$qdir"
+last=$(ls "$qdir" 2>/dev/null | sort -n | tail -1)
+mine=$(( ${last:--1} + 1 ))
+while ! mkdir "$qdir/$mine" 2>/dev/null; do mine=$(( mine + 1 )); done
+echo $$ > "$qdir/$mine/pid"
+# Until a slot is held, the trap clears the TICKET alone: `$lock` still
+# names slot 1, and removing it here would free another lane's slot.
+trap 'rm -rf "$qdir/$mine"' EXIT INT TERM
+held=""
+said=no
+while [ -z "$held" ]; do
+    ahead=no
+    for t in "$qdir"/*; do
+        [ -d "$t" ] || continue
+        h=$(cat "$t/pid" 2>/dev/null)
+        if [ -n "$h" ] && ! kill -0 "$h" 2>/dev/null; then
+            rm -rf "$t"
+            continue
+        fi
+        n=${t##*/}
+        [ "$n" -lt "$mine" ] 2>/dev/null && ahead=yes
+    done
+    if [ "$ahead" = no ]; then
+        n=1
+        while [ "$n" -le "$slots" ]; do
+            [ "$n" = 1 ] && cand="$lock" || cand="$lock.$n"
+            if mkdir "$cand" 2>/dev/null; then held="$cand"; break; fi
+            holder=$(cat "$cand/pid" 2>/dev/null)
+            if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+                rm -rf "$cand"
+                continue
+            fi
+            n=$(( n + 1 ))
+        done
     fi
-    echo "watch: waiting for the build lock (held by pid ${holder:-?})" >&2
+    [ -n "$held" ] && break
+    if [ "$said" = no ]; then
+        echo "watch: all $slots build slots busy — waiting (ticket $mine)" >&2
+        said=yes
+    fi
     sleep 5
 done
-echo $$ > "$lock/pid"
+lock="$held"
+# A TICKET MEANS "WAITING", NOT "RUNNING". Dropping it at the moment a
+# slot is taken is what lets the other slots fill: a ticket held for
+# the whole run would make every later arrival wait behind THIS one,
+# and N slots would serve one lane at a time — the queue defeating the
+# capacity it was put in front of (witnessed: four runs, no overlap).
+rm -rf "$qdir/$mine"
 trap 'rm -rf "$lock"' EXIT INT TERM
+echo $$ > "$lock/pid"
 while :; do
     level=$(sysctl -n kern.memorystatus_level 2>/dev/null || echo 100)
     [ "$level" -ge "$floor" ] && break
