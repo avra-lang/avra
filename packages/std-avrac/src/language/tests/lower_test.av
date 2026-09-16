@@ -2,7 +2,7 @@
 // its definition's register), scopes are structure, and the memory
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
-use @std.avrac.core.{Ins, RtSig, Reg, Type, TypeId, same_reg, distinct, new_type_registry}
+use @std.avrac.core.{Ins, RtSig, Reg, Type, TypeId, same_reg, distinct, moved_args, flatten, new_type_registry}
 use @std.avrac.language.{Lowered, Body, render_ir, minted_pointers}
 use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns, rt_index}
 use @std.avrac.testing.{ir_of, halver, shown}
@@ -177,6 +177,20 @@ spec "language/lower" {
             ir_of("let t = \"a\" == \"b\"\n\"done\"").entry.ins.filter((i: Ins) -> i is .CallRt).length == 1
         }
     }
+    given "the ownership roles read as behavior" {
+        then "the identity pack of an UNMANAGED pair carries NO reference — `@owns` respects `is_managed`" {
+            pack_carries_no_reference(all_ins(ir_of(pair_read())))
+        }
+        then "the element read is a VIEW — no retain, no release of its own" {
+            extract_carries_no_reference(all_ins(ir_of(pair_read())))
+        }
+        then "a call's `@moves` seat is RETAINED before the call — the caller's half" {
+            every_call_seat_retained(ir_of(moved_seat()).entry.ins)
+        }
+        then "`avra ir` SHOWS the moved seat's retain, placed Before the call that releases it" {
+            render_ir(ir_of(moved_seat())).contains("retain r0\n  r1 = call id(r0)")
+        }
+    }
     given "THE LAW: nullability never allocates" {
         // The one exception, pinned so it cannot widen: a FLAT record
         // is a machine word with no spare value and no room for a
@@ -338,6 +352,65 @@ fn cond_mint_settled(ins: List<Ins>) -> bool {
     let end = marker_index(ins, Ins.LoopEnd)
     let minted: Reg? = called_in(ins.slice(start, cond))
     minted != null && releases_of(ins.slice(start, cond), minted!) == 1 && releases_of(ins.slice(end, ins.length), minted!) == 0
+}
+
+/// The identity pack's destination holds NO reference — its value is
+/// unmanaged, so `@owns` is a role and `is_managed` is the gate.
+fn pack_carries_no_reference(ins: List<Ins>) -> bool {
+    let d: Reg? = first_pack(ins)
+    if d == null { return false }
+    retains_of(ins, d!) == 0 && releases_of(ins, d!) == 0
+}
+
+/// The element read views the box — no reference of its own.
+fn extract_carries_no_reference(ins: List<Ins>) -> bool {
+    let d: Reg? = first_extract(ins)
+    if d == null { return false }
+    retains_of(ins, d!) == 0 && releases_of(ins, d!) == 0
+}
+
+/// Every instruction of every body — a projection may be emitted in a
+/// callee's body while the read stands in the entry.
+fn all_ins(l: Lowered) -> List<Ins> {
+    flatten([b.ins for b in l.fns]).concat(l.entry.ins)
+}
+
+/// An Avra call whose one argument is managed — the `@moves` seat the
+/// caller must retain before handing its reference over.
+fn moved_seat() -> string {
+    "fn id(s: string) -> string { s }\nid(\"a\")"
+}
+
+/// Every managed `@moves` seat of every call in the slice is retained
+/// exactly once — what `retained_args` reads off the declaration.
+fn every_call_seat_retained(ins: List<Ins>) -> bool {
+    let calls = [i for i in ins if i is .Call]
+    let seats = flatten([moved_args(i) for i in calls])
+    seats.all((r: Reg) -> retains_of(ins, r) == 1)
+}
+
+/// The destination of the first pack in the slice.
+fn first_pack(ins: List<Ins>) -> Reg? {
+    for i in ins {
+        let d: Reg? = match i {
+            .Pack(d, _) -> d,
+            _ -> null,
+        }
+        if d != null { return d }
+    }
+    null
+}
+
+/// The destination of the first element read in the slice.
+fn first_extract(ins: List<Ins>) -> Reg? {
+    for i in ins {
+        let d: Reg? = match i {
+            .Extract(d, _, _) -> d,
+            _ -> null,
+        }
+        if d != null { return d }
+    }
+    null
 }
 
 /// The register the first body CALL in the slice defines.
