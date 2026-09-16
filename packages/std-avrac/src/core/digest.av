@@ -1,0 +1,64 @@
+//! A WIDE CONTENT DIGEST — four independent modular lanes read as one
+//! key. `fp`/`fp_str` are in-process fingerprints: thirty bits, plenty
+//! to cut a memo wave, far too few to name an artifact that outlives
+//! the process. A cache key decides which bytes a later build TRUSTS,
+//! so a collision is a silently wrong binary; four lanes put that near
+//! 2^-120 a pair, below any artifact count this tree can reach.
+//!
+//! Absorb the WHOLE value a consumer reads. A digest over a projection
+//! certifies "unchanged" about something that changed — the
+//! early-cutoff law one layer out, where the cost is not a stale span
+//! but a reused artifact.
+
+export type Digest = { a: int, b: int, c: int, d: int }
+
+const D0: int = 1000000007
+const D1: int = 1000000009
+const D2: int = 1000000021
+const D3: int = 1000000033
+
+/// Lanes start apart, so a digest that absorbed nothing still differs
+/// from one that absorbed a single zero.
+export fn new_digest() -> Digest {
+    Digest { a: 7919, b: 104729, c: 1299709, d: 15485863 }
+}
+
+/// One lane of the fold: `v` normalized under the lane's prime, so
+/// mixing never overflows and a negative payload mixes as its residue.
+fn lane(h: int, v: int, p: int) -> int {
+    mut nv = v % p
+    if nv < 0 { nv = nv + p }
+    (h * 131 + nv + 7) % p
+}
+
+/// Absorb one whole number across every lane, so two inputs agreeing in
+/// one lane still separate in another.
+export fn digest_int(d: Digest, v: int) -> Digest {
+    Digest {
+        a: lane(lane(d.a, v, D0), v, D2),
+        b: lane(lane(d.b, v, D1), v, D3),
+        c: lane(lane(d.c, v, D2), v, D0),
+        d: lane(lane(d.d, v, D3), v, D1),
+    }
+}
+
+/// Absorb a string's bytes AND its length: the length fold is what
+/// makes `"ab"` then `"c"` differ from `"a"` then `"bc"`.
+export fn digest_text(d: Digest, s: string) -> Digest {
+    mut out = d
+    let n = s.length
+    mut i = 0
+    while i < n {
+        out = digest_int(out, s.char_code(i))
+        i = i + 1
+    }
+    digest_int(out, n)
+}
+
+/// The digest as a file-name key: four lanes, decimal, dot-separated.
+/// The name a result is STORED under and the name it is LOOKED UP by
+/// are this one derivation.
+export fn digest_key(d: Digest) -> string { "${d.a}.${d.b}.${d.c}.${d.d}" }
+
+/// A whole string's key — the common case.
+export fn digest_of(s: string) -> string { digest_key(digest_text(new_digest(), s)) }
