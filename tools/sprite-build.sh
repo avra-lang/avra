@@ -16,6 +16,7 @@ sprite=
 worktree=
 pulls=
 receipt=
+prebuild=
 # A worktree may predate the provisioning script, so the helper carries
 # its own copy and seeds it into the synced tree.
 here=$(cd "$(dirname "$0")" && pwd)
@@ -24,6 +25,7 @@ while [ "$#" -gt 0 ]; do
     case $1 in
         --pull) pulls="$pulls $2"; shift 2 ;;
         --receipt) receipt=1; shift ;;
+        --prebuild) prebuild=1; shift ;;
         --) shift; break ;;
         *) [ -z "$sprite" ] && sprite=$1 || worktree=$1; shift ;;
     esac
@@ -44,7 +46,7 @@ trap 'rm -f "$tarfile"' EXIT
 # those files travel even though they are not source.
 (
     cd "$worktree"
-    find Makefile avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
+    find Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
          backend runtime packages tools bootstrap corpus \
         -type f ! -path '*/build/*' ! -path '*/.claude/*' 2>/dev/null \
         | LC_ALL=C sort \
@@ -67,7 +69,12 @@ status=0
 sprite -s "$sprite" file push "$provision_script" "/home/sprite/.avra-provision.sh" >/dev/null
 # Provisioning may fail its own seed build on a tree that predates the
 # Linux fixes; the toolchain it installs is what the command needs.
-sprite -s "$sprite" exec --no-port-forward -- bash -lc "cd '$remote' && { test -f tools/sprite-provision.sh || { mkdir -p tools && cp /home/sprite/.avra-provision.sh tools/sprite-provision.sh; }; } && { test -f /usr/lib/llvm-22/lib/libLLVM.so || sh tools/sprite-provision.sh >/dev/null 2>&1 || true; } && exec $*" || status=$?
+# `stems` examines the compiler's own binary, so a gate is only a real
+# gate when one is already built — --prebuild builds it once per hash.
+remote_cmd="cd '$remote' && { test -f tools/sprite-provision.sh || { mkdir -p tools && cp /home/sprite/.avra-provision.sh tools/sprite-provision.sh; }; } && { test -f /usr/lib/llvm-22/lib/libLLVM.so || sh tools/sprite-provision.sh >/dev/null 2>&1 || true; }"
+[ -n "$prebuild" ] && remote_cmd="$remote_cmd && { test -x build/avra || make avra; }"
+remote_cmd="$remote_cmd && exec $*"
+sprite -s "$sprite" exec --no-port-forward -- bash -lc "$remote_cmd" || status=$?
 
 for spec in $pulls; do
     from=${spec%%:*}
