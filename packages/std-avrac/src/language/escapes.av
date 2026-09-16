@@ -15,7 +15,7 @@
 //! nothing declared which — so every row seat had to be counted both
 //! ways, and the answer spanned 8.6% to 47.8%. One column collapsed
 //! it to a number.
-use core.{Ins, Reg, TypeId, TypeRegistry, escapes_in, seat_regs, call_symbol, flatten, joined}
+use core.{Ins, Reg, TypeId, TypeRegistry, escapes_in, seat_regs, moved_args, same_reg, call_symbol, flatten, joined}
 
 /// A body's managed seats, and which of them the body only reads.
 type BodySeats = { name: string, managed: List<int>, reads: List<int> }
@@ -136,9 +136,11 @@ fn body_tally(types: TypeRegistry, reads: Map<string, List<int>>, b: Body) -> Re
 }
 
 /// The managed arguments of an Avra call — exactly what the pass
-/// retains, by the same `is_managed` rule.
+/// retains, by the same `is_managed` rule. The seat set is the IR's
+/// `@moves` role, the SAME declaration the pass reads, so the census
+/// and the pass cannot drift.
 fn managed_args(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> List<Reg> {
-    [a for a in seat_regs(i) if is_managed(types, reg_types[a.index])]
+    [a for a in moved_args(i) if is_managed(types, reg_types[a.index])]
 }
 
 /// How many of this call's managed seats the CALLEE only reads. A
@@ -149,7 +151,8 @@ fn reading_seats(types: TypeRegistry, reg_types: List<TypeId>, reads: Map<string
     if sym == null { return 0 }
     let seats: List<int>? = reads.get(sym!)
     if seats == null { return 0 }
-    [j for j, a in seat_regs(i) if is_managed(types, reg_types[a.index]) && seats!.contains(j)].length
+    let moved = moved_args(i)
+    [j for j, a in seat_regs(i) if is_managed(types, reg_types[a.index]) && moved.any(same_reg(it, a)) && seats!.contains(j)].length
 }
 
 /// The pass's store rule through the same `is_managed`: a store
