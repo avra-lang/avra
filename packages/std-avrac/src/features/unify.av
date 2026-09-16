@@ -42,7 +42,7 @@ impl TypeCx {
             .App(wd, _, wa) -> self.app_unifies(wd, wa, got, target, bound),
             .Fn(wp, _, wr) -> self.fn_unifies(wp, wr, got, target, bound),
             // LICENSED I9: type identity — interned ids ARE the agreement
-            .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
             .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> want.index == got.index,
         }
     }
@@ -93,7 +93,7 @@ impl TypeCx {
             .List(g) -> self.unify(w, g, target, bound),
             .EmptyList -> true,
             .Opt(_) or .Null or .Cell(_) or .Map(_, _) or .EmptyMap or
-            .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
             .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
         }
     }
@@ -104,7 +104,7 @@ impl TypeCx {
             .Map(_, g) -> self.unify(w, g, target, bound),
             .EmptyMap -> true,
             .Opt(_) or .Null or .Cell(_) or .List(_) or .EmptyList or
-            .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
             .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> false,
         }
     }
@@ -119,7 +119,7 @@ impl TypeCx {
             .Opt(g) -> self.unify(w, g, target, bound),
             .Null -> !(self.view.types.shape_of(w) is .Var),
             .List(_) or .Cell(_) or .EmptyList or .Map(_, _) or .EmptyMap or
-            .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
             .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Error or .Void -> !(self.view.types.shape_of(w) is .Var) && self.unify(w, got, target, bound),
         }
     }
@@ -143,7 +143,7 @@ impl TypeCx {
             .Map(_, v) -> self.unlawful_side(v),
             .EmptyMap -> null,
             .App(_, _, args) -> args.find((a) -> self.unlawful_side(a) != null),
-            .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or
             .Void -> null,
         }
@@ -171,7 +171,7 @@ impl TypeCx {
             .Res(ok, err) -> self.fully_bound(ok, target, bound) && self.fully_bound(err, target, bound),
             .App(_, _, args) -> args.all((a) -> self.fully_bound(a, target, bound)),
             .Fn(ps, _, ret) -> ps.all((p) -> self.fully_bound(p, target, bound)) && self.fully_bound(ret, target, bound),
-            .Ptr or .Int or .Float or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
             .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void -> true,
         }
     }
@@ -220,14 +220,14 @@ impl TypeCx {
 /// (`instantiation_lawful`), so nothing smuggles past by wearing T.
 export fn slot_worthy(types: TypeRegistry, sh: Type) -> bool {
     match sh {
-        .Ptr or .Int or .Float or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
+        .Ptr or .Int or .Float or .Bytes or .Bool or .Str or .Struct(_, _) or .Enum(_, _) or .Dyn(_, _) or
         .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .List(_) or .Cell(_) or .Var(_, _, _) or .Fn(_, _, _) or
         .Map(_, _) -> true,
         // a nullable POINTER is its own nullable — the slot holds
         // the pointer, absence the null one (the niche); a scalar
         // nullable is a register pair, which no word holds. A
         // nullable VAR is neither yet: the instantiation decides.
-        .Opt(inner) -> types.opt_rides_pointer(inner) || types.shape_of(inner) is .Var,
+        .Opt(inner) -> types.opt_rides_pointer(inner) || types.abstract_yet(inner),
         .Null or .EmptyList or .Error or .Void or .EmptyMap -> false,
     }
 }

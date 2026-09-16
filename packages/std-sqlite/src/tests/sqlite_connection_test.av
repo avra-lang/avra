@@ -7,7 +7,7 @@
 // T127, opening is lazy, and the check needs a statement.
 use @std.io.{exists, write_text, remove}
 use @std.sqlite.open.{Db, Mode, OpenConfig, config_at, open, open_read, memory, open_with, close}
-use @std.sqlite.stmt.{Stmt, prepare, finalize}
+use @std.sqlite.stmt.{Stmt, prepare, step, finalize}
 use @std.sqlite.error.{SqlError}
 
 /// A fresh in-memory database handed to `work`, or the kind the OPEN
@@ -37,16 +37,14 @@ fn opens(r: Result<Db, SqlError>) -> bool {
 /// `close` writes through its receiver, so the handle must sit in a
 /// place that can be nulled — `F2048` refuses a `let`.
 fn closed(db: Db) -> bool {
-    mut held = db
-    close(held) == 0
+    close(db) == 0
 }
 
 /// Closing the SAME binding twice: the second finds a nulled handle,
 /// does nothing, and answers zero. This is the half of the double-close
 /// the type actually closes.
 fn closed_twice(db: Db) -> bool {
-    mut held = db
-    close(held) == 0 && close(held) == 0
+    close(db) == 0 && close(db) == 0
 }
 
 /// The kind an open was refused with, or the word for success.
@@ -58,10 +56,10 @@ fn open_kind(r: Result<Db, SqlError>) -> string {
 }
 
 fn opened_word(db: Db) -> string {
-    mut held = db
-    ok_after(close(held))
+    ok_after(close(db))
 }
 
+// LICENSED I23: conforms to a callback signature — the CONTRACT owns the list
 fn ok_after(rc: int) -> string { "OPENED" }
 
 /// An open whose handle is closed twice, through one binding.
@@ -80,71 +78,149 @@ fn not_a_db() -> string { "/tmp/avra-sqlite-notadb-conn.db" }
 fn made(path: string, text: string) -> bool { (write_text(path, text) catch "") != "" }
 fn gone(path: string) -> bool { (remove(path) catch "") != "" }
 
-// ── S2 TRIPWIRES ────────────────────────────────────────────────
+// ── ONE HANDLE, HOWEVER MANY VALUES HOLD IT ─────────────────────
 //
 // TWO DESTRUCTORS IN THIS PACKAGE HAVE THE SAME SHAPE: guard on null,
 // call the C destructor, null the handle. `close` (open.av) and
-// `finalize` (stmt.av). Each is safe against a SECOND call through the
-// SAME binding, and the suite proves that elsewhere.
+// `finalize` (stmt.av). A SECOND call must free nothing, through the
+// same binding AND through every copy of it.
 //
-// NEITHER IS SAFE AGAINST A COPY, and today that does not bite for a
-// reason outside this package: `mut b = a` ALIASES rather than copies —
-// lane C's S2 receiver-aliasing hole. So nulling through `b` nulls `a`
-// too, and the second call finds nothing to free.
+// THE HANDLE IS A CELL, so a copy of the value shares the slot rather
+// than the pointer: closing through either nulls the one slot both
+// read. That is a property of the TYPE and it holds whatever a seat
+// copy comes to mean.
 //
-// THE DAY S2 LANDS AND COPIES COPY, `a.raw` still holds a freed pointer
-// and the second call is a DOUBLE FREE inside a std package. These two
-// cases assert TODAY'S answer, so they FAIL the day the aliasing goes —
-// which is the notice, and it is aimed at whoever takes S2.
+// THE DONE MARK IS THE SAME LAW WITH A QUIETER FAILURE. A lost handle
+// traps; a lost DONE mark re-runs the statement and answers rows a
+// second time with nothing in the answer saying so, so `Stmt.done` is
+// a cell too and the last case here is the one that proves it.
 
-/// Closing through a copy, and what the original still holds.
-fn close_through_a_copy() -> string { in_memory(aliased_close) }
+/// Closing through a copy, and what the original then holds.
+fn close_through_a_copy() -> string { in_memory(copied_close) }
 
-fn aliased_close(db: Db) -> string {
-    mut a = db
-    mut b = a
-    let first = close(b)
-    let original_nulled = a.raw == null
-    let second = close(a)
+fn copied_close(db: Db) -> string {
+    let copy = db
+    let first = close(copy)
+    let original_nulled = db.raw.get() == null
+    let second = close(db)
     "first=${first} second=${second} original_nulled=${original_nulled}"
 }
 
-/// Finalizing through a copy, and what the original still holds.
-fn finalize_through_a_copy() -> string { in_memory(aliased_finalize) }
+/// Finalizing through a copy, and what the original then holds.
+fn finalize_through_a_copy() -> string { in_memory(copied_finalize) }
 
-fn aliased_finalize(db: Db) -> string {
-    mut held = db
-    let said = with_statement(db)
-    let _ = close(held)
+fn copied_finalize(db: Db) -> string {
+    let said = with_statement(db, copied_stmt)
+    let _ = close(db)
     said
 }
 
-fn with_statement(db: Db) -> string {
+/// Stepping to DONE through one binding, then stepping a COPY: the
+/// mark is one slot, so the copy refuses instead of re-running.
+fn step_past_done_through_a_copy() -> string { in_memory(copied_step) }
+
+fn copied_step(db: Db) -> string {
+    let said = with_statement(db, stepped_then_copied)
+    let _ = close(db)
+    said
+}
+
+fn with_statement(db: Db, act: fn(Stmt) -> string) -> string {
     match prepare(db, "select 1") {
-        .Ok(s) -> aliased_stmt(s),
+        .Ok(s) -> act(s),
         .Err(e) -> e.cause.kind(),
     }
 }
 
-fn aliased_stmt(s: Stmt) -> string {
-    mut a = s
-    mut b = a
-    let first = finalize(b)
-    let original_nulled = a.raw == null
-    let second = finalize(a)
+fn copied_stmt(s: Stmt) -> string {
+    let copy = s
+    let first = finalize(copy)
+    let original_nulled = s.raw.get() == null
+    let second = finalize(s)
     "first=${first} second=${second} original_nulled=${original_nulled}"
+}
+
+fn stepped_then_copied(s: Stmt) -> string {
+    let copy = s
+    let row = word_of(step(s))
+    let done = word_of(step(s))
+    let again = word_of(step(copy))
+    let _ = finalize(s)
+    "row=${row} done=${done} again=${again}"
+}
+
+// A HANDLE REACHES ITS CELL THROUGH EVERY CARRIER. `Db` is a flat
+// record over one cell, so a copy of the value is a copy of the cell's
+// pointer — which is the same slot. These five are every way the
+// language can carry a value away from the binding that made it, and
+// each must see a close made through any other. They are the cases the
+// `mut` seat could not have passed: a seat writes through ONE caller's
+// place, and a list element, a field, a payload and a capture are not
+// that place.
+type Holder = { db: Db, tag: int }
+
+enum Carried { In(db: Db), None }
+
+fn through_a_list(db: Db) -> string {
+    let dbs = [db, db]
+    let first = close(dbs[0])
+    "first=${first} other=${dbs[1].raw.get() == null} original=${db.raw.get() == null}"
+}
+
+fn through_a_field(db: Db) -> string {
+    let h = Holder { db: db, tag: 1 }
+    shut(close(h.db), db)
+}
+
+fn through_a_payload(db: Db) -> string {
+    shut(match Carried.In(db) { .In(d) -> close(d), .None -> 99 }, db)
+}
+
+fn through_a_capture(db: Db) -> string {
+    let shutter = () -> close(db)
+    shut(shutter(), db)
+}
+
+fn through_a_frame(db: Db) -> string { shut(closed_deeper(db), db) }
+
+fn closed_deeper(db: Db) -> int { close(db) }
+
+/// What a close through a carrier answered, and what the ORIGINAL
+/// binding holds afterwards — the whole assertion for four of the five.
+fn shut(first: int, db: Db) -> string {
+    "first=${first} original=${db.raw.get() == null}"
+}
+
+/// Four closes across three bindings of one connection: the first
+/// frees, the rest find a nulled slot.
+fn closed_four_ways(db: Db) -> string {
+    let a = db
+    let b = a
+    "${close(db)} ${close(a)} ${close(b)} ${close(db)}"
+}
+
+fn word_of(r: Result<bool, SqlError>) -> string {
+    match r {
+        .Ok(more) -> "${more}",
+        .Err(e) -> e.cause.kind(),
+    }
 }
 
 spec "std/sqlite connection" {
 
-    given "the S2 tripwires — these must FAIL when copies stop aliasing" {
-        // Both pass today BECAUSE `mut b = a` aliases. When lane C's S2
-        // lands and copies copy, `original_nulled` goes false and the
-        // second call double-frees. Do not "fix" these by updating the
-        // string: the failure is the point, and the fix is a handle a
-        // copy cannot outlive.
-        then "closing a copy nulls the original too, which is what saves us" { close_through_a_copy() == "first=0 second=0 original_nulled=true" }
-        then "finalizing a copy nulls the original too" { finalize_through_a_copy() == "first=0 second=0 original_nulled=true" }
+    given "a handle is one slot, however many values hold it" {
+        then "closing a copy nulls the original, and the second close frees nothing" { close_through_a_copy() == "first=0 second=0 original_nulled=true" }
+        then "finalizing a copy nulls the original, and the second finalize frees nothing" { finalize_through_a_copy() == "first=0 second=0 original_nulled=true" }
+        then "a copy sees the DONE mark the original set, and refuses to re-run" { step_past_done_through_a_copy() == "row=true done=false again=sqlite.done" }
+        then "four closes across three bindings free once" { in_memory(closed_four_ways) == "0 0 0 0" }
+    }
+
+    given "every carrier a handle can travel in" {
+        then "a list element, and the SIBLING element sees it too" { in_memory(through_a_list) == "first=0 other=true original=true" }
+        then "a struct field" { in_memory(through_a_field) == "first=0 original=true" }
+        then "an enum payload" { in_memory(through_a_payload) == "first=0 original=true" }
+        then "a lambda capture" { in_memory(through_a_capture) == "first=0 original=true" }
+        then "a deeper frame" { in_memory(through_a_frame) == "first=0 original=true" }
     }
 
     given "a database in memory" {

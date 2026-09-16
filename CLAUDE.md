@@ -96,9 +96,10 @@ source and refuses a repeated number.
   POINT (`lower(a: Analysis)`, `memory(l: Lowered)`) keeps the one
   standard signature and is not a verb.
 - A long fn splits at its PHASE boundaries into named helpers, each
-  with a one-line contract (`match_seq` matches, `built` builds;
-  `printed_value` dispatches, `bool_word` branches). If a fn needs
-  a paragraph comment mid-body, that paragraph is a helper's name.
+  with a one-line contract (`match_seq` matches, `built` builds —
+  grammar/executor.av; `window` frames, `severity_word` branches —
+  diagnostics/render.av). If a fn needs a paragraph comment
+  mid-body, that paragraph is a helper's name.
 - A LAW never assembles PROSE: every refusal is a NAMED VOICE fn
   (its whole body the one `spoken`/`emit`), in a voices section at
   the file's tail or shared where features share words. Rule
@@ -112,16 +113,20 @@ source and refuses a repeated number.
   rule to obey — so it teaches the reader to look for the quirk. The
   law's wording outlives its own implementation, which is what makes
   it worth pinning in the golden (lower.av's pointer-constant guard).
-- A BUILDER'S WORDS ARE ITS CLAIM. The executor prefixes every
-  builder error with "builder failed:" (grammar/executor.av), so a
-  LAW the writer can fix reads as an internal failure — five of
-  today's messages are laws, against eight real defects, and the
-  prefix lies about all five. The seam needed no change: `Cause`
-  already separates `Builder` from `Defect`, and only the WORDING
-  lied. THE GENERAL SHAPE: when a message's TRUTHFULNESS is what is
-  at stake, put the claim in the WORDS and not in a flag beside
-  them — a flag can be set wrong and stay invisible, while words
-  that say the wrong thing are visibly wrong to the next reader.
+- A BUILDER'S WORDS ARE ITS CLAIM. A builder's refusal is carried
+  WHOLE into its diagnostic (grammar/executor.av's build phase:
+  `cause: Cause.Builder, message: m`), so a message that is a LAW
+  the writer broke reads as the law, and one that is a DEFECT says
+  so in its own words. A blanket "builder failed:" prefix once told
+  the reader the compiler had broken about every law — five of the
+  seven refusals sampled at c7b5038 — while `Cause` had separated
+  `Builder` from `Defect` all along: the seam was right and only the
+  WORDING lied. THE GENERAL SHAPE: A PARAPHRASE OF A FLAG IS A
+  SECOND COPY, and the reader believes the words — the flag is
+  checked by the code, the prose by nobody. So the WORDS carry the
+  CLAIM and the STRUCTURE carries the CATEGORY (`Cause.Builder`
+  projects to F0102, language/codes.av), and the words never restate
+  the category.
 - A projection is ONE match: nested patterns
   (`.Node(.NAlt(a)) -> a, _ -> null`), never an unwrap ladder.
 - The third copy of a shape names the concept: shared walks and
@@ -177,10 +182,10 @@ engine's spec, written by dogfooding.
   are exhaustive matches now.
   ENFORCEMENT SPLITS FROM THE LAW HERE, deliberately: no grep tells a
   registry enum from a projection one, so this gets NO ratchet rule.
-  The keeper is `make vocab`, which names each registry's consumers
-  and refuses BOTH shapes inside them; it covers `Ins` and `RtKind`,
-  and a registry it does not name is unguarded. Naming the next one
-  IS how this law is enforced.
+  The keeper is `make vocab`, a CURATED table naming each registry's
+  consumers and refusing BOTH shapes inside them — the table says
+  which registries it holds, and a registry it does not name is
+  unguarded. Naming the next one IS how this law is enforced.
   AND THE OBLIGATION CROSSES INTO C, where no keeper can follow. The
   runtime's `acc_kind_of` was a kind-keyed ternary falling through to
   ACC_RECORD — correct for the three kinds that existed when it was
@@ -286,7 +291,7 @@ engine's spec, written by dogfooding.
   (language/tests/seats holds the proof).
 - EVERY POINTER AVRA HOLDS CARRIES A HEADER. The runtime counts
   references in sixteen bytes BEFORE each payload (tag, kind, rc,
-  and a record's size class or a string's length),
+  and a LENGTH — a string's text length, a record's payload bytes),
   and `avra_rc_retain/release` read that header — so a managed
   value that came from anywhere else reads memory that is not ours.
   The sources are all headered: the backend's string constants
@@ -368,7 +373,7 @@ engine's spec, written by dogfooding.
   caller having done nothing wrong. The face takes the new type too,
   so the box stays in the caller's hands and the type says what the
   contract always required. THE SEATS WHERE THIS BITES ARE FEW AND
-  GREPPABLE: those whose contract mentions LIFETIME (19 sites here).
+  GREPPABLE: those whose contract mentions LIFETIME.
   One level down, the same law: a box materialised ONLY to be staged
   has no other holder, so its last reference dies before the call and
   C reads freed memory — staged boxes are held until the call
@@ -399,7 +404,15 @@ engine's spec, written by dogfooding.
   and read as "no fn declared in this package" for a fn declared
   right there. The caller's directory is `AVRA_CWD`, exported by the
   shim before it moves; a command that reads the package it stands in
-  roots at `here()` (cli/commands/shared.av), never at ".". AND A
+  roots at `here()` (cli/commands/shared.av), never at ".", and EVERY
+  PATH ARGUMENT is rooted there too, ABSOLUTELY (`rooted`) — a
+  relative one read where the tree stands found nothing from another
+  directory, and read from a package's own root it walked past the
+  `avra.toml` at `.`; one absolute spelling serves both. AND THE
+  SHIM'S HEAVINESS TEST SKIPS THE SUBCOMMAND WORD: `build/` is a
+  directory at the tree's root, so every `avra build <file>` queued
+  on the machine lock as a package-scale run until the loop learned
+  to start at the second word. AND A
   PACKAGE IS NAMED BY ONE VERB: a root module carries no package
   prefix, so `package_of_module` answered "" for the root while the
   manifest named it — `Decls.package_named` answers the root's
@@ -408,6 +421,39 @@ engine's spec, written by dogfooding.
   every impl in the compiler's own cli the moment only one side knew.
   A second-generation build that REFUSES its own source is this law's
   symptom as much as a trap is.
+- A POINTER SEAT NAMES ITS BOX. A row's `Ptr` says a header stands
+  there, not WHICH — and `avra_str_len` handed a list answers the
+  list's byte size as a text length, in a clean program (native 40,
+  the evaluator "defect"). `RtSig.boxes` (core/ir.av's `Box`: `Text`,
+  `List`, `Map`, `Any`) says what each pointer seat reads; a row that
+  names none takes `Any` everywhere — unconstrained, never wrongly
+  constrained, since most pointer seats do take any box and
+  `avra_rc_retain` means it. TWO READERS, ONE COLUMN: `checked_extern`
+  refuses an `extern fn` that names a row with the wrong seat count
+  or a type that is not the seat's box (F2084; `ptr` is the raw
+  crossing and fits any), and `make externs` refuses a `Text` box over
+  a C `void*` or a `char*` under any other — so the column, the C and
+  every declaration agree or the gate says which does not. Filled from
+  the C in one sweep (46 rows, 141 seats): `const char*` is `Text`;
+  the array, map and process rows say `List`/`Map` by name.
+- A ROW'S ANSWER IS THE ROW'S, NOT THE DECLARATION'S — the seat law's
+  other end, and it was unheld while every argument was held. An
+  extern naming a runtime row could answer ANY type:
+  `extern fn avra_array_new() -> bool` checked clean and the engines
+  then disagreed about what it answered (the evaluator printing a
+  list, native printing `true`). The declared answer rides the row's
+  CURRENCY (`extern_kind` against `RtSig.ret`, a narrow width and a
+  word being different), and a POINTER answer names the BOX the C
+  body built (`RtSig.answer`) — without that half, `-> Bytes` on a
+  list-building row still agreed on the kind and the program read a
+  list's header as octets, "a non-Bytes value reached a byte
+  operation in a clean program", the compiler blaming itself for what
+  it accepted. THE NATIVE BUILD ALREADY NOTICED AND COULD NOT SPEAK:
+  it warns "redeclared with a different type — stale: ptr (), source:
+  i64 ()", and that channel exists for seed/source generation SKEW,
+  so it cannot become an error — a name that is IN `rt_sigs`
+  redeclared with a different answer is not skew, and needs its own
+  refusal at the declaration.
 - A RUNTIME ROW BORROWS ITS ARGUMENTS — callee-cleans is the AVRA
   call's convention, not the registry's. `retained_args` retains for
   `.Call` and `.CallPtr` alone; a `CallRt`/`CallRtVoid` argument
@@ -559,7 +605,9 @@ engine's spec, written by dogfooding.
   verb in `@std/text` reads the header, so a NUL is an ordinary
   character on this side — text carrying one is longer than its
   prefix and unequal to it (`==`, `contains`, `index_of`, `split`,
-  `replace` walk the length under `memcmp`/`memmem`, f57372a). It is
+  `replace` walk the length under `memcmp`/`memmem`, f57372a, and
+  `starts_with` joined them here — it was left off that list and
+  still walked with `strncmp`). It is
   `getenv`, `execvp`, `fopen`, `sqlite3_open` that end at the first
   NUL, so a value means a PREFIX of itself the moment it crosses, and
   the guard belongs at the row that hands the pointer over.
@@ -643,6 +691,18 @@ engine's spec, written by dogfooding.
   the branch that would dodge it: deduplicating `far_merge`'s
   expected sets measured 3% SLOWER, and skipping an empty
   `concat` measured neutral. Measure before removing an allocation.
+- A CAP BELONGS ON A LOG, NEVER ON DATA THAT IS COMPARED. A build log
+  with no ceiling is a full disk — `make avra` wrote 43 GB into a file
+  whose last 200 KB was all anyone read, twice in one day, and took a
+  compiler binary and every other session's work with it. So every log
+  runs through `tools/capped.sh`, which caps the output and answers
+  the COMMAND's status (a bare pipe answers `tail`'s). But the same
+  `tail` over an artifact that is DIFFED can truncate two different
+  outputs INTO AGREEMENT — `witness` and `native-check` exist to prove
+  two readings agree, and a cap there manufactures the agreement with
+  no failing run to reveal it. Those two stay uncapped, with the
+  reason at the site. Ask of every redirect which it is: read by its
+  tail when something breaks, or compared to another file.
 - A PROCESS STATUS IS A VERDICT, never a count: statuses are eight
   bits, so 256 failures read as success. Exit 0 or 1 and print the
   count. A TRAP is not a verdict either — `avra_trap` exits 2, so a
@@ -656,15 +716,15 @@ engine's spec, written by dogfooding.
   IMPOSSIBLE — never an escape. A command asked to be inert data AND
   a grammar the shell parses is the first firing: `avra_spawn_status`
   did not quote better, it REMOVED THE PARSER, and the supply-chain
-  hole closed as a consequence rather than as the goal. The sqlite
-  driver lane reports the second at a different boundary — under
-  `SQLITE_USE_URI` a path handed to `sqlite3_open_v2` is a filename
-  AND a URI parsed for `?mode=`, so a user's path beginning `file:`
-  changes meaning with nobody writing a line. The RESOLUTION is the
-  same shape, which is what makes it a law and not a coincidence:
-  SPLIT THE VERB, one per grammar. `open(path)` is always a filename
-  and names its sibling when refusing a `file:` prefix; a separate
-  verb takes a URI deliberately. The capability was never the
+  hole closed as a consequence rather than as the goal. @std/sqlite
+  is the second, at a different boundary — under `SQLITE_USE_URI` a
+  path handed to `sqlite3_open_v2` is a filename AND a URI parsed for
+  `?mode=`, so a user's path beginning `file:` changes meaning with
+  nobody writing a line. The RESOLUTION is the same shape, which is
+  what makes it a law and not a coincidence: SPLIT THE VERB, one per
+  grammar. `open(path)` is always a filename and refuses a `file:`
+  prefix, saying to ask deliberately; `open_with` is where the ask
+  lives (`uri: true`). The capability was never the
   problem, the AMBIGUITY was. THE TEST: when a value crosses a
   boundary, ask whether the CALLEE will parse it — if it will, the
   value wears two hats and the design owes a SPLIT, not an escape.
@@ -680,8 +740,8 @@ engine's spec, written by dogfooding.
   disagree are AVRA AND C, never two Avra verbs, so the door and its
   callee are inspecting DIFFERENT VALUES only where the callee is
   the C one. The trap the door exists to stop walks straight through
-  it there. The sqlite lane's
-  empty-path door is the instance, attributed: an empty path opens a
+  it there. @std/sqlite's empty-path door is the instance (the
+  sqlite lane's, open.av's `path_fault`): an empty path opens a
   PRIVATE TEMPORARY database deleted at close, so every write
   succeeds and the data is silently gone. The guard was not weak —
   it was reading a different string than the callee.
@@ -692,6 +752,85 @@ engine's spec, written by dogfooding.
   near-miss rather than counting it as a pass is what separates a
   red team from a demo. (That accident was the pre-f57372a `==`; the
   lossy half it relied on is gone, and the near-miss lesson is not.)
+- `@std/*` IS THE TOOLCHAIN'S, NOT THE MANIFEST'S. A `use @std.x` needs
+  no dependency row: the CLI's disk host names a std root found from
+  the binary's own directory (`<self>/../packages` in a checkout,
+  `<self>/../lib/avra/std` under `make install`), and the workspace
+  admits `@std/x` from `<std_root>/std-x` the first time a `use`
+  reaches for it — `reaches` is the ONE door, F3013 is what it still
+  says for a key the toolchain does not carry. A row that names a std
+  package is a PIN and wins for the whole graph. The old blocker —
+  one directory under two spellings refusing as F4014 — is paid in
+  `admitted`, which compares `host.absolute(...)` of both roots.
+  RECORDED TRIGGER: the compiler's own manifests (`packages/std-*`,
+  `packages/cli`) still declare their `@std/*` rows, and must, until
+  `make seed` on main carries this resolver — the committed seed
+  compiles HEAD in `seed-check`, and a seed that predates the door
+  cannot read a manifest with no rows. Strip them in the slice after
+  that refresh, and the pin law holds across the tree.
+- THE PRELUDE IS THE FLOOR: `@std/prelude` (packages/std-prelude) is
+  seen by every file in every package without a `use` — `println`
+  and `eprintln` today, and nothing a program can be compiled
+  without; a verb that fails that test belongs to a package above.
+  It is a PACKAGE the toolchain carries, not a scope the resolver
+  injects (P7: a reader can open it, `explain` can point at it, and
+  the layering `prelude <- text <- io <- process <- …` has a node at
+  its bottom). It binds WEAKLY (`bind_prelude`, features/
+  namespace.av): a file's own declaration, an explicit import, a
+  local binding all win silently. It DEPENDS ON NOTHING, and the
+  compiler refuses a prelude manifest that says otherwise (F4018).
+  A package's tests print through it, never through `@std/io`, so
+  a dev edge never points up — `@std/text`'s did, and is gone.
+  RECORDED TRIGGER: `@std/io` still exports `println`/`eprintln`
+  and the compiler's own source imports them, because the committed
+  seed predates the prelude and `seed-check` compiles HEAD with it;
+  after `make seed` on main carries the prelude, drop io's two verbs
+  and the 19 `use @std.io.{println…}` lines — an explicit import of
+  the prelude's name is legal, so the sweep is deletion only.
+- A COMPILER UNDER TEST MUST STAND WHERE A COMPILER STANDS. `@std/*`
+  resolves from the BINARY'S OWN DIRECTORY, so a harness that links
+  the binary somewhere else changes what it can resolve: `seed-check`
+  linked into `build/seed-check/`, looked for `build/packages`, found
+  no std root, and could reach a std package only through a manifest
+  row. Green for as long as every manifest carried rows, and red the
+  day they went — the assumption-nobody-violated law, wearing a
+  harness's clothes. A binary under test links beside `build/avra`.
+
+- A REFUSAL THAT EXPLAINS ITSELF ON THE SAME CHANNEL AS ITS CONSENT IS
+  A TRAP FOR THE NEXT CALLER. A verb answering both a VERDICT and
+  PROSE must not send the prose where a reader takes it for the
+  verdict: `receipt_trusts` printed "no receipt in …/build" on STDOUT
+  and returned 1, the caller read stdout and swallowed the status, and
+  a MISSING receipt read as permission to skip a gate — on the
+  feature's first integration. Consent gets its own channel (stdout
+  non-empty if and only if trusted, every reason on stderr), and a
+  status-blind caller then fails SAFE rather than open. AND BOTH
+  BRANCHES ANNOUNCE: moving the reason to stderr silenced the
+  integrator's own log until the caller was taught to read it, so a
+  skip says what it trusted and a gate says what it read instead —
+  neither branch silent is what makes a mechanism auditable rather
+  than merely honest. AND THE TESTS MUST USE THE CALLER'S CONVENTION:
+  four fixtures called the function and checked its EXIT STATUS while
+  the caller read its STDOUT, so they were green over a contract
+  nobody used — "a test with its own copy of the logic tests the
+  copy", one seam over, where the copy is the calling convention.
+- A SELF-TEST MUST NOT BE REACHABLE FROM THE ENTRY POINT IT
+  EXERCISES. "An instrument proves itself before it certifies
+  anything" put the fixtures inside `write`, and the fixtures call
+  `write`: 986 processes in one chain, 2441 of a 2666 fork limit, and
+  every other session's builds died on `fork: Resource temporarily
+  unavailable`. THE FIX IS THE SHAPE, never a depth counter — every
+  verb a function, the fixtures calling the functions, so recursion is
+  unreachable rather than bounded; run the fixtures once at gate time
+  beside the verb, not inside it. A fixture may re-enter the script
+  only where what it checks is a PROCESS's exit status, and only while
+  the path it re-enters runs no fixtures. AND THE SIGNATURE IS THE
+  HALF TO REMEMBER: A RESOURCE EXHAUSTION PRESENTS AS A FAILURE IN
+  WHATEVER ELSE HAPPENS TO BE RUNNING, so the first unexplained
+  "Resource temporarily unavailable" is a question about the MACHINE,
+  never about the command that reported it — it fooled the author of
+  the bomb, holding its own output, ten minutes before anyone else saw
+  it.
 - Every module has `spec`/`given`/`then` tests in `tests/` beside it.
 - A TEST'S NAME IS READ AS ITS SCOPE, so a name that claims a
   PROPERTY where the body checks an INSTANCE promises coverage the
@@ -804,16 +943,6 @@ engine's spec, written by dogfooding.
   lists adjacently; `>>` is TWO tokens the grammar joins, both
   branches capturing ONE token into the same label so the run stays
   aligned. The next `>=`-shaped operator faces the same question.
-- Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `quote {`
-  and `grammar {` emit their `{` as a token, so the lexer emits the
-  `}` that ends the raw body too, and the rule consumes it
-  (`"quote" "{" t:STRING "}"`). Swallowing it left the line law's
-  bracket stack holding a brace nothing closed, and `[quote { … } for
-  x in xs]` dropped the break after its line. AND A RAW BODY OPENED
-  INSIDE A HOLE pays the hole's count too (`balanced`): the opener was
-  counted against the enclosing hole when it was emitted, and the
-  closer never passes through that count. Line comments inside a raw
-  body are the generated program's — a `}` in one ends nothing.
 - A RUN OF TEMPLATES HAS NO EXPRESSION POSITION, and every OTHER seat
   takes one. `${xs}` with a `List<Code>` flattens where a RUN belongs
   — statements, arms, binders each join a `Many` — and an expression
@@ -883,6 +1012,17 @@ engine's spec, written by dogfooding.
   minted. One mechanism, one loud door and one mute one, and the
   mute one is the door every `@derive` takes. All three doors read
   one `unsettled_label` now.
+- Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `grammar {`
+  and a block word's `{` hand their body over whole, so the lexer emits
+  the `}` that ends it too, and the rule consumes it (`"grammar" "{"
+  s:STRING "}"`). Swallowing it left the line law's bracket stack
+  holding a brace nothing closed. A `quote {` body is NO raw body —
+  tokenized as source, parsed where it stands — and its rule consumes
+  its own `"}"` all the same. AND A RAW BODY OPENED INSIDE A HOLE pays
+  the hole's count too: the opener was counted against the enclosing
+  hole when emitted, and the closer never passes through it. Line
+  comments inside a raw body are the generated program's — a `}` in
+  one ends nothing.
 - A NAME-KEYED TABLE CROSSES MODULES. `impls_by_name` files every
   `impl` under its NAME, so asking `@std.meta.Code`'s methods signed
   the compiler's own `impl Code` and dragged `features` into a
@@ -945,8 +1085,9 @@ engine's spec, written by dogfooding.
 - Grammar authoring: a rule's GRAM TEXT and its BUILDERS are one
   unit — a builder named in feature A's grammar registers in
   feature A, never in a feature that might be absent (a partial
-  assembly refuses on the dangling name; the let_stmt tests parse
-  with three features only). The NODE may still be another
+  assembly refuses on the dangling name — "no feature owns builder
+  `x`"; the let_stmt tests assemble a PARTIAL list). The NODE may
+  still be another
   feature's to give meaning: semantics_of decides ownership of
   MEANING, the gram decides ownership of PARSE.
 - Grammar authoring: a KEYWORD ANCHOR merges before every
@@ -973,14 +1114,15 @@ engine's spec, written by dogfooding.
 - A feature never matches ANOTHER feature's variants — nor
   re-extracts its OWN literal's payload inline: all literal reads
   go through core's value protocol (`bool_of`, `int_of`, `text_of`,
-  `pairs_of`, `elems_of`, all in core/nodes.av) — one projection per
+  `pairs_of`, `elems_of` and their siblings, DERIVED onto `Expr` by
+  `@derive(ValueProtocol)`, core/protocol.av) — one projection per
   category a feature reads WITHOUT its own dispatch. The protocol
   grows with value categories — a core event — never per feature.
   (N variants need N projections — payload types differ, and a
   unified return would be the parallel Value enum the doctrine
   refuses.) A protocol read is NEVER `?? <a
   plausible default>`: the dispatch guaranteed that payload, so
-  absence is a DEFECT — `lower_defect(cx, e, ...)`, or the compiler
+  absence is a DEFECT — `cx.lower_defect(e, ...)`, or the compiler
   ships a silently wrong program.
 - The IR is a CURATED vocabulary, not a frozen one. Features lower
   into it and never grow it; growth is a CORE event with a
@@ -997,15 +1139,15 @@ engine's spec, written by dogfooding.
      consumer; it did NOT add SwitchArm/SwitchEnd. Prefer the
      variant that makes an existing concept more general over one
      that adds a parallel concept.
-  3. PAY THE EIGHT CONSUMERS, which the compiler lists for you
-     because each dispatch is exhaustive: `dst_of`, `body_symbol`
-     and `hosted_symbol` (core/ir.av), `step` (interp),
-     `memory_ins`, `body_lines` (ir_text), `emit_ins` (llvm),
-     `give` (features/facts.av — does the runtime registry
-     validate it) — plus a program test proving eval == native
-     and the IR golden that shows the shape.
-  4. THE GUARANTEE: those eight matches carry no `_ ->`, so a new
-     variant breaks all eight at compile time. The vocabulary
+  3. PAY EVERY CONSUMER, which the compiler lists for you because
+     each dispatch is exhaustive: `make vocab`'s Ins rows name
+     them and `avra new ins` prints the arm each wants, across
+     core/ir.av, interp, memory, ir_text, llvm and
+     features/facts.av (does the runtime registry validate it) —
+     plus a program test proving eval == native and the IR golden
+     that shows the shape.
+  4. THE GUARANTEE: those matches carry no `_ ->`, so a new
+     variant breaks every one at compile time. The vocabulary
      cannot grow half-way, and a variant nobody implements cannot
      ship. Keep them catch-all free.
   5. AND THE PROTOCOL GUARDS THE WRONG DOOR ON ITS OWN — it gates
@@ -1040,8 +1182,8 @@ engine's spec, written by dogfooding.
      than one that grows the vocabulary and answers yes.
      THE MEASUREMENT WANTED A COMPILER-SIDE COUNT INSTEAD — the
      memory pass knows why it emitted each retain at the moment it
-     emits it (four emitters: a cell store, an owned load, a scope's
-     yield, a call seat), and counting them needs no IR at all.
+     emits it (a cell store, an owned load, a pack, a scope's yield,
+     a call seat), and counting them needs no IR at all.
   The backend and memory pass stay functions of the IR, dispatching
   on shapes, never on features.
 - THE VOCABULARY SEAM RULE — which shape a new vocabulary takes,
@@ -1107,7 +1249,7 @@ engine's spec, written by dogfooding.
   (`IfStart … ArmEnd … RegionEnd`); a `Bin(Or)` on bools is the
   defect "a non-equality op reached bool operands". And THE MINT
   LAW: a register is DEFINED in the order it was minted — mint
-  operands first (`let tag = tag_of(cx, v)` before minting the
+  operands first (`let tag = cx.tag_of(v)` before minting the
   constant it compares to), the answer last.
 - A feature is a directory: `mod.av` is the declarative manifest
   (component + tables), `builders.av` holds parse lowering,
@@ -1146,7 +1288,10 @@ engine's spec, written by dogfooding.
 - The CLI: each subcommand is ONE file in
   `packages/cli/src/commands/`, exporting
   `<name>_command() -> Subcommand`; `cli/src/main.av` only composes
-  the list. A new command is a new file plus one line. A command
+  the list — and hands a HAND-OFF's words (the stage word, then the
+  link plans) to `cli/src/stage.av` before the app reads them: the
+  suite's light phase is a re-exec, never a command, so no name
+  reaches it. A new command is a new file plus one line. A command
   that takes a program is `phased(args, "<phase>", act)`
   (commands/phase.av): the act is a NAMED fn answering
   `Result<int, string>` — its exit code, or the report `phased`
@@ -1205,12 +1350,12 @@ form the compiler's help names, and when a site wants the missing
 form, add the ask to the ROADMAP's sugar backlog naming the site.
 Every entry was probed with `./avra check` on a scratch file and
 quotes the refusal, so a re-probe is cheap; an entry the compiler
-starts accepting is deleted. THIS SECTION IS A CACHE, and it is 21% of
-this file — every entry is a fact the COMPILER can answer, which is
-why two went stale in one day and both were found by luck. RECORDED
-TRIGGER: when the docs campaign's `lang/subset/*.av` lands as a
-gate-verified program tests, this section becomes a POINTER to them and stops
-being a hand-kept list. Measured 2026-09-06 at 1233 lines. Laws that SPEAK are not listed —
+starts accepting is deleted. THIS SECTION IS A CACHE, and a
+fifth of this file — every entry is a fact the COMPILER can answer,
+which is why entries go stale unseen until a re-probe (nine moved in
+one audit). RECORDED TRIGGER: when the docs campaign's
+`lang/subset/*.av` lands as gate-verified program tests, this section
+becomes a POINTER to them and stops being a hand-kept list. Laws that SPEAK are not listed —
 reserved words (F3002 names the word and its status), a mutating
 method on a non-`mut` binding (F2034), a lambda assigning to a
 capture (F3005: captures are copies), a fn body reading a top-level
@@ -1247,17 +1392,17 @@ Syntax the grammar lacks:
   in lo..hi]` counts.
 - A GENERIC STRUCT LITERAL WITH EXPLICIT TYPE ARGUMENTS (`Box<float>
   { held: 1.25 }`): F0100 "expected BREAK while parsing `stmt`", at
-  the `<`. A TYPED LET carries it instead — `let b: Box<float> = Box
+  the `>`. A TYPED LET carries it instead — `let b: Box<float> = Box
   { held: 1.25 }` — and INFERENCE IS FINE without any pin: a generic
   fn over a generic struct resolves from its argument
   (`unwrap(bf)` where `bf: Box<float>`, probed at 5575a2e, both
   engines). Worth stating because the literal's refusal cascades into
   a "write the type explicitly" further down, and the pin that
   silences it is not the thing that was wrong.
-- A DOUBLE `?` on a type (`int??`): F0100 "expected `)` while parsing
-  `stmt`" at the second `?` — the type grammar takes one `?` per name,
-  so a doubly-nullable value has no spelling, in an annotation or a
-  type literal alike.
+- A DOUBLE `?` on a type (`int??`): F0100 at the FIRST `?`, wording
+  by position ("expected `)`" in a parameter seat, "expected `=`"
+  under a `let`, "expected BREAK" under a `type` alias) — the type
+  grammar takes one `?` per name, so it has no spelling anywhere.
 - A `table` literal without its row type: a bare `table { id: 1 }`
   reads as a STRUCT LITERAL of a type named `table` — F3000 "no `type
   table` is declared", with no hint that the row type is missing. The
@@ -1308,12 +1453,12 @@ Syntax the grammar lacks:
   to a match — the block goes in the parentheses), and `(f(a)) { … }`
   widens `f(a)` (a paren group mints no node) where `f(a)() { … }`
   applies the answer.
-- A GENERIC FN AS A VALUE (`let f: fn(int) -> int = ident<int>`, the
-  pinned call unapplied): "expected BREAK while parsing `stmt`" — a
-  pinned call is a CALL in the grammar, so a generic fn cannot be
-  stored, and a generic `mut`-seat fn cannot fill a fn-typed seat.
-- `@comptime`: refuses at the `@` ("expected `mod`, `use`, … while
-  parsing `stmt`").
+- A GENERIC FN AS A VALUE: the PINNED spelling (`let f: fn(int) -> int
+  = ident<int>`) is F0100 "expected BREAK while parsing `stmt`" — a
+  pinned call is a CALL, so it wants arguments. The BARE spelling
+  SPEAKS: F2033 "a generic fn is not a value — no single signature to
+  wear", whose help writes the wrapper. Genericity is all of it — a
+  non-generic `mut`-seat fn fills `fn(mut Cx) -> int` clean.
 - The bare component form (`Cfg d { depth = 8 }`): "expected BREAK
   while parsing `stmt`" — `component Cfg d { … }` is the form.
   Instantiation is a STATEMENT: as a fn's tail it answers `void`
@@ -1325,19 +1470,27 @@ Syntax the grammar lacks:
   not-your-home"` above it, the same line compiles clean and the
   command becomes `echo /tmp/not-your-home`. Spell a shell variable
   `$VAR`, which Avra leaves alone.
+- `_` IS A PARAMETER NAME NOWHERE, and `let _ = f()` everywhere.
+  `fn f(_: int)` is F3002 "`_` is a keyword — cannot be a name", help
+  "pick another name", while `let _ = g()` and `.Bind(_)` are the
+  ordinary spellings. A parameter a SEAT owns and the body never reads
+  is `_q` — a leading underscore is a name, it compiles, and the idiom
+  bar has always read that prefix as "unread by contract" (I23).
 - A MAP'S KEYS ARE STRINGS ONLY: `Map<int, int>` is F2019 "a map's
   keys are strings, not `int`", help "other key types are recorded".
   It kills the obvious trie-node shape; key by the text.
-- `++` IS NOT A LIST OPERATOR: `xs ++ ys` is "expected BREAK while
-  parsing `stmt`" AT the `++`, and the fn then reads as answering
-  `void`, so the real refusal arrives as a type error about the
-  body. `xs.concat(ys)` is the spelling.
+- `++` IS NOT A LIST OPERATOR: `xs ++ ys` is F0100 "expected BREAK
+  while parsing `stmt`" AT the `++`, and that is the WHOLE refusal —
+  the fn draws no type complaint of its own, and typing is not
+  suppressed here (a sibling fn's error reports in the same run).
+  `xs.concat(ys)` is the spelling.
 - `List` HAS `all`, NOT `every`: `.every(it > 0)` is F2030, `.all(it
   > 0)` compiles — which retires the double negative `![…].any(!it)`.
-- A COMPREHENSION TAKES ONE `for` HEAD: `[a + b for a in as for b in
-  bs]` does not parse, and the SYMPTOM MISDIRECTS — the binding is
-  reported UNDEFINED AT ITS USE SITE (F3000) with nothing said at the
-  comprehension. A nested sweep is a named helper per outer element.
+- A COMPREHENSION TAKES ONE `for` HEAD: `[a + b for a in ps for b in
+  qs]` is F0100 "expected `]` to close the comprehension" AT the
+  second `for`. The let's own binding still reads UNDEFINED at its use
+  site (F3000) behind it, but the comprehension is named FIRST now. A
+  nested sweep is a named helper per outer element.
 - A MATCH ARM SHARING THE OPENING BRACE'S LINE NEEDS A TRAILING COMMA
   when another arm follows (found by the HTTP lane, probed here).
   `match v { .R(o) -> o` with `.S -> "s"` on the next line is
@@ -1358,16 +1511,18 @@ Syntax the grammar lacks:
   holds a backslash and a `u`. Spell a code point with `@std/text`'s
   `from_codepoint(65533)` (sugar backlog: `\u{…}` escapes).
 - A match arm whose body is a bare STATEMENT (`.Unknown(t) -> fail
-  E.Bad(t),`): "expected `}` to close the `match`", and every later
-  declaration cascades. An arm's body is an expression — brace it:
-  `.Unknown(t) -> { fail E.Bad(t) },` (a block that leaves joins the
-  other arms).
+  E.Bad(t),`): F0100 "expected `}` to close the `match`" at the
+  `fail`'s payload, then "expected EOF while parsing `program`" — and
+  the whole file goes UNTYPED, earlier declarations included. An arm's
+  body is an expression — brace it: `.Unknown(t) -> { fail E.Bad(t) },`
+  (a block that leaves joins the other arms).
 - `?` then a field on a Result (`get(i)?.name`): lexes as `?.` —
   F2023 "`?.` reaches into a nullable, this is `Result<P, E>`".
   `(get(i)?).name` says it, in a comprehension element too.
-- `export let` / `export const`: F3014 "`export` marks a fn, type,
-  enum or trait — not this statement" — a constant crosses modules
-  as a fn.
+- `export let`: F3014 "`export` marks a fn, type, enum or trait — not
+  this statement", help "drop the `export`, or declare the value as a
+  fn". `export const` LANDED — a constant crosses as a const, and the
+  help's "as a fn" reaches a `let` alone.
 - `is` with a PAYLOAD pattern (`p is .Bind(_)`): "expected BREAK
   while parsing `stmt`" — `is` takes a BARE variant. A one-arm
   match is the projection (`.Bind(_) -> true, _ -> false`).
@@ -1395,11 +1550,12 @@ Syntax the grammar lacks:
   not its shape. Parenthesise the propagation — `(shell(line)?).run()`
   — or bind it first. The field twin (`x()?.out`) is the same
   refusal; its help says "write `.out`", wrong for propagate-then-read.
-- `fail` inside a `catch` ARM's block (`x catch e -> { cleanup(); fail
-  e }`): F2029 "a `catch` arm answers the ok side: `T`, this is
-  `Result<…>`" — the arm's block is not read as diverging. Write the
-  statement `match` (`.Err(e) -> { cleanup(); fail e }, .Ok(v) -> …`),
-  which is (@std/process's three drivers).
+- `fail` inside a `catch` ARM's block (`x catch e -> { … fail e }`,
+  the block's statements on their own lines — a `;` is F0001): F2029
+  "a `catch` arm answers the ok side: `T`, this is `Result<…>`" — the
+  arm's block is not read as diverging. Write the statement `match`
+  (`.Err(e) -> { … fail e }, .Ok(v) -> …`), as @std/process's three
+  drivers do.
 - A NULLABLE LIST ELEMENT, and the boundary moved — the old entries
   (a `null` literal under `List<T?>`, and `List<T>` refusing a
   `List<T?>` want) are RETIRED, both now compile. What refuses today,
@@ -1448,7 +1604,7 @@ Wants the typer does not carry yet:
   and a `ProcessError` in hand checks and dispatches (probed at
   `8519ae9`, answering `proc 2`); that clause is retired.
 - A trait impl over a GENERIC type (`impl Show for Box<T>`): F2031
-  "`P` is generic — a trait impl over a generic type is recorded,
+  "`Box` is generic — a trait impl over a generic type is recorded,
   not landed". Inherent generic impls (`impl Box<T>`) land.
 - A BOUND LANDS ON A FREE FN'S PARAMETERS AND NOWHERE ELSE, so a
   GENERIC TYPE CANNOT READ ITS KEY. `type T<K: Tr, V> = { … }` and
@@ -1509,8 +1665,8 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   `Map<string, int>`" — `.get(k)`, which answers `T?`.
 - An EMPTY LITERAL does not adopt a NULLABLE aggregate want: `let
   xs: List<int>? = []` is F2024 "`xs` declares `List<int>?`, this is
-  `[]`", `{}` under a `Map<K, V>?` reads alike, and a fn tail says
-  "the body answers `[]?` but … declares `List<int>?`". Bind the
+  `[]`", `{}` under a `Map<K, V>?` reads alike, and a fn tail is
+  F2000 "the body answers `[]` but `f` declares `List<int>?`". Bind the
   empty at its own type first (`let none: List<int> = []`). An
   empty STRING adopts `string?` fine.
   THE WANT IS WHAT DECIDES, NOT THE NEIGHBOUR — and this entry reads
@@ -1531,6 +1687,19 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   above.)
 
 Runtime facts, ours to ratify:
+- `Bytes` IS NOT A LIST AND `bytes()` HAS TWO ANSWERS. `b[0]` is
+  F2000 "`[...]` indexes a `List`, found `Bytes`" — the octet read is
+  `b.at(i)`, answering `int`, and it TRAPS past the end ("index 99 is
+  out of bounds (length 3)"), so absence is not how a range error
+  arrives. `.length` reads. AND THE ANSWER FOLLOWS THE RECEIVER: a
+  string's `.bytes()` is `Bytes` (every text is octets), a
+  `List<int>`'s is `Bytes?` — an element outside 0..255 makes the
+  whole answer null, so `let b: Bytes = [104, 105].bytes()` is F2024
+  "`b` declares `Bytes`, this is `Bytes?`" and `.at` on the unwrapped
+  value is F2030 "`.at(…)` calls a method, and `Bytes?` has none" —
+  while a `List<Bytes>`'s GATHERS the parts and answers a plain
+  `Bytes`. One name, three receivers, and only the octet reading is
+  nullable.
 - A STRING's `.length` is a LOAD — the header carries the length
   (lane A), as a list's does; `while i < s.length` costs a load per
   turn, and I27 retired with the strlen it ratcheted. WITH ONE
@@ -1557,6 +1726,17 @@ Runtime facts, ours to ratify:
   NUL is an ordinary character: `ab\0cd` has `.length` 5, is UNEQUAL
   to `ab`, and `contains("cd")` answers true at index 3. A NUL is
   itself a findable needle.
+  "EVERY" WAS A CLAIM ABOUT FIVE VERBS AND THERE WERE SEVEN.
+  `starts_with` was not on f57372a's list and still walked with
+  `strncmp`, so at EQUAL LENGTH it disagreed with `==` about the same
+  pair — `"ab" + from_codepoint(0) + "cd"` was NOT equal to the same
+  text ending `ce` and DID start with it — and a prefix longer than
+  the text read as a prefix. `ends_with` was on neither list and was
+  already right, which is what let the gap read as closed. Fixed here
+  (`memcmp` over the header), pinned in std-text's NUL block. A
+  UNIVERSAL written from an ENUMERATION is only as wide as the list
+  that produced it, and the list came from the fix rather than from
+  the vocabulary.
   THIS ENTRY SAID THE OPPOSITE UNTIL 927ed49, and half this file's
   NUL doctrine was written from it. Five primitives — `==`,
   `contains`, `index_of`, `split`, `replace` — WERE C string calls
@@ -1587,11 +1767,10 @@ Runtime facts, ours to ratify:
   shared with a loaded desktop and has panicked twice under this
   tree — three concurrent `make test` runs once, and a background
   gate with other compiler runs beside it (a WindowServer watchdog
-  panic). A gate is ~0.3 GB for twenty seconds; nothing else heavy runs
-  beside it, no gate runs in the background, and every suite, gate
-  or whole-package check runs through the watchdog, which holds the
-  machine-wide lock, kills the tree past its cap and prints the
-  peak.
+  panic). A gate is ~0.3 GB for twenty seconds; nothing else heavy
+  runs beside it, and every suite, gate or whole-package check runs
+  through the watchdog, which holds the machine-wide lock, kills the
+  tree past its cap and prints the peak.
   THE LOCK IS THE LAW AND THE FOREGROUND IS ITS MECHANISM. "One
   heavy process at a time" means ONE PROCESS HOLDING THE WATCHDOG'S
   LOCK, and every heavy run is LAUNCHED in the foreground under it.
@@ -1687,11 +1866,35 @@ Runtime facts, ours to ratify:
   makes `cp build/avra build/avra.pre` the whole protocol rather than
   a nicety — the HTTP lane's strings slice paid for this and its way
   back was a copy of ANOTHER LANE's product.
+- ITS MIRROR, AND IT POINTS THE OTHER WAY: A REGISTRY ROW THE
+  COMPILER'S OWN SOURCE DECLARES CANNOT BE GATED IN THE COMMIT THAT
+  ADDS IT. A declaration naming an `rt_sigs` row is legal only to a
+  compiler that ALREADY CARRIES the row — `crossing_law` exempts a
+  row's name by asking its own `rt_sigs()` — so a tree that adds the
+  row and declares it in the same breath is refused by every compiler
+  that could build it: the standing binary, the committed seed, and
+  therefore `seed-check` and `make bootstrap` alike. THE BRANCH CANNOT
+  GATE BY CONSTRUCTION, and the first buildable point is a tree
+  carrying BOTH the row and a seed that knows it.
+  THE LADDER IS TWO LANDINGS, not two builds. FIRST the row alone,
+  hosted `Unhosted` — which is TRUE, since the evaluator has no arm
+  yet — plus the C body and whatever keeper table names it; that
+  gates on the standing seed because nothing declares it. The seed is
+  refreshed on landing. THEN the declaration, the `RtHost` variant and
+  its arm, and the callers; that gates because the seed now knows the
+  row. Splitting it is not ceremony: a single landing leaves main
+  unbuildable between the merge and the refresh, and an integrator
+  that gates the LANE hits the same wall one step later with the
+  landing dead.
+  A PLACEHOLDER ARM IS NOT NEEDED AND SHOULD NOT BE WRITTEN. `Unhosted`
+  already says what is true and already has its arm; inventing a
+  temporary variant to delete next week is a comment about a point in
+  time wearing code's clothes.
 - THE RECEIPT FOR A SLICE THAT REMOVES A RUNTIME SYMBOL IS `make
   bootstrap` GREEN, NEVER `make avra` GREEN. `make avra` builds the
   cli with the STANDING binary and copies the result; it never
   touches `bootstrap/seed.ll`, which is a COMMITTED artifact naming
-  every runtime symbol it needs (31 `avra_io_` references today). So
+  every runtime symbol it needs, the `avra_io_` names among them. So
   deleting a runtime symbol gates clean under `make avra`, twice,
   while the cold path is already broken — `make bootstrap` links the
   seed against the runtime and every removed name is undefined.
@@ -1735,8 +1938,8 @@ Runtime facts, ours to ratify:
   compiles the source with the STANDING binary — ONE `make avra`
   ADVANCES THE COMPILER BY EXACTLY ONE GENERATION, because the recipe
   is one `./avra build packages/cli` and one `cp` over `build/avra`
-  while the shim execs the binary already on disk (Makefile:59-64,
-  `avra`:19-24). THE GENERATION IS THE LAW AND "THE SECOND BUILD" IS
+  while the shim execs the binary already on disk (the Makefile's
+  `avra` target). THE GENERATION IS THE LAW AND "THE SECOND BUILD" IS
   ITS CONSEQUENCE: change the recipe and the count goes stale while
   the rule does not. So a product built
   right after merging a memory-pass fix carries the fix as SOURCE
@@ -1837,18 +2040,31 @@ Runtime facts, ours to ratify:
   foreign-text design READ the entry and asked what the empty case
   would do. A deadline is paid by a new consumer arriving, not by
   the breakage arriving. And `parsed`'s early cutoff, sound only
-  while compiles are ONE-SHOT (= ROADMAP:2190).
+  while compiles are ONE-SHOT.
   THERE: the pointer-constant guard, landed as "unreachable today"
-  (ROADMAP:2018 — and its condition ACTUALLY CHANGED hours later when
-  `avra_ptr_at` made a pointer mintable; it survived only because the
-  capability took a runtime-row shape rather than a constant fold, so
-  by an unrelated design choice and nothing its author did); `plain`
+  (and its condition ACTUALLY CHANGED hours later when `avra_ptr_at`
+  made a pointer mintable; it survived only because the capability
+  took a runtime-row shape rather than a constant fold, so by an
+  unrelated design choice and nothing its author did); `plain`
   dropping a fn type's seat marks, safe only while a nullable fn type
-  is unspellable (ROADMAP:2109); and @std/sqlite's `close(mut db)`,
-  whose idempotence rests ENTIRELY on `mut b = a` aliasing — the day
-  S2 makes copies copy, `close(a)` is a DOUBLE FREE in a shipping std
-  package, and the driver's own test passes because it uses one
-  binding (ROADMAP:2345, verified here at open.av:358).
+  is unspellable; and @std/sqlite's `close(mut db)`, whose
+  idempotence rested ENTIRELY on a `mut` SEAT writing through the
+  caller's binding — PAID, and the way it was paid is the second
+  half of the lesson above: NOT by meeting the deadline but by
+  refusing the channel. A seat reaches ONE caller's place by the
+  calling convention's leave; `Db` and `Stmt` hold their handle and
+  their DONE mark in a `Cell` instead, so the write lands in one
+  slot every copy reads and the property belongs to the TYPE rather
+  than to whatever a seat copy comes to mean. A list element, a
+  struct field, an enum payload, a lambda capture and a deeper
+  frame are all carriers a seat could never have reached, and each
+  is a case in the suite now. THE LOST DONE MARK IS THE HALF WORTH
+  CARRYING: a lost handle traps, so it was the one on the register,
+  while the same seat carried `Stmt.done` and losing THAT re-runs
+  the statement and answers rows a second time with nothing in the
+  answer saying so. When a deadline names one value riding a doomed
+  channel, ask what ELSE rides it — the quiet passenger is the one
+  nobody wrote down.
   So NAME THE CONDITION IN THE SAME BREATH — an unstated one is what
   makes the eventual breakage read as a new bug rather than an
   EXPIRY. A sixth instance is a CITATION of this line, never another
@@ -1908,9 +2124,31 @@ Runtime facts, ours to ratify:
   is polled, or `echo` under `ms(0)` still gets its word out; and a
   timeout's capture must hold everything readable WHEN it fired, so
   the last act before declaring is a DRAIN and the grace is a floor.
-  Stated as order, the process pump's turn length was never tuned
-  once when it moved from C into Avra — A TUNED INTERVAL IS THE SMELL
-  that two orderings are being approximated by one number.
+  A TUNED INTERVAL IS THE SMELL that two orderings are being
+  approximated by one number.
+  THE INSTANCE: a grace waited out after the child was reaped SPUN a
+  core for its whole window, because the poll row's guard against
+  spinning asked whether the CHILD WAS ALIVE where the question is
+  whether the CALLER ASKED TO WAIT — so with nothing left to poll it
+  returned at once and the driver looped hot. The fix moved no
+  number: the row now waits whenever it is asked to, in every state
+  of the child.
+  AND THAT FIX ALONE LEFT THE WALL TIME WHERE IT WAS, which is the
+  law demonstrating itself in two steps. With the burn gone the grace
+  still waited its floor out for every command, because the loop's
+  exit asked the CLOCK alone where the question needs TWO facts: the
+  floor bounds how long a grandchild MAY still speak, and the pipe
+  state says whether anyone is left to speak at all. The loop already
+  asked the second question — AFTER itself. One invariant fixed the
+  burn; only both fixed the wait.
+  AND THE TEMPTING NUMBER WAS NOT THE TURN BUT THE GRACE — the turn
+  was never consulted on that path, so shortening it would have
+  measured nothing, while the spin lasted exactly the GRACE, so
+  cutting that cuts the burn IN PROPORTION and pays for it
+  by shortening the window a grandchild has to speak. A tuning that
+  works is the dangerous one.
+  AND ONLY A WITNESS THAT SEPARATES THEM CAN PIN IT: a wait and a
+  spin take the same WALL time, so the law is tested in CPU.
 - AN ASSUMPTION NOTHING HAS EVER TRIED TO VIOLATE IS NOT A GUARANTEE.
   A check that passes proves the arrangement it was handed happened
   to work; it does not prove the check would NOTICE. Two shapes,
@@ -1977,12 +2215,13 @@ Runtime facts, ours to ratify:
   which is the new-consumer law one rule over. An entry whose instance
   is a NAMED ARTIFACT owes a re-check the day that artifact moves —
   the law is evergreen, the example has a date on it.
-  AND THE MECHANISM THIS LAW CALLS FOR DOES NOT EXIST: there is no
-  `ACCEPTED` table in `tools/idioms.py`, only `SPECIMENS`, which holds
-  the shapes a matcher must FIRE on — the refuse surface alone. The
-  `COUNTS` list beside `COUNTED` is one matcher's worth of the accept
-  surface, self-tested; every other matcher's accept surface is still
-  unexercised. Do not read this entry as saying the table is there.
+  AND THE MECHANISM THIS LAW CALLS FOR DOES NOT EXIST AS FIRST
+  WRITTEN: there is no `ACCEPTED` table in `tools/idioms.py`. What the
+  tree holds is main's `CLEAN` table — the accept surface for I20,
+  I21, I23 and I48 — and the `COUNTS` list beside `COUNTED`, one
+  matcher's worth of the accept surface; both are self-tested, and
+  every other matcher's accept surface is still unexercised. Do not
+  read this entry as saying every matcher's accept surface is guarded.
 - A TEST WITH ITS OWN COPY OF THE LOGIC TESTS THE COPY, and the
   SYMPTOM IS WHAT MISDIRECTS. The externs keeper's self-test built
   its typedef map from an inline duplicate of the collection it
@@ -2122,10 +2361,10 @@ Runtime facts, ours to ratify:
   than agreed with — so the instances have to stay checkable. One
   probed in this tree reads as fact; one from a lane's own tree is
   named as that lane's and stays ATTRIBUTED until the code lands
-  here. The two-hats law carries one of each, deliberately. Mixing
-  them silently is how a file of receipts decays into a file of
-  claims, and the reader loses the ability to tell which line to
-  trust — including the lines that are true.
+  here — AND THE LABEL EXPIRES WITH THE LANDING, or it sends the
+  reader away for a receipt in front of them (the two-hats law's
+  sqlite half). Mixing the two silently is how a file of receipts
+  decays into claims, and even the true lines stop being trusted.
 - A COUNT FROM A PACKAGE SWEEP IS LINES, NOT SITES. Checking one
   package reports its DEPENDENCIES' warnings too, so summing the
   twelve counts every shared site once per package that reaches it:

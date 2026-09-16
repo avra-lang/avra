@@ -1,0 +1,21 @@
+// proves: AN EMPTY BYTES IS PRESENT. Every way to make one — text,
+// an empty list, a zero-length slice at either end, a concat of two
+// empties — reads present in a `Bytes?` slot with length 0; only
+// null reads absent. The niche spends the null pointer, never a box.
+fn made(k: int) -> Bytes? {
+    match k {
+        0 -> "".bytes(),
+        1 -> [].bytes(),
+        2 -> [1].bytes()!.slice(1, 1),
+        3 -> "".bytes().concat([].bytes()!),
+        4 -> "".bytes().slice(0, 0),
+        5 -> [7].bytes()!.slice(0, 0),
+        _ -> null,
+    }
+}
+type Slot = { b: Bytes? }
+let slots = [Slot { b: made(i) } for i in 0..7]
+let present = [s.b != null for s in slots]
+let lengths = [s.b?.length ?? -1 for s in slots]
+let absent: Bytes? = null
+"${["${p}" for p in present].join(",")} ${lengths.length} ${lengths[0]} ${lengths[5]} ${lengths[6]} ${absent == null} ${made(6) == null} ${(made(0) ?? [9].bytes()!).length}"

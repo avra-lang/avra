@@ -7,7 +7,7 @@
 use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined, filled, flatten}
 use features.{TypeCx, EnumSig, this_is, nothing, duplicate_names, variants_are, pat_semantics_of}
 use features.enums.{all_irrefutable, hole_of}
-use diagnostics.{refusal, warning}
+use diagnostics.{refusal, warning, defect_at}
 
 /// The declaration's own law.
 export fn check_enum_decl(mut cx: TypeCx, s: StmtId) {
@@ -116,6 +116,11 @@ export fn pat_types_of(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeI
 export fn bind_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
     match cx.view.store.pat(p) {
         .Wild or .Rest -> [],
+        // the seam routes a format to its own owner; one arriving here is a defect
+        .Format(_, _) -> {
+            cx.emit(defect_at(cx.pat_loc(p), "a format pattern reached the enum typing's binds"))
+            []
+        },
         .Bind(_) -> [expected],
         .Variant(name, args) -> variant_types(cx, p, name.of, args, expected),
         .Lit(v) -> lit_types(cx, p, v, expected),
@@ -236,7 +241,7 @@ fn tests_first(cx: TypeCx, rows: List<Row>, name: string) -> bool {
 fn names_variant(cx: TypeCx, p: PatId, name: string) -> bool {
     match cx.view.store.pat(p) {
         .Variant(n, _) -> n.of == name,
-        .Wild or .Rest or .Bind(_) or .Lit(_) -> false,
+        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) -> false,
     }
 }
 
@@ -274,7 +279,7 @@ fn held(p: PatId) -> PatId? {
 fn variant_args(cx: TypeCx, p: PatId, name: string, arity: int) -> List<PatId?>? {
     match cx.view.store.pat(p) {
         .Variant(n, args) -> if n.of == name { padded(args, arity) } else { null },
-        .Wild or .Rest or .Bind(_) or .Lit(_) -> null,
+        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) -> null,
     }
 }
 
@@ -331,7 +336,7 @@ fn hole_binds(cx: TypeCx, hole: PatId) -> bool {
 fn whole_variant(cx: TypeCx, p: PatId) -> string? {
     match cx.view.store.pat(p) {
         .Variant(name, args) -> if all_irrefutable(cx.view.store, args) { name.of } else { null },
-        .Wild or .Rest or .Bind(_) or .Lit(_) -> null,
+        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) -> null,
     }
 }
 

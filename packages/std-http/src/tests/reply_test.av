@@ -1,0 +1,91 @@
+//! The reply framer: a status line's forms, a reply's body rules by
+//! status and by the request's method, and the refusals it shares
+//! with the request framer.
+use @std.http.frame.{framed_reply, limits, ReplyBody, Reply, Refusal, Method}
+
+fn reply_of(text: string, asked: Method) -> Reply? {
+    match framed_reply(text.bytes(), 0, 0, limits(), asked) {
+        .Complete(r) -> r,
+        .Partial -> null,
+        .Refused(_) -> null,
+    }
+}
+
+fn reply_refuses(text: string, want: Refusal) -> bool {
+    match framed_reply(text.bytes(), 0, 0, limits(), Method.Get) {
+        .Refused(why) -> why == want,
+        .Complete(_) -> false,
+        .Partial -> false,
+    }
+}
+
+fn reply_partial(text: string) -> bool {
+    match framed_reply(text.bytes(), 0, 0, limits(), Method.Get) {
+        .Partial -> true,
+        .Complete(_) -> false,
+        .Refused(_) -> false,
+    }
+}
+
+fn body_word(b: ReplyBody) -> string {
+    match b {
+        .None -> "none",
+        .Length(n) -> "length ${n}",
+        .Chunked -> "chunked",
+        .UntilClose -> "close",
+    }
+}
+
+fn shape(text: string, asked: Method) -> string {
+    let held: Reply? = reply_of(text, asked)
+    if held == null { return "no reply" }
+    let r = held!
+    "${r.status} 1.${r.minor} ${body_word(r.body)} ${r.keep_alive} ${r.fields.length} ${r.end}"
+}
+
+spec "std.http reply framer" {
+    given "the status line" {
+        then "a plain reply with a length" {
+            shape("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhello", Method.Get) == "200 1.1 length 5 true 1 38"
+        }
+        then "a reason may be empty" { shape("HTTP/1.1 200 \r\n\r\n", Method.Get) == "200 1.1 close false 0 17" }
+        then "a reason may be absent" { shape("HTTP/1.1 200\r\n\r\n", Method.Get) == "200 1.1 close false 0 16" }
+        then "a two-digit status is refused" { reply_refuses("HTTP/1.1 20 OK\r\n\r\n", .RequestLine) }
+        then "a letter in the status is refused" { reply_refuses("HTTP/1.1 2O0 OK\r\n\r\n", .RequestLine) }
+        then "a wrong major is refused" { reply_refuses("HTTP/2.0 200 OK\r\n\r\n", .Major) }
+        then "chunked on an HTTP/1.0 reply refuses, as it does on a request" { reply_refuses("HTTP/1.0 200 OK\r\ntransfer-encoding: chunked\r\n\r\n", .OldChunked) }
+        then "a lowercase scheme is refused" { reply_refuses("http/1.1 200 OK\r\n\r\n", .Version) }
+        then "a bare LF is refused" { reply_refuses("HTTP/1.1 200 OK\ncontent-length: 0\n\n", .LineEnd) }
+        then "no blank line yet is partial" { reply_partial("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n") }
+    }
+    given "a reply's body" {
+        then "a HEAD's answer has none whatever its length says" {
+            shape("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\n", Method.Head) == "200 1.1 none true 1 38"
+        }
+        then "a 204 has none" { shape("HTTP/1.1 204 No Content\r\n\r\n", Method.Get) == "204 1.1 none true 0 27" }
+        then "a 304 has none" { shape("HTTP/1.1 304 Not Modified\r\ncontent-length: 9\r\n\r\n", Method.Get) == "304 1.1 none true 1 48" }
+        then "a 1xx has none" { shape("HTTP/1.1 100 Continue\r\n\r\n", Method.Post) == "100 1.1 none true 0 25" }
+        then "chunked frames by chunks" {
+            shape("HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n", Method.Get) == "200 1.1 chunked true 1 47"
+        }
+        then "no length and no coding is read to the close, which cannot persist" {
+            shape("HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\n\r\n", Method.Get) == "200 1.1 close false 1 45"
+        }
+        then "connection: close ends persistence" {
+            shape("HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n", Method.Get) == "200 1.1 length 0 false 2 57"
+        }
+        then "HTTP/1.0 persists only with keep-alive" {
+            shape("HTTP/1.0 200 OK\r\ncontent-length: 0\r\n\r\n", Method.Get) == "200 1.0 length 0 false 1 38" &&
+                shape("HTTP/1.0 200 OK\r\ncontent-length: 0\r\nconnection: keep-alive\r\n\r\n", Method.Get) == "200 1.0 length 0 true 2 62"
+        }
+        then "chunked beside a length is refused" {
+            reply_refuses("HTTP/1.1 200 OK\r\ncontent-length: 3\r\ntransfer-encoding: chunked\r\n\r\n", .TransferEncoding)
+        }
+        then "two lengths are refused" {
+            reply_refuses("HTTP/1.1 200 OK\r\ncontent-length: 3\r\ncontent-length: 3\r\n\r\n", .ContentLength)
+        }
+        then "a length past the bound is refused" {
+            reply_refuses("HTTP/1.1 200 OK\r\ncontent-length: 99999999\r\n\r\n", .BodyLength)
+        }
+    }
+}

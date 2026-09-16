@@ -1,0 +1,223 @@
+//! client.av — the CLIENT: one connection as a value, a request sent
+//! whole, the reply framed as it arrives, its body gathered by the
+//! reply's own rule.
+//!
+//! The client has the server's shape: `polled` is one wait and one
+//! read, answering the reply when it is whole; `fetched` polls until
+//! the reply or the deadline. A test turns a server and polls a client
+//! on one thread; a program calls `fetched`.
+use @std.errors.{Error, ErrorInfo, info}
+use @std.net.{Conn, Poller, Read, NetError, connect, poller}
+use @std.time.{Duration, now_ms, ms}
+use frame.{Method, Reply, ReplyBody, Refusal, Chunker, Limits, framed_reply, chunker, fed, status_of, admits, is_target}
+use http.{Header, read_size, every_octet, fields_writable, token_char}
+
+/// What a fetch answers: the status, the fields as text, the body
+/// whole.
+export type Answer = { status: int, headers: List<Header>, body: Bytes }
+
+impl Answer {
+    /// The first header of this name, ASCII-folded, or null.
+    fn header(name: string) -> string? {
+        let h: Header? = self.headers.find((h) -> same_name(h.name, name))
+        h?.value
+    }
+}
+
+fn same_name(a: string, b: string) -> bool {
+    let octets = a.bytes()
+    octets.ieq_at(0, octets.length, b.bytes())
+}
+
+/// Why a fetch did not answer: the network, a reply the framer
+/// refuses (with the status the refusal names, as a server would
+/// answer it), the peer closing before a reply, or the deadline.
+export enum ClientError {
+    Net(e: NetError)
+    Refused(why: Refusal)
+    Closed
+    TimedOut
+}
+
+impl Error for ClientError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Net(e) -> e.describe(),
+            .Refused(why) -> info("http.refused", "the reply breaks a framing law and would earn ${status_of(why)}"),
+            .Closed -> info("http.closed", "the peer closed before a reply"),
+            .TimedOut -> info("http.timed_out", "no reply within the deadline"),
+        }
+    }
+}
+
+/// A connection with a request in flight.
+export type Client = {
+    conn: Conn,
+    poll: Poller,
+    asked: Method,
+    buf: Bytes,
+    scanned: int,
+    reply: Reply?,
+    decoder: Chunker?,
+    limits: Limits,
+}
+
+/// A net result as the client's: the failure wears `.Net`.
+fn netted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
+    match r {
+        .Ok(v) -> .Ok(v),
+        .Err(e) -> .Err(.Net(e)),
+    }
+}
+
+/// A client connected to host:port within `timeout`.
+export fn connected(host: string, port: int, timeout: Duration, limits: Limits) -> Result<Client, ClientError> {
+    let c = netted(connect(host, port, timeout))?
+    let p = netted(poller())?
+    netted(p.watch(c.fd, .Read))?
+    .Ok(Client { conn: c, poll: p, asked: .Get, buf: "".bytes(), scanned: 0, reply: null, decoder: null, limits: limits })
+}
+
+/// A request on the wire: the line, `host`, the fields, the body's
+/// length when there is a body (a body-less request has length zero
+/// by RFC 9112 §6.3 and needs no field), the body.
+///
+/// ABSENT WHEN A WORD OR A FIELD BREAKS THE FRAMER'S LAW. A method is
+/// a token, a target and a host are target octets, and every field is
+/// one the framer would frame — so a CRLF in a value a caller was
+/// handed cannot become a SECOND REQUEST LINE, which is the whole of
+/// request smuggling. A malformed request is refused rather than
+/// escaped, the way `decoded` refuses a malformed escape: a builder
+/// that repairs and a peer that does not disagree about what was sent.
+export fn request(method: string, target: string, host: string, headers: List<Header>, body: Bytes) -> Bytes? {
+    if !sayable(method, target, host, headers) { return null }
+    let fields = ["${h.name}: ${h.value}\r\n" for h in headers].join("")
+    let length = if body.length > 0 { "content-length: ${body.length}\r\n" } else { "" }
+    "${method} ${target} HTTP/1.1\r\nhost: ${host}\r\n${fields}${length}\r\n".bytes().concat(body)
+}
+
+/// Whether every word and field of a request can be written.
+fn sayable(method: string, target: string, host: string, headers: List<Header>) -> bool {
+    is_token(method) && is_word(target) && is_word(host) && fields_writable(headers, request_writes())
+}
+
+fn is_token(s: string) -> bool { !s.is_empty() && every_octet(s, token_char()) }
+
+/// A word of the request line: target octets, and at least one.
+fn is_word(s: string) -> bool { !s.is_empty() && every_octet(s, word_char()) }
+
+once fn word_char() -> Bytes { admits(is_target) }
+
+/// The framing fields `request` writes itself.
+once fn request_writes() -> List<Bytes> { [w.bytes() for w in ["host", "content-length", "transfer-encoding"]] }
+
+impl Client {
+    /// The request written whole, waiting on the socket as needed;
+    /// `asked` is the method, which decides whether the reply has a
+    /// body.
+    mut fn sent(asked: Method, req: Bytes) -> Result<int, ClientError> {
+        self.asked = asked
+        self.reply = null
+        self.decoder = null
+        mut from = 0
+        while from < req.length {
+            let n = netted(self.conn.write(req, from))?
+            if n == 0 {
+                netted(self.poll.watch(self.conn.fd, .Write))?
+                netted(self.poll.wait(ms(1000)))?
+                netted(self.poll.watch(self.conn.fd, .Read))?
+            }
+            from = from + n
+        }
+        .Ok(from)
+    }
+
+    /// One wait of up to `budget` and one read: the answer when the
+    /// reply is whole, null while it is not.
+    mut fn polled(budget: Duration) -> Result<Answer?, ClientError> {
+        netted(self.poll.wait(budget))?
+        match self.conn.read(read_size()) {
+            .Ok(.Data(b)) -> self.grown(b),
+            .Ok(.Eof) -> self.ended(),
+            .Ok(.Pending) -> .Ok(null),
+            .Err(e) -> .Err(.Net(e)),
+        }
+    }
+
+    /// Polls until the reply or the deadline.
+    mut fn fetched(asked: Method, req: Bytes, deadline: Duration) -> Result<Answer, ClientError> {
+        self.sent(asked, req)?
+        let until = now_ms() + deadline.ms
+        while now_ms() < until {
+            let a: Answer? = self.polled(ms(until - now_ms()))?
+            if a != null { return .Ok(a!) }
+        }
+        .Err(.TimedOut)
+    }
+
+    mut fn grown(b: Bytes) -> Result<Answer?, ClientError> {
+        self.buf = self.buf.concat(b)
+        self.framed()
+    }
+
+    /// The buffer framed: the head first, then the body by its rule.
+    mut fn framed() -> Result<Answer?, ClientError> {
+        if self.reply == null {
+            match framed_reply(self.buf, 0, self.scanned, self.limits, self.asked) {
+                .Partial -> { self.scanned = self.buf.length },
+                .Refused(why) -> { return .Err(.Refused(why)) },
+                .Complete(r) -> { self.reply = r },
+            }
+        }
+        if self.reply == null { return .Ok(null) }
+        self.bodied(self.reply!)
+    }
+
+    mut fn bodied(r: Reply) -> Result<Answer?, ClientError> {
+        match r.body {
+            .None -> self.answered(r, "".bytes(), r.end),
+            .Length(n) -> if self.buf.length < r.end + n { .Ok(null) } else { self.answered(r, self.buf.slice(r.end, r.end + n), r.end + n) },
+            .Chunked -> self.chunked(r),
+            .UntilClose -> .Ok(null),
+        }
+    }
+
+    mut fn chunked(r: Reply) -> Result<Answer?, ClientError> {
+        match fed(self.decoder ?? chunker(r.end), self.buf, self.limits) {
+            .More(c) -> self.decoding(c),
+            .Refused(why) -> .Err(.Refused(why)),
+            .Done(body, end) -> self.answered(r, body, end),
+        }
+    }
+
+    /// The decoder kept between reads; no answer yet.
+    mut fn decoding(c: Chunker) -> Result<Answer?, ClientError> {
+        self.decoder = c
+        .Ok(null)
+    }
+
+    /// The peer has finished: a reply read to the close is whole now;
+    /// anything else was cut short.
+    mut fn ended() -> Result<Answer?, ClientError> {
+        let held: Reply? = self.reply
+        if held == null { return .Err(.Closed) }
+        let r = held!
+        match r.body {
+            .UntilClose -> self.answered(r, self.buf.slice(r.end, self.buf.length), self.buf.length),
+            .None or .Length(_) or .Chunked -> .Err(.Closed),
+        }
+    }
+
+    /// The answer built, the consumed bytes dropped so a next reply
+    /// on the same connection frames from the buffer's start.
+    mut fn answered(r: Reply, body: Bytes, end: int) -> Result<Answer?, ClientError> {
+        let raw = self.buf
+        self.buf = raw.slice(end, raw.length)
+        self.scanned = 0
+        self.reply = null
+        self.decoder = null
+        .Ok(Answer { status: r.status, headers: [Header { name: raw.slice(f.name.lo, f.name.hi).text() ?? "", value: raw.slice(f.value.lo, f.value.hi).text() ?? "" } for f in r.fields], body: body })
+    }
+
+    fn close() -> Result<int, NetError> { self.conn.close() }
+}

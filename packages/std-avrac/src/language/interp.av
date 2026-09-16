@@ -10,7 +10,7 @@
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
 //! live in machine tables addressed by handle.
-use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, Reach, opens_region, closes_region, filled, joined, reversed, rt_index, hosted_symbol, fp, fp_list, fp_str, Static, StaticBox, Slot, debug}
+use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, RtKind, Reach, opens_region, closes_region, filled, joined, reversed, rt_index, hosted_symbol, fp, fp_list, fp_str, Static, StaticBox, Slot, debug}
 use @std.path.{joined_path}
 use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing, Budgets}
 
@@ -27,6 +27,9 @@ enum Val {
     F(bits: int)
     B(v: bool)
     S(v: string)
+    /// Octets, held directly: immutable, so no identity and no handle.
+    /// The evaluator's representation, never the language's.
+    Y(v: List<int>)
     /// An aggregate — a handle into the machine's array table.
     A(id: int)
     /// A mut binding's cell — a handle into the cell table.
@@ -55,6 +58,23 @@ type Machine = {
     statics: Map<string, Val>,
     out: List<string>,
     failures: List<string>,
+    // BOXES MINTED FOR A CROSSING, HELD UNTIL IT RETURNS. The frame
+    // stashes a raw pointer; a box materialised only to be staged has
+    // no other holder, so without this its last reference dies before
+    // the call and C reads freed memory. Cleared after every call.
+    staged: List<Bytes>,
+    /// THE PROGRAM'S OWN CLOSURE, OPENED — one handle per package that
+    /// owns native code, 0 where its library is not there. Held in a
+    /// PER-PROGRAM value on purpose: a handle set is per-program
+    /// IDENTITY, so handles kept in C would outlive the program that
+    /// opened them and a later program would reach a symbol it never
+    /// declared. That is the `RTLD_GLOBAL` leak wearing a stale field.
+    libs: List<OpenLibrary>,
+    /// EVERY CALLEE'S ADDRESS, ASKED ONCE. A symbol's address is fixed
+    /// for the life of the process — nothing here ever `dlclose`s —
+    /// and the lookup runs on EVERY extern call, so without this a
+    /// loop calling one extern pays a `dlsym` per handle per turn.
+    symbols: Map<string, int>,
     // instructions this run may still execute; below zero it traps
     budget: int,
     // the instruction budget as asked, for the refusal's words
@@ -72,9 +92,32 @@ type Machine = {
     embeds: List<string>,
 }
 
+/// One package's library as the machine holds it: the package that
+/// owns it, and the handle — 0 when it did not open. THE TWO TRAVEL
+/// TOGETHER because both readers need both halves: the lookup asks
+/// the handle, the refusal names the package, and holding them as
+/// parallel lists made the second index one list by the other's
+/// position.
+type OpenLibrary = { name: string, handle: int }
+
+/// The program's closure opened, in package order. A handle of 0 is
+/// ORDINARY rather than a failure: a package the compiler's own image
+/// already carries has no library at all, and the image answers for
+/// it. The stem carries no suffix, so the platform question stays out
+/// of the compiler and the machine tries the ones it knows.
+fn opened_libraries(l: Lowered) -> List<OpenLibrary> {
+    [OpenLibrary { name: p.name, handle: opened(p.library) } for p in l.libraries]
+}
+
+fn opened(stem: string) -> int {
+    let mach_o = avra_ffi_open("${stem}.dylib")
+    if mach_o != 0 { return mach_o }
+    avra_ffi_open("${stem}.so")
+}
+
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], failures: [], budget: unbudgeted, asked: unbudgeted, bytes: unbudgeted, mem_base: avra_mem_live(), mem_peak: 0, exhausted: null, base: null, embeds: [] }
+    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], failures: [], budget: unbudgeted, asked: unbudgeted, bytes: unbudgeted, mem_base: avra_mem_live(), mem_peak: 0, exhausted: null, base: null, embeds: [], staged: [], libs: opened_libraries(l), symbols: {} }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -352,6 +395,7 @@ impl Machine {
             .F(bits) -> fp(3, [bits]),
             .B(b) -> fp(4, [if b { 1 } else { 0 }]),
             .S(s) -> fp(5, [fp_str(s)]),
+            .Y(data) -> fp(10, data),
             .A(id) -> fp(6, [self.value_hash(x) for x in self.arrays[id]]),
             .C(id) -> fp(7, [self.value_hash(self.cells[id])]),
             .M(id) -> fp(8, [fp_list([fp_str(k) for k in self.maps[id].keys]), fp_list([self.value_hash(x) for x in self.maps[id].vals])]),
@@ -510,6 +554,7 @@ impl Machine {
             .F(bits) -> MetaVal.Float(bits),
             .B(b) -> MetaVal.Bool(b),
             .S(s) -> MetaVal.Text(s),
+            .Y(data) -> MetaVal.Text(self.decoded(data)),
             .N -> MetaVal.Absent,
             .A(id) -> {
                 heap.node([self.meta_of(x, heap) for x in self.arrays[id]])
@@ -530,12 +575,12 @@ impl Machine {
             return Val.S("")
         }
         let path = if rel.starts_with("/") { rel } else { joined_path(self.base!, rel) }
-        if avra_io_read(path) < 0 {
+        if avra_selfhost_file_exists(path) == 0 {
             self.trapped("`embed` finds no `${rel}` beside the source")
             return Val.S("")
         }
         self.embeds.push(path)
-        Val.S(avra_io_taken())
+        Val.S(avra_selfhost_read_file(path))
     }
 
     fn trapped(msg: string) {
@@ -566,15 +611,65 @@ impl Machine {
         self.whole(self.value(r))
     }
 
+
+    /// TEXT AT A ROW'S SEAT, FROM EITHER BOX. A row's seat kind is
+    /// `Ptr`, which a string and a `Bytes` both fill — natively one
+    /// headered box, read the same way — so a `Bytes` here is those
+    /// bytes viewed as text, and the engines agree about it. Spelled
+    /// over every variant: a `Val` is a registry, and the next kind
+    /// that can fill a pointer seat must answer here.
     fn text_val(v: Val) -> string {
         match v {
             .S(s) -> s,
-            _ -> {
+            .Y(data) -> self.decoded(data),
+            .I(_) or .F(_) or .B(_) or .A(_) or .M(_) or .C(_) or .N -> {
                 self.defect("a non-string reached text")
                 ""
             }
         }
     }
+
+    /// A BOX'S LENGTH IN BYTES, WITHOUT DECODING: the row reads a
+    /// header natively, so it answers for any octets — including ones
+    /// that are not UTF-8, which text has to refuse and a length never
+    /// needs to. `rest ->` delegates everything that is not octets to
+    /// `text_val`, which is exhaustive.
+    fn byte_length(v: Val) -> int {
+        match v {
+            .Y(data) -> data.length,
+            rest -> self.text_val(v).length,
+        }
+    }
+
+    /// ONE BYTE OF A ROW'S BOX, WITHOUT DECODING — `byte_length`'s
+    /// sibling, and the family's rule: A ROW THAT ANSWERS A SCALAR
+    /// FROM OCTETS NEVER DECODES. Natively the row indexes the box,
+    /// so it answers for any octets at all. Asked per byte rather
+    /// than through `octets`, which would build the whole sequence
+    /// for one question.
+    fn byte_at(v: Val, i: int) -> int {
+        match v {
+            .Y(data) -> data[i],
+            rest -> self.text_val(v).char_code(i),
+        }
+    }
+
+    /// Octets as text. THE DECODE IS LOSSLESS FOR UTF-8 AND ONLY FOR
+    /// UTF-8: an evaluator string cannot hold arbitrary octets, so
+    /// bytes that are not UTF-8 are refused by name, never
+    /// approximated — a silent disagreement with the native answer is
+    /// the one outcome worse than a refusal.
+    fn decoded(data: List<int>) -> string {
+        utf8_text(data) ?? self.refused_octets()
+    }
+
+    /// The refusal above, spoken: the trap names the fault and the
+    /// engine that has none.
+    fn refused_octets() -> string {
+        self.trapped("octets that are not UTF-8 reached a text seat — the evaluator carries text as text and cannot hold these bytes; build natively")
+        ""
+    }
+
 
     /// A register's float BITS — the evaluator's float currency.
     fn bits_val(r: Reg) -> int {
@@ -811,6 +906,7 @@ impl Machine {
             .B(t) -> if t { "true" } else { "false" },
             .S(s) -> s,
             .A(id) -> "[${joined([self.val_text(e) for e in self.arrays[id]], ", ")}]",
+            .Y(_) -> "<Bytes>",
             .C(_) -> "<cell>",
             .M(_) -> "<map>",
             .N -> "null",
@@ -826,9 +922,21 @@ impl Machine {
     /// the runtime's i64 answer, exactly as the backend does.
     fn rt_val(b: Body, d: Reg, callee: string, args: List<Reg>) -> Val {
         let raw = self.rt_dispatch(callee, [self.value(r) for r in args])
-        if self.l.types.machine_shape(b.reg_types[d.index]) is .Bool {
+        let shape = self.l.types.machine_shape(b.reg_types[d.index])
+        if shape is .Bool {
             return match raw {
                 .I(n) -> Val.B(n != 0),
+                _ -> raw,
+            }
+        }
+        // A POINTER ANSWER IN A TEXT SEAT IS THE TEXT IT POINTS AT.
+        // The frame answers every pointer as its address, because a
+        // kind cannot say whether the declaration meant text; the
+        // DESTINATION can, and it is the same place the bool answer
+        // narrows. The read is a cast and never a second call.
+        if shape is .Str {
+            return match raw {
+                .I(a) -> if a == 0 { Val.S("") } else { Val.S(avra_ffi_text_at(a)) }
                 _ -> raw,
             }
         }
@@ -840,9 +948,19 @@ impl Machine {
     fn rt_dispatch(callee: string, vals: List<Val>) -> Val {
         let sig: RtSig? = self.rt.get(callee)
         if sig == null {
-            if self.l.externs.any(it.name == callee) { return self.unhosted_extern(callee) }
+            // THE ROW IS THE WITNESS, so the seam must keep it: asking
+            // `any` threw away the very declaration the frame needs.
+            let host: RtSig? = self.l.externs.find(it.name == callee)
+            if host != null { return self.hosted_extern(host!, callee, vals) }
             return self.defect_val("an unknown runtime callee `${callee}` survived lowering")
         }
+        // THE SAME CHECK THE BACKEND EMITS, at the same seam. A row's
+        // arm hands C an Avra string directly, so without this the
+        // evaluator would let a NUL-bearing name cross where the
+        // native binary traps — the engines disagreeing about which
+        // strings may cross, which is the one thing this check exists
+        // to prevent.
+        self.crossings(sig!, vals)
         let host = sig!.host
         match host {
             .Puts -> self.puts_val(vals),
@@ -867,7 +985,7 @@ impl Machine {
             .InsistScalar -> self.insist_scalar_val(vals),
             .Text -> Val.S(self.val_text(vals[0])),
             .FloatTextBits -> Val.S(avra_float_text_bits(self.whole(vals[0]))),
-            .Strlen -> Val.I(self.text_val(vals[0]).length),
+            .Strlen -> Val.I(self.byte_length(vals[0])),
             .ArrayPop -> self.array_pop_val(vals),
             .ArrayConcat -> self.array_concat_val(vals),
             .ArraySlice -> self.array_slice_val(vals),
@@ -881,40 +999,317 @@ impl Machine {
             .StrCharCode -> self.str_char_code_val(vals),
             .StrTrim -> Val.S(trimmed(self.text_val(vals[0]))),
             .StrConcat -> Val.S(self.text_val(vals[0]) + self.text_val(vals[1])),
-            .ProcSpawn -> Val.I(avra_proc_spawn(self.text_val(vals[0]), self.texts_of(vals[1]), self.texts_of(vals[2]), self.text_val(vals[3]), self.whole(vals[4]), self.whole(vals[5]), self.whole(vals[6]))),
-            .ProcRun -> Val.I(avra_proc_run(self.text_val(vals[0]), self.texts_of(vals[1]), self.texts_of(vals[2]), self.text_val(vals[3]), self.whole(vals[4]), self.text_val(vals[5]), self.whole(vals[6]), self.whole(vals[7]), self.whole(vals[8]))),
-            .ProcPoll -> Val.I(avra_proc_poll(self.whole(vals[0]), self.whole(vals[1]))),
-            .ProcWrite -> Val.I(avra_proc_write(self.whole(vals[0]), self.text_val(vals[1]))),
-            .ProcStdinClose -> Val.I(avra_proc_stdin_close(self.whole(vals[0]))),
-            .ProcTake -> Val.S(avra_proc_take(self.whole(vals[0]), self.whole(vals[1]))),
-            .ProcSignal -> Val.I(avra_proc_signal(self.whole(vals[0]), self.whole(vals[1]), self.whole(vals[2]))),
-            .ProcStatus -> Val.I(avra_proc_status(self.whole(vals[0]))),
-            .ProcPid -> Val.I(avra_proc_pid(self.whole(vals[0]))),
-            .ProcClose -> proc_close_val(self.whole(vals[0])),
-            .ProcWhich -> Val.S(avra_proc_which(self.text_val(vals[0]), self.text_val(vals[1]))),
+            .BytesLen -> Val.I(self.octets(vals[0]).length),
+            .BytesEq -> verdict(same_octets(self.octets(vals[0]), self.octets(vals[1]))),
+            .BytesAt -> self.bytes_at_val(vals),
+            .BytesSlice -> self.bytes_slice_val(vals),
+            .BytesConcat -> Val.Y(self.octets(vals[0]).concat(self.octets(vals[1]))),
+            .BytesIndexOf -> self.bytes_index_of_val(vals),
+            .BytesOfStr -> Val.Y(self.octets(vals[0])),
+            .BytesOfList -> self.bytes_of_list_val(vals[0]),
+            .StrOfBytes -> text_of_octets(self.octets(vals[0])),
+            .Utf8BadAt -> Val.I(utf8_bad_at(self.octets(vals[0]))),
+            .BytesRun -> self.bytes_run_val(vals),
+            .BytesEqAt -> self.bytes_eq_at_val(vals, false),
+            .BytesIeqAt -> self.bytes_eq_at_val(vals, true),
+            .BytesGathered -> self.bytes_gathered_val(vals[0]),
+            .BytesAdopted -> self.adopted_val(vals),
+            .FdRead -> Val.I(avra_fd_read(self.whole(vals[0]), self.whole(vals[1]))),
+            .FdTaken -> Val.Y(octets_of_box(avra_fd_taken(self.whole(vals[0])))),
+            .FdWrite -> Val.I(avra_fd_write(self.whole(vals[0]), self.octets(vals[1]).bytes()!, self.whole(vals[2]))),
             .ErrnoText -> Val.S(avra_errno_text(self.whole(vals[0]))),
             .NowNs -> Val.I(avra_now_ns()),
             .HostEnv -> Val.S(avra_host_env(self.text_val(vals[0]))),
-            .Eputs -> eputs_val(self.text_val(vals[0])),
-            .IoKind -> Val.I(avra_io_kind(self.text_val(vals[0]))),
-            .IoRead -> Val.I(avra_io_read(self.text_val(vals[0]))),
-            .IoWrite -> Val.I(avra_io_write(self.text_val(vals[0]), self.text_val(vals[1]))),
-            .IoList -> Val.I(avra_io_list(self.text_val(vals[0]))),
-            .IoMkdir -> Val.I(avra_io_mkdir(self.text_val(vals[0]))),
-            .IoRemove -> Val.I(avra_io_remove(self.text_val(vals[0]))),
-            .IoEnv -> Val.I(avra_io_env(self.text_val(vals[0]))),
-            .IoTaken -> Val.S(avra_io_taken()),
+            .Eputs -> self.eputs_row(vals),
+            .IoList -> self.io_list_val(vals),
             .Embed -> self.embedded(self.text_val(vals[0])),
             .StrFromCodepoint -> Val.S(avra_str_from_codepoint(self.whole(vals[0]))),
+            .ExecSelf -> self.exec_self_val(vals),
+            .SpawnStatus -> self.spawn_status_val(vals),
             .Unhosted -> self.defect_val("a runtime callee the interpreter does not host: `${callee}`"),
         }
     }
 
-    /// An extern fn is the host's — the evaluator has no body for it.
-    fn unhosted_extern(callee: string) -> Val {
-        self.trapped("`${callee}` is extern — the evaluator cannot host it; build natively")
+
+    /// Every text seat of a non-inert row checked before it crosses.
+    fn crossings(sig: RtSig, vals: List<Val>) {
+        if sig.inert { return }
+        for i, k in sig.params { self.crossed(k, vals[i]) }
+    }
+
+    fn crossed(k: RtKind, v: Val) {
+        if !carries_text(k) { return }
+        let b: Bytes? = bytes_of_val(v)
+        if b != null { let _ = avra_str_crossing(b!) }
+    }
+
+    /// AN EXTERN, HOSTED: the symbol in the running image, called
+    /// through ONE fully applied frame. The declaration's row is the
+    /// witness — its seat kinds say how each value crosses and its
+    /// answer kind how the answer comes back — and the backend reads
+    /// that same column, so the engines agree by construction and not
+    /// by two hand-written tables happening to match.
+    fn hosted_extern(sig: RtSig, callee: string, vals: List<Val>) -> Val {
+        let sym = self.symbol_of(callee)
+        if sym == 0 { return self.no_symbol(callee) }
+        if self.past_the_frame(sig) { return self.too_many_seats(callee) }
+        avra_ffi_reset()
+        self.staged = []
+        if !self.staged_seats(sig, vals) { return self.unstageable(callee) }
+        avra_ffi_arm(fault_words(callee, vals))
+        let answer = self.answered(sig.ret, sym)
+        self.settled_cells(sig, vals)
+        answer
+    }
+
+    /// Every seat staged into its own register file, at its own
+    /// file's index — the k-th integer-class value and the k-th
+    /// float, which is the order both ABIs fill.
+    /// Whether every seat crossed. A LAW REFUSES BEFORE THE WORK: a
+    /// refusal recorded MID-staging left the symbol CALLED anyway,
+    /// with the slot at the reset's zero — a callee that dereferences
+    /// read address zero and one that did not answered a number
+    /// attributed to a refused call. Every seat still stages: the fold
+    /// reads a list already built, so nothing here short-circuits, and
+    /// a frame that is never called does not care what is in it.
+    fn staged_seats(sig: RtSig, vals: List<Val>) -> bool {
+        let slots = file_slots(sig.params)
+        [self.stage_seat(k, cell_at(sig, i), slots[i], vals[i]) for i, k in sig.params].all(it)
+    }
+
+    /// EVERY `mut` SEAT READ BACK, AT ITS DECLARED WIDTH, after the
+    /// call. A C `int*` writes 32 bits and leaves the top half of a
+    /// 64-bit cell STALE, so reading it whole answers a number the
+    /// callee never wrote. The backend normalises for exactly this
+    /// reason (`normalized_cell`) and reads the width from the SAME
+    /// `cells` column, which is what keeps the two engines agreeing.
+    fn settled_cells(sig: RtSig, vals: List<Val>) {
+        // MOST CALLS HAVE NO INOUT, and this runs on every one — the
+        // walk below allocates a slot map to discover that nothing
+        // needs settling, right beside a lookup that was just made
+        // free. Ask the column first.
+        if !sig.cells.any(carries_cell(it)) { return }
+        let slots = file_slots(sig.params)
+        for i, k in sig.params {
+            let width = cell_at(sig, i)
+            if carries_cell(width) { self.settled_cell(width, slots[i], vals[i]) }
+        }
+    }
+
+    fn settled_cell(width: RtKind, at: int, v: Val) {
+        match v {
+            .C(id) -> self.cells.set(id, settled_word(width, avra_ffi_cell_at(at))),
+            rest -> self.defect("a `mut` seat settled onto something that is not a cell"),
+        }
+    }
+
+    /// HOW ONE ARGUMENT CROSSES — the evaluator's twin of the
+    /// backend's `rt_arg`, over the same column.
+    fn stage_seat(k: RtKind, cell: RtKind, at: int, v: Val) -> bool {
+        if carries_cell(cell) { return self.staged_cell(at, v) }
+        match k {
+            .F64 -> self.staged_f64(at, v),
+            .Ptr -> self.stage_pointer(at, v),
+            .I64 or .I32 or .U32 -> self.staged_word(at, v),
+            .Void -> self.void_seat(),
+        }
+    }
+
+    /// A pointer seat takes a BOX from text and an ADDRESS from a
+    /// number; absence is the null pointer, which is what a C
+    /// sentinel of zero means. Spelled over every `Val`: a handle
+    /// into the machine's own tables is NOT an address, and a
+    /// catch-all here would forget the next variant that is.
+    fn stage_pointer(at: int, v: Val) -> bool {
+        match v {
+            .S(t) -> self.staged_text(at, t),
+            .Y(_) -> self.stage_bytes(at, v),
+            .N -> self.staged_at(at, 0),
+            .I(a) -> self.staged_at(at, a),
+            .F(_) or .B(_) or .A(_) or .M(_) or .C(_) -> false,
+        }
+    }
+
+    /// A `mut` SEAT HANDS C THE ADDRESS OF THE CALLER'S CELL. The
+    /// frame seeds its own storage with the cell's current value —
+    /// an inout is not always an out, and a callee may read what it
+    /// was handed — and passes THAT address; `settled_cells` reads it
+    /// back. Only a local `mut` binding has a cell, which the seat
+    /// law already holds the CALL site to.
+    fn staged_cell(at: int, v: Val) -> bool {
+        match v {
+            .C(id) -> self.seeded(at, id),
+            .S(_) or .Y(_) or .N or .I(_) or .F(_) or .B(_) or .A(_) or .M(_) -> false,
+        }
+    }
+
+    /// A cell's value as a machine word. `word_of` and not `whole`,
+    /// because a `ptr?` cell starts at `null` and a null pointer
+    /// seeds as the address zero — `sqlite3_open_v2`'s handle is
+    /// exactly that, and `whole` calls a null a defect.
+    fn seeded(at: int, id: int) -> bool {
+        avra_ffi_set_cell(at, self.word_of(self.cells[id]))
+        true
+    }
+
+    fn staged_f64(at: int, v: Val) -> bool {
+        avra_ffi_set_f64(at, self.bits_of_val(v))
+        true
+    }
+
+    fn staged_word(at: int, v: Val) -> bool {
+        avra_ffi_set_int(at, self.word_of(v))
+        true
+    }
+
+    fn staged_at(at: int, address: int) -> bool {
+        avra_ffi_set_int(at, address)
+        true
+    }
+
+    fn staged_text(at: int, t: string) -> bool {
+        avra_ffi_set_text(at, t)
+        true
+    }
+
+    /// OCTETS STAGED, AND HELD. The box is materialised from the
+    /// evaluator's own octets, so nothing else holds it: the frame
+    /// keeps a raw pointer and the reference must outlive the call.
+    fn stage_bytes(at: int, v: Val) -> bool {
+        let b = self.octets(v).bytes()!
+        self.staged.push(b)
+        avra_ffi_set_bytes(at, b)
+        true
+    }
+
+    /// A word seat's value. A bool crosses as the word the runtime
+    /// words it with, which is what every other seam does.
+    fn word_of(v: Val) -> int {
+        match v {
+            .B(b) -> if b { 1 } else { 0 }
+            .N -> 0,
+            rest -> self.whole(v),
+        }
+    }
+
+    /// A float's bits, which is how the evaluator holds one.
+    fn bits_of_val(v: Val) -> int {
+        match v {
+            .F(bits) -> bits,
+            rest -> self.whole(v),
+        }
+    }
+
+    /// HOW THE ANSWER CROSSES BACK — the evaluator's twin of the
+    /// backend's `answered`: a narrow word is extended with the SIGN
+    /// its width names, because a C `int` writes 32 bits and leaves
+    /// the rest of the register alone.
+    fn answered(k: RtKind, sym: int) -> Val {
+        match k {
+            .Void -> {
+                let _ = avra_ffi_call(sym)
+                Val.I(0)
+            }
+            .F64 -> Val.F(avra_ffi_call_f64(sym)),
+            .Ptr -> pointer_val(avra_ffi_call(sym)),
+            .I64 -> Val.I(avra_ffi_call(sym)),
+            .I32 -> Val.I(sign_extended(avra_ffi_call(sym))),
+            .U32 -> Val.I(zero_extended(avra_ffi_call(sym))),
+        }
+    }
+
+    // ── The frame's voices ──────────────────────────────────────
+
+    /// A symbol the running image does not carry. The image holds
+    /// what `build/avra` links, so a package whose object the
+    /// compiler does not depend on is reached natively and not here.
+    /// THE PROGRAM'S OWN CLOSURE FIRST, THEN THE RUNNING IMAGE. A
+    /// package's symbol is reachable only when the program depends on
+    /// the package — that is the whole narrowing. The image still
+    /// answers for libc and for everything `build/avra` links, which
+    /// is what the extern host delivered and what the frame itself
+    /// calls; dropping it would take the evaluator's own doors away.
+    fn symbol_of(callee: string) -> int {
+        let known: int? = self.symbols.get(callee)
+        if known != null { return known! }
+        self.remembered(callee, self.looked_up(callee))
+    }
+
+    /// The closure's handles, then the image. The answer cannot change
+    /// for the life of the process, which is what makes remembering it
+    /// correct rather than merely faster.
+    fn looked_up(callee: string) -> int {
+        [avra_ffi_symbol_in(o.handle, callee) for o in self.libs].find(it != 0) ?? avra_ffi_symbol(callee)
+    }
+
+    /// ABSENCE IS REMEMBERED TOO. `0` is a real answer here and not a
+    /// missing one — a callee no library and no image carries stays
+    /// absent, and asking again would re-walk every handle to learn
+    /// the same thing.
+    fn remembered(callee: string, found: int) -> int {
+        self.symbols.set(callee, found)
+        found
+    }
+
+    fn no_symbol(callee: string) -> Val {
+        self.trapped("`${callee}` is extern and this image does not carry it${self.unopened()} — build natively")
         Val.I(0)
     }
+
+    /// The packages in this program's closure whose library did not
+    /// open, named for the refusal — so "not found" can say WHERE
+    /// else it would have looked. Empty when every one opened, and
+    /// then the refusal is the plain one.
+    fn unopened() -> string {
+        let missing = [o.name for o in self.libs if o.handle == 0]
+        if missing.is_empty() { return "" }
+        ", and ${joined(missing, ", ")} owns native code whose library is not built — run `make libs`"
+    }
+
+    /// A declaration wider than one frame. The frame is fully applied
+    /// and fixed, so a wider one is a shape the evaluator was never
+    /// able to call.
+    fn too_many_seats(callee: string) -> Val {
+        self.trapped("`${callee}` takes more seats than one frame carries — build natively")
+        Val.I(0)
+    }
+
+    /// A `void` seat is a shape no declaration can write — F2056
+    /// refuses it at the declaration, so reaching here is ours.
+    ///
+    /// THAT SENTENCE WAS FALSE WHEN IT WAS FIRST WRITTEN. The seat
+    /// law admitted `.Void`, so `extern fn f(x: void)` checked clean
+    /// and a program that filled the seat reached this defect under
+    /// the evaluator while LLVM refused the module the backend
+    /// emitted — two internal failures for one user mistake. The
+    /// claim is kept because it is the right one; naming the law is
+    /// what makes it checkable rather than believed.
+    fn void_seat() -> bool {
+        self.defect("a `void` seat reached the extern frame")
+        false
+    }
+
+    /// AN AGGREGATE AT A SEAT, which is a LAW and not a defect. The
+    /// evaluator holds a list or a map as a HANDLE into its own
+    /// table, never as a box, so there is nothing to hand C — a
+    /// runtime row's arm materialises one, and the uniform frame
+    /// cannot. `Bytes` is NOT one of these: it is a headered box and
+    /// the frame stages it. It was worded as a defect while only a row could
+    /// reach the frame; a package's `extern fn` may declare an
+    /// aggregate seat, so the words now name the remedy its writer
+    /// can act on.
+    fn unstageable(callee: string) -> Val {
+        self.trapped("`${callee}` has a seat the frame cannot carry — the evaluator holds one as a handle, not a box; stage the elements one at a time")
+        Val.I(0)
+    }
+
+    /// Whether the declaration asks for more seats than one frame
+    /// carries, in either register file.
+    fn past_the_frame(sig: RtSig) -> bool {
+        [1 for k in sig.params if !rides_fp(k)].length > avra_ffi_max_int() ||
+            [1 for k in sig.params if rides_fp(k)].length > avra_ffi_max_f64()
+    }
+
 
     fn array_new_val() -> Val {
         self.fresh_array([])
@@ -983,13 +1378,13 @@ impl Machine {
         Val.S(if lo < hi { s.substring(lo, hi) } else { "" })
     }
 
-    /// The byte at `i` as a code; past the text, the runtime's trap.
+
+    /// The byte at `i` as a code; past the box, the runtime's trap.
     fn str_char_code_val(vals: List<Val>) -> Val {
-        let s = self.text_val(vals[0])
         let i = self.whole(vals[1])
-        let n = s.length
+        let n = self.byte_length(vals[0])
         if i < 0 || i >= n { return self.out_of_bounds(i, n) }
-        Val.I(s.char_code(i))
+        Val.I(self.byte_at(vals[0], i))
     }
 
     /// VALUE SEMANTICS, spelled as the spec: the interpreter has no
@@ -1008,7 +1403,7 @@ impl Machine {
                 self.maps.push(MapVal { keys: [k for k in self.maps[id].keys], vals: [x for x in self.maps[id].vals] })
                 Val.M(self.maps.length - 1)
             }
-            .I(_) or .B(_) or .S(_) or .C(_) or .N -> v,
+            .I(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N -> v,
         }
     }
 
@@ -1179,6 +1574,62 @@ impl Machine {
         }
     }
 
+
+    /// THE NAME A ROW THAT ACTS WILL RESOLVE, or absence once reading
+    /// it refused. A LAW REFUSES BEFORE THE WORK — the law the extern
+    /// host's staging already pays, owed by these rows too. A seat
+    /// read that refuses hands back a STAND-IN and the machine only
+    /// stops at the next INSTRUCTION, so a row that reads and acts in
+    /// one expression acts with the stand-in inside it: a child ran
+    /// with a word the program never wrote, a directory opened at a
+    /// path nobody asked for, and the refusal was spoken after.
+    fn named_act(v: Val) -> string? {
+        let name = self.text_val(v)
+        if self.failures.is_empty() { name } else { null }
+    }
+
+    fn io_list_val(vals: List<Val>) -> Val {
+        let path? = self.named_act(vals[0]) else { return Val.I(0) }
+        Val.I(avra_io_list(path))
+    }
+
+    fn eputs_row(vals: List<Val>) -> Val {
+        let line? = self.named_act(vals[0]) else { return Val.I(0) }
+        eputs_val(line)
+    }
+
+    /// This process REPLACED, so the seats are read first and the row
+    /// acts only over a machine that is still clean.
+    fn exec_self_val(vals: List<Val>) -> Val {
+        let words = self.texts_of(vals[0])
+        if !self.failures.is_empty() { return Val.I(0) }
+        Val.I(avra_exec_self(words))
+    }
+
+    fn spawn_status_val(vals: List<Val>) -> Val {
+        let prog? = self.named_act(vals[0]) else { return Val.I(0) }
+        let words = self.texts_of(vals[1])
+        if !self.failures.is_empty() { return Val.I(0) }
+        Val.I(avra_spawn_status(prog, words))
+    }
+
+
+    /// THE ADOPTION, EVALUATED THROUGH THE SAME DOOR THE COMPILED
+    /// PROGRAM CALLS. The frame answers every pointer as its ADDRESS,
+    /// so the address is minted back into a pointer and handed to the
+    /// runtime — the octets are then one copy made by one function,
+    /// and the engines agree because there is only one of them.
+    ///
+    /// A ZERO ADDRESS CANNOT ARRIVE: the row's seat takes no absence
+    /// (F2088), so a caller holding a nullable pointer decided what
+    /// nothing means before it got here.
+    fn adopted_val(vals: List<Val>) -> Val {
+        let held? = avra_ptr_at(self.whole(vals[0])) else {
+            return self.defect_val("an address of zero reached the adoption door")
+        }
+        Val.Y(octets_of_box(avra_bytes_adopted(held, self.whole(vals[1]))))
+    }
+
     fn streq_val(vals: List<Val>) -> Val {
         verdict(self.text_val(vals[0]) == self.text_val(vals[1]))
     }
@@ -1196,36 +1647,19 @@ extern fn avra_int_or(a: int, b: int) -> int
 extern fn avra_int_xor(a: int, b: int) -> int
 extern fn avra_int_shl(a: int, b: int) -> int
 extern fn avra_int_shr(a: int, b: int) -> int
-extern fn avra_proc_spawn(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, max_bytes: int, from_h: int) -> int
-extern fn avra_proc_run(file: string, argv: List<string>, envp: List<string>, cwd: string, flags: int, stdin_text: string, timeout_ms: int, grace_ms: int, max_bytes: int) -> int
-extern fn avra_proc_poll(h: int, timeout_ms: int) -> int
-extern fn avra_proc_write(h: int, text: string) -> int
-extern fn avra_proc_stdin_close(h: int) -> int
-extern fn avra_proc_take(h: int, stream: int) -> string
-extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
-extern fn avra_proc_status(h: int) -> int
-extern fn avra_proc_pid(h: int) -> int
-extern fn avra_proc_close(h: int)
-extern fn avra_proc_which(file: string, path: string) -> string
 extern fn avra_errno_text(err: int) -> string
 extern fn avra_now_ns() -> int
 extern fn avra_eputs(line: string)
-extern fn avra_io_kind(path: string) -> int
-extern fn avra_io_read(path: string) -> int
-extern fn avra_io_write(path: string, text: string) -> int
 extern fn avra_io_list(path: string) -> int
-extern fn avra_io_mkdir(path: string) -> int
-extern fn avra_io_remove(path: string) -> int
-extern fn avra_io_env(name: string) -> int
-extern fn avra_io_taken() -> string
 extern fn avra_str_from_codepoint(code: int) -> string
+extern fn avra_exec_self(args: List<string>) -> int
+extern fn avra_spawn_status(prog: string, args: List<string>) -> int
+extern fn avra_fd_read(fd: int, max: int) -> int
+extern fn avra_selfhost_file_exists(path: string) -> int
+extern fn avra_selfhost_read_file(path: string) -> string
+extern fn avra_fd_taken(token: int) -> Bytes
+extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
 // `avra_host_env` is the module's already — workspace.av declares it.
-
-/// A void host call answers the placeholder every void call does.
-fn proc_close_val(h: int) -> Val {
-    avra_proc_close(h)
-    Val.I(0)
-}
 
 /// A line to the evaluator's own stderr — never the program's answer.
 fn eputs_val(line: string) -> Val {
@@ -1396,3 +1830,149 @@ extern fn avra_float_lt(a: int, b: int) -> int
 extern fn avra_float_le(a: int, b: int) -> int
 extern fn avra_float_gt(a: int, b: int) -> int
 extern fn avra_float_ge(a: int, b: int) -> int
+
+
+// ── The extern host's frame ─────────────────────────────────────
+// The evaluator's way to call a linked C function by name, so a
+// program that binds C answers the same under `avra run` as it does
+// built. The C is the COMPILER's, not the runtime's — a symbol
+// resolver in the runtime would ride inside every binary the compiler
+// emits (packages/std-avrac/src/c/ffi.c).
+
+extern fn avra_ffi_symbol(name: string) -> int
+extern fn avra_ffi_open(path: string) -> int
+extern fn avra_ffi_symbol_in(handle: int, name: string) -> int
+extern fn avra_ffi_set_cell(at: int, v: int)
+extern fn avra_ffi_cell_at(at: int) -> int
+extern fn avra_ffi_reset()
+extern fn avra_ffi_max_int() -> int
+extern fn avra_ffi_max_f64() -> int
+extern fn avra_ffi_set_int(at: int, v: int)
+extern fn avra_ffi_set_f64(at: int, bits: int)
+extern fn avra_ffi_set_text(at: int, s: string)
+extern fn avra_ffi_set_bytes(at: int, b: Bytes)
+extern fn avra_ffi_arm(words: string)
+extern fn avra_ffi_call(sym: int) -> int
+extern fn avra_ffi_call_f64(sym: int) -> int
+extern fn avra_ffi_text_at(address: int) -> string
+extern fn avra_ptr_at(address: int) -> ptr?
+extern fn avra_bytes_adopted(p: ptr, n: int) -> Bytes
+extern fn avra_str_crossing(b: Bytes) -> Bytes
+
+/// THE VERDICT A FAULT INSIDE THE CALLEE WILL WEAR, composed BEFORE
+/// the call because a fault handler may not allocate. A HOST SEAT'S
+/// ABSENCE IS A NULL POINTER and only the callee's own contract says
+/// whether it may be one — `free(null)` is defined and `atoi(null)`
+/// wrecks — so the seats that carried absence are named beside the
+/// callee rather than refused ahead of it.
+fn fault_words(callee: string, vals: List<Val>) -> string {
+    let absent: List<int> = [j + 1 for j, v in vals if v is .N]
+    if absent.is_empty() { return "a foreign body faulted inside `${callee}`" }
+    "a foreign body faulted inside `${callee}` — ${absent_seats(absent)}"
+}
+
+/// The seats a call handed absence, spelled for those words.
+fn absent_seats(absent: List<int>) -> string {
+    let ns = joined(["${n}" for n in absent], ", ")
+    if absent.length == 1 { return "seat ${ns} was handed `null`" }
+    "seats ${ns} were handed `null`"
+}
+
+/// WHICH REGISTER FILE A SEAT RIDES. Spelled over every kind rather
+/// than asked with `is`: `RtKind` is a registry, and a boolean about
+/// ONE variant forgets the next one exactly as a catch-all would.
+fn rides_fp(k: RtKind) -> bool {
+    match k {
+        .F64 -> true,
+        .I64 or .Ptr or .Void or .I32 or .U32 -> false,
+    }
+}
+
+/// Each seat's index WITHIN ITS OWN register file — how many earlier
+/// seats ride the same file. That is the only thing the frame needs,
+/// because both ABIs fill each file in class order however the seats
+/// interleave.
+fn file_slots(kinds: List<RtKind>) -> List<int> {
+    [[1 for j, p in kinds if j < i && rides_fp(p) == rides_fp(k)].length for i, k in kinds]
+}
+
+/// WHETHER A SEAT COULD CARRY TEXT — a pointer seat, and only that.
+/// Spelled over every kind: `RtKind` is a registry, and a boolean
+/// asking about ONE variant forgets the next exactly as a catch-all
+/// would.
+fn carries_text(k: RtKind) -> bool {
+    match k {
+        .Ptr -> true,
+        .I64 or .Void or .I32 or .U32 or .F64 -> false,
+    }
+}
+
+/// A `Val`'s BYTES at a row's seat, or absence for a value that is
+/// not a box of bytes. A string and a `Bytes` are ONE headered box
+/// natively and the check reads that header, so both cross the same
+/// door — reading only the string was the check declining to look at
+/// the box the native binary was about to hand over. A word list at a
+/// seat is a box and not a name; the rows that take one check their
+/// own words in C.
+fn bytes_of_val(v: Val) -> Bytes? {
+    match v {
+        .S(t) -> t.bytes(),
+        .Y(data) -> data.bytes()!,
+        rest -> null,
+    }
+}
+
+/// WHETHER A SEAT CARRIES A CELL — an inout, holding the address of
+/// the caller's own slot. `Void` in the row's `cells` column means
+/// the seat is not one. Spelled over every kind: a boolean asking
+/// about ONE variant forgets the next exactly as a catch-all would.
+/// The width behind seat `i`, or `Void` where the row declares none —
+/// a row's `cells` column is shorter than its params whenever no seat
+/// is an inout.
+fn cell_at(sig: RtSig, i: int) -> RtKind {
+    if i >= sig.cells.length { return RtKind.Void }
+    sig.cells[i]
+}
+
+/// A cell as its declared width leaves it — the backend's
+/// `narrow_sign` in the evaluator's currency, spelled over every kind
+/// so a new width demands an answer here too.
+///
+/// A POINTER CELL ANSWERS THROUGH THE SAME DOOR AS A POINTER ANSWER:
+/// zero is ABSENCE, not the number nought. `sqlite3_open_v2` leaves
+/// NULL there when it fails, and a program that reads the handle back
+/// as `0` rather than `null` would carry a non-null pointer to a
+/// database that never opened.
+fn settled_word(width: RtKind, w: int) -> Val {
+    match width {
+        .Ptr -> pointer_val(w),
+        .I32 -> Val.I(sign_extended(w)),
+        .U32 -> Val.I(zero_extended(w)),
+        .I64 or .F64 or .Void -> Val.I(w),
+    }
+}
+
+fn carries_cell(k: RtKind) -> bool {
+    match k {
+        .Void -> false,
+        .I64 or .Ptr or .I32 or .U32 or .F64 -> true,
+    }
+}
+
+/// An answered address as the evaluator holds one: zero is the null
+/// pointer, which is what a C sentinel of zero means, and anything
+/// else is a word Avra can pass back but never read through.
+fn pointer_val(address: int) -> Val {
+    if address == 0 { Val.N } else { Val.I(address) }
+}
+
+/// A C `int` answer widened over the whole register — it wrote 32
+/// bits and left the rest, so the sign its width names decides.
+fn sign_extended(w: int) -> int {
+    let low = w - (w / 4294967296) * 4294967296
+    if low >= 2147483648 { low - 4294967296 } else { low }
+}
+
+fn zero_extended(w: int) -> int {
+    w - (w / 4294967296) * 4294967296
+}

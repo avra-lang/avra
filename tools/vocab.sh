@@ -13,7 +13,7 @@
 # ONE TABLE, THREE REGISTRIES. It was two loops with two messages
 # saying the same thing in different words; the third registry is what
 # named the concept. A row is: the enum, the file, the dispatch fn,
-# and what it decides.
+# how it is guarded, and what it decides.
 #
 # WHAT IS NOT HERE IS A DECISION, NOT AN OVERSIGHT. Only a REGISTRY
 # belongs — two or more arms answering. A PROJECTION (one arm answers,
@@ -55,14 +55,69 @@ RtKind	packages/std-avrac/src/language/llvm.av	rt_arg	spelled	how an argument cr
 RtKind	packages/std-avrac/src/language/llvm.av	answers_word	spelled	how an answer crosses back
 RtKind	packages/std-avrac/src/language/llvm.av	answered	spelled	the SIGN a narrow answer widens with
 RtKind	packages/std-avrac/src/language/llvm.av	narrow_sign	spelled	the SIGN an inout cell normalises with
+RtKind	packages/std-avrac/src/language/interp.av	stage_seat	spelled	how an argument crosses, interpreted
+RtKind	packages/std-avrac/src/language/interp.av	answered	spelled	how an answer crosses back, interpreted
+RtKind	packages/std-avrac/src/language/interp.av	rides_fp	spelled	which register file a seat rides
+RtKind	packages/std-avrac/src/language/interp.av	carries_cell	spelled	whether a seat holds an inout's address
+RtKind	packages/std-avrac/src/language/interp.av	carries_text	spelled	whether a seat could carry text across the seam
 Type	packages/std-avrac/src/features/checks.av	comparable	spelled	which shapes equality may compare
 Type	packages/std-avrac/src/features/str_lit/check.av	printable	spelled	which shapes an interpolation hole may show
 Type	packages/std-avrac/src/features/crossing.av	kind_of	spelled	which @std/meta shape it crosses as
+Type	packages/std-avrac/src/language/llvm.av	names_a_name	spelled	which shapes a callee reads as a NUL-terminated name
+Type	packages/std-avrac/src/core/types.av	ptr_shape	spelled	whether a shape travels as a pointer
+Type	packages/std-avrac/src/features/unify.av	slot_worthy	spelled	which shapes a slot may hold
+Type	packages/std-avrac/src/language/llvm.av	ll_type_of	spelled	the LLVM type a shape becomes
+Type	packages/std-avrac/src/language/llvm.av	slot_form	spelled	which conversion a category owes the word slot
+SlotForm	packages/std-avrac/src/language/llvm.av	worded	spelled	the cast INTO the slot
+SlotForm	packages/std-avrac/src/language/llvm.av	unworded	spelled	the cast back out of it
+SlotForm	packages/std-avrac/src/language/llvm.av	answer_form	spelled	which of them survives a non-word answer
 Kind	packages/std-avrac/src/features/crossing.av	meta_of_kind	spelled	how it crosses into the evaluator
-Kind	packages/std-meta/src/meta.av	spelled	spelled	the words it is written with"
+Kind	packages/std-meta/src/meta.av	spelled	spelled	the words it is written with
+RtHost	packages/std-avrac/src/language/interp.av	rt_dispatch	spelled	the arm that evaluates a row"
 
 # A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
 # ends the script rather than a subshell the gate never sees.
+# SELF-TEST, both surfaces: a catch-all AFTER a braced arm is refused
+# (the shape that once ended the scan), and its clean twin passes.
+selftest=$(mktemp)
+cat > "$selftest" <<'FIX'
+fn probe(i: Ins) -> int {
+    match i {
+        .A -> {
+            1
+        }
+        _ -> 0,
+    }
+}
+fn clean(i: Ins) -> int {
+    match i {
+        .A -> {
+            1
+        }
+        .B -> 0,
+    }
+}
+FIX
+count() { awk -v fn="$2" '
+    !inside && $0 ~ "^ *(export )?fn " fn "\\(" {
+      inside = 1; match($0, /^ */); close_rx = "^" substr($0, 1, RLENGTH) "}$"
+    }
+    inside { seen++ }
+    inside && $0 ~ close_rx { inside = 0 }
+    END { print seen+0 }
+  ' "$1"; }
+scan() { awk -v fn="$2" '
+    !inside && $0 ~ "^ *(export )?fn " fn "\\(" {
+      inside = 1; match($0, /^ */); close_rx = "^" substr($0, 1, RLENGTH) "}$"
+    }
+    inside && (/_ ->/ || / is \./) { print FNR ": " $0 }
+    inside && $0 ~ close_rx { inside = 0 }
+  ' "$1"; }
+[ -n "$(scan "$selftest" probe)" ] || { echo "vocab: SELF-TEST — a catch-all after a braced arm was not seen"; exit 1; }
+[ -z "$(scan "$selftest" clean)" ] || { echo "vocab: SELF-TEST — a clean dispatch was refused"; exit 1; }
+rm -f "$selftest"
+
+examined=""
 while IFS='	' read -r enum file fn how what; do
   [ -n "$file" ] || continue
   if [ ! -f "$file" ]; then
@@ -88,13 +143,13 @@ while IFS='	' read -r enum file fn how what; do
     continue
     ;;
   esac
-  hit=$(awk -v fn="$fn" '
-    $0 ~ "^ *(export )?fn " fn "\\(" { inside = 1; seen = 1 }
-    inside && (/_ ->/ || / is \./) { print FNR ": " $0 }
-    inside && /^ *}$/ && inside { inside = 0 }
-    END { if (!seen) print "ABSENT" }
-  ' "$file")
-  if [ "$hit" = "ABSENT" ]; then
+  # A fn ends at the `}` on ITS OWN indent, never at the first
+  # closing brace: a braced arm closes deeper, and ending there read
+  # three of nine `Ins` consumers only up to their first arm.
+  hit=$(scan "$file" "$fn")
+  seen=$(count "$file" "$fn")
+  examined="$examined $fn:$seen"
+  if [ "$seen" = 0 ]; then
     echo "vocab: ${file} declares no \`fn ${fn}\` — the $enum consumer registry names a fn that is gone."
     echo "  A CHECK THAT EXAMINED NOTHING IS NOT A CHECK THAT PASSED: this row would have"
     echo "  reported success over a file it never read. Rename the row, move it, or"
@@ -127,9 +182,10 @@ EOF
 # report. A label NARROWER than its coverage, in the tool whose own
 # comment warns about the wider kind.
 line=""
-for e in $(echo "$CONSUMERS" | cut -f1 | sort -u); do
+for e in $(printf '%s\n' "$CONSUMERS" | cut -f1 | sort -u); do
   line="$line $e $(echo "$CONSUMERS" | grep -c "^$e	")"
 done
 echo "vocab: consumers GUARDED —$line"
+echo "vocab: lines examined per consumer —$examined"
 echo "vocab: the lists are CURATED, not a census: a consumer they do not name is"
 echo "vocab: unguarded, and naming it is how this law reaches it."

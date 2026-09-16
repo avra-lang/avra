@@ -30,9 +30,8 @@ export fn un_symbol(op: UnOp) -> string {
 /// and performance is a first-class reason to grow — a shape the
 /// backend can exploit but cannot infer earns a variant.
 ///
-/// A new variant owes EIGHT consumers, and the compiler names them
-/// for you because each dispatch is exhaustive — `make vocab`
-/// keeps them that way:
+/// A new variant owes EVERY consumer `make vocab` names, and the
+/// compiler names them for you because each dispatch is exhaustive:
 ///   dst_of (below)          the register it defines
 ///   body_symbol (below)     the program body it names
 ///   hosted_symbol (below)   the hosted fn it calls
@@ -41,11 +40,12 @@ export fn un_symbol(op: UnOp) -> string {
 ///   ir_text.av body_lines   its human projection
 ///   llvm.av    emit_ins     its machine projection
 ///   facts.av   give         whether the runtime registry validates it
+///   memory.av  managed_dst  whether its answer is the caller's to release
 /// plus a program test (eval == native) and an IR golden.
 /// `avra new ins <Name>` prints the whole checklist.
 ///
 /// GENERALIZE BEFORE ADDING: SwitchStart reuses ArmEnd/RegionEnd,
-/// so an N-arm region and a 2-arm `if` are ONE mechanism in all eight —
+/// so an N-arm region and a 2-arm `if` are ONE mechanism in every consumer —
 /// prefer making an existing concept more general over adding a
 /// parallel one. That is what keeps this vocabulary small while it
 /// grows.
@@ -311,34 +311,45 @@ export enum RtHost {
     StrCharCode
     StrTrim
     StrConcat
+    BytesLen
+    BytesEq
+    BytesAt
+    BytesSlice
+    BytesConcat
+    BytesIndexOf
+    BytesOfStr
+    BytesOfList
+    StrOfBytes
+    Utf8BadAt
+    BytesRun
+    BytesEqAt
+    BytesIeqAt
+    BytesGathered
+    /// The one door a FOREIGN buffer enters by: an address the program
+    /// supplied and a length, copied into a box of ours.
+    BytesAdopted
+    FdRead
+    FdTaken
+    FdWrite
     /// The process substrate: one host arm per row, each a thin call
     /// into the same C the native program calls, so eval == native
     /// holds by construction.
-    ProcSpawn
-    ProcRun
-    ProcPoll
-    ProcWrite
-    ProcStdinClose
-    ProcTake
-    ProcSignal
-    ProcStatus
-    ProcPid
-    ProcClose
-    ProcWhich
     ErrnoText
     NowNs
     HostEnv
     Eputs
-    IoKind
-    IoRead
-    IoWrite
     IoList
-    IoMkdir
-    IoRemove
-    IoEnv
-    IoTaken
     Embed
     StrFromCodepoint
+    /// This image re-executed with new words. A ROW because its C
+    /// reads an `AvraArray` — §2.1's line — and because a uniform
+    /// frame cannot hand C a box the evaluator holds as a HANDLE. Its
+    /// arm materialises the words on the interpreted side.
+    ExecSelf
+    /// A program run with its words and waited for. A ROW for the same
+    /// two reasons as `ExecSelf`, and its words are resolved by the
+    /// host exactly as `execv`'s are.
+    SpawnStatus
     /// The once cache — a pure fn's answer, settled for the run and
     /// keyed by the fn's own symbol.
     OnceGet
@@ -370,6 +381,17 @@ export enum RtHost {
 /// the answering kind would make every `!` unwrap read as an escape.
 /// Empty means the row keeps nothing, which is 82 of 86 rows.
 ///
+/// `inert` says the C body reads its text as BYTES it was handed and
+/// resolves nothing outside the program — no path, no name, no
+/// command, no environment key, and no C-string call that stops at a
+/// NUL. Only such a row may skip the crossing check.
+///
+/// THE DEFAULT IS CHECKED, and the polarity is the whole point: a row
+/// nobody has thought about is checked, not exempt. An `exempt: false`
+/// default would make forgetting the field the same as deciding it,
+/// and the forgetting is silent. A package's extern can never be
+/// inert — its C is not ours to certify.
+///
 /// `cells[j]` is the width of the CELL BEHIND an inout seat — never
 /// the seat's own ABI kind, which is always `Ptr` because an inout
 /// carries an address. `Void` means seat `j` is not an inout. Only
@@ -382,7 +404,32 @@ export enum RtHost {
 /// env, a child — and no compile-time evaluation may.
 export enum Reach { Pure, Embed, World }
 
-export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], cells: List<RtKind> = [], reach: Reach = Reach.Pure }
+export type RtSig = { name: string, ret: RtKind, params: List<RtKind>, owns_result: bool, has_owned_twin: bool, host: RtHost, lends: bool = false, keeps: List<bool> = [], cells: List<RtKind> = [], reach: Reach = Reach.Pure, boxes: List<Box> = [], answer: Box = Box.Any, inert: bool = false }
+
+/// WHICH BOX a `Ptr` seat takes — and, in `answer`, which box a `Ptr`
+/// ANSWER hands back. A pointer says only that a header
+/// stands there, and a text length read from a list's header is a
+/// plausible number. `Text` is C's `const char*`; `List` and `Map`
+/// are the runtime's own layouts; `Any` is a seat that takes every
+/// box and means it (`avra_rc_retain`). A row that names no boxes
+/// takes `Any` at every pointer seat — unconstrained, never wrongly
+/// constrained. `Bytes` is octets: C's `const char*` too, but the row
+/// reads the box's LENGTH from its header or a seat beside it, never
+/// to a NUL — and the Avra seat that fills it is `Bytes`.
+export enum Box {
+    Any
+    Text
+    Bytes
+    List
+    Map
+}
+
+impl RtSig {
+    /// The box the j-th seat takes.
+    fn box_at(j: int) -> Box {
+        if j < self.boxes.length { self.boxes[j] } else { Box.Any }
+    }
+}
 
 // ── The role projections ──────────────────────────────────────────
 // A DERIVE'S DECLARATION IS ITS MODULE'S, NOT ITS PACKAGE'S: a
@@ -419,3 +466,4 @@ export fn body_symbol(i: Ins) -> string? { body_symbol_role(i) }
 /// own externs share one call shape, so they share one projection.
 /// Every name here must be a declared row.
 export fn hosted_symbol(i: Ins) -> string? { hosted_symbol_role(i) }
+

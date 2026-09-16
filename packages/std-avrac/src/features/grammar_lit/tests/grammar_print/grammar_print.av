@@ -1,0 +1,37 @@
+// proves: THE ROUND-TRIP LAW, over the domain the compiler enforces.
+// `Name.print(r)` weaves the record's fields back between the
+// format's literals and answers absence when a value would not
+// survive — an INTERIOR hole whose text, with its following literal
+// appended, would place that literal anywhere but at the boundary.
+// A value that merely CONTAINS its delimiter is not the test: a value
+// that ENDS IN A PROPER PREFIX of it moves the split too, and only
+// the appended form sees that.
+grammar R = "{method} {path} HTTP/{major}.{minor}"
+grammar Overlap = "{a}--{b}"
+
+/// print, then parse: the law as one word per value.
+fn trip(v: R) -> string {
+    let text = R.print(v)
+    if text == null { return "refused" }
+    match R.parse(text!) {
+        back? -> if back.method == v.method && back.path == v.path && back.major == v.major && back.minor == v.minor { "ok" } else { "drift" }
+        null -> "unparsed"
+    }
+}
+
+let flagship = trip(R { method: "GET", path: "/x", major: "1", minor: "1" })
+let empties = trip(R { method: "", path: "", major: "", minor: "" })
+// a space inside the PATH is fine: the path's delimiter is " HTTP/"
+let spaced = trip(R { method: "GET", path: "/a b", major: "1", minor: "1" })
+// a space inside the METHOD is not: the method's delimiter IS a space
+let split = trip(R { method: "G T", path: "/x", major: "1", minor: "1" })
+// the LAST hole carries no condition — the suffix anchor fixes its end
+let dotted = trip(R { method: "GET", path: "/x", major: "1", minor: "1.2" })
+
+// the overlap: "x-" ends in a proper prefix of "--", so printing it
+// would yield text that parses back as "x" and "-b"
+let moved = Overlap.print(Overlap { a: "x-", b: "b" })
+let clean = Overlap.print(Overlap { a: "x", b: "b" })
+let printed = R.print(R { method: "GET", path: "/x", major: "1", minor: "1" })
+
+"${flagship} ${empties} ${spaced} ${split} ${dotted} | ${moved ?? "refused"} | ${clean ?? "refused"} | ${printed ?? "refused"}"

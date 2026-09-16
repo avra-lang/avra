@@ -12,10 +12,10 @@
 #include <stdint.h>
 
 // A box's KIND decides how it reclaims and clones: 0 a plain
-// allocation, 1 an array, 2 a map, 3 a string. Below zero it is not
+// allocation, 1 an array, 2 a map, 3 a string, 4 octets. Below zero it is not
 // counted: STATIC is immortal, DEAD is the guard's mark on a
 // reclaimed box.
-enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MAP = 2, KIND_STR = 3 };
+enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MAP = 2, KIND_STR = 3, KIND_BYTES = 4 };
 
 // AN IMMORTAL BOX KEEPS ITS SHAPE. A `once` answer and a static
 // aggregate live for the process, so retain and release must no-op

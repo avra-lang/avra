@@ -36,6 +36,16 @@ root="$(cd "$(dirname "$0")/.." && pwd)"
 main="$(dirname "$root")/avra"
 worktree="$(dirname "$root")/avra-lane-$lane"
 [ -d "$main/.git" ] && [ -d "$worktree" ] || { echo "integrate: no main at $main or no worktree at $worktree" >&2; exit 2; }
+
+# THE WORKTREE MUST BE ON `lane/<name>`, or this is not the lane's
+# worktree. The path is derived from the name, so a directory that
+# merely matches the pattern — another session's, on its own branch —
+# would be rebased in place. Checked, not assumed.
+on="$(git -C "$worktree" branch --show-current)"
+[ "$on" = "lane/$lane" ] || {
+    echo "integrate: $worktree is on '${on:-a detached HEAD}', not lane/$lane — refusing to touch a worktree that is not this lane's" >&2
+    exit 2
+}
 cap=4000
 # EVERY TEMP PATH CARRIES THE LANE. They were shared across worktrees —
 # and three of them are BINARIES: `-lane-product` is copied straight
@@ -129,12 +139,46 @@ pinned() {
 }
 before="$(pinned)"
 
-sh tools/watch.sh $cap make gate > "$gate_out" 2>&1 || {
-    echo "integrate: the gate is RED on lane/$lane — main untouched ($gate_out)"
-    printf 'integrate: codes '; grep -oE 'F[0-9]{4}' "$gate_out" | sort -u | tr '\n' ' '; echo
-    grep -n "✗\|FAILED\|error" "$gate_out" | head -12
-    exit 1
-}
+# THE LANE'S OWN GREEN, WHEN THIS INTEGRATION TAKES THE VERY SAME
+# TREE. `git merge-tree --write-tree` answers the tree the merge would
+# land, without merging; when the lane's receipt names that exact
+# hash, the gate below would read the tree that receipt already
+# describes. Main having moved, a ledger conflict resolved, one byte
+# anywhere: the hash differs and the gate runs in full.
+# A SKIP IS ANNOUNCED WITH WHAT IT TRUSTED — the receipt's commit, its
+# date and the tree — because a verification that is sometimes skipped
+# and never says so is one nobody can audit.
+# THE STATUS IS THE ANSWER, NEVER THE OUTPUT. `trusts` prints its
+# REASON on refusal as well as its receipt on trust, so reading stdout
+# read every refusal as permission — the skip fired exactly when it
+# must not. The status is the only channel that says yes.
+merged_tree="$(git -C "$main" merge-tree --write-tree main "lane/$lane" 2>/dev/null || true)"
+trusted=""
+why=""
+if [ -n "$merged_tree" ]; then
+    # STDOUT IS CONSENT, STDERR IS THE REASON, and BOTH are announced:
+    # a skip says what it trusted, and a refusal to skip says what it
+    # read. Discarding the reason here would have made the gate that
+    # follows look like an unexplained choice.
+    if said="$(sh tools/gate_receipt.sh trusts "$worktree" "$merged_tree" 2>"$tmp-receipt.err")"; then
+        trusted="$said"
+    else
+        why="$(cat "$tmp-receipt.err" 2>/dev/null || true)"
+    fi
+fi
+if [ -n "$trusted" ]; then
+    echo "integrate: the merge takes the tree lane/$lane already gated — trusting its receipt"
+    echo "integrate:   tree $(echo "$merged_tree" | cut -c1-12), gated at $trusted"
+else
+    if [ -n "$why" ]; then echo "integrate: gating in full — $why"; fi
+    sh tools/watch.sh $cap make gate > "$gate_out" 2>&1 || {
+        echo "integrate: the gate is RED on lane/$lane — main untouched ($gate_out)"
+        printf 'integrate: codes '; grep -oE 'F[0-9]{4}' "$gate_out" | sort -u | tr '\n' ' '; echo
+        grep -n "✗\|FAILED\|error" "$gate_out" | head -12
+        exit 1
+    }
+    echo "integrate: gate green on lane/$lane ($(grep -c 'tests passed' "$gate_out") suites)"
+fi
 
 if [ "$(pinned)" != "$before" ]; then
     echo "integrate: the tree CHANGED under the gate — main untouched"
@@ -144,7 +188,6 @@ if [ "$(pinned)" != "$before" ]; then
     git status --short | head -12
     exit 1
 fi
-echo "integrate: gate green on lane/$lane ($(grep -c 'tests passed' "$gate_out") suites)"
 
 # THE PRE-FLIGHT: can MAIN's standing compiler READ the lane's tree? A lane that
 # lands a language change AND uses it (lane C's `self`, its `mut` seats) leaves a
@@ -210,6 +253,7 @@ echo "integrate: merged as $(git log -1 --format=%h)"
 # main and gated green with it, so it is the compiler this tree needs. Main's own
 # product is re-derived by the fixed point below.
 if [ -n "$seed_from_lane" ]; then
+    mkdir -p build
     cp "$worktree/build/avra" build/avra
     codesign -f -s - build/avra 2>/dev/null || true
     echo "integrate: main's compiler seeded from lane/$lane's product"

@@ -2,7 +2,7 @@
 // can grow: degenerate shapes, every wrong value in every slot, the
 // two engines, ownership, and refusal quality. Each case names the
 // attack; the fixtures are the shell and a hand-built tool.
-use @std.process.{Tool, tool, tool_from_env, cmd, Command, Pipeline, Stdin, Ready, Env, ProcessError, minimal, exit_text, parallel, race}
+use @std.process.{Tool, tool, tool_from_env, cmd, Command, Pipeline, Stdin, Ready, Env, EnvPair, Output, ProcessError, minimal, exit_text, parallel, race}
 use @std.time.{ms, secs, now_ms}
 use @std.text.{from_codepoint}
 
@@ -93,6 +93,66 @@ fn empty_env_name() -> Result<string, ProcessError> {
     text(shell("echo x")? with { env: minimal().with_var("", "x") })
 }
 
+/// What a flooding child leaves in the partial capture when it breaks
+/// a cap — the SIZE, which is what diverged.
+/// A command carrying one environment pair, run.
+fn named(n: string, v: string) -> Result<Output, ProcessError> {
+    let c = shell("true")? with { env: Env.Only([EnvPair { name: n, value: v }]) }
+    c.run()
+}
+
+fn env_said(r: Result<Output, ProcessError>) -> string {
+    match r {
+        .Ok(_) -> "ok",
+        .Err(e) -> e.describe().kind.replace("process.", ""),
+    }
+}
+
+fn captured_over(cap: int) -> int {
+    match flooded(cap) {
+        .Ok(n) -> n,
+        .Err(_) -> 0 - 1,
+    }
+}
+
+fn flooded(cap: int) -> Result<int, ProcessError> {
+    let c = shell("yes")? with { timeout: secs(5), max_capture: cap }
+    match c.run() {
+        .Ok(o) -> o.stdout.length,
+        .Err(e) -> match e {
+            .TooMuch(s, n, part) -> part.stdout.length,
+            rest -> { fail e }
+        },
+    }
+}
+
+extern fn avra_proc_stage() -> int
+extern fn avra_proc_word(token: int, text: string) -> int
+extern fn avra_proc_spawn(token: int, file: string, cwd: string, flags: int, from_h: int) -> int
+extern fn avra_proc_reap(h: int) -> int
+extern fn avra_proc_signal(h: int, sig: int, to_group: int) -> int
+extern fn avra_proc_close(h: int) -> int
+
+/// A child in its OWN GROUP, run to its end and reaped, then its
+/// group signalled twice — the answers, negated.
+fn emptied_group() -> string {
+    let t = avra_proc_stage()
+    let _ = avra_proc_word(t, "-c")
+    let _ = avra_proc_word(t, "exit 0")
+    // NEW_PGROUP so the child leads a group; NULL in, PIPE out and err
+    let h = avra_proc_spawn(t, "/bin/sh", "", 16 + 2 + 4 + 1024, 0 - 1)
+    // REAPED, NOT MERELY POLLED AT. `reap` does not wait, so the bound
+    // counts immediate asks and a shell takes tens of thousands of
+    // them to start and exit — a bound of 400 left the group ALIVE and
+    // the case read as a failing fix rather than a short loop.
+    mut turns = 0
+    while turns < 400000 && avra_proc_reap(h) == 0 { turns = turns + 1 }
+    let first = 0 - avra_proc_signal(h, 15, 1)
+    let second = 0 - avra_proc_signal(h, 15, 1)
+    let _ = avra_proc_close(h)
+    "${first}/${second}"
+}
+
 fn grandchild_is_stopped() -> Result<string, ProcessError> {
     // the child prints its grandchild's pid and exits; the grandchild
     // holds our pipe past the grace, so the run is truncated — and the
@@ -145,6 +205,15 @@ fn many() -> Result<string, ProcessError> {
         if (cmd(t, []).outcome()?).exit is .Clean { clean = clean + 1 }
     }
     "${clean}"
+}
+
+/// A command whose shell variable shares its name with a local. The
+/// local must not reach the child: the shell expands `$AVRA_PROBE`,
+/// and the `${…}` spelling would have handed over "decoy" instead.
+fn shadowed_var() -> Result<string, ProcessError> {
+    let AVRA_PROBE = "decoy"
+    let c = shell("echo $AVRA_PROBE")? with { env: minimal().with_var("AVRA_PROBE", "seen") }
+    "${(c.run()?).stdout.trim()}${AVRA_PROBE.replace("decoy", "")}"
 }
 
 fn hostile_words() -> Result<string, ProcessError> {
@@ -255,6 +324,46 @@ fn middle_stdin_ignored() -> Result<string, ProcessError> {
     let cat = tool("cat")?
     let head = shell("echo up")?
     (head.pipe(cmd(cat, []) with { stdin: Stdin.Text("mine") }).run()?).stdout.trim()
+}
+
+/// THIS PROCESS'S CONSUMED CPU, the only witness that tells a WAIT from
+/// a SPIN — both take the same wall time. Declared here and nowhere
+/// else: the language needs no such row, this law does.
+extern fn avra_proc_cpu_ms() -> i64
+
+/// A command whose child ends at once, with a drain grace the driver
+/// must WAIT OUT — the window where there is nothing left to poll.
+/// Answers the elapsed milliseconds and the CPU milliseconds the wait
+/// itself cost.
+fn quick_with_grace(g: int) -> Result<int, ProcessError> {
+    let began = now_ms()
+    let _ = (shell("echo done")? with { drain_grace: ms(g) }).run()?
+    now_ms() - began
+}
+
+fn cpu_of_grace(g: int) -> Result<int, ProcessError> {
+    let cpu = avra_proc_cpu_ms()
+    let _ = (shell("echo done")? with { drain_grace: ms(g) }).run()?
+    avra_proc_cpu_ms() - cpu
+}
+
+/// THE SAME GRACE WITH A GRANDCHILD STILL HOLDING THE PIPE. The child
+/// ends at once and a background sibling keeps stdout open, so the
+/// driver has something to poll for the whole window — the state the
+/// old row handled correctly. Its CPU is the control: the defect was
+/// the state with NOTHING to watch, never the grace loop itself.
+/// The elapsed time of a grace a grandchild holds open — the window
+/// that IS waited out, whole.
+fn held_grace(g: int) -> Result<int, ProcessError> {
+    let began = now_ms()
+    let _ = (shell("sleep 3 & echo done")? with { drain_grace: ms(g) }).run()?
+    now_ms() - began
+}
+
+fn cpu_of_held_grace(g: int) -> Result<int, ProcessError> {
+    let cpu = avra_proc_cpu_ms()
+    let _ = (shell("sleep 3 & echo done")? with { drain_grace: ms(g) }).run()?
+    avra_proc_cpu_ms() - cpu
 }
 
 spec "std/process adversarial" {
@@ -408,6 +517,38 @@ spec "std/process adversarial" {
             cmd(dashed(), []).path("").args.join("|") == ""
         }
     }
+    given "an environment entry with no name" {
+        then "the face refuses one, whatever its value" {
+            env_said(named("", "V")) == "bad_env_name" && env_said(named("", "")) == "bad_env_name"
+        }
+        then "a name set to EMPTY is set, and is not the same thing" {
+            env_said(named("AVRA_RT_SET", "")) == "ok"
+        }
+    }
+    given "the cap bounds what it captures, not merely what it accepts" {
+        // A FLOODING CHILD gave 679 KB natively and 52 MB under the
+        // evaluator for a cap of 1000 — the decision agreed and the
+        // CAPTURE did not, which is a divergence in a value the caller
+        // reads. A drain that empties the pipe before testing the bound
+        // is bounded by the child's speed, not by the cap.
+        then "a cap of 1000 keeps at most a chunk past it, not megabytes" {
+            captured_over(1000) <= 2000
+        }
+        then "the same cap keeps the same amount whatever the engine's speed" {
+            captured_over(64) <= 128 && captured_over(64) >= 64
+        }
+    }
+    given "a group whose members are gone" {
+        // A GROUP OUTLIVES ITS LEADER, which is why a signal must not
+        // test the leader's life — and the same reasoning bounds it:
+        // once the group is genuinely EMPTY the OS may recycle the
+        // pgid, and a late signal lands on an unrelated group. The
+        // pgid is a raw OS number no generation can guard, so the
+        // slot records the first emptiness it ever observes.
+        then "the first signal to an emptied group answers ESRCH, and so does every later one" {
+            emptied_group() == "3/3"
+        }
+    }
     given "the tree, not the child" {
         then "a grandchild holding the pipe is truncated and stopped with the group" {
             shown(grandchild_is_stopped()) == "true/dead"
@@ -416,6 +557,61 @@ spec "std/process adversarial" {
     given "the words are data" {
         then "shell metacharacters in words reach the child as themselves" {
             shown(hostile_words()) == "b c d\"e $HOME ; rm -rf / --flag `id`"
+        }
+        // A SHELL VARIABLE IS SPELLED `$NAME`, NEVER `${NAME}`, and the
+        // difference is silent. `"${HOME}"` is Avra's interpolation: with
+        // nothing of that name it is a loud F3000, and with a `let HOME`
+        // in scope it COMPILES CLEAN and the command becomes the local's
+        // value — measured here, `echo /tmp/not-your-home`, no
+        // diagnostics. So the loud half protects a writer only while no
+        // local shares the name, and a command line is exactly where
+        // HOME, PATH and USER are likely to be locals too.
+        then "a same-named local does not reach the child — the `$NAME` spelling is the shell's" {
+            shown(shadowed_var()) == "seen"
+        }
+    }
+
+    given "a grace with nothing left to watch — the wait is a wait, never a spin" {
+        // A CHILD THAT IS GONE AND DRAINED LEAVES NOTHING TO POLL, and
+        // the driver still waits the grace out (a grandchild may hold
+        // the pipes). `avra_proc_ready` slept only while the child was
+        // alive, so this window returned instantly and the loop spun:
+        // one core for the whole grace, two seconds per command by
+        // default. The row waits whenever it is asked to, so the time
+        // is SLEPT — measurable as elapsed time here, and as user time
+        // in the suite's own clock.
+        then "a holder's grace is waited out, not raced" {
+            (held_grace(300) catch 0) >= 250
+        }
+        then "a longer grace waits longer — the window is the caller's number" {
+            (held_grace(600) catch 0) >= 550
+        }
+        then "and it is not waited twice — the floor is the grace, not a multiple" {
+            (held_grace(300) catch 9999) < 2000
+        }
+        // THE ELAPSED TIME CANNOT TELL A WAIT FROM A SPIN: both take the
+        // grace. The CPU can, and it is the whole claim — so the law is
+        // asserted where it lives. A 500 ms grace slept costs a few
+        // milliseconds of CPU; spun it cost ~500.
+        then "the grace is SLEPT — it costs wall time and almost no CPU" {
+            (cpu_of_grace(500) catch 9999) < 100
+        }
+        then "a longer grace costs no more CPU than a shorter one" {
+            (cpu_of_grace(1000) catch 9999) < 100
+        }
+        // THE CONTROL, and it is what makes the claim exact: with a
+        // grandchild holding the pipe there IS something to poll, and
+        // the window was always slept — on the old row too. So the
+        // defect was the state with nothing to watch, never the grace.
+        then "a grace with a grandchild holding the pipe was never the spin" {
+            (cpu_of_held_grace(500) catch 9999) < 100
+        }
+        // AND THE FLOOR IS NOT PAID WHERE NOBODY CAN SPEAK: with both
+        // ends closed the window has nothing to protect, so the wait
+        // ends with the pipes and not with the clock. A holder still
+        // gets its whole floor — the case above proves that one waits.
+        then "a grace with nothing left to hold it ends with the pipes, not the clock" {
+            (quick_with_grace(2000) catch 9999) < 500
         }
     }
 }

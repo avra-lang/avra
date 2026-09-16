@@ -499,6 +499,51 @@ export enum Pat {
     Bind(name: Scoped)
     Variant(name: Plain, args: List<PatId>)
     Lit(value: ExprId)
+    /// A text FORMAT: literal `head`, then a hole and the literal
+    /// that follows it, repeated. `"a{x}b{y}c"` is head `"a"` with
+    /// parts `[{x, "b"}, {y, "c"}]`; a format with no holes is head
+    /// alone. The count relationship between literals and holes is
+    /// true by construction and unspellable otherwise.
+    Format(head: string, parts: List<FormatPart>)
+}
+
+/// One hole of a format: the name it binds — `_` binds nothing, as
+/// `Wild` spells it — the type it parses through, absent when it
+/// takes the span as text, and whether it is GREEDY.
+///
+/// A greedy hole (`{name...}`) finds the literal after it at that
+/// literal's LAST occurrence rather than its first. On the final hole
+/// the two agree, because a suffix anchor already fixes that hole's
+/// end — which is why the mark reads there as a statement of what the
+/// hole does rather than a change to it.
+export type Hole = { name: string, ty: TypeRef?, greedy: bool }
+
+/// A hole and the literal text that follows it.
+export type FormatPart = { hole: Hole, piece: string }
+
+/// The format a `grammar` declaration read. Its holes became the
+/// record's fields, and a record cannot say what text it reads —
+/// so the format is kept beside the statement that declared it.
+export type GrammarSpec = { head: string, parts: List<FormatPart> }
+
+/// One name a pattern binds, and the pattern node it binds under.
+export type Binder = { pat: PatId, name: string }
+
+/// The word a name takes when it binds nothing.
+export fn nothing_bound() -> string { "_" }
+
+/// Whether a hole BINDS what it takes. One definition: the arm's
+/// scope, the lowering's cuts and the pattern's bind list must agree
+/// about which holes bind, and a rule spelled three times is a
+/// disagreement waiting to happen that no reading would find.
+export fn binds(h: Hole) -> bool {
+    h.name != nothing_bound()
+}
+
+/// The names a format's parts bind, in order — the arm's bind order,
+/// which every pass keys by index.
+export fn bound_names(parts: List<FormatPart>) -> List<string> {
+    [p.hole.name for p in parts if binds(p.hole)]
 }
 
 /// One match arm: its alternatives (`a or b`) and its value.
@@ -638,6 +683,8 @@ export type NodeStore = {
     // `mut fn` — a method declaring that it writes its receiver
     mutating: List<bool>,
     onces: List<bool>,
+    // the format a `grammar` declaration read, by its statement
+    grammars: List<GrammarSpec?>,
     // `@name(args)` marks per statement, in written order
     annotations: List<List<Annotation>>,
     // declaration-leading `///` lines; absent on synthesized nodes
@@ -668,7 +715,7 @@ export type NodeStore = {
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], statics: [], annotations: [], docs: [],
+        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], grammars: [], statics: [], annotations: [], docs: [],
         pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [], quotes_at: {}, sublangs: [], body_starts: {}, block_voices: [], foreign: [],
     }
 }
@@ -870,12 +917,14 @@ impl NodeStore {
 
     /// The names a pattern binds, in pre-order — the arm's bind
     /// order, which every pass keys by index.
-    /// A pattern's BINDING nodes in pre-order — the order that indexes
-    /// `Binding.Pattern`.
-    fn pattern_binds(id: PatId) -> List<PatId> {
+    /// A pattern's BINDERS in pre-order — the order that indexes
+    /// `Binding.Pattern`. A format's holes bind under the format's own
+    /// node: a hole is not a sub-pattern.
+    fn pattern_binds(id: PatId) -> List<Binder> {
         match self.pat(id) {
-            .Bind(_) -> [id],
+            .Bind(name) -> [Binder { pat: id, name: name }],
             .Variant(_, args) -> flatten([self.pattern_binds(a) for a in args]),
+            .Format(_, parts) -> [Binder { pat: id, name: n } for n in bound_names(parts)],
             .Wild or .Rest or .Lit(_) -> [],
         }
     }
@@ -892,7 +941,7 @@ impl NodeStore {
     fn irrefutable(id: PatId) -> bool {
         match self.pat(id) {
             .Wild or .Rest or .Bind(_) -> true,
-            .Variant(_, _) or .Lit(_) -> false,
+            .Variant(_, _) or .Lit(_) or .Format(_, _) -> false,
         }
     }
 
@@ -905,6 +954,7 @@ impl NodeStore {
             .Bind(name) -> fp(52, [fp_str(name.of)]),
             .Variant(name, args) -> fp(53, [fp_str(name.of), fp_list([self.pat_fingerprint(a) for a in args])]),
             .Lit(v) -> fp(54, [self.expr_fingerprint(v)]),
+            .Format(head, parts) -> fp(129, [fp_str(head), fp_list([hole_fp(p) for p in parts])]),
         }
     }
 
@@ -924,6 +974,7 @@ impl NodeStore {
         self.exported.push(false)
         self.mutating.push(false)
         self.onces.push(false)
+        self.grammars.push(null)
         self.statics.push(false)
         self.annotations.push([])
         self.docs.push(null)
@@ -1011,11 +1062,31 @@ impl NodeStore {
         self.statics[s.index]
     }
 
+    /// `grammar Name = "…"` declared this record — the format it
+    /// reads, which the record's fields cannot spell. The mark's code
+    /// is 113 and the format is its PAYLOAD: the head, then the holes
+    /// folded to one value.
+    fn mark_grammar(s: StmtId, read: GrammarSpec) {
+        self.grammars.set(s.index, read)
+        self.restamp_carrying(s, 113, [fp_str(read.head), fp_list([hole_fp(p) for p in read.parts])])
+    }
+
+    fn grammar_of(s: StmtId) -> GrammarSpec? {
+        self.grammars[s.index]
+    }
+
     /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()`,
     /// `once fn f()`, `static fn f()` and `export fn f()` declare
     /// different things, so no two of them may wear one fingerprint.
     fn restamp(s: StmtId, tag: int) {
-        self.stmt_fingerprints.set(s.index, fp(tag, [self.stmt_fingerprints[s.index]]))
+        self.restamp_carrying(s, tag, [])
+    }
+
+    /// The tag is the mark's reserved CODE and nothing else; a mark
+    /// that CARRIES something folds what it carries to ONE value, so
+    /// the codes stay a registry and no run's boundary can move.
+    fn restamp_carrying(s: StmtId, tag: int, carried: List<int>) {
+        self.stmt_fingerprints.set(s.index, fp(tag, [self.stmt_fingerprints[s.index], fp_list(carried)]))
     }
 
     /// `export` crossed this declaration — the module's surface
@@ -1232,6 +1303,23 @@ fn scoped_fps(names: List<Scoped>) -> List<int> {
 fn flagged(b: bool) -> int {
     if b { 1 } else { 0 }
 }
+
+/// A format part's identity: what it binds, what it parses through,
+/// and the literal that follows it — every field, so a reindented
+/// or retyped hole is a different pattern.
+/// One hole folded to ONE value, so a run of holes has no boundary
+/// that can move whatever a hole comes to carry — the pattern and
+/// the grammar mark fold each hole through this one door.
+fn hole_fp(p: FormatPart) -> int { fp(130, hole_fps(p)) }
+
+fn hole_fps(p: FormatPart) -> List<int> {
+    [fp_str(p.hole.name), type_fp(p.hole.ty), fp_str(p.piece), greed_fp(p.hole.greedy)]
+}
+
+/// Greed rides the fingerprint: two formats that differ only in which
+/// occurrence a hole takes are different formats, and a fold that
+/// dropped it would hand them one hash.
+fn greed_fp(greedy: bool) -> int { if greedy { 1 } else { 0 } }
 
 /// A SEAT'S CONTRACT IS PART OF WHAT THE SEAT IS: `fn(mut Cx)` is a
 /// different type from `fn(Cx)`, and `const x` a different seat from

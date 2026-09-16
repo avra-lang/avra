@@ -1,0 +1,86 @@
+// The red team's survivors at the ROW SEAT — where a `Bytes` and a
+// string meet, which is the one door an `extern fn` over a runtime
+// symbol opens. The type's own attacks live beside the feature
+// (features/bytes/tests); these are the seam's, by attack class.
+//
+// THE LAW UNDER ATTACK: a row's seat kind is `Ptr`, which a string
+// and a `Bytes` BOTH fill — natively one headered box, read the same
+// way — so every accepted program must answer the same on both
+// engines. A row that READS OCTETS reads either box; only a row that
+// ANSWERS TEXT owes a decode, and only that decode may refuse.
+use @std.avrac.testing.{shown, refused_at_run}
+
+/// The extern that opens the door, over one runtime symbol.
+fn door(decl: string, body: string) -> string {
+    shown("extern fn ${decl}\n${body}")
+}
+
+fn shut(decl: string, body: string, phrase: string) -> bool {
+    refused_at_run("extern fn ${decl}\n${body}", phrase)
+}
+
+spec "language/row seats — adversarial" {
+    given "degenerate shapes" {
+        then "the empty box answers zero at a length, from either side of the door" {
+            door("avra_str_len(b: Bytes) -> int", "avra_str_len(\"\".bytes())") == "0" &&
+                door("avra_str_len(b: Bytes) -> int", "avra_str_len([].bytes()!)") == "0" &&
+                door("avra_bytes_len(s: string) -> int", "avra_bytes_len(\"\")") == "0"
+        }
+        then "one byte reads as one byte through either seat" {
+            door("avra_str_len(b: Bytes) -> int", "avra_str_len([65].bytes()!)") == "1" &&
+                door("avra_bytes_len(s: string) -> int", "avra_bytes_len(\"A\")") == "1"
+        }
+    }
+    given "the two engines — a string at a row that reads octets" {
+        // The mirror of the text-seat law, and it was the half left
+        // standing: the engines diverged and the evaluator called a
+        // CLEAN program a defect of the compiler's.
+        then "a length over octets answers the header for a string too" {
+            door("avra_bytes_len(s: string) -> int", "avra_bytes_len(\"hi\")") == "2"
+        }
+        then "a byte read answers the byte for a string too" {
+            door("avra_bytes_at(s: string, i: int) -> int", "avra_bytes_at(\"hi\", 1)") == "105"
+        }
+        then "the UTF-8 validator answers for a string too" {
+            door("avra_utf8_bad_at(s: string) -> int", "avra_utf8_bad_at(\"hi\")") == "-1"
+        }
+        then "a byte read past the end traps for a string, as it does for a Bytes" {
+            shut("avra_bytes_at(s: string, i: int) -> int", "avra_bytes_at(\"hi\", 2)",
+                "index 2 is out of bounds (length 2)")
+        }
+    }
+    given "the two engines — octets that are not UTF-8 at a scalar row" {
+        // A ROW THAT ANSWERS A SCALAR FROM OCTETS NEVER DECODES. The
+        // length was the first of the family; the byte read is its
+        // sibling, and both answer natively for any octets at all.
+        then "a byte read answers for octets that are not UTF-8" {
+            door("avra_str_char_code(b: Bytes, i: int) -> int", "avra_str_char_code([255, 254].bytes()!, 0)") == "255"
+        }
+        then "a length answers for octets that are not UTF-8" {
+            door("avra_str_len(b: Bytes) -> int", "avra_str_len([255, 254].bytes()!)") == "2"
+        }
+        then "the octets go back out unchanged, with no decode between" {
+            door("avra_bytes_of_str(b: Bytes) -> Bytes", "avra_bytes_of_str([255, 254].bytes()!).at(0)") == "255"
+        }
+        then "a row that ANSWERS TEXT still refuses them by name" {
+            shut("avra_str_trim(b: Bytes) -> string", "avra_str_trim([255].bytes()!)",
+                "octets that are not UTF-8 reached a text seat")
+        }
+    }
+    given "a NUL is a character at the seat too" {
+        then "a NUL neither shortens the length nor ends the byte read" {
+            door("avra_str_len(b: Bytes) -> int", "avra_str_len([104, 0, 105].bytes()!)") == "3" &&
+                door("avra_str_char_code(b: Bytes, i: int) -> int", "avra_str_char_code([104, 0, 105].bytes()!, 2)") == "105"
+        }
+        then "a NUL is found where it sits, never where a scan would stop" {
+            door("avra_bytes_index_of(b: Bytes, n: Bytes, from: int) -> int",
+                "avra_bytes_index_of([104, 0, 105].bytes()!, [0].bytes()!, 0)") == "1"
+        }
+    }
+    given "ownership" {
+        then "a box handed through the door and answered back is spent, not kept" {
+            door("avra_str_trim(b: Bytes) -> string",
+                "mut n = 0\nmut i = 0\nwhile i < 50 {\n  n = n + avra_str_trim(\" hi \".bytes()).length\n  i = i + 1\n}\nn") == "100"
+        }
+    }
+}

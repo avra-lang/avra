@@ -36,6 +36,7 @@ cap_mb="$1"; shift
 if [ -n "$AVRA_WATCH_HELD" ]; then
     exec "$@"
 fi
+slots="${AVRA_BUILD_SLOTS:-3}"
 lock=/tmp/avra-build.lock
 floor="${AVRA_MEM_FLOOR:-20}"
 
@@ -71,7 +72,6 @@ fi
 # or the queue would serve one lane at a time and the slots would buy
 # nothing. A ticket or a slot whose holder died is reaped, or it
 # blocks the queue forever.
-slots="${AVRA_BUILD_SLOTS:-3}"
 qdir=$lock.q
 mkdir -p "$qdir"
 last=$(ls "$qdir" 2>/dev/null | sort -n | tail -1)

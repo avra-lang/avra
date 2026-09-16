@@ -116,9 +116,15 @@ fn known_key(section: string, key: string) -> bool {
 }
 
 /// What a `[link]` row holds, in the words its refusal uses.
+///
+/// AN OBJECT ROW IS ROOTED AT THE PACKAGE, NOT BOUNDED BY IT. The path
+/// is joined to the package's root (`package_link`, workspace.av) and
+/// nothing refuses one that climbs out — every row in this tree does,
+/// because the build tree sits ABOVE every package. Saying "under the
+/// package root" claimed a boundary no row keeps.
 fn link_shape(key: string) -> string {
     match key {
-        "objects" -> "object files under the package root",
+        "objects" -> "object files, by path from the package root",
         "search" -> "directories",
         rest -> "library names",
     }
@@ -429,6 +435,10 @@ export fn name_mismatch(at: Loc?, key: string, found: string, dir: string) -> Di
 
 export fn dependency_cycle(at: Loc?, chain: List<string>) -> Diag {
     refusal("manifest.cycle", at, "packages depend in a cycle: ${joined(chain, " -> ")}", "closes the cycle here", "a package graph is acyclic — cut one edge")
+}
+
+export fn prelude_depends(at: Loc?) -> Diag {
+    refusal("manifest.prelude_floor", at, "`@std/prelude` depends on nothing — it is the floor every package stands on", "this dependency", "move the verb that needs this package up, into the package that depends on it")
 }
 
 export fn duplicate_package(at: Loc?, key: string, first: string, second: string) -> Diag {

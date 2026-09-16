@@ -1,0 +1,41 @@
+// ONE RESOURCE, TWO FORMS, ONE HANDLER. The framer accepts
+// absolute-form because RFC 9112 §3.3 says a server MUST, and a
+// router that read the whole URI answered `/admin` and
+// `http://h/admin` from two different routes — the differential a
+// normalising front end turns into a bypass. Both engines, one law.
+use @std.http.frame.{framed, limits, Framed, Method}
+use @std.http.http.{Request, Response, text}
+use @std.http.route.{Route, Table, fixed, compiled, dispatch}
+
+fn serve_admin(q: Request) -> Response { text(200, "admin@${q.authority() ?? "-"}") }
+fn serve_root(q: Request) -> Response { text(200, "root") }
+
+once fn routes() -> Table {
+    compiled([fixed(Method.Get, "/admin", serve_admin), fixed(Method.Get, "/", serve_root)])
+}
+
+fn asked(line: string) -> Request? {
+    let raw = (line + "\r\nHost: h\r\n\r\n").bytes()
+    match framed(raw, 0, 0, limits()) {
+        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "c" }
+        .Partial -> null
+        .Refused(_) -> null
+    }
+}
+
+/// What the router answers, beside the path and authority it read.
+fn row(line: string) -> string {
+    let q = asked(line)
+    if q == null { return "${line} -> unframed" }
+    let r = dispatch(routes(), q!)
+    "${line} -> ${r.status} ${r.body.text() ?? ""} path=${q!.path()?.text() ?? "<none>"} authority=${q!.authority() ?? "<none>"}"
+}
+
+[row("GET /admin HTTP/1.1"),
+ row("GET http://h/admin HTTP/1.1"),
+ row("GET https://h:8080/admin?x=1 HTTP/1.1"),
+ row("GET / HTTP/1.1"),
+ row("GET http://h HTTP/1.1"),
+ row("OPTIONS * HTTP/1.1"),
+ row("CONNECT h:443 HTTP/1.1"),
+ row("GET http://h/admin#top HTTP/1.1")].join("\n")
