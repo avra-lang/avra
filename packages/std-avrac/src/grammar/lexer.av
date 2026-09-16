@@ -647,6 +647,10 @@ type QuoteFrame = {
     assembling: bool,
     parts: List<string>,
     holes: List<int>,
+    // the hole token's own start — the name run it begins with — while
+    // `lo` is the BODY's start, which the Body token and the unclosed
+    // block's span read. Two starts, two fields.
+    head: int,
     lo: int,
 }
 
@@ -859,7 +863,7 @@ impl Lexing {
     }
 
     mut fn opened_frame(raw: bool) {
-        self.frames.push(QuoteFrame { raw: raw, body: builder(), depth: 0, groups: [], count: 0, current: [], hole_lo: 0, assembling: false, parts: [], holes: [], lo: self.i })
+        self.frames.push(QuoteFrame { raw: raw, body: builder(), depth: 0, groups: [], count: 0, current: [], hole_lo: 0, assembling: false, parts: [], holes: [], head: 0, lo: self.i })
         self.stack.push(Ctx.Body(self.frames.length - 1))
     }
 
@@ -897,10 +901,10 @@ impl Lexing {
             if touching != null {
                 self.unpushed()
                 fr.parts = [touching!.text]
-                fr.lo = touching!.span.lo
+                fr.head = touching!.span.lo
             } else {
                 fr.parts = [""]
-                fr.lo = self.i
+                fr.head = self.i
             }
             fr.holes = []
             fr.assembling = true
@@ -945,7 +949,7 @@ impl Lexing {
         if !continues {
             fr.assembling = false
             self.frames.set(f, fr)
-            self.push(token(TokenKind.Hole, placeholder(fr.parts, fr.holes), fr.lo, j))
+            self.push(token(TokenKind.Hole, placeholder(fr.parts, fr.holes), fr.head, j))
             return
         }
         self.frames.set(f, fr)
