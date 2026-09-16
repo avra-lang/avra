@@ -10,7 +10,7 @@ do.** This file is the whole workload; keep it current.
 | | |
 |---|---|
 | branch | `lane/comptime`, worktree `../avra-lane-comptime` |
-| head | `4ecd176`, pushed to origin |
+| head | `3fd86f1`, pushed to origin |
 | main | `fa0c1ec` — BEHIND; merge at a milestone, not per slice |
 | dashboard | https://claude.ai/code/artifact/782ea599-df60-4594-a9a1-dcd500ce0b14 — file `build/scratch/perfect-compiler.html`, `P = [name, size, done, total]`, republish with the Artifact tool, same path. No text updates. |
 | tasks | `export TASKS_DB=/Users/tristan/projects/tristanMatthias/avra/.tasks/avra.db`; `tasks` CLI direct, NEVER the MCP task tools. Survey wants under epic `avra-8sb5.11`. |
@@ -23,10 +23,10 @@ do.** This file is the whole workload; keep it current.
 | B one meta vocabulary, one crossing | **DONE** 3/3 | retired |
 | H side tables, derived identity | **DONE** 2/2 | retired |
 | G runtime header + diagnostic witnesses | **DONE** 2/2 | `../avra-phase-g`, `phase/g` @ `efb1200`, merged, clean — retire it |
-| C children + fingerprints derived | 2/3 | `../avra-phase-c`, `phase/c` @ `fd94afe`, MERGED |
-| D grammar names the node, fmt | 2/4, **worker RETIRED** | `../avra-phase-d`, `phase/d` @ `75d0946` — **committed, NOT merged, gate RED** |
+| C children + fingerprints derived | 2/3, **LIVE on C2** | `../avra-phase-c`, `phase/c` @ `fd94afe` merged; C2 = the avra-9cbe consolidation + F2086's witness + deleting node_grammar's text parsing |
+| D grammar names the node, fmt | 2/4, **LIVE — new worker finishing rung 1** | `../avra-phase-d`, `phase/d` @ `75d0946`, committed, NOT merged, gate RED (six goldens pinned the lossy output). Its rung: BUILD THE CURSOR, fix the six, `fmt(x) == x` over every file. |
 | E type marks, IR roles, ownership | 2/3, **worker RETIRED** | MERGED at `4ecd176`. E3 (§6) is BLOCKED and measured: a generated decl's names resolve at the TARGET file, `semantics_of` takes a features type, core imports nothing above itself. E recommends dropping it for the cheap half — rename `Dispatch`'s 43 fields to their FEATURE names, killing a second vocabulary. |
-| I ownership roles on Ins | **UNSTAFFED** | blocked: marks the same `Ins` payloads as E2 — start only after E2 lands |
+| I ownership roles on Ins | **LIVE** | `../avra-phase-i`, `phase/i` from `4ecd176`. Unblocked by E2's payload marks; inherits `@dst`/`@seats` spelling. Also carries E3's cheap half: rename `Dispatch`'s 43 fields to their FEATURE names. |
 | J one hole-bearing block | not started | after D |
 | K attack/doc/binding/diagnostic `at` | not started | last |
 
