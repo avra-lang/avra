@@ -400,10 +400,32 @@ lists disagreed on whether `Pack` owns).
 degenerate shapes (N = 0, 1, max of every repeated capture), every
 slot every wrong type (from the type model), malformed surface (delete,
 duplicate, swap, keyword-replace each token) — deterministically from
-the feature's rule and the model, and pins them as
-`<feature>_adversarial_test.av`. A person writes only the semantic
+the feature's rule and the model. A person writes only the semantic
 attacks. KILLS: the survivors every red team on this branch found in
 class 2/3 by hand (a `bool` fitting a NAME seat; `${}` empty hole).
+
+TWO FILES, AND THE NAMES SAY WHICH IS WHICH: the GENERATED mechanical
+classes are pinned as `<feature>_mechanical_test.av`; the HAND-WRITTEN
+semantic attacks stay in `<feature>_adversarial_test.av`. This section
+first gave the generated file the `_adversarial_` name, and MANY
+features already use that name for hand-written attacks — a generator
+run under the first spelling OVERWROTE them, and only a `git diff`
+before committing caught it. A generator never owns a name a person
+writes.
+
+LANDED (phase K): the canonical enumerator — a rule branch's first
+path, `Ref` recursed with a cycle guard, a `Named(term)` resolved
+through `term_kind` so the sample table is keyed on the lexer's own
+`TokenKind` and never a hand table — and two classes. DEGENERATE
+asserts the shape still PARSES (the sample spells `x` where a name
+belongs, so a TYPE error is expected and a parse error is not);
+MALFORMED asserts a deleted, duplicated or swapped token is DIAGNOSED
+(a deletion that empties the sample is a VALID program, not an attack;
+a swap of equal tokens is a no-op). KEYWORD-REPLACE and WRONG-TYPE are
+scheduled: they need to know which substitutions a position still
+ACCEPTS before a refusal can be asserted — replacing `true` with
+`false` in `bool_lit` is a valid program, and asserting refusal there
+would manufacture a false survivor.
 
 ### 10.5 Three hole-bearing blocks become one
 
@@ -421,6 +443,16 @@ AND the evaluator's call binding. KILLS: the two link sites a hand list
 let drift. NOT `tools/externs.py` — see §7: its subject is the extern
 WALL, 198 declarations that are not rows, and six of its checks are not
 widths.
+
+LANDED, verified against the tree at phase K. ONE source, `rt_sigs()`,
+generates all three: the C prototype (`runtime/avra_rt.h`, whose per-row
+`_Static_assert` is the keeper — the header is included LAST, so a row
+without a body fails at the C compiler), the LLVM declaration
+(`declare_runtime`'s loop over the rows), and the evaluator's binding
+(`rt_dispatch`, an exhaustive `RtHost` match keyed by the row's `host`).
+87 rows. The row count's question is "every runtime row is a whole
+binding", NOT "every C function has a row": the functions no row names
+are the runtime's internals and the extern WALL, which §7 keeps out.
 
 ### 10.7 A diagnostic knows where it points
 
