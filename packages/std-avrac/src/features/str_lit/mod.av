@@ -9,11 +9,15 @@
 //! order, which is also what retired interpolation's hand-written
 //! check that the two lists agree — the payload's arity IS the
 //! grammar's.
-use features.{LanguageFeature, PropertyRow, MethodRow, ReceiverEffect, measured_reg, lower_is_empty}
+use features.{LanguageFeature, PropertyRow, MethodRow, ReceiverEffect, measured_reg, lower_is_empty, BuilderRow}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn str_lit() -> LanguageFeature {
+    let builders = table<BuilderRow> {
+        name        | build
+        "body_text" | build_body_text
+    }
     let codes = table<DiagCode> {
         kind               | id      | summary
         "type.interp_hole" | "F2007" | "an interpolation hole prints as a scalar or string"
@@ -39,8 +43,9 @@ export fn str_lit() -> LanguageFeature {
         name = "str_lit"
         docs = "Double-quoted strings, with dollar-brace interpolation holes; the text vocabulary — `contains`, `starts_with`, `ends_with`, `index_of`, `substring`, `split`, `replace`, `char_code`, `trim`, `is_empty` — is this feature's method rows."
         gram = grammar {
-            primary = value:STRING -> Expr.StrLit | parts:ISTR_BEGIN holes:expression ( parts:ISTR_MID holes:expression )* parts:ISTR_END -> Expr.Interp
+            primary = value:STRING -> Expr.StrLit | parts:ISTR_BEGIN holes:expression ( parts:ISTR_MID holes:expression )* parts:ISTR_END -> body_text(parts, holes)
         }
+        builders = builders
         diags = codes
         methods = methods
         properties = properties

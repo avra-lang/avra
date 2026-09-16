@@ -2,20 +2,21 @@
 //! (`core/holes.av`'s `fits`, the one registry), and the quote answers
 //! the meta kind its body parsed as — both judged HERE, in the file
 //! that wrote the template, with no user of it.
-use core.{ExprId, TypeId, DeclId, StmtId, Type, QuoteParts, HoleKind, MetaKind, FillClass, hole_kinds, quote_kind, fits, holes_kind, holes_seat, meta_name}
+use core.{ExprId, TypeId, DeclId, StmtId, Type, BodyParts, HoleKind, MetaKind, FillClass, hole_kinds, quote_kind, fits, holes_kind, holes_seat, meta_name}
 use features.{TypeCx, Decls, this_is}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
 
 fn quote_type(mut cx: TypeCx, e: ExprId) -> TypeId {
-    let held: QuoteParts? = (cx.view.store.expr(e)).quote_of()
+    let held: BodyParts? = (cx.view.store.expr(e)).body_of()
     if held == null { return cx.error_type }
     let q = held!
     // a body that did not parse has spoken already
-    if q.stmts.any((s: StmtId) -> cx.view.store.stmt(s) is .Error) { return cx.error_type }
+    let stmts: List<StmtId> = match q.view { .Verbatim(ss, _) -> ss, rest -> [] }
+    if stmts.any((s: StmtId) -> cx.view.store.stmt(s) is .Error) { return cx.error_type }
     let classes = [class_of(cx.view.decls, cx.type_at(h), cx.shape_at(h)) for h in q.holes]
-    let whole = quote_kind(cx.view.store, q)
-    let kinds = hole_kinds(cx.view.store, q)
+    let whole = quote_kind(cx.view.store, e)
+    let kinds = hole_kinds(cx.view.store, e)
     // a value no seat takes refuses in its seat's words where the
     // seat is known; a body of holes has no seat until its kind is
     for k, h in q.holes {

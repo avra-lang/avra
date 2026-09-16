@@ -3,7 +3,7 @@
 //! node's. A new node kind breaks the map at compile time, and the
 //! impl it names owes every pass, enforced by the traits. The walk
 //! order every pass shares lives here too.
-use core.{Expr, Stmt, ExprId, NodeStore, flatten, Pat}
+use core.{Expr, Stmt, ExprId, NodeStore, flatten, Pat, body_behavior, BodyBehavior}
 
 /// Every feature's boxed semantics, built ONCE per assembly — the
 /// exhaustive maps below only SELECT. The language builds it (the
@@ -57,15 +57,24 @@ export type Dispatch = {
 /// selecting from the once-built Dispatch. A new variant breaks
 /// HERE at compile time, and the impl it names owes every pass,
 /// enforced by the trait.
+/// A body is handled by the feature its WORD names — the one
+/// registry in core, asked once.
+fn body_semantics(d: Dispatch, word: string) -> dyn NodeSemantics {
+    match body_behavior(word) {
+        .Text -> d.strs,
+        .Quote -> d.quotes,
+        .Foreign -> d.sublangs,
+    }
+}
+
 export fn semantics_of(d: Dispatch, e: Expr) -> dyn NodeSemantics {
     match e {
         .IntLit(_) or .FloatLit(_) or .Ident(_) or .Binary(_, _, _) or .Not(_) or
         .Index(_, _) or .Prop(_, _) or .Error -> d.spine,
         .ListLit(_) or .Comp(_, _, _, _, _, _) -> d.aggs,
         .MapLit(_, _) -> d.maps,
-        .StrLit(_) or .Interp(_, _) -> d.strs,
-        .Quote(_, _, _, _) -> d.quotes,
-        .Sublang(_, _, _, _) -> d.sublangs,
+        .StrLit(_) -> d.strs,
+        .Body(word, _, _, _) -> body_semantics(d, word),
         .BoolLit(_) -> d.bools,
         .If(_, _, _) -> d.ifs,
         .When(_, _, _) -> d.whens,

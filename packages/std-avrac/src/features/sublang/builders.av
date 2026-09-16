@@ -4,9 +4,9 @@
 //! and every action mints a call of the library's fn, the captures as
 //! arguments — so the expansion's nodes stand right before the block's,
 //! as a parsed child does, and every range law holds.
-use core.{Expr, Stmt, ExprId, NodeStore, Span, HoleName, hole_name, flatten, some_list, BlockVoice, Scoped}
+use core.{Expr, Stmt, ExprId, NodeStore, Span, HoleName, hole_name, flatten, some_list, BlockVoice, Scoped, BodyView}
 use features.{LangNode, Builder, BlockGrammar, zip_defect_of}
-use grammar.{run_from, lex_body, Captured, TokenKind, Token, Grammar, Seq, Item, Prim, Build}
+use grammar.{run_from, lex_body, runs, Captured, TokenKind, Token, Grammar, Seq, Item, Prim, Build}
 
 /// The declaration always mints; its notation is judged by its typing
 /// (`check_syntax`), which speaks the DSL's own words at the statement.
@@ -25,7 +25,9 @@ fn build_sublang(mut b: Builder) -> Result<LangNode, string> {
     if begins.length != holes.length { return .Err("a hole is empty — `\${e}` takes an expression") }
     if ends.length != holes.length { return .Err(zip_defect_of("block holes")) }
     let expansion: ExprId? = expanded(b, w.text, body, holes)
-    let e = b.store.alloc_expr(Expr.Sublang(w.text, body.text, holes, expansion), b.span)
+    let parts = runs(body.text, body.span.lo, body.span.hi, begins, ends)
+    let view = if expansion == null { BodyView.None } else { BodyView.Expanded(expansion!) }
+    let e = b.store.alloc_expr(Expr.Body(w.text, parts, holes, view), b.span)
     b.store.mark_sublang(e, body.span.lo)
     .Ok(LangNode.NExpr(e))
 }

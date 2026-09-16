@@ -19,7 +19,7 @@ use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relativ
 use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
 use @std.meta.{Diagnostic, Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Mark as MetaMark, Decls as MetaDecls, Kind}
-use core.{Stmt, Arm, QuoteParts, HoleKind, Filled, Unplaced, copier, quote_kind, all_codes, is_name_cont, SyntaxParts, ForeignRange}
+use core.{Stmt, StmtId, Arm, BodyParts, BodyView, HoleKind, Filled, Unplaced, copier, quote_kind, all_codes, is_name_cont, SyntaxParts, ForeignRange}
 use grammar.{parse_grammar, ready}
 use diagnostics.{defect_at}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error, user_code, DiagCode}
@@ -1376,7 +1376,7 @@ impl Workspace {
             .Bool(b) -> store.alloc_expr(Expr.BoolLit(b), null),
             .Interp(parts, holes) -> {
                 let hs = [self.spliced_expr(f, h) for h in holes]
-                store.alloc_expr(Expr.Interp(parts, hs), null)
+                store.alloc_expr(Expr.Body("text", parts, hs, BodyView.None), null)
             },
             .Many(_) -> store.alloc_expr(Expr.Error, null),
         }
@@ -1436,15 +1436,17 @@ impl Workspace {
         let src = self.decls.store_of(origin)
         let q: ExprId? = src.quote_at(at)
         if q == null { return nothing_copied() }
-        let parts: QuoteParts? = (src.expr(q!)).quote_of()
+        let parts: BodyParts? = (src.expr(q!)).body_of()
         if parts == null { return nothing_copied() }
         let body = parts!
-        if quote_kind(src, body) is .Holes { return self.holes_copied(f, fills, seat) }
+        if quote_kind(src, q!) is .Holes { return self.holes_copied(f, fills, seat) }
         let ws = self
         let thunks = [(kind: HoleKind) -> ws.spliced(f, fill, kind) for fill in fills]
         mut rb = copier(src, self.decls.store_of(f), thunks)
-        let stmts = rb.stmts(body.stmts)
-        let arms = rb.arms(body.arms)
+        let copied_stmts: List<StmtId> = match body.view { .Verbatim(ss, _) -> ss, .None -> [], .Expanded(_) -> [] }
+        let copied_arms: List<Arm> = match body.view { .Verbatim(_, arms) -> arms, .None -> [], .Expanded(_) -> [] }
+        let stmts = rb.stmts(copied_stmts)
+        let arms = rb.arms(copied_arms)
         if !same_file(origin, f) { self.decls.note_origins(f, rb.made_exprs, rb.made_stmts, rb.made_pats, origin) }
         // a node the template's own sublanguage minted keeps THAT
         // library as its origin, not the template's file
