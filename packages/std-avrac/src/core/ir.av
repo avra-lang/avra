@@ -59,7 +59,7 @@ export enum Ins {
     /// constant, so what an instruction MEANS never depends on where
     /// its answer is going.
     ConstFloat(@dst dst: Reg, bits: int)
-    ConstStr(@dst dst: Reg, s: string)
+    ConstStr(@dst @owns dst: Reg, s: string)
     ConstBool(@dst dst: Reg, v: bool)
     /// The eager binary operations — operands same-typed. The lazy
     /// ops (And/Or) never reach here: they lower as regions.
@@ -72,19 +72,19 @@ export enum Ins {
     /// A call into the runtime's C surface — THE escape hatch that
     /// keeps this instruction set closed: features lower
     /// value-producing runtime needs here, never as new variants.
-    CallRt(@dst dst: Reg, @host callee: string, args: List<Reg>)
+    CallRt(@dst @owns dst: Reg, @host callee: string, args: List<Reg>)
     /// A small immutable aggregate built IN REGISTERS — the machine
     /// shape behind the unboxed pair (a scalar nullable's
     /// {present, value}); the backend keeps it out of memory
     /// entirely, so the optimizer sees through it. A register holds
     /// ONE VALUE, not one word — this is the variant that says so.
-    Pack(@dst dst: Reg, elems: List<Reg>)
+    Pack(@dst @owns dst: Reg, elems: List<Reg>)
     /// One element of a packed value.
-    Extract(@dst dst: Reg, src: Reg, at: int)
+    Extract(@dst @view dst: Reg, src: Reg, at: int)
     /// A named fn's ADDRESS as a value — the code pointer a dyn
     /// box (and, ahead, a closure) carries; `CallPtr` calls
     /// through it. An opaque word to every other consumer.
-    FnAddr(@dst dst: Reg, @code sym: string)
+    FnAddr(@dst @owns dst: Reg, @code sym: string)
     /// A SETTLED aggregate's ADDRESS: the `Static` of that name in
     /// the program, laid out before it runs as an immortal headered
     /// box — never built, never released, so a read costs one
@@ -114,14 +114,14 @@ export enum Ins {
     /// why it is not named for either.
     ArmEnd(gives: Reg)
     /// End of the LAST arm: every arm's yield merges into `dst`.
-    RegionEnd(@dst dst: Reg, gives: Reg)
+    RegionEnd(@dst @owns dst: Reg, gives: Reg)
     /// A call to an Avra fn body. The ABI is callee-cleans: the
     /// caller retains managed arguments in, the callee's exit
     /// releases its params minus what RetVal keeps.
-    Call(@dst dst: Reg, @body callee: string, @seats args: List<Reg>)
+    Call(@dst @owns dst: Reg, @body callee: string, @seats @moves args: List<Reg>)
     /// An INDIRECT call through a register-held fn address — dyn
     /// dispatch (and, ahead, closures). The ABI is `Call`'s.
-    CallPtr(@dst dst: Reg, f: Reg, @seats args: List<Reg>)
+    CallPtr(@dst @owns dst: Reg, f: Reg, @seats @moves args: List<Reg>)
     /// A fn body's answer, after its scope has settled its debts.
     RetVal(r: Reg)
     /// An EARLY answer — `return` from anywhere in a body. The
@@ -136,7 +136,7 @@ export enum Ins {
     // mint fresh registers, stores update the slot. Scalars only
     // until ownership analysis covers managed values.
     Alloca(@dst dst: Reg)
-    Load(@dst dst: Reg, slot: Reg)
+    Load(@dst @owns dst: Reg, slot: Reg)
     Store(slot: Reg, src: Reg)
 
     // Loops: the third bracket family. The condition's instructions
@@ -224,8 +224,8 @@ export fn escapes_in(i: Ins, r: Reg) -> bool {
         .RegionEnd(_, v) -> same_reg(v, r),
         .ScopeExit(gives) -> gives != null && same_reg(gives!, r),
         // handed to a callee that may keep it
-        .Call(_, _, args) -> args.any(same_reg(it, r)),
-        .CallPtr(_, f, args) -> same_reg(f, r) || args.any(same_reg(it, r)),
+        .Call(_, _, _) -> moved_args(i).any(same_reg(it, r)),
+        .CallPtr(_, f, _) -> same_reg(f, r) || moved_args(i).any(same_reg(it, r)),
         // a row borrows every seat but the ones it keeps
         .CallRt(_, callee, args) -> kept_seat(callee, args, r),
         .CallRtVoid(callee, args) -> kept_seat(callee, args, r),
@@ -451,6 +451,23 @@ export fn reads_of(i: Ins) -> List<Reg> { reads_of_role(i) }
 /// retains, and the only ones a conditional ABI could stop retaining.
 /// A runtime row BORROWS its arguments, so its are not seats.
 export fn seat_regs(i: Ins) -> List<Reg> { seat_regs_role(i) }
+
+/// The register an instruction DEFINES that OWNS a reference when
+/// its value is managed — the payload marked `@owns`. A destination
+/// carrying only `@dst` owns NOTHING: a scalar's word, a cell, an
+/// immortal static address. That absence is a role, not an omission.
+export fn owned_dst(i: Ins) -> Reg? { owned_dst_role(i) }
+
+/// The register that is a VIEW of another box — it rides a reference
+/// somebody else holds and owns nothing of its own.
+export fn viewed_dst(i: Ins) -> Reg? { viewed_dst_role(i) }
+
+/// An AVRA CALL's argument registers the caller RETAINS — the seats
+/// that MOVE IN under callee-cleans. `@seats` is the structural claim
+/// (these are an Avra call's arguments); `@moves` is the ABI claim
+/// (the caller hands its reference over). A runtime row BORROWS its
+/// arguments, so its args carry neither, and are no seats here.
+export fn moved_args(i: Ins) -> List<Reg> { moved_args_role(i) }
 
 /// The symbol an AVRA call names, when it is a known body — a
 /// `CallPtr` names none, so its seats can never be shown read-only.
