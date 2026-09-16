@@ -34,33 +34,69 @@ macOS-only fixture (`avra_proc_which("sh", "/usr/bin:/bin")` answers
 refreshed ON the Sprite (`make bootstrap seed`, 316312 lines) and
 `seed-check` proves the new seed compiles HEAD.
 
-## The full main→lane merge — OWED, and it is a PROJECT
+## The full main→lane merge — RESOLVED, PRESERVED, AND IT CANNOT BOOTSTRAP
 
-`git merge-tree HEAD main` measures 20 conflicted files. At least eight
-are SEMANTIC, where a textual union is wrong:
+`merge/main-into-lane` @ `4f2b112` (pushed) holds the whole
+reconciliation: 24 paths, no markers, and the resolution verified by
+reading it — `core/rebuild.av` keeps the lane's derived arms and lands
+main's `Pat.Format` walk as `rebuilt_part`/`rebuilt_parts` + a `verb_of`
+row; `source_text.av` keeps the lane's `pattern` with main's `.Format`
+arm folded in; the Makefile is main's build system plus the lane's five
+and the `SHA_SRC` content-hash-over-headers union; `tools/*.sh` take
+main's, exactly. TWO merge laws it paid for:
 
-- `core/rebuild.av` — the lane DELETED main's `rebuilt_expr/stmt/pat`
-  and derives those arms (`@derive(Rebuild)` + `verb_of`); main ADDED
-  hand arms for its new variants. The union is the lane's structure
-  plus main's `FormatPart` walk as a `verb_of` row, never both.
-- `language/source_text.av`, `features/{decls,enums/check,enums/lower,
-  fns/check}.av`, `language/{llvm,resolve}.av` — both sides moved these.
-- `Makefile` — main replaced the hand-kept object list with one glob,
-  a stem-uniqueness law, `tools/suites.py` and `tools/libs.py`; the
-  lane has its own additions (`SEED_FLOOR`, `rt-header`, `witnesses`,
-  `gate` deps, `avra_rt.h` in `runtime.sha`). The union is main's build
-  system plus those five.
-- `tools/{idioms.py,vocab.sh,watch.sh,integrate.sh}` — both lanes moved
-  the keepers.
+- **A MERGE IS A THIRD LANE, AND INHERITANCE COLLIDES IDENTICALLY.**
+  main registered `bool_comprehension` under `I43`; the lane registered
+  `hand_sized_column` under `I43`. Same number, both sides — the failure
+  the doctrine names (two lanes landing one number, the duplicate key
+  silently dropping the earlier rule). The fix renumbered MAIN's to the
+  next free `I48` in EVERY place (RULES dict, both SPECIMENS,
+  DOGFOODING.md), kept the lane's `I43`, and recorded it in ROADMAP.md.
+  The keeper then read clean: debt 0, next free I50.
+- **A ONE-SIDE DELETION IS A DECISION, NOT A CONFLICT.** `staged.av`
+  and `process_seam.av` are gone because main removed them
+  deliberately (`007508d`, `957a343`); the merge drops the files AND
+  their registrations. A `modify/delete` is not a tie to break.
 
-AND IT NEEDS A LADDER: neither parent's binary reads the merged tree
-(the lane's payload-mark grammar vs main's later lexer). Rule the merge
-WITH the compiler as oracle — which is now possible, because the lane
-gates on a Sprite.
+**WHY IT CANNOT BOOTSTRAP — the actual blocker, measured.** Neither
+parent's compiler reads the merged tree, and this is NOT the ladder the
+doctrine describes:
 
-AT THE MERGE: take MAIN's version of `tools/sprite-build.sh` (it has
-`--receipt`, `--prebuild`, the doctrine files and the root `avra` shim)
-and main's `tools/sprite-provision.sh`.
+| parent | cannot do |
+|---|---|
+| the lane's seed | resolve main's new BUILTINS — F2001 `Bytes` names no type across `interp.av`/`llvm_api.av`/`bytes/*`; F3000 `println`/`eprintln` (main's prelude); F3013 implicit deps |
+| main's seed | parse the lane's FRONT END — F0100 at `core/ir.av:55 @dst` and `nodes.av:256 @verbatim`; F0102 in `bool_lit`/`str_lit` (node-named builds main's DSL cannot read) |
+
+THE CLASSIC LADDER ASSUMES ONE PARENT MOVED THE GRAMMAR. BOTH moved the
+compiler's ENGINE, not only its syntax: `Bytes` is a new BUILTIN whose
+knowledge is compiled INTO the compiler (there is no old spelling of a
+builtin, and a temp alias would bake the WRONG engine into gen1), and the
+prelude is engine behaviour with no spelling at all. So "write the new
+form in the old spelling" has no single old spelling to write.
+
+**THE PATH — RECOMMENDED, in preference order.**
+
+- **(C) Land the lane's FRONT END on main as its own slice.** The engine
+  delta (grammar DSL accepting a mark before a PAYLOAD; node-named rules;
+  the `listed`/AST-mark machinery) is CODE, and code is written WITHOUT
+  the new spellings — the spellings live in the feature `mod.av` files.
+  So main's compiler can build an engine-only tree. After that slice,
+  main's compiler reads the lane's sources, main already has `Bytes` and
+  the prelude, and the milestone merge becomes an ORDINARY merge with no
+  ladder at all. This is the paradox collapse: the throwaway intermediate
+  becomes a real slice, and no work is wasted.
+- **(A) A designed, throwaway intermediate (gen0 = main's compiler).**
+  T1 = the merged tree with the lane's new SPELLINGS reverted to their
+  pre-D/pre-E2 forms (feature rules back to `-> build_x(...)` with their
+  builders; `core/ir.av` roles hand-written as main has them) while
+  KEEPING the lane's engine; gen0 builds T1 -> gen1; restore the
+  spellings; gen1 builds the merged tree -> gen2, and gen2 == gen3. The
+  shapes T1 needs exist in history, so this is mechanical but iterative.
+- **(B) Rebase the lane's 47 commits onto main.** Each step is buildable
+  by the previous generation, so the ladder happens implicitly one commit
+  at a time. Most work, and it rewrites the shared lane history (C/D/I
+  must re-base).
+
 
 
 ## Phases
