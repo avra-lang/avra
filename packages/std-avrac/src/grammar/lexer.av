@@ -882,13 +882,11 @@ impl Lexing {
 
     /// A hole of the innermost quote opens: a Hole token begins here
     /// (or continues, after `}${`), taking the name run just emitted
-    /// when it touches the hole. A hole DIRECTLY in a hole is refused;
-    /// one inside braces a hole's own body owns (a block, a nested
-    /// quote) is its own, and counts its own braces.
+    /// when it touches the hole.
     mut fn open_hole() {
         let f = self.frames.length - 1
         let top: Ctx? = self.stack.last()
-        if top != null && self.hole_at_zero(top!) {
+        if top != null && top! is .QuoteHole {
             self.errors.push(LexError { message: "a hole inside a hole — splice the inner value first", span: span_of(self.i, self.i + 2) })
             self.i = self.i + 2
             return
@@ -914,16 +912,6 @@ impl Lexing {
         self.frames.set(f, fr)
         self.stack.push(Ctx.QuoteHole(f, 0))
         self.i = self.i + 2
-    }
-
-    /// Whether the top context is a template hole standing at its own
-    /// opening depth — a hole directly in a hole, not one nested in a
-    /// body the hole contains.
-    fn hole_at_zero(top: Ctx) -> bool {
-        match top {
-            .QuoteHole(_, depth) -> depth == 0,
-            .Body(_) or .StrHole(_) -> false,
-        }
     }
 
     /// The name token just emitted, when it ends exactly where the

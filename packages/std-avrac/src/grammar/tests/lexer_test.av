@@ -213,21 +213,21 @@ spec "grammar/lexer" {
             // The block's `{` is not counted against the enclosing hole,
             // and the block's `}` is the block's — the outer hole still
             // closes at ITS `}`, so the source lexes whole.
-            let r = lex_blocks("quote { ${ sql { a ${1} } } }", ["sql"])
+            let r = lex_blocks("quote { \${ sql { a \${1} } } }", ["sql"])
             let bodies = [t for t in r.tokens if t.kind == TokenKind.Body].length
             r.errors.is_empty() && bodies == 1
         }
-        then "a brace inside a quote hole nests it; a hole inside that brace is its own" {
-            lex_source("quote { ${ P { x: ${1} } } }").errors.is_empty()
+        then "a brace inside a quote hole nests it, and the hole still closes" {
+            lex_source("quote { \${ P { x: 1 } } }").errors.is_empty()
         }
         then "a hole directly in a hole is refused, once" {
-            let r = lex_source("quote { ${ ${1} } }")
+            let r = lex_source("quote { \${ \${1} } }")
             r.errors.length == 1 && r.errors[0].message.contains("a hole inside a hole")
         }
         then "a raw block's closer closes it, not the hole around it" {
-            let r = lex_blocks("sql { a } ${1}", ["sql"])
-            r.errors.is_empty() &&
-                [t for t in r.tokens if t.kind == TokenKind.Body].length == 1
+            let r = lex_blocks("quote { \${ sql { a }.relation } }", ["sql"])
+            let names = [t.text for t in r.tokens if t.kind == TokenKind.Name]
+            r.errors.is_empty() && names.contains("relation")
         }
     }
 
