@@ -600,11 +600,6 @@ RULES = {
 }
 
 UNRATCHETED = {
-    "I49": "no grep links two fns as INVERSES, so nothing textual sees a pack\n"
-           "           learning a category its unpack has not. The keeper is `make\n"
-           "           vocab`: both directions are named as consumers of the SAME\n"
-           "           registry enum, and a catch-all or an `is` test inside either\n"
-           "           fails the gate whichever direction grew the hole",
     "I47": "no grep tells a COMPLETE anchor list from a partial one — the anchors\n"
            "           are whatever the grammar can put in the range, so a helper taking\n"
            "           `List<Token>` of names reads identically whether or not the span\n"
@@ -629,6 +624,11 @@ UNRATCHETED = {
            "           reads as ordinary code. The keeper is the boundary check itself:\n"
            "           crossing_test.av moves each crossed shape and demands the refusal\n"
            "           name the one that moved",
+    "I49": "no grep links two fns as INVERSES, so nothing textual sees a pack\n"
+           "           learning a category its unpack has not. The keeper is `make\n"
+           "           vocab`: both directions are named as consumers of the SAME\n"
+           "           registry enum, and a catch-all or an `is` test inside either\n"
+           "           fails the gate whichever direction grew the hole",
     "I42": "no grep tells a READ site from a SEAT site — `shape_at` is correct at\n"
            "           one and a defect at the other, and both spellings live beside each\n"
            "           other in the same file. The keeper is the adversarial suite:\n"
@@ -693,7 +693,7 @@ UNRATCHETED = {
 #
 # THEY WERE TWO TABLES, `ACCEPTED` and `CLEAN`, AND THE SECOND KILLED
 # THE FIRST: two `CLEAN = {…}` bindings landed in one file a week
-# apart, Python kept the later, and the I21, I23 and I43 fixtures of
+# apart, Python kept the later, and the I21, I23 and I48 fixtures of
 # the earlier one stopped being checked with nothing to see. That is
 # this file's own duplicate-number hazard one level up — the guard
 # below now reads its own source for a table defined twice, as it
