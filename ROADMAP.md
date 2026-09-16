@@ -7068,7 +7068,6 @@ additions get siblings, nothing changes shape:
   edit re-runs importers only when the export surface's fingerprint
   moved.
 
-<<<<<<< HEAD
 ## Feedback survey — 2026-09-15 (phase C, C1: children and identity derived)
 
 Base: lane/comptime 1c39ad8 + phase/c. Counts: FRICTION 3, FEATURES 1,
@@ -7192,8 +7191,6 @@ observation and not a measurement.
   his side. Worth naming as the thing that worked: the integrator
   taking the merge, gating the MERGED tree rather than trusting either
   lane's receipt, is why neither lane had to.
-=======
->>>>>>> cdf499a (feat(core): a payload declares its ROLE, and the IR's projections are read off it)
 ## Feedback survey — 2026-09-15 (phase E: §4–§6 of the perfect compiler)
 
 18 findings. Top three by cost: THE INSPECTOR THAT AGREED WITH THE
@@ -9104,7 +9101,6 @@ the gate did.
 
 ## Sugar backlog — dogfooding asks
 
-<<<<<<< HEAD
 ANSWERED, NOT COLLAPSED (phase G, 2026-09-15) — A REGISTRY SUMMARY AND
 A VOICE'S HEADLINE ARE DIFFERENT THINGS. Asked whether the two spell
 one law twice (avra-5m62, from phase C's side). MEASURED over the 72
@@ -9206,8 +9202,6 @@ argument's rc across the call — which the generated header (§7) is the
 natural place to emit, since it already spells every row's seats. AND
 THE COVERAGE CAVEAT IS REAL: a row nobody calls is never measured, and
 `avra_int_not` above is the proof that such rows exist here.
-=======
->>>>>>> cdf499a (feat(core): a payload declares its ROLE, and the IR's projections are read off it)
 WANT (phase E, 2026-09-15) — A DERIVE CAN REFUSE. `derive(t: Type) ->
 List<Directive>` has ONE channel and it is generation: there is no way
 for a derive to say "this declaration is wrong" the way a VALIDATES
