@@ -1693,6 +1693,30 @@ Runtime facts, ours to ratify:
   makes `cp build/avra build/avra.pre` the whole protocol rather than
   a nicety — the HTTP lane's strings slice paid for this and its way
   back was a copy of ANOTHER LANE's product.
+- ITS MIRROR, AND IT POINTS THE OTHER WAY: A REGISTRY ROW THE
+  COMPILER'S OWN SOURCE DECLARES CANNOT BE GATED IN THE COMMIT THAT
+  ADDS IT. A declaration naming an `rt_sigs` row is legal only to a
+  compiler that ALREADY CARRIES the row — `crossing_law` exempts a
+  row's name by asking its own `rt_sigs()` — so a tree that adds the
+  row and declares it in the same breath is refused by every compiler
+  that could build it: the standing binary, the committed seed, and
+  therefore `seed-check` and `make bootstrap` alike. THE BRANCH CANNOT
+  GATE BY CONSTRUCTION, and the first buildable point is a tree
+  carrying BOTH the row and a seed that knows it.
+  THE LADDER IS TWO LANDINGS, not two builds. FIRST the row alone,
+  hosted `Unhosted` — which is TRUE, since the evaluator has no arm
+  yet — plus the C body and whatever keeper table names it; that
+  gates on the standing seed because nothing declares it. The seed is
+  refreshed on landing. THEN the declaration, the `RtHost` variant and
+  its arm, and the callers; that gates because the seed now knows the
+  row. Splitting it is not ceremony: a single landing leaves main
+  unbuildable between the merge and the refresh, and an integrator
+  that gates the LANE hits the same wall one step later with the
+  landing dead.
+  A PLACEHOLDER ARM IS NOT NEEDED AND SHOULD NOT BE WRITTEN. `Unhosted`
+  already says what is true and already has its arm; inventing a
+  temporary variant to delete next week is a comment about a point in
+  time wearing code's clothes.
 - THE RECEIPT FOR A SLICE THAT REMOVES A RUNTIME SYMBOL IS `make
   bootstrap` GREEN, NEVER `make avra` GREEN. `make avra` builds the
   cli with the STANDING binary and copies the result; it never
