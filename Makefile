@@ -136,7 +136,7 @@ build/%.o: %.c build/%.sha
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
 .PHONY: census traps test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap libs libscope \
-        check run ir emit build-native native-check avra suites install
+        check run ir emit build-native native-check avra suites install sprite sprite-check
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -205,6 +205,20 @@ install: avra
 	@cp build/avra_runtime.o $(PREFIX)/lib/avra/avra_runtime.o
 	@for p in packages/std-*; do rm -rf $(PREFIX)/lib/avra/std/$$(basename $$p); cp -R $$p $(PREFIX)/lib/avra/std/; done
 	@echo "install: $(PREFIX)/bin/avra, $$(ls -d packages/std-* | wc -l | tr -d ' ') std packages under $(PREFIX)/lib/avra/std"
+
+# A Sprite is a stock Ubuntu image; `make sprite` provisions the machine
+# it runs on — LLVM 22, the tree's paths, and a compiler. On macOS it is
+# a no-op.
+sprite:
+	@sh tools/sprite-provision.sh
+
+# What a fresh Sprite from THIS tree would do: no build when the tree is
+# the source the seed came from, one build once it has moved.
+sprite-check:
+	@h=$$(sh tools/sources_hash.sh); s=$$(cat bootstrap/seed.sources); \
+	 printf 'sprite-check: sources %s\nsprite-check: seed    %s\n' "$$h" "$$s"; \
+	 if [ "$$h" = "$$s" ]; then echo "sprite-check: the seed IS this tree — a fresh Sprite needs no build"; \
+	 else echo "sprite-check: this tree has moved — a fresh Sprite takes one build; \`make seed\` restores the seed path"; fi
 
 # Scratch a run leaves behind: the test binaries each package's
 # cases were linked into.
