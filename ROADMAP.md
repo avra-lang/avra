@@ -16306,3 +16306,85 @@ rather than `<tree>/build/<x>.o`). Then "under the package root" admits
 every legitimate row and refuses every escape, and it is one check in
 `package_link`. Until then a boundary would have to be an allow-list,
 which is the same trust decision written twice.
+## Feedback survey — 2026-09-15 (STD-DATA: end of life)
+
+Seven slices, seven PRs (#20, #21, #23, #24, #25, #27, #28), epic
+`avra-bjkk` empty. This is the END-OF-LIFE survey — what the work
+wanted from the LANGUAGE and the toolchain — and it covers `.3.2` and
+`.3.6`, which had no survey of their own. The per-slice surveys above
+carry the rest.
+
+Wants filed under `avra-8sb5.11`: four new (`avra-8yak`, `avra-gypz`,
+`avra-cijb`, `avra-ibw1`), two existing CONFIRMED with counts
+(`.11.13`, `.11.3`).
+
+### What the work wanted
+
+- **A VERB ANSWERING TWO VALUES** (`avra-8yak`). `paced`
+  (std-process/process.av) wants to answer a stepped `Stage` AND
+  whether this sweep has spent its one wait. It answers the Stage, and
+  three call sites infer the second answer from `!t.timed` — a field
+  that means something else and happens to be set by exactly one
+  branch. Sound today, unchecked by anything, and silently wrong the
+  day another verb sets `timed`.
+- **AN `or` ARM THAT BINDS THE SCRUTINEE** (`avra-gypz`).
+  `answer_form` (llvm.av) reads `.Widened -> SlotForm.Widened`,
+  restating the variant it just matched, because an `or` arm binds
+  nothing. F2039 is right about PAYLOADS — alternatives must agree —
+  and the scrutinee needs no agreement: it is one value and every
+  alternative matched it.
+- **A ROW AND ITS DECLARATION IN ONE COMMIT** (`avra-cijb`). Cost two
+  PRs, two merges and a seed refresh between them. Written down as
+  doctrine rather than fixed, which may be the right answer; the cost
+  is then one read instead of one experiment.
+- **A NAMED FILE'S REFUSAL NAMING THAT FILE** (`avra-ibw1`). F4005
+  from `avra run <file>` names the manifest around it and never the
+  file, so it reads as a broken package. Cost ~15 probes relocated out
+  of the tree on a conclusion that was wrong.
+
+### What worked, which is feedback too
+
+- **THE COMPILER DROVE A 62-SITE SWEEP.** Deleting @std/sqlite's `mut`
+  seats left 13 declarations and 49 alias bindings stale across six
+  files, and F2048/F2051 named every one in two `./avra check` cycles.
+  A conversion whose fallout the type system enumerates can be done at
+  once rather than in nervous pieces.
+- **TWO KEEPERS CAUGHT WHAT READING WOULD NOT.** `make externs`
+  refused `const char*` for a foreign-address seat — the obvious
+  spelling — and `make vocab` refused an `is .Word` planted in a new
+  registry consumer. Both on shapes no reviewer would have questioned.
+- **THE DIFFERENTIAL CAUGHT MY OWN TEST.** `native-check` failed on a
+  clock assertion I had written into a probe, an hour after reading
+  the closed task that says a suite measuring the pump must not
+  measure the clock.
+- **A FIELD DEFAULT THAT CALLS RUNS PER CONSTRUCTION** — probed, both
+  engines, and now in DOGFOODING so the next author does not fear the
+  shared-default trap other languages have.
+
+### `.3.2` — the verbs already worked
+
+`read_bytes`/`write_bytes` landed with lane/http and are correct,
+measured: an empty box writes an empty FILE that reads back as an
+empty BOX, octets holding a NUL round-trip whole, a missing file
+refuses. What was missing is that nothing pinned it on the octet side.
+Two cases now do. A THIRD WAS WRITTEN AND DROPPED because it
+duplicated the existing text case — `read_text` is `read_bytes` plus a
+UTF-8 check, so one mutation fails both. Three new guards was the easy
+claim; two is the true one.
+
+### `.3.6` — refused, and the words were false anyway
+
+No path-shaped boundary admits this tree: all six `objects` rows climb
+out of their package root AND of the workspace root, because the build
+tree sits above both. Recorded as a REFUSED entry above with the
+measurement and the trigger that would make a boundary expressible.
+The fix that survived the refusal is the one the question uncovered:
+the refusal's own words claimed `objects` takes "object files under
+the package root", a guard that does not exist.
+
+### Not surveyed
+
+`avra-8sb5.9.1` (the text→int parse row) — unbuilt, nobody's, and a
+core parse question rather than a data-package one. Performance
+anywhere except the sweep slice: nothing else in these seven slices
+was measured for time or memory, and saying so is the honest bound.
