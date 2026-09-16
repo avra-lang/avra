@@ -10,7 +10,7 @@ do.** This file is the whole workload; keep it current.
 | | |
 |---|---|
 | branch | `lane/comptime`, worktree `../avra-lane-comptime` |
-| head | `28dcac8`, pushed to origin |
+| head | `4db0d90`, pushed to origin |
 | main | `fa0c1ec` — BEHIND; merge at a milestone, not per slice |
 | dashboard | https://claude.ai/code/artifact/782ea599-df60-4594-a9a1-dcd500ce0b14 — file `build/scratch/perfect-compiler.html`, `P = [name, size, done, total]`, republish with the Artifact tool, same path. No text updates. |
 | tasks | `export TASKS_DB=/Users/tristan/projects/tristanMatthias/avra/.tasks/avra.db`; `tasks` CLI direct, NEVER the MCP task tools. Survey wants under epic `avra-8sb5.11`. |
@@ -23,9 +23,9 @@ do.** This file is the whole workload; keep it current.
 | B one meta vocabulary, one crossing | **DONE** 3/3 | retired |
 | H side tables, derived identity | **DONE** 2/2 | retired |
 | G runtime header + diagnostic witnesses | **DONE** 2/2 | `../avra-phase-g`, `phase/g` @ `efb1200`, merged, clean — retire it |
-| C children + fingerprints derived | 1/3 | `../avra-phase-c`, `phase/c` @ `1c39ad8` |
+| C children + fingerprints derived | 2/3 | `../avra-phase-c`, `phase/c` @ `fd94afe`, MERGED |
 | D grammar names the node, fmt | 2/4, **worker RETIRED** | `../avra-phase-d`, `phase/d` @ `75d0946` — **committed, NOT merged, gate RED** |
-| E type marks, IR roles, ownership | 0/3 | `../avra-phase-e`, `phase/e` @ `1c39ad8` |
+| E type marks, IR roles, ownership | 2/3, **worker RETIRED** | `../avra-phase-e`, `phase/e` @ `cdf499a`, pushed, gate GREEN IN ITS OWN TREE — **MERGE FAILS, see below** |
 | I ownership roles on Ins | **UNSTAFFED** | blocked: marks the same `Ins` payloads as E2 — start only after E2 lands |
 | J one hole-bearing block | not started | after D |
 | K attack/doc/binding/diagnostic `at` | not started | last |
@@ -71,6 +71,28 @@ do.** This file is the whole workload; keep it current.
   memory pass and `emit_ins` hand-written. Ruled on `make vocab`: keep
   the rows, change what each ASSERTS (hand-written → grep; derived →
   assert the annotation), and refuse a row whose subject is in neither.
+
+## THE NEXT THING TO DO: phase E's merge fails
+
+`phase/e` (`cdf499a`) gates GREEN alone — 3420 spec cases, 126
+programs, peak 865 MB. Merged onto `lane/comptime` at `4db0d90` it
+**does not build**: 57 × F3012 "`@std.avrac.core` does not export
+`Reg`", 208 × F2001, plus F2030s about `PropertyRow`/`MethodRow`.
+I reverted the merge rather than push it; nothing is lost.
+
+`Reg` IS declared `export type Reg` in `core/ir.av`. **LEAD, not a
+conclusion:** `core/ir.av` carries E's `@derive(Roles)` and C1's
+derives now also run over core, so the likely cause is that
+`core/ir.av` FAILS AS A WHOLE for a real reason and the 57 F3012s are
+the cascade — the symptom-accuses-an-innocent shape, which this tree
+has a law about. Find the file that actually failed before repairing
+anything. `avra-inr8` (two matches in one `Decls` alias their nodes)
+and the claim law are both live in that neighbourhood.
+
+TWO CONFLICTS WERE RESOLVED BY HAND IN THAT MERGE and will need
+redoing: `tools/vocab.sh` (take E's `how` column, and RE-ADD G's
+`c_kind` row for `runtime_header.av`, which only exists on the lane
+side) and `ROADMAP.md` (both survey texts, keep both).
 
 ## Standing orders (owner)
 
