@@ -34,6 +34,37 @@ macOS-only fixture (`avra_proc_which("sh", "/usr/bin:/bin")` answers
 refreshed ON the Sprite (`make bootstrap seed`, 316312 lines) and
 `seed-check` proves the new seed compiles HEAD.
 
+## Step 1 — the front-end slice (GREEN, awaiting landing on main)
+
+`feat/lane-front-end` @ `dc809b3` on `main` (`0b88933`), 32 files,
++1092/-69, gated GREEN on the Sprite (2931/2931 spec tests). It teaches
+MAIN's compiler to parse the lane's front end, which is the unblock:
+the member-mark SURFACE (`( vm:mark )*` + `( pm:mark )*` in
+`features/enums/mod.av`, `( fm:mark )*` in `features/structs/mod.av`, the
+DSL `mark` rule + `build_mark` in `features/annotations/mod.av`, and the
+MarkWindows/payload anchor alignment) plus the node-named capability
+(`05563b4`: node-named rules, the LIST LAW, `Builder.text/texts/flag`).
+
+EXCLUDED as instructed and verified by the diff: the role readers, the
+derives, the crossing, the feature builder deletions, the claim law
+F2086, `SEED_FLOOR`/sprite/parse/capture.
+
+AND ONE CORRECTION THE AGENT MADE TO ME, worth keeping: the six files I
+listed as "node-named spellings in the engine" contain no node build in
+CODE — only comments. My grep had overstated it; the slice needed no
+spelling revert at all. THE LESSON: a grep for a SPELLING finds it in
+prose too, and a slice's own source is the thing to read.
+
+AFTER IT LANDS ON MAIN, THERE IS NO LADDER: main's compiler then has
+`Bytes`, the prelude AND the front end, so re-merging main into the lane
+(`make bootstrap` from main's seed -> `make gate`) is the whole sequence.
+
+RESIDUAL, named rather than hidden (the agent's own note):
+`node_scaffold`'s three builder bodies are BOUND and REGISTERED but never
+EXECUTED until the merge names `Expr.StrLit`/`BoolLit`/`Interp` — their
+binding is tested, their bodies are not. That is honest coverage, not a
+defect, and it closes at the merge.
+
 ## The full main→lane merge — RESOLVED, PRESERVED, AND IT CANNOT BOOTSTRAP
 
 `merge/main-into-lane` @ `4f2b112` (pushed) holds the whole
@@ -53,6 +84,21 @@ main's, exactly. TWO merge laws it paid for:
   next free `I48` in EVERY place (RULES dict, both SPECIMENS,
   DOGFOODING.md), kept the lane's `I43`, and recorded it in ROADMAP.md.
   The keeper then read clean: debt 0, next free I50.
+  **AND IT FIRED AGAIN IN A WORSE REGISTRY — the DIAGNOSTIC codes, where
+  NOTHING REFUSES IT.** Both branches minted `F2084`/`F2085`/`F2086` for
+  different laws: the lane's `annotation.meta`/`annotation.unplaceable`/
+  `annotation.unread_mark` against main's `type.row_shape`/
+  `type.format_parse`/`type.format_shape`. The idiom keeper refuses a
+  repeated number; the diagnostics registry has no such keeper, which is
+  why the ungated merge carried all three silently — `avra explain F2085`
+  answers two laws and `docs/DIAGNOSTICS.md` keys two rows to one code.
+  Fixed by renumbering the LANE's three to the next free (the union tops
+  out at F2089, so F2090–F2092) with every citation swept, the F2086
+  WITNESS included. MEASURE it, never eyeball it:
+  extract the `kind | "F####"` rows and report a code carried by more
+  than one kind. (`main`'s own `F0001` pair, `clash.kind` vs `lex.error`,
+  is PRE-EXISTING and out of scope.) A REGISTRY WITHOUT A KEEPER IS WHERE
+  A MERGE HIDES ITS COLLISIONS.
 - **A ONE-SIDE DELETION IS A DECISION, NOT A CONFLICT.** `staged.av`
   and `process_seam.av` are gone because main removed them
   deliberately (`007508d`, `957a343`); the merge drops the files AND
