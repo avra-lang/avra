@@ -366,19 +366,19 @@ an annotation could not run
 
 No witness yet.
 
-## F2084 — annotation.meta
+## F2090 — annotation.meta
 
 the compiler crosses `@std/meta`'s own shapes
 
 No witness yet.
 
-## F2085 — annotation.unplaceable
+## F2091 — annotation.unplaceable
 
 a hole was filled with something no seat can hold
 
 No witness yet.
 
-## F2086 — annotation.unread_mark
+## F2092 — annotation.unread_mark
 
 every mark is read by something that claims it
 
@@ -389,7 +389,7 @@ enum E {
 ```
 
 ```
-error[F2086]: every mark is read by something that claims it
+error[F2092]: every mark is read by something that claims it
   ╭─[witness.av:2:5]
 2 │     @nobody A
   ·     ┬
