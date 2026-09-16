@@ -107,7 +107,7 @@ form in the old spelling" has no single old spelling to write.
 | B one meta vocabulary, one crossing | **DONE** 3/3 | retired |
 | H side tables, derived identity | **DONE** 2/2 | retired |
 | G runtime header + diagnostic witnesses | **DONE** 2/2 | `../avra-phase-g`, `phase/g` @ `efb1200`, merged, clean — retire it |
-| C children + fingerprints derived | 2/3, **LIVE on C2, REDUCED** | `../avra-phase-c`. C2 is now C2a (the `Field` collapse, behaviour-neutral — node_grammar KEEPS its `ty` parsers) + C2c (the F2086 witness). **C2b is HELD and filed P1**: the uncommitted kind-based WIP is silently wrong — a derive's crossing sees enum payload kinds as `Unspelled("")` mid-resolve, so `rebuilt` stops rebuilding children and `@derive(Grammar)` misclassifies. The crossing must see the declaration's EARNED sig; that is a slice of its own and the real prerequisite for avra-9cbe/9tfi. |
+| C children + fingerprints derived | 2/3, **C2a+C2c DONE, C2b BLOCKED** | `../avra-phase-c` @ `339bd2a`. C2a: `core.Payload` deleted, `PayloadRow` carries `@std.meta.Field`, `@derive(Grammar)` emits the field whole, behaviour-neutral (node_grammar KEEPS its `ty` parsers because the kinds are Unspelled mid-resolve). C2c: the F2086 witness + regenerated `docs/DIAGNOSTICS.md` (136 registered · 73 witnessed · 63 owed). Cold bootstrap proof: `make avra` clean on the Sprite, `avra diagnostics` runs. |
 | D grammar names the node, fmt | 2/4, **LIVE on the CURSOR** | `../avra-phase-d` @ `509ced2` (lane merged). One ordered cursor over `store.remarks`, drained at every line-start + a file-tail drain; `DocComment.at` + a `doc_ats` side table for author order. Six goldens rewritten deliberately; `--write` stays OUT (trailing same-line `//` is avra-8sb5.11.112, doc tables avra-8sb5.11.104). Receipt: zero own-line remark loss per file over the manifests. |
 | E type marks, IR roles, ownership | 2/3, **worker RETIRED** | MERGED at `4ecd176`. E3 (§6) is BLOCKED and measured: a generated decl's names resolve at the TARGET file, `semantics_of` takes a features type, core imports nothing above itself. E recommends dropping it for the cheap half — rename `Dispatch`'s 43 fields to their FEATURE names, killing a second vocabulary. |
 | I ownership roles on Ins | 2/3, **LIVE — I1+I2 done, awaiting the gate** | `../avra-phase-i`. `@owns`/`@view` BESIDE `@dst` (an unmanaged `Alloca`/int-`Bin` dst is neither, and `dst_of` must still find it); `@moves` on Call/CallPtr args. `owned_dst`/`viewed_dst`/`moved_args` derived; the memory pass's two hand lists die. E3's rename DEFERRED (measured: 40 fields, 10 features with several semantics impls — no single feature name exists), filed avra-8sb5.11.113. |
@@ -224,6 +224,32 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   machine and red on the other from the day it landed. Name ONE
   directory the platform agrees on.
 
+- **C2b is BLOCKED on avra-8sb5.11.115, measured — not on effort** (phase
+  C's write-up, which is the authority). A derive's crossing builds
+  `@std.meta.Type` through `crossed_variants` -> `payload_kinds` ->
+  `Decls.sig(d)`; a derive crosses DURING resolve, where the enum's sig
+  is not earned ("sig mid-resolve", `workspace.sig`), so `kind_at([], j)`
+  answers `Kind.Unspelled("")` for every payload. Records are unaffected
+  (`@derive(Fingerprint)` on `DeclId` folds `.Int`), so the asymmetry is
+  ENUM-only and annotation-ORDER-dependent. The tell is
+  `avra expand core/nodes.av`: `grammar_payloads_Expr`/`_Stmt` are all
+  `.Unspelled("")` while `_Pat` carries real kinds, and `@derive(Rebuild)`
+  on Expr emits `.Ident(p0) -> .Ident(p0)` — every child rebuild silently
+  dropped. SPEC TARGET: a derive's crossing must see the declaration's
+  EARNED sig. The full retirement is parked on `parked/c2-kind` @
+  `54872e1` (4 files) and applies in one pass the day 115 is fixed.
+- **A KEEPER HAS TWO SURFACES: WHAT IT REFUSES AND WHAT IT ACCEPTS**, and
+  a matcher whose subject is a SUB-UNIT must be exercised with the
+  defect placed in a NON-FIRST unit. Phase I's per-payload role guard
+  (`tools/vocab.sh`, a role mark on a payload that is not `@dst`) first
+  checked the LINE — and a variant's payloads share one line, so a
+  misplaced `@owns` on the SECOND payload read as satisfied by the first
+  payload's `@dst`. It was witnessed PASSING on the real keeper by
+  moving `@owns` from `ConstStr`'s destination to its `s: string`
+  payload. The fix checks each payload (a top-level comma split — Ins
+  payload types carry no nested comma, stated in the script) and fired on
+  the same crafted defect. The draft was not a wrong grep a reader could
+  have caught; it was a green check that had never been made to fail.
 - A seed refresh is owed by the first commit that **READS** a grown
   field, not the one that grew it. Tell: an index one past a length, at
   an annotation.
