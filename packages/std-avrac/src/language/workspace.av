@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, Mark, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, Mark, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped, Digest, new_digest, digest_text, digest_key}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
@@ -1708,6 +1708,77 @@ impl Workspace {
     /// The root package's source files — what `check <root>` analyzes.
     fn root_files() -> List<string> {
         self.all_files(self.packages[0].src)
+    }
+
+    /// The tree the toolchain's packages stand in: `<tree>/packages`
+    /// when the host was given a std root, else nothing.
+    fn toolchain_root() -> string {
+        let std = self.host.std_root ?? ""
+        if std == "" { "" } else { dir_of(std) }
+    }
+
+    /// Every directory a build reads: each admitted package's source
+    /// root, and each of the toolchain's packages. Deliberately wide —
+    /// `@std/*` is admitted only when a `use` first reaches for one, so
+    /// a key over `self.packages` alone would miss the toolchain and
+    /// reuse a stale artifact. Over-covering costs a rebuild; UNDER-
+    /// covering is a silently wrong binary.
+    fn closure_roots() -> List<string> {
+        let std = self.host.std_root ?? ""
+        let toolchain: List<string> = if std == "" { [] } else { [joined_path(std, d) for d in self.host.list(std) if self.host.is_dir(joined_path(std, d))] }
+        sorted_texts([p.src for p in self.packages].concat(toolchain))
+    }
+
+    /// Every source file under a directory, `.av` alone — the same
+    /// filter `all_files` applies, without its package boundary: the
+    /// backend's and runtime's own trees hold no packages.
+    fn engine_sources(dir: string) -> List<string> {
+        mut out: List<string> = []
+        for f in self.host.list(dir) {
+            let full = joined_path(dir, f)
+            if self.host.is_dir(full) { out = out.concat(self.engine_sources(full)) }
+            else if f.ends_with(".c") || f.ends_with(".h") { out.push(full) }
+        }
+        out
+    }
+
+    /// Everything a whole-program build reads, ordered: the closure's
+    /// `.av` files, the manifests, and the compiler's own non-package
+    /// sources — the backend, the runtime, the Makefile. No `use`
+    /// reaches for the last group, so nothing else would put them in
+    /// the key, and a code-generator change must invalidate every
+    /// module it could have emitted.
+    fn build_inputs() -> List<string> {
+        let tree = self.toolchain_root()
+        let engine: List<string> = if tree == "" { [] } else { [joined_path(tree, "Makefile")].concat(self.engine_sources(joined_path(tree, "backend"))).concat(self.engine_sources(joined_path(tree, "runtime"))) }
+        sorted_texts(flatten([self.all_files(r) for r in self.closure_roots()]).concat(self.manifest_paths()).concat(engine))
+    }
+
+    /// Each closure root's manifest, where it has one.
+    fn manifest_paths() -> List<string> {
+        let at = [joined_path(r, "avra.toml") for r in self.closure_roots()]
+        [p for p in at if self.host.exists(p)]
+    }
+
+    /// THE BUILD CACHE'S KEY — the identity of everything a whole-program
+    /// build reads, one derivation used for both the store and the
+    /// lookup. The law it exists under: AN EARLY-CUTOFF HASH MUST COVER
+    /// THE WHOLE VALUE. `parsed` cuts off on structural fingerprints
+    /// while its value carries the source text and every span, so a
+    /// reindent leaves later spans stale and certified fresh; here every
+    /// BYTE of every input is absorbed, so a whitespace-only edit moves
+    /// the key and a wrong reuse is impossible by construction rather
+    /// than by discipline.
+    fn build_key(entry: string?, mode: string, salt: string) -> string {
+        mut d = new_digest()
+        d = digest_text(d, salt)
+        d = digest_text(d, mode)
+        d = digest_text(d, normalized(entry ?? ""))
+        for f in self.build_inputs() {
+            d = digest_text(d, normalized(f))
+            d = digest_text(d, self.host.read(f))
+        }
+        digest_key(d)
     }
 
     /// A module's exported declarations, in file and declaration order.
