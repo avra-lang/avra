@@ -674,12 +674,12 @@ source_filename = "avra"
 @"av_const$91$91" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 7, i64 7, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] }, ptr @"av_const$91$91", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] }, ptr @"av_const$91$91", i32 0, i32 3), ptr null }, [7 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.241, i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$91$91$0", i64 16) to i64), i64 0, i64 0, i64 0, i64 0, i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$91$91$1", i64 16) to i64)], [7 x i8] c"\01\01\00\00\00\01\01" }, align 16
 @.str.242 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"git\00" }, align 16
 @.str.243 = private unnamed_addr constant { { i32, i32, i32, i32 }, [17 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 16 }, [17 x i8] c"--end-of-options\00" }, align 16
-@"av_const$35$95$0" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 2, i64 2, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$95$0", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$95$0", i32 0, i32 3), ptr null }, [2 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.242, i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.243, i64 16) to i64)], [2 x i8] c"\01\01" }, align 16
+@"av_const$35$96$0" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 2, i64 2, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$96$0", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$96$0", i32 0, i32 3), ptr null }, [2 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.242, i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.243, i64 16) to i64)], [2 x i8] c"\01\01" }, align 16
 @.str.244 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"find\00" }, align 16
-@"av_const$35$95$1" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 2, i64 2, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$95$1", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$95$1", i32 0, i32 3), ptr null }, [2 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.244, i64 16) to i64), i64 0], [2 x i8] c"\01\01" }, align 16
+@"av_const$35$96$1" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 2, i64 2, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$96$1", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$96$1", i32 0, i32 3), ptr null }, [2 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.244, i64 16) to i64), i64 0], [2 x i8] c"\01\01" }, align 16
 @.str.245 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"dd\00" }, align 16
-@"av_const$35$95$2" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 2, i64 2, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$95$2", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$95$2", i32 0, i32 3), ptr null }, [2 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.245, i64 16) to i64), i64 0], [2 x i8] c"\01\01" }, align 16
-@"av_const$35$95" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [3 x i64], [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 3, i64 3, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [3 x i64], [3 x i8] }, ptr @"av_const$35$95", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [3 x i64], [3 x i8] }, ptr @"av_const$35$95", i32 0, i32 3), ptr null }, [3 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$35$95$0", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$35$95$1", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$35$95$2", i64 16) to i64)], [3 x i8] c"\01\01\01" }, align 16
+@"av_const$35$96$2" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 2, i64 2, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$96$2", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [2 x i64], [2 x i8] }, ptr @"av_const$35$96$2", i32 0, i32 3), ptr null }, [2 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.245, i64 16) to i64), i64 0], [2 x i8] c"\01\01" }, align 16
+@"av_const$35$96" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [3 x i64], [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 3, i64 3, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [3 x i64], [3 x i8] }, ptr @"av_const$35$96", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [3 x i64], [3 x i8] }, ptr @"av_const$35$96", i32 0, i32 3), ptr null }, [3 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$35$96$0", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$35$96$1", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$35$96$2", i64 16) to i64)], [3 x i8] c"\01\01\01" }, align 16
 @"av_const$19$4$0" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 1, i64 1, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$19$4$0", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$19$4$0", i32 0, i32 3), ptr null }, [1 x i64] [i64 2], [1 x i8] zeroinitializer }, align 16
 @"av_const$19$4$1" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 1, i64 1, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$19$4$1", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$19$4$1", i32 0, i32 3), ptr null }, [1 x i64] zeroinitializer, [1 x i8] zeroinitializer }, align 16
 @"av_const$19$4$2" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 1, i64 1, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$19$4$2", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$19$4$2", i32 0, i32 3), ptr null }, [1 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$19$4$1", i64 16) to i64)], [1 x i8] c"\01" }, align 16
@@ -9413,447 +9413,448 @@ source_filename = "avra"
 @.str.8926 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.8927 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.8928 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"-w\00" }, align 16
-@.str.8929 = private unnamed_addr constant { { i32, i32, i32, i32 }, [21 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 20 }, [21 x i8] c"build/avra_runtime.o\00" }, align 16
-@.str.8930 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"-o\00" }, align 16
-@.str.8931 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c".ll\00" }, align 16
-@.str.8932 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c".av\00" }, align 16
-@.str.8933 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"-L\00" }, align 16
-@.str.8934 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8929 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"-rdynamic\00" }, align 16
+@.str.8930 = private unnamed_addr constant { { i32, i32, i32, i32 }, [21 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 20 }, [21 x i8] c"build/avra_runtime.o\00" }, align 16
+@.str.8931 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"-o\00" }, align 16
+@.str.8932 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c".ll\00" }, align 16
+@.str.8933 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c".av\00" }, align 16
+@.str.8934 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"-L\00" }, align 16
 @.str.8935 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.8936 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"-l\00" }, align 16
-@.str.8937 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8936 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8937 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"-l\00" }, align 16
 @.str.8938 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.8939 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"${\00" }, align 16
-@.str.8940 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8939 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8940 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"${\00" }, align 16
 @.str.8941 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.8942 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.8943 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.8944 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.8945 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"}\00" }, align 16
-@.str.8946 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"avra\00" }, align 16
-@.str.8947 = private unnamed_addr constant { { i32, i32, i32, i32 }, [44 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 43 }, [44 x i8] c"internal compiler error: nothing declares `\00" }, align 16
-@.str.8948 = private unnamed_addr constant { { i32, i32, i32, i32 }, [32 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 31 }, [32 x i8] c"` \E2\80\94 the program is not closed\00" }, align 16
-@.str.8949 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.8950 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c"cannot write `\00" }, align 16
-@.str.8951 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"`\00" }, align 16
-@.str.8952 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.8953 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c"avra_args_init\00" }, align 16
-@.str.8954 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"av_entry\00" }, align 16
+@.str.8945 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8946 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"}\00" }, align 16
+@.str.8947 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"avra\00" }, align 16
+@.str.8948 = private unnamed_addr constant { { i32, i32, i32, i32 }, [44 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 43 }, [44 x i8] c"internal compiler error: nothing declares `\00" }, align 16
+@.str.8949 = private unnamed_addr constant { { i32, i32, i32, i32 }, [32 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 31 }, [32 x i8] c"` \E2\80\94 the program is not closed\00" }, align 16
+@.str.8950 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8951 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c"cannot write `\00" }, align 16
+@.str.8952 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"`\00" }, align 16
+@.str.8953 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8954 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c"avra_args_init\00" }, align 16
 @.str.8955 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"av_entry\00" }, align 16
-@.str.8956 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"main\00" }, align 16
+@.str.8956 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"av_entry\00" }, align 16
 @.str.8957 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"main\00" }, align 16
-@.str.8958 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"entry\00" }, align 16
-@.str.8959 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c"avra_args_init\00" }, align 16
-@.str.8960 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"argc\00" }, align 16
-@.str.8961 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.8962 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"code\00" }, align 16
-@.str.8963 = private unnamed_addr constant { { i32, i32, i32, i32 }, [59 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 58 }, [59 x i8] c"internal compiler error: LLVM verification failed for main\00" }, align 16
-@.str.8964 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"entry\00" }, align 16
-@.str.8965 = private unnamed_addr constant { { i32, i32, i32, i32 }, [55 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 54 }, [55 x i8] c"internal compiler error: LLVM verification failed for \00" }, align 16
-@.str.8966 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8958 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"main\00" }, align 16
+@.str.8959 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"entry\00" }, align 16
+@.str.8960 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c"avra_args_init\00" }, align 16
+@.str.8961 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"argc\00" }, align 16
+@.str.8962 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8963 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"code\00" }, align 16
+@.str.8964 = private unnamed_addr constant { { i32, i32, i32, i32 }, [59 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 58 }, [59 x i8] c"internal compiler error: LLVM verification failed for main\00" }, align 16
+@.str.8965 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"entry\00" }, align 16
+@.str.8966 = private unnamed_addr constant { { i32, i32, i32, i32 }, [55 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 54 }, [55 x i8] c"internal compiler error: LLVM verification failed for \00" }, align 16
 @.str.8967 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.8968 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c".str\00" }, align 16
-@.str.8969 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"slot\00" }, align 16
-@.str.8970 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"ld\00" }, align 16
-@.str.8971 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"lbody\00" }, align 16
-@.str.8972 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"lhead\00" }, align 16
-@.str.8973 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"lexit\00" }, align 16
-@.str.8974 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"regval\00" }, align 16
-@.str.8975 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"arm\00" }, align 16
+@.str.8968 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8969 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c".str\00" }, align 16
+@.str.8970 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"slot\00" }, align 16
+@.str.8971 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"ld\00" }, align 16
+@.str.8972 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"lbody\00" }, align 16
+@.str.8973 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"lhead\00" }, align 16
+@.str.8974 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"lexit\00" }, align 16
+@.str.8975 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"regval\00" }, align 16
 @.str.8976 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"arm\00" }, align 16
-@.str.8977 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"endswitch\00" }, align 16
-@.str.8978 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"then\00" }, align 16
-@.str.8979 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"else\00" }, align 16
-@.str.8980 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"endif\00" }, align 16
-@.str.8981 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"postret\00" }, align 16
-@.str.8982 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c"avra_rc_retain\00" }, align 16
-@.str.8983 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.8984 = private unnamed_addr constant { { i32, i32, i32, i32 }, [16 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 15 }, [16 x i8] c"avra_rc_release\00" }, align 16
-@.str.8985 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.8986 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"av_\00" }, align 16
-@.str.8987 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8977 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"arm\00" }, align 16
+@.str.8978 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"endswitch\00" }, align 16
+@.str.8979 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"then\00" }, align 16
+@.str.8980 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"else\00" }, align 16
+@.str.8981 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"endif\00" }, align 16
+@.str.8982 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"postret\00" }, align 16
+@.str.8983 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c"avra_rc_retain\00" }, align 16
+@.str.8984 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8985 = private unnamed_addr constant { { i32, i32, i32, i32 }, [16 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 15 }, [16 x i8] c"avra_rc_release\00" }, align 16
+@.str.8986 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8987 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"av_\00" }, align 16
 @.str.8988 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.8989 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"x\00" }, align 16
-@.str.8990 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"pack\00" }, align 16
-@.str.8991 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"b\00" }, align 16
-@.str.8992 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"boxed\00" }, align 16
-@.str.8993 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"unslotted\00" }, align 16
-@.str.8994 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"wide\00" }, align 16
+@.str.8989 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.8990 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"x\00" }, align 16
+@.str.8991 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"pack\00" }, align 16
+@.str.8992 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"b\00" }, align 16
+@.str.8993 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"boxed\00" }, align 16
+@.str.8994 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"unslotted\00" }, align 16
 @.str.8995 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"wide\00" }, align 16
-@.str.8996 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"cell\00" }, align 16
-@.str.8997 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"low\00" }, align 16
-@.str.8998 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"signed\00" }, align 16
-@.str.8999 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"unsigned\00" }, align 16
-@.str.9000 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"narrow\00" }, align 16
-@.str.9001 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"slot\00" }, align 16
+@.str.8996 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"wide\00" }, align 16
+@.str.8997 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"cell\00" }, align 16
+@.str.8998 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"low\00" }, align 16
+@.str.8999 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"signed\00" }, align 16
+@.str.9000 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"unsigned\00" }, align 16
+@.str.9001 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"narrow\00" }, align 16
 @.str.9002 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"slot\00" }, align 16
 @.str.9003 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"slot\00" }, align 16
-@.str.9004 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"not\00" }, align 16
-@.str.9005 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"add\00" }, align 16
-@.str.9006 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"sub\00" }, align 16
-@.str.9007 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"mul\00" }, align 16
-@.str.9008 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c"avra_int_div\00" }, align 16
-@.str.9009 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c"avra_int_mod\00" }, align 16
-@.str.9010 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"cmp\00" }, align 16
+@.str.9004 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"slot\00" }, align 16
+@.str.9005 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"not\00" }, align 16
+@.str.9006 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"add\00" }, align 16
+@.str.9007 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"sub\00" }, align 16
+@.str.9008 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"mul\00" }, align 16
+@.str.9009 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c"avra_int_div\00" }, align 16
+@.str.9010 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c"avra_int_mod\00" }, align 16
 @.str.9011 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"cmp\00" }, align 16
 @.str.9012 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"cmp\00" }, align 16
 @.str.9013 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"cmp\00" }, align 16
 @.str.9014 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"cmp\00" }, align 16
 @.str.9015 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"cmp\00" }, align 16
-@.str.9016 = private unnamed_addr constant { { i32, i32, i32, i32 }, [33 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 32 }, [33 x i8] c"a lazy op reached the eager path\00" }, align 16
-@.str.9017 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"band\00" }, align 16
-@.str.9018 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"bor\00" }, align 16
-@.str.9019 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"bxor\00" }, align 16
-@.str.9020 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c"avra_int_shl\00" }, align 16
-@.str.9021 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c"avra_int_shr\00" }, align 16
-@.str.9022 = private unnamed_addr constant { { i32, i32, i32, i32 }, [18 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 17 }, [18 x i8] c"compiler defect: \00" }, align 16
-@.str.9023 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9016 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"cmp\00" }, align 16
+@.str.9017 = private unnamed_addr constant { { i32, i32, i32, i32 }, [33 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 32 }, [33 x i8] c"a lazy op reached the eager path\00" }, align 16
+@.str.9018 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"band\00" }, align 16
+@.str.9019 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"bor\00" }, align 16
+@.str.9020 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"bxor\00" }, align 16
+@.str.9021 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c"avra_int_shl\00" }, align 16
+@.str.9022 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c"avra_int_shr\00" }, align 16
+@.str.9023 = private unnamed_addr constant { { i32, i32, i32, i32 }, [18 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 17 }, [18 x i8] c"compiler defect: \00" }, align 16
 @.str.9024 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9025 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fadd\00" }, align 16
-@.str.9026 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fsub\00" }, align 16
-@.str.9027 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fmul\00" }, align 16
-@.str.9028 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fdiv\00" }, align 16
-@.str.9029 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fcmp\00" }, align 16
+@.str.9025 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9026 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fadd\00" }, align 16
+@.str.9027 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fsub\00" }, align 16
+@.str.9028 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fmul\00" }, align 16
+@.str.9029 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fdiv\00" }, align 16
 @.str.9030 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fcmp\00" }, align 16
 @.str.9031 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fcmp\00" }, align 16
 @.str.9032 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fcmp\00" }, align 16
 @.str.9033 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fcmp\00" }, align 16
 @.str.9034 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fcmp\00" }, align 16
-@.str.9035 = private unnamed_addr constant { { i32, i32, i32, i32 }, [42 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 41 }, [42 x i8] c"an integer-only op reached float operands\00" }, align 16
-@.str.9036 = private unnamed_addr constant { { i32, i32, i32, i32 }, [33 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 32 }, [33 x i8] c"a lazy op reached the eager path\00" }, align 16
-@.str.9037 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9038 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c" (module at \00" }, align 16
-@.str.9039 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c")\00" }, align 16
-@.str.9040 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9035 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"fcmp\00" }, align 16
+@.str.9036 = private unnamed_addr constant { { i32, i32, i32, i32 }, [42 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 41 }, [42 x i8] c"an integer-only op reached float operands\00" }, align 16
+@.str.9037 = private unnamed_addr constant { { i32, i32, i32, i32 }, [33 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 32 }, [33 x i8] c"a lazy op reached the eager path\00" }, align 16
+@.str.9038 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9039 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c" (module at \00" }, align 16
+@.str.9040 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c")\00" }, align 16
 @.str.9041 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9042 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"$k\00" }, align 16
-@.str.9043 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9042 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9043 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"$k\00" }, align 16
 @.str.9044 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9045 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"$v\00" }, align 16
-@.str.9046 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9047 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c".str\00" }, align 16
-@.str.9048 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9049 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"$\00" }, align 16
-@.str.9050 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9045 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9046 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"$v\00" }, align 16
+@.str.9047 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9048 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c".str\00" }, align 16
+@.str.9049 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9050 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"$\00" }, align 16
 @.str.9051 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.9052 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9053 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"program\00" }, align 16
-@.str.9054 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" proved\00" }, align 16
-@.str.9055 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9056 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"main\00" }, align 16
-@.str.9057 = private unnamed_addr constant { { i32, i32, i32, i32 }, [18 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 17 }, [18 x i8] c"avra_process_exit\00" }, align 16
+@.str.9053 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9054 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"program\00" }, align 16
+@.str.9055 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" proved\00" }, align 16
+@.str.9056 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9057 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"main\00" }, align 16
 @.str.9058 = private unnamed_addr constant { { i32, i32, i32, i32 }, [18 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 17 }, [18 x i8] c"avra_process_exit\00" }, align 16
-@.str.9059 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"avra_puts\00" }, align 16
-@.str.9060 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9061 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c" \00" }, align 16
-@.str.9062 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9059 = private unnamed_addr constant { { i32, i32, i32, i32 }, [18 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 17 }, [18 x i8] c"avra_process_exit\00" }, align 16
+@.str.9060 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"avra_puts\00" }, align 16
+@.str.9061 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9062 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c" \00" }, align 16
 @.str.9063 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9064 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"s\00" }, align 16
-@.str.9065 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9064 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9065 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"s\00" }, align 16
 @.str.9066 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9067 = private unnamed_addr constant { { i32, i32, i32, i32 }, [16 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 15 }, [16 x i8] c"avra_case_begin\00" }, align 16
-@.str.9068 = private unnamed_addr constant { { i32, i32, i32, i32 }, [19 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 18 }, [19 x i8] c"avra_capture_begin\00" }, align 16
-@.str.9069 = private unnamed_addr constant { { i32, i32, i32, i32 }, [17 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 16 }, [17 x i8] c"avra_capture_end\00" }, align 16
-@.str.9070 = private unnamed_addr constant { { i32, i32, i32, i32 }, [11 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 10 }, [11 x i8] c"avra_streq\00" }, align 16
-@.str.9071 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9072 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c": \00" }, align 16
-@.str.9073 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c" == expected\00" }, align 16
-@.str.9074 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9067 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9068 = private unnamed_addr constant { { i32, i32, i32, i32 }, [16 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 15 }, [16 x i8] c"avra_case_begin\00" }, align 16
+@.str.9069 = private unnamed_addr constant { { i32, i32, i32, i32 }, [19 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 18 }, [19 x i8] c"avra_capture_begin\00" }, align 16
+@.str.9070 = private unnamed_addr constant { { i32, i32, i32, i32 }, [17 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 16 }, [17 x i8] c"avra_capture_end\00" }, align 16
+@.str.9071 = private unnamed_addr constant { { i32, i32, i32, i32 }, [11 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 10 }, [11 x i8] c"avra_streq\00" }, align 16
+@.str.9072 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9073 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c": \00" }, align 16
+@.str.9074 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c" == expected\00" }, align 16
 @.str.9075 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9076 = private unnamed_addr constant { { i32, i32, i32, i32 }, [21 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 20 }, [21 x i8] c": native != expected\00" }, align 16
-@.str.9077 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9078 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"avra_puts\00" }, align 16
-@.str.9079 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c"eval == native\00" }, align 16
-@.str.9080 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"native\00" }, align 16
-@.str.9081 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9082 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c": eval FAILED\0A\00" }, align 16
-@.str.9083 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9076 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9077 = private unnamed_addr constant { { i32, i32, i32, i32 }, [21 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 20 }, [21 x i8] c": native != expected\00" }, align 16
+@.str.9078 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9079 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"avra_puts\00" }, align 16
+@.str.9080 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c"eval == native\00" }, align 16
+@.str.9081 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"native\00" }, align 16
+@.str.9082 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9083 = private unnamed_addr constant { { i32, i32, i32, i32 }, [15 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 14 }, [15 x i8] c": eval FAILED\0A\00" }, align 16
 @.str.9084 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.9085 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9086 = private unnamed_addr constant { { i32, i32, i32, i32 }, [20 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 19 }, [20 x i8] c": eval != expected\0A\00" }, align 16
-@.str.9087 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9086 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9087 = private unnamed_addr constant { { i32, i32, i32, i32 }, [20 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 19 }, [20 x i8] c": eval != expected\0A\00" }, align 16
 @.str.9088 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9089 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"\0A\00" }, align 16
-@.str.9090 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9091 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"\0A\00" }, align 16
-@.str.9092 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9093 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c".native-only\00" }, align 16
-@.str.9094 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9089 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9090 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"\0A\00" }, align 16
+@.str.9091 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9092 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"\0A\00" }, align 16
+@.str.9093 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9094 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c".native-only\00" }, align 16
 @.str.9095 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9096 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c".expected\00" }, align 16
-@.str.9097 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9098 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"avra: \00" }, align 16
-@.str.9099 = private unnamed_addr constant { { i32, i32, i32, i32 }, [78 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 77 }, [78 x i8] c" holds no programs \E2\80\94 a program test is an `.av` file beside its `.expected`\00" }, align 16
-@.str.9100 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9101 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"avra: \00" }, align 16
-@.str.9102 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" has no \00" }, align 16
-@.str.9103 = private unnamed_addr constant { { i32, i32, i32, i32 }, [75 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 74 }, [75 x i8] c".expected beside it \E2\80\94 a program test is proved by the text it must print\00" }, align 16
-@.str.9104 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9105 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"src\00" }, align 16
-@.str.9106 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"avra.toml\00" }, align 16
-@.str.9107 = private unnamed_addr constant { { i32, i32, i32, i32 }, [12 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 11 }, [12 x i8] c"cases.av.ll\00" }, align 16
-@.str.9108 = private unnamed_addr constant { { i32, i32, i32, i32 }, [14 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 13 }, [14 x i8] c"avra_int_text\00" }, align 16
-@.str.9109 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"/\00" }, align 16
-@.str.9110 = private unnamed_addr constant { { i32, i32, i32, i32 }, [14 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 13 }, [14 x i8] c" tests passed\00" }, align 16
-@.str.9111 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9112 = private unnamed_addr constant { { i32, i32, i32, i32 }, [16 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 15 }, [16 x i8] c"avra_str_concat\00" }, align 16
-@.str.9113 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"avra_puts\00" }, align 16
-@.str.9114 = private unnamed_addr constant { { i32, i32, i32, i32 }, [16 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 15 }, [16 x i8] c"avra_case_begin\00" }, align 16
-@.str.9115 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"    \E2\9C\97 \00" }, align 16
-@.str.9116 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9096 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9097 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c".expected\00" }, align 16
+@.str.9098 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9099 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"avra: \00" }, align 16
+@.str.9100 = private unnamed_addr constant { { i32, i32, i32, i32 }, [78 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 77 }, [78 x i8] c" holds no programs \E2\80\94 a program test is an `.av` file beside its `.expected`\00" }, align 16
+@.str.9101 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9102 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"avra: \00" }, align 16
+@.str.9103 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" has no \00" }, align 16
+@.str.9104 = private unnamed_addr constant { { i32, i32, i32, i32 }, [75 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 74 }, [75 x i8] c".expected beside it \E2\80\94 a program test is proved by the text it must print\00" }, align 16
+@.str.9105 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9106 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"src\00" }, align 16
+@.str.9107 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"avra.toml\00" }, align 16
+@.str.9108 = private unnamed_addr constant { { i32, i32, i32, i32 }, [12 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 11 }, [12 x i8] c"cases.av.ll\00" }, align 16
+@.str.9109 = private unnamed_addr constant { { i32, i32, i32, i32 }, [14 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 13 }, [14 x i8] c"avra_int_text\00" }, align 16
+@.str.9110 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"/\00" }, align 16
+@.str.9111 = private unnamed_addr constant { { i32, i32, i32, i32 }, [14 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 13 }, [14 x i8] c" tests passed\00" }, align 16
+@.str.9112 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9113 = private unnamed_addr constant { { i32, i32, i32, i32 }, [16 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 15 }, [16 x i8] c"avra_str_concat\00" }, align 16
+@.str.9114 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"avra_puts\00" }, align 16
+@.str.9115 = private unnamed_addr constant { { i32, i32, i32, i32 }, [16 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 15 }, [16 x i8] c"avra_case_begin\00" }, align 16
+@.str.9116 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"    \E2\9C\97 \00" }, align 16
 @.str.9117 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.9118 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9119 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c" / \00" }, align 16
+@.str.9119 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.9120 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c" / \00" }, align 16
-@.str.9121 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c" @ \00" }, align 16
-@.str.9122 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c":\00" }, align 16
-@.str.9123 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9121 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c" / \00" }, align 16
+@.str.9122 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c" @ \00" }, align 16
+@.str.9123 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c":\00" }, align 16
 @.str.9124 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.9125 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9126 = private unnamed_addr constant { { i32, i32, i32, i32 }, [19 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 18 }, [19 x i8] c"no spec cases here\00" }, align 16
-@.str.9127 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"avra: \00" }, align 16
-@.str.9128 = private unnamed_addr constant { { i32, i32, i32, i32 }, [85 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 84 }, [85 x i8] c" holds no spec cases \E2\80\94 a file named to `test` carries `spec`/`given`/`then` blocks\00" }, align 16
-@.str.9129 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9130 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"src\00" }, align 16
-@.str.9131 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"parse\00" }, align 16
-@.str.9132 = private unnamed_addr constant { { i32, i32, i32, i32 }, [19 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 18 }, [19 x i8] c"manifest.no_target\00" }, align 16
-@.str.9133 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"`\00" }, align 16
-@.str.9134 = private unnamed_addr constant { { i32, i32, i32, i32 }, [85 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 84 }, [85 x i8] c"/avra.toml` declares no `[bin]`, and `src/main.av` does not exist \E2\80\94 nothing to run\00" }, align 16
-@.str.9135 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9126 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9127 = private unnamed_addr constant { { i32, i32, i32, i32 }, [19 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 18 }, [19 x i8] c"no spec cases here\00" }, align 16
+@.str.9128 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"avra: \00" }, align 16
+@.str.9129 = private unnamed_addr constant { { i32, i32, i32, i32 }, [85 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 84 }, [85 x i8] c" holds no spec cases \E2\80\94 a file named to `test` carries `spec`/`given`/`then` blocks\00" }, align 16
+@.str.9130 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9131 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"src\00" }, align 16
+@.str.9132 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"parse\00" }, align 16
+@.str.9133 = private unnamed_addr constant { { i32, i32, i32, i32 }, [19 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 18 }, [19 x i8] c"manifest.no_target\00" }, align 16
+@.str.9134 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"`\00" }, align 16
+@.str.9135 = private unnamed_addr constant { { i32, i32, i32, i32 }, [85 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 84 }, [85 x i8] c"/avra.toml` declares no `[bin]`, and `src/main.av` does not exist \E2\80\94 nothing to run\00" }, align 16
 @.str.9136 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9137 = private unnamed_addr constant { { i32, i32, i32, i32 }, [42 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 41 }, [42 x i8] c"add `[bin]` with `path`, or `src/main.av`\00" }, align 16
-@.str.9138 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"run\00" }, align 16
-@.str.9139 = private unnamed_addr constant { { i32, i32, i32, i32 }, [34 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 33 }, [34 x i8] c"Run a program and print its value\00" }, align 16
-@.str.9140 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"lower+run\00" }, align 16
-@.str.9141 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"build\00" }, align 16
-@.str.9142 = private unnamed_addr constant { { i32, i32, i32, i32 }, [37 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 36 }, [37 x i8] c"Compile a program to a native binary\00" }, align 16
-@.str.9143 = private unnamed_addr constant { { i32, i32, i32, i32 }, [11 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 10 }, [11 x i8] c"lower+emit\00" }, align 16
-@.str.9144 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"-O1\00" }, align 16
-@.str.9145 = private unnamed_addr constant { { i32, i32, i32, i32 }, [21 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 20 }, [21 x i8] c"the program is empty\00" }, align 16
-@.str.9146 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9147 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c".ll\00" }, align 16
-@.str.9148 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9149 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"emit\00" }, align 16
-@.str.9150 = private unnamed_addr constant { { i32, i32, i32, i32 }, [39 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 38 }, [39 x i8] c"Print a program's verified LLVM module\00" }, align 16
-@.str.9151 = private unnamed_addr constant { { i32, i32, i32, i32 }, [11 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 10 }, [11 x i8] c"lower+emit\00" }, align 16
-@.str.9152 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9153 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"seats\00" }, align 16
-@.str.9154 = private unnamed_addr constant { { i32, i32, i32, i32 }, [49 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 48 }, [49 x i8] c"Count managed seats whose callee only reads them\00" }, align 16
-@.str.9155 = private unnamed_addr constant { { i32, i32, i32, i32 }, [12 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 11 }, [12 x i8] c"lower+count\00" }, align 16
-@.str.9156 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"retains: \00" }, align 16
-@.str.9157 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" emitted\00" }, align 16
-@.str.9158 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9159 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"  seat:  \00" }, align 16
-@.str.9160 = private unnamed_addr constant { { i32, i32, i32, i32 }, [54 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 53 }, [54 x i8] c" \E2\80\94 a call's managed argument, the ABI's ONLY target\00" }, align 16
-@.str.9161 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9162 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"  store: \00" }, align 16
-@.str.9163 = private unnamed_addr constant { { i32, i32, i32, i32 }, [41 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 40 }, [41 x i8] c" \E2\80\94 a managed value into a managed cell\00" }, align 16
-@.str.9164 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9165 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"  state: \00" }, align 16
-@.str.9166 = private unnamed_addr constant { { i32, i32, i32, i32 }, [48 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 47 }, [48 x i8] c" \E2\80\94 an owned load or a scope's yield, together\00" }, align 16
-@.str.9167 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9168 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"of the \00" }, align 16
-@.str.9169 = private unnamed_addr constant { { i32, i32, i32, i32 }, [16 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 15 }, [16 x i8] c" seat retains, \00" }, align 16
-@.str.9170 = private unnamed_addr constant { { i32, i32, i32, i32 }, [40 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 39 }, [40 x i8] c" are handed to a callee that only READS\00" }, align 16
-@.str.9171 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9172 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"\0A\00" }, align 16
-@.str.9173 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"seats: \00" }, align 16
-@.str.9174 = private unnamed_addr constant { { i32, i32, i32, i32 }, [18 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 17 }, [18 x i8] c" managed, across \00" }, align 16
-@.str.9175 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" bodies\00" }, align 16
-@.str.9176 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9177 = private unnamed_addr constant { { i32, i32, i32, i32 }, [12 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 11 }, [12 x i8] c"read-only: \00" }, align 16
-@.str.9178 = private unnamed_addr constant { { i32, i32, i32, i32 }, [61 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 60 }, [61 x i8] c" \E2\80\94 a FLOOR: a seat handed to another fn counts as escaping\00" }, align 16
-@.str.9179 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9180 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"\0A\00" }, align 16
-@.str.9181 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"  \00" }, align 16
-@.str.9182 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c": \00" }, align 16
-@.str.9183 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"/\00" }, align 16
-@.str.9184 = private unnamed_addr constant { { i32, i32, i32, i32 }, [11 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 10 }, [11 x i8] c" read-only\00" }, align 16
-@.str.9185 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9186 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"ir\00" }, align 16
-@.str.9187 = private unnamed_addr constant { { i32, i32, i32, i32 }, [42 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 41 }, [42 x i8] c"Print a program's IR, regions as brackets\00" }, align 16
-@.str.9188 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c"lower+render\00" }, align 16
-@.str.9189 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"\0A\00" }, align 16
-@.str.9190 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"scope \00" }, align 16
-@.str.9191 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c" {\00" }, align 16
-@.str.9192 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9193 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"}\00" }, align 16
-@.str.9194 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"if r\00" }, align 16
-@.str.9195 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c" {\00" }, align 16
-@.str.9196 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9197 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"switch r\00" }, align 16
-@.str.9198 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" over [\00" }, align 16
-@.str.9199 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"] {\00" }, align 16
-@.str.9200 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9201 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"arm\00" }, align 16
-@.str.9202 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"else\00" }, align 16
-@.str.9203 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"} \00" }, align 16
-@.str.9204 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c" {\00" }, align 16
-@.str.9205 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9206 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"} -> r\00" }, align 16
-@.str.9207 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9137 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9138 = private unnamed_addr constant { { i32, i32, i32, i32 }, [42 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 41 }, [42 x i8] c"add `[bin]` with `path`, or `src/main.av`\00" }, align 16
+@.str.9139 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"run\00" }, align 16
+@.str.9140 = private unnamed_addr constant { { i32, i32, i32, i32 }, [34 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 33 }, [34 x i8] c"Run a program and print its value\00" }, align 16
+@.str.9141 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"lower+run\00" }, align 16
+@.str.9142 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"build\00" }, align 16
+@.str.9143 = private unnamed_addr constant { { i32, i32, i32, i32 }, [37 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 36 }, [37 x i8] c"Compile a program to a native binary\00" }, align 16
+@.str.9144 = private unnamed_addr constant { { i32, i32, i32, i32 }, [11 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 10 }, [11 x i8] c"lower+emit\00" }, align 16
+@.str.9145 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"-O1\00" }, align 16
+@.str.9146 = private unnamed_addr constant { { i32, i32, i32, i32 }, [21 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 20 }, [21 x i8] c"the program is empty\00" }, align 16
+@.str.9147 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9148 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c".ll\00" }, align 16
+@.str.9149 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9150 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"emit\00" }, align 16
+@.str.9151 = private unnamed_addr constant { { i32, i32, i32, i32 }, [39 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 38 }, [39 x i8] c"Print a program's verified LLVM module\00" }, align 16
+@.str.9152 = private unnamed_addr constant { { i32, i32, i32, i32 }, [11 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 10 }, [11 x i8] c"lower+emit\00" }, align 16
+@.str.9153 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9154 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"seats\00" }, align 16
+@.str.9155 = private unnamed_addr constant { { i32, i32, i32, i32 }, [49 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 48 }, [49 x i8] c"Count managed seats whose callee only reads them\00" }, align 16
+@.str.9156 = private unnamed_addr constant { { i32, i32, i32, i32 }, [12 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 11 }, [12 x i8] c"lower+count\00" }, align 16
+@.str.9157 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"retains: \00" }, align 16
+@.str.9158 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" emitted\00" }, align 16
+@.str.9159 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9160 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"  seat:  \00" }, align 16
+@.str.9161 = private unnamed_addr constant { { i32, i32, i32, i32 }, [54 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 53 }, [54 x i8] c" \E2\80\94 a call's managed argument, the ABI's ONLY target\00" }, align 16
+@.str.9162 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9163 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"  store: \00" }, align 16
+@.str.9164 = private unnamed_addr constant { { i32, i32, i32, i32 }, [41 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 40 }, [41 x i8] c" \E2\80\94 a managed value into a managed cell\00" }, align 16
+@.str.9165 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9166 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"  state: \00" }, align 16
+@.str.9167 = private unnamed_addr constant { { i32, i32, i32, i32 }, [48 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 47 }, [48 x i8] c" \E2\80\94 an owned load or a scope's yield, together\00" }, align 16
+@.str.9168 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9169 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"of the \00" }, align 16
+@.str.9170 = private unnamed_addr constant { { i32, i32, i32, i32 }, [16 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 15 }, [16 x i8] c" seat retains, \00" }, align 16
+@.str.9171 = private unnamed_addr constant { { i32, i32, i32, i32 }, [40 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 39 }, [40 x i8] c" are handed to a callee that only READS\00" }, align 16
+@.str.9172 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9173 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"\0A\00" }, align 16
+@.str.9174 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"seats: \00" }, align 16
+@.str.9175 = private unnamed_addr constant { { i32, i32, i32, i32 }, [18 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 17 }, [18 x i8] c" managed, across \00" }, align 16
+@.str.9176 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" bodies\00" }, align 16
+@.str.9177 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9178 = private unnamed_addr constant { { i32, i32, i32, i32 }, [12 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 11 }, [12 x i8] c"read-only: \00" }, align 16
+@.str.9179 = private unnamed_addr constant { { i32, i32, i32, i32 }, [61 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 60 }, [61 x i8] c" \E2\80\94 a FLOOR: a seat handed to another fn counts as escaping\00" }, align 16
+@.str.9180 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9181 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"\0A\00" }, align 16
+@.str.9182 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"  \00" }, align 16
+@.str.9183 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c": \00" }, align 16
+@.str.9184 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"/\00" }, align 16
+@.str.9185 = private unnamed_addr constant { { i32, i32, i32, i32 }, [11 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 10 }, [11 x i8] c" read-only\00" }, align 16
+@.str.9186 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9187 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"ir\00" }, align 16
+@.str.9188 = private unnamed_addr constant { { i32, i32, i32, i32 }, [42 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 41 }, [42 x i8] c"Print a program's IR, regions as brackets\00" }, align 16
+@.str.9189 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c"lower+render\00" }, align 16
+@.str.9190 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"\0A\00" }, align 16
+@.str.9191 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"scope \00" }, align 16
+@.str.9192 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c" {\00" }, align 16
+@.str.9193 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9194 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"}\00" }, align 16
+@.str.9195 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"if r\00" }, align 16
+@.str.9196 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c" {\00" }, align 16
+@.str.9197 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9198 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"switch r\00" }, align 16
+@.str.9199 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" over [\00" }, align 16
+@.str.9200 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"] {\00" }, align 16
+@.str.9201 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9202 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"arm\00" }, align 16
+@.str.9203 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"else\00" }, align 16
+@.str.9204 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"} \00" }, align 16
+@.str.9205 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c" {\00" }, align 16
+@.str.9206 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9207 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"} -> r\00" }, align 16
 @.str.9208 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9209 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9210 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" = int \00" }, align 16
-@.str.9211 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9209 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9210 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9211 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" = int \00" }, align 16
 @.str.9212 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9213 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9214 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c" = float \00" }, align 16
-@.str.9215 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9213 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9214 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9215 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c" = float \00" }, align 16
 @.str.9216 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9217 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9218 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" = str \00" }, align 16
-@.str.9219 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9217 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9218 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9219 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" = str \00" }, align 16
 @.str.9220 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9221 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"true\00" }, align 16
-@.str.9222 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"false\00" }, align 16
-@.str.9223 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9224 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" = bool \00" }, align 16
-@.str.9225 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9221 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9222 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"true\00" }, align 16
+@.str.9223 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"false\00" }, align 16
+@.str.9224 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9225 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" = bool \00" }, align 16
 @.str.9226 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9227 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9228 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c" = r\00" }, align 16
-@.str.9229 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c" \00" }, align 16
-@.str.9230 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c" r\00" }, align 16
-@.str.9231 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9227 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9228 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9229 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c" = r\00" }, align 16
+@.str.9230 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c" \00" }, align 16
+@.str.9231 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c" r\00" }, align 16
 @.str.9232 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9233 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9234 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c" = \00" }, align 16
-@.str.9235 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9236 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9233 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9234 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9235 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c" = \00" }, align 16
+@.str.9236 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
 @.str.9237 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9238 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9239 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" = pack \00" }, align 16
-@.str.9240 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9238 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9239 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9240 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" = pack \00" }, align 16
 @.str.9241 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9242 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9243 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c" = r\00" }, align 16
-@.str.9244 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c".\00" }, align 16
-@.str.9245 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9242 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9243 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9244 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c" = r\00" }, align 16
+@.str.9245 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c".\00" }, align 16
 @.str.9246 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9247 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"call \00" }, align 16
-@.str.9248 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"(\00" }, align 16
-@.str.9249 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c")\00" }, align 16
-@.str.9250 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9251 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9252 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" = addr \00" }, align 16
-@.str.9253 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9247 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9248 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"call \00" }, align 16
+@.str.9249 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"(\00" }, align 16
+@.str.9250 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c")\00" }, align 16
+@.str.9251 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9252 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9253 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" = addr \00" }, align 16
 @.str.9254 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9255 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9256 = private unnamed_addr constant { { i32, i32, i32, i32 }, [11 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 10 }, [11 x i8] c" = static \00" }, align 16
-@.str.9257 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9255 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9256 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9257 = private unnamed_addr constant { { i32, i32, i32, i32 }, [11 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 10 }, [11 x i8] c" = static \00" }, align 16
 @.str.9258 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9259 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9260 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c" = callptr r\00" }, align 16
-@.str.9261 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"(\00" }, align 16
-@.str.9262 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c")\00" }, align 16
-@.str.9263 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9264 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9265 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" = slot\00" }, align 16
-@.str.9266 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9267 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9268 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c" = load r\00" }, align 16
-@.str.9269 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9259 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9260 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9261 = private unnamed_addr constant { { i32, i32, i32, i32 }, [13 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 12 }, [13 x i8] c" = callptr r\00" }, align 16
+@.str.9262 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"(\00" }, align 16
+@.str.9263 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c")\00" }, align 16
+@.str.9264 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9265 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9266 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c" = slot\00" }, align 16
+@.str.9267 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9268 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9269 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c" = load r\00" }, align 16
 @.str.9270 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9271 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"store r\00" }, align 16
-@.str.9272 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c" <- r\00" }, align 16
-@.str.9273 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9271 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9272 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"store r\00" }, align 16
+@.str.9273 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c" <- r\00" }, align 16
 @.str.9274 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9275 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"loop {\00" }, align 16
-@.str.9276 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"while r\00" }, align 16
-@.str.9277 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9275 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9276 = private unnamed_addr constant { { i32, i32, i32, i32 }, [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 6 }, [7 x i8] c"loop {\00" }, align 16
+@.str.9277 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"while r\00" }, align 16
 @.str.9278 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9279 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"}\00" }, align 16
-@.str.9280 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"release r\00" }, align 16
-@.str.9281 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9279 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9280 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"}\00" }, align 16
+@.str.9281 = private unnamed_addr constant { { i32, i32, i32, i32 }, [10 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 9 }, [10 x i8] c"release r\00" }, align 16
 @.str.9282 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9283 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"retain r\00" }, align 16
-@.str.9284 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9283 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9284 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"retain r\00" }, align 16
 @.str.9285 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9286 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"ret r\00" }, align 16
-@.str.9287 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9286 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9287 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"ret r\00" }, align 16
 @.str.9288 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9289 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"return r\00" }, align 16
-@.str.9290 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9289 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9290 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"return r\00" }, align 16
 @.str.9291 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9292 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"ret \00" }, align 16
-@.str.9293 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9292 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9293 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"ret \00" }, align 16
 @.str.9294 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9295 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9296 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9295 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9296 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
 @.str.9297 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9298 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c", \00" }, align 16
-@.str.9299 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9300 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" = call \00" }, align 16
-@.str.9301 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"(\00" }, align 16
-@.str.9302 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c")\00" }, align 16
-@.str.9303 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9298 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9299 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c", \00" }, align 16
+@.str.9300 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9301 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c" = call \00" }, align 16
+@.str.9302 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"(\00" }, align 16
+@.str.9303 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c")\00" }, align 16
 @.str.9304 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9305 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"  \00" }, align 16
-@.str.9306 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9305 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9306 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c"  \00" }, align 16
 @.str.9307 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.9308 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.9309 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9310 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"!\00" }, align 16
-@.str.9311 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9310 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9311 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"!\00" }, align 16
 @.str.9312 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.9313 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9314 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c", \00" }, align 16
-@.str.9315 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"yield r\00" }, align 16
-@.str.9316 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9314 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9315 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c", \00" }, align 16
+@.str.9316 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"yield r\00" }, align 16
 @.str.9317 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9318 = private unnamed_addr constant { { i32, i32, i32, i32 }, [12 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 11 }, [12 x i8] c"application\00" }, align 16
-@.str.9319 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"systems\00" }, align 16
-@.str.9320 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"bare\00" }, align 16
-@.str.9321 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"hardware\00" }, align 16
-@.str.9322 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"static \00" }, align 16
-@.str.9323 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c" {\00" }, align 16
-@.str.9324 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9318 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9319 = private unnamed_addr constant { { i32, i32, i32, i32 }, [12 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 11 }, [12 x i8] c"application\00" }, align 16
+@.str.9320 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"systems\00" }, align 16
+@.str.9321 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"bare\00" }, align 16
+@.str.9322 = private unnamed_addr constant { { i32, i32, i32, i32 }, [9 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 8 }, [9 x i8] c"hardware\00" }, align 16
+@.str.9323 = private unnamed_addr constant { { i32, i32, i32, i32 }, [8 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 7 }, [8 x i8] c"static \00" }, align 16
+@.str.9324 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c" {\00" }, align 16
 @.str.9325 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9326 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c": \00" }, align 16
-@.str.9327 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9326 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9327 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c": \00" }, align 16
 @.str.9328 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9329 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"}\00" }, align 16
-@.str.9330 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9331 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"[\00" }, align 16
-@.str.9332 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c", \00" }, align 16
-@.str.9333 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"]\00" }, align 16
-@.str.9334 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9335 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"{\00" }, align 16
-@.str.9336 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9337 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c": \00" }, align 16
-@.str.9338 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9329 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9330 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"}\00" }, align 16
+@.str.9331 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9332 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"[\00" }, align 16
+@.str.9333 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c", \00" }, align 16
+@.str.9334 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"]\00" }, align 16
+@.str.9335 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9336 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"{\00" }, align 16
+@.str.9337 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9338 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c": \00" }, align 16
 @.str.9339 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9340 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c", \00" }, align 16
-@.str.9341 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"}\00" }, align 16
-@.str.9342 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9340 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9341 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c", \00" }, align 16
+@.str.9342 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"}\00" }, align 16
 @.str.9343 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.9344 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.9345 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9346 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"true\00" }, align 16
-@.str.9347 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"false\00" }, align 16
-@.str.9348 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"@\00" }, align 16
-@.str.9349 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9346 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9347 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"true\00" }, align 16
+@.str.9348 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"false\00" }, align 16
+@.str.9349 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"@\00" }, align 16
 @.str.9350 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9351 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"null\00" }, align 16
-@.str.9352 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"fn \00" }, align 16
-@.str.9353 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"(\00" }, align 16
-@.str.9354 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c") -> \00" }, align 16
-@.str.9355 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9351 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9352 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"null\00" }, align 16
+@.str.9353 = private unnamed_addr constant { { i32, i32, i32, i32 }, [4 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 3 }, [4 x i8] c"fn \00" }, align 16
+@.str.9354 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"(\00" }, align 16
+@.str.9355 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c") -> \00" }, align 16
 @.str.9356 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
 @.str.9357 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9358 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
-@.str.9359 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c": \00" }, align 16
-@.str.9360 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9358 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9359 = private unnamed_addr constant { { i32, i32, i32, i32 }, [2 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 1 }, [2 x i8] c"r\00" }, align 16
+@.str.9360 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c": \00" }, align 16
 @.str.9361 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
-@.str.9362 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c", \00" }, align 16
-@.str.9363 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"check\00" }, align 16
-@.str.9364 = private unnamed_addr constant { { i32, i32, i32, i32 }, [61 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 60 }, [61 x i8] c"Report everything wrong with a source file or a package root\00" }, align 16
-@.str.9365 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"lower\00" }, align 16
-@.str.9366 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"every\00" }, align 16
-@.str.9367 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"avra\00" }, align 16
-@.str.9368 = private unnamed_addr constant { { i32, i32, i32, i32 }, [18 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 17 }, [18 x i8] c"The Avra compiler\00" }, align 16
-@.str.9369 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"0.0.1\00" }, align 16
+@.str.9362 = private unnamed_addr constant { { i32, i32, i32, i32 }, [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 0 }, [1 x i8] zeroinitializer }, align 16
+@.str.9363 = private unnamed_addr constant { { i32, i32, i32, i32 }, [3 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 2 }, [3 x i8] c", \00" }, align 16
+@.str.9364 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"check\00" }, align 16
+@.str.9365 = private unnamed_addr constant { { i32, i32, i32, i32 }, [61 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 60 }, [61 x i8] c"Report everything wrong with a source file or a package root\00" }, align 16
+@.str.9366 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"lower\00" }, align 16
+@.str.9367 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"every\00" }, align 16
+@.str.9368 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"avra\00" }, align 16
+@.str.9369 = private unnamed_addr constant { { i32, i32, i32, i32 }, [18 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 17 }, [18 x i8] c"The Avra compiler\00" }, align 16
+@.str.9370 = private unnamed_addr constant { { i32, i32, i32, i32 }, [6 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 5 }, [6 x i8] c"0.0.1\00" }, align 16
 
 declare void @avra_puts(ptr)
 
@@ -300270,10 +300271,10 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l236" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l237" to i64))
   call void @avra_array_push_owned(ptr %1, ptr %0)
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
-  %3 = call i64 @avra_array_len(ptr getelementptr inbounds (i8, ptr @"av_const$35$95", i64 16))
+  %3 = call i64 @avra_array_len(ptr getelementptr inbounds (i8, ptr @"av_const$35$96", i64 16))
   store i64 0, ptr %slot1, align 8
   br label %lhead
 
@@ -300291,7 +300292,7 @@ lexit:                                            ; preds = %lhead
 
 lbody:                                            ; preds = %lhead
   %ld2 = load i64, ptr %slot1, align 8
-  %4 = call ptr @avra_array_get_owned(ptr getelementptr inbounds (i8, ptr @"av_const$35$95", i64 16), i64 %ld2)
+  %4 = call ptr @avra_array_get_owned(ptr getelementptr inbounds (i8, ptr @"av_const$35$96", i64 16), i64 %ld2)
   call void @avra_rc_retain(ptr %1)
   call void @avra_rc_retain(ptr %4)
   %cast = inttoptr i64 %2 to ptr
@@ -300346,7 +300347,7 @@ postret:                                          ; No predecessors!
   br label %endif8
 }
 
-define i1 @"av_$40std$2Eprocess$2Eprocess$24l236"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eprocess$2Eprocess$24l237"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -300840,7 +300841,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l502" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l503" to i64))
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed = inttoptr i64 %3 to ptr
@@ -301243,7 +301244,7 @@ postret51:                                        ; No predecessors!
   br label %endif50
 }
 
-define i1 @"av_$40std$2Eprocess$2Eprocess$24l502"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eprocess$2Eprocess$24l503"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Eprocess$2Ebad_env_name"(ptr %1)
@@ -301673,7 +301674,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l785" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l786" to i64))
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %3, i64 1)
@@ -301798,7 +301799,7 @@ postret:                                          ; No predecessors!
   br label %endif14
 }
 
-define i1 @"av_$40std$2Eprocess$2Eprocess$24l785"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eprocess$2Eprocess$24l786"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i64 @"av_$40std$2Etext$2Enul_at"(ptr %1)
@@ -303156,11 +303157,12 @@ entry:
 
 define ptr @"av_commands$2Eclang_words"(ptr %0, ptr %1, ptr %2) {
 entry:
-  %3 = call ptr @avra_array_sized(i64 4)
+  %3 = call ptr @avra_array_sized(i64 5)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.8928, i64 16))
   call void @avra_array_push_owned(ptr %3, ptr %2)
-  call void @avra_array_push_owned(ptr %3, ptr %0)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.8929, i64 16))
+  call void @avra_array_push_owned(ptr %3, ptr %0)
+  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.8930, i64 16))
   %4 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %4 to ptr
   call void @avra_rc_retain(ptr %boxed)
@@ -303169,15 +303171,16 @@ entry:
   call void @avra_rc_retain(ptr %0)
   %7 = call ptr @"av_commands$2Ebinary_name"(ptr %0)
   %8 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.8930, i64 16))
+  call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.8931, i64 16))
   call void @avra_array_push_owned(ptr %8, ptr %7)
   %9 = call ptr @avra_array_concat(ptr %6, ptr %8)
   call void @avra_rc_release(ptr %8)
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8930, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8931, i64 16))
   call void @avra_rc_release(ptr %6)
   call void @avra_rc_release(ptr %5)
   call void @avra_rc_release(ptr %3)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8930, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8929, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8928, i64 16))
   call void @avra_rc_release(ptr %2)
@@ -303188,7 +303191,7 @@ entry:
 
 define ptr @"av_commands$2Ebinary_name"(ptr %0) {
 entry:
-  %1 = call i64 @avra_str_ends_with(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.8931, i64 16))
+  %1 = call i64 @avra_str_ends_with(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.8932, i64 16))
   %b = icmp ne i64 %1, 0
   br i1 %b, label %then, label %else
 
@@ -303204,7 +303207,7 @@ else:                                             ; preds = %entry
 
 endif:                                            ; preds = %else, %then
   %regval = phi ptr [ %3, %then ], [ %0, %else ]
-  %4 = call i64 @avra_str_ends_with(ptr %regval, ptr getelementptr inbounds (i8, ptr @.str.8932, i64 16))
+  %4 = call i64 @avra_str_ends_with(ptr %regval, ptr getelementptr inbounds (i8, ptr @.str.8933, i64 16))
   %b1 = icmp ne i64 %4, 0
   br i1 %b1, label %then2, label %else3
 
@@ -303220,9 +303223,9 @@ else3:                                            ; preds = %endif
 
 endif4:                                           ; preds = %else3, %then2
   %regval6 = phi ptr [ %6, %then2 ], [ %regval, %else3 ]
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8932, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8933, i64 16))
   call void @avra_rc_release(ptr %regval)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8931, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8932, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %regval6
 }
@@ -303333,19 +303336,19 @@ lbody11:                                          ; preds = %lhead7
   %20 = call i64 @avra_array_get(ptr %10, i64 %ld12)
   %boxed13 = inttoptr i64 %20 to ptr
   %21 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.8933, i64 16))
-  call void @avra_array_push_owned(ptr %21, ptr %boxed13)
   call void @avra_array_push_owned(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.8934, i64 16))
-  %22 = call ptr @avra_str_join(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.8935, i64 16))
+  call void @avra_array_push_owned(ptr %21, ptr %boxed13)
+  call void @avra_array_push_owned(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.8935, i64 16))
+  %22 = call ptr @avra_str_join(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.8936, i64 16))
   call void @avra_array_push_owned(ptr %8, ptr %22)
   %ld14 = load i64, ptr %slot6, align 8
   %add15 = add i64 %ld14, 1
   store i64 %add15, ptr %slot6, align 8
   call void @avra_rc_release(ptr %22)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8935, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8936, i64 16))
   call void @avra_rc_release(ptr %21)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8935, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8934, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8933, i64 16))
   br label %lhead7
 
 lhead18:                                          ; preds = %lbody22, %lexit8
@@ -303364,19 +303367,19 @@ lbody22:                                          ; preds = %lhead18
   %25 = call i64 @avra_array_get(ptr %18, i64 %ld23)
   %boxed24 = inttoptr i64 %25 to ptr
   %26 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %26, ptr getelementptr inbounds (i8, ptr @.str.8936, i64 16))
-  call void @avra_array_push_owned(ptr %26, ptr %boxed24)
   call void @avra_array_push_owned(ptr %26, ptr getelementptr inbounds (i8, ptr @.str.8937, i64 16))
-  %27 = call ptr @avra_str_join(ptr %26, ptr getelementptr inbounds (i8, ptr @.str.8938, i64 16))
+  call void @avra_array_push_owned(ptr %26, ptr %boxed24)
+  call void @avra_array_push_owned(ptr %26, ptr getelementptr inbounds (i8, ptr @.str.8938, i64 16))
+  %27 = call ptr @avra_str_join(ptr %26, ptr getelementptr inbounds (i8, ptr @.str.8939, i64 16))
   call void @avra_array_push_owned(ptr %16, ptr %27)
   %ld25 = load i64, ptr %slot17, align 8
   %add26 = add i64 %ld25, 1
   store i64 %add26, ptr %slot17, align 8
   call void @avra_rc_release(ptr %27)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8938, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8939, i64 16))
   call void @avra_rc_release(ptr %26)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8938, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8937, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8936, i64 16))
   br label %lhead18
 
 then:                                             ; preds = %lexit19
@@ -303477,12 +303480,12 @@ endif:                                            ; preds = %else, %then
 
 define ptr @"av_$40std$2Eavrac$2Elanguage$2Eexpanded"(ptr %0) {
 entry:
-  %1 = call i64 @avra_str_index_of(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.8939, i64 16))
+  %1 = call i64 @avra_str_index_of(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.8940, i64 16))
   %cmp = icmp slt i64 %1, 0
   br i1 %cmp, label %then, label %else
 
 then:                                             ; preds = %entry
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8939, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8940, i64 16))
   ret ptr %0
 
 else:                                             ; preds = %entry
@@ -303499,7 +303502,7 @@ postret:                                          ; No predecessors!
   br label %endif
 
 then2:                                            ; preds = %endif
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8939, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8940, i64 16))
   ret ptr %0
 
 else3:                                            ; preds = %endif
@@ -303515,27 +303518,27 @@ endif4:                                           ; preds = %else3, %postret5
   %6 = call ptr @avra_str_substring(ptr %0, i64 %add7, i64 %5)
   %7 = call ptr @avra_host_env(ptr %4)
   %8 = call ptr @avra_array_sized(i64 7)
-  call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.8940, i64 16))
-  call void @avra_array_push_owned(ptr %8, ptr %3)
   call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.8941, i64 16))
-  call void @avra_array_push_owned(ptr %8, ptr %7)
+  call void @avra_array_push_owned(ptr %8, ptr %3)
   call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.8942, i64 16))
-  call void @avra_array_push_owned(ptr %8, ptr %6)
+  call void @avra_array_push_owned(ptr %8, ptr %7)
   call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.8943, i64 16))
-  %9 = call ptr @avra_str_join(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.8944, i64 16))
+  call void @avra_array_push_owned(ptr %8, ptr %6)
+  call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.8944, i64 16))
+  %9 = call ptr @avra_str_join(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.8945, i64 16))
   call void @avra_rc_retain(ptr %9)
   %10 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eexpanded"(ptr %9)
   call void @avra_rc_release(ptr %9)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8944, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8945, i64 16))
   call void @avra_rc_release(ptr %8)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8944, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8943, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8942, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8941, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8940, i64 16))
   call void @avra_rc_release(ptr %6)
   call void @avra_rc_release(ptr %4)
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8939, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8940, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %10
 
@@ -303547,12 +303550,12 @@ define i64 @"av_$40std$2Eavrac$2Elanguage$2Eclosing_brace"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_str_len(ptr %0)
   %3 = call ptr @avra_str_substring(ptr %0, i64 %1, i64 %2)
-  %4 = call i64 @avra_str_index_of(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.8945, i64 16))
+  %4 = call i64 @avra_str_index_of(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.8946, i64 16))
   %cmp = icmp slt i64 %4, 0
   br i1 %cmp, label %then, label %else
 
 then:                                             ; preds = %entry
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8945, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8946, i64 16))
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %0)
   ret i64 -1
@@ -303563,7 +303566,7 @@ else:                                             ; preds = %entry
 endif:                                            ; preds = %else, %postret
   %regval = phi i64 [ 0, %postret ], [ 0, %else ]
   %add = add i64 %1, %4
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8945, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8946, i64 16))
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %0)
   ret i64 %add
@@ -303584,7 +303587,7 @@ entry:
   store ptr null, ptr %slot1, align 8
   %slot = alloca i64, align 8
   %2 = call ptr @avra_llvm_context_create()
-  %3 = call ptr @avra_llvm_module_create(ptr getelementptr inbounds (i8, ptr @.str.8946, i64 16), ptr %2)
+  %3 = call ptr @avra_llvm_module_create(ptr getelementptr inbounds (i8, ptr @.str.8947, i64 16), ptr %2)
   %4 = call ptr @avra_llvm_create_builder(ptr %2)
   call void @avra_rc_retain(ptr %0)
   %5 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eunheld_name"(ptr %0)
@@ -303594,18 +303597,18 @@ entry:
 then:                                             ; preds = %entry
   %6 = call ptr @avra_insist(ptr %5)
   %7 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.8947, i64 16))
-  call void @avra_array_push_owned(ptr %7, ptr %6)
   call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.8948, i64 16))
-  %8 = call ptr @avra_str_join(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.8949, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8949, i64 16))
+  call void @avra_array_push_owned(ptr %7, ptr %6)
+  call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.8949, i64 16))
+  %8 = call ptr @avra_str_join(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.8950, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8950, i64 16))
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8948, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8949, i64 16))
   call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8947, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8948, i64 16))
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8946, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8947, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %8
@@ -303627,11 +303630,11 @@ endif:                                            ; preds = %else, %postret
 
 postret:                                          ; No predecessors!
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8949, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8950, i64 16))
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8948, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8949, i64 16))
   call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8947, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8948, i64 16))
   br label %endif
 
 lhead:                                            ; preds = %lbody, %endif
@@ -303746,7 +303749,7 @@ then31:                                           ; preds = %lbody24
   call void @avra_rc_release(ptr %12)
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8946, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8947, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %33
@@ -303788,7 +303791,7 @@ then39:                                           ; preds = %lexit21
   call void @avra_rc_release(ptr %12)
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8946, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8947, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %35
@@ -303809,17 +303812,17 @@ postret42:                                        ; No predecessors!
 
 then45:                                           ; preds = %endif41
   %37 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %37, ptr getelementptr inbounds (i8, ptr @.str.8950, i64 16))
-  call void @avra_array_push_owned(ptr %37, ptr %1)
   call void @avra_array_push_owned(ptr %37, ptr getelementptr inbounds (i8, ptr @.str.8951, i64 16))
-  %38 = call ptr @avra_str_join(ptr %37, ptr getelementptr inbounds (i8, ptr @.str.8952, i64 16))
+  call void @avra_array_push_owned(ptr %37, ptr %1)
+  call void @avra_array_push_owned(ptr %37, ptr getelementptr inbounds (i8, ptr @.str.8952, i64 16))
+  %38 = call ptr @avra_str_join(ptr %37, ptr getelementptr inbounds (i8, ptr @.str.8953, i64 16))
   call void @avra_cell_release(ptr %slot19)
   call void @avra_cell_release(ptr %slot8)
   call void @avra_cell_release(ptr %slot1)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8952, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8953, i64 16))
   call void @avra_rc_release(ptr %37)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8952, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8951, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8950, i64 16))
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %24)
   call void @avra_rc_release(ptr %20)
@@ -303828,7 +303831,7 @@ then45:                                           ; preds = %endif41
   call void @avra_rc_release(ptr %12)
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8946, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8947, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %38
@@ -303851,17 +303854,17 @@ endif47:                                          ; preds = %else46, %postret48
   call void @avra_rc_release(ptr %12)
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8946, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8947, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr null
 
 postret48:                                        ; No predecessors!
   call void @avra_rc_release(ptr %38)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8952, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8953, i64 16))
   call void @avra_rc_release(ptr %37)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8952, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8951, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8950, i64 16))
   br label %endif47
 }
 
@@ -303875,15 +303878,15 @@ entry:
   call void @avra_array_push(ptr %8, i64 %slot)
   %slot1 = ptrtoint ptr %7 to i64
   call void @avra_array_push(ptr %8, i64 %slot1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.8953, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.8954, i64 16))
   call void @avra_rc_retain(ptr %8)
-  %9 = call i64 @"av_$40std$2Eavrac$2Elanguage$2Edeclare"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8953, i64 16), ptr %5, ptr %8, i1 false)
+  %9 = call i64 @"av_$40std$2Eavrac$2Elanguage$2Edeclare"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8954, i64 16), ptr %5, ptr %8, i1 false)
   %10 = call ptr @avra_llvm_int32_type(ptr %0)
   %11 = call ptr @avra_array_sized(i64 0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.8954, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.8955, i64 16))
   call void @avra_rc_retain(ptr %11)
-  %12 = call i64 @"av_$40std$2Eavrac$2Elanguage$2Edeclare"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8954, i64 16), ptr %10, ptr %11, i1 false)
-  %13 = call ptr @avra_llvm_get_named_function(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8955, i64 16))
+  %12 = call i64 @"av_$40std$2Eavrac$2Elanguage$2Edeclare"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8955, i64 16), ptr %10, ptr %11, i1 false)
+  %13 = call ptr @avra_llvm_get_named_function(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8956, i64 16))
   %14 = call ptr @avra_array_get_owned(ptr %3, i64 2)
   %15 = call ptr @avra_array_get_owned(ptr %3, i64 4)
   %16 = call i64 @avra_array_get(ptr %3, i64 1)
@@ -303900,11 +303903,11 @@ then:                                             ; preds = %entry
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %15)
   call void @avra_rc_release(ptr %14)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8955, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8956, i64 16))
   call void @avra_rc_release(ptr %11)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8954, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8955, i64 16))
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8953, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8954, i64 16))
   call void @avra_rc_release(ptr %4)
   call void @avra_rc_release(ptr %3)
   ret ptr %17
@@ -303919,11 +303922,11 @@ endif:                                            ; preds = %else, %postret
   call void @avra_rc_release(ptr %17)
   call void @avra_rc_release(ptr %15)
   call void @avra_rc_release(ptr %14)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8955, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8956, i64 16))
   call void @avra_rc_release(ptr %11)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8954, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8955, i64 16))
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8953, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8954, i64 16))
   call void @avra_rc_release(ptr %4)
   call void @avra_rc_release(ptr %3)
   ret ptr %18
@@ -303942,26 +303945,26 @@ entry:
   call void @avra_array_push(ptr %7, i64 %slot)
   %slot1 = ptrtoint ptr %6 to i64
   call void @avra_array_push(ptr %7, i64 %slot1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.8956, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.8957, i64 16))
   call void @avra_rc_retain(ptr %7)
-  %8 = call i64 @"av_$40std$2Eavrac$2Elanguage$2Edeclare"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8956, i64 16), ptr %4, ptr %7, i1 false)
-  %9 = call ptr @avra_llvm_get_named_function(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8957, i64 16))
-  %10 = call ptr @avra_llvm_append_basic_block(ptr %0, ptr %9, ptr getelementptr inbounds (i8, ptr @.str.8958, i64 16))
+  %8 = call i64 @"av_$40std$2Eavrac$2Elanguage$2Edeclare"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8957, i64 16), ptr %4, ptr %7, i1 false)
+  %9 = call ptr @avra_llvm_get_named_function(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8958, i64 16))
+  %10 = call ptr @avra_llvm_append_basic_block(ptr %0, ptr %9, ptr getelementptr inbounds (i8, ptr @.str.8959, i64 16))
   call void @avra_llvm_position_at_end(ptr %2, ptr %10)
-  %11 = call ptr @avra_llvm_get_named_function(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8959, i64 16))
+  %11 = call ptr @avra_llvm_get_named_function(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8960, i64 16))
   %12 = call ptr @avra_llvm_value_array_new(i32 2)
   %13 = call ptr @avra_llvm_get_param(ptr %9, i32 0)
   %14 = call ptr @avra_llvm_int64_type(ptr %0)
-  %15 = call ptr @avra_llvm_build_zext(ptr %2, ptr %13, ptr %14, ptr getelementptr inbounds (i8, ptr @.str.8960, i64 16))
+  %15 = call ptr @avra_llvm_build_zext(ptr %2, ptr %13, ptr %14, ptr getelementptr inbounds (i8, ptr @.str.8961, i64 16))
   call void @avra_llvm_value_array_set(ptr %12, i32 0, ptr %15)
   %16 = call ptr @avra_llvm_get_param(ptr %9, i32 1)
   call void @avra_llvm_value_array_set(ptr %12, i32 1, ptr %16)
   %17 = call ptr @avra_llvm_fn_type_of(ptr %11)
-  %18 = call ptr @avra_llvm_build_call(ptr %2, ptr %17, ptr %11, ptr %12, i32 2, ptr getelementptr inbounds (i8, ptr @.str.8961, i64 16))
+  %18 = call ptr @avra_llvm_build_call(ptr %2, ptr %17, ptr %11, ptr %12, i32 2, ptr getelementptr inbounds (i8, ptr @.str.8962, i64 16))
   call void @avra_llvm_value_array_free(ptr %12)
   %19 = call ptr @avra_llvm_value_array_new(i32 0)
   %20 = call ptr @avra_llvm_fn_type_of(ptr %3)
-  %21 = call ptr @avra_llvm_build_call(ptr %2, ptr %20, ptr %3, ptr %19, i32 0, ptr getelementptr inbounds (i8, ptr @.str.8962, i64 16))
+  %21 = call ptr @avra_llvm_build_call(ptr %2, ptr %20, ptr %3, ptr %19, i32 0, ptr getelementptr inbounds (i8, ptr @.str.8963, i64 16))
   call void @avra_llvm_value_array_free(ptr %19)
   %22 = call ptr @avra_llvm_build_ret(ptr %2, ptr %21)
   %23 = call i64 @avra_llvm_verify_function(ptr %9)
@@ -303969,33 +303972,33 @@ entry:
   br i1 %cmp, label %then, label %else
 
 then:                                             ; preds = %entry
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8963, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8962, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8961, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8960, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8959, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8958, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8957, i64 16))
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8956, i64 16))
-  ret ptr getelementptr inbounds (i8, ptr @.str.8963, i64 16)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8957, i64 16))
+  ret ptr getelementptr inbounds (i8, ptr @.str.8964, i64 16)
 
 else:                                             ; preds = %entry
   br label %endif
 
 endif:                                            ; preds = %else, %postret
   %regval = phi i64 [ 0, %postret ], [ 0, %else ]
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8963, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8962, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8961, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8960, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8959, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8958, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8957, i64 16))
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8956, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8957, i64 16))
   ret ptr null
 
 postret:                                          ; No predecessors!
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8963, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8964, i64 16))
   br label %endif
 }
 
@@ -304101,7 +304104,7 @@ lexit:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %14)
   call void @avra_cell_release(ptr %slot11)
   store ptr %14, ptr %slot11, align 8
-  %15 = call ptr @avra_llvm_append_basic_block(ptr %0, ptr %7, ptr getelementptr inbounds (i8, ptr @.str.8964, i64 16))
+  %15 = call ptr @avra_llvm_append_basic_block(ptr %0, ptr %7, ptr getelementptr inbounds (i8, ptr @.str.8965, i64 16))
   call void @avra_llvm_position_at_end(ptr %2, ptr %15)
   %16 = call ptr @avra_array_get_owned(ptr %6, i64 4)
   %17 = call i64 @avra_array_len(ptr %16)
@@ -304151,19 +304154,19 @@ then:                                             ; preds = %lexit15
   %23 = call i64 @avra_array_get(ptr %6, i64 0)
   %boxed25 = inttoptr i64 %23 to ptr
   %24 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %24, ptr getelementptr inbounds (i8, ptr @.str.8965, i64 16))
-  call void @avra_array_push_owned(ptr %24, ptr %boxed25)
   call void @avra_array_push_owned(ptr %24, ptr getelementptr inbounds (i8, ptr @.str.8966, i64 16))
-  %25 = call ptr @avra_str_join(ptr %24, ptr getelementptr inbounds (i8, ptr @.str.8967, i64 16))
+  call void @avra_array_push_owned(ptr %24, ptr %boxed25)
+  call void @avra_array_push_owned(ptr %24, ptr getelementptr inbounds (i8, ptr @.str.8967, i64 16))
+  %25 = call ptr @avra_str_join(ptr %24, ptr getelementptr inbounds (i8, ptr @.str.8968, i64 16))
   call void @avra_cell_release(ptr %slot13)
   call void @avra_cell_release(ptr %slot11)
   call void @avra_cell_release(ptr %slot)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8967, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8968, i64 16))
   call void @avra_rc_release(ptr %24)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8967, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8966, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8965, i64 16))
   call void @avra_rc_release(ptr %16)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8964, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8965, i64 16))
   call void @avra_rc_release(ptr %14)
   call void @avra_rc_release(ptr %13)
   call void @avra_rc_release(ptr %12)
@@ -304183,7 +304186,7 @@ endif:                                            ; preds = %else, %postret
   call void @avra_cell_release(ptr %slot11)
   call void @avra_cell_release(ptr %slot)
   call void @avra_rc_release(ptr %16)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8964, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8965, i64 16))
   call void @avra_rc_release(ptr %14)
   call void @avra_rc_release(ptr %13)
   call void @avra_rc_release(ptr %12)
@@ -304196,10 +304199,10 @@ endif:                                            ; preds = %else, %postret
 
 postret:                                          ; No predecessors!
   call void @avra_rc_release(ptr %25)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8967, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8968, i64 16))
   call void @avra_rc_release(ptr %24)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8967, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8966, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8965, i64 16))
   br label %endif
 }
 
@@ -304271,10 +304274,10 @@ arm3:                                             ; preds = %entry
   %15 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed32 = inttoptr i64 %15 to ptr
   %16 = call i64 @avra_str_len(ptr %boxed31)
-  %17 = call ptr @avra_llvm_build_text(ptr %boxed32, ptr %boxed31, i64 %16, ptr getelementptr inbounds (i8, ptr @.str.8968, i64 16))
+  %17 = call ptr @avra_llvm_build_text(ptr %boxed32, ptr %boxed31, i64 %16, ptr getelementptr inbounds (i8, ptr @.str.8969, i64 16))
   call void @avra_rc_retain(ptr %0)
   %18 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Edefine"(ptr %0, ptr %17)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8968, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8969, i64 16))
   br label %endswitch
 
 arm4:                                             ; preds = %entry
@@ -304467,10 +304470,10 @@ arm23:                                            ; preds = %entry
   %boxed51 = inttoptr i64 %91 to ptr
   call void @avra_rc_retain(ptr %0)
   %92 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ereg_type"(ptr %0, i64 %90)
-  %93 = call ptr @avra_llvm_build_alloca(ptr %boxed51, ptr %92, ptr getelementptr inbounds (i8, ptr @.str.8969, i64 16))
+  %93 = call ptr @avra_llvm_build_alloca(ptr %boxed51, ptr %92, ptr getelementptr inbounds (i8, ptr @.str.8970, i64 16))
   call void @avra_rc_retain(ptr %0)
   %94 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Edefine"(ptr %0, ptr %93)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8969, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8970, i64 16))
   br label %endswitch
 
 arm24:                                            ; preds = %entry
@@ -304484,10 +304487,10 @@ arm24:                                            ; preds = %entry
   %boxed53 = inttoptr i64 %99 to ptr
   %100 = call i64 @avra_array_get(ptr %boxed53, i64 %96)
   %boxed54 = inttoptr i64 %100 to ptr
-  %101 = call ptr @avra_llvm_build_load(ptr %boxed52, ptr %98, ptr %boxed54, ptr getelementptr inbounds (i8, ptr @.str.8970, i64 16))
+  %101 = call ptr @avra_llvm_build_load(ptr %boxed52, ptr %98, ptr %boxed54, ptr getelementptr inbounds (i8, ptr @.str.8971, i64 16))
   call void @avra_rc_retain(ptr %0)
   %102 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Edefine"(ptr %0, ptr %101)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8970, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8971, i64 16))
   br label %endswitch
 
 arm25:                                            ; preds = %entry
@@ -304620,7 +304623,7 @@ endif:                                            ; preds = %else, %then
   %boxed = inttoptr i64 %6 to ptr
   %7 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed1 = inttoptr i64 %7 to ptr
-  %8 = call ptr @avra_llvm_append_basic_block(ptr %boxed, ptr %boxed1, ptr getelementptr inbounds (i8, ptr @.str.8971, i64 16))
+  %8 = call ptr @avra_llvm_append_basic_block(ptr %boxed, ptr %boxed1, ptr getelementptr inbounds (i8, ptr @.str.8972, i64 16))
   %9 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed2 = inttoptr i64 %9 to ptr
   %10 = call i64 @avra_array_get(ptr %0, i64 6)
@@ -304634,7 +304637,7 @@ endif:                                            ; preds = %else, %then
   %boxed6 = inttoptr i64 %14 to ptr
   call void @avra_llvm_position_at_end(ptr %boxed6, ptr %8)
   call void @avra_cell_release(ptr %slot)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8971, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8972, i64 16))
   call void @avra_rc_release(ptr %5)
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %2)
@@ -304648,12 +304651,12 @@ entry:
   %boxed = inttoptr i64 %1 to ptr
   %2 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed1 = inttoptr i64 %2 to ptr
-  %3 = call ptr @avra_llvm_append_basic_block(ptr %boxed, ptr %boxed1, ptr getelementptr inbounds (i8, ptr @.str.8972, i64 16))
+  %3 = call ptr @avra_llvm_append_basic_block(ptr %boxed, ptr %boxed1, ptr getelementptr inbounds (i8, ptr @.str.8973, i64 16))
   %4 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed2 = inttoptr i64 %4 to ptr
   %5 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed3 = inttoptr i64 %5 to ptr
-  %6 = call ptr @avra_llvm_append_basic_block(ptr %boxed2, ptr %boxed3, ptr getelementptr inbounds (i8, ptr @.str.8973, i64 16))
+  %6 = call ptr @avra_llvm_append_basic_block(ptr %boxed2, ptr %boxed3, ptr getelementptr inbounds (i8, ptr @.str.8974, i64 16))
   %7 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed4 = inttoptr i64 %7 to ptr
   %8 = call ptr @avra_llvm_build_br(ptr %boxed4, ptr %3)
@@ -304668,8 +304671,8 @@ entry:
   call void @avra_array_push(ptr %11, i64 %slot6)
   call void @avra_array_push_owned(ptr %10, ptr %11)
   call void @avra_rc_release(ptr %11)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8974, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8973, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8972, i64 16))
   call void @avra_rc_release(ptr %0)
   ret i64 0
 }
@@ -304894,7 +304897,7 @@ entry:
   %boxed7 = inttoptr i64 %18 to ptr
   call void @avra_rc_retain(ptr %0)
   %19 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ereg_type"(ptr %0, i64 %1)
-  %20 = call ptr @avra_llvm_build_phi(ptr %boxed7, ptr %19, ptr getelementptr inbounds (i8, ptr @.str.8974, i64 16))
+  %20 = call ptr @avra_llvm_build_phi(ptr %boxed7, ptr %19, ptr getelementptr inbounds (i8, ptr @.str.8975, i64 16))
   %21 = call i64 @avra_array_len(ptr %9)
   store i64 0, ptr %slot8, align 8
   br label %lhead
@@ -304907,7 +304910,7 @@ lhead:                                            ; preds = %lbody, %entry
 lexit:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %0)
   %22 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Edefine"(ptr %0, ptr %20)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8974, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8975, i64 16))
   call void @avra_rc_release(ptr %12)
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %9)
@@ -305019,7 +305022,7 @@ lexit:                                            ; preds = %lhead
   %boxed5 = inttoptr i64 %5 to ptr
   %6 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed6 = inttoptr i64 %6 to ptr
-  %7 = call ptr @avra_llvm_append_basic_block(ptr %boxed5, ptr %boxed6, ptr getelementptr inbounds (i8, ptr @.str.8976, i64 16))
+  %7 = call ptr @avra_llvm_append_basic_block(ptr %boxed5, ptr %boxed6, ptr getelementptr inbounds (i8, ptr @.str.8977, i64 16))
   %8 = call ptr @avra_array_sized(i64 1)
   %slot7 = ptrtoint ptr %7 to i64
   call void @avra_array_push(ptr %8, i64 %slot7)
@@ -305028,7 +305031,7 @@ lexit:                                            ; preds = %lhead
   %boxed8 = inttoptr i64 %10 to ptr
   %11 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed9 = inttoptr i64 %11 to ptr
-  %12 = call ptr @avra_llvm_append_basic_block(ptr %boxed8, ptr %boxed9, ptr getelementptr inbounds (i8, ptr @.str.8977, i64 16))
+  %12 = call ptr @avra_llvm_append_basic_block(ptr %boxed8, ptr %boxed9, ptr getelementptr inbounds (i8, ptr @.str.8978, i64 16))
   %13 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed10 = inttoptr i64 %13 to ptr
   %14 = call i64 @avra_array_get(ptr %0, i64 6)
@@ -305055,13 +305058,13 @@ lbody:                                            ; preds = %lhead
   %boxed = inttoptr i64 %24 to ptr
   %25 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed2 = inttoptr i64 %25 to ptr
-  %26 = call ptr @avra_llvm_append_basic_block(ptr %boxed, ptr %boxed2, ptr getelementptr inbounds (i8, ptr @.str.8975, i64 16))
+  %26 = call ptr @avra_llvm_append_basic_block(ptr %boxed, ptr %boxed2, ptr getelementptr inbounds (i8, ptr @.str.8976, i64 16))
   %slot3 = ptrtoint ptr %26 to i64
   call void @avra_array_push(ptr %3, i64 %slot3)
   %ld4 = load i64, ptr %slot, align 8
   %add = add i64 %ld4, 1
   store i64 %add, ptr %slot, align 8
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8975, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8976, i64 16))
   br label %lhead
 
 lhead17:                                          ; preds = %lbody21, %lexit
@@ -305078,10 +305081,10 @@ lexit18:                                          ; preds = %lhead17
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %9)
   %29 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Eopen_region"(ptr %0, ptr %9, ptr %12)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8977, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8978, i64 16))
   call void @avra_rc_release(ptr %9)
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8976, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8977, i64 16))
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %0)
@@ -305129,17 +305132,17 @@ entry:
   %boxed = inttoptr i64 %2 to ptr
   %3 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed1 = inttoptr i64 %3 to ptr
-  %4 = call ptr @avra_llvm_append_basic_block(ptr %boxed, ptr %boxed1, ptr getelementptr inbounds (i8, ptr @.str.8978, i64 16))
+  %4 = call ptr @avra_llvm_append_basic_block(ptr %boxed, ptr %boxed1, ptr getelementptr inbounds (i8, ptr @.str.8979, i64 16))
   %5 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed2 = inttoptr i64 %5 to ptr
   %6 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed3 = inttoptr i64 %6 to ptr
-  %7 = call ptr @avra_llvm_append_basic_block(ptr %boxed2, ptr %boxed3, ptr getelementptr inbounds (i8, ptr @.str.8979, i64 16))
+  %7 = call ptr @avra_llvm_append_basic_block(ptr %boxed2, ptr %boxed3, ptr getelementptr inbounds (i8, ptr @.str.8980, i64 16))
   %8 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed4 = inttoptr i64 %8 to ptr
   %9 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed5 = inttoptr i64 %9 to ptr
-  %10 = call ptr @avra_llvm_append_basic_block(ptr %boxed4, ptr %boxed5, ptr getelementptr inbounds (i8, ptr @.str.8980, i64 16))
+  %10 = call ptr @avra_llvm_append_basic_block(ptr %boxed4, ptr %boxed5, ptr getelementptr inbounds (i8, ptr @.str.8981, i64 16))
   %11 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed6 = inttoptr i64 %11 to ptr
   %12 = call i64 @avra_array_get(ptr %0, i64 6)
@@ -305159,9 +305162,9 @@ entry:
   call void @avra_rc_retain(ptr %16)
   %17 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Eopen_region"(ptr %0, ptr %16, ptr %10)
   call void @avra_rc_release(ptr %16)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8981, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8980, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8979, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8978, i64 16))
   call void @avra_rc_release(ptr %0)
   ret i64 %17
 }
@@ -305192,11 +305195,11 @@ entry:
   %boxed3 = inttoptr i64 %6 to ptr
   %7 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed4 = inttoptr i64 %7 to ptr
-  %8 = call ptr @avra_llvm_append_basic_block(ptr %boxed3, ptr %boxed4, ptr getelementptr inbounds (i8, ptr @.str.8981, i64 16))
+  %8 = call ptr @avra_llvm_append_basic_block(ptr %boxed3, ptr %boxed4, ptr getelementptr inbounds (i8, ptr @.str.8982, i64 16))
   %9 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed5 = inttoptr i64 %9 to ptr
   call void @avra_llvm_position_at_end(ptr %boxed5, ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8981, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8982, i64 16))
   call void @avra_rc_release(ptr %0)
   ret i64 0
 }
@@ -305224,11 +305227,11 @@ entry:
   %slot = ptrtoint ptr %boxed1 to i64
   call void @avra_array_push(ptr %4, i64 %slot)
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.8982, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.8983, i64 16))
   call void @avra_rc_retain(ptr %4)
-  %5 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.8982, i64 16), ptr %4)
+  %5 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.8983, i64 16), ptr %4)
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8982, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8983, i64 16))
   call void @avra_rc_release(ptr %0)
   ret i64 0
 }
@@ -305259,8 +305262,8 @@ lexit:                                            ; preds = %lhead
   %9 = call ptr @avra_llvm_fn_type_of(ptr %4)
   %10 = call i64 @avra_array_len(ptr %2)
   %narrow8 = trunc i64 %10 to i32
-  %11 = call ptr @avra_llvm_build_call(ptr %boxed7, ptr %9, ptr %4, ptr %6, i32 %narrow8, ptr getelementptr inbounds (i8, ptr @.str.8983, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8983, i64 16))
+  %11 = call ptr @avra_llvm_build_call(ptr %boxed7, ptr %9, ptr %4, ptr %6, i32 %narrow8, ptr getelementptr inbounds (i8, ptr @.str.8984, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8984, i64 16))
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
@@ -305290,11 +305293,11 @@ entry:
   %slot = ptrtoint ptr %boxed1 to i64
   call void @avra_array_push(ptr %4, i64 %slot)
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.8984, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.8985, i64 16))
   call void @avra_rc_retain(ptr %4)
-  %5 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.8984, i64 16), ptr %4)
+  %5 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.8985, i64 16), ptr %4)
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8984, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8985, i64 16))
   call void @avra_rc_release(ptr %0)
   ret i64 0
 }
@@ -305382,8 +305385,8 @@ lexit16:                                          ; preds = %lhead15
   %boxed36 = inttoptr i64 %29 to ptr
   %30 = call i64 @avra_array_len(ptr %3)
   %narrow37 = trunc i64 %30 to i32
-  %31 = call ptr @avra_llvm_build_call(ptr %boxed36, ptr %13, ptr %28, ptr %15, i32 %narrow37, ptr getelementptr inbounds (i8, ptr @.str.8985, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8985, i64 16))
+  %31 = call ptr @avra_llvm_build_call(ptr %boxed36, ptr %13, ptr %28, ptr %15, i32 %narrow37, ptr getelementptr inbounds (i8, ptr @.str.8986, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8986, i64 16))
   call void @avra_rc_release(ptr %8)
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %0)
@@ -305424,14 +305427,14 @@ lbody19:                                          ; preds = %lhead15
 define ptr @"av_$40std$2Eavrac$2Elanguage$2Emangled"(ptr %0) {
 entry:
   %1 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8986, i64 16))
-  call void @avra_array_push_owned(ptr %1, ptr %0)
   call void @avra_array_push_owned(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8987, i64 16))
-  %2 = call ptr @avra_str_join(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8988, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8988, i64 16))
+  call void @avra_array_push_owned(ptr %1, ptr %0)
+  call void @avra_array_push_owned(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8988, i64 16))
+  %2 = call ptr @avra_str_join(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.8989, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8989, i64 16))
   call void @avra_rc_release(ptr %1)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8988, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8987, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8986, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %2
 }
@@ -305462,8 +305465,8 @@ endif:                                            ; preds = %else, %postret
   %8 = call i64 @avra_array_get(ptr %boxed3, i64 %1)
   %boxed4 = inttoptr i64 %8 to ptr
   %narrow = trunc i64 %2 to i32
-  %9 = call ptr @avra_llvm_build_extract_value(ptr %boxed2, ptr %boxed4, i32 %narrow, ptr getelementptr inbounds (i8, ptr @.str.8989, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8989, i64 16))
+  %9 = call ptr @avra_llvm_build_extract_value(ptr %boxed2, ptr %boxed4, i32 %narrow, ptr getelementptr inbounds (i8, ptr @.str.8990, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8990, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %9
 
@@ -305546,12 +305549,12 @@ lbody:                                            ; preds = %lhead
   %13 = call i64 @avra_array_get(ptr %boxed7, i64 %ld8)
   %boxed9 = inttoptr i64 %13 to ptr
   %narrow = trunc i64 %ld4 to i32
-  %14 = call ptr @avra_llvm_build_insert_value(ptr %boxed5, ptr %ld6, ptr %boxed9, i32 %narrow, ptr getelementptr inbounds (i8, ptr @.str.8990, i64 16))
+  %14 = call ptr @avra_llvm_build_insert_value(ptr %boxed5, ptr %ld6, ptr %boxed9, i32 %narrow, ptr getelementptr inbounds (i8, ptr @.str.8991, i64 16))
   store ptr %14, ptr %slot, align 8
   %ld10 = load i64, ptr %slot2, align 8
   %add = add i64 %ld10, 1
   store i64 %add, ptr %slot2, align 8
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8990, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8991, i64 16))
   br label %lhead
 }
 
@@ -305591,8 +305594,8 @@ then:                                             ; preds = %entry
   %boxed3 = inttoptr i64 %14 to ptr
   %15 = call ptr @avra_llvm_int64_type(ptr %boxed3)
   %16 = call ptr @avra_llvm_const_int(ptr %15, i64 0, i32 0)
-  %17 = call ptr @avra_llvm_build_icmp(ptr %boxed2, i32 33, ptr %7, ptr %16, ptr getelementptr inbounds (i8, ptr @.str.8991, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8991, i64 16))
+  %17 = call ptr @avra_llvm_build_icmp(ptr %boxed2, i32 33, ptr %7, ptr %16, ptr getelementptr inbounds (i8, ptr @.str.8992, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8992, i64 16))
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %8)
   call void @avra_rc_release(ptr %4)
@@ -305617,7 +305620,7 @@ endif:                                            ; preds = %else, %postret
   br i1 %21, label %then6, label %else7
 
 postret:                                          ; No predecessors!
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8991, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8992, i64 16))
   br label %endif
 
 then6:                                            ; preds = %endif
@@ -305639,8 +305642,8 @@ then10:                                           ; preds = %endif8
   %24 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed14 = inttoptr i64 %24 to ptr
   %25 = call ptr @avra_llvm_pointer_type(ptr %boxed14)
-  %26 = call ptr @avra_llvm_build_int_to_ptr(ptr %boxed13, ptr %7, ptr %25, ptr getelementptr inbounds (i8, ptr @.str.8992, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8992, i64 16))
+  %26 = call ptr @avra_llvm_build_int_to_ptr(ptr %boxed13, ptr %7, ptr %25, ptr getelementptr inbounds (i8, ptr @.str.8993, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8993, i64 16))
   call void @avra_rc_release(ptr %18)
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %8)
@@ -305668,7 +305671,7 @@ endif12:                                          ; preds = %else11, %postret15
   br i1 %cmp19, label %then20, label %else21
 
 postret15:                                        ; No predecessors!
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8992, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8993, i64 16))
   br label %endif12
 
 then20:                                           ; preds = %endif12
@@ -305690,8 +305693,8 @@ then24:                                           ; preds = %endif22
   %34 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed28 = inttoptr i64 %34 to ptr
   %35 = call ptr @avra_llvm_double_type(ptr %boxed28)
-  %36 = call ptr @avra_llvm_build_bitcast(ptr %boxed27, ptr %7, ptr %35, ptr getelementptr inbounds (i8, ptr @.str.8993, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8993, i64 16))
+  %36 = call ptr @avra_llvm_build_bitcast(ptr %boxed27, ptr %7, ptr %35, ptr getelementptr inbounds (i8, ptr @.str.8994, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8994, i64 16))
   call void @avra_rc_release(ptr %30)
   call void @avra_rc_release(ptr %27)
   call void @avra_rc_release(ptr %18)
@@ -305720,7 +305723,7 @@ endif26:                                          ; preds = %else25, %postret29
   ret ptr %7
 
 postret29:                                        ; No predecessors!
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8993, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8994, i64 16))
   br label %endif26
 }
 
@@ -305927,15 +305930,15 @@ postret:                                          ; No predecessors!
 arm:                                              ; preds = %endif
   %9 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed4 = inttoptr i64 %9 to ptr
-  %10 = call ptr @avra_llvm_build_sext(ptr %boxed4, ptr %2, ptr %5, ptr getelementptr inbounds (i8, ptr @.str.8994, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8994, i64 16))
+  %10 = call ptr @avra_llvm_build_sext(ptr %boxed4, ptr %2, ptr %5, ptr getelementptr inbounds (i8, ptr @.str.8995, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8995, i64 16))
   br label %endswitch
 
 arm2:                                             ; preds = %endif
   %11 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed5 = inttoptr i64 %11 to ptr
-  %12 = call ptr @avra_llvm_build_zext(ptr %boxed5, ptr %2, ptr %5, ptr getelementptr inbounds (i8, ptr @.str.8995, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8995, i64 16))
+  %12 = call ptr @avra_llvm_build_zext(ptr %boxed5, ptr %2, ptr %5, ptr getelementptr inbounds (i8, ptr @.str.8996, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8996, i64 16))
   br label %endswitch
 
 arm3:                                             ; preds = %endif
@@ -306057,11 +306060,11 @@ endif:                                            ; preds = %else, %postret
   %boxed3 = inttoptr i64 %8 to ptr
   %9 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed4 = inttoptr i64 %9 to ptr
-  %10 = call ptr @avra_llvm_build_load(ptr %boxed4, ptr %5, ptr %boxed2, ptr getelementptr inbounds (i8, ptr @.str.8996, i64 16))
+  %10 = call ptr @avra_llvm_build_load(ptr %boxed4, ptr %5, ptr %boxed2, ptr getelementptr inbounds (i8, ptr @.str.8997, i64 16))
   %11 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed5 = inttoptr i64 %11 to ptr
   %12 = call ptr @avra_llvm_int32_type(ptr %boxed5)
-  %13 = call ptr @avra_llvm_build_trunc(ptr %boxed3, ptr %10, ptr %12, ptr getelementptr inbounds (i8, ptr @.str.8997, i64 16))
+  %13 = call ptr @avra_llvm_build_trunc(ptr %boxed3, ptr %10, ptr %12, ptr getelementptr inbounds (i8, ptr @.str.8998, i64 16))
   %x6 = extractvalue { i1, i1 } %3, 0
   %x7 = extractvalue { i1, i1 } %3, 1
   %slot = zext i1 %x6 to i64
@@ -306076,15 +306079,15 @@ postret:                                          ; No predecessors!
 then9:                                            ; preds = %endif
   %15 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed12 = inttoptr i64 %15 to ptr
-  %16 = call ptr @avra_llvm_build_sext(ptr %boxed12, ptr %13, ptr %5, ptr getelementptr inbounds (i8, ptr @.str.8998, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8998, i64 16))
+  %16 = call ptr @avra_llvm_build_sext(ptr %boxed12, ptr %13, ptr %5, ptr getelementptr inbounds (i8, ptr @.str.8999, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8999, i64 16))
   br label %endif11
 
 else10:                                           ; preds = %endif
   %17 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed13 = inttoptr i64 %17 to ptr
-  %18 = call ptr @avra_llvm_build_zext(ptr %boxed13, ptr %13, ptr %5, ptr getelementptr inbounds (i8, ptr @.str.8999, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8999, i64 16))
+  %18 = call ptr @avra_llvm_build_zext(ptr %boxed13, ptr %13, ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9000, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9000, i64 16))
   br label %endif11
 
 endif11:                                          ; preds = %else10, %then9
@@ -306092,8 +306095,8 @@ endif11:                                          ; preds = %else10, %then9
   %19 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed15 = inttoptr i64 %19 to ptr
   %20 = call ptr @avra_llvm_build_store(ptr %boxed15, ptr %regval14, ptr %boxed2)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8998, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8997, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.8996, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 0
@@ -306267,8 +306270,8 @@ then19:                                           ; preds = %endif16
   %18 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed23 = inttoptr i64 %18 to ptr
   %19 = call ptr @avra_llvm_int32_type(ptr %boxed23)
-  %20 = call ptr @avra_llvm_build_trunc(ptr %boxed22, ptr %boxed1, ptr %19, ptr getelementptr inbounds (i8, ptr @.str.9000, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9000, i64 16))
+  %20 = call ptr @avra_llvm_build_trunc(ptr %boxed22, ptr %boxed1, ptr %19, ptr getelementptr inbounds (i8, ptr @.str.9001, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9001, i64 16))
   br label %endif21
 
 else20:                                           ; preds = %endif16
@@ -306309,8 +306312,8 @@ entry:
 then:                                             ; preds = %entry
   %9 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed3 = inttoptr i64 %9 to ptr
-  %10 = call ptr @avra_llvm_build_ptr_to_int(ptr %boxed3, ptr %2, ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9001, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9001, i64 16))
+  %10 = call ptr @avra_llvm_build_ptr_to_int(ptr %boxed3, ptr %2, ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9002, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9002, i64 16))
   call void @avra_rc_release(ptr %5)
   call void @avra_rc_release(ptr %0)
   ret ptr %10
@@ -306333,14 +306336,14 @@ endif:                                            ; preds = %else, %postret
   br i1 %cmp, label %then6, label %else7
 
 postret:                                          ; No predecessors!
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9001, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9002, i64 16))
   br label %endif
 
 then6:                                            ; preds = %endif
   %16 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed9 = inttoptr i64 %16 to ptr
-  %17 = call ptr @avra_llvm_build_zext(ptr %boxed9, ptr %2, ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9002, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9002, i64 16))
+  %17 = call ptr @avra_llvm_build_zext(ptr %boxed9, ptr %2, ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9003, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9003, i64 16))
   call void @avra_rc_release(ptr %14)
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %5)
@@ -306365,14 +306368,14 @@ endif8:                                           ; preds = %else7, %postret10
   br i1 %cmp14, label %then15, label %else16
 
 postret10:                                        ; No predecessors!
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9002, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9003, i64 16))
   br label %endif8
 
 then15:                                           ; preds = %endif8
   %23 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed18 = inttoptr i64 %23 to ptr
-  %24 = call ptr @avra_llvm_build_bitcast(ptr %boxed18, ptr %2, ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9003, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9003, i64 16))
+  %24 = call ptr @avra_llvm_build_bitcast(ptr %boxed18, ptr %2, ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9004, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9004, i64 16))
   call void @avra_rc_release(ptr %21)
   call void @avra_rc_release(ptr %18)
   call void @avra_rc_release(ptr %14)
@@ -306395,7 +306398,7 @@ endif17:                                          ; preds = %else16, %postret19
   ret ptr %2
 
 postret19:                                        ; No predecessors!
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9003, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9004, i64 16))
   br label %endif17
 }
 
@@ -306424,8 +306427,8 @@ define ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Eun_value"(ptr %0, ptr %1, ptr
 entry:
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed = inttoptr i64 %3 to ptr
-  %4 = call ptr @avra_llvm_build_not(ptr %boxed, ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9004, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9004, i64 16))
+  %4 = call ptr @avra_llvm_build_not(ptr %boxed, ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9005, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9005, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %4
@@ -306490,8 +306493,8 @@ entry:
 then:                                             ; preds = %entry
   %5 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed = inttoptr i64 %5 to ptr
-  %6 = call ptr @avra_llvm_build_add(ptr %boxed, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9005, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9005, i64 16))
+  %6 = call ptr @avra_llvm_build_add(ptr %boxed, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9006, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9006, i64 16))
   br label %endif
 
 else:                                             ; preds = %entry
@@ -306508,8 +306511,8 @@ endif:                                            ; preds = %endif4, %then
 then2:                                            ; preds = %else
   %8 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed5 = inttoptr i64 %8 to ptr
-  %9 = call ptr @avra_llvm_build_sub(ptr %boxed5, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9006, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9006, i64 16))
+  %9 = call ptr @avra_llvm_build_sub(ptr %boxed5, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9007, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9007, i64 16))
   br label %endif4
 
 else3:                                            ; preds = %else
@@ -306524,8 +306527,8 @@ endif4:                                           ; preds = %endif9, %then2
 then7:                                            ; preds = %else3
   %11 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed10 = inttoptr i64 %11 to ptr
-  %12 = call ptr @avra_llvm_build_mul(ptr %boxed10, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9007, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9007, i64 16))
+  %12 = call ptr @avra_llvm_build_mul(ptr %boxed10, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9008, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9008, i64 16))
   br label %endif9
 
 else8:                                            ; preds = %else3
@@ -306544,11 +306547,11 @@ then12:                                           ; preds = %else8
   %slot15 = ptrtoint ptr %3 to i64
   call void @avra_array_push(ptr %14, i64 %slot15)
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9008, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9009, i64 16))
   call void @avra_rc_retain(ptr %14)
-  %15 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9008, i64 16), ptr %14)
+  %15 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9009, i64 16), ptr %14)
   call void @avra_rc_release(ptr %14)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9008, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9009, i64 16))
   br label %endif14
 
 else13:                                           ; preds = %else8
@@ -306567,11 +306570,11 @@ then17:                                           ; preds = %else13
   %slot21 = ptrtoint ptr %3 to i64
   call void @avra_array_push(ptr %17, i64 %slot21)
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9009, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9010, i64 16))
   call void @avra_rc_retain(ptr %17)
-  %18 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9009, i64 16), ptr %17)
+  %18 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9010, i64 16), ptr %17)
   call void @avra_rc_release(ptr %17)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9009, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9010, i64 16))
   br label %endif19
 
 else18:                                           ; preds = %else13
@@ -306586,8 +306589,8 @@ endif19:                                          ; preds = %endif25, %then17
 then23:                                           ; preds = %else18
   %20 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed26 = inttoptr i64 %20 to ptr
-  %21 = call ptr @avra_llvm_build_icmp(ptr %boxed26, i32 32, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9010, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9010, i64 16))
+  %21 = call ptr @avra_llvm_build_icmp(ptr %boxed26, i32 32, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9011, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9011, i64 16))
   br label %endif25
 
 else24:                                           ; preds = %else18
@@ -306602,8 +306605,8 @@ endif25:                                          ; preds = %endif30, %then23
 then28:                                           ; preds = %else24
   %23 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed31 = inttoptr i64 %23 to ptr
-  %24 = call ptr @avra_llvm_build_icmp(ptr %boxed31, i32 33, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9011, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9011, i64 16))
+  %24 = call ptr @avra_llvm_build_icmp(ptr %boxed31, i32 33, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9012, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9012, i64 16))
   br label %endif30
 
 else29:                                           ; preds = %else24
@@ -306618,8 +306621,8 @@ endif30:                                          ; preds = %endif35, %then28
 then33:                                           ; preds = %else29
   %26 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed36 = inttoptr i64 %26 to ptr
-  %27 = call ptr @avra_llvm_build_icmp(ptr %boxed36, i32 40, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9012, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9012, i64 16))
+  %27 = call ptr @avra_llvm_build_icmp(ptr %boxed36, i32 40, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9013, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9013, i64 16))
   br label %endif35
 
 else34:                                           ; preds = %else29
@@ -306634,8 +306637,8 @@ endif35:                                          ; preds = %endif40, %then33
 then38:                                           ; preds = %else34
   %29 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed41 = inttoptr i64 %29 to ptr
-  %30 = call ptr @avra_llvm_build_icmp(ptr %boxed41, i32 41, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9013, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9013, i64 16))
+  %30 = call ptr @avra_llvm_build_icmp(ptr %boxed41, i32 41, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9014, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9014, i64 16))
   br label %endif40
 
 else39:                                           ; preds = %else34
@@ -306650,8 +306653,8 @@ endif40:                                          ; preds = %endif45, %then38
 then43:                                           ; preds = %else39
   %32 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed46 = inttoptr i64 %32 to ptr
-  %33 = call ptr @avra_llvm_build_icmp(ptr %boxed46, i32 38, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9014, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9014, i64 16))
+  %33 = call ptr @avra_llvm_build_icmp(ptr %boxed46, i32 38, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9015, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9015, i64 16))
   br label %endif45
 
 else44:                                           ; preds = %else39
@@ -306666,8 +306669,8 @@ endif45:                                          ; preds = %endif50, %then43
 then48:                                           ; preds = %else44
   %35 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed51 = inttoptr i64 %35 to ptr
-  %36 = call ptr @avra_llvm_build_icmp(ptr %boxed51, i32 39, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9015, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9015, i64 16))
+  %36 = call ptr @avra_llvm_build_icmp(ptr %boxed51, i32 39, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9016, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9016, i64 16))
   br label %endif50
 
 else49:                                           ; preds = %else44
@@ -306693,9 +306696,9 @@ endif55:                                          ; preds = %else54, %then53
 
 then57:                                           ; preds = %endif55
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9016, i64 16))
-  %39 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ewrecked"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9016, i64 16), ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9016, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9017, i64 16))
+  %39 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ewrecked"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9017, i64 16), ptr %2)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9017, i64 16))
   br label %endif59
 
 else58:                                           ; preds = %endif55
@@ -306710,8 +306713,8 @@ endif59:                                          ; preds = %endif63, %then57
 then61:                                           ; preds = %else58
   %41 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed64 = inttoptr i64 %41 to ptr
-  %42 = call ptr @avra_llvm_build_and(ptr %boxed64, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9017, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9017, i64 16))
+  %42 = call ptr @avra_llvm_build_and(ptr %boxed64, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9018, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9018, i64 16))
   br label %endif63
 
 else62:                                           ; preds = %else58
@@ -306726,8 +306729,8 @@ endif63:                                          ; preds = %endif68, %then61
 then66:                                           ; preds = %else62
   %44 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed69 = inttoptr i64 %44 to ptr
-  %45 = call ptr @avra_llvm_build_or(ptr %boxed69, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9018, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9018, i64 16))
+  %45 = call ptr @avra_llvm_build_or(ptr %boxed69, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9019, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9019, i64 16))
   br label %endif68
 
 else67:                                           ; preds = %else62
@@ -306742,8 +306745,8 @@ endif68:                                          ; preds = %endif73, %then66
 then71:                                           ; preds = %else67
   %47 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed74 = inttoptr i64 %47 to ptr
-  %48 = call ptr @avra_llvm_build_xor(ptr %boxed74, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9019, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9019, i64 16))
+  %48 = call ptr @avra_llvm_build_xor(ptr %boxed74, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9020, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9020, i64 16))
   br label %endif73
 
 else72:                                           ; preds = %else67
@@ -306762,11 +306765,11 @@ then76:                                           ; preds = %else72
   %slot80 = ptrtoint ptr %3 to i64
   call void @avra_array_push(ptr %50, i64 %slot80)
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9020, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9021, i64 16))
   call void @avra_rc_retain(ptr %50)
-  %51 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9020, i64 16), ptr %50)
+  %51 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9021, i64 16), ptr %50)
   call void @avra_rc_release(ptr %50)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9020, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9021, i64 16))
   br label %endif78
 
 else77:                                           ; preds = %else72
@@ -306776,11 +306779,11 @@ else77:                                           ; preds = %else72
   %slot82 = ptrtoint ptr %3 to i64
   call void @avra_array_push(ptr %52, i64 %slot82)
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9021, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9022, i64 16))
   call void @avra_rc_retain(ptr %52)
-  %53 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9021, i64 16), ptr %52)
+  %53 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ecall"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9022, i64 16), ptr %52)
   call void @avra_rc_release(ptr %52)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9021, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9022, i64 16))
   br label %endif78
 
 endif78:                                          ; preds = %else77, %then76
@@ -306791,16 +306794,16 @@ endif78:                                          ; preds = %else77, %then76
 define ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ewrecked"(ptr %0, ptr %1, ptr %2) {
 entry:
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9022, i64 16))
-  call void @avra_array_push_owned(ptr %3, ptr %1)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9023, i64 16))
-  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9024, i64 16))
+  call void @avra_array_push_owned(ptr %3, ptr %1)
+  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9024, i64 16))
+  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9025, i64 16))
   call void @avra_trap(ptr %4)
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9024, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9025, i64 16))
   call void @avra_rc_release(ptr %3)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9024, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9023, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9022, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %2
@@ -306815,8 +306818,8 @@ entry:
 then:                                             ; preds = %entry
   %5 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed = inttoptr i64 %5 to ptr
-  %6 = call ptr @avra_llvm_build_fadd(ptr %boxed, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9025, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9025, i64 16))
+  %6 = call ptr @avra_llvm_build_fadd(ptr %boxed, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9026, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9026, i64 16))
   br label %endif
 
 else:                                             ; preds = %entry
@@ -306833,8 +306836,8 @@ endif:                                            ; preds = %endif4, %then
 then2:                                            ; preds = %else
   %8 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed5 = inttoptr i64 %8 to ptr
-  %9 = call ptr @avra_llvm_build_fsub(ptr %boxed5, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9026, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9026, i64 16))
+  %9 = call ptr @avra_llvm_build_fsub(ptr %boxed5, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9027, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9027, i64 16))
   br label %endif4
 
 else3:                                            ; preds = %else
@@ -306849,8 +306852,8 @@ endif4:                                           ; preds = %endif9, %then2
 then7:                                            ; preds = %else3
   %11 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed10 = inttoptr i64 %11 to ptr
-  %12 = call ptr @avra_llvm_build_fmul(ptr %boxed10, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9027, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9027, i64 16))
+  %12 = call ptr @avra_llvm_build_fmul(ptr %boxed10, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9028, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9028, i64 16))
   br label %endif9
 
 else8:                                            ; preds = %else3
@@ -306865,8 +306868,8 @@ endif9:                                           ; preds = %endif14, %then7
 then12:                                           ; preds = %else8
   %14 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed15 = inttoptr i64 %14 to ptr
-  %15 = call ptr @avra_llvm_build_fdiv(ptr %boxed15, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9028, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9028, i64 16))
+  %15 = call ptr @avra_llvm_build_fdiv(ptr %boxed15, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9029, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9029, i64 16))
   br label %endif14
 
 else13:                                           ; preds = %else8
@@ -306881,8 +306884,8 @@ endif14:                                          ; preds = %endif19, %then12
 then17:                                           ; preds = %else13
   %17 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed20 = inttoptr i64 %17 to ptr
-  %18 = call ptr @avra_llvm_build_fcmp(ptr %boxed20, i32 1, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9029, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9029, i64 16))
+  %18 = call ptr @avra_llvm_build_fcmp(ptr %boxed20, i32 1, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9030, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9030, i64 16))
   br label %endif19
 
 else18:                                           ; preds = %else13
@@ -306897,8 +306900,8 @@ endif19:                                          ; preds = %endif24, %then17
 then22:                                           ; preds = %else18
   %20 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed25 = inttoptr i64 %20 to ptr
-  %21 = call ptr @avra_llvm_build_fcmp(ptr %boxed25, i32 6, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9030, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9030, i64 16))
+  %21 = call ptr @avra_llvm_build_fcmp(ptr %boxed25, i32 6, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9031, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9031, i64 16))
   br label %endif24
 
 else23:                                           ; preds = %else18
@@ -306913,8 +306916,8 @@ endif24:                                          ; preds = %endif29, %then22
 then27:                                           ; preds = %else23
   %23 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed30 = inttoptr i64 %23 to ptr
-  %24 = call ptr @avra_llvm_build_fcmp(ptr %boxed30, i32 2, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9031, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9031, i64 16))
+  %24 = call ptr @avra_llvm_build_fcmp(ptr %boxed30, i32 2, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9032, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9032, i64 16))
   br label %endif29
 
 else28:                                           ; preds = %else23
@@ -306929,8 +306932,8 @@ endif29:                                          ; preds = %endif34, %then27
 then32:                                           ; preds = %else28
   %26 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed35 = inttoptr i64 %26 to ptr
-  %27 = call ptr @avra_llvm_build_fcmp(ptr %boxed35, i32 3, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9032, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9032, i64 16))
+  %27 = call ptr @avra_llvm_build_fcmp(ptr %boxed35, i32 3, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9033, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9033, i64 16))
   br label %endif34
 
 else33:                                           ; preds = %else28
@@ -306945,8 +306948,8 @@ endif34:                                          ; preds = %endif39, %then32
 then37:                                           ; preds = %else33
   %29 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed40 = inttoptr i64 %29 to ptr
-  %30 = call ptr @avra_llvm_build_fcmp(ptr %boxed40, i32 4, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9033, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9033, i64 16))
+  %30 = call ptr @avra_llvm_build_fcmp(ptr %boxed40, i32 4, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9034, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9034, i64 16))
   br label %endif39
 
 else38:                                           ; preds = %else33
@@ -306961,8 +306964,8 @@ endif39:                                          ; preds = %endif44, %then37
 then42:                                           ; preds = %else38
   %32 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed45 = inttoptr i64 %32 to ptr
-  %33 = call ptr @avra_llvm_build_fcmp(ptr %boxed45, i32 5, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9034, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9034, i64 16))
+  %33 = call ptr @avra_llvm_build_fcmp(ptr %boxed45, i32 5, ptr %2, ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9035, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9035, i64 16))
   br label %endif44
 
 else43:                                           ; preds = %else38
@@ -307036,16 +307039,16 @@ endif68:                                          ; preds = %else67, %then66
 
 then71:                                           ; preds = %endif68
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9035, i64 16))
-  %40 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ewrecked"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9035, i64 16), ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9035, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9036, i64 16))
+  %40 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ewrecked"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9036, i64 16), ptr %2)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9036, i64 16))
   br label %endif73
 
 else72:                                           ; preds = %endif68
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9036, i64 16))
-  %41 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ewrecked"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9036, i64 16), ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9036, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9037, i64 16))
+  %41 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EEmit$2Ewrecked"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9037, i64 16), ptr %2)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9037, i64 16))
   br label %endif73
 
 endif73:                                          ; preds = %else72, %then71
@@ -307096,17 +307099,17 @@ entry:
   %3 = call i64 @avra_llvm_verify_module_print(ptr %0)
   %4 = call i64 @avra_llvm_print_module_to_file(ptr %0, ptr %1)
   %5 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9037, i64 16))
-  call void @avra_array_push_owned(ptr %5, ptr %2)
   call void @avra_array_push_owned(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9038, i64 16))
-  call void @avra_array_push_owned(ptr %5, ptr %1)
+  call void @avra_array_push_owned(ptr %5, ptr %2)
   call void @avra_array_push_owned(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9039, i64 16))
-  %6 = call ptr @avra_str_join(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9040, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9040, i64 16))
+  call void @avra_array_push_owned(ptr %5, ptr %1)
+  call void @avra_array_push_owned(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9040, i64 16))
+  %6 = call ptr @avra_str_join(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9041, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9041, i64 16))
   call void @avra_rc_release(ptr %5)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9040, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9039, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9038, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9037, i64 16))
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
   ret ptr %6
@@ -307175,10 +307178,10 @@ arm1:                                             ; preds = %entry
   %8 = call ptr @avra_array_get_owned(ptr %4, i64 1)
   %9 = call ptr @avra_array_get_owned(ptr %4, i64 2)
   %10 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9041, i64 16))
-  call void @avra_array_push_owned(ptr %10, ptr %2)
   call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9042, i64 16))
-  %11 = call ptr @avra_str_join(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9043, i64 16))
+  call void @avra_array_push_owned(ptr %10, ptr %2)
+  call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9043, i64 16))
+  %11 = call ptr @avra_str_join(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9044, i64 16))
   %12 = call ptr @avra_array_sized(i64 0)
   %13 = call i64 @avra_array_len(ptr %8)
   store i64 0, ptr %slot, align 8
@@ -307202,26 +307205,26 @@ lexit:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %12)
   %14 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Estatic_array"(ptr %0, ptr %1, ptr %11, ptr %3, ptr %12)
   %15 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9044, i64 16))
-  call void @avra_array_push_owned(ptr %15, ptr %2)
   call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9045, i64 16))
-  %16 = call ptr @avra_str_join(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9046, i64 16))
+  call void @avra_array_push_owned(ptr %15, ptr %2)
+  call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9046, i64 16))
+  %16 = call ptr @avra_str_join(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9047, i64 16))
   call void @avra_rc_retain(ptr %16)
   call void @avra_rc_retain(ptr %3)
   call void @avra_rc_retain(ptr %9)
   %17 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Estatic_array"(ptr %0, ptr %1, ptr %16, ptr %3, ptr %9)
   %18 = call ptr @avra_llvm_static_map(ptr %1, ptr %2, ptr %14, ptr %17)
   call void @avra_rc_release(ptr %16)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9046, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9047, i64 16))
   call void @avra_rc_release(ptr %15)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9046, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9045, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9044, i64 16))
   call void @avra_rc_release(ptr %12)
   call void @avra_rc_release(ptr %11)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9043, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9044, i64 16))
   call void @avra_rc_release(ptr %10)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9043, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9042, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9041, i64 16))
   call void @avra_rc_release(ptr %9)
   call void @avra_rc_release(ptr %8)
   br label %endswitch
@@ -307321,8 +307324,8 @@ arm3:                                             ; preds = %entry
   %13 = call i64 @avra_array_get(ptr %3, i64 1)
   %boxed = inttoptr i64 %13 to ptr
   %14 = call i64 @avra_str_len(ptr %boxed)
-  %15 = call ptr @avra_llvm_global_text(ptr %1, ptr %boxed, i64 %14, ptr getelementptr inbounds (i8, ptr @.str.9047, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9047, i64 16))
+  %15 = call ptr @avra_llvm_global_text(ptr %1, ptr %boxed, i64 %14, ptr getelementptr inbounds (i8, ptr @.str.9048, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9048, i64 16))
   br label %endswitch
 
 arm4:                                             ; preds = %entry
@@ -307379,19 +307382,19 @@ else:                                             ; preds = %entry
   %7 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Emangled"(ptr %boxed2)
   %8 = call ptr @avra_int_text(i64 %1)
   %9 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9048, i64 16))
-  call void @avra_array_push_owned(ptr %9, ptr %7)
   call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9049, i64 16))
-  call void @avra_array_push_owned(ptr %9, ptr %8)
+  call void @avra_array_push_owned(ptr %9, ptr %7)
   call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9050, i64 16))
-  %10 = call ptr @avra_str_join(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9051, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9051, i64 16))
+  call void @avra_array_push_owned(ptr %9, ptr %8)
+  call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9051, i64 16))
+  %10 = call ptr @avra_str_join(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9052, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9052, i64 16))
   call void @avra_rc_release(ptr %9)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9050, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9051, i64 16))
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9049, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9050, i64 16))
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9048, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9049, i64 16))
   br label %endif
 
 endif:                                            ; preds = %else, %then
@@ -308224,13 +308227,13 @@ lexit:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %ld9)
   %5 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEntryBuild$2Efailures"(ptr %ld9, i64 %3)
   %6 = call i64 @avra_array_len(ptr %1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9053, i64 16))
-  %7 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ecounted"(i64 %6, ptr getelementptr inbounds (i8, ptr @.str.9053, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9054, i64 16))
+  %7 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ecounted"(i64 %6, ptr getelementptr inbounds (i8, ptr @.str.9054, i64 16))
   %8 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9052, i64 16))
+  call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9053, i64 16))
   call void @avra_array_push_owned(ptr %8, ptr %7)
-  call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9054, i64 16))
-  %9 = call ptr @avra_str_join(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9055, i64 16))
+  call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9055, i64 16))
+  %9 = call ptr @avra_str_join(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9056, i64 16))
   call void @avra_rc_retain(ptr %ld8)
   call void @avra_rc_retain(ptr %9)
   %10 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEntryBuild$2Eleaves_by_verdict"(ptr %ld8, i64 %5, ptr %9)
@@ -308240,12 +308243,12 @@ lexit:                                            ; preds = %lhead
   call void @avra_cell_release(ptr %slot2)
   call void @avra_cell_release(ptr %slot)
   call void @avra_rc_release(ptr %9)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9055, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9056, i64 16))
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9054, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9055, i64 16))
   call void @avra_rc_release(ptr %7)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9054, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9053, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9052, i64 16))
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
@@ -308283,7 +308286,7 @@ entry:
   %6 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed1 = inttoptr i64 %6 to ptr
   %7 = call ptr @avra_array_sized(i64 6)
-  call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9056, i64 16))
+  call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9057, i64 16))
   call void @avra_array_push_owned(ptr %7, ptr %1)
   call void @avra_array_push_owned(ptr %7, ptr %4)
   call void @avra_array_push_owned(ptr %7, ptr null)
@@ -308294,7 +308297,7 @@ entry:
   call void @avra_rc_release(ptr %4)
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %1)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9056, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9057, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %7
 }
@@ -308331,7 +308334,7 @@ endif:                                            ; preds = %else, %then
   call void @avra_array_push(ptr %9, i64 %8)
   %10 = call ptr @avra_array_sized(i64 3)
   call void @avra_array_push(ptr %10, i64 6)
-  call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9057, i64 16))
+  call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9058, i64 16))
   call void @avra_array_push_owned(ptr %10, ptr %9)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %10)
@@ -308350,7 +308353,7 @@ endif:                                            ; preds = %else, %then
   call void @avra_array_push(ptr %16, i64 %15)
   %17 = call ptr @avra_array_sized(i64 3)
   call void @avra_array_push(ptr %17, i64 6)
-  call void @avra_array_push_owned(ptr %17, ptr getelementptr inbounds (i8, ptr @.str.9058, i64 16))
+  call void @avra_array_push_owned(ptr %17, ptr getelementptr inbounds (i8, ptr @.str.9059, i64 16))
   call void @avra_array_push_owned(ptr %17, ptr %16)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %17)
@@ -308394,11 +308397,11 @@ endif:                                            ; preds = %else, %then
   call void @avra_rc_release(ptr %21)
   call void @avra_rc_release(ptr %17)
   call void @avra_rc_release(ptr %16)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9058, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9059, i64 16))
   call void @avra_rc_release(ptr %13)
   call void @avra_rc_release(ptr %10)
   call void @avra_rc_release(ptr %9)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9057, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9058, i64 16))
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %4)
   call void @avra_rc_release(ptr %2)
@@ -308463,14 +308466,14 @@ entry:
   call void @avra_array_push(ptr %3, i64 %2)
   %4 = call ptr @avra_array_sized(i64 3)
   call void @avra_array_push(ptr %4, i64 6)
-  call void @avra_array_push_owned(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9059, i64 16))
+  call void @avra_array_push_owned(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9060, i64 16))
   call void @avra_array_push_owned(ptr %4, ptr %3)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %4)
   %5 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEntryBuild$2Egive"(ptr %0, ptr %4)
   call void @avra_rc_release(ptr %4)
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9059, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9060, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 %5
@@ -308549,24 +308552,24 @@ else:                                             ; preds = %entry
   br label %endif
 
 endif:                                            ; preds = %else, %then
-  %regval = phi ptr [ getelementptr inbounds (i8, ptr @.str.9063, i64 16), %then ], [ getelementptr inbounds (i8, ptr @.str.9064, i64 16), %else ]
+  %regval = phi ptr [ getelementptr inbounds (i8, ptr @.str.9064, i64 16), %then ], [ getelementptr inbounds (i8, ptr @.str.9065, i64 16), %else ]
   %3 = call ptr @avra_array_sized(i64 7)
-  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9060, i64 16))
-  call void @avra_array_push_owned(ptr %3, ptr %2)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9061, i64 16))
-  call void @avra_array_push_owned(ptr %3, ptr %1)
+  call void @avra_array_push_owned(ptr %3, ptr %2)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9062, i64 16))
+  call void @avra_array_push_owned(ptr %3, ptr %1)
+  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9063, i64 16))
   call void @avra_array_push_owned(ptr %3, ptr %regval)
-  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9065, i64 16))
-  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9066, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9066, i64 16))
+  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9066, i64 16))
+  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9067, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9067, i64 16))
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9065, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9066, i64 16))
   call void @avra_rc_release(ptr %regval)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9063, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9062, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9061, i64 16))
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9060, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9061, i64 16))
   call void @avra_rc_release(ptr %1)
   ret ptr %4
 }
@@ -308608,7 +308611,7 @@ entry:
   call void @avra_array_push(ptr %5, i64 %4)
   %6 = call ptr @avra_array_sized(i64 3)
   call void @avra_array_push(ptr %6, i64 6)
-  call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9067, i64 16))
+  call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9068, i64 16))
   call void @avra_array_push_owned(ptr %6, ptr %5)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %6)
@@ -308616,7 +308619,7 @@ entry:
   %8 = call ptr @avra_array_sized(i64 0)
   %9 = call ptr @avra_array_sized(i64 3)
   call void @avra_array_push(ptr %9, i64 6)
-  call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9068, i64 16))
+  call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9069, i64 16))
   call void @avra_array_push_owned(ptr %9, ptr %8)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %9)
@@ -308656,7 +308659,7 @@ entry:
   %24 = call ptr @avra_array_sized(i64 4)
   call void @avra_array_push(ptr %24, i64 7)
   call void @avra_array_push(ptr %24, i64 %22)
-  call void @avra_array_push_owned(ptr %24, ptr getelementptr inbounds (i8, ptr @.str.9069, i64 16))
+  call void @avra_array_push_owned(ptr %24, ptr getelementptr inbounds (i8, ptr @.str.9070, i64 16))
   call void @avra_array_push_owned(ptr %24, ptr %23)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %24)
@@ -308682,7 +308685,7 @@ entry:
   %33 = call ptr @avra_array_sized(i64 4)
   call void @avra_array_push(ptr %33, i64 7)
   call void @avra_array_push(ptr %33, i64 %31)
-  call void @avra_array_push_owned(ptr %33, ptr getelementptr inbounds (i8, ptr @.str.9070, i64 16))
+  call void @avra_array_push_owned(ptr %33, ptr getelementptr inbounds (i8, ptr @.str.9071, i64 16))
   call void @avra_array_push_owned(ptr %33, ptr %32)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %33)
@@ -308697,12 +308700,12 @@ entry:
   call void @avra_rc_retain(ptr %1)
   %38 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Elegs_of"(ptr %1)
   %39 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %39, ptr getelementptr inbounds (i8, ptr @.str.9071, i64 16))
-  call void @avra_array_push_owned(ptr %39, ptr %37)
   call void @avra_array_push_owned(ptr %39, ptr getelementptr inbounds (i8, ptr @.str.9072, i64 16))
-  call void @avra_array_push_owned(ptr %39, ptr %38)
+  call void @avra_array_push_owned(ptr %39, ptr %37)
   call void @avra_array_push_owned(ptr %39, ptr getelementptr inbounds (i8, ptr @.str.9073, i64 16))
-  %40 = call ptr @avra_str_join(ptr %39, ptr getelementptr inbounds (i8, ptr @.str.9074, i64 16))
+  call void @avra_array_push_owned(ptr %39, ptr %38)
+  call void @avra_array_push_owned(ptr %39, ptr getelementptr inbounds (i8, ptr @.str.9074, i64 16))
+  %40 = call ptr @avra_str_join(ptr %39, ptr getelementptr inbounds (i8, ptr @.str.9075, i64 16))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %40)
   %41 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEntryBuild$2Esay"(ptr %0, ptr %40)
@@ -308717,10 +308720,10 @@ entry:
   %45 = call i64 @avra_array_get(ptr %1, i64 1)
   %boxed6 = inttoptr i64 %45 to ptr
   %46 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %46, ptr getelementptr inbounds (i8, ptr @.str.9075, i64 16))
-  call void @avra_array_push_owned(ptr %46, ptr %boxed6)
   call void @avra_array_push_owned(ptr %46, ptr getelementptr inbounds (i8, ptr @.str.9076, i64 16))
-  %47 = call ptr @avra_str_join(ptr %46, ptr getelementptr inbounds (i8, ptr @.str.9077, i64 16))
+  call void @avra_array_push_owned(ptr %46, ptr %boxed6)
+  call void @avra_array_push_owned(ptr %46, ptr getelementptr inbounds (i8, ptr @.str.9077, i64 16))
+  %47 = call ptr @avra_str_join(ptr %46, ptr getelementptr inbounds (i8, ptr @.str.9078, i64 16))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %47)
   %48 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEntryBuild$2Esay"(ptr %0, ptr %47)
@@ -308728,7 +308731,7 @@ entry:
   call void @avra_array_push(ptr %49, i64 %22)
   %50 = call ptr @avra_array_sized(i64 3)
   call void @avra_array_push(ptr %50, i64 6)
-  call void @avra_array_push_owned(ptr %50, ptr getelementptr inbounds (i8, ptr @.str.9078, i64 16))
+  call void @avra_array_push_owned(ptr %50, ptr getelementptr inbounds (i8, ptr @.str.9079, i64 16))
   call void @avra_array_push_owned(ptr %50, ptr %49)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %50)
@@ -308812,30 +308815,30 @@ entry:
   call void @avra_rc_release(ptr %53)
   call void @avra_rc_release(ptr %50)
   call void @avra_rc_release(ptr %49)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9078, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9079, i64 16))
   call void @avra_rc_release(ptr %47)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9077, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9078, i64 16))
   call void @avra_rc_release(ptr %46)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9077, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9076, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9075, i64 16))
   call void @avra_rc_release(ptr %43)
   call void @avra_rc_release(ptr %40)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9074, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9075, i64 16))
   call void @avra_rc_release(ptr %39)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9073, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9074, i64 16))
   call void @avra_rc_release(ptr %38)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9072, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9073, i64 16))
   call void @avra_rc_release(ptr %37)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9071, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9072, i64 16))
   call void @avra_rc_release(ptr %35)
   call void @avra_rc_release(ptr %33)
   call void @avra_rc_release(ptr %32)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9070, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9071, i64 16))
   call void @avra_rc_release(ptr %30)
   call void @avra_rc_release(ptr %29)
   call void @avra_rc_release(ptr %24)
   call void @avra_rc_release(ptr %23)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9069, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9070, i64 16))
   call void @avra_rc_release(ptr %21)
   call void @avra_rc_release(ptr %20)
   call void @avra_rc_release(ptr %17)
@@ -308844,10 +308847,10 @@ entry:
   call void @avra_rc_release(ptr %12)
   call void @avra_rc_release(ptr %9)
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9068, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9069, i64 16))
   call void @avra_rc_release(ptr %6)
   call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9067, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9068, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 %74
@@ -308866,7 +308869,7 @@ else:                                             ; preds = %entry
   br label %endif
 
 endif:                                            ; preds = %else, %then
-  %regval = phi ptr [ getelementptr inbounds (i8, ptr @.str.9079, i64 16), %then ], [ getelementptr inbounds (i8, ptr @.str.9080, i64 16), %else ]
+  %regval = phi ptr [ getelementptr inbounds (i8, ptr @.str.9080, i64 16), %then ], [ getelementptr inbounds (i8, ptr @.str.9081, i64 16), %else ]
   call void @avra_rc_release(ptr %0)
   ret ptr %regval
 }
@@ -309050,17 +309053,17 @@ entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
   %3 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9081, i64 16))
-  call void @avra_array_push_owned(ptr %3, ptr %boxed)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9082, i64 16))
-  call void @avra_array_push_owned(ptr %3, ptr %1)
+  call void @avra_array_push_owned(ptr %3, ptr %boxed)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9083, i64 16))
-  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9084, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9084, i64 16))
+  call void @avra_array_push_owned(ptr %3, ptr %1)
+  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9084, i64 16))
+  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9085, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9085, i64 16))
   call void @avra_rc_release(ptr %3)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9084, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9083, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9082, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9081, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %4
@@ -309071,17 +309074,17 @@ entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
   %3 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9085, i64 16))
-  call void @avra_array_push_owned(ptr %3, ptr %boxed)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9086, i64 16))
-  call void @avra_array_push_owned(ptr %3, ptr %1)
+  call void @avra_array_push_owned(ptr %3, ptr %boxed)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9087, i64 16))
-  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9088, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9088, i64 16))
+  call void @avra_array_push_owned(ptr %3, ptr %1)
+  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9088, i64 16))
+  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9089, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9089, i64 16))
   call void @avra_rc_release(ptr %3)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9088, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9087, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9086, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9085, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %4
@@ -309155,9 +309158,9 @@ entry:
   %2 = call i64 @avra_array_get(ptr %boxed, i64 8)
   %boxed1 = inttoptr i64 %2 to ptr
   call void @avra_rc_retain(ptr %boxed1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9089, i64 16))
-  %3 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %boxed1, ptr getelementptr inbounds (i8, ptr @.str.9089, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9089, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9090, i64 16))
+  %3 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %boxed1, ptr getelementptr inbounds (i8, ptr @.str.9090, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9090, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %3
 }
@@ -309390,7 +309393,7 @@ else:                                             ; preds = %entry
   br label %endif
 
 endif:                                            ; preds = %else, %then
-  %regval = phi ptr [ %4, %then ], [ getelementptr inbounds (i8, ptr @.str.9090, i64 16), %else ]
+  %regval = phi ptr [ %4, %then ], [ getelementptr inbounds (i8, ptr @.str.9091, i64 16), %else ]
   call void @avra_rc_retain(ptr %0)
   %5 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eprogram_symbol"(ptr %0)
   call void @avra_rc_retain(ptr %0)
@@ -309400,7 +309403,7 @@ endif:                                            ; preds = %else, %then
   call void @avra_rc_retain(ptr %6)
   call void @avra_rc_retain(ptr %7)
   %8 = call ptr @"av_$40std$2Epath$2Ejoined_path"(ptr %6, ptr %7)
-  %9 = call i64 @avra_str_ends_with(ptr %regval, ptr getelementptr inbounds (i8, ptr @.str.9091, i64 16))
+  %9 = call i64 @avra_str_ends_with(ptr %regval, ptr getelementptr inbounds (i8, ptr @.str.9092, i64 16))
   %b = icmp ne i64 %9, 0
   br i1 %b, label %then1, label %else2
 
@@ -309426,7 +309429,7 @@ endif3:                                           ; preds = %else2, %then1
   %slot = zext i1 %not to i64
   call void @avra_array_push(ptr %13, i64 %slot)
   call void @avra_rc_release(ptr %regval4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9091, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9092, i64 16))
   call void @avra_rc_release(ptr %8)
   call void @avra_rc_release(ptr %7)
   call void @avra_rc_release(ptr %6)
@@ -309445,10 +309448,10 @@ entry:
   call void @avra_rc_retain(ptr %0)
   %2 = call ptr @"av_$40std$2Epath$2Estem_of"(ptr %0)
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9092, i64 16))
-  call void @avra_array_push_owned(ptr %3, ptr %2)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9093, i64 16))
-  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9094, i64 16))
+  call void @avra_array_push_owned(ptr %3, ptr %2)
+  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9094, i64 16))
+  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9095, i64 16))
   call void @avra_rc_retain(ptr %1)
   call void @avra_rc_retain(ptr %4)
   %5 = call ptr @"av_$40std$2Epath$2Ejoined_path"(ptr %1, ptr %4)
@@ -309456,11 +309459,11 @@ entry:
   %6 = call i1 @"av_$40std$2Eio$2Eexists"(ptr %5)
   call void @avra_rc_release(ptr %5)
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9094, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9095, i64 16))
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9093, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9094, i64 16))
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9092, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9093, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i1 %6
@@ -309473,19 +309476,19 @@ entry:
   call void @avra_rc_retain(ptr %0)
   %2 = call ptr @"av_$40std$2Epath$2Estem_of"(ptr %0)
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9095, i64 16))
-  call void @avra_array_push_owned(ptr %3, ptr %2)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9096, i64 16))
-  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9097, i64 16))
+  call void @avra_array_push_owned(ptr %3, ptr %2)
+  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9097, i64 16))
+  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9098, i64 16))
   call void @avra_rc_retain(ptr %1)
   call void @avra_rc_retain(ptr %4)
   %5 = call ptr @"av_$40std$2Epath$2Ejoined_path"(ptr %1, ptr %4)
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9097, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9098, i64 16))
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9096, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9097, i64 16))
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9095, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9096, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %5
@@ -309494,14 +309497,14 @@ entry:
 define ptr @"av_commands$2Eno_programs"(ptr %0) {
 entry:
   %1 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9098, i64 16))
-  call void @avra_array_push_owned(ptr %1, ptr %0)
   call void @avra_array_push_owned(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9099, i64 16))
-  %2 = call ptr @avra_str_join(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9100, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9100, i64 16))
+  call void @avra_array_push_owned(ptr %1, ptr %0)
+  call void @avra_array_push_owned(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9100, i64 16))
+  %2 = call ptr @avra_str_join(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9101, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9101, i64 16))
   call void @avra_rc_release(ptr %1)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9100, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9099, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9098, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %2
 }
@@ -309511,18 +309514,18 @@ entry:
   call void @avra_rc_retain(ptr %0)
   %1 = call ptr @"av_$40std$2Epath$2Estem_of"(ptr %0)
   %2 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9101, i64 16))
-  call void @avra_array_push_owned(ptr %2, ptr %0)
   call void @avra_array_push_owned(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9102, i64 16))
-  call void @avra_array_push_owned(ptr %2, ptr %1)
+  call void @avra_array_push_owned(ptr %2, ptr %0)
   call void @avra_array_push_owned(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9103, i64 16))
-  %3 = call ptr @avra_str_join(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9104, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9104, i64 16))
+  call void @avra_array_push_owned(ptr %2, ptr %1)
+  call void @avra_array_push_owned(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9104, i64 16))
+  %3 = call ptr @avra_str_join(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9105, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9105, i64 16))
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9103, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9104, i64 16))
   call void @avra_rc_release(ptr %1)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9103, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9102, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9101, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %3
 }
@@ -309589,8 +309592,8 @@ endif:                                            ; preds = %else, %then
 define ptr @"av_commands$2Enested_workspace"(ptr %0) {
 entry:
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9105, i64 16))
-  %1 = call ptr @"av_$40std$2Epath$2Ejoined_path"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9105, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9106, i64 16))
+  %1 = call ptr @"av_$40std$2Epath$2Ejoined_path"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9106, i64 16))
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Eio$2Eis_dir"(ptr %1)
   br i1 %2, label %then, label %else
@@ -309609,7 +309612,7 @@ then:                                             ; preds = %entry
   call void @avra_rc_release(ptr %4)
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %1)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9105, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9106, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %6
 
@@ -309631,7 +309634,7 @@ endif:                                            ; preds = %else, %postret
   call void @avra_rc_release(ptr %8)
   call void @avra_rc_release(ptr %7)
   call void @avra_rc_release(ptr %1)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9105, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9106, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %10
 
@@ -309717,8 +309720,8 @@ endif:                                            ; preds = %else, %then
 define ptr @"av_commands$2Enested_at"(ptr %0) {
 entry:
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9106, i64 16))
-  %1 = call ptr @"av_$40std$2Epath$2Ejoined_path"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9106, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9107, i64 16))
+  %1 = call ptr @"av_$40std$2Epath$2Ejoined_path"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9107, i64 16))
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Eio$2Eexists"(ptr %1)
   br i1 %2, label %then, label %else
@@ -309727,7 +309730,7 @@ then:                                             ; preds = %entry
   %3 = call ptr @avra_array_sized(i64 1)
   call void @avra_array_push_owned(ptr %3, ptr %0)
   call void @avra_rc_release(ptr %1)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9106, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9107, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %3
 
@@ -309739,7 +309742,7 @@ endif:                                            ; preds = %else, %postret
   call void @avra_rc_retain(ptr %0)
   %4 = call ptr @"av_commands$2Enested_roots"(ptr %0)
   call void @avra_rc_release(ptr %1)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9106, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9107, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %4
 
@@ -309810,9 +309813,9 @@ lexit:                                            ; preds = %lhead
   call void @avra_array_push_owned(ptr %13, ptr %boxed5)
   call void @avra_rc_retain(ptr %13)
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9107, i64 16))
-  %14 = call ptr @"av_commands$2Eplanned_module"(ptr %13, ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9107, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9107, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9108, i64 16))
+  %14 = call ptr @"av_commands$2Eplanned_module"(ptr %13, ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9108, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9108, i64 16))
   call void @avra_rc_release(ptr %13)
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %10)
@@ -309956,17 +309959,17 @@ entry:
   %16 = call ptr @avra_array_sized(i64 4)
   call void @avra_array_push(ptr %16, i64 7)
   call void @avra_array_push(ptr %16, i64 %14)
-  call void @avra_array_push_owned(ptr %16, ptr getelementptr inbounds (i8, ptr @.str.9108, i64 16))
+  call void @avra_array_push_owned(ptr %16, ptr getelementptr inbounds (i8, ptr @.str.9109, i64 16))
   call void @avra_array_push_owned(ptr %16, ptr %15)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %16)
   %17 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEntryBuild$2Egive"(ptr %0, ptr %16)
   %18 = call ptr @avra_int_text(i64 %1)
   %19 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %19, ptr getelementptr inbounds (i8, ptr @.str.9109, i64 16))
-  call void @avra_array_push_owned(ptr %19, ptr %18)
   call void @avra_array_push_owned(ptr %19, ptr getelementptr inbounds (i8, ptr @.str.9110, i64 16))
-  %20 = call ptr @avra_str_join(ptr %19, ptr getelementptr inbounds (i8, ptr @.str.9111, i64 16))
+  call void @avra_array_push_owned(ptr %19, ptr %18)
+  call void @avra_array_push_owned(ptr %19, ptr getelementptr inbounds (i8, ptr @.str.9111, i64 16))
+  %20 = call ptr @avra_str_join(ptr %19, ptr getelementptr inbounds (i8, ptr @.str.9112, i64 16))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %20)
   %21 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEntryBuild$2Etext"(ptr %0, ptr %20)
@@ -309986,7 +309989,7 @@ entry:
   %27 = call ptr @avra_array_sized(i64 4)
   call void @avra_array_push(ptr %27, i64 7)
   call void @avra_array_push(ptr %27, i64 %25)
-  call void @avra_array_push_owned(ptr %27, ptr getelementptr inbounds (i8, ptr @.str.9112, i64 16))
+  call void @avra_array_push_owned(ptr %27, ptr getelementptr inbounds (i8, ptr @.str.9113, i64 16))
   call void @avra_array_push_owned(ptr %27, ptr %26)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %27)
@@ -309995,28 +309998,28 @@ entry:
   call void @avra_array_push(ptr %29, i64 %25)
   %30 = call ptr @avra_array_sized(i64 3)
   call void @avra_array_push(ptr %30, i64 6)
-  call void @avra_array_push_owned(ptr %30, ptr getelementptr inbounds (i8, ptr @.str.9113, i64 16))
+  call void @avra_array_push_owned(ptr %30, ptr getelementptr inbounds (i8, ptr @.str.9114, i64 16))
   call void @avra_array_push_owned(ptr %30, ptr %29)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %30)
   %31 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEntryBuild$2Egive"(ptr %0, ptr %30)
   call void @avra_rc_release(ptr %30)
   call void @avra_rc_release(ptr %29)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9113, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9114, i64 16))
   call void @avra_rc_release(ptr %27)
   call void @avra_rc_release(ptr %26)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9112, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9113, i64 16))
   call void @avra_rc_release(ptr %24)
   call void @avra_rc_release(ptr %23)
   call void @avra_rc_release(ptr %20)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9111, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9112, i64 16))
   call void @avra_rc_release(ptr %19)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9110, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9111, i64 16))
   call void @avra_rc_release(ptr %18)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9109, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9110, i64 16))
   call void @avra_rc_release(ptr %16)
   call void @avra_rc_release(ptr %15)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9108, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9109, i64 16))
   call void @avra_rc_release(ptr %13)
   call void @avra_rc_release(ptr %12)
   call void @avra_rc_release(ptr %9)
@@ -310038,7 +310041,7 @@ entry:
   call void @avra_array_push(ptr %5, i64 %4)
   %6 = call ptr @avra_array_sized(i64 3)
   call void @avra_array_push(ptr %6, i64 6)
-  call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9114, i64 16))
+  call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9115, i64 16))
   call void @avra_array_push_owned(ptr %6, ptr %5)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %6)
@@ -310081,10 +310084,10 @@ entry:
   %21 = call i64 @avra_array_get(ptr %1, i64 1)
   %boxed3 = inttoptr i64 %21 to ptr
   %22 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %22, ptr getelementptr inbounds (i8, ptr @.str.9115, i64 16))
-  call void @avra_array_push_owned(ptr %22, ptr %boxed3)
   call void @avra_array_push_owned(ptr %22, ptr getelementptr inbounds (i8, ptr @.str.9116, i64 16))
-  %23 = call ptr @avra_str_join(ptr %22, ptr getelementptr inbounds (i8, ptr @.str.9117, i64 16))
+  call void @avra_array_push_owned(ptr %22, ptr %boxed3)
+  call void @avra_array_push_owned(ptr %22, ptr getelementptr inbounds (i8, ptr @.str.9117, i64 16))
+  %23 = call ptr @avra_str_join(ptr %22, ptr getelementptr inbounds (i8, ptr @.str.9118, i64 16))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %23)
   %24 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EEntryBuild$2Esay"(ptr %0, ptr %23)
@@ -310166,10 +310169,10 @@ entry:
   call void @avra_rc_release(ptr %27)
   call void @avra_rc_release(ptr %26)
   call void @avra_rc_release(ptr %23)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9117, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9118, i64 16))
   call void @avra_rc_release(ptr %22)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9117, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9116, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9115, i64 16))
   call void @avra_rc_release(ptr %19)
   call void @avra_rc_release(ptr %16)
   call void @avra_rc_release(ptr %14)
@@ -310178,7 +310181,7 @@ entry:
   call void @avra_rc_release(ptr %9)
   call void @avra_rc_release(ptr %6)
   call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9114, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9115, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 %47
@@ -310203,31 +310206,31 @@ entry:
   %5 = call i64 @avra_array_get(ptr %0, i64 4)
   %6 = call ptr @avra_int_text(i64 %5)
   %7 = call ptr @avra_array_sized(i64 11)
-  call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9118, i64 16))
-  call void @avra_array_push_owned(ptr %7, ptr %1)
   call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9119, i64 16))
-  call void @avra_array_push_owned(ptr %7, ptr %2)
+  call void @avra_array_push_owned(ptr %7, ptr %1)
   call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9120, i64 16))
-  call void @avra_array_push_owned(ptr %7, ptr %3)
+  call void @avra_array_push_owned(ptr %7, ptr %2)
   call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9121, i64 16))
-  call void @avra_array_push_owned(ptr %7, ptr %4)
+  call void @avra_array_push_owned(ptr %7, ptr %3)
   call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9122, i64 16))
-  call void @avra_array_push_owned(ptr %7, ptr %6)
+  call void @avra_array_push_owned(ptr %7, ptr %4)
   call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9123, i64 16))
-  %8 = call ptr @avra_str_join(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9124, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9124, i64 16))
+  call void @avra_array_push_owned(ptr %7, ptr %6)
+  call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9124, i64 16))
+  %8 = call ptr @avra_str_join(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9125, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9125, i64 16))
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9123, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9124, i64 16))
   call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9122, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9123, i64 16))
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9121, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9122, i64 16))
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9120, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9121, i64 16))
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9119, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9120, i64 16))
   call void @avra_rc_release(ptr %1)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9118, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9119, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %8
 }
@@ -310328,7 +310331,7 @@ define i64 @"av_commands$2Ewarn"(ptr %0) {
 entry:
   call void @avra_rc_retain(ptr %0)
   %1 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EProgram$2Ewarnings"(ptr %0)
-  %2 = call i64 @avra_streq(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9125, i64 16))
+  %2 = call i64 @avra_streq(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9126, i64 16))
   %b = icmp ne i64 %2, 0
   %not = xor i1 %b, true
   br i1 %not, label %then, label %else
@@ -310343,7 +310346,7 @@ else:                                             ; preds = %entry
 
 endif:                                            ; preds = %else, %then
   %regval = phi i64 [ 0, %then ], [ 0, %else ]
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9125, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9126, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 0
@@ -310432,10 +310435,10 @@ endif12:                                          ; preds = %else11, %then10
   br i1 %regval15, label %then16, label %else17
 
 then16:                                           ; preds = %endif12
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9126, i64 16))
-  %11 = call i64 @"av_$40std$2Eio$2Eprintln"(ptr getelementptr inbounds (i8, ptr @.str.9126, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9127, i64 16))
+  %11 = call i64 @"av_$40std$2Eio$2Eprintln"(ptr getelementptr inbounds (i8, ptr @.str.9127, i64 16))
   call void @avra_cell_release(ptr %slot)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9126, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9127, i64 16))
   call void @avra_rc_release(ptr %7)
   call void @avra_rc_release(ptr %6)
   call void @avra_rc_release(ptr null)
@@ -310471,7 +310474,7 @@ endif18:                                          ; preds = %else17, %postret19
   ret i64 %14
 
 postret19:                                        ; No predecessors!
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9126, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9127, i64 16))
   br label %endif18
 
 postret22:                                        ; No predecessors!
@@ -310567,17 +310570,17 @@ else:                                             ; preds = %entry
 endif:                                            ; preds = %else, %postret
   %regval = phi i64 [ 0, %postret ], [ 0, %else ]
   %5 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9127, i64 16))
-  call void @avra_array_push_owned(ptr %5, ptr %1)
   call void @avra_array_push_owned(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9128, i64 16))
-  %6 = call ptr @avra_str_join(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9129, i64 16))
+  call void @avra_array_push_owned(ptr %5, ptr %1)
+  call void @avra_array_push_owned(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9129, i64 16))
+  %6 = call ptr @avra_str_join(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9130, i64 16))
   call void @avra_rc_retain(ptr %6)
   %7 = call i64 @"av_$40std$2Eio$2Eeprintln"(ptr %6)
   call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9129, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9130, i64 16))
   call void @avra_rc_release(ptr %5)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9129, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9128, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9127, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 1
@@ -311116,8 +311119,8 @@ else6:                                            ; preds = %lexit
   %7 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed8 = inttoptr i64 %7 to ptr
   call void @avra_rc_retain(ptr %boxed8)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9130, i64 16))
-  %8 = call ptr @"av_$40std$2Epath$2Ejoined_path"(ptr %boxed8, ptr getelementptr inbounds (i8, ptr @.str.9130, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9131, i64 16))
+  %8 = call ptr @"av_$40std$2Epath$2Ejoined_path"(ptr %boxed8, ptr getelementptr inbounds (i8, ptr @.str.9131, i64 16))
   call void @avra_rc_retain(ptr %8)
   %9 = call ptr @"av_commands$2Enested_roots"(ptr %8)
   %10 = call i64 @avra_array_len(ptr %9)
@@ -311125,7 +311128,7 @@ else6:                                            ; preds = %lexit
   %not = xor i1 %cmp9, true
   call void @avra_rc_release(ptr %9)
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9130, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9131, i64 16))
   br label %endif7
 
 endif7:                                           ; preds = %else6, %then5
@@ -311254,12 +311257,12 @@ lexit:                                            ; preds = %lhead
   %8 = call i64 %cast6(ptr %boxed5)
   %sub = sub i64 %8, %3
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9131, i64 16))
-  %9 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EWorkspace$2Etimed"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9131, i64 16), i64 %sub)
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9132, i64 16))
+  %9 = call i64 @"av_$40std$2Eavrac$2Elanguage$2EWorkspace$2Etimed"(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.9132, i64 16), i64 %sub)
   call void @avra_rc_retain(ptr %0)
   %10 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EWorkspace$2Ecases"(ptr %0)
   call void @avra_cell_release(ptr %slot1)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9131, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9132, i64 16))
   call void @avra_rc_release(ptr %4)
   call void @avra_rc_release(ptr %0)
   ret ptr %10
@@ -311340,32 +311343,32 @@ entry:
 define ptr @"av_$40std$2Eavrac$2Elanguage$2Eno_target"(ptr %0) {
 entry:
   %1 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9133, i64 16))
-  call void @avra_array_push_owned(ptr %1, ptr %0)
   call void @avra_array_push_owned(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9134, i64 16))
-  %2 = call ptr @avra_str_join(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9135, i64 16))
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9132, i64 16))
+  call void @avra_array_push_owned(ptr %1, ptr %0)
+  call void @avra_array_push_owned(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9135, i64 16))
+  %2 = call ptr @avra_str_join(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9136, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9133, i64 16))
   call void @avra_rc_retain(ptr %2)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9136, i64 16))
   call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9137, i64 16))
-  %3 = call ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erefusal"(ptr getelementptr inbounds (i8, ptr @.str.9132, i64 16), ptr null, ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9136, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9137, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9138, i64 16))
+  %3 = call ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erefusal"(ptr getelementptr inbounds (i8, ptr @.str.9133, i64 16), ptr null, ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9137, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9138, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9138, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9137, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9136, i64 16))
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9135, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9136, i64 16))
   call void @avra_rc_release(ptr %1)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9135, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9134, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9133, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9132, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %3
 }
 
 define ptr @"av_commands$2Erun_command"() {
 entry:
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9138, i64 16))
   call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9139, i64 16))
-  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9138, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9139, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9140, i64 16))
+  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9139, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9140, i64 16))
   %1 = call ptr @avra_array_sized(i64 0)
   %2 = call ptr @avra_array_new()
   call void @avra_array_push_owned(ptr %2, ptr %1)
@@ -311376,8 +311379,8 @@ entry:
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9140, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9139, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9138, i64 16))
   ret ptr %3
 }
 
@@ -311386,11 +311389,11 @@ entry:
   %2 = call ptr @avra_array_sized(i64 1)
   call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_commands$2Eran$24w" to i64))
   call void @avra_rc_retain(ptr %1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9140, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9141, i64 16))
   call void @avra_rc_retain(ptr %2)
-  %3 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9140, i64 16), ptr %2)
+  %3 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9141, i64 16), ptr %2)
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9140, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9141, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 %3
@@ -311573,9 +311576,9 @@ endif:                                            ; preds = %else, %then
 
 define ptr @"av_commands$2Ebuild_command"() {
 entry:
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9141, i64 16))
   call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9142, i64 16))
-  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9141, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9142, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9143, i64 16))
+  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9142, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9143, i64 16))
   %1 = call ptr @avra_array_sized(i64 0)
   %2 = call ptr @avra_array_new()
   call void @avra_array_push_owned(ptr %2, ptr %1)
@@ -311586,8 +311589,8 @@ entry:
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9143, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9142, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9141, i64 16))
   ret ptr %3
 }
 
@@ -311596,11 +311599,11 @@ entry:
   %2 = call ptr @avra_array_sized(i64 1)
   call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_commands$2Ebuilt$24w" to i64))
   call void @avra_rc_retain(ptr %1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9143, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9144, i64 16))
   call void @avra_rc_retain(ptr %2)
-  %3 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9143, i64 16), ptr %2)
+  %3 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9144, i64 16), ptr %2)
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9143, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9144, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 %3
@@ -311680,9 +311683,9 @@ define i64 @"av_commands$2Elink"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9144, i64 16))
-  %2 = call i64 @"av_commands$2Elinked"(ptr %0, ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9144, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9144, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9145, i64 16))
+  %2 = call i64 @"av_commands$2Elinked"(ptr %0, ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9145, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9145, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 %2
@@ -311806,8 +311809,8 @@ postret6:                                         ; No predecessors!
 then11:                                           ; preds = %endif4
   %15 = call ptr @avra_array_sized(i64 2)
   call void @avra_array_push(ptr %15, i64 1)
-  call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9145, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9145, i64 16))
+  call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9146, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9146, i64 16))
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %4)
@@ -311827,7 +311830,7 @@ endif13:                                          ; preds = %else12, %postret14
 
 postret14:                                        ; No predecessors!
   call void @avra_rc_release(ptr %15)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9145, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9146, i64 16))
   br label %endif13
 
 then17:                                           ; preds = %endif13
@@ -311851,10 +311854,10 @@ endif19:                                          ; preds = %postret20, %then17
   %22 = call i64 @avra_array_get(ptr %boxed23, i64 0)
   %boxed24 = inttoptr i64 %22 to ptr
   %23 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %23, ptr getelementptr inbounds (i8, ptr @.str.9146, i64 16))
-  call void @avra_array_push_owned(ptr %23, ptr %boxed24)
   call void @avra_array_push_owned(ptr %23, ptr getelementptr inbounds (i8, ptr @.str.9147, i64 16))
-  %24 = call ptr @avra_str_join(ptr %23, ptr getelementptr inbounds (i8, ptr @.str.9148, i64 16))
+  call void @avra_array_push_owned(ptr %23, ptr %boxed24)
+  call void @avra_array_push_owned(ptr %23, ptr getelementptr inbounds (i8, ptr @.str.9148, i64 16))
+  %24 = call ptr @avra_str_join(ptr %23, ptr getelementptr inbounds (i8, ptr @.str.9149, i64 16))
   call void @avra_rc_retain(ptr %regval21)
   call void @avra_rc_retain(ptr %24)
   %25 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eemit_ll"(ptr %regval21, ptr %24)
@@ -311873,11 +311876,11 @@ then26:                                           ; preds = %endif19
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %25)
   call void @avra_rc_release(ptr %24)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9148, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9149, i64 16))
   call void @avra_rc_release(ptr %23)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9147, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9148, i64 16))
   call void @avra_rc_release(ptr %19)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9146, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9147, i64 16))
   call void @avra_rc_release(ptr %regval21)
   call void @avra_rc_release(ptr %16)
   call void @avra_rc_release(ptr %11)
@@ -311897,11 +311900,11 @@ endif28:                                          ; preds = %else27, %postret29
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %25)
   call void @avra_rc_release(ptr %24)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9148, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9149, i64 16))
   call void @avra_rc_release(ptr %23)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9147, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9148, i64 16))
   call void @avra_rc_release(ptr %19)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9146, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9147, i64 16))
   call void @avra_rc_release(ptr %regval21)
   call void @avra_rc_release(ptr %16)
   call void @avra_rc_release(ptr %11)
@@ -311918,9 +311921,9 @@ postret29:                                        ; No predecessors!
 
 define ptr @"av_commands$2Eemit_command"() {
 entry:
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9149, i64 16))
   call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9150, i64 16))
-  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9149, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9150, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9151, i64 16))
+  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9150, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9151, i64 16))
   %1 = call ptr @avra_array_sized(i64 0)
   %2 = call ptr @avra_array_new()
   call void @avra_array_push_owned(ptr %2, ptr %1)
@@ -311931,8 +311934,8 @@ entry:
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9151, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9150, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9149, i64 16))
   ret ptr %3
 }
 
@@ -311941,11 +311944,11 @@ entry:
   %2 = call ptr @avra_array_sized(i64 1)
   call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_commands$2Eemitted$24w" to i64))
   call void @avra_rc_retain(ptr %1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9151, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9152, i64 16))
   call void @avra_rc_retain(ptr %2)
-  %3 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9151, i64 16), ptr %2)
+  %3 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9152, i64 16), ptr %2)
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9151, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9152, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 %3
@@ -311995,7 +311998,7 @@ else3:                                            ; preds = %endif
   br label %endif4
 
 endif4:                                           ; preds = %else3, %then2
-  %regval5 = phi ptr [ %6, %then2 ], [ getelementptr inbounds (i8, ptr @.str.9152, i64 16), %else3 ]
+  %regval5 = phi ptr [ %6, %then2 ], [ getelementptr inbounds (i8, ptr @.str.9153, i64 16), %else3 ]
   call void @avra_rc_retain(ptr %regval5)
   %7 = call i64 @"av_$40std$2Eio$2Eprintln"(ptr %regval5)
   call void @avra_rc_release(ptr %regval5)
@@ -312011,9 +312014,9 @@ endif4:                                           ; preds = %else3, %then2
 
 define ptr @"av_commands$2Eseats_command"() {
 entry:
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9153, i64 16))
   call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9154, i64 16))
-  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9153, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9154, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9155, i64 16))
+  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9154, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9155, i64 16))
   %1 = call ptr @avra_array_sized(i64 0)
   %2 = call ptr @avra_array_new()
   call void @avra_array_push_owned(ptr %2, ptr %1)
@@ -312024,8 +312027,8 @@ entry:
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9155, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9154, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9153, i64 16))
   ret ptr %3
 }
 
@@ -312034,11 +312037,11 @@ entry:
   %2 = call ptr @avra_array_sized(i64 1)
   call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_commands$2Etallied$24w" to i64))
   call void @avra_rc_retain(ptr %1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9155, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9156, i64 16))
   call void @avra_rc_retain(ptr %2)
-  %3 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9155, i64 16), ptr %2)
+  %3 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9156, i64 16), ptr %2)
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9155, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9156, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 %3
@@ -312111,42 +312114,42 @@ entry:
   %1 = call i64 @avra_array_get(ptr %0, i64 0)
   %2 = call ptr @avra_int_text(i64 %1)
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9156, i64 16))
-  call void @avra_array_push_owned(ptr %3, ptr %2)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9157, i64 16))
-  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9158, i64 16))
+  call void @avra_array_push_owned(ptr %3, ptr %2)
+  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9158, i64 16))
+  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9159, i64 16))
   %5 = call i64 @avra_array_get(ptr %0, i64 1)
   %6 = call ptr @avra_int_text(i64 %5)
   %7 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9159, i64 16))
-  call void @avra_array_push_owned(ptr %7, ptr %6)
   call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9160, i64 16))
-  %8 = call ptr @avra_str_join(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9161, i64 16))
+  call void @avra_array_push_owned(ptr %7, ptr %6)
+  call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9161, i64 16))
+  %8 = call ptr @avra_str_join(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9162, i64 16))
   %9 = call i64 @avra_array_get(ptr %0, i64 2)
   %10 = call ptr @avra_int_text(i64 %9)
   %11 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %11, ptr getelementptr inbounds (i8, ptr @.str.9162, i64 16))
-  call void @avra_array_push_owned(ptr %11, ptr %10)
   call void @avra_array_push_owned(ptr %11, ptr getelementptr inbounds (i8, ptr @.str.9163, i64 16))
-  %12 = call ptr @avra_str_join(ptr %11, ptr getelementptr inbounds (i8, ptr @.str.9164, i64 16))
+  call void @avra_array_push_owned(ptr %11, ptr %10)
+  call void @avra_array_push_owned(ptr %11, ptr getelementptr inbounds (i8, ptr @.str.9164, i64 16))
+  %12 = call ptr @avra_str_join(ptr %11, ptr getelementptr inbounds (i8, ptr @.str.9165, i64 16))
   %13 = call i64 @avra_array_get(ptr %0, i64 3)
   %14 = call ptr @avra_int_text(i64 %13)
   %15 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9165, i64 16))
-  call void @avra_array_push_owned(ptr %15, ptr %14)
   call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9166, i64 16))
-  %16 = call ptr @avra_str_join(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9167, i64 16))
+  call void @avra_array_push_owned(ptr %15, ptr %14)
+  call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9167, i64 16))
+  %16 = call ptr @avra_str_join(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9168, i64 16))
   %17 = call i64 @avra_array_get(ptr %0, i64 1)
   %18 = call ptr @avra_int_text(i64 %17)
   %19 = call i64 @avra_array_get(ptr %0, i64 4)
   %20 = call ptr @avra_int_text(i64 %19)
   %21 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9168, i64 16))
-  call void @avra_array_push_owned(ptr %21, ptr %18)
   call void @avra_array_push_owned(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9169, i64 16))
-  call void @avra_array_push_owned(ptr %21, ptr %20)
+  call void @avra_array_push_owned(ptr %21, ptr %18)
   call void @avra_array_push_owned(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9170, i64 16))
-  %22 = call ptr @avra_str_join(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9171, i64 16))
+  call void @avra_array_push_owned(ptr %21, ptr %20)
+  call void @avra_array_push_owned(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9171, i64 16))
+  %22 = call ptr @avra_str_join(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9172, i64 16))
   %23 = call ptr @avra_array_sized(i64 5)
   call void @avra_array_push_owned(ptr %23, ptr %4)
   call void @avra_array_push_owned(ptr %23, ptr %8)
@@ -312154,42 +312157,42 @@ entry:
   call void @avra_array_push_owned(ptr %23, ptr %16)
   call void @avra_array_push_owned(ptr %23, ptr %22)
   call void @avra_rc_retain(ptr %23)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9172, i64 16))
-  %24 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %23, ptr getelementptr inbounds (i8, ptr @.str.9172, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9172, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9173, i64 16))
+  %24 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %23, ptr getelementptr inbounds (i8, ptr @.str.9173, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9173, i64 16))
   call void @avra_rc_release(ptr %23)
   call void @avra_rc_release(ptr %22)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9171, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9172, i64 16))
   call void @avra_rc_release(ptr %21)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9170, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9171, i64 16))
   call void @avra_rc_release(ptr %20)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9169, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9170, i64 16))
   call void @avra_rc_release(ptr %18)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9168, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9169, i64 16))
   call void @avra_rc_release(ptr %16)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9167, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9168, i64 16))
   call void @avra_rc_release(ptr %15)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9166, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9167, i64 16))
   call void @avra_rc_release(ptr %14)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9165, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9166, i64 16))
   call void @avra_rc_release(ptr %12)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9164, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9165, i64 16))
   call void @avra_rc_release(ptr %11)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9163, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9164, i64 16))
   call void @avra_rc_release(ptr %10)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9162, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9163, i64 16))
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9161, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9162, i64 16))
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9160, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9161, i64 16))
   call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9159, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9160, i64 16))
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9158, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9159, i64 16))
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9157, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9158, i64 16))
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9156, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9157, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %24
 }
@@ -314001,19 +314004,19 @@ entry:
   %3 = call i64 @avra_array_get(ptr %0, i64 0)
   %4 = call ptr @avra_int_text(i64 %3)
   %5 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9173, i64 16))
-  call void @avra_array_push_owned(ptr %5, ptr %2)
   call void @avra_array_push_owned(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9174, i64 16))
-  call void @avra_array_push_owned(ptr %5, ptr %4)
+  call void @avra_array_push_owned(ptr %5, ptr %2)
   call void @avra_array_push_owned(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9175, i64 16))
-  %6 = call ptr @avra_str_join(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9176, i64 16))
+  call void @avra_array_push_owned(ptr %5, ptr %4)
+  call void @avra_array_push_owned(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9176, i64 16))
+  %6 = call ptr @avra_str_join(ptr %5, ptr getelementptr inbounds (i8, ptr @.str.9177, i64 16))
   %7 = call i64 @avra_array_get(ptr %0, i64 2)
   %8 = call ptr @avra_int_text(i64 %7)
   %9 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9177, i64 16))
-  call void @avra_array_push_owned(ptr %9, ptr %8)
   call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9178, i64 16))
-  %10 = call ptr @avra_str_join(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9179, i64 16))
+  call void @avra_array_push_owned(ptr %9, ptr %8)
+  call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9179, i64 16))
+  %10 = call ptr @avra_str_join(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9180, i64 16))
   %11 = call ptr @avra_array_sized(i64 2)
   call void @avra_array_push_owned(ptr %11, ptr %6)
   call void @avra_array_push_owned(ptr %11, ptr %10)
@@ -314021,25 +314024,25 @@ entry:
   %boxed = inttoptr i64 %12 to ptr
   %13 = call ptr @avra_array_concat(ptr %11, ptr %boxed)
   call void @avra_rc_retain(ptr %13)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9180, i64 16))
-  %14 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %13, ptr getelementptr inbounds (i8, ptr @.str.9180, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9180, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9181, i64 16))
+  %14 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %13, ptr getelementptr inbounds (i8, ptr @.str.9181, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9181, i64 16))
   call void @avra_rc_release(ptr %13)
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %10)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9179, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9180, i64 16))
   call void @avra_rc_release(ptr %9)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9178, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9179, i64 16))
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9177, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9178, i64 16))
   call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9176, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9177, i64 16))
   call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9175, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9176, i64 16))
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9174, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9175, i64 16))
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9173, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9174, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %14
 }
@@ -314200,23 +314203,23 @@ entry:
   %6 = call i64 @avra_array_len(ptr %boxed1)
   %7 = call ptr @avra_int_text(i64 %6)
   %8 = call ptr @avra_array_sized(i64 7)
-  call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9181, i64 16))
-  call void @avra_array_push_owned(ptr %8, ptr %1)
   call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9182, i64 16))
-  call void @avra_array_push_owned(ptr %8, ptr %4)
+  call void @avra_array_push_owned(ptr %8, ptr %1)
   call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9183, i64 16))
-  call void @avra_array_push_owned(ptr %8, ptr %7)
+  call void @avra_array_push_owned(ptr %8, ptr %4)
   call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9184, i64 16))
-  %9 = call ptr @avra_str_join(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9185, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9185, i64 16))
+  call void @avra_array_push_owned(ptr %8, ptr %7)
+  call void @avra_array_push_owned(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9185, i64 16))
+  %9 = call ptr @avra_str_join(ptr %8, ptr getelementptr inbounds (i8, ptr @.str.9186, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9186, i64 16))
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9184, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9185, i64 16))
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9183, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9184, i64 16))
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9182, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9183, i64 16))
   call void @avra_rc_release(ptr %1)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9181, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9182, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %9
 }
@@ -314316,9 +314319,9 @@ endif:                                            ; preds = %else, %then
 
 define ptr @"av_commands$2Eir_command"() {
 entry:
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9186, i64 16))
   call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9187, i64 16))
-  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9186, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9187, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9188, i64 16))
+  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9187, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9188, i64 16))
   %1 = call ptr @avra_array_sized(i64 0)
   %2 = call ptr @avra_array_new()
   call void @avra_array_push_owned(ptr %2, ptr %1)
@@ -314329,8 +314332,8 @@ entry:
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9188, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9187, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9186, i64 16))
   ret ptr %3
 }
 
@@ -314339,11 +314342,11 @@ entry:
   %2 = call ptr @avra_array_sized(i64 1)
   call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_commands$2Erendered$24w" to i64))
   call void @avra_rc_retain(ptr %1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9188, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9189, i64 16))
   call void @avra_rc_retain(ptr %2)
-  %3 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9188, i64 16), ptr %2)
+  %3 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9189, i64 16), ptr %2)
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9188, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9189, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 %3
@@ -314455,9 +314458,9 @@ lexit5:                                           ; preds = %lhead4
   %14 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ebody_lines"(ptr %boxed14)
   %15 = call ptr @avra_array_concat(ptr %11, ptr %14)
   call void @avra_rc_retain(ptr %15)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9189, i64 16))
-  %16 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9189, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9189, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9190, i64 16))
+  %16 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9190, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9190, i64 16))
   call void @avra_rc_release(ptr %15)
   call void @avra_rc_release(ptr %14)
   call void @avra_rc_release(ptr %11)
@@ -314573,10 +314576,10 @@ arm:                                              ; preds = %lbody
   call void @avra_rc_retain(ptr %6)
   %8 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Etier_word"(ptr %6)
   %9 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9190, i64 16))
-  call void @avra_array_push_owned(ptr %9, ptr %8)
   call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9191, i64 16))
-  %10 = call ptr @avra_str_join(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9192, i64 16))
+  call void @avra_array_push_owned(ptr %9, ptr %8)
+  call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9192, i64 16))
+  %10 = call ptr @avra_str_join(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9193, i64 16))
   call void @avra_rc_retain(ptr %10)
   %11 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld37, ptr %10)
   call void @avra_array_push_owned(ptr %7, ptr %11)
@@ -314585,11 +314588,11 @@ arm:                                              ; preds = %lbody
   store i64 %add, ptr %slot1, align 8
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %10)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9192, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9193, i64 16))
   call void @avra_rc_release(ptr %9)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9191, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9192, i64 16))
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9190, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9191, i64 16))
   call void @avra_rc_release(ptr %6)
   br label %endswitch
 
@@ -314604,10 +314607,10 @@ arm8:                                             ; preds = %lbody
   %ld43 = load i64, ptr %slot1, align 8
   %15 = call ptr @avra_int_text(i64 %13)
   %16 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %16, ptr getelementptr inbounds (i8, ptr @.str.9194, i64 16))
-  call void @avra_array_push_owned(ptr %16, ptr %15)
   call void @avra_array_push_owned(ptr %16, ptr getelementptr inbounds (i8, ptr @.str.9195, i64 16))
-  %17 = call ptr @avra_str_join(ptr %16, ptr getelementptr inbounds (i8, ptr @.str.9196, i64 16))
+  call void @avra_array_push_owned(ptr %16, ptr %15)
+  call void @avra_array_push_owned(ptr %16, ptr getelementptr inbounds (i8, ptr @.str.9196, i64 16))
+  %17 = call ptr @avra_str_join(ptr %16, ptr getelementptr inbounds (i8, ptr @.str.9197, i64 16))
   call void @avra_rc_retain(ptr %17)
   %18 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld43, ptr %17)
   call void @avra_array_push_owned(ptr %14, ptr %18)
@@ -314618,11 +314621,11 @@ arm8:                                             ; preds = %lbody
   store i64 %add45, ptr %slot1, align 8
   call void @avra_rc_release(ptr %18)
   call void @avra_rc_release(ptr %17)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9196, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9197, i64 16))
   call void @avra_rc_release(ptr %16)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9195, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9196, i64 16))
   call void @avra_rc_release(ptr %15)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9194, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9195, i64 16))
   br label %endswitch
 
 arm9:                                             ; preds = %lbody
@@ -314634,12 +314637,12 @@ arm9:                                             ; preds = %lbody
   call void @avra_rc_retain(ptr %21)
   %24 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eint_list"(ptr %21)
   %25 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %25, ptr getelementptr inbounds (i8, ptr @.str.9197, i64 16))
-  call void @avra_array_push_owned(ptr %25, ptr %23)
   call void @avra_array_push_owned(ptr %25, ptr getelementptr inbounds (i8, ptr @.str.9198, i64 16))
-  call void @avra_array_push_owned(ptr %25, ptr %24)
+  call void @avra_array_push_owned(ptr %25, ptr %23)
   call void @avra_array_push_owned(ptr %25, ptr getelementptr inbounds (i8, ptr @.str.9199, i64 16))
-  %26 = call ptr @avra_str_join(ptr %25, ptr getelementptr inbounds (i8, ptr @.str.9200, i64 16))
+  call void @avra_array_push_owned(ptr %25, ptr %24)
+  call void @avra_array_push_owned(ptr %25, ptr getelementptr inbounds (i8, ptr @.str.9200, i64 16))
+  %26 = call ptr @avra_str_join(ptr %25, ptr getelementptr inbounds (i8, ptr @.str.9201, i64 16))
   call void @avra_rc_retain(ptr %26)
   %27 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld46, ptr %26)
   call void @avra_array_push_owned(ptr %22, ptr %27)
@@ -314650,13 +314653,13 @@ arm9:                                             ; preds = %lbody
   store i64 %add48, ptr %slot1, align 8
   call void @avra_rc_release(ptr %27)
   call void @avra_rc_release(ptr %26)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9200, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9201, i64 16))
   call void @avra_rc_release(ptr %25)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9199, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9200, i64 16))
   call void @avra_rc_release(ptr %24)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9198, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9199, i64 16))
   call void @avra_rc_release(ptr %23)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9197, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9198, i64 16))
   call void @avra_rc_release(ptr %21)
   br label %endswitch
 
@@ -314693,20 +314696,20 @@ arm11:                                            ; preds = %lbody
   %ld77 = load i64, ptr %slot1, align 8
   %40 = call ptr @avra_int_text(i64 %33)
   %41 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %41, ptr getelementptr inbounds (i8, ptr @.str.9206, i64 16))
-  call void @avra_array_push_owned(ptr %41, ptr %40)
   call void @avra_array_push_owned(ptr %41, ptr getelementptr inbounds (i8, ptr @.str.9207, i64 16))
-  %42 = call ptr @avra_str_join(ptr %41, ptr getelementptr inbounds (i8, ptr @.str.9208, i64 16))
+  call void @avra_array_push_owned(ptr %41, ptr %40)
+  call void @avra_array_push_owned(ptr %41, ptr getelementptr inbounds (i8, ptr @.str.9208, i64 16))
+  %42 = call ptr @avra_str_join(ptr %41, ptr getelementptr inbounds (i8, ptr @.str.9209, i64 16))
   call void @avra_rc_retain(ptr %42)
   %43 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld77, ptr %42)
   call void @avra_array_push_owned(ptr %39, ptr %43)
   call void @avra_rc_release(ptr %43)
   call void @avra_rc_release(ptr %42)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9208, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9209, i64 16))
   call void @avra_rc_release(ptr %41)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9207, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9208, i64 16))
   call void @avra_rc_release(ptr %40)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9206, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9207, i64 16))
   call void @avra_rc_release(ptr %36)
   br label %endswitch
 
@@ -314718,24 +314721,24 @@ arm12:                                            ; preds = %lbody
   %47 = call ptr @avra_int_text(i64 %44)
   %48 = call ptr @avra_int_text(i64 %45)
   %49 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %49, ptr getelementptr inbounds (i8, ptr @.str.9209, i64 16))
-  call void @avra_array_push_owned(ptr %49, ptr %47)
   call void @avra_array_push_owned(ptr %49, ptr getelementptr inbounds (i8, ptr @.str.9210, i64 16))
-  call void @avra_array_push_owned(ptr %49, ptr %48)
+  call void @avra_array_push_owned(ptr %49, ptr %47)
   call void @avra_array_push_owned(ptr %49, ptr getelementptr inbounds (i8, ptr @.str.9211, i64 16))
-  %50 = call ptr @avra_str_join(ptr %49, ptr getelementptr inbounds (i8, ptr @.str.9212, i64 16))
+  call void @avra_array_push_owned(ptr %49, ptr %48)
+  call void @avra_array_push_owned(ptr %49, ptr getelementptr inbounds (i8, ptr @.str.9212, i64 16))
+  %50 = call ptr @avra_str_join(ptr %49, ptr getelementptr inbounds (i8, ptr @.str.9213, i64 16))
   call void @avra_rc_retain(ptr %50)
   %51 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld78, ptr %50)
   call void @avra_array_push_owned(ptr %46, ptr %51)
   call void @avra_rc_release(ptr %51)
   call void @avra_rc_release(ptr %50)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9212, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9213, i64 16))
   call void @avra_rc_release(ptr %49)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9211, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9212, i64 16))
   call void @avra_rc_release(ptr %48)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9210, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9211, i64 16))
   call void @avra_rc_release(ptr %47)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9209, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9210, i64 16))
   br label %endswitch
 
 arm13:                                            ; preds = %lbody
@@ -314746,24 +314749,24 @@ arm13:                                            ; preds = %lbody
   %55 = call ptr @avra_int_text(i64 %52)
   %56 = call ptr @avra_float_text_bits(i64 %53)
   %57 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %57, ptr getelementptr inbounds (i8, ptr @.str.9213, i64 16))
-  call void @avra_array_push_owned(ptr %57, ptr %55)
   call void @avra_array_push_owned(ptr %57, ptr getelementptr inbounds (i8, ptr @.str.9214, i64 16))
-  call void @avra_array_push_owned(ptr %57, ptr %56)
+  call void @avra_array_push_owned(ptr %57, ptr %55)
   call void @avra_array_push_owned(ptr %57, ptr getelementptr inbounds (i8, ptr @.str.9215, i64 16))
-  %58 = call ptr @avra_str_join(ptr %57, ptr getelementptr inbounds (i8, ptr @.str.9216, i64 16))
+  call void @avra_array_push_owned(ptr %57, ptr %56)
+  call void @avra_array_push_owned(ptr %57, ptr getelementptr inbounds (i8, ptr @.str.9216, i64 16))
+  %58 = call ptr @avra_str_join(ptr %57, ptr getelementptr inbounds (i8, ptr @.str.9217, i64 16))
   call void @avra_rc_retain(ptr %58)
   %59 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld79, ptr %58)
   call void @avra_array_push_owned(ptr %54, ptr %59)
   call void @avra_rc_release(ptr %59)
   call void @avra_rc_release(ptr %58)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9216, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9217, i64 16))
   call void @avra_rc_release(ptr %57)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9215, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9216, i64 16))
   call void @avra_rc_release(ptr %56)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9214, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9215, i64 16))
   call void @avra_rc_release(ptr %55)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9213, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9214, i64 16))
   br label %endswitch
 
 arm14:                                            ; preds = %lbody
@@ -314776,24 +314779,24 @@ arm14:                                            ; preds = %lbody
   call void @avra_rc_retain(ptr %boxed)
   %64 = call ptr @"av_$40std$2Eavrac$2Ecore$2Equoted_text"(ptr %boxed)
   %65 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %65, ptr getelementptr inbounds (i8, ptr @.str.9217, i64 16))
-  call void @avra_array_push_owned(ptr %65, ptr %63)
   call void @avra_array_push_owned(ptr %65, ptr getelementptr inbounds (i8, ptr @.str.9218, i64 16))
-  call void @avra_array_push_owned(ptr %65, ptr %64)
+  call void @avra_array_push_owned(ptr %65, ptr %63)
   call void @avra_array_push_owned(ptr %65, ptr getelementptr inbounds (i8, ptr @.str.9219, i64 16))
-  %66 = call ptr @avra_str_join(ptr %65, ptr getelementptr inbounds (i8, ptr @.str.9220, i64 16))
+  call void @avra_array_push_owned(ptr %65, ptr %64)
+  call void @avra_array_push_owned(ptr %65, ptr getelementptr inbounds (i8, ptr @.str.9220, i64 16))
+  %66 = call ptr @avra_str_join(ptr %65, ptr getelementptr inbounds (i8, ptr @.str.9221, i64 16))
   call void @avra_rc_retain(ptr %66)
   %67 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld80, ptr %66)
   call void @avra_array_push_owned(ptr %62, ptr %67)
   call void @avra_rc_release(ptr %67)
   call void @avra_rc_release(ptr %66)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9220, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9221, i64 16))
   call void @avra_rc_release(ptr %65)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9219, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9220, i64 16))
   call void @avra_rc_release(ptr %64)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9218, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9219, i64 16))
   call void @avra_rc_release(ptr %63)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9217, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9218, i64 16))
   br label %endswitch
 
 arm15:                                            ; preds = %lbody
@@ -314815,32 +314818,32 @@ arm16:                                            ; preds = %lbody
   %77 = call ptr @"av_$40std$2Eavrac$2Ecore$2Eop_symbol"(ptr %71)
   %78 = call ptr @avra_int_text(i64 %73)
   %79 = call ptr @avra_array_sized(i64 9)
-  call void @avra_array_push_owned(ptr %79, ptr getelementptr inbounds (i8, ptr @.str.9227, i64 16))
-  call void @avra_array_push_owned(ptr %79, ptr %75)
   call void @avra_array_push_owned(ptr %79, ptr getelementptr inbounds (i8, ptr @.str.9228, i64 16))
-  call void @avra_array_push_owned(ptr %79, ptr %76)
+  call void @avra_array_push_owned(ptr %79, ptr %75)
   call void @avra_array_push_owned(ptr %79, ptr getelementptr inbounds (i8, ptr @.str.9229, i64 16))
-  call void @avra_array_push_owned(ptr %79, ptr %77)
+  call void @avra_array_push_owned(ptr %79, ptr %76)
   call void @avra_array_push_owned(ptr %79, ptr getelementptr inbounds (i8, ptr @.str.9230, i64 16))
-  call void @avra_array_push_owned(ptr %79, ptr %78)
+  call void @avra_array_push_owned(ptr %79, ptr %77)
   call void @avra_array_push_owned(ptr %79, ptr getelementptr inbounds (i8, ptr @.str.9231, i64 16))
-  %80 = call ptr @avra_str_join(ptr %79, ptr getelementptr inbounds (i8, ptr @.str.9232, i64 16))
+  call void @avra_array_push_owned(ptr %79, ptr %78)
+  call void @avra_array_push_owned(ptr %79, ptr getelementptr inbounds (i8, ptr @.str.9232, i64 16))
+  %80 = call ptr @avra_str_join(ptr %79, ptr getelementptr inbounds (i8, ptr @.str.9233, i64 16))
   call void @avra_rc_retain(ptr %80)
   %81 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld87, ptr %80)
   call void @avra_array_push_owned(ptr %74, ptr %81)
   call void @avra_rc_release(ptr %81)
   call void @avra_rc_release(ptr %80)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9232, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9233, i64 16))
   call void @avra_rc_release(ptr %79)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9231, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9232, i64 16))
   call void @avra_rc_release(ptr %78)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9230, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9231, i64 16))
   call void @avra_rc_release(ptr %77)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9229, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9230, i64 16))
   call void @avra_rc_release(ptr %76)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9228, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9229, i64 16))
   call void @avra_rc_release(ptr %75)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9227, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9228, i64 16))
   call void @avra_rc_release(ptr %71)
   br label %endswitch
 
@@ -314855,28 +314858,28 @@ arm17:                                            ; preds = %lbody
   %87 = call ptr @"av_$40std$2Eavrac$2Ecore$2Eun_symbol"(ptr %83)
   %88 = call ptr @avra_int_text(i64 %84)
   %89 = call ptr @avra_array_sized(i64 7)
-  call void @avra_array_push_owned(ptr %89, ptr getelementptr inbounds (i8, ptr @.str.9233, i64 16))
-  call void @avra_array_push_owned(ptr %89, ptr %86)
   call void @avra_array_push_owned(ptr %89, ptr getelementptr inbounds (i8, ptr @.str.9234, i64 16))
-  call void @avra_array_push_owned(ptr %89, ptr %87)
+  call void @avra_array_push_owned(ptr %89, ptr %86)
   call void @avra_array_push_owned(ptr %89, ptr getelementptr inbounds (i8, ptr @.str.9235, i64 16))
-  call void @avra_array_push_owned(ptr %89, ptr %88)
+  call void @avra_array_push_owned(ptr %89, ptr %87)
   call void @avra_array_push_owned(ptr %89, ptr getelementptr inbounds (i8, ptr @.str.9236, i64 16))
-  %90 = call ptr @avra_str_join(ptr %89, ptr getelementptr inbounds (i8, ptr @.str.9237, i64 16))
+  call void @avra_array_push_owned(ptr %89, ptr %88)
+  call void @avra_array_push_owned(ptr %89, ptr getelementptr inbounds (i8, ptr @.str.9237, i64 16))
+  %90 = call ptr @avra_str_join(ptr %89, ptr getelementptr inbounds (i8, ptr @.str.9238, i64 16))
   call void @avra_rc_retain(ptr %90)
   %91 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld88, ptr %90)
   call void @avra_array_push_owned(ptr %85, ptr %91)
   call void @avra_rc_release(ptr %91)
   call void @avra_rc_release(ptr %90)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9237, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9238, i64 16))
   call void @avra_rc_release(ptr %89)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9236, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9237, i64 16))
   call void @avra_rc_release(ptr %88)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9235, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9236, i64 16))
   call void @avra_rc_release(ptr %87)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9234, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9235, i64 16))
   call void @avra_rc_release(ptr %86)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9233, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9234, i64 16))
   call void @avra_rc_release(ptr %83)
   br label %endswitch
 
@@ -314905,24 +314908,24 @@ arm19:                                            ; preds = %lbody
   call void @avra_rc_retain(ptr %boxed91)
   %101 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ereg_list"(ptr %boxed91)
   %102 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %102, ptr getelementptr inbounds (i8, ptr @.str.9238, i64 16))
-  call void @avra_array_push_owned(ptr %102, ptr %100)
   call void @avra_array_push_owned(ptr %102, ptr getelementptr inbounds (i8, ptr @.str.9239, i64 16))
-  call void @avra_array_push_owned(ptr %102, ptr %101)
+  call void @avra_array_push_owned(ptr %102, ptr %100)
   call void @avra_array_push_owned(ptr %102, ptr getelementptr inbounds (i8, ptr @.str.9240, i64 16))
-  %103 = call ptr @avra_str_join(ptr %102, ptr getelementptr inbounds (i8, ptr @.str.9241, i64 16))
+  call void @avra_array_push_owned(ptr %102, ptr %101)
+  call void @avra_array_push_owned(ptr %102, ptr getelementptr inbounds (i8, ptr @.str.9241, i64 16))
+  %103 = call ptr @avra_str_join(ptr %102, ptr getelementptr inbounds (i8, ptr @.str.9242, i64 16))
   call void @avra_rc_retain(ptr %103)
   %104 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld92, ptr %103)
   call void @avra_array_push_owned(ptr %99, ptr %104)
   call void @avra_rc_release(ptr %104)
   call void @avra_rc_release(ptr %103)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9241, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9242, i64 16))
   call void @avra_rc_release(ptr %102)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9240, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9241, i64 16))
   call void @avra_rc_release(ptr %101)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9239, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9240, i64 16))
   call void @avra_rc_release(ptr %100)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9238, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9239, i64 16))
   br label %endswitch
 
 arm20:                                            ; preds = %lbody
@@ -314935,28 +314938,28 @@ arm20:                                            ; preds = %lbody
   %110 = call ptr @avra_int_text(i64 %106)
   %111 = call ptr @avra_int_text(i64 %107)
   %112 = call ptr @avra_array_sized(i64 7)
-  call void @avra_array_push_owned(ptr %112, ptr getelementptr inbounds (i8, ptr @.str.9242, i64 16))
-  call void @avra_array_push_owned(ptr %112, ptr %109)
   call void @avra_array_push_owned(ptr %112, ptr getelementptr inbounds (i8, ptr @.str.9243, i64 16))
-  call void @avra_array_push_owned(ptr %112, ptr %110)
+  call void @avra_array_push_owned(ptr %112, ptr %109)
   call void @avra_array_push_owned(ptr %112, ptr getelementptr inbounds (i8, ptr @.str.9244, i64 16))
-  call void @avra_array_push_owned(ptr %112, ptr %111)
+  call void @avra_array_push_owned(ptr %112, ptr %110)
   call void @avra_array_push_owned(ptr %112, ptr getelementptr inbounds (i8, ptr @.str.9245, i64 16))
-  %113 = call ptr @avra_str_join(ptr %112, ptr getelementptr inbounds (i8, ptr @.str.9246, i64 16))
+  call void @avra_array_push_owned(ptr %112, ptr %111)
+  call void @avra_array_push_owned(ptr %112, ptr getelementptr inbounds (i8, ptr @.str.9246, i64 16))
+  %113 = call ptr @avra_str_join(ptr %112, ptr getelementptr inbounds (i8, ptr @.str.9247, i64 16))
   call void @avra_rc_retain(ptr %113)
   %114 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld93, ptr %113)
   call void @avra_array_push_owned(ptr %108, ptr %114)
   call void @avra_rc_release(ptr %114)
   call void @avra_rc_release(ptr %113)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9246, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9247, i64 16))
   call void @avra_rc_release(ptr %112)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9245, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9246, i64 16))
   call void @avra_rc_release(ptr %111)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9244, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9245, i64 16))
   call void @avra_rc_release(ptr %110)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9243, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9244, i64 16))
   call void @avra_rc_release(ptr %109)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9242, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9243, i64 16))
   br label %endswitch
 
 arm21:                                            ; preds = %lbody
@@ -314968,23 +314971,23 @@ arm21:                                            ; preds = %lbody
   call void @avra_rc_retain(ptr %boxed94)
   %118 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ereg_list"(ptr %boxed94)
   %119 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %119, ptr getelementptr inbounds (i8, ptr @.str.9247, i64 16))
-  call void @avra_array_push_owned(ptr %119, ptr %115)
   call void @avra_array_push_owned(ptr %119, ptr getelementptr inbounds (i8, ptr @.str.9248, i64 16))
-  call void @avra_array_push_owned(ptr %119, ptr %118)
+  call void @avra_array_push_owned(ptr %119, ptr %115)
   call void @avra_array_push_owned(ptr %119, ptr getelementptr inbounds (i8, ptr @.str.9249, i64 16))
-  %120 = call ptr @avra_str_join(ptr %119, ptr getelementptr inbounds (i8, ptr @.str.9250, i64 16))
+  call void @avra_array_push_owned(ptr %119, ptr %118)
+  call void @avra_array_push_owned(ptr %119, ptr getelementptr inbounds (i8, ptr @.str.9250, i64 16))
+  %120 = call ptr @avra_str_join(ptr %119, ptr getelementptr inbounds (i8, ptr @.str.9251, i64 16))
   call void @avra_rc_retain(ptr %120)
   %121 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld95, ptr %120)
   call void @avra_array_push_owned(ptr %117, ptr %121)
   call void @avra_rc_release(ptr %121)
   call void @avra_rc_release(ptr %120)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9250, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9251, i64 16))
   call void @avra_rc_release(ptr %119)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9249, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9250, i64 16))
   call void @avra_rc_release(ptr %118)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9249, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9248, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9247, i64 16))
   call void @avra_rc_release(ptr %115)
   br label %endswitch
 
@@ -315011,23 +315014,23 @@ arm23:                                            ; preds = %lbody
   %ld99 = load i64, ptr %slot1, align 8
   %130 = call ptr @avra_int_text(i64 %127)
   %131 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %131, ptr getelementptr inbounds (i8, ptr @.str.9251, i64 16))
-  call void @avra_array_push_owned(ptr %131, ptr %130)
   call void @avra_array_push_owned(ptr %131, ptr getelementptr inbounds (i8, ptr @.str.9252, i64 16))
-  call void @avra_array_push_owned(ptr %131, ptr %boxed98)
+  call void @avra_array_push_owned(ptr %131, ptr %130)
   call void @avra_array_push_owned(ptr %131, ptr getelementptr inbounds (i8, ptr @.str.9253, i64 16))
-  %132 = call ptr @avra_str_join(ptr %131, ptr getelementptr inbounds (i8, ptr @.str.9254, i64 16))
+  call void @avra_array_push_owned(ptr %131, ptr %boxed98)
+  call void @avra_array_push_owned(ptr %131, ptr getelementptr inbounds (i8, ptr @.str.9254, i64 16))
+  %132 = call ptr @avra_str_join(ptr %131, ptr getelementptr inbounds (i8, ptr @.str.9255, i64 16))
   call void @avra_rc_retain(ptr %132)
   %133 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld99, ptr %132)
   call void @avra_array_push_owned(ptr %129, ptr %133)
   call void @avra_rc_release(ptr %133)
   call void @avra_rc_release(ptr %132)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9254, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9255, i64 16))
   call void @avra_rc_release(ptr %131)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9254, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9253, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9252, i64 16))
   call void @avra_rc_release(ptr %130)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9251, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9252, i64 16))
   br label %endswitch
 
 arm24:                                            ; preds = %lbody
@@ -315038,23 +315041,23 @@ arm24:                                            ; preds = %lbody
   %ld101 = load i64, ptr %slot1, align 8
   %137 = call ptr @avra_int_text(i64 %134)
   %138 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %138, ptr getelementptr inbounds (i8, ptr @.str.9255, i64 16))
-  call void @avra_array_push_owned(ptr %138, ptr %137)
   call void @avra_array_push_owned(ptr %138, ptr getelementptr inbounds (i8, ptr @.str.9256, i64 16))
-  call void @avra_array_push_owned(ptr %138, ptr %boxed100)
+  call void @avra_array_push_owned(ptr %138, ptr %137)
   call void @avra_array_push_owned(ptr %138, ptr getelementptr inbounds (i8, ptr @.str.9257, i64 16))
-  %139 = call ptr @avra_str_join(ptr %138, ptr getelementptr inbounds (i8, ptr @.str.9258, i64 16))
+  call void @avra_array_push_owned(ptr %138, ptr %boxed100)
+  call void @avra_array_push_owned(ptr %138, ptr getelementptr inbounds (i8, ptr @.str.9258, i64 16))
+  %139 = call ptr @avra_str_join(ptr %138, ptr getelementptr inbounds (i8, ptr @.str.9259, i64 16))
   call void @avra_rc_retain(ptr %139)
   %140 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld101, ptr %139)
   call void @avra_array_push_owned(ptr %136, ptr %140)
   call void @avra_rc_release(ptr %140)
   call void @avra_rc_release(ptr %139)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9258, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9259, i64 16))
   call void @avra_rc_release(ptr %138)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9258, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9257, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9256, i64 16))
   call void @avra_rc_release(ptr %137)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9255, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9256, i64 16))
   br label %endswitch
 
 arm25:                                            ; preds = %lbody
@@ -315069,28 +315072,28 @@ arm25:                                            ; preds = %lbody
   call void @avra_rc_retain(ptr %boxed102)
   %147 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ereg_list"(ptr %boxed102)
   %148 = call ptr @avra_array_sized(i64 7)
-  call void @avra_array_push_owned(ptr %148, ptr getelementptr inbounds (i8, ptr @.str.9259, i64 16))
-  call void @avra_array_push_owned(ptr %148, ptr %145)
   call void @avra_array_push_owned(ptr %148, ptr getelementptr inbounds (i8, ptr @.str.9260, i64 16))
-  call void @avra_array_push_owned(ptr %148, ptr %146)
+  call void @avra_array_push_owned(ptr %148, ptr %145)
   call void @avra_array_push_owned(ptr %148, ptr getelementptr inbounds (i8, ptr @.str.9261, i64 16))
-  call void @avra_array_push_owned(ptr %148, ptr %147)
+  call void @avra_array_push_owned(ptr %148, ptr %146)
   call void @avra_array_push_owned(ptr %148, ptr getelementptr inbounds (i8, ptr @.str.9262, i64 16))
-  %149 = call ptr @avra_str_join(ptr %148, ptr getelementptr inbounds (i8, ptr @.str.9263, i64 16))
+  call void @avra_array_push_owned(ptr %148, ptr %147)
+  call void @avra_array_push_owned(ptr %148, ptr getelementptr inbounds (i8, ptr @.str.9263, i64 16))
+  %149 = call ptr @avra_str_join(ptr %148, ptr getelementptr inbounds (i8, ptr @.str.9264, i64 16))
   call void @avra_rc_retain(ptr %149)
   %150 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld103, ptr %149)
   call void @avra_array_push_owned(ptr %144, ptr %150)
   call void @avra_rc_release(ptr %150)
   call void @avra_rc_release(ptr %149)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9263, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9264, i64 16))
   call void @avra_rc_release(ptr %148)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9262, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9263, i64 16))
   call void @avra_rc_release(ptr %147)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9261, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9262, i64 16))
   call void @avra_rc_release(ptr %146)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9260, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9261, i64 16))
   call void @avra_rc_release(ptr %145)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9259, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9260, i64 16))
   br label %endswitch
 
 arm26:                                            ; preds = %lbody
@@ -315099,20 +315102,20 @@ arm26:                                            ; preds = %lbody
   %ld104 = load i64, ptr %slot1, align 8
   %153 = call ptr @avra_int_text(i64 %151)
   %154 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %154, ptr getelementptr inbounds (i8, ptr @.str.9264, i64 16))
-  call void @avra_array_push_owned(ptr %154, ptr %153)
   call void @avra_array_push_owned(ptr %154, ptr getelementptr inbounds (i8, ptr @.str.9265, i64 16))
-  %155 = call ptr @avra_str_join(ptr %154, ptr getelementptr inbounds (i8, ptr @.str.9266, i64 16))
+  call void @avra_array_push_owned(ptr %154, ptr %153)
+  call void @avra_array_push_owned(ptr %154, ptr getelementptr inbounds (i8, ptr @.str.9266, i64 16))
+  %155 = call ptr @avra_str_join(ptr %154, ptr getelementptr inbounds (i8, ptr @.str.9267, i64 16))
   call void @avra_rc_retain(ptr %155)
   %156 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld104, ptr %155)
   call void @avra_array_push_owned(ptr %152, ptr %156)
   call void @avra_rc_release(ptr %156)
   call void @avra_rc_release(ptr %155)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9266, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9267, i64 16))
   call void @avra_rc_release(ptr %154)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9265, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9266, i64 16))
   call void @avra_rc_release(ptr %153)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9264, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9265, i64 16))
   br label %endswitch
 
 arm27:                                            ; preds = %lbody
@@ -315123,24 +315126,24 @@ arm27:                                            ; preds = %lbody
   %160 = call ptr @avra_int_text(i64 %157)
   %161 = call ptr @avra_int_text(i64 %158)
   %162 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %162, ptr getelementptr inbounds (i8, ptr @.str.9267, i64 16))
-  call void @avra_array_push_owned(ptr %162, ptr %160)
   call void @avra_array_push_owned(ptr %162, ptr getelementptr inbounds (i8, ptr @.str.9268, i64 16))
-  call void @avra_array_push_owned(ptr %162, ptr %161)
+  call void @avra_array_push_owned(ptr %162, ptr %160)
   call void @avra_array_push_owned(ptr %162, ptr getelementptr inbounds (i8, ptr @.str.9269, i64 16))
-  %163 = call ptr @avra_str_join(ptr %162, ptr getelementptr inbounds (i8, ptr @.str.9270, i64 16))
+  call void @avra_array_push_owned(ptr %162, ptr %161)
+  call void @avra_array_push_owned(ptr %162, ptr getelementptr inbounds (i8, ptr @.str.9270, i64 16))
+  %163 = call ptr @avra_str_join(ptr %162, ptr getelementptr inbounds (i8, ptr @.str.9271, i64 16))
   call void @avra_rc_retain(ptr %163)
   %164 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld105, ptr %163)
   call void @avra_array_push_owned(ptr %159, ptr %164)
   call void @avra_rc_release(ptr %164)
   call void @avra_rc_release(ptr %163)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9270, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9271, i64 16))
   call void @avra_rc_release(ptr %162)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9269, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9270, i64 16))
   call void @avra_rc_release(ptr %161)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9268, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9269, i64 16))
   call void @avra_rc_release(ptr %160)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9267, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9268, i64 16))
   br label %endswitch
 
 arm28:                                            ; preds = %lbody
@@ -315151,37 +315154,37 @@ arm28:                                            ; preds = %lbody
   %168 = call ptr @avra_int_text(i64 %165)
   %169 = call ptr @avra_int_text(i64 %166)
   %170 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %170, ptr getelementptr inbounds (i8, ptr @.str.9271, i64 16))
-  call void @avra_array_push_owned(ptr %170, ptr %168)
   call void @avra_array_push_owned(ptr %170, ptr getelementptr inbounds (i8, ptr @.str.9272, i64 16))
-  call void @avra_array_push_owned(ptr %170, ptr %169)
+  call void @avra_array_push_owned(ptr %170, ptr %168)
   call void @avra_array_push_owned(ptr %170, ptr getelementptr inbounds (i8, ptr @.str.9273, i64 16))
-  %171 = call ptr @avra_str_join(ptr %170, ptr getelementptr inbounds (i8, ptr @.str.9274, i64 16))
+  call void @avra_array_push_owned(ptr %170, ptr %169)
+  call void @avra_array_push_owned(ptr %170, ptr getelementptr inbounds (i8, ptr @.str.9274, i64 16))
+  %171 = call ptr @avra_str_join(ptr %170, ptr getelementptr inbounds (i8, ptr @.str.9275, i64 16))
   call void @avra_rc_retain(ptr %171)
   %172 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld106, ptr %171)
   call void @avra_array_push_owned(ptr %167, ptr %172)
   call void @avra_rc_release(ptr %172)
   call void @avra_rc_release(ptr %171)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9274, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9275, i64 16))
   call void @avra_rc_release(ptr %170)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9273, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9274, i64 16))
   call void @avra_rc_release(ptr %169)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9272, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9273, i64 16))
   call void @avra_rc_release(ptr %168)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9271, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9272, i64 16))
   br label %endswitch
 
 arm29:                                            ; preds = %lbody
   %173 = call ptr @avra_cell_unique(ptr %slot)
   %ld107 = load i64, ptr %slot1, align 8
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9275, i64 16))
-  %174 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld107, ptr getelementptr inbounds (i8, ptr @.str.9275, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9276, i64 16))
+  %174 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld107, ptr getelementptr inbounds (i8, ptr @.str.9276, i64 16))
   call void @avra_array_push_owned(ptr %173, ptr %174)
   %ld108 = load i64, ptr %slot1, align 8
   %add109 = add i64 %ld108, 1
   store i64 %add109, ptr %slot1, align 8
   call void @avra_rc_release(ptr %174)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9275, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9276, i64 16))
   br label %endswitch
 
 arm30:                                            ; preds = %lbody
@@ -315190,20 +315193,20 @@ arm30:                                            ; preds = %lbody
   %ld110 = load i64, ptr %slot1, align 8
   %177 = call ptr @avra_int_text(i64 %175)
   %178 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %178, ptr getelementptr inbounds (i8, ptr @.str.9276, i64 16))
-  call void @avra_array_push_owned(ptr %178, ptr %177)
   call void @avra_array_push_owned(ptr %178, ptr getelementptr inbounds (i8, ptr @.str.9277, i64 16))
-  %179 = call ptr @avra_str_join(ptr %178, ptr getelementptr inbounds (i8, ptr @.str.9278, i64 16))
+  call void @avra_array_push_owned(ptr %178, ptr %177)
+  call void @avra_array_push_owned(ptr %178, ptr getelementptr inbounds (i8, ptr @.str.9278, i64 16))
+  %179 = call ptr @avra_str_join(ptr %178, ptr getelementptr inbounds (i8, ptr @.str.9279, i64 16))
   call void @avra_rc_retain(ptr %179)
   %180 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld110, ptr %179)
   call void @avra_array_push_owned(ptr %176, ptr %180)
   call void @avra_rc_release(ptr %180)
   call void @avra_rc_release(ptr %179)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9278, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9279, i64 16))
   call void @avra_rc_release(ptr %178)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9277, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9278, i64 16))
   call void @avra_rc_release(ptr %177)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9276, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9277, i64 16))
   br label %endswitch
 
 arm31:                                            ; preds = %lbody
@@ -315212,11 +315215,11 @@ arm31:                                            ; preds = %lbody
   store i64 %sub112, ptr %slot1, align 8
   %181 = call ptr @avra_cell_unique(ptr %slot)
   %ld113 = load i64, ptr %slot1, align 8
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9279, i64 16))
-  %182 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld113, ptr getelementptr inbounds (i8, ptr @.str.9279, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9280, i64 16))
+  %182 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld113, ptr getelementptr inbounds (i8, ptr @.str.9280, i64 16))
   call void @avra_array_push_owned(ptr %181, ptr %182)
   call void @avra_rc_release(ptr %182)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9279, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9280, i64 16))
   br label %endswitch
 
 arm32:                                            ; preds = %lbody
@@ -315225,20 +315228,20 @@ arm32:                                            ; preds = %lbody
   %ld114 = load i64, ptr %slot1, align 8
   %185 = call ptr @avra_int_text(i64 %183)
   %186 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %186, ptr getelementptr inbounds (i8, ptr @.str.9280, i64 16))
-  call void @avra_array_push_owned(ptr %186, ptr %185)
   call void @avra_array_push_owned(ptr %186, ptr getelementptr inbounds (i8, ptr @.str.9281, i64 16))
-  %187 = call ptr @avra_str_join(ptr %186, ptr getelementptr inbounds (i8, ptr @.str.9282, i64 16))
+  call void @avra_array_push_owned(ptr %186, ptr %185)
+  call void @avra_array_push_owned(ptr %186, ptr getelementptr inbounds (i8, ptr @.str.9282, i64 16))
+  %187 = call ptr @avra_str_join(ptr %186, ptr getelementptr inbounds (i8, ptr @.str.9283, i64 16))
   call void @avra_rc_retain(ptr %187)
   %188 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld114, ptr %187)
   call void @avra_array_push_owned(ptr %184, ptr %188)
   call void @avra_rc_release(ptr %188)
   call void @avra_rc_release(ptr %187)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9282, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9283, i64 16))
   call void @avra_rc_release(ptr %186)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9281, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9282, i64 16))
   call void @avra_rc_release(ptr %185)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9280, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9281, i64 16))
   br label %endswitch
 
 arm33:                                            ; preds = %lbody
@@ -315247,20 +315250,20 @@ arm33:                                            ; preds = %lbody
   %ld115 = load i64, ptr %slot1, align 8
   %191 = call ptr @avra_int_text(i64 %189)
   %192 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %192, ptr getelementptr inbounds (i8, ptr @.str.9283, i64 16))
-  call void @avra_array_push_owned(ptr %192, ptr %191)
   call void @avra_array_push_owned(ptr %192, ptr getelementptr inbounds (i8, ptr @.str.9284, i64 16))
-  %193 = call ptr @avra_str_join(ptr %192, ptr getelementptr inbounds (i8, ptr @.str.9285, i64 16))
+  call void @avra_array_push_owned(ptr %192, ptr %191)
+  call void @avra_array_push_owned(ptr %192, ptr getelementptr inbounds (i8, ptr @.str.9285, i64 16))
+  %193 = call ptr @avra_str_join(ptr %192, ptr getelementptr inbounds (i8, ptr @.str.9286, i64 16))
   call void @avra_rc_retain(ptr %193)
   %194 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld115, ptr %193)
   call void @avra_array_push_owned(ptr %190, ptr %194)
   call void @avra_rc_release(ptr %194)
   call void @avra_rc_release(ptr %193)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9285, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9286, i64 16))
   call void @avra_rc_release(ptr %192)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9284, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9285, i64 16))
   call void @avra_rc_release(ptr %191)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9283, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9284, i64 16))
   br label %endswitch
 
 arm34:                                            ; preds = %lbody
@@ -315269,20 +315272,20 @@ arm34:                                            ; preds = %lbody
   %ld116 = load i64, ptr %slot1, align 8
   %197 = call ptr @avra_int_text(i64 %195)
   %198 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %198, ptr getelementptr inbounds (i8, ptr @.str.9286, i64 16))
-  call void @avra_array_push_owned(ptr %198, ptr %197)
   call void @avra_array_push_owned(ptr %198, ptr getelementptr inbounds (i8, ptr @.str.9287, i64 16))
-  %199 = call ptr @avra_str_join(ptr %198, ptr getelementptr inbounds (i8, ptr @.str.9288, i64 16))
+  call void @avra_array_push_owned(ptr %198, ptr %197)
+  call void @avra_array_push_owned(ptr %198, ptr getelementptr inbounds (i8, ptr @.str.9288, i64 16))
+  %199 = call ptr @avra_str_join(ptr %198, ptr getelementptr inbounds (i8, ptr @.str.9289, i64 16))
   call void @avra_rc_retain(ptr %199)
   %200 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld116, ptr %199)
   call void @avra_array_push_owned(ptr %196, ptr %200)
   call void @avra_rc_release(ptr %200)
   call void @avra_rc_release(ptr %199)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9288, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9289, i64 16))
   call void @avra_rc_release(ptr %198)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9287, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9288, i64 16))
   call void @avra_rc_release(ptr %197)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9286, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9287, i64 16))
   br label %endswitch
 
 arm35:                                            ; preds = %lbody
@@ -315291,20 +315294,20 @@ arm35:                                            ; preds = %lbody
   %ld117 = load i64, ptr %slot1, align 8
   %203 = call ptr @avra_int_text(i64 %201)
   %204 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %204, ptr getelementptr inbounds (i8, ptr @.str.9289, i64 16))
-  call void @avra_array_push_owned(ptr %204, ptr %203)
   call void @avra_array_push_owned(ptr %204, ptr getelementptr inbounds (i8, ptr @.str.9290, i64 16))
-  %205 = call ptr @avra_str_join(ptr %204, ptr getelementptr inbounds (i8, ptr @.str.9291, i64 16))
+  call void @avra_array_push_owned(ptr %204, ptr %203)
+  call void @avra_array_push_owned(ptr %204, ptr getelementptr inbounds (i8, ptr @.str.9291, i64 16))
+  %205 = call ptr @avra_str_join(ptr %204, ptr getelementptr inbounds (i8, ptr @.str.9292, i64 16))
   call void @avra_rc_retain(ptr %205)
   %206 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld117, ptr %205)
   call void @avra_array_push_owned(ptr %202, ptr %206)
   call void @avra_rc_release(ptr %206)
   call void @avra_rc_release(ptr %205)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9291, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9292, i64 16))
   call void @avra_rc_release(ptr %204)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9290, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9291, i64 16))
   call void @avra_rc_release(ptr %203)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9289, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9290, i64 16))
   br label %endswitch
 
 arm36:                                            ; preds = %lbody
@@ -315313,20 +315316,20 @@ arm36:                                            ; preds = %lbody
   %ld118 = load i64, ptr %slot1, align 8
   %209 = call ptr @avra_int_text(i64 %207)
   %210 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %210, ptr getelementptr inbounds (i8, ptr @.str.9292, i64 16))
-  call void @avra_array_push_owned(ptr %210, ptr %209)
   call void @avra_array_push_owned(ptr %210, ptr getelementptr inbounds (i8, ptr @.str.9293, i64 16))
-  %211 = call ptr @avra_str_join(ptr %210, ptr getelementptr inbounds (i8, ptr @.str.9294, i64 16))
+  call void @avra_array_push_owned(ptr %210, ptr %209)
+  call void @avra_array_push_owned(ptr %210, ptr getelementptr inbounds (i8, ptr @.str.9294, i64 16))
+  %211 = call ptr @avra_str_join(ptr %210, ptr getelementptr inbounds (i8, ptr @.str.9295, i64 16))
   call void @avra_rc_retain(ptr %211)
   %212 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld118, ptr %211)
   call void @avra_array_push_owned(ptr %208, ptr %212)
   call void @avra_rc_release(ptr %212)
   call void @avra_rc_release(ptr %211)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9294, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9295, i64 16))
   call void @avra_rc_release(ptr %210)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9293, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9294, i64 16))
   call void @avra_rc_release(ptr %209)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9292, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9293, i64 16))
   br label %endswitch
 
 endswitch:                                        ; preds = %arm36, %arm35, %arm34, %arm33, %arm32, %arm31, %arm30, %arm29, %arm28, %arm27, %arm26, %arm25, %arm24, %arm23, %arm22, %arm21, %arm20, %arm19, %arm18, %arm17, %arm16, %endif84, %arm14, %arm13, %arm12, %arm11, %endif68, %arm9, %arm8, %endif, %arm
@@ -315359,11 +315362,11 @@ endif:                                            ; preds = %else, %then
   store i64 %sub, ptr %slot1, align 8
   %217 = call ptr @avra_cell_unique(ptr %slot)
   %ld42 = load i64, ptr %slot1, align 8
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9193, i64 16))
-  %218 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld42, ptr getelementptr inbounds (i8, ptr @.str.9193, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9194, i64 16))
+  %218 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld42, ptr getelementptr inbounds (i8, ptr @.str.9194, i64 16))
   call void @avra_array_push_owned(ptr %217, ptr %218)
   call void @avra_rc_release(ptr %218)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9193, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9194, i64 16))
   call void @avra_rc_release(ptr null)
   call void @avra_rc_release(ptr %12)
   br label %endswitch
@@ -315403,14 +315406,14 @@ else67:                                           ; preds = %endif63
   br label %endif68
 
 endif68:                                          ; preds = %else67, %then66
-  %regval69 = phi ptr [ getelementptr inbounds (i8, ptr @.str.9201, i64 16), %then66 ], [ getelementptr inbounds (i8, ptr @.str.9202, i64 16), %else67 ]
+  %regval69 = phi ptr [ getelementptr inbounds (i8, ptr @.str.9202, i64 16), %then66 ], [ getelementptr inbounds (i8, ptr @.str.9203, i64 16), %else67 ]
   %220 = call ptr @avra_cell_unique(ptr %slot)
   %ld70 = load i64, ptr %slot1, align 8
   %221 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %221, ptr getelementptr inbounds (i8, ptr @.str.9203, i64 16))
-  call void @avra_array_push_owned(ptr %221, ptr %regval69)
   call void @avra_array_push_owned(ptr %221, ptr getelementptr inbounds (i8, ptr @.str.9204, i64 16))
-  %222 = call ptr @avra_str_join(ptr %221, ptr getelementptr inbounds (i8, ptr @.str.9205, i64 16))
+  call void @avra_array_push_owned(ptr %221, ptr %regval69)
+  call void @avra_array_push_owned(ptr %221, ptr getelementptr inbounds (i8, ptr @.str.9205, i64 16))
+  %222 = call ptr @avra_str_join(ptr %221, ptr getelementptr inbounds (i8, ptr @.str.9206, i64 16))
   call void @avra_rc_retain(ptr %222)
   %223 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld70, ptr %222)
   call void @avra_array_push_owned(ptr %220, ptr %223)
@@ -315419,10 +315422,10 @@ endif68:                                          ; preds = %else67, %then66
   store i64 %add72, ptr %slot1, align 8
   call void @avra_rc_release(ptr %223)
   call void @avra_rc_release(ptr %222)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9205, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9206, i64 16))
   call void @avra_rc_release(ptr %221)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9205, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9204, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9203, i64 16))
   call void @avra_rc_release(ptr %regval69)
   call void @avra_rc_release(ptr %ld52)
   call void @avra_rc_release(ptr %31)
@@ -315435,28 +315438,28 @@ else83:                                           ; preds = %arm15
   br label %endif84
 
 endif84:                                          ; preds = %else83, %then82
-  %regval85 = phi ptr [ getelementptr inbounds (i8, ptr @.str.9221, i64 16), %then82 ], [ getelementptr inbounds (i8, ptr @.str.9222, i64 16), %else83 ]
+  %regval85 = phi ptr [ getelementptr inbounds (i8, ptr @.str.9222, i64 16), %then82 ], [ getelementptr inbounds (i8, ptr @.str.9223, i64 16), %else83 ]
   %224 = call ptr @avra_cell_unique(ptr %slot)
   %ld86 = load i64, ptr %slot1, align 8
   %225 = call ptr @avra_int_text(i64 %68)
   %226 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %226, ptr getelementptr inbounds (i8, ptr @.str.9223, i64 16))
-  call void @avra_array_push_owned(ptr %226, ptr %225)
   call void @avra_array_push_owned(ptr %226, ptr getelementptr inbounds (i8, ptr @.str.9224, i64 16))
-  call void @avra_array_push_owned(ptr %226, ptr %regval85)
+  call void @avra_array_push_owned(ptr %226, ptr %225)
   call void @avra_array_push_owned(ptr %226, ptr getelementptr inbounds (i8, ptr @.str.9225, i64 16))
-  %227 = call ptr @avra_str_join(ptr %226, ptr getelementptr inbounds (i8, ptr @.str.9226, i64 16))
+  call void @avra_array_push_owned(ptr %226, ptr %regval85)
+  call void @avra_array_push_owned(ptr %226, ptr getelementptr inbounds (i8, ptr @.str.9226, i64 16))
+  %227 = call ptr @avra_str_join(ptr %226, ptr getelementptr inbounds (i8, ptr @.str.9227, i64 16))
   call void @avra_rc_retain(ptr %227)
   %228 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %ld86, ptr %227)
   call void @avra_array_push_owned(ptr %224, ptr %228)
   call void @avra_rc_release(ptr %228)
   call void @avra_rc_release(ptr %227)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9226, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9227, i64 16))
   call void @avra_rc_release(ptr %226)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9226, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9225, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9224, i64 16))
   call void @avra_rc_release(ptr %225)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9223, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9224, i64 16))
   call void @avra_rc_release(ptr %regval85)
   br label %endswitch
 }
@@ -315476,9 +315479,9 @@ lhead:                                            ; preds = %lbody, %entry
 
 lexit:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9298, i64 16))
-  %3 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9298, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9298, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9299, i64 16))
+  %3 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9299, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9299, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %3
@@ -315488,20 +315491,20 @@ lbody:                                            ; preds = %lhead
   %4 = call i64 @avra_array_get(ptr %0, i64 %ld1)
   %5 = call ptr @avra_int_text(i64 %4)
   %6 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9295, i64 16))
-  call void @avra_array_push_owned(ptr %6, ptr %5)
   call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9296, i64 16))
-  %7 = call ptr @avra_str_join(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9297, i64 16))
+  call void @avra_array_push_owned(ptr %6, ptr %5)
+  call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9297, i64 16))
+  %7 = call ptr @avra_str_join(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9298, i64 16))
   call void @avra_array_push_owned(ptr %1, ptr %7)
   %ld2 = load i64, ptr %slot, align 8
   %add = add i64 %ld2, 1
   store i64 %add, ptr %slot, align 8
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9297, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9298, i64 16))
   call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9296, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9297, i64 16))
   call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9295, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9296, i64 16))
   br label %lhead
 }
 
@@ -315511,25 +315514,25 @@ entry:
   call void @avra_rc_retain(ptr %3)
   %5 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ereg_list"(ptr %3)
   %6 = call ptr @avra_array_sized(i64 7)
-  call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9299, i64 16))
-  call void @avra_array_push_owned(ptr %6, ptr %4)
   call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9300, i64 16))
-  call void @avra_array_push_owned(ptr %6, ptr %2)
+  call void @avra_array_push_owned(ptr %6, ptr %4)
   call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9301, i64 16))
-  call void @avra_array_push_owned(ptr %6, ptr %5)
+  call void @avra_array_push_owned(ptr %6, ptr %2)
   call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9302, i64 16))
-  %7 = call ptr @avra_str_join(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9303, i64 16))
+  call void @avra_array_push_owned(ptr %6, ptr %5)
+  call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9303, i64 16))
+  %7 = call ptr @avra_str_join(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9304, i64 16))
   call void @avra_rc_retain(ptr %7)
   %8 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %0, ptr %7)
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9303, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9304, i64 16))
   call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9302, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9303, i64 16))
   call void @avra_rc_release(ptr %5)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9302, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9301, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9300, i64 16))
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9299, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9300, i64 16))
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %2)
   ret ptr %8
@@ -315537,27 +315540,27 @@ entry:
 
 define ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %0, ptr %1) {
 entry:
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9305, i64 16))
-  %2 = call ptr @"av_$40std$2Eavrac$2Ecore$2Efilled$2411"(i64 %0, ptr getelementptr inbounds (i8, ptr @.str.9305, i64 16))
-  call void @avra_rc_retain(ptr %2)
   call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9306, i64 16))
-  %3 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9306, i64 16))
+  %2 = call ptr @"av_$40std$2Eavrac$2Ecore$2Efilled$2411"(i64 %0, ptr getelementptr inbounds (i8, ptr @.str.9306, i64 16))
+  call void @avra_rc_retain(ptr %2)
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9307, i64 16))
+  %3 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9307, i64 16))
   %4 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9304, i64 16))
+  call void @avra_array_push_owned(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9305, i64 16))
   call void @avra_array_push_owned(ptr %4, ptr %3)
-  call void @avra_array_push_owned(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9307, i64 16))
-  call void @avra_array_push_owned(ptr %4, ptr %1)
   call void @avra_array_push_owned(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9308, i64 16))
-  %5 = call ptr @avra_str_join(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9309, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9309, i64 16))
+  call void @avra_array_push_owned(ptr %4, ptr %1)
+  call void @avra_array_push_owned(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9309, i64 16))
+  %5 = call ptr @avra_str_join(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9310, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9310, i64 16))
   call void @avra_rc_release(ptr %4)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9309, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9308, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9307, i64 16))
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9306, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9307, i64 16))
   call void @avra_rc_release(ptr %2)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9306, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9305, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9304, i64 16))
   call void @avra_rc_release(ptr %1)
   ret ptr %5
 }
@@ -315565,7 +315568,7 @@ entry:
 define ptr @"av_$40std$2Eavrac$2Ecore$2Eun_symbol"(ptr %0) {
 entry:
   call void @avra_rc_release(ptr %0)
-  ret ptr getelementptr inbounds (i8, ptr @.str.9310, i64 16)
+  ret ptr getelementptr inbounds (i8, ptr @.str.9311, i64 16)
 }
 
 define ptr @"av_$40std$2Eavrac$2Elanguage$2Eint_list"(ptr %0) {
@@ -315583,9 +315586,9 @@ lhead:                                            ; preds = %lbody, %entry
 
 lexit:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9314, i64 16))
-  %3 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9314, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9314, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9315, i64 16))
+  %3 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9315, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9315, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %3
@@ -315595,20 +315598,20 @@ lbody:                                            ; preds = %lhead
   %4 = call i64 @avra_array_get(ptr %0, i64 %ld1)
   %5 = call ptr @avra_int_text(i64 %4)
   %6 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9311, i64 16))
-  call void @avra_array_push_owned(ptr %6, ptr %5)
   call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9312, i64 16))
-  %7 = call ptr @avra_str_join(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9313, i64 16))
+  call void @avra_array_push_owned(ptr %6, ptr %5)
+  call void @avra_array_push_owned(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9313, i64 16))
+  %7 = call ptr @avra_str_join(ptr %6, ptr getelementptr inbounds (i8, ptr @.str.9314, i64 16))
   call void @avra_array_push_owned(ptr %1, ptr %7)
   %ld2 = load i64, ptr %slot, align 8
   %add = add i64 %ld2, 1
   store i64 %add, ptr %slot, align 8
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9313, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9314, i64 16))
   call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9312, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9313, i64 16))
   call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9311, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9312, i64 16))
   br label %lhead
 }
 
@@ -315616,18 +315619,18 @@ define ptr @"av_$40std$2Eavrac$2Elanguage$2Eyield_line"(i64 %0, i64 %1) {
 entry:
   %2 = call ptr @avra_int_text(i64 %1)
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9315, i64 16))
-  call void @avra_array_push_owned(ptr %3, ptr %2)
   call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9316, i64 16))
-  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9317, i64 16))
+  call void @avra_array_push_owned(ptr %3, ptr %2)
+  call void @avra_array_push_owned(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9317, i64 16))
+  %4 = call ptr @avra_str_join(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9318, i64 16))
   call void @avra_rc_retain(ptr %4)
   %5 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 %0, ptr %4)
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9317, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9318, i64 16))
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9316, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9317, i64 16))
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9315, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9316, i64 16))
   ret ptr %5
 }
 
@@ -315653,7 +315656,7 @@ arm3:                                             ; preds = %entry
   br label %endswitch
 
 endswitch:                                        ; preds = %arm3, %arm2, %arm1, %arm
-  %regval = phi ptr [ getelementptr inbounds (i8, ptr @.str.9318, i64 16), %arm ], [ getelementptr inbounds (i8, ptr @.str.9319, i64 16), %arm1 ], [ getelementptr inbounds (i8, ptr @.str.9320, i64 16), %arm2 ], [ getelementptr inbounds (i8, ptr @.str.9321, i64 16), %arm3 ]
+  %regval = phi ptr [ getelementptr inbounds (i8, ptr @.str.9319, i64 16), %arm ], [ getelementptr inbounds (i8, ptr @.str.9320, i64 16), %arm1 ], [ getelementptr inbounds (i8, ptr @.str.9321, i64 16), %arm2 ], [ getelementptr inbounds (i8, ptr @.str.9322, i64 16), %arm3 ]
   call void @avra_rc_release(ptr %0)
   ret ptr %regval
 }
@@ -315664,10 +315667,10 @@ entry:
   %1 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed = inttoptr i64 %1 to ptr
   %2 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9322, i64 16))
-  call void @avra_array_push_owned(ptr %2, ptr %boxed)
   call void @avra_array_push_owned(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9323, i64 16))
-  %3 = call ptr @avra_str_join(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9324, i64 16))
+  call void @avra_array_push_owned(ptr %2, ptr %boxed)
+  call void @avra_array_push_owned(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9324, i64 16))
+  %3 = call ptr @avra_str_join(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9325, i64 16))
   %4 = call ptr @avra_array_sized(i64 1)
   call void @avra_array_push_owned(ptr %4, ptr %3)
   %5 = call ptr @avra_array_sized(i64 0)
@@ -315684,21 +315687,21 @@ lhead:                                            ; preds = %lbody, %entry
 lexit:                                            ; preds = %lhead
   %8 = call ptr @avra_array_concat(ptr %4, ptr %5)
   %9 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9329, i64 16))
   call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9330, i64 16))
+  call void @avra_array_push_owned(ptr %9, ptr getelementptr inbounds (i8, ptr @.str.9331, i64 16))
   %10 = call ptr @avra_array_concat(ptr %8, ptr %9)
   call void @avra_rc_release(ptr %9)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9331, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9330, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9329, i64 16))
   call void @avra_rc_release(ptr %8)
   call void @avra_rc_release(ptr %6)
   call void @avra_rc_release(ptr %5)
   call void @avra_rc_release(ptr %4)
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9324, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9325, i64 16))
   call void @avra_rc_release(ptr %2)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9324, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9323, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9322, i64 16))
   call void @avra_rc_release(ptr %0)
   ret ptr %10
 
@@ -315710,12 +315713,12 @@ lbody:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %boxed2)
   %13 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ebox_text"(ptr %boxed2)
   %14 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %14, ptr getelementptr inbounds (i8, ptr @.str.9325, i64 16))
-  call void @avra_array_push_owned(ptr %14, ptr %12)
   call void @avra_array_push_owned(ptr %14, ptr getelementptr inbounds (i8, ptr @.str.9326, i64 16))
-  call void @avra_array_push_owned(ptr %14, ptr %13)
+  call void @avra_array_push_owned(ptr %14, ptr %12)
   call void @avra_array_push_owned(ptr %14, ptr getelementptr inbounds (i8, ptr @.str.9327, i64 16))
-  %15 = call ptr @avra_str_join(ptr %14, ptr getelementptr inbounds (i8, ptr @.str.9328, i64 16))
+  call void @avra_array_push_owned(ptr %14, ptr %13)
+  call void @avra_array_push_owned(ptr %14, ptr getelementptr inbounds (i8, ptr @.str.9328, i64 16))
+  %15 = call ptr @avra_str_join(ptr %14, ptr getelementptr inbounds (i8, ptr @.str.9329, i64 16))
   call void @avra_rc_retain(ptr %15)
   %16 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eline"(i64 1, ptr %15)
   call void @avra_array_push_owned(ptr %5, ptr %16)
@@ -315724,13 +315727,13 @@ lbody:                                            ; preds = %lhead
   store i64 %add, ptr %slot, align 8
   call void @avra_rc_release(ptr %16)
   call void @avra_rc_release(ptr %15)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9328, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9329, i64 16))
   call void @avra_rc_release(ptr %14)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9327, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9328, i64 16))
   call void @avra_rc_release(ptr %13)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9326, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9327, i64 16))
   call void @avra_rc_release(ptr %12)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9325, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9326, i64 16))
   br label %lhead
 }
 
@@ -315770,20 +315773,20 @@ lhead:                                            ; preds = %lbody, %arm
 
 lexit:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %3)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9332, i64 16))
-  %9 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9332, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9333, i64 16))
+  %9 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %3, ptr getelementptr inbounds (i8, ptr @.str.9333, i64 16))
   %10 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9331, i64 16))
+  call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9332, i64 16))
   call void @avra_array_push_owned(ptr %10, ptr %9)
-  call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9333, i64 16))
-  %11 = call ptr @avra_str_join(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9334, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9334, i64 16))
+  call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9334, i64 16))
+  %11 = call ptr @avra_str_join(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9335, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9335, i64 16))
   call void @avra_rc_release(ptr %10)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9333, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9334, i64 16))
   call void @avra_rc_release(ptr %9)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9332, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9333, i64 16))
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9331, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9332, i64 16))
   call void @avra_rc_release(ptr %2)
   br label %endswitch
 
@@ -315807,20 +315810,20 @@ lhead5:                                           ; preds = %lbody9, %arm1
 
 lexit6:                                           ; preds = %lhead5
   call void @avra_rc_retain(ptr %7)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9340, i64 16))
-  %14 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9340, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9341, i64 16))
+  %14 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9341, i64 16))
   %15 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9335, i64 16))
+  call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9336, i64 16))
   call void @avra_array_push_owned(ptr %15, ptr %14)
-  call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9341, i64 16))
-  %16 = call ptr @avra_str_join(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9342, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9342, i64 16))
+  call void @avra_array_push_owned(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9342, i64 16))
+  %16 = call ptr @avra_str_join(ptr %15, ptr getelementptr inbounds (i8, ptr @.str.9343, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9343, i64 16))
   call void @avra_rc_release(ptr %15)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9341, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9342, i64 16))
   call void @avra_rc_release(ptr %14)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9340, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9341, i64 16))
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9335, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9336, i64 16))
   call void @avra_rc_release(ptr %6)
   call void @avra_rc_release(ptr %5)
   br label %endswitch
@@ -315836,24 +315839,24 @@ lbody9:                                           ; preds = %lhead5
   call void @avra_rc_retain(ptr %boxed12)
   %20 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eslot_text"(ptr %boxed12)
   %21 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9336, i64 16))
-  call void @avra_array_push_owned(ptr %21, ptr %18)
   call void @avra_array_push_owned(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9337, i64 16))
-  call void @avra_array_push_owned(ptr %21, ptr %20)
+  call void @avra_array_push_owned(ptr %21, ptr %18)
   call void @avra_array_push_owned(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9338, i64 16))
-  %22 = call ptr @avra_str_join(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9339, i64 16))
+  call void @avra_array_push_owned(ptr %21, ptr %20)
+  call void @avra_array_push_owned(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9339, i64 16))
+  %22 = call ptr @avra_str_join(ptr %21, ptr getelementptr inbounds (i8, ptr @.str.9340, i64 16))
   call void @avra_array_push_owned(ptr %7, ptr %22)
   %ld13 = load i64, ptr %slot4, align 8
   %add14 = add i64 %ld13, 1
   store i64 %add14, ptr %slot4, align 8
   call void @avra_rc_release(ptr %22)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9339, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9340, i64 16))
   call void @avra_rc_release(ptr %21)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9338, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9339, i64 16))
   call void @avra_rc_release(ptr %20)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9337, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9338, i64 16))
   call void @avra_rc_release(ptr %18)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9336, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9337, i64 16))
   br label %lhead5
 }
 
@@ -315872,15 +315875,15 @@ arm:                                              ; preds = %entry
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call ptr @avra_int_text(i64 %2)
   %4 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9343, i64 16))
-  call void @avra_array_push_owned(ptr %4, ptr %3)
   call void @avra_array_push_owned(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9344, i64 16))
-  %5 = call ptr @avra_str_join(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9345, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9345, i64 16))
+  call void @avra_array_push_owned(ptr %4, ptr %3)
+  call void @avra_array_push_owned(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9345, i64 16))
+  %5 = call ptr @avra_str_join(ptr %4, ptr getelementptr inbounds (i8, ptr @.str.9346, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9346, i64 16))
   call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9344, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9345, i64 16))
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9343, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9344, i64 16))
   br label %endswitch
 
 arm1:                                             ; preds = %entry
@@ -315904,22 +315907,22 @@ arm4:                                             ; preds = %entry
   %11 = call i64 @avra_array_get(ptr %0, i64 1)
   %12 = call ptr @avra_int_text(i64 %11)
   %13 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push_owned(ptr %13, ptr getelementptr inbounds (i8, ptr @.str.9348, i64 16))
-  call void @avra_array_push_owned(ptr %13, ptr %12)
   call void @avra_array_push_owned(ptr %13, ptr getelementptr inbounds (i8, ptr @.str.9349, i64 16))
-  %14 = call ptr @avra_str_join(ptr %13, ptr getelementptr inbounds (i8, ptr @.str.9350, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9350, i64 16))
+  call void @avra_array_push_owned(ptr %13, ptr %12)
+  call void @avra_array_push_owned(ptr %13, ptr getelementptr inbounds (i8, ptr @.str.9350, i64 16))
+  %14 = call ptr @avra_str_join(ptr %13, ptr getelementptr inbounds (i8, ptr @.str.9351, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9351, i64 16))
   call void @avra_rc_release(ptr %13)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9349, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9350, i64 16))
   call void @avra_rc_release(ptr %12)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9348, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9349, i64 16))
   br label %endswitch
 
 arm5:                                             ; preds = %entry
   br label %endswitch
 
 endswitch:                                        ; preds = %arm5, %arm4, %arm3, %endif, %arm1, %arm
-  %regval6 = phi ptr [ %5, %arm ], [ %7, %arm1 ], [ %regval, %endif ], [ %10, %arm3 ], [ %14, %arm4 ], [ getelementptr inbounds (i8, ptr @.str.9351, i64 16), %arm5 ]
+  %regval6 = phi ptr [ %5, %arm ], [ %7, %arm1 ], [ %regval, %endif ], [ %10, %arm3 ], [ %14, %arm4 ], [ getelementptr inbounds (i8, ptr @.str.9352, i64 16), %arm5 ]
   call void @avra_rc_release(ptr %0)
   ret ptr %regval6
 
@@ -315930,7 +315933,7 @@ else:                                             ; preds = %arm2
   br label %endif
 
 endif:                                            ; preds = %else, %then
-  %regval = phi ptr [ getelementptr inbounds (i8, ptr @.str.9346, i64 16), %then ], [ getelementptr inbounds (i8, ptr @.str.9347, i64 16), %else ]
+  %regval = phi ptr [ getelementptr inbounds (i8, ptr @.str.9347, i64 16), %then ], [ getelementptr inbounds (i8, ptr @.str.9348, i64 16), %else ]
   br label %endswitch
 }
 
@@ -315948,14 +315951,14 @@ entry:
   call void @avra_rc_retain(ptr %boxed1)
   %6 = call ptr @"av_$40std$2Eavrac$2Ecore$2ETypeRegistry$2Ename_of"(ptr %boxed, ptr %boxed1)
   %7 = call ptr @avra_array_sized(i64 7)
-  call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9352, i64 16))
-  call void @avra_array_push_owned(ptr %7, ptr %2)
   call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9353, i64 16))
-  call void @avra_array_push_owned(ptr %7, ptr %3)
+  call void @avra_array_push_owned(ptr %7, ptr %2)
   call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9354, i64 16))
-  call void @avra_array_push_owned(ptr %7, ptr %6)
+  call void @avra_array_push_owned(ptr %7, ptr %3)
   call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9355, i64 16))
-  %8 = call ptr @avra_str_join(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9356, i64 16))
+  call void @avra_array_push_owned(ptr %7, ptr %6)
+  call void @avra_array_push_owned(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9356, i64 16))
+  %8 = call ptr @avra_str_join(ptr %7, ptr getelementptr inbounds (i8, ptr @.str.9357, i64 16))
   %9 = call ptr @avra_array_sized(i64 1)
   call void @avra_array_push_owned(ptr %9, ptr %8)
   %10 = call i64 @avra_array_get(ptr %1, i64 4)
@@ -315963,24 +315966,24 @@ entry:
   call void @avra_rc_retain(ptr %boxed2)
   %11 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ebody_lines"(ptr %boxed2)
   %12 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push_owned(ptr %12, ptr getelementptr inbounds (i8, ptr @.str.9357, i64 16))
+  call void @avra_array_push_owned(ptr %12, ptr getelementptr inbounds (i8, ptr @.str.9358, i64 16))
   %13 = call ptr @avra_array_concat(ptr %11, ptr %12)
   %14 = call ptr @avra_array_concat(ptr %9, ptr %13)
   call void @avra_rc_release(ptr %13)
   call void @avra_rc_release(ptr %12)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9357, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9358, i64 16))
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %9)
   call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9356, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9357, i64 16))
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9355, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9356, i64 16))
   call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9354, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9355, i64 16))
   call void @avra_rc_release(ptr %3)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9353, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9354, i64 16))
   call void @avra_rc_release(ptr %2)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9352, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9353, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret ptr %14
@@ -316002,9 +316005,9 @@ lhead:                                            ; preds = %lbody, %entry
 
 lexit:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %2)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9362, i64 16))
-  %5 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9362, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9362, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9363, i64 16))
+  %5 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ejoined"(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9363, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9363, i64 16))
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
@@ -316022,32 +316025,32 @@ lbody:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %boxed)
   %9 = call ptr @"av_$40std$2Eavrac$2Ecore$2ETypeRegistry$2Ename_of"(ptr %boxed2, ptr %boxed)
   %10 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9358, i64 16))
-  call void @avra_array_push_owned(ptr %10, ptr %7)
   call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9359, i64 16))
-  call void @avra_array_push_owned(ptr %10, ptr %9)
+  call void @avra_array_push_owned(ptr %10, ptr %7)
   call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9360, i64 16))
-  %11 = call ptr @avra_str_join(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9361, i64 16))
+  call void @avra_array_push_owned(ptr %10, ptr %9)
+  call void @avra_array_push_owned(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9361, i64 16))
+  %11 = call ptr @avra_str_join(ptr %10, ptr getelementptr inbounds (i8, ptr @.str.9362, i64 16))
   call void @avra_array_push_owned(ptr %2, ptr %11)
   %ld3 = load i64, ptr %slot, align 8
   %add = add i64 %ld3, 1
   store i64 %add, ptr %slot, align 8
   call void @avra_rc_release(ptr %11)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9361, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9362, i64 16))
   call void @avra_rc_release(ptr %10)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9360, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9361, i64 16))
   call void @avra_rc_release(ptr %9)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9359, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9360, i64 16))
   call void @avra_rc_release(ptr %7)
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9358, i64 16))
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9359, i64 16))
   br label %lhead
 }
 
 define ptr @"av_commands$2Echeck_command"() {
 entry:
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9363, i64 16))
   call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9364, i64 16))
-  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9363, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9364, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9365, i64 16))
+  %0 = call ptr @"av_commands$2Efile_command"(ptr getelementptr inbounds (i8, ptr @.str.9364, i64 16), ptr getelementptr inbounds (i8, ptr @.str.9365, i64 16))
   %1 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed = inttoptr i64 %1 to ptr
   %2 = call ptr @avra_array_sized(i64 1)
@@ -316084,16 +316087,16 @@ entry:
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %0)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9365, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9364, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9363, i64 16))
   ret ptr %12
 }
 
 define i64 @"av_commands$2ECheckCmd$2Erun"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9366, i64 16))
-  %2 = call i1 @"av_$40std$2Ecli$2ECliResult$2Ehas_flag"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9366, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9367, i64 16))
+  %2 = call i1 @"av_$40std$2Ecli$2ECliResult$2Ehas_flag"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9367, i64 16))
   br i1 %2, label %then, label %else
 
 then:                                             ; preds = %entry
@@ -316109,12 +316112,12 @@ else:                                             ; preds = %entry
 endif:                                            ; preds = %else, %then
   %regval = phi ptr [ %3, %then ], [ %4, %else ]
   call void @avra_rc_retain(ptr %1)
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9365, i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @.str.9366, i64 16))
   call void @avra_rc_retain(ptr %regval)
-  %5 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9365, i64 16), ptr %regval)
+  %5 = call i64 @"av_commands$2Ephased"(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.9366, i64 16), ptr %regval)
   call void @avra_rc_release(ptr %regval)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9367, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9366, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9365, i64 16))
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 %5
@@ -316264,9 +316267,9 @@ entry:
   call void @avra_array_push_owned(ptr %15, ptr %13)
   call void @avra_array_push_owned(ptr %15, ptr %14)
   %16 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push_owned(ptr %16, ptr getelementptr inbounds (i8, ptr @.str.9367, i64 16))
   call void @avra_array_push_owned(ptr %16, ptr getelementptr inbounds (i8, ptr @.str.9368, i64 16))
   call void @avra_array_push_owned(ptr %16, ptr getelementptr inbounds (i8, ptr @.str.9369, i64 16))
+  call void @avra_array_push_owned(ptr %16, ptr getelementptr inbounds (i8, ptr @.str.9370, i64 16))
   call void @avra_array_push_owned(ptr %16, ptr %15)
   call void @avra_rc_retain(ptr %16)
   %17 = call i64 @"av_$40std$2Ecli$2EApp$2Erun"(ptr %16)
@@ -316293,9 +316296,9 @@ entry:
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
+  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9370, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9369, i64 16))
   call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9368, i64 16))
-  call void @avra_rc_release(ptr getelementptr inbounds (i8, ptr @.str.9367, i64 16))
   ret i32 0
 }
 
