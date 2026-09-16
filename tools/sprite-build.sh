@@ -15,6 +15,7 @@ set -eu
 sprite=
 worktree=
 pulls=
+receipt=
 # A worktree may predate the provisioning script, so the helper carries
 # its own copy and seeds it into the synced tree.
 here=$(cd "$(dirname "$0")" && pwd)
@@ -22,12 +23,13 @@ provision_script="$here/sprite-provision.sh"
 while [ "$#" -gt 0 ]; do
     case $1 in
         --pull) pulls="$pulls $2"; shift 2 ;;
+        --receipt) receipt=1; shift ;;
         --) shift; break ;;
         *) [ -z "$sprite" ] && sprite=$1 || worktree=$1; shift ;;
     esac
 done
 [ -n "$sprite" ] && [ -n "$worktree" ] && [ "$#" -gt 0 ] || {
-    echo "usage: sprite-build.sh <sprite> <worktree> [--pull <remote>:<local>]... -- <command...>" >&2
+    echo "usage: sprite-build.sh <sprite> <worktree> [--receipt] [--pull <remote>:<local>]... -- <command...>" >&2
     exit 2
 }
 
@@ -38,9 +40,12 @@ slug=$(basename "$worktree")
 # file and a deleted file all name a different tree.
 tarfile=$(mktemp -t avra-sprite.XXXXXX)
 trap 'rm -f "$tarfile"' EXIT
+# The gate reads doctrine as data (tools/idioms.py, tools/cited.py), so
+# those files travel even though they are not source.
 (
     cd "$worktree"
-    find Makefile avra.toml backend runtime packages tools bootstrap corpus \
+    find Makefile avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
+         backend runtime packages tools bootstrap corpus \
         -type f ! -path '*/build/*' ! -path '*/.claude/*' 2>/dev/null \
         | LC_ALL=C sort \
         | COPYFILE_DISABLE=1 tar --no-mac-metadata -cf "$tarfile" -T -
@@ -72,6 +77,12 @@ for spec in $pulls; do
         sprite -s "$sprite" file pull "$remote/$from" "$to" >/dev/null
     fi
 done
+
+# The receipt names the CALLER's clean tree: the Sprite has no history,
+# so a receipt written there could not name the commit the gate read.
+if [ -n "$receipt" ] && [ "$status" = 0 ] && [ -f "$worktree/tools/gate_receipt.sh" ]; then
+    (cd "$worktree" && sh tools/gate_receipt.sh write) || true
+fi
 
 echo "sprite-build: $slug@$hash on $sprite -> exit $status" >&2
 exit "$status"
