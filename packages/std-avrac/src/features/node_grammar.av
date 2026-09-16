@@ -1,0 +1,237 @@
+//! THE GRAMMAR NAMES THE NODE. A rule that maps its captures into a
+//! node's payloads says so — `primary = value:STRING -> Expr.StrLit`
+//! — and the builder is derived from the node model. A capture LABEL
+//! is a PAYLOAD NAME; a payload the rule STATES rather than captures
+//! is written `value = true`.
+//!
+//! Binding happens ONCE, at assembly: every `Build.Node` is resolved
+//! into the `Build.Call` the engine already runs, its arguments in
+//! PAYLOAD ORDER, so no parse pays for the join and the engine never
+//! learns what a node is.
+//!
+//! THE ARITY LAW, which is what makes an unnamed payload honest: a
+//! `List<X>` payload nothing names is `[]`, an `X?` payload nothing
+//! names is `null`, and any other unnamed payload REFUSES THE
+//! ASSEMBLY. That is what lets one rule cover `{ }` and `{ k: v }`.
+use core.{flatten, joined}
+use grammar.{Grammar, Alt, Seq, Item, Prim, Build, Slot, Fixed, Diagnostic, defect}
+
+/// One payload of one variant: its name and its type's spelling.
+export type Payload = { name: string, ty: string }
+
+/// What a node build needs to know about the variant it names — the
+/// node model's own declaration, as a row.
+export type PayloadRow = { owner: string, variant: string, payloads: List<Payload> }
+
+/// A grammar with every node build bound, and what binding refused.
+export type NodeBinding = { g: Grammar, defects: List<Diagnostic> }
+
+/// Every node build in `g` resolved against the node model.
+export fn bind_nodes(g: Grammar, rows: List<PayloadRow>) -> NodeBinding {
+    NodeBinding {
+        g: g with { rules: [r with { body: bound_alt(r.name, r.body, rows) } for r in g.rules] },
+        defects: flatten([alt_defects(r.name, r.body, rows) for r in g.rules]),
+    }
+}
+
+/// A rule body's branches, each judged by ITS OWN labels — the top of
+/// every scope a capture can reach.
+fn bound_alt(rule: string, a: Alt, rows: List<PayloadRow>) -> Alt {
+    a with { branches: [bound_seq(rule, s, s, rows) for s in a.branches] }
+}
+
+/// One branch bound, and every branch nested in its groups — all of
+/// them against `visible`, the ENCLOSING branch's labels. A capture
+/// escapes its group into that branch, so a nested build reads the
+/// same names the engine will hand it.
+fn bound_seq(rule: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Seq {
+    s with {
+        items: [m with { prim: bound_prim(rule, m.prim, outer, rows) } for m in s.items],
+        build: bound_build(s, outer, rows),
+    }
+}
+
+fn bound_prim(rule: string, p: Prim, outer: Seq, rows: List<PayloadRow>) -> Prim {
+    match p {
+        .Group(inner) -> Prim.Group(inner with { branches: [bound_seq(rule, b, outer, rows) for b in inner.branches] }),
+        .Ref(_) or .Lit(_) or .Named(_) -> p,
+    }
+}
+
+/// The branch's build with its node build's slots filled. A variant
+/// the model does not answer keeps its empty slots: the defects below
+/// refuse the assembly, so no parse ever reaches it.
+fn bound_build(s: Seq, outer: Seq, rows: List<PayloadRow>) -> Build? {
+    if s.build == null { return null }
+    match s.build! {
+        .Node(owner, variant, fixed, _) -> Build.Node(owner, variant, fixed, filled_slots(outer, owner, variant, fixed, rows)),
+        .Call(_, _) or .Var(_) -> s.build,
+    }
+}
+
+fn filled_slots(outer: Seq, owner: string, variant: string, fixed: List<Fixed>, rows: List<PayloadRow>) -> List<Slot>? {
+    let row: PayloadRow? = row_for(rows, owner, variant)
+    if row == null { return null }
+    [filling(p, outer.labels(), fixed) for p in row!.payloads]
+}
+
+/// One payload's slot: the label that captures it, the value the rule
+/// states, or nothing — which the arity law permits only for a list
+/// or a nullable.
+fn filling(p: Payload, labels: List<string>, fixed: List<Fixed>) -> Slot {
+    if labels.contains(p.name) { return Slot.Label(p.name) }
+    let stated: Fixed? = fixed.find(it.name == p.name)
+    if stated != null { return Slot.Fixed(stated!.text) }
+    Slot.Empty
+}
+
+fn row_for(rows: List<PayloadRow>, owner: string, variant: string) -> PayloadRow? {
+    rows.find(it.owner == owner && it.variant == variant)
+}
+
+// ── The refusals. A node build is checked against the DECLARATION,
+// so a grammar that would build a wrong tree never runs. ──
+
+fn alt_defects(rule: string, a: Alt, rows: List<PayloadRow>) -> List<Diagnostic> {
+    flatten([branch_defects(rule, s, rows) for s in a.branches])
+}
+
+/// One branch and every branch nested in it, all judged by THIS
+/// branch's labels — the set the engine binds into.
+fn branch_defects(rule: string, s: Seq, rows: List<PayloadRow>) -> List<Diagnostic> {
+    flatten([seq_defects(rule, nested, s, rows) for nested in s.seqs()])
+}
+
+fn seq_defects(rule: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> List<Diagnostic> {
+    if s.build == null { return [] }
+    match s.build! {
+        .Node(owner, variant, fixed, _) -> node_defects(rule, outer, owner, variant, fixed, rows),
+        .Call(_, _) or .Var(_) -> [],
+    }
+}
+
+fn node_defects(rule: string, outer: Seq, owner: string, variant: string,
+                fixed: List<Fixed>, rows: List<PayloadRow>) -> List<Diagnostic> {
+    let row: PayloadRow? = row_for(rows, owner, variant)
+    if row == null { return [node_refusal(rule, no_such_variant(owner, variant))] }
+    judged(rule, outer, row!, fixed)
+}
+
+/// The branch against a variant that EXISTS: what it names, what it
+/// leaves unfilled, and what it fills with the wrong shape.
+fn judged(rule: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
+    stranger_defects(rule, s, row, fixed)
+        .concat(unfilled_defects(rule, s, row, fixed))
+        .concat(shape_defects(rule, s, row))
+}
+
+/// Names the rule uses — captured or stated — that the variant has no
+/// payload for.
+fn stranger_defects(rule: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
+    let names = [p.name for p in row.payloads]
+    [node_refusal(rule, no_such_payload(row, n, names))
+     for n in s.labels().concat([f.name for f in fixed]) if !names.contains(n)]
+}
+
+/// Payloads nothing fills, and whose type does not answer absence.
+fn unfilled_defects(rule: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
+    let labels = s.labels()
+    [node_refusal(rule, nothing_fills(row, p)) for p in row.payloads
+     if !labels.contains(p.name) && !fixed.any(it.name == p.name) && !absence_is_a_value(p.ty)]
+}
+
+/// A LIST holds nothing and a NULLABLE is absent; every other payload
+/// must be filled.
+fn absence_is_a_value(ty: string) -> bool {
+    ty.starts_with("List<") || ty.ends_with("?")
+}
+
+/// Each payload's SHAPE against what its label matches: a node payload
+/// is built by a rule, text is carried by a terminal. Refused only
+/// where the branch PROVES the mismatch — a literal captures nothing
+/// and a group may answer either, so neither is judged.
+fn shape_defects(rule: string, s: Seq, row: PayloadRow) -> List<Diagnostic> {
+    flatten([payload_shape(rule, s, row, p) for p in row.payloads])
+}
+
+fn payload_shape(rule: string, s: Seq, row: PayloadRow, p: Payload) -> List<Diagnostic> {
+    let hit: Item? = s.deep_items().find(labelled(it, p.name))
+    if hit == null { return [] }
+    let carried: Carrier? = carrier_of(hit!.prim)
+    if carried == null || carried! == wanted_carrier(p.ty) { return [] }
+    [node_refusal(rule, wrong_shape(row, p, carried!))]
+}
+
+/// What a grammar atom answers with: a built node, or a token's text.
+enum Carrier { Built, Text }
+
+/// What a payload's declared type must be filled from.
+fn wanted_carrier(ty: string) -> Carrier {
+    if texted(ty) { return Carrier.Text }
+    Carrier.Built
+}
+
+/// The payload types a TOKEN fills — every other is a built node.
+/// Its element spelling is what a list of them is asked about, so one
+/// list answers both.
+fn texted(ty: string) -> bool {
+    text_types.contains(element_of(ty))
+}
+
+const text_types: List<string> = ["string", "int", "bool", "Scoped", "Plain", "Nominal"]
+
+/// A type's element: `List<X>` and `X?` are asked about their `X`.
+fn element_of(ty: string) -> string {
+    if ty.starts_with("List<") { return element_of(ty.substring(5, ty.length - 1)) }
+    if ty.ends_with("?") { return ty.substring(0, ty.length - 1) }
+    ty
+}
+
+/// The item this label names.
+fn labelled(m: Item, name: string) -> bool {
+    m.label != null && m.label! == name
+}
+
+fn carrier_of(p: Prim) -> Carrier? {
+    match p {
+        .Ref(_) -> Carrier.Built,
+        .Named(_) -> Carrier.Text,
+        // A literal captures nothing a payload wants, and a group may
+        // answer either — neither proves a mismatch.
+        .Lit(_) or .Group(_) -> null,
+    }
+}
+
+// ── Voices. Each states the law the grammar broke. ──
+
+fn no_such_variant(owner: string, variant: string) -> string {
+    "builds `${owner}.${variant}`, and no such variant is declared"
+}
+
+fn no_such_payload(row: PayloadRow, name: string, names: List<string>) -> string {
+    "names `${name}`, and `${row.owner}.${row.variant}` has no such payload — it carries ${listed(names)}"
+}
+
+fn nothing_fills(row: PayloadRow, p: Payload) -> string {
+    "builds `${row.owner}.${row.variant}` and nothing fills `${p.name}: ${p.ty}` — only a list or a nullable payload may go unnamed"
+}
+
+fn wrong_shape(row: PayloadRow, p: Payload, got: Carrier) -> string {
+    "gives `${row.owner}.${row.variant}`'s `${p.name}: ${p.ty}` ${carrier_word(got)}, and it holds ${carrier_word(wanted_carrier(p.ty))}"
+}
+
+fn carrier_word(c: Carrier) -> string {
+    match c {
+        .Built -> "a built node",
+        .Text -> "a token's text",
+    }
+}
+
+fn listed(names: List<string>) -> string {
+    if names.is_empty() { return "nothing" }
+    "`${joined(names, "`, `")}`"
+}
+
+fn node_refusal(rule: string, message: string) -> Diagnostic {
+    defect(rule, "rule `${rule}` ${message}")
+}

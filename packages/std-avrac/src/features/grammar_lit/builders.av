@@ -4,7 +4,7 @@
 //! merges values and never parses text.
 use core.{Expr, ExprId, Span}
 use features.{LangNode, Builder}
-use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover, Diagnostic, parse_grammar}
+use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Expect, Recover, Diagnostic, parse_grammar}
 
 fn build_grammar_lit(mut b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
@@ -79,7 +79,17 @@ fn build_expr(mut b: Builder, held: Build?, sp: Span?) -> ExprId {
         .Var(name) -> variant(b, "Build", "Var", [text_expr(b, name, sp)], sp),
         .Call(name, args) -> variant(b, "Build", "Call",
             [text_expr(b, name, sp), list_expr(b, [text_expr(b, a, sp) for a in args], sp)], sp),
+        // SLOTS ARE NOT WRITTEN: binding fills them where the node
+        // model lives, and a grammar value carries them unbound.
+        .Node(owner, vname, fixed, _) -> variant(b, "Build", "Node",
+            [text_expr(b, owner, sp), text_expr(b, vname, sp),
+             list_expr(b, [fixed_expr(b, f, sp) for f in fixed], sp),
+             b.store.alloc_expr(Expr.NullLit, sp)], sp),
     }
+}
+
+fn fixed_expr(mut b: Builder, f: Fixed, sp: Span?) -> ExprId {
+    lit_struct(b, "Fixed", ["name", "text"], [text_expr(b, f.name, sp), text_expr(b, f.text, sp)], sp)
 }
 
 fn expect_expr(mut b: Builder, held: Expect?, sp: Span?) -> ExprId {

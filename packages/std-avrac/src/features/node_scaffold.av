@@ -1,0 +1,53 @@
+//! THE HAND TABLE, WRITTEN TO BE DELETED. `@derive(Grammar)` on the
+//! node enums generates exactly these rows and these builders, read
+//! off each variant's declared payloads; it cannot yet, because
+//! `@std.meta.Variant` carries a payload's TYPE and not its NAME.
+//!
+//! RETIREMENT TRIGGER: `Variant.fields` landing in `@std/meta`. The
+//! first step then is to prove the generated rows equal these, row
+//! for row, and delete this file. Every row here is a TRANSCRIPTION
+//! of core/nodes.av — never a second opinion about it.
+use core.{Expr}
+use features.{BuilderRow, LangNode, Builder, Payload, PayloadRow}
+
+/// The variants a rule may name today — the migration's front.
+export fn node_payloads() -> List<PayloadRow> {
+    [
+        PayloadRow { owner: "Expr", variant: "StrLit", payloads: [Payload { name: "value", ty: "string" }] },
+        PayloadRow { owner: "Expr", variant: "BoolLit", payloads: [Payload { name: "value", ty: "bool" }] },
+        PayloadRow { owner: "Expr", variant: "Interp", payloads: [
+            Payload { name: "parts", ty: "List<string>" },
+            Payload { name: "holes", ty: "List<ExprId>" },
+        ] },
+    ]
+}
+
+/// Each variant's builder, its arguments in PAYLOAD ORDER — which is
+/// what the binding guarantees.
+export fn node_builders() -> List<BuilderRow> {
+    let rows = table<BuilderRow> {
+        name          | build
+        "Expr.StrLit"  | build_expr_str_lit
+        "Expr.BoolLit" | build_expr_bool_lit
+        "Expr.Interp"  | build_expr_interp
+    }
+    rows
+}
+
+// LICENSED I39: a builder is a registry ROW's fn, not a verb on `Builder` —
+// the shape every `features/*/builders.av` carries, exempt there by path alone
+fn build_expr_str_lit(mut b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.StrLit(b.text(0)?))
+}
+
+// LICENSED I39: a builder is a registry ROW's fn, not a verb on `Builder` —
+// the shape every `features/*/builders.av` carries, exempt there by path alone
+fn build_expr_bool_lit(mut b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.BoolLit(b.flag(0)?))
+}
+
+// LICENSED I39: a builder is a registry ROW's fn, not a verb on `Builder` —
+// the shape every `features/*/builders.av` carries, exempt there by path alone
+fn build_expr_interp(mut b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.Interp(b.texts(0)?, b.exprs(1)?))
+}
