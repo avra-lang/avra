@@ -19,7 +19,7 @@ RUNTIME_OBJS := build/llvm_wrapper.o build/avra_runtime.o
 SUITES := packages/std-errors packages/std-testing packages/std-text packages/std-path packages/std-time packages/std-io packages/std-meta packages/std-toml packages/std-process packages/std-cli packages/std-json packages/std-avrac packages/cli packages/std-sqlite
 
 .PHONY: census traps test tested clean seed-check gate externs idioms idioms-accept bench fuzz scaffold-check vocab sweep seed recover bootstrap rt-header witnesses \
-        check run ir emit build-native native-check avra
+        check run ir emit build-native native-check avra sprite sprite-check
 
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -50,6 +50,7 @@ seed: $(RUNTIME_OBJS)
 		rm -f build/seed.ll.new; exit 1; \
 	fi; \
 	mv build/seed.ll.new bootstrap/seed.ll; \
+	sh tools/sources_hash.sh > bootstrap/seed.sources; \
 	echo "seed: bootstrap/seed.ll ($$n lines)"
 
 # THE ONLY RULE THAT LINKS BY HAND, and the one a cold tree and every
@@ -86,6 +87,20 @@ avra: $(RUNTIME_OBJS)
 	@codesign -f -s - build/avra 2>/dev/null || true
 	@rm -f packages/cli/src/main packages/cli/src/main.av.ll
 	@echo "avra: build/avra"
+
+# A Sprite is a stock Ubuntu image; `make sprite` provisions the machine
+# it runs on — LLVM 22, the tree's paths, and a compiler. On macOS it is
+# a no-op.
+sprite:
+	@sh tools/sprite-provision.sh
+
+# What a fresh Sprite from THIS tree would do: no build when the tree is
+# the source the seed came from, one build once it has moved.
+sprite-check:
+	@h=$$(sh tools/sources_hash.sh); s=$$(cat bootstrap/seed.sources 2>/dev/null || echo none); \
+	 printf 'sprite-check: sources %s\nsprite-check: seed    %s\n' "$$h" "$$s"; \
+	 if [ "$$h" = "$$s" ]; then echo "sprite-check: the seed IS this tree — a fresh Sprite needs no build"; \
+	 else echo "sprite-check: this tree has moved — a fresh Sprite takes one build; `make seed` restores the seed path"; fi
 
 # Scratch a run leaves behind: the test binaries each package's
 # cases were linked into.
@@ -127,7 +142,7 @@ build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c runtime/avra_box.h
 
 build/avra_runtime.o: runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h build/runtime.sha
 	@mkdir -p build
-	cc -O2 -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
+	cc -O2 -fPIC -Wall -Werror -c runtime/avra_runtime.c -o build/avra_runtime.o
 
 # The runtime's trap contract: the words and the verdict (exit 2).
 # No program test can hold it — a suite runs every program in
@@ -145,7 +160,7 @@ census:
 
 build/llvm_wrapper.o: backend/llvm_wrapper.c runtime/avra_box.h build/llvm_wrapper.sha
 	@mkdir -p build
-	cc -c -O2 -I$(LLVM_PREFIX)/include -o build/llvm_wrapper.o backend/llvm_wrapper.c
+	cc -c -O2 -fPIC -I$(LLVM_PREFIX)/include -o build/llvm_wrapper.o backend/llvm_wrapper.c
 
 clean:
 	@mkdir -p build
@@ -166,7 +181,7 @@ clean:
 # This gate step cold-bootstraps into a throwaway BUILD and refuses a
 # latent drift: a seed that fails here fails the gate, not a future
 # `make clean` + `make bootstrap`.
-seed-check:
+seed-check: $(RUNTIME_OBJS)
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
 	@clang -w -O1 build/seed-check/seed.ll $(RUNTIME_OBJS) \
@@ -292,7 +307,7 @@ SQLITE_FLAGS := \
 
 build/sqlite3.o: packages/std-sqlite/vendor/sqlite3.c
 	@mkdir -p build
-	cc -c -O2 $(SQLITE_FLAGS) -o $@ $<
+	cc -c -O2 -fPIC $(SQLITE_FLAGS) -o $@ $<
 
 # The driver's own C: the destructor sentinel as a named door, so no
 # Avra program needs a way to build a pointer from an integer.
@@ -300,11 +315,11 @@ build/sqlite3.o: packages/std-sqlite/vendor/sqlite3.c
 # rule can replace this hand rule by deleting it.
 build/sqlite_sentinel.o: packages/std-sqlite/src/c/sqlite_sentinel.c
 	@mkdir -p build
-	cc -c -O2 -Ipackages/std-sqlite/vendor -o $@ $<
+	cc -c -O2 -fPIC -Ipackages/std-sqlite/vendor -o $@ $<
 
 build/width_witness.o: packages/width-witness/src/witness.c
 	@mkdir -p build
-	cc -c -O2 -o build/width_witness.o packages/width-witness/src/witness.c
+	cc -c -O2 -fPIC -o build/width_witness.o packages/width-witness/src/witness.c
 
 # EVERY WORKING FILE LIVES IN `build/`, WHICH IS PER-WORKTREE. A
 # shared `/tmp` path is written by one lane and read by another: the
