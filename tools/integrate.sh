@@ -265,8 +265,8 @@ cp build/avra "$tmp-preboot"
 sh tools/watch.sh $cap make -s bootstrap > "$tmp-boot.out" 2>&1 || { echo "integrate: the refreshed seed does not bootstrap"; tail -20 "$tmp-boot.out"; exit 1; }
 cmp -s build/avra "$tmp-preboot" || { echo "integrate: the seed does not CYCLE (bootstrap differs)"; exit 1; }
 # a merge that touched no compiler source leaves the seed as it was
-git add bootstrap/seed.ll
-git diff --quiet --cached -- bootstrap/seed.ll && echo "integrate: the seed is unchanged" || git commit -q -m "chore(seed): refreshed after lane $lane merged
+git add bootstrap/seed.ll bootstrap/seed.sources
+git diff --quiet --cached -- bootstrap/seed.ll bootstrap/seed.sources && echo "integrate: the seed is unchanged" || git commit -q -m "chore(seed): refreshed after lane $lane merged
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_01XXBDccuDA8Ntk55RXKedD2"
