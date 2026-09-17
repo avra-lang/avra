@@ -173,7 +173,14 @@ impl Builder {
         if stmts.is_empty() { return self.expr_node(Expr.Block(stmts, null)) }
         let value: ExprId? = self.store.answer_of(stmts.last()!)
         if value == null { return self.expr_node(Expr.Block(stmts, null)) }
-        self.expr_node(Expr.Block(stmts.slice(0, stmts.length - 1), value!))
+        let v = value!
+        if stmts.length == 1 {
+            // a scope holding only its value wears the VALUE's span: the
+            // block node is the author's FORM, so a diagnostic about the
+            // answer still points at the answer, never at the brace
+            return self.store.alloc_expr(Expr.Block([], v), self.store.expr_span(v))
+        }
+        self.expr_node(Expr.Block(stmts.slice(0, stmts.length - 1), v))
     }
 
     /// Where this build's branch ENDED — the bound a positional
