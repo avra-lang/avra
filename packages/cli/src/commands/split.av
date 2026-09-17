@@ -1,0 +1,52 @@
+//! `avra split` — emit one module per FILE and report the bytes, against the
+//! whole-program module those same bytes would have made.
+//!
+//! This is the measurement the disk rung owes, and it is a MEASUREMENT rather
+//! than a build step: splitting the IR per file is what makes an edit re-emit one
+//! file instead of all of them, but the first attempt at it was built, measured,
+//! and REVERTED — 257 modules cost 210MB where one cost 19MB, because every
+//! module repeated every declaration and every static.
+//!
+//! The dedup landed since, so the question is open again: does a split module
+//! declared-and-laid-out for only what IT carries come back down to the size of
+//! the one module it came from? If it does, per-file IR is worth building. If it
+//! does not, the disk rung is a cost with no offsetting saving and stays reverted.
+use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.avrac.language.{Program, emit_module, build_cache_root}
+use @std.io.{make_dirs, read_text}
+
+type SplitCmd = { }
+
+impl Runnable for SplitCmd {
+    fn run(args: CliResult) -> int { phased(args, "split", measured) }
+}
+
+fn measured(p: Program) -> Result<int, string> {
+    if !p.clean() { fail p.report() }
+    let l = p.lowered()
+    let dir = "${build_cache_root(p.ws)}/split"
+    let _ = make_dirs(dir)
+    let whole = "${dir}/whole.ll"
+    let broke = emit_module(l, whole, false, null)
+    if broke != null { fail broke! }
+    mut total = 0
+    mut widest = 0
+    for i, a in p.files.enumerate() {
+        let f = a.view.file
+        let path = "${dir}/mod-${i}.ll"
+        let failure = emit_module(l, path, false, f)
+        if failure != null { fail failure! }
+        let n = read_text(path) catch ""
+        total = total + n.length
+        if n.length > widest { widest = n.length }
+    }
+    let whole_bytes = (read_text(whole) catch "").length
+    println("whole-program module ....... ${whole_bytes} bytes")
+    println("${p.files.length} per-file modules ...... ${total} bytes")
+    println("widest single module ....... ${widest} bytes")
+    0
+}
+
+export fn split_command() -> Subcommand {
+    Subcommand { meta: file_command("split", "Emit one module per file and report the bytes — the disk rung's measurement"), body: SplitCmd { } }
+}

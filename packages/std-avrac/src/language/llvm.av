@@ -292,10 +292,16 @@ fn wreck(m: ptr, path: string, failure: string) -> string {
 /// its implementation twin. A split module declares the rows it
 /// calls; a whole-program module declares every row.
 fn declare_runtime(lc: ptr, m: ptr, refs: Refs) {
+    // EVERY RUNTIME ROW, in every module, and NOT filtered to the names the
+    // program's instructions mention. `emit_body` emits runtime calls of its own
+    // — retains, releases, boxing, the trap — that are NOT instructions a
+    // reference walk can see, so a filtered declaration list leaves those calls
+    // aiming at nothing (the split's first run died in `fn_type_of` on a null
+    // function). The rows are a few dozen and their declarations are a small
+    // part of a module's text; the USER declarations and the STATICS are where
+    // the duplication actually lives, and those are still filtered.
     for s in rt_sigs() {
-        if carries(refs, refs.hosted, s.name) {
-            declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
-        }
+        declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
     }
 }
 
