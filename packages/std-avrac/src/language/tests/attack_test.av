@@ -1,0 +1,39 @@
+// THE HARNESS BITES. A class's assertion must be FALSIFIABLE, or a
+// green sweep is a habit rather than a result: `avra attack` found no
+// survivor across thirteen features, and nothing distinguished "the
+// compiler is clean on these classes" from "the assertions are too
+// weak to notice". These cases pin sources where each law is FALSE, so
+// a generated case that asserted it would go RED.
+use @std.avrac.language.{analyze_source}
+use @std.avrac.diagnostics.{Diag}
+use @std.avrac.testing.{refusals}
+
+/// The SHAPE parses — a parse error is `parse.*`, a type error is not.
+fn parses(src: string) -> bool {
+    !analyze_source(src).diagnostics.any(parse_error)
+}
+
+fn parse_error(d: Diag) -> bool {
+    d.kind.starts_with("parse.")
+}
+
+spec "language/attack harness" {
+    given "the degenerate law (stability) is falsifiable" {
+        // A statement-list repeat alternates with a BREAK branch, so
+        // repeating the statement branch alone is NOT a stable shape —
+        // this pair is why `many` is emitted only for a SELF-CONTAINED
+        // repeat, and a case that asserted stability here would fail.
+        then "`{ x x }` does not parse where `{ x }` does" {
+            parses("{ x x }") != parses("{ x }")
+        }
+    }
+    given "the malformed law (tolerance) is the true one, not refusal" {
+        // Deleting `grammar` from `grammar { "s" }` leaves `{ "s" }`,
+        // a VALID block. A refusal assertion here was FALSE and made
+        // grammar_lit red for the wrong reason; this pins the valid
+        // program so the law cannot drift back to refusal.
+        then "a deletion can yield a VALID program — `{ \"s\" }` analyzes clean" {
+            refusals("{ \"s\" }") == 0
+        }
+    }
+}

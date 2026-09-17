@@ -4,7 +4,11 @@
 //! only the SEMANTIC attacks; this is the shape every hand red team
 //! found by hand, so the next one starts where they stopped.
 use @std.cli.{Subcommand, CliResult, Runnable, ArgDef}
-use @std.avrac.language.{avra, attacks, attack_test_source}
+use @std.avrac.language.{avra, attacks, attack_test_source, survivors_of, baseline_word}
+
+/// A fixture that dominates the suite taxes every landing; the cap
+/// keeps one feature's grammar from doing so, and the fixture says so.
+fn attack_cap() -> int { 500 }
 
 type AttackCmd = { }
 
@@ -19,7 +23,18 @@ impl Runnable for AttackCmd {
             eprintln("avra attack: no feature `${name}` — `avra grammar` lists the language")
             return 2
         }
-        println(attack_test_source(name, attacks(feature!.gram)))
+        let generated = attacks(feature!.gram, attack_cap())
+        if generated.dropped > 0 {
+            eprintln("avra attack: ${generated.dropped} case(s) dropped over the cap of ${generated.cap} — the fixture records it")
+        }
+        // SURVIVORS on stderr, machine-readably: a mutant the compiler
+        // accepts is not a failure (it may be valid), so `make attack`
+        // holds the set against tools/attack.baseline and a NEW one is
+        // refused. `tools/attack.sh` reads these lines.
+        for s in survivors_of(generated) {
+            eprintln("survivor\t${name}\t${baseline_word(s.source)}")
+        }
+        println(attack_test_source(name, generated))
         0
     }
 }
