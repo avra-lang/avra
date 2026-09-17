@@ -568,8 +568,11 @@ you ship proofs rather than trust.
 
 | # | what | status |
 |---|---|---|
-| 0 | whole-program cache, cap + GC, linked binary kept, seam fixed | **LANDED** |
-| 0 | the perf work behind the cache (`Cell` verbs) — 5.8× on every compile | **LANDED** |
+| 0 | whole-program module cache — `build_key`, derived once and used for both store and lookup, over every byte a build reads | **LANDED** |
+| 0 | **the linked binary is kept** — a hit is a `cp`, not a clang run | **LANDED** |
+| 0 | cap + dead-key collection — cap 8, the `recent` file, a **clock-free LRU**, witnessed evicting | **LANDED** |
+| 0 | artifacts go to the **disk** host, sources to the source host | **LANDED** |
+| 0 | the perf work behind the cache (`Cell.push`/`Cell.set_at`) — 5.8× on every compile | **LANDED** |
 | 0 | `stable_type` / `stable_sig` — a persistent key folds a SPELLING | **LANDED** |
 | 0 | `unit_key` + `avra keys` — the per-file identity, inspectable | **LANDED** |
 | 0 | `module_surface` — the interface's identity, all three legs witnessed | **LANDED** |
@@ -579,6 +582,12 @@ you ship proofs rather than trust.
 | 3 | per-file objects | gated on 1 |
 | 4 | semantic addressing — the failing case already committed | gated on 1–3 |
 | 5 | evidence + comptime caching — the compounding payoff | last |
+
+**WHAT THE LANDED ROWS BUY TODAY, EXACTLY.** Nothing changed: a hit, 372× faster.
+**Anything changed: the whole-program key misses, and the build is the old ~30 s** — the
+cache is a no-op accelerator, not yet an incremental one. **The small-change case is the
+unsolved one**, and rows 1–3 are what solve it; until they land, an edit pays the full
+analysis. That gap is the whole reason this document exists.
 
 **Why this order.** Observed invalidation and the keys kill the bug class and everything
 after relies on the key being complete; interfaces are the only thing that must persist
