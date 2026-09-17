@@ -972,3 +972,28 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   disagree with itself about what an absent signature means. (`CACHE_FORMAT`
   moves, so old entries are unreachable rather than wrong.)
 
+- **A MEASUREMENT THAT CANNOT EXHIBIT THE CHANGE IS THE FIXTURE LAW ONE
+  LAYER DOWN.** The cache's eager index measured 7% (17.6s against 16.4s) —
+  against a binary whose `packages/cli/src/main` was STALE, because the
+  build meant to replace it had FAILED and left the old artifact in place.
+  The timing looked plausible and was about the WRONG ARTIFACT. So a number
+  is trustworthy only once the binary is known to be the one just built:
+  the same test as "can this fixture exhibit the defect", applied to the
+  THING BEING MEASURED rather than to the case.
+- **A PROJECTION FILLED ON EVERY WRITE ANSWERS A QUESTION ONLY A READER
+  ASKS.** The name->id index filled on every `intern` cost 7% of a package
+  check — a rendering and a map write for every type the compiler makes, to
+  serve a LOADER — and LAZY it is FREE (an alternating A/B of three runs
+  each: 0.2%, inside this machine's noise), because a build that loads no
+  record never builds it. The question's READER decides when it is worth
+  paying for.
+- **A NAME IS NOT UNIQUE, SO A CALLER THAT MINTS FROM ONE CHECKS THE ROUND
+  TRIP.** Two declarations in different modules may render the same text and
+  `by_name` answers the FIRST interned — so a minting caller re-renders what
+  it got and REFUSES unless it equals the spelling it asked for. A collision
+  then costs a REFUSAL, never a wrong type: the only direction this may fail
+  in. AND THE LIFETIME DISTINCTION DECIDED A THIRD DESIGN — `ids` LOOKED like
+  the inverse and is not, because it is keyed by `canon`, which spells its
+  children by INDEX and so belongs to ONE RUN, while a record outlives one
+  and needs the PRINTING text.
+
