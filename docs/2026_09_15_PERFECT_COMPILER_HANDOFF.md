@@ -1165,3 +1165,25 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   work is banked, the reason is visible AT THE SITE, and the next reader
   cannot mistake it for dead code.
 
+- **A `file` TAG THAT RECORDS WHO ASKED DOES NOT RECORD WHERE A BODY BELONGS.**
+  The first unsoundness was a body with NO home (a mono specialization its own
+  source never mentions); the second is a body with TOO MANY HOMES — A WRAP'S
+  NAME IS GLOBAL BUT ITS BODY IS GENERATED PER CALLER, so every file that calls
+  `f$w` attributes it to ITSELF and six modules define one symbol. No
+  key-cleverness fixes it: the problem is the ATTRIBUTION, not the key, so the
+  home must be DERIVED FROM THE BODY and never from the asker. AND THE
+  DERIVATION MUST BE ORDER-INDEPENDENT — an owner chosen by "the first asker
+  reached" moves with traversal order, the same family as a seed computed
+  differently from its updates.
+- **THE SELF-BUILD IS THE ONLY FIXTURE THIS RUNG ACCEPTS.** Four unsoundnesses
+  now, EVERY ONE found by RUNNING THE COMPILER'S OWN 275-MODULE BUILD with
+  every fixture green: a three-file package never instantiates across a module
+  boundary, and a fixture has too few callers to make a wrap collide. Two of
+  them were found within minutes of each other — the strongest available
+  argument that the self-build is the TEST rather than a convenience.
+- **AND A FIX REVERTED CAN STILL PAY.** `lower_lambda` and `wrapped_body` now
+  SET `file` — correct in itself, since a lambda belongs to the file it was
+  written in — and that is what turned an UNEMITTABLE lambda into a VISIBLE
+  duplicate rather than silence. The revert banked the correctness and
+  withheld only the mechanism.
+
