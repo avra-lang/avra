@@ -12,6 +12,10 @@
 #            grammar DSL drops (avra-8sb5.11.114) — the one named exception.
 #   doc    — a `///` line (avra-8sb5.11.104 holds the non-declaration ones)
 #   trail  — a `//` sharing its line with code (avra-8sb5.11.112)
+#   flat   — a braced form written on ONE line (`{ 1 }`, `{ k: v }`): the
+#            author's form, which rung 2 keeps. A deficit means one was
+#            expanded; a few are the parse's own collapses (`{ 7 }` is its
+#            value), so the class is read as a trend, not a floor of zero.
 #
 # A class's count is a DIFF of the same awk over input and output, so a
 # misread line (a `//` inside a string) appears on both sides and cancels.
@@ -30,6 +34,7 @@ lost_files=0
 own=0
 doc=0
 trail=0
+flat=0
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
@@ -38,17 +43,18 @@ counts() {
     # text; re-expanding it keeps the count from calling a re-spelled
     # string a lost comment (a `fmt` writes a triple-quoted string as
     # one escaped line).
-    awk 'BEGIN{own=0;doc=0;trail=0}
+    awk 'BEGIN{own=0;doc=0;trail=0;flat=0}
          { gsub(/\\n/, "\n")
            n = split($0, part, "\n")
            for (i = 1; i <= n; i++) {
+             if (part[i] ~ /\{[^{}]*[^ \t}][^{}]*\}/) flat++
              l = part[i]; sub(/^[ \t]+/, "", l)
              if (l == "") continue
              if (l ~ /^\/\/\//) {doc++; continue}
              if (l ~ /^\/\//) {own++; continue}
              if (index(part[i], "//") > 0) {trail++}
            } }
-         END{printf "%d %d %d\n", own, doc, trail}' "$1"
+         END{printf "%d %d %d %d\n", own, doc, trail, flat}' "$1"
 }
 
 for f in $list; do
@@ -59,17 +65,18 @@ for f in $list; do
         continue
     fi
     set -- $(counts "$f")
-    io=$1; id=$2; it=$3
+    io=$1; id=$2; it=$3; iflat=$4
     set -- $(counts "$out")
-    oo=$1; od=$2; ot=$3
-    if [ "$io" -ne "$oo" ] || [ "$id" -ne "$od" ] || [ "$it" -ne "$ot" ]; then
+    oo=$1; od=$2; ot=$3; oflat=$4
+    if [ "$io" -ne "$oo" ] || [ "$id" -ne "$od" ] || [ "$it" -ne "$ot" ] || [ "$iflat" -ne "$oflat" ]; then
         lost_files=$((lost_files + 1))
-        echo "$f  own $io->$oo  doc $id->$od  trail $it->$ot"
+        echo "$f  own $io->$oo  doc $id->$od  trail $it->$ot  flat $iflat->$oflat"
     fi
     own=$((own + io - oo))
     doc=$((doc + id - od))
     trail=$((trail + it - ot))
+    flat=$((flat + iflat - oflat))
 done
 
 echo "fmt_roundtrip: $files file(s) rendered, $refused refused, $lost_files with a deficit"
-echo "fmt_roundtrip: lost own-line remarks $own, doc lines $doc, trailing comments $trail"
+echo "fmt_roundtrip: lost own-line remarks $own, doc lines $doc, trailing comments $trail, one-line forms $flat"
