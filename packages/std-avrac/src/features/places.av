@@ -6,7 +6,7 @@
 //! observed. The runtime clones by its own owned-map; the
 //! interpreter clones every time (the executable spec). Mutation
 //! and the list vocabulary's `push` both land here.
-use core.{ExprId, Reg, Ins, Type, PlaceStep, Binding}
+use core.{ExprId, Reg, Ins, Type, PlaceStep}
 
 /// An opened place: a cell (a bare mut name) or a slot of a box
 /// already made unique.
@@ -52,10 +52,8 @@ impl LowerCx {
                 let cell: Reg? = self.cell_of(s)
                 if cell != null {
                     let dst = self.mint_ty(self.type_at(s))
-                    // a BORROW of a parameter's field writes through to the
-                    // field (bs2's aliasing, honored until self-host); any
-                    // other cell opens unique — copy-on-write
-                    if self.borrows(s) { self.emit(Ins.Load(dst, cell!)) } else { self.emit(Ins.CallRt(dst, "avra_cell_unique", [cell!])) }
+                    // a cell opens unique — copy-on-write
+                    self.emit(Ins.CallRt(dst, "avra_cell_unique", [cell!]))
                     return dst
                 }
                 // a method's receiver: `self` is the box itself — shared
@@ -64,17 +62,6 @@ impl LowerCx {
             }
             .Field(subject, name) -> self.slot_opened(s, self.unique_box(subject), self.field_slot(subject, name.of)),
             .At(subject, index) -> self.slot_opened(s, self.unique_box(subject), self.reg_of(index)),
-        }
-    }
-
-    /// Whether a root name is a `mut` binding that borrows a parameter's
-    /// field.
-    fn borrows(root: ExprId) -> bool {
-        let b: Binding? = self.names.binding(root)
-        if b == null { return false }
-        match b! {
-            .Def(s) -> self.facts.is_borrow(s),
-            .Param(_) or .Receiver or .Decl(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
         }
     }
 
