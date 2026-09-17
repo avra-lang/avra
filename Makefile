@@ -339,6 +339,7 @@ clean:
 # binary links beside `build/avra`, which is the layout the resolver
 # describes; the scratch keeps its own directory.
 seed-check: $(COMPILER_OBJS)
+	@sh tools/seed_guard.sh
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
 	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(COMPILER_OBJS) \
@@ -403,6 +404,11 @@ idioms:
 
 idioms-accept:
 	@sh tools/idioms.sh --accept
+
+# The survivor baseline: a mutant `avra attack` accepts is a decision,
+# never a silent pass — a NEW one is refused (tools/attack.baseline).
+attack:
+	@sh tools/attack.sh
 
 # The IR vocabulary's guarantee: every Ins consumer stays exhaustive,
 # so a new instruction cannot ship half-implemented.
@@ -525,7 +531,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # THE RECEIPT: a green gate names the tree it proved, so an
 # integration that takes that exact tree need not prove it again
 # (tools/gate_receipt.sh). A dirty tree writes none.
-gate: seed-check stems vocab fingerprints rt-header witnesses externs idioms cited tested traps witness
+gate: seed-check stems vocab fingerprints rt-header witnesses externs idioms cited attack tested traps witness
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/gate_receipt.sh write
 
