@@ -6,7 +6,7 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
-use core.{Ins, Reg, body_symbol, hosted_symbol, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index, Static, StaticBox, Slot, FileId, same_file}
+use core.{Ins, Reg, body_symbol, hosted_symbol, static_symbol, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index, Static, StaticBox, Slot, FileId, same_file}
 use features.{nothing}
 
 // The runtime's wreck. The backend has no diagnostic channel — by the
@@ -55,6 +55,53 @@ fn mangled(name: string) -> string {
     "av_${name}"
 }
 
+/// WHAT A MODULE'S BODIES NAME — the bodies they call or take the address
+/// of, the hosted rows they call, and the statics they address.
+///
+/// A SPLIT MODULE DECLARES WHAT IT REFERENCES, which is what LLVM requires
+/// and nothing more. Declaring the whole program in every module is the
+/// duplication that makes a split cost MORE disk than it saves: the
+/// declarations are the bulk of a module's text, not its bodies.
+///
+/// `whole` is a WHOLE-PROGRAM module — one that carries every name, which
+/// is what a lone module must do and the only shape there was before the
+/// split. It is a field rather than an absent value so no caller guards.
+type Refs = { whole: bool, bodies: List<string>, hosted: List<string>, statics: List<string> }
+
+/// A whole-program module: every name is carried, so the lists are unread.
+fn every_name() -> Refs { Refs { whole: true, bodies: [], hosted: [], statics: [] } }
+
+/// THE BODIES A MODULE OWNS, and whether it owns every one — the ONE place
+/// the optional file is opened, so no caller guards and none can disagree
+/// with another about which bodies are the module's.
+type ModuleBodies = { whole: bool, bodies: List<Body> }
+
+fn bodies_of(l: Lowered, only: FileId?) -> ModuleBodies {
+    if only == null { ModuleBodies { whole: true, bodies: l.fns } }
+    else { ModuleBodies { whole: false, bodies: [bd for bd in l.fns if bd.file != null && same_file(bd.file!, only!)] } }
+}
+
+/// What these bodies NAME, and their own names with it: a module declares a
+/// body it owns as much as one it only calls.
+fn refs_of(bodies: List<Body>) -> Refs {
+    mut r = Refs { whole: false, bodies: [bd.name for bd in bodies], hosted: [], statics: [] }
+    for bd in bodies {
+        for i in bd.ins {
+            let body = body_symbol(i)
+            if body != null { r.bodies.push(body!) }
+            let host = hosted_symbol(i)
+            if host != null { r.hosted.push(host!) }
+            let st = static_symbol(i)
+            if st != null { r.statics.push(st!) }
+        }
+    }
+    r
+}
+
+/// Does this module carry the name? Every name in a whole-program module;
+/// only what its own bodies named in a split one.
+fn carries(r: Refs, named: List<string>, name: string) -> bool { r.whole || named.contains(name) }
+
 /// Write the program as verified `.ll` text; null means written, a
 /// string is the failure.
 export fn emit_ll(l: Lowered, path: string) -> string? { emit_module(l, path, true, null) }
@@ -63,32 +110,39 @@ export fn emit_ll(l: Lowered, path: string) -> string? { emit_module(l, path, tr
 ///
 /// `with_entry` false leaves `main` out — EXACTLY ONE module in a program may
 /// define the entry, or the link fails on a duplicate symbol. `only` names the
-/// file whose bodies this module DEFINES; null defines every body. Declarations
-/// are always the WHOLE program, because `unheld_name` refuses a call to a fn
-/// nothing declares, and every module must be closed on its own.
+/// file whose bodies this module DEFINES; null defines every body.
 ///
-/// THE STATICS ARE EMITTED IN EVERY MODULE, and that is safe rather than lazy:
+/// WHAT A SPLIT MODULE DECLARES IS WHAT ITS OWN BODIES NAME. LLVM requires a
+/// called symbol to be declared in the module that calls it, so declarations
+/// cannot be shared across modules the way bytes can — but they need not be
+/// REPEATED either, and repeating them is what made a split cost 11x the disk
+/// of one whole-program module. A null `only` keeps the whole-program shape:
+/// every declaration, every static, which is what a lone module must carry.
+///
+/// THE STATICS ARE LAID OUT PER MODULE, and that is safe rather than lazy:
 /// they carry PRIVATE linkage, so each copy is module-local and the linker
 /// renames them — no duplicate symbol — and a settled aggregate is immutable
-/// read-only data, so the copies are identical by construction. The cost is
-/// duplicated data; the alternative is a declare-only path for a global the
-/// wrapper refuses to read undeclared.
+/// read-only data, so the copies are identical by construction.
 export fn emit_module(l: Lowered, path: string, with_entry: bool, only: FileId?) -> string? {
     let lc = avra_llvm_context_create()
     let m = avra_llvm_module_create("avra", lc)
     let b = avra_llvm_create_builder(lc)
     let missing: string? = unheld_name(l)
     if missing != null { return "internal compiler error: nothing declares `${missing!}` — the program is not closed" }
-    declare_runtime(lc, m)
-    declare_externs(lc, m, l.externs)
-    for bd in l.fns { declare_user(lc, m, l.types, bd) }
-    for st in l.statics { emit_static(lc, m, st) }
+    let own = bodies_of(l, only)
+    let refs: Refs = if own.whole { every_name() } else { refs_of(own.bodies) }
+    let mine: List<string> = [bd.name for bd in own.bodies]
+    declare_runtime(lc, m, refs)
+    declare_externs(lc, m, l.externs, refs)
+    for bd in l.fns {
+        if carries(refs, refs.bodies, bd.name) { declare_user(lc, m, l.types, bd) }
+    }
+    for st in l.statics {
+        if carries(refs, refs.statics, st.name) { emit_static(lc, m, st) }
+    }
     let rt = rt_index()
     for bd in l.fns {
-        // A body whose file is absent is no file's to split — it belongs to
-        // every module, which is what a synthetic entry is.
-        let mine: bool = if only == null { true } else { bd.file != null && same_file(bd.file!, only!) }
-        if mine {
+        if mine.contains(bd.name) {
             let f = avra_llvm_get_named_function(m, mangled(bd.name))
             let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f)
             if failure != null { return wreck(m, path, failure!) }
@@ -235,17 +289,22 @@ fn wreck(m: ptr, path: string, failure: string) -> string {
 
 /// The runtime surface, declared straight from the registry —
 /// runtime_api.av is the one definition, runtime/avra_runtime.c
-/// its implementation twin.
-fn declare_runtime(lc: ptr, m: ptr) {
+/// its implementation twin. A split module declares the rows it
+/// calls; a whole-program module declares every row.
+fn declare_runtime(lc: ptr, m: ptr, refs: Refs) {
     for s in rt_sigs() {
-        declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+        if carries(refs, refs.hosted, s.name) {
+            declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+        }
     }
 }
 
 /// The program's own host fns, declared like the runtime's rows.
-fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>) {
+fn declare_externs(lc: ptr, m: ptr, rows: List<RtSig>, refs: Refs) {
     for s in rows {
-        declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+        if carries(refs, refs.hosted, s.name) {
+            declare(m, s.name, ll_rt_kind(lc, s.ret), [ll_rt_kind(lc, k) for k in s.params], false)
+        }
     }
 }
 
