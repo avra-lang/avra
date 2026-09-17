@@ -29,6 +29,8 @@ export type BuildOutcome = { words: List<string>, binary: string, warnings: stri
 /// worktree's cache dies with the worktree.
 export type BuildCache = { ws: Workspace, root: string }
 
+// LICENSED I39: a CONSTRUCTOR — the workspace in, the cache out. The
+// standard shape, like `new_db`.
 export fn build_cache(ws: Workspace) -> BuildCache {
     BuildCache { ws: ws, root: joined_path(ws.root, ".avra-cache") }
 }
@@ -84,6 +86,8 @@ impl BuildCache {
 /// inputs were built before, else analyzed, lowered and emitted now.
 /// `.Err` is the refusal to report, and A REFUSAL IS NEVER KEPT — a bad
 /// program is reported on every run and cached never.
+// LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one
+// standard signature `build_program(ws, entry, …)`.
 export fn build_program(ws: Workspace, entry: string, mode: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
     let cache = build_cache(ws)
     let key = cache.key(entry, mode)
@@ -92,6 +96,9 @@ export fn build_program(ws: Workspace, entry: string, mode: string, opt: string,
     emitted(cache, ws.program(entry), entry, key, opt, runtime)
 }
 
+// LICENSED I39: the build's TWO PHASES, not a pass's vocabulary —
+// `build_program` is the entry point and keeps the one standard signature
+// (I39's own exemption), and this is its split at the phase boundary.
 fn emitted(cache: BuildCache, p: Program, entry: string, key: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
     if !p.clean() { return .Err(p.report()) }
     let view = p.entry_file()
@@ -111,6 +118,9 @@ fn emitted(cache: BuildCache, p: Program, entry: string, key: string, opt: strin
 /// objects and flags, then the binary's path. The runtime object is passed
 /// in — it is a TOOLCHAIN fact found from the binary's own directory, and a
 /// lone file's host is in memory and knows nothing of a disk.
+// LICENSED I39: a pure PROJECTION — a path, an opt level and a toolchain
+// fact in, clang's words out. It owns no state and takes the workspace
+// second, because the module's path is what it is about.
 fn link_words(ll_path: string, ws: Workspace, opt: string, runtime: string) -> List<string> {
     ["-w", opt, "-rdynamic", ll_path, runtime].concat(ws.link_words()).concat(["-o", binary_name(ll_path)])
 }

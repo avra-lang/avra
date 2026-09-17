@@ -110,12 +110,19 @@ impl Decls {
         for i in imports {
             let x = self.decl(i.decl)
             let name = if i.alias.is_empty() { x.name } else { i.alias }
-            let prior: DeclId? = match x.kind {
-                .Fn or .Const -> fns.get(name) ?? module.base.fns.get(name),
-                .Record or .Named or .Enum or .Trait or .Builtin -> types.get(name) ?? module.base.types.get(name),
-                .Syntax -> syntaxes.get(name) ?? module.base.syntaxes.get(name),
+            let mine: DeclId? = match x.kind {
+                .Fn or .Const -> fns.get(name),
+                .Record or .Named or .Enum or .Trait or .Builtin -> types.get(name),
+                .Syntax -> syntaxes.get(name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
+            let shared: DeclId? = match x.kind {
+                .Fn or .Const -> module.base.fns.get(name),
+                .Record or .Named or .Enum or .Trait or .Builtin -> module.base.types.get(name),
+                .Syntax -> module.base.syntaxes.get(name),
+                .Method or .Default or .Impl or .Main or .Case -> null,
+            }
+            let prior: DeclId? = mine ?? shared
             if prior == null {
                 match x.kind {
                     .Fn or .Const -> {
