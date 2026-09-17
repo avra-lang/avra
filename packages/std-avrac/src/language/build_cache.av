@@ -198,13 +198,19 @@ fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: stri
     if view == null { return .Err(p.rendered([no_target(p.ws.root)])) }
     if view!.view.stmts.is_empty() { return .Err("the program is empty") }
     let lo = p.lowered_checked()?
-    // THE WHOLE-PROGRAM MODULE, and the per-file split is NOT the build path yet:
-    // a file's `unit_key` does not cover what a MONO-GENERATED body depends on —
-    // WHICH OTHER FILES INSTANTIATE IT — so a reused module can be missing a
-    // specialization another file asked for. MEASURED, NOT FEARED: the split
-    // linked `_av_commands.TestCmd.run` "not found" after an edit elsewhere in the
-    // tree. `emit_units` stands beside this, measured at 2 of 276 modules
-    // re-emitted, waiting on a key that covers instantiation.
+    // THE WHOLE-PROGRAM MODULE, and the per-file split is NOT the build path: two
+    // distinct defects were found by RUNNING IT, and neither is a matter of tuning.
+    //   1. A MONO SPECIALIZATION LANDS IN A FILE ITS OWN SOURCE DOES NOT MENTION,
+    //      so `unit_key` cannot see it. FIXED by `module_key`, which folds the
+    //      NAMES of the bodies landing in the file — and the count proves the fix
+    //      holds the reuse (2 of 276 re-emitted on an edit).
+    //   2. A WRAP'S NAME IS GLOBAL BUT ITS BODY IS GENERATED PER CALLER, so every
+    //      file that calls `f$w` attributes it to ITSELF and several modules
+    //      define one symbol — "6 duplicate symbols", all of them the `$w` bodies.
+    //      The `file` tag is a property of who ASKED, not of where the body
+    //      BELONGS, and a body with two askers has no single home this way.
+    // `emit_units` stands beside this, measured, waiting on a home for a body that
+    // more than one file asks for.
     let ll = "${view!.view.source.file}.ll"
     let failure = emit_ll(lo, ll)
     if failure != null { return .Err(failure!) }
@@ -774,6 +780,32 @@ export type Emitted = { modules: List<string>, reused: int, emitted: int }
 /// own module — `with_entry` decides who defines `main`, and exactly one module
 /// may — WHICH IS WHY THE ENTRY FILE GETS NO SEPARATE ONE: emitting its bodies
 /// twice is a duplicate symbol at the link.
+/// A FILE'S MODULE KEY — its `unit_key` PLUS THE NAMES OF THE BODIES THAT LAND
+/// IN IT, and the second half is what makes this sound under MONO.
+///
+/// `unit_key` covers a file's own bytes and the signatures it can see. NEITHER
+/// COVERS A SPECIALIZATION: a generic is lowered into ITS OWN FILE when ANOTHER
+/// file instantiates it, so file A's bodies move when file B changes — and A's
+/// source, and A's visible signatures, say nothing about it. The first version of
+/// this reuse linked `_av_commands.TestCmd.run` "not found" for exactly that
+/// reason, on an edit to a different file.
+///
+/// A SPECIALIZATION IS A DIFFERENT BODY NAME, so the set of names landing in a file
+/// is exactly the thing that moves — and it is a MEMO key rather than a
+/// whole-program one: it says which bodies are THIS file's, not which bodies the
+/// program has. Approximating it with the program's instantiation surface would
+/// collapse the split back to one module and turn 2-of-276 into 276-of-276.
+// LICENSED I39: a KEY DERIVATION — a file's identity plus the bodies that landed in it.
+fn module_key(mut ws: Workspace, l: Lowered, f: FileId) -> string {
+    mut d = new_digest()
+    d = digest_text(d, CACHE_FORMAT)
+    d = digest_text(d, unit_key(ws, f))
+    for name in sorted_texts([b.name for b in l.fns if b.file != null && same_file(b.file!, f)]) {
+        d = digest_text(d, name)
+    }
+    digest_key(d)
+}
+
 // LICENSED I39: THE EMISSION DRIVER — a workspace, a lowered program and a directory in, the modules and the counts out.
 export fn emit_units(mut ws: Workspace, l: Lowered, dir: string, files: List<FileId>, entry_file: FileId) -> Emitted {
     let _ = make_dirs(dir)
@@ -782,7 +814,7 @@ export fn emit_units(mut ws: Workspace, l: Lowered, dir: string, files: List<Fil
     mut emitted = 0
     for f in files {
         if !same_file(f, entry_file) {
-            let path = joined_path(dir, "${unit_key(ws, f)}.ll")
+            let path = joined_path(dir, "${module_key(ws, l, f)}.ll")
             if exists(path) { reused = reused + 1 }
             else {
                 let failure = emit_module(l, path, false, f)
