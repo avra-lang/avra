@@ -896,3 +896,26 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   export `build_program`"). A FILE-LEVEL TYPO, A MODULE-LEVEL AMPUTATION,
   REPORTED AGAINST INNOCENTS.
 
+- **A LANDING THAT TEACHES A VERB NEEDS A COMPILER THAT KNOWS IT** — the
+  two-generation law RE-INSTANCED, same shape as a grammar change. The
+  landed seed predates the cache's `Cell.push`/`set_at`, so it cannot
+  compile the tree that USES them (F2030 on `Cell<List<Origin>>`), while the
+  campaign's OWN product can — so the fresh seed (344,513 lines) was emitted
+  by that product over the rebased tree, and THAT is what let the gate pass.
+  The symptom accuses the tree; the cause is the seed's generation.
+- **A UNION'S GRANULARITY MUST MATCH THE CONFLICT'S GRANULARITY.** A
+  conflict that is ONE NAME (`attack_command` vs `keys_command` in a `use`
+  list) needs a NAME for its resolution; a script that unions the two SIDES
+  glues a whole command list into a mid-list position and the parser refuses
+  the line. The file-level instinct is wrong at exactly the place it looks
+  safest, and the build caught it rather than any review. Beside "a merge is
+  a third lane": both are laws about RESOLVING rather than deciding.
+- **DERIVED DATA NEVER TRAVELS.** The cache writes `<program root>/
+  .avra-cache/`, and for a program under `packages/` that is INSIDE
+  `packages/` — gitignored, so invisible to `git status`, and 476MB of
+  artifacts rode the sprite archive into a PUT timeout TWICE. The archive now
+  excludes `*/.avra-cache/*` (the structural fix for our tools). AND THE
+  LOCATION IS A DESIGN QUESTION, not settled: a program under `packages/`
+  writing a gitignored store inside `packages/` will bite any walker that
+  trusts a `.gitignore`-blind `find` — a per-tree root would not.
+
