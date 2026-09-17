@@ -928,11 +928,22 @@ fn paced(s: Stage, waited: bool) -> Stage {
 }
 
 /// One turn: what is ready, drained and fed, then a reap. The turn's
-/// LENGTH is not a correctness question — `pumped` holds the order.
+/// LENGTH is not a correctness question — `pumped` and the drain
+/// below hold the order.
+///
+/// THE DRAIN IS THE LAST ACT BEFORE DECLARING THE CHILD GONE. A reap
+/// can report the child ended at the same instant the poll that
+/// preceded it answered "nothing ready" — the child wrote and exited
+/// between the poll and the reap — and a caller that reads `stopped`
+/// as "the capture is whole" then collects whatever the poll's own
+/// drain happened to land. Everything readable is swept here, once,
+/// before `stopped` can be answered; a caller only ever sees a gone
+/// child whose streams are dry.
 fn ticked(s: Stage, ms: int) -> Stage {
     let ready = avra_proc_ready(s.h, ms)
     let after = fed_on(drawn(s, ready), ready)
-    after with { stopped: avra_proc_reap(after.h) != 0 }
+    if avra_proc_reap(after.h) == 0 { return after }
+    swept(after) with { stopped: true }
 }
 
 fn drawn(s: Stage, ready: int) -> Stage {
