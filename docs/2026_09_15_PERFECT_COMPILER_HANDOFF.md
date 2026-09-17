@@ -776,3 +776,16 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   witness fails first and passes: edits 1..8 keep keys 1..8, edits 9..11
   keep 8, 8, 8.
 
+- **THE PER-FILE MODULE RUNG'S SPEC, named so it can wait.** The good
+  news first: NO NEW C IS NEEDED — each per-file module can be its own
+  `.ll` and clang links them together. The three blockers, in the order
+  they must be taken: (a) `emit_ll` always emits the ENTRY, so every module
+  would define `main` and the link fails — it needs `with_entry: bool`;
+  (b) `Body` does not name its file, so either it carries the FileId (a
+  GROWTH — check the payload hashes before adding a field, per the hash
+  law) or the drain happens per file in `lowered_from`; (c) statics are
+  DEFINED by `emit_static` and a module that is not their owner must
+  DECLARE them, with no declare-only path today — the fiddliest part. It
+  waits for its own cycle; the cap and eviction make the disk BOUNDED in
+  the meantime (~149MB at `cache_kept = 8` for the compiler).
+
