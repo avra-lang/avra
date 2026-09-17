@@ -800,3 +800,15 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   A GENERATED FILE'S CONFLICT IS ONE COMMAND (see above): both follow from
   the artifact being a PROJECTION, not a decision.
 
+- **A CROSS-PLATFORM TOOL MUST BE WITNESSED ON BOTH PLATFORMS, BECAUSE THE
+  PLATFORM THE GATE RAN ON IS NOT NECESSARILY THE PLATFORM THE TOOL WILL
+  RUN ON.** `tools/stems.sh` shipped `sed -n 's/.* T _\?//p'` — `\?` is a
+  GNU BRE extension, BSD/macOS sed rejects it — and it PASSED every Sprite
+  gate because the Sprite's sed is GNU sed. So main's MACOS gate went red
+  and blocked every macOS lane, from ONE LINE. THE TELL: a gate that runs
+  on one platform witnesses only that platform's DIALECT. The sweep that
+  finds this class is cheap and named: `sed -r` (BSD wants `-E`), `\?`/`\+`
+  in a BRE, `\s`/`\w`, `grep -P`, `readlink -f`, `stat -c`, `sort -V`,
+  `date -d`, `echo -e`. Run it over `tools/*.sh` and treat a hit as a bug
+  until a witness on the OTHER platform says otherwise.
+
