@@ -1773,8 +1773,15 @@ impl Workspace {
     /// what resolution happened to load. This is what lets a held file be known without
     /// being resolved.
     fn every_source() -> List<string> {
-        flatten([self.all_files(pkg.src) for pkg in self.packages])
+        // A TEST IS NOT PROGRAM CODE. `all_files` walks every `.av` under a package's
+        // source root, tests included, and analysing one as a program fails in its own
+        // words — "a module file holds declarations, only the entry runs statements" —
+        // which is a diagnostic about the TEST rather than about the build.
+        [f for f in flatten([self.all_files(pkg.src) for pkg in self.packages]) if !self.is_test_path(f)]
     }
+
+    /// Whether a source path is a package's TEST tree rather than its code.
+    fn is_test_path(path: string) -> bool { path.contains("/tests/") }
 
     fn root_files() -> List<string> {
         self.all_files(self.packages[0].src)
