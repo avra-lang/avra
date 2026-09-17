@@ -413,3 +413,93 @@ any byte of any member moves every member's key, so nothing inside the cycle can
 reused across a real change. The cost is over-invalidation *within the cycle only*,
 and cycles are rare, small, and already a shape the language tolerates rather than
 encourages.
+
+
+### 1. LIFECYCLE AND STALENESS — the resident engine's new failure surface
+
+A long-lived process holding state can be WRONG about the world in ways a one-shot
+process cannot, and the tree already contains the hole:
+
+**`Memo.input` NEVER RE-READS ONCE LOADED.** Its body matches the value table first and,
+on `.Present`, records the dependency and RETURNS the memoized value — the host is not
+asked again. Loading is a `Missing`-only path. That is correct for ONE-SHOT, where
+nothing can change under the process, and it is a SILENT STALE WORLD for a daemon: a
+file edited on disk is never re-read, so the daemon keeps compiling the old bytes and has
+no way to notice. THE SAME HOLE COVERS MANIFESTS — a dependency added to an `avra.toml`
+is never seen — so a daemon's PACKAGE SET is stale too.
+
+So the resident engine's first prerequisite is not the cutoff, it is that INPUTS VERIFY:
+re-read, fingerprint, and let `set_input` bump the revision only when the bytes moved
+(the kernel already bumps and propagates). Cheap — a read and a hash per input — and it
+is the mechanism `Workspace.sources` already anticipates in a comment ("a live host
+clears an entry when its file changes").
+
+**THE INVALIDATION WITNESS FOR IT, WHICH FAILS FIRST.** Two legs, both against a resident
+process: (1) change a file's BYTES and ask for a build again IN THE SAME PROCESS — the
+answer must MOVE, and on today's `Memo.input` it does not; (2) add a DEPENDENCY ROW to a
+manifest and ask again — the package set must grow. Leg 2 is the control.
+
+TWO MORE SOURCES, each with its own answer: **the binary it was built from** — a daemon
+IS its own generation, so a rebuilt `build/avra` leaves it serving an older LANGUAGE, and
+the answer is an identity check at the request boundary and a clean exit, never a silent
+answer; and **a build tool it cannot see** — clang, the runtime object — already handled
+by being stateless about it, since the link plan is rebuilt per request.
+
+### 2. THE ONE-SHOT ASSUMPTION, REPLACED vs BYPASSED
+
+* **RESIDENT must replace it.** `parsed` settles on the STRUCTURAL hash while its value
+  carries text and spans, so a reindent leaves spans stale and certified fresh. The
+  recorded fix is a cutoff PER CONSUMER: `parsed` owes TWO fingerprints and a dependent's
+  cutoff names which it read. Bounded, but it touches every cutoff DECISION — the
+  kernel's correctness argument, not just its code.
+* **PERSISTENCE bypasses it.** Its keys absorb every byte, so no consumer cuts off on
+  `parsed`'s structural hash, and `parsed` keeps its correct one-shot life. Nothing in
+  the tree changes — which is why it is the lower-risk of the two.
+
+### 3. COST AND RISK, AS NUMBERS WHERE THEY EXIST
+
+| | resident | persistence |
+|---|---|---|
+| prerequisite work | inputs that verify + the per-consumer cutoff + a protocol and a client | per-file IR + **dedup** + per-file objects |
+| measured cost of the dedup gap | — | **19MB -> 210MB** without it (built, measured, reverted) |
+| what it saves | the whole analysis, in-process | the whole analysis, across runs |
+| expected edit | **~10s, link-bound** | **~10s, link-bound** |
+| risk of a wrong answer | MEDIUM — a stale process answers in the right SHAPE | LOW — needs a hash collision |
+| new lifecycle | a daemon to start, stop, age out | none |
+| sharing | one process | processes, worktrees, machines, CI |
+
+**THE CASE FOR PERSISTENCE, STATED FAIRLY:** it does not avoid the hard part (the analysis
+must become incremental either way — the same keys serve both); it avoids TWO things —
+writing a second invalidation mechanism beside the kernel's, and owning a process. Its
+cost is that IR must be STORED, which is why dedup comes first.
+
+**THE CASE FOR RESIDENT, STATED JUST AS FAIRLY:** the kernel ALREADY IS the incremental
+engine — dependency capture, red-green verification, cycle detection — and a persisted
+cache re-derives a coarse approximation of that graph BY HAND, which is two engines and
+potentially two truths. `unit_key` is exactly that coarse hand-derivation, and it will
+drift from the kernel the day the kernel changes.
+
+### 4. THE SPRITE MODEL — where the two FAIL DIFFERENTLY
+
+Today's landing gate is ONE-SHOT clang on a Sprite under "one COLD receipt per landing".
+A resident engine is the OPPOSITE of cold, and that is not a performance objection, it is
+a CONTRADICTION: a cold receipt's whole purpose is "this tree builds from nothing", so a
+receipt taken through a warm process is not that receipt. Therefore: the cold receipt
+must be taken by a ONE-SHOT process, daemon or not — THE RULE DOES NOT CHANGE; a daemon
+would not participate in the landing path, and would ADD a service to start and age out
+inside a Sprite that needs none today; and persistence composes with the model UNCHANGED,
+a cache directory and one-shot processes, riding the Sprite the way the seed does.
+
+### THE SYNTHESIS (P6) — BOTH, AT DIFFERENT SCOPES
+
+The two are not rivals. They serve different SCOPES and SHARE THE SAME KEYS, which is the
+reason to build the keys first and the reason neither choice is wasted:
+
+* **PERSISTENCE** — CI, the landing gate, cold receipts, cross-machine and cross-worktree
+  sharing. Stateless, no lifecycle, composes with the Sprite rule.
+* **RESIDENT** — the interactive dev loop (an editor, `avra serve`), where the same keys
+  let the kernel answer in-process with NO serialization at all.
+
+Both sit on `unit_key` and `module_surface`. Building those first — which this campaign
+has done — is the step that is right under either ruling; the ruling then chooses which
+one to LAND FIRST, not which one to have.
