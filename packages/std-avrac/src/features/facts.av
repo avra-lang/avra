@@ -127,7 +127,6 @@ export type TypeFacts = {
     binding_types: SideTable<TypeId?>,
     // a `mut` binding that BORROWS a parameter's field (bs2's
     // aliasing, honored until self-host — ROADMAP: the bs2 debt ledger)
-    borrows: SideTable<bool>,
     // a use whose declaration's warnings were already spoken — one
     // voice per use, however often the node is typed
     warned: SideTable<bool>,
@@ -156,7 +155,6 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
         binding_types: side_table<TypeId?>("binding_types", 0, stmts, null),
-        borrows: side_table("borrows", 0, stmts, false),
         voices: no_voices(),
     }
 }
@@ -249,18 +247,12 @@ impl TypeFacts {
         self.binding_types.set(s.index, ty)
     }
 
-    fn mark_borrow(s: StmtId) {
-        self.borrows.set(s.index, true)
-    }
-
     /// Whether this use already spoke its declaration's warnings.
     fn spoke_warning(e: ExprId) -> bool { self.warned.get(e.index) }
 
     fn mark_warned(e: ExprId) {
         self.warned.set(e.index, true)
     }
-
-    fn is_borrow(s: StmtId) -> bool { self.borrows.get(s.index) }
 
     /// Another body's facts laid into this table over its range,
     /// and every binding it declared — the per-file fold. The
@@ -282,7 +274,6 @@ impl TypeFacts {
         self.captures.lay(other.captures)
         self.wants.lay(other.wants)
         self.pattern_types.lay(other.pattern_types)
-        self.borrows.lay_named(other.borrows, is_true)
         self.binding_types.lay_named(other.binding_types, is_typed)
     }
 
@@ -448,7 +439,6 @@ impl BodyRegs {
 }
 
 /// A column's fold reads only what the body actually recorded.
-fn is_true(b: bool) -> bool { b }
 fn is_typed(t: TypeId?) -> bool { t != null }
 fn is_hungry(h: bool) -> bool { h }
 

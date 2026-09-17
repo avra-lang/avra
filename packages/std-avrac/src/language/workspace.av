@@ -889,10 +889,8 @@ impl Workspace {
         let known: int? = self.specs.get(w.name)
         if known != null { return known! }
         let id = self.asks.length
-        mut ss = self.specs
-        ss.set(w.name, id)
-        mut as_ = self.asks
-        as_.push(w)
+        self.specs.set(w.name, id)
+        self.asks.push(w)
         id
     }
 
@@ -2376,13 +2374,12 @@ impl Workspace {
     /// holds a manifest, the manifest calls itself the keyed name, one
     /// key is one directory, and no cycle closes.
     mut fn load_packages(src: string) {
-        mut ps = self.packages
         let unnamed = Package { key: "", root: self.root, src: src, ordinal: 0, at: null, origin: Origin.Root }
-        ps.push(unnamed)
+        self.packages.push(unnamed)
         let m = self.manifest(0)
         self.decls.name_root(m.name)
         let named = unnamed with { key: m.name }
-        ps.set(0, named)
+        self.packages.set(0, named)
         self.admit_dependencies(0, m, true, [m.name])
     }
 
@@ -2423,10 +2420,9 @@ impl Workspace {
     /// held to the key, its dependencies admitted. THE FLOOR: the
     /// prelude declares no dependency, so the layering has a bottom.
     mut fn entered(key: string, dir: string, at: Loc?, origin: Origin, chain: List<string>) {
-        mut ps = self.packages
-        let i = ps.length
+        let i = self.packages.length
         let pkg = Package { key: key, root: dir, src: joined_path(dir, "src"), ordinal: i, at: at, origin: origin }
-        ps.push(pkg)
+        self.packages.push(pkg)
         let m = self.manifest(i)
         if m.name != key { self.speak_package(name_mismatch(at, key, m.name, dir)) }
         if key == prelude_key && !m.deps.is_empty() { return self.speak_package(prelude_depends(m.deps[0].at)) }
@@ -2434,8 +2430,7 @@ impl Workspace {
     }
 
     mut fn speak_package(d: Diag) {
-        mut vs = self.package_voices
-        vs.push(d)
+        self.package_voices.push(d)
     }
 
     /// Everything the packages said: each manifest's own voices, then

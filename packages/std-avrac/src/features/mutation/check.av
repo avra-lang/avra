@@ -2,7 +2,7 @@
 //! `let` (the want the channel plants); an assignment lands on a
 //! PLACE whose type — read off the target — is the slot's law, the
 //! value ACCEPTED by it with widening recorded like every slot's.
-use core.{StmtId, ExprId, TypeId, TypeRef, same_expr, Binding}
+use core.{StmtId, ExprId, TypeId, TypeRef}
 use features.{TypeCx, this_is}
 use diagnostics.{refusal}
 
@@ -19,29 +19,8 @@ export fn check_mut(mut cx: TypeCx, s: StmtId) {
     cx.walk(v)
     if cx.refuses_type_value(v) { return }
     if cx.refuses_void_value(v) { return }
-    if borrows_field(cx, v) { cx.mark_borrow(s) }
     if declared != null {
         cx.declared_binding(v, cx.view.store.let_name(s) ?? "this binding", declared!)
-    }
-}
-
-/// A `mut` bound to a PARAMETER's or RECEIVER's FIELD PATH borrows
-/// that field, so writes through the binding land in the owner's
-/// record. The borrow is only lawful over a place the body may WRITE:
-/// an immutable parameter or receiver would hand the write to a value
-/// the caller owns, which is the silent channel — there the binding is
-/// a COPY, and the write lands in it.
-fn borrows_field(cx: TypeCx, v: ExprId) -> bool {
-    let found: ExprId? = cx.view.store.place_root(v)
-    if found == null { return false }
-    let root = found!
-    if same_expr(root, v) { return false }
-    let held: Binding? = cx.names.binding(root)
-    if held == null { return false }
-    match held! {
-        .Param(_) -> cx.is_mut(root),
-        .Receiver -> cx.receiver_written(),
-        .Def(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> false,
     }
 }
 
