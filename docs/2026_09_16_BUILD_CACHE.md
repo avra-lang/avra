@@ -1,86 +1,191 @@
 # The build cache — design
 
-Terse. Goal: Avra's builds incremental, fast, and **small**.
+The campaign: make Avra's builds incremental, fast and small — and get the
+correctness by construction rather than by discipline.
 
 ## Measured
 
-`./avra build packages/cli` — the compiler's own build:
+`build packages/cli` (the compiler's own build), **user CPU**, never wall — this
+box runs at load 10–175 from other campaigns and wall is the machine's number,
+not the tree's.
 
-| | user CPU | wall |
+| | user CPU |
+|---|---|
+| where the campaign began | 93.0 s |
+| **no-op** (nothing changed) | **0.25 s** — 372× |
+| edit / clean | ~35 s |
+| lone-file no-op | 0.019 s |
+
+An edit's 35 s splits:
+
+| stage | cost | redone on an edit? |
 |---|---|---|
-| no cache | 150.5 s | 190 s |
-| whole-program cache, hit | 12.2 s | 51 s |
+| parse / resolve / typecheck (**analysis**) | **~14–18 s** | yes — the WHOLE program, every time |
+| lower + emit | ~5 s | only for changed files |
+| **link** (clang) | **~10 s** | yes |
 
-**12.4×.** What a hit skips: `resolve 80.7s · bodies 75.9s · parse 5.7s · sigs 3.3s`.
-Analysis dominates; the link is most of the remaining 12 s.
+**The edit case is ANALYSIS-BOUND.** This is the measurement that decides the
+design: per-declaration *IR* caching buys only the `lower+emit` slice (~1.2×), and
+any plan that only caches IR has aimed at the smaller half.
 
-**Disk: 16 MB per cache key** — two builds = 31 MB. Every edit adds another 16 MB.
-This is Rust's disease and it must be fixed before landing.
+## What is already built
 
-## The thesis
+| | |
+|---|---|
+| content-addressed whole-program module cache | `build_cache.av` — key over every byte a build reads |
+| the key is derived once, used for store and lookup | `build_key` |
+| **the linked binary is kept** | a hit is a `cp`, not a clang run |
+| cap + dead-key collection | cap 8, `recent` file, clock-free LRU, **witnessed evicting** |
+| `unit_key` + `avra keys` | the per-file identity, inspectable |
+| the perf work (not caching) | 5.8× on every compile — `Cell.push`/`Cell.set_at` |
 
-**Cache size must scale with DISTINCT CONTENT, not with NUMBER OF BUILDS.**
+## The diagnosis
 
-## Why Rust's `target/` explodes
+The compiler re-does **the whole frontend** on every build. It does not need to.
 
-Coarse units × no dedup × no compression × no GC × keys that wobble for irrelevant
-reasons (flags, timestamps, paths).
+**The derivation tree already exists — it is the query kernel.** `parsed →
+resolved → typed → lowered` are its nodes; dependencies are discovered by
+execution; `ask` is the red-green walk ("verify my inputs; if none changed, reuse
+me"). The kernel *is* the graph this campaign wants.
 
-## Five moves
+So two things are wrong, and only two:
 
-1. **Fine units + content addressing.** The unit becomes one declaration's lowered IR
-   (`lowered(id)` — already a query). ~2 KB each. Identical units share ONE blob, across
-   builds *and across programs*. The stdlib's units are immutable and shared, so the bulk
-   of the cache is a small fixed set and an edit adds KB, not MB.
-2. **Pack + compress.** One append-only pack + index, not millions of files. LLVM IR is
-   *text*: ~8× under zstd. Also kills the 4 KB-per-file floor and directory scans.
-3. **GC: mark-sweep from build roots + a byte cap.** Roots = the unit manifests of recent
-   builds. Rust has neither, so `target/` never shrinks. This makes growth **bounded by
-   construction**.
-4. **Per-unit object files + incremental link.** Emitting ONE giant `.ll` is the worst
-   case for the linker. One `.o` per unit gives: unchanged units reused from the CAS,
-   changed units recompiled, **codegen parallel across cores**, incremental link.
-5. **Binary patching: no for machine code, yes for IR.** Patching a binary in place needs
-   fixed addresses and no inlining — that is live-patching, not building. The safe form is
-   real: edit one unit → splice its IR → one object changes → **the linker patches**.
+1. **The tree dies when the process exits.**
+2. **The bottom node's "did my inputs change?" test does not cover the whole
+   value** — `parsed` cuts off on structural fingerprints while its value carries
+   the source text and every span. Sound while compiles are one-shot (the
+   ROADMAP's recorded trigger `avra-8sb5.9.2`); fatal the moment anything edits.
 
-## The macOS lever
+**Do NOT serialize the middle of the tree.** The AST and typed tables are live
+structures keyed by per-run integer ids and holding closures. Writing them to disk
+is inventing a binary format for the compiler's memory, and it breaks every time an
+internal shape moves.
 
-APFS `clonefile()` (`cp -c`): placing a cached artifact is a copy-on-write clone — ~0 s,
-~0 bytes. Caching the linked binary then costs nothing, which is the one place speed and
-disk stop trading.
+## The waist
 
-## Correctness laws (non-negotiable)
+Ask what must cross a file boundary. Not the AST. Not the typed facts. **Only the
+interface** — the names a file exports and their signatures.
 
-- **A key must cover the WHOLE value it certifies.** `parsed` cuts off on structural
-  fingerprints while its value carries text and every span; a reindent leaves later spans
-  stale and *certified fresh*. A reused stale artifact is a silently wrong binary, so a
-  wrong reuse must be impossible **by construction**, not unlikely.
-- **The key and the stored name are ONE derivation.** No second stamp to fall out of step.
-- **A cutoff per consumer** — what a dependent READ decides which fingerprint may cut it off.
-- **The invalidation witness must FAIL FIRST.** Witness (passing): unchanged→HIT;
-  semantic edit→MISS; **whitespace-only→MISS**; comment-only→MISS; revert-to-same-bytes→HIT.
-  Under the structural `program_hash`, rows 3–4 would have been HITs.
-- **The link plan is part of the artifact.** A hit has no analyzed workspace, and
-  `link_words` reads the packages a `use` admits; a plan rebuilt on a hit linked against an
-  empty dependency closure (undefined `avra_proc_*`, `avra_ffi_arm`).
-- **Compose with the seed fast path.** `bootstrap/seed.sources` + `tools/sources_hash.sh`
-  already answer "is this tree the seed's source" — whole-tree, ~20 s `make recover`. Do not
-  re-derive it. The cache is the FINE path **under** it: the seed is the degenerate case
-  where every unit matches. (Recorded trigger: `parsed`'s cutoff is sound only while
-  compiles are one-shot — a live host or daemon is this campaign's deadline.)
+A file calling `twice` needs `twice`'s *signature*. Never its AST, never its type
+tables. Everything else a file computes is private to itself.
+
+```
+   bytes ──► INTERFACE ──► IMPLEMENTATION ──► OBJECT ──► BINARY
+  (on disk)   (tiny)        (IR text)        (bytes)     (bytes)
+
+ interface_key(f) = digest( f's bytes + interfaces of f's imports + language )
+ impl_key(f)      = digest( f's bytes + interfaces f can see    + language )
+```
+
+Everything persisted is small and already hashed. Interfaces are the only thing
+that must learn to persist, and they are simple **by construction**.
+
+An edit then costs: re-if-the-interface-moved, re-type/re-lower only files whose
+`impl_key` moved (usually one) → recompile one object → relink.
+
+**AND BE PRECISE ABOUT WHAT THIS DOES NOT SAVE.** Parse is per-file, but its
+result is a live structure (arena ids, spans), so statelessly the parse still
+re-runs for every file (~7.5s) — only a resident engine (or persisted trees) skips
+it. Resolve and typing ARE skippable, because a file's resolve reads only
+`(its bytes + the interfaces it sees)`, and both are in the key. So the honest
+ladder is: interfaces remove ~14s of resolve+typing, per-file objects remove ~5s
+of emit, and **parse (~7.5s) and link (~10s) need the daemon and an incremental
+linker respectively** — the last two are why a truly instant edit is three rungs,
+not one.
+
+A **signature** change propagates to exactly the files that can see it, and nothing
+else — automatically, because the interface hash is *in* the downstream keys. That
+is the seat-change witness, one level up.
+
+This is **stateless**, so it needs no daemon and shares across processes,
+worktrees, machines and CI. A resident engine gets the same win but only within a
+session.
+
+## The vision — build on meaning, and observe dependencies rather than declare them
+
+All five are one move: **a thing's identity comes from what it MEANS and from what
+it actually READ, never from a label a human wrote.** Each is enabled by something
+this language already has.
+
+1. **Observed invalidation.** The kernel already records deps by execution; take it
+   one field down and record *which fields of which values were read*. Then the
+   cutoff is DERIVED, not declared, and "a hash that forgets a payload" becomes
+   unrepresentable. Highest value: it turns today's entire bug class into a
+   structural impossibility.
+2. **Interfaces as the persisted waist** (§ above). Bounded, provable.
+3. **Per-file objects.** Recompile one object, relink. This is the SAFE form of
+   "binary patching" — patching machine code in place needs fixed addresses and no
+   inlining, and breaks on any layout move; the linker patching one changed object
+   does not.
+4. **Semantic addressing.** The IR is a CLOSED, CURATED vocabulary (~40 instruction
+   shapes, catch-all-free), so it is tractable to NORMALIZE it — α-rename
+   registers, canonicalize commutative operands, canonicalize block order, drop
+   provably-dead definitions — and key the cache on the NORMALIZED hash. Then a
+   rename, an extraction, a reformat, a reorder of independent code **does no
+   work**, because the meaning is byte-identical. No build system on earth does
+   this. **THE CAVEAT IS THE WHOLE GAME: normalization must be SOUND and
+   CONSERVATIVE — collapse only what is provably identical. Missing an equality
+   forever is fine; inventing one is a silently wrong binary.**
+5. **Evidence and derived code as cached derivations.** A test is a derivation over
+   its subject, so a rename re-runs nothing and a real change re-runs exactly what
+   it touched; the receipt names the derivation it proved. A `@derive`'s output is
+   keyed by (the annotated type's derivation + the trait's own + the language), so
+   metaprogramming stops being paid for twice — ever, on the machine.
+
+And because the **language is a value**, keying by language hash makes grammar
+changes cheap (only nodes that READ the changed rule invalidate) and lets two
+language versions coexist in one store. No other compiler can offer that.
+
+The endgame is **verifiable build receipts**: a peer verifies by re-hashing
+inputs, so you ship proofs rather than trust.
+
+## The laws this work paid for
+
+- **A `Cell`'s read-modify-write round trip is a copy per element, and the fix is a
+  verb.** Measured: `get`→push→`set` = 0.453 s for 20,000 appends; `Cell.push` =
+  0.001 s. Copy-on-write IS amortized, `List`/`Table`/`Namespace` are fine; the one
+  slow shape is the round trip, and `Cell` existed precisely to make
+  mutation-through-sharing cheap while `lower_set` already emitted the in-place
+  slot write.
+- **The idiom's own advice can be the quadratic.** I3 recommends a comprehension or
+  `concat` for a build loop; both are O(n) per call, so following it literally
+  re-introduces the defect. Licensed at the sites with the reason.
+- **A verb and its first use are two generations, so the seed rides the slice.**
+  Three instances in one day, in two consecutive commits.
+- **A perf change that makes a declaration honest is the tree saying the shape
+  improved** — the only diagnostic difference was a new F2050, and it was right.
+- **A compiler under test must stand where a compiler stands.** Running it from
+  `packages/cli/src/` moves `avra_self_dir()`, the std root resolves elsewhere, and
+  `println` disappears — the artifact looks broken when the harness moved the
+  ground under it.
+- **A generated artifact is not a concern to review.** The seed alone is
+  +25991/−21632; the landing is 1222 lines without it.
+- **The key must cover what the unit READ** — witnessed end to end on a real
+  package, with a control: change only a called fn's parameter type, the importer's
+  bytes are byte-identical, its key moves, and an unrelated file's key does not.
+- **Measure the anvil too.** Four instruments lied in one session (wall for user
+  CPU, a harness that did not exercise the path, `avra run` which INTERPRETS, and a
+  link failing silently). Every one produced a confident wrong answer.
 
 ## Order
 
-- (a) per-unit objects + parallel codegen — biggest win, enables the rest
-- (b) pack + compress + GC
-- (c) clonefile the binary
+| # | what | why here |
+|---|---|---|
+| 1 | observed invalidation | kills the bug class; everything after relies on the key being complete |
+| 2 | interfaces as the waist | bounded; the only thing that must persist |
+| 3 | per-file objects | per-file recompilation; the safe "patching" |
+| 4 | semantic addressing | the headline — sound only once 1–3 hold |
+| 5 | evidence + comptime caching | the compounding payoff |
 
-## Placement
+## Known defects, filed
 
-All of it in `@std.avrac`. The CLI points at a file or package and stays thin.
-
-## Measure honestly
-
-Wall clock on this machine is meaningless — three other campaigns hold load ~11 on 8
-cores. **User CPU, or the census.** (Same lesson as the ROADMAP's LANE A.)
+- **A `Store`/`Host` seam is missing.** The library's cache writes artifacts through
+  `Host`, and a LONE FILE's host is in memory — its `.ll`/`.plan`/`.warn` vanish
+  with the process while the binary reaches the real disk. **WITNESSED INERT**:
+  delete the `.bin` and the build REBUILDS, so nothing consumes the wrong path. ~45
+  lines; folds into the per-file work, which rewrites exactly this path.
+- **`tools/census.sh` deletes `build/avra_runtime.o` and does not restore it** —
+  broke linking twice in one day.
+- **`@std/process` is flaky under load** — three runs of a gated tree gave rc=1,
+  rc=1, rc=0, and the differing bytes are LOST CHILD OUTPUT. The gate is
+  intermittently red for reasons unrelated to any landing.
