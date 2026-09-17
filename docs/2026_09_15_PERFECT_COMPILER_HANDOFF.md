@@ -938,3 +938,19 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   packages in it, still dying with the worktree. The whole-program cache
   already held that property; the placement work extended it.
 
+- **ONE DEFINITION OF "WHAT DOES THIS FILE EXPORT".** `interface_lines`
+  produces a module's entries, `module_surface` FOLDS them into the
+  contract's key, and the record KEEPS them — one projection, three uses,
+  because two spellings would let the cache VALIDATE one thing and SERVE
+  another. And an entry carries NO KIND FIELD: the signature's own prefix
+  says it (`fn(string)void`, `enum(Ok,Err|T1;T2)`), because a second copy of
+  what the signature carries is a copy that can disagree with it.
+- **A FIELD THAT READS COMPLETE WHILE CARRYING NOTHING IS A HOLE, AND THE
+  FIRST LOOK IS WHEN TO CATCH IT.** A few PRELUDE entries carry an EMPTY
+  signature (`List`, `Map`) because a builtin has no `DeclSig` to render — so
+  an entry that looks like every other entry is a HOLE in what a driver can
+  mint. The fix belongs at the WRITER (refuse to write one) or the LOADER
+  (treat it as a builtin) and must be decided BEFORE the loader exists. Same
+  shape as the empty-value law: the spare value is spent where nobody looked,
+  and here it is a record row that reads complete.
+
