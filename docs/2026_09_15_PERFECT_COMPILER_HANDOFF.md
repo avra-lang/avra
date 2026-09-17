@@ -729,6 +729,14 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   stale (`lane/comptime` predates the milestone it produced). **A PROBE
   RESULT NAMES THE BASE THAT ANSWERED IT**, and six spellings against one
   older tree is the cleanest demonstration this program has.
+  AND ITS OPERATIONAL HALF, which the sync paid for: **YOUR DOCTRINE
+  SURFACE IS THE TREE YOU READ.** A branch that predates the milestone it
+  produced keeps a stale `CLAUDE.md`, a stale `ROADMAP` and stale code, so
+  a law "not in the doctrine" may simply not be in YOUR copy of it — read
+  doctrine from `origin/main` when the answer decides an action, and keep
+  the working branch synced (a RESET when main already holds the content
+  by another name, as here: 79 superseded commits, one commit to sync, and
+  `git diff --stat origin/main HEAD` = the handoff and nothing else).
 
 - **One consumer adapts to a bad seam; two consumers adapting
   independently means the seam is wrong.** Phase D worked around
