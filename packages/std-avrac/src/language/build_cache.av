@@ -28,7 +28,7 @@ export type BuildOutcome = { words: List<string>, binary: string, warnings: stri
 
 /// Where a program's artifacts are kept — beside the program, so a
 /// worktree's cache dies with the worktree.
-export type BuildCache = { ws: Workspace, root: string }
+export type BuildCache = { ws: Workspace, root: string, disk: Host }
 
 // LICENSED I39: a CONSTRUCTOR — the workspace in, the cache out. The
 // standard shape, like `new_db`.
@@ -38,9 +38,14 @@ export type BuildCache = { ws: Workspace, root: string }
 // LICENSED I39: a pure projection — a workspace in, the directory its artifacts live in out.
 export fn build_cache_root(ws: Workspace) -> string { joined_path(ws.root, ".avra-cache") }
 
-// LICENSED I39: a CONSTRUCTOR — the workspace in, the cache out.
-export fn build_cache(ws: Workspace) -> BuildCache {
-    BuildCache { ws: ws, root: build_cache_root(ws) }
+/// ARTIFACTS GO TO THE `disk` HOST, never to the source host. They are
+/// different things and a LONE FILE is exactly where they diverge: its
+/// workspace host is in memory, so routing the module through it wrote the
+/// .ll/.plan/.warn into a map that died with the process while the binary
+/// reached the real disk.
+// LICENSED I39: a CONSTRUCTOR — the workspace and the artifact host in, the cache out.
+export fn build_cache(ws: Workspace, disk: Host) -> BuildCache {
+    BuildCache { ws: ws, root: build_cache_root(ws), disk: disk }
 }
 
 impl BuildCache {
@@ -65,8 +70,8 @@ impl BuildCache {
     /// refuses a missing read is entitled to say so loudly.
     fn held(key: string, suffix: string) -> string? {
         let path = joined_path(self.root, "${key}${suffix}")
-        if !self.ws.host.exists(path) { return null }
-        self.ws.host.read(path)
+        if !self.disk.exists(path) { return null }
+        self.disk.read(path)
     }
 
     /// A held build put where a fresh one would have written it, or null
@@ -78,15 +83,15 @@ impl BuildCache {
         let plan = self.held(key, ".plan")
         if plan == null { return null }
         let ll = "${entry}.ll"
-        if self.ws.host.write(ll, module!) != null { return null }
+        if self.disk.write(ll, module!) != null { return null }
         BuildOutcome { words: plan!.split("\n"), binary: binary_name(ll), warnings: self.held(key, ".warn") ?? "", reused: true, key: key }
     }
 
     /// Keep a fresh build's module, plan and warnings under its key.
     fn keep(entry: string, key: string, words: List<string>, warnings: string) {
-        let _ = self.ws.host.write(joined_path(self.root, "${key}.ll"), self.ws.host.read("${entry}.ll"))
-        let _ = self.ws.host.write(joined_path(self.root, "${key}.plan"), joined(words, "\n"))
-        let _ = self.ws.host.write(joined_path(self.root, "${key}.warn"), warnings)
+        let _ = self.disk.write(joined_path(self.root, "${key}.ll"), self.disk.read("${entry}.ll"))
+        let _ = self.disk.write(joined_path(self.root, "${key}.plan"), joined(words, "\n"))
+        let _ = self.disk.write(joined_path(self.root, "${key}.warn"), warnings)
     }
 }
 
@@ -95,9 +100,10 @@ impl BuildCache {
 /// `.Err` is the refusal to report, and A REFUSAL IS NEVER KEPT — a bad
 /// program is reported on every run and cached never.
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one
-// standard signature `build_program(ws, entry, …)`.
-export fn build_program(ws: Workspace, entry: string, mode: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
-    let cache = build_cache(ws)
+// standard signature `build_program(ws, entry, …)`. `disk` is the artifact
+// host: sources come from the workspace's host, artifacts go here.
+export fn build_program(ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host) -> Result<BuildOutcome, string> {
+    let cache = build_cache(ws, disk)
     let key = cache.key(entry, mode)
     let held = cache.reuse(entry, key)
     if held != null { return .Ok(held!) }
