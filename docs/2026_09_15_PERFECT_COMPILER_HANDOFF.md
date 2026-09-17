@@ -954,3 +954,21 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   shape as the empty-value law: the spare value is spent where nobody looked,
   and here it is a record row that reads complete.
 
+- **A GREEN THAT PROVED LESS THAN IT LOOKED LIKE.** A witness re-run is not
+  a re-run until you READ WHAT YOU CHANGED: the cache's first re-check of the
+  three-leg witness set `util` back to the SAME content, so it exercised leg
+  0 (nothing changed -> everything holds) and NOT the two legs that matter.
+  The suite was green and the property was untested — same family as "a
+  check that examined nothing is not a check that passed" and "a fixture
+  that cannot exhibit the defect", and the catch is READING THE DIFF, never
+  the result.
+- **THE TWO CAUSES OF AN ABSENT VALUE MUST NOT SHARE A SPELLING — IN A
+  RECORD ROW TOO.** A builtin has no `DeclSig` to render, so its entry read
+  COMPLETE WHILE CARRYING NOTHING, and a loader could not tell "there is
+  nothing to mint, the compiler provides this name" from "there is
+  something to mint that the writer FAILED to write". The fix is a WORD:
+  `builtin\tList` says the first, and a signature says the second, with
+  `entry_line` the ONE place that decides which — so the writer cannot
+  disagree with itself about what an absent signature means. (`CACHE_FORMAT`
+  moves, so old entries are unreachable rather than wrong.)
+
