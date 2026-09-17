@@ -1014,3 +1014,21 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   entries mint NOTHING, so "nothing to mint" and "failed to write" are not
   the same silence (the `entry_line` decision paying off one step later).
 
+- **A HOOK THAT COMPUTES ON FIRST ASK IS A TRAP FOR A VALUE THAT WAS NEVER
+  COMPUTED.** `sig(d)` answers through `ensure`, a per-file hook that computes
+  a signature FROM THE PARSE on first ask (`no_ensure` by default). A MINTED
+  declaration must answer WITHOUT that hook — there is no parse — and it would
+  NOT fail loudly: it would compute from an EMPTY STORE and produce a
+  signature shaped like nothing. So registration owes four coordinated table
+  writes (`decls`, `sigs`, `file_decls` — the tables `items(f)` walks) AND a
+  decision about the hook, and that decision rests on ONE unverified fact:
+  does `sig` really short-circuit on a filled table? **VERIFY THE DECIDING
+  FACT BEFORE THE CODE** — a guess here produces a plausible wrong signature
+  rather than an error, which is the worst of the three outcomes.
+- **AND THE DECIDING FACT IS FOUND BY READING THE TOUCH POINTS, NOT BY
+  WRITING.** `exported_decls(m)` does not read the parse at all — it walks a
+  FILE'S ITEMS and filters by `exported`, so a minted declaration needs no
+  parse to be VISIBLE, only to appear in `items(f)`. Naming the four touch
+  points first is what turned "register a declaration" from a vague step into
+  four pushes and one verified fact.
+
