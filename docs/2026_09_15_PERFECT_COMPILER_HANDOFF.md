@@ -919,3 +919,22 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   writing a gitignored store inside `packages/` will bite any walker that
   trusts a `.gitignore`-blind `find` — a per-tree root would not.
 
+- **A FIXTURE THAT CANNOT EXHIBIT THE DEFECT PASSES WHILE THE REAL TREE
+  FAILS.** The cache's store-placement walk kept the highest ancestor
+  "while every ancestor looked like a tree", so it stopped at the first
+  PLAIN directory — and `packages/` holds no `.git` and no manifest, so it
+  wrote the store EXACTLY where the change existed to keep it from going.
+  The NESTED-PACKAGE TEST PASSED and the compiler's own build failed,
+  because a two-level fixture has NO PLAIN DIRECTORY between its root and
+  its package: the fixture could not exhibit the defect. THE TEST: for a
+  rule about ANCESTRY or SHAPE, ask whether the fixture contains the case
+  the rule is about — a two-level fixture tests two levels and nothing else.
+- **STORE PLACEMENT IS NOT A CORRECTNESS QUESTION, WHICH IS WHY IT WAS EASY.**
+  Every artifact is named by a key over the whole input tuple AND the tuple
+  is checked before the artifact is believed, so a store in the WRONG PLACE
+  costs a rebuild and can never hand back a wrong answer. Placement is then
+  about blast radius and sharing alone, and both point the same way: per-tree
+  is ONE directory at the checkout root (beside `.git`), SHARED across the
+  packages in it, still dying with the worktree. The whole-program cache
+  already held that property; the placement work extended it.
+
