@@ -608,32 +608,31 @@ impl Decls {
     }
 
     /// Nodes copied from a template: each wears the file that wrote it.
-    mut fn note_origins(f: FileId, exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, origin: FileId) {
+    /// The tables are `Cell`s, so a grow and a write both land in place —
+    /// this runs once per copied node, and each call used to copy the
+    /// whole table.
+    fn note_origins(f: FileId, exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, origin: FileId) {
         let known = self.origins[f.index]
         let wrote = Origin.Written(origin)
-        mut expr_rows = known.exprs
-        mut stmt_rows = known.stmts
-        mut pat_rows = known.pats
         for e in exprs {
-            while expr_rows.length <= e.index { expr_rows.push(Origin.Here) }
-            expr_rows.set(e.index, wrote)
+            while known.exprs.get().length <= e.index { known.exprs.push(Origin.Here) }
+            known.exprs.set_at(e.index, wrote)
         }
         for s in stmts {
-            while stmt_rows.length <= s.index { stmt_rows.push(Origin.Here) }
-            stmt_rows.set(s.index, wrote)
+            while known.stmts.get().length <= s.index { known.stmts.push(Origin.Here) }
+            known.stmts.set_at(s.index, wrote)
         }
         for p in pats {
-            while pat_rows.length <= p.index { pat_rows.push(Origin.Here) }
-            pat_rows.set(p.index, wrote)
+            while known.pats.get().length <= p.index { known.pats.push(Origin.Here) }
+            known.pats.set_at(p.index, wrote)
         }
-        self.origins.set(f.index, Origins { exprs: expr_rows, stmts: stmt_rows, pats: pat_rows })
     }
 
     /// The file a generated node was WRITTEN in, when it is another
     /// than the node's own.
-    fn origin_of_expr(f: FileId, e: ExprId) -> FileId? { self.origins[f.index].at(self.origins[f.index].exprs, e.index) }
-    fn origin_of_stmt(f: FileId, s: StmtId) -> FileId? { self.origins[f.index].at(self.origins[f.index].stmts, s.index) }
-    fn origin_of_pat(f: FileId, p: PatId) -> FileId? { self.origins[f.index].at(self.origins[f.index].pats, p.index) }
+    fn origin_of_expr(f: FileId, e: ExprId) -> FileId? { self.origins[f.index].at(self.origins[f.index].exprs.get(), e.index) }
+    fn origin_of_stmt(f: FileId, s: StmtId) -> FileId? { self.origins[f.index].at(self.origins[f.index].stmts.get(), s.index) }
+    fn origin_of_pat(f: FileId, p: PatId) -> FileId? { self.origins[f.index].at(self.origins[f.index].pats.get(), p.index) }
 
     /// What a file's expansion refused, kept for its resolve to speak.
     /// IDEMPOTENT, BECAUSE THE EXPANSION RUNS TWICE BY DESIGN.

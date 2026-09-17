@@ -200,10 +200,17 @@ export enum Origin {
 }
 
 /// A file's generated nodes' origins, dense by arena index — a node
-/// past the table's end is written here.
-export type Origins = { exprs: List<Origin>, stmts: List<Origin>, pats: List<Origin> }
+/// past the table's end is written here. EACH TABLE IS A `Cell`: a bare
+/// list reaches a copy at every write, so marking n nodes through the
+/// record copied the whole table n times.
+export type Origins = { exprs: Cell<List<Origin>>, stmts: Cell<List<Origin>>, pats: Cell<List<Origin>> }
 
-export fn no_origins() -> Origins { Origins { exprs: [], stmts: [], pats: [] } }
+export fn no_origins() -> Origins {
+    let a: List<Origin> = []
+    let b: List<Origin> = []
+    let c: List<Origin> = []
+    Origins { exprs: Cell.new(a), stmts: Cell.new(b), pats: Cell.new(c) }
+}
 
 impl Origins {
     /// The origin at an index, when the table reaches it.
