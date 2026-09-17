@@ -1,0 +1,52 @@
+// THE FAILING CASE FOR SEMANTIC ADDRESSING, WRITTEN FIRST.
+//
+// Normalization is only sound if it never maps two shapes to one identity
+// when they differ in MEANING. The shape a normalizer is most tempted by is
+// an OPERATION: "which runtime row is this" — and this tree IS the trap,
+// because two rows differ in everything that decides the reference count
+// while carrying THE SAME host:
+//
+//     avra_array_get        ret I64  owns_result false  lends true   host RtArrayGet
+//     avra_array_get_owned  ret Ptr  owns_result true   lends false  host RtArrayGet
+//
+// One BORROWS and one RETAINS. Conflating them changes a reference count,
+// which is a leak or a use-after-free, silently — so the pair is written
+// here as the case that must differ, BEFORE anything normalizes.
+//
+// BOTH HALVES ARE ASSERTED, so the witness fails if EITHER stops holding: a
+// key over the OPERATION must conflate them (that is the temptation, and the
+// reason the rule exists), and a key over the ROW must keep them apart.
+use @std.avrac.core.{digest_of, rt_index}
+
+/// The temptation: one identity per OPERATION, the owned twin being "the
+/// same read". This is the shape a normalizer reaches for first.
+fn by_operation(name: string) -> string {
+    digest_of(name.replace("_owned", ""))
+}
+
+/// The rule: an instruction's identity includes EVERYTHING the row says that
+/// decides what happens — never just which operation it is.
+fn by_row(name: string) -> string {
+    let row = rt_index().get(name)
+    if row == null { return "no row" }
+    let r = row!
+    digest_of("${r.name}|${r.owns_result}|${r.lends}|${r.has_owned_twin}|${r.params.length}")
+}
+
+spec "the instruction key" {
+    given "two runtime rows that share a host and differ in ownership" {
+        then "they ARE the same operation — so the temptation is real, not hypothetical" {
+            rt_index().get("avra_array_get")!.host == rt_index().get("avra_array_get_owned")!.host
+        }
+        then "and they DO differ in what the row says — borrow against retain" {
+            rt_index().get("avra_array_get")!.lends && !rt_index().get("avra_array_get_owned")!.lends &&
+            !rt_index().get("avra_array_get")!.owns_result && rt_index().get("avra_array_get_owned")!.owns_result
+        }
+        then "a key over the OPERATION conflates them (the failing case)" {
+            by_operation("avra_array_get") == by_operation("avra_array_get_owned")
+        }
+        then "a key over the ROW keeps them apart (what normalization must do)" {
+            by_row("avra_array_get") != by_row("avra_array_get_owned")
+        }
+    }
+}
