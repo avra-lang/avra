@@ -1,0 +1,24 @@
+//! `avra keys` — the per-file BUILD KEYS, printed. The cache's input
+//! identity made inspectable: a reader can see what a rebuild would
+//! consider unchanged, and what it would not. Keys move on content alone,
+//! so an edit anywhere in a file's bytes — a reindent, a comment — shows
+//! here, and so does a change to a SIGNATURE the file can see.
+use @std.cli.{Subcommand, CliResult, Runnable}
+use @std.avrac.language.{Program, unit_key}
+
+type KeysCmd = { }
+
+impl Runnable for KeysCmd {
+    fn run(args: CliResult) -> int { phased(args, "keys", keyed) }
+}
+
+fn keyed(p: Program) -> Result<int, string> {
+    mut ws = p.ws
+    let rows = [unit_key(ws, a.view.file) for a in p.files]
+    for i, k in rows { println("${k}  ${p.files[i].view.source.file}") }
+    .Ok(0)
+}
+
+export fn keys_command() -> Subcommand {
+    Subcommand { meta: file_command("keys", "Print each file's build key — what the cache keys on"), body: KeysCmd { } }
+}

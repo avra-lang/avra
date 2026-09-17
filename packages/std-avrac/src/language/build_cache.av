@@ -12,7 +12,8 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, joined}
+use core.{new_digest, digest_text, digest_int, digest_key, joined, DeclId, FileId}
+use features.{Namespace}
 use @std.path.{joined_path, relative_path}
 
 /// The compiler's format identity, folded first into every key. The
@@ -129,4 +130,42 @@ fn link_words(ll_path: string, ws: Workspace, opt: string, runtime: string) -> L
 export fn binary_name(ll_path: string) -> string {
     let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
     if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
+}
+
+// ── THE PER-UNIT KEY ────────────────────────────────────────────────
+
+/// A name's signature fingerprint, or 0 when nothing holds it.
+/// THE SIG IS ASKED, NOT READ OUT OF THE TABLE: `decls.sigs` fills only
+/// when a signature is computed, so reading it directly answers 0 for
+/// every name whose sig has not happened to be needed yet — which is a
+/// key blind to exactly the change it exists to see.
+// LICENSED I39: a pure PROJECTION — a workspace and a name in, a number out.
+fn sig_of(mut ws: Workspace, id: DeclId?) -> int {
+    if id == null { return 0 }
+    sig_hash(ws.sig(id!))
+}
+
+/// THE UNIT KEY — one declaration's file's bytes, and the fingerprints of
+/// every signature that file can SEE.
+///
+/// The sigs a unit READ are found by EXECUTION (the kernel records them on
+/// the cell), and a cache LOOKUP may not execute — so the key takes the
+/// file's VISIBLE namespace instead. That over-approximates what was read,
+/// and the direction is the sound one: it can invalidate a unit that did
+/// not need it, never certify one that did.
+///
+/// THE LAW IT EXISTS TO HOLD is the whole design's assumption, and it is
+/// WITNESSED beside the whitespace and comment rows: a unit whose SEAT
+/// changed while its own body did not must MISS. A key over the file's
+/// bytes alone would be blind to exactly that change — which is why the
+/// visible signatures are folded in below.
+// LICENSED I39: a KEY DERIVATION — a pure projection of one file's bytes and the signatures it can see, called from `avra keys` and the cache alone.
+export fn unit_key(mut ws: Workspace, f: FileId) -> string {
+    mut d = new_digest()
+    d = digest_text(d, CACHE_FORMAT)
+    d = digest_text(d, ws.source(f).text)
+    let ns: Namespace = ws.visible(f)
+    for n in ns.fn_names { d = digest_int(d, sig_of(ws, ns.fns.get(n))) }
+    for n in ns.type_names { d = digest_int(d, sig_of(ws, ns.types.get(n))) }
+    digest_key(d)
 }
