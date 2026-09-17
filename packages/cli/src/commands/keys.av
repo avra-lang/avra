@@ -4,7 +4,7 @@
 //! so an edit anywhere in a file's bytes — a reindent, a comment — shows
 //! here, and so does a change to a SIGNATURE the file can see.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.language.{Program, unit_key, module_surface, build_cache_root, surface_holds, bytes_key, record_path, recorded_entries, minted_entry}
+use @std.avrac.language.{Program, unit_key, module_surface, build_cache_root, surface_holds, bytes_key, record_path, recorded_entries, minted_entry, mint_record}
 use @std.io.{read_text}
 use @std.avrac.core.{module_path, distinct}
 
@@ -28,7 +28,11 @@ fn keyed(p: Program) -> Result<int, string> {
         let lines = recorded_entries(text)
         mut mintable = 0
         for line in lines { if minted_entry(ws.decls.types, line) != null { mintable = mintable + 1 } }
-        println("record ${word}  ${m.text()}  entries=${lines.length} mintable=${mintable}")
+        // MINT IT, then ask what the WORKSPACE now says this module exports. A
+        // name the source does not contain can only come from the record.
+        let made = if surface_holds(ws, dir, m) { mint_record(ws, m, text) } else { 0 }
+        let shown = ws.surface(m).length
+        println("record ${word}  ${m.text()}  entries=${lines.length} mintable=${mintable} minted=${made} surface=${shown}")
     }
     .Ok(0)
 }

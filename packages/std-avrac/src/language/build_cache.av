@@ -12,7 +12,7 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, sorted_texts, module_path, DeclId, FileId, TypeId, TypeRegistry, ModulePath}
+use core.{new_digest, digest_text, digest_key, digest_of, DeclId, DeclKind, no_stmt, joined, flatten, sorted_texts, module_path, FileId, TypeId, TypeRegistry, ModulePath}
 use features.{Namespace, DeclSig, FnSig}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_text, write_text, make_dirs}
@@ -657,4 +657,53 @@ fn fn_spelling(mut types: TypeRegistry, spelling: string) -> DeclSig? {
     let ret = types.by_name(spelling.substring(close + 1, spelling.length))
     if ret == null { return null }
     .Fn(FnSig { params: params, ret: ret! })
+}
+
+/// REGISTER A HELD MODULE'S EXPORTED SIGNATURES — what makes `surface(m)`,
+/// `exported_decls(m)` and `sig(id)` answer as a parse would.
+///
+/// SIGNATURES ONLY, AND THE BOUNDARY IS LOAD-BEARING: a held module is never
+/// LOWERED, so its declarations never reach a pass that walks a tree. That is
+/// what makes `no_stmt` and a null root safe here — a CONTRACT, not a
+/// convenience, and the tree already mints tree-less declarations exactly so (a
+/// `.Builtin`). The day something lowers a held module, these rows are lies.
+///
+/// THE RECORD IS PER MODULE AND THE MINTED TABLE IS PER FILE, because `items(f)`
+/// is asked per file — so EVERY file of the module answers from one set. A mint
+/// registered for one file and not its sibling would make half a module visible
+/// and half parsed, which is the worst of both.
+///
+/// AND THE CELL IS WRITTEN, NOT ONLY THE TABLE: `sig` consults `db.ask` first, so
+/// a filled row whose cell still reads `.Compute` would recompute the signature
+/// FROM A TREE THAT IS NOT THERE — a plausible wrong signature, and the failure
+/// no gate would catch.
+// LICENSED I39: the MINTING — a workspace, a module and its entries in, the count registered out.
+export fn mint_held(mut ws: Workspace, m: ModulePath, entries: List<Minted>) -> int {
+    let paths = ws.module_files(m)
+    let head = paths.first()
+    let f = ws.file_id(head ?? "")
+    mut made = 0
+    for e in entries {
+        // The kind follows the signature TODAY because the decoder accepts fns
+        // alone; it must follow the decoder the day the decoder widens.
+        let id = ws.decls.mint("held::${m.text()}::${e.name}", f, no_stmt, e.name, DeclKind.Fn, true, "", null, false, null)
+        ws.decls.declare(id, e.sig)
+        ws.db.set_input(key(Family.Sig, id.index), sig_hash(e.sig))
+        for path in paths { ws.decls.minted.set(path, (ws.decls.minted.get(path) ?? []).concat([id])) }
+        made = made + 1
+    }
+    made
+}
+
+/// MINT A HELD MODULE from its record — decode its entries and register them.
+///
+/// IT REFUSES PER ENTRY, not per record: an entry that does not round-trip is
+/// dropped and the rest stand, because a record with one bad spelling is a record
+/// whose other spellings are still good.
+// LICENSED I39: the MINTING'S ENTRY POINT — a record's text and the module it belongs to in, the count registered out.
+export fn mint_record(mut ws: Workspace, m: ModulePath, text: string) -> int {
+    let lines = recorded_entries(text)
+    let decoded = [minted_entry(ws.decls.types, line) for line in lines]
+    let entries = [e for e in decoded if e != null]
+    mint_held(ws, m, [e! for e in entries])
 }
