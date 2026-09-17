@@ -812,3 +812,20 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   `date -d`, `echo -e`. Run it over `tools/*.sh` and treat a hit as a bug
   until a witness on the OTHER platform says otherwise.
 
+- **THE BUILD CACHE'S WAIST IS THE INTERFACE, NOT THE IR** — the correction
+  that re-aimed the campaign, from its own measurement. An EDIT's cost is
+  ANALYSIS-bound (parse ~7.5s + resolve/typing ~14-18s + lower/emit ~5s +
+  link ~10s), so per-declaration IR caching buys about **1.2x** and any plan
+  that only caches IR has aimed at the SMALLER half. The tree already holds
+  the derivation graph (the query kernel IS it); what is wrong is that it
+  DIES WITH THE PROCESS and that its bottom cutoff covers STRUCTURE but not
+  text or spans. And only the INTERFACE crosses a file boundary — so
+  interfaces are the only thing that must learn to persist. THE HONEST
+  LADDER, stated so nobody is surprised: interfaces remove ~14s of
+  resolve+typing; per-file objects remove ~5s of emit; PARSE and LINK need
+  a RESIDENT ENGINE and an INCREMENTAL LINKER respectively, so a truly
+  instant edit is three rungs and the first two are stateless. AND THE
+  RUNG THAT SOUNDS BEST IS THE ONE TO DISTRUST: semantic addressing is
+  sound ONLY IF normalization is conservative, because inventing an
+  equality is a silently wrong binary.
+
