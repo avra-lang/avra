@@ -742,3 +742,37 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   independently means the seam is wrong.** Phase D worked around
   `avra-l4xk` and wrote it into a comment as a fact of life; phase E hit
   it separately. The second adapter is what turns a habit into a defect.
+
+- **INSTANCE OF THE ORDER LAW (`CLAUDE.md`): THE REAP WAS AN ORDERING
+  APPROXIMATED AGAINST THE DRAIN.** `@std/process`'s `ticked` did
+  `poll -> drain what the poll reported -> reap`, then set `stopped`, so a
+  child that WROTE AND EXITED in the gap between the poll answering
+  "nothing ready" and the reap was declared gone with its word still in the
+  pipe — and the callers that collect when `stopped` is true (`parallel`,
+  `race`, `Pipeline.outcome`) gathered an EMPTY capture. `Command.outcome`
+  was spared only because its `grace` sweeps after the loop; the others
+  have no grace. MEASURED: 5-in-10 suite runs red pre-fix (dropped `a b`,
+  `p1+p2+ -> p1++`), a 144-word direct probe losing 3 then 8, and 0-in-15
+  plus a green probe post-fix. THE FIX IS ONE DEFINITION WHERE THE FACT IS
+  MINTED: sweep both streams (non-blocking read-to-EOF) BEFORE returning
+  `stopped: true`, +13/-2, no caller changes — and the ordinary path is
+  SHORTER (objdump: prologue byte-identical, every added retain and sweep
+  behind the `cbz` on the reap). BEYOND THE LAW: a suite red 5-in-10 does
+  not merely annoy, it TEACHES LANES TO DISTRUST REAL REDS.
+- **A SOURCE HOST AND AN ARTIFACT STORE ARE DIFFERENT THINGS.** The
+  cache collapsed `Store` into `Host` and lost the distinction exactly
+  where the two diverge: a LONE FILE's host is in memory, so its `.ll`,
+  `.plan` and `.warn` went into a map and vanished with the process while
+  the binary (copied by the command) reached the real disk — benign only
+  because the binary is consulted FIRST. A host is where SOURCES are read;
+  a store is where ARTIFACTS persist, and a lone file is the case that
+  tells them apart. The seam is owed back before anything else depends on
+  the artifact path.
+- **AN EVICTION ORDER MUST BE A FACT ABOUT USE, NOT ABOUT THE CLOCK.**
+  The cache's cap is deterministic and clock-free: a HIT and a STORE both
+  move a key to the front of `.avra-cache/recent` and eviction takes the
+  tail — no mtime, no tie-break, nothing machine-dependent — and the file
+  is readable, so what drops next is inspectable instead of asserted. Its
+  witness fails first and passes: edits 1..8 keep keys 1..8, edits 9..11
+  keep 8, 8, 8.
+
