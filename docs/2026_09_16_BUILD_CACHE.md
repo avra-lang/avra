@@ -577,3 +577,41 @@ The number the driver must move is the one the diagnosis named: **resolve plus t
 in proportion to the modules held — and the honest check is that the `.ll` and the
 warnings do NOT move at all. A speed measured without that differential is a speed of
 unknown correctness, which is the one thing this campaign has refused throughout.
+
+## (c) MEASURED: SAFE, AND NOT YET FASTER — and why the order is IR first
+
+`(c)` is wired: before analysis, every module whose record holds contributes its exported
+signatures without being parsed. **The differential is green** — a build that mints and one
+that does not produce the byte-identical `.ll` and the identical diagnostics.
+
+**AND THE SPEEDUP IS ZERO, MEASURED, NOT FEARED:**
+
+| | check packages/cli |
+|---|---|
+| records present (the walk mints) | 15.8s / 15.1s |
+| records gone (the walk mints nothing) | 15.6s / 14.5s |
+
+**THE MINTING IS SAFE AND NOTHING WAS SKIPPED**, and the reason is one function:
+`analyze_all` parses through `items(f)` — which a held module now answers from its record —
+but it then does, for EVERY file:
+
+    for fi in self.decls.files { let _ = self.resolved(fi.id) }        # calls parsed(f)
+    for fi in self.decls.files { let _ = self.sig_diagnostics(fi.id) }
+    let out = [self.analysis(fi.id) for fi in self.decls.files]       # calls parsed(f)
+
+and `resolved` and `analyzed` both call `parsed(f)`. **So a held module is not parsed for its
+items and IS parsed for its resolve** — the work is saved in the one place it is cheap and
+paid in the two places it is expensive.
+
+**AND THIS IS THE HAZARD THE DESIGN NAMED, ARRIVING AS A NUMBER RATHER THAN A WORRY:** a
+registration that fills the tables and leaves the passes reaching for a parse is CORRECT AND
+NOT FASTER — the differential green, every keeper green, the saving absent. It would have
+looked like a finished rung.
+
+**WHY THE SKIP CANNOT BE TAKEN NEXT, WHICH IS THE ORDER THIS ESTABLISHES.** Skipping
+`resolve` for a held file means `Program.files` no longer contains an analysed entry for it,
+which means LOWERING DOES NOT EMIT ITS BODIES — a program missing its functions. So the
+resolve skip is only sound once a held module's BODIES come from somewhere, and that
+somewhere is the per-file IR. **THE PER-FILE IR COMES FIRST, NOT THE SKIP** — and the split's
+own measurement (16.4MB whole against 17.3MB for 272 modules, 1.06x) is what says it is
+affordable.
