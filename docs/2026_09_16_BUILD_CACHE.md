@@ -263,3 +263,41 @@ is commutative by opcode, and `expr_spine/lower.av` lowers a string `+` to
 temptation is neutralised **by the IR's shape**, not by a convention someone must
 remember — which is the strongest argument for the closed vocabulary, and why
 normalization is tractable here and nowhere else.
+
+## Rung 2 — how the validation walk is BOUNDED, and what happens on a cycle
+
+The recursion is real: validating M needs its imports' current `surface_key`s, and each
+of those is a digest over its own imports. Unbounded, a per-module transitive closure
+would hand back the resolve time the interface exists to save — and it would stay
+invisible until a deep graph arrived.
+
+**IT IS BOUNDED BY ONE PROPERTY THAT MAKES THE WHOLE WALK FREE OF PARSING:** the imports
+themselves come from a record keyed by `bytes_key` — a digest of **file bytes alone** —
+so every module's import list is readable without parsing anything. Therefore:
+
+1. **A MEMO.** `surface_key(m)` is computed once per module and held in a table for the
+   walk's duration. Cost per module: one small file read (`bytes_key` → its record) and
+   one digest. **O(modules), not a closure per module.**
+2. **AN ITERATIVE TOPOLOGICAL PASS**, not recursion — so there is no depth limit and no
+   reliance on native stack depth.
+3. **AND THE WALK IS THE BUILD PLAN.** Every module must be visited anyway to decide
+   what to rebuild, so validation is not extra work — it is the same pass that says
+   "this one re-parses, that one is reused".
+
+**ON A CYCLE.** Two different cycles exist and only one is already refused:
+
+- A **PACKAGE** dependency cycle is refused by the language, in its own words
+  (`dependency_cycle` at `admitted`) — so a package graph the compiler accepts is
+  acyclic.
+- A **MODULE** cycle inside one package is *tolerated* today (two files importing each
+  other is a memo cycle the kernel answers rather than recurses into), so the walk must
+  tolerate it too — and a surface graph with a cycle has no well-founded digest.
+
+**THE RESOLUTION IS TO COLLAPSE IT, NOT TO ORDER IT.** The memo doubles as a VISIT MARK;
+re-entering a module that is still in flight identifies a cycle, and **every module on
+that cycle takes a BYTES-ONLY key** — a digest of the members' own file bytes, with no
+surface reference among them. That is **SOUND because it over-approximates**: a change to
+any byte of any member moves every member's key, so nothing inside the cycle can be
+reused across a real change. The cost is over-invalidation *within the cycle only*,
+and cycles are rare, small, and already a shape the language tolerates rather than
+encourages.
