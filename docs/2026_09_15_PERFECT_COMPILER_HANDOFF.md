@@ -789,3 +789,14 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   waits for its own cycle; the cap and eviction make the disk BOUNDED in
   the meantime (~149MB at `cache_kept = 8` for the compiler).
 
+- **A GENERATED ARTIFACT IS NOT A CONCERN TO REVIEW.** The cache landing's
+  diff reads 37 files / +1077/-145 = **1222 lines** with the seed EXCLUDED,
+  and 39 files / +25991/-21632 with it included — the second number would
+  have forced a SPLIT THAT NOTHING NEEDED. So a diff-size rule (the ≤3k
+  line rule, any review budget) must EXCLUDE generated artifacts
+  (`bootstrap/seed.ll`, `seed.sources`, `runtime/avra_rt.h`,
+  `docs/DIAGNOSTICS.md`, every `*_mechanical_test.av`), or the generator's
+  output is measured as if a person wrote it. AND THE SAME EXCLUSION IS WHY
+  A GENERATED FILE'S CONFLICT IS ONE COMMAND (see above): both follow from
+  the artifact being a PROJECTION, not a decision.
+
