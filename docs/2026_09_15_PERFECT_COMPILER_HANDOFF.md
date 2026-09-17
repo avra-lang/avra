@@ -829,3 +829,26 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   sound ONLY IF normalization is conservative, because inventing an
   equality is a silently wrong binary.
 
+- **A PERSISTENT KEY MUST NOT COVER GLOBAL STATE — AND THE SAME VALUE IS
+  RIGHT IN ONE LIFETIME AND WRONG IN THE OTHER.** `sig_hash` folds interned
+  `TypeId` ORDINALS, a dense index into the workspace's registry, so
+  introducing `string` ANYWHERE shifts every signature that mentions a type
+  and an unrelated edit invalidates EVERY file. MEASURED BY A CONTROL LEG: a
+  BODY in an unrelated module leaves a key stable; a SEAT (`int -> string`)
+  in an unrelated module MOVES it. **THE DUAL LAW, and both halves are key
+  defects: too LITTLE coverage (structure without text or spans) reuses a
+  stale artifact — a WRONG BINARY; covering GLOBAL state (an interning
+  ordinal, a revision, a clock) invalidates everything — a USELESS CACHE.**
+  Neither was CHOSEN: both are what a convenient number happened to
+  include, and the second is a performance failure wearing correctness's
+  clothes. In-process the ordinals are fixed for the run, so `sig_hash` IS
+  the right early cutoff; PERSISTED it is the wrong identity, and a key that
+  outlives one run folds the type's SPELLING or a STRUCTURAL digest of its
+  shape instead.
+- **A POSITIVE-ONLY WITNESS CANNOT SEE OVER-INVALIDATION.** Every leg that
+  proves "this hit was not wrongly given" passes while a key moves for a
+  reason it should not — it takes A LEG THAT ASSERTS A KEY MUST NOT MOVE.
+  This campaign's two controlling legs have now found two defects the
+  positive legs could not, and in both cases the CONTROL was the case that
+  failed.
+
