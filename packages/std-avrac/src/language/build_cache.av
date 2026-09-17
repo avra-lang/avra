@@ -15,7 +15,7 @@
 use core.{new_digest, digest_text, digest_key, digest_of, DeclId, DeclKind, no_stmt, joined, flatten, sorted_texts, module_path, FileId, TypeId, TypeRegistry, ModulePath, same_file}
 use features.{Namespace, DeclSig, FnSig}
 use @std.path.{joined_path, relative_path, dir_of}
-use @std.io.{read_text, write_text, make_dirs, exists}
+use @std.io.{read_text, write_text, make_dirs, exists, remove}
 
 /// The compiler's format identity, folded first into every key. The
 /// compiler's own sources, its backend and its runtime are already key
@@ -176,7 +176,7 @@ impl BuildCache {
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one
 // standard signature `build_program(ws, entry, …)`. `disk` is the artifact host.
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name.
-export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host) -> Result<BuildOutcome, string> {
+export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string) -> Result<BuildOutcome, string> {
     let cache = build_cache(ws, disk)
     let inputs = cache.inputs()
     let key = cache.key(entry, mode, inputs)
@@ -186,35 +186,37 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     // module whose record still holds contributes its exported signatures WITHOUT
     // being parsed, and the rest are left to the ordinary path.
     let _ = mint_held_modules(ws, build_cache_root(ws))
-    emitted(cache, ws.program(entry), key, inputs, opt, runtime)
+    emitted(cache, ws.program(entry), key, inputs, opt, runtime, linker)
 }
 
 // LICENSED I39: the build's TWO PHASES, not a pass's vocabulary —
 // `build_program` is the entry point and keeps the one standard signature
 // (I39's own exemption), and this is its split at the phase boundary.
-fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
+fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: string, runtime: string, linker: string) -> Result<BuildOutcome, string> {
     if !p.clean() { return .Err(p.report()) }
     let view = p.entry_file()
     if view == null { return .Err(p.rendered([no_target(p.ws.root)])) }
     let ent = view!
     if ent.view.stmts.is_empty() { return .Err("the program is empty") }
     let lo = p.lowered_checked()?
-    // THE WHOLE-PROGRAM MODULE, because THE SPLIT IS A NET LOSS ON AN EDIT — and
-    // that is a MEASUREMENT, not a doubt. The split was made SOUND first (home_of,
-    // module_key) and then measured, same machine, same edit:
+    mut ws = p.ws
+    // ONE OBJECT PER FILE, CACHED. The measurement that decides this: `clang -O1` on
+    // the compiler's own module is 14.9s while `ld` over the objects is 333ms — the
+    // OPTIMIZATION is the cost, not the link. So the object is kept, an edit
+    // recompiles ONE file, and the link reassembles the rest.
     //
-    //     edit, one file, WITH the split ....  63.7s / 64.2s   (2 of 276 re-emitted)
-    //     edit, one file, WITHOUT it ........  53.0s
-    //
-    // The emission it saves is 2 of 276 modules; THE LINK IT COSTS IS 275 SEPARATE
-    // MODULES INSTEAD OF ONE. Re-emission is cheap next to linking, so the rung is
-    // only worth turning on WITH PER-FILE OBJECTS AND AN INCREMENTAL LINK — which is
-    // what turns "275 modules to link" into "one object to relink".
-    let ll = "${ent.view.source.file}.ll"
-    let failure = emit_ll(lo, ll)
-    if failure != null { return .Err(failure!) }
-    let binary = binary_name(ll)
-    let words = link_words(ll, p.ws, opt, runtime)
+    // This is also why the earlier split LOST while being sound: it linked 275 IR
+    // modules and every one paid its own optimization. The objects were the missing
+    // half, not the link.
+    // THE BINARY IS NAMED BY `binary_name`, AND THE LINKER'S OUTPUT IS ALWAYS THAT
+    // NAME. Passing the SOURCE path here instead wrote the linked binary OVER
+    // `main.av` — "not UTF-8, byte 0" — because a path that was only ever read was
+    // handed to a verb that WRITES. There is one derivation of a binary's name and
+    // the linker is never given anything else.
+    let binary = binary_name(ent.view.source.file)
+    let units = emit_objects(ws, lo, cache.root, [a.view.file for a in p.files], ent.view.file, linker, opt)
+    if units.objects.is_empty() { return .Err("no object was emitted") }
+    let words = link_objects(units.objects, p.ws, runtime, binary)
     let warnings = p.warnings()
     cache.keep(key, inputs, words, warnings)
     .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key })
@@ -828,4 +830,72 @@ export fn emit_units(mut ws: Workspace, l: Lowered, dir: string, files: List<Fil
     if broke == null { emitted = emitted + 1 }
     mods.push(entry_path)
     Emitted { modules: mods, reused: reused, emitted: emitted }
+}
+
+// ── THE OBJECT CACHE ────────────────────────────────────────────────
+//
+// THE LARGEST COST IN A BUILD IS OPTIMIZING ONE MODULE, NOT LINKING. Measured on the
+// compiler's own 16.6MB module: `clang -O1` takes 14.9s, of which the compile is
+// 15.2s and `ld` over the objects is 333ms. So the thing worth keeping is the
+// OBJECT — and keeping it per FILE is what makes an edit cheap: one file's object is
+// recompiled (hundreds of milliseconds) and `ld` reassembles the rest.
+//
+// THIS IS WHY THE EARLIER SPLIT LOST EVEN THOUGH IT WAS SOUND: it linked 275 IR
+// MODULES, and every one of them paid its own optimization pass. The objects were
+// the missing half, not the link.
+
+
+/// Compile one module to its object, or find the object already there. The module
+/// itself is NOT kept: it exists to make the object, and a kept `.ll` would be a
+/// second store of bytes the `.o` already answers for.
+fn compile_one(linker: string, module: string, object: string, opt: string) -> bool {
+    if exists(object) { return true }
+    avra_spawn_status(linker, ["-w", opt, "-c", module, "-o", object]) == 0
+}
+
+/// A BUILD'S OBJECTS: one per file, plus the entry's, with the counts of what was
+/// recompiled and what was found. The count is produced WHERE THE DECISION IS MADE.
+export type Objects = { objects: List<string>, reused: int, compiled: int }
+
+/// COMPILE THE PROGRAM TO ONE OBJECT PER FILE, reusing what each file's key holds.
+// LICENSED I39: THE OBJECT DRIVER — a workspace, a lowered program, a linker and a directory in, the objects and counts out.
+export fn emit_objects(mut ws: Workspace, l: Lowered, dir: string, files: List<FileId>, entry_file: FileId, linker: string, opt: string) -> Objects {
+    let _ = make_dirs(dir)
+    mut objs: List<string> = []
+    mut reused = 0
+    mut compiled = 0
+    for f in files {
+        if !same_file(f, entry_file) {
+            let key = module_key(ws, l, f)
+            let obj = joined_path(dir, "${key}.o")
+            if exists(obj) { reused = reused + 1 }
+            else {
+                let ll = joined_path(dir, "${key}.ll")
+                if emit_module(l, ll, false, f) == null {
+                    let _ = compile_one(linker, ll, obj, opt)
+                    let _ = remove(ll)
+                    compiled = compiled + 1
+                }
+            }
+            objs.push(obj)
+        }
+    }
+    let entry_obj = joined_path(dir, "${module_key(ws, l, entry_file)}.entry.o")
+    if exists(entry_obj) { reused = reused + 1 }
+    else {
+        let ll = joined_path(dir, "${module_key(ws, l, entry_file)}.entry.ll")
+        if emit_module(l, ll, true, entry_file) == null {
+            let _ = compile_one(linker, ll, entry_obj, opt)
+            let _ = remove(ll)
+            compiled = compiled + 1
+        }
+    }
+    objs.push(entry_obj)
+    Objects { objects: objs, reused: reused, compiled: compiled }
+}
+
+/// `clang`'s words to link a set of objects — ONE invocation, 333ms, which is what
+/// makes an edit's floor the compile of one file rather than the link.
+export fn link_objects(objs: List<string>, ws: Workspace, runtime: string, out: string) -> List<string> {
+    ["-w", "-rdynamic"].concat(objs).concat([runtime]).concat(ws.link_words()).concat(["-o", out])
 }

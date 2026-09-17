@@ -497,7 +497,10 @@ fn cached_build(args: CliResult) -> int {
         eprintln("avra: ${ws.root} declares no entry point")
         return 1
     }
-    match build_program(ws, entry!, "build", "-O1", runtime_object(), disk_host()) {
+    // THE LINKER ITSELF, because the object cache compiles per file and only the
+    // final link is the CLI's to run. Its path is the tool the CLI already found.
+    let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return refused_by_host(e) } }
+    match build_program(ws, entry!, "build", "-O1", runtime_object(), disk_host(), tool.path) {
         .Err(report) -> {
             println(report)
             1
