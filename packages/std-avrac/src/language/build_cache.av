@@ -84,15 +84,15 @@ impl BuildCache {
 /// inputs were built before, else analyzed, lowered and emitted now.
 /// `.Err` is the refusal to report, and A REFUSAL IS NEVER KEPT — a bad
 /// program is reported on every run and cached never.
-export fn build_program(ws: Workspace, entry: string, mode: string, opt: string) -> Result<BuildOutcome, string> {
+export fn build_program(ws: Workspace, entry: string, mode: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
     let cache = build_cache(ws)
     let key = cache.key(entry, mode)
     let held = cache.reuse(entry, key)
     if held != null { return .Ok(held!) }
-    emitted(cache, ws.program(entry), entry, key, opt)
+    emitted(cache, ws.program(entry), entry, key, opt, runtime)
 }
 
-fn emitted(cache: BuildCache, p: Program, entry: string, key: string, opt: string) -> Result<BuildOutcome, string> {
+fn emitted(cache: BuildCache, p: Program, entry: string, key: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
     if !p.clean() { return .Err(p.report()) }
     let view = p.entry_file()
     if view == null { return .Err(p.rendered([no_target(p.ws.root)])) }
@@ -101,16 +101,18 @@ fn emitted(cache: BuildCache, p: Program, entry: string, key: string, opt: strin
     let ll = "${view!.view.source.file}.ll"
     let failure = emit_ll(lo, ll)
     if failure != null { return .Err(failure!) }
-    let words = link_words(ll, p.ws, opt)
+    let words = link_words(ll, p.ws, opt, runtime)
     let warnings = p.warnings()
     cache.keep(entry, key, words, warnings)
     .Ok(BuildOutcome { words: words, binary: binary_name(ll), warnings: warnings, reused: false })
 }
 
 /// clang's words for a module: the level, the runtime, the packages' own
-/// objects and flags, then the binary's path.
-fn link_words(ll_path: string, ws: Workspace, opt: string) -> List<string> {
-    ["-w", opt, "-rdynamic", ll_path, ws.host.runtime_object].concat(ws.link_words()).concat(["-o", binary_name(ll_path)])
+/// objects and flags, then the binary's path. The runtime object is passed
+/// in — it is a TOOLCHAIN fact found from the binary's own directory, and a
+/// lone file's host is in memory and knows nothing of a disk.
+fn link_words(ll_path: string, ws: Workspace, opt: string, runtime: string) -> List<string> {
+    ["-w", opt, "-rdynamic", ll_path, runtime].concat(ws.link_words()).concat(["-o", binary_name(ll_path)])
 }
 
 /// `x.av.ll` builds `x`.

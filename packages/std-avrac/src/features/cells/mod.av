@@ -1,7 +1,7 @@
 //! `Cell<T>` — one explicit shared slot. Copies of a cell share its
 //! referent; `get` copies the held value and `set` replaces it without
 //! requiring the cell binding itself to be `mut`.
-use core.{Type, TypeId, Reg, Ins}
+use core.{Type, TypeId, Reg, Ins, ExprId}
 use features.{LanguageFeature, MethodRow, ReceiverEffect, TypeRow, TypeArgs, MethodCall, TypeCx, LowerCx, no_law, no_variants, slot_worthy}
 
 export fn cells() -> LanguageFeature {
@@ -10,6 +10,8 @@ export fn cells() -> LanguageFeature {
         "new" | on_cell_type | check_new | lower_new | ReceiverEffect.Read
         "get" | on_cell      | check_get | lower_get | ReceiverEffect.Read
         "set" | on_cell      | check_set | lower_set | ReceiverEffect.Shared
+        "push" | on_cell     | check_push | lower_push | ReceiverEffect.Shared
+        "set_at" | on_cell   | check_set_at | lower_set_at | ReceiverEffect.Shared
     }
     let types = table<TypeRow> {
         name   | arity | slots | judge  | builds     | variants
@@ -79,6 +81,53 @@ fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let box = cx.reg_of(mc.subject)
     let at = cx.const_int(0)
     cx.emit(Ins.CallRtVoid("avra_slot_set", [box, at, cx.reg_of(mc.args[0])]))
+    cx.hollow_of(cx.type_at(mc.e))
+}
+
+/// `c.push(v)` — append to the list the cell HOLDS.
+///
+/// THE WHOLE POINT: a read-modify-write through `get`/`set` copies the held
+/// list once per element, because the value `get` hands back stays shared
+/// with the cell. The cell OWNS its list, so this reads slot 0 and pushes —
+/// no `unique_box`, no round trip — and the append is in place.
+fn check_push(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let held: TypeId? = held_type(cx, mc)
+    if held == null { return cx.error_type }
+    let elem: TypeId? = cx.view.types.element(held!)
+    if elem == null { return cx.error_type }
+    if !cx.seated(mc, "push", [elem!]) { return cx.error_type }
+    cx.type(void)
+}
+
+fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let first: ExprId? = mc.args.first()
+    if first == null { return cx.lower_defect(mc.e, "a push without its value survived typing") }
+    let held: TypeId? = cx.view.types.cell_inner(cx.type_at(mc.subject))
+    if held == null { return cx.lower_defect(mc.e, "a Cell.push whose cell has no held type survived typing") }
+    let list = cx.slot_read(cx.reg_of(mc.subject), 0, held)
+    cx.emit(Ins.CallRtVoid("avra_array_push", [list, cx.reg_of(first!)]))
+    cx.hollow_of(cx.type_at(mc.e))
+}
+
+/// `c.set_at(i, v)` — write one element of the list the cell HOLDS.
+///
+/// The indexed twin of `push`, and the same point: `get` then `set` copies
+/// the held list, while the cell owns it and a slot write is in place.
+fn check_set_at(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let held: TypeId? = held_type(cx, mc)
+    if held == null { return cx.error_type }
+    let elem: TypeId? = cx.view.types.element(held!)
+    if elem == null { return cx.error_type }
+    if !cx.seated(mc, "set_at", [cx.type(int), elem!]) { return cx.error_type }
+    cx.type(void)
+}
+
+fn lower_set_at(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    if mc.args.length != 2 { return cx.lower_defect(mc.e, "a set_at without its index and value survived typing") }
+    let held: TypeId? = cx.view.types.cell_inner(cx.type_at(mc.subject))
+    if held == null { return cx.lower_defect(mc.e, "a Cell.set_at whose cell has no held type survived typing") }
+    let list = cx.slot_read(cx.reg_of(mc.subject), 0, held)
+    cx.emit(Ins.CallRtVoid("avra_slot_set", [list, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1])]))
     cx.hollow_of(cx.type_at(mc.e))
 }
 

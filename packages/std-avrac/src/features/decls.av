@@ -609,12 +609,24 @@ impl Decls {
 
     /// Nodes copied from a template: each wears the file that wrote it.
     mut fn note_origins(f: FileId, exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, origin: FileId) {
-        mut known = self.origins[f.index]
+        let known = self.origins[f.index]
         let wrote = Origin.Written(origin)
-        for e in exprs { known.exprs = known.set_at(known.exprs, e.index, wrote) }
-        for s in stmts { known.stmts = known.set_at(known.stmts, s.index, wrote) }
-        for p in pats { known.pats = known.set_at(known.pats, p.index, wrote) }
-        self.origins.set(f.index, known)
+        mut expr_rows = known.exprs
+        mut stmt_rows = known.stmts
+        mut pat_rows = known.pats
+        for e in exprs {
+            while expr_rows.length <= e.index { expr_rows.push(Origin.Here) }
+            expr_rows.set(e.index, wrote)
+        }
+        for s in stmts {
+            while stmt_rows.length <= s.index { stmt_rows.push(Origin.Here) }
+            stmt_rows.set(s.index, wrote)
+        }
+        for p in pats {
+            while pat_rows.length <= p.index { pat_rows.push(Origin.Here) }
+            pat_rows.set(p.index, wrote)
+        }
+        self.origins.set(f.index, Origins { exprs: expr_rows, stmts: stmt_rows, pats: pat_rows })
     }
 
     /// The file a generated node was WRITTEN in, when it is another

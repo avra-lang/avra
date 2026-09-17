@@ -28,12 +28,19 @@ export enum Verdict {
 
 type QueryCell = { deps: List<Key>, changed_at: int, verified_at: int, value_hash: int }
 
+// A shared DbState's cell list copies on write. Bound each copy to
+// one short row rather than a table that grows with the program.
+const cell_chunk: int = 256
+
 type DbState = {
     rev: int,
-    cells: List<QueryCell?>,
+    cells: List<List<QueryCell?>>,
     verifiers: List<fn(int) -> int>,
-    deps: List<Key>,
-    marks: List<int>,
+    // One dependency list per open query, EACH IN ITS OWN CELL. A shared
+    // `List` reaches a copy at every append, so a list routed through the
+    // state copied its whole self per recorded read; a cell is a stable
+    // box, so `push` on it appends in place.
+    pending: List<Cell<List<Key>>>,
     open: List<Key>,
     hits: int,
     misses: int,
@@ -45,7 +52,7 @@ type DbState = {
 export type Db = { state: Cell<DbState> }
 
 export fn new_db() -> Db {
-    let state = DbState { rev: 1, cells: [], verifiers: [], deps: [], marks: [], open: [], hits: 0, misses: 0 }
+    let state = DbState { rev: 1, cells: [], verifiers: [], pending: [], open: [], hits: 0, misses: 0 }
     Db { state: Cell.new(state) }
 }
 
@@ -141,16 +148,15 @@ impl Db {
 
     fn begin(key: Key) {
         mut s = self.snapshot()
-        s.marks.push(s.deps.length)
+        let none: List<Key> = []
+        s.pending.push(Cell.new(none))
         s.open.push(key)
         self.replace(s)
     }
 
     fn settle(key: Key, value_hash: int) {
         mut s = self.snapshot()
-        let start = s.marks.pop()
-        let deps = s.deps.slice(start, s.deps.length)
-        while s.deps.length > start { let _ = s.deps.pop() }
+        let deps: List<Key> = s.pending.pop().get()
         let _ = s.open.pop()
         let prior: QueryCell? = state_cell(s, key)
         let changed = if prior != null && prior!.value_hash == value_hash { prior!.changed_at } else { state_revision(s) }
@@ -158,18 +164,29 @@ impl Db {
         self.replace(s)
     }
 
+    /// One read's dependency, appended to the OPEN query's list. The list
+    /// lives in a `Cell`, so the append is in place and the state is not
+    /// written at all: routing it through the shared record copied the
+    /// whole list per read.
     fn record_dep(key: Key) {
-        mut s = self.snapshot()
-        if s.marks.is_empty() { return }
-        s.deps.push(key)
-        self.replace(s)
+        let s = self.snapshot()
+        if s.pending.is_empty() { return }
+        s.pending[s.pending.length - 1].push(key)
     }
 
     fn sweep() {
         mut s = self.snapshot()
         let rev = state_revision(s)
-        for i, held in s.cells {
-            if held != null && held!.verified_at != rev { s.cells.set(i, null) }
+        for i, row in s.cells {
+            mut kept = row
+            mut changed = false
+            for j, held in row {
+                if held != null && held!.verified_at != rev {
+                    kept.set(j, null)
+                    changed = true
+                }
+            }
+            if changed { s.cells.set(i, kept) }
         }
         self.replace(s)
     }
@@ -181,8 +198,14 @@ impl Db {
         mut s = self.snapshot()
         mut at = family
         let stride = s.verifiers.length
-        while at < s.cells.length {
-            s.cells.set(at, null)
+        while at < s.cells.length * cell_chunk {
+            let block = at / cell_chunk
+            let offset = at % cell_chunk
+            mut row = s.cells[block]
+            if offset < row.length {
+                row.set(offset, null)
+                s.cells.set(block, row)
+            }
             at = at + stride
         }
         self.replace(s)
@@ -217,14 +240,23 @@ fn state_slot(s: DbState, key: Key) -> int {
 
 fn state_cell(s: DbState, key: Key) -> QueryCell? {
     let at = state_slot(s, key)
-    if at >= s.cells.length { return null }
-    s.cells[at]
+    let block = at / cell_chunk
+    let offset = at % cell_chunk
+    if block >= s.cells.length { return null }
+    let row = s.cells[block]
+    if offset >= row.length { return null }
+    row[offset]
 }
 
 fn write_cell(mut s: DbState, key: Key, cell: QueryCell) {
     let at = state_slot(s, key)
-    while s.cells.length <= at { s.cells.push(null) }
-    s.cells.set(at, cell)
+    let block = at / cell_chunk
+    let offset = at % cell_chunk
+    while s.cells.length <= block { s.cells.push([]) }
+    mut row = s.cells[block]
+    while row.length <= offset { row.push(null) }
+    row.set(offset, cell)
+    s.cells.set(block, row)
 }
 
 extern fn avra_trap(message: string)

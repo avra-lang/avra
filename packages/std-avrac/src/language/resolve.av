@@ -307,7 +307,7 @@ impl ResolveCx {
     /// binder: `sql` alone is the unresolved name it always was.
     fn refused_binder(name: string, at: Loc?) -> bool {
         if self.refused_name(name, at) { return true }
-        if self.facts.names.syntaxes.get(name) != null {
+        if self.facts.names.syntax_decl(name) != null {
             self.emit(refusal("resolve.block_word", at, "`${name}` is a sublanguage's block word here, and nothing else in this file may wear it", "this name", "rename it, or import the sublanguage under another name"))
             return true
         }
@@ -472,15 +472,15 @@ impl ResolveCx {
     mut fn use_type(e: ExprId, name: string) {
         if self.met(e) { return }
         let names = self.names_at(e)
-        let found: DeclId? = names.types.get(name)
+        let found: DeclId? = names.type_decl(name)
         if found != null {
             self.bind_use(e, Binding.Decl(found!))
             return
         }
-        if names.fns.get(name) != null { return self.emit(refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared — `${name}` is a fn, and a name before `{ }` reads as a record literal", "used here", "a call taking an empty block writes its parentheses: `${name}() { }`")) }
+        if names.fn_decl(name) != null { return self.emit(refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared — `${name}` is a fn, and a name before `{ }` reads as a record literal", "used here", "a call taking an empty block writes its parentheses: `${name}() { }`")) }
         self.emit(self.suggested(
             refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared", "used here", null),
-            e, name, names.type_names))
+            e, name, names.type_suggestions()))
     }
 
     /// A callee resolves in the fn namespace alone.
@@ -491,7 +491,7 @@ impl ResolveCx {
         if self.refused_name(name, self.loc_of(e)) { return }
         let origin: FileId? = self.view.origin_of(e)
         let names = self.names_in(origin)
-        let found: DeclId? = names.fns.get(name)
+        let found: DeclId? = names.fn_decl(name)
         if found != null {
             self.bind_use(e, Binding.Decl(found!))
             return
@@ -516,7 +516,7 @@ impl ResolveCx {
         // namespace answers LAST, so no declared fn and no local
         // value is ever shadowed by a type of the same name; typing
         // judges the one seat.
-        let as_type: DeclId? = names.types.get(name)
+        let as_type: DeclId? = names.type_decl(name)
         if as_type != null {
             self.bind_use(e, Binding.Decl(as_type!))
             return
@@ -524,7 +524,7 @@ impl ResolveCx {
         if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, self.loc_of(e)) }
         self.emit(self.suggested(
             refusal("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined", "called here", null),
-            e, name, names.fn_names))
+            e, name, names.fn_suggestions()))
     }
 
     /// The namespace a node's names resolve in: this file's, or the
@@ -565,9 +565,9 @@ impl ResolveCx {
         // a type's name, then a NAMED FN as a value — both global,
         // so no capture chains
         let names = self.names_in(origin)
-        let named_type: DeclId? = names.types.get(name)
+        let named_type: DeclId? = names.type_decl(name)
         if named_type != null { return Binding.Decl(named_type!) }
-        let f: DeclId? = names.fns.get(name)
+        let f: DeclId? = names.fn_decl(name)
         if f != null { return Binding.Decl(f!) }
         // THE TWO-TIER SECOND LOOK: a written program knows no such
         // name; a GENERATED declaration may. The workspace's oracle

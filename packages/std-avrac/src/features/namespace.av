@@ -12,10 +12,21 @@ use @std.errors.{Loc}
 
 /// A file's namespace: the bindings, the names in declaration order
 /// (for suggestions), and the diagnostics building it earned.
-export type Namespace = {
+export type BoundNames = {
     fns: Map<string, DeclId>,
     types: Map<string, DeclId>,
-    // the sublanguage words in scope — a block word before `{`
+    syntaxes: Map<string, DeclId>,
+    syntax_names: List<string>,
+    fn_names: List<string>,
+    type_names: List<string>,
+}
+
+export type Namespace = {
+    // The module's winners are shared by every file. These fields hold
+    // only imports, prelude exports, and builtins added for this file.
+    base: BoundNames?,
+    fns: Map<string, DeclId>,
+    types: Map<string, DeclId>,
     syntaxes: Map<string, DeclId>,
     syntax_names: List<string>,
     fn_names: List<string>,
@@ -24,20 +35,47 @@ export type Namespace = {
 }
 
 impl Namespace {
+    fn fn_decl(name: string) -> DeclId? {
+        let local: DeclId? = self.fns.get(name)
+        if local != null || self.base == null { return local }
+        self.base!.fns.get(name)
+    }
+
+    fn type_decl(name: string) -> DeclId? {
+        let local: DeclId? = self.types.get(name)
+        if local != null || self.base == null { return local }
+        self.base!.types.get(name)
+    }
+
+    fn syntax_decl(name: string) -> DeclId? {
+        let local: DeclId? = self.syntaxes.get(name)
+        if local != null || self.base == null { return local }
+        self.base!.syntaxes.get(name)
+    }
+
+    fn fn_suggestions() -> List<string> {
+        if self.base == null { return self.fn_names }
+        self.base!.fn_names.concat(self.fn_names)
+    }
+
+    fn type_suggestions() -> List<string> {
+        if self.base == null { return self.type_names }
+        self.base!.type_names.concat(self.type_names)
+    }
+
     /// Whether either namespace holds the name.
     fn names(name: string) -> bool {
-        let as_fn: DeclId? = self.fns.get(name)
-        as_fn != null || self.types.get(name) != null
+        self.fn_decl(name) != null || self.type_decl(name) != null
     }
 }
 
 export fn no_names() -> Namespace {
-    Namespace { fns: {}, types: {}, syntaxes: {}, syntax_names: [], fn_names: [], type_names: [], voices: no_voices() }
+    Namespace { base: null, fns: {}, types: {}, syntaxes: {}, syntax_names: [], fn_names: [], type_names: [], voices: no_voices() }
 }
 
 /// A module's names, bound once: the declarations that won, in
 /// order, and every clash — filed under the losing file.
-export type ModuleNames = { bound: List<DeclId>, clashes: List<Clash> }
+export type ModuleNames = { bound: List<DeclId>, clashes: List<Clash>, base: BoundNames }
 
 export type Clash = { file: FileId, diag: Diag }
 
@@ -51,19 +89,90 @@ impl Decls {
     fn module_names(ordered: List<DeclId>, shown: fn(string) -> string) -> ModuleNames {
         mut b = self.binder(shown)
         for d in ordered { b.declare(d) }
-        ModuleNames { bound: b.bound, clashes: b.clashes }
+        let names = b.names
+        ModuleNames { bound: b.bound, clashes: b.clashes, base: BoundNames {
+            fns: names.fns, types: names.types, syntaxes: names.syntaxes,
+            fn_names: names.fn_names, type_names: names.type_names, syntax_names: names.syntax_names,
+        } }
     }
 
-    /// A file's namespace: its module's winners, then its imports; the
-    /// module's clashes at this file's own declarations ride along.
+    /// A file adds imports, prelude exports, and builtins over its
+    /// module's shared winners. The module's clashes remain filed at
+    /// the declaration in this file that lost.
     fn file_names(file: FileId, module: ModuleNames, imports: List<Import>, prelude: List<Import>, shown: fn(string) -> string) -> Namespace {
-        mut b = self.binder(shown)
-        for d in module.bound { b.bind_decl(d) }
-        for i in imports { b.import(i, file) }
-        for i in prelude { b.bind_prelude(i) }
-        for d in self.builtin_decls() { b.bind_builtin(d) }
+        mut fns: Map<string, DeclId> = {}
+        mut types: Map<string, DeclId> = {}
+        mut syntaxes: Map<string, DeclId> = {}
+        mut fn_names: List<string> = []
+        mut type_names: List<string> = []
+        mut syntax_names: List<string> = []
+        mut spoken: List<Diag> = []
+        for i in imports {
+            let x = self.decl(i.decl)
+            let name = if i.alias.is_empty() { x.name } else { i.alias }
+            let prior: DeclId? = match x.kind {
+                .Fn or .Const -> fns.get(name) ?? module.base.fns.get(name),
+                .Record or .Named or .Enum or .Trait or .Builtin -> types.get(name) ?? module.base.types.get(name),
+                .Syntax -> syntaxes.get(name) ?? module.base.syntaxes.get(name),
+                .Method or .Default or .Impl or .Main or .Case -> null,
+            }
+            if prior == null {
+                match x.kind {
+                    .Fn or .Const -> {
+                        fns.set(name, i.decl)
+                        fn_names.push(name)
+                    },
+                    .Record or .Named or .Enum or .Trait or .Builtin -> {
+                        types.set(name, i.decl)
+                        type_names.push(name)
+                    },
+                    .Syntax -> {
+                        syntaxes.set(name, i.decl)
+                        syntax_names.push(name)
+                    },
+                    .Method or .Default or .Impl or .Main or .Case -> not_bound(),
+                }
+            } else {
+                if !same_decl(prior!, i.decl) { spoken.push(import_clash(i.at, name, self.holder_of(prior!, file, shown))) }
+            }
+        }
+        for i in prelude.concat([Import { decl: d, at: null, alias: "" } for d in self.builtin_decls()]) {
+            let x = self.decl(i.decl)
+            let prior: DeclId? = match x.kind {
+                .Fn or .Const -> fns.get(x.name) ?? module.base.fns.get(x.name),
+                .Record or .Named or .Enum or .Trait or .Builtin -> types.get(x.name) ?? module.base.types.get(x.name),
+                .Syntax -> syntaxes.get(x.name) ?? module.base.syntaxes.get(x.name),
+                .Method or .Default or .Impl or .Main or .Case -> null,
+            }
+            if prior == null {
+                match x.kind {
+                    .Fn or .Const -> {
+                        fns.set(x.name, i.decl)
+                        fn_names.push(x.name)
+                    },
+                    .Record or .Named or .Enum or .Trait or .Builtin -> {
+                        types.set(x.name, i.decl)
+                        type_names.push(x.name)
+                    },
+                    .Syntax -> {
+                        syntaxes.set(x.name, i.decl)
+                        syntax_names.push(x.name)
+                    },
+                    .Method or .Default or .Impl or .Main or .Case -> not_bound(),
+                }
+            }
+        }
         let own = [c.diag for c in module.clashes if in_file(c, file)]
-        b.names with { voices: Voices { list: own.concat(b.names.voices.list) } }
+        Namespace { base: module.base, fns: fns, types: types, syntaxes: syntaxes, syntax_names: syntax_names, fn_names: fn_names, type_names: type_names, voices: Voices { list: own.concat(spoken) } }
+    }
+
+    /// Who holds a name already: this module (by file), or a module.
+    fn holder_of(prior: DeclId, file: FileId, shown: fn(string) -> string) -> string {
+        let p = self.decl(prior)
+        if self.module_of(prior) == self.module_name(self.file(file).module_id) {
+            return "this module (`${shown(self.file(p.file).path)}`)"
+        }
+        "`${self.module_of(prior)}`"
     }
 
     fn binder(shown: fn(string) -> string) -> Binder {
@@ -246,4 +355,3 @@ fn declared_twice(at: Loc?, name: string, other: string) -> Diag {
 fn import_clash(at: Loc?, item: string, holder: string) -> Diag {
     refusal("resolve.import_clash", at, "`${item}` is imported, but ${holder} already has it", "in this use", "drop the import, or rename the local declaration")
 }
-

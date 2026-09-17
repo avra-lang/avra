@@ -138,7 +138,23 @@ gate — there is no amnesty left to hide in.
       validate's and coherence's `seen` folds are duplicate
       DETECTION (they emit on the dup), a different concept, left.
 - I6  head-plus-tail list builds — `concat`/`flatten` today, spread
-      literals when the sugar lands (backlog).
+      literals when the sugar lands (backlog). AND `concat` COSTS THE
+      WHOLE LIST, so this entry must never be read as "append one
+      element with it": building n items by appending one at a time
+      copies a growing list n times, which is quadratic. MEASURED
+      (2026-09-17), 20,000 appends: through a LOCAL `mut` binding
+      0.002s (the push is in place); through a RECORD FIELD of a
+      shared value, or through a `Cell`'s `get`→`push`→`set`, 0.45s
+      — the whole list copied per element. So `concat` JOINS TWO
+      LISTS, and a loop that appends builds through a local `mut`
+      binding or is a comprehension. The two worst sites in the tree
+      were both this shape: `Db.record_dep` (97% of the `bodies`
+      phase) and `Decls.note_origins` (97% of `resolve`). AND THE
+      COST IS NOT THE COPY-ON-WRITE — a push on a local that shares
+      its list with another binding is in place, measured at the
+      same 0.002s. It is that a write reaching a list through a
+      field of a shared value, or a `Cell` round trip, cannot keep
+      the unique copy, so no write is ever the one that pays.
 - I7  (ratcheted) `xs[xs.length - 1]` is `xs.last()!`; `xs[0]` read
       MORE THAN ONCE binds a `head`. LICENSED exception: the
       rebind-alias mutation pattern REQUIRES index syntax — `mut

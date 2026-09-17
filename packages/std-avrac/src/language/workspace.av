@@ -32,7 +32,7 @@ use @std.testing.{CaseRef, words}
 extern fn avra_host_env(name: string) -> string
 
 /// The filesystem, as four questions.
-export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, std_root: string? = null, cwd: string = "", runtime_object: string = "" }
+export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, std_root: string? = null, cwd: string = "" }
 
 impl Host {
     /// One spelling for one directory: a relative path rooted at the
@@ -95,6 +95,10 @@ fn children_of(names: List<string>, dir: string) -> List<string> {
     sorted_texts(out)
 }
 
+/// Method clashes grouped in one pass, then read by the losing file.
+/// A new revision or declaration invalidates the grouping.
+type MethodDiagIndex = { revision: int, decl_count: int, by_file: List<List<Diag>> }
+
 /// The families' value tables, sparse by their keys and grown as
 /// values are placed; `sigs` and `methods` live in the declaration
 /// table itself.
@@ -123,6 +127,7 @@ export type Workspace = {
     decl_facts: Memo<TypeFacts>,
     const_type_facts: Memo<TypeId>,
     method_clashes: Table<List<Clash>>,
+    method_diags: List<MethodDiagIndex>,
     folds: Memo<TypeFacts>,
     analyses: Memo<Analysis>,
     specs: Map<string, int>,
@@ -317,7 +322,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         module_names: new_memo<ModuleNames>(db, ordinal(Family.Namespace)),
         visibles: new_memo<Namespace>(db, ordinal(Family.Visible)),
         name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)), sig_voices: new_table(),
-        decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), const_type_facts: new_memo<TypeId>(db, ordinal(Family.ConstTyped)), method_clashes: new_table(),
+        decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), const_type_facts: new_memo<TypeId>(db, ordinal(Family.ConstTyped)), method_clashes: new_table(), method_diags: [],
         folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
@@ -738,7 +743,7 @@ impl Workspace {
     /// is asking — `@std.meta.Code` and the compiler's own `Code` met
     /// so, inside a derive, and poisoned a sig computed mid-resolve.
     fn aims_at(b: DeclId, target: DeclId) -> bool {
-        let seen: DeclId? = self.visible(self.decls.decl(b).file).types.get(self.decls.decl(target).name)
+        let seen: DeclId? = self.visible(self.decls.decl(b).file).type_decl(self.decls.decl(target).name)
         seen != null && same_decl(seen!, target)
     }
 
@@ -849,26 +854,41 @@ impl Decls {
 }
 
 impl Workspace {
-    /// The method-table clashes spoken in a file: every type's table
-    /// asked, the clashes whose later declaration lives here.
+    /// The method-table clashes spoken in a file. Build the index once:
+    /// scanning every type for every file made this a whole-program
+    /// pass repeated for each file.
     fn method_diagnostics(f: FileId) -> List<Diag> {
         // A LIFTED CALL RUNS INSIDE A RESOLVE: computing the provider's
         // analysis must not force ANOTHER file's resolve (a re-entrant
         // `resolved` is a defect, not a smaller view). The provider's
         // real diagnostics come from the normal analyze pass.
         if self.db.family_active(ordinal(Family.Resolved)) { return [] }
-        mut out: List<Diag> = []
-        for t in self.typed_decls() {
-            touch(self.methods(t))
-            let held: List<Clash> = self.method_clashes.at(t.index) ?? []
-            out = out.concat([c.diag for c in held if same_file(c.file, f)])
+        let previous: MethodDiagIndex? = self.method_diags.first()
+        if previous != null && previous!.revision == self.db.revision() && previous!.decl_count == self.decls.decls.length && f.index < previous!.by_file.length {
+            return previous!.by_file[f.index]
         }
-        out
-    }
-
-    /// Every record and enum of the program, in id order.
-    fn typed_decls() -> List<DeclId> {
-        [x.id for x in self.decls.decls if is_type_decl(x)]
+        mut by_file: List<List<Diag>> = []
+        mut at = 0
+        // Signing an impl may admit another declaration, so walk the
+        // growing table until every type has had its method query.
+        while at < self.decls.decls.length {
+            let x = self.decls.decls[at]
+            at = at + 1
+            if is_type_decl(x) {
+                touch(self.methods(x.id))
+                let held: List<Clash> = self.method_clashes.at(x.id.index) ?? []
+                for c in held {
+                    while by_file.length <= c.file.index { by_file.push([]) }
+                    mut row = by_file[c.file.index]
+                    row.push(c.diag)
+                    by_file.set(c.file.index, row)
+                }
+            }
+        }
+        while by_file.length < self.decls.files.length { by_file.push([]) }
+        let current = MethodDiagIndex { revision: self.db.revision(), decl_count: self.decls.decls.length, by_file: by_file }
+        if self.method_diags.is_empty() { self.method_diags.push(current) } else { self.method_diags.set(0, current) }
+        by_file[f.index]
     }
 
     /// One file's analysis: the snapshot every facade reads.
@@ -1201,7 +1221,7 @@ impl Workspace {
         for a in anns {
             let callee_name: string? = p.store.ident_name(a.callee)
             if callee_name != null {
-                let found: DeclId? = vis.fns.get(callee_name!)
+                let found: DeclId? = vis.fn_decl(callee_name!)
                 if found != null {
                     let ann_decl = found!
                     // A callee from the SAME FILE would need this very
@@ -1501,7 +1521,7 @@ impl Workspace {
     fn named_arg(p: Parsed, vis: Namespace, e: ExprId) -> DeclId? {
         let name: string? = p.store.ident_name(e)
         if name == null { return null }
-        vis.fns.get(name!) ?? vis.types.get(name!)
+        vis.fn_decl(name!) ?? vis.type_decl(name!)
     }
 
     /// One trait's associated `derive` over the declaration — its
