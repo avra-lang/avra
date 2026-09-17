@@ -199,19 +199,25 @@ fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: stri
     let ent = view!
     if ent.view.stmts.is_empty() { return .Err("the program is empty") }
     let lo = p.lowered_checked()?
-    // ONE MODULE PER FILE. Two defects were found by running this; both are fixed
-    // at their cause rather than tuned: `module_key` folds the names that LAND in a
-    // file (the mono one), and `home_of` decides ownership from the BODY (the wrap
-    // one — a wrapper's home is the file declaring what it wraps, so it is the same
-    // home for every asker and does not move with who asked first).
-    mut ws = p.ws
-    let units = emit_units(ws, lo, cache.root, [a.view.file for a in p.files], ent.view.file)
-    if units.modules.is_empty() { return .Err("no module was emitted") }
-    let binary = binary_name("${ent.view.source.file}.ll")
-    let words = link_modules(units.modules, p.ws, opt, runtime)
+    // THE WHOLE-PROGRAM MODULE, because THE SPLIT IS A NET LOSS ON AN EDIT — and
+    // that is a MEASUREMENT, not a doubt. The split was made SOUND first (home_of,
+    // module_key) and then measured, same machine, same edit:
+    //
+    //     edit, one file, WITH the split ....  63.7s / 64.2s   (2 of 276 re-emitted)
+    //     edit, one file, WITHOUT it ........  53.0s
+    //
+    // The emission it saves is 2 of 276 modules; THE LINK IT COSTS IS 275 SEPARATE
+    // MODULES INSTEAD OF ONE. Re-emission is cheap next to linking, so the rung is
+    // only worth turning on WITH PER-FILE OBJECTS AND AN INCREMENTAL LINK — which is
+    // what turns "275 modules to link" into "one object to relink".
+    let ll = "${ent.view.source.file}.ll"
+    let failure = emit_ll(lo, ll)
+    if failure != null { return .Err(failure!) }
+    let binary = binary_name(ll)
+    let words = link_words(ll, p.ws, opt, runtime)
     let warnings = p.warnings()
     cache.keep(key, inputs, words, warnings)
-    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key, emitted: units.emitted, reused_files: units.reused })
+    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key })
 }
 
 /// clang's words for a module: the level, the runtime, the packages' own
