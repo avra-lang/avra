@@ -1187,3 +1187,19 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   duplicate rather than silence. The revert banked the correctness and
   withheld only the mechanism.
 
+- **THE HOME IS DERIVED BY NAME THROUGH THE PROGRAM, NEVER BY WHOEVER REACHED
+  IT FIRST.** A wrap's home is the file that DECLARES WHAT IT WRAPS: one place,
+  the same for every asker, and — the property that matters — it does not move
+  with asking order. `home_of(l, b)` resolves through the program BY NAME
+  rather than through the traversal that happened to arrive first, which makes
+  order-independence a CONSTRUCTION instead of a hope. NO WRAP KIND NEEDED A
+  FALLBACK OR AN EXCEPTION — which was the thing to check rather than assume.
+- **NO HOME, THEN TOO MANY HOMES: ONE MISTAKE SEEN TWICE.** `Body.file`
+  recorded WHO ASKED rather than WHERE A BODY BELONGS — so a lifted lambda was
+  emitted by NOBODY ("symbol not found") and a wrap was emitted by EVERYBODY
+  (six modules, one symbol). The defect was ATTRIBUTION, which no key-cleverness
+  can reach — and the key was ALREADY RIGHT, which is why the work count kept
+  saying 2 of 276 while the link said broken. THE TWO LEGS CAN DISAGREE BECAUSE
+  EACH SEES A DIFFERENT LAYER: the count saw the key, the differential saw the
+  attribution.
+
