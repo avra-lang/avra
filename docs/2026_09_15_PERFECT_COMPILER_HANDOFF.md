@@ -1093,3 +1093,27 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   and the suspect is the reading or the context — but the report was still
   right to exist, because a workaround is how a real one would have died.
 
+- **A DIFFERENTIAL PROVES CORRECTNESS, NEVER THAT WORK WAS SKIPPED — SO
+  EVERY RUNG NEEDS A SECOND LEG.** (c) passed on the letter: `.ll`
+  byte-identical (3888 bytes) AND diagnostics identical, with A genuinely
+  minting and B genuinely not. The work count then said NO SPEEDUP —
+  15.8s/15.1s minting against 15.6s/14.5s minting nothing. THE TRAP'S SHAPE:
+  differential green, keepers green, saving ABSENT. That is the "fixture that
+  cannot exhibit the defect" family, and this campaign has now named THREE
+  members: a number taken against a stale artifact, a registration that was
+  correct and not faster, and this one. A perf rung's receipt carries BOTH
+  legs, and the second is the one that decides whether the rung is real.
+- **THE WORK IS SAVED WHERE IT IS CHEAP AND PAID WHERE IT IS EXPENSIVE.**
+  Minting saves a held module's ITEMS parse (`items` answers from the record)
+  and pays its RESOLVE parse anyway — `analyze_all` calls `resolved(fi.id)`
+  and `analysis(fi.id)` for EVERY file, and both call `parsed(f)`. So a cache
+  covering the cheap half looks complete and moves the clock by zero: find
+  WHERE the time is before deciding WHAT to cache.
+- **A SKIP THAT REMOVES A FILE FROM `Program.files` ALSO REMOVES ITS BODIES,
+  SO THE BODIES COME FIRST.** Skipping `resolve` for a held file drops it
+  from `Program.files`, and LOWERING WALKS `Program.files` TO EMIT BODIES — so
+  the skip without per-file IR produces a program MISSING ITS FUNCTIONS. **THE
+  IR COMES BEFORE THE SKIP**, a build order decided by a measurement rather
+  than by the design's convenience, and the split's own 1.06x (16.4MB whole
+  against 17.3MB over 272 modules) is what says it is affordable.
+
