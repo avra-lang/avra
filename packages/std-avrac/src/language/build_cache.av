@@ -12,10 +12,10 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, digest_of, DeclId, DeclKind, no_stmt, joined, flatten, sorted_texts, module_path, FileId, TypeId, TypeRegistry, ModulePath}
+use core.{new_digest, digest_text, digest_key, digest_of, DeclId, DeclKind, no_stmt, joined, flatten, sorted_texts, module_path, FileId, TypeId, TypeRegistry, ModulePath, same_file}
 use features.{Namespace, DeclSig, FnSig}
 use @std.path.{joined_path, relative_path, dir_of}
-use @std.io.{read_text, write_text, make_dirs}
+use @std.io.{read_text, write_text, make_dirs, exists}
 
 /// The compiler's format identity, folded first into every key. The
 /// compiler's own sources, its backend and its runtime are already key
@@ -25,7 +25,7 @@ const CACHE_FORMAT: string = "avra-build-cache-3"
 
 /// A build's result: the words that link it, the binary they produce,
 /// the warnings to speak, and whether a held artifact was reused.
-export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool, key: string }
+export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool, key: string, emitted: int = 0, reused_files: int = 0 }
 
 /// Where a program's artifacts are kept — beside the program, so a
 /// worktree's cache dies with the worktree.
@@ -145,21 +145,24 @@ impl BuildCache {
     /// when nothing is held or the module cannot be placed — so a partial
     /// entry self-heals into a miss rather than a wrong link.
     fn reuse(entry: string, key: string, inputs: string) -> BuildOutcome? {
-        let module = self.held(key, ".ll")
-        if module == null { return null }
         let plan = self.held(key, ".plan")
         if plan == null { return null }
         // THE TUPLE IS THE TRUST, the key only the lookup.
         let held_inputs = self.held(key, ".inputs")
         if held_inputs == null || held_inputs! != inputs { return null }
+        // NO SINGLE MODULE IS REQUIRED ANY MORE, and requiring one is how the
+        // no-op went from 0.25s to 15.8s: the modules are per FILE now and live on
+        // disk under their own `unit_key`s, so a hit re-links nothing and re-emits
+        // nothing — it places the BINARY the plan already named.
         let ll = "${entry}.ll"
-        if self.disk.write(ll, module!) != null { return null }
         BuildOutcome { words: plan!.split("\n"), binary: binary_name(ll), warnings: self.held(key, ".warn") ?? "", reused: true, key: key }
     }
 
     /// Keep a fresh build's module, plan and warnings under its key.
-    fn keep(entry: string, key: string, inputs: string, words: List<string>, warnings: string) {
-        let _ = self.disk.write(joined_path(self.root, "${key}.ll"), self.disk.read("${entry}.ll"))
+    fn keep(key: string, inputs: string, words: List<string>, warnings: string) {
+        // THE MODULES ARE NOT KEPT HERE: they are per file, already on disk under
+        // their own keys, and copying them into this key would be a second store
+        // of the same bytes.
         let _ = self.disk.write(joined_path(self.root, "${key}.plan"), joined(words, "\n"))
         let _ = self.disk.write(joined_path(self.root, "${key}.warn"), warnings)
         let _ = self.disk.write(joined_path(self.root, "${key}.inputs"), inputs)
@@ -183,25 +186,33 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     // module whose record still holds contributes its exported signatures WITHOUT
     // being parsed, and the rest are left to the ordinary path.
     let _ = mint_held_modules(ws, build_cache_root(ws))
-    emitted(cache, ws.program(entry), entry, key, inputs, opt, runtime)
+    emitted(cache, ws.program(entry), key, inputs, opt, runtime)
 }
 
 // LICENSED I39: the build's TWO PHASES, not a pass's vocabulary —
 // `build_program` is the entry point and keeps the one standard signature
 // (I39's own exemption), and this is its split at the phase boundary.
-fn emitted(cache: BuildCache, p: Program, entry: string, key: string, inputs: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
+fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
     if !p.clean() { return .Err(p.report()) }
     let view = p.entry_file()
     if view == null { return .Err(p.rendered([no_target(p.ws.root)])) }
     if view!.view.stmts.is_empty() { return .Err("the program is empty") }
     let lo = p.lowered_checked()?
+    // THE WHOLE-PROGRAM MODULE, and the per-file split is NOT the build path yet:
+    // a file's `unit_key` does not cover what a MONO-GENERATED body depends on —
+    // WHICH OTHER FILES INSTANTIATE IT — so a reused module can be missing a
+    // specialization another file asked for. MEASURED, NOT FEARED: the split
+    // linked `_av_commands.TestCmd.run` "not found" after an edit elsewhere in the
+    // tree. `emit_units` stands beside this, measured at 2 of 276 modules
+    // re-emitted, waiting on a key that covers instantiation.
     let ll = "${view!.view.source.file}.ll"
     let failure = emit_ll(lo, ll)
     if failure != null { return .Err(failure!) }
+    let binary = binary_name(ll)
     let words = link_words(ll, p.ws, opt, runtime)
     let warnings = p.warnings()
-    cache.keep(entry, key, inputs, words, warnings)
-    .Ok(BuildOutcome { words: words, binary: binary_name(ll), warnings: warnings, reused: false, key: key })
+    cache.keep(key, inputs, words, warnings)
+    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key })
 }
 
 /// clang's words for a module: the level, the runtime, the packages' own
@@ -213,6 +224,13 @@ fn emitted(cache: BuildCache, p: Program, entry: string, key: string, inputs: st
 // second, because the module's path is what it is about.
 fn link_words(ll_path: string, ws: Workspace, opt: string, runtime: string) -> List<string> {
     ["-w", opt, "-rdynamic", ll_path, runtime].concat(ws.link_words()).concat(["-o", binary_name(ll_path)])
+}
+
+/// The same, over EVERY module the build emitted — one per file, plus the entry.
+/// The output's name comes from the FIRST module's file, because a binary is named
+/// for the program rather than for whichever file happened to be linked last.
+fn link_modules(mods: List<string>, ws: Workspace, opt: string, runtime: string) -> List<string> {
+    ["-w", opt, "-rdynamic"].concat(mods).concat([runtime]).concat(ws.link_words()).concat(["-o", binary_name(mods.first() ?? "")])
 }
 
 /// `x.av.ll` builds `x`.
@@ -735,4 +753,48 @@ export fn mint_held_modules(mut ws: Workspace, dir: string) -> int {
         }
     }
     made
+}
+
+// ── THE BODY HALF: PER-FILE IR ──────────────────────────────────────
+
+/// WHAT A BUILD EMITTED, and HOW MUCH OF IT IT REUSED.
+///
+/// THE COUNT IS THE POINT AND IT IS TAKEN BY THE MECHANISM ITSELF. A differential
+/// proves the output is right; it cannot see whether any work was skipped, and the
+/// failure that hides there is a rung that is CORRECT AND NOT FASTER — green
+/// everywhere, and worth nothing. So the number is produced where the decision is
+/// made rather than reconstructed later by someone who wonders.
+export type Emitted = { modules: List<string>, reused: int, emitted: int }
+
+/// EMIT THE PROGRAM AS ONE MODULE PER FILE, reusing what each file's `unit_key`
+/// already holds.
+///
+/// A FILE'S MODULE IS NAMED BY ITS OWN KEY, so a file whose content and visible
+/// signatures are unchanged finds its module and emits nothing. The ENTRY is its
+/// own module — `with_entry` decides who defines `main`, and exactly one module
+/// may — WHICH IS WHY THE ENTRY FILE GETS NO SEPARATE ONE: emitting its bodies
+/// twice is a duplicate symbol at the link.
+// LICENSED I39: THE EMISSION DRIVER — a workspace, a lowered program and a directory in, the modules and the counts out.
+export fn emit_units(mut ws: Workspace, l: Lowered, dir: string, files: List<FileId>, entry_file: FileId) -> Emitted {
+    let _ = make_dirs(dir)
+    mut mods: List<string> = []
+    mut reused = 0
+    mut emitted = 0
+    for f in files {
+        if !same_file(f, entry_file) {
+            let path = joined_path(dir, "${unit_key(ws, f)}.ll")
+            if exists(path) { reused = reused + 1 }
+            else {
+                let failure = emit_module(l, path, false, f)
+                if failure == null { emitted = emitted + 1 }
+            }
+            mods.push(path)
+        }
+    }
+    // THE ENTRY, alone, because it defines `main`.
+    let entry_path = joined_path(dir, "${unit_key(ws, entry_file)}.entry.ll")
+    let broke = emit_module(l, entry_path, true, entry_file)
+    if broke == null { emitted = emitted + 1 }
+    mods.push(entry_path)
+    Emitted { modules: mods, reused: reused, emitted: emitted }
 }

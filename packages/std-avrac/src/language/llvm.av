@@ -130,7 +130,13 @@ export fn emit_module(l: Lowered, path: string, with_entry: bool, only: FileId?)
     let missing: string? = unheld_name(l)
     if missing != null { return "internal compiler error: nothing declares `${missing!}` — the program is not closed" }
     let own = bodies_of(l, only)
-    let refs: Refs = if own.whole { every_name() } else { refs_of(own.bodies) }
+    // THE ENTRY IS NOT IN `l.fns`. It is carried beside them and emitted by
+    // `emit_entry`, so a split module that collected only its OWN bodies' names
+    // never saw what the entry CALLS — and the entry is exactly the body that
+    // calls the program. A whole-program module hides this (it declares
+    // everything); a split one CRASHES on the first entry that calls anything.
+    let scanned: List<Body> = if with_entry { own.bodies.concat([l.entry]) } else { own.bodies }
+    let refs: Refs = if own.whole { every_name() } else { refs_of(scanned) }
     let mine: List<string> = [bd.name for bd in own.bodies]
     declare_runtime(lc, m)
     declare_externs(lc, m, l.externs, refs)
