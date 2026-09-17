@@ -12,7 +12,7 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, joined, flatten, sorted_texts, module_path, DeclId, FileId, TypeId, TypeRegistry, ModulePath}
+use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, sorted_texts, module_path, DeclId, FileId, TypeId, TypeRegistry, ModulePath}
 use features.{Namespace, DeclSig}
 use @std.path.{joined_path, relative_path}
 use @std.io.{read_text, write_text, make_dirs}
@@ -21,7 +21,7 @@ use @std.io.{read_text, write_text, make_dirs}
 /// compiler's own sources, its backend and its runtime are already key
 /// inputs (`Workspace.build_inputs`); this covers only what those files
 /// cannot say — a change to how the key itself is derived.
-const CACHE_FORMAT: string = "avra-build-cache-1"
+const CACHE_FORMAT: string = "avra-build-cache-2"
 
 /// A build's result: the words that link it, the binary they produce,
 /// the warnings to speak, and whether a held artifact was reused.
@@ -51,21 +51,45 @@ export fn build_cache(ws: Workspace, disk: Host) -> BuildCache {
 
 impl BuildCache {
     /// The key these inputs and this mode are stored under.
-    fn key(entry: string, mode: string) -> string {
+    /// THE KEY, from the TUPLE — one pass over the inputs, and a fold over
+    /// everything the tuple carries: each path, each LENGTH, and each content
+    /// digest. The tuple is computed once and used twice, for the key and for the
+    /// check, because reading every input twice to answer one question is how a
+    /// 250ms no-op becomes an 890ms one.
+    fn key(entry: string, mode: string, inputs: string) -> string {
         mut d = new_digest()
         d = digest_text(d, CACHE_FORMAT)
         d = digest_text(d, mode)
         d = digest_text(d, self.rooted(entry))
-        for f in self.ws.build_inputs() {
-            d = digest_text(d, self.rooted(f))
-            d = digest_text(d, self.ws.host.read(f))
-        }
+        d = digest_text(d, inputs)
         digest_key(d)
     }
 
     /// A path as the key spells it: relative to the program's root, so
     /// two checkouts of one source share their artifacts.
     fn rooted(path: string) -> string { relative_path(self.ws.root, path) }
+
+    /// THE INPUT TUPLE — every input the key absorbed, one line each: the
+    /// relative path, the byte LENGTH, and a digest of the bytes.
+    ///
+    /// THE KEY IS A DIGEST OF THIS, SO THE KEY CAN LOSE IT. A hundred-and-twenty
+    /// bit key names an artifact; it cannot separate two input SETS that
+    /// digested to one value, and that residue is the whole of the collision
+    /// risk. So the tuple is kept BESIDE the artifact and CHECKED before the
+    /// artifact is believed — and path and length are recorded EXACTLY rather
+    /// than digested, which is what makes the check able to fail. AN ENTRY
+    /// FOUND BY A COLLIDING KEY FAILS THE CHECK AND IS REPORTED AS A MISS:
+    /// the failure mode of a collision is a rebuild, never a wrong binary.
+    fn inputs() -> string {
+        joined([self.input_line(f) for f in self.ws.build_inputs()], "\n")
+    }
+
+    /// One input's line. The length is kept as well as the digest because it is
+    /// the field a digest cannot lie about.
+    fn input_line(path: string) -> string {
+        let text = self.ws.host.read(path)
+        "${self.rooted(path)}\t${text.length}\t${digest_of(text)}"
+    }
 
     /// One artifact, or null — `exists` first, because a host that
     /// refuses a missing read is entitled to say so loudly.
@@ -78,21 +102,25 @@ impl BuildCache {
     /// A held build put where a fresh one would have written it, or null
     /// when nothing is held or the module cannot be placed — so a partial
     /// entry self-heals into a miss rather than a wrong link.
-    fn reuse(entry: string, key: string) -> BuildOutcome? {
+    fn reuse(entry: string, key: string, inputs: string) -> BuildOutcome? {
         let module = self.held(key, ".ll")
         if module == null { return null }
         let plan = self.held(key, ".plan")
         if plan == null { return null }
+        // THE TUPLE IS THE TRUST, the key only the lookup.
+        let held_inputs = self.held(key, ".inputs")
+        if held_inputs == null || held_inputs! != inputs { return null }
         let ll = "${entry}.ll"
         if self.disk.write(ll, module!) != null { return null }
         BuildOutcome { words: plan!.split("\n"), binary: binary_name(ll), warnings: self.held(key, ".warn") ?? "", reused: true, key: key }
     }
 
     /// Keep a fresh build's module, plan and warnings under its key.
-    fn keep(entry: string, key: string, words: List<string>, warnings: string) {
+    fn keep(entry: string, key: string, inputs: string, words: List<string>, warnings: string) {
         let _ = self.disk.write(joined_path(self.root, "${key}.ll"), self.disk.read("${entry}.ll"))
         let _ = self.disk.write(joined_path(self.root, "${key}.plan"), joined(words, "\n"))
         let _ = self.disk.write(joined_path(self.root, "${key}.warn"), warnings)
+        let _ = self.disk.write(joined_path(self.root, "${key}.inputs"), inputs)
     }
 }
 
@@ -105,16 +133,17 @@ impl BuildCache {
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name.
 export fn build_program(ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host) -> Result<BuildOutcome, string> {
     let cache = build_cache(ws, disk)
-    let key = cache.key(entry, mode)
-    let held = cache.reuse(entry, key)
+    let inputs = cache.inputs()
+    let key = cache.key(entry, mode, inputs)
+    let held = cache.reuse(entry, key, inputs)
     if held != null { return .Ok(held!) }
-    emitted(cache, ws.program(entry), entry, key, opt, runtime)
+    emitted(cache, ws.program(entry), entry, key, inputs, opt, runtime)
 }
 
 // LICENSED I39: the build's TWO PHASES, not a pass's vocabulary —
 // `build_program` is the entry point and keeps the one standard signature
 // (I39's own exemption), and this is its split at the phase boundary.
-fn emitted(cache: BuildCache, p: Program, entry: string, key: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
+fn emitted(cache: BuildCache, p: Program, entry: string, key: string, inputs: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
     if !p.clean() { return .Err(p.report()) }
     let view = p.entry_file()
     if view == null { return .Err(p.rendered([no_target(p.ws.root)])) }
@@ -125,7 +154,7 @@ fn emitted(cache: BuildCache, p: Program, entry: string, key: string, opt: strin
     if failure != null { return .Err(failure!) }
     let words = link_words(ll, p.ws, opt, runtime)
     let warnings = p.warnings()
-    cache.keep(entry, key, words, warnings)
+    cache.keep(entry, key, inputs, words, warnings)
     .Ok(BuildOutcome { words: words, binary: binary_name(ll), warnings: warnings, reused: false, key: key })
 }
 
