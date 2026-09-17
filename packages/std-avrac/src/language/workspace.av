@@ -1769,6 +1769,13 @@ impl Workspace {
     }
 
     /// The root package's source files — what `check <root>` analyzes.
+    /// EVERY package's sources — the build's input set, from the DISK rather than from
+    /// what resolution happened to load. This is what lets a held file be known without
+    /// being resolved.
+    fn every_source() -> List<string> {
+        flatten([self.all_files(pkg.src) for pkg in self.packages])
+    }
+
     fn root_files() -> List<string> {
         self.all_files(self.packages[0].src)
     }
@@ -1895,14 +1902,19 @@ impl Workspace {
         // its BODY is not needed: its object is found by the record's key. THE THREE
         // LOOPS BELOW ARE WHERE THE EDIT TIME LIVES — together they are the analysis
         // that an unchanged module has no reason to pay for twice.
+        // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED — its module's
+        // record answers what a caller can see of it, and its BODY is not needed
+        // because its object is found by the record's key. The files themselves are
+        // known WITHOUT resolving (the packages and a disk walk), which is what makes
+        // this skip possible at all.
         let t1 = self.clock()
-        for fi in self.decls.files { let _ = self.resolved(fi.id) }
+        for fi in self.decls.files { if !self.is_held(fi.id) { let _ = self.resolved(fi.id) } }
         self.timed("resolve", self.clock() - t1)
         let t2 = self.clock()
-        for fi in self.decls.files { let _ = self.sig_diagnostics(fi.id) }
+        for fi in self.decls.files { if !self.is_held(fi.id) { let _ = self.sig_diagnostics(fi.id) } }
         self.timed("sigs", self.clock() - t2)
         let t3 = self.clock()
-        let out = [self.analysis(fi.id) for fi in self.decls.files]
+        let out = [self.analysis(fi.id) for fi in self.decls.files if !self.is_held(fi.id)]
         self.timed("bodies", self.clock() - t3)
         out
     }

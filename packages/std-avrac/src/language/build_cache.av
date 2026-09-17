@@ -185,8 +185,11 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     // THE WALK IS CONSULTED HERE, once the answer is known to be needed: every
     // module whose record still holds contributes its exported signatures WITHOUT
     // being parsed, and the rest are left to the ordinary path.
+    // ONE WALK FOR THE MINT AND FOR THE HELD SET. `mint_held_modules` validated each
+    // module on its own memo too; the two passes are now one question asked once.
+    let _ = held_set(ws, build_cache_root(ws))
     let _ = mint_held_modules(ws, build_cache_root(ws))
-    let held = held_files(ws, build_cache_root(ws))
+    let held = held_set(ws, build_cache_root(ws))
     emitted(cache, ws.program(entry), key, inputs, opt, runtime, linker, held)
 }
 
@@ -228,7 +231,7 @@ fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: stri
     // link 23 objects where 275 belong. The held files are ASKED FOR (their `items`
     // answers from the record) so they are in this table even though they were never
     // analysed.
-    let all_files = [fi.id for fi in ws.decls.files]
+    let all_files = program_files(ws)
     let units = emit_objects(ws, lo, cache.root, all_files, ent.view.file, linker, opt, held_files)
     if units.objects.is_empty() { return .Err("no object was emitted") }
     let words = link_objects(units.objects, p.ws, runtime, binary)
@@ -801,12 +804,14 @@ export fn mint_record(mut ws: Workspace, m: ModulePath, text: string) -> int {
 // LICENSED I39: THE DRIVER'S OPENING MOVE — a workspace and its cache directory in, the count minted out.
 export fn mint_held_modules(mut ws: Workspace, dir: string) -> int {
     mut made = 0
-    for path in ws.root_files() {
+    mut known: Map<string, string> = {}
+    mut live: List<string> = []
+    for path in ws.every_source() {
         let m = module_path(ws.module_of(path).split("."))
         let f = ws.file_id(path)
-        if surface_holds(ws, dir, m) {
-            let text = read_text(record_path(dir, bytes_key(ws, m))) catch ""
-            if is_marked(text) && exists(joined_path(dir, "${held_key(ws, dir, m, f)}.o")) { made = made + mint_record(ws, m, text) }
+        let text = read_text(record_path(dir, bytes_key(ws, m))) catch ""
+        if surface_of(known, live, ws, dir, m) != "" && is_marked(text) && exists(joined_path(dir, "${held_key(ws, dir, m, f)}.o")) {
+            made = made + mint_record(ws, m, text)
         }
     }
     made
@@ -1038,6 +1043,51 @@ export fn held_files(mut ws: Workspace, dir: string) -> List<FileId> {
         // symbols not found with 23 objects where 275 belonged. The record proves the
         // CONTRACT; the object is what proves the BODY.
         if surface_holds(ws, dir, m) && is_marked(text) && exists(joined_path(dir, "${held_key(ws, dir, m, f)}.o")) {
+            out.push(f)
+        }
+    }
+    out
+}
+
+/// EVERY FILE THE BUILD MUST LINK — found from the PACKAGES and the DISK, never from
+/// resolution.
+///
+/// **THE BUILD LEARNS ITS FILES BY RESOLVING THEM TODAY**, which is why skipping a held
+/// file's resolve also stopped discovering the packages behind it: measured, 23 objects
+/// linked where 275 belonged. A build that means to skip analysis must know its inputs
+/// BEFORE it analyses anything — and it can, because both halves are READS: the packages
+/// come from the manifests, and each package's files from a walk of its own source root.
+///
+/// This is the coupling the skip was blocked on, broken from the reading side.
+// LICENSED I39: THE BUILD'S INPUT SET — a workspace in, the files it must link out.
+export fn program_files(mut ws: Workspace) -> List<FileId> {
+    [ws.file_id(path) for path in ws.every_source()]
+}
+
+/// THE HELD SET, VALIDATED IN ONE WALK.
+///
+/// `surface_holds` builds a FRESH memo per call, so asking it per module walks the
+/// import closure once per module — O(modules) records read, each one a digest of its
+/// own imports, which is a quadratic the design named and this is where it bites: a
+/// held rebuild measured 151s with one object recompiled, because the WORK was in asking
+/// the question rather than in answering it.
+///
+/// ONE MEMO, ONE LIST OF IN-FLIGHT MODULES, ONE WALK. The cost per module becomes one
+/// small read and one digest, however many dependents ask.
+// LICENSED I39: THE DRIVER'S HELD SET — a workspace and its cache directory in, the files held out.
+export fn held_set(mut ws: Workspace, dir: string) -> List<FileId> {
+    mut known: Map<string, string> = {}
+    mut live: List<string> = []
+    mut out: List<FileId> = []
+    // EVERY PACKAGE'S FILES, NOT THE ROOT'S. The walk covered the root package alone,
+    // so the toolchain's modules were never held and every one of them was resolved —
+    // measured as 162s with ONE object recompiled, which is the analysis of everything
+    // the hold was meant to skip.
+    for path in ws.every_source() {
+        let m = module_named(ws.module_of(path))
+        let f = ws.file_id(path)
+        let text = read_text(record_path(dir, bytes_key(ws, m))) catch ""
+        if surface_of(known, live, ws, dir, m) != "" && is_marked(text) && exists(joined_path(dir, "${held_key(ws, dir, m, f)}.o")) {
             out.push(f)
         }
     }
