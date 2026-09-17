@@ -112,11 +112,12 @@ if [ -x build/avra ]; then
         [ -e "$o" ] || continue
         seen=$((seen + 1))
         # THE SYMBOL SPELLING IS THE PLATFORM'S: Mach-O prefixes `_`,
-        # ELF does not. A mandatory `_` read NOTHING on Linux and the
-        # rule went green over an empty set.
-        sym=$(nm -gU "$o" 2>/dev/null | sed -n 's/.* T _\?//p' | head -1)
+        # ELF does not — and the OPTIONAL underscore must be spelled
+        # `_*`, not `\?`: `\?` is a GNU-sed extension, so on BSD/macOS
+        # the substitution never matched and the reader returned NOTHING.
+        sym=$(nm -gU "$o" 2>/dev/null | sed -n 's/.* T _*//p' | head -1)
         [ -n "$sym" ] || continue
-        nm -gU build/avra 2>/dev/null | grep -q " T _\?$sym\$" || continue
+        nm -gU build/avra 2>/dev/null | grep -q " T _*$sym\$" || continue
         looked=$((looked + 1))
         case "$compiler_objs" in
             *" $o "*) ;;
