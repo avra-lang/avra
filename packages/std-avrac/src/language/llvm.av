@@ -57,7 +57,13 @@ fn mangled(name: string) -> string {
 
 /// Write the program as verified `.ll` text; null means written, a
 /// string is the failure.
-export fn emit_ll(l: Lowered, path: string) -> string? {
+export fn emit_ll(l: Lowered, path: string) -> string? { emit_module(l, path, true) }
+
+/// The same, with the ENTRY OPTIONAL. `with_entry` false leaves `main` out, so a
+/// per-file module can declare everything and define only its OWN bodies —
+/// EXACTLY ONE module in a program may define the entry, or the link fails on a
+/// duplicate symbol.
+export fn emit_module(l: Lowered, path: string, with_entry: bool) -> string? {
     let lc = avra_llvm_context_create()
     let m = avra_llvm_module_create("avra", lc)
     let b = avra_llvm_create_builder(lc)
@@ -73,8 +79,10 @@ export fn emit_ll(l: Lowered, path: string) -> string? {
         let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f)
         if failure != null { return wreck(m, path, failure!) }
     }
-    let failure: string? = emit_entry(lc, m, b, l, rt)
-    if failure != null { return wreck(m, path, failure!) }
+    if with_entry {
+        let failure: string? = emit_entry(lc, m, b, l, rt)
+        if failure != null { return wreck(m, path, failure!) }
+    }
     if avra_llvm_print_module_to_file(m, path) != 0 {
         return "cannot write `${path}`"
     }
