@@ -1025,12 +1025,26 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   does `sig` really short-circuit on a filled table? **VERIFY THE DECIDING
   FACT BEFORE THE CODE** — a guess here produces a plausible wrong signature
   rather than an error, which is the worst of the three outcomes.
-- **AND THE DECIDING FACT IS FOUND BY READING THE TOUCH POINTS, NOT BY
-  WRITING.** `exported_decls(m)` does not read the parse at all — it walks a
-  FILE'S ITEMS and filters by `exported`, so a minted declaration needs no
-  parse to be VISIBLE, only to appear in `items(f)`. Naming the four touch
-  points first is what turned "register a declaration" from a vague step into
-  four pushes and one verified fact.
+- **AND THE DECIDING FACT IS FOUND BY READING ONE CALL PAST WHERE YOU
+  LOOKED.** `exported_decls(m)` seemed to "not read the parse at all — it
+  walks a FILE'S ITEMS and filters by `exported`" — AND THAT WAS WRONG: it
+  calls `items(f)`, and `items(f)` calls `self.parsed(f)`. A claim made from
+  the layer above WITHOUT FOLLOWING THE CALL is this campaign's recurring
+  error, and here it inverted the shape: MINTING ROWS IS NOT SUFFICIENT for
+  a held module to be VISIBLE, because `exported_decls` would go on parsing
+  the file the rung exists to skip. So `items(f)` — not `exported_decls(m)` —
+  is where a held module must answer without a parse: SIX touch points, one
+  of them a behaviour change that must not alter the parsed path.
+- **THE DEFECT CAN BE THE ABSENCE OF A CHANGE, AND EVERY GATE PASSES.** A
+  registration that fills the tables but leaves `items` reaching for `parsed`
+  produces a build that is CORRECT AND NOT FASTER: the differential is green
+  (both builds parsed everything, so both .ll's are identical), every gate is
+  green, and the SAVING is simply absent. "A fixture that cannot exhibit the
+  defect" is the same family, in the one place where the defect is the
+  ABSENCE of an effect rather than a wrong value. THE RECEIPT THEREFORE
+  PROVES THE THING IT EXISTS TO SKIP WAS SKIPPED — a CALL COUNT (did
+  `parsed` run for this module?), never only a clock and never only an
+  identical output.
 
 - **A FILLED TABLE IS NOT THE WHOLE ANSWER WHEN A QUERY CELL DECIDES WHETHER
   THE TABLE IS CONSULTED.** `sig`'s short-circuit reads `if
