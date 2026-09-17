@@ -12,7 +12,7 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, joined, DeclId, FileId, TypeId, TypeRegistry, ModulePath}
+use core.{new_digest, digest_text, digest_key, joined, flatten, sorted_texts, DeclId, FileId, TypeId, TypeRegistry, ModulePath}
 use features.{Namespace, DeclSig}
 use @std.path.{joined_path, relative_path}
 
@@ -239,4 +239,89 @@ export fn unit_key(mut ws: Workspace, f: FileId) -> string {
     for n in ns.fn_names { d = digest_text(d, sig_of(ws, ns.fns.get(n))) }
     for n in ns.type_names { d = digest_text(d, sig_of(ws, ns.types.get(n))) }
     digest_key(d)
+}
+
+// ── RUNG 2: THE INTERFACE RECORD ────────────────────────────────────
+//
+// The surface key above is the CONTRACT. What makes it usable across runs is
+// that it can be VALIDATED WITHOUT PARSING, and that needs two things the
+// surface key alone cannot give:
+//
+//   bytes_key(m)  — a digest of m's own files' BYTES, and nothing else. The
+//                   bytes are on disk, so this costs a read and a hash: NO
+//                   PARSE. It is the LOOKUP key, and it is why a record can
+//                   be found at all before deciding whether to parse.
+//
+//   the record    — stored UNDER bytes_key, holding the surface key the
+//                   module HAD and the modules it imported with the surface
+//                   key each had at that moment.
+//
+// Validation is then: compute bytes_key (parse-free) -> the record is either
+// there or not -> for each recorded import, recompute its surface_key
+// (memoized, recursively) and compare. All equal means the contract this
+// module was built against is the contract it faces now, so its surface is
+// reused with NO PARSE AND NO RESOLVE. Any inequality means re-parse.
+
+/// THE LOOKUP KEY: a module's own files' bytes. No parse, no namespace, no
+/// signature — the cheapest question a cache can ask, and the one that decides
+/// whether anything else is asked at all.
+// LICENSED I39: a KEY DERIVATION — the bytes of one module's files, digested.
+export fn bytes_key(mut ws: Workspace, m: ModulePath) -> string {
+    mut d = new_digest()
+    d = digest_text(d, CACHE_FORMAT)
+    for path in sorted_texts(ws.module_files(m)) {
+        d = digest_text(d, relative_path(ws.root, path))
+        d = digest_text(d, ws.source(ws.file_id(path)).text)
+    }
+    digest_key(d)
+}
+
+/// THE INTERFACE RECORD, as text — one line per entry, so a reader can see it
+/// and a diff of two records reads as a diff of two contracts.
+///
+///   surface <key>
+///   import <module> <the surface key it had>
+///
+/// The imports are RECORDED because they are what makes validation parse-free:
+/// a module's own `use` lines live in its source, so reading them costs a parse
+/// — but reading them once, when the record is written, and keeping them here,
+/// makes every later question free.
+export fn surface_record(surface: string, imports: List<string>, had: List<string>) -> string {
+    "surface ${surface}\n" + joined(flatten([["import ${imports[i]} ${had[i]}"] for i in 0..imports.length]), "\n")
+}
+
+/// The record's surface key, or "" when the text is empty — the field the
+/// validation compares first, because a record for a DIFFERENT contract is no
+/// record at all.
+export fn recorded_surface(text: string) -> string {
+    for line in text.split("\n") {
+        if line.starts_with("surface ") { return line.substring(8, line.length) }
+    }
+    ""
+}
+
+/// The imported modules a record names, in the order they were written.
+export fn recorded_imports(text: string) -> List<string> {
+    mut out: List<string> = []
+    for line in text.split("\n") {
+        if line.starts_with("import ") {
+            let words = line.split(" ")
+            if words.length >= 2 { out.push(words[1]) }
+        }
+    }
+    out
+}
+
+/// The surface key each recorded import HAD — the other half of the pair the
+/// validation compares, and the reason the record is a contract rather than a
+/// cache: it says what it was built AGAINST, not merely what it produces.
+export fn recorded_had(text: string) -> List<string> {
+    mut out: List<string> = []
+    for line in text.split("\n") {
+        if line.starts_with("import ") {
+            let words = line.split(" ")
+            if words.length >= 3 { out.push(words[2]) }
+        }
+    }
+    out
 }
