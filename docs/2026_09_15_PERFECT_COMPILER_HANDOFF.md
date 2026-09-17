@@ -1117,3 +1117,24 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   than by the design's convenience, and the split's own 1.06x (16.4MB whole
   against 17.3MB over 272 modules) is what says it is affordable.
 
+- **A WORK COUNT IS TAKEN WHEN THE MECHANISM LANDS, NOT WHEN THE SAVING IS
+  QUESTIONED.** The zero that (c) reported was found by measuring what the
+  differential cannot see — and the cheapest time to take that measurement is
+  the step that INTRODUCES the mechanism. So the per-file IR's FIRST
+  measurement is the number of FILES EMITTED, and "correct and not faster" is
+  caught on the step that causes it rather than two steps later. A perf
+  receipt's work count is not a follow-up; it is part of done.
+- **AN ENABLER'S RECEIPT IS NOT A NUMBER, SO BANK IT WITH THE SPEEDUP.** The
+  identity half is inert (byte-identical `.ll`, identical diagnostics), so
+  landing it alone spends a rebase, a seed refresh and a Sprite gate on
+  nothing user-visible AND bakes an inert half into the committed seed. Land
+  for a receipt rather than for a commit: the enabler rides with the number it
+  enables.
+- **THE ENTRY FILE GETS NO SEPARATE MODULE, OR ITS BODIES ARE EMITTED TWICE.**
+  The per-file split is N modules — `emit_module(l, p_i, false, f_i)`, each
+  DECLARING what its bodies name and DEFINING what it owns — plus ONE entry
+  module (`..., true, f_entry`) which emits that file's bodies AND `main`
+  exactly once, because `with_entry` decides who defines the entry. AND THE
+  PIECE THAT MAKES IT CHEAP: `Body.file` is ALREADY set on the entry, so the
+  split needs NO change to lowering — the pieces were standing.
+
