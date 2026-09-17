@@ -18067,3 +18067,49 @@ THE SPEAKING IS F2047, one level up: with the 17 declared writing, a
 call on a non-`mut` place warns where it was silent. The capture wall
 (`ws.spec_id(w)` inside a lambda) is one such site — the warning is the
 record, and its fix is S2's Cell<T>, not this slice.
+
+## Feedback survey — 2026-09-17 (LANE C: S2a, the borrow deleted — avra-8sb5.4.4)
+
+SCOPE: delete the borrow mechanism; `mut ys = <place>` now copies
+wherever the place lives. H3 had narrowed the borrow to a writable
+place and the ruling is that a copy is a copy (Q1(a), Cell<T> the only
+door), so the narrowing was the last step before the deletion, not a
+destination.
+
+MEASURED FIRST, on main `f167beb`: 26 lawful borrows tree-wide, every
+one mutating through the local. The split decided the slice's size —
+**20 already write the value BACK** (`mut fr = self.frames[f]`;
+`fr.body.push(t)`; `self.frames.set(f, fr)`) and became plain copies
+with ZERO code change, and the doc comment on interp's `put` had said
+"the frame is a value, so the frame that holds the write is stored back
+over the old one" since before the borrow was named. **6 mutate in
+place** with no write-back, and those are the whole of the change:
+four in workspace.av (`spec_id`'s `specs`/`asks`, `load_packages`'s
+`packages`, `entered`'s `packages`, `speak_package`'s
+`package_voices`), one suite program, one spec case that asserted a
+`mut`-PARAM borrow writing through.
+
+TWO PROBES THAT DECIDED THE DESIGN, both engines:
+- **a path write through a `mut fn` receiver REACHES the caller** —
+  `mut fn add(v) { self.xs.push(v) }` on an immutable parameter answers
+  `2 3`, and through a capture `3`, with F2047 speaking. So the 6 want
+  path writes, not Cells.
+- **`Cell<List<int>>.get()` answers a COPY** (`1 1 2`), and only
+  `get`->mutate->`set` round-trips (`2 2`). A `get`/push/`set` per unit
+  is O(n) per push for `specs`/`asks`/`packages` — quadratic. Cell is
+  for sharing ACROSS A BOUNDARY; it is the wrong door for a field
+  mutated in place, and that is worth knowing before S2b/S2c.
+
+THE CHECK THAT MADE THE DELETION SAFE: for each of the 20, is the
+ORIGINAL read between the local's mutation and its write-back? A copy
+would hide that write. None does — checked mechanically, 20 for 20.
+
+WHAT SURVIVES, deliberately: F2047 still speaks at the capture wall
+(`ws.spec_id(w)` inside a lambda), and that is S2b's Cell. The 17
+`mut fn` marks H3 landed stay CORRECT — a body that writes its
+receiver through the written-back copy is a writing method, and the
+mark says so.
+
+DEAD CODE THE DELETION REVEALED: `facts.av`'s `is_true` existed only
+for the borrow column's `lay_named`; a column deleted is a helper
+deleted, and nothing else referenced it.
