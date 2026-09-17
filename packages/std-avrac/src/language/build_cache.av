@@ -12,9 +12,10 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, joined, flatten, sorted_texts, DeclId, FileId, TypeId, TypeRegistry, ModulePath}
+use core.{new_digest, digest_text, digest_key, joined, flatten, sorted_texts, module_path, DeclId, FileId, TypeId, TypeRegistry, ModulePath}
 use features.{Namespace, DeclSig}
 use @std.path.{joined_path, relative_path}
+use @std.io.{read_text, write_text, make_dirs}
 
 /// The compiler's format identity, folded first into every key. The
 /// compiler's own sources, its backend and its runtime are already key
@@ -324,4 +325,143 @@ export fn recorded_had(text: string) -> List<string> {
         }
     }
     out
+}
+
+/// THE VALIDATION WALK — what a module's RECORD is still worth.
+///
+/// IT EXECUTES NOTHING OF THE MODULE. Every question it asks is answered from
+/// the record: the module's own bytes decide WHICH record to read (the key is
+/// content, so finding one means the bytes are unchanged), and the imports come
+/// from the record rather than from the source — which is the whole reason the
+/// record keeps them, because a module's `use` lines otherwise cost a parse.
+///
+/// THE MEMO IS THE BOUND. Without it, validating one module would walk its
+/// imports' closure and validating every module would cost the residue of the
+/// resolve time the interface exists to save. With it each surface is computed
+/// once, however many dependents ask. `live` is the VISIT MARK and the ORDER the
+/// cycle key folds, and it is a LIST rather than a map because a map cannot be
+/// iterated and its order would reach the digest.
+///
+/// THE ANSWER IS "" WHEN THE RECORD IS NOT WORTH REUSING — a miss, which costs
+/// a parse and is always sound. An interface key can only ever be too eager to
+/// say "unknown"; it can never say "unchanged" about something that moved.
+// LICENSED I39: a KEY DERIVATION — the record's worth, over one module's sources and what they can see.
+fn surface_of(mut known: Map<string, string>, mut live: List<string>, mut ws: Workspace, dir: string, m: ModulePath) -> string {
+    let name = m.text()
+    let held = known.get(name)
+    if held != null { return held! }
+    if live.contains(name) { return cycle_key(ws, live) }
+    live.push(name)
+    let s = validated(known, live, ws, dir, m)
+    known.set(name, s)
+    let _ = live.pop()
+    s
+}
+
+/// A record's worth: the surface key it claims, when every module it names still
+/// has the surface it was built against; "" when any does not.
+// LICENSED I39: a KEY DERIVATION — one record read, and the surface it is worth.
+fn validated(mut known: Map<string, string>, mut live: List<string>, mut ws: Workspace, dir: string, m: ModulePath) -> string {
+    let text = read_text(record_path(dir, bytes_key(ws, m))) catch ""
+    if text == "" { return "" }
+    let deps = recorded_imports(text)
+    let had = recorded_had(text)
+    for i in 0..deps.length {
+        if surface_of(known, live, ws, dir, module_path(deps[i].split("."))) != had[i] { return "" }
+    }
+    recorded_surface(text)
+}
+
+/// THE CYCLE'S KEY: a digest of EVERY module in flight, which is a SUPERSET of
+/// the cycle and is what makes it sound — a change to any byte of any member
+/// moves every member's key, so nothing on the cycle is reused across a real
+/// change. Over-invalidation is the price, and it is paid only for a graph shape
+/// the language tolerates rather than encourages; the modules are folded in
+/// SORTED order so two walks of one graph agree on one key.
+// LICENSED I39: a KEY DERIVATION — the bytes of the modules currently in flight.
+fn cycle_key(mut ws: Workspace, live: List<string>) -> string {
+    mut d = new_digest()
+    d = digest_text(d, CACHE_FORMAT)
+    d = digest_text(d, "cycle")
+    for name in sorted_texts(live) { d = digest_text(d, bytes_key(ws, module_path(name.split(".")))) }
+    digest_key(d)
+}
+
+/// Where a module's record lives: under its BYTES key, in the cache directory,
+/// because the record is the cache's and the source tree stays the source tree.
+export fn record_path(dir: string, bytes: string) -> string { joined_path(dir, "${bytes}.surface") }
+
+// ── WRITE TIME: THE SAME RECURSION, FROM THE SOURCE ─────────────────
+//
+// THE SURFACE A RECORD STORES AND THE SURFACE VALIDATION RECOMPUTES MUST BE
+// ONE FUNCTION. They are reached differently — one walks the SOURCE, the other
+// walks RECORDS — so the only thing keeping them equal is that they share this
+// recursion's every decision: the same memo, the same cycle key, and therefore
+// one key per graph. TWO SPELLINGS WOULD DISAGREE ON A CYCLE and a record would
+// never validate, which is the kind of defect that shows up as a cache that
+// mysteriously never hits rather than as a wrong answer.
+
+/// A module's surface key, computed FROM THE SOURCE — bytes, plus each import's
+/// surface computed the same way. Write time only: it is the one time a parse is
+/// already paid for, so it is the one time the import list is free.
+// LICENSED I39: a KEY DERIVATION — the module's bytes and its imports' surfaces, from a parse.
+fn source_surface(mut known: Map<string, string>, mut live: List<string>, mut ws: Workspace, m: ModulePath) -> string {
+    let name = m.text()
+    let held = known.get(name)
+    if held != null { return held! }
+    if live.contains(name) { return cycle_key(ws, live) }
+    live.push(name)
+    mut d = new_digest()
+    d = digest_text(d, CACHE_FORMAT)
+    d = digest_text(d, bytes_key(ws, m))
+    for dep in ws.imports_of(m) { d = digest_text(d, source_surface(known, live, ws, dep)) }
+    let s = digest_key(d)
+    known.set(name, s)
+    let _ = live.pop()
+    s
+}
+
+/// WRITE A MODULE'S INTERFACE RECORD, under the BYTES key its own files hash to.
+///
+/// The record is written the only moment its imports are cheap — while the parse
+/// is in hand — and it stores what this module WAS BUILT AGAINST: the surface
+/// each import had at that moment. That is what makes the record a CONTRACT
+/// rather than a cache entry, and what a later run compares against.
+// LICENSED I39: a KEY DERIVATION — one module's record written under its bytes key.
+export fn write_surface(mut ws: Workspace, dir: string, m: ModulePath) -> string {
+    mut known: Map<string, string> = {}
+    mut live: List<string> = []
+    let imports = ws.imports_of(m)
+    let names = [d.text() for d in imports]
+    let hads = [source_surface(known, live, ws, d) for d in imports]
+    let text = surface_record(source_surface(known, live, ws, m), names, hads)
+    let _ = make_dirs(dir)
+    let _ = write_text(record_path(dir, bytes_key(ws, m)), text) catch ""
+    text
+}
+
+/// THE WHOLE PROGRAM'S RECORDS, one per module — sorted, so two runs write in
+/// one order and a diff of two cache directories reads as a diff of two
+/// contracts.
+// LICENSED I39: a DRIVER — the module list in, the count written out; `avra records` is its only caller.
+export fn write_surfaces(mut ws: Workspace, dir: string, modules: List<ModulePath>) -> int {
+    mut written = 0
+    for m in modules {
+        let _ = write_surface(ws, dir, m)
+        written = written + 1
+    }
+    written
+}
+
+/// DOES THIS MODULE'S RECORD STILL HOLD — the question a driver asks before
+/// deciding whether to parse a module at all, and the whole point of rung 2.
+///
+/// Its answer is parse-free: the record's location is content (the bytes are
+/// hashed, not parsed) and its imports are remembered rather than read. A
+/// `false` is a MISS and costs a parse; it is never a reuse of something that
+/// moved.
+export fn surface_holds(mut ws: Workspace, dir: string, m: ModulePath) -> bool {
+    mut known: Map<string, string> = {}
+    mut live: List<string> = []
+    surface_of(known, live, ws, dir, m) != ""
 }

@@ -4,7 +4,7 @@
 //! so an edit anywhere in a file's bytes — a reindent, a comment — shows
 //! here, and so does a change to a SIGNATURE the file can see.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.language.{Program, unit_key, module_surface}
+use @std.avrac.language.{Program, unit_key, module_surface, build_cache_root, surface_holds}
 use @std.avrac.core.{module_path, distinct}
 
 type KeysCmd = { }
@@ -16,8 +16,14 @@ impl Runnable for KeysCmd {
 fn keyed(p: Program) -> Result<int, string> {
     mut ws = p.ws
     for a in p.files { println("${unit_key(ws, a.view.file)}  ${a.view.source.file}") }
-    for n in distinct([ws.module_of(a.view.source.file) for a in p.files]) {
-        println("module ${module_surface(ws, module_path(n.split(".")))}  ${n}")
+    let mods = [module_path(n.split(".")) for n in distinct([ws.module_of(a.view.source.file) for a in p.files])]
+    for m in mods {
+        println("module ${module_surface(ws, m)}  ${m.text()}")
+    }
+    let dir = build_cache_root(ws)
+    for m in mods {
+        let word = if surface_holds(ws, dir, m) { "holds" } else { "MISS " }
+        println("record ${word}  ${m.text()}")
     }
     .Ok(0)
 }

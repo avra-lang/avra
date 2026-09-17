@@ -1682,6 +1682,26 @@ impl Workspace {
         []
     }
 
+    /// THE MODULES A MODULE IMPORTS — read from the PARSE, which is the ONE time
+    /// they are free. The interface record keeps them so that every later
+    /// question about them costs nothing, which is what lets validation decide
+    /// whether to re-parse WITHOUT parsing.
+    ///
+    /// A file's `use` lines name paths qualified against the file's own package,
+    /// which is exactly what the resolver does — the record must agree with the
+    /// resolver about what an import MEANS, or it would validate a module
+    /// against a contract it never had.
+    fn imports_of(m: ModulePath) -> List<ModulePath> {
+        mut out: List<ModulePath> = []
+        for path in self.module_files(m) {
+            let from = self.packages[self.holder_of_path(path)]
+            for u in use_lines(self.parsed(self.file_id(path))) {
+                out.push(qualified(module_path(u.path), from))
+            }
+        }
+        out
+    }
+
     /// Whether a path — a directory or a file — is one its package's
     /// manifest EXCLUDES.
     fn excluded(path: string) -> bool {
