@@ -264,6 +264,50 @@ temptation is neutralised **by the IR's shape**, not by a convention someone mus
 remember — which is the strongest argument for the closed vocabulary, and why
 normalization is tractable here and nowhere else.
 
+## A KEY MUST NOT COVER GLOBAL STATE — the dual of the whole-value law
+
+FOUND BY THE CONTROL. The three-leg interface witness was run end to end and **leg 3
+failed**: an unrelated file's key MOVED. Leg 3 is the control — the leg with no link
+whatsoever to the change — and it is the leg that found this.
+
+What it is, isolated by discriminating the change:
+
+| change | an UNRELATED file's key | |
+|---|---|---|
+| a BODY in an unrelated module | **stable** | so it is not "any change" |
+| a SEAT (`int` -> `string`) in an unrelated module | **MOVES** | a new type enters interning |
+| editing the file itself | moves | correct |
+
+**`sig_hash` folds interned `TypeId` ORDINALS.** A `TypeId` is a dense index into the
+workspace's type registry, so introducing `string` anywhere in the program shifts the
+ordinals, and every signature that mentions a type shifts with them. The key is
+therefore a function of the GLOBAL INTERNING ORDER, not of the program's meaning —
+and an unrelated edit invalidates every file.
+
+**THIS IS THE DUAL OF THE LAW THIS CAMPAIGN RUNS ON**, and both halves are key defects:
+
+- too LITTLE coverage (structure without text or spans) **reuses a stale artifact** — a
+  wrong binary;
+- covering GLOBAL STATE (an interning ordinal, a revision, a clock) **invalidates
+  everything** — a useless cache.
+
+Neither is a deliberate choice anyone made; both are what a convenient number happened
+to include. The first is a correctness failure, the second a performance failure, and
+**the second is invisible to every witness that only checks a HIT is not wrongly given**
+— it takes a control that says a key must NOT move.
+
+**THE FIX, and it is bounded:** any key that outlives one run must fold a type's
+STABLE IDENTITY — its spelling, or a structural digest of its shape — and never its
+interned ordinal. `sig_hash` stays exactly right for the memo kernel's in-process early
+cutoff, where the ordinals are fixed within the run; it is only a PERSISTENT key that
+may not use it.
+
+**BLAST RADIUS TODAY: none.** `unit_key` is consumed by `avra keys` and by nothing else,
+so the defect is inert — which is why it is recorded rather than patched in a hurry.
+It MUST be fixed before rung 2 builds on it, because the interface key inherits it: an
+interface hash that moves whenever any new type is interned would invalidate every
+dependent, which is precisely the resolve time the interface exists to save.
+
 ## Rung 2 — how the validation walk is BOUNDED, and what happens on a cycle
 
 The recursion is real: validating M needs its imports' current `surface_key`s, and each
