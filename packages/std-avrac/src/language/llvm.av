@@ -6,7 +6,7 @@
 //! list. Programs link OUR runtime (runtime/avra_runtime.c) —
 //! printing, string equality, aggregates, and ownership — and
 //! nothing else.
-use core.{Ins, Reg, body_symbol, hosted_symbol, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index, Static, StaticBox, Slot}
+use core.{Ins, Reg, body_symbol, hosted_symbol, BinOp, UnOp, TypeId, TypeRegistry, RtKind, RtSig, rt_sigs, rt_index, Static, StaticBox, Slot, FileId, same_file}
 use features.{nothing}
 
 // The runtime's wreck. The backend has no diagnostic channel — by the
@@ -57,13 +57,23 @@ fn mangled(name: string) -> string {
 
 /// Write the program as verified `.ll` text; null means written, a
 /// string is the failure.
-export fn emit_ll(l: Lowered, path: string) -> string? { emit_module(l, path, true) }
+export fn emit_ll(l: Lowered, path: string) -> string? { emit_module(l, path, true, null) }
 
-/// The same, with the ENTRY OPTIONAL. `with_entry` false leaves `main` out, so a
-/// per-file module can declare everything and define only its OWN bodies —
-/// EXACTLY ONE module in a program may define the entry, or the link fails on a
-/// duplicate symbol.
-export fn emit_module(l: Lowered, path: string, with_entry: bool) -> string? {
+/// The same, with the ENTRY optional and the BODIES filterable.
+///
+/// `with_entry` false leaves `main` out — EXACTLY ONE module in a program may
+/// define the entry, or the link fails on a duplicate symbol. `only` names the
+/// file whose bodies this module DEFINES; null defines every body. Declarations
+/// are always the WHOLE program, because `unheld_name` refuses a call to a fn
+/// nothing declares, and every module must be closed on its own.
+///
+/// THE STATICS ARE EMITTED IN EVERY MODULE, and that is safe rather than lazy:
+/// they carry PRIVATE linkage, so each copy is module-local and the linker
+/// renames them — no duplicate symbol — and a settled aggregate is immutable
+/// read-only data, so the copies are identical by construction. The cost is
+/// duplicated data; the alternative is a declare-only path for a global the
+/// wrapper refuses to read undeclared.
+export fn emit_module(l: Lowered, path: string, with_entry: bool, only: FileId?) -> string? {
     let lc = avra_llvm_context_create()
     let m = avra_llvm_module_create("avra", lc)
     let b = avra_llvm_create_builder(lc)
@@ -75,9 +85,14 @@ export fn emit_module(l: Lowered, path: string, with_entry: bool) -> string? {
     for st in l.statics { emit_static(lc, m, st) }
     let rt = rt_index()
     for bd in l.fns {
-        let f = avra_llvm_get_named_function(m, mangled(bd.name))
-        let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f)
-        if failure != null { return wreck(m, path, failure!) }
+        // A body whose file is absent is no file's to split — it belongs to
+        // every module, which is what a synthetic entry is.
+        let mine: bool = if only == null { true } else { bd.file != null && same_file(bd.file!, only!) }
+        if mine {
+            let f = avra_llvm_get_named_function(m, mangled(bd.name))
+            let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f)
+            if failure != null { return wreck(m, path, failure!) }
+        }
     }
     if with_entry {
         let failure: string? = emit_entry(lc, m, b, l, rt)
