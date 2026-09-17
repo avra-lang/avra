@@ -852,3 +852,27 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   positive legs could not, and in both cases the CONTROL was the case that
   failed.
 
+- **THE PER-FILE RUNG IS TWO PARTS, NOT THREE, AND HERE IS ITS EXACT RESUME
+  POINT** (from the campaign's own sizing, which it stopped at a clean
+  boundary to report). (a) IS DONE AND INERT: `emit_module(l, path,
+  with_entry)` with `emit_ll` a one-line call passing `true`, verified by
+  `emit` output being BYTE-IDENTICAL before and after — the right receipt
+  for a part that exists only to make the next one possible. THEN (c) AND
+  (b) ARE ONE CHANGE, because SPLITTING BODIES PER FILE IMMEDIATELY REQUIRES
+  STATICS TO BE DECLARED BUT NOT DEFINED outside their owner module —
+  otherwise every per-file module defines the same globals and the link
+  fails on duplicate symbols, so there is NO intermediate state. And
+  `unheld_name(l)` (the closure check that refuses "nothing declares X")
+  means each module must still DECLARE every user fn while DEFINING only its
+  own bodies, so the signature is ONE `Lowered` plus `only: FileId?`, not
+  two `Lowered` values. THE EXACT STEPS: `Body` and `Static` each gain
+  `file: FileId? = null` (growths — `Body` is NOT fingerprinted and both are
+  records, so all 24 construction sites stay untouched); `lower_fn`/the unit
+  drain set that field from `Wanted.file`; `emit_module(l, path, with_entry,
+  only: FileId?)` declares everything, calls `emit_static` only for the entry
+  module and emits bodies only for `only`; the driver emits one module per
+  file plus the entry module and the link plan lists them all; and the judge
+  is `emit` byte-identical for a single-module program, then the link runs,
+  then `check packages/cli` diagnostics identical. NO NEW C: clang links the
+  N `.ll`s.
+
