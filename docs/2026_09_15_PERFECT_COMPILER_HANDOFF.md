@@ -1067,3 +1067,29 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   be set wrong and stay invisible. And a held module's FILE is not lowered, so
   its declarations never reach the tree-walking passes at all.
 
+- **THE WITNESS FOR A CACHE IS A GHOST, NOT A CALL COUNT.** `util/m.av`
+  declares exactly ONE fn; a name (`ghost`) was injected into the RECORD and
+  nowhere else; and the workspace's answer for what that module exports grew
+  by EXACTLY ONE (entries 7->8, mintable 3->4, minted 3->4, surface 3->4)
+  with nothing else moving. A call count would have said `parsed` did not run
+  — a PROXY. The ghost says the name could ONLY have come from the record,
+  which is the PROPERTY ITSELF. So prefer the witness that could not be true
+  any other way, and keep the control beside it: a targeted injection moves
+  one count, in one module.
+- **THE INVISIBLE WRITE IS THE ONE THAT MATTERS.** Four writes register a
+  held module: `decls.mint` (the dense rows), `declare` (the signature),
+  `minted.set` (visibility), and `db.set_input` (marking the signature CELL)
+  — because `sig` consults `db.ask` BEFORE the table, so a filled row whose
+  cell still read `.Compute` recomputes from a tree that is not there. The
+  registration would have LOOKED correct and produced a PLAUSIBLE WRONG
+  SIGNATURE. The three writes a reader can see are not the whole contract;
+  the fourth is the one that makes the other three true.
+- **A FORM THAT PARSES IN ONE PLACE AND NOT ANOTHER IS EITHER A DEFECT OR A
+  READING, AND THE PROBE DECIDES.** The cache lane recorded rather than
+  swallowed that `mut ids: List<DeclId> = []` was refused F0100 at the `<`
+  while "the same form parses elsewhere in the tree". Probed here on a fresh
+  package (`avra-lane-cache` @ `8bd4195`): the form PARSES CLEAN, and the
+  tree carries four sites of the same shape. So the FORM is not the defect
+  and the suspect is the reading or the context — but the report was still
+  right to exist, because a workaround is how a real one would have died.
+
