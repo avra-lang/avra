@@ -876,3 +876,23 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   then `check packages/cli` diagnostics identical. NO NEW C: clang links the
   N `.ll`s.
 
+- **A SPLIT THAT DUPLICATES EVERY DECLARATION AND STATIC INFLATES WHAT IT
+  SPLITS.** Emitting one module per file inflated `packages/cli`'s IR from
+  **19MB to 210MB for ONE cache key** (257 modules) and regressed the
+  compiler's own no-op from 0.25s to **21s** — so the DISK rung, whose whole
+  purpose was to REDUCE disk, multiplied it eleven-to-thirteen times, because
+  every per-file module repeats every declaration and every static. THE LAW:
+  a per-file split is a NEGATIVE until the duplicated parts are SHARED (one
+  declarations module, statics emitted once) — and it serves neither goal
+  until then, since it buys only `lower+emit` (~5s of 35s) and touches none
+  of the analysis that dominates. The measurement cost one sitting and
+  re-aimed the campaign; it is the same shape as "allocation here is cheap,
+  so avoiding one is a trade" — a structural change must be MEASURED,
+  because SMALLER UNITS ARE NOT SMALLER BYTES.
+- **AN UNRESOLVABLE `use` NAME SILENTLY REMOVES A FILE'S ENTIRE CONTRIBUTION
+  TO ITS MODULE.** `use core.{…, Lowered}` where `Lowered` lives in the
+  module ITSELF made every export of `build_cache.av` vanish — and the
+  symptom appeared in OTHER files ("does not export `unit_key`", "does not
+  export `build_program`"). A FILE-LEVEL TYPO, A MODULE-LEVEL AMPUTATION,
+  REPORTED AGAINST INNOCENTS.
+
