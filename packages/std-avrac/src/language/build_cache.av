@@ -351,6 +351,8 @@ fn surface_of(mut known: Map<string, string>, mut live: List<string>, mut ws: Wo
     let held = known.get(name)
     if held != null { return held! }
     if live.contains(name) { return cycle_key(ws, live) }
+    // LICENSED I15: not a scope bracket — the VISIT MARK `cycle_key` READS while a
+    // module is in flight, so a thunk would hide the state the algorithm inspects.
     live.push(name)
     let s = validated(known, live, ws, dir, m)
     known.set(name, s)
@@ -366,8 +368,8 @@ fn validated(mut known: Map<string, string>, mut live: List<string>, mut ws: Wor
     if text == "" { return "" }
     let deps = recorded_imports(text)
     let had = recorded_had(text)
-    for i in 0..deps.length {
-        if surface_of(known, live, ws, dir, module_path(deps[i].split("."))) != had[i] { return "" }
+    for i, dep in deps.enumerate() {
+        if surface_of(known, live, ws, dir, module_path(dep.split("."))) != had[i] { return "" }
     }
     recorded_surface(text)
 }
@@ -410,6 +412,7 @@ fn source_surface(mut known: Map<string, string>, mut live: List<string>, mut ws
     let held = known.get(name)
     if held != null { return held! }
     if live.contains(name) { return cycle_key(ws, live) }
+    // LICENSED I15: the same visit mark, for the same reason.
     live.push(name)
     mut d = new_digest()
     d = digest_text(d, CACHE_FORMAT)
@@ -460,6 +463,7 @@ export fn write_surfaces(mut ws: Workspace, dir: string, modules: List<ModulePat
 /// hashed, not parsed) and its imports are remembered rather than read. A
 /// `false` is a MISS and costs a parse; it is never a reuse of something that
 /// moved.
+// LICENSED I39: THE QUESTION A DRIVER ASKS — a workspace-and-directory question with one boolean answer.
 export fn surface_holds(mut ws: Workspace, dir: string, m: ModulePath) -> bool {
     mut known: Map<string, string> = {}
     mut live: List<string> = []

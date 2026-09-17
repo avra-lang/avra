@@ -1692,14 +1692,15 @@ impl Workspace {
     /// resolver about what an import MEANS, or it would validate a module
     /// against a contract it never had.
     fn imports_of(m: ModulePath) -> List<ModulePath> {
-        mut out: List<ModulePath> = []
-        for path in self.module_files(m) {
-            let from = self.packages[self.holder_of_path(path)]
-            for u in use_lines(self.parsed(self.file_id(path))) {
-                out.push(qualified(module_path(u.path), from))
-            }
-        }
-        out
+        flatten([self.imported_by(path) for path in self.module_files(m)])
+    }
+
+    /// The modules ONE file imports, each path qualified against the file's own
+    /// package — the spelling the resolver uses, so the record cannot mean a
+    /// different module than the compiler does.
+    fn imported_by(path: string) -> List<ModulePath> {
+        let from = self.packages[self.holder_of_path(path)]
+        [qualified(module_path(u.path), from) for u in use_lines(self.parsed(self.file_id(path)))]
     }
 
     /// Whether a path — a directory or a file — is one its package's
