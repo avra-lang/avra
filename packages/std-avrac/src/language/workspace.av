@@ -1890,6 +1890,11 @@ impl Workspace {
         let t0 = self.clock()
         for path in self.root_files() { let _ = self.items(self.file_id(path)) }
         self.timed("parse", self.clock() - t0)
+        // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its module's record
+        // already answers what a caller can see of it (the minted declarations), and
+        // its BODY is not needed: its object is found by the record's key. THE THREE
+        // LOOPS BELOW ARE WHERE THE EDIT TIME LIVES — together they are the analysis
+        // that an unchanged module has no reason to pay for twice.
         let t1 = self.clock()
         for fi in self.decls.files { let _ = self.resolved(fi.id) }
         self.timed("resolve", self.clock() - t1)
@@ -1901,6 +1906,11 @@ impl Workspace {
         self.timed("bodies", self.clock() - t3)
         out
     }
+
+    /// Whether a file's module is HELD — its record still validates, so it contributes
+    /// its exported signatures and its object rather than being analysed again. The
+    /// minted table IS the answer: a file is held exactly when a mint filled it.
+    fn is_held(f: FileId) -> bool { self.decls.minted.get(self.decls.file(f).path) != null }
 
     /// One file's analysis by path.
     fn analyze_file(path: string) -> Analysis {
