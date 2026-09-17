@@ -204,9 +204,19 @@ fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: stri
     if ent.view.stmts.is_empty() { return .Err("the program is empty") }
     let lo = p.lowered_checked()?
     mut ws = p.ws
-    // MARK EVERY MODULE'S BODY NAMES, now that lowering has produced them — the
-    // half of the record that makes a held module's OBJECT KEY computable without
-    // lowering it. Written here because here is the only moment the names exist.
+    // WRITE EVERY MODULE'S RECORD, AND MARK ITS BODY NAMES — both halves, now that
+    // lowering has produced the bodies. THE BUILD MUST WRITE ITS OWN RECORDS: the
+    // `records` command is a convenience, and a build that only READ them kept the keys
+    // of the last time someone ran it — measured, as 875ms and then 176s for the same
+    // kind of edit, because after the first edit every `fkey` was stale and nothing
+    // could be held.
+    // MARK EVERY MODULE'S BODY NAMES, now that lowering has produced them.
+    //
+    // AND THE RECORD IS WRITTEN BY `avra records`, NOT HERE — not because it should not
+    // be automatic, but because `p.files` holds every file the workspace ANALYSED,
+    // including test files that are not part of any program, and writing their records
+    // raises diagnostics that fail the build. The automatic version needs the program's
+    // MODULE closure rather than its analysed files, and that is owed.
     let _ = mark_modules(ws, cache.root, lo, [module_named(ws.module_of(a.view.source.file)) for a in p.files], ent.view.file)
     // ONE OBJECT PER FILE, CACHED. The measurement that decides this: `clang -O1` on
     // the compiler's own module is 14.9s while `ld` over the objects is 333ms — the
@@ -438,11 +448,13 @@ export fn bytes_key(mut ws: Workspace, m: ModulePath) -> string {
 /// a module's own `use` lines live in its source, so reading them costs a parse
 /// — but reading them once, when the record is written, and keeping them here,
 /// makes every later question free.
-export fn surface_record(surface: string, imports: List<string>, had: List<string>, entries: List<string>, bodies: List<string>) -> string {
+export fn surface_record(surface: string, imports: List<string>, had: List<string>, entries: List<string>, bodies: List<string>, files: List<string>) -> string {
     let head = "surface ${surface}\n" + joined(flatten([["import ${imports[i]} ${had[i]}"] for i in 0..imports.length]), "\n")
     let marks = joined(flatten([["body ${b}"] for b in bodies]), "\n")
     let tail = if entries.is_empty() { head } else { "${head}\nentry\n" + joined(entries, "\n") }
-    if bodies.is_empty() { tail } else { "${tail}\nmark\n${marks}" }
+    let fkeys = joined(flatten([["fkey ${f}"] for f in files]), "\n")
+    let marked = if bodies.is_empty() { "${tail}\nmark" } else { "${tail}\nmark\n${marks}" }
+    if files.is_empty() { marked } else { "${marked}\nfiles\n${fkeys}" }
 }
 
 /// WHETHER A RECORD CARRIES ITS BODY NAMES — the proof that it was written by a build
@@ -653,7 +665,7 @@ export fn write_surface(p: Program, mut ws: Workspace, dir: string, m: ModulePat
     let imports = ws.imports_of(m)
     let names = [d.text() for d in imports]
     let hads = [source_surface(known, live, ws, d) for d in imports]
-    let text = surface_record(source_surface(known, live, ws, m), names, hads, module_entries(ws, m), [])
+    let text = surface_record(source_surface(known, live, ws, m), names, hads, module_entries(ws, m), [], file_keys(known, live, ws, m))
     let key = bytes_key(ws, m)
     let _ = make_dirs(dir)
     let _ = write_text(record_path(dir, key), text) catch ""
@@ -810,8 +822,14 @@ export fn mint_held_modules(mut ws: Workspace, dir: string) -> int {
         let m = module_path(ws.module_of(path).split("."))
         let f = ws.file_id(path)
         let text = read_text(record_path(dir, bytes_key(ws, m))) catch ""
-        if surface_of(known, live, ws, dir, m) != "" && is_marked(text) && exists(joined_path(dir, "${held_key(ws, dir, m, f)}.o")) {
-            made = made + mint_record(ws, m, text)
+        // PER FILE, NOT PER MODULE: the record's own `fkey` for a file says whether
+        // THAT file's bytes and what it can see are unchanged, and a sibling's body is
+        // neither.
+        let holds = held_paths(known, live, ws, dir, m)
+        if !holds.is_empty() {
+            let _ = mint_record(ws, m, text)
+            for p in holds { ws.hold_file(p) }
+            made = made + holds.length
         }
     }
     made
@@ -1090,6 +1108,64 @@ export fn held_set(mut ws: Workspace, dir: string) -> List<FileId> {
         if surface_of(known, live, ws, dir, m) != "" && is_marked(text) && exists(joined_path(dir, "${held_key(ws, dir, m, f)}.o")) {
             out.push(f)
         }
+    }
+    out
+}
+
+/// A FILE'S REUSABLE IDENTITY — its own BYTES and the surface of every module it can
+/// SEE, as one line `path\tkey`.
+///
+/// **THE CONTRACT IS PER MODULE; THE REUSE MUST BE PER FILE.** A module is a DIRECTORY,
+/// so a per-module record makes a one-line edit invalidate twenty files and every module
+/// importing them — measured, as 53 modules all MISSING after an edit to one, and 142s of
+/// analysis for files whose bodies could not have moved.
+///
+/// A file's own key depends on two things, and on nothing else: what it SAYS, and what it
+/// can SEE. A sibling's body change moves neither. That is what makes the skip bite at
+/// the granularity an edit actually has.
+// LICENSED I39: a KEY DERIVATION — a module's files and what they can see, one line each.
+fn file_keys(mut known: Map<string, string>, mut live: List<string>, mut ws: Workspace, m: ModulePath) -> List<string> {
+    let deps = ws.imports_of(m)
+    let seen = joined([surface_of(known, live, ws, "", d) for d in deps], "|")
+    [file_key_line(ws, path, seen) for path in ws.module_files(m)]
+}
+
+/// One file's key line: its path, a tab, and the digest of its bytes with everything it
+/// can see. ONE READING OF THE FILE, so the path the line names and the text it hashes
+/// are the same file.
+// LICENSED I39: a pure PROJECTION — a file's path and what it can see in, its key line out.
+fn file_key_line(ws: Workspace, path: string, seen: string) -> string {
+    "${path}\t${digest_of("${ws.source(ws.file_id(path)).text}${seen}")}"
+}
+
+/// THE FILE KEYS A RECORD CARRIES, by path.
+export fn recorded_fkeys(text: string) -> List<string> {
+    mut out: List<string> = []
+    mut inside = false
+    for line in text.split("\n") {
+        if line == "files" { inside = true }
+        else { if inside && line.starts_with("fkey ") { out.push(line.substring(5, line.length)) } }
+    }
+    out
+}
+
+/// THE FILES OF A MODULE WHOSE OWN KEY STILL HOLDS — the per-file answer that replaces
+/// asking the module's surface.
+///
+/// A file is reusable when its BYTES and everything it can SEE are unchanged. Its
+/// siblings' bodies are neither, so an edit to one file leaves its neighbours alone —
+/// which is the whole difference between holding 273 of 275 and holding none.
+// LICENSED I39: a KEY DERIVATION — a module's files and what they can see, the held ones out.
+export fn held_paths(mut known: Map<string, string>, mut live: List<string>, mut ws: Workspace, dir: string, m: ModulePath) -> List<string> {
+    let text = read_text(record_path(dir, bytes_key(ws, m))) catch ""
+    if !is_marked(text) { return [] }
+    let deps = ws.imports_of(m)
+    let seen = joined([surface_of(known, live, ws, dir, d) for d in deps], "|")
+    let recorded = recorded_fkeys(text)
+    mut out: List<string> = []
+    for path in ws.module_files(m) {
+        let key = digest_of("${ws.source(ws.file_id(path)).text}${seen}")
+        if recorded.any(it == "${path}\t${key}") { out.push(path) }
     }
     out
 }
