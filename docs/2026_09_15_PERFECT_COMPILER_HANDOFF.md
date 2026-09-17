@@ -997,3 +997,20 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   children by INDEX and so belongs to ONE RUN, while a record outlives one
   and needs the PRINTING text.
 
+- **A GUESSED ANSWER IS WORSE THAN A MISSING ONE, AND A PARTIAL ONE IS
+  WORSE THAN BOTH.** The cache's decoder refuses THREE things rather than
+  answering plausibly: a spelling whose ROUND TRIP disagrees (`by_name`
+  answers the FIRST type that ever rendered that text and cannot know it is
+  the one the record meant, so the signature is rendered BACK with the
+  writer's own projection and a disagreement is a REFUSAL); every kind that
+  is not a `fn` (a call site reads a callee's parameters and answer and
+  nothing else — a declaration whose shape was GUESSED is a wrong program,
+  while a missing one is a diagnostic); and a NESTED seat
+  (`fn(fn(int)int)void` carries a `)` inside its parameters, so a decoder
+  splitting on the first one would SILENTLY TAKE HALF A SIGNATURE). ONE
+  PRINCIPLE, THREE GUARDS: where an answer can be PARTIAL, refusal is the
+  only sound direction — and the failure is then a diagnostic rather than a
+  wrong program. AND THE EMPTY CASE IS SPELLED: the prelude's four `builtin`
+  entries mint NOTHING, so "nothing to mint" and "failed to write" are not
+  the same silence (the `entry_line` decision paying off one step later).
+
