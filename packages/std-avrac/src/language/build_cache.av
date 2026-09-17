@@ -12,7 +12,7 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, digest_of, DeclId, DeclKind, no_stmt, joined, flatten, sorted_texts, module_path, FileId, TypeId, TypeRegistry, ModulePath, same_file}
+use core.{new_digest, digest_text, digest_key, digest_of, DeclId, DeclKind, no_stmt, joined, flatten, sorted_texts, distinct, module_path, FileId, TypeId, TypeRegistry, ModulePath, same_file}
 use features.{Namespace, DeclSig, FnSig}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_text, write_text, make_dirs, exists, remove}
@@ -200,6 +200,10 @@ fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: stri
     if ent.view.stmts.is_empty() { return .Err("the program is empty") }
     let lo = p.lowered_checked()?
     mut ws = p.ws
+    // MARK EVERY MODULE'S BODY NAMES, now that lowering has produced them — the
+    // half of the record that makes a held module's OBJECT KEY computable without
+    // lowering it. Written here because here is the only moment the names exist.
+    let _ = mark_modules(ws, cache.root, lo, [module_named(ws.module_of(a.view.source.file)) for a in p.files], ent.view.file)
     // ONE OBJECT PER FILE, CACHED. The measurement that decides this: `clang -O1` on
     // the compiler's own module is 14.9s while `ld` over the objects is 333ms — the
     // OPTIMIZATION is the cost, not the link. So the object is kept, an edit
@@ -420,10 +424,30 @@ export fn bytes_key(mut ws: Workspace, m: ModulePath) -> string {
 /// a module's own `use` lines live in its source, so reading them costs a parse
 /// — but reading them once, when the record is written, and keeping them here,
 /// makes every later question free.
-export fn surface_record(surface: string, imports: List<string>, had: List<string>, entries: List<string>) -> string {
+export fn surface_record(surface: string, imports: List<string>, had: List<string>, entries: List<string>, bodies: List<string>) -> string {
     let head = "surface ${surface}\n" + joined(flatten([["import ${imports[i]} ${had[i]}"] for i in 0..imports.length]), "\n")
-    if entries.is_empty() { return head }
-    "${head}\nentry\n" + joined(entries, "\n")
+    let marks = joined(flatten([["body ${b}"] for b in bodies]), "\n")
+    let tail = if entries.is_empty() { head } else { "${head}\nentry\n" + joined(entries, "\n") }
+    if bodies.is_empty() { tail } else { "${tail}\nmark\n${marks}" }
+}
+
+/// THE BODY NAMES A RECORD CARRIES — what lands in this module, one per line after
+/// its `mark`.
+///
+/// THEY ARE RECORDED BECAUSE THE OBJECT KEY IS MADE OF THEM, AND THE OBJECT KEY MUST
+/// BE COMPUTABLE WITHOUT LOWERING. A held module is not lowered at all — that is the
+/// point of holding it — so the names that decide its key come from the record
+/// rather than from a pass that would have to run to produce them. Without this the
+/// key is circular: the object key needs the names, and the names need the lowering
+/// the object key exists to skip.
+export fn recorded_bodies(text: string) -> List<string> {
+    mut out: List<string> = []
+    mut inside = false
+    for line in text.split("\n") {
+        if line == "mark" { inside = true }
+        else { if inside && line.starts_with("body ") { out.push(line.substring(5, line.length)) } }
+    }
+    out
 }
 
 /// THE ENTRIES a record carries — one per exported name, after its `entry`
@@ -601,7 +625,7 @@ export fn write_surface(p: Program, mut ws: Workspace, dir: string, m: ModulePat
     let imports = ws.imports_of(m)
     let names = [d.text() for d in imports]
     let hads = [source_surface(known, live, ws, d) for d in imports]
-    let text = surface_record(source_surface(known, live, ws, m), names, hads, module_entries(ws, m))
+    let text = surface_record(source_surface(known, live, ws, m), names, hads, module_entries(ws, m), [])
     let key = bytes_key(ws, m)
     let _ = make_dirs(dir)
     let _ = write_text(record_path(dir, key), text) catch ""
@@ -898,4 +922,54 @@ export fn emit_objects(mut ws: Workspace, l: Lowered, dir: string, files: List<F
 /// makes an edit's floor the compile of one file rather than the link.
 export fn link_objects(objs: List<string>, ws: Workspace, runtime: string, out: string) -> List<string> {
     ["-w", "-rdynamic"].concat(objs).concat([runtime]).concat(ws.link_words()).concat(["-o", out])
+}
+
+/// MARK A MODULE'S BODY NAMES, after lowering — the half of the record that can only
+/// be known once the bodies EXIST.
+///
+/// The record is otherwise written before analysis, because that is when the imports
+/// are free; this half is written after lowering, because the names it carries are
+/// what lowering produces. A record is therefore written in TWO moments, and the
+/// second one REPLACES the first's mark rather than appending to it — a mark that
+/// accumulated would grow a line per build.
+// LICENSED I39: THE MARKING DRIVER — a workspace, a lowered program and a module in, the count marked out.
+export fn mark_module(mut ws: Workspace, dir: string, l: Lowered, m: ModulePath, entry_file: FileId) -> int {
+    let path = record_path(dir, bytes_key(ws, m))
+    let text = read_text(path) catch ""
+    if text == "" { return 0 }
+    let cut = text.index_of("\nmark\n")
+    let base = if cut < 0 { text } else { text.substring(0, cut) }
+    mut bodies: List<string> = []
+    for f in ws.module_files(m) {
+        let id = ws.file_id(f)
+        for b in l.fns {
+            if owns(l, b, id) { bodies.push(b.name) }
+        }
+        if same_file(id, entry_file) && owns(l, l.entry, id) { bodies.push(l.entry.name) }
+    }
+    let marks = joined(flatten([["body ${b}"] for b in sorted_texts(distinct(bodies))]), "\n")
+    let _ = write_text(path, "${base}\nmark\n${marks}") catch ""
+    bodies.length
+}
+
+/// MARK EVERY MODULE whose record holds — the build's own pass, run once lowering has
+/// produced the bodies.
+// LICENSED I39: THE MARKING DRIVER'S ENTRY POINT — a workspace, a lowered program and a
+// module list in, the count marked out.
+export fn mark_modules(mut ws: Workspace, dir: string, l: Lowered, modules: List<ModulePath>, entry_file: FileId) -> int {
+    mut made = 0
+    for m in modules { made = made + mark_module(ws, dir, l, m, entry_file) }
+    made
+}
+
+/// THE MODULE A NAME SPELLS — and the ROOT MODULE IS NO SEGMENTS, not one empty one.
+///
+/// `module_of` answers "" for a file at the package's root, and `"".split(".")` is a
+/// list holding one empty string — a module named "" rather than the root, which
+/// `module_files` resolves to nothing. That is why the root module's marks came out
+/// empty while a nested module's were written: TWO SPELLINGS OF ONE QUESTION, and the
+/// empty one built a path that existed nowhere.
+// LICENSED I39: a pure PROJECTION — a module's name in, its path out.
+export fn module_named(name: string) -> ModulePath {
+    if name.is_empty() { module_path([]) } else { module_path(name.split(".")) }
 }
