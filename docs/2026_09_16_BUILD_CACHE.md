@@ -190,6 +190,74 @@ inputs, so you ship proofs rather than trust.
   rc=1, rc=0, and the differing bytes are LOST CHILD OUTPUT. The gate is
   intermittently red for reasons unrelated to any landing.
 
+## DESIGN REVIEW — PERSISTENCE vs RESIDENT (for the interface's next rung)
+
+The step after the interface's foundation owes a review, because it is the one the
+CEO reserved and because it turns on a capability the tree does not have. Its spec is
+the tree's own recorded trigger:
+
+> **`avra-8sb5.9.2`**: "`parsed`'s early cutoff covers structural fingerprints only —
+> sound while compiles are ONE-SHOT; fires when anything edits."
+
+The trigger is precise: `parsed` settles on `program_hash` (structure) while its VALUE
+carries the source text and every span, so a reindent leaves later spans stale and
+certified fresh. Two options follow, and the review's conclusion is that ONE OF THEM
+SIDESTEPS THE TRIGGER ENTIRELY.
+
+### The options, against the same questions
+
+| | **RESIDENT** (a long-lived engine) | **PERSISTENCE** (content-addressed artifacts) |
+|---|---|---|
+| **what is retained** | the whole in-memory workspace: `Db` cells with deps/revisions, every memo family (Parsed, sigs, type facts, units, settlements), the decls tables | the IR (per unit) and the OBJECT, plus the INTERFACE — and NOT the AST, NOT the typed facts |
+| **keyed by** | nothing new — the kernel's existing (family, arg) dense keys | `unit_key` (a file's bytes + the sigs it can see, by SPELLING) and `module_surface` |
+| **invalidated how** | `Db.set_input` on re-read bumps the revision; the red-green walk propagates | content alone, by construction |
+| **how the one-shot assumption is replaced** | it must be REPLACED: the daemon relies on `parsed`'s cutoff, so the per-consumer cutoff must be built first (the trigger) | it is BYPASSED, not replaced: the cache's keys already cover the whole value — every byte, and the sigs by spelling — so nothing depends on `parsed`'s structural cutoff, and that cutoff stays exactly as it is for one-shot compiles |
+| **staleness** | the process holds state it must be TOLD about; a file changed behind its back is served stale | impossible by construction: a key that covers the whole value cannot certify a changed one |
+| **shares across** | one process | processes, worktrees, machines, CI |
+| **lifecycle** | new: start/stop, a process older than the binary it was built from, a client that must invalidate | none — the existing one-shot CLI, plus files |
+| **risk** | MEDIUM: a stale process that answers correctly-shaped but stale results | LOW: a wrong reuse requires a hash collision |
+
+### The conclusion, and the reason is the trigger
+
+**PERSISTENCE.** The resident engine's most attractive property — that the incremental
+machinery already exists and only needs to stop dying — is exactly what makes it a trap
+here: THE MACHINERY IT WOULD REUSE IS THE UNSOUND ONE. A daemon leans on `parsed`'s
+cutoff, so it must first build the per-consumer cutoff the trigger names. Persistence
+does not lean on it: its keys already absorb the whole value (text and spans, since
+they digest every byte), so the trigger is not a prerequisite but an IRRELEVANCE, and
+`parsed`'s cutoff keeps its correct one-shot life — the same lifetime distinction that
+governs `sig_hash`, one level up.
+
+### What persistence therefore needs, in order
+
+1. **The IR cached per FILE, keyed by `unit_key`** (built and witnessed: it moves on a
+   seat change and does NOT move on an unrelated one).
+2. **DEDUP, and this is not optional** — measured: splitting the IR per file without it
+   took the compiler's cache from **19 MB to 210 MB**, because every module repeats
+   every declaration and every static. So the disk rung (shared declarations, statics
+   emitted once) is a PREREQUISITE OF PERSISTENCE, not an alternative to it.
+3. **Per-file objects**, so re-emission and recompilation are per-file too.
+
+### What an edit should then cost
+
+    parse + resolve + type ....... SKIPPED for every unchanged file (the interface is unchanged)
+    lower + emit ................. the changed file's unit only
+    link ......................... still runs, ~10s                      <-- THE FLOOR
+
+So ~30s becomes ~10s on this machine from the IR cache alone, and the floor is the
+LINK — which is why per-file objects (and eventually the linker's own incremental
+mode) are the rung after, not a detail.
+
+### The load-bearing assumption, and how it would be witnessed
+
+The key must cover what the unit READ or the saving is a stale body. `unit_key`
+over-approximates with the file's whole VISIBLE namespace, which is sound and coarse;
+the refinement — the sigs actually read — is the "observed invalidation" idea, and it
+becomes worth building only when the coarseness measurably costs rebuilds. THE WITNESS
+ALREADY EXISTS and is the seat-change one: change only a called fn's parameter type,
+the importer's bytes are byte-identical, its key moves, and an unrelated file's does
+not. Persistence inherits it.
+
 ## Rung 2 — the interface, in full
 
 **What persists.** One record per MODULE: `{ imports: [(module, the surface_key it
