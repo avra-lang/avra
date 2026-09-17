@@ -516,3 +516,64 @@ reason to build the keys first and the reason neither choice is wasted:
 Both sit on `unit_key` and `module_surface`. Building those first — which this campaign
 has done — is the step that is right under either ruling; the ruling then chooses which
 one to LAND FIRST, not which one to have.
+
+## The DRIVER — what skips the parse, and the prerequisite it revealed
+
+Rung 2's walk answers, parse-free, whether a module's contract still holds. The driver
+is what CONSUMES that answer: an unchanged module is not parsed and not resolved.
+Written down before it is built, because writing it down changed what it is.
+
+### The shape
+
+```
+1. the walk over the program's modules      -> held (record still true) / fresh (parse it)
+2. for a HELD module, the record IS its interface: mint its declarations from it
+3. for a FRESH module, parse and resolve as today
+4. the program is held ⊎ fresh, and every consumer cannot tell which was which
+```
+
+Step 2 is the whole of it. `ws.program(entry)` today parses every file because RESOLVE
+asks for the signatures of imported declarations, and a declaration's signature lives in
+its file's parse. So a held module's interface must be answerable WITHOUT its `Parsed` —
+which means the record must hold enough to MINT its declarations.
+
+### THE PREREQUISITE THIS REVEALED — the record is missing its entries
+
+The design's record is `{ imports: [(module, surface_key)], surface: [(name, kind, sig)] }`.
+**What is built writes only the first half.** `surface <key>` and `import <module> <key>`
+are what validation needs; the `surface` ENTRIES — one per exported name, carrying what
+that name IS — are what a driver would need to mint a declaration, and they are not
+written yet. That is the first piece of the driver and it is an extension of the writer
+rather than a new mechanism.
+
+### How a declaration is minted from an entry
+
+An entry names a name, its kind, and its seats as SPELLINGS. Loading re-PARSES those
+spellings as types and interns them — reusing the type grammar that already exists rather
+than inventing a decoder — so a held module's declarations are the same `Decl`s a parse
+would have produced, with no body and no statements.
+
+**AND THAT IS THE CORRECTNESS RISK, STATED PLAINLY: a held module's declarations must be
+indistinguishable from parsed ones to EVERY consumer.** Typing, seating, ownership,
+diagnostics and the emitter each read declarations, and any one that can tell the
+difference is a defect that appears as a wrong answer rather than a slow build. The
+witness is therefore a differential, not a speed: **a build with every record held must
+produce the byte-identical `.ll` and the byte-identical diagnostics of a build with no
+records at all.** The whole-program cache already holds that property; the driver must
+extend it one level down.
+
+### The gap that follows from it — a held module's WARNINGS
+
+A fresh module's warnings are computed during its analysis. A held module is not
+analysed, so **its warnings must be STORED beside its record or they vanish** — and a
+build that quietly drops a warning is exactly the silent wrongness this whole design is
+arranged against. The whole-program cache already keeps `.warn`; the per-module record
+needs the same, and it is part of the driver rather than a later refinement.
+
+### Measurement
+
+The number the driver must move is the one the diagnosis named: **resolve plus typing is
+~14s of an edit's ~35s.** With the walk holding N−1 of N modules, that slice should fall
+in proportion to the modules held — and the honest check is that the `.ll` and the
+warnings do NOT move at all. A speed measured without that differential is a speed of
+unknown correctness, which is the one thing this campaign has refused throughout.
