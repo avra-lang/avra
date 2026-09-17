@@ -21,7 +21,7 @@ use @std.io.{read_text, write_text, make_dirs}
 /// compiler's own sources, its backend and its runtime are already key
 /// inputs (`Workspace.build_inputs`); this covers only what those files
 /// cannot say — a change to how the key itself is derived.
-const CACHE_FORMAT: string = "avra-build-cache-2"
+const CACHE_FORMAT: string = "avra-build-cache-3"
 
 /// A build's result: the words that link it, the binary they produce,
 /// the warnings to speak, and whether a held artifact was reused.
@@ -259,8 +259,20 @@ export fn module_surface(mut ws: Workspace, m: ModulePath) -> string {
 // LICENSED I39: a pure PROJECTION — a workspace and a file in, the names it exports out.
 fn interface_lines(mut ws: Workspace, f: FileId) -> List<string> {
     let ns: Namespace = ws.visible(f)
-    ["${n}\t${sig_of(ws, ns.fns.get(n))}" for n in ns.fn_names].concat(
-        ["${n}\t${sig_of(ws, ns.types.get(n))}" for n in ns.type_names])
+    [entry_line(n, sig_of(ws, ns.fns.get(n))) for n in ns.fn_names].concat(
+        [entry_line(n, sig_of(ws, ns.types.get(n))) for n in ns.type_names])
+}
+
+/// ONE ENTRY: a name and its signature, or `builtin` and the name.
+///
+/// THE EMPTY CASE IS SPELLED, NOT LEFT EMPTY. A builtin has no `DeclSig` to
+/// render — `List`, `Map` — so its entry would otherwise read COMPLETE WHILE
+/// CARRYING NOTHING, and a loader could not tell "there is nothing to mint, the
+/// compiler provides this name" from "there is something to mint that the writer
+/// failed to write". THE TWO CAUSES GET TWO SPELLINGS, which is the only thing
+/// that makes an absent signature safe to skip.
+fn entry_line(name: string, sig: string) -> string {
+    if sig.is_empty() { "builtin\t${name}" } else { "${name}\t${sig}" }
 }
 
 /// THE MODULE'S ENTRIES, its files' in order — what a record writes and what a
