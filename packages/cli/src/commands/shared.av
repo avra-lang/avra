@@ -1,7 +1,7 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef}
-use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, lone_workspace, timed_workspace, programs_workspace, no_target, avra, emit_ll, stage_words, build_program, binary_name}
+use @std.avrac.language.{Host, Program, Analysis, TestCase, Workspace, lone_workspace, timed_workspace, programs_workspace, no_target, avra, emit_ll, stage_words, build_program, binary_name, build_cache_root}
 use @std.avrac.core.{joined, distinct}
 use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized}
 use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit_text, exit}
@@ -426,6 +426,24 @@ fn hit_line(reused: bool) -> string {
     if reused { "time: lower+emit · cache hit" } else { "time: lower+emit · built" }
 }
 
+/// A file COPY, argv-only — no shell, so no character in a path means
+/// anything but itself.
+fn copy_file(from: string, to: string) -> bool {
+    match tool("cp") {
+        .Err(_) -> false,
+        .Ok(cp) -> match cmd(cp, [from, to]).outcome() {
+            .Ok(x) -> x.exit is .Clean,
+            .Err(_) -> false,
+        },
+    }
+}
+
+/// THE LINKED BINARY, KEPT. The link is the whole cost of a no-op build —
+/// the module is already cached, so a hit pays clang and nothing else.
+/// The binary is kept under the same key, and `cp` preserves its mode, so
+/// a hit is a copy rather than a link.
+fn cached_binary(ws: Workspace, key: string) -> string { "${build_cache_root(ws)}/${key}.bin" }
+
 /// `avra build`: a program's module reused when these exact inputs were built before,
 /// else analyzed, lowered and emitted. The cache is the library's; the link is the
 /// command's.
@@ -448,9 +466,21 @@ fn cached_build(args: CliResult) -> int {
         },
         .Ok(b) -> {
             if b.warnings != "" { eprintln(b.warnings) }
+            let held = cached_binary(ws, b.key)
+            if exists(held) {
+                if timed(args) { eprintln("time: lower+emit · cache hit (binary)") }
+                if copy_file(held, b.binary) {
+                    println(b.binary)
+                    return 0
+                }
+            }
             if timed(args) { eprintln(hit_line(b.reused)) }
             let code = run_words(b.words)
-            if code == 0 { println(b.binary) }
+            if code == 0 {
+                let _ = make_dirs(build_cache_root(ws))
+                let _ = copy_file(b.binary, held)
+                println(b.binary)
+            }
             code
         },
     }

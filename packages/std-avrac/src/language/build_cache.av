@@ -24,7 +24,7 @@ const CACHE_FORMAT: string = "avra-build-cache-1"
 
 /// A build's result: the words that link it, the binary they produce,
 /// the warnings to speak, and whether a held artifact was reused.
-export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool }
+export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool, key: string }
 
 /// Where a program's artifacts are kept — beside the program, so a
 /// worktree's cache dies with the worktree.
@@ -32,8 +32,15 @@ export type BuildCache = { ws: Workspace, root: string }
 
 // LICENSED I39: a CONSTRUCTOR — the workspace in, the cache out. The
 // standard shape, like `new_db`.
+/// Where a program's artifacts are kept — beside the program, so a
+/// worktree's cache dies with the worktree. ONE derivation: the library
+/// and the command that keeps the linked binary both name it here.
+// LICENSED I39: a pure projection — a workspace in, the directory its artifacts live in out.
+export fn build_cache_root(ws: Workspace) -> string { joined_path(ws.root, ".avra-cache") }
+
+// LICENSED I39: a CONSTRUCTOR — the workspace in, the cache out.
 export fn build_cache(ws: Workspace) -> BuildCache {
-    BuildCache { ws: ws, root: joined_path(ws.root, ".avra-cache") }
+    BuildCache { ws: ws, root: build_cache_root(ws) }
 }
 
 impl BuildCache {
@@ -72,7 +79,7 @@ impl BuildCache {
         if plan == null { return null }
         let ll = "${entry}.ll"
         if self.ws.host.write(ll, module!) != null { return null }
-        BuildOutcome { words: plan!.split("\n"), binary: binary_name(ll), warnings: self.held(key, ".warn") ?? "", reused: true }
+        BuildOutcome { words: plan!.split("\n"), binary: binary_name(ll), warnings: self.held(key, ".warn") ?? "", reused: true, key: key }
     }
 
     /// Keep a fresh build's module, plan and warnings under its key.
@@ -112,7 +119,7 @@ fn emitted(cache: BuildCache, p: Program, entry: string, key: string, opt: strin
     let words = link_words(ll, p.ws, opt, runtime)
     let warnings = p.warnings()
     cache.keep(entry, key, words, warnings)
-    .Ok(BuildOutcome { words: words, binary: binary_name(ll), warnings: warnings, reused: false })
+    .Ok(BuildOutcome { words: words, binary: binary_name(ll), warnings: warnings, reused: false, key: key })
 }
 
 /// clang's words for a module: the level, the runtime, the packages' own
