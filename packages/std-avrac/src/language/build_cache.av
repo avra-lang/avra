@@ -242,11 +242,32 @@ export fn module_surface(mut ws: Workspace, m: ModulePath) -> string {
     for path in ws.module_files(m) {
         let f = ws.file_id(path)
         d = digest_text(d, ws.source(f).text)
-        let ns: Namespace = ws.visible(f)
-        for n in ns.fn_names { d = digest_text(d, sig_of(ws, ns.fns.get(n))) }
-        for n in ns.type_names { d = digest_text(d, sig_of(ws, ns.types.get(n))) }
+        for line in interface_lines(ws, f) { d = digest_text(d, line) }
     }
     digest_key(d)
+}
+
+/// THE INTERFACE ENTRIES — what a file exports, one line each: the name, a tab,
+/// and its stable signature (whose own prefix says which KIND it is, so a kind
+/// field would be a second copy of what the signature already carries).
+///
+/// ONE DEFINITION, TWO USES: `module_surface` FOLDS these into the contract's
+/// key, and a record KEEPS them so a driver can mint a held module's
+/// declarations without parsing it. Two spellings of "what does this file
+/// export" would let the key and the entries describe different modules, which
+/// is the defect where the cache validates one thing and serves another.
+// LICENSED I39: a pure PROJECTION — a workspace and a file in, the names it exports out.
+fn interface_lines(mut ws: Workspace, f: FileId) -> List<string> {
+    let ns: Namespace = ws.visible(f)
+    ["${n}\t${sig_of(ws, ns.fns.get(n))}" for n in ns.fn_names].concat(
+        ["${n}\t${sig_of(ws, ns.types.get(n))}" for n in ns.type_names])
+}
+
+/// THE MODULE'S ENTRIES, its files' in order — what a record writes and what a
+/// driver reads back.
+// LICENSED I39: a pure PROJECTION — a workspace and a module in, the entries it exports out.
+fn module_entries(mut ws: Workspace, m: ModulePath) -> List<string> {
+    flatten([interface_lines(ws, ws.file_id(path)) for path in ws.module_files(m)])
 }
 
 // ── A STABLE IDENTITY ───────────────────────────────────────────────
@@ -358,8 +379,24 @@ export fn bytes_key(mut ws: Workspace, m: ModulePath) -> string {
 /// a module's own `use` lines live in its source, so reading them costs a parse
 /// — but reading them once, when the record is written, and keeping them here,
 /// makes every later question free.
-export fn surface_record(surface: string, imports: List<string>, had: List<string>) -> string {
-    "surface ${surface}\n" + joined(flatten([["import ${imports[i]} ${had[i]}"] for i in 0..imports.length]), "\n")
+export fn surface_record(surface: string, imports: List<string>, had: List<string>, entries: List<string>) -> string {
+    let head = "surface ${surface}\n" + joined(flatten([["import ${imports[i]} ${had[i]}"] for i in 0..imports.length]), "\n")
+    if entries.is_empty() { return head }
+    "${head}\nentry\n" + joined(entries, "\n")
+}
+
+/// THE ENTRIES a record carries — one per exported name, after its `entry`
+/// marker. A driver MINTS a held module's declarations from these; validation
+/// never reads them, which is why they sat unwritten while the walk was the only
+/// consumer and why the driver's design found them missing.
+export fn recorded_entries(text: string) -> List<string> {
+    mut out: List<string> = []
+    mut inside = false
+    for line in text.split("\n") {
+        if line == "entry" { inside = true }
+        else { if inside && !line.is_empty() { out.push(line) } }
+    }
+    out
 }
 
 /// The record's surface key, or "" when the text is empty — the field the
@@ -464,6 +501,21 @@ fn cycle_key(mut ws: Workspace, live: List<string>) -> string {
 /// because the record is the cache's and the source tree stays the source tree.
 export fn record_path(dir: string, bytes: string) -> string { joined_path(dir, "${bytes}.surface") }
 
+/// A MODULE'S WARNINGS, rendered — the ones its OWN files spoke. A fresh
+/// module's warnings are produced while it is analysed; a HELD one is never
+/// analysed, so they are kept here or they are lost.
+fn module_warnings(p: Program, ws: Workspace, m: ModulePath) -> string {
+    let files = ws.module_files(m)
+    let spoken = flatten([a.diagnostics for a in p.files if files.contains(a.view.source.file)])
+    p.rendered([d for d in spoken if is_warning(d)])
+}
+
+/// A HELD MODULE'S WARNINGS, beside its record. A fresh module's warnings are
+/// computed while it is analysed, so a module that is NOT analysed has none
+/// unless they were kept — and a build that quietly drops a warning is the exact
+/// silent wrongness this design is arranged against.
+export fn record_warn_path(dir: string, bytes: string) -> string { joined_path(dir, "${bytes}.warn") }
+
 // ── WRITE TIME: THE SAME RECURSION, FROM THE SOURCE ─────────────────
 //
 // THE SURFACE A RECORD STORES AND THE SURFACE VALIDATION RECOMPUTES MUST BE
@@ -502,15 +554,17 @@ fn source_surface(mut known: Map<string, string>, mut live: List<string>, mut ws
 /// each import had at that moment. That is what makes the record a CONTRACT
 /// rather than a cache entry, and what a later run compares against.
 // LICENSED I39: a KEY DERIVATION — one module's record written under its bytes key.
-export fn write_surface(mut ws: Workspace, dir: string, m: ModulePath) -> string {
+export fn write_surface(p: Program, mut ws: Workspace, dir: string, m: ModulePath) -> string {
     mut known: Map<string, string> = {}
     mut live: List<string> = []
     let imports = ws.imports_of(m)
     let names = [d.text() for d in imports]
     let hads = [source_surface(known, live, ws, d) for d in imports]
-    let text = surface_record(source_surface(known, live, ws, m), names, hads)
+    let text = surface_record(source_surface(known, live, ws, m), names, hads, module_entries(ws, m))
+    let key = bytes_key(ws, m)
     let _ = make_dirs(dir)
-    let _ = write_text(record_path(dir, bytes_key(ws, m)), text) catch ""
+    let _ = write_text(record_path(dir, key), text) catch ""
+    let _ = write_text(record_warn_path(dir, key), module_warnings(p, ws, m)) catch ""
     text
 }
 
@@ -518,10 +572,10 @@ export fn write_surface(mut ws: Workspace, dir: string, m: ModulePath) -> string
 /// one order and a diff of two cache directories reads as a diff of two
 /// contracts.
 // LICENSED I39: a DRIVER — the module list in, the count written out; `avra records` is its only caller.
-export fn write_surfaces(mut ws: Workspace, dir: string, modules: List<ModulePath>) -> int {
+export fn write_surfaces(p: Program, mut ws: Workspace, dir: string, modules: List<ModulePath>) -> int {
     mut written = 0
     for m in modules {
-        let _ = write_surface(ws, dir, m)
+        let _ = write_surface(p, ws, dir, m)
         written = written + 1
     }
     written
