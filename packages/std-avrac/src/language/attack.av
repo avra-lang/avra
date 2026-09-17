@@ -21,9 +21,27 @@ use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, TokenKind, term_kind}
 /// The class a case belongs to.
 export enum AttackClass { Degenerate, Malformed }
 
-/// One generated attack: its class, the source, and the law it states
-/// (`refuses` — false means the source must ANALYZE CLEAN).
-export type Attack = { class: AttackClass, source: string, refuses: bool }
+/// The malformed cases the compiler ACCEPTS. A survivor is a mutant
+/// the tolerance law lets through, and it is NOT a failure — it may be
+/// a valid program. It is recorded in `tools/attack.baseline` so a NEW
+/// one is refused: the baseline never grows without a decision.
+export fn survivors_of(g: Generated) -> List<Attack> {
+    [a for a in g.cases if a.class is .Malformed && accepts(a.source)]
+}
+
+fn accepts(src: string) -> bool {
+    analyze_source(src).diagnostics.is_empty()
+}
+
+/// A source on one baseline line — a newline or tab would break the
+/// record, so they are spelled.
+export fn baseline_word(src: string) -> string {
+    src.replace("\n", "\\n").replace("\t", "\\t")
+}
+
+/// One generated attack: its class, the source, and — for a
+/// degenerate case — the BASE it varies, so the law is STABILITY.
+export type Attack = { class: AttackClass, source: string, base: string = "" }
 
 /// How many copies of a repeated item a sample spells.
 enum Count { None, One, Many }
@@ -34,9 +52,16 @@ type Vary = { path: List<int>, count: Count }
 
 /// Every mechanical attack a grammar's rules name, in rule and branch
 /// order — deterministic, so a regeneration is a diff.
-export fn attacks(g: Grammar) -> List<Attack> {
-    first_seen(flatten([rule_attacks(g, r) for r in g.rules]))
+export fn attacks(g: Grammar, cap: int) -> Generated {
+    let all = first_seen(flatten([rule_attacks(g, r) for r in g.rules]))
+    if all.length <= cap { return Generated { cases: all, dropped: 0, cap: cap } }
+    Generated { cases: all.slice(0, cap), dropped: all.length - cap, cap: cap }
 }
+
+/// The generated cases and the cap they were generated under — a
+/// SUBSET whose gap is written in the artifact is honest; a silent one
+/// claims a coverage it does not have.
+export type Generated = { cases: List<Attack>, dropped: int, cap: int }
 
 /// One case per SOURCE — a `then` label is the source, so a source
 /// two branches or two classes both reach declares the same test
@@ -60,11 +85,38 @@ fn branch_attacks(g: Grammar, r: Rule, branch: int) -> List<Attack> {
 }
 
 /// The degenerate class: every repeated item in a branch, spelled
-/// ZERO and MANY. Both are valid surfaces, so the law is ACCEPTED.
+/// ZERO — and MANY where the repeat spells itself: a `(s:stmt | BREAK)*`
+/// repeat alternates with a SEPARATOR branch, so repeating the
+/// statement branch alone skips the break and the many sample does not
+/// parse. That is a generator limit, not a compiler law, so the many
+/// case is emitted only where the repeat is self-contained.
 fn degenerate(g: Grammar, r: Rule, s: Seq) -> List<Attack> {
-    let paths = repeated_paths_of(s, [])
-    let sources = flatten([[varying(g, s, r.name, p, c) for c in [Count.None, Count.Many]] for p in paths])
-    [Attack { class: AttackClass.Degenerate, source: src, refuses: false } for src in sources]
+    let base = seq_sample(g, s, [r.name], null, [])
+    flatten([reps_attacks(g, s, r.name, base, rep) for rep in repeats_of(s, [])])
+}
+
+fn reps_attacks(g: Grammar, s: Seq, rule: string, base: string, rep: Repeat) -> List<Attack> {
+    let counts = if rep.many { [Count.None, Count.Many] } else { [Count.None] }
+    [Attack { class: AttackClass.Degenerate, source: varying(g, s, rule, rep.path, c), base: base } for c in counts]
+}
+
+/// A repeated item and whether its many-copy is self-contained.
+type Repeat = { path: List<int>, many: bool }
+
+/// A group that alternates with a lone-BREAK branch is separator-led.
+fn many_ok(m: Item) -> bool {
+    match m.prim {
+        .Group(inner) -> !inner.branches.any(is_separator),
+        .Ref(_) or .Lit(_) or .Named(_) -> true,
+    }
+}
+
+fn is_separator(s: Seq) -> bool {
+    if s.items.length != 1 { return false }
+    match s.items[0].prim {
+        .Named(term) -> term == "BREAK",
+        .Ref(_) or .Lit(_) or .Group(_) -> false,
+    }
 }
 
 fn varying(g: Grammar, s: Seq, rule: string, path: List<int>, count: Count) -> string {
@@ -82,7 +134,7 @@ fn malformed(base: string) -> List<Attack> {
     let toks = [t for t in base.split(" ") if !t.is_empty()]
     if toks.is_empty() { return [] }
     let sources = distinct(deletions(toks).concat(duplications(toks)).concat(swap_mutants(toks)))
-    [Attack { class: AttackClass.Malformed, source: src, refuses: true } for src in sources]
+    [Attack { class: AttackClass.Malformed, source: src } for src in sources]
 }
 
 /// A token removed — but an EMPTY surface is a VALID empty program,
@@ -167,18 +219,18 @@ fn prim_sample(g: Grammar, p: Prim, seen: List<string>, vary: Vary?, path: List<
 
 /// The repeated items of a branch, by path — a group's FIRST branch,
 /// which is the one the sample opens.
-fn repeated_paths_of(s: Seq, prefix: List<int>) -> List<List<int>> {
-    flatten([repeated_in_item(m, prefix.concat([j])) for j, m in s.items])
+fn repeats_of(s: Seq, prefix: List<int>) -> List<Repeat> {
+    flatten([repeat_in_item(m, prefix.concat([j])) for j, m in s.items])
 }
 
-fn repeated_in_item(m: Item, path: List<int>) -> List<List<int>> {
-    let here = if repeats(m.rep) { [path] } else { [] }
+fn repeat_in_item(m: Item, path: List<int>) -> List<Repeat> {
+    let here = if repeats(m.rep) { [Repeat { path: path, many: many_ok(m) }] } else { [] }
     here.concat(group_repeats(m.prim, path))
 }
 
-fn group_repeats(p: Prim, path: List<int>) -> List<List<int>> {
+fn group_repeats(p: Prim, path: List<int>) -> List<Repeat> {
     match p {
-        .Group(inner) -> if inner.branches.is_empty() { [] } else { repeated_paths_of(inner.branches[0], path) },
+        .Group(inner) -> if inner.branches.is_empty() { [] } else { repeats_of(inner.branches[0], path) },
         .Ref(_) or .Lit(_) or .Named(_) -> [],
     }
 }
@@ -246,21 +298,21 @@ fn swapped(t: string, j: int, at: int, xs: List<string>) -> string {
 
 
 // ── The committed file ─────────────────────────────────────────────
-// THE FIXTURE IS GENERATED, so a case's law is a test body and a
-// `refuses` is the assertion. `refusals` counts what the compiler
-// said: zero is clean, one-or-more is a refusal, and a TRAP is not a
-// verdict — the case dies with the process, which is why a malformed
-// mutant is never exempted for crashing.
+// THE FIXTURE IS GENERATED, so a case's law is its test body. The
+// laws live in `attack_case`; a TRAP is not a verdict — the case dies
+// with the process, which is why a malformed mutant is never exempted
+// for crashing.
 
 /// The `<feature>_adversarial_test.av` a command writes, whole.
-export fn attack_test_source(feature: string, cases: List<Attack>) -> string {
+export fn attack_test_source(feature: string, g: Generated) -> string {
+    let cases = g.cases
     joined([
         "// GENERATED by `avra attack ${feature}` — the mechanical",
         "// classes from the feature's rule and the model. A SEMANTIC",
         "// attack belongs in the feature's hand-written test.",
+        "// cap: ${g.cap} case(s), ${g.dropped} dropped.",
         "use @std.avrac.language.{analyze_source}",
         "use @std.avrac.diagnostics.{Diag}",
-        "use @std.avrac.testing.{refusals}",
         "",
         "/// The SHAPE parses — a canonical sample spells `x` where a name",
         "/// belongs, so a TYPE error is expected and a PARSE error is not.",
@@ -270,6 +322,14 @@ export fn attack_test_source(feature: string, cases: List<Attack>) -> string {
         "",
         "fn parse_error(d: Diag) -> bool {",
         "    d.kind.starts_with(\"parse.\")",
+        "}",
+        "",
+        "/// The compiler REACHES A VERDICT on a malformed surface — a",
+        "/// deletion can yield a valid program, so this law is tolerance,",
+        "/// not refusal; a trap is not a verdict and dies in the call.",
+        "fn tolerates(src: string) -> bool {",
+        "    let reached = analyze_source(src).diagnostics.length",
+        "    reached >= 0",
         "}",
         "",
         "spec \"features/${feature} adversarial — mechanical\" {",
@@ -297,6 +357,17 @@ fn given_block(c: AttackClass, title: string, cases: List<Attack>) -> string {
 }
 
 fn attack_case(a: Attack) -> string {
-    let want = if a.refuses { "refusals(${quoted_text(a.source)}) > 0" } else { "parses(${quoted_text(a.source)})" }
+    let want = match a.class {
+        // DEGENERATE'S LAW IS STABILITY, not cleanliness: varying a
+        // repetition's count must not change whether the surface
+        // parses. A canonical sample spells `x` where a name belongs,
+        // and a fragment rule's base may not parse at all.
+        .Degenerate -> "parses(${quoted_text(a.source)}) == parses(${quoted_text(a.base)})",
+        // MALFORMED'S LAW IS TOLERANCE, not refusal: deleting a leading
+        // keyword can yield a VALID program (`{"s"}` is a block), so a
+        // refusal assertion there is false and manufactures a survivor.
+        // A TRAP is not a verdict and dies in the call, failing the case.
+        .Malformed -> "tolerates(${quoted_text(a.source)})",
+    }
     "        then ${quoted_text(a.source)} { ${want} }"
 }
