@@ -146,10 +146,10 @@ export type RepRow = { fields: List<TypeId>, sealed: bool, stands_for: TypeId? =
 /// form — deterministic structural content, children by interned id —
 /// which is exactly what content-addressing later hashes: the key
 /// derivation swaps, the map and its callers do not.
-export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId>, reps: List<RepRow> }
+export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId>, named: Map<string, TypeId>, indexed: bool, reps: List<RepRow> }
 
 export fn new_type_registry() -> TypeRegistry {
-    TypeRegistry { shapes: [], ids: {}, reps: [] }
+    TypeRegistry { shapes: [], ids: {}, named: {}, indexed: false, reps: [] }
 }
 
 /// A heap-shaped value: it rides POINTERS, and it waits on
@@ -486,6 +486,33 @@ impl TypeRegistry {
             .EmptyMap -> "{}",
             .Error -> "<error>",
         }
+    }
+
+    /// THE INVERSE OF `name_of` — the type a spelling names, or null when the
+    /// registry has never made one. The loader that mints declarations from a
+    /// record needs it: a held module's seats are written as spellings, and a
+    /// spelling only becomes a `TypeId` through here.
+    ///
+    /// BUILT ON FIRST ASK, NOT ON EVERY `intern`. An index kept eagerly costs a
+    /// rendering and a map write for every type the compiler ever makes — measured
+    /// at 7% of a package check — to answer a question only a LOADER asks. A build
+    /// that loads no record never builds it.
+    ///
+    /// A NAME IS NOT GUARANTEED UNIQUE. Two declarations in different modules may
+    /// render the same text, and this answers the FIRST interned — so A CALLER
+    /// THAT MINTS FROM A NAME MUST CHECK THE ROUND TRIP: render what it got back
+    /// and refuse unless it equals the spelling it asked for. A collision then
+    /// costs a REFUSAL rather than a wrong type, which is the only direction this
+    /// may fail in.
+    mut fn by_name(name: string) -> TypeId? {
+        if !self.indexed {
+            for i in 0..self.shapes.length {
+                let id = TypeId { index: i }
+                self.named.set(self.name_of(id), id)
+            }
+            self.indexed = true
+        }
+        self.named.get(name)
     }
 
     /// A type's arguments, positionally — what its declaration's
