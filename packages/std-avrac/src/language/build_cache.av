@@ -12,7 +12,7 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, joined, DeclId, FileId, TypeId, TypeRegistry}
+use core.{new_digest, digest_text, digest_key, joined, DeclId, FileId, TypeId, TypeRegistry, ModulePath}
 use features.{Namespace, DeclSig}
 use @std.path.{joined_path, relative_path}
 
@@ -146,6 +146,36 @@ export fn binary_name(ll_path: string) -> string {
 }
 
 // ── THE PER-UNIT KEY ────────────────────────────────────────────────
+
+// ── THE MODULE INTERFACE'S IDENTITY ──────
+
+/// WHAT ANOTHER MODULE SEES of this one, as one key.
+///
+/// THE INTERFACE IS THE CONTRACT, so its key names the WHOLE contract, and it
+/// names it the SOUND way: the module's own sources AND the fingerprints of
+/// everything those sources can SEE. The second half is not padding — a
+/// signature can name a type from an import, so `fn f(x: util.Pair)` must move
+/// when `util.Pair` changes, and a key over the module's own bytes alone misses
+/// exactly that. THE OVER-APPROXIMATION IS DELIBERATE and it is the safe
+/// direction: it can invalidate a dependent that did not need it, never certify
+/// one that did.
+///
+/// It folds `stable_sig`, never `sig_hash` — an interface outlives one run, and
+/// a key over interned ordinals moves whenever any new type is interned
+/// anywhere, which would invalidate every dependent on an unrelated edit.
+// LICENSED I39: a KEY DERIVATION — a pure projection of one module's sources and what they can see.
+export fn module_surface(mut ws: Workspace, m: ModulePath) -> string {
+    mut d = new_digest()
+    d = digest_text(d, CACHE_FORMAT)
+    for path in ws.module_files(m) {
+        let f = ws.file_id(path)
+        d = digest_text(d, ws.source(f).text)
+        let ns: Namespace = ws.visible(f)
+        for n in ns.fn_names { d = digest_text(d, sig_of(ws, ns.fns.get(n))) }
+        for n in ns.type_names { d = digest_text(d, sig_of(ws, ns.types.get(n))) }
+    }
+    digest_key(d)
+}
 
 // ── A STABLE IDENTITY ───────────────────────────────────────────────
 
