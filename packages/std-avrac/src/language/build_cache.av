@@ -173,12 +173,16 @@ impl BuildCache {
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one
 // standard signature `build_program(ws, entry, …)`. `disk` is the artifact host.
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name.
-export fn build_program(ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host) -> Result<BuildOutcome, string> {
+export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host) -> Result<BuildOutcome, string> {
     let cache = build_cache(ws, disk)
     let inputs = cache.inputs()
     let key = cache.key(entry, mode, inputs)
     let held = cache.reuse(entry, key, inputs)
     if held != null { return .Ok(held!) }
+    // THE WALK IS CONSULTED HERE, once the answer is known to be needed: every
+    // module whose record still holds contributes its exported signatures WITHOUT
+    // being parsed, and the rest are left to the ordinary path.
+    let _ = mint_held_modules(ws, build_cache_root(ws))
     emitted(cache, ws.program(entry), entry, key, inputs, opt, runtime)
 }
 
@@ -706,4 +710,29 @@ export fn mint_record(mut ws: Workspace, m: ModulePath, text: string) -> int {
     let decoded = [minted_entry(ws.decls.types, line) for line in lines]
     let entries = [e for e in decoded if e != null]
     mint_held(ws, m, [e! for e in entries])
+}
+
+// ── (c): THE WALK, CONSULTED ────────────────────────────────────────
+
+/// MINT EVERY MODULE WHOSE RECORD STILL HOLDS, before the program is analysed.
+///
+/// This is where the walk stops being an identity and starts being a saving: a
+/// module whose record validates contributes its EXPORTED SIGNATURES from the
+/// record, and nothing else in the program can tell the difference.
+///
+/// THE ONLY THING IT CAN GET WRONG IS SILENCE, so it is deliberately boring: a
+/// module with no record, or with a record that does not validate, is left exactly
+/// as it was. There is no path here that makes a program faster by assuming
+/// something — only one that declines to.
+// LICENSED I39: THE DRIVER'S OPENING MOVE — a workspace and its cache directory in, the count minted out.
+export fn mint_held_modules(mut ws: Workspace, dir: string) -> int {
+    mut made = 0
+    for path in ws.root_files() {
+        let m = module_path(ws.module_of(path).split("."))
+        if surface_holds(ws, dir, m) {
+            let text = read_text(record_path(dir, bytes_key(ws, m))) catch ""
+            made = made + mint_record(ws, m, text)
+        }
+    }
+    made
 }
