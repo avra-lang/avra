@@ -1174,3 +1174,27 @@ export fn held_paths(mut known: Map<string, string>, mut live: List<string>, mut
     }
     out
 }
+
+// ── WHAT THE HELD GAP NEEDS, AND WHY IT IS SMALLER THAN IT LOOKED ───
+
+/// A body's name is an ORDINAL: `new_memo$497` says a lambda exists, not what it
+/// contains. That is why a key over names let a stale object through — two lowerings, one
+/// name set. The obvious repair is a key over the bodies' CONTENT, and the obvious
+/// objection is that a held file is not lowered, so its content cannot be recomputed.
+///
+/// **IT DOES NOT NEED TO BE.** A file's body content can change without its bytes changing
+/// through exactly ONE door: MONO. A generic is specialized when ANOTHER FILE instantiates
+/// it, so what lands in this file is a function of what the PROGRAM asked for — a single
+/// quantity, and the only thing about a held module that its own record cannot see.
+///
+/// SO THE CONDITION IS: the instantiation surface the record was written under must still
+/// be the program's. It is computed from the FRESH files' lowering — which has already
+/// happened by the time the question is asked — and it needs no re-lowering of anything
+/// held. **One number, compared once, covers every body in every held file.**
+// LICENSED I39: a KEY DERIVATION — the instantiation requests a lowering produced, digested.
+export fn instantiation_surface(l: Lowered) -> string {
+    mut d = new_digest()
+    d = digest_text(d, CACHE_FORMAT)
+    for name in sorted_texts([b.name for b in l.fns]) { d = digest_text(d, name) }
+    digest_key(d)
+}
