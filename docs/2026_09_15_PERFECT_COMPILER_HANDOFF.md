@@ -1032,3 +1032,24 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   points first is what turned "register a declaration" from a vague step into
   four pushes and one verified fact.
 
+- **A FILLED TABLE IS NOT THE WHOLE ANSWER WHEN A QUERY CELL DECIDES WHETHER
+  THE TABLE IS CONSULTED.** `sig`'s short-circuit reads `if
+  !(self.db.ask(k) is .Compute) || x.kind is .Builtin`, so a filled `sigs`
+  row is returned ONLY when the cell is not `.Compute` — and a never-asked
+  cell IS `.Compute`, so a minted declaration needs a FIFTH write
+  (`db.set_input` or a settle) beyond the four tables. THE GUESS THAT WOULD
+  HAVE HIDDEN IT: write the row, watch `sig` return it in the happy path, and
+  the failure appears only for a declaration whose cell was never touched — a
+  PLAUSIBLE WRONG SIGNATURE, which no gate catches.
+- **A ROW THAT READS COMPLETE AND CARRIES NOTHING, ONE TABLE OVER.** A `Decl`
+  carries `stmt` and `root`, and a MINTED declaration has NEITHER (there is no
+  parse) — fine while nothing reads them, and LATER PASSES DO: lowering walks
+  a declaration's `root`. So registration cannot be one pass. THE RULING:
+  **SIGNATURES ONLY** — a held module's signatures are what a CALLER reads and
+  its body is what (c)'s per-file IR is for, so the driver registers what the
+  loader needs and leaves bodies alone. The alternative — minted declarations
+  carrying a MARK every pass must honour — is a contract the whole backend
+  keeps AND A FLAG BESIDE THE CLAIM, which this tree refuses because a flag can
+  be set wrong and stay invisible. And a held module's FILE is not lowered, so
+  its declarations never reach the tree-walking passes at all.
+
