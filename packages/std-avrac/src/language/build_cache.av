@@ -14,7 +14,7 @@
 //! step.
 use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, sorted_texts, module_path, DeclId, FileId, TypeId, TypeRegistry, ModulePath}
 use features.{Namespace, DeclSig}
-use @std.path.{joined_path, relative_path}
+use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_text, write_text, make_dirs}
 
 /// The compiler's format identity, folded first into every key. The
@@ -37,7 +37,49 @@ export type BuildCache = { ws: Workspace, root: string, disk: Host }
 /// worktree's cache dies with the worktree. ONE derivation: the library
 /// and the command that keeps the linked binary both name it here.
 // LICENSED I39: a pure projection — a workspace in, the directory its artifacts live in out.
-export fn build_cache_root(ws: Workspace) -> string { joined_path(ws.root, ".avra-cache") }
+export fn build_cache_root(ws: Workspace) -> string { joined_path(tree_root(ws), ".avra-cache") }
+
+/// WHERE A TREE'S ARTIFACTS LIVE — ONE store for the whole CHECKOUT.
+///
+/// THE LOCATION IS NOT A CORRECTNESS QUESTION, and that is what frees it to be
+/// decided on blast radius and sharing instead. Every artifact is named by a key
+/// over the whole input tuple AND the tuple is checked before the artifact is
+/// believed, so a store in the wrong place costs a rebuild and can never hand
+/// back a wrong answer.
+///
+/// AND BOTH CONSIDERATIONS POINT THE SAME WAY. A store beside each PROGRAM wrote
+/// one gitignored directory per package INSIDE `packages/`, where every walker
+/// that trusts a `.gitignore`-blind `find` will meet it — that cost two timed-out
+/// uploads before the archive learned to exclude it. A store at the TREE root is
+/// ONE directory, in the place a checkout already keeps its `.git`; and it is
+/// SHARED, so `std-avrac`'s artifacts serve `cli`'s build instead of being
+/// re-derived once per package. It still dies with the worktree, which is the
+/// only thing the beside-the-program rule was ever for.
+///
+/// The tree is the HIGHEST ancestor that still looks like a checkout — a `.git`,
+/// or a manifest at that root. A lone file has no tree above it and is its own
+/// root, which is also the safe answer for an in-memory host: it answers no for
+/// every directory it cannot see.
+// LICENSED I39: a pure PROJECTION — a workspace in, the checkout it stands in out.
+fn tree_root(ws: Workspace) -> string {
+    // ALL THE WAY UP, keeping the HIGHEST that looks like a tree. Requiring every
+    // ancestor to be one stops at the first plain directory — and a real checkout
+    // has them: `packages/` holds no `.git` and no manifest, so the walk stopped
+    // at `packages/cli` and wrote the store exactly where this change exists to
+    // keep it from going.
+    mut best = ws.root
+    mut up = dir_of(ws.root)
+    while up != dir_of(up) {
+        if looks_like_tree(ws.host, up) { best = up }
+        up = dir_of(up)
+    }
+    best
+}
+
+/// Whether a directory is a CHECKOUT ROOT rather than a directory inside one.
+fn looks_like_tree(host: Host, dir: string) -> bool {
+    host.is_dir(joined_path(dir, ".git")) || host.exists(joined_path(dir, "avra.toml"))
+}
 
 /// ARTIFACTS GO TO THE `disk` HOST, never to the source host. They are
 /// different things and a LONE FILE is exactly where they diverge: its
