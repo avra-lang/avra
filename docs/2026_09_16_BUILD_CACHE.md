@@ -236,6 +236,19 @@ governs `sig_hash`, one level up.
    took the compiler's cache from **19 MB to 210 MB**, because every module repeats
    every declaration and every static. So the disk rung (shared declarations, statics
    emitted once) is a PREREQUISITE OF PERSISTENCE, not an alternative to it.
+   **AND IT IS PAID, so the rung is affordable — the after-number, measured on the
+   compiler's own build (272 modules):**
+
+   | | before dedup | **after** |
+   |---|---|---|
+   | whole-program module | 19 MB | **16.4 MB** |
+   | per-file modules | **210 MB** (257 mods, 11x) | **17.3 MB** (272 mods, **1.06x**) |
+
+   A 6% overhead buys the ability to re-emit ONE file instead of all of them, which is
+   what the whole disk rung was waiting on. The declarations the emitter itself needs —
+   the runtime rows a backend adds rather than an instruction names — are declared whole
+   in every module; the USER declarations and the STATICS are what actually duplicated,
+   and those are filtered to what each module names.
 3. **Per-file objects**, so re-emission and recompilation are per-file too.
 
 ### What an edit should then cost
