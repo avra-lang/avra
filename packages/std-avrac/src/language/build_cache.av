@@ -176,7 +176,7 @@ impl BuildCache {
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one
 // standard signature `build_program(ws, entry, …)`. `disk` is the artifact host.
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name.
-export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string) -> Result<BuildOutcome, string> {
+export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host) -> Result<BuildOutcome, string> {
     let cache = build_cache(ws, disk)
     let inputs = cache.inputs()
     let key = cache.key(entry, mode, inputs)
@@ -190,13 +190,13 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     let _ = held_set(ws, build_cache_root(ws))
     let _ = mint_held_modules(ws, build_cache_root(ws))
     let held = held_set(ws, build_cache_root(ws))
-    emitted(cache, ws.program(entry), key, inputs, opt, runtime, linker, held)
+    emitted(cache, ws.program(entry), key, inputs, opt, runtime)
 }
 
 // LICENSED I39: the build's TWO PHASES, not a pass's vocabulary —
 // `build_program` is the entry point and keeps the one standard signature
 // (I39's own exemption), and this is its split at the phase boundary.
-fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: string, runtime: string, linker: string, held_files: List<FileId>) -> Result<BuildOutcome, string> {
+fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
     if !p.clean() { return .Err(p.report()) }
     let view = p.entry_file()
     if view == null { return .Err(p.rendered([no_target(p.ws.root)])) }
@@ -204,50 +204,37 @@ fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: stri
     if ent.view.stmts.is_empty() { return .Err("the program is empty") }
     let lo = p.lowered_checked()?
     mut ws = p.ws
-    // WRITE EVERY MODULE'S RECORD, AND MARK ITS BODY NAMES — both halves, now that
-    // lowering has produced the bodies. THE BUILD MUST WRITE ITS OWN RECORDS: the
-    // `records` command is a convenience, and a build that only READ them kept the keys
-    // of the last time someone ran it — measured, as 875ms and then 176s for the same
-    // kind of edit, because after the first edit every `fkey` was stale and nothing
-    // could be held.
-    // MARK EVERY MODULE'S BODY NAMES, now that lowering has produced them.
+
+    // THE BUILD WRITES ITS OWN RECORDS, for the modules it ANALYSED — a held module
+    // keeps the record it was held by, and a TEST's module is left alone, because a
+    // test file is in `p.files` only because the workspace analysed it and it belongs
+    // to no program.
+    let names = distinct([ws.module_of(a.view.source.file) for a in p.files if !ws.is_test_path(a.view.source.file)])
+    let mods = [module_named(n) for n in names]
+    let _ = write_surfaces(p, ws, cache.root, mods)
+    // The body names lowering produced, marked on each record — the half that makes a
+    // held module's object key computable without lowering it.
+    let _ = mark_modules(ws, cache.root, lo, mods, ent.view.file)
+
+    // THE WHOLE-PROGRAM MODULE, AND THE OBJECT PATH IS NOT THE BUILD PATH YET.
     //
-    // AND THE RECORD IS WRITTEN BY `avra records`, NOT HERE — not because it should not
-    // be automatic, but because `p.files` holds every file the workspace ANALYSED,
-    // including test files that are not part of any program, and writing their records
-    // raises diagnostics that fail the build. The automatic version needs the program's
-    // MODULE closure rather than its analysed files, and that is owed.
-    let _ = mark_modules(ws, cache.root, lo, [module_named(ws.module_of(a.view.source.file)) for a in p.files], ent.view.file)
-    // ONE OBJECT PER FILE, CACHED. The measurement that decides this: `clang -O1` on
-    // the compiler's own module is 14.9s while `ld` over the objects is 333ms — the
-    // OPTIMIZATION is the cost, not the link. So the object is kept, an edit
-    // recompiles ONE file, and the link reassembles the rest.
+    // The per-file path is built, measured, and HELD OFF, and the reason is a
+    // SOUNDNESS gap rather than a doubt: a module's object key folds the NAMES of the
+    // bodies that land in it, and TWO DIFFERENT LOWERINGS CAN PRODUCE THE SAME NAME SET
+    // — measured, as `new_memo$497` not found, from an object reused under a key whose
+    // names had not moved while the bodies had. The name is an ordinal, and an ordinal
+    // is not a content.
     //
-    // This is also why the earlier split LOST while being sound: it linked 275 IR
-    // modules and every one paid its own optimization. The objects were the missing
-    // half, not the link.
-    // THE BINARY IS NAMED BY `binary_name`, AND THE LINKER'S OUTPUT IS ALWAYS THAT
-    // NAME. Passing the SOURCE path here instead wrote the linked binary OVER
-    // `main.av` — "not UTF-8, byte 0" — because a path that was only ever read was
-    // handed to a verb that WRITES. There is one derivation of a binary's name and
-    // the linker is never given anything else.
+    // What it needs is a key over what the bodies ARE — the same lesson as every key in
+    // this campaign, one level down.
+    let ll = "${ent.view.source.file}.ll"
+    let failure = emit_ll(lo, ll)
+    if failure != null { return .Err(failure!) }
     let binary = binary_name(ent.view.source.file)
-    // THE FILE LIST COMES FROM THE DISK, NOT FROM `Program.files`. A held file is not
-    // in `Program.files` — it was not analysed — so a list built from the program would
-    // omit exactly the objects this build means to LINK, and the binary would come out
-    // missing its held modules' bodies.
-    // EVERY FILE THE WORKSPACE KNOWS, not the root package's sources: the program
-    // reaches the whole toolchain's packages, and a list built from `root_files` would
-    // link 23 objects where 275 belong. The held files are ASKED FOR (their `items`
-    // answers from the record) so they are in this table even though they were never
-    // analysed.
-    let all_files = program_files(ws)
-    let units = emit_objects(ws, lo, cache.root, all_files, ent.view.file, linker, opt, held_files)
-    if units.objects.is_empty() { return .Err("no object was emitted") }
-    let words = link_objects(units.objects, p.ws, runtime, binary)
+    let words = link_words(ll, p.ws, opt, runtime)
     let warnings = p.warnings()
     cache.keep(key, inputs, words, warnings)
-    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key })
+    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key, emitted: 0, reused_files: 0 })
 }
 
 /// clang's words for a module: the level, the runtime, the packages' own
@@ -1162,10 +1149,28 @@ export fn held_paths(mut known: Map<string, string>, mut live: List<string>, mut
     let deps = ws.imports_of(m)
     let seen = joined([surface_of(known, live, ws, dir, d) for d in deps], "|")
     let recorded = recorded_fkeys(text)
+    let bodies = recorded_bodies(text)
     mut out: List<string> = []
     for path in ws.module_files(m) {
         let key = digest_of("${ws.source(ws.file_id(path)).text}${seen}")
-        if recorded.any(it == "${path}\t${key}") { out.push(path) }
+        // **A FILE WITH GENERATED BODIES IS NOT HELD**, and this is the conservative half
+        // of a real dependency rather than a precaution. `$` MARKS A BODY MONO MADE: a
+        // generic function is specialized when ANOTHER FILE instantiates it, so this
+        // file's bodies move when a file it has never seen changes — and a held file is
+        // not lowered, so its body names cannot be refreshed and its key would keep a
+        // stale object. Measured, as `new_memo$497` not found: the object held the
+        // module's older body set.
+        //
+        // Holding only what CANNOT move this way keeps the reuse sound, and the files it
+        // declines are exactly the ones whose identity is not theirs to know.
+        // NOT HELD: one measured failure remains, and it is a STALE OBJECT rather than a
+        // missed hold — `new_memo$497` not found, from an object that was reused although
+        // the body set it was compiled from had since moved. The mono rule above is
+        // necessary and NOT sufficient, and until the second cause is named the hold is
+        // OFF: every part of the mechanism stays built, tested and measured, and the
+        // build behaves as it did before the skip.
+        let mono = bodies.any(it.contains("$"))
+        if false && !mono && recorded.any(it == "${path}\t${key}") { out.push(path) }
     }
     out
 }
