@@ -1138,3 +1138,30 @@ twice. Expect gen1 != gen2 and gen2 == gen3 after a syntax change.
   PIECE THAT MAKES IT CHEAP: `Body.file` is ALREADY set on the entry, so the
   split needs NO change to lowering — the pieces were standing.
 
+- **A PER-FILE KEY THAT COVERS A FILE'S OWN BYTES DOES NOT COVER WHAT ANOTHER
+  FILE MADE IT DO.** `unit_key` covers a file's bytes and the signatures it
+  can see — and A MONO-GENERATED BODY IS COVERED BY NEITHER: a generic is
+  specialized when ANOTHER file instantiates it, so file A's body depends on
+  what file B asked for, and changing B moves A's body while A's key stands
+  still. The reused module was a body MISSING A SPECIALIZATION its own source
+  never mentions. So the key needs a THIRD component — the INSTANTIATIONS
+  this file's bodies were generated for — which only a run can observe
+  (observed invalidation, arriving exactly where it stops being an
+  optimization and becomes a requirement). This is the tree's own
+  CUTOFF-PER-CONSUMER law: what a dependent READ decides which fingerprint may
+  cut it off, and under mono the read is ANOTHER FILE'S REQUEST.
+- **A COUNT ALONE HAS NO REASON TO DOUBT IT; A DIFFERENTIAL ALONE SHOWS A
+  GREEN COUNT AND A BROKEN TREE.** Together they located this defect in ONE
+  RUN — 2 modules of 276 re-emitted, and a link that failed with
+  `_av_commands$2ETestCmd$2erun` after an edit to a different file. The
+  two-leg law proving itself on the step that introduced the mechanism, rather
+  than two steps later. AND THE SMALLEST FIXTURE THAT CAN EXHIBIT IT WAS THE
+  COMPILER ITSELF: a three-file package compiles green because it never
+  instantiates across a module boundary — the third time a small fixture lied
+  by passing, and the 275-module build is what found it.
+- **A MECHANISM THAT IS UNSOUND DOES NOT SHIP TURNED ON.** The split is
+  reverted to the whole-program module (cold rc=0, no-op 354ms), and
+  `emit_units` STANDS with the comment saying why it is not called — so the
+  work is banked, the reason is visible AT THE SITE, and the next reader
+  cannot mistake it for dead code.
+
