@@ -78,7 +78,38 @@ type ModuleBodies = { whole: bool, bodies: List<Body> }
 
 fn bodies_of(l: Lowered, only: FileId?) -> ModuleBodies {
     if only == null { ModuleBodies { whole: true, bodies: l.fns } }
-    else { ModuleBodies { whole: false, bodies: [bd for bd in l.fns if bd.file != null && same_file(bd.file!, only!)] } }
+    else { ModuleBodies { whole: false, bodies: [bd for bd in l.fns if owns(l, bd, only!)] } }
+}
+
+/// WHERE A BODY BELONGS — derived from the BODY, never from whoever asked for it.
+///
+/// `Body.file` records WHO ASKED, and for most bodies that is the same thing. For a
+/// WRAP it is not: a wrapper is generated for every file that takes a named fn as a
+/// value, so several files claim one body and several modules define one symbol —
+/// measured, as "6 duplicate symbols", every one of them a `$w`. AND A BODY WITH NO
+/// HOME OF ITS OWN IS THE OTHER HALF OF THE SAME MISTAKE: the first version had a
+/// lifted lambda belonging to nobody, and the link said a symbol was not found.
+///
+/// A WRAP'S HOME IS THE FILE THAT DECLARES WHAT IT WRAPS. It exists in exactly one
+/// place, it is the same place for every asker, and it does not move with who asked
+/// FIRST — which is the property that matters, because an owner chosen by traversal
+/// order is the same defect as a seed computed differently from its updates.
+/// Whether a module OWNS the body — its home is that module's file. ONE question,
+/// asked once, so no caller opens the nullable twice and none can disagree.
+// LICENSED I39: a pure PROJECTION — a program, a body and a file in, one answer out.
+fn owns(l: Lowered, b: Body, f: FileId) -> bool {
+    let home = home_of(l, b)
+    home != null && same_file(home!, f)
+}
+
+// LICENSED I39: a pure PROJECTION — a program and a body in, the file it belongs to out.
+fn home_of(l: Lowered, b: Body) -> FileId? {
+    if b.file == null { return null }
+    if !b.name.ends_with("$w") { return b.file }
+    for o in l.fns {
+        if o.name == b.name.substring(0, b.name.length - 2) && o.file != null { return o.file }
+    }
+    b.file
 }
 
 /// What these bodies NAME, and their own names with it: a module declares a

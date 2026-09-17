@@ -196,29 +196,22 @@ fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: stri
     if !p.clean() { return .Err(p.report()) }
     let view = p.entry_file()
     if view == null { return .Err(p.rendered([no_target(p.ws.root)])) }
-    if view!.view.stmts.is_empty() { return .Err("the program is empty") }
+    let ent = view!
+    if ent.view.stmts.is_empty() { return .Err("the program is empty") }
     let lo = p.lowered_checked()?
-    // THE WHOLE-PROGRAM MODULE, and the per-file split is NOT the build path: two
-    // distinct defects were found by RUNNING IT, and neither is a matter of tuning.
-    //   1. A MONO SPECIALIZATION LANDS IN A FILE ITS OWN SOURCE DOES NOT MENTION,
-    //      so `unit_key` cannot see it. FIXED by `module_key`, which folds the
-    //      NAMES of the bodies landing in the file — and the count proves the fix
-    //      holds the reuse (2 of 276 re-emitted on an edit).
-    //   2. A WRAP'S NAME IS GLOBAL BUT ITS BODY IS GENERATED PER CALLER, so every
-    //      file that calls `f$w` attributes it to ITSELF and several modules
-    //      define one symbol — "6 duplicate symbols", all of them the `$w` bodies.
-    //      The `file` tag is a property of who ASKED, not of where the body
-    //      BELONGS, and a body with two askers has no single home this way.
-    // `emit_units` stands beside this, measured, waiting on a home for a body that
-    // more than one file asks for.
-    let ll = "${view!.view.source.file}.ll"
-    let failure = emit_ll(lo, ll)
-    if failure != null { return .Err(failure!) }
-    let binary = binary_name(ll)
-    let words = link_words(ll, p.ws, opt, runtime)
+    // ONE MODULE PER FILE. Two defects were found by running this; both are fixed
+    // at their cause rather than tuned: `module_key` folds the names that LAND in a
+    // file (the mono one), and `home_of` decides ownership from the BODY (the wrap
+    // one — a wrapper's home is the file declaring what it wraps, so it is the same
+    // home for every asker and does not move with who asked first).
+    mut ws = p.ws
+    let units = emit_units(ws, lo, cache.root, [a.view.file for a in p.files], ent.view.file)
+    if units.modules.is_empty() { return .Err("no module was emitted") }
+    let binary = binary_name("${ent.view.source.file}.ll")
+    let words = link_modules(units.modules, p.ws, opt, runtime)
     let warnings = p.warnings()
     cache.keep(key, inputs, words, warnings)
-    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key })
+    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key, emitted: units.emitted, reused_files: units.reused })
 }
 
 /// clang's words for a module: the level, the runtime, the packages' own
@@ -800,7 +793,7 @@ fn module_key(mut ws: Workspace, l: Lowered, f: FileId) -> string {
     mut d = new_digest()
     d = digest_text(d, CACHE_FORMAT)
     d = digest_text(d, unit_key(ws, f))
-    for name in sorted_texts([b.name for b in l.fns if b.file != null && same_file(b.file!, f)]) {
+    for name in sorted_texts([b.name for b in l.fns if owns(l, b, f)]) {
         d = digest_text(d, name)
     }
     digest_key(d)
