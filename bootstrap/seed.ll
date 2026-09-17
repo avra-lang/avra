@@ -679,10 +679,10 @@ source_filename = "avra"
 @"av_const$73$20$16" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 1, i64 1, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$73$20$16", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$73$20$16", i32 0, i32 3), ptr null }, [1 x i64] [i64 16], [1 x i8] zeroinitializer }, align 16
 @"av_const$73$20$17" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 1, i64 1, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$73$20$17", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$73$20$17", i32 0, i32 3), ptr null }, [1 x i64] [i64 17], [1 x i8] zeroinitializer }, align 16
 @"av_const$73$20" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [18 x i64], [18 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 18, i64 18, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [18 x i64], [18 x i8] }, ptr @"av_const$73$20", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [18 x i64], [18 x i8] }, ptr @"av_const$73$20", i32 0, i32 3), ptr null }, [18 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$0", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$1", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$2", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$3", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$4", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$5", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$6", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$7", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$8", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$9", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$10", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$11", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$12", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$13", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$14", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$15", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$16", i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$73$20$17", i64 16) to i64)], [18 x i8] c"\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01\01" }, align 16
-@"av_const$94$91$0" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 0, i64 0, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$94$91$0", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$94$91$0", i32 0, i32 3), ptr null }, [0 x i64] zeroinitializer, [0 x i8] zeroinitializer }, align 16
-@"av_const$94$91$1" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 0, i64 0, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$94$91$1", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$94$91$1", i32 0, i32 3), ptr null }, [0 x i64] zeroinitializer, [0 x i8] zeroinitializer }, align 16
+@"av_const$94$89$0" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 0, i64 0, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$94$89$0", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$94$89$0", i32 0, i32 3), ptr null }, [0 x i64] zeroinitializer, [0 x i8] zeroinitializer }, align 16
+@"av_const$94$89$1" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 0, i64 0, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$94$89$1", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [0 x i64], [0 x i8] }, ptr @"av_const$94$89$1", i32 0, i32 3), ptr null }, [0 x i64] zeroinitializer, [0 x i8] zeroinitializer }, align 16
 @.str.247 = private unnamed_addr constant { { i32, i32, i32, i32 }, [5 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -1, i32 0, i32 4 }, [5 x i8] c"void\00" }, align 16
-@"av_const$94$91" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 7, i64 7, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] }, ptr @"av_const$94$91", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] }, ptr @"av_const$94$91", i32 0, i32 3), ptr null }, [7 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.247, i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$94$91$0", i64 16) to i64), i64 0, i64 0, i64 0, i64 0, i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$94$91$1", i64 16) to i64)], [7 x i8] c"\01\01\00\00\00\01\01" }, align 16
+@"av_const$94$89" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 7, i64 7, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] }, ptr @"av_const$94$89", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [7 x i64], [7 x i8] }, ptr @"av_const$94$89", i32 0, i32 3), ptr null }, [7 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @.str.247, i64 16) to i64), i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$94$89$0", i64 16) to i64), i64 0, i64 0, i64 0, i64 0, i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$94$89$1", i64 16) to i64)], [7 x i8] c"\01\01\00\00\00\01\01" }, align 16
 @"av_const$21$4$0" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 1, i64 1, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$21$4$0", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$21$4$0", i32 0, i32 3), ptr null }, [1 x i64] [i64 2], [1 x i8] zeroinitializer }, align 16
 @"av_const$21$4$1" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 1, i64 1, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$21$4$1", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$21$4$1", i32 0, i32 3), ptr null }, [1 x i64] zeroinitializer, [1 x i8] zeroinitializer }, align 16
 @"av_const$21$4$2" = private global { { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] } { { i32, i32, i32, i32 } { i32 1096176193, i32 -5, i32 0, i32 40 }, { i64, i64, ptr, ptr, ptr } { i64 1, i64 1, ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$21$4$2", i32 0, i32 2), ptr getelementptr inbounds ({ { i32, i32, i32, i32 }, { i64, i64, ptr, ptr, ptr }, [1 x i64], [1 x i8] }, ptr @"av_const$21$4$2", i32 0, i32 3), ptr null }, [1 x i64] [i64 ptrtoint (ptr getelementptr inbounds (i8, ptr @"av_const$21$4$1", i64 16) to i64)], [1 x i8] c"\01" }, align 16
@@ -11634,7 +11634,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l765" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l783" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %0, i64 3)
@@ -11728,7 +11728,7 @@ postret:                                          ; No predecessors!
   br label %endif8
 }
 
-define i1 @"av_$40std$2Ecli$2Ecli$24l765"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Ecli$2Ecli$24l783"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -11790,7 +11790,7 @@ endif4:                                           ; preds = %else3, %then2
   call void @avra_cell_release(ptr %slot6)
   store ptr null, ptr %slot6, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l113" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l118" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %regval5)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call ptr @avra_array_get_owned(ptr %0, i64 3)
@@ -11888,7 +11888,7 @@ postret:                                          ; No predecessors!
   br label %endif20
 }
 
-define i1 @"av_$40std$2Ecli$2Ecli$24l113"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Ecli$2Ecli$24l118"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -12282,7 +12282,7 @@ lhead:                                            ; preds = %endif, %entry
 lexit:                                            ; preds = %lhead
   store i1 false, ptr %slot49, align 8
   %6 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l409" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l420" to i64))
   %7 = call i64 @avra_array_get(ptr %6, i64 0)
   %8 = call ptr @avra_array_get_owned(ptr %0, i64 4)
   %9 = call i64 @avra_array_len(ptr %8)
@@ -12566,7 +12566,7 @@ postret77:                                        ; No predecessors!
   br label %endif74
 }
 
-define i1 @"av_$40std$2Ecli$2Ecli$24l409"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Ecli$2Ecli$24l420"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 3)
   %b = icmp ne i64 %2, 0
@@ -12679,7 +12679,7 @@ endif8:                                           ; preds = %else7, %postret
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %6 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l254" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l261" to i64))
   call void @avra_array_push_owned(ptr %6, ptr %1)
   %7 = call i64 @avra_array_get(ptr %6, i64 0)
   %8 = call ptr @avra_array_get_owned(ptr %0, i64 3)
@@ -12777,7 +12777,7 @@ endif27:                                          ; preds = %else26, %then25
   call void @avra_cell_release(ptr %slot29)
   store ptr null, ptr %slot29, align 8
   %18 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l282" to i64))
+  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l291" to i64))
   call void @avra_array_push_owned(ptr %18, ptr %regval28)
   %19 = call i64 @avra_array_get(ptr %18, i64 0)
   %20 = call ptr @avra_array_get_owned(ptr %0, i64 5)
@@ -12921,7 +12921,7 @@ postret57:                                        ; No predecessors!
   br label %endif55
 }
 
-define i1 @"av_$40std$2Ecli$2Ecli$24l282"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Ecli$2Ecli$24l291"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -12933,7 +12933,7 @@ entry:
   ret i1 %3
 }
 
-define i1 @"av_$40std$2Ecli$2Ecli$24l254"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Ecli$2Ecli$24l261"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -13112,7 +13112,7 @@ endif:                                            ; preds = %else, %postret
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l738" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Ecli$2Ecli$24l756" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %1)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call ptr @avra_array_get_owned(ptr %0, i64 3)
@@ -13210,7 +13210,7 @@ postret15:                                        ; No predecessors!
   br label %endif14
 }
 
-define i1 @"av_$40std$2Ecli$2Ecli$24l738"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Ecli$2Ecli$24l756"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -16452,7 +16452,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l1277" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l1323" to i64))
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_get(ptr %0, i64 3)
   %boxed = inttoptr i64 %4 to ptr
@@ -16774,7 +16774,7 @@ endif59:                                          ; preds = %else58, %then57
   ret ptr %57
 }
 
-define i1 @"av_$40std$2Eprocess$2Eprocess$24l1277"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eprocess$2Eprocess$24l1323"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Eprocess$2Ebad_env_name"(ptr %1)
@@ -17268,7 +17268,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l763" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l801" to i64))
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %3, i64 1)
@@ -17387,7 +17387,7 @@ postret:                                          ; No predecessors!
   br label %endif14
 }
 
-define i1 @"av_$40std$2Eprocess$2Eprocess$24l763"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eprocess$2Eprocess$24l801"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i64 @"av_$40std$2Etext$2Enul_at"(ptr %1)
@@ -17893,7 +17893,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l270" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l282" to i64))
   call void @avra_array_push_owned(ptr %1, ptr %0)
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call i64 @avra_array_len(ptr getelementptr inbounds (i8, ptr @"av_const$38$110", i64 16))
@@ -17965,7 +17965,7 @@ postret:                                          ; No predecessors!
   br label %endif8
 }
 
-define i1 @"av_$40std$2Eprocess$2Eprocess$24l270"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eprocess$2Eprocess$24l282"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -18003,7 +18003,7 @@ endif:                                            ; preds = %else, %postret
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l230" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eprocess$2Eprocess$24l239" to i64))
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
   %7 = call ptr @avra_array_sized(i64 0)
   %8 = call ptr @avra_str_split(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.455, i64 16))
@@ -18125,7 +18125,7 @@ endif31:                                          ; preds = %else30, %then29
   ret ptr %regval32
 }
 
-define i1 @"av_$40std$2Eprocess$2Eprocess$24l230"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eprocess$2Eprocess$24l239"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_str_crossing(ptr %1)
   %3 = call i64 @avra_proc_executable(ptr %2)
@@ -19123,7 +19123,7 @@ else3:                                            ; preds = %endif
 endif4:                                           ; preds = %postret5, %then2
   %regval6 = phi i64 [ %8, %then2 ], [ 0, %postret5 ]
   %9 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eio$2Eio$24l148" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eio$2Eio$24l156" to i64))
   call void @avra_array_push(ptr %9, i64 %regval6)
   call void @avra_rc_retain(ptr %0)
   %10 = call ptr @"av_$40std$2Eio$2Edrained"(ptr %0, i64 %regval6)
@@ -19142,7 +19142,7 @@ postret5:                                         ; No predecessors!
   br label %endif4
 }
 
-define i64 @"av_$40std$2Eio$2Eio$24l148"(ptr %0) {
+define i64 @"av_$40std$2Eio$2Eio$24l156"(ptr %0) {
 entry:
   %1 = call i64 @avra_array_get(ptr %0, i64 1)
   %2 = call i64 @avra_io_close(i64 %1)
@@ -19550,7 +19550,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_commands$2Eattack$24l11" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_commands$2Eattack$24l12" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %2)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call ptr @avra_array_get_owned(ptr %3, i64 0)
@@ -19740,7 +19740,7 @@ lbody21:                                          ; preds = %lhead17
   br label %lhead17
 }
 
-define i1 @"av_commands$2Eattack$24l11"(ptr %0, ptr %1) {
+define i1 @"av_commands$2Eattack$24l12"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -21339,7 +21339,7 @@ entry:
   %3 = call ptr @"av_$40std$2Eavrac$2Equery$2EDb$2Esnapshot"(ptr %0)
   store i1 false, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Equery$2Edb$24l136" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Equery$2Edb$24l140" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %1)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call ptr @avra_array_get_owned(ptr %3, i64 5)
@@ -21522,7 +21522,7 @@ postret24:                                        ; No predecessors!
   br label %endif23
 }
 
-define i1 @"av_$40std$2Eavrac$2Equery$2Edb$24l136"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Equery$2Edb$24l140"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -21780,7 +21780,7 @@ entry:
   call void @avra_rc_retain(ptr %20)
   %21 = call ptr @"av_$40std$2Eavrac$2Ecore$2Eflatten$24141"(ptr %20)
   %22 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %22, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1840" to i64))
+  call void @avra_array_push(ptr %22, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1878" to i64))
   call void @avra_array_push_owned(ptr %22, ptr %0)
   call void @avra_array_push_owned(ptr %22, ptr %boxed1)
   %23 = call ptr @avra_array_sized(i64 6)
@@ -21806,7 +21806,7 @@ entry:
   ret ptr %23
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1840"(ptr %0) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1878"(ptr %0) {
 entry:
   %1 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %2 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -22349,9 +22349,9 @@ then:                                             ; preds = %entry
   %7 = call i64 @avra_array_get(ptr %0, i64 6)
   %boxed2 = inttoptr i64 %7 to ptr
   %8 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5621" to i64))
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5728" to i64))
   %9 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5623" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5730" to i64))
   call void @avra_rc_retain(ptr %boxed2)
   call void @avra_rc_retain(ptr %8)
   call void @avra_rc_retain(ptr %9)
@@ -22371,7 +22371,7 @@ endif:                                            ; preds = %else, %postret
   %regval = phi i64 [ 0, %postret ], [ 0, %else ]
   %11 = call ptr @avra_array_get_owned(ptr %0, i64 6)
   %12 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5641" to i64))
+  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5748" to i64))
   call void @avra_array_push_owned(ptr %12, ptr %0)
   call void @avra_array_push_owned(ptr %12, ptr %5)
   call void @avra_rc_retain(ptr %11)
@@ -22392,7 +22392,7 @@ postret:                                          ; No predecessors!
   br label %endif
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5641"(ptr %0) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5748"(ptr %0) {
 entry:
   %1 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
@@ -22426,14 +22426,14 @@ entry:
   ret ptr %11
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5623"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5730"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
   ret i64 0
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5621"(ptr %0) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5728"(ptr %0) {
 entry:
   %1 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eempty_manifest"()
   call void @avra_rc_release(ptr %0)
@@ -23183,7 +23183,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l16" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l17" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %1)
   call void @avra_array_push_owned(ptr %3, ptr %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
@@ -23236,7 +23236,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Etoml$2Etoml$24l16"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Etoml$2Etoml$24l17"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -23862,7 +23862,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l474" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l492" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %0, i64 1)
@@ -23949,7 +23949,7 @@ postret:                                          ; No predecessors!
   br label %endif8
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l474"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l492"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -23978,7 +23978,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l31" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l34" to i64))
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %4 = call i64 @avra_array_len(ptr %3)
@@ -24068,7 +24068,7 @@ lbody14:                                          ; preds = %lhead10
   br label %lhead10
 }
 
-define i1 @"av_$40std$2Etoml$2Etoml$24l31"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Etoml$2Etoml$24l34"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -24302,7 +24302,7 @@ arm:                                              ; preds = %entry
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l73" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l80" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %1)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call i64 @avra_array_len(ptr %3)
@@ -24373,7 +24373,7 @@ endif9:                                           ; preds = %else8, %then7
   br label %endswitch
 }
 
-define i1 @"av_$40std$2Etoml$2Etoml$24l73"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Etoml$2Etoml$24l80"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -24656,7 +24656,7 @@ endif4:                                           ; preds = %else3, %postret
   call void @avra_cell_release(ptr %slot6)
   store ptr null, ptr %slot6, align 8
   %8 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l967" to i64))
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l986" to i64))
   %9 = call i64 @avra_array_get(ptr %8, i64 0)
   %10 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %11 = call ptr @avra_array_get_owned(ptr %10, i64 0)
@@ -24746,7 +24746,7 @@ postret21:                                        ; No predecessors!
   br label %endif20
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l967"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l986"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -25621,7 +25621,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l52" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l57" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %0, i64 0)
@@ -25669,7 +25669,7 @@ then5:                                            ; preds = %lexit
 else6:                                            ; preds = %lexit
   store i1 false, ptr %slot8, align 8
   %8 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l60" to i64))
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l65" to i64))
   call void @avra_array_push_owned(ptr %8, ptr %1)
   %9 = call i64 @avra_array_get(ptr %8, i64 0)
   %10 = call ptr @avra_array_get_owned(ptr %0, i64 1)
@@ -25722,7 +25722,7 @@ endif20:                                          ; preds = %else19, %then18
   br label %lhead10
 }
 
-define i1 @"av_$40std$2Etoml$2Etoml$24l60"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Etoml$2Etoml$24l65"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -25735,7 +25735,7 @@ entry:
   ret i1 %b
 }
 
-define i1 @"av_$40std$2Etoml$2Etoml$24l52"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Etoml$2Etoml$24l57"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -26017,7 +26017,7 @@ endif:                                            ; preds = %else, %then
 then2:                                            ; preds = %endif
   store i1 true, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l173" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l176" to i64))
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
   %7 = call i64 @avra_array_len(ptr %3)
   store i64 0, ptr %slot5, align 8
@@ -26072,7 +26072,7 @@ endif10:                                          ; preds = %else9, %then8
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l173"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Emanifest$24l176"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Eavrac$2Elanguage$2Eis_number"(ptr %1)
@@ -29467,7 +29467,7 @@ entry:
 then:                                             ; preds = %entry
   store i1 true, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l1030" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Etoml$2Etoml$24l1057" to i64))
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_str_split(ptr %0, ptr getelementptr inbounds (i8, ptr @.str.952, i64 16))
   %5 = call i64 @avra_array_len(ptr %4)
@@ -29522,7 +29522,7 @@ endif6:                                           ; preds = %else5, %then4
   br label %lhead
 }
 
-define i1 @"av_$40std$2Etoml$2Etoml$24l1030"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Etoml$2Etoml$24l1057"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Etoml$2Ekey_word"(ptr %1)
@@ -33120,7 +33120,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1606" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1635" to i64))
   call void @avra_array_push(ptr %3, i64 %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @avra_array_get_owned(ptr %0, i64 14)
@@ -33172,7 +33172,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1606"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1635"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -34471,7 +34471,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2661" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2728" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @avra_array_get_owned(ptr %0, i64 24)
@@ -34522,7 +34522,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2661"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2728"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -35617,7 +35617,7 @@ endif:                                            ; preds = %else, %postret
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2266" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2325" to i64))
   call void @avra_array_push_owned(ptr %5, ptr %2)
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
   %7 = call ptr @avra_array_get_owned(ptr %0, i64 31)
@@ -35672,7 +35672,7 @@ endif6:                                           ; preds = %else5, %then4
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2266"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2325"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -39449,7 +39449,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Etyping_declare$24l1228" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Etyping_declare$24l1242" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %0)
   call void @avra_array_push_owned(ptr %3, ptr %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
@@ -39653,7 +39653,7 @@ postret27:                                        ; No predecessors!
   br label %endif26
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Etyping_declare$24l1228"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Etyping_declare$24l1242"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
@@ -40341,7 +40341,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Emod$24l30" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Emod$24l31" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr %0)
@@ -40390,7 +40390,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Emod$24l30"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Emod$24l31"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -41477,7 +41477,7 @@ endif:                                            ; preds = %else, %postret
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eruntime_api$24l1560" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eruntime_api$24l1561" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr getelementptr inbounds (i8, ptr @"av_const$80$13", i64 16))
@@ -41576,7 +41576,7 @@ postret15:                                        ; No predecessors!
   br label %endif14
 }
 
-define i1 @"av_$40std$2Eavrac$2Ecore$2Eruntime_api$24l1560"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Ecore$2Eruntime_api$24l1561"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -45059,11 +45059,11 @@ endif5:                                           ; preds = %else4, %then3
   call void @avra_rc_retain(ptr %0)
   %13 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EWorkspace$2Eparsed"(ptr %0, i64 %1)
   %14 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1193" to i64))
+  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1221" to i64))
   call void @avra_array_push_owned(ptr %14, ptr %0)
   call void @avra_array_push(ptr %14, i64 %1)
   %15 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1197" to i64))
+  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1225" to i64))
   call void @avra_array_push_owned(ptr %15, ptr %0)
   %16 = call ptr @avra_array_sized(i64 2)
   call void @avra_array_push_owned(ptr %16, ptr %14)
@@ -45178,7 +45178,7 @@ lbody:                                            ; preds = %lhead
   br label %lhead
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1197"(ptr %0, i64 %1) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1225"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -45188,7 +45188,7 @@ entry:
   ret ptr %3
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1193"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1221"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -45227,7 +45227,7 @@ endif:                                            ; preds = %else, %postret
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1264" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1292" to i64))
   call void @avra_array_push_owned(ptr %5, ptr %0)
   call void @avra_array_push_owned(ptr %5, ptr %2)
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
@@ -45281,7 +45281,7 @@ endif5:                                           ; preds = %else4, %then3
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1264"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1292"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -45632,7 +45632,7 @@ endif:                                            ; preds = %else, %postret
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %7 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2870" to i64))
+  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2916" to i64))
   call void @avra_array_push_owned(ptr %7, ptr %0)
   call void @avra_array_push(ptr %7, i64 %2)
   %8 = call i64 @avra_array_get(ptr %7, i64 0)
@@ -45893,7 +45893,7 @@ lbody64:                                          ; preds = %lhead60
   br label %lhead60
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2870"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2916"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -45961,7 +45961,7 @@ lbody:                                            ; preds = %lhead
   store i1 false, ptr %slot4, align 8
   %ld5 = load ptr, ptr %slot2, align 8
   %8 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1547" to i64))
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1574" to i64))
   call void @avra_array_push_owned(ptr %8, ptr %ld5)
   %9 = call i64 @avra_array_get(ptr %8, i64 0)
   %ld6 = load ptr, ptr %slot, align 8
@@ -46032,7 +46032,7 @@ endif18:                                          ; preds = %else17, %then16
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1547"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1574"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -46701,7 +46701,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6368" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6498" to i64))
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call i64 @avra_array_len(ptr %0)
   store i64 0, ptr %slot1, align 8
@@ -46785,7 +46785,7 @@ lbody14:                                          ; preds = %lhead10
   br label %lhead10
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6368"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6498"(ptr %0, ptr %1) {
 entry:
   %cmp = icmp ne ptr %1, null
   %not = xor i1 %cmp, true
@@ -47798,7 +47798,7 @@ entry:
   %13 = call ptr @"av_$40std$2Eavrac$2Efeatures$2EWanted$2Eroot"()
   call void @avra_array_push_owned(ptr %11, ptr %13)
   %14 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2352" to i64))
+  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2391" to i64))
   call void @avra_array_push_owned(ptr %14, ptr %0)
   call void @avra_rc_retain(ptr %7)
   call void @avra_rc_retain(ptr %11)
@@ -48195,7 +48195,7 @@ endswitch59:                                      ; preds = %arm58, %arm57
   ret ptr %regval62
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2352"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2391"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -48238,7 +48238,7 @@ endswitch:                                        ; preds = %arm1, %postret
   %8 = call i64 @avra_array_get(ptr %7, i64 %1)
   %boxed2 = inttoptr i64 %8 to ptr
   %9 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1908" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1946" to i64))
   call void @avra_array_push_owned(ptr %9, ptr %0)
   %10 = call i64 @avra_array_get(ptr %boxed2, i64 0)
   call void @avra_rc_retain(ptr %0)
@@ -48275,7 +48275,7 @@ postret:                                          ; No predecessors!
   br label %endswitch
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1908"(ptr %0, i64 %1, ptr %2, ptr %3) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1946"(ptr %0, i64 %1, ptr %2, ptr %3) {
 entry:
   %4 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %4 to ptr
@@ -48625,11 +48625,11 @@ define ptr @"av_$40std$2Eavrac$2Elanguage$2EWorkspace$2Esource"(ptr %0, i64 %1) 
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 5)
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l737" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l755" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %0)
   call void @avra_array_push(ptr %3, i64 %1)
   %4 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l741" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l759" to i64))
   call void @avra_rc_retain(ptr %2)
   call void @avra_rc_retain(ptr %3)
   call void @avra_rc_retain(ptr %4)
@@ -48641,7 +48641,7 @@ entry:
   ret ptr %5
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l741"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l759"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -48652,7 +48652,7 @@ entry:
   ret i64 %3
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l737"(ptr %0) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l755"(ptr %0) {
 entry:
   %1 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %2 = call i64 @avra_array_get(ptr %1, i64 4)
@@ -50466,7 +50466,7 @@ endif4:                                           ; preds = %else3, %then2
 then7:                                            ; preds = %endif4
   store i1 true, ptr %slot, align 8
   %8 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l521" to i64))
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l529" to i64))
   %9 = call i64 @avra_array_get(ptr %8, i64 0)
   %10 = call ptr @avra_array_sized(i64 0)
   store i64 1, ptr %slot10, align 8
@@ -50554,7 +50554,7 @@ endif35:                                          ; preds = %else34, %then33
   br label %lhead27
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l521"(ptr %0, i1 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l529"(ptr %0, i1 %1) {
 entry:
   call void @avra_rc_release(ptr %0)
   ret i1 %1
@@ -51847,11 +51847,11 @@ endif20:                                          ; preds = %else19, %then18
 define i64 @"av_$40std$2Eavrac$2Elanguage$2EBody$2Epast_loop"(ptr %0, i64 %1) {
 entry:
   %2 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3636" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3706" to i64))
   %3 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3639" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3709" to i64))
   %4 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3642" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3712" to i64))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %2)
   call void @avra_rc_retain(ptr %3)
@@ -51865,7 +51865,7 @@ entry:
   ret i64 %add
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3642"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3712"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %cmp = icmp eq i64 %2, 27
@@ -51874,7 +51874,7 @@ entry:
   ret i1 %cmp
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3639"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3709"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %cmp = icmp eq i64 %2, 27
@@ -51883,7 +51883,7 @@ entry:
   ret i1 %cmp
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3636"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3706"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %cmp = icmp eq i64 %2, 25
@@ -52224,7 +52224,7 @@ lbody:                                            ; preds = %lhead
   %4 = call ptr @avra_array_sized(i64 1)
   call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Ecloses_region$24w" to i64))
   %5 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3571" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3640" to i64))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %3)
   call void @avra_rc_retain(ptr %4)
@@ -52240,7 +52240,7 @@ lbody:                                            ; preds = %lhead
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3571"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3640"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %cmp = icmp eq i64 %2, 16
@@ -52341,7 +52341,7 @@ entry:
   %3 = call ptr @avra_array_sized(i64 1)
   call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Ecloses_region$24w" to i64))
   %4 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3628" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3697" to i64))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %2)
   call void @avra_rc_retain(ptr %3)
@@ -52355,7 +52355,7 @@ entry:
   ret i64 %add
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3628"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l3697"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %cmp = icmp eq i64 %2, 16
@@ -52610,7 +52610,7 @@ endif3:                                           ; preds = %else2, %postret
   call void @avra_cell_release(ptr %slot5)
   store ptr null, ptr %slot5, align 8
   %6 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l1705" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l1739" to i64))
   call void @avra_array_push_owned(ptr %6, ptr %1)
   %7 = call i64 @avra_array_get(ptr %6, i64 0)
   %8 = call ptr @avra_array_get_owned(ptr %0, i64 0)
@@ -52788,7 +52788,7 @@ endif46:                                          ; preds = %else45, %then44
   ret ptr %regval47
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l1705"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l1739"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -53115,7 +53115,7 @@ endif:                                            ; preds = %else, %postret
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %6 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l133" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l137" to i64))
   call void @avra_array_push_owned(ptr %6, ptr %1)
   %7 = call i64 @avra_array_get(ptr %6, i64 0)
   %8 = call ptr @avra_array_get_owned(ptr %0, i64 0)
@@ -53170,7 +53170,7 @@ endif6:                                           ; preds = %else5, %then4
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l133"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l137"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -53262,7 +53262,7 @@ then1:                                            ; preds = %endif
   call void @avra_cell_release(ptr %slot4)
   store ptr null, ptr %slot4, align 8
   %6 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l1973" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2016" to i64))
   call void @avra_array_push_owned(ptr %6, ptr %1)
   %7 = call i64 @avra_array_get(ptr %6, i64 0)
   %8 = call ptr @avra_array_get_owned(ptr %0, i64 0)
@@ -54147,7 +54147,7 @@ lbody106:                                         ; preds = %lhead102
   br label %lhead102
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l1973"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2016"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -54973,7 +54973,7 @@ postret:                                          ; No predecessors!
 then15:                                           ; preds = %endif11
   store i1 true, ptr %slot, align 8
   %16 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l246" to i64))
+  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l247" to i64))
   %17 = call i64 @avra_array_get(ptr %16, i64 0)
   %18 = call ptr @avra_array_sized(i64 0)
   %19 = call i64 @avra_array_len(ptr %14)
@@ -55052,7 +55052,7 @@ endif33:                                          ; preds = %else32, %then31
   br label %lhead25
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l246"(ptr %0, i1 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l247"(ptr %0, i1 %1) {
 entry:
   call void @avra_rc_release(ptr %0)
   ret i1 %1
@@ -55247,7 +55247,7 @@ endif11:                                          ; preds = %else10, %postret12
   %regval13 = phi i64 [ 0, %postret12 ], [ 0, %else10 ]
   store { i1, i64 } zeroinitializer, ptr %slot, align 8
   %18 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l177" to i64))
+  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l178" to i64))
   call void @avra_array_push_owned(ptr %18, ptr %7)
   call void @avra_array_push_owned(ptr %18, ptr %3)
   %19 = call i64 @avra_array_get(ptr %18, i64 0)
@@ -55340,7 +55340,7 @@ endif34:                                          ; preds = %else33, %then32
   ret ptr %26
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l177"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l178"(ptr %0, i64 %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -55461,7 +55461,7 @@ lhead:                                            ; preds = %lbody, %endif
 lexit:                                            ; preds = %lhead
   store i1 false, ptr %slot4, align 8
   %8 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l289" to i64))
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l290" to i64))
   %9 = call i64 @avra_array_get(ptr %8, i64 0)
   %10 = call i64 @avra_array_len(ptr %4)
   store i64 0, ptr %slot5, align 8
@@ -55544,7 +55544,7 @@ postret22:                                        ; No predecessors!
   br label %endif21
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l289"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l290"(ptr %0, i64 %1) {
 entry:
   %cmp = icmp slt i64 %1, 0
   br i1 %cmp, label %then, label %else
@@ -55636,7 +55636,7 @@ entry:
   %add = add i64 %sub, 1
   store { i1, i64 } zeroinitializer, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l368" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l374" to i64))
   call void @avra_array_push_owned(ptr %5, ptr %0)
   call void @avra_array_push_owned(ptr %5, ptr %1)
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
@@ -55712,7 +55712,7 @@ endif17:                                          ; preds = %else16, %then15
   ret i64 %regval19
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l368"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l374"(ptr %0, i64 %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -55732,7 +55732,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 true, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l388" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l394" to i64))
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @avra_array_sized(i64 0)
   %6 = call i64 @avra_array_len(ptr %1)
@@ -55801,7 +55801,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead8
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l388"(ptr %0, i1 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l394"(ptr %0, i1 %1) {
 entry:
   call void @avra_rc_release(ptr %0)
   ret i1 %1
@@ -55956,7 +55956,7 @@ entry:
 then:                                             ; preds = %entry
   store i1 true, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l336" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l339" to i64))
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call ptr @avra_array_sized(i64 0)
   %7 = call i64 @avra_array_len(ptr %0)
@@ -56031,7 +56031,7 @@ endif16:                                          ; preds = %else15, %then14
   br label %lhead8
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l336"(ptr %0, i1 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp_bytes$24l339"(ptr %0, i1 %1) {
 entry:
   call void @avra_rc_release(ptr %0)
   ret i1 %1
@@ -58371,7 +58371,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2469" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2512" to i64))
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @avra_array_get_owned(ptr %1, i64 8)
   %6 = call i64 @avra_array_len(ptr %5)
@@ -58489,7 +58489,7 @@ endif20:                                          ; preds = %else19, %then18
   br label %lhead12
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2469"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2512"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Eavrac$2Elanguage$2Ecarries_cell"(ptr %1)
@@ -59035,7 +59035,7 @@ entry:
   %4 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Efile_slots"(ptr %boxed)
   store i1 true, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2462" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2505" to i64))
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
   %7 = call ptr @avra_array_sized(i64 0)
   %8 = call ptr @avra_array_get_owned(ptr %1, i64 2)
@@ -59117,7 +59117,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead8
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2462"(ptr %0, i1 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2505"(ptr %0, i1 %1) {
 entry:
   call void @avra_rc_release(ptr %0)
   ret i1 %1
@@ -59734,7 +59734,7 @@ entry:
   %slot = alloca { i1, i64 }, align 8
   store { i1, i64 } zeroinitializer, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2674" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2725" to i64))
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_array_sized(i64 0)
   %5 = call ptr @avra_array_get_owned(ptr %0, i64 11)
@@ -59818,7 +59818,7 @@ endif16:                                          ; preds = %else15, %then14
   ret i64 %regval18
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2674"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l2725"(ptr %0, i64 %1) {
 entry:
   %cmp = icmp ne i64 %1, 0
   call void @avra_rc_release(ptr %0)
@@ -66288,7 +66288,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l579" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l587" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %0)
   %slot1 = zext i1 %2 to i64
   call void @avra_array_push(ptr %3, i64 %slot1)
@@ -66492,7 +66492,7 @@ postret36:                                        ; No predecessors!
   br label %endif35
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l579"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Einterp$24l587"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -66833,7 +66833,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ediagnostics$2Emod$24l93" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ediagnostics$2Emod$24l102" to i64))
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call i64 @avra_array_len(ptr %0)
   store i64 0, ptr %slot1, align 8
@@ -66876,7 +66876,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Ediagnostics$2Emod$24l93"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Ediagnostics$2Emod$24l102"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Eavrac$2Ediagnostics$2Eis_error"(ptr %1)
@@ -66908,7 +66908,7 @@ entry:
   call void @avra_array_push_owned(ptr %7, ptr %4)
   call void @avra_array_push_owned(ptr %7, ptr %6)
   %8 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2189" to i64))
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2228" to i64))
   call void @avra_array_push_owned(ptr %8, ptr %0)
   call void @avra_rc_retain(ptr %5)
   call void @avra_rc_retain(ptr %7)
@@ -66927,7 +66927,7 @@ entry:
   ret ptr %10
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2189"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2228"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -68172,7 +68172,7 @@ lbody:                                            ; preds = %lhead
   store i1 false, ptr %slot4, align 8
   %ld5 = load ptr, ptr %slot, align 8
   %9 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l397" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l399" to i64))
   call void @avra_array_push_owned(ptr %9, ptr %ld5)
   %10 = call i64 @avra_array_get(ptr %9, i64 0)
   call void @avra_rc_retain(ptr %8)
@@ -68350,7 +68350,7 @@ postret55:                                        ; No predecessors!
   br label %endif54
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l397"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l399"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -68366,7 +68366,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l452" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l454" to i64))
   call void @avra_array_push(ptr %2, i64 %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr %0)
@@ -68408,7 +68408,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l452"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l454"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i1 @"av_$40std$2Eavrac$2Ecore$2Esame_reg"(i64 %1, i64 %2)
@@ -68441,7 +68441,7 @@ endif:                                            ; preds = %else, %postret
   %regval = phi i64 [ 0, %postret ], [ 0, %else ]
   store i1 false, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l462" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l465" to i64))
   call void @avra_array_push(ptr %3, i64 %1)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   call void @avra_rc_retain(ptr %0)
@@ -68489,7 +68489,7 @@ endif6:                                           ; preds = %else5, %then4
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l462"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l465"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i1 @"av_$40std$2Eavrac$2Ecore$2Esame_reg"(i64 %1, i64 %2)
@@ -70870,7 +70870,7 @@ endif4:                                           ; preds = %else3, %postret5
   %regval6 = phi i64 [ 0, %postret5 ], [ 0, %else3 ]
   store i1 false, ptr %slot, align 8
   %10 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l578" to i64))
+  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l587" to i64))
   call void @avra_array_push(ptr %10, i64 %6)
   %11 = call i64 @avra_array_get(ptr %10, i64 0)
   %12 = call ptr @avra_array_get_owned(ptr %2, i64 1)
@@ -70950,7 +70950,7 @@ postret19:                                        ; No predecessors!
   br label %endif18
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l578"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Ememory$24l587"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i1 @"av_$40std$2Eavrac$2Ecore$2Esame_reg"(i64 %1, i64 %2)
@@ -72552,7 +72552,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower$24l629" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower$24l642" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %0)
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
@@ -72600,7 +72600,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Elower$24l629"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Elower$24l642"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -76451,7 +76451,7 @@ lhead:                                            ; preds = %lbody, %entry
 lexit:                                            ; preds = %lhead
   %11 = call ptr @avra_array_sized(i64 0)
   %12 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l104" to i64))
+  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l106" to i64))
   %13 = call i64 @avra_array_get(ptr %12, i64 0)
   %14 = call i64 @avra_array_len(ptr %9)
   store i64 0, ptr %slot7, align 8
@@ -76510,7 +76510,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead8
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l104"(ptr %0, i1 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l106"(ptr %0, i1 %1) {
 entry:
   call void @avra_rc_release(ptr %0)
   ret i1 %1
@@ -77048,7 +77048,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1586" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1614" to i64))
   call void @avra_array_push(ptr %3, i64 %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @avra_array_get_owned(ptr %0, i64 14)
@@ -77100,7 +77100,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1586"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1614"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -77366,7 +77366,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l873" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l893" to i64))
   call void @avra_array_push(ptr %2, i64 %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %0, i64 7)
@@ -77416,7 +77416,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l873"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l893"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -80376,7 +80376,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Enodes$24l135" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Enodes$24l144" to i64))
   call void @avra_array_push_owned(ptr %1, ptr %0)
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ebody_rows"()
@@ -80453,7 +80453,7 @@ postret:                                          ; No predecessors!
   br label %endif8
 }
 
-define i1 @"av_$40std$2Eavrac$2Ecore$2Enodes$24l135"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Ecore$2Enodes$24l144"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -81398,11 +81398,11 @@ entry:
   call void @avra_rc_retain(ptr %13)
   %18 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Epresence_of"(ptr %0, i64 %14, ptr %13)
   %19 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %19, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_walk$24l253" to i64))
+  call void @avra_array_push(ptr %19, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_walk$24l255" to i64))
   call void @avra_array_push(ptr %19, i64 %14)
   call void @avra_array_push_owned(ptr %19, ptr %13)
   %20 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %20, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_walk$24l267" to i64))
+  call void @avra_array_push(ptr %20, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_walk$24l269" to i64))
   call void @avra_array_push(ptr %20, i64 %2)
   call void @avra_array_push(ptr %20, i64 %5)
   call void @avra_rc_retain(ptr %0)
@@ -81426,7 +81426,7 @@ entry:
   ret i64 %21
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Elower_walk$24l267"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Elower_walk$24l269"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   call void @avra_rc_retain(ptr %1)
@@ -81450,7 +81450,7 @@ entry:
   ret i64 %3
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Elower_walk$24l253"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Elower_walk$24l255"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -82900,7 +82900,7 @@ entry:
   %slot = alloca i64, align 8
   %1 = call ptr @avra_array_sized(i64 0)
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l1246" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l1276" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %0)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %0, i64 0)
@@ -83013,7 +83013,7 @@ postret:                                          ; No predecessors!
   br label %endif13
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l1246"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l1276"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -87534,7 +87534,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ecrossing$24l300" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ecrossing$24l304" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %0)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @"av_$40std$2Eavrac$2Efeatures$2Emeta_records"()
@@ -87626,7 +87626,7 @@ endif13:                                          ; preds = %else12, %then11
   ret ptr %18
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Ecrossing$24l300"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Ecrossing$24l304"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -89132,7 +89132,7 @@ lexit23:                                          ; preds = %lhead22
   call void @avra_cell_release(ptr %slot32)
   store ptr null, ptr %slot32, align 8
   %21 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %21, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1741" to i64))
+  call void @avra_array_push(ptr %21, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1779" to i64))
   call void @avra_array_push_owned(ptr %21, ptr %0)
   call void @avra_array_push_owned(ptr %21, ptr %2)
   %22 = call i64 @avra_array_get(ptr %21, i64 0)
@@ -89226,7 +89226,7 @@ endif50:                                          ; preds = %else49, %then48
   ret ptr %ld46
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1741"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1779"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -89355,11 +89355,11 @@ define ptr @"av_$40std$2Eavrac$2Elanguage$2EWorkspace$2Eparsed"(ptr %0, i64 %1) 
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 8)
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l750" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l769" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %0)
   call void @avra_array_push(ptr %3, i64 %1)
   %4 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l763" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l782" to i64))
   call void @avra_rc_retain(ptr %2)
   call void @avra_rc_retain(ptr %3)
   call void @avra_rc_retain(ptr %4)
@@ -89371,7 +89371,7 @@ entry:
   ret ptr %5
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l763"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l782"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i64 @"av_$40std$2Eavrac$2Elanguage$2Eprogram_hash"(ptr %1)
@@ -89401,7 +89401,7 @@ entry:
   ret i64 %9
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l750"(ptr %0) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l769"(ptr %0) {
 entry:
   %1 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %2 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -90219,7 +90219,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ediagnostics$2Emod$24l17" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ediagnostics$2Emod$24l19" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr %0)
@@ -90282,7 +90282,7 @@ endif8:                                           ; preds = %else7, %then6
   ret ptr %regval9
 }
 
-define i1 @"av_$40std$2Eavrac$2Ediagnostics$2Emod$24l17"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Ediagnostics$2Emod$24l19"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -96622,7 +96622,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l165$24309" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l178$24309" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr %0)
@@ -96685,7 +96685,7 @@ endif8:                                           ; preds = %else7, %then6
   ret ptr %regval9
 }
 
-define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l165$24309"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l178$24309"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -97560,7 +97560,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l120$24309" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l129$24309" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %1)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call i64 @avra_array_len(ptr %0)
@@ -97758,7 +97758,7 @@ endif42:                                          ; preds = %else41, %then40
   br label %endif38
 }
 
-define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l120$24309"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l129$24309"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -106283,7 +106283,7 @@ endif41:                                          ; preds = %else40, %then39
   store ptr null, ptr %slot43, align 8
   %ld44 = load ptr, ptr %slot30, align 8
   %34 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %34, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l917" to i64))
+  call void @avra_array_push(ptr %34, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l940" to i64))
   call void @avra_array_push_owned(ptr %34, ptr %ld44)
   %35 = call i64 @avra_array_get(ptr %34, i64 0)
   %36 = call i64 @avra_array_len(ptr %23)
@@ -106376,7 +106376,7 @@ endif66:                                          ; preds = %else65, %then64
   br label %endif62
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l917"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l940"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -106743,7 +106743,7 @@ entry:
   %slot = alloca i64, align 8
   %1 = call ptr @avra_array_sized(i64 0)
   %2 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Evalidate$24l160" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Evalidate$24l171" to i64))
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %0, i64 2)
   %5 = call i64 @avra_array_len(ptr %4)
@@ -106985,7 +106985,7 @@ lbody65:                                          ; preds = %lhead61
   br label %lhead61
 }
 
-define ptr @"av_$40std$2Eavrac$2Egrammar$2Evalidate$24l160"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Egrammar$2Evalidate$24l171"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %1, i64 0)
   call void @avra_rc_release(ptr %1)
@@ -108216,7 +108216,7 @@ endif19:                                          ; preds = %else18, %postret20
   call void @avra_cell_release(ptr %slot22)
   store ptr null, ptr %slot22, align 8
   %12 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Efirst$24l34" to i64))
+  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Efirst$24l35" to i64))
   call void @avra_array_push_owned(ptr %12, ptr %1)
   %13 = call i64 @avra_array_get(ptr %12, i64 0)
   %14 = call ptr @avra_array_get_owned(ptr %0, i64 0)
@@ -108332,7 +108332,7 @@ postret46:                                        ; No predecessors!
   br label %endif45
 }
 
-define i1 @"av_$40std$2Eavrac$2Egrammar$2Efirst$24l34"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Egrammar$2Efirst$24l35"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -111928,7 +111928,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l165$24579" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l178$24579" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr %0)
@@ -111991,7 +111991,7 @@ endif8:                                           ; preds = %else7, %then6
   ret ptr %regval9
 }
 
-define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l165$24579"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l178$24579"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -112382,7 +112382,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l120$24579" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l129$24579" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %1)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call i64 @avra_array_len(ptr %0)
@@ -112580,7 +112580,7 @@ endif42:                                          ; preds = %else41, %then40
   br label %endif38
 }
 
-define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l120$24579"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l129$24579"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -117827,11 +117827,11 @@ define ptr @"av_$40std$2Eavrac$2Elanguage$2EWorkspace$2Eplain_parsed"(ptr %0, i6
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 9)
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l776" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l796" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %0)
   call void @avra_array_push(ptr %3, i64 %1)
   %4 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l779" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l799" to i64))
   call void @avra_rc_retain(ptr %2)
   call void @avra_rc_retain(ptr %3)
   call void @avra_rc_retain(ptr %4)
@@ -117843,7 +117843,7 @@ entry:
   ret ptr %5
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l779"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l799"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i64 @"av_$40std$2Eavrac$2Elanguage$2Eprogram_hash"(ptr %1)
@@ -117852,7 +117852,7 @@ entry:
   ret i64 %2
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l776"(ptr %0) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l796"(ptr %0) {
 entry:
   %1 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %2 = call i64 @avra_array_get(ptr %1, i64 2)
@@ -118666,7 +118666,7 @@ entry:
   %boxed = inttoptr i64 %4 to ptr
   store i1 false, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4034" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4091" to i64))
   call void @avra_array_push_owned(ptr %5, ptr %1)
   call void @avra_array_push_owned(ptr %5, ptr %boxed)
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
@@ -118719,7 +118719,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4034"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4091"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -118893,7 +118893,7 @@ endif:                                            ; preds = %else, %postret
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5971" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6082" to i64))
   call void @avra_array_push_owned(ptr %5, ptr %2)
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
   %7 = call ptr @avra_array_get_owned(ptr %0, i64 31)
@@ -118950,7 +118950,7 @@ endif6:                                           ; preds = %else5, %then4
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5971"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6082"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -119129,7 +119129,7 @@ endif5:                                           ; preds = %else4, %postret6
   %regval7 = phi i64 [ 0, %postret6 ], [ 0, %else4 ]
   store i1 false, ptr %slot, align 8
   %9 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5816" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5925" to i64))
   call void @avra_array_push_owned(ptr %9, ptr %1)
   %10 = call i64 @avra_array_get(ptr %9, i64 0)
   %11 = call ptr @avra_array_get_owned(ptr %0, i64 31)
@@ -119215,7 +119215,7 @@ postret22:                                        ; No predecessors!
   br label %endif21
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5816"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5925"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -119527,7 +119527,7 @@ endif7:                                           ; preds = %else6, %postret
   call void @avra_cell_release(ptr %slot9)
   store ptr null, ptr %slot9, align 8
   %12 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5750" to i64))
+  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5859" to i64))
   call void @avra_array_push_owned(ptr %12, ptr %1)
   %13 = call i64 @avra_array_get(ptr %12, i64 0)
   %14 = call ptr @avra_array_get_owned(ptr %0, i64 31)
@@ -119714,7 +119714,7 @@ postret46:                                        ; No predecessors!
   br label %endif45
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5750"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5859"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -120260,7 +120260,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5996" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6108" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call i64 @avra_array_get(ptr %1, i64 3)
@@ -120312,7 +120312,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5996"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6108"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -123726,7 +123726,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l3631" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l3682" to i64))
   call void @avra_array_push_owned(ptr %5, ptr %0)
   call void @avra_array_push(ptr %5, i64 %2)
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
@@ -123815,7 +123815,7 @@ postret:                                          ; No predecessors!
   br label %endif8
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l3631"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l3682"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -124037,7 +124037,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2521" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2585" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %0)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   call void @avra_rc_retain(ptr %0)
@@ -124090,7 +124090,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2521"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2585"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -124921,7 +124921,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 true, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2607" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2648" to i64))
   call void @avra_array_push_owned(ptr %5, ptr %3)
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
   %7 = call ptr @avra_array_get_owned(ptr %2, i64 3)
@@ -125083,7 +125083,7 @@ lbody27:                                          ; preds = %lhead23
   br label %lhead23
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2607"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l2648"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -127983,7 +127983,7 @@ lbody:                                            ; preds = %lhead
   %36 = call i64 @avra_array_get(ptr %4, i64 %ld28)
   %boxed29 = inttoptr i64 %36 to ptr
   %37 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %37, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l3412" to i64))
+  call void @avra_array_push(ptr %37, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l3461" to i64))
   call void @avra_array_push_owned(ptr %37, ptr %0)
   call void @avra_array_push(ptr %37, i64 %1)
   call void @avra_array_push_owned(ptr %37, ptr %boxed29)
@@ -128214,7 +128214,7 @@ lbody87:                                          ; preds = %lhead83
   br label %lhead83
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l3412"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l3461"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -128680,7 +128680,7 @@ endif6:                                           ; preds = %else5, %postret7
   %regval8 = phi i64 [ 0, %postret7 ], [ 0, %else5 ]
   %ld = load ptr, ptr %slot, align 8
   %7 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eprogram$24l162" to i64))
+  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eprogram$24l163" to i64))
   call void @avra_array_push_owned(ptr %7, ptr %0)
   call void @avra_array_push_owned(ptr %7, ptr %ld)
   call void @avra_array_push_owned(ptr %7, ptr %1)
@@ -128802,7 +128802,7 @@ postret35:                                        ; No predecessors!
   br label %endif34
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eprogram$24l162"(ptr %0, ptr %1, ptr %2, ptr %3) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eprogram$24l163"(ptr %0, ptr %1, ptr %2, ptr %3) {
 entry:
   %4 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %5 = call i64 @avra_array_get(ptr %4, i64 1)
@@ -129049,7 +129049,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6422" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6553" to i64))
   call void @avra_array_push(ptr %5, i64 %3)
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
   %7 = call ptr @avra_array_get_owned(ptr %2, i64 23)
@@ -129155,7 +129155,7 @@ endif13:                                          ; preds = %else12, %then11
   ret i64 0
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6422"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6553"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -134636,7 +134636,7 @@ endif12:                                          ; preds = %else11, %postret13
   %regval14 = phi i64 [ 0, %postret13 ], [ 0, %else11 ]
   store i1 true, ptr %slot, align 8
   %15 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Erebuild$24l97" to i64))
+  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Erebuild$24l99" to i64))
   call void @avra_array_push_owned(ptr %15, ptr %0)
   %16 = call i64 @avra_array_get(ptr %15, i64 0)
   %17 = call i64 @avra_array_len(ptr %8)
@@ -134799,7 +134799,7 @@ endif53:                                          ; preds = %else52, %postret54
   %regval55 = phi i64 [ 0, %postret54 ], [ 0, %else52 ]
   store i1 true, ptr %slot56, align 8
   %35 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %35, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Erebuild$24l127" to i64))
+  call void @avra_array_push(ptr %35, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Erebuild$24l129" to i64))
   call void @avra_array_push_owned(ptr %35, ptr %0)
   %36 = call i64 @avra_array_get(ptr %35, i64 0)
   %37 = call i64 @avra_array_len(ptr %8)
@@ -134879,7 +134879,7 @@ postret76:                                        ; No predecessors!
   br label %endif75
 }
 
-define i1 @"av_$40std$2Eavrac$2Ecore$2Erebuild$24l127"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Ecore$2Erebuild$24l129"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -134904,7 +134904,7 @@ endif:                                            ; preds = %else, %then
   ret i1 %regval
 }
 
-define i1 @"av_$40std$2Eavrac$2Ecore$2Erebuild$24l97"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Ecore$2Erebuild$24l99"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -136079,7 +136079,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2511" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2574" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %0)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   call void @avra_rc_retain(ptr %0)
@@ -136132,7 +136132,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2511"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l2574"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -136763,7 +136763,7 @@ lexit:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %0)
   %17 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EWorkspace$2Eprelude_imports"(ptr %0, i64 %1)
   %18 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1105" to i64))
+  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1131" to i64))
   call void @avra_array_push_owned(ptr %18, ptr %0)
   call void @avra_rc_retain(ptr %12)
   call void @avra_rc_retain(ptr %16)
@@ -136863,7 +136863,7 @@ lbody:                                            ; preds = %lhead
   br label %lhead
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1105"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1131"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -140165,7 +140165,7 @@ lexit:                                            ; preds = %lhead
   %14 = call ptr @"av_$40std$2Eavrac$2Ecore$2Eflatten$24113"(ptr %12)
   %15 = call ptr @avra_array_get_owned(ptr %0, i64 4)
   %16 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1036" to i64))
+  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1062" to i64))
   call void @avra_array_push_owned(ptr %16, ptr %0)
   call void @avra_rc_retain(ptr %15)
   call void @avra_rc_retain(ptr %14)
@@ -140242,7 +140242,7 @@ lbody11:                                          ; preds = %lhead7
   br label %lhead7
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1036"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1062"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -141714,7 +141714,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6004" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6117" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @avra_array_get_owned(ptr %0, i64 31)
@@ -141918,7 +141918,7 @@ endif21:                                          ; preds = %else20, %then19
   ret ptr %38
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6004"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l6117"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -142436,7 +142436,7 @@ entry:
   %2 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EWorkspace$2Eparsed"(ptr %0, i64 %1)
   store i1 false, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1278" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1306" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @avra_array_get_owned(ptr %2, i64 1)
@@ -142481,7 +142481,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1278"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1306"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -144002,7 +144002,7 @@ entry:
   %2 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EWorkspace$2Eparsed"(ptr %0, i64 %1)
   store i1 false, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1292" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1320" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @avra_array_get_owned(ptr %2, i64 1)
@@ -144047,7 +144047,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1292"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1320"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -144244,7 +144244,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Equery$2Edb$24l210" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Equery$2Edb$24l214" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   call void @avra_rc_retain(ptr %0)
@@ -144294,7 +144294,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Equery$2Edb$24l210"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Equery$2Edb$24l214"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -145005,7 +145005,7 @@ lexit:                                            ; preds = %lhead
   %11 = call ptr @avra_array_concat(ptr %3, ptr %4)
   store i1 false, ptr %slot5, align 8
   %12 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1395" to i64))
+  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1423" to i64))
   call void @avra_array_push_owned(ptr %12, ptr %0)
   %13 = call i64 @avra_array_get(ptr %12, i64 0)
   %14 = call i64 @avra_array_len(ptr %11)
@@ -145094,7 +145094,7 @@ endif23:                                          ; preds = %else22, %postret
   %regval25 = phi i64 [ 0, %postret ], [ 0, %else22 ]
   store i1 false, ptr %slot26, align 8
   %21 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %21, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1414" to i64))
+  call void @avra_array_push(ptr %21, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1442" to i64))
   call void @avra_array_push_owned(ptr %21, ptr %0)
   %22 = call i64 @avra_array_get(ptr %21, i64 0)
   %23 = call i64 @avra_array_len(ptr %11)
@@ -145321,7 +145321,7 @@ lbody76:                                          ; preds = %lhead72
   br label %lhead72
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1414"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1442"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %2, i64 3)
@@ -145350,7 +145350,7 @@ entry:
   ret i1 %10
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1395"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l1423"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -145979,7 +145979,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Equery$2Edb$24l217" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Equery$2Edb$24l222" to i64))
   call void @avra_array_push(ptr %2, i64 %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   call void @avra_rc_retain(ptr %0)
@@ -146028,7 +146028,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Equery$2Edb$24l217"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Equery$2Edb$24l222"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -148843,7 +148843,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Enodes$24l151" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Enodes$24l160" to i64))
   call void @avra_array_push_owned(ptr %1, ptr %0)
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ebody_rows"()
@@ -148920,7 +148920,7 @@ endif12:                                          ; preds = %else11, %then10
   ret i1 %regval14
 }
 
-define i1 @"av_$40std$2Eavrac$2Ecore$2Enodes$24l151"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Ecore$2Enodes$24l160"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -152886,7 +152886,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Econtexts$24l146" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Econtexts$24l148" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %0)
   call void @avra_array_push_owned(ptr %3, ptr %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
@@ -152941,7 +152941,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Econtexts$24l146"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Econtexts$24l148"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -155269,7 +155269,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eannotations$2Echeck$24l216" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eannotations$2Echeck$24l217" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %0)
   call void @avra_array_push(ptr %2, i64 %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
@@ -155361,7 +155361,7 @@ postret:                                          ; No predecessors!
   br label %endif9
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eannotations$2Echeck$24l216"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eannotations$2Echeck$24l217"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -156824,7 +156824,7 @@ entry:
   call void @avra_rc_retain(ptr %0)
   %8 = call ptr @"av_$40std$2Epath$2Edir_of"(ptr %0)
   %9 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l210" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l222" to i64))
   call void @avra_rc_retain(ptr %6)
   call void @avra_rc_retain(ptr %7)
   call void @avra_rc_retain(ptr %8)
@@ -156844,7 +156844,7 @@ entry:
   ret ptr %10
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l210"(ptr %0) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l222"(ptr %0) {
 entry:
   call void @avra_rc_release(ptr %0)
   ret i64 0
@@ -157029,7 +157029,7 @@ lexit:                                            ; preds = %lhead
   %boxed14 = inttoptr i64 %73 to ptr
   %ld15 = load ptr, ptr %slot2, align 8
   %74 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %74, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l366" to i64))
+  call void @avra_array_push(ptr %74, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l380" to i64))
   call void @avra_array_push_owned(ptr %74, ptr %ld15)
   call void @avra_rc_retain(ptr %boxed14)
   call void @avra_rc_retain(ptr %74)
@@ -157039,7 +157039,7 @@ lexit:                                            ; preds = %lhead
   %boxed17 = inttoptr i64 %76 to ptr
   %ld18 = load ptr, ptr %slot2, align 8
   %77 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %77, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l374" to i64))
+  call void @avra_array_push(ptr %77, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l388" to i64))
   call void @avra_array_push_owned(ptr %77, ptr %ld18)
   call void @avra_rc_retain(ptr %boxed17)
   call void @avra_rc_retain(ptr %77)
@@ -157049,7 +157049,7 @@ lexit:                                            ; preds = %lhead
   %boxed20 = inttoptr i64 %79 to ptr
   %ld21 = load ptr, ptr %slot2, align 8
   %80 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %80, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l381" to i64))
+  call void @avra_array_push(ptr %80, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l395" to i64))
   call void @avra_array_push_owned(ptr %80, ptr %ld21)
   call void @avra_rc_retain(ptr %boxed20)
   call void @avra_rc_retain(ptr %80)
@@ -157059,7 +157059,7 @@ lexit:                                            ; preds = %lhead
   %boxed23 = inttoptr i64 %82 to ptr
   %ld24 = load ptr, ptr %slot2, align 8
   %83 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %83, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l387" to i64))
+  call void @avra_array_push(ptr %83, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l401" to i64))
   call void @avra_array_push_owned(ptr %83, ptr %ld24)
   call void @avra_rc_retain(ptr %boxed23)
   call void @avra_rc_retain(ptr %83)
@@ -157069,14 +157069,14 @@ lexit:                                            ; preds = %lhead
   %boxed26 = inttoptr i64 %85 to ptr
   %ld27 = load ptr, ptr %slot2, align 8
   %86 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %86, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l394" to i64))
+  call void @avra_array_push(ptr %86, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l408" to i64))
   call void @avra_array_push_owned(ptr %86, ptr %ld27)
   call void @avra_rc_retain(ptr %boxed26)
   call void @avra_rc_retain(ptr %86)
   %87 = call i64 @"av_$40std$2Eavrac$2Efeatures$2EDecls$2Earm_marks"(ptr %boxed26, ptr %86)
   %ld28 = load ptr, ptr %slot2, align 8
   %88 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %88, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l404" to i64))
+  call void @avra_array_push(ptr %88, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l418" to i64))
   call void @avra_array_push_owned(ptr %88, ptr %ld28)
   %ld29 = load ptr, ptr %slot2, align 8
   %89 = call i64 @avra_array_get(ptr %ld29, i64 4)
@@ -157166,7 +157166,7 @@ lbody:                                            ; preds = %lhead
   %ld7 = load ptr, ptr %slot2, align 8
   %ld8 = load ptr, ptr %slot4, align 8
   %94 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %94, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l353" to i64))
+  call void @avra_array_push(ptr %94, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l367" to i64))
   call void @avra_array_push_owned(ptr %94, ptr %ld7)
   call void @avra_array_push_owned(ptr %94, ptr %ld8)
   call void @avra_rc_retain(ptr %boxed)
@@ -157199,7 +157199,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l404"(ptr %0, ptr %1, i64 %2, i64 %3, i64 %4, ptr %5) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l418"(ptr %0, ptr %1, i64 %2, i64 %3, i64 %4, ptr %5) {
 entry:
   %6 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %6 to ptr
@@ -157213,7 +157213,7 @@ entry:
   ret ptr %7
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l394"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l408"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -157225,7 +157225,7 @@ entry:
   ret i64 %3
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l387"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l401"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -157236,7 +157236,7 @@ entry:
   ret i64 %3
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l381"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l395"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -157248,7 +157248,7 @@ entry:
   ret i64 %3
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l374"(ptr %0, i64 %1, i64 %2) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l388"(ptr %0, i64 %1, i64 %2) {
 entry:
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %3 to ptr
@@ -157258,7 +157258,7 @@ entry:
   ret i1 %4
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l366"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l380"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -157270,7 +157270,7 @@ entry:
   ret i64 %3
 }
 
-define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l353"(ptr %0, i64 %1) {
+define i64 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l367"(ptr %0, i64 %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -157993,7 +157993,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ereceivers$24l132" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ereceivers$24l136" to i64))
   call void @avra_array_push(ptr %3, i64 %2)
   call void @avra_array_push_owned(ptr %3, ptr %0)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
@@ -158041,7 +158041,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Ereceivers$24l132"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Ereceivers$24l136"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -160855,7 +160855,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Emod$24l41" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Emod$24l43" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %1)
   call void @avra_array_push_owned(ptr %3, ptr %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
@@ -160906,7 +160906,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Emod$24l41"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Emod$24l43"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -163341,19 +163341,19 @@ entry:
 define ptr @"av_$40std$2Eavrac$2Elanguage$2Ememory_host_at"(ptr %0, ptr %1, ptr %2) {
 entry:
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l38" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l40" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %0)
   call void @avra_array_push_owned(ptr %3, ptr %2)
   %4 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l47" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l49" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %0)
   call void @avra_array_push_owned(ptr %4, ptr %2)
   %5 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l54" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l56" to i64))
   call void @avra_array_push_owned(ptr %5, ptr %1)
   call void @avra_array_push_owned(ptr %5, ptr %2)
   %6 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l64" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l66" to i64))
   call void @avra_array_push_owned(ptr %6, ptr %1)
   call void @avra_array_push_owned(ptr %6, ptr %2)
   %7 = call ptr @avra_array_sized(i64 6)
@@ -163375,7 +163375,7 @@ entry:
   ret ptr %7
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l64"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l66"(ptr %0, ptr %1) {
 entry:
   %slot1 = alloca i64, align 8
   %slot = alloca i1, align 1
@@ -163383,7 +163383,7 @@ entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 2)
   %boxed = inttoptr i64 %2 to ptr
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l62" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l64" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %boxed)
   call void @avra_array_push_owned(ptr %3, ptr %1)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
@@ -163431,7 +163431,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l62"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l64"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -163452,7 +163452,7 @@ entry:
   ret i1 %6
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l54"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l56"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -163473,7 +163473,7 @@ entry:
   ret ptr %6
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l47"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l49"(ptr %0, ptr %1) {
 entry:
   %slot = alloca ptr, align 8
   store ptr null, ptr %slot, align 8
@@ -163529,7 +163529,7 @@ endif3:                                           ; preds = %else2, %then1
   ret ptr %regval4
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l38"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l40"(ptr %0, ptr %1) {
 entry:
   %slot = alloca ptr, align 8
   store ptr null, ptr %slot, align 8
@@ -168399,7 +168399,7 @@ postret:                                          ; No predecessors!
 then14:                                           ; preds = %endif11
   store i1 false, ptr %slot17, align 8
   %19 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %19, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l767" to i64))
+  call void @avra_array_push(ptr %19, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l787" to i64))
   call void @avra_array_push(ptr %19, i64 %11)
   %20 = call i64 @avra_array_get(ptr %19, i64 0)
   %21 = call ptr @avra_array_get_owned(ptr %0, i64 7)
@@ -168487,7 +168487,7 @@ postret39:                                        ; No predecessors!
   br label %endif37
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l767"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Elower_state$24l787"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -169979,7 +169979,7 @@ lexit:                                            ; preds = %lhead
   call void @avra_cell_release(ptr %slot4)
   store ptr null, ptr %slot4, align 8
   %6 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Echeck$24l22" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Echeck$24l23" to i64))
   call void @avra_array_push_owned(ptr %6, ptr %4)
   %7 = call i64 @avra_array_get(ptr %6, i64 0)
   %8 = call i64 @avra_array_len(ptr %4)
@@ -170080,7 +170080,7 @@ endif23:                                          ; preds = %else22, %postret29
   %17 = call ptr @avra_insist(ptr %15)
   store i1 false, ptr %slot31, align 8
   %18 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Echeck$24l60" to i64))
+  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Echeck$24l61" to i64))
   call void @avra_array_push_owned(ptr %18, ptr %0)
   %19 = call i64 @avra_array_get(ptr %18, i64 0)
   %20 = call i64 @avra_array_len(ptr %17)
@@ -170332,7 +170332,7 @@ endif78:                                          ; preds = %else77, %then76
   ret ptr %regval81
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Echeck$24l60"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Echeck$24l61"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -170344,7 +170344,7 @@ entry:
   ret i1 %3
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Echeck$24l22"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Echeck$24l23"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -172034,7 +172034,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 true, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1683" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1702" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %0)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %0, i64 4)
@@ -172087,7 +172087,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1683"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1702"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -172543,7 +172543,7 @@ endif9:                                           ; preds = %else8, %postret10
   %regval11 = phi i64 [ 0, %postret10 ], [ 0, %else8 ]
   store i1 false, ptr %slot, align 8
   %15 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1839" to i64))
+  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1860" to i64))
   call void @avra_array_push_owned(ptr %15, ptr %0)
   call void @avra_array_push(ptr %15, i64 %9)
   %16 = call i64 @avra_array_get(ptr %15, i64 0)
@@ -172612,7 +172612,7 @@ endif23:                                          ; preds = %else22, %then21
   ret ptr %22
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1839"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1860"(ptr %0, i64 %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -180041,7 +180041,7 @@ arm8:                                             ; preds = %entry
   %24 = call ptr @avra_array_get_owned(ptr %6, i64 3)
   store i1 true, ptr %slot, align 8
   %25 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %25, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l391" to i64))
+  call void @avra_array_push(ptr %25, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l399" to i64))
   call void @avra_array_push_owned(ptr %25, ptr %0)
   call void @avra_array_push_owned(ptr %25, ptr %2)
   call void @avra_array_push_owned(ptr %25, ptr %3)
@@ -180055,7 +180055,7 @@ arm9:                                             ; preds = %entry
   %29 = call ptr @avra_array_get_owned(ptr %6, i64 3)
   store i1 true, ptr %slot35, align 8
   %30 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %30, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l399" to i64))
+  call void @avra_array_push(ptr %30, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l407" to i64))
   call void @avra_array_push_owned(ptr %30, ptr %0)
   call void @avra_array_push_owned(ptr %30, ptr %2)
   call void @avra_array_push_owned(ptr %30, ptr %3)
@@ -180217,7 +180217,7 @@ endif55:                                          ; preds = %else54, %then53
   br label %endswitch
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l399"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l407"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 2)
@@ -180235,7 +180235,7 @@ entry:
   ret i1 %5
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l391"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l399"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 2)
@@ -182019,7 +182019,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Etyping$24l782" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Etyping$24l791" to i64))
   call void @avra_array_push(ptr %4, i64 %3)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call i64 @avra_array_len(ptr %2)
@@ -182101,7 +182101,7 @@ postret:                                          ; No predecessors!
   br label %endif8
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Etyping$24l782"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Etyping$24l791"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -184560,11 +184560,11 @@ endif:                                            ; preds = %else, %postret
   call void @avra_rc_retain(ptr %10)
   %12 = call ptr @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Ecarried_type"(ptr %0, ptr %10)
   %13 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l250" to i64))
+  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l260" to i64))
   call void @avra_array_push(ptr %13, i64 %7)
   call void @avra_array_push_owned(ptr %13, ptr %10)
   %14 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l265" to i64))
+  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l275" to i64))
   call void @avra_array_push(ptr %14, i64 %1)
   call void @avra_array_push_owned(ptr %14, ptr %10)
   call void @avra_rc_retain(ptr %0)
@@ -184588,7 +184588,7 @@ postret:                                          ; No predecessors!
   br label %endif
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l265"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l275"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -184618,7 +184618,7 @@ entry:
   ret i64 %10
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l250"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l260"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -185515,10 +185515,10 @@ entry:
   call void @avra_rc_retain(ptr %0)
   %4 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Ereg_of"(ptr %0, i64 %1)
   %5 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Esemantics$24l93" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Esemantics$24l102" to i64))
   call void @avra_array_push_owned(ptr %5, ptr %2)
   %6 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Esemantics$24l97" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Esemantics$24l107" to i64))
   call void @avra_array_push_owned(ptr %6, ptr %3)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %5)
@@ -185532,7 +185532,7 @@ entry:
   ret i64 %7
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Esemantics$24l97"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Esemantics$24l107"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -185544,7 +185544,7 @@ entry:
   ret i64 %3
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Esemantics$24l93"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Esemantics$24l102"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -190162,7 +190162,7 @@ lexit:                                            ; preds = %lhead
   call void @avra_cell_release(ptr %slot12)
   store ptr null, ptr %slot12, align 8
   %7 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l46" to i64))
+  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l47" to i64))
   call void @avra_array_push_owned(ptr %7, ptr %2)
   %8 = call i64 @avra_array_get(ptr %7, i64 0)
   %9 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ert_sigs"()
@@ -190300,7 +190300,7 @@ postret:                                          ; No predecessors!
   br label %endif30
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l46"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l47"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -191334,7 +191334,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l65" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l66" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %2)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ert_sigs"()
@@ -191520,7 +191520,7 @@ endif47:                                          ; preds = %else46, %then45
   ret i64 0
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l65"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l66"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -192145,7 +192145,7 @@ endswitch:                                        ; preds = %arm2, %arm
   %regval = phi ptr [ %6, %arm ], [ %7, %arm2 ]
   store i1 false, ptr %slot, align 8
   %8 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l343" to i64))
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l345" to i64))
   call void @avra_array_push_owned(ptr %8, ptr %0)
   %9 = call i64 @avra_array_get(ptr %8, i64 0)
   %10 = call i64 @avra_array_len(ptr %regval)
@@ -192189,7 +192189,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l343"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Efns$2Echeck$24l345"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -193996,7 +193996,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %7 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Equote$2Echeck$24l186" to i64))
+  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Equote$2Echeck$24l190" to i64))
   call void @avra_array_push_owned(ptr %7, ptr %0)
   call void @avra_array_push_owned(ptr %7, ptr %1)
   %8 = call i64 @avra_array_get(ptr %7, i64 0)
@@ -194051,7 +194051,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Equote$2Echeck$24l186"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Equote$2Echeck$24l190"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -194633,7 +194633,7 @@ endif16:                                          ; preds = %else15, %then14
   %regval17 = phi ptr [ %7, %then14 ], [ %9, %else15 ]
   store i1 true, ptr %slot18, align 8
   %10 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eholes$24l221" to i64))
+  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eholes$24l227" to i64))
   call void @avra_array_push_owned(ptr %10, ptr %regval17)
   %11 = call i64 @avra_array_get(ptr %10, i64 0)
   %12 = call i64 @avra_array_len(ptr %0)
@@ -194694,7 +194694,7 @@ endif32:                                          ; preds = %else31, %then30
   ret ptr %regval33
 }
 
-define i1 @"av_$40std$2Eavrac$2Ecore$2Eholes$24l221"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Ecore$2Eholes$24l227"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -196582,11 +196582,11 @@ endif:                                            ; preds = %else, %postret
   call void @avra_rc_retain(ptr %0)
   %13 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Eokness_of"(ptr %0, i64 %6)
   %14 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l51" to i64))
+  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l53" to i64))
   call void @avra_array_push(ptr %14, i64 %6)
   call void @avra_array_push_owned(ptr %14, ptr %12)
   %15 = call ptr @avra_array_sized(i64 7)
-  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l60" to i64))
+  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l63" to i64))
   call void @avra_array_push(ptr %15, i64 %1)
   call void @avra_array_push(ptr %15, i64 %6)
   call void @avra_array_push_owned(ptr %15, ptr %12)
@@ -196614,7 +196614,7 @@ postret:                                          ; No predecessors!
   br label %endif
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l60"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l63"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -196637,7 +196637,7 @@ entry:
   ret i64 %8
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l51"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l53"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -197110,7 +197110,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 true, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l214" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l217" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %0, i64 0)
@@ -197158,7 +197158,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l214"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Elower$24l217"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -197706,7 +197706,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Echeck$24l186" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Echeck$24l189" to i64))
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call i64 @avra_array_len(ptr %2)
   store i64 0, ptr %slot1, align 8
@@ -197797,7 +197797,7 @@ postret13:                                        ; No predecessors!
   br label %endif12
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Echeck$24l186"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eresults$2Echeck$24l189"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_streq(ptr %1, ptr getelementptr inbounds (i8, ptr @.str.4109, i64 16))
   %b = icmp ne i64 %2, 0
@@ -198644,14 +198644,14 @@ entry:
   call void @avra_rc_retain(ptr %5)
   %7 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Epresence_of"(ptr %0, i64 %4, ptr %5)
   %8 = call ptr @avra_array_sized(i64 6)
-  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l291" to i64))
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l302" to i64))
   call void @avra_array_push(ptr %8, i64 %1)
   call void @avra_array_push(ptr %8, i64 %4)
   call void @avra_array_push_owned(ptr %8, ptr %5)
   call void @avra_array_push_owned(ptr %8, ptr %3)
   call void @avra_array_push_owned(ptr %8, ptr %6)
   %9 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l295" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l307" to i64))
   call void @avra_array_push_owned(ptr %9, ptr %6)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %8)
@@ -198666,7 +198666,7 @@ entry:
   ret i64 %10
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l295"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l307"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -198678,7 +198678,7 @@ entry:
   ret i64 %3
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l291"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l302"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -199010,12 +199010,12 @@ entry:
   call void @avra_rc_retain(ptr %6)
   %7 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Epresence_of"(ptr %0, i64 %5, ptr %6)
   %8 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l130" to i64))
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l134" to i64))
   call void @avra_array_push(ptr %8, i64 %3)
   call void @avra_array_push(ptr %8, i64 %5)
   call void @avra_array_push_owned(ptr %8, ptr %6)
   %9 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l134" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l139" to i64))
   call void @avra_array_push(ptr %9, i64 %4)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %8)
@@ -199028,7 +199028,7 @@ entry:
   ret i64 %10
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l134"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l139"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   call void @avra_rc_retain(ptr %1)
@@ -199038,7 +199038,7 @@ entry:
   ret i64 %3
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l130"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l134"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -199092,9 +199092,9 @@ else:                                             ; preds = %entry
 endif:                                            ; preds = %else, %postret
   %regval = phi i64 [ 0, %postret ], [ 0, %else ]
   %10 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l159" to i64))
+  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l165" to i64))
   %11 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l163" to i64))
+  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l170" to i64))
   call void @avra_array_push(ptr %11, i64 %1)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %4)
@@ -199112,7 +199112,7 @@ postret:                                          ; No predecessors!
   br label %endif
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l163"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l170"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   call void @avra_rc_retain(ptr %1)
@@ -199122,7 +199122,7 @@ entry:
   ret i64 %3
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l159"(ptr %0, ptr %1, i64 %2) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l165"(ptr %0, ptr %1, i64 %2) {
 entry:
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
@@ -199227,11 +199227,11 @@ entry:
   call void @avra_rc_retain(ptr %0)
   %3 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Eokness_of"(ptr %0, i64 %2)
   %4 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l178" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l186" to i64))
   call void @avra_array_push(ptr %4, i64 %2)
   call void @avra_array_push(ptr %4, i64 %1)
   %5 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l192" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l200" to i64))
   call void @avra_array_push(ptr %5, i64 %2)
   call void @avra_array_push(ptr %5, i64 %1)
   call void @avra_rc_retain(ptr %0)
@@ -199244,7 +199244,7 @@ entry:
   ret i64 %6
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l192"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l200"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Efailing"(ptr %1)
@@ -199268,7 +199268,7 @@ entry:
   ret i64 %8
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l178"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l186"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -199497,13 +199497,13 @@ endif:                                            ; preds = %else, %postret
   call void @avra_rc_retain(ptr %5)
   %13 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Epresence_of"(ptr %0, i64 %4, ptr %5)
   %14 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l76" to i64))
+  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l79" to i64))
   %slot = zext i1 %cmp3 to i64
   call void @avra_array_push(ptr %14, i64 %slot)
   call void @avra_array_push(ptr %14, i64 %4)
   call void @avra_array_push_owned(ptr %14, ptr %5)
   %15 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l80" to i64))
+  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l84" to i64))
   call void @avra_array_push(ptr %15, i64 %3)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %14)
@@ -199523,7 +199523,7 @@ postret:                                          ; No predecessors!
   br label %endif
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l80"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l84"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   call void @avra_rc_retain(ptr %1)
@@ -199533,7 +199533,7 @@ entry:
   ret i64 %3
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l76"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Enullable$2Elower$24l79"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %b = icmp ne i64 %2, 0
@@ -202348,13 +202348,13 @@ endif:                                            ; preds = %else, %postret
   call void @avra_rc_retain(ptr %6)
   %10 = call i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Eaccepts_reg"(ptr %0, i64 %2, ptr %3, ptr %6)
   %11 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l284" to i64))
+  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l291" to i64))
   call void @avra_array_push(ptr %11, i64 %2)
   call void @avra_array_push_owned(ptr %11, ptr %3)
   call void @avra_array_push_owned(ptr %11, ptr %6)
   call void @avra_array_push_owned(ptr %11, ptr %7)
   %12 = call ptr @avra_array_sized(i64 6)
-  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l294" to i64))
+  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l302" to i64))
   call void @avra_array_push(ptr %12, i64 %1)
   call void @avra_array_push(ptr %12, i64 %2)
   call void @avra_array_push_owned(ptr %12, ptr %3)
@@ -202378,7 +202378,7 @@ postret:                                          ; No predecessors!
   br label %endif
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l294"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l302"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -202397,7 +202397,7 @@ entry:
   ret i64 %7
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l284"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l291"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 2)
@@ -202735,9 +202735,9 @@ lbody:                                            ; preds = %lhead
   call void @avra_rc_retain(ptr %11)
   %12 = call ptr @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Einterned"(ptr %0, ptr %11)
   %13 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l449" to i64))
+  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l464" to i64))
   %14 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l455" to i64))
+  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l471" to i64))
   call void @avra_array_push(ptr %14, i64 %10)
   call void @avra_array_push(ptr %14, i64 %1)
   call void @avra_array_push_owned(ptr %14, ptr %2)
@@ -202757,7 +202757,7 @@ lbody:                                            ; preds = %lhead
   br label %lhead
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l455"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l471"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -202771,7 +202771,7 @@ entry:
   ret i64 %5
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l449"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l464"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Econst_bool"(ptr %1, i1 true)
@@ -203840,7 +203840,7 @@ postret:                                          ; No predecessors!
 then2:                                            ; preds = %endif
   store i1 false, ptr %slot, align 8
   %9 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l188" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l190" to i64))
   call void @avra_array_push_owned(ptr %9, ptr %0)
   %10 = call i64 @avra_array_get(ptr %9, i64 0)
   %11 = call i64 @avra_array_len(ptr %3)
@@ -204002,7 +204002,7 @@ lbody47:                                          ; preds = %lhead43
   br label %lhead43
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l188"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l190"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -204080,7 +204080,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l799" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l818" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %0)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr %1)
@@ -204191,7 +204191,7 @@ postret13:                                        ; No predecessors!
   br label %endif12
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l799"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l818"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -205037,7 +205037,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1626" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1656" to i64))
   call void @avra_array_push(ptr %3, i64 %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @avra_array_get_owned(ptr %0, i64 14)
@@ -205089,7 +205089,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1626"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Edecls$24l1656"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 2)
   %boxed = inttoptr i64 %2 to ptr
@@ -206396,7 +206396,7 @@ endif9:                                           ; preds = %else8, %then7
 then12:                                           ; preds = %endif9
   store i1 false, ptr %slot15, align 8
   %13 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l237" to i64))
+  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l239" to i64))
   %14 = call i64 @avra_array_get(ptr %13, i64 0)
   %15 = call i64 @avra_array_len(ptr %3)
   store i64 0, ptr %slot16, align 8
@@ -206488,7 +206488,7 @@ postret:                                          ; No predecessors!
   br label %endif34
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l237"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Echeck$24l239"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_len(ptr %1)
   %cmp = icmp eq i64 %2, 0
@@ -210411,7 +210411,7 @@ then14:                                           ; preds = %endif11
   call void @avra_rc_retain(ptr %0)
   %26 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Ereg_of"(ptr %0, i64 %25)
   %27 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %27, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Elower$24l92" to i64))
+  call void @avra_array_push(ptr %27, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Elower$24l99" to i64))
   call void @avra_array_push(ptr %27, i64 %8)
   call void @avra_array_push(ptr %27, i64 %2)
   call void @avra_rc_retain(ptr %0)
@@ -210444,7 +210444,7 @@ endif16:                                          ; preds = %else15, %then14
   ret i64 %8
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Elower$24l92"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Elower$24l99"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -213561,7 +213561,7 @@ arm7:                                             ; preds = %entry
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %18 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l295" to i64))
+  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l300" to i64))
   call void @avra_array_push_owned(ptr %18, ptr %0)
   %19 = call i64 @avra_array_get(ptr %18, i64 0)
   %20 = call i64 @avra_array_len(ptr %17)
@@ -213619,7 +213619,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l295"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eunify$24l300"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -215323,7 +215323,7 @@ endif:                                            ; preds = %else, %postret
   %boxed2 = inttoptr i64 %5 to ptr
   store i1 false, ptr %slot, align 8
   %6 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l1249" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l1262" to i64))
   call void @avra_array_push_owned(ptr %6, ptr %1)
   call void @avra_array_push_owned(ptr %6, ptr %boxed2)
   %7 = call i64 @avra_array_get(ptr %6, i64 0)
@@ -215374,7 +215374,7 @@ endif9:                                           ; preds = %else8, %then7
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l1249"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l1262"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -216055,40 +216055,76 @@ endswitch:                                        ; preds = %arm2, %arm
 
 define i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Elower_block"(ptr %0, ptr %1, ptr %2, ptr %3) {
 entry:
-  call void @avra_rc_retain(ptr %0)
-  %4 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Escope_enter"(ptr %0)
-  call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr %1)
-  %5 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Elower_stmts"(ptr %0, ptr %1)
-  %cmp = icmp ne ptr %2, null
-  %not = xor i1 %cmp, true
-  br i1 %not, label %then, label %else
+  %4 = call i64 @avra_array_len(ptr %1)
+  %cmp = icmp eq i64 %4, 0
+  br i1 %cmp, label %then, label %else
 
 then:                                             ; preds = %entry
-  call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr %3)
-  %6 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Ehollow_of"(ptr %0, ptr %3)
+  %cmp1 = icmp ne ptr %2, null
   br label %endif
 
 else:                                             ; preds = %entry
-  %7 = call i64 @avra_array_get(ptr %2, i64 0)
-  call void @avra_rc_retain(ptr %0)
-  %8 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Ereg_of"(ptr %0, i64 %7)
   br label %endif
 
 endif:                                            ; preds = %else, %then
-  %regval = phi i64 [ %6, %then ], [ %8, %else ]
-  %9 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %9, i64 %regval)
+  %regval = phi i1 [ %cmp1, %then ], [ false, %else ]
+  br i1 %regval, label %then2, label %else3
+
+then2:                                            ; preds = %endif
+  %5 = call ptr @avra_insist(ptr %2)
+  %6 = call i64 @avra_array_get(ptr %5, i64 0)
   call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr %9)
-  %10 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Escope_exit"(ptr %0, ptr %9)
-  call void @avra_rc_release(ptr %9)
+  %7 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Ereg_of"(ptr %0, i64 %6)
+  call void @avra_rc_release(ptr %5)
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %2)
   call void @avra_rc_release(ptr %1)
   call void @avra_rc_release(ptr %0)
-  ret i64 %regval
+  ret i64 %7
+
+else3:                                            ; preds = %endif
+  br label %endif4
+
+endif4:                                           ; preds = %else3, %postret
+  %regval5 = phi i64 [ 0, %postret ], [ 0, %else3 ]
+  call void @avra_rc_retain(ptr %0)
+  %8 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Escope_enter"(ptr %0)
+  call void @avra_rc_retain(ptr %0)
+  call void @avra_rc_retain(ptr %1)
+  %9 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Elower_stmts"(ptr %0, ptr %1)
+  %cmp6 = icmp ne ptr %2, null
+  %not = xor i1 %cmp6, true
+  br i1 %not, label %then7, label %else8
+
+postret:                                          ; No predecessors!
+  call void @avra_rc_release(ptr %5)
+  br label %endif4
+
+then7:                                            ; preds = %endif4
+  call void @avra_rc_retain(ptr %0)
+  call void @avra_rc_retain(ptr %3)
+  %10 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Ehollow_of"(ptr %0, ptr %3)
+  br label %endif9
+
+else8:                                            ; preds = %endif4
+  %11 = call i64 @avra_array_get(ptr %2, i64 0)
+  call void @avra_rc_retain(ptr %0)
+  %12 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Ereg_of"(ptr %0, i64 %11)
+  br label %endif9
+
+endif9:                                           ; preds = %else8, %then7
+  %regval10 = phi i64 [ %10, %then7 ], [ %12, %else8 ]
+  %13 = call ptr @avra_array_sized(i64 1)
+  call void @avra_array_push(ptr %13, i64 %regval10)
+  call void @avra_rc_retain(ptr %0)
+  call void @avra_rc_retain(ptr %13)
+  %14 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Escope_exit"(ptr %0, ptr %13)
+  call void @avra_rc_release(ptr %13)
+  call void @avra_rc_release(ptr %3)
+  call void @avra_rc_release(ptr %2)
+  call void @avra_rc_release(ptr %1)
+  call void @avra_rc_release(ptr %0)
+  ret i64 %regval10
 }
 
 define ptr @"av_$40std$2Eavrac$2Efeatures$2Eblock$2EBlockSemantics$2Etype_of"(ptr %0, ptr %1, i64 %2) {
@@ -216477,11 +216513,11 @@ endif:                                            ; preds = %else, %postret
   call void @avra_rc_retain(ptr %0)
   %9 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Ereg_of"(ptr %0, i64 %8)
   %10 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ewhen_expr$2Elower$24l35" to i64))
+  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ewhen_expr$2Elower$24l37" to i64))
   call void @avra_array_push_owned(ptr %10, ptr %3)
   call void @avra_array_push(ptr %10, i64 %5)
   %11 = call ptr @avra_array_sized(i64 6)
-  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ewhen_expr$2Elower$24l45" to i64))
+  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ewhen_expr$2Elower$24l48" to i64))
   call void @avra_array_push(ptr %11, i64 %1)
   call void @avra_array_push_owned(ptr %11, ptr %2)
   call void @avra_array_push_owned(ptr %11, ptr %3)
@@ -216502,7 +216538,7 @@ postret:                                          ; No predecessors!
   br label %endif
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Ewhen_expr$2Elower$24l45"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Ewhen_expr$2Elower$24l48"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 2)
@@ -216521,7 +216557,7 @@ entry:
   ret i64 %7
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Ewhen_expr$2Elower$24l35"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Ewhen_expr$2Elower$24l37"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -216740,11 +216776,11 @@ arm:                                              ; preds = %entry
   call void @avra_rc_retain(ptr %0)
   %10 = call i64 @"av_$40std$2Eavrac$2Elanguage$2ELowerCx$2Ereg_of"(ptr %0, i64 %6)
   %11 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Elower$24l21" to i64))
+  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Elower$24l22" to i64))
   call void @avra_array_push(ptr %11, i64 %7)
   call void @avra_array_push_owned(ptr %11, ptr %9)
   %12 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Elower$24l29" to i64))
+  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Elower$24l31" to i64))
   call void @avra_array_push(ptr %12, i64 %8)
   call void @avra_array_push_owned(ptr %12, ptr %9)
   call void @avra_rc_retain(ptr %0)
@@ -216768,7 +216804,7 @@ endswitch:                                        ; preds = %arm2, %arm
   ret i64 %regval
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Elower$24l29"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Elower$24l31"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -216784,7 +216820,7 @@ entry:
   ret i64 %6
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Elower$24l21"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eif_expr$2Elower$24l22"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -219111,13 +219147,13 @@ else:                                             ; preds = %entry
 endif:                                            ; preds = %else, %then
   %regval = phi ptr [ %8, %then ], [ %3, %else ]
   %9 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l423" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l425" to i64))
   call void @avra_array_push(ptr %9, i64 %1)
   call void @avra_array_push(ptr %9, i64 %4)
   call void @avra_array_push_owned(ptr %9, ptr %5)
   call void @avra_array_push_owned(ptr %9, ptr %regval)
   %10 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l428" to i64))
+  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l431" to i64))
   call void @avra_array_push(ptr %10, i64 %4)
   call void @avra_array_push_owned(ptr %10, ptr %5)
   call void @avra_rc_retain(ptr %0)
@@ -219135,7 +219171,7 @@ endif:                                            ; preds = %else, %then
   ret i64 %11
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l428"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l431"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -219148,7 +219184,7 @@ entry:
   ret i64 %4
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l423"(ptr %0, ptr %1, i64 %2) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l425"(ptr %0, ptr %1, i64 %2) {
 entry:
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
   %4 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -219194,11 +219230,11 @@ else:                                             ; preds = %entry
 endif:                                            ; preds = %else, %postret
   %regval = phi i64 [ 0, %postret ], [ 0, %else ]
   %10 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l453" to i64))
+  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l457" to i64))
   call void @avra_array_push(ptr %10, i64 %2)
   call void @avra_array_push_owned(ptr %10, ptr %5)
   %11 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l457" to i64))
+  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l462" to i64))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %4)
   call void @avra_rc_retain(ptr %10)
@@ -219216,7 +219252,7 @@ postret:                                          ; No predecessors!
   br label %endif
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l457"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l462"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Econst_bool"(ptr %1, i1 false)
@@ -219225,7 +219261,7 @@ entry:
   ret i64 %2
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l453"(ptr %0, ptr %1, i64 %2) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l457"(ptr %0, ptr %1, i64 %2) {
 entry:
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
   %4 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -219487,10 +219523,10 @@ entry:
 
 then:                                             ; preds = %entry
   %9 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l518" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l524" to i64))
   call void @avra_array_push(ptr %9, i64 %4)
   %10 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l522" to i64))
+  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l529" to i64))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %9)
   call void @avra_rc_retain(ptr %10)
@@ -219508,9 +219544,9 @@ else:                                             ; preds = %entry
 endif:                                            ; preds = %else, %postret
   %regval = phi i64 [ 0, %postret ], [ 0, %else ]
   %12 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l531" to i64))
+  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l539" to i64))
   %13 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l535" to i64))
+  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l544" to i64))
   call void @avra_array_push(ptr %13, i64 %4)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %12)
@@ -219529,7 +219565,7 @@ postret:                                          ; No predecessors!
   br label %endif
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l535"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l544"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   call void @avra_rc_retain(ptr %1)
@@ -219539,7 +219575,7 @@ entry:
   ret i64 %3
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l531"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l539"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Econst_bool"(ptr %1, i1 true)
@@ -219548,7 +219584,7 @@ entry:
   ret i64 %2
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l522"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l529"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Econst_bool"(ptr %1, i1 false)
@@ -219557,7 +219593,7 @@ entry:
   ret i64 %2
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l518"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Elower$24l524"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   call void @avra_rc_retain(ptr %1)
@@ -221367,7 +221403,7 @@ postret:                                          ; No predecessors!
 then3:                                            ; preds = %endif
   store i1 true, ptr %slot, align 8
   %7 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1172" to i64))
+  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1183" to i64))
   %8 = call i64 @avra_array_get(ptr %7, i64 0)
   %9 = call ptr @avra_insist(ptr %6)
   %10 = call ptr @avra_array_get_owned(ptr %9, i64 1)
@@ -221425,7 +221461,7 @@ endif13:                                          ; preds = %else12, %then11
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1172"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Echecks$24l1183"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_len(ptr %1)
   %cmp = icmp eq i64 %2, 0
@@ -223209,7 +223245,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l1415" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l1436" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %1)
   call void @avra_array_push_owned(ptr %3, ptr %boxed)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
@@ -223277,7 +223313,7 @@ endif8:                                           ; preds = %else7, %then6
   ret ptr %regval9
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l1415"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l1436"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -223378,7 +223414,7 @@ entry:
 define i1 @"av_$40std$2Eavrac$2Elanguage$2EResolveCx$2Eseat_is_settled"(ptr %0, i64 %1) {
 entry:
   %2 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l815" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l823" to i64))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %2)
   %3 = call i1 @"av_$40std$2Eavrac$2Elanguage$2EResolveCx$2Eat_seat"(ptr %0, i64 %1, ptr %2)
@@ -223387,7 +223423,7 @@ entry:
   ret i1 %3
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l815"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l823"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 1)
   %b = icmp ne i64 %2, 0
@@ -223597,7 +223633,7 @@ postret:                                          ; No predecessors!
 define i1 @"av_$40std$2Eavrac$2Elanguage$2EResolveCx$2Eseat_is_mut"(ptr %0, i64 %1) {
 entry:
   %2 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l809" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l816" to i64))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %2)
   %3 = call i1 @"av_$40std$2Eavrac$2Elanguage$2EResolveCx$2Eat_seat"(ptr %0, i64 %1, ptr %2)
@@ -223606,7 +223642,7 @@ entry:
   ret i1 %3
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l809"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eresolve$24l816"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %b = icmp ne i64 %2, 0
@@ -225558,7 +225594,7 @@ entry:
   %1 = call ptr @"av_$40std$2Eavrac$2Ecore$2Ebound_names"(ptr %0)
   store { i1, i64 } zeroinitializer, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l415" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l433" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_array_sized(i64 0)
@@ -225650,7 +225686,7 @@ postret:                                          ; No predecessors!
   br label %endif16
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l415"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l433"(ptr %0, i64 %1) {
 entry:
   %slot1 = alloca i64, align 8
   %slot = alloca i64, align 8
@@ -225707,7 +225743,7 @@ entry:
   %slot = alloca { i1, i64 }, align 8
   store { i1, i64 } zeroinitializer, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l378" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l396" to i64))
   call void @avra_array_push_owned(ptr %1, ptr %0)
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call ptr @avra_array_sized(i64 0)
@@ -225814,7 +225850,7 @@ postret:                                          ; No predecessors!
   br label %endif16
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l378"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l396"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -226356,12 +226392,12 @@ endif10:                                          ; preds = %else9, %postret11
   call void @avra_rc_retain(ptr %22)
   %23 = call ptr @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Einterned"(ptr %0, ptr %22)
   %24 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %24, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l552" to i64))
+  call void @avra_array_push(ptr %24, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l570" to i64))
   call void @avra_array_push_owned(ptr %24, ptr %21)
   call void @avra_array_push_owned(ptr %24, ptr %2)
   call void @avra_array_push(ptr %24, i64 %3)
   %25 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %25, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l556" to i64))
+  call void @avra_array_push(ptr %25, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l575" to i64))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %23)
   call void @avra_rc_retain(ptr %24)
@@ -226387,7 +226423,7 @@ postret11:                                        ; No predecessors!
   br label %endif10
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l556"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l575"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Econst_bool"(ptr %1, i1 false)
@@ -226396,7 +226432,7 @@ entry:
   ret i64 %2
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l552"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l570"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 2)
@@ -226453,13 +226489,13 @@ then:                                             ; preds = %lbody
   %9 = call ptr @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Einterned"(ptr %0, ptr %8)
   %ld6 = load i64, ptr %slot2, align 8
   %10 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l587" to i64))
+  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l607" to i64))
   call void @avra_array_push(ptr %10, i64 %ld6)
   call void @avra_array_push(ptr %10, i64 %3)
   call void @avra_array_push(ptr %10, i64 %ld3)
   call void @avra_array_push_owned(ptr %10, ptr %1)
   %11 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l591" to i64))
+  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l612" to i64))
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %9)
   call void @avra_rc_retain(ptr %10)
@@ -226483,7 +226519,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l591"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l612"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Econst_bool"(ptr %1, i1 false)
@@ -226492,7 +226528,7 @@ entry:
   ret i64 %2
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l587"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Eenums$2Elower$24l607"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -229028,7 +229064,7 @@ entry:
   %slot = alloca i64, align 8
   %2 = call ptr @avra_array_sized(i64 0)
   %3 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l68" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l70" to i64))
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call i64 @avra_array_len(ptr %0)
   store i64 0, ptr %slot, align 8
@@ -229170,7 +229206,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead15
 }
 
-define ptr @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l68"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l70"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %1, i64 0)
   call void @avra_rc_release(ptr %1)
@@ -229187,7 +229223,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l20" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l21" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr %0)
@@ -229250,7 +229286,7 @@ endif8:                                           ; preds = %else7, %then6
   ret ptr %regval9
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l20"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l21"(ptr %0, ptr %1) {
 entry:
   %slot1 = alloca i64, align 8
   %slot = alloca i1, align 1
@@ -229258,7 +229294,7 @@ entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l18" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l19" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %boxed)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @avra_array_get_owned(ptr %1, i64 3)
@@ -229305,7 +229341,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l18"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Ecoherence$24l19"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -229970,7 +230006,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l282" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l291" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %3)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   call void @avra_rc_retain(ptr %1)
@@ -230117,7 +230153,7 @@ postret21:                                        ; No predecessors!
   br label %endif20
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l282"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l291"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -230480,7 +230516,7 @@ endif:                                            ; preds = %else, %then
 then12:                                           ; preds = %lexit5
   store i1 false, ptr %slot15, align 8
   %13 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l249" to i64))
+  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l256" to i64))
   call void @avra_array_push_owned(ptr %13, ptr %8)
   %14 = call i64 @avra_array_get(ptr %13, i64 0)
   %15 = call i64 @avra_array_len(ptr %3)
@@ -230570,7 +230606,7 @@ endif41:                                          ; preds = %else40, %then39
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l249"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l256"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -231282,7 +231318,7 @@ endif7:                                           ; preds = %else6, %postret
   call void @avra_cell_release(ptr %slot10)
   store ptr null, ptr %slot10, align 8
   %9 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l121" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l125" to i64))
   call void @avra_array_push_owned(ptr %9, ptr %0)
   %10 = call i64 @avra_array_get(ptr %9, i64 0)
   %11 = call i64 @avra_array_len(ptr %2)
@@ -231370,7 +231406,7 @@ postret30:                                        ; No predecessors!
   br label %endif28
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l121"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Enode_grammar$24l125"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -239631,7 +239667,7 @@ entry:
   call void @avra_rc_retain(ptr %16)
   %17 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Eemit"(ptr %0, ptr %16)
   %18 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Emaps$2Emethods$24l268" to i64))
+  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Emaps$2Emethods$24l271" to i64))
   call void @avra_array_push_owned(ptr %18, ptr %4)
   call void @avra_array_push(ptr %18, i64 %5)
   call void @avra_array_push(ptr %18, i64 %6)
@@ -239661,7 +239697,7 @@ entry:
   ret i64 %20
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Emaps$2Emethods$24l268"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Emaps$2Emethods$24l271"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -242089,7 +242125,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Etyping$24l808" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Etyping$24l818" to i64))
   call void @avra_array_push(ptr %2, i64 %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call ptr @avra_array_get_owned(ptr %0, i64 13)
@@ -242133,7 +242169,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Etyping$24l808"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Etyping$24l818"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i1 @"av_$40std$2Eavrac$2Ecore$2Esame_expr"(i64 %1, i64 %2)
@@ -242358,7 +242394,7 @@ entry:
   call void @avra_rc_retain(ptr %18)
   %19 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Eemit"(ptr %0, ptr %18)
   %20 = call ptr @avra_array_sized(i64 7)
-  call void @avra_array_push(ptr %20, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l631" to i64))
+  call void @avra_array_push(ptr %20, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l641" to i64))
   %slot = zext i1 %2 to i64
   call void @avra_array_push(ptr %20, i64 %slot)
   call void @avra_array_push(ptr %20, i64 %13)
@@ -242383,7 +242419,7 @@ entry:
   ret i64 %23
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l631"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l641"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %b = icmp ne i64 %2, 0
@@ -243228,7 +243264,7 @@ entry:
   call void @avra_rc_retain(ptr %boxed1)
   %16 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Esame_value"(ptr %0, i64 %14, i64 %8, ptr %boxed1)
   %17 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %17, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l547" to i64))
+  call void @avra_array_push(ptr %17, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l555" to i64))
   call void @avra_array_push(ptr %17, i64 %6)
   call void @avra_array_push(ptr %17, i64 %13)
   call void @avra_array_push_owned(ptr %17, ptr %11)
@@ -243251,7 +243287,7 @@ entry:
   ret i64 %21
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l547"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l555"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -243625,7 +243661,7 @@ entry:
   call void @avra_rc_retain(ptr %boxed1)
   %13 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Esame_value"(ptr %0, i64 %11, i64 %5, ptr %boxed1)
   %14 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l489" to i64))
+  call void @avra_array_push(ptr %14, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l497" to i64))
   call void @avra_array_push(ptr %14, i64 %3)
   call void @avra_array_push_owned(ptr %14, ptr %8)
   call void @avra_rc_retain(ptr %0)
@@ -243645,7 +243681,7 @@ entry:
   ret i64 %18
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l489"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l497"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   call void @avra_rc_retain(ptr %1)
@@ -243833,7 +243869,7 @@ entry:
   call void @avra_rc_retain(ptr %0)
   %15 = call i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Eflipping"(ptr %0, i64 %14, i1 %3)
   %16 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l440" to i64))
+  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l448" to i64))
   call void @avra_array_push(ptr %16, i64 %4)
   %slot = zext i1 %3 to i64
   call void @avra_array_push(ptr %16, i64 %slot)
@@ -243857,7 +243893,7 @@ entry:
   ret i64 %20
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l440"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l448"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -244730,7 +244766,7 @@ entry:
   call void @avra_rc_retain(ptr %14)
   %15 = call i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Eturn_call"(ptr %0, ptr %7, i64 %13, ptr %14)
   %16 = call ptr @avra_array_sized(i64 5)
-  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l386" to i64))
+  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l394" to i64))
   call void @avra_array_push(ptr %16, i64 %5)
   call void @avra_array_push_owned(ptr %16, ptr %4)
   call void @avra_array_push(ptr %16, i64 %13)
@@ -244755,7 +244791,7 @@ entry:
   ret i64 %20
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l386"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l394"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 2)
@@ -244905,7 +244941,7 @@ entry:
   call void @avra_rc_retain(ptr %16)
   %17 = call i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Eturn_call"(ptr %0, ptr %9, i64 %15, ptr %16)
   %18 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l331" to i64))
+  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l339" to i64))
   call void @avra_array_push(ptr %18, i64 %5)
   call void @avra_array_push(ptr %18, i64 %15)
   call void @avra_rc_retain(ptr %0)
@@ -244925,7 +244961,7 @@ entry:
   ret i64 %5
 }
 
-define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l331"(ptr %0, ptr %1) {
+define i64 @"av_$40std$2Eavrac$2Efeatures$2Elists$2Ewalks$24l339"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -250697,7 +250733,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l668" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l699" to i64))
   call void @avra_array_push(ptr %4, i64 %2)
   call void @avra_array_push(ptr %4, i64 %3)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
@@ -250714,7 +250750,7 @@ lexit:                                            ; preds = %lhead
   %ld4 = load i1, ptr %slot, align 8
   store i1 false, ptr %slot5, align 8
   %7 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l675" to i64))
+  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l706" to i64))
   call void @avra_array_push(ptr %7, i64 %2)
   call void @avra_array_push(ptr %7, i64 %3)
   %8 = call i64 @avra_array_get(ptr %7, i64 0)
@@ -250791,7 +250827,7 @@ endif17:                                          ; preds = %else16, %then15
   br label %lhead7
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l675"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l706"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -250802,7 +250838,7 @@ entry:
   ret i1 %4
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l668"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l699"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -250946,7 +250982,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Enodes$24l1328" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Enodes$24l1394" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %0)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr %1)
@@ -250989,7 +251025,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Ecore$2Enodes$24l1328"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Ecore$2Enodes$24l1394"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -251085,59 +251121,34 @@ else8:                                            ; preds = %endif4
 endif9:                                           ; preds = %else8, %postret10
   %regval11 = phi i64 [ 0, %postret10 ], [ 0, %else8 ]
   %14 = call i64 @avra_array_len(ptr %1)
-  %cmp12 = icmp eq i64 %14, 1
-  br i1 %cmp12, label %then13, label %else14
+  %sub12 = sub i64 %14, 1
+  %15 = call ptr @avra_array_slice(ptr %1, i64 0, i64 %sub12)
+  %16 = call ptr @avra_insist(ptr %11)
+  %17 = call i64 @avra_array_get(ptr %16, i64 0)
+  %18 = call ptr @avra_array_sized(i64 1)
+  call void @avra_array_push(ptr %18, i64 %17)
+  %19 = call ptr @avra_array_sized(i64 3)
+  call void @avra_array_push(ptr %19, i64 16)
+  call void @avra_array_push_owned(ptr %19, ptr %15)
+  call void @avra_array_push_owned(ptr %19, ptr %18)
+  call void @avra_rc_retain(ptr %0)
+  call void @avra_rc_retain(ptr %19)
+  %20 = call i64 @"av_$40std$2Eavrac$2Efeatures$2EBuilder$2Eexpr_node"(ptr %0, ptr %19)
+  call void @avra_cell_release(ptr %slot)
+  call void @avra_rc_release(ptr %19)
+  call void @avra_rc_release(ptr %18)
+  call void @avra_rc_release(ptr %16)
+  call void @avra_rc_release(ptr %15)
+  call void @avra_rc_release(ptr %11)
+  call void @avra_rc_release(ptr %9)
+  call void @avra_rc_release(ptr %5)
+  call void @avra_rc_release(ptr %1)
+  call void @avra_rc_release(ptr %0)
+  ret i64 %20
 
 postret10:                                        ; No predecessors!
   call void @avra_rc_release(ptr %12)
   br label %endif9
-
-then13:                                           ; preds = %endif9
-  %15 = call ptr @avra_insist(ptr %11)
-  %16 = call i64 @avra_array_get(ptr %15, i64 0)
-  call void @avra_cell_release(ptr %slot)
-  call void @avra_rc_release(ptr %15)
-  call void @avra_rc_release(ptr %11)
-  call void @avra_rc_release(ptr %9)
-  call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr %1)
-  call void @avra_rc_release(ptr %0)
-  ret i64 %16
-
-else14:                                           ; preds = %endif9
-  br label %endif15
-
-endif15:                                          ; preds = %else14, %postret16
-  %regval17 = phi i64 [ 0, %postret16 ], [ 0, %else14 ]
-  %17 = call i64 @avra_array_len(ptr %1)
-  %sub18 = sub i64 %17, 1
-  %18 = call ptr @avra_array_slice(ptr %1, i64 0, i64 %sub18)
-  %19 = call ptr @avra_insist(ptr %11)
-  %20 = call i64 @avra_array_get(ptr %19, i64 0)
-  %21 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %21, i64 %20)
-  %22 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %22, i64 16)
-  call void @avra_array_push_owned(ptr %22, ptr %18)
-  call void @avra_array_push_owned(ptr %22, ptr %21)
-  call void @avra_rc_retain(ptr %0)
-  call void @avra_rc_retain(ptr %22)
-  %23 = call i64 @"av_$40std$2Eavrac$2Efeatures$2EBuilder$2Eexpr_node"(ptr %0, ptr %22)
-  call void @avra_cell_release(ptr %slot)
-  call void @avra_rc_release(ptr %22)
-  call void @avra_rc_release(ptr %21)
-  call void @avra_rc_release(ptr %19)
-  call void @avra_rc_release(ptr %18)
-  call void @avra_rc_release(ptr %11)
-  call void @avra_rc_release(ptr %9)
-  call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr %1)
-  call void @avra_rc_release(ptr %0)
-  ret i64 %23
-
-postret16:                                        ; No predecessors!
-  call void @avra_rc_release(ptr %15)
-  br label %endif15
 }
 
 define i64 @"av_$40std$2Eavrac$2Efeatures$2EBuilder$2Eexpr_node"(ptr %0, ptr %1) {
@@ -252014,7 +252025,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l530" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l556" to i64))
   call void @avra_array_push(ptr %3, i64 %1)
   call void @avra_array_push(ptr %3, i64 %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
@@ -252087,7 +252098,7 @@ postret:                                          ; No predecessors!
   br label %endif8
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l530"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l556"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 2)
   %boxed = inttoptr i64 %2 to ptr
@@ -253896,7 +253907,7 @@ then379:                                          ; preds = %endif376
   %106 = call i64 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Enext_anchor"(ptr %0, ptr %regval12, ptr %regval30, ptr %regval36, i64 %add383, i64 %ld384, i64 %ld385, i64 %45)
   store i1 false, ptr %slot386, align 8
   %107 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %107, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Ebuilders$24l731" to i64))
+  call void @avra_array_push(ptr %107, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Ebuilders$24l748" to i64))
   call void @avra_array_push(ptr %107, i64 %regval140)
   call void @avra_array_push(ptr %107, i64 %106)
   %108 = call i64 @avra_array_get(ptr %107, i64 0)
@@ -254126,7 +254137,7 @@ endif443:                                         ; preds = %else442, %then441
   br label %endif381
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Ebuilders$24l731"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Ebuilders$24l748"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 2)
   %boxed = inttoptr i64 %2 to ptr
@@ -256010,7 +256021,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Ebuilders$24l995" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Ebuilders$24l1014" to i64))
   call void @avra_array_push_owned(ptr %1, ptr %0)
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call i64 @avra_array_len(ptr getelementptr inbounds (i8, ptr @"av_const$73$20", i64 16))
@@ -256058,7 +256069,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Ebuilders$24l995"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eexpr_spine$2Ebuilders$24l1014"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call ptr @"av_$40std$2Eavrac$2Ecore$2Eop_symbol"(ptr %1)
@@ -263113,11 +263124,11 @@ then:                                             ; preds = %entry
   br label %endif
 
 else:                                             ; preds = %entry
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @"av_const$94$91", i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @"av_const$94$89", i64 16))
   br label %endif
 
 endif:                                            ; preds = %else, %then
-  %regval = phi ptr [ %3, %then ], [ getelementptr inbounds (i8, ptr @"av_const$94$91", i64 16), %else ]
+  %regval = phi ptr [ %3, %then ], [ getelementptr inbounds (i8, ptr @"av_const$94$89", i64 16), %else ]
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %0)
   ret ptr %regval
@@ -263169,7 +263180,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l451" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l472" to i64))
   call void @avra_array_push(ptr %3, i64 %1)
   call void @avra_array_push(ptr %3, i64 %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
@@ -263218,7 +263229,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l451"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l472"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -271542,7 +271553,7 @@ endif:                                            ; preds = %else, %then
 then1:                                            ; preds = %endif
   store i1 true, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l333" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l348" to i64))
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call ptr @avra_array_sized(i64 0)
   %7 = call i64 @avra_str_len(ptr %0)
@@ -271615,7 +271626,7 @@ endif19:                                          ; preds = %else18, %then17
   br label %lhead10
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l333"(ptr %0, i1 %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eformats$2Eformat$24l348"(ptr %0, i1 %1) {
 entry:
   call void @avra_rc_release(ptr %0)
   ret i1 %1
@@ -274736,7 +274747,7 @@ endif:                                            ; preds = %else, %then
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %11 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l610" to i64))
+  call void @avra_array_push(ptr %11, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l638" to i64))
   call void @avra_array_push_owned(ptr %11, ptr %0)
   call void @avra_array_push(ptr %11, i64 %6)
   call void @avra_array_push(ptr %11, i64 %regval)
@@ -274789,7 +274800,7 @@ endif10:                                          ; preds = %else9, %then8
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l610"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Ebuilder$24l638"(ptr %0, i64 %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -279632,7 +279643,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l109" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l111" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %1)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call ptr @avra_array_get_owned(ptr %0, i64 4)
@@ -279796,7 +279807,7 @@ endif35:                                          ; preds = %else34, %postret36
   %34 = call i64 @avra_array_get(ptr %boxed40, i64 0)
   %boxed41 = inttoptr i64 %34 to ptr
   %35 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %35, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l169" to i64))
+  call void @avra_array_push(ptr %35, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l171" to i64))
   call void @avra_array_push_owned(ptr %35, ptr %32)
   call void @avra_array_push_owned(ptr %35, ptr %boxed41)
   call void @avra_array_push_owned(ptr %35, ptr %3)
@@ -280073,7 +280084,7 @@ postret118:                                       ; No predecessors!
   br label %endif117
 }
 
-define ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l169"(ptr %0, ptr %1, ptr %2, ptr %3) {
+define ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l171"(ptr %0, ptr %1, ptr %2, ptr %3) {
 entry:
   %4 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %5 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -280100,7 +280111,7 @@ entry:
   ret ptr %9
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l109"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l111"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -280560,7 +280571,7 @@ lexit:                                            ; preds = %lhead
   call void @avra_cell_release(ptr %slot5)
   store ptr null, ptr %slot5, align 8
   %7 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l254" to i64))
+  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l256" to i64))
   call void @avra_array_push_owned(ptr %7, ptr %1)
   call void @avra_array_push(ptr %7, i64 %2)
   %8 = call i64 @avra_array_get(ptr %7, i64 0)
@@ -280704,7 +280715,7 @@ lbody36:                                          ; preds = %lhead32
   br label %lhead32
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l254"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l256"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -280784,7 +280795,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l309" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l311" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %1)
   %slot1 = zext i1 %2 to i64
   call void @avra_array_push(ptr %3, i64 %slot1)
@@ -280831,7 +280842,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l309"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l311"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -280927,7 +280938,7 @@ arm:                                              ; preds = %endif18
   %11 = call ptr @avra_array_get_owned(ptr %9, i64 1)
   store i1 false, ptr %slot, align 8
   %12 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l335" to i64))
+  call void @avra_array_push(ptr %12, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l338" to i64))
   call void @avra_array_push_owned(ptr %12, ptr %1)
   %slot21 = zext i1 %regval6 to i64
   call void @avra_array_push(ptr %12, i64 %slot21)
@@ -280986,7 +280997,7 @@ endif28:                                          ; preds = %else27, %then26
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l335"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Esublang$2Ebuilders$24l338"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -282748,7 +282759,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l165$2488" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l178$2488" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr %0)
@@ -282811,7 +282822,7 @@ endif8:                                           ; preds = %else7, %then6
   ret ptr %regval9
 }
 
-define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l165$2488"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l178$2488"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -283202,7 +283213,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l120$2488" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l129$2488" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %1)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call i64 @avra_array_len(ptr %0)
@@ -283400,7 +283411,7 @@ endif42:                                          ; preds = %else41, %then40
   br label %endif38
 }
 
-define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l120$2488"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Egrammar$2Eexecutor$24l129$2488"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -292702,7 +292713,7 @@ endif77:                                          ; preds = %else76, %then75
   store i1 false, ptr %slot82, align 8
   %ld83 = load ptr, ptr %slot61, align 8
   %57 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %57, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l264" to i64))
+  call void @avra_array_push(ptr %57, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l268" to i64))
   call void @avra_array_push(ptr %57, i64 %regval81)
   call void @avra_array_push_owned(ptr %57, ptr %ld83)
   %58 = call i64 @avra_array_get(ptr %57, i64 0)
@@ -292759,7 +292770,7 @@ endif100:                                         ; preds = %else99, %then98
   store i1 false, ptr %slot103, align 8
   %ld104 = load ptr, ptr %slot61, align 8
   %64 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %64, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l279" to i64))
+  call void @avra_array_push(ptr %64, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l283" to i64))
   call void @avra_array_push(ptr %64, i64 %regval81)
   call void @avra_array_push_owned(ptr %64, ptr %ld104)
   %65 = call i64 @avra_array_get(ptr %64, i64 0)
@@ -292827,7 +292838,7 @@ endif123:                                         ; preds = %else122, %then121
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l279"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l283"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 2)
   %boxed = inttoptr i64 %2 to ptr
@@ -292844,7 +292855,7 @@ entry:
   ret i1 %8
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l264"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l268"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 2)
   %boxed = inttoptr i64 %2 to ptr
@@ -293010,7 +293021,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 4)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l381" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l385" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %0)
   call void @avra_array_push(ptr %4, i64 %2)
   call void @avra_array_push(ptr %4, i64 %3)
@@ -293062,7 +293073,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l381"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l385"(ptr %0, i64 %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -293121,7 +293132,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l407" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l412" to i64))
   call void @avra_array_push(ptr %3, i64 %1)
   call void @avra_array_push(ptr %3, i64 %2)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
@@ -293172,11 +293183,11 @@ then6:                                            ; preds = %lexit
   br label %endif8
 
 else7:                                            ; preds = %lexit
-  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @"av_const$94$91", i64 16))
+  call void @avra_rc_retain(ptr getelementptr inbounds (i8, ptr @"av_const$94$89", i64 16))
   br label %endif8
 
 endif8:                                           ; preds = %else7, %then6
-  %regval9 = phi ptr [ %ld4, %then6 ], [ getelementptr inbounds (i8, ptr @"av_const$94$91", i64 16), %else7 ]
+  %regval9 = phi ptr [ %ld4, %then6 ], [ getelementptr inbounds (i8, ptr @"av_const$94$89", i64 16), %else7 ]
   call void @avra_cell_release(ptr %slot)
   call void @avra_rc_release(ptr %ld4)
   call void @avra_rc_release(ptr %3)
@@ -293184,7 +293195,7 @@ endif8:                                           ; preds = %else7, %then6
   ret ptr %regval9
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l407"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eimpls$2Ebuilders$24l412"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -301368,7 +301379,7 @@ endif25:                                          ; preds = %else24, %then23
   %12 = call ptr @avra_cell_unique(ptr %slot)
   store i1 false, ptr %slot28, align 8
   %13 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Ebuilders$24l115" to i64))
+  call void @avra_array_push(ptr %13, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Ebuilders$24l117" to i64))
   call void @avra_array_push(ptr %13, i64 %regval14)
   call void @avra_array_push(ptr %13, i64 %regval27)
   %14 = call i64 @avra_array_get(ptr %13, i64 0)
@@ -301385,7 +301396,7 @@ lexit31:                                          ; preds = %lhead30
   %ld41 = load i1, ptr %slot28, align 8
   store i1 false, ptr %slot42, align 8
   %16 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Ebuilders$24l124" to i64))
+  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Ebuilders$24l126" to i64))
   call void @avra_array_push(ptr %16, i64 %regval14)
   call void @avra_array_push(ptr %16, i64 %regval27)
   %17 = call i64 @avra_array_get(ptr %16, i64 0)
@@ -301468,7 +301479,7 @@ endif54:                                          ; preds = %else53, %then52
   br label %lhead44
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Ebuilders$24l124"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Ebuilders$24l126"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 2)
   %boxed = inttoptr i64 %2 to ptr
@@ -301481,7 +301492,7 @@ entry:
   ret i1 %6
 }
 
-define i1 @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Ebuilders$24l115"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Efeatures$2Eclosures$2Ebuilders$24l117"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 2)
   %boxed = inttoptr i64 %2 to ptr
@@ -301969,7 +301980,7 @@ lbody:                                            ; preds = %lhead
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 %ld1)
   store i1 true, ptr %slot2, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eattack$24l60" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eattack$24l63" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %3)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   call void @avra_rc_retain(ptr %0)
@@ -302031,7 +302042,7 @@ endif14:                                          ; preds = %else13, %then12
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eattack$24l60"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eattack$24l63"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -303232,7 +303243,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eattack$24l266" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eattack$24l278" to i64))
   call void @avra_array_push_owned(ptr %5, ptr %1)
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
   %7 = call ptr @avra_array_get_owned(ptr %0, i64 2)
@@ -303322,7 +303333,7 @@ postret:                                          ; No predecessors!
   br label %endif8
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eattack$24l266"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eattack$24l278"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -304693,7 +304704,7 @@ else3:                                            ; preds = %endif
 endif4:                                           ; preds = %postret5, %then2
   %regval6 = phi i64 [ %9, %then2 ], [ 0, %postret5 ]
   %10 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eio$2Eio$24l204" to i64))
+  call void @avra_array_push(ptr %10, i64 ptrtoint (ptr @"av_$40std$2Eio$2Eio$24l214" to i64))
   call void @avra_array_push(ptr %10, i64 %regval6)
   %11 = call i64 @avra_io_temp_fd(i64 %regval6)
   call void @avra_rc_retain(ptr %0)
@@ -304809,7 +304820,7 @@ postret25:                                        ; No predecessors!
   br label %endif23
 }
 
-define i64 @"av_$40std$2Eio$2Eio$24l204"(ptr %0) {
+define i64 @"av_$40std$2Eio$2Eio$24l214"(ptr %0) {
 entry:
   %1 = call i64 @avra_array_get(ptr %0, i64 1)
   %2 = call i64 @avra_io_drop(i64 %1)
@@ -306421,7 +306432,7 @@ lbody:                                            ; preds = %lhead
   %3 = call ptr @avra_array_get_owned(ptr %1, i64 %ld1)
   store i1 false, ptr %slot2, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l70" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l75" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %3)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eavra"()
@@ -306488,7 +306499,7 @@ endif14:                                          ; preds = %else13, %then12
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l70"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l75"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -307255,7 +307266,7 @@ lbody12:                                          ; preds = %lhead8
 define ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender_among"(ptr %0, ptr %1, ptr %2) {
 entry:
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l91" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l95" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %2)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %1)
@@ -307268,7 +307279,7 @@ entry:
   ret ptr %4
 }
 
-define ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l91"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l95"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -307291,7 +307302,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l98" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l103" to i64))
   call void @avra_array_push_owned(ptr %2, ptr %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr %0)
@@ -307354,7 +307365,7 @@ endif8:                                           ; preds = %else7, %then6
   ret ptr %regval9
 }
 
-define i1 @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l98"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l103"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %1, i64 0)
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 1)
@@ -308079,7 +308090,7 @@ entry:
   %7 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed1 = inttoptr i64 %7 to ptr
   %8 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5474" to i64))
+  call void @avra_array_push(ptr %8, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5573" to i64))
   call void @avra_array_push_owned(ptr %8, ptr %4)
   call void @avra_rc_retain(ptr %boxed)
   call void @avra_rc_retain(ptr %boxed1)
@@ -308119,7 +308130,7 @@ entry:
   ret ptr %18
 }
 
-define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5474"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5573"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -309261,7 +309272,7 @@ endif:                                            ; preds = %else, %then
 then2:                                            ; preds = %endif
   store i1 false, ptr %slot, align 8
   %5 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5235" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5326" to i64))
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
   %7 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %8 = call i64 @avra_array_len(ptr %7)
@@ -309314,7 +309325,7 @@ endif11:                                          ; preds = %else10, %then9
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5235"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5326"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Eavrac$2Elanguage$2Eunclean"(ptr %1)
@@ -309332,7 +309343,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l96" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l104" to i64))
   call void @avra_array_push_owned(ptr %1, ptr %0)
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses"()
@@ -309411,7 +309422,7 @@ endif13:                                          ; preds = %else12, %then11
   ret ptr %regval14
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l96"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l104"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -318743,7 +318754,7 @@ then2:                                            ; preds = %endif
   %7 = call ptr @"av_commands$2Edisk_host"()
   %8 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eavra"()
   %9 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_commands$2Eshared$24l108" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_commands$2Eshared$24l115" to i64))
   call void @avra_rc_retain(ptr %7)
   call void @avra_rc_retain(ptr %4)
   call void @avra_rc_retain(ptr %8)
@@ -318797,7 +318808,7 @@ endif10:                                          ; preds = %else9, %postret11
   %13 = call ptr @"av_commands$2Edisk_host"()
   %14 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eavra"()
   %15 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_commands$2Eshared$24l120" to i64))
+  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_commands$2Eshared$24l127" to i64))
   call void @avra_rc_retain(ptr %13)
   call void @avra_rc_retain(ptr %4)
   call void @avra_rc_retain(ptr %14)
@@ -318819,14 +318830,14 @@ postret11:                                        ; No predecessors!
   br label %endif10
 }
 
-define i64 @"av_commands$2Eshared$24l120"(ptr %0) {
+define i64 @"av_commands$2Eshared$24l127"(ptr %0) {
 entry:
   %1 = call i64 @"av_$40std$2Etime$2Enow_ns"()
   call void @avra_rc_release(ptr %0)
   ret i64 %1
 }
 
-define i64 @"av_commands$2Eshared$24l108"(ptr %0) {
+define i64 @"av_commands$2Eshared$24l115"(ptr %0) {
 entry:
   %1 = call i64 @"av_$40std$2Etime$2Enow_ns"()
   call void @avra_rc_release(ptr %0)
@@ -319191,7 +319202,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %0 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %0, i64 ptrtoint (ptr @"av_commands$2Eshared$24l26" to i64))
+  call void @avra_array_push(ptr %0, i64 ptrtoint (ptr @"av_commands$2Eshared$24l27" to i64))
   %1 = call i64 @avra_array_get(ptr %0, i64 0)
   %2 = call ptr @avra_array_sized(i64 2)
   call void @avra_array_push_owned(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9312, i64 16))
@@ -319246,7 +319257,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_commands$2Eshared$24l26"(ptr %0, ptr %1) {
+define i1 @"av_commands$2Eshared$24l27"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Eio$2Eis_dir"(ptr %1)
@@ -320007,7 +320018,7 @@ entry:
   %1 = call ptr @"av_commands$2Edisk_host"()
   %2 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eavra"()
   %3 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_commands$2Eshared$24l139" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_commands$2Eshared$24l148" to i64))
   call void @avra_rc_retain(ptr %1)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %2)
@@ -320027,7 +320038,7 @@ entry:
   ret ptr %6
 }
 
-define i64 @"av_commands$2Eshared$24l139"(ptr %0) {
+define i64 @"av_commands$2Eshared$24l148"(ptr %0) {
 entry:
   %1 = call i64 @"av_$40std$2Etime$2Enow_ns"()
   call void @avra_rc_release(ptr %0)
@@ -320350,7 +320361,7 @@ lbody46:                                          ; preds = %lhead42
   store i1 false, ptr %slot48, align 8
   %ld49 = load ptr, ptr %slot41, align 8
   %36 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %36, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5105" to i64))
+  call void @avra_array_push(ptr %36, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5196" to i64))
   call void @avra_array_push_owned(ptr %36, ptr %ld49)
   %37 = call i64 @avra_array_get(ptr %36, i64 0)
   %ld50 = load ptr, ptr %slot2, align 8
@@ -320418,7 +320429,7 @@ endif68:                                          ; preds = %else67, %then66
   br label %lhead42
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5105"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5196"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -321161,7 +321172,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l49" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l54" to i64))
   call void @avra_array_push_owned(ptr %1, ptr %0)
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %3 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eavra"()
@@ -321242,7 +321253,7 @@ postret:                                          ; No predecessors!
   br label %endif8
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l49"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Ewitnesses$24l54"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -321347,7 +321358,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4976" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5066" to i64))
   call void @avra_array_push_owned(ptr %4, ptr %1)
   call void @avra_array_push_owned(ptr %4, ptr %3)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
@@ -321572,7 +321583,7 @@ endif40:                                          ; preds = %else39, %then38
   ret ptr %regval41
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4976"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l5066"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 3)
   %boxed = inttoptr i64 %2 to ptr
@@ -322457,7 +322468,7 @@ lhead:                                            ; preds = %lbody, %endif8
 lexit:                                            ; preds = %lhead
   store i1 false, ptr %slot16, align 8
   %15 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_commands$2Eexplain$24l174" to i64))
+  call void @avra_array_push(ptr %15, i64 ptrtoint (ptr @"av_commands$2Eexplain$24l176" to i64))
   %16 = call i64 @avra_array_get(ptr %15, i64 0)
   %17 = call ptr @avra_array_get_owned(ptr %12, i64 13)
   %18 = call i64 @avra_array_len(ptr %17)
@@ -322678,7 +322689,7 @@ lbody51:                                          ; preds = %lhead47
   br label %lhead47
 }
 
-define i1 @"av_commands$2Eexplain$24l174"(ptr %0, ptr %1) {
+define i1 @"av_commands$2Eexplain$24l176"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_commands$2Erefuses"(ptr %1)
@@ -322924,7 +322935,7 @@ endif12:                                          ; preds = %else11, %then10
 define ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender"(ptr %0, ptr %1, ptr %2) {
 entry:
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l83" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l86" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %2)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %1)
@@ -322937,7 +322948,7 @@ entry:
   ret ptr %4
 }
 
-define ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l83"(ptr %0, ptr %1) {
+define ptr @"av_$40std$2Eavrac$2Ediagnostics$2Erender$24l86"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   call void @avra_rc_release(ptr %1)
@@ -324164,7 +324175,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %0 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %0, i64 ptrtoint (ptr @"av_commands$2Eshared$24l34" to i64))
+  call void @avra_array_push(ptr %0, i64 ptrtoint (ptr @"av_commands$2Eshared$24l36" to i64))
   %1 = call i64 @avra_array_get(ptr %0, i64 0)
   %2 = call ptr @avra_array_sized(i64 2)
   call void @avra_array_push_owned(ptr %2, ptr getelementptr inbounds (i8, ptr @.str.9489, i64 16))
@@ -324232,7 +324243,7 @@ endif8:                                           ; preds = %else7, %then6
   ret ptr %regval9
 }
 
-define i1 @"av_commands$2Eshared$24l34"(ptr %0, ptr %1) {
+define i1 @"av_commands$2Eshared$24l36"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_$40std$2Eio$2Eexists"(ptr %1)
@@ -326435,7 +326446,7 @@ else2:                                            ; preds = %endif
   call void @avra_cell_release(ptr %slot4)
   store ptr null, ptr %slot4, align 8
   %5 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ellvm$24l1262" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Ellvm$24l1282" to i64))
   call void @avra_array_push_owned(ptr %5, ptr %1)
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
   %7 = call ptr @avra_array_get_owned(ptr %0, i64 9)
@@ -326493,7 +326504,7 @@ endif11:                                          ; preds = %else10, %then9
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Ellvm$24l1262"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Ellvm$24l1282"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %2 to ptr
@@ -330491,7 +330502,7 @@ then:                                             ; preds = %entry
   %3 = call ptr @"av_commands$2Edisk_host"()
   %4 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eavra"()
   %5 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_commands$2Etest$24l135" to i64))
+  call void @avra_array_push(ptr %5, i64 ptrtoint (ptr @"av_commands$2Etest$24l145" to i64))
   call void @avra_rc_retain(ptr %3)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %4)
@@ -330513,7 +330524,7 @@ endif:                                            ; preds = %else, %postret
   %7 = call ptr @"av_commands$2Edisk_host"()
   %8 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eavra"()
   %9 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_commands$2Etest$24l141" to i64))
+  call void @avra_array_push(ptr %9, i64 ptrtoint (ptr @"av_commands$2Etest$24l151" to i64))
   call void @avra_rc_retain(ptr %7)
   call void @avra_rc_retain(ptr %0)
   call void @avra_rc_retain(ptr %8)
@@ -330535,14 +330546,14 @@ postret:                                          ; No predecessors!
   br label %endif
 }
 
-define i64 @"av_commands$2Etest$24l141"(ptr %0) {
+define i64 @"av_commands$2Etest$24l151"(ptr %0) {
 entry:
   %1 = call i64 @"av_$40std$2Etime$2Enow_ns"()
   call void @avra_rc_release(ptr %0)
   ret i64 %1
 }
 
-define i64 @"av_commands$2Etest$24l135"(ptr %0) {
+define i64 @"av_commands$2Etest$24l145"(ptr %0) {
 entry:
   %1 = call i64 @"av_$40std$2Etime$2Enow_ns"()
   call void @avra_rc_release(ptr %0)
@@ -331732,7 +331743,7 @@ entry:
   call void @avra_cell_release(ptr %slot)
   store ptr null, ptr %slot, align 8
   %6 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4546" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4621" to i64))
   call void @avra_array_push_owned(ptr %6, ptr %3)
   %7 = call i64 @avra_array_get(ptr %6, i64 0)
   %8 = call ptr @avra_insist(ptr %5)
@@ -331830,7 +331841,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4546"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4621"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
@@ -331901,7 +331912,7 @@ then1:                                            ; preds = %endif
   %5 = call ptr @"av_commands$2Edisk_host"()
   %6 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eavra"()
   %7 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_commands$2Eshared$24l170" to i64))
+  call void @avra_array_push(ptr %7, i64 ptrtoint (ptr @"av_commands$2Eshared$24l179" to i64))
   call void @avra_rc_retain(ptr %5)
   call void @avra_rc_retain(ptr %1)
   call void @avra_rc_retain(ptr %6)
@@ -331940,7 +331951,7 @@ postret4:                                         ; No predecessors!
   br label %endif3
 }
 
-define i64 @"av_commands$2Eshared$24l170"(ptr %0) {
+define i64 @"av_commands$2Eshared$24l179"(ptr %0) {
 entry:
   %1 = call i64 @"av_$40std$2Etime$2Enow_ns"()
   call void @avra_rc_release(ptr %0)
@@ -331953,7 +331964,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_commands$2Etest$24l309" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_commands$2Etest$24l327" to i64))
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   call void @avra_rc_retain(ptr %0)
   %3 = call ptr @"av_$40std$2Eavrac$2Elanguage$2EWorkspace$2Eroot_files"(ptr %0)
@@ -332022,7 +332033,7 @@ endif7:                                           ; preds = %else6, %then5
   ret i1 %regval10
 }
 
-define i1 @"av_commands$2Etest$24l309"(ptr %0, ptr %1) {
+define i1 @"av_commands$2Etest$24l327"(ptr %0, ptr %1) {
 entry:
   call void @avra_rc_retain(ptr %1)
   %2 = call i1 @"av_commands$2Eis_program"(ptr %1)
@@ -332037,7 +332048,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 true, ptr %slot, align 8
   %1 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4487" to i64))
+  call void @avra_array_push(ptr %1, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4560" to i64))
   call void @avra_array_push_owned(ptr %1, ptr %0)
   %2 = call i64 @avra_array_get(ptr %1, i64 0)
   call void @avra_rc_retain(ptr %0)
@@ -332085,7 +332096,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4487"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eworkspace$24l4560"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 1)
@@ -332195,7 +332206,7 @@ endif:                                            ; preds = %else, %postret
   %4 = call ptr @avra_insist(ptr %1)
   %5 = call ptr @"av_$40std$2Eavrac$2Elanguage$2Eavra"()
   %6 = call ptr @avra_array_sized(i64 1)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_commands$2Eshared$24l245" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_commands$2Eshared$24l254" to i64))
   call void @avra_rc_retain(ptr %3)
   call void @avra_rc_retain(ptr %4)
   call void @avra_rc_retain(ptr %5)
@@ -332214,7 +332225,7 @@ postret:                                          ; No predecessors!
   br label %endif
 }
 
-define i64 @"av_commands$2Eshared$24l245"(ptr %0) {
+define i64 @"av_commands$2Eshared$24l254"(ptr %0) {
 entry:
   %1 = call i64 @"av_$40std$2Etime$2Enow_ns"()
   call void @avra_rc_release(ptr %0)
@@ -333575,7 +333586,7 @@ lbody:                                            ; preds = %lhead
 then16:                                           ; preds = %lbody
   store i1 false, ptr %slot19, align 8
   %16 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l248" to i64))
+  call void @avra_array_push(ptr %16, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l255" to i64))
   call void @avra_array_push(ptr %16, i64 %13)
   %17 = call i64 @avra_array_get(ptr %16, i64 0)
   %18 = call i64 @avra_array_len(ptr %8)
@@ -333682,7 +333693,7 @@ endif56:                                          ; preds = %else55, %then54
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l248"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l255"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i1 @"av_$40std$2Eavrac$2Ecore$2Esame_reg"(i64 %1, i64 %2)
@@ -334205,7 +334216,7 @@ arm:                                              ; preds = %entry
   %5 = call i64 @avra_array_get(ptr %2, i64 2)
   store i1 true, ptr %slot, align 8
   %6 = call ptr @avra_array_sized(i64 3)
-  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l269" to i64))
+  call void @avra_array_push(ptr %6, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l276" to i64))
   call void @avra_array_push_owned(ptr %6, ptr %0)
   call void @avra_array_push_owned(ptr %6, ptr %1)
   %7 = call i64 @avra_array_get(ptr %6, i64 0)
@@ -334262,7 +334273,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l269"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l276"(ptr %0, i64 %1) {
 entry:
   %2 = call ptr @avra_array_get_owned(ptr %0, i64 1)
   %3 = call i64 @avra_array_get(ptr %0, i64 2)
@@ -334396,7 +334407,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %2 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l76" to i64))
+  call void @avra_array_push(ptr %2, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l79" to i64))
   call void @avra_array_push(ptr %2, i64 %1)
   %3 = call i64 @avra_array_get(ptr %2, i64 0)
   %4 = call i64 @avra_array_len(ptr %0)
@@ -334440,7 +334451,7 @@ endif:                                            ; preds = %else, %then
   br label %lhead
 }
 
-define i1 @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l76"(ptr %0, ptr %1) {
+define i1 @"av_$40std$2Eavrac$2Elanguage$2Eescapes$24l79"(ptr %0, ptr %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   call void @avra_rc_retain(ptr %1)
@@ -334477,7 +334488,7 @@ arm:                                              ; preds = %entry
   %3 = call ptr @avra_array_get_owned(ptr %0, i64 2)
   store i1 false, ptr %slot, align 8
   %4 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eir$24l22" to i64))
+  call void @avra_array_push(ptr %4, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eir$24l26" to i64))
   call void @avra_array_push(ptr %4, i64 %1)
   %5 = call i64 @avra_array_get(ptr %4, i64 0)
   %6 = call i64 @avra_array_len(ptr %3)
@@ -334517,7 +334528,7 @@ arm6:                                             ; preds = %entry
 arm7:                                             ; preds = %entry
   store i1 false, ptr %slot21, align 8
   %18 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eir$24l52" to i64))
+  call void @avra_array_push(ptr %18, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eir$24l56" to i64))
   call void @avra_array_push(ptr %18, i64 %1)
   %19 = call i64 @avra_array_get(ptr %18, i64 0)
   call void @avra_rc_retain(ptr %0)
@@ -334648,7 +334659,7 @@ then37:                                           ; preds = %arm8
 else38:                                           ; preds = %arm8
   store i1 false, ptr %slot40, align 8
   %37 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %37, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eir$24l62" to i64))
+  call void @avra_array_push(ptr %37, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eir$24l66" to i64))
   call void @avra_array_push(ptr %37, i64 %1)
   %38 = call i64 @avra_array_get(ptr %37, i64 0)
   call void @avra_rc_retain(ptr %0)
@@ -334696,7 +334707,7 @@ endif51:                                          ; preds = %else50, %then49
   br label %lhead42
 }
 
-define i1 @"av_$40std$2Eavrac$2Ecore$2Eir$24l62"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Ecore$2Eir$24l66"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i1 @"av_$40std$2Eavrac$2Ecore$2Esame_reg"(i64 %1, i64 %2)
@@ -334704,7 +334715,7 @@ entry:
   ret i1 %3
 }
 
-define i1 @"av_$40std$2Eavrac$2Ecore$2Eir$24l52"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Ecore$2Eir$24l56"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i1 @"av_$40std$2Eavrac$2Ecore$2Esame_reg"(i64 %1, i64 %2)
@@ -334712,7 +334723,7 @@ entry:
   ret i1 %3
 }
 
-define i1 @"av_$40std$2Eavrac$2Ecore$2Eir$24l22"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Ecore$2Eir$24l26"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %3 = call i1 @"av_$40std$2Eavrac$2Ecore$2Esame_reg"(i64 %1, i64 %2)
@@ -334727,7 +334738,7 @@ entry:
   %slot = alloca i1, align 1
   store i1 false, ptr %slot, align 8
   %3 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eir$24l84" to i64))
+  call void @avra_array_push(ptr %3, i64 ptrtoint (ptr @"av_$40std$2Eavrac$2Ecore$2Eir$24l89" to i64))
   call void @avra_array_push_owned(ptr %3, ptr %0)
   %4 = call i64 @avra_array_get(ptr %3, i64 0)
   %5 = call ptr @avra_array_sized(i64 0)
@@ -334802,7 +334813,7 @@ endif13:                                          ; preds = %else12, %then11
   br label %lhead5
 }
 
-define i1 @"av_$40std$2Eavrac$2Ecore$2Eir$24l84"(ptr %0, i64 %1) {
+define i1 @"av_$40std$2Eavrac$2Ecore$2Eir$24l89"(ptr %0, i64 %1) {
 entry:
   %2 = call i64 @avra_array_get(ptr %0, i64 1)
   %boxed = inttoptr i64 %2 to ptr
