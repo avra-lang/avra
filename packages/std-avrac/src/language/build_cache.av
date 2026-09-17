@@ -12,8 +12,8 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_int, digest_key, joined, DeclId, FileId}
-use features.{Namespace}
+use core.{new_digest, digest_text, digest_key, joined, DeclId, FileId, TypeId, TypeRegistry}
+use features.{Namespace, DeclSig}
 use @std.path.{joined_path, relative_path}
 
 /// The compiler's format identity, folded first into every key. The
@@ -147,15 +147,43 @@ export fn binary_name(ll_path: string) -> string {
 
 // ── THE PER-UNIT KEY ────────────────────────────────────────────────
 
-/// A name's signature fingerprint, or 0 when nothing holds it.
-/// THE SIG IS ASKED, NOT READ OUT OF THE TABLE: `decls.sigs` fills only
-/// when a signature is computed, so reading it directly answers 0 for
-/// every name whose sig has not happened to be needed yet — which is a
-/// key blind to exactly the change it exists to see.
-// LICENSED I39: a pure PROJECTION — a workspace and a name in, a number out.
-fn sig_of(mut ws: Workspace, id: DeclId?) -> int {
-    if id == null { return 0 }
-    sig_hash(ws.sig(id!))
+// ── A STABLE IDENTITY ───────────────────────────────────────────────
+
+/// A TYPE'S STABLE IDENTITY — its spelled SHAPE, never its interned ordinal.
+///
+/// A `TypeId` is a dense index into the workspace's registry, so introducing a
+/// type anywhere shifts the ordinals and every signature that mentions a type
+/// shifts with them. A key over such a number is a function of the GLOBAL
+/// INTERNING ORDER, and an unrelated edit then invalidates every file — the DUAL
+/// of the whole-value law, and just as much a key defect.
+// LICENSED I39: a pure PROJECTION — a registry and a type in, its spelling out.
+fn stable_type(types: TypeRegistry, id: TypeId) -> string { types.name_of(id) }
+
+/// A SIGNATURE'S STABLE TEXT — the whole signature, every type by its spelling.
+/// `sig_hash` stays exactly right for the memo kernel's IN-PROCESS cutoff, where
+/// the ordinals are fixed for the run; a key that OUTLIVES the run may not fold
+/// them. A default is folded as its PRESENCE, never its `DeclId` ordinal.
+// LICENSED I39: a pure PROJECTION — a registry and a signature in, its stable text out.
+fn stable_sig(types: TypeRegistry, s: DeclSig?) -> string {
+    if s == null { return "" }
+    match s! {
+        .Fn(f) -> "fn(${joined([stable_type(types, t) for t in f.params], ",")})${stable_type(types, f.ret)}",
+        .Record(r) -> "rec(${joined(r.names, ",")}|${joined([stable_type(types, t) for t in r.types], ",")}|${joined([if d == null { "_" } else { "d" } for d in r.defaults], "")})",
+        .Enum(e) -> "enum(${joined(e.names, ",")}|${joined([joined([stable_type(types, t) for t in payload], ",") for payload in e.payloads], ";")})",
+        .Named(n) -> "named(${stable_type(types, n.of)})",
+    }
+}
+
+/// A name's signature, ASKED (the table fills only when asked) and rendered by
+/// its STABLE spelling.
+/// THE SIG IS ASKED, NOT READ OUT OF THE TABLE: `decls.sigs` fills only when a
+/// signature is computed, so reading it directly answers nothing for every name
+/// whose sig has not happened to be needed yet — a key blind to exactly the
+/// change it exists to see.
+// LICENSED I39: a pure PROJECTION — a workspace and a name in, the signature's stable text out.
+fn sig_of(mut ws: Workspace, id: DeclId?) -> string {
+    if id == null { return "" }
+    stable_sig(ws.decls.types, ws.sig(id!))
 }
 
 /// THE UNIT KEY — one declaration's file's bytes, and the fingerprints of
@@ -178,7 +206,7 @@ export fn unit_key(mut ws: Workspace, f: FileId) -> string {
     d = digest_text(d, CACHE_FORMAT)
     d = digest_text(d, ws.source(f).text)
     let ns: Namespace = ws.visible(f)
-    for n in ns.fn_names { d = digest_int(d, sig_of(ws, ns.fns.get(n))) }
-    for n in ns.type_names { d = digest_int(d, sig_of(ws, ns.types.get(n))) }
+    for n in ns.fn_names { d = digest_text(d, sig_of(ws, ns.fns.get(n))) }
+    for n in ns.type_names { d = digest_text(d, sig_of(ws, ns.types.get(n))) }
     digest_key(d)
 }
