@@ -348,17 +348,20 @@ impl SourceText {
     }
 
     mut fn spec_decl(name: string, cases: List<Case>, end: int, one_line: bool, depth: int) -> string {
-        let body = flatten([self.case_lines(c, depth + 1) for c in cases]).concat(self.trivia_before(end, depth + 1))
+        let body = flatten([self.case_lines(c, one_line, depth + 1) for c in cases]).concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "spec ${quoted_text(name)} {}") }
         if one_line && body.length == 1 { return source_line(depth, "spec ${quoted_text(name)} { ${unpadded(body[0], depth + 1)} }") }
         "${source_line(depth, "spec ${quoted_text(name)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
-    mut fn case_lines(c: Case, depth: int) -> List<string> {
+    /// One case. A `given` group is a body too, so a spec the author
+    /// wrote on one line keeps `given g { then n { … } }` as written.
+    mut fn case_lines(c: Case, one_line: bool, depth: int) -> List<string> {
         let at = depth + if c.group.is_empty() { 0 } else { 1 }
         let one = self.trivia_before(start_of(self.store.expr_span(c.body)), at)
             .concat([source_line(at, "then ${quoted_text(c.name)} ${self.block(c.body, self.span_flat(self.store.expr_span(c.body)), at)}")])
         if c.group.is_empty() { return one }
+        if one_line && one.length == 1 { return [source_line(depth, "given ${quoted_text(c.group)} { ${unpadded(one[0], at)} }")] }
         [source_line(depth, "given ${quoted_text(c.group)} {")].concat(one).concat([source_line(depth, "}")])
     }
 
