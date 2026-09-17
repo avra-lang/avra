@@ -339,6 +339,7 @@ clean:
 # binary links beside `build/avra`, which is the layout the resolver
 # describes; the scratch keeps its own directory.
 seed-check: $(COMPILER_OBJS)
+	@sh tools/seed_guard.sh
 	@mkdir -p build/seed-check
 	@cp bootstrap/seed.ll build/seed-check/seed.ll
 	@clang -w -O1 -rdynamic build/seed-check/seed.ll $(COMPILER_OBJS) \
