@@ -13,7 +13,7 @@
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
 use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, sorted_texts, module_path, DeclId, FileId, TypeId, TypeRegistry, ModulePath}
-use features.{Namespace, DeclSig}
+use features.{Namespace, DeclSig, FnSig}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_text, write_text, make_dirs}
 
@@ -605,4 +605,56 @@ export fn surface_holds(mut ws: Workspace, dir: string, m: ModulePath) -> bool {
     mut known: Map<string, string> = {}
     mut live: List<string> = []
     surface_of(known, live, ws, dir, m) != ""
+}
+
+// ── MINTING: A RECORD ENTRY BECOMES A SIGNATURE ─────────────────────
+
+/// A record entry decoded: the name a declaration has, and the signature it
+/// wears.
+export type Minted = { name: string, sig: DeclSig }
+
+/// DECODE ONE ENTRY, and REFUSE anything that does not round-trip.
+///
+/// A seat is written as a SPELLING, and a spelling becomes a `TypeId` through
+/// `by_name` — which answers the FIRST type that ever rendered that text and
+/// cannot know whether it is the one this record meant. SO THE SIGNATURE IS
+/// RENDERED BACK AND COMPARED WITH THE LINE IT CAME FROM: a disagreement is a
+/// refusal, never a wrong type, and that is the only direction this may fail in.
+///
+/// A FN IS WHAT A HELD MODULE'S CALLERS NEED — a call site reads a callee's
+/// parameters and its answer, and nothing else about it. Every other kind is
+/// REFUSED BY NAME rather than answered with something plausible, because a
+/// declaration whose shape was GUESSED is worse than one that is missing: a
+/// missing one is a diagnostic and a guessed one is a wrong program.
+// LICENSED I39: a DECODER — a registry and a record line in, the signature they spell out.
+export fn minted_entry(mut types: TypeRegistry, line: string) -> Minted? {
+    let words = line.split("\t")
+    if words.length != 2 { return null }
+    let spelling = words[1]
+    if !spelling.starts_with("fn(") { return null }
+    let sig = fn_spelling(types, spelling)
+    if sig == null { return null }
+    if stable_sig(types, sig) != spelling { return null }
+    Minted { name: words[0], sig: sig! }
+}
+
+/// A fn's spelling back into its seats. A NESTED SEAT is refused rather than
+/// mis-split: `fn(fn(int)int)void` has a `)` inside its parameters, and a decoder
+/// that split on the first one would silently take half a signature.
+// LICENSED I39: a KEY DECODER — a registry and one spelling in, the seats out.
+fn fn_spelling(mut types: TypeRegistry, spelling: string) -> DeclSig? {
+    let close = spelling.index_of(")")
+    if close < 0 { return null }
+    let inside = spelling.substring(3, close)
+    if inside.contains("(") { return null }
+    let seats = if inside.is_empty() { [] } else { inside.split(",") }
+    mut params: List<TypeId> = []
+    for s in seats {
+        let t = types.by_name(s)
+        if t == null { return null }
+        params.push(t!)
+    }
+    let ret = types.by_name(spelling.substring(close + 1, spelling.length))
+    if ret == null { return null }
+    .Fn(FnSig { params: params, ret: ret! })
 }
