@@ -189,3 +189,77 @@ inputs, so you ship proofs rather than trust.
 - **`@std/process` is flaky under load** — three runs of a gated tree gave rc=1,
   rc=1, rc=0, and the differing bytes are LOST CHILD OUTPUT. The gate is
   intermittently red for reasons unrelated to any landing.
+
+## Rung 2 — the interface, in full
+
+**What persists.** One record per MODULE: `{ imports: [(module, the surface_key it
+had)], surface: [(name, kind, sig_hash)] }`.
+
+**Keyed by what — two levels, which is what makes it work without parsing:**
+
+```
+bytes_key(m)   = digest( sorted (relative path, bytes) of m's files )      # the LOOKUP key
+surface_key(m) = digest( bytes_key(m) + [surface_key(m') for m' in imports(m)] + language )
+```
+
+The entry is stored under `bytes_key` and **validated** by recomputing the imports'
+current `surface_key`s and comparing them with the recorded ones. Equal → the surface
+is reused with **no parse and no resolve**; different → re-parse. `bytes_key` needs no
+parse (the bytes are on disk), so the lookup itself is free.
+
+**How the interface's identity is derived — the whole design.**
+
+```
+surface_key(m) = digest( ITS OWN FILES' BYTES
+                       + THE surface_keys OF EVERY MODULE IT IMPORTS
+                       + THE LANGUAGE HASH )
+```
+
+The imports are in it because **a signature can name a type from an import**: a module
+whose surface says `fn f(x: util.Pair)` must move when `util.Pair` changes, and a key
+over its own bytes alone misses exactly that. **A surface key that names less than the
+contract reuses a stale body on precisely the change the interface exists to catch.**
+
+**Invalidated** by content in exactly two ways — its own files' bytes, and any import's
+surface. No clock, no flags, no configuration.
+
+**The witness** (the seat-change witness, one level up; leg 2 is what a key over
+own-bytes-alone would fail):
+
+1. change a SEAT in module M → `surface_key(M)` **moves**
+2. a module **importing** M → **its** `surface_key` moves (imports are in the key)
+3. an **unrelated** module → its `surface_key` does **not** move *(the control)*
+
+**Saving:** parse + resolve of every unchanged module is skipped — the resolve and
+typing half (~14s) plus the parse of unchanged modules (~7s).
+
+## Rung 3 — the pair that must NOT be equal
+
+Two runtime rows with **the same host and the same params**:
+
+```
+avra_array_get        ret: I64   owns_result: false   lends: true    host: RtHost.ArrayGet
+avra_array_get_owned  ret: Ptr   owns_result: true    lends: false   host: RtHost.ArrayGet
+```
+
+A normalizer keyed on "which operation is this" — and `RtHost.ArrayGet` is *literally
+the same value* for both, which is the temptation — maps them to one identity. They are
+not equal: **one borrows, one retains**, and conflating them changes the reference
+count, which is a leak or a use-after-free, silently. The failing case, written before
+anything builds:
+
+```
+A: a body whose read lowered as `avra_array_get`        (borrowed)
+B: the same source bytes, lowered under a liveness choice that retains
+   -> `avra_array_get_owned`
+assert normalized_key(A) != normalized_key(B)
+```
+
+The normalizer must consult `owns_result` / `lends` / `ret`, never the host.
+
+**And the pair a normalizer is MOST tempted by is already closed.** `a + b` vs `b + a`
+is commutative by opcode, and `expr_spine/lower.av` lowers a string `+` to
+`CallRt("avra_str_concat", [a, b])` and an int `+` to `Bin(Add, a, b)`. The
+temptation is neutralised **by the IR's shape**, not by a convention someone must
+remember — which is the strongest argument for the closed vocabulary, and why
+normalization is tractable here and nowhere else.
