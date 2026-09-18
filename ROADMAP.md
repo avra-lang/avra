@@ -18113,3 +18113,21 @@ mark says so.
 DEAD CODE THE DELETION REVEALED: `facts.av`'s `is_true` existed only
 for the borrow column's `lay_named`; a column deleted is a helper
 deleted, and nothing else referenced it.
+
+### A `catch` ARM CANNOT BE LEFT EARLY — asked by the cache lane, 2026-09-17
+
+`let dir = f() catch return 1` DOES NOT PARSE; the refusal is F0100 "expected BREAK
+while parsing `stmt`", at the `return`. The two forms that work are `catch <answer>` (an
+expression, which is the common case) and a `catch e -> { ... }` ARM whose block is the
+answer. So a fallback that wants to LEAVE THE FN — rather than produce a value — has no
+spelling, and the site that hit it had to be written as a nested `??` chain instead.
+
+WHY IT IS WORTH A SLICE RATHER THAN A SHRUG: the shape a reader reaches for first when a
+seat may be absent is "else give up", and giving up is a `return` in every language whose
+`catch`/`?` it resembles. The workaround is not wrong, it is just LONGER AND LESS OBVIOUS
+than the thing every reader tries first, and the cost of that is paid at every such seat.
+
+THE ASK, precisely: `catch` should take a STATEMENT or a block after it, so
+`catch return 1` and `catch fail E.Bad(x)` mean what they read as. The forms that exist
+today stay — this is an addition, not a replacement — and the natural spelling is the one
+already used for arms: `catch { return 1 }`.

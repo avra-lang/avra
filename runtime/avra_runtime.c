@@ -2304,6 +2304,34 @@ int64_t avra_spawn_status(const char* prog, void* args) {
     return (int64_t)WEXITSTATUS(status);
 }
 
+/* THE SAME, RUN IN A DIRECTORY — because a CHILD'S OUTPUT PATHS ARE RELATIVE TO WHERE IT
+   STARTS, and that is not a detail a caller can work around: an invocation handed many
+   inputs (which is what makes a batch cheap) writes each output beside its own working
+   directory rather than beside its input. The chdir happens IN THE CHILD, between fork and
+   exec, so the compiler's own working directory never moves — a process that chdir'd
+   would change the meaning of every relative path it touched afterwards. */
+int64_t avra_spawn_in(const char* dir, const char* prog, void* args) {
+    AvraArray* a = (AvraArray*)args;
+    char** argv = (char**)malloc((size_t)(a->len + 2) * sizeof(char*));
+    argv[0] = (char*)prog;
+    for (int64_t i = 0; i < a->len; i++)
+        argv[i + 1] = (char*)(uintptr_t)avra_str_crossing((const char*)(uintptr_t)a->data[i]);
+    argv[a->len + 1] = NULL;
+    fflush(NULL);
+    posix_spawn_file_actions_t acts;
+    if (posix_spawn_file_actions_init(&acts) != 0) { free(argv); return 127; }
+    if (AVRA_ADDCHDIR(&acts, dir) != 0) { posix_spawn_file_actions_destroy(&acts); free(argv); return 127; }
+    pid_t pid;
+    int started = posix_spawnp(&pid, prog, &acts, NULL, argv, environ);
+    posix_spawn_file_actions_destroy(&acts);
+    free(argv);
+    if (started != 0) return 127;
+    int status;
+    if (waitpid(pid, &status, 0) < 0) return 127;
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return (int64_t)WEXITSTATUS(status);
+}
+
 // THIS PROGRAM AGAIN, with new words: the image is replaced, so the
 // memory the program held is gone — how a heavy phase hands the
 // light one a fresh process. Answers only when it cannot: 127.
