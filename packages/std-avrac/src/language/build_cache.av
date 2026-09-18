@@ -205,7 +205,19 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     let ll = "${ent.view.source.file}.ll"
     let failure = emit_ll(lo, ll)
     if failure != null { fail failure! }
-    let words = link_words(ll, ws, opt, runtime)
+    // THE MODULE'S OWN CONTENT IS ITS OBJECT'S KEY, so a module that did not move reuses
+    // its machine code and CLANG IS NEVER RUN. The optimizer is the largest single cost in
+    // a build — 15s over the compiler's module against 333ms to link — and it is the one
+    // thing that does not need doing twice. A content key is the whole proof: same bytes,
+    // same object, and `has` answers it with one `exists`.
+    let obj_key = node_key(Stored.Obj, [digest_of(read_text(ll) catch ""), opt, runtime])
+    let obj = "${ll}.o"
+    if !store.place(Stored.Obj, obj_key, obj) {
+        let built = avra_spawn_status(linker, ["-w", opt, "-c", ll, "-o", obj])
+        if built != 0 { fail "avra: clang failed compiling — exited with code ${built}" }
+        let _ = store.keep_file(Stored.Obj, obj_key, obj, [obj_key])
+    }
+    let words = link_objects([obj], ws, runtime, binary)
     // THE LINK RUNS HERE, not in the CLI: the build owns its pipeline, and a thin caller
     // is one that decides nothing.
     let code = avra_spawn_status(linker, words)
@@ -227,8 +239,8 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
 // LICENSED I39: a pure PROJECTION — a path, an opt level and a toolchain
 // fact in, clang's words out. It owns no state and takes the workspace
 // second, because the module's path is what it is about.
-fn link_words(ll_path: string, ws: Workspace, opt: string, runtime: string) -> List<string> {
-    ["-w", opt, "-rdynamic", ll_path, runtime].concat(ws.link_words()).concat(["-o", binary_name(ll_path)])
+fn link_objects(objs: List<string>, ws: Workspace, runtime: string, out: string) -> List<string> {
+    ["-w", "-rdynamic"].concat(objs).concat([runtime]).concat(ws.link_words()).concat(["-o", out])
 }
 
 /// The same, over EVERY module the build emitted — one per file, plus the entry.
