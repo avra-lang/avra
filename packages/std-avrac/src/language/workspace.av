@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, Mark, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped, DeclKind, no_stmt}
+use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, Mark, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
@@ -571,14 +571,6 @@ impl Workspace {
     /// The declarations a file MINTS into the one table; the answer's
     /// hash is the item tree's — names and kinds.
     fn items(f: FileId) -> List<DeclId> {
-        // A HELD MODULE ANSWERS FROM ITS RECORD, before anything reaches for a
-        // parse. WITHOUT THIS THE REST IS THEATRE: `items` parses every other
-        // file, so a minted set it never consults would leave the rung parsing
-        // exactly what it exists to skip — and the build would be CORRECT AND NOT
-        // FASTER, which no differential can see, because both builds would have
-        // parsed everything and both `.ll`s would match.
-        let held = self.decls.minted.get(self.decls.file(f).path)
-        if held != null { return held! }
         match self.file_items.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let p = self.parsed(f)
         let ids = self.decls.admit(f, p.store, p.stmts)
@@ -1909,34 +1901,18 @@ impl Workspace {
         // its BODY is not needed: its object is found by the record's key. THE THREE
         // LOOPS BELOW ARE WHERE THE EDIT TIME LIVES — together they are the analysis
         // that an unchanged module has no reason to pay for twice.
-        // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED — its module's
-        // record answers what a caller can see of it, and its BODY is not needed
-        // because its object is found by the record's key. The files themselves are
-        // known WITHOUT resolving (the packages and a disk walk), which is what makes
-        // this skip possible at all.
         let t1 = self.clock()
-        for fi in self.decls.files { if !self.is_held(fi.id) { let _ = self.resolved(fi.id) } }
+        for fi in self.decls.files { let _ = self.resolved(fi.id) }
         self.timed("resolve", self.clock() - t1)
         let t2 = self.clock()
-        for fi in self.decls.files { if !self.is_held(fi.id) { let _ = self.sig_diagnostics(fi.id) } }
+        for fi in self.decls.files { let _ = self.sig_diagnostics(fi.id) }
         self.timed("sigs", self.clock() - t2)
         let t3 = self.clock()
-        let out = [self.analysis(fi.id) for fi in self.decls.files if !self.is_held(fi.id)]
+        let out = [self.analysis(fi.id) for fi in self.decls.files]
         self.timed("bodies", self.clock() - t3)
         out
     }
 
-    /// HOLD ONE FILE — its record's own key still matched, so it contributes its
-    /// exported signatures and its object rather than being analysed again.
-    mut fn hold_file(path: string) {
-        let f = self.file_id(path)
-        self.decls.held.set(self.decls.file(f).path, true)
-    }
-
-    /// Whether a file's module is HELD — its record still validates, so it contributes
-    /// its exported signatures and its object rather than being analysed again. The
-    /// minted table IS the answer: a file is held exactly when a mint filled it.
-    fn is_held(f: FileId) -> bool { self.decls.held.get(self.decls.file(f).path) != null }
 
     /// One file's analysis by path.
     fn analyze_file(path: string) -> Analysis {
