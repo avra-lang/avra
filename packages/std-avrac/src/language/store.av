@@ -1,0 +1,145 @@
+//! THE STORE — every artifact a build keeps, on disk, by content.
+//!
+//! ONE ROW SHAPE (a key, the bytes it names, the keys it read), ONE VERB SET, and a
+//! family as a KIND rather than a spelling. THE FILESYSTEM IS THE INDEX: `has` is one
+//! `exists` and nothing read, so "has this changed?" is O(1) with no index to load and
+//! no second copy of the truth to disagree with the first.
+//!
+//! A KEY IS CONTENT — a digest over a STABLE projection, never a per-run id, which is a
+//! slot in one process's table and means nothing to the next.
+//!
+//! A ROW IS PRESENT ONLY WHEN ITS EDGES ARE. Data and edges are two files and `has`
+//! wants both, so a write that never finished reads as ABSENT rather than as half a
+//! value: the edges are the COMMIT, not bookkeeping.
+use @std.io.{exists, read_text, write_text, make_dirs, remove, list_dir}
+use @std.path.{joined_path}
+use core.{digest_of, joined}
+
+/// WHAT THE STORE KEEPS, as a KIND — so a family cannot be misspelled and every match
+/// over it is exhaustive. Adding one is this enum and a directory name, which is the
+/// smallest edit a new family can be.
+export enum Stored {
+    /// A declaration's interface, stored STRUCTURALLY: a rendered spelling is a lossy
+    /// round trip that must REFUSE what it cannot re-render, which is what text did.
+    Sig
+    /// A declaration's body, as one number.
+    Fp
+    /// A lowered body at one set of type arguments — THE GRANULARITY WHERE A
+    /// SPECIALIZATION IS SIMPLY A DIFFERENT KEY.
+    Unit
+    /// Machine code: one unit's, or a file's units `ld -r`'d together.
+    Obj
+    /// A file's blob.
+    Mod
+    /// The linked program.
+    Bin
+}
+
+impl Stored {
+    /// The directory a family lives in — ONE projection, so the name a row is written
+    /// under and the name it is looked up by cannot differ.
+    fn name() -> string {
+        match self {
+            .Sig -> "sig",
+            .Fp -> "fp",
+            .Unit -> "unit",
+            .Obj -> "obj",
+            .Mod -> "mod",
+            .Bin -> "bin",
+        }
+    }
+}
+
+/// THE STORE — one root, every family under it.
+export type Store = { root: string }
+
+// LICENSED I39: a CONSTRUCTOR — the root in, the store out, like `new_db`.
+export fn store_at(root: string) -> Store { Store { root: root } }
+
+/// A KEY OVER A PROJECTION — the one derivation every family shares, so no family can
+/// key itself differently from its neighbours. The family's name is folded first, so two
+/// families naming the same parts stay apart.
+// LICENSED I39: a pure PROJECTION — a family and its parts in, the key out.
+export fn node_key(family: Stored, parts: List<string>) -> string {
+    digest_of(joined([family.name()].concat(parts), "\n"))
+}
+
+impl Store {
+    /// THE SHARD a key lands in — one projection, because the writer that makes the
+    /// directory and the writer that names the file must agree about it. A content key is
+    /// uniform, so two characters make 256 buckets and no directory grows unbounded.
+    fn shard(family: Stored, key: string) -> string {
+        joined_path(joined_path(self.root, family.name()), key.substring(0, 2))
+    }
+
+    /// A key's path.
+    fn path(family: Stored, key: string) -> string { joined_path(self.shard(family, key), key) }
+
+    fn edge_path(family: Stored, key: string) -> string { "${self.path(family, key)}.deps" }
+
+    /// HAS THIS CHANGED? One `exists`, NOTHING read.
+    fn has(family: Stored, key: string) -> bool {
+        exists(self.path(family, key)) && exists(self.edge_path(family, key))
+    }
+
+    /// The bytes a key names, or nothing when the row is not committed.
+    fn get(family: Stored, key: string) -> string? {
+        if !self.has(family, key) { return null }
+        match read_text(self.path(family, key)) {
+            .Ok(text) -> text,
+            .Err(why) -> null,
+        }
+    }
+
+    /// WHAT THIS KEY READ. Recorded where the key is minted, because that is the only
+    /// place that knows.
+    fn deps(family: Stored, key: string) -> List<string> {
+        if !self.has(family, key) { return [] }
+        let text = read_text(self.edge_path(family, key)) catch ""
+        if text == "" { return [] }
+        text.split("\n")
+    }
+
+    /// REMEMBER A ROW: the DATA first, then the EDGES, so the second write is what makes
+    /// the row visible and a crash between them leaves nothing rather than half.
+    fn keep(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
+        let _ = make_dirs(self.shard(family, key))
+        let _ = write_text(self.path(family, key), bytes) catch ""
+        let _ = write_text(self.edge_path(family, key), joined(read, "\n")) catch ""
+        true
+    }
+
+    /// THE ONE VERB MOST CALLERS WANT: the stored bytes, or compute, remember, hand back.
+    /// The ladder nobody should write — `if has { get } else { compute; keep }` — has no
+    /// site in the tree, because this is that ladder with the key, the edges and the body
+    /// in one place.
+    ///
+    /// THE BODY IS `() -> expr`, AND THE BLOCK FORM DOES NOT REACH HERE: `f(a) { -> x }`
+    /// parses after a bare call and NOT after a method's arguments ("expected `}` to close
+    /// the trailing block"), so this seat takes the lambda spelled out. A probe that tried
+    /// only the bare-call shape said the block worked; the real call site is what found it.
+    fn cached(family: Stored, key: string, read: List<string>, make: fn() -> string) -> string {
+        let held = self.get(family, key)
+        if held != null { return held! }
+        let made = make()
+        let _ = self.keep(family, key, made, read)
+        made
+    }
+
+    /// FORGET WHAT IS NOT `live` — the collector, and it needs no index either: a key's
+    /// presence IS its file.
+    fn sweep(family: Stored, live: List<string>) -> int {
+        let dir = joined_path(self.root, family.name())
+        mut dropped = 0
+        for shard in list_dir(dir) catch [] {
+            for name in list_dir(joined_path(dir, shard)) catch [] {
+                if !name.ends_with(".deps") && !live.any(it == name) {
+                    let _ = remove(joined_path(joined_path(dir, shard), name))
+                    let _ = remove("${joined_path(joined_path(dir, shard), name)}.deps")
+                    dropped = dropped + 1
+                }
+            }
+        }
+        dropped
+    }
+}
