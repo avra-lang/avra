@@ -48,10 +48,16 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # `package_sources`). A hand-written list is a registry that silently
 # forgets its next member — and a listed pair of DIRECTORIES forgets
 # the next directory the same way.
+# Where a C source is never a C source: `packages/` is the compiler's own source, held
+# to its own rules, and `build/` HOLDS ARTIFACTS — a `*.c` there is a binary that happens
+# to wear the name, and reading one as text dies in the decoder. The exclusion is by
+# DIRECTORY rather than by extension because the extension is exactly what cannot be
+# trusted here.
 def tree_sources():
+    skip = (os.path.join(ROOT, "packages") + os.sep, os.path.join(ROOT, "build") + os.sep)
     return sorted(os.path.relpath(path, ROOT)
                   for path in glob.glob(os.path.join(ROOT, "*", "*.c"))
-                  if not path.startswith(os.path.join(ROOT, "packages") + os.sep))
+                  if not path.startswith(skip))
 
 
 # The registry's one file, opened by one name.
