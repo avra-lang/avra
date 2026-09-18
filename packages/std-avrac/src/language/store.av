@@ -11,7 +11,7 @@
 //! A ROW IS PRESENT ONLY WHEN ITS EDGES ARE. Data and edges are two files and `has`
 //! wants both, so a write that never finished reads as ABSENT rather than as half a
 //! value: the edges are the COMMIT, not bookkeeping.
-use @std.io.{exists, read_text, write_text, make_dirs, remove, list_dir}
+use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove, list_dir}
 use @std.path.{joined_path}
 use core.{digest_of, joined}
 
@@ -33,6 +33,11 @@ export enum Stored {
     Mod
     /// The linked program.
     Bin
+    /// WHAT THE BUILD SAID about it — the warnings a hit must still speak, and the
+    /// reason they are a row rather than a field: a program that is not analysed has no
+    /// voice to ask, and a build that quietly stops warning is the silent wrongness this
+    /// whole design is arranged against.
+    Warn
 }
 
 impl Stored {
@@ -46,6 +51,7 @@ impl Stored {
             .Obj -> "obj",
             .Mod -> "mod",
             .Bin -> "bin",
+            .Warn -> "warn",
         }
     }
 }
@@ -124,6 +130,32 @@ impl Store {
         let made = make()
         let _ = self.keep(family, key, made, read)
         made
+    }
+
+    /// REMEMBER A ROW WHOSE BYTES ARE A FILE — the twinned half of `keep`, because a
+    /// linked binary is BYTES and reading it as text is the thing that loses them. The
+    /// edges are the commit here too.
+    fn keep_file(family: Stored, key: string, from: string, read: List<string>) -> bool {
+        let _ = make_dirs(self.shard(family, key))
+        let bytes = match read_bytes(from) {
+            .Ok(b) -> b,
+            .Err(why) -> { return false },
+        }
+        let _ = write_bytes(self.path(family, key), bytes)
+        let _ = write_text(self.edge_path(family, key), joined(read, "\n")) catch ""
+        true
+    }
+
+    /// PUT A ROW WHERE A CALLER WANTS IT — what a hit does with a binary: the store has
+    /// the bytes and the caller wants them at a path, and neither re-reads the other.
+    fn place(family: Stored, key: string, to: string) -> bool {
+        if !self.has(family, key) { return false }
+        let bytes = match read_bytes(self.path(family, key)) {
+            .Ok(b) -> b,
+            .Err(why) -> { return false },
+        }
+        let _ = write_bytes(to, bytes)
+        true
     }
 
     /// FORGET WHAT IS NOT `live` — the collector, and it needs no index either: a key's

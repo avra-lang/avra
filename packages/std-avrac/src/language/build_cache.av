@@ -176,52 +176,48 @@ impl BuildCache {
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one
 // standard signature `build_program(ws, entry, …)`. `disk` is the artifact host.
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name.
+// LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one standard signature.
+// `disk` is the artifact host; `linker` is the tool the CLI already found, because a
+// build that means to link runs the linker itself and is the only place that knows how.
+// LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one standard signature.
 export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string) -> Result<BuildOutcome, string> {
+    let store = store_at(build_cache_root(ws))
     let cache = build_cache(ws, disk)
     let inputs = cache.inputs()
     let key = cache.key(entry, mode, inputs)
-    let held = cache.reuse(entry, key, inputs)
-    if held != null { return .Ok(held!) }
-    // THE WALK IS CONSULTED HERE, once the answer is known to be needed: every
-    // module whose record still holds contributes its exported signatures WITHOUT
-    // being parsed, and the rest are left to the ordinary path.
-    // ONE WALK FOR THE MINT AND FOR THE HELD SET. `mint_held_modules` validated each
-    // module on its own memo too; the two passes are now one question asked once.
-    let _ = held_set(ws, build_cache_root(ws))
-    let _ = mint_held_modules(ws, build_cache_root(ws))
-    let held = held_set(ws, build_cache_root(ws))
-    emitted(cache, ws.program(entry), key, inputs, opt, runtime, linker, held)
-}
+    let binary = binary_name(entry)
 
-// LICENSED I39: the build's TWO PHASES, not a pass's vocabulary —
-// `build_program` is the entry point and keeps the one standard signature
-// (I39's own exemption), and this is its split at the phase boundary.
-fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: string, runtime: string, linker: string, held: List<FileId>) -> Result<BuildOutcome, string> {
-    if !p.clean() { return .Err(p.report()) }
+    // A HIT: the binary and its voice are already in the store, so NOTHING runs — no
+    // analysis, no emission, no link. The warnings come from the store, because a program
+    // that is not analysed has no voice to ask.
+    if store.has(Stored.Bin, key) {
+        let _ = store.place(Stored.Bin, key, binary)
+        return .Ok(BuildOutcome { words: [], binary: binary, warnings: store.get(Stored.Warn, key) ?? "", reused: true, key: key })
+    }
+
+    let p = ws.program(entry)
+    if !p.clean() { fail p.report() }
     let view = p.entry_file()
-    if view == null { return .Err(p.rendered([no_target(p.ws.root)])) }
+    if view == null { return .Err(p.rendered([no_target(ws.root)])) }
     let ent = view!
-    if ent.view.stmts.is_empty() { return .Err("the program is empty") }
+    if ent.view.stmts.is_empty() { fail "the program is empty" }
+
     let lo = p.lowered_checked()?
-    mut ws = p.ws
-
-    // THE BUILD WRITES ITS OWN RECORDS, for the modules it ANALYSED — a held module
-    // keeps the record it was held by, and a TEST's module is left alone, because a
-    // test file is in `p.files` only because the workspace analysed it and it belongs
-    // to no program.
-    let names = distinct([ws.module_of(a.view.source.file) for a in p.files if !ws.is_test_path(a.view.source.file)])
-    let mods = [module_named(n) for n in names]
-    let _ = write_surfaces(p, ws, cache.root, mods)
-    // The body names lowering produced, marked on each record — the half that makes a
-    // held module's object key computable without lowering it.
-    let _ = mark_modules(ws, cache.root, lo, mods, ent.view.file)
-
-    let binary = binary_name(ent.view.source.file)
-    let units = emit_objects(ws, lo, cache.root, program_files(ws), ent.view.file, linker, opt, held)
-    if units.objects.is_empty() { return .Err("no object was emitted") }
-    let words = link_objects(units.objects, p.ws, runtime, binary)
+    let ll = "${ent.view.source.file}.ll"
+    let failure = emit_ll(lo, ll)
+    if failure != null { fail failure! }
+    let words = link_words(ll, ws, opt, runtime)
+    // THE LINK RUNS HERE, not in the CLI: the build owns its pipeline, and a thin caller
+    // is one that decides nothing.
+    let code = avra_spawn_status(linker, words)
+    if code != 0 {
+        fail "avra: clang failed linking — exited with code ${code}"
+    }
     let warnings = p.warnings()
-    cache.keep(key, inputs, words, warnings)
+    // THE RESULT IS THE BUILD'S OWN OUTPUT, so it is the build that remembers it: the
+    // binary under one family and what was said about it under another.
+    let _ = store.keep_file(Stored.Bin, key, binary, [key])
+    let _ = store.keep(Stored.Warn, key, warnings, [key])
     .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key })
 }
 

@@ -499,31 +499,15 @@ fn cached_build(args: CliResult) -> int {
     }
     let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return refused_by_host(e) } }
     match build_program(ws, entry!, "build", "-O1", runtime_object(), disk_host(), tool.path) {
-        .Err(report) -> {
+                .Err(report) -> {
             println(report)
             1
         },
         .Ok(b) -> {
             if b.warnings != "" { eprintln(b.warnings) }
-            let held = cached_binary(ws, b.key)
-            if exists(held) {
-                if timed(args) { eprintln("time: lower+emit · cache hit (binary)") }
-                if copy_file(held, b.binary) {
-                    touch_key(ws, b.key)
-                    println(b.binary)
-                    return 0
-                }
-            }
             if timed(args) { eprintln(hit_line(b.reused)) }
-            let code = run_words(b.words)
-            if code == 0 {
-                let _ = make_dirs(build_cache_root(ws))
-                let _ = copy_file(b.binary, held)
-                touch_key(ws, b.key)
-                collect_keys(ws)
-                println(b.binary)
-            }
-            code
+            println(b.binary)
+            0
         },
     }
 }
