@@ -12,7 +12,8 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, digest_of, joined, same_file}
+use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, same_file, module_path, ModulePath, TypeRegistry, DeclId}
+use features.{Decl, DeclSig}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_text, write_text, make_dirs, exists}
 
@@ -233,6 +234,9 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     if code != 0 {
         fail "avra: clang failed linking — exited with code ${code}"
     }
+    // REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it — the data a
+    // later build needs to decide whether a file may be skipped WITHOUT READING IT.
+    let _ = keep_interfaces(ws, store, [module_path(ws.module_of(a.view.source.file).split(".")) for a in p.files])
     let warnings = p.warnings()
     // WHAT EACH PHASE COST, because a build that cannot say where its time went is a
     // build whose next optimisation is a guess.
@@ -266,4 +270,56 @@ fn link_modules(mods: List<string>, ws: Workspace, opt: string, runtime: string)
 export fn binary_name(ll_path: string) -> string {
     let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
     if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
+}
+
+// ── THE INTERFACE, REMEMBERED ───────────────────────────────────────
+
+/// A DECLARATION'S SIGNATURE, STORED STRUCTURALLY — one line per signature, parts
+/// separated by a tab, so a later run reads back EXACTLY what was written without a
+/// parser. A rendered spelling was tried and refused: it is a lossy round trip whose
+/// decoder must REFUSE whatever it cannot re-render, and generics were among the
+/// refusals.
+///
+/// ONE PROJECTION OF A SIGNATURE, because the writer and the reader must agree about the
+/// shape and two spellings of it is how a record comes to validate one thing and serve
+/// another.
+// LICENSED I39: a pure PROJECTION — a registry and a signature in, the line that stores it.
+fn sig_line(types: TypeRegistry, s: DeclSig) -> string {
+    match s {
+        .Fn(f) -> "fn\t${joined([types.name_of(p) for p in f.params], " ")}\t${types.name_of(f.ret)}",
+        .Record(r) -> "rec\t${joined(r.names, " ")}\t${joined([types.name_of(t) for t in r.types], " ")}",
+        .Enum(e) -> "enum\t${joined(e.names, " ")}",
+        .Named(n) -> "named\t${types.name_of(n.of)}",
+    }
+}
+
+/// EVERY NAME A MODULE EXPORTS, and the signature each wears — the INTERFACE, as text.
+/// Written once a build has computed it, and read back by a later build that means to
+/// decide whether a file may be skipped WITHOUT parsing it.
+// LICENSED I39: a pure PROJECTION — the workspace and a module in, its interface out.
+fn interface_text(mut ws: Workspace, m: ModulePath) -> string {
+    joined(flatten([named_sig(ws, d) for d in ws.exported_decls(m)]), "\n")
+}
+
+/// ONE NAME AND THE SIGNATURE IT WEARS, or nothing when it has none yet — a declaration
+/// whose signature the build has not needed carries no line, and a name with no line is
+/// simply absent from the interface.
+// LICENSED I39: a pure PROJECTION — the workspace and a declaration in, its interface line.
+fn named_sig(mut ws: Workspace, d: Decl) -> List<string> {
+    let s = ws.sig(d.id)
+    if s == null { return [] }
+    ["${d.name}\t${sig_line(ws.decls.types, s!)}"]
+}
+
+/// REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it. The key is the
+/// module's own NAME, because a module is what a caller imports — and the value carries
+/// what that name is worth, so a file can be judged without being read.
+// LICENSED I39: THE DRIVER'S RECORD STEP — a workspace, a store and a module list in, the count out.
+export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModulePath>) -> int {
+    mut kept = 0
+    for m in modules {
+        let _ = store.keep(Stored.Sig, m.text(), interface_text(ws, m), [])
+        kept = kept + 1
+    }
+    kept
 }
