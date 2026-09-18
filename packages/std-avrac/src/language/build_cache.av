@@ -176,7 +176,7 @@ impl BuildCache {
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one
 // standard signature `build_program(ws, entry, …)`. `disk` is the artifact host.
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name.
-export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host) -> Result<BuildOutcome, string> {
+export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string) -> Result<BuildOutcome, string> {
     let cache = build_cache(ws, disk)
     let inputs = cache.inputs()
     let key = cache.key(entry, mode, inputs)
@@ -190,13 +190,13 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     let _ = held_set(ws, build_cache_root(ws))
     let _ = mint_held_modules(ws, build_cache_root(ws))
     let held = held_set(ws, build_cache_root(ws))
-    emitted(cache, ws.program(entry), key, inputs, opt, runtime)
+    emitted(cache, ws.program(entry), key, inputs, opt, runtime, linker, held)
 }
 
 // LICENSED I39: the build's TWO PHASES, not a pass's vocabulary —
 // `build_program` is the entry point and keeps the one standard signature
 // (I39's own exemption), and this is its split at the phase boundary.
-fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: string, runtime: string) -> Result<BuildOutcome, string> {
+fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: string, runtime: string, linker: string, held: List<FileId>) -> Result<BuildOutcome, string> {
     if !p.clean() { return .Err(p.report()) }
     let view = p.entry_file()
     if view == null { return .Err(p.rendered([no_target(p.ws.root)])) }
@@ -216,20 +216,10 @@ fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: stri
     // held module's object key computable without lowering it.
     let _ = mark_modules(ws, cache.root, lo, mods, ent.view.file)
 
-    // THE WHOLE-PROGRAM MODULE IS THE BUILD PATH, AND THE OBJECT PATH IS OFF.
-    //
-    // Measured, one edit of one file, this machine:
-    //     whole-program module .......  58s
-    //     per-file objects ...........  65s, 73s, 122s  (2, 31 and 66 objects recompiled)
-    // The object cache works — it recompiles only what moved — but the LINK over 277
-    // objects and the per-file emission cost more than one module's single compile, and
-    // A MECHANISM SLOWER THAN WHAT IT REPLACES IS NOT ONE TO LEAVE ON. Everything stands
-    // beside it, measured, with the two bugs it took to get here fixed below.
-    let ll = "${ent.view.source.file}.ll"
-    let failure = emit_ll(lo, ll)
-    if failure != null { return .Err(failure!) }
     let binary = binary_name(ent.view.source.file)
-    let words = link_words(ll, p.ws, opt, runtime)
+    let units = emit_objects(ws, lo, cache.root, program_files(ws), ent.view.file, linker, opt, held)
+    if units.objects.is_empty() { return .Err("no object was emitted") }
+    let words = link_objects(units.objects, p.ws, runtime, binary)
     let warnings = p.warnings()
     cache.keep(key, inputs, words, warnings)
     .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key })
@@ -321,7 +311,16 @@ fn entry_line(name: string, sig: string) -> string {
 /// driver reads back.
 // LICENSED I39: a pure PROJECTION — a workspace and a module in, the entries it exports out.
 fn module_entries(mut ws: Workspace, m: ModulePath) -> List<string> {
-    flatten([interface_lines(ws, ws.file_id(path)) for path in ws.module_files(m)])
+    // THE MODULE'S OWN DECLARATIONS, not its files' visible namespaces. `visible(f)`
+    // answers what a FILE can see — the prelude, its own imports, and whatever it declares
+    // — and for a file that is not the entry it was answering with the PRELUDE ALONE,
+    // measured: the `gen` module's record carried `println`, `eprintln`, `Result`, `List`,
+    // `Map`, `Cell` and NOT ONE of its own two exports, so a held module contributed
+    // nothing a caller could call ("no `fn pick` is defined").
+    //
+    // What a contract needs is what the module EXPORTS, and the tree has exactly that
+    // projection: `exported_decls(m)`.
+    [entry_line(d.name, sig_of(ws, d.id)) for d in ws.exported_decls(m)]
 }
 
 // ── A STABLE IDENTITY ───────────────────────────────────────────────
@@ -433,8 +432,8 @@ export fn bytes_key(mut ws: Workspace, m: ModulePath) -> string {
 /// a module's own `use` lines live in its source, so reading them costs a parse
 /// — but reading them once, when the record is written, and keeping them here,
 /// makes every later question free.
-export fn surface_record(surface: string, imports: List<string>, had: List<string>, entries: List<string>, bodies: List<string>, files: List<string>) -> string {
-    let head = "surface ${surface}\n" + joined(flatten([["import ${imports[i]} ${had[i]}"] for i in 0..imports.length]), "\n")
+export fn surface_record(m_name: string, surface: string, imports: List<string>, had: List<string>, entries: List<string>, bodies: List<string>, files: List<string>) -> string {
+    let head = "module ${m_name}\nsurface ${surface}\n" + joined(flatten([["import ${imports[i]} ${had[i]}"] for i in 0..imports.length]), "\n")
     let marks = joined(flatten([["body ${b}"] for b in bodies]), "\n")
     let tail = if entries.is_empty() { head } else { "${head}\nentry\n" + joined(entries, "\n") }
     let fkeys = joined(flatten([["fkey ${f}"] for f in files]), "\n")
@@ -448,6 +447,16 @@ export fn surface_record(surface: string, imports: List<string>, had: List<strin
     // SECTION THAT WRITER OWNS.**
     let marks_tail = if bodies.is_empty() { "${keyed}\nmark" } else { "${keyed}\nmark\n${marks}" }
     marks_tail
+}
+
+/// THE INSTANTIATION SURFACE a record was written under — what a generated body's CONTENT
+/// depends on. A body's NAME is an ordinal: `new_memo$497` says a lambda exists, not what
+/// it contains, so a key over names alone reused an object whose lambda had since changed.
+export fn recorded_inst(text: string) -> string {
+    for line in text.split("\n") {
+        if line.starts_with("inst ") { return line.substring(5, line.length) }
+    }
+    ""
 }
 
 /// WHETHER A RECORD CARRIES ITS BODY NAMES — the proof that it was written by a build
@@ -658,7 +667,7 @@ export fn write_surface(p: Program, mut ws: Workspace, dir: string, m: ModulePat
     let imports = ws.imports_of(m)
     let names = [d.text() for d in imports]
     let hads = [source_surface(known, live, ws, d) for d in imports]
-    let text = surface_record(source_surface(known, live, ws, m), names, hads, module_entries(ws, m), [], file_keys(known, live, ws, m))
+    let text = surface_record(m.text(), source_surface(known, live, ws, m), names, hads, module_entries(ws, m), [], file_keys(known, live, ws, dir, m))
     let key = bytes_key(ws, m)
     let _ = make_dirs(dir)
     let _ = write_text(record_path(dir, key), text) catch ""
@@ -968,7 +977,12 @@ export fn emit_objects(mut ws: Workspace, l: Lowered, dir: string, files: List<F
             // key, its marks, and the conservative refusal to hold a module with generated
             // bodies.
             let name = ws.module_of(ws.decls.file(f).path)
-            let key = held_key(ws, dir, module_named(name), f)
+            // A HELD FILE'S KEY COMES FROM ITS RECORD — no lowering to ask. A FILE WE
+            // ARE REBUILDING USES THE LIVE KEY, which folds what the program ASKED FOR:
+            // a generated body moves when another file instantiates something new, and
+            // the record cannot know that (measured, as `_av_gen.ident$9` not found —
+            // main asked for a new specialization and `gen`'s recorded key had not moved).
+            let key = if held.any(same_file(it, f)) { held_key(ws, dir, module_named(name), f) } else { module_key(ws, l, f) }
             let obj = joined_path(dir, "${key}.o")
             if exists(obj) { reused = reused + 1 }
             else {
@@ -1019,7 +1033,9 @@ export fn mark_module(mut ws: Workspace, dir: string, l: Lowered, m: ModulePath,
         if same_file(id, entry_file) && owns(l, l.entry, id) { bodies.push(l.entry.name) }
     }
     let marks = joined(flatten([["body ${b}"] for b in sorted_texts(distinct(bodies))]), "\n")
-    let _ = write_text(path, "${base}\nmark\n${marks}") catch ""
+    // THE INSTANTIATION SURFACE rides in the SAME section, because it has the same
+    // writer and the same truncation rule: everything after `mark` belongs to this pass.
+    let _ = write_text(path, "${base}\nmark\ninst ${instantiation_surface(l)}\n${marks}") catch ""
     bodies.length
 }
 
@@ -1061,6 +1077,7 @@ export fn held_key(mut ws: Workspace, dir: string, m: ModulePath, f: FileId) -> 
     d = digest_text(d, CACHE_FORMAT)
     d = digest_text(d, unit_key(ws, f))
     for name in sorted_texts(recorded_bodies(text)) { d = digest_text(d, name) }
+    d = digest_text(d, recorded_inst(text))
     digest_key(d)
 }
 
@@ -1142,9 +1159,9 @@ export fn held_set(mut ws: Workspace, dir: string) -> List<FileId> {
 /// can SEE. A sibling's body change moves neither. That is what makes the skip bite at
 /// the granularity an edit actually has.
 // LICENSED I39: a KEY DERIVATION — a module's files and what they can see, one line each.
-fn file_keys(mut known: Map<string, string>, mut live: List<string>, mut ws: Workspace, m: ModulePath) -> List<string> {
+fn file_keys(mut known: Map<string, string>, mut live: List<string>, mut ws: Workspace, cache_dir: string, m: ModulePath) -> List<string> {
     let deps = ws.imports_of(m)
-    let seen = joined([surface_of(known, live, ws, "", d) for d in deps], "|")
+    let seen = joined([surface_of(known, live, ws, cache_dir, d) for d in deps], "|")
     [file_key_line(ws, path, seen) for path in ws.module_files(m)]
 }
 
@@ -1201,7 +1218,19 @@ export fn held_paths(mut known: Map<string, string>, mut live: List<string>, mut
         // OFF: every part of the mechanism stays built, tested and measured, and the
         // build behaves as it did before the skip.
         let mono = bodies.any(it.contains("$"))
-        if false && !mono && recorded.any(it == "${path}\t${key}") { out.push(path) }
+        // A FILE WITH GENERATED BODIES IS NOT HELD, and this is a DEPENDENCY rather than a
+        // precaution. `$` marks a body MONO made, and a generated body depends on what
+        // OTHER FILES instantiate — so it can change while this file's bytes and visible
+        // signatures do not. Measured: `_av_gen.ident$9` not found, because the entry
+        // asked for a NEW specialization and the module defining it, held on a key that
+        // could not see the request, handed back an object from before it existed.
+        //
+        // The held check runs BEFORE the analysis — it has to, that is what it is for — so
+        // it cannot know what the program is about to instantiate. Refusing the files that
+        // DEPEND on that is the only sound answer available there.
+        let mine = [b for b in bodies if b.starts_with("${path}\t")]
+        let mono = mine.any(it.contains("$"))
+        if !mono && recorded.any(it == "${path}\t${key}") { out.push(path) }
     }
     out
 }
