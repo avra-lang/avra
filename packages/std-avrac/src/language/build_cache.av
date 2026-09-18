@@ -227,6 +227,14 @@ fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: stri
     //
     // What it needs is a key over what the bodies ARE — the same lesson as every key in
     // this campaign, one level down.
+    // THE WHOLE-PROGRAM MODULE IS THE BUILD PATH, AND THE OBJECT PATH IS NOT.
+    //
+    // The measurements say why, and they are not close: ONE module compiles in 180ms and
+    // ONE invocation over all 275 takes 30s — the same as the 33s single module — but the
+    // per-file path only pays off if the HELD set engages, and it does not yet (the records
+    // carry marks and no per-file keys). Without it every file is re-analysed AND the 277
+    // objects are relinked, so an edit measured 77-153s against 58s for one module. A
+    // mechanism that is SLOWER than what it replaces is not a mechanism to leave on.
     let ll = "${ent.view.source.file}.ll"
     let failure = emit_ll(lo, ll)
     if failure != null { return .Err(failure!) }
@@ -908,6 +916,20 @@ export fn emit_units(mut ws: Workspace, l: Lowered, dir: string, files: List<Fil
 /// Compile one module to its object, or find the object already there. The module
 /// itself is NOT kept: it exists to make the object, and a kept `.ll` would be a
 /// second store of bytes the `.o` already answers for.
+/// COMPILE MANY MODULES IN ONE CALL, IN THEIR OWN DIRECTORY.
+///
+/// A CLANG CALL COSTS FAR MORE THAN THE WORK INSIDE IT — 275 modules one call at a time
+/// measured 330s against 30s for the same modules handed over together — so everything
+/// missing is gathered and compiled ONCE.
+///
+/// AND THE DIRECTORY IS PART OF THE REQUEST: `-c a.ll b.ll` writes each object where the
+/// CHILD is standing, not beside its input. The spawn chdirs in the child, so the
+/// compiler's own working directory never moves — a process that chdir'd would change the
+/// meaning of every relative path it touched afterwards.
+fn compile_many(linker: string, modules: List<string>, dir: string, opt: string) -> int {
+    avra_spawn_in(dir, linker, ["-w", opt, "-c"].concat(modules))
+}
+
 fn compile_one(linker: string, module: string, object: string, opt: string) -> bool {
     if exists(object) { return true }
     avra_spawn_status(linker, ["-w", opt, "-c", module, "-o", object]) == 0
@@ -922,40 +944,36 @@ export type Objects = { objects: List<string>, reused: int, compiled: int }
 export fn emit_objects(mut ws: Workspace, l: Lowered, dir: string, files: List<FileId>, entry_file: FileId, linker: string, opt: string, held: List<FileId>) -> Objects {
     let _ = make_dirs(dir)
     mut objs: List<string> = []
+    // THE MODULES TO COMPILE, GATHERED AND HANDED OVER ONCE. A clang call costs far more
+    // than the work inside it (275 calls measured 330s against 30s for one), so a build
+    // decides what is missing and makes ONE call.
+    mut want: List<string> = []
     mut reused = 0
-    mut compiled = 0
     for f in files {
         if !same_file(f, entry_file) {
-            // A HELD FILE'S KEY COMES FROM ITS RECORD, so its object is found WITHOUT
-            // emitting anything — and if the record and the program disagree the key
-            // simply misses, which costs a compile and never a wrong object.
+            // A HELD FILE'S KEY COMES FROM ITS RECORD, so its object is found without
+            // emitting anything; a disagreement simply misses, costing a compile and never
+            // a wrong object.
             let name = ws.module_of(ws.decls.file(f).path)
             let key = if held.any(same_file(it, f)) { held_key(ws, dir, module_named(name), f) } else { module_key(ws, l, f) }
             let obj = joined_path(dir, "${key}.o")
             if exists(obj) { reused = reused + 1 }
             else {
-                let ll = joined_path(dir, "${key}.ll")
-                if emit_module(l, ll, false, f) == null {
-                    let _ = compile_one(linker, ll, obj, opt)
-                    let _ = remove(ll)
-                    compiled = compiled + 1
-                }
+                if emit_module(l, joined_path(dir, "${key}.ll"), false, f) == null { want.push("${key}.ll") }
             }
             objs.push(obj)
         }
     }
-    let entry_obj = joined_path(dir, "${module_key(ws, l, entry_file)}.entry.o")
-    if exists(entry_obj) { reused = reused + 1 }
-    else {
-        let ll = joined_path(dir, "${module_key(ws, l, entry_file)}.entry.ll")
-        if emit_module(l, ll, true, entry_file) == null {
-            let _ = compile_one(linker, ll, entry_obj, opt)
-            let _ = remove(ll)
-            compiled = compiled + 1
-        }
+    // THE ENTRY IS ALWAYS ITS OWN MODULE — it defines `main`, and exactly one may — so it
+    // is always recompiled, and it joins the same single invocation.
+    let entry_name = "${module_key(ws, l, entry_file)}.entry.ll"
+    if emit_module(l, joined_path(dir, entry_name), true, entry_file) == null { want.push(entry_name) }
+    objs.push(joined_path(dir, "${module_key(ws, l, entry_file)}.entry.o"))
+    if !want.is_empty() {
+        let _ = compile_many(linker, want, dir, opt)
+        for name in want { let _ = remove(joined_path(dir, name)) }
     }
-    objs.push(entry_obj)
-    Objects { objects: objs, reused: reused, compiled: compiled }
+    Objects { objects: objs, reused: reused, compiled: want.length }
 }
 
 /// `clang`'s words to link a set of objects — ONE invocation, 333ms, which is what

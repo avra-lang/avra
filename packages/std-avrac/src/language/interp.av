@@ -1026,6 +1026,7 @@ impl Machine {
             .StrFromCodepoint -> Val.S(avra_str_from_codepoint(self.whole(vals[0]))),
             .ExecSelf -> self.exec_self_val(vals),
             .SpawnStatus -> self.spawn_status_val(vals),
+            .SpawnIn -> self.spawn_in_val(vals),
             .Unhosted -> self.defect_val("a runtime callee the interpreter does not host: `${callee}`"),
         }
     }
@@ -1606,6 +1607,21 @@ impl Machine {
         Val.I(avra_exec_self(words))
     }
 
+    /// A seat that is not there answers 127 — "could not start", the same word this row
+    /// family already answers for a child the host refused, so a malformed call and a
+    /// refused one are ONE failure rather than two.
+    fn spawn_in_val(vals: List<Val>) -> Val {
+        let where? = vals.first() else { return Val.I(127) }
+        let rest = vals.slice(1, vals.length)
+        let which? = rest.first() else { return Val.I(127) }
+        let args? = rest.slice(1, rest.length).first() else { return Val.I(127) }
+        let dir? = self.texts_of(where).first() else { return Val.I(127) }
+        let prog? = self.named_act(which) else { return Val.I(127) }
+        let words = self.texts_of(args)
+        if !self.failures.is_empty() { return Val.I(127) }
+        Val.I(avra_spawn_in(dir, prog, words))
+    }
+
     fn spawn_status_val(vals: List<Val>) -> Val {
         let prog? = self.named_act(vals[0]) else { return Val.I(0) }
         let words = self.texts_of(vals[1])
@@ -1654,6 +1670,7 @@ extern fn avra_io_list(path: string) -> int
 extern fn avra_str_from_codepoint(code: int) -> string
 extern fn avra_exec_self(args: List<string>) -> int
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
+extern fn avra_spawn_in(dir: string, prog: string, args: List<string>) -> int
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_selfhost_file_exists(path: string) -> int
 extern fn avra_selfhost_read_file(path: string) -> string
