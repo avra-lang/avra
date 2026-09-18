@@ -216,25 +216,15 @@ fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: stri
     // held module's object key computable without lowering it.
     let _ = mark_modules(ws, cache.root, lo, mods, ent.view.file)
 
-    // THE WHOLE-PROGRAM MODULE, AND THE OBJECT PATH IS NOT THE BUILD PATH YET.
+    // THE WHOLE-PROGRAM MODULE IS THE BUILD PATH, AND THE OBJECT PATH IS OFF.
     //
-    // The per-file path is built, measured, and HELD OFF, and the reason is a
-    // SOUNDNESS gap rather than a doubt: a module's object key folds the NAMES of the
-    // bodies that land in it, and TWO DIFFERENT LOWERINGS CAN PRODUCE THE SAME NAME SET
-    // — measured, as `new_memo$497` not found, from an object reused under a key whose
-    // names had not moved while the bodies had. The name is an ordinal, and an ordinal
-    // is not a content.
-    //
-    // What it needs is a key over what the bodies ARE — the same lesson as every key in
-    // this campaign, one level down.
-    // THE WHOLE-PROGRAM MODULE IS THE BUILD PATH, AND THE OBJECT PATH IS NOT.
-    //
-    // The measurements say why, and they are not close: ONE module compiles in 180ms and
-    // ONE invocation over all 275 takes 30s — the same as the 33s single module — but the
-    // per-file path only pays off if the HELD set engages, and it does not yet (the records
-    // carry marks and no per-file keys). Without it every file is re-analysed AND the 277
-    // objects are relinked, so an edit measured 77-153s against 58s for one module. A
-    // mechanism that is SLOWER than what it replaces is not a mechanism to leave on.
+    // Measured, one edit of one file, this machine:
+    //     whole-program module .......  58s
+    //     per-file objects ...........  65s, 73s, 122s  (2, 31 and 66 objects recompiled)
+    // The object cache works — it recompiles only what moved — but the LINK over 277
+    // objects and the per-file emission cost more than one module's single compile, and
+    // A MECHANISM SLOWER THAN WHAT IT REPLACES IS NOT ONE TO LEAVE ON. Everything stands
+    // beside it, measured, with the two bugs it took to get here fixed below.
     let ll = "${ent.view.source.file}.ll"
     let failure = emit_ll(lo, ll)
     if failure != null { return .Err(failure!) }
@@ -242,7 +232,7 @@ fn emitted(cache: BuildCache, p: Program, key: string, inputs: string, opt: stri
     let words = link_words(ll, p.ws, opt, runtime)
     let warnings = p.warnings()
     cache.keep(key, inputs, words, warnings)
-    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key, emitted: 0, reused_files: 0 })
+    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key })
 }
 
 /// clang's words for a module: the level, the runtime, the packages' own
@@ -448,8 +438,16 @@ export fn surface_record(surface: string, imports: List<string>, had: List<strin
     let marks = joined(flatten([["body ${b}"] for b in bodies]), "\n")
     let tail = if entries.is_empty() { head } else { "${head}\nentry\n" + joined(entries, "\n") }
     let fkeys = joined(flatten([["fkey ${f}"] for f in files]), "\n")
-    let marked = if bodies.is_empty() { "${tail}\nmark" } else { "${tail}\nmark\n${marks}" }
-    if files.is_empty() { marked } else { "${marked}\nfiles\n${fkeys}" }
+    let keyed = if files.is_empty() { tail } else { "${tail}\nfiles\n${fkeys}" }
+    // THE MARK COMES LAST, AND THAT ORDER IS THE CONTRACT. `mark_module` rewrites a record
+    // from its `mark` marker onward — it must, to replace the body names a later lowering
+    // produced — and ANYTHING WRITTEN AFTER `mark` IS TRUNCATED OFF by that rewrite. The
+    // per-file keys were written there first, so every build wrote them and every build
+    // then deleted them: `fkey` counted zero in every record while the marks stood, and
+    // nothing could be held. **A SECTION A LATER WRITER TRUNCATES MUST NOT FOLLOW THE
+    // SECTION THAT WRITER OWNS.**
+    let marks_tail = if bodies.is_empty() { "${keyed}\nmark" } else { "${keyed}\nmark\n${marks}" }
+    marks_tail
 }
 
 /// WHETHER A RECORD CARRIES ITS BODY NAMES — the proof that it was written by a build
@@ -954,8 +952,23 @@ export fn emit_objects(mut ws: Workspace, l: Lowered, dir: string, files: List<F
             // A HELD FILE'S KEY COMES FROM ITS RECORD, so its object is found without
             // emitting anything; a disagreement simply misses, costing a compile and never
             // a wrong object.
+            // ONE DERIVATION FOR THE OBJECT'S NAME, HELD OR NOT.
+            //
+            // `module_key` folded the live lowering's body names AND the instantiation
+            // surface; `held_key` folds the RECORD's body names. TWO SPELLINGS OF ONE
+            // IDENTITY, so an object written under one was looked for under the other and
+            // never found — and worse, the held check itself looks for the object, so a
+            // disagreement silently UNHELD every module and the analysis ran in full
+            // (measured, on an edit that recompiled 2 objects and spent 100s).
+            //
+            // The key must be computable BOTH at emit time (a lowering in hand) and at the
+            // held check (NO lowering — that is the point of holding). So it folds what
+            // both have: the file's `unit_key`, and the body names its RECORD carries.
+            // THE SOUNDNESS IS THE HELD CHECK'S, not the key's — the record's own per-file
+            // key, its marks, and the conservative refusal to hold a module with generated
+            // bodies.
             let name = ws.module_of(ws.decls.file(f).path)
-            let key = if held.any(same_file(it, f)) { held_key(ws, dir, module_named(name), f) } else { module_key(ws, l, f) }
+            let key = held_key(ws, dir, module_named(name), f)
             let obj = joined_path(dir, "${key}.o")
             if exists(obj) { reused = reused + 1 }
             else {
