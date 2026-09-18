@@ -12,7 +12,7 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, digest_of, joined}
+use core.{new_digest, digest_text, digest_key, digest_of, joined, same_file}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_text, write_text, make_dirs, exists}
 
@@ -24,7 +24,7 @@ const CACHE_FORMAT: string = "avra-build-cache-3"
 
 /// A build's result: the words that link it, the binary they produce,
 /// the warnings to speak, and whether a held artifact was reused.
-export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool, key: string, emitted: int = 0, reused_files: int = 0 }
+export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool, key: string, emitted: int = 0, reused_files: int = 0, phases: string = "" }
 
 /// Where a program's artifacts are kept — beside the program, so a
 /// worktree's cache dies with the worktree.
@@ -210,6 +210,15 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     // a build — 15s over the compiler's module against 333ms to link — and it is the one
     // thing that does not need doing twice. A content key is the whole proof: same bytes,
     // same object, and `has` answers it with one `exists`.
+    // THE WHOLE-PROGRAM MODULE, AND ITS OBJECT KEYED BY ITS OWN CONTENT.
+    //
+    // PER-FILE MODULES WERE TRIED AND THEY LOSE, measured: emitting 200 modules to
+    // compute their digests costs more than the one compile it saves (57s against 28s on
+    // an edit, and 83s against 43s cold). THE KEY CANNOT BE THE OUTPUT'S CONTENT — to
+    // learn that a module did not move, you must EMIT it, and emitting is most of what
+    // recompiling would have cost. The next attempt must key on INPUTS, which is what the
+    // unit layer is for: a unit's key is (declaration, type arguments, the declaration's
+    // own source), all of which are known BEFORE anything is lowered.
     let obj_key = node_key(Stored.Obj, [digest_of(read_text(ll) catch ""), opt, runtime])
     let obj = "${ll}.o"
     if !store.place(Stored.Obj, obj_key, obj) {
@@ -225,11 +234,14 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
         fail "avra: clang failed linking — exited with code ${code}"
     }
     let warnings = p.warnings()
+    // WHAT EACH PHASE COST, because a build that cannot say where its time went is a
+    // build whose next optimisation is a guess.
+    let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases], ", ")
     // THE RESULT IS THE BUILD'S OWN OUTPUT, so it is the build that remembers it: the
     // binary under one family and what was said about it under another.
     let _ = store.keep_file(Stored.Bin, key, binary, [key])
     let _ = store.keep(Stored.Warn, key, warnings, [key])
-    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key })
+    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key, phases: spent })
 }
 
 /// clang's words for a module: the level, the runtime, the packages' own
