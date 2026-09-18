@@ -615,3 +615,225 @@ resolve skip is only sound once a held module's BODIES come from somewhere, and 
 somewhere is the per-file IR. **THE PER-FILE IR COMES FIRST, NOT THE SKIP** — and the split's
 own measurement (16.4MB whole against 17.3MB for 272 modules, 1.06x) is what says it is
 affordable.
+
+---
+
+# THE STORE — a database, and the graph it makes durable
+
+This section replaces the per-file key machinery earlier in this document. That machinery
+worked — the small case measured **546ms, 602ms, 604ms** with a correct binary, and four real
+bugs were found and fixed getting there — **but it was the wrong LAYER**, and every hole in it
+came from that.
+
+## The mistake
+
+**The kernel already IS the derivation graph.** `parsed → resolved → typed → lowered` are its
+nodes, dependencies are recorded BY EXECUTION, and `ask` is the red-green walk. This document
+said so in its first paragraph.
+
+Then the campaign built a second, hand-rolled dependency system beside it: `unit_key`,
+`held_key`, `module_key`, surface records, marks, per-file keys, a conservative rule about
+generated bodies. **Every bug of that campaign was that duplication.**
+
+- the graph was re-derived by hand and kept being incomplete (`new_memo$497` not found);
+- the per-file keys were written and then *deleted* by a later writer of the same record;
+- a module's entries were read from the wrong projection, so held modules exported nothing;
+- two keys for one identity disagreed, and the disagreement silently un-held everything.
+
+**A hand-built copy of a graph is a copy that drifts.** The kernel's graph cannot drift from
+itself.
+
+## The minimum work
+
+Change `twice(n: int)` to `twice(n: int, m: int)`. What MUST happen:
+
+1. the file's bytes are hashed — **O(1)**
+2. THAT file is re-parsed and re-typed
+3. every **caller**'s call site is now different, so every caller is re-typed
+4. those units are re-lowered, their objects recompiled
+5. the binary is relinked
+
+**The minimum is the changed thing plus its transitive CALLERS.** Not a file, not a module —
+the closure of what READ what moved. In-process, the kernel already computes exactly this.
+
+**The only thing the kernel cannot do is survive the process ending.** That is the entire gap
+this design fills, and it is a gap of DURABILITY, not of architecture.
+
+## The granularity: the UNIT
+
+The compiler does not build files. It builds **units**: *this function, at these type
+arguments.* `identity` at `int` and `identity` at `string` are already two different things in
+the compiler.
+
+**A unit's identity is `(which declaration, which type arguments)` — both known BEFORE anything
+is compiled.** Which means:
+
+- a new call site asks for `identity("hello")` → **new unit → new key → not cached → build it**
+- `identity(41)` unchanged → **same key → cached object**
+- a file that never changed but gained a specialization → **one new unit is built**
+
+**MONO STOPS BEING A PROBLEM — not solved, DESIGNED AWAY.** There is no "is this file safe to
+trust?" question, because at unit granularity *made-to-order is what a unit is*. The
+instantiation-surface, the conservative rule, the optimistic-then-unhold dance: all of it
+exists only because the granularity was wrong.
+
+## The nodes
+
+| node | key is a digest over | persist |
+|---|---|---|
+| **source** | path → bytes | bytes + hash |
+| parsed | — | **no** — live structure, per-run ids |
+| typed facts | — | **no** — same |
+| **signature** | the declaration's name, kind, STRUCTURAL spelling | yes |
+| **body fingerprint** | the declaration's identity + its body | yes |
+| **unit** | (declaration, type-argument spellings) + the body fingerprint + language | its IR |
+| **object** | the unit key + opt level | machine code |
+| **module** | the file + its units' keys | an `ld -r` blob |
+| **binary** | the program + its modules + runtime | the link |
+
+**IDs never cross this seam.** A `FileId` is *"slot 7 in this run's table"*; a `TypeId` is a
+dense slot; an `ExprId` is a slot in a file's arena. They are the right IN-PROCESS currency and
+they mean nothing outside it. The CROSS-RUN currency is a **content digest**, and every id is
+re-interned fresh on load. That is this tree's own law — *a type's persistent identity is its
+SPELLING, never its interned ordinal* — arriving a third time.
+
+**Signatures are stored STRUCTURALLY, not as text.** A rendered spelling is a lossy round trip:
+`fn(List<int>)int` has to be parsed back, and anything the decoder cannot re-render exactly must
+be REFUSED — which is what happened, generics among them. A small tree of (constructor, names)
+loads by direct rebuild: no parsing, no lossiness, no refusal.
+
+**NOT persisted: the AST and the typed-facts table.** Those are the compiler's live memory —
+arenas, per-run ids, closures. Persisting them means inventing a serialisation format for the
+compiler's own layout, and it breaks every time an internal shape moves.
+
+**What that costs, measured:** the parse is ~7.5s for 275 files ≈ **27ms a file**, and it is
+paid ONLY for the affected closure. A leaf-function edit touches a handful; a core signature
+change touches everything that calls it, and those files genuinely moved.
+
+## The interface
+
+Everything the store keeps has the same three parts — a key, bytes, and what it read.
+
+```avra
+/// ONE ROW OF THE BUILD'S MEMORY: a key, the bytes it names, and the keys it read.
+export type Row = { family: string, key: string, deps: List<string> }
+
+/// EVERY FAMILY THE BUILD KEEPS. One row per family, and adding one is adding a ROW
+/// rather than code. `inline` says where its dependencies ride: a text row carries
+/// them inside itself, a blob carries them beside it — machine code has nowhere.
+export const families = table<Family> {
+    name   | inline | note
+    "sig"  | true   | "a declaration's interface, structurally"
+    "fp"   | true   | "a declaration's body, as one number"
+    "unit" | true   | "a lowered body, at one set of type arguments"
+    "obj"  | false  | "machine code"
+    "mod"  | false  | "a file's units, ld -r'd into one blob"
+    "bin"  | false  | "the linked program"
+}
+
+export type Store = { root: string, disk: Host }
+
+impl Store {
+    /// ONE `exists`. No read, no parse — THIS is the O(1) question.
+    fn has(family: string, key: string) -> bool
+    fn get(family: string, key: string) -> string?
+    /// What this key read — the EDGES, recorded where the key is minted, which is the
+    /// only place that knows them.
+    fn deps(family: string, key: string) -> List<string>
+    /// Atomic: a temp file, then a rename.
+    fn keep(family: string, key: string, bytes: string, deps: List<string>)
+    /// THE ONE VERB MOST CALLERS WANT.
+    fn cached(family: string, key: string, read: List<string>, make: fn() -> string) -> string
+    fn sweep(live: List<string>) -> int
+}
+```
+
+A call site is one line, and the dependencies are named where the key is:
+
+```avra
+let ir  = store.cached("unit", unit_key, [body_fp, sub_key]) { render_ir(lower_unit(u)) }
+let obj = store.cached("obj", ir_key, [ir_key, lang_key, opt]) { compile(ir) }
+```
+
+**That ladder nobody should write — `if has { get } else { compute; put }` — has no site in the
+tree.** `cached` is the seam and the sugar at once.
+
+## At rest: the filesystem, sharded, content-addressed
+
+```
+<root>/
+  sig/3f/3f9a…        a text row, deps inline
+  unit/8c/8c41…       the IR
+  obj/8c/8c41….o      an object
+  obj/8c/8c41….deps   its inputs — a blob cannot hold them
+  mod/a1/a107….o      a file's ld -r blob
+  bin/<key>           the binary
+  recent              the GC clock
+```
+
+**The filesystem IS a key-value store with O(1) lookup, atomic rename and trees**, and every
+property here is one this build needs:
+
+| property | how |
+|---|---|
+| **O(1) "has this changed?"** | `exists(path)` — no index to read |
+| **crash safety** | write `.tmp`, then `rename` — a half-written artifact is never visible |
+| **no index to corrupt** | the NAME is the hash; there is no second copy to disagree |
+| **concurrency** | two builds writing one key write the same bytes |
+| **GC** | delete the files; the `recent` clock already exists |
+| **sharding** | two hex characters → 256 buckets |
+| **no deserialisation** | a text row is text; an object is an object |
+
+**A packfile is the wrong shape here.** It needs an in-memory index, an append rewrites it, and
+corruption takes the whole store. There is no bulk-scan requirement: lookups are by key, one at
+a time.
+
+## The algorithm
+
+```
+1. hash the sources                        O(files)    stat + hash
+2. compare against the persisted table      O(files)    a key compare, O(1) each
+3. changed files → re-parse, re-type        O(changed)
+4. their signatures and body fingerprints move
+5. units whose key moved → re-lower         O(affected)  ← the CALL closure
+6. those objects → recompile                O(affected)
+7. affected files → ld -r                   O(affected)  ← NOT every module
+8. relink the binary                        O(1) + the link
+```
+
+**No reverse edges are needed for correctness.** The pull walk from the root verifies
+everything, and each verification is a KEY COMPARISON — O(1) — so a walk over tens of thousands
+of nodes is still milliseconds. Reverse edges would be an optimisation on top of a correct
+walk, and are deferred until something measures them.
+
+## What it deletes
+
+`unit_key`, `held_key`, `module_key`, the surface records, the marks, the fkey records, the
+conservative rule about generated bodies, the instantiation surface, the held-versus-rebuilt
+key split, and the optimistic-unhold dance. **All of it exists to hand-derive a graph the
+kernel already has.**
+
+## What it costs, measured
+
+| | |
+|---|---|
+| one module compiled alone | **180ms** |
+| 275 modules, one clang invocation | **30s** |
+| 275 modules, one call each | **330s** — so compilation MUST be batched |
+| `ld` over 277 objects | **~1s** — so modules MUST be `ld -r`'d into blobs |
+| parse, per file | **27ms** |
+
+**An edit should land near 500ms:** re-parse and re-type one file (~50ms) + re-lower a unit or
+two (~10ms) + compile one object (~200ms) + `ld -r` one file (~100ms) + link the blobs
+(~200ms). **The link is the floor**, which is why `ld -r` is not an optimisation but part of the
+shape — and why binary patching, out of scope for now, is what would take it below that.
+
+## The order of work
+
+1. **A `Store` seam on the kernel** — a family declares that it persists and gives its rows a
+   key and bytes. The tables become rows on disk. This is the piece that makes the database a
+   database.
+2. **The unit family** — `(declaration, type arguments) → IR`, content-keyed, persisted.
+3. **The object family** — batched compile, content-keyed, persisted.
+4. **`ld -r` per file**, then the link over blobs.
+5. **Retire the key machinery** this section replaces.
