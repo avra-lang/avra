@@ -7,7 +7,7 @@
 //! first), so names cost nothing.
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
-use core.{StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_row, inout_row, no_marks, ExternParts, Param, TypeRef, SeatMark, Static}
+use core.{StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind, extern_kind_name, extern_row, inout_row, no_marks, ExternParts, Param, TypeRef, SeatMark, Static}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot}
 
@@ -75,10 +75,13 @@ impl Decls {
     /// the seats are.
     fn extern_row_of(d: Decl) -> RtSig {
         let sig: FnSig? = (self.sig(d.id))?.fn_sig()
-        let host: ExternParts? = self.store(d.id).extern_parts(d.stmt)
+        // THE WIDTHS ARE A DECLARATION FACT, not a store read: a held extern has no
+        // store, and a width is a property of a SEAT — the one parse fact the row
+        // cannot derive from the signature alone (`int` crosses, but at what width).
+        let host: List<string> = self.facts_or(d.id).host
         let params: List<TypeId> = sig?.params ?? []
         inout_row(self.symbol(d.id),
-                  extern_kind(self.types, host?.ret, sig?.ret ?? self.type(void)),
+                  extern_kind_name(self.types, host_name(host, host.length - 1), sig?.ret ?? self.type(void)),
                   [self.host_seat_kind(d.id, host, j, p) for j, p in params],
                   [self.host_cell_kind(d.id, host, j, p) for j, p in params])
     }
@@ -86,25 +89,24 @@ impl Decls {
     /// A host seat's ABI kind. A `mut` seat is an INOUT — it carries the
     /// ADDRESS of the caller's cell, so it is a POINTER whatever the
     /// cell holds; every other seat is its width or its type's kind.
-    fn host_seat_kind(d: DeclId, host: ExternParts?, j: int, p: TypeId) -> RtKind {
+    fn host_seat_kind(d: DeclId, host: List<string>, j: int, p: TypeId) -> RtKind {
         if self.seat_mark(d, j).mutable { return RtKind.Ptr }
-        extern_kind(self.types, seat_written(host, j), p)
+        extern_kind_name(self.types, host_name(host, j), p)
     }
 
     /// The width of the CELL behind an inout seat — what the backend
     /// normalises after the call. `Void` for every seat that is not one.
-    fn host_cell_kind(d: DeclId, host: ExternParts?, j: int, p: TypeId) -> RtKind {
+    fn host_cell_kind(d: DeclId, host: List<string>, j: int, p: TypeId) -> RtKind {
         if !self.seat_mark(d, j).mutable { return RtKind.Void }
-        extern_kind(self.types, seat_written(host, j), p)
+        extern_kind_name(self.types, host_name(host, j), p)
     }
 }
 
-/// The annotation seat `j` wrote, when the declaration is an extern
-/// and reaches that far.
-fn seat_written(host: ExternParts?, j: int) -> TypeRef? {
-    let seats: List<Param> = host?.params ?? []
-    if j >= seats.length { return null }
-    seats[j].ty
+/// The annotation seat `j` wrote: the host names carry one per parameter and the ANSWER
+/// last, so the answer's index is the length and is never a seat.
+fn host_name(host: List<string>, j: int) -> string {
+    if j < 0 || j >= host.length { return "" }
+    host[j]
 }
 
 /// One lowering per BODY — `fn_ret` is that body's declared answer

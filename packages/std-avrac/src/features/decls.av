@@ -44,6 +44,18 @@ export type DeclFacts = {
     tparams: List<string>,
     bounds: List<string>,
     seats: List<string>,
+    /// AN EXTERN'S RAW SEAT WIDTHS — the annotation each seat wrote, the answer last.
+    /// A width is a property of a SEAT and lives in the parse alone, so a held extern
+    /// must carry it or its runtime row cannot be built without a store.
+    host: List<string>,
+}
+
+/// An extern's raw seat widths: one name per parameter, then the answer's.
+fn extern_host(store: NodeStore, s: StmtId) -> List<string> {
+    let ext = store.extern_parts(s)
+    if ext == null { return [] }
+    let seats = [p.ty?.name ?? "" for p in ext!.params]
+    seats.concat([ext!.ret.name])
 }
 
 /// THE ONE CAPTURE — a parsed declaration's facts, read from its store exactly once.
@@ -61,12 +73,13 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
         tparams: if readable { store.decl_tparams(x.stmt) } else { [] },
         bounds: if readable { [p.ty?.name ?? "" for p in store.decl_tbounds(x.stmt)] } else { [] },
         seats: if readable { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },
+        host: if readable { extern_host(store, x.stmt) } else { [] },
     }
 }
 
 /// The facts a declaration minted with no store wears: a synthetic or builtin body has no
 /// receiver and declares nothing about the source.
-fn no_facts() -> DeclFacts { DeclFacts { external: false, stat: true, is_grammar: false, span: null, tparams: [], bounds: [], seats: [] } }
+fn no_facts() -> DeclFacts { DeclFacts { external: false, stat: true, is_grammar: false, span: null, tparams: [], bounds: [], seats: [], host: [] } }
 
 export type Decls = {
     types: TypeRegistry,
