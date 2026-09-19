@@ -25,6 +25,48 @@ fn record_key(ws: Workspace, m: ModulePath) -> string {
     node_key(Stored.Sig, [CACHE_FORMAT, ws.root, m.text()])
 }
 
+/// ONE READ PER RECORD PER BUILD. The record for a module, from the cache when this
+/// build has already asked, else from the store. An absent record is cached too, so a
+/// module with no record is asked ONCE rather than at every consumer.
+fn record_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
+    let key = record_key(ws, m)
+    if ws.record_asked.get(key) != null { return ws.record_texts.get(key) ?? "" }
+    let text = store.get(Stored.Sig, key) ?? ""
+    ws.record_texts.set(key, text)
+    ws.record_asked.set(key, true)
+    text
+}
+
+/// A RECORD MOVED, SO EVERY DERIVED KEY MOVES WITH IT: the written record is what the
+/// interface digest and every dependent object key fold, so after the interfaces are
+/// written the per-build caches are facts about a previous state.
+fn forget_keys(mut ws: Workspace) {
+    ws.record_texts = {}
+    ws.record_asked = {}
+    ws.bytes_keys = {}
+    ws.object_keys = {}
+}
+
+/// A MODULE'S INTERFACE DIGEST, memoized for the build.
+fn bytes_key_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
+    let known: string? = ws.bytes_keys.get(m.text())
+    if known != null { return known! }
+    let made = bytes_key(ws, store, m)
+    ws.bytes_keys.set(m.text(), made)
+    made
+}
+
+/// ONE FILE'S OBJECT KEY, memoized for the build. The key is the module together with
+/// the file's path, so a module-level ask and a file-level ask do not collide.
+fn obj_key_cached(mut ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
+    let key = "${m.text()}\t${path}"
+    let known: string? = ws.object_keys.get(key)
+    if known != null { return known! }
+    let made = obj_key_of(ws, store, m, path)
+    ws.object_keys.set(key, made)
+    made
+}
+
 /// A TYPE'S SHAPE, as one line — the declaration it belongs to, and what it stands over.
 /// A NAMED type's line carries the shape it IS, so re-interning reproduces the same type
 /// rather than a fresh one that merely wears the name.
@@ -172,7 +214,7 @@ fn read_type_wire(mut decls: Decls, words: List<string>, at: int) -> WireType? {
 /// the order that makes each shape internable.
 // LICENSED I39: a pure PROJECTION — the workspace, a store and a module in, its record out.
 fn record_of(mut ws: Workspace, store: Store, m: ModulePath) -> string {
-    let prior = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+    let prior = record_cached(ws, store, m)
     let prior_lines = prior.split("\n")
     let remembered = [line for line in prior_lines if line.starts_with("import\t")]
     let fresh = flatten([ws.imported_by(path) for path in ws.module_files(m) if !ws.is_held(ws.file_id(path))])
@@ -369,7 +411,7 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     let key = record_key(ws, m)
     if ws.loaded_records.get(key) != null { return 0 }
     ws.loaded_records.set(key, true)
-    let text = store.get(Stored.Sig, key) ?? ""
+    let text = record_cached(ws, store, m)
     if text == "" {
         return 0
     }
@@ -391,7 +433,7 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
     for f in ws.module_files(m) {
-        if f != entry && store.has(Stored.Obj, obj_key_of(ws, store, m, f)) && const_rows_ready(ws, store, m, f, lines) && holdable(lines, f) { ws.hold_only(f) }
+        if f != entry && store.has(Stored.Obj, obj_key_cached(ws, store, m, f)) && const_rows_ready(ws, store, m, f, lines) && holdable(lines, f) { ws.hold_only(f) }
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.
@@ -405,11 +447,11 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
 // LICENSED I39: THE LOADER'S FIRST HALF — the workspace and a store in, nothing out.
 export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
     for m in ws.held_order {
-        let text = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+        let text = record_cached(ws, store, m)
         for line in text.split("\n") { if !line.starts_with("import\t") { mint_identity(ws, line) } }
     }
     for m in ws.held_order {
-        let text = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+        let text = record_cached(ws, store, m)
         for line in text.split("\n") { if !line.starts_with("import\t") { link_identity(ws, line) } }
     }
 }
@@ -419,7 +461,7 @@ export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
 // LICENSED I39: THE LOADER'S SECOND HALF — the workspace and a store in, nothing out.
 export fn fill_interfaces(mut ws: Workspace, store: Store) {
     for m in ws.held_order {
-        let text = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+        let text = record_cached(ws, store, m)
         for line in text.split("\n") { if !line.starts_with("import\t") { fill_shape(ws, store, m, line) } }
     }
 }
@@ -758,7 +800,7 @@ fn declared_kind(shape: string, word: string) -> DeclKind? {
 }
 
 fn const_unit_key(mut ws: Workspace, store: Store, m: ModulePath, path: string, name: string) -> string {
-    node_key(Stored.Unit, ["const", CACHE_FORMAT, obj_key_of(ws, store, m, path), name])
+    node_key(Stored.Unit, ["const", CACHE_FORMAT, obj_key_cached(ws, store, m, path), name])
 }
 
 /// Persist each exported const's settled result after a clean program has
@@ -821,7 +863,7 @@ export fn module_bytes(mut ws: Workspace, m: ModulePath) -> string {
 /// pass's written bits, which move without a contract moving); the bytes line is.
 // LICENSED I39: a KEY DERIVATION — a store and a module in, its stored bytes digest out.
 export fn bytes_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
-    let rec = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+    let rec = record_cached(ws, store, m)
     for line in rec.split("\n") {
         if line.starts_with("iface\t") { return line.substring(6, line.length) }
     }
@@ -835,7 +877,7 @@ export fn bytes_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
 /// text: a key is a function of the program's meaning, never of a projection that churns.
 // LICENSED I39: a KEY DERIVATION — a workspace, a store, a module and a file in, the object's key out.
 export fn obj_key_of(mut ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
-    let rec = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+    let rec = record_cached(ws, store, m)
     let deps = [line.substring(7, line.length) for line in rec.split("\n") if line.starts_with("import\t")]
     mut d = new_digest()
     d = digest_text(d, CACHE_FORMAT)
@@ -844,7 +886,7 @@ export fn obj_key_of(mut ws: Workspace, store: Store, m: ModulePath, path: strin
         d = digest_text(d, path)
         d = digest_text(d, ws.source(ws.file_id(path)).text)
     }
-    for dep in sorted_texts(distinct(deps)) { d = digest_text(d, bytes_key(ws, store, module_path(dep.split(".")))) }
+    for dep in sorted_texts(distinct(deps)) { d = digest_text(d, bytes_key_cached(ws, store, module_path(dep.split(".")))) }
     digest_key(d)
 }
 
@@ -867,11 +909,11 @@ export fn held_modules(mut ws: Workspace, store: Store) -> List<ModulePath> {
     let mods = [module_path(n.split(".")) for n in names]
     mut out: List<ModulePath> = []
     for m in mods {
-        let rec = store.get(Stored.Sig, record_key(ws, m))
+        let rec = record_cached(ws, store, m)
         let paths = ws.module_files(m)
-        let keys = [obj_key_of(ws, store, m, p) for p in paths]
+        let keys = [obj_key_cached(ws, store, m, p) for p in paths]
         let any_here = keys.any((k) -> store.has(Stored.Obj, k))
-        if rec != null && any_here { out.push(m) }
+        if rec != "" && any_here { out.push(m) }
     }
     out
 }
