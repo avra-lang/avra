@@ -145,6 +145,19 @@ export type Workspace = {
     settle_asks: List<SettleAsk>,
     settlements: Memo<Settlement>,
     loaded_records: Map<string, bool>,
+    /// THE INTERFACE RECORDS THIS BUILD HAS READ, by record key, with the answer for
+    /// the keys that have none — ONE read per record per build, because a record is
+    /// asked for by every consumer (the held walk, the load, the mint, the fill, the
+    /// object key) and a text read is a syscall plus a UTF-8 validation of the whole
+    /// record. The pair is (whether it was asked, what it answered): a missing row is
+    /// not the same as an unread one.
+    record_texts: Map<string, string>,
+    record_asked: Map<string, bool>,
+    /// TWO PER-BUILD FOLDS OF A RECORD, memoized because they are asked hundreds of
+    /// times over the same 55 records: a module's interface digest, and one file's
+    /// object key. Cleared after the interfaces are written, when a record moves.
+    bytes_keys: Map<string, string>,
+    object_keys: Map<string, string>,
     /// THE MODULES A HELD LOAD TOUCHED, in order — phase one mints and INTERNS every name;
     /// phase two FILLS every shape. A mutual import (language <-> features <-> core) is a
     /// cycle, and one module's shapes cannot be filled until every other module's NAMES are
@@ -337,7 +350,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, held_order: [], defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, bytes_keys: {}, object_keys: {}, held_order: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }
@@ -1026,6 +1039,48 @@ impl Workspace {
 
     /// The store, attached by a build; null outside one.
     mut fn attach_store(s: Store) { self.store = s }
+
+    /// ONE READ PER RECORD PER BUILD. The record for a module, from the cache when this
+    /// build has already asked, else from the store. An absent record is cached too, so a
+    /// module with no record is asked ONCE rather than at every consumer.
+    mut fn record_cached(store: Store, m: ModulePath) -> string {
+        let key = record_key(self, m)
+        if self.record_asked.get(key) != null { return self.record_texts.get(key) ?? "" }
+        let text = store.get(Stored.Sig, key) ?? ""
+        self.record_texts.set(key, text)
+        self.record_asked.set(key, true)
+        text
+    }
+
+    /// A RECORD MOVED, SO EVERY DERIVED KEY MOVES WITH IT: the written record is what the
+    /// interface digest and every dependent object key fold, so after the interfaces are
+    /// written the per-build caches are facts about a previous state.
+    mut fn forget_keys() {
+        self.record_texts = {}
+        self.record_asked = {}
+        self.bytes_keys = {}
+        self.object_keys = {}
+    }
+
+    /// A MODULE'S INTERFACE DIGEST, memoized for the build.
+    mut fn bytes_key_cached(store: Store, m: ModulePath) -> string {
+        let known: string? = self.bytes_keys.get(m.text())
+        if known != null { return known! }
+        let made = bytes_key(self, store, m)
+        self.bytes_keys.set(m.text(), made)
+        made
+    }
+
+    /// ONE FILE'S OBJECT KEY, memoized for the build. The key is the module together with
+    /// the file's path, so a module-level ask and a file-level ask do not collide.
+    mut fn obj_key_cached(store: Store, m: ModulePath, path: string) -> string {
+        let key = "${m.text()}\t${path}"
+        let known: string? = self.object_keys.get(key)
+        if known != null { return known! }
+        let made = obj_key_of(self, store, m, path)
+        self.object_keys.set(key, made)
+        made
+    }
 
     /// ONE DERIVATION for the key a unit's edges live under: the unit's NAME is its
     /// identity (a declaration's symbol plus the type-argument wires), stable across runs.

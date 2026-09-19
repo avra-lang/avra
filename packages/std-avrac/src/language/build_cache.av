@@ -305,11 +305,15 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     let built_modules = [module_path(name.split(".")) for name in distinct([ws.module_of(a.view.source.file) for a in p.files])]
     let l7 = avra_now_ns()
     let _ = keep_interfaces(ws, store, built_modules)
+    // THE RECORDS JUST MOVED. Every derived key below folds the record that was written,
+    // and the per-build caches still hold the previous state — drop them so the object
+    // keys are read from the interface as it now stands.
+    ws.forget_keys()
     let _ = keep_const_units(ws, store, built_modules)
     // A changed interface can move a dependent object's key after the first
     // provisional hold. Restart from the untouched workspace against the new
     // records, so that file parses and recompiles instead of linking stale code.
-    let missing = [path for path in held_paths(ws) if !store.has(Stored.Obj, obj_key_of(ws, store, module_path(ws.module_of(path).split(".")), path))]
+    let missing = [path for path in held_paths(ws) if !store.has(Stored.Obj, ws.obj_key_cached(store, module_path(ws.module_of(path).split(".")), path))]
     if !missing.is_empty() {
         if attempt >= 2 { fail "avra: interface records did not stabilize" }
         return build_program_attempt(fresh, entry, mode, opt, runtime, disk, linker, attempt + 1)
@@ -361,7 +365,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
         let m = module_path(ws.module_of(path).split("."))
         let base = node_key(Stored.Obj, [digest_of(path)])
         let obj = "${cache.root}/${base}.o"
-        let okey = obj_key_of(ws, store, m, path)
+        let okey = ws.obj_key_cached(store, m, path)
         // A FILE WHOSE OBJECT IS ALREADY KEYED needs no emission: it was re-parsed (its
         // module moved) but its own inputs did not.
         if store.place(Stored.Obj, okey, obj) {
@@ -390,7 +394,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     }
     for path in held_paths(ws) {
         let m = module_path(ws.module_of(path).split("."))
-        let okey = obj_key_of(ws, store, m, path)
+        let okey = ws.obj_key_cached(store, m, path)
         // THE LINK READS THE STORE'S OBJECT IN PLACE — a held object is a blob on disk and
         // copying all 274 of them to temp paths each build was 650ms of pure I/O.
         if !store.has(Stored.Obj, okey) { fail "avra: a held object disappeared: ${path} (module ${m.text()}) key ${okey}" }
