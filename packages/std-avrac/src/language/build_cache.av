@@ -31,11 +31,14 @@ const CACHE_FORMAT: string = "avra-build-cache-18"
 /// A held file's bodies come from its stored object; a file that is NOT held is lowered
 /// WHOLE (`every` below), because reachability alone would miss a fn whose only callers
 /// are held.
-const CACHE_HOLD_ENABLED: bool = true
+const CACHE_HOLD_ENABLED: bool = false
 
 /// A build's result: the words that link it, the binary they produce,
 /// the warnings to speak, and whether a held artifact was reused.
 export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool, key: string, emitted: int = 0, reused_files: int = 0, phases: string = "" }
+
+/// A module emitted but not yet compiled: its object's key, and where clang will write it.
+type PendingObj = { okey: string, obj: string }
 
 /// Where a program's artifacts are kept — beside the program, so a
 /// worktree's cache dies with the worktree.
@@ -319,22 +322,41 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     }
     let full = Lowered { fns: active, entry: lo.entry, types: lo.types, diagnostics: lo.diagnostics, externs: lo.externs, statics: lo.statics, libraries: lo.libraries }
 
-    // ONE OBJECT PER FILE: the files that MOVED are emitted and compiled, and the files
-    // that did not come out of the store. Emitting every file was the mistake that made
-    // this cost 40s — with the skip, only what moved is emitted at all.
+    // ONE OBJECT PER FILE: the files that MOVED are emitted, and the files that did not
+    // come out of the store. Emitting every file was the mistake that made this cost 40s —
+    // with the skip, only what moved is emitted at all.
     mut objs: List<string> = []
+    mut compile_ll: List<string> = []
+    mut pending: List<PendingObj> = []
     for a in p.files {
         let path = a.view.source.file
         let m = module_path(ws.module_of(path).split("."))
-        let obj = "${cache.root}/${node_key(Stored.Obj, [digest_of(path)])}.o"
-        let _ = store.place(Stored.Obj, obj_key_of(ws, store, m, path), obj)
-        let ll = "${cache.root}/${node_key(Stored.Obj, [digest_of(path)])}.ll"
-        let broke = emit_module(full, ll, same_file(a.view.file, ent.view.file), a.view.file)
-        if broke != null { fail broke! }
-        let built = avra_spawn_status(linker, ["-w", opt, "-c", ll, "-o", obj])
+        let base = node_key(Stored.Obj, [digest_of(path)])
+        let obj = "${cache.root}/${base}.o"
+        let okey = obj_key_of(ws, store, m, path)
+        // A FILE WHOSE OBJECT IS ALREADY KEYED needs no emission: it was re-parsed (its
+        // module moved) but its own inputs did not.
+        if store.place(Stored.Obj, okey, obj) {
+            objs.push(obj)
+        } else {
+            let ll = "${cache.root}/${base}.ll"
+            let broke = emit_module(full, ll, same_file(a.view.file, ent.view.file), a.view.file)
+            if broke != null { fail broke! }
+            compile_ll.push("${base}.ll")
+            pending.push(PendingObj { okey: okey, obj: obj })
+        }
+    }
+    // ONE CLANG OVER EVERY MOVED MODULE. At this size process startup is most of the cost
+    // — 18 modules one at a time measured ~14s — and one invocation does the same
+    // optimisation work once. `-c a.ll b.ll` writes `a.o`/`b.o` BESIDE its inputs, so the
+    // run is DIRECTORY-SCOPED to the cache root.
+    if !compile_ll.is_empty() {
+        let built = avra_spawn_in(cache.root, linker, ["-w", opt, "-c"].concat(compile_ll))
         if built != 0 { fail "avra: clang failed compiling — exited with code ${built}" }
-        let _ = store.keep_file(Stored.Obj, obj_key_of(ws, store, m, path), obj, [])
-        objs.push(obj)
+    }
+    for po in pending {
+        let _ = store.keep_file(Stored.Obj, po.okey, po.obj, [])
+        objs.push(po.obj)
     }
     for path in held_paths(ws) {
         let m = module_path(ws.module_of(path).split("."))
