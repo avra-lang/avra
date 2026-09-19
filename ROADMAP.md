@@ -18393,3 +18393,46 @@ hash of every input; both are separate levers and both help a COLD build too
 (the record guard and everything above are warm-only: on a cold tree no records
 exist, so `module_names_syntax` answers "parse" and the whole universe is built
 anyway).
+
+## Inputs and reconstruction — the two remaining levers (2026-09-18 late)
+
+After the record guard (`abc3579`), a warm edit is ~1.7 s user and a cold build
+~30.7 s user. Two levers remain; both were measured before either was built.
+
+### Lever 1 — the input hash (helps COLD and warm)
+
+`BuildCache.inputs()` notes the whole input tuple and folds it into the key.
+Instrumented: for `build packages/cli` the WALK is 18 ms and the HASH is
+224–291 ms for 667 files / 5.0 MB (≈20 MB/s). A hash that slow is not I/O — it is
+`digest_text` (`core/digest.av`) folding EIGHT modular multiplies per byte
+(`digest_int` calls `lane` twice per lane × 4 lanes, each a `%` prime); 5 MB is
+~40 M modulos. The fix is not input-graph persistence (the walk is already cheap):
+it is a batched byte fold — absorb seven bytes per `digest_int`, `word*256+byte`
+staying under 2^56 so no lane overflows. Every content key in the tree rides
+`digest_text`, so this is paid on cold, on warm, and by every record/fingerprint
+fold; it is the widest-reaching constant-factor win left.
+
+Two candidate designs were considered and NOT taken:
+- **input-graph persistence** (persist the file list, hash only the closure):
+  measured pointless — the walk is 18 ms, the cost is hashing the bytes, so
+  persisting the list saves the cheap half.
+- **stat fast-path** (reuse a digest when size+mtime unchanged): the standard
+  build-system trust, and REJECTED against this tree's law — "an early-cutoff
+  hash must cover the whole value"; a spoofed/preserved mtime would reuse a
+  digest for changed content, and the artifact tuple would then agree with itself.
+
+Separately, the input SET over-covers: 667 files hashed, 276 read (the rest are
+`tests/` trees of every toolchain package). Narrowing by a `tests/` convention
+was REJECTED as under-covering (a package may import a test module); the sound
+narrowing is to hash the files the build actually read, which needs the closure —
+i.e. it is the same shape as lever 2, not a heuristic.
+
+### Lever 2 — the declaration/type reconstruction (warm only)
+
+`load` 271 + `mint` 310 + `fill` 107 ms rebuild the whole held universe from the
+55 interface records every edit: names/facts/methods/parents (`mint`, needed for
+name resolution) and shapes (`fill`). Unlike lever 1 this is warm-only (a cold
+tree parses the same files as part of building). The only real cut is to persist
+a form that loads without re-interning — the design's `sig` node, compact or
+resident — not a lazy patch: deferring `fill` ceilings at ~107 ms and re-trips
+the representation-completeness invariant (see the entry above).
