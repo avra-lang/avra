@@ -125,7 +125,7 @@ fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, seats: List<SeatValue>,
 /// A lone file's program, lowered without a memo — the tests' seam.
 export fn lower(a: Analysis) -> Lowered {
     let externs = a.view.decls.extern_names()
-    a.view.decls.union([a], 0, false, false, (w: Wanted) -> lower_unit(a, externs, w, no_settle))
+    a.view.decls.union([a], 0, false, false, (w: Wanted) -> lower_unit(a, externs, w, no_settle), (_w: Wanted) -> false)
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
@@ -184,7 +184,7 @@ impl Decls {
     /// test run asks for `every` declared body under its entry, whose
     /// laws (a module file runs nothing) still hold. A unit is asked
     /// once per symbol; the guard is the polymorphic-recursion refusal.
-    fn union(files: List<Analysis>, entry: int?, every: bool, programs: bool, unit_of: fn(Wanted) -> Unit) -> Lowered {
+    fn union(files: List<Analysis>, entry: int?, every: bool, programs: bool, unit_of: fn(Wanted) -> Unit, skip_body: fn(Wanted) -> bool) -> Lowered {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
         let at: int = entry ?? 0
@@ -207,7 +207,7 @@ impl Decls {
             wants = wants.concat(mu.wants)
             statics = mu.statics
         }
-        let d = drained(wants, unit_of)
+        let d = drained(wants, unit_of, skip_body)
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
         spoken = spoken.concat(minted_pointers(self.types, fns.concat([entry_body])))
@@ -220,7 +220,7 @@ impl Decls {
     /// lowers once.
     fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit) -> Lowered {
         let ru = unit_of(root)
-        let d = drained(ru.wants, unit_of)
+        let d = drained(ru.wants, unit_of, (_w: Wanted) -> false)
         let entry = ru.bodies.first() ?? empty_main(self.types).body
         let fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
         let spoken = ru.voices.list.concat(d.spoken).concat(minted_pointers(self.types, fns.concat([entry])))
@@ -232,7 +232,7 @@ impl Decls {
 /// read, and what they spoke.
 type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static> }
 
-fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit) -> Drained {
+fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit, skip_body: fn(Wanted) -> bool) -> Drained {
     mut wants = [w for w in pending]
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
@@ -244,14 +244,12 @@ fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit) -> Drained {
         if claim_seen(seen, w.name) {
             minted = minted + 1
             let u = unit_of(w)
-            // LICENSED I3: a comprehension would COPY the list, which is the bug.
-            for b in u.bodies { fns.push(b) }
-            // LICENSED I3: a comprehension would COPY the list, which is the bug.
+            if !skip_body(w) {
+                for b in u.bodies { fns.push(b) }
+                for st in u.statics { statics.push(st) }
+            }
             for d in u.voices.list { spoken.push(d) }
-            // LICENSED I3: a comprehension would COPY the list, which is the bug.
             for more in u.wants { wants.push(more) }
-            // LICENSED I3: a comprehension would COPY the list, which is the bug.
-            for st in u.statics { statics.push(st) }
         }
     }
     if !wants.is_empty() {

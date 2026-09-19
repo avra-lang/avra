@@ -153,6 +153,12 @@ export type Workspace = {
     /// not the same as an unread one.
     record_texts: Map<string, string>,
     record_asked: Map<string, bool>,
+    /// THE SPLIT-LINE FORM of each record, cached so load_interface / mint / fill do not
+    /// each split the same text. Cleared with record_texts after interfaces are written.
+    record_lines: Map<string, List<string>>,
+    /// THE TAB-SPLIT FIELDS of each record line — one list per line, avoiding per-declaration
+    /// tab splits across load, mint, and fill. Cleared with record_lines after interfaces are written.
+    record_fields: Map<string, List<List<string>>>,
     /// TWO PER-BUILD FOLDS OF A RECORD, memoized because they are asked hundreds of
     /// times over the same 55 records: a module's interface digest, and one file's
     /// object key. Cleared after the interfaces are written, when a record moves.
@@ -350,7 +356,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, bytes_keys: {}, object_keys: {}, held_order: [], defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, bytes_keys: {}, object_keys: {}, held_order: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }
@@ -2581,7 +2587,7 @@ impl Program {
 
     fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
         let ws = self.ws
-        memory(self.ws.decls.union(self.files, entry, every, programs, (w: Wanted) -> ws.lowered(ws.spec_id(w)))) with { libraries: ws.linked_packages() }
+        memory(self.ws.decls.union(self.files, entry, every, programs, (w: Wanted) -> ws.lowered(ws.spec_id(w)), (w: Wanted) -> !ws.is_held(w.file))) with { libraries: ws.linked_packages() }
     }
 
     /// The lowered program, CHECKED — every file's analysis first,
