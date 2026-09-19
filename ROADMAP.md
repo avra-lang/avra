@@ -18455,3 +18455,57 @@ gap to it is TEXT, not hashing: reading bytes and folding bytes (skipping
 `text_of`) is the next ~30–50 ms, which needs a byte door on `Host`. And the
 floor for the edit is not here at all — 60 ms of 1350 ms. It is the eager
 reconstruction (~620 ms) and the link (~100 ms).
+
+## Rung 3 — the IR codec spec, and the emission hazard that gates it (2026-09-19)
+
+The design's unit rung: `unit = (declaration, type-arguments) -> IR`, persisted, so a
+held unit contributes its lowered body and its dependencies become implicit. The
+missing piece was always the IR's on-disk form. Here it is, plus the trap.
+
+### The codec
+
+`Ins` (core/ir.av) is CLOSED and catch-all-free, so an exhaustive encoder is
+tractable and a NEW variant breaks the build until it is handled — the vocabulary
+cannot grow half-way. Shape: one tagged text record per instruction, reusing
+`WireReader` (settlement_wire.av) and `type_wire`/`read_type_wire`
+(interface.av) so `reg_types` ride the SAME cross-run identity as every other
+type on disk (never a `TypeId` ordinal).
+
+- `Body` fields: `name`, `params`/`ret` (type_wire each), `gives`, `weak`,
+  `file` (module path + ordinal, `decl_wire`'s shape), `reg_types[]`
+  (`type_wire`), `ins[]`.
+- `Reg` is a dense index; encode as a varint, not a typed id.
+- Per-variant payloads are the constructor's own fields; `Call` carries the
+  callee NAME (`body`), which is already the cross-run currency.
+- `Static` is bytes laid out by the runtime's own `avra_box.h` layout, so encode
+  it as the SAME bytes the backend emits, not a second projection.
+- The codec carries the same DERIVED fingerprint discipline as `DeclFacts`: the
+  last field is a fold over what was decoded, recomputed on read, and a mismatch
+  refuses the unit. A field added to `Body`/`Ins` without an encode is then a
+  rebuild, never a unit wearing a default.
+
+The round trip to require: encode every variant, decode, compare structurally;
+and a program test that lowers, round-trips every unit, re-lowers from the decoded
+IR, and checks eval == native (the differential is the oracle, not agreement).
+
+### The emission hazard — why this is not a drop-in
+
+Loading a held unit's REAL bodies is not the current contract. `build_cache`'s
+`active` remap moves every non-empty body whose HOME file is held into the entry
+module, WEAK, because "the store's object cannot contain what this build just
+lowered". That is exactly right while held units carry edges+stub (a stub has no
+instructions and is never emitted). The day a held unit returns its real IR, that
+rule re-emits the whole held program into the entry module — thousands of
+duplicate weak bodies, and the link breaks or, worse, silently takes the wrong
+copy. So rung 3 must land TOGETHER with an emission rule that skips a body whose
+home is held AND whose object already defines it, and the differential/probe must
+prove the mixed object set still resolves. That is a slice, not a commit.
+
+### Measured reason to defer it
+
+After the per-file-object work, `lower` is ~220 ms; rung 3 removes none of the
+reconstruction (~620 ms) and none of clang/link (~190 ms), and the O(n^2) mint
+fixes measured NEUTRAL — the held universe is small enough that its per-declaration
+work is the floor. Rung 3 buys ARCHITECTURE (one node table, no edges/stub layer,
+exact reachability), not clock. It should be done when a consumer needs a held
+unit's IR, not for speed.
