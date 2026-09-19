@@ -136,3 +136,26 @@ next probe: link the same fresh object set two ways (all-fresh vs mixed) and
 bisect which reused object changes the answer. `emit_module` emits every
 REFERENCED static regardless of `Static.file`, so a static whose held copy and
 fresh demand disagree is the prime suspect.
+
+### Bisected further: per-file structure and pure reuse are BOTH correct
+
+| held build | held-built compiler |
+|---|---|
+| ALL-FRESH per file (the populate, 276 modules) | **CORRECT** |
+| NO edit (pure reuse, 276/276) | **CORRECT** |
+| an EDIT (fresh file + reused objects) | traps |
+
+So neither the per-file module split nor object reuse is the defect on its own —
+**only the MIX is**. The edit's fresh IR is instruction-identical to the
+whole-program's, the only cross-object duplicate (the `$w` wrappers) is
+byte-identical, and no statics are duplicated. What the edit adds that neither
+control has is a fresh file whose bodies include specializations whose HOME is a
+held file: `active` remaps those to the entry module `weak`, and the LINK then
+holds two definitions (the entry's weak one and the held object's strong one)
+with the linker free to take the strong one.
+
+The next probe is therefore the remap: emit those held-home bodies NON-weak in
+their fresh module (they are new, so the held object cannot define them), or
+assert their names are absent from every held object's symbol table before
+remapping. A `nm` over the mixed object set, diffed against the remapped names,
+answers it in one run.
