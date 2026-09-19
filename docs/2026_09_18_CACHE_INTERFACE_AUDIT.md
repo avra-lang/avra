@@ -99,3 +99,40 @@ and exhaustive (a new instruction breaks the build until it is handled).
    it and it is fresh every build.
 4. **`ld -r` blobs** for the link (276 objects link in ~0.15 s now, so this is
    low priority).
+
+## The unit rung, built — and what it narrowed the defect to
+
+The design's granularity now exists in the tree (commit `8f55c10`):
+
+- `type_wire`/`read_type_wire` are ONE projection with an inverse, and `mangle`
+  folds it — so a specialization's name and the on-disk wire are the same
+  function, and `read_type_wire` resolves a unit's type arguments back.
+- `settlement_wire` encodes a unit's EDGES (`List<Wanted>`, with the settled
+  seats reusing the value/heap reader) and refuses a partial decode.
+- `lowered` consults the store for a held unit's edges and returns a declaration
+  stub for a held specialization (its generic's signature substituted at the
+  type the Sub names); a fresh unit is lowered and its edges kept.
+- `every=true` is GONE.
+
+A generic-file edit that used to fail the held link with 81 missing symbols now
+LINKS.
+
+And it narrowed the miscompile precisely, by experiment:
+
+| held build | held-built compiler |
+|---|---|
+| NO edit (pure reuse, 276/276) | **CORRECT** — diagnostics identical to whole-program |
+| an EDIT (one fresh file) | traps (`index 0 is out of bounds`) |
+
+**The edit's fresh IR is not the defect.** Extracting the edited file's module
+from the held build and diffing every `define` against the whole-program `.ll`
+shows the INSTRUCTIONS ARE IDENTICAL; only the string-global NAMES differ
+(`.str.8` vs `.str.661`), which is per-module numbering. The only symbol
+duplicated across objects is the WRAPPER family (`$w`), and the copies are
+byte-identical (`weak_odr` coalesces them correctly).
+
+So the defect is in the MIX: a fresh module linked beside reused objects. The
+next probe: link the same fresh object set two ways (all-fresh vs mixed) and
+bisect which reused object changes the answer. `emit_module` emits every
+REFERENCED static regardless of `Static.file`, so a static whose held copy and
+fresh demand disagree is the prime suspect.
