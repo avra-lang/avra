@@ -18509,3 +18509,128 @@ fixes measured NEUTRAL — the held universe is small enough that its per-declar
 work is the floor. Rung 3 buys ARCHITECTURE (one node table, no edges/stub layer,
 exact reachability), not clock. It should be done when a consumer needs a held
 unit's IR, not for speed.
+
+## Feedback survey — 2026-09-19 (cache/cas, edit-perf session)
+
+Scope: the cache lane only, worktree `avra-cache-cas`, commits `9b2f4eb..6fd9994`
+(the warm edit went 6.7s -> ~1.4s user). Counts: FRICTION 6, SUGAR 2, FEATURES 4,
+DEFECTS 4, DOCTRINE 3, PERFORMANCE 1, PROCESS 3. Top three by cost: (1) **a failed
+stabilization poisons the cache and the next run blames the wrong thing** (twice,
+hours); (2) **the F2010 method-addition defect** (forced free-fn workarounds for
+the whole cache layer); (3) **the `--time` phases are WALL time**, so the first
+bottleneck read was wrong by ~2s.
+
+### FRICTION — what cost time
+
+- **A FAILED STABILIZATION POISONS THE CACHE, AND THE NEXT RUN MISREPORTS IT.** A
+  broad source change makes the held path fail `avra: interface records did not
+  stabilize`; the NEXT build then reads half-written records and reports
+  `F2030: .fingerprint(…) calls a method, and int has none` — which reads as a
+  typing defect, not a cache state. Cost: two multi-build detours. ASK: on
+  "did not stabilize", name the key/path that moved (the handoff already asks for
+  the missing-path wording) AND a one-command recovery (`avra cache --drop`).
+- **THE F2010 METHOD-ADDITION DEFECT FORCED EVERY CACHE HELPER TO BE A FREE FN.**
+  Adding ONE method to `impl Workspace` makes `Analysis.program`'s `fn() -> Program`
+  resolve to a neighbouring free fn. Cost: a bisect plus four free fns with
+  `// LICENSED I39` (see DEFECTS). ASK: diagnose it; a `Workspace` method is the
+  idiomatic home.
+- **THE `--time` REPORT IS WALL CLOCK.** `avra_now_ns` is `CLOCK_MONOTONIC`, so
+  phases inflate under load and do not sum to user CPU; `admit 2037ms` was first
+  read as descheduling, then found to be 2s of real parse. ASK: `--time=cpu` (or
+  a second column).
+- **A LONE PACKAGE'S `main` IS NOT THE ENTRY.** A `fn main() -> int { println(...) }`
+  built and printed NOTHING; the entry is the file's top-level statements (as
+  `build/scratch/probe` shows). Cost: ~6 build cycles on a primitives probe. ASK:
+  a fn named `main` should BE the entry, or the refusal should say so.
+- **A DIGEST KEY THAT STARTS WITH `-` IS A CLANG OPTION.** Signed digest lanes made
+  a `.bc` filename `-8658105448031244961….bc`; clang read it as an option and the
+  installed compiler could no longer build its own fix. Cost: a near-brick and a
+  known-good-binary recovery. ASK: a keeper that a key surface is non-negative
+  (or a store that never emits a leading `-`).
+- **THE SEED GUARD NEEDS A CLEAN TREE, AND THE ORDER IS NOT OBVIOUS.**
+  `make seed` on a dirty tree is fine, but `make seed-check` refuses until
+  `bootstrap/seed.ll` + `bootstrap/seed.sources` are COMMITTED TOGETHER. Cost:
+  one confused cycle. ASK: `make seed` should say "commit the two files, then
+  re-check".
+
+### SUGAR — a construct the language should have
+
+- **HEX LITERALS.** `fn main() -> int { 0xFF }` is `F0100: expected BREAK while
+  parsing stmt`. The digest rewrite wrote four 64-bit odd constants by hand in
+  decimal (`0 - 7046029254386353131`). Wanting site: `core/digest.av`.
+- **A LOGICAL RIGHT SHIFT.** `(0 - 8) >>> 1` is `F0100`; `>>` is arithmetic
+  (`ashr`, both engines agree), so a rotate needed `log_shr(x,s) = (x>>s) &
+  (MAX>>(s-1))`. Wanting site: `core/digest.av`'s `rotl`/`mix_final`.
+- (Confirmed, not new: `let x: List<T> = []` must be `mut`; `0 - N` was used for
+  a negative constant but `-7` in fact parses — the caution was unnecessary.)
+
+### FEATURES — a capability, larger than sugar
+
+- **A CACHE DOCTOR.** The recovery (clear `.avra-cache`, cold-build once with a
+  known-good binary) is hand-run every time. ASK: `make cache-doctor` that names
+  the inconsistent key space and clears just it.
+- **A PROVENANCE STAMP.** Still wanted (filed 2026-09-18): `avra version` should
+  print a binary-content hash, so a probe result names its base. This session's
+  near-brick is exactly the case.
+- **`--time=cpu`** (see FRICTION).
+- **A CACHE DIFFERENTIAL GATE.** Still wanted: `make cache-witness` builds held
+  and whole-program and diffs the `.ll`/objects. The four checks are run by hand.
+
+### DEFECTS — the compiler blaming itself
+
+- **ADDING A METHOD TO `impl Workspace` BREAKS AN UNRELATED FIELD'S TYPE.**
+  Repro: add `mut fn probe(store: Store) -> string { "" }` to `impl Workspace`;
+  `F2010: field 'program' is 'fn() -> is_source'` at the `Analysis` construction
+  (`analysis.av`'s `program: fn() -> Program`), the return type resolving to a
+  NEIGHBOURING FREE FN that moves with the declaration count. Types, fields and
+  free fns alone are fine. NOT DIAGNOSED.
+- **THE HELD PATH REFUSES AN INTERFACE CHANGE TO A FILE WITH A TRAIT IMPL.**
+  Adding one exported fn to `packages/std-io/src/io.av` (which holds
+  `impl Error for IoError`) fails `F0900: defect: a unit without a body was asked
+  for — '@std.io.IoError.describe'`, whole-program fine. Reproduced with the
+  pre-change `build/avra.known-good` + `.avra-cache/bin` cleared, so PRE-EXISTING.
+  It blocked the clean `@std/io` fix for the exec bit.
+- **A HALF-WRITTEN STABILIZATION LEAVES A POISONED CACHE** (see FRICTION); the
+  follow-on `.fingerprint()` error is a symptom, not the defect.
+- **A NEGATIVE KEY NAMES A CLANG OPTION** (see FRICTION); no keeper on key shape.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **"A BETTER ALGORITHM" IS NOT A WIN UNTIL MEASURED.** Three changes measured
+  NEUTRAL after the one that enabled them: the digest's xor-rotate-multiply fold
+  (the 7-byte BATCHING was the win), bitcode emission, and the in-place mint. The
+  doctrine already says measure; add the corollary: a point optimization can be
+  dominated by the layer beneath it — instrument the WHOLE step's floor first.
+- **THE REPRESENTATION INVARIANT GATES THE HELD RECONSTRUCTION.** `fill_shape`
+  decides a value's machine shape; deferring/reordering/changing the SET of
+  reconstructed held declarations re-opens the campaign's original silent
+  miscompile. Settled in the handoff II (§8) and `d6d60d3`'s lazy-fill entry.
+- **THE `--time` PHASES ARE WALL, NOT CPU.** The old handoff said measure user CPU
+  while the tool prints wall; a reader trusts the tool. Settled in handoff II §3.
+
+### PERFORMANCE — a measured cost
+
+Instruments NAMED: `--time` (wall) and `/usr/bin/time -p` (user), plus a
+temporary `CLOCK_PROCESS_CPUTIME_ID` for the true phase split. Scope:
+`build packages/cli` (276 files). Warm edit ~1.4s user (no-op 0.10, cold ~28.9):
+reconstruction ~620 (load 200 + mint 310 + fill 110), lower ~220, analyze ~130,
+admit ~70, clang+link ~190, inputs ~60. Cold: clang 10.4, emit 7.5, parse 7.5.
+Closed doors (do not reopen without a new measurement): the hash fold (text read
+is the cost), the reconstruction's quadratic (it is per-declaration WORK), and
+bitcode (cold is IR construction + clang optimization).
+
+### PROCESS — the working discipline itself
+
+- **KEEP**: the watchdog + machine lock; the four checks (differential, probe,
+  self-build, self-hosting); a saved known-good binary; the edit-benchmark model.
+- **CHANGE — CACHE RECOVERY IS A STEP, NOT A DISCOVERY.** Bake it into the
+  handoff and a script: on "did not stabilize" or a surprise `.fingerprint()`,
+  clear `.avra-cache` and cold-build once with a known-good binary; do not debug
+  the symptom.
+- **CHANGE — A BROAD INTERFACE CHANGE IS A TWO-GENERATION MOVE.** After changing
+  many files' declarations, expect one failed transition and do a deliberate cold
+  build to a consistent key space before trusting a warm number.
+- **CHANGE — SAVE THE KNOWN-GOOD BINARY FIRST, ALWAYS**, and name it in the receipt.
+
+NOT SURVEYED: the cold frontend/backend beyond the measurements above; the wider
+compiler outside `std-avrac`/`cli`; the pre-cache lane history.
