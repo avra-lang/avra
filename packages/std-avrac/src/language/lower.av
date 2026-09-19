@@ -492,11 +492,13 @@ fn empty_main(types: TypeRegistry) -> LoweredBody {
     }
 }
 
-/// The specialization's name: uncollidable (`$`, `@` are
-/// unwritable) and stable per run — interned ids in ordinal order,
-/// then the settled seats' value fingerprints after `@`.
-fn mangle(name: string, sub: Sub) -> string {
-    let ids = joined(["${a.index}" for a in sub.args], "_")
+/// The specialization's name: uncollidable (`$`, `@` are unwritable) and STABLE ACROSS
+/// RUNS — each type argument is its CROSS-RUN IDENTITY (`TypeRegistry.identity`), never
+/// an interned ordinal, then the settled seats' value fingerprints after `@`. A symbol
+/// built from an ordinal names a different specialization in the next build, so a held
+/// object defines a name the fresh code never demands.
+fn mangle(types: TypeRegistry, sym: fn(DeclId) -> string, name: string, sub: Sub) -> string {
+    let ids = joined([types.identity(sym, a) for a in sub.args], "_")
     if sub.consts.is_empty() { return "${name}$${ids}" }
     "${name}$${ids}@${joined(sub.consts, "_")}"
 }

@@ -21,7 +21,7 @@ use @std.io.{read_text, write_text, make_dirs, exists}
 /// compiler's own sources, its backend and its runtime are already key
 /// inputs (`Workspace.build_inputs`); this covers only what those files
 /// cannot say — a change to how the key itself is derived.
-const CACHE_FORMAT: string = "avra-build-cache-22"
+const CACHE_FORMAT: string = "avra-build-cache-23"
 
 /// THE PARSE-FREE HOLD IS ON. An object is keyed by the module's own bytes and each
 /// import's STORED bytes digest (`obj_key_of`), never by a record's declaration text —
@@ -31,7 +31,21 @@ const CACHE_FORMAT: string = "avra-build-cache-22"
 /// A held file's bodies come from its stored object; a file that is NOT held is lowered
 /// WHOLE (`every` below), because reachability alone would miss a fn whose only callers
 /// are held.
-const CACHE_HOLD_ENABLED: bool = true
+/// THE PARSE-FREE HOLD IS OFF, AND THE REASON IS ARCHITECTURAL, not a missing fact.
+///
+/// It reuses a held file's per-file OBJECT and re-lowers only the files that moved. That
+/// is sound only if a file's object is a pure function of its own inputs — and it is not:
+/// lowering is whole-program (mono mints a specialization in its DECLARING file's unit,
+/// and statics dedup across the program), so `every=true` was added to re-lower every
+/// declaration of a moved file and hope it matches. It does not. A no-edit reuse build is
+/// correct (verified by differential), and an EDIT links and then MISCOMPILES: a
+/// held-built compiler traps on the source a whole-program build compiles clean.
+///
+/// The fix is the design's own rung: persist the LOWERED UNIT (declaration, type-args)
+/// keyed by content, so a held unit's IR is reused and a fresh unit's IR is lowered —
+/// reachability is then exact on both sides and `every=true` dies. Until then the
+/// whole-program path below is SOUND, and soundness outranks speed.
+const CACHE_HOLD_ENABLED: bool = false
 
 /// A build's result: the words that link it, the binary they produce,
 /// the warnings to speak, and whether a held artifact was reused.
