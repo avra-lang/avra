@@ -34,7 +34,9 @@ const cell_chunk: int = 256
 
 type DbState = {
     rev: int,
-    cells: List<List<QueryCell?>>,
+    /// ONE SLOT, SHARED — see `features/decls.av`'s member tables: a write must
+    /// not copy the block.
+    cells: List<Cell<List<QueryCell?>>>,
     verifiers: List<fn(int) -> int>,
     // One dependency list per open query, EACH IN ITS OWN CELL. A shared
     // `List` reaches a copy at every append, so a list routed through the
@@ -177,16 +179,10 @@ impl Db {
     fn sweep() {
         mut s = self.snapshot()
         let rev = state_revision(s)
-        for i, row in s.cells {
-            mut kept = row
-            mut changed = false
-            for j, held in row {
-                if held != null && held!.verified_at != rev {
-                    kept.set(j, null)
-                    changed = true
-                }
+        for row in s.cells {
+            for j, held in row.get() {
+                if held != null && held!.verified_at != rev { row.set_at(j, null) }
             }
-            if changed { s.cells.set(i, kept) }
         }
         self.replace(s)
     }
@@ -201,10 +197,8 @@ impl Db {
         while at < s.cells.length * cell_chunk {
             let block = at / cell_chunk
             let offset = at % cell_chunk
-            mut row = s.cells[block]
-            if offset < row.length {
-                row.set(offset, null)
-                s.cells.set(block, row)
+            if offset < s.cells[block].get().length {
+                s.cells[block].set_at(offset, null)
             }
             at = at + stride
         }
@@ -243,7 +237,7 @@ fn state_cell(s: DbState, key: Key) -> QueryCell? {
     let block = at / cell_chunk
     let offset = at % cell_chunk
     if block >= s.cells.length { return null }
-    let row = s.cells[block]
+    let row = s.cells[block].get()
     if offset >= row.length { return null }
     row[offset]
 }
@@ -252,11 +246,12 @@ fn write_cell(mut s: DbState, key: Key, cell: QueryCell) {
     let at = state_slot(s, key)
     let block = at / cell_chunk
     let offset = at % cell_chunk
-    while s.cells.length <= block { s.cells.push([]) }
-    mut row = s.cells[block]
-    while row.length <= offset { row.push(null) }
-    row.set(offset, cell)
-    s.cells.set(block, row)
+    while s.cells.length <= block {
+        let no_row: List<QueryCell?> = []
+        s.cells.push(Cell.new(no_row))
+    }
+    while s.cells[block].get().length <= offset { s.cells[block].push(null) }
+    s.cells[block].set_at(offset, cell)
 }
 
 extern fn avra_trap(message: string)
