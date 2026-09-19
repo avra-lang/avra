@@ -18634,3 +18634,87 @@ bitcode (cold is IR construction + clang optimization).
 
 NOT SURVEYED: the cold frontend/backend beyond the measurements above; the wider
 compiler outside `std-avrac`/`cli`; the pre-cache lane history.
+
+## The shared-table copy law — a design ask, not a style note (2026-09-19)
+
+A warm-edit perf pass took the compiler from 1.16 s to 0.65 s user CPU
+(`7fe0d00`, `dbca4db`, `7e83fe2`, `c6012b4`; handoff III carries the budgets).
+The finds were real, but the trap that produced them is a DESIGN defect that
+will catch every future agent, so it is filed here as asks, not considered paid.
+
+### The trap, precisely
+
+Two language properties conspire, and NEITHER is visible where the code is
+written:
+
+1. **A vocabulary write CONSUMES what it writes through.** Probed at `56a15a5`:
+   `mut v = t[0]; v.push(9)` leaves both readable (a borrow, no write);
+   `u[0].push(9)` leaves `u` NOT DEFINED; `mut row = x[0]; row.push(9)` leaves
+   `row` NOT DEFINED. So the language FORCES read-modify-write — the
+   `t.set(i, v)` is not a style choice, it is the only spelling that works.
+2. **That forced write-back copies when the target is shared.** `t.set(i, v)` on
+   a shared `List<List<T>>` / `List<SideTable<T>>` deep-copies the WHOLE table —
+   ~26-33 us at ~6,400 declarations, silently. `children` cost 80 ms, `decl_ids`
+   170 ms, `written_seats` most of a 68 ms fill.
+
+Net: **the language makes the writer spell a pattern that is silently quadratic,
+and gives no signal that they did.** `Cell` is the patch, and it helps only if
+the writer already knows to reach for it. Eight tables in `features/decls.av`
+paid this; three more (`seat_marks`, `marks`, `generations`) measured NEUTRAL,
+so it is not every nested table.
+
+### The signature worth teaching
+
+The cost was INVARIANT to how the append was spelled — the `.set` twin, a direct
+nested `push`, a dedup-scan removal, a borrow-scoping all measured neutral; only
+REMOVING the call helped. A cost that is BODY-INVARIANT and CALL-DEPENDENT is a
+copy of a shared intermediate. That belongs in the perf doctrine beside
+"measure, then change".
+
+### Sugar backlog
+
+- **IN-PLACE NESTED MUTATION.** `t[i].push(x)` should write through AND leave
+  `t` usable. Today it consumes `t`, which is what forces the write-back and so
+  the copy. This is the one change that REMOVES the trap rather than patching
+  it: the natural spelling becomes the fast spelling and the tension dissolves
+  (P6). Wanting sites: the eight `Cell` conversions in `features/decls.av` —
+  `children`, `module_files`, `file_decls`, `expansion_voices`, `methods`,
+  `impls`, `written_seats`, `decl_ids`; every one is a site that wanted this
+  sugar and did not have it.
+- **A SPELLED SHARED AGGREGATE.** `List<List<T>>` and `List<Cell<List<T>>>` are
+  two mutation models that look alike, so a reader cannot tell whether mutating
+  `t[i]` is cheap. Promote `Cell` to a first-class spelled type (`Ref<T>` /
+  `Shared<T>`) so the TYPE carries the cost (P11). Today `Cell` is folklore: a
+  wrapper you must already know exists.
+
+### Features / doctrine
+
+- **THE COMPILER MUST SPEAK WHEN A WRITE CLONES.** It knows the refcount (P10 —
+  semantic knowledge no other tool has). A write that will clone a shared table
+  should refuse or warn, with the `Cell` form in its help, and the help pinned
+  by a test that COMPILES the form it names — a help is an unchecked claim about
+  the grammar. Unlike F2040's proxy, this lint's true positive is objective (a
+  copy happens or it does not), so it can be exact; still MEASURE the rate
+  before shipping.
+- **MAKE COPIES COUNTABLE PER BUILD.** `AVRA_MEM_STATS` exists; a `copies: N`
+  line makes a regression visible on the FIRST build instead of at the next
+  benchmark. This trap survived to today because nothing counted.
+- **RATCHET THE SHAPE.** `v = t[i] ... v.push(..) ... t.set(i, v)` is greppable
+  and belongs in DOGFOODING's registry with a `tools/idioms.py` matcher, exactly
+  as I20/I39/I40 are. Immediate, and it is the doctrine's own enforcement.
+- **THE LAW ALREADY EXISTS AND IS NOT ENFORCED.** "A BORROW ALIASES, A PATH
+  WRITE THROUGH A SHARED INTERMEDIATE COPIES" is in CLAUDE.md. A prose law is a
+  note nobody reads at the moment they write `t.set(i, v)`; correctness that
+  matters must be compiler-enforced or unspellable.
+
+### What to determine FIRST
+
+WHY the tables were shared is still unknown — a closure capture of the
+workspace, a copy-in/copy-out of the `Decls` receiver, or the borrow itself. It
+decides whether `Cell` is the cure or a workaround for an ownership bug. One
+probe: instrument the refcount at a `.set` and watch it cross 1. Until that
+runs the asks above are ranked by leverage, not confirmed by cause.
+
+### The principle
+
+**A cost the writer cannot see is a bug waiting for a benchmark.**
