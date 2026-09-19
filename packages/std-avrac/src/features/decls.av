@@ -53,6 +53,10 @@ export type DeclFacts = {
     /// A width is a property of a SEAT and lives in the parse alone, so a held extern
     /// must carry it or its runtime row cannot be built without a store.
     host: List<string>,
+    /// WHETHER THE DECLARATION CARRIES ANNOTATIONS. A use-site warning is computed from
+    /// them, and that computation reads the declaration's PARSE — so a held decl must say
+    /// whether it has any, or asking its marks parses a file the hold exists to skip.
+    annotated: bool,
 }
 
 /// An extern's raw seat widths: one name per parameter, then the answer's.
@@ -79,12 +83,13 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
         bounds: if readable { [p.ty?.name ?? "" for p in store.decl_tbounds(x.stmt)] } else { [] },
         seats: if readable { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },
         host: if readable { extern_host(store, x.stmt) } else { [] },
+        annotated: readable && !store.annotations_of(x.stmt).is_empty(),
     }
 }
 
 /// The facts a declaration minted with no store wears: a synthetic or builtin body has no
 /// receiver and declares nothing about the source.
-fn no_facts() -> DeclFacts { DeclFacts { external: false, stat: true, is_grammar: false, span: null, tparams: [], bounds: [], seats: [], host: [] } }
+fn no_facts() -> DeclFacts { DeclFacts { external: false, stat: true, is_grammar: false, span: null, tparams: [], bounds: [], seats: [], host: [], annotated: false } }
 
 export type Decls = {
     types: TypeRegistry,

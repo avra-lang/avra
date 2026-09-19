@@ -213,7 +213,7 @@ fn interface_form(line: string) -> string {
     let p = line.split("\t")
     if p.length < 13 { return "" }
     let facts = p[12].split(";")
-    let stable = if facts.length >= 9 { joined([facts[0], facts[1], facts[2], facts[5], facts[6], facts[7], facts[8]], ";") } else if facts.length >= 8 { joined([facts[0], facts[1], facts[2], facts[5], facts[6], facts[7]], ";") } else { p[12] }
+    let stable = if facts.length >= 10 { joined([facts[0], facts[1], facts[2], facts[5], facts[6], facts[7], facts[8], facts[9]], ";") } else if facts.length >= 9 { joined([facts[0], facts[1], facts[2], facts[5], facts[6], facts[7], facts[8]], ";") } else if facts.length >= 8 { joined([facts[0], facts[1], facts[2], facts[5], facts[6], facts[7]], ";") } else { p[12] }
     let payload = if p.length > 13 { p[13] } else { "" }
     let seats = if p.length > 15 { joined([p[14], p[15]], ";") } else { "" }
     joined([p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], stable, payload, seats], "|")
@@ -289,7 +289,7 @@ fn record_line(mut ws: Workspace, d: Decl, ordinal: int, item: bool) -> string {
 fn facts_block(f: DeclFacts) -> string {
     let slo = f.span?.lo ?? (0 - 1)
     let shi = f.span?.hi ?? (0 - 1)
-    "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${f.fingerprint()}"
+    "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.fingerprint()}"
 }
 
 /// One string list as `<count>~<len>:<item>…`. EACH ELEMENT CARRIES ITS LENGTH, because
@@ -321,10 +321,10 @@ fn item_of_field(p: string) -> string {
 /// REFUSED — drift is a rebuild, never a declaration wearing a default.
 fn facts_unblocked(block: string) -> DeclFacts? {
     let p = block.split(";")
-    if p.length < 10 { return null }
+    if p.length < 11 { return null }
     let slo? = wire_number(p[3]) else { return null }
     let shi? = wire_number(p[4]) else { return null }
-    let want? = wire_number(p[9]) else { return null }
+    let want? = wire_number(p[10]) else { return null }
     let facts = DeclFacts {
         external: p[0] == "1",
         stat: p[1] == "1",
@@ -334,6 +334,7 @@ fn facts_unblocked(block: string) -> DeclFacts? {
         bounds: read_list(p[6]),
         seats: read_list(p[7]),
         host: read_list(p[8]),
+        annotated: p[9] == "1",
     }
     if facts.fingerprint() != want { return null }
     facts
