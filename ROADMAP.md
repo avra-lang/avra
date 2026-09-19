@@ -18349,3 +18349,47 @@ clang link ~150 ms). The design's per-unit IR is the next rung; its missing
 specification is still the IR's on-disk form — an exhaustive codec over `Ins`
 (core/ir.av, closed, catch-all-free) and `Body`, with `reg_types` as `type_wire`
 identities. Write it before building.
+
+## Interface load — why "lazy" needs a design, not a patch (2026-09-18 late)
+
+Measured after the record guard (`abc3579`): user CPU 1.72 s; `load` 280,
+`admit` 70, `fill` 420, `keep` 208, `analyze` 130, `lower` 223, clang+link
+~180, and `inputs()` ~300 outside the phase trace.
+
+`fill` mint/fills EVERY held declaration: names for all (needed — namespaces),
+shapes for all (only some are ever asked). The obvious fix — defer a held
+declaration's shape until `sig(d)` asks — is NOT a patch, for one reason:
+
+**THE TYPE REGISTRY'S REPRESENTATION MUST BE COMPLETE BEFORE ANYTHING IS TYPED.**
+`fill_shape` does not only intern signatures; it calls `mark_flat` / `mark_named`
+/ `declare` for records, enums and named types, and that is where a value's
+machine representation (bare field vs box, one slot vs a pointer) is DECIDED.
+Deferring those re-opens the exact bug of this campaign: two builds decide
+flatness in different orders and the objects disagree silently under opaque
+pointers. A first attempt that merely restricted `held_stubs` to referenced
+symbols and rebuilt `held_items` in place tripped it (`F2030: .fingerprint(…)`
+on `int`, a derive seeing a flattened field as its bare shape) and was reverted.
+
+So the split is by WHAT THE FACT IS FOR, never by declaration kind:
+- **eager**: every fact that decides a representation — a record's flat/boxed
+  mark, a named type's shape, a struct/enum field's layout, a const's type.
+- **deferrable**: a fn/method's parameter and return TYPES, and its seat marks,
+  which nothing uses until a call site is typed (`sig(d)` is the one door: all
+  sig reads funnel through `ws.sig`/`Decls.sig`).
+
+The blocker for the deferrable half is that `held_stubs` asks `ws.sig` for EVERY
+held declaration (`stub_of`), so any deferral is immediately forced. The slice
+must therefore land together: (1) `held_stubs` takes the symbol set a fresh body
+actually names (`referenced_symbols`: `.Call`/`.FnAddr` operands of the fresh
+`Lowered`), a missing declaration being a LOUD link error, never a silent one;
+(2) the fn/method branch of `fill_shape` records seats + written bits eagerly but
+stores its `(seats, ret)` wire instead of `declare`; (3) `ws.sig`'s held branch
+fills that one declaration on first ask. Verify with the whole-program
+diagnostics differential AND a probe, since the failure mode is a declaration the
+objects disagree about.
+
+`load` (280 ms) is reads + hold decisions and `inputs()` (300 ms) is the content
+hash of every input; both are separate levers and both help a COLD build too
+(the record guard and everything above are warm-only: on a cold tree no records
+exist, so `module_names_syntax` answers "parse" and the whole universe is built
+anyway).
