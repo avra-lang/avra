@@ -233,18 +233,26 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     // hold disabled until the interface is complete and proven on the compiler.
     mut trace: List<string> = []
     mut held: List<ModulePath> = []
+    let l0 = avra_now_ns()
     if CACHE_HOLD_ENABLED { held = held_modules(ws, store) }
     trace.push("mods ${held.length}")
+    let l1 = avra_now_ns()
     for m in held { let _ = load_interface(ws, store, m, entry) }
+    let l2 = avra_now_ns()
     trace.push("files-held ${held_paths(ws).length}")
     // NAMES, THEN SHAPES, GLOBALLY: admit every file (its declared names interned at mint),
     // re-mint the held records over it (generated declarations land, written ones refresh),
     // then fill held shapes — every spelling now resolves.
     ws.admit_all()
+    let l3 = avra_now_ns()
     mint_held_interfaces(ws, store)
     fill_interfaces(ws, store)
+    let l4 = avra_now_ns()
+    trace.push("mods ${held.length} hold ${(l1-l0)/1000000} load ${(l2-l1)/1000000} admit ${(l3-l2)/1000000} fill ${(l4-l3)/1000000}")
 
+    let l5 = avra_now_ns()
     let p = ws.program(entry)
+    trace.push("analyze ${(avra_now_ns()-l5)/1000000}")
     if !p.clean() { fail p.report() }
     let view = p.entry_file()
     if view == null { return .Err(p.rendered([no_target(ws.root)])) }
@@ -257,7 +265,9 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     // bodyless one — the link then misses every symbol it defined. `every` seeds the
     // worklist with every declaration of every file in hand, which is exactly the
     // non-held set here.
+    let l6 = avra_now_ns()
     let lo = p.lowered_checked()?
+    trace.push("lower ${(avra_now_ns()-l6)/1000000}")
     // Until the interface can answer every cross-file query, no file is held.
     // The whole-program module keeps that safe path within the cold-build
     // budget; compiling one object per file costs much more on the compiler.
@@ -293,6 +303,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     // was held for exactly that reason (measured: `held modules: 0`), with the records
     // written a few lines below the emission.
     let built_modules = [module_path(name.split(".")) for name in distinct([ws.module_of(a.view.source.file) for a in p.files])]
+    let l7 = avra_now_ns()
     let _ = keep_interfaces(ws, store, built_modules)
     let _ = keep_const_units(ws, store, built_modules)
     // A changed interface can move a dependent object's key after the first
