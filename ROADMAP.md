@@ -18319,6 +18319,28 @@ record, and a held consumer asks a unit by the name that ordinal used to name.
 Fixing the binary's mode had to avoid `@std/io` for this reason; the driver
 restores it by `chmod` instead (`build_cache.av`).
 
+### MEASURED — `admit` is the real 2s, and it is block-grammar discovery
+
+The `--time` phases are WALL (`avra_now_ns` is CLOCK_MONOTONIC), so they do not
+sum to user CPU. Re-measured with `clock_gettime(CLOCK_PROCESS_CPUTIME_ID)` (a
+temporary runtime edit): hold 7, load ~290, **admit ~2050**, fill ~425, analyze
+~130, lower ~250, emit ~10, place 2 ms. clang/link are CHILD processes and show
+0 in the parent's CPU clock.
+
+`admit` is `admit_all()`, which parsed only **2** files of 275 (the entry and
+the edited file) — yet took 2050 ms. Instrumenting `parsed_under_blocks`:
+`block_grammars` for the entry 381 ms, for the edited file 1592 ms, and BOTH
+found **zero** grammars (`n=0`). It parses every file of every provider module
+(`plain_grammars` per file via `plain_parsed`) to look for exported named
+grammars the `use` line might import — and the compiler's own `use` lines
+import types and fns, never grammars. So ~2 s of an edit is parsing `core` and
+`features` providers to discover nothing. That is the next target: carry the
+exported-grammar surface (name + declaring file) in the interface record so
+`line_grammars` can skip a provider whose record names no grammar the line
+takes. (The once-per-process language assembly is ~10 ms, measured by timing a
+tiny `avra check`; it is not a cost here. And the feature grammars ARE compiled
+consts / held files — 273/276 files held on an edit.)
+
 ### Next — the rung that removes the reconstruction (spec first)
 
 The remaining edit cost is reconstructing the declaration/type universe from 55
