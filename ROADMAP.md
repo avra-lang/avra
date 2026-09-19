@@ -18870,3 +18870,39 @@ never a second spelling of the file's identity. If this is retried: key the
 cache by `FileId` (or by the rooted path) in BOTH the writer and the reader so
 hit and miss compute the identical value, and prove it with `make avra` twice
 (a fixed point) BEFORE trusting a warm number.
+
+## The source-digest sharing: THREE attempts, all broken — and it is not the cache (2026-09-19)
+
+The note above blamed "a lookup that can hit or miss". That was one bug, not the
+wall. Three variants were built and every one failed IDENTICALLY — the compiler
+built, a no-op HIT, and a warm edit ran **10.4s and failed** with
+`F2030 .fingerprint(…) calls a method, and int has none` in an untouched
+`core/fingerprint.av`:
+
+| attempt | cache key | fallback door | result |
+|---|---|---|---|
+| 1 | `path` | `source(file_id(path)).text` | broke |
+| 2 | `path` | `host.read(path)` | broke |
+| 3 | `path` | `host.read(decls.file(file_id(path)).path)` (resolved) | broke |
+| **isolation** | **NO CACHE AT ALL** | `digest_of(source(file_id(path)).text)` | **broke** |
+
+The isolation is the finding: with no cache anywhere, merely folding
+`digest_of(source)` where the raw `source` text used to be folded breaks the
+build. **THE BLOCKER IS THE KEY FORM, NOT THE MEMO.**
+
+Why it is a FORMAT change and not a local edit: `obj_key_of`'s value is not only
+the store key. It is ALSO
+- the hold check (`held_modules`, `load_interface`),
+- the CONST UNIT key — `node_key(Stored.Unit, ["const", CACHE_FORMAT, obj_key_cached(…), name])`,
+- and `module_bytes`, whose digest is STORED in the module's record as the `bytes`
+  line and is `bytes_key`'s fallback.
+
+Change the form and those stop agreeing: a held module's record and its object
+answer different keys, and the build re-derives over a half-held state — which is
+exactly the poisoned-key-space symptom in a file nobody edited.
+
+**So it is not a 60 ms local win.** It is a coordinated change: one new
+derivation, every record's `bytes` line rewritten, the const unit keys moved, and
+a witness that a HELD build and a whole-program build agree — the same shape as
+any other format bump, and it owes a deliberate cold build to a consistent key
+space. Filed as that, not as a memo.
