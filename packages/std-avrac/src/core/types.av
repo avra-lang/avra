@@ -495,44 +495,6 @@ impl TypeRegistry {
         }
     }
 
-    /// A TYPE'S CROSS-RUN IDENTITY — a structural spelling whose NOMINAL nodes are named
-    /// by `sym`, never by an interned ordinal. A `TypeId` is "slot 7 in this run's
-    /// table", so a symbol built from one is stable only until the next build interns a
-    /// type in another order — and a held object's symbol then names a DIFFERENT
-    /// specialization than the fresh code demands. This is the ONE projection a
-    /// specialization's name is built from, so a stored object and a fresh demand agree.
-    ///
-    /// `sym` is the caller's stable identity for a declaration — its qualified symbol —
-    /// because a nominal node's identity is the one thing the registry cannot answer
-    /// alone.
-    fn identity(sym: fn(DeclId) -> string, id: TypeId) -> string {
-        match self.shape_of(id) {
-            .Int -> "i",
-            .Float -> "f",
-            .Bool -> "b",
-            .Str -> "s",
-            .Bytes -> "y",
-            .Ptr -> "p",
-            .Void -> "v",
-            .Null -> "n",
-            .EmptyList -> "e",
-            .EmptyMap -> "h",
-            .Error -> "x",
-            .Struct(d, _) -> "S${sym(d)}",
-            .Enum(d, _) -> "E${sym(d)}",
-            .Dyn(d, _) -> "D${sym(d)}",
-            .TypeName(d, _) -> "N${sym(d)}",
-            .Var(d, j, _) -> "R${sym(d)}.${j}",
-            .App(d, _, args) -> "A${sym(d)}<${joined([self.identity(sym, a) for a in args], ",")}>",
-            .List(t) -> "L${self.identity(sym, t)}",
-            .Cell(t) -> "C${self.identity(sym, t)}",
-            .Opt(t) -> "O${self.identity(sym, t)}",
-            .Map(k, v) -> "M${self.identity(sym, k)}${self.identity(sym, v)}",
-            .Res(ok, err) -> "Q${self.identity(sym, ok)}${self.identity(sym, err)}",
-            .Fn(params, marks, ret) -> "F(${joined([self.identity(sym, t) for t in params], ",")})${joined([if m.mutable { "m" } else if m.settled { "s" } else { "-" } for m in marks], "")}${self.identity(sym, ret)}",
-        }
-    }
-
     /// THE INVERSE OF `name_of` — the type a spelling names, or null when the
     /// registry has never made one. The loader that mints declarations from a
     /// record needs it: a held module's seats are written as spellings, and a

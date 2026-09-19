@@ -36,28 +36,30 @@ fn record_key(ws: Workspace, m: ModulePath) -> string {
 // LICENSED I39: a pure PROJECTION — a registry and a declaration's signature in, its line out.
 fn shape_line(ws: Workspace, s: DeclSig) -> string {
     match s {
-        .Record(r) -> "struct\t${joined([r.names[i] + ":" + type_wire(ws, r.types[i]) for i in 0..r.names.length], ";")}",
-        .Enum(e) -> "enum\t${joined([e.names[i] + ":" + joined([type_wire(ws, t) for t in e.payloads[i]], "|") for i in 0..e.names.length], ";")}",
-        .Named(n) -> "named\t${type_wire(ws, n.of)}",
-        .Fn(f) -> "fn\t${joined([type_wire(ws, t) for t in f.params], ";")}\t${type_wire(ws, f.ret)}",
+        .Record(r) -> "struct\t${joined([r.names[i] + ":" + type_wire(ws.decls, r.types[i]) for i in 0..r.names.length], ";")}",
+        .Enum(e) -> "enum\t${joined([e.names[i] + ":" + joined([type_wire(ws.decls, t) for t in e.payloads[i]], "|") for i in 0..e.names.length], ";")}",
+        .Named(n) -> "named\t${type_wire(ws.decls, n.of)}",
+        .Fn(f) -> "fn\t${joined([type_wire(ws.decls, t) for t in f.params], ";")}\t${type_wire(ws.decls, f.ret)}",
     }
 }
 
 /// A type in an interface is a tree of tagged tokens. Nominal nodes name
 /// their source file and declaration ordinal; the registry's human-readable
 /// name is not an identity (several packages declare `Type`, for example).
-/// This one projection serves fields, variants, consts and callable seats.
-fn decl_wire(ws: Workspace, d: DeclId) -> string {
-    let x = ws.decls.decl(d)
+/// This one projection serves fields, variants, consts, callable seats AND a
+/// specialization's name, so it takes `Decls` (not `Workspace`) and lowering can
+/// call it; `read_type_wire` is its inverse, which is why it can carry the wire.
+fn decl_wire(decls: Decls, d: DeclId) -> string {
+    let x = decls.decl(d)
     mut at = 0
-    for j, id in ws.decls.decls_of_file(x.file) {
+    for j, id in decls.decls_of_file(x.file) {
         if same_decl(id, d) { at = j }
     }
-    "${ws.decls.file(x.file).path}~${at}"
+    "${decls.file(x.file).path}~${at}"
 }
 
-fn type_wire(ws: Workspace, id: TypeId) -> string {
-    let body = match ws.decls.types.shape_of(id) {
+fn type_wire(decls: Decls, id: TypeId) -> string {
+    let body = match decls.types.shape_of(id) {
         .Int -> "i",
         .Float -> "f",
         .Bool -> "b",
@@ -69,35 +71,35 @@ fn type_wire(ws: Workspace, id: TypeId) -> string {
         .EmptyList -> "e",
         .EmptyMap -> "h",
         .Error -> "x",
-        .Struct(d, _) -> "S~${decl_wire(ws, d)}",
-        .Enum(d, _) -> "E~${decl_wire(ws, d)}",
-        .Dyn(d, _) -> "D~${decl_wire(ws, d)}",
-        .TypeName(d, _) -> "N~${decl_wire(ws, d)}",
-        .Var(d, j, _) -> "R~${decl_wire(ws, d)}~${j}",
-        .App(d, _, args) -> "A~${decl_wire(ws, d)}~${args.length}~${joined([type_wire(ws, a).substring(1, type_wire(ws, a).length) for a in args], "~")}",
-        .List(t) -> "L~${type_wire(ws, t).substring(1, type_wire(ws, t).length)}",
-        .Cell(t) -> "C~${type_wire(ws, t).substring(1, type_wire(ws, t).length)}",
-        .Opt(t) -> "O~${type_wire(ws, t).substring(1, type_wire(ws, t).length)}",
-        .Map(k, v) -> "M~${type_wire(ws, k).substring(1, type_wire(ws, k).length)}~${type_wire(ws, v).substring(1, type_wire(ws, v).length)}",
-        .Res(ok, err) -> "Q~${type_wire(ws, ok).substring(1, type_wire(ws, ok).length)}~${type_wire(ws, err).substring(1, type_wire(ws, err).length)}",
-        .Fn(params, marks, ret) -> joined(["F", "${params.length}"].concat([type_wire(ws, t).substring(1, type_wire(ws, t).length) for t in params]).concat([joined([mark_word(if j < marks.length { marks[j] } else { SeatMark { mutable: false, settled: false } }) for j in 0..params.length], ""), type_wire(ws, ret).substring(1, type_wire(ws, ret).length)]), "~"),
+        .Struct(d, _) -> "S~${decl_wire(decls, d)}",
+        .Enum(d, _) -> "E~${decl_wire(decls, d)}",
+        .Dyn(d, _) -> "D~${decl_wire(decls, d)}",
+        .TypeName(d, _) -> "N~${decl_wire(decls, d)}",
+        .Var(d, j, _) -> "R~${decl_wire(decls, d)}~${j}",
+        .App(d, _, args) -> "A~${decl_wire(decls, d)}~${args.length}~${joined([type_wire(decls, a).substring(1, type_wire(decls, a).length) for a in args], "~")}",
+        .List(t) -> "L~${type_wire(decls, t).substring(1, type_wire(decls, t).length)}",
+        .Cell(t) -> "C~${type_wire(decls, t).substring(1, type_wire(decls, t).length)}",
+        .Opt(t) -> "O~${type_wire(decls, t).substring(1, type_wire(decls, t).length)}",
+        .Map(k, v) -> "M~${type_wire(decls, k).substring(1, type_wire(decls, k).length)}~${type_wire(decls, v).substring(1, type_wire(decls, v).length)}",
+        .Res(ok, err) -> "Q~${type_wire(decls, ok).substring(1, type_wire(decls, ok).length)}~${type_wire(decls, err).substring(1, type_wire(decls, err).length)}",
+        .Fn(params, marks, ret) -> joined(["F", "${params.length}"].concat([type_wire(decls, t).substring(1, type_wire(decls, t).length) for t in params]).concat([joined([mark_word(if j < marks.length { marks[j] } else { SeatMark { mutable: false, settled: false } }) for j in 0..params.length], ""), type_wire(decls, ret).substring(1, type_wire(decls, ret).length)]), "~"),
     }
     "^${body}"
 }
 
 type WireType = { id: TypeId, next: int }
 
-fn wire_decl(ws: Workspace, words: List<string>, at: int) -> DeclId? {
+fn wire_decl(decls: Decls, words: List<string>, at: int) -> DeclId? {
     if at + 1 >= words.length { return null }
     let ordinal? = wire_number(words[at + 1]) else { return null }
-    let f: FileId? = ws.decls.paths.get(words[at])
+    let f: FileId? = decls.paths.get(words[at])
     if f == null || ordinal < 0 { return null }
-    let ids = ws.decls.decls_of_file(f!)
+    let ids = decls.decls_of_file(f!)
     if ordinal >= ids.length { return null }
     ids[ordinal]
 }
 
-fn read_type_wire(mut ws: Workspace, words: List<string>, at: int) -> WireType? {
+fn read_type_wire(mut decls: Decls, words: List<string>, at: int) -> WireType? {
     if at >= words.length { return null }
     let tag = words[at]
     let scalar: Type? = match tag {
@@ -106,41 +108,41 @@ fn read_type_wire(mut ws: Workspace, words: List<string>, at: int) -> WireType? 
         "v" -> Type.Void, "n" -> Type.Null, "e" -> Type.EmptyList,
         "h" -> Type.EmptyMap, "x" -> Type.Error, _ -> null,
     }
-    if scalar != null { return WireType { id: ws.decls.types.intern(scalar!), next: at + 1 } }
+    if scalar != null { return WireType { id: decls.types.intern(scalar!), next: at + 1 } }
     if tag == "S" || tag == "E" || tag == "D" || tag == "N" || tag == "R" || tag == "A" {
-        let d? = wire_decl(ws, words, at + 1) else { return null }
-        let x = ws.decls.decl(d)
-        if tag == "S" { return WireType { id: ws.decls.types.intern(Type.Struct(d, x.name)), next: at + 3 } }
-        if tag == "E" { return WireType { id: ws.decls.types.intern(Type.Enum(d, x.name)), next: at + 3 } }
-        if tag == "D" { return WireType { id: ws.decls.types.intern(Type.Dyn(d, x.name)), next: at + 3 } }
-        if tag == "N" { return WireType { id: ws.decls.types.intern(Type.TypeName(d, x.name)), next: at + 3 } }
+        let d? = wire_decl(decls, words, at + 1) else { return null }
+        let x = decls.decl(d)
+        if tag == "S" { return WireType { id: decls.types.intern(Type.Struct(d, x.name)), next: at + 3 } }
+        if tag == "E" { return WireType { id: decls.types.intern(Type.Enum(d, x.name)), next: at + 3 } }
+        if tag == "D" { return WireType { id: decls.types.intern(Type.Dyn(d, x.name)), next: at + 3 } }
+        if tag == "N" { return WireType { id: decls.types.intern(Type.TypeName(d, x.name)), next: at + 3 } }
         if at + 3 >= words.length { return null }
         let n? = wire_number(words[at + 3]) else { return null }
         if tag == "R" {
-            let names = ws.decls.tparams(d)
+            let names = decls.tparams(d)
             if n < 0 || n >= names.length { return null }
-            return WireType { id: ws.decls.types.intern(Type.Var(d, n, names[n])), next: at + 4 }
+            return WireType { id: decls.types.intern(Type.Var(d, n, names[n])), next: at + 4 }
         }
         if n < 0 { return null }
         mut args: List<TypeId> = []
         mut cursor = at + 4
         for j in 0..n {
-            let child? = read_type_wire(ws, words, cursor) else { return null }
+            let child? = read_type_wire(decls, words, cursor) else { return null }
             args.push(child.id)
             cursor = child.next
         }
-        return WireType { id: ws.decls.types.intern(Type.App(d, x.name, args)), next: cursor }
+        return WireType { id: decls.types.intern(Type.App(d, x.name, args)), next: cursor }
     }
     if tag == "L" || tag == "C" || tag == "O" {
-        let child? = read_type_wire(ws, words, at + 1) else { return null }
+        let child? = read_type_wire(decls, words, at + 1) else { return null }
         let raw = if tag == "L" { Type.List(child.id) } else if tag == "C" { Type.Cell(child.id) } else { Type.Opt(child.id) }
-        return WireType { id: ws.decls.types.intern(raw), next: child.next }
+        return WireType { id: decls.types.intern(raw), next: child.next }
     }
     if tag == "M" || tag == "Q" {
-        let a? = read_type_wire(ws, words, at + 1) else { return null }
-        let b? = read_type_wire(ws, words, a.next) else { return null }
+        let a? = read_type_wire(decls, words, at + 1) else { return null }
+        let b? = read_type_wire(decls, words, a.next) else { return null }
         let raw = if tag == "M" { Type.Map(a.id, b.id) } else { Type.Res(a.id, b.id) }
-        return WireType { id: ws.decls.types.intern(raw), next: b.next }
+        return WireType { id: decls.types.intern(raw), next: b.next }
     }
     if tag == "F" {
         if at + 1 >= words.length { return null }
@@ -149,7 +151,7 @@ fn read_type_wire(mut ws: Workspace, words: List<string>, at: int) -> WireType? 
         mut cursor = at + 2
         if n < 0 { return null }
         for j in 0..n {
-            let child? = read_type_wire(ws, words, cursor) else { return null }
+            let child? = read_type_wire(decls, words, cursor) else { return null }
             params.push(child.id)
             cursor = child.next
         }
@@ -160,8 +162,8 @@ fn read_type_wire(mut ws: Workspace, words: List<string>, at: int) -> WireType? 
             if j >= bits.length { return null }
             marks.push(mark_of_word(bits.substring(j, j + 1)))
         }
-        let ret? = read_type_wire(ws, words, cursor + 1) else { return null }
-        return WireType { id: ws.decls.types.intern(Type.Fn(params, marks, ret.id)), next: ret.next }
+        let ret? = read_type_wire(decls, words, cursor + 1) else { return null }
+        return WireType { id: decls.types.intern(Type.Fn(params, marks, ret.id)), next: ret.next }
     }
     null
 }
@@ -251,7 +253,7 @@ fn record_line(mut ws: Workspace, d: Decl, ordinal: int, item: bool) -> string {
     let sig = if d.kind is .Const { null } else { ws.sig(d.id) }
     let shape = if d.kind is .Const {
         let ty = ws.decls.type_of_const(d.file, d.stmt) ?? ws.decls.types.intern(Type.Error)
-        "const\t${type_wire(ws, ty)}"
+        "const\t${type_wire(ws.decls, ty)}"
     } else if sig == null {
         "opaque"
     } else if d.kind is .Fn || d.kind is .Method {
@@ -639,7 +641,7 @@ fn mark_of_word(w: string) -> SeatMark {
 fn interface_type(mut ws: Workspace, owner: DeclId, name: string) -> TypeId {
     if name.starts_with("^") {
         let words = name.substring(1, name.length).split("~")
-        let decoded = read_type_wire(ws, words, 0)
+        let decoded = read_type_wire(ws.decls, words, 0)
         if decoded != null && decoded!.next == words.length { return decoded!.id }
         return ws.decls.types.intern(Type.Error)
     }
