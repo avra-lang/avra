@@ -102,7 +102,8 @@ export type Decls = {
     mains: List<DeclId?>,
     stores: List<NodeStore?>,
     ensure_store: List<fn(FileId)>,
-    decl_ids: List<SideTable<DeclId?>>,
+    /// ONE SLOT, SHARED — see `children`: a write must not copy the table.
+    decl_ids: List<Cell<SideTable<DeclId?>>>,
     /// ONE SLOT, SHARED — see `children`: an append must not copy the table.
     file_decls: List<Cell<List<DeclId>>>,
     decls: List<Decl>,
@@ -267,7 +268,7 @@ impl Decls {
         self.files.push(FileInfo { id: id, path: path, module_id: m })
         self.module_files[m.index].push(id)
         self.stores.push(null)
-        self.decl_ids.push(side_table<DeclId?>("decl_ids", 0, 0, null))
+        self.decl_ids.push(Cell.new(side_table<DeclId?>("decl_ids", 0, 0, null)))
         let no_decls: List<DeclId> = []
         self.file_decls.push(Cell.new(no_decls))
         self.generations.push([])
@@ -395,7 +396,7 @@ impl Decls {
                 made.push(nd)
             }
         }
-        self.decl_ids.set(f.index, by_stmt)
+        self.decl_ids.set(f.index, Cell.new(by_stmt))
         self.file_decls.set(f.index, Cell.new(made))
         self.range_bodies(f, store, main)
         out
@@ -688,10 +689,10 @@ impl Decls {
     /// as written. The statement table is grown to the arena first —
     /// `decl_of` reads it by statement, and a miss reads past its end.
     mut fn record_generated(f: FileId, made: List<DeclId>) {
-        mut by_stmt = self.decl_ids[f.index]
+        mut by_stmt = self.decl_ids[f.index].get()
         by_stmt.grow_to(self.store_of(f).stmts.count())
         for d in made { by_stmt.set(self.decl(d).stmt.index, d) }
-        self.decl_ids.set(f.index, by_stmt)
+        self.decl_ids[f.index].set(by_stmt)
         self.file_decls[f.index].set(self.file_decls[f.index].get().concat(made))
     }
 
@@ -826,7 +827,7 @@ impl Decls {
     }
 
     /// The declaration a statement of a file makes, when it does.
-    fn decl_of(f: FileId, s: StmtId) -> DeclId? { self.decl_ids[f.index].get(s.index) }
+    fn decl_of(f: FileId, s: StmtId) -> DeclId? { self.decl_ids[f.index].get().get(s.index) }
 
     fn store(d: DeclId) -> NodeStore { self.store_of(self.decl(d).file) }
 
