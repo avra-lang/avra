@@ -21,7 +21,7 @@ use @std.io.{read_text, write_text, make_dirs, exists}
 /// compiler's own sources, its backend and its runtime are already key
 /// inputs (`Workspace.build_inputs`); this covers only what those files
 /// cannot say — a change to how the key itself is derived.
-const CACHE_FORMAT: string = "avra-build-cache-19"
+const CACHE_FORMAT: string = "avra-build-cache-21"
 
 /// THE PARSE-FREE HOLD IS ON. An object is keyed by the module's own bytes and each
 /// import's STORED bytes digest (`obj_key_of`), never by a record's declaration text —
@@ -328,6 +328,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     mut objs: List<string> = []
     mut compile_ll: List<string> = []
     mut pending: List<PendingObj> = []
+    let t_e0 = avra_now_ns()
     for a in p.files {
         let path = a.view.source.file
         let m = module_path(ws.module_of(path).split("."))
@@ -346,6 +347,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
             pending.push(PendingObj { okey: okey, obj: obj })
         }
     }
+    let t_e1 = avra_now_ns()
     // ONE CLANG OVER EVERY MOVED MODULE. At this size process startup is most of the cost
     // — 18 modules one at a time measured ~14s — and one invocation does the same
     // optimisation work once. `-c a.ll b.ll` writes `a.o`/`b.o` BESIDE its inputs, so the
@@ -354,6 +356,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
         let built = avra_spawn_in(cache.root, linker, ["-w", opt, "-c"].concat(compile_ll))
         if built != 0 { fail "avra: clang failed compiling — exited with code ${built}" }
     }
+    let t_e2 = avra_now_ns()
     for po in pending {
         let _ = store.keep_file(Stored.Obj, po.okey, po.obj, [])
         objs.push(po.obj)
@@ -365,6 +368,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
         if !store.place(Stored.Obj, okey, obj) { fail "avra: a held object disappeared: ${path} (module ${m.text()}) key ${okey}" }
         objs.push(obj)
     }
+    let t_e3 = avra_now_ns()
     let words = link_objects(objs, ws, runtime, binary)
     // THE LINK RUNS HERE, not in the CLI: the build owns its pipeline, and a thin caller
     // is one that decides nothing.
@@ -372,12 +376,13 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     if code != 0 {
         fail "avra: clang failed linking — exited with code ${code}"
     }
+    let t_e4 = avra_now_ns()
     // REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it — the data a
     // later build needs to decide whether a file may be skipped WITHOUT READING IT.
     let warnings = p.warnings()
     // WHAT EACH PHASE COST, because a build that cannot say where its time went is a
     // build whose next optimisation is a guess.
-    let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases].concat(["held ${held_paths(ws).length}/${ws.decls.files.length}", "attempt ${attempt}"]).concat(trace), ", ")
+    let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases].concat(["held ${held_paths(ws).length}/${ws.decls.files.length}", "attempt ${attempt}", "emit ${(t_e1 - t_e0) / 1000000}ms", "clang ${(t_e2 - t_e1) / 1000000}ms", "place ${(t_e3 - t_e2) / 1000000}ms", "link ${(t_e4 - t_e3) / 1000000}ms"]).concat(trace), ", ")
     // THE RESULT IS THE BUILD'S OWN OUTPUT, so it is the build that remembers it: the
     // binary under one family and what was said about it under another.
     let _ = store.keep_file(Stored.Bin, key, binary, [key])

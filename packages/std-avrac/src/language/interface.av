@@ -289,27 +289,43 @@ fn record_line(mut ws: Workspace, d: Decl, ordinal: int, item: bool) -> string {
 fn facts_block(f: DeclFacts) -> string {
     let slo = f.span?.lo ?? (0 - 1)
     let shi = f.span?.hi ?? (0 - 1)
-    "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)}"
+    "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${f.fingerprint()}"
 }
 
-/// One string list as `<count>~<items…>`.
-fn list_field(xs: List<string>) -> string { "${xs.length}~${joined(xs, "~")}" }
+/// One string list as `<count>~<len>:<item>…`. EACH ELEMENT CARRIES ITS LENGTH, because
+/// a bare `~`-join LOSES a trailing EMPTY element — `split` drops it — and a facts list
+/// legitimately holds `""` (an unconstrained bound, an unwritten width). The old form
+/// decoded `[""]` as `[]`: benign where the only reader returns `""` either way, and a
+/// silent loss the moment a reader distinguishes them.
+fn list_field(xs: List<string>) -> string { "${xs.length}~${joined(["${x.length}:${x}" for x in xs], "~")}" }
 
-/// The inverse — `"0"` and `"0~"` both read as the empty list.
+/// The inverse — `"0"` and `"0~"` both read as the empty list, and a length-prefixed
+/// element survives whether or not it is empty.
 fn read_list(field: string) -> List<string> {
     let parts = field.split("~")
     if parts.length < 2 { return [] }
-    parts.slice(1, parts.length)
+    [item_of_field(p) for p in parts.slice(1, parts.length)]
+}
+
+/// One list element: its length prefix dropped, the value whole.
+fn item_of_field(p: string) -> string {
+    let at = p.index_of(":")
+    if at < 0 { return p }
+    p.substring(at + 1, p.length)
 }
 
 /// The decoder — a block it cannot read makes the whole RECORD undecodable, so the module
-/// is a miss rather than a declaration whose facts are guessed.
+/// is a miss rather than a declaration whose facts are guessed. THE LAST FIELD IS THE
+/// VALUE'S OWN FINGERPRINT: it is recomputed from what was decoded, so a field the
+/// writer added but this reader does not know makes the two disagree and the record is
+/// REFUSED — drift is a rebuild, never a declaration wearing a default.
 fn facts_unblocked(block: string) -> DeclFacts? {
     let p = block.split(";")
-    if p.length < 9 { return null }
+    if p.length < 10 { return null }
     let slo? = wire_number(p[3]) else { return null }
     let shi? = wire_number(p[4]) else { return null }
-    DeclFacts {
+    let want? = wire_number(p[9]) else { return null }
+    let facts = DeclFacts {
         external: p[0] == "1",
         stat: p[1] == "1",
         is_grammar: p[2] == "1",
@@ -319,6 +335,8 @@ fn facts_unblocked(block: string) -> DeclFacts? {
         seats: read_list(p[7]),
         host: read_list(p[8]),
     }
+    if facts.fingerprint() != want { return null }
+    facts
 }
 
 /// REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it.
