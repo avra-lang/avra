@@ -1,0 +1,872 @@
+//! THE INTERFACE, REMEMBERED AND REBUILT.
+//!
+//! A caller needs a declaration's SIGNATURE, never its body — so a whole module can be
+//! answered from what a previous build wrote down, without parsing it. That is the waist:
+//! what crosses a file boundary is small, and it is the only thing that must persist.
+//!
+//! THE RECORD IS FLAT TEXT, one line per item, because a reader that needs a parser to
+//! answer "what does this module export?" has moved the cost, not removed it. Every line
+//! is a KIND and then names and SPELLINGS — `name_of`'s own text, which is the registry's
+//! printing projection and therefore the one spelling that can be re-interned.
+//!
+//! A SHAPE IS CARRIED, NOT JUST A NAME, and that is the whole lesson of the first attempt:
+//! a signature naming a USER type cannot be re-interned from its name alone, because a
+//! type's identity is a per-run id and its SHAPE lives in its declaration. So a struct
+//! carries its fields, an enum its variants, and loading walks the IMPORTS FIRST — a field
+//! of another module's type is only internable once that module's types exist.
+use core.{new_digest, digest_text, digest_key, joined, flatten, sorted_texts, distinct, same_file, same_decl, module_path, ModulePath, TypeRegistry, Type, TypeId, DeclId, FileId, StmtId, ExprId, DeclKind, SeatMark, Span, TypeRef}
+use features.{Decl, DeclSig, FnSig, StructSig, EnumSig, NamedSig, Decls, Namespace, SettleRoot, kind_word, spelled_type, scalar_named, DeclFacts}
+
+/// THE NAME A MODULE'S RECORD IS STORED UNDER. The ROOT module's name is EMPTY — it holds
+/// the entry file and its neighbours — and an empty name has no shard to live in and no key
+/// to be asked for, so it is spelled here rather than special-cased at every reader.
+// LICENSED I39: a pure PROJECTION — a module in, the name its record is stored under out.
+fn record_key(ws: Workspace, m: ModulePath) -> string {
+    node_key(Stored.Sig, [CACHE_FORMAT, ws.root, m.text()])
+}
+
+/// A TYPE'S SHAPE, as one line — the declaration it belongs to, and what it stands over.
+/// A NAMED type's line carries the shape it IS, so re-interning reproduces the same type
+/// rather than a fresh one that merely wears the name.
+///
+/// THE SEPARATORS ARE `;` AND `|`, NEVER A SPACE: a spelling CONTAINS spaces
+/// (`dyn Runnable`, `fn(a) -> b`), so a space-joined list splits a single type into
+/// fields and invents declarations (`body:dyn Runnable` became `body:dyn` and a field
+/// named `Runnable`). Neither `;` nor `|` is in the type grammar.
+// LICENSED I39: a pure PROJECTION — a registry and a declaration's signature in, its line out.
+fn shape_line(ws: Workspace, s: DeclSig) -> string {
+    match s {
+        .Record(r) -> "struct\t${joined([r.names[i] + ":" + type_wire(ws, r.types[i]) for i in 0..r.names.length], ";")}",
+        .Enum(e) -> "enum\t${joined([e.names[i] + ":" + joined([type_wire(ws, t) for t in e.payloads[i]], "|") for i in 0..e.names.length], ";")}",
+        .Named(n) -> "named\t${type_wire(ws, n.of)}",
+        .Fn(f) -> "fn\t${joined([type_wire(ws, t) for t in f.params], ";")}\t${type_wire(ws, f.ret)}",
+    }
+}
+
+/// A type in an interface is a tree of tagged tokens. Nominal nodes name
+/// their source file and declaration ordinal; the registry's human-readable
+/// name is not an identity (several packages declare `Type`, for example).
+/// This one projection serves fields, variants, consts and callable seats.
+fn decl_wire(ws: Workspace, d: DeclId) -> string {
+    let x = ws.decls.decl(d)
+    mut at = 0
+    for j, id in ws.decls.decls_of_file(x.file) {
+        if same_decl(id, d) { at = j }
+    }
+    "${ws.decls.file(x.file).path}~${at}"
+}
+
+fn type_wire(ws: Workspace, id: TypeId) -> string {
+    let body = match ws.decls.types.shape_of(id) {
+        .Int -> "i",
+        .Float -> "f",
+        .Bool -> "b",
+        .Str -> "s",
+        .Bytes -> "y",
+        .Ptr -> "p",
+        .Void -> "v",
+        .Null -> "n",
+        .EmptyList -> "e",
+        .EmptyMap -> "h",
+        .Error -> "x",
+        .Struct(d, _) -> "S~${decl_wire(ws, d)}",
+        .Enum(d, _) -> "E~${decl_wire(ws, d)}",
+        .Dyn(d, _) -> "D~${decl_wire(ws, d)}",
+        .TypeName(d, _) -> "N~${decl_wire(ws, d)}",
+        .Var(d, j, _) -> "R~${decl_wire(ws, d)}~${j}",
+        .App(d, _, args) -> "A~${decl_wire(ws, d)}~${args.length}~${joined([type_wire(ws, a).substring(1, type_wire(ws, a).length) for a in args], "~")}",
+        .List(t) -> "L~${type_wire(ws, t).substring(1, type_wire(ws, t).length)}",
+        .Cell(t) -> "C~${type_wire(ws, t).substring(1, type_wire(ws, t).length)}",
+        .Opt(t) -> "O~${type_wire(ws, t).substring(1, type_wire(ws, t).length)}",
+        .Map(k, v) -> "M~${type_wire(ws, k).substring(1, type_wire(ws, k).length)}~${type_wire(ws, v).substring(1, type_wire(ws, v).length)}",
+        .Res(ok, err) -> "Q~${type_wire(ws, ok).substring(1, type_wire(ws, ok).length)}~${type_wire(ws, err).substring(1, type_wire(ws, err).length)}",
+        .Fn(params, marks, ret) -> joined(["F", "${params.length}"].concat([type_wire(ws, t).substring(1, type_wire(ws, t).length) for t in params]).concat([joined([mark_word(if j < marks.length { marks[j] } else { SeatMark { mutable: false, settled: false } }) for j in 0..params.length], ""), type_wire(ws, ret).substring(1, type_wire(ws, ret).length)]), "~"),
+    }
+    "^${body}"
+}
+
+type WireType = { id: TypeId, next: int }
+
+fn wire_decl(ws: Workspace, words: List<string>, at: int) -> DeclId? {
+    if at + 1 >= words.length { return null }
+    let ordinal? = wire_number(words[at + 1]) else { return null }
+    let f: FileId? = ws.decls.paths.get(words[at])
+    if f == null || ordinal < 0 { return null }
+    let ids = ws.decls.decls_of_file(f!)
+    if ordinal >= ids.length { return null }
+    ids[ordinal]
+}
+
+fn read_type_wire(mut ws: Workspace, words: List<string>, at: int) -> WireType? {
+    if at >= words.length { return null }
+    let tag = words[at]
+    let scalar: Type? = match tag {
+        "i" -> Type.Int, "f" -> Type.Float, "b" -> Type.Bool,
+        "s" -> Type.Str, "y" -> Type.Bytes, "p" -> Type.Ptr,
+        "v" -> Type.Void, "n" -> Type.Null, "e" -> Type.EmptyList,
+        "h" -> Type.EmptyMap, "x" -> Type.Error, _ -> null,
+    }
+    if scalar != null { return WireType { id: ws.decls.types.intern(scalar!), next: at + 1 } }
+    if tag == "S" || tag == "E" || tag == "D" || tag == "N" || tag == "R" || tag == "A" {
+        let d? = wire_decl(ws, words, at + 1) else { return null }
+        let x = ws.decls.decl(d)
+        if tag == "S" { return WireType { id: ws.decls.types.intern(Type.Struct(d, x.name)), next: at + 3 } }
+        if tag == "E" { return WireType { id: ws.decls.types.intern(Type.Enum(d, x.name)), next: at + 3 } }
+        if tag == "D" { return WireType { id: ws.decls.types.intern(Type.Dyn(d, x.name)), next: at + 3 } }
+        if tag == "N" { return WireType { id: ws.decls.types.intern(Type.TypeName(d, x.name)), next: at + 3 } }
+        if at + 3 >= words.length { return null }
+        let n? = wire_number(words[at + 3]) else { return null }
+        if tag == "R" {
+            let names = ws.decls.tparams(d)
+            if n < 0 || n >= names.length { return null }
+            return WireType { id: ws.decls.types.intern(Type.Var(d, n, names[n])), next: at + 4 }
+        }
+        if n < 0 { return null }
+        mut args: List<TypeId> = []
+        mut cursor = at + 4
+        for j in 0..n {
+            let child? = read_type_wire(ws, words, cursor) else { return null }
+            args.push(child.id)
+            cursor = child.next
+        }
+        return WireType { id: ws.decls.types.intern(Type.App(d, x.name, args)), next: cursor }
+    }
+    if tag == "L" || tag == "C" || tag == "O" {
+        let child? = read_type_wire(ws, words, at + 1) else { return null }
+        let raw = if tag == "L" { Type.List(child.id) } else if tag == "C" { Type.Cell(child.id) } else { Type.Opt(child.id) }
+        return WireType { id: ws.decls.types.intern(raw), next: child.next }
+    }
+    if tag == "M" || tag == "Q" {
+        let a? = read_type_wire(ws, words, at + 1) else { return null }
+        let b? = read_type_wire(ws, words, a.next) else { return null }
+        let raw = if tag == "M" { Type.Map(a.id, b.id) } else { Type.Res(a.id, b.id) }
+        return WireType { id: ws.decls.types.intern(raw), next: b.next }
+    }
+    if tag == "F" {
+        if at + 1 >= words.length { return null }
+        let n? = wire_number(words[at + 1]) else { return null }
+        mut params: List<TypeId> = []
+        mut cursor = at + 2
+        if n < 0 { return null }
+        for j in 0..n {
+            let child? = read_type_wire(ws, words, cursor) else { return null }
+            params.push(child.id)
+            cursor = child.next
+        }
+        if cursor >= words.length { return null }
+        let bits = words[cursor]
+        mut marks: List<SeatMark> = []
+        for j in 0..n {
+            if j >= bits.length { return null }
+            marks.push(mark_of_word(bits.substring(j, j + 1)))
+        }
+        let ret? = read_type_wire(ws, words, cursor + 1) else { return null }
+        return WireType { id: ws.decls.types.intern(Type.Fn(params, marks, ret.id)), next: ret.next }
+    }
+    null
+}
+
+/// EVERY NAME A MODULE EXPORTS — its imports first, so a reader can walk the closure in
+/// the order that makes each shape internable.
+// LICENSED I39: a pure PROJECTION — the workspace, a store and a module in, its record out.
+fn record_of(mut ws: Workspace, store: Store, m: ModulePath) -> string {
+    let prior = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+    let prior_lines = prior.split("\n")
+    let remembered = [line for line in prior_lines if line.starts_with("import\t")]
+    let fresh = flatten([ws.imported_by(path) for path in ws.module_files(m) if !ws.is_held(ws.file_id(path))])
+    let here = distinct(remembered.concat(["import\t${d.text()}" for d in fresh]))
+    mut items: List<string> = []
+    for path in ws.module_files(m) {
+        let f = ws.file_id(path)
+        // A HELD FILE'S LINES ARE COPIED VERBATIM, never regenerated. A record's
+        // DECLARATION text may move between two builds of identical bytes (the written
+        // bits, a parse-order detail), and a held file must keep the lines it was held
+        // against. The BYTES line is regenerated for the module WHOLE, so it cannot
+        // drift from the files.
+        if ws.is_held(f) {
+            items = items.concat([line for line in prior_lines if named_file(line) == path])
+        } else {
+            let top = ws.items(f)
+            for ordinal, id in ws.decls.decls_of_file(f) {
+                items.push(record_line(ws, ws.decl_at(id), ordinal, top.any(same_decl(it, id))))
+            }
+        }
+    }
+    joined(["bytes\t${module_bytes(ws, m)}"].concat(here).concat(items), "\n")
+}
+
+/// The path a record line names, or "" — the second column, and nothing for a header line.
+fn named_file(line: string) -> string {
+    if line.starts_with("import\t") || line.starts_with("bytes\t") || line.starts_with("iface\t") { return "" }
+    let parts = line.split("\t")
+    if parts.length < 2 { return "" }
+    parts[1]
+}
+
+fn type_record(sig: DeclSig?) -> bool {
+    if sig == null { return false }
+    match sig! {
+        .Record(_) or .Enum(_) or .Named(_) -> true,
+        .Fn(_) -> false,
+    }
+}
+
+fn interface_decls(mut ws: Workspace, m: ModulePath) -> List<Decl> {
+    mut ids: List<DeclId> = []
+    for path in ws.module_files(m) {
+        let f = ws.file_id(path)
+        let _ = ws.items(f)
+        ids = ids.concat(ws.decls.decls_of_file(f))
+    }
+    [ws.decl_at(id) for id in ids]
+}
+
+/// The source file travels with each item. A module can have many files, and a
+/// held declaration must retain the file whose object and const unit own it.
+fn record_line(mut ws: Workspace, d: Decl, ordinal: int, item: bool) -> string {
+    let sig = if d.kind is .Const { null } else { ws.sig(d.id) }
+    let shape = if d.kind is .Const {
+        let ty = ws.decls.type_of_const(d.file, d.stmt) ?? ws.decls.types.intern(Type.Error)
+        "const\t${type_wire(ws, ty)}"
+    } else if sig == null {
+        "opaque"
+    } else if d.kind is .Fn || d.kind is .Method {
+        // THE SEATS' CONTRACTS AND WHAT THE BODY WROTE are parse facts a held file
+        // cannot answer, and a caller's `mut`/retain decision reads them. They ride
+        // the fn's payload: one word per seat, then one bit per seat.
+        let n = ws.decls.seat_count(d.id)
+        let marks = joined([mark_word(ws.decls.seat_mark(d.id, j)) for j in 0..n], ";")
+        let writes = joined([if ws.decls.seat_written_so_far(d.id, j) { "1" } else { "0" } for j in 0..n], "")
+        "${shape_line(ws, sig!)}\t${marks}\t${writes}"
+    } else {
+        shape_line(ws, sig!)
+    }
+    let at = shape.index_of("\t")
+    let visibility = if d.exported { "1" } else { "0" }
+    // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
+    // and a held file has no store, so the record must carry it: the word is the one
+    // column every kind already has, and the payload's layout is unchanged.
+    let first = if ws.decls.is_extern(d.id) { "extern" } else if at < 0 { shape } else { shape.substring(0, at) }
+    let payload = if at < 0 { "" } else { shape.substring(at + 1, shape.length) }
+    mut parent_at = 0 - 1
+    if d.parent != null {
+        for j, id in ws.decls.decls_of_file(d.file) {
+            if same_decl(id, d.parent!) { parent_at = j }
+        }
+    }
+    let root = d.root?.index ?? (0 - 1)
+    "${first}\t${ws.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${d.name}\t${kind_word(d.kind)}\t${d.owner}\t${parent_at}\t${if d.nested { "1" } else { "0" }}\t${root}\t${if item { "1" } else { "0" }}\t${facts_block(ws.decls.facts_or(d.id))}\t${payload}"
+}
+
+/// A DECLARATION'S FACTS, as the record's block — the encoder of `facts_unblocked`, and
+/// the pair is ONE unit. `split` DROPS a trailing empty field, so a list is encoded as
+/// `<count>~<items…>`: an empty list is `0`, never an empty field that would shift its
+/// neighbour. Neither `;` nor `~` is in a type spelling or an identifier.
+fn facts_block(f: DeclFacts) -> string {
+    let slo = f.span?.lo ?? (0 - 1)
+    let shi = f.span?.hi ?? (0 - 1)
+    "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)}"
+}
+
+/// One string list as `<count>~<items…>`.
+fn list_field(xs: List<string>) -> string { "${xs.length}~${joined(xs, "~")}" }
+
+/// The inverse — `"0"` and `"0~"` both read as the empty list.
+fn read_list(field: string) -> List<string> {
+    let parts = field.split("~")
+    if parts.length < 2 { return [] }
+    parts.slice(1, parts.length)
+}
+
+/// The decoder — a block it cannot read makes the whole RECORD undecodable, so the module
+/// is a miss rather than a declaration whose facts are guessed.
+fn facts_unblocked(block: string) -> DeclFacts? {
+    let p = block.split(";")
+    if p.length < 8 { return null }
+    let slo? = wire_number(p[3]) else { return null }
+    let shi? = wire_number(p[4]) else { return null }
+    DeclFacts {
+        external: p[0] == "1",
+        stat: p[1] == "1",
+        is_grammar: p[2] == "1",
+        span: if slo < 0 { null } else { Span { lo: slo, hi: shi } },
+        tparams: read_list(p[5]),
+        bounds: read_list(p[6]),
+        seats: read_list(p[7]),
+    }
+}
+
+/// REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it.
+// LICENSED I39: THE RECORD STEP — a workspace, a store and a module list in, the count out.
+export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModulePath>) -> int {
+    mut kept = 0
+    for m in modules {
+        if true {
+            let _ = store.keep(Stored.Sig, record_key(ws, m), record_of(ws, store, m), [])
+            kept = kept + 1
+        }
+    }
+    kept
+}
+
+// ── REBUILDING ──────────────────────────────────────────────────────
+
+/// THE DECLARATIONS A MODULE'S RECORD DESCRIBES, minted into the workspace as if its file
+/// had been parsed. THE IMPORTS COME FIRST: a shape may name another module's type, and
+/// `by_name` can only answer for a type that exists.
+///
+/// A MINTED DECLARATION HAS NO BODY AND NO STORE, which is safe for the same reason a
+/// `.Builtin` is: nothing lowers a module that was not read. The day something does, these
+/// rows are lies.
+// LICENSED I39: THE LOADER — a workspace, a store and a module in, the count minted out.
+export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: string) -> int {
+    let key = record_key(ws, m)
+    if ws.loaded_records.get(key) != null { return 0 }
+    ws.loaded_records.set(key, true)
+    let text = store.get(Stored.Sig, key) ?? ""
+    if text == "" {
+        return 0
+    }
+    let lines = text.split("\n")
+    // FAIL CLOSED: a record the decoder cannot rebuild WHOLE holds NOTHING, and
+    // its files parse. A partial hold is how a declaration goes missing — the
+    // cache must be a miss rather than a lie.
+    if !record_complete(lines) {
+        return 0
+    }
+    for line in lines {
+        if line.starts_with("import\t") {
+            let imp = module_path(line.substring(7, line.length).split("."))
+            let key = imp.package()
+            if key != null { ws.ensure_package(key!) }
+            let _ = load_interface(ws, store, imp, entry)
+        }
+    }
+    // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
+    // this same module finds it.
+    for f in ws.module_files(m) {
+        if f != entry && store.has(Stored.Obj, obj_key_of(ws, store, m, f)) && const_rows_ready(ws, store, m, f, lines) && holdable(lines, f) { ws.hold_only(f) }
+    }
+    // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
+    // pass only REMEMBERS the module for the shape pass. One parser, one minter.
+    ws.held_order.push(m)
+    lines.length
+}
+
+/// PHASE ONE: mint every held module's declarations from its record — a no-op for a
+/// WRITTEN declaration `admit` already made (same identity key), a fresh mint for a
+/// derive-GENERATED one. Runs AFTER every file is admitted, so the two never collide.
+// LICENSED I39: THE LOADER'S FIRST HALF — the workspace and a store in, nothing out.
+export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
+    for m in ws.held_order {
+        let text = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+        for line in text.split("\n") { if !line.starts_with("import\t") { mint_identity(ws, line) } }
+    }
+    for m in ws.held_order {
+        let text = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+        for line in text.split("\n") { if !line.starts_with("import\t") { link_identity(ws, line) } }
+    }
+}
+
+/// PHASE TWO: fill every held module's shapes, once ALL its names exist. A shape names
+/// other types, so the registry must answer for every module before any shape is read.
+// LICENSED I39: THE LOADER'S SECOND HALF — the workspace and a store in, nothing out.
+export fn fill_interfaces(mut ws: Workspace, store: Store) {
+    for m in ws.held_order {
+        let text = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+        for line in text.split("\n") { if !line.starts_with("import\t") { fill_shape(ws, store, m, line) } }
+    }
+}
+
+/// WHETHER A RECORD CAN BE REBUILT WHOLE — a total check, run BEFORE any file is
+/// held, over the SAME decoder the mint uses. A field the writer adds that this
+/// reader does not know makes the record short, and a short record refuses the
+/// module rather than contributing a declaration nobody can see.
+// LICENSED I39: a pure PREDICATE — a record's lines in, whether all of them decode out.
+fn record_complete(lines: List<string>) -> bool {
+    // THE ORDINALS MUST BE CONTIGUOUS PER FILE, 0..n-1 IN ORDER: the mint appends each
+    // held declaration to its file, so a hole is a record where a declaration would be
+    // silently missing. Checking it HERE refuses the whole module instead of truncating.
+    mut seen: Map<string, int> = {}
+    for line in lines {
+        if line.starts_with("import\t") || line.starts_with("bytes\t") || line.starts_with("iface\t") { let _ = 0 } else {
+            if !decodable(line) {
+                let p = line.split("\t")
+                return false
+            }
+            let parts = line.split("\t")
+            let ordinal? = wire_number(parts[2]) else { return false }
+            let want: int = seen.get(parts[1]) ?? 0
+            if ordinal != want {
+                return false
+            }
+            seen.set(parts[1], want + 1)
+        }
+    }
+    true
+}
+
+/// WHETHER ONE RECORD LINE DECODES — the guard half of the decoder, so a line the
+/// mint would silently skip is caught here and the whole record is refused.
+fn decodable(line: string) -> bool {
+    let parts = line.split("\t")
+    if parts.length < 13 || parts[5].is_empty() { return false }
+    if wire_number(parts[2]) == null || wire_number(parts[3]) == null { return false }
+    if wire_number(parts[8]) == null || wire_number(parts[10]) == null { return false }
+    if facts_unblocked(parts[12]) == null { return false }
+    declared_kind(parts[0], parts[6]) != null
+}
+
+/// WHETHER A FILE MAY BE HELD — a grammar record's spec and an extern fn's raw seat
+/// spellings are their own parse and are not in the interface, so a file that declares
+/// either is a MISS and parses. The honest boundary: the interface carries what it
+/// carries, and a fact it cannot is a rebuild, not a guess.
+fn holdable(lines: List<string>, path: string) -> bool {
+    for line in lines {
+        if !line.starts_with("import\t") {
+            let parts = line.split("\t")
+            if parts.length >= 13 && parts[1] == path {
+                let f? = facts_unblocked(parts[12]) else { return false }
+                if f.is_grammar || f.external { return false }
+            }
+        }
+    }
+    true
+}
+
+/// A file is held only when every value its exported consts may supply is
+/// committed and decodable. A partial cache entry is a miss, never a parse-free
+/// declaration whose value cannot be read.
+fn const_rows_ready(mut ws: Workspace, store: Store, m: ModulePath, path: string, lines: List<string>) -> bool {
+    for line in lines {
+        let parts = line.split("\t")
+        if parts.length > 5 && parts[0] == "const" && parts[1] == path {
+            let raw = store.get(Stored.Unit, const_unit_key(ws, store, m, path, parts[5]))
+            if raw == null || settled_from_wire(raw!) == null { return false }
+        }
+    }
+    true
+}
+
+/// First pass: restore every declaration's identity and relationships in
+/// source admission order. The shape is filled after all names exist.
+fn mint_identity(mut ws: Workspace, line: string) {
+    let parts = line.split("\t")
+    if parts.length < 13 || parts[5].is_empty() { return }
+    let path = parts[1]
+    if !ws.is_held(ws.file_id(path)) { return }
+    let f = ws.file_id(path)
+    let stmt_index? = wire_number(parts[3]) else { return }
+    let root_at? = wire_number(parts[10]) else { return }
+    let kind? = declared_kind(parts[0], parts[6]) else { return }
+    let root: ExprId? = if root_at < 0 { null } else { ExprId { index: root_at } }
+    let stmt = StmtId { index: stmt_index }
+    // The ordinal is the record's stable identity within a held file. A
+    // name/kind key collapses generated members and same-named methods, then
+    // every later type reference points at the wrong declaration.
+    let ordinal? = wire_number(parts[2]) else { return }
+    let id = ws.decls.mint("${path}::held::${ordinal}", f, stmt, parts[5], kind, parts[4] == "1", parts[7], null, parts[9] == "1", root)
+    let prior = ws.decls.decls_of_file(f)
+    if !prior.any(same_decl(it, id)) { ws.decls.file_decls.set(f.index, prior.concat([id])) }
+    mut by_stmt = ws.decls.decl_ids[f.index]
+    by_stmt.grow_to(stmt_index + 1)
+    if by_stmt.get(stmt_index) == null { by_stmt.set(stmt_index, id) }
+    ws.decls.decl_ids.set(f.index, by_stmt)
+    if kind is .Main { ws.decls.mains.set(f.index, id) }
+    if parts[11] == "1" { ws.decls.remember_held_item(f, id) }
+    let facts? = facts_unblocked(parts[12]) else { return }
+    ws.decls.adopt_facts(id, facts)
+}
+
+/// THE SECOND PASS: a declaration's PARENT, once every declaration in the module exists.
+/// A GENERATED MEMBER PRECEDES THE IMPL THAT OWNS IT in `decls_of_file` order — a method
+/// at ordinal 162 with its impl at 765 — so a mint that demanded the parent first stopped
+/// at the first such member and dropped the rest: `core/nodes.av`, 788 declarations,
+/// became 162 and every derive-generated fn vanished. The parent is a LINK, not a mint
+/// order.
+fn link_identity(mut ws: Workspace, line: string) {
+    let parts = line.split("\t")
+    let id? = row_decl(ws, parts) else { return }
+    let parent_at? = wire_number(parts[8]) else { return }
+    if parent_at < 0 { return }
+    let f = ws.decls.decl(id).file
+    let ids = ws.decls.decls_of_file(f)
+    if parent_at < ids.length { ws.decls.adopt(id, ids[parent_at]) }
+}
+
+fn row_decl(mut ws: Workspace, parts: List<string>) -> DeclId? {
+    if parts.length < 13 { return null }
+    let f = ws.file_id(parts[1])
+    if !ws.is_held(f) { return null }
+    let ordinal? = wire_number(parts[2]) else { return null }
+    let ids = ws.decls.decls_of_file(f)
+    if ordinal < 0 || ordinal >= ids.length { return null }
+    ids[ordinal]
+}
+
+fn intern_identity(mut ws: Workspace, line: string) {
+    let parts = line.split("\t")
+    let id? = row_decl(ws, parts) else { return }
+    let word = parts[0]
+    if word == "struct" || word == "named" { let _ = ws.decls.types.intern(Type.Struct(id, parts[5])) }
+    if word == "enum" { let _ = ws.decls.types.intern(Type.Enum(id, parts[5])) }
+}
+
+/// Third pass: fill signatures and restored settled values after every
+/// named type in the import closure and this module has an identity.
+fn fill_shape(mut ws: Workspace, store: Store, m: ModulePath, line: string) {
+    let parts = line.split("\t")
+    let id? = row_decl(ws, parts) else { return }
+    let f = ws.decls.decl(id).file
+    let stmt = ws.decls.decl(id).stmt
+    let path = parts[1]
+    // A SHAPE NAMES OTHER TYPES, and `by_name` can only answer for types that EXIST — a
+    // spelling it does not know is a DEFECT in the record, not a name to guess at. The
+    // fallback is `error`, the ABSORBING type, so a broken record produces a type that
+    // refuses rather than one that is silently wrong.
+    // AN `extern fn`'s record word is `extern`; its payload is a fn's, so the shape
+    // branch below is the fn branch.
+    let word = if parts[0] == "extern" { "fn" } else { parts[0] }
+    if word == "const" {
+        let ty = interface_type(ws, id, parts[13])
+        ws.decls.record_const_type(f, stmt, ty)
+        let key = const_unit_key(ws, store, m, path, parts[5])
+        let bytes = store.get(Stored.Unit, key)
+        if bytes != null {
+            let value = settled_from_wire(bytes!)
+            if value != null { ws.decls.remember_held_value(id, value!) }
+        }
+    }
+    if word == "named" {
+        let of = interface_type(ws, id, parts[13])
+        ws.decls.declare(id, .Named(NamedSig { of: of }))
+        let named = ws.decls.types.intern(Type.Struct(id, parts[5]))
+        ws.decls.types.mark_named(named, of)
+        ws.decls.types.mark_flat(named, [of])
+    }
+    if word == "struct" {
+        let fields = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
+        ws.decls.declare(id, .Record(StructSig {
+            names: [field_name(f) for f in fields],
+            types: [interface_type(ws, id, name_of_field(f)) for f in fields],
+            defaults: [ws.decls.default_named(id, field_name(f)) for f in fields],
+        }))
+        if fields.length == 1 {
+            let ty = interface_type(ws, id, name_of_field(fields[0]))
+            let named = ws.decls.types.intern(Type.Struct(id, parts[5]))
+            if ws.decls.types.spells(ty) { ws.decls.types.mark_flat(named, [ty]) }
+        }
+    }
+    if word == "enum" {
+        let arms = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
+        ws.decls.declare(id, .Enum(EnumSig { names: [field_name(a) for a in arms], payloads: [payload_of(ws, id, a) for a in arms] }))
+    }
+    if word == "fn" {
+        let seats = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
+        let marks: List<SeatMark> = if parts.length > 15 && !parts[15].is_empty() { [mark_of_word(w) for w in parts[15].split(";")] } else { [] }
+        ws.decls.record_seats(id, marks)
+        ws.decls.declare(id, .Fn(FnSig {
+            params: [interface_type(ws, id, s) for s in seats],
+            ret: interface_type(ws, id, parts[14]),
+        }))
+        if parts.length > 16 {
+            let bits = parts[16]
+            for j in 0..bits.length { if bits.char_code(j) == 49 { ws.decls.record_seat_written(id, j) } }
+        }
+    }
+}
+
+/// A SEAT'S PROMISE as one character — the record's spelling of `SeatMark`.
+fn mark_word(m: SeatMark) -> string {
+    if m.mutable { "m" } else if m.settled { "s" } else { "-" }
+}
+
+/// The inverse — an unknown word is the plain unwritten seat, the shape of every
+/// seat that promises nothing.
+fn mark_of_word(w: string) -> SeatMark {
+    if w == "m" { SeatMark { mutable: true, settled: false } } else if w == "s" { SeatMark { mutable: false, settled: true } } else { SeatMark { mutable: false, settled: false } }
+}
+
+/// A SPELLING AS A TYPE — the registry for every DECLARED name, the type grammar only for
+/// the shape. `spelled_type` decodes `List`/`Map`/scalars and answers nothing for a name a
+/// program declared, so every held `Memo<SourceFile>` interned `error`. A NAME resolves
+/// HERE: a declared type by the registry, a type parameter by the OWNING declaration, a
+/// `dyn` as its trait, `?` as an `Opt`.
+fn interface_type(mut ws: Workspace, owner: DeclId, name: string) -> TypeId {
+    if name.starts_with("^") {
+        let words = name.substring(1, name.length).split("~")
+        let decoded = read_type_wire(ws, words, 0)
+        if decoded != null && decoded!.next == words.length { return decoded!.id }
+        return ws.decls.types.intern(Type.Error)
+    }
+    let known = ws.decls.types.by_name(name)
+    if known != null { return known! }
+    let written = parse_type_ref(ws.lang, name)
+    if written == null { return ws.decls.types.intern(Type.Error) }
+    let ty: TypeId? = interface_spelled(ws, owner, written!)
+    ty ?? ws.decls.types.intern(Type.Error)
+}
+
+fn interface_spelled(mut ws: Workspace, owner: DeclId, a: TypeRef) -> TypeId? {
+    let plain: TypeId? = interface_plain(ws, owner, a)
+    if plain == null { return null }
+    let held = plain!
+    // A NULLABLE IS ITS OWN TYPE, scalar or boxed: the interface decodes what the SOURCE
+    // grammar refuses (`int?` is legal there), so no `rides_pointer` gate here.
+    if !a.optional { return held }
+    ws.decls.types.type(held?)
+}
+
+fn interface_plain(mut ws: Workspace, owner: DeclId, a: TypeRef) -> TypeId? {
+    if a.dynamic {
+        let base: TypeId? = ws.decls.types.by_name(a.name)
+        if base == null { return null }
+        let decl: DeclId? = nominal_decl(ws.decls.types, base!)
+        if decl == null { return null }
+        return ws.decls.types.intern(Type.Dyn(decl!, a.name))
+    }
+    if a.args.is_empty() {
+        let named: TypeId? = ws.decls.types.by_name(a.name)
+        if named != null { return named! }
+        let j: int? = ws.decls.tparams(owner).index_of(a.name)
+        if j != null && j! >= 0 { return ws.decls.types.intern(Type.Var(owner, j!, a.name)) }
+        let word: Type? = scalar_named(a.name)
+        if word != null { return ws.decls.types.intern(word!) }
+        if a.name == "void" { return ws.decls.types.intern(Type.Void) }
+        if a.name == "ptr" { return ws.decls.types.intern(Type.Ptr) }
+        if a.name == "bytes" { return ws.decls.types.intern(Type.Bytes) }
+        return null
+    }
+    mut args: List<TypeId> = []
+    for g in a.args {
+        let t: TypeId? = interface_spelled(ws, owner, g)
+        if t == null { return null }
+        args.push(t!)
+    }
+    if a.name == "List" && args.length == 1 {
+        let elem = args[0]
+        return ws.decls.types.type(List<elem>)
+    }
+    if a.name == "Map" && args.length == 2 {
+        let val = args[1]
+        return ws.decls.types.type(Map<string, val>)
+    }
+    let base: TypeId? = ws.decls.types.by_name(a.name)
+    if base == null { return null }
+    let decl: DeclId? = nominal_decl(ws.decls.types, base!)
+    if decl == null { return null }
+    ws.decls.types.intern(Type.App(decl!, a.name, args))
+}
+
+/// A NOMINAL type's declaration — the one place the registry knows which types a program
+/// declared. `rest -> null` is the licensed remainder: a structural or scalar shape names
+/// no declaration, and a future nominal variant is added here.
+fn nominal_decl(types: TypeRegistry, id: TypeId) -> DeclId? {
+    match types.shape_of(id) {
+        .Struct(d, _) -> d,
+        .Enum(d, _) -> d,
+        .App(d, _, _) -> d,
+        .Dyn(d, _) -> d,
+        .TypeName(d, _) -> d,
+        .Var(d, _, _) -> d,
+        rest -> null,
+    }
+}
+
+/// A field's NAME, from its `name:spelling` pair.
+fn field_name(pair: string) -> string { pair.split(":")[0] }
+
+/// A field's SPELLING, from the same pair — the part `by_name` is asked for.
+fn name_of_field(pair: string) -> string {
+    let at = pair.index_of(":")
+    if at < 0 { return pair }
+    pair.substring(at + 1, pair.length)
+}
+
+/// A variant's PAYLOAD, from its `name:t1,t2` pair — no types when it carries none.
+// LICENSED I39: a RECORD DECODER — a workspace and one arm's text in, the payload's types out.
+fn payload_of(mut ws: Workspace, owner: DeclId, arm: string) -> List<TypeId> {
+    [interface_type(ws, owner, t) for t in name_of_field(arm).split("|") if t != ""]
+}
+
+/// THE DECLARATION KIND a record's word names. A record line says which SHAPE it carries,
+/// and the kind is that shape's own — so `struct` is a `Record` and `enum` an `Enum`,
+/// never a generic "type" the tree does not have.
+fn declared_kind(shape: string, word: string) -> DeclKind? {
+    if shape == "struct" { return .Record }
+    if shape == "named" { return .Named }
+    match word {
+        "fn" -> .Fn,
+        "enum" -> .Enum,
+        "trait" -> .Trait,
+        "syntax" -> .Syntax,
+        "method" -> .Method,
+        "default" -> .Default,
+        "impl" -> .Impl,
+        "main" -> .Main,
+        "case" -> .Case,
+        "const" -> .Const,
+        "builtin" -> .Builtin,
+        _ -> null,
+    }
+}
+
+fn const_unit_key(mut ws: Workspace, store: Store, m: ModulePath, path: string, name: string) -> string {
+    node_key(Stored.Unit, ["const", CACHE_FORMAT, obj_key_of(ws, store, m, path), name])
+}
+
+/// Persist each exported const's settled result after a clean program has
+/// lowered. Subsequent builds can materialize it without parsing its file.
+export fn keep_const_units(mut ws: Workspace, store: Store, modules: List<ModulePath>) -> int {
+    mut count = 0
+    for m in modules {
+        for d in interface_decls(ws, m) {
+            if d.kind is .Const && !ws.is_held(d.file) {
+                let path = ws.decls.file(d.file).path
+                let key = const_unit_key(ws, store, m, path, d.name)
+                if !store.has(Stored.Unit, key) {
+                    match ws.settled(d.file, SettleRoot.Const(d.stmt), []) {
+                        .Ok(value) -> {
+                            let _ = store.keep(Stored.Unit, key, settled_wire(value), [obj_key_of(ws, store, m, path)])
+                            count = count + 1
+                        },
+                        .Err(_) -> { let _ = 0 },
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
+// ── THE OBJECT'S KEY, FROM INPUTS ───────────────────────────────────
+
+/// A MODULE'S OBJECT KEY, COMPUTED FROM INPUTS ALONE — its own sources, and the records of
+/// the modules it imports. NOTHING IS PARSED and NOTHING IS EMITTED to state it, which is
+/// the whole point: the first attempt keyed an object by its own content, and to learn that
+/// a module had not moved you had to EMIT it, so the key cost the work it exists to skip
+/// (measured: 83s cold against 43s, 57s on an edit against 28s).
+///
+/// THE RECORD'S OWN DIGEST STANDS IN FOR THE INTERFACE, so a caller's key moves when what
+/// it sees moves — a signature, a shape, anything — without a walk over the import closure.
+// LICENSED I39: a KEY DERIVATION — the workspace, a store and a module in, the object's key out.
+export fn obj_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
+    obj_key_of(ws, store, m, "")
+}
+
+/// ONE MODULE'S BYTES — a digest over every file it holds, in path order. Parse-free.
+/// This is the identity a dependent keys on, and it is STORED in the module's record so
+/// a later build can read it without admitting the module's package: computing it from
+/// the files works only when the package is already admitted, which at the top of a
+/// build it is not.
+// LICENSED I39: a KEY DERIVATION — a workspace and a module in, the digest of its bytes out.
+export fn module_bytes(mut ws: Workspace, m: ModulePath) -> string {
+    mut d = new_digest()
+    d = digest_text(d, CACHE_FORMAT)
+    for path in sorted_texts(ws.module_files(m)) {
+        d = digest_text(d, path)
+        d = digest_text(d, ws.source(ws.file_id(path)).text)
+    }
+    digest_key(d)
+}
+
+/// A MODULE'S OWN BYTES, FROM ITS RECORD — the parse-free read, and the one a dependent
+/// keys on. A record's DECLARATION text is not an interface (it carries the receivers
+/// pass's written bits, which move without a contract moving); the bytes line is.
+// LICENSED I39: a KEY DERIVATION — a store and a module in, its stored bytes digest out.
+export fn bytes_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
+    let rec = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+    for line in rec.split("\n") {
+        if line.starts_with("bytes\t") { return line.substring(6, line.length) }
+    }
+    module_bytes(ws, m)
+}
+
+/// THE SAME KEY, FOR ONE FILE OF A MODULE. The module's record supplies the imports — what
+/// the file can SEE — and each import contributes ITS OWN BYTES' digest, never its record's
+/// text: a key is a function of the program's meaning, never of a projection that churns.
+// LICENSED I39: a KEY DERIVATION — a workspace, a store, a module and a file in, the object's key out.
+export fn obj_key_of(mut ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
+    let rec = store.get(Stored.Sig, record_key(ws, m)) ?? ""
+    let deps = [line.substring(7, line.length) for line in rec.split("\n") if line.starts_with("import\t")]
+    mut d = new_digest()
+    d = digest_text(d, CACHE_FORMAT)
+    d = digest_text(d, m.text())
+    if path != "" {
+        d = digest_text(d, path)
+        d = digest_text(d, ws.source(ws.file_id(path)).text)
+    }
+    for dep in sorted_texts(distinct(deps)) { d = digest_text(d, bytes_key(ws, store, module_path(dep.split(".")))) }
+    digest_key(d)
+}
+
+/// EVERY MODULE WHOSE OBJECT IS ALREADY IN THE STORE — that is, whose sources AND whose
+/// imports' interfaces are the ones the object was built from. THE EXISTENCE OF THE OBJECT
+/// UNDER A KEY OVER THE INPUTS IS THE PROOF; there is no second check to disagree with it.
+// LICENSED I39: THE HELD WALK — a workspace and a store in, the modules that need no work out.
+// LICENSED I39: THE HELD WALK — a workspace and a store in, the modules that need no work out.
+export fn held_modules(mut ws: Workspace, store: Store) -> List<ModulePath> {
+    // PER FILE, NOT PER MODULE: a module with fifty files holds forty-nine and rebuilds the
+    // one that moved. A per-module hold made the ROOT all-or-nothing, and its fifty files
+    // emitted at ~1.5s each is 75s — measured.
+    //
+    // AND THE ROOT IS INCLUDED. Filtering an empty name out of this walk excluded the module
+    // that holds the entry file and its forty-nine neighbours — the largest module in the
+    // tree — and nothing was ever held (`held modules: 0` while 276 objects sat in the
+    // store). `record_key` names it, so there is nothing to filter.
+    let splits = ws.root_files()
+    let names = distinct([ws.module_of(p) for p in splits])
+    let mods = [module_path(n.split(".")) for n in names]
+    mut out: List<ModulePath> = []
+    for m in mods {
+        let rec = store.get(Stored.Sig, record_key(ws, m))
+        let paths = ws.module_files(m)
+        let keys = [obj_key_of(ws, store, m, p) for p in paths]
+        let any_here = keys.any((k) -> store.has(Stored.Obj, k))
+        if rec != null && any_here { out.push(m) }
+    }
+    out
+}
+
+/// EVERY HELD FILE, by path — ONE derivation for the stubs, the objects and the
+/// interface writes, so no list of modules can disagree with the files actually held.
+// LICENSED I39: a pure PROJECTION — the workspace in, its held files' paths out.
+export fn held_paths(ws: Workspace) -> List<string> {
+    [ws.decls.file(fi.id).path for fi in ws.decls.files if ws.is_held(fi.id)]
+}
+
+// ── STUB BODIES FOR HELD FUNCTIONS ──────────────────────────────────
+
+/// A HELD FN, AS A DECLARATION THE EMITTER CAN SEE. A body that is never LOWED into
+/// instructions is still a NAME and a SIGNATURE, and that is exactly what a caller's module
+/// needs: `emit_module` declares what its bodies NAME, so a call to a held function finds a
+/// declaration. IT IS NEVER DEFINED, because the file it belongs to is never emitted — its
+/// machine code comes from the object the store already holds.
+///
+/// WITHOUT THIS A FRESH MODULE THAT CALLS A HELD ONE HAS NOTHING TO DECLARE THE CALL
+/// AGAINST: `main.av` calling `twice` whose module was skipped died in the link, and that
+/// was the one thing between the skip and a sub-second edit.
+///
+/// AND A HELD FILE MAY BE AN IMPORT — the modules `held_modules` walks are the ROOT's,
+/// while `load_interface` holds imported files too — so the stub set is EVERY held file,
+/// never the root's module list.
+// LICENSED I39: A STUB — the workspace in, the bodies every held file lets a caller name.
+export fn held_stubs(mut ws: Workspace) -> List<Body> {
+    mut out: List<Body> = []
+    for d in ws.decls.decls {
+        let stub = if ws.is_held(d.file) { stub_of(ws, d) } else { null }
+        if stub != null { out.push(stub!) }
+    }
+    out
+}
+
+/// ONE STUB — the name a caller sees, the signature it wears, and no instructions — or
+/// nothing when the declaration is not a FUNCTION, because a type needs no declaration to
+/// call through.
+fn stub_of(mut ws: Workspace, d: Decl) -> Body? {
+    let s? = ws.sig(d.id) else { return null }
+    match s {
+        .Fn(sig) -> Body { name: ws.decls.symbol(d.id), params: sig.params, ret: sig.ret, gives: null, ins: [], reg_types: [], file: d.file },
+        rest -> null,
+    }
+}

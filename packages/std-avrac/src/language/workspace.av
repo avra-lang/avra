@@ -140,6 +140,12 @@ export type Workspace = {
     settle_specs: Map<string, int>,
     settle_asks: List<SettleAsk>,
     settlements: Memo<Settlement>,
+    loaded_records: Map<string, bool>,
+    /// THE MODULES A HELD LOAD TOUCHED, in order — phase one mints and INTERNS every name;
+    /// phase two FILLS every shape. A mutual import (language <-> features <-> core) is a
+    /// cycle, and one module's shapes cannot be filled until every other module's NAMES are
+    /// interned, so the two passes must be GLOBAL, not per module.
+    held_order: List<ModulePath>,
     defects: List<Diag>,
     packages: List<Package>,
     package_voices: List<Diag>,
@@ -327,7 +333,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, held_order: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }
@@ -336,6 +342,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     }
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
+    ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
@@ -364,6 +371,13 @@ impl Workspace {
 
     fn ensured(d: DeclId) {
         let _ = self.sig(d)
+    }
+
+    /// A held declaration may need syntax-only facts that were not part of
+    /// its signature. Parse that file on first such read; the declaration
+    /// identities and object reuse still come from the stored interface.
+    fn store_ensured(f: FileId) {
+        self.decls.remember_store(f, self.parsed(f).store)
     }
 
     fn methods_ensured(d: DeclId) {
@@ -571,6 +585,9 @@ impl Workspace {
     /// The declarations a file MINTS into the one table; the answer's
     /// hash is the item tree's — names and kinds.
     fn items(f: FileId) -> List<DeclId> {
+        // A HELD FILE ANSWERS FROM ITS RECORD, before anything reaches for a parse: its
+        // declarations were MINTED, and `file_items` is a memo over a paree it never had.
+        if self.is_held(f) { return self.decls.held_items_of_file(f) }
         match self.file_items.start(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let p = self.parsed(f)
         let ids = self.decls.admit(f, p.store, p.stmts)
@@ -696,6 +713,7 @@ impl Workspace {
     fn sig(d: DeclId) -> DeclSig? {
         let k = key(Family.Sig, d.index)
         let x = self.decls.decl(d)
+        if self.is_held(x.file) { return self.decls.sigs[d.index] }
         // the language's own declarations were signed at admission
         if !(self.db.ask(k) is .Compute) || x.kind is .Builtin {
             return self.decls.sigs[d.index]
@@ -729,7 +747,9 @@ impl Workspace {
         let k = key(Family.Methods, target.index)
         if !(self.db.ask(k) is .Compute) { return self.decls.methods_of(target) }
         self.db.begin(k)
-        for b in blocks { touch(self.sig(b)) }
+        for b in blocks {
+            if self.is_held(self.decls.decl(b).file) { self.held_methods(target, b) } else { touch(self.sig(b)) }
+        }
         let out = self.decls.methods_of(target)
         self.method_clashes.keep(target.index, self.decls.method_clashes(target))
         self.db.settle(k, fp_str(joined([self.decls.decl(m).name for m in out], ",")))
@@ -743,8 +763,19 @@ impl Workspace {
     /// is asking — `@std.meta.Code` and the compiler's own `Code` met
     /// so, inside a derive, and poisoned a sig computed mid-resolve.
     fn aims_at(b: DeclId, target: DeclId) -> bool {
+        // A HELD IMPL HAS NO NAMESPACE TO ASK — its file was never parsed, so the
+        // record's own name is the identity: the impl was filed under the target's
+        // name and its file was admitted to the same package.
+        if self.is_held(self.decls.decl(b).file) { return self.decls.decl(b).name == self.decls.decl(target).name }
         let seen: DeclId? = self.visible(self.decls.decl(b).file).type_decl(self.decls.decl(target).name)
         seen != null && same_decl(seen!, target)
+    }
+
+    /// A HELD IMPL'S METHODS, registered from the interface. The typer SIGNS an
+    /// impl to fill the table; a held impl has no body to sign, so its RECORD's
+    /// children are the table's entries.
+    fn held_methods(target: DeclId, block: DeclId) {
+        for m in self.decls.children_of(block) { self.decls.declare_method(target, m) }
     }
 
     /// Whether a declaration's signature is being computed right now.
@@ -944,10 +975,42 @@ impl Workspace {
     fn lowered(id: int) -> Unit {
         match self.units.start_recursive(id) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let w = self.asks[id]
+        if w.decl != null && self.is_held(w.file) && w.sub == null {
+            let empty = Unit { bodies: [], wants: [], voices: no_voices(), statics: [] }
+            return self.units.finish(id, empty, self.db.revision())
+        }
+        let out = self.lower_requested(w)
+        self.units.finish(id, out, self.db.revision())
+    }
+
+    /// The one lowering path for a body requested from a held source. A
+    /// specialization may be absent from its cached object, and compile-time
+    /// evaluation also needs the real body.
+    fn lower_requested(w: Wanted) -> Unit {
+        if self.is_held(w.file) {
+            let path = self.decls.file(w.file).path
+            if self.decls.ranged.get(path) == null {
+                let main = self.decls.main_of(w.file)
+                if main != null {
+                    let p = self.parsed(w.file)
+                    self.decls.range_bodies(w.file, p.store, main!)
+                }
+                self.decls.ranged.set(path, true)
+            }
+        }
         let ws = self
         let settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> = (f: FileId, root: SettleRoot, seats: List<SeatValue>) -> ws.settled(f, root, seats)
-        let out = lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle)
-        self.units.finish(id, out, self.db.revision())
+        lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle)
+    }
+
+    /// An isolated compile-time run needs the body of every function it
+    /// reaches, including one whose machine-code object is held. Parse and
+    /// lower that source on demand; ordinary program lowering still reuses
+    /// the held object through `lowered` above.
+    fn lowered_for_eval(id: int) -> Unit {
+        let w = self.asks[id]
+        if w.decl == null || !self.is_held(w.file) { return self.lowered(id) }
+        self.lower_requested(w)
     }
 
     /// A const's value, settled ONCE per workspace: its initializer
@@ -1055,7 +1118,7 @@ impl Workspace {
     /// body it reaches remains a shared `Lowered` query.
     fn isolated(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Lowered {
         let ws = self
-        memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
+        memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root }, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))))
     }
 
     /// An annotation argument evaluated directly into the crossing
@@ -1111,7 +1174,7 @@ impl Workspace {
     fn lifted_once(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
         let x = self.decls.decl(d)
         let ws = self
-        let l = memory(self.decls.settlement(Wanted { file: x.file, decl: d, name: self.decls.symbol(d), sub: null }, (w: Wanted) -> ws.lowered(ws.spec_id(w))))
+        let l = memory(self.decls.settlement(Wanted { file: x.file, decl: d, name: self.decls.symbol(d), sub: null, seats: [], root: null }, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))))
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         let sig = (self.decls.sig(d))?.fn_sig()
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
@@ -1901,14 +1964,19 @@ impl Workspace {
         // its BODY is not needed: its object is found by the record's key. THE THREE
         // LOOPS BELOW ARE WHERE THE EDIT TIME LIVES — together they are the analysis
         // that an unchanged module has no reason to pay for twice.
+        // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
+        // MINTED from its record, so every consumer sees the interface it had — and its
+        // BODY is not wanted, because its object comes from the store. THIS IS WHERE THE
+        // SUB-SECOND EDIT LIVES: one file read, 199 answered from what a previous build
+        // wrote down.
         let t1 = self.clock()
-        for fi in self.decls.files { let _ = self.resolved(fi.id) }
+        for fi in self.decls.files { if !self.is_held(fi.id) { let _ = self.resolved(fi.id) } }
         self.timed("resolve", self.clock() - t1)
         let t2 = self.clock()
-        for fi in self.decls.files { let _ = self.sig_diagnostics(fi.id) }
+        for fi in self.decls.files { if !self.is_held(fi.id) { let _ = self.sig_diagnostics(fi.id) } }
         self.timed("sigs", self.clock() - t2)
         let t3 = self.clock()
-        let out = [self.analysis(fi.id) for fi in self.decls.files]
+        let out = [self.analysis(fi.id) for fi in self.decls.files if !self.is_held(fi.id)]
         self.timed("bodies", self.clock() - t3)
         out
     }
@@ -1952,6 +2020,36 @@ impl Workspace {
     /// no cases has none only when nothing refused to parse — a broken
     /// spec file parses to nothing, and saying "no cases" of it would
     /// be a green over a red.
+    /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
+    /// question the analysis asks before it does anything at all.
+    fn is_held(f: FileId) -> bool { self.decls.held.get(self.decls.file(f).path) != null }
+
+    /// WHETHER ONE FILE IS HELD — the hold is per FILE, because a module with fifty files
+    /// holds forty-nine.
+    mut fn hold_only(path: string) { self.decls.held.set(path, true) }
+
+    /// ADMIT EVERY FILE — parse and mint the whole closure, which GROWS as a file's `use`
+    /// lines admit packages. Held sigs are rebuilt from records and may name a PARSED
+    /// module's type, so every name must exist before any held shape is filled.
+    mut fn admit_all() {
+        mut i = 0
+        while i < self.decls.files.length {
+            let _ = self.items(self.decls.files[i].id)
+            i = i + 1
+        }
+    }
+
+    /// HOLD A FILE: from here it contributes its MINTED declarations and its stored
+    /// object, and nothing reads it.
+    mut fn hold_file(path: string) { self.decls.held.set(path, true) }
+
+    /// ADMIT THE PACKAGE A MODULE NAMES. A held file's `use` lines are never
+    /// resolved, so a package they would have admitted is admitted here instead:
+    /// the import graph is part of the interface, not a side effect of the parse.
+    fn ensure_package(key: string) {
+        let _ = self.std_admitted(key)
+    }
+
     fn parse_clean() -> bool {
         self.root_files().all((f) -> !has_errors(self.parsed(self.file_id(f)).voices.list))
     }
@@ -2460,7 +2558,7 @@ fn is_warning(d: Diag) -> bool {
 // ── The packages ──
 
 fn empty_manifest() -> Manifest {
-    Manifest { budgets: budgets_of(null, null), name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], voices: [] }
+    Manifest { budgets: budgets_of(null, null), name: "", version: "", bin: null, lib: null, deps: [], deps_at: null, excludes: [], objects: [], search: [], libs: [], raw: [], tools: [], voices: [] }
 }
 
 impl Workspace {

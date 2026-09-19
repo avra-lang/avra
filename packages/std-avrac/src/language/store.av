@@ -1,8 +1,8 @@
 //! THE STORE — every artifact a build keeps, on disk, by content.
 //!
 //! ONE ROW SHAPE (a key, the bytes it names, the keys it read), ONE VERB SET, and a
-//! family as a KIND rather than a spelling. THE FILESYSTEM IS THE INDEX: `has` is one
-//! `exists` and nothing read, so "has this changed?" is O(1) with no index to load and
+//! family as a KIND rather than a spelling. THE FILESYSTEM IS THE INDEX: `has` uses
+//! two `exists` calls and reads nothing, so "has this changed?" is O(1) with no index to load and
 //! no second copy of the truth to disagree with the first.
 //!
 //! A KEY IS CONTENT — a digest over a STABLE projection, never a per-run id, which is a
@@ -83,7 +83,18 @@ impl Store {
 
     fn edge_path(family: Stored, key: string) -> string { "${self.path(family, key)}.deps" }
 
-    /// HAS THIS CHANGED? One `exists`, NOTHING read.
+    /// Withdraw an earlier commit before replacing its data. If the next
+    /// write fails, its old edge cannot make the new data look complete.
+    fn uncommit(family: Stored, key: string) -> bool {
+        let edge = self.edge_path(family, key)
+        if !exists(edge) { return true }
+        match remove(edge) {
+            .Ok(_) -> true,
+            .Err(_) -> false,
+        }
+    }
+
+    /// HAS THIS CHANGED? Two `exists` calls, NOTHING read.
     fn has(family: Stored, key: string) -> bool {
         exists(self.path(family, key)) && exists(self.edge_path(family, key))
     }
@@ -109,10 +120,13 @@ impl Store {
     /// REMEMBER A ROW: the DATA first, then the EDGES, so the second write is what makes
     /// the row visible and a crash between them leaves nothing rather than half.
     fn keep(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
-        let _ = make_dirs(self.shard(family, key))
-        let _ = write_text(self.path(family, key), bytes) catch ""
-        let _ = write_text(self.edge_path(family, key), joined(read, "\n")) catch ""
-        true
+        match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
+        if !self.uncommit(family, key) { return false }
+        match write_text(self.path(family, key), bytes) { .Ok(_) -> {}, .Err(_) -> { return false } }
+        match write_text(self.edge_path(family, key), joined(read, "\n")) {
+            .Ok(_) -> true,
+            .Err(_) -> false,
+        }
     }
 
     /// THE ONE VERB MOST CALLERS WANT: the stored bytes, or compute, remember, hand back.
@@ -136,14 +150,17 @@ impl Store {
     /// linked binary is BYTES and reading it as text is the thing that loses them. The
     /// edges are the commit here too.
     fn keep_file(family: Stored, key: string, from: string, read: List<string>) -> bool {
-        let _ = make_dirs(self.shard(family, key))
+        match make_dirs(self.shard(family, key)) { .Ok(_) -> {}, .Err(_) -> { return false } }
         let bytes = match read_bytes(from) {
             .Ok(b) -> b,
             .Err(why) -> { return false },
         }
-        let _ = write_bytes(self.path(family, key), bytes)
-        let _ = write_text(self.edge_path(family, key), joined(read, "\n")) catch ""
-        true
+        if !self.uncommit(family, key) { return false }
+        match write_bytes(self.path(family, key), bytes) { .Ok(_) -> {}, .Err(_) -> { return false } }
+        match write_text(self.edge_path(family, key), joined(read, "\n")) {
+            .Ok(_) -> true,
+            .Err(_) -> false,
+        }
     }
 
     /// PUT A ROW WHERE A CALLER WANTS IT — what a hit does with a binary: the store has
@@ -154,8 +171,10 @@ impl Store {
             .Ok(b) -> b,
             .Err(why) -> { return false },
         }
-        let _ = write_bytes(to, bytes)
-        true
+        match write_bytes(to, bytes) {
+            .Ok(_) -> true,
+            .Err(_) -> false,
+        }
     }
 
     /// FORGET WHAT IS NOT `live` — the collector, and it needs no index either: a key's

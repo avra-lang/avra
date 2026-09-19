@@ -13,7 +13,7 @@ use core.{SeatMark, mark_at, plain_mark}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
-use features.{TypeRow, TypeArgs, Unsettled, Lifted, MetaHeap, MetaVal, StructSig, EnumSig, generated_key, Decl, Origin, Origins, no_origins}
+use features.{TypeRow, TypeArgs, Unsettled, Lifted, Settled, MetaHeap, MetaVal, StructSig, EnumSig, generated_key, Decl, Origin, Origins, no_origins}
 use @std.meta.{Diagnostic}
 
 /// A file's path facts — known at first mention, before its parse.
@@ -32,6 +32,42 @@ type OwnerSpan = { d: DeclId, lo: int, hi: int }
 /// DeclId; `stores` and `decl_ids` dense by FileId. The two hooks
 /// make the table's reads queries: `ensure` computes a sig on first
 /// ask, `ensure_methods` fills a type's method table.
+/// EVERY FACT A PASS READS OFF A DECLARATION'S PARSE — captured ONCE, when the file is
+/// admitted, and kept beside the declaration. A pass that reads `store(d)` instead reads
+/// a file a HELD build never parsed; this is the ONE place that knowledge lives, so a held
+/// file is loaded by filling these rows and NOTHING reaches into a store after admission.
+export type DeclFacts = {
+    external: bool,
+    stat: bool,
+    is_grammar: bool,
+    span: Span?,
+    tparams: List<string>,
+    bounds: List<string>,
+    seats: List<string>,
+}
+
+/// THE ONE CAPTURE — a parsed declaration's facts, read from its store exactly once.
+// LICENSED I39: a pure PROJECTION — a store and a declaration in, its facts out.
+fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
+    // A GENERATED declaration's statement lives in an expanded range the written part
+    // tables do not cover — `statics`, `grammars`, the parts tables trap past their end.
+    // Absence there is "declares nothing", not a defect.
+    let readable = x.stmt.index < store.stmts.count()
+    DeclFacts {
+        external: readable && x.kind is .Fn && store.extern_parts(x.stmt) != null,
+        stat: store.is_static(x.stmt),
+        is_grammar: readable && x.kind is .Record && store.grammar_of(x.stmt) != null,
+        span: if x.kind is .Default || x.kind is .Case { if x.root == null { null } else { store.expr_span(x.root!) } } else { store.stmt_span(x.stmt) },
+        tparams: if readable { store.decl_tparams(x.stmt) } else { [] },
+        bounds: if readable { [p.ty?.name ?? "" for p in store.decl_tbounds(x.stmt)] } else { [] },
+        seats: if readable { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },
+    }
+}
+
+/// The facts a declaration minted with no store wears: a synthetic or builtin body has no
+/// receiver and declares nothing about the source.
+fn no_facts() -> DeclFacts { DeclFacts { external: false, stat: true, is_grammar: false, span: null, tparams: [], bounds: [], seats: [] } }
+
 export type Decls = {
     types: TypeRegistry,
     files: List<FileInfo>,
@@ -41,9 +77,22 @@ export type Decls = {
     module_files: List<List<FileId>>,
     mains: List<DeclId?>,
     stores: List<NodeStore?>,
+    ensure_store: List<fn(FileId)>,
     decl_ids: List<SideTable<DeclId?>>,
     file_decls: List<List<DeclId>>,
     decls: List<Decl>,
+    /// THE FILES ANSWERED FROM A RECORD — never parsed, so their declarations were
+    /// MINTED and their objects come from the store. Keyed by path.
+    held: Map<string, bool>,
+    held_items: Map<string, List<DeclId>>,
+    /// Lazy expression-range reconstruction is once per held file, even
+    /// when dozens of specializations ask for bodies from that file.
+    ranged: Map<string, bool>,
+    /// THE DECLARATION'S PARSE FACTS, captured at admit and loaded for a held file — the
+    /// ONE place a pass reads them, so no pass reaches into a store after admission.
+    faces: List<DeclFacts?>,
+    /// Settlements restored for declarations whose files were never parsed.
+    held_values: Map<string, Settled>,
     keys: Map<string, DeclId>,
     sigs: List<DeclSig?>,
 
@@ -111,6 +160,9 @@ fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) 
 fn no_marks(d: DeclId) {
 }
 
+fn no_store(f: FileId) {
+}
+
 // LICENSED I23: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
 fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
 
@@ -128,7 +180,7 @@ fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
-        stores: [], decl_ids: [], file_decls: [], generations: [], origins: [], expansion_voices: [], meta_ids: {}, decls: [], keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], root_name: [""], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
+        stores: [], ensure_store: [no_store], decl_ids: [], file_decls: [], generations: [], origins: [], expansion_voices: [], meta_ids: {}, decls: [], held: {}, held_items: {}, ranged: {}, faces: [], held_values: {}, keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], root_name: [""], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
         ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
         seat_marks: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
         lifter: [no_lifter],
@@ -215,7 +267,14 @@ impl Decls {
 
     fn file(f: FileId) -> FileInfo { self.files[f.index] }
 
-    fn store_of(f: FileId) -> NodeStore { self.stores[f.index]! }
+    fn store_of(f: FileId) -> NodeStore {
+        if self.stores[f.index] == null { self.ensure_store[0](f) }
+        self.stores[f.index]!
+    }
+
+    fn arm_store(ensure: fn(FileId)) { self.ensure_store.set(0, ensure) }
+
+    fn remember_store(f: FileId, store: NodeStore) { self.stores.set(f.index, store) }
 
     /// A file admitted with its parse: which statements declare, and
     /// every declaration minted — the top-level ones, then each
@@ -345,6 +404,13 @@ impl Decls {
     /// nested ones.
     fn decls_of_file(f: FileId) -> List<DeclId> { self.file_decls[f.index] }
 
+    fn held_items_of_file(f: FileId) -> List<DeclId> { self.held_items.get(self.file(f).path) ?? [] }
+
+    fn remember_held_item(f: FileId, d: DeclId) {
+        let path = self.file(f).path
+        self.held_items.set(path, self.held_items_of_file(f).concat([d]))
+    }
+
     /// A declaration whose body owns its expressions: not Main (it
     /// takes the rest), not nested (its enclosing body walks it).
     fn owns_a_range(d: DeclId) -> bool {
@@ -357,9 +423,27 @@ impl Decls {
     fn decl_span(d: DeclId) -> Span? {
         let x = self.decl(d)
         if x.kind is .Builtin { return null }
-        if x.kind is .Default || x.kind is .Case { return self.store(d).expr_span(x.root!) }
-        self.store(d).stmt_span(x.stmt)
+        self.facts_of(d)?.span
     }
+
+    /// THE ONE DOOR a pass reads a declaration's parse facts through. Absence is total:
+    /// a declaration minted without a face (a synthetic one) reads as no facts.
+    fn facts_of(d: DeclId) -> DeclFacts? {
+        if d.index >= self.faces.length { return null }
+        self.faces[d.index]
+    }
+
+    /// The facts, or the synthetic default — for a caller that must write a record for a
+    /// declaration minted without a store.
+    fn facts_or(d: DeclId) -> DeclFacts { self.facts_of(d) ?? no_facts() }
+
+    fn adopt_facts(d: DeclId, f: DeclFacts) {
+        if d.index < self.faces.length { self.faces.set(d.index, f) }
+    }
+
+    /// Whether a declaration's body has no receiver — the fact eight sites used to read
+    /// off the store.
+    fn is_static_of(d: DeclId) -> bool { self.facts_of(d)?.stat ?? true }
 
     /// The smallest owner span holding `sp`, or absence. The spans
     /// were read ONCE per file: this runs per expression, and a
@@ -428,10 +512,24 @@ impl Decls {
             self.children.push([])
             self.methods.push([])
             self.impls.push([])
+            self.faces.push(null)
             if kind is .Impl { self.note_impl(name, id) }
         } else {
             self.decls.set(id.index, d)
         }
+        // THE ONE CAPTURE, at the one place a declaration is minted from a parse. Six
+        // readers asked the store per pass; they ask this row now, and a held file's row
+        // comes from its record instead of a store it does not have.
+        if f.index < self.stores.length {
+            let st: NodeStore? = self.stores[f.index]
+            if st != null { self.faces.set(id.index, capture_facts(st!, d)) }
+        }
+        // A DECLARATION'S NOMINAL NAME IS INTERNED AT MINT — not at typing. A held file's
+        // sigs are rebuilt from a record before anything is typed, and a field naming a
+        // PARSED module's type needs that name in the registry by then. One place registers
+        // every declared name, so a spelling resolves regardless of typing order.
+        if kind is .Record || kind is .Named || kind is .Trait { let _ = self.types.intern(Type.Struct(id, name)) }
+        if kind is .Enum { let _ = self.types.intern(Type.Enum(id, name)) }
         if parent != null {
             mut members = self.children[parent!.index]
             members.push(id)
@@ -439,6 +537,23 @@ impl Decls {
         }
         id
     }
+
+    /// A PARENT LINK, set after every declaration exists — the record orders a generated
+    /// member BEFORE its impl, so attaching at mint truncated the file. The parent is a
+    /// link, not a mint order.
+    mut fn adopt(child: DeclId, parent: DeclId) {
+        let d = self.decl(child)
+        self.decls.set(child.index, d with { parent: parent })
+        mut members = self.children[parent.index]
+        if !members.any(same_decl(it, child)) {
+            members.push(child)
+            self.children.set(parent.index, members)
+        }
+    }
+
+    /// A DECLARATION BY ITS IDENTITY — the key `mint` files it under, so the loader finds
+    /// it without an ordinal that depend on parse/expand order.
+    fn named_decl(path: string, word: string, name: string) -> DeclId? { self.keys.get("${path}::${word}::${name}") }
 
     /// The id a key already names — asked in its own scope, so the
     /// table's reference dies before the caller writes.
@@ -757,6 +872,7 @@ impl Decls {
         self.ensure_methods.set(0, no_ensure)
         self.ensure_writes.set(0, no_ensure)
         self.ensure_marks.set(0, no_marks)
+        self.ensure_store.set(0, no_store)
         self.lifter.set(0, no_lifter)
     }
 
@@ -776,6 +892,10 @@ impl Decls {
     }
 
     fn held_const_type(f: FileId, s: StmtId) -> TypeId? { self.const_types.get(const_type_key(f, s)) }
+
+    fn held_value(d: DeclId) -> Settled? { self.held_values.get("${d.index}") }
+
+    fn remember_held_value(d: DeclId, value: Settled) { self.held_values.set("${d.index}", value) }
 
     fn record_const_type(f: FileId, s: StmtId, ty: TypeId) {
         self.const_types.set(const_type_key(f, s), ty)
@@ -833,7 +953,7 @@ impl Decls {
         // implementor — and its members wear it: a default body is
         // a generic method over `Self`, lowered per signatory.
         if x.kind is .Trait { return [self_word] }
-        self.store(d).decl_tparams(x.stmt)
+        self.facts_of(d)?.tparams ?? []
     }
 
     /// An impl block's type parameters are its TARGET's — a method
@@ -916,10 +1036,11 @@ impl Decls {
     /// The pass starts over: every inferred bit falls, and the
     /// fixpoint re-earns them.
     fn clear_written() {
-        mut j = 0
-        while j < self.written_seats.length {
-            self.written_seats.set(j, filled(self.written_seats[j].length, false))
-            j = j + 1
+        // A HELD FILE'S SETTLED BITS ARE THE INTERFACE'S, not this pass's to clear:
+        // the receivers pass never surveys a held body, so wiping them loses the
+        // writer a caller's retain decision reads. The pass clears what it owns.
+        for j, x in self.decls {
+            if self.held.get(self.file(x.file).path) == null { self.written_seats.set(j, filled(self.written_seats[j].length, false)) }
         }
     }
 
@@ -954,13 +1075,21 @@ impl Decls {
         held
     }
 
-    fn tbounds(d: DeclId) -> List<Param> {
+    /// The BOUND each type parameter declares, by NAME — `""` for an unconstrained seat.
+    /// One accessor for the four sites that read a bound, so the fact lives once.
+    fn tbounds(d: DeclId) -> List<string> {
         let x = self.decl(d)
         if x.kind is .Builtin { return [] }
-        // `Self` is bounded by the trait itself: inside a default,
-        // `self` answers the trait's own members
-        if x.kind is .Trait { return [Param { name: Scoped(self_word), ty: named_ref(x.name), default: null, promises: plain_mark, span: null }] }
-        self.store(d).decl_tbounds(x.stmt)
+        // `Self` is bounded by the trait itself.
+        if x.kind is .Trait { return [self_word] }
+        self.facts_of(d)?.bounds ?? []
+    }
+
+    /// The bound a seat declares, by name.
+    fn bound_name(d: DeclId, j: int) -> string {
+        let tb = self.tbounds(d)
+        if j < 0 || j >= tb.length { return "" }
+        tb[j]
     }
 
     fn is_trait(d: DeclId) -> bool { self.decl(d).kind is .Trait }
@@ -1008,13 +1137,14 @@ impl Decls {
     fn grammar_of(d: DeclId) -> GrammarSpec? {
         let x = self.decl(d)
         if !(x.kind is .Record) { return null }
+        // A GRAMMAR SPEC IS ITS OWN PARSE, and only a PARSED file can answer it: the hold
+        // refuses a file that declares a grammar record (`grammar_free`), so the store is
+        // always here when the answer is not null.
+        if self.held.get(self.file(x.file).path) != null { return null }
         self.store(d).grammar_of(x.stmt)
     }
 
-    fn is_extern(d: DeclId) -> bool {
-        let x = self.decl(d)
-        x.kind is .Fn && self.store(d).extern_parts(x.stmt) != null
-    }
+    fn is_extern(d: DeclId) -> bool { self.decl(d).kind is .Fn && (self.facts_of(d)?.external ?? false) }
 
     /// A type's name — records and enums.
     fn type_name(d: DeclId) -> string? {
@@ -1108,14 +1238,9 @@ impl Decls {
 
     /// A trait's method declarations, in declaration order.
     fn trait_fns(d: DeclId) -> List<DeclId> {
-        let x = self.decl(d)
-        let fns: List<StmtId> = self.store(d).trait_parts(x.stmt)?.fns ?? []
-        mut out: List<DeclId> = []
-        for f in fns {
-            let m: DeclId? = self.decl_of(x.file, f)
-            if m != null { out.push(m!) }
-        }
-        out
+        // A TRAIT'S MEMBERS ARE ITS CHILDREN, minted with it as METHODS — the store's
+        // `trait_parts` was a second listing of a relationship the table already holds.
+        [m for m in self.children_of(d) if self.decl(m).kind is .Method]
     }
 
     /// A trait's method names — the vtable's order.

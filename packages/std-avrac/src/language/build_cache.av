@@ -12,7 +12,7 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, same_file, module_path, ModulePath, TypeRegistry, DeclId}
+use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, distinct, same_file, module_path, ModulePath, TypeRegistry, DeclId}
 use features.{Decl, DeclSig}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_text, write_text, make_dirs, exists}
@@ -21,7 +21,17 @@ use @std.io.{read_text, write_text, make_dirs, exists}
 /// compiler's own sources, its backend and its runtime are already key
 /// inputs (`Workspace.build_inputs`); this covers only what those files
 /// cannot say — a change to how the key itself is derived.
-const CACHE_FORMAT: string = "avra-build-cache-3"
+const CACHE_FORMAT: string = "avra-build-cache-17"
+
+/// THE PARSE-FREE HOLD IS ON. An object is keyed by the module's own bytes and each
+/// import's STORED bytes digest (`obj_key_of`), never by a record's declaration text —
+/// a name-keyed record can be rewritten under a build and its text can move without a
+/// contract moving, and a key that folds it disagrees with itself between two builds.
+///
+/// A held file's bodies come from its stored object; a file that is NOT held is lowered
+/// WHOLE (`every` below), because reachability alone would miss a fn whose only callers
+/// are held.
+const CACHE_HOLD_ENABLED: bool = false
 
 /// A build's result: the words that link it, the binary they produce,
 /// the warnings to speak, and whether a held artifact was reused.
@@ -181,6 +191,11 @@ impl BuildCache {
 // build that means to link runs the linker itself and is the only place that knows how.
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one standard signature.
 export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string) -> Result<BuildOutcome, string> {
+    build_program_attempt(ws, entry, mode, opt, runtime, disk, linker, 0)
+}
+
+fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string, attempt: int) -> Result<BuildOutcome, string> {
+    mut fresh = ws
     let store = store_at(build_cache_root(ws))
     let cache = build_cache(ws, disk)
     let inputs = cache.inputs()
@@ -190,10 +205,25 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     // A HIT: the binary and its voice are already in the store, so NOTHING runs — no
     // analysis, no emission, no link. The warnings come from the store, because a program
     // that is not analysed has no voice to ask.
-    if store.has(Stored.Bin, key) {
-        let _ = store.place(Stored.Bin, key, binary)
+    if store.has(Stored.Bin, key) && store.place(Stored.Bin, key, binary) {
         return .Ok(BuildOutcome { words: [], binary: binary, warnings: store.get(Stored.Warn, key) ?? "", reused: true, key: key })
     }
+
+    // The current interface record does not yet cover every fact a caller asks
+    // of a held declaration (including fn seat contracts). Keep the parse-free
+    // hold disabled until the interface is complete and proven on the compiler.
+    mut trace: List<string> = []
+    mut held: List<ModulePath> = []
+    if CACHE_HOLD_ENABLED { held = held_modules(ws, store) }
+    trace.push("mods ${held.length}")
+    for m in held { let _ = load_interface(ws, store, m, entry) }
+    trace.push("files-held ${held_paths(ws).length}")
+    // NAMES, THEN SHAPES, GLOBALLY: admit every file (its declared names interned at mint),
+    // re-mint the held records over it (generated declarations land, written ones refresh),
+    // then fill held shapes — every spelling now resolves.
+    ws.admit_all()
+    mint_held_interfaces(ws, store)
+    fill_interfaces(ws, store)
 
     let p = ws.program(entry)
     if !p.clean() { fail p.report() }
@@ -201,33 +231,103 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     if view == null { return .Err(p.rendered([no_target(ws.root)])) }
     let ent = view!
     if ent.view.stmts.is_empty() { fail "the program is empty" }
-
-    let lo = p.lowered_checked()?
-    let ll = "${ent.view.source.file}.ll"
-    let failure = emit_ll(lo, ll)
-    if failure != null { fail failure! }
+    // A HELD BUILD LOWERS EVERY DECLARATION OF THE FILES IT PARSED. Lowering a fresh
+    // file's bodies by reachability alone misses a fn whose only callers are HELD: their
+    // calls sit in a stored object, so nothing fresh demands the body, it lowers to
+    // nothing, and re-compiling that file OVERWRITES the good stored object with a
+    // bodyless one — the link then misses every symbol it defined. `every` seeds the
+    // worklist with every declaration of every file in hand, which is exactly the
+    // non-held set here.
+    let lo = if CACHE_HOLD_ENABLED { p.checked_from(p.entry?.at, true)? } else { p.lowered_checked()? }
+    // Until the interface can answer every cross-file query, no file is held.
+    // The whole-program module keeps that safe path within the cold-build
+    // budget; compiling one object per file costs much more on the compiler.
+    if !CACHE_HOLD_ENABLED {
+        let ll = "${ent.view.source.file}.ll"
+        let failure = emit_ll(lo, ll)
+        if failure != null { fail failure! }
+        let obj_key = node_key(Stored.Obj, [digest_of(read_text(ll) catch ""), opt, runtime])
+        let obj = "${ll}.o"
+        if !store.place(Stored.Obj, obj_key, obj) {
+            let built = avra_spawn_status(linker, ["-w", opt, "-c", ll, "-o", obj])
+            if built != 0 { fail "avra: clang failed compiling — exited with code ${built}" }
+            let _ = store.keep_file(Stored.Obj, obj_key, obj, [obj_key])
+        }
+        let words = link_objects([obj], ws, runtime, binary)
+        let code = avra_spawn_status(linker, words)
+        if code != 0 { fail "avra: clang failed linking — exited with code ${code}" }
+        let warnings = p.warnings()
+        let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases], ", ")
+        let _ = store.keep_file(Stored.Bin, key, binary, [key])
+        let _ = store.keep(Stored.Warn, key, warnings, [key])
+        return .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key, phases: spent })
+    }
     // THE MODULE'S OWN CONTENT IS ITS OBJECT'S KEY, so a module that did not move reuses
     // its machine code and CLANG IS NEVER RUN. The optimizer is the largest single cost in
     // a build — 15s over the compiler's module against 333ms to link — and it is the one
     // thing that does not need doing twice. A content key is the whole proof: same bytes,
     // same object, and `has` answers it with one `exists`.
-    // THE WHOLE-PROGRAM MODULE, AND ITS OBJECT KEYED BY ITS OWN CONTENT.
-    //
-    // PER-FILE MODULES WERE TRIED AND THEY LOSE, measured: emitting 200 modules to
-    // compute their digests costs more than the one compile it saves (57s against 28s on
-    // an edit, and 83s against 43s cold). THE KEY CANNOT BE THE OUTPUT'S CONTENT — to
-    // learn that a module did not move, you must EMIT it, and emitting is most of what
-    // recompiling would have cost. The next attempt must key on INPUTS, which is what the
-    // unit layer is for: a unit's key is (declaration, type arguments, the declaration's
-    // own source), all of which are known BEFORE anything is lowered.
-    let obj_key = node_key(Stored.Obj, [digest_of(read_text(ll) catch ""), opt, runtime])
-    let obj = "${ll}.o"
-    if !store.place(Stored.Obj, obj_key, obj) {
+    // THE INTERFACES ARE WRITTEN BEFORE THE OBJECTS ARE KEYED, and that order is the whole
+    // contract: `obj_key_of` folds the imports' RECORDS, so an object stored before its
+    // module's record exists is stored under a key over nothing — and the next build, whose
+    // records DO exist, looks for it under a key over their text and never finds it. Nothing
+    // was held for exactly that reason (measured: `held modules: 0`), with the records
+    // written a few lines below the emission.
+    let built_modules = [module_path(name.split(".")) for name in distinct([ws.module_of(a.view.source.file) for a in p.files])]
+    let _ = keep_interfaces(ws, store, built_modules)
+    let _ = keep_const_units(ws, store, built_modules)
+    // A changed interface can move a dependent object's key after the first
+    // provisional hold. Restart from the untouched workspace against the new
+    // records, so that file parses and recompiles instead of linking stale code.
+    let missing = [path for path in held_paths(ws) if !store.has(Stored.Obj, obj_key_of(ws, store, module_path(ws.module_of(path).split(".")), path))]
+    if !missing.is_empty() {
+        if attempt >= 2 { fail "avra: interface records did not stabilize" }
+        return build_program_attempt(fresh, entry, mode, opt, runtime, disk, linker, attempt + 1)
+    }
+
+    // THE HELD MODULES' FUNCTIONS GO IN AS DECLARATIONS ONLY. A stub is a NAME and a
+    // SIGNATURE with no instructions: a caller's module declares what it NAMES, so a call
+    // to a held function finds a declaration — and it is defined NOWHERE, because the file
+    // it belongs to is never emitted. Its machine code is the object the store holds.
+    let stubs = held_stubs(ws)
+    // A newly demanded specialization of a held generic has no definition in
+    // its cached object. Emit it with the entry's fresh object; weak lets a
+    // pre-existing specialization in another object coalesce with it.
+    mut active: List<Body> = []
+    for bd in lo.fns {
+        if bd.file != null && ws.is_held(bd.file!) {
+            active.push(bd with { file: ent.view.file, weak: true })
+        } else {
+            active.push(bd)
+        }
+    }
+    let full = Lowered { fns: active.concat(stubs), entry: lo.entry, types: lo.types, diagnostics: lo.diagnostics, externs: lo.externs, statics: lo.statics, libraries: lo.libraries }
+
+    // ONE OBJECT PER FILE: the files that MOVED are emitted and compiled, and the files
+    // that did not come out of the store. Emitting every file was the mistake that made
+    // this cost 40s — with the skip, only what moved is emitted at all.
+    mut objs: List<string> = []
+    for a in p.files {
+        let path = a.view.source.file
+        let m = module_path(ws.module_of(path).split("."))
+        let obj = "${cache.root}/${node_key(Stored.Obj, [digest_of(path)])}.o"
+        let _ = store.place(Stored.Obj, obj_key_of(ws, store, m, path), obj)
+        let ll = "${cache.root}/${node_key(Stored.Obj, [digest_of(path)])}.ll"
+        let broke = emit_module(full, ll, same_file(a.view.file, ent.view.file), a.view.file)
+        if broke != null { fail broke! }
         let built = avra_spawn_status(linker, ["-w", opt, "-c", ll, "-o", obj])
         if built != 0 { fail "avra: clang failed compiling — exited with code ${built}" }
-        let _ = store.keep_file(Stored.Obj, obj_key, obj, [obj_key])
+        let _ = store.keep_file(Stored.Obj, obj_key_of(ws, store, m, path), obj, [])
+        objs.push(obj)
     }
-    let words = link_objects([obj], ws, runtime, binary)
+    for path in held_paths(ws) {
+        let m = module_path(ws.module_of(path).split("."))
+        let obj = "${cache.root}/${node_key(Stored.Obj, [digest_of(path)])}.o"
+        let okey = obj_key_of(ws, store, m, path)
+        if !store.place(Stored.Obj, okey, obj) { fail "avra: a held object disappeared: ${path} (module ${m.text()}) key ${okey}" }
+        objs.push(obj)
+    }
+    let words = link_objects(objs, ws, runtime, binary)
     // THE LINK RUNS HERE, not in the CLI: the build owns its pipeline, and a thin caller
     // is one that decides nothing.
     let code = avra_spawn_status(linker, words)
@@ -236,11 +336,10 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     }
     // REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it — the data a
     // later build needs to decide whether a file may be skipped WITHOUT READING IT.
-    let _ = keep_interfaces(ws, store, [module_path(ws.module_of(a.view.source.file).split(".")) for a in p.files])
     let warnings = p.warnings()
     // WHAT EACH PHASE COST, because a build that cannot say where its time went is a
     // build whose next optimisation is a guess.
-    let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases], ", ")
+    let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases].concat(["held ${held_paths(ws).length}/${ws.decls.files.length}", "attempt ${attempt}"]).concat(trace), ", ")
     // THE RESULT IS THE BUILD'S OWN OUTPUT, so it is the build that remembers it: the
     // binary under one family and what was said about it under another.
     let _ = store.keep_file(Stored.Bin, key, binary, [key])
@@ -270,56 +369,4 @@ fn link_modules(mods: List<string>, ws: Workspace, opt: string, runtime: string)
 export fn binary_name(ll_path: string) -> string {
     let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
     if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
-}
-
-// ── THE INTERFACE, REMEMBERED ───────────────────────────────────────
-
-/// A DECLARATION'S SIGNATURE, STORED STRUCTURALLY — one line per signature, parts
-/// separated by a tab, so a later run reads back EXACTLY what was written without a
-/// parser. A rendered spelling was tried and refused: it is a lossy round trip whose
-/// decoder must REFUSE whatever it cannot re-render, and generics were among the
-/// refusals.
-///
-/// ONE PROJECTION OF A SIGNATURE, because the writer and the reader must agree about the
-/// shape and two spellings of it is how a record comes to validate one thing and serve
-/// another.
-// LICENSED I39: a pure PROJECTION — a registry and a signature in, the line that stores it.
-fn sig_line(types: TypeRegistry, s: DeclSig) -> string {
-    match s {
-        .Fn(f) -> "fn\t${joined([types.name_of(p) for p in f.params], " ")}\t${types.name_of(f.ret)}",
-        .Record(r) -> "rec\t${joined(r.names, " ")}\t${joined([types.name_of(t) for t in r.types], " ")}",
-        .Enum(e) -> "enum\t${joined(e.names, " ")}",
-        .Named(n) -> "named\t${types.name_of(n.of)}",
-    }
-}
-
-/// EVERY NAME A MODULE EXPORTS, and the signature each wears — the INTERFACE, as text.
-/// Written once a build has computed it, and read back by a later build that means to
-/// decide whether a file may be skipped WITHOUT parsing it.
-// LICENSED I39: a pure PROJECTION — the workspace and a module in, its interface out.
-fn interface_text(mut ws: Workspace, m: ModulePath) -> string {
-    joined(flatten([named_sig(ws, d) for d in ws.exported_decls(m)]), "\n")
-}
-
-/// ONE NAME AND THE SIGNATURE IT WEARS, or nothing when it has none yet — a declaration
-/// whose signature the build has not needed carries no line, and a name with no line is
-/// simply absent from the interface.
-// LICENSED I39: a pure PROJECTION — the workspace and a declaration in, its interface line.
-fn named_sig(mut ws: Workspace, d: Decl) -> List<string> {
-    let s = ws.sig(d.id)
-    if s == null { return [] }
-    ["${d.name}\t${sig_line(ws.decls.types, s!)}"]
-}
-
-/// REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it. The key is the
-/// module's own NAME, because a module is what a caller imports — and the value carries
-/// what that name is worth, so a file can be judged without being read.
-// LICENSED I39: THE DRIVER'S RECORD STEP — a workspace, a store and a module list in, the count out.
-export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModulePath>) -> int {
-    mut kept = 0
-    for m in modules {
-        let _ = store.keep(Stored.Sig, m.text(), interface_text(ws, m), [])
-        kept = kept + 1
-    }
-    kept
 }

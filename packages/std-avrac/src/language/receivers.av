@@ -33,7 +33,10 @@ impl Workspace {
         let k = key(Family.Receivers, 0)
         if !(self.db.ask(k) is .Compute) { return 0 }
         self.db.begin(k)
-        let fns = [x.id for x in self.decls.decls if seated(x)]
+        // A HELD BODY IS NOT SURVEYED: its store is gone, and its settled bits were
+        // carried in the interface (`record_line`), replayed at mint. The pass settles
+        // the files that MOVED, and a call to a held fn reads its recorded bits.
+        let fns = [x.id for x in self.decls.decls if seated(x) && !self.is_held(x.file)]
         for d in fns { touch(self.sig(d)) }
         self.decls.clear_written()
         let sums = [self.summary(d) for d in fns]
@@ -335,15 +338,15 @@ impl Survey {
     fn static_member(d: DeclId, name: string) -> Callee {
         let m: DeclId? = self.decls.method(d, name)
         if m == null { return Callee.None }
-        if !self.store.is_static(self.decls.decl(m!).stmt) { return Callee.None }
+        if !self.decls.is_static_of(m!) { return Callee.None }
         Callee.Static(m!)
     }
 
     /// A method on a BOUNDED type parameter: the bound's trait's member.
     fn bounded_member(d: DeclId, j: int, name: string) -> Callee {
-        let tb = self.decls.tbounds(d)
-        if j >= tb.length || tb[j].ty == null { return Callee.None }
-        let tdecl: DeclId? = self.decls.trait_named(self.names, tb[j].ty!.name)
+        let bound = self.decls.bound_name(d, j)
+        if bound == "" { return Callee.None }
+        let tdecl: DeclId? = self.decls.trait_named(self.names, bound)
         if tdecl == null { return Callee.None }
         self.contract_member(tdecl!, name)
     }

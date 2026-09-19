@@ -59,7 +59,7 @@ impl LowerCx {
         let parent: DeclId? = self.view.decls.decl(m).parent
         if parent != null && self.view.decls.is_trait(parent!) {
             let contract = parent!
-            if at == null { return self.wanted(m, Sub { target: contract, args: [recv] }, []) }
+            if at == null { return self.wanted(m, Sub { target: contract, args: [recv], consts: [] }, []) }
             let call = at!
             let seats: List<SeatValue> = self.call_seats(m, call)
             if !self.seats_complete(m, call, seats) { return self.wanted(m, null, []) }
@@ -76,7 +76,7 @@ impl LowerCx {
         let sym = self.view.decls.symbol(d)
         let name = if sub == null { sym } else { mangle(sym, sub!) }
         if self.unseen(name) {
-            self.jobs.pending.push(Wanted { file: self.view.decls.decl(d).file, decl: d, name: name, sub: sub, seats: seats })
+            self.jobs.pending.push(Wanted { file: self.view.decls.decl(d).file, decl: d, name: name, sub: sub, seats: seats, root: null })
         }
         name
     }
@@ -120,6 +120,8 @@ impl LowerCx {
     }
 
     fn declared_seat(d: DeclId, index: int, ty: TypeId) -> SeatValue? {
+        let held = self.view.decls.held_value(d)
+        if held != null { return seat_value(index, ty, held!) }
         let x = self.view.decls.decl(d)
         self.settled_seat(x.file, SettleRoot.Const(x.stmt), [], index, ty)
     }
@@ -197,7 +199,7 @@ impl LowerCx {
     /// 0 even though its call node is dotted.
     fn call_base(d: DeclId, e: ExprId) -> int {
         match self.view.store.expr(e) {
-            .MethodCall(_, _, _) -> if self.view.decls.store(d).is_static(self.view.decls.decl(d).stmt) { 0 } else { 1 },
+            .MethodCall(_, _, _) -> if self.view.decls.is_static_of(d) { 0 } else { 1 },
             rest -> 0,
         }
     }
@@ -271,6 +273,8 @@ impl LowerCx {
     /// A DECLARED const read: settled in the declaration's OWN file, on
     /// no seats — a declaration has none.
     fn const_decl_reg(e: ExprId, d: DeclId, ty: TypeId) -> Reg? {
+        let held = self.view.decls.held_value(d)
+        if held != null { return self.materialized(held!.answer, held!.heap, ty, self.view.decls.symbol(d)) }
         let x = self.view.decls.decl(d)
         self.const_reg(e, x.file, x.stmt, ty, [])
     }

@@ -246,6 +246,10 @@ LLVMValueRef avra_llvm_add_function(LLVMModuleRef m, const char* name, LLVMTypeR
     return fn;
 }
 
+void avra_llvm_set_weak_odr(LLVMValueRef fn) {
+    LLVMSetLinkage(fn, LLVMWeakODRLinkage);
+}
+
 LLVMValueRef avra_llvm_get_named_function(LLVMModuleRef m, const char* name) {
     char* sym = avra_mangle_symbol(name);
     LLVMValueRef fn = LLVMGetNamedFunction(m, sym ? sym : name);

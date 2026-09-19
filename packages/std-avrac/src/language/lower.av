@@ -26,6 +26,8 @@ export type Body = {
     /// entry), which is a GROWTH: every existing construction site is
     /// untouched.
     file: FileId? = null,
+    /// Instantiations may be emitted by more than one cached object.
+    weak: bool = false,
 }
 
 /// The lowering facts: every fn body, the entry body (`main` — its
@@ -192,7 +194,7 @@ impl Decls {
         for i, a in files {
             if entry != null && i != at { spoken = spoken.concat(entry_only(a, files[at])) }
         }
-        let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: "main", sub: null }) }
+        let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: "main", sub: null, seats: [], root: null }) }
         mut entry_body: Body = empty_main(self.types).body
         mut statics: List<Static> = []
         if main_unit != null {
@@ -207,7 +209,7 @@ impl Decls {
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
         spoken = spoken.concat(minted_pointers(self.types, fns.concat([entry_body])))
-        Lowered { fns: fns, entry: entry_body, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(statics.concat(d.statics)) }
+        Lowered { fns: fns, entry: entry_body, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(statics.concat(d.statics)), libraries: [] }
     }
 
     /// A const's initializer as a program of its own: the root unit's
@@ -220,7 +222,7 @@ impl Decls {
         let entry = ru.bodies.first() ?? empty_main(self.types).body
         let fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
         let spoken = ru.voices.list.concat(d.spoken).concat(minted_pointers(self.types, fns.concat([entry])))
-        Lowered { fns: fns, entry: entry, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(ru.statics.concat(d.statics)) }
+        Lowered { fns: fns, entry: entry, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(ru.statics.concat(d.statics)), libraries: [] }
     }
 }
 
@@ -308,7 +310,7 @@ const unit_ceiling: int = 100000
 /// for an instantiation to want it.
 /// A file's main as a wanted body, named for the program it is.
 fn program_main(a: Analysis) -> Wanted {
-    Wanted { file: a.view.file, decl: null, name: program_symbol(a.view.decls.file(a.view.file).path), sub: null }
+    Wanted { file: a.view.file, decl: null, name: program_symbol(a.view.decls.file(a.view.file).path), sub: null, seats: [], root: null }
 }
 
 /// The symbol a program's body wears in a programs binary: its whole
@@ -323,7 +325,7 @@ export fn program_symbol(path: string) -> string {
 }
 
 fn declared(a: Analysis) -> List<Wanted> {
-    [Wanted { file: a.view.file, decl: d, name: a.view.decls.symbol(d), sub: null } for d in a.view.decls.decls_of_file(a.view.file) if lowers_plain(a, d)]
+    [Wanted { file: a.view.file, decl: d, name: a.view.decls.symbol(d), sub: null, seats: [], root: null } for d in a.view.decls.decls_of_file(a.view.file) if lowers_plain(a, d)]
 }
 
 /// A body lowered without an instantiation: one that has no type
@@ -364,7 +366,7 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValu
     lo.seats_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file },
+        body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: sub != null },
         voices: lo.out.voices, jobs: lo.jobs,
     }
 }
@@ -392,7 +394,7 @@ fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId,
     lo.seats_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file },
+        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true },
         voices: lo.out.voices, jobs: lo.jobs,
     }
 }
@@ -415,7 +417,7 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
         Ins.ScopeExit(dst),
         Ins.RetVal(dst),
     ]
-    Body { name: w.name, params: [fnty].concat(w.seats), ret: w.ret, gives: dst, ins: ins, reg_types: tys, file: a.view.file }
+    Body { name: w.name, params: [fnty].concat(w.seats), ret: w.ret, gives: dst, ins: ins, reg_types: tys, file: a.view.file, weak: true }
 }
 
 /// A file's run-time statements as a body under `name` — `main` for

@@ -215,6 +215,12 @@ impl TypeRegistry {
         self.reps.push(blank)
         let id = TypeId { index: self.shapes.length - 1 }
         self.ids.set(key, id)
+        // Interface loading may ask by spelling before later named types are
+        // interned. Keep the lazy index current once it has been built.
+        if self.indexed {
+            let name = self.name_of(id)
+            if self.named.get(name) == null { self.named.set(name, id) }
+        }
         id
     }
 
@@ -240,6 +246,7 @@ impl TypeRegistry {
     }
 
     fn shape_of(id: TypeId) -> Type { self.shapes[id.index] }
+
 
     /// A FLAT record's fields, in slot order — a value that IS its
     /// fields, with no box of its own: a record of scalars, which

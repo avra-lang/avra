@@ -1,0 +1,131 @@
+//! The disk form of a settled const. Fields carry their byte length, so text,
+//! including newlines and NULs, can round trip without an escape language.
+use features.{Settled, MetaVal, MetaHeap, MetaMap}
+
+fn wire_field(s: string) -> string { "${s.length}:${s}" }
+
+fn wire_value(v: MetaVal) -> string {
+    match v {
+        .Int(n) -> wire_field("i") + wire_field("${n}"),
+        .Float(bits) -> wire_field("f") + wire_field("${bits}"),
+        .Text(s) -> wire_field("t") + wire_field(s),
+        .Bool(b) -> wire_field("b") + wire_field(if b { "1" } else { "0" }),
+        .Absent -> wire_field("a"),
+        .Node(i) -> wire_field("n") + wire_field("${i}"),
+        .Map(i) -> wire_field("m") + wire_field("${i}"),
+    }
+}
+
+/// A unit row contains the answer, its heap, embed dependencies, and the value
+/// fingerprint that specialization keys use. Heap handles remain indices into
+/// these serialized arrays; no process-local type or AST id crosses the disk.
+fn settled_wire(s: Settled) -> string {
+    mut out = "S1" + wire_field("${s.fingerprint}") + wire_field("${s.embeds.length}")
+    for path in s.embeds { out = out + wire_field(path) }
+    out = out + wire_field("${s.heap.nodes.length}")
+    for slots in s.heap.nodes {
+        out = out + wire_field("${slots.length}")
+        for v in slots { out = out + wire_value(v) }
+    }
+    out = out + wire_field("${s.heap.maps.length}")
+    for row in s.heap.maps {
+        out = out + wire_field("${row.keys.length}")
+        for i in 0..row.keys.length { out = out + wire_field(row.keys[i]) + wire_value(row.values[i]) }
+    }
+    out + wire_value(s.answer)
+}
+
+type WireReader = { raw: string, pos: int }
+
+fn wire_number(s: string) -> int? {
+    if s.is_empty() { return null }
+    let neg = s.char_code(0) == 45
+    let start = if neg { 1 } else { 0 }
+    if start == s.length { return null }
+    mut n = 0
+    for i in start..s.length {
+        let c = s.char_code(i)
+        if c < 48 || c > 57 { return null }
+        n = n * 10 - (c - 48)
+    }
+    if neg { n } else { 0 - n }
+}
+
+impl WireReader {
+    mut fn field() -> string? {
+        mut at = self.pos
+        while at < self.raw.length && self.raw.char_code(at) >= 48 && self.raw.char_code(at) <= 57 { at = at + 1 }
+        if at == self.pos || at >= self.raw.length || self.raw.char_code(at) != 58 { return null }
+        let size? = wire_number(self.raw.substring(self.pos, at)) else { return null }
+        if size < 0 || size > self.raw.length - at - 1 { return null }
+        let begin = at + 1
+        self.pos = begin + size
+        self.raw.substring(begin, self.pos)
+    }
+
+    mut fn number() -> int? {
+        let s? = self.field() else { return null }
+        wire_number(s)
+    }
+
+    mut fn value() -> MetaVal? {
+        let tag? = self.field() else { return null }
+        if tag == "a" { return MetaVal.Absent }
+        let data? = self.field() else { return null }
+        if tag == "t" { return MetaVal.Text(data) }
+        if tag == "b" { return MetaVal.Bool(data == "1") }
+        let n? = wire_number(data) else { return null }
+        match tag {
+            "i" -> MetaVal.Int(n),
+            "f" -> MetaVal.Float(n),
+            "n" -> MetaVal.Node(n),
+            "m" -> MetaVal.Map(n),
+            _ -> null,
+        }
+    }
+}
+
+fn settled_from_wire(raw: string) -> Settled? {
+    if !raw.starts_with("S1") { return null }
+    mut r = WireReader { raw: raw, pos: 2 }
+    let fp? = r.number() else { return null }
+    let embed_count? = r.number() else { return null }
+    if embed_count < 0 { return null }
+    mut embeds: List<string> = []
+    for i in 0..embed_count {
+        let path? = r.field() else { return null }
+        embeds.push(path)
+    }
+    let node_count? = r.number() else { return null }
+    if node_count < 0 { return null }
+    mut nodes: List<List<MetaVal>> = []
+    for i in 0..node_count {
+        let count? = r.number() else { return null }
+        if count < 0 { return null }
+        mut slots: List<MetaVal> = []
+        for j in 0..count {
+            let v? = r.value() else { return null }
+            slots.push(v)
+        }
+        nodes.push(slots)
+    }
+    let map_count? = r.number() else { return null }
+    if map_count < 0 { return null }
+    mut maps: List<MetaMap> = []
+    for i in 0..map_count {
+        let count? = r.number() else { return null }
+        if count < 0 { return null }
+        mut keys: List<string> = []
+        mut values: List<MetaVal> = []
+        for j in 0..count {
+            let key? = r.field() else { return null }
+            let v? = r.value() else { return null }
+            keys.push(key)
+            values.push(v)
+        }
+        maps.push(MetaMap { keys: keys, values: values })
+    }
+    let answer? = r.value() else { return null }
+    if r.pos != raw.length { return null }
+    Settled { answer: answer, heap: MetaHeap { nodes: nodes, maps: maps }, embeds: embeds, fingerprint: fp }
+}
