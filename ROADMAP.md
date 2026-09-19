@@ -18798,3 +18798,47 @@ Measure those next, not the bundle.
 Remaining blocs, in order: `load` 142, `mint+fill` 103, `no-op` 110 (the input
 walk + hash), `analyze` 41, `bodies` 39. `link` (109 ms) and `clang` (36 ms) are
 child processes and do NOT appear in the parent's user CPU.
+
+## The object key re-hashes the whole source, every build (2026-09-19)
+
+Split of `load`'s per-file held check (274 files), in ms:
+
+```
+obj_key_cached 69   store.has 2   const_rows_ready 22   holdable 12
+```
+
+`obj_key_cached` is the cost, and `obj_key_of` is why:
+
+```avra
+let rec = record_cached(ws, store, m)
+d = digest_text(d, CACHE_FORMAT); d = digest_text(d, m.text())
+if path != "" {
+    d = digest_text(d, path)
+    d = digest_text(d, ws.source(ws.file_id(path)).text)     // <-- THE WHOLE FILE
+}
+for dep in sorted_texts(distinct(deps)) { d = digest_text(d, bytes_key_cached(...)) }
+```
+
+**It digests every file's ENTIRE SOURCE, once per file, per build** — ~5 MB
+across the tree, which is the same ~60 ms the batched fold costs. And
+`inputs()` ALREADY computes exactly that per file:
+
+```avra
+fn input_line(path) -> string { let text = self.ws.host.read(path); "${rooted(path)}\t${text.length}\t${digest_of(text)}" }
+```
+
+so the source is hashed TWICE per build: once joined into the build key, once
+per file into the object keys.
+
+### The ask
+
+**Share the per-file digest.** `input_line` has it and drops it; `obj_key_of`
+rebuilds it. Memoize `path -> digest` on the workspace in `input_line` and fold
+THAT in `obj_key_of` instead of the raw text. Worth ~60 ms (warm edit 0.58 ->
+~0.52). It changes every object key, so it owes one deliberate cold build to a
+consistent key space (handoff III §4), and the verification is a fixed point
+plus the differential — a WRONG key here is the silent-stale kind, not a
+diagnostic.
+
+The alternative — dropping the source digest from the object key — is WRONG: the
+key must move on a BODY edit, and `bytes_key` covers the interface alone.
