@@ -588,6 +588,14 @@ impl Workspace {
         if m.malformed() || m.text() == own { return [] }
         if m.package() != null && !self.reaches(from, m.package()!) { return [] }
         if self.ambiguous_module(m) || self.module_files(m).is_empty() { return [] }
+        // THE RECORD ANSWERS FIRST. A block word is a top-level `syntax` declaration
+        // (`readied_grammar`), and the interface already names every declaration's kind —
+        // so when the provider's record names no syntax the line takes, no provider file
+        // has to be read at all. Without this every `use` line parsed every file of its
+        // provider module to look for grammars, which is seconds of parse for a program
+        // that declares none. A record that is absent (a cold tree) answers `true`, and
+        // the parse below is the fallback.
+        if !module_names_syntax(self, m, u.items) { return [] }
         let declared = flatten([self.plain_grammars(path) for path in self.module_files(m)])
         mut blocks: List<BlockGrammar> = []
         for j, item in u.items {
@@ -3094,4 +3102,20 @@ fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
 /// minted unit turns the walk quadratic.
 fn spec_put(mut specs: Map<string, int>, name: string, id: int) {
     specs.set(name, id)
+}
+
+/// WHETHER A MODULE'S RECORD NAMES A NAMED GRAMMAR THE `use` LINE TAKES — read from the
+/// persisted interface alone, never a parse. `true` when the record is absent, so the
+/// caller falls back to reading the provider.
+// LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
+fn module_names_syntax(ws: Workspace, m: ModulePath, items: List<string>) -> bool {
+    let s: Store? = ws.store
+    if s == null { return true }
+    let rec = s!.get(Stored.Sig, record_key(ws, m))
+    if rec == null { return true }
+    for line in rec!.split("\n") {
+        let p = line.split("\t")
+        if p.length >= 7 && p[6] == "syntax" && items.any(it == p[5]) { return true }
+    }
+    false
 }
