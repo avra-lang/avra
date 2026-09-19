@@ -6,6 +6,7 @@
 
 #include <llvm-c/Core.h>
 #include <llvm-c/Analysis.h>
+#include <llvm-c/BitWriter.h>
 #include <stdlib.h>
 #include <string.h>
 void avra_trap(const char* msg);
@@ -726,6 +727,25 @@ int64_t avra_llvm_print_module_to_file(LLVMModuleRef m, const char* path) {
     if (result != 0) {
         remove(tmp);
         return result;
+    }
+    if (rename(tmp, path) != 0) {
+        remove(tmp);
+        return 1;
+    }
+    return 0;
+}
+
+// THE SAME MODULE, AS BITCODE: what clang parses far faster than text, and what the
+// build path hands it. Atomic the same way — a temp, then rename.
+int64_t avra_llvm_write_bitcode_to_file(LLVMModuleRef m, const char* path) {
+    char tmp[4096];
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int)getpid())
+            >= (int)sizeof(tmp)) {
+        return 1;
+    }
+    if (LLVMWriteBitcodeToFile(m, tmp) != 0) {
+        remove(tmp);
+        return 1;
     }
     if (rename(tmp, path) != 0) {
         remove(tmp);

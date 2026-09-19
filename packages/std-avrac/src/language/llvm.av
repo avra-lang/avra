@@ -141,6 +141,16 @@ export fn emit_ll(l: Lowered, path: string) -> string? { emit_module(l, path, tr
 /// renames them — no duplicate symbol — and a settled aggregate is immutable
 /// read-only data, so the copies are identical by construction.
 export fn emit_module(l: Lowered, path: string, with_entry: bool, only: FileId?) -> string? {
+    emit_mode(l, path, with_entry, only, false)
+}
+
+/// The same module as BITCODE — what the build path hands clang, which parses it far
+/// faster than text and never needs the `.ll` rendering.
+export fn emit_bitcode(l: Lowered, path: string, with_entry: bool, only: FileId?) -> string? {
+    emit_mode(l, path, with_entry, only, true)
+}
+
+fn emit_mode(l: Lowered, path: string, with_entry: bool, only: FileId?, bitcode: bool) -> string? {
     let lc = avra_llvm_context_create()
     let m = avra_llvm_module_create("avra", lc)
     let b = avra_llvm_create_builder(lc)
@@ -176,7 +186,8 @@ export fn emit_module(l: Lowered, path: string, with_entry: bool, only: FileId?)
         let failure: string? = emit_entry(lc, m, b, l, rt)
         if failure != null { return wreck(m, path, failure!) }
     }
-    if avra_llvm_print_module_to_file(m, path) != 0 {
+    let written = if bitcode { avra_llvm_write_bitcode_to_file(m, path) } else { avra_llvm_print_module_to_file(m, path) }
+    if written != 0 {
         return "cannot write `${path}`"
     }
     avra_llvm_dispose_builder(b)

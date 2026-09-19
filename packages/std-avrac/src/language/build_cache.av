@@ -277,8 +277,8 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     // The whole-program module keeps that safe path within the cold-build
     // budget; compiling one object per file costs much more on the compiler.
     if !CACHE_HOLD_ENABLED {
-        let ll = "${ent.view.source.file}.ll"
-        let failure = emit_ll(lo, ll)
+        let ll = "${ent.view.source.file}.bc"
+        let failure = emit_bitcode(lo, ll, true, null)
         if failure != null { fail failure! }
         let obj_key = node_key(Stored.Obj, [digest_of(read_text(ll) catch ""), opt, runtime])
         let obj = "${ll}.o"
@@ -376,10 +376,10 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
         if store.place(Stored.Obj, okey, obj) {
             objs.push(obj)
         } else {
-            let ll = "${cache.root}/${base}.ll"
-            let broke = emit_module(full, ll, same_file(a.view.file, ent.view.file), a.view.file)
+            let ll = "${cache.root}/${base}.bc"
+            let broke = emit_bitcode(full, ll, same_file(a.view.file, ent.view.file), a.view.file)
             if broke != null { fail broke! }
-            compile_ll.push("${base}.ll")
+            compile_ll.push("${base}.bc")
             pending.push(PendingObj { okey: okey, obj: obj })
         }
     }
