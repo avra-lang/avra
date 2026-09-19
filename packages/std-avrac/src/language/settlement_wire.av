@@ -129,3 +129,171 @@ fn settled_from_wire(raw: string) -> Settled? {
     if r.pos != raw.length { return null }
     Settled { answer: answer, heap: MetaHeap { nodes: nodes, maps: maps }, embeds: embeds, fingerprint: fp }
 }
+
+// ── A unit's DEMANDS ──────────────────────────────────────────────
+//
+// A held unit contributes no BODY — its machine code is the stored object — but it does
+// contribute its EDGES: the units its body demanded. Persisting them is what makes a
+// fresh lowering's reachability EXACT. Without them a fn only a held body calls is never
+// demanded, and `every=true` (re-lower everything and hope it matches) was the patch —
+// the patch that miscompiles. THE SAME WIRE, because a type argument is the same wire in
+// both places and `read_type_wire` is its inverse.
+use core.{FileId, DeclId, TypeId}
+use features.{Wanted, Sub, SeatValue}
+
+fn file_ref(ws: Workspace, f: FileId) -> string { ws.decls.file(f).path }
+
+fn decl_ref(ws: Workspace, d: DeclId?) -> string {
+    if d == null { return "" }
+    decl_wire(ws.decls, d!)
+}
+
+fn type_ref(ws: Workspace, t: TypeId) -> string { type_wire(ws.decls, t) }
+
+fn sub_wire(ws: Workspace, sub: Sub?) -> string {
+    if sub == null { return wire_field("-") }
+    let s = sub!
+    mut out = wire_field("+") + wire_field(decl_ref(ws, s.target)) + wire_field("${s.args.length}")
+    for a in s.args { out = out + wire_field(type_ref(ws, a)) }
+    out = out + wire_field("${s.consts.length}")
+    for c in s.consts { out = out + wire_field(c) }
+    out
+}
+
+fn heap_wire(h: MetaHeap) -> string {
+    mut out = wire_field("${h.nodes.length}")
+    for slots in h.nodes {
+        out = out + wire_field("${slots.length}")
+        for v in slots { out = out + wire_value(v) }
+    }
+    out = out + wire_field("${h.maps.length}")
+    for row in h.maps {
+        out = out + wire_field("${row.keys.length}")
+        for i in 0..row.keys.length { out = out + wire_field(row.keys[i]) + wire_value(row.values[i]) }
+    }
+    out
+}
+
+fn seat_wire(ws: Workspace, s: SeatValue) -> string {
+    wire_field("${s.index}") + wire_field(s.fp) + wire_field(type_ref(ws, s.ty)) + wire_value(s.value) + heap_wire(s.heap)
+}
+
+fn wanted_wire(ws: Workspace, w: Wanted) -> string {
+    mut out = wire_field(w.name) + wire_field(file_ref(ws, w.file)) + wire_field(decl_ref(ws, w.decl))
+    out = out + sub_wire(ws, w.sub) + wire_field("${w.seats.length}")
+    for s in w.seats { out = out + seat_wire(ws, s) }
+    out
+}
+
+fn wanted_list_wire(ws: Workspace, xs: List<Wanted>) -> string {
+    mut out = "W1" + wire_field("${xs.length}")
+    for w in xs { out = out + wanted_wire(ws, w) }
+    out
+}
+
+/// The inverse. A wire that does not decode WHOLE is refused, so a unit's edges are
+/// never guessed — a partial decode would demand the wrong units and the fresh lowering
+/// would be inexact again.
+fn wanted_list_from_wire(mut ws: Workspace, raw: string) -> List<Wanted>? {
+    if !raw.starts_with("W1") { return null }
+    mut r = WireReader { raw: raw, pos: 2 }
+    let count? = r.number() else { return null }
+    if count < 0 { return null }
+    mut out: List<Wanted> = []
+    for i in 0..count {
+        let name? = r.field() else { return null }
+        let file_path? = r.field() else { return null }
+        let decl_raw? = r.field() else { return null }
+        let sub_mark? = r.field() else { return null }
+        let f: FileId? = ws.decls.paths.get(file_path)
+        if f == null { return null }
+        let decl = decl_from_ref(ws, decl_raw)
+        mut sub: Sub? = null
+        if sub_mark == "+" {
+            let target_raw? = r.field() else { return null }
+            let target = decl_from_ref(ws, target_raw)
+            if target == null { return null }
+            let arg_count? = r.number() else { return null }
+            if arg_count < 0 { return null }
+            mut args: List<TypeId> = []
+            for j in 0..arg_count {
+                let tw? = r.field() else { return null }
+                let ty = type_from_wire(ws, tw)
+                if ty == null { return null }
+                args.push(ty!)
+            }
+            let const_count? = r.number() else { return null }
+            if const_count < 0 { return null }
+            mut consts: List<string> = []
+            for j in 0..const_count {
+                let c? = r.field() else { return null }
+                consts.push(c)
+            }
+            sub = Sub { target: target!, args: args, consts: consts }
+        }
+        let seat_count? = r.number() else { return null }
+        if seat_count < 0 { return null }
+        mut seats: List<SeatValue> = []
+        for j in 0..seat_count {
+            let index? = r.number() else { return null }
+            let fp? = r.field() else { return null }
+            let tw? = r.field() else { return null }
+            let ty = type_from_wire(ws, tw)
+            if ty == null { return null }
+            let value? = r.value() else { return null }
+            let node_count? = r.number() else { return null }
+            if node_count < 0 { return null }
+            mut nodes: List<List<MetaVal>> = []
+            for k in 0..node_count {
+                let c? = r.number() else { return null }
+                if c < 0 { return null }
+                mut slots: List<MetaVal> = []
+                for m in 0..c {
+                    let v? = r.value() else { return null }
+                    slots.push(v)
+                }
+                nodes.push(slots)
+            }
+            let map_count? = r.number() else { return null }
+            if map_count < 0 { return null }
+            mut maps: List<MetaMap> = []
+            for k in 0..map_count {
+                let c? = r.number() else { return null }
+                if c < 0 { return null }
+                mut keys: List<string> = []
+                mut values: List<MetaVal> = []
+                for m in 0..c {
+                    let key? = r.field() else { return null }
+                    let v? = r.value() else { return null }
+                    keys.push(key)
+                    values.push(v)
+                }
+                maps.push(MetaMap { keys: keys, values: values })
+            }
+            seats.push(SeatValue { index: index, fp: fp, ty: ty!, value: value, heap: MetaHeap { nodes: nodes, maps: maps } })
+        }
+        out.push(Wanted { file: f!, decl: decl, name: name, sub: sub, seats: seats, root: null })
+    }
+    if r.pos != raw.length { return null }
+    out
+}
+
+fn decl_from_ref(ws: Workspace, raw: string) -> DeclId? {
+    if raw == "" { return null }
+    let parts = raw.split("~")
+    if parts.length != 2 { return null }
+    let f: FileId? = ws.decls.paths.get(parts[0])
+    if f == null { return null }
+    let at? = wire_number(parts[1]) else { return null }
+    let ids = ws.decls.decls_of_file(f!)
+    if at < 0 || at >= ids.length { return null }
+    ids[at]
+}
+
+fn type_from_wire(mut ws: Workspace, raw: string) -> TypeId? {
+    if !raw.starts_with("^") { return null }
+    let words = raw.substring(1, raw.length).split("~")
+    let d = read_type_wire(ws.decls, words, 0)
+    if d == null || d!.next != words.length { return null }
+    d!.id
+}

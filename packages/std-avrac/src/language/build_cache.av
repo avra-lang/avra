@@ -21,7 +21,6 @@ use @std.io.{read_text, write_text, make_dirs, exists}
 /// compiler's own sources, its backend and its runtime are already key
 /// inputs (`Workspace.build_inputs`); this covers only what those files
 /// cannot say — a change to how the key itself is derived.
-const CACHE_FORMAT: string = "avra-build-cache-23"
 
 /// THE PARSE-FREE HOLD IS ON. An object is keyed by the module's own bytes and each
 /// import's STORED bytes digest (`obj_key_of`), never by a record's declaration text —
@@ -214,6 +213,9 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
 fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string, attempt: int) -> Result<BuildOutcome, string> {
     mut fresh = ws
     let store = store_at(build_cache_root(ws))
+    // THE UNIT DEPS ARE THE HOLD'S CURRENCY: a build that holds nothing reads none, so it
+    // does not pay to write them.
+    if CACHE_HOLD_ENABLED { ws.attach_store(store) }
     let cache = build_cache(ws, disk)
     let inputs = cache.inputs()
     let key = cache.key(entry, mode, inputs)
@@ -255,7 +257,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     // bodyless one — the link then misses every symbol it defined. `every` seeds the
     // worklist with every declaration of every file in hand, which is exactly the
     // non-held set here.
-    let lo = if CACHE_HOLD_ENABLED { p.checked_from(p.entry?.at, true)? } else { p.lowered_checked()? }
+    let lo = p.lowered_checked()?
     // Until the interface can answer every cross-file query, no file is held.
     // The whole-program module keeps that safe path within the cold-build
     // budget; compiling one object per file costs much more on the compiler.
