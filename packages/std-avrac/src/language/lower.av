@@ -241,8 +241,7 @@ fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit) -> Drained {
     mut minted = 0
     while !wants.is_empty() && minted < unit_ceiling {
         let w = wants.pop()
-        if seen.get(w.name) == null {
-            seen.set(w.name, true)
+        if claim_seen(seen, w.name) {
             minted = minted + 1
             let u = unit_of(w)
             // LICENSED I3: a comprehension would COPY the list, which is the bug.
@@ -508,4 +507,12 @@ fn mangle(decls: Decls, name: string, sub: Sub) -> string {
 
 fn runs_outside_entry(a: Analysis, s: StmtId, entry: Analysis) -> Diag {
     refusal("lower.entry_only", loc_at(a.view.source.file, a.view.store.stmt_span(s)), "a module file holds declarations — only the entry `${entry.view.source.file ?? "the entry"}` runs statements", "runs here", "move it into the entry, or wrap it in a fn the entry calls")
+}
+
+/// CLAIM A NAME: true the first time, and the seat is MUT so the write lands in the
+/// caller's map rather than copying it — the copy-on-write was the walk's whole cost.
+fn claim_seen(mut seen: Map<string, bool>, name: string) -> bool {
+    if seen.get(name) != null { return false }
+    seen.set(name, true)
+    true
 }
