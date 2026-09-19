@@ -28,6 +28,7 @@ fn record_key(ws: Workspace, m: ModulePath) -> string {
 /// ONE READ PER RECORD PER BUILD. The record for a module, from the cache when this
 /// build has already asked, else from the store. An absent record is cached too, so a
 /// module with no record is asked ONCE rather than at every consumer.
+// LICENSED I39: a Workspace method here trips the compiler's declaration-order defect (F2010).
 fn record_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
     let key = record_key(ws, m)
     if ws.record_asked.get(key) != null { return ws.record_texts.get(key) ?? "" }
@@ -40,6 +41,7 @@ fn record_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
 /// A RECORD MOVED, SO EVERY DERIVED KEY MOVES WITH IT: the written record is what the
 /// interface digest and every dependent object key fold, so after the interfaces are
 /// written the per-build caches are facts about a previous state.
+// LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn forget_keys(mut ws: Workspace) {
     ws.record_texts = {}
     ws.record_asked = {}
@@ -48,6 +50,7 @@ fn forget_keys(mut ws: Workspace) {
 }
 
 /// A MODULE'S INTERFACE DIGEST, memoized for the build.
+// LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn bytes_key_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
     let known: string? = ws.bytes_keys.get(m.text())
     if known != null { return known! }
@@ -58,6 +61,7 @@ fn bytes_key_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
 
 /// ONE FILE'S OBJECT KEY, memoized for the build. The key is the module together with
 /// the file's path, so a module-level ask and a file-level ask do not collide.
+// LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn obj_key_cached(mut ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
     let key = "${m.text()}\t${path}"
     let known: string? = ws.object_keys.get(key)
