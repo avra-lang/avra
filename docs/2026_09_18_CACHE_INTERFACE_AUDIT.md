@@ -201,3 +201,25 @@ record's field is its bare shape, (2) land `flatten_records`, (3) then the held
 path is representation-consistent and the hold can be turned on.
 
 Until both land, the hold stays OFF and the whole-program path is sound.
+
+### What deterministic flattening actually costs (measured, 2026-09-18)
+
+I built it: one `flatten_records` pass after the sigs phase (so it cannot force
+sigs, which would run derives mid-pass) and before typing, plus the fix the
+derive needs — `kind_of` must SEE THROUGH a flat record (`if types.is_flat(id) {
+kind_of(types, flat_fields(id)[0]) }`), or the `Fingerprint` derive calls
+`.fingerprint()` on a bare `int`. With both in, the derive error is gone.
+
+**And then the next one arrives:** `List<int>` vs `List<TypeId>` — flattening
+`TypeId` gets as far as the list element, and `concat` refuses
+`List<int>.concat(List<TypeId>)`. That is not a cache defect either; it is the
+same law reaching the ELEMENT.
+
+So the honest size of the fix is: deterministic flattening is a CORE change that
+must be landed across the type registry, the derive's kind projection, and the
+list element rules, and the compiler must build itself at each step. It is not a
+cache patch, and it cannot be smuggled in behind the hold flag. Until it lands
+the hold stays OFF and the whole-program path is sound.
+
+`git log` on `cache/cas` carries the unit rung and the root cause; this file
+carries the sequence.
