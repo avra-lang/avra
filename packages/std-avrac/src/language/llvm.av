@@ -81,20 +81,13 @@ fn bodies_of(l: Lowered, only: FileId?) -> ModuleBodies {
     else { ModuleBodies { whole: false, bodies: [bd for bd in l.fns if owns(l, bd, only!)] } }
 }
 
-/// WHERE A BODY BELONGS — derived from the BODY, never from whoever asked for it.
-///
-/// `Body.file` records WHO ASKED, and for most bodies that is the same thing. For a
-/// WRAP it is not: a wrapper is generated for every file that takes a named fn as a
-/// value, so several files claim one body and several modules define one symbol —
-/// measured, as "6 duplicate symbols", every one of them a `$w`. AND A BODY WITH NO
-/// HOME OF ITS OWN IS THE OTHER HALF OF THE SAME MISTAKE: the first version had a
-/// lifted lambda belonging to nobody, and the link said a symbol was not found.
-///
-/// A WRAP'S HOME IS THE FILE THAT DECLARES WHAT IT WRAPS. It exists in exactly one
-/// place, it is the same place for every asker, and it does not move with who asked
-/// FIRST — which is the property that matters, because an owner chosen by traversal
-/// order is the same defect as a seed computed differently from its updates.
-/// Whether a module OWNS the body — its home is that module's file. ONE question,
+/// WHERE A BODY BELONGS — `Body.file`, the file that asked for it. A WRAPPER is asked
+/// for by every file that takes the named fn as a value, so several modules can name
+/// one `$w`; it is emitted WEAK (in `build_cache`'s held remap), so the copies coalesce
+/// at link and no single declaring file has to exist to own it. That is the property
+/// the held world needs, where the declaring file may come from the store and the
+/// wrapper minted here is not in the stored object.
+/// Whether a module OWNS the body — its file is that module's file. ONE question,
 /// asked once, so no caller opens the nullable twice and none can disagree.
 // LICENSED I39: a pure PROJECTION — a program, a body and a file in, one answer out.
 fn owns(l: Lowered, b: Body, f: FileId) -> bool {
@@ -103,14 +96,7 @@ fn owns(l: Lowered, b: Body, f: FileId) -> bool {
 }
 
 // LICENSED I39: a pure PROJECTION — a program and a body in, the file it belongs to out.
-fn home_of(l: Lowered, b: Body) -> FileId? {
-    if b.file == null { return null }
-    if !b.name.ends_with("$w") { return b.file }
-    for o in l.fns {
-        if o.name == b.name.substring(0, b.name.length - 2) && o.file != null { return o.file }
-    }
-    b.file
-}
+export fn home_of(l: Lowered, b: Body) -> FileId? { b.file }
 
 /// What these bodies NAME, and their own names with it: a module declares a
 /// body it owns as much as one it only calls.

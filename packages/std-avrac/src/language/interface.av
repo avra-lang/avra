@@ -14,7 +14,7 @@
 //! type's identity is a per-run id and its SHAPE lives in its declaration. So a struct
 //! carries its fields, an enum its variants, and loading walks the IMPORTS FIRST — a field
 //! of another module's type is only internable once that module's types exist.
-use core.{new_digest, digest_text, digest_key, joined, flatten, sorted_texts, distinct, same_file, same_decl, module_path, ModulePath, TypeRegistry, Type, TypeId, DeclId, FileId, StmtId, ExprId, DeclKind, SeatMark, Span, TypeRef}
+use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, sorted_texts, distinct, same_file, same_decl, module_path, ModulePath, TypeRegistry, Type, TypeId, DeclId, FileId, StmtId, ExprId, DeclKind, SeatMark, Span, TypeRef}
 use features.{Decl, DeclSig, FnSig, StructSig, EnumSig, NamedSig, Decls, Namespace, SettleRoot, kind_word, spelled_type, scalar_named, DeclFacts}
 
 /// THE NAME A MODULE'S RECORD IS STORED UNDER. The ROOT module's name is EMPTY — it holds
@@ -192,7 +192,31 @@ fn record_of(mut ws: Workspace, store: Store, m: ModulePath) -> string {
             }
         }
     }
-    joined(["bytes\t${module_bytes(ws, m)}"].concat(here).concat(items), "\n")
+    joined(["iface\t${iface_digest(items)}"].concat(here).concat(items), "\n")
+}
+
+/// A MODULE'S INTERFACE, AS ONE DIGEST — the identity a dependent keys on. It covers what
+/// a caller can SEE (names, kinds, visibility, type parameters, bounds, seat names, and
+/// each signature's type wire and seat marks) and NOTHING a build recorded: the spans a
+/// whitespace edit moves, the statement/expression indices, and the `writes` bits the
+/// receivers pass recomputes. A body edit therefore does not move a dependent's key; a
+/// seat or shape change does, because both are in the digest.
+// LICENSED I39: a pure PROJECTION — a module's declaration lines in, its interface digest out.
+fn iface_digest(items: List<string>) -> string {
+    digest_of(joined([interface_form(line) for line in sorted_texts(items)], "\n"))
+}
+
+/// ONE DECLARATION'S CONTRACT, as one line: the fields a caller can see, and never the
+/// span, the statement/expression indices, or the `writes` bits.
+// LICENSED I39: a pure PROJECTION — a record line in, its contract out.
+fn interface_form(line: string) -> string {
+    let p = line.split("\t")
+    if p.length < 13 { return "" }
+    let facts = p[12].split(";")
+    let stable = if facts.length >= 8 { joined([facts[0], facts[1], facts[2], facts[5], facts[6], facts[7]], ";") } else { p[12] }
+    let payload = if p.length > 13 { p[13] } else { "" }
+    let seats = if p.length > 15 { joined([p[14], p[15]], ";") } else { "" }
+    joined([p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], stable, payload, seats], "|")
 }
 
 /// The path a record line names, or "" — the second column, and nothing for a header line.
@@ -777,8 +801,10 @@ export fn module_bytes(mut ws: Workspace, m: ModulePath) -> string {
 export fn bytes_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
     let rec = store.get(Stored.Sig, record_key(ws, m)) ?? ""
     for line in rec.split("\n") {
-        if line.starts_with("bytes\t") { return line.substring(6, line.length) }
+        if line.starts_with("iface\t") { return line.substring(6, line.length) }
     }
+    // A record written before the interface digest existed: fall back to the module's
+    // bytes, which is sound (it over-invalidates, never under).
     module_bytes(ws, m)
 }
 

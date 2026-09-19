@@ -12,7 +12,7 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, distinct, same_file, module_path, ModulePath, TypeRegistry, DeclId}
+use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, distinct, same_file, module_path, ModulePath, TypeRegistry, DeclId, FileId}
 use features.{Decl, DeclSig}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_text, write_text, make_dirs, exists}
@@ -21,7 +21,7 @@ use @std.io.{read_text, write_text, make_dirs, exists}
 /// compiler's own sources, its backend and its runtime are already key
 /// inputs (`Workspace.build_inputs`); this covers only what those files
 /// cannot say — a change to how the key itself is derived.
-const CACHE_FORMAT: string = "avra-build-cache-17"
+const CACHE_FORMAT: string = "avra-build-cache-18"
 
 /// THE PARSE-FREE HOLD IS ON. An object is keyed by the module's own bytes and each
 /// import's STORED bytes digest (`obj_key_of`), never by a record's declaration text —
@@ -31,7 +31,7 @@ const CACHE_FORMAT: string = "avra-build-cache-17"
 /// A held file's bodies come from its stored object; a file that is NOT held is lowered
 /// WHOLE (`every` below), because reachability alone would miss a fn whose only callers
 /// are held.
-const CACHE_HOLD_ENABLED: bool = false
+const CACHE_HOLD_ENABLED: bool = true
 
 /// A build's result: the words that link it, the binary they produce,
 /// the warnings to speak, and whether a held artifact was reused.
@@ -290,18 +290,34 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     // to a held function finds a declaration — and it is defined NOWHERE, because the file
     // it belongs to is never emitted. Its machine code is the object the store holds.
     let stubs = held_stubs(ws)
-    // A newly demanded specialization of a held generic has no definition in
-    // its cached object. Emit it with the entry's fresh object; weak lets a
-    // pre-existing specialization in another object coalesce with it.
+    // A BODY IS EMITTED WHERE ITS HOME IS, and a home that is HELD cannot emit it: the
+    // object comes from the store, and a WRAPPER a fresh caller minted (`$w`, whose home
+    // is the file that DECLARES what it wraps) is not in that stored object — the link
+    // then misses it. Remap by HOME, never by `bd.file`, which for a wrapper is the ASKER
+    // (fresh, so the old test kept it and `owns` filed it under a module with no emitter).
+    let all: List<Body> = lo.fns.concat(stubs)
+    let whole = Lowered { fns: all, entry: lo.entry, types: lo.types, diagnostics: lo.diagnostics, externs: lo.externs, statics: lo.statics, libraries: lo.libraries }
     mut active: List<Body> = []
-    for bd in lo.fns {
-        if bd.file != null && ws.is_held(bd.file!) {
-            active.push(bd with { file: ent.view.file, weak: true })
-        } else {
+    for bd in all {
+        // A STUB IS NEVER EMITTED — it has no instructions and only declares a name.
+        // A WRAPPER IS EMITTED WEAK where its asker lives, so two askers' copies coalesce
+        // and a stored object's copy does too. Every other real body whose home is held
+        // moves to the entry, weak, because the store's object cannot contain what this
+        // build just lowered.
+        if bd.ins.is_empty() {
             active.push(bd)
+        } else if bd.name.ends_with("$w") {
+            active.push(bd with { weak: true })
+        } else {
+            let home: FileId? = home_of(whole, bd)
+            if home != null && ws.is_held(home!) {
+                active.push(bd with { file: ent.view.file, weak: true })
+            } else {
+                active.push(bd)
+            }
         }
     }
-    let full = Lowered { fns: active.concat(stubs), entry: lo.entry, types: lo.types, diagnostics: lo.diagnostics, externs: lo.externs, statics: lo.statics, libraries: lo.libraries }
+    let full = Lowered { fns: active, entry: lo.entry, types: lo.types, diagnostics: lo.diagnostics, externs: lo.externs, statics: lo.statics, libraries: lo.libraries }
 
     // ONE OBJECT PER FILE: the files that MOVED are emitted and compiled, and the files
     // that did not come out of the store. Emitting every file was the mistake that made
