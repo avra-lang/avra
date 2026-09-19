@@ -18718,3 +18718,54 @@ runs the asks above are ranked by leverage, not confirmed by cause.
 ### The principle
 
 **A cost the writer cannot see is a bug waiting for a benchmark.**
+
+## Held lowering is 4,625 store reads — the next cache lever (2026-09-19)
+
+`lower` ~230 ms was the biggest warm-edit bloc after the `Cell` fixes. Split with
+`CLOCK_PROCESS_CPUTIME_ID` (the wall clock swings 2.5x under load):
+
+```
+union:   head 1ms   drained ~205ms   tail 0ms
+drained: visited 4,627 units   bodies 481   unit_of = ~205ms (all of it)
+unit_of: spec_id 3ms   lowered ~215ms
+lowered: start 3ms  asks 1ms  deps 241ms  stub 7ms  fin 7ms
+deps   : key 11ms   read 201ms   parse 22ms
+```
+
+**`held_deps` is the cost, and its store READ is nearly all of it**: 4,625 rows,
+one small file each, ~43 us a read (2 `exists` stats + open/read/close, plus up
+to three `path()` builds). The 481 fresh units are not the expense; the 4,146
+HELD units each pay a read for their edge list.
+
+### The ask
+
+**Bulk-load the unit-edge family.** One row for the whole family (or one per
+module) turns 4,625 small reads into one, worth ~150 ms — warm edit 0.65 -> ~0.50 s.
+It is a format slice: `remember_deps` (the writer, called per unit during
+lowering) must accumulate and flush once, and `held_deps` (the reader) must
+parse the blob and look up by name. It is handoff II's "compact bundle" applied
+to the ONE family where it pays — the earlier note filed it against the
+interface records, where format parsing measured only ~47 ms.
+
+Cheaper and already measured: `Store.get` runs two `exists` stats and up to
+three `path()` builds per read. Dropping the stats measured `read` 201 -> 161 ms,
+but end-to-end it was NEUTRAL and it duplicates `has`'s "row + edge" invariant,
+so it was NOT taken.
+
+### The measurement lesson (this cost two invalid A/Bs)
+
+**An A/B that changes the SHAPE OF THE WORK is not an A/B.** Stubbing
+`held_deps` to return `null` made `lowered` fall through to REAL lowering (much
+more work, 578 ms); returning `[]` made the worklist empty (much less work,
+205 ms, which I misread as "only 20 ms"). Both looked like measurements and were
+not — the walk visited a different set of units. **Measure the COMPONENT (a
+per-call timer summed over the run, as above), never a stub that alters what is
+visited.** A stub is safe only when its costs are additive and the call graph is
+unchanged.
+
+### And the same trap, once more, in the kernel
+
+`write_cell` was the nested read-modify-write (`row = cells[block]; grow; set;
+cells.set(block, row)`) — fixed by making `cells` a `List<Cell<..>>`, matching
+`pending` two fields above, which had already been fixed for exactly this. It
+measured NEUTRAL (the reads dominate), and is kept as the neighbour's primitive.
