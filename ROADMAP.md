@@ -18436,3 +18436,22 @@ tree parses the same files as part of building). The only real cut is to persist
 a form that loads without re-interning — the design's `sig` node, compact or
 resident — not a lazy patch: deferring `fill` ceilings at ~107 ms and re-trips
 the representation-completeness invariant (see the entry above).
+
+### Lever 1, done and measured — the fold was not the floor
+
+`b5ce0db` batched the byte fold (seven bytes per `digest_int`): no-op 0.29s ->
+0.10s user, warm edit 1.72s -> 1.35s, cold 30.7s -> 28.8s.
+
+`99c64ce` replaced the modulo fold with the xxh64/wyhash shape (four lanes,
+xor-rotate-multiply, splitmix avalanche, 8 bytes a word). It measured NEUTRAL
+end-to-end, and the instrumented number says why: `inputs()` hash is 60 ms for
+5 MB, of which the four-lane fold is a few ms — the rest is `read_text` (UTF-8
+validation + a string allocation) on 667 files. The 7-byte batching had already
+taken the arithmetic off the critical path. Kept as the right primitive (no
+division; throughput no longer degrades on large inputs), not for the clock.
+
+So the true floor for `inputs()` is memory bandwidth (~1–3 ms for 5 MB), and the
+gap to it is TEXT, not hashing: reading bytes and folding bytes (skipping
+`text_of`) is the next ~30–50 ms, which needs a byte door on `Host`. And the
+floor for the edit is not here at all — 60 ms of 1350 ms. It is the eager
+reconstruction (~620 ms) and the link (~100 ms).
