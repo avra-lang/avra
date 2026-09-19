@@ -18842,3 +18842,31 @@ diagnostic.
 
 The alternative — dropping the source digest from the object key — is WRONG: the
 key must move on a BODY edit, and `bytes_key` covers the interface alone.
+
+## ATTEMPTED AND REVERTED: sharing the per-file source digest (2026-09-19)
+
+The ask above ("share the per-file digest") was BUILT and it BROKE THE BUILD —
+recorded so nobody rebuilds it the same way.
+
+`input_line` cached `digest_of(host.read(path))` in a `Cell<Map<string,string>>`
+on the workspace; `obj_key_of` folded `ws.source_hash(path)` (cache hit, else
+`digest_of(source(path).text)`) instead of the raw text. The compiler built, a
+no-op HIT (0.12s), and a WARM EDIT ran **10.4s and FAILED** with the poisoned
+key-space symptom — `F2030 .fingerprint(…) calls a method, and int has none` in
+`core/fingerprint.av`, a file nobody touched.
+
+**WHY: THE OBJECT KEY'S INPUT IS NOW A LOOKUP, AND A LOOKUP CAN HIT OR MISS.**
+The old derivation folded the file's TEXT — a pure function of the file. The new
+one folds a CACHE VALUE whose spelling of `path` decides whether it is a hit or
+a fallback, and the two do not have to agree (`host.read(p)` vs
+`source(file_id(p)).text` are different doors to the same bytes, and the two
+path spellings are not one string). So the key the EMITTER stored and the key
+the LOOKUP asked for can differ, the object is never found, and the build
+re-derives over a half-held state.
+
+**THE LAW: A KEY MUST BE A PURE FUNCTION OF THE VALUE IT NAMES.** Memoizing a
+digest is safe only when the memo's key is the SAME derivation as the value's —
+never a second spelling of the file's identity. If this is retried: key the
+cache by `FileId` (or by the rooted path) in BOTH the writer and the reader so
+hit and miss compute the identical value, and prove it with `make avra` twice
+(a fixed point) BEFORE trusting a warm number.
