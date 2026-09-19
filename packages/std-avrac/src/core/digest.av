@@ -1,63 +1,80 @@
-//! A WIDE CONTENT DIGEST — four independent modular lanes read as one
-//! key. `fp`/`fp_str` are in-process fingerprints: thirty bits, plenty
-//! to cut a memo wave, far too few to name an artifact that outlives
-//! the process. A cache key decides which bytes a later build TRUSTS,
-//! so a collision is a silently wrong binary; four lanes put that near
-//! 2^-120 a pair, below any artifact count this tree can reach.
+//! A WIDE CONTENT DIGEST — four independent 64-bit lanes read as one key. `fp`/`fp_str`
+//! are in-process fingerprints: thirty bits, plenty to cut a memo wave, far too few to
+//! name an artifact that outlives the process. A cache key decides which bytes a later
+//! build TRUSTS, so a collision is a silently wrong binary; four 64-bit lanes put that
+//! far below any artifact count this tree can reach.
 //!
-//! Absorb the WHOLE value a consumer reads. A digest over a projection
-//! certifies "unchanged" about something that changed — the
-//! early-cutoff law one layer out, where the cost is not a stale span
-//! but a reused artifact.
+//! Absorb the WHOLE value a consumer reads. A digest over a projection certifies
+//! "unchanged" about something that changed — the early-cutoff law one layer out, where
+//! the cost is not a stale span but a reused artifact.
+//!
+//! A LANE FOLDS BY MULTIPLY-XOR-ROTATE, NEVER MODULO. The first version folded each byte
+//! through `(h * 131 + v + 7) % p` eight times, and a `%` by a prime is a division: 5 MB
+//! of inputs cost ~40 M divisions, ~100 MB/s. Multiplication, xor and rotate are a few
+//! cycles each, so a word now costs what a byte did. This is the xxh64/wyhash family's
+//! shape — the fastest scalar construction for exactly this purpose, a content-addressed
+//! key that must not collide.
 
 export type Digest = { a: int, b: int, c: int, d: int }
 
-const D0: int = 1000000007
-const D1: int = 1000000009
-const D2: int = 1000000021
-const D3: int = 1000000033
+/// Four odd constants, one per lane, so a single absorbed bit spreads across all four.
+const P1: int = 0 - 7046029254386353131
+const P2: int = 0 - 4417276706812531889
+const P3: int = 1609587929392839161
+const P4: int = 0 - 8796714831421723037
+const M1: int = 0 - 4658895280553007687
+const M2: int = 0 - 7723592293110705685
 
-/// Lanes start apart, so a digest that absorbed nothing still differs
-/// from one that absorbed a single zero.
+/// Logical right shift. The language's `>>` is arithmetic (`ashr`, and the evaluator
+/// agrees), so a rotate needs the sign bits cleared after the shift.
+fn log_shr(x: int, s: int) -> int {
+    if s <= 0 { return x }
+    if s >= 64 { return 0 }
+    (x >> s) & (9223372036854775807 >> (s - 1))
+}
+
+/// A 64-bit rotate left; `r` is nonzero at every call.
+fn rotl(x: int, r: int) -> int {
+    (x << r) | log_shr(x, 64 - r)
+}
+
+/// Lanes start apart, so a digest that absorbed nothing still differs from one that
+/// absorbed a single zero.
 export fn new_digest() -> Digest {
-    Digest { a: 7919, b: 104729, c: 1299709, d: 15485863 }
+    Digest { a: P1, b: P2, c: P3, d: P4 }
 }
 
-/// One lane of the fold: `v` normalized under the lane's prime, so
-/// mixing never overflows and a negative payload mixes as its residue.
-fn lane(h: int, v: int, p: int) -> int {
-    mut nv = v % p
-    if nv < 0 { nv = nv + p }
-    (h * 131 + nv + 7) % p
-}
-
-/// Absorb one whole number across every lane, so two inputs agreeing in
-/// one lane still separate in another.
-export fn digest_int(d: Digest, v: int) -> Digest {
+/// Absorb one 64-bit word: each lane xors it in, rotates, and multiplies by a different
+/// constant, so the four lanes stay independent.
+fn fold_word(d: Digest, w: int) -> Digest {
     Digest {
-        a: lane(lane(d.a, v, D0), v, D2),
-        b: lane(lane(d.b, v, D1), v, D3),
-        c: lane(lane(d.c, v, D2), v, D0),
-        d: lane(lane(d.d, v, D3), v, D1),
+        a: rotl(d.a ^ (w * P1), 31) * P2,
+        b: rotl(d.b ^ (w * P2), 27) * P3,
+        c: rotl(d.c ^ (w * P3), 33) * P4,
+        d: rotl(d.d ^ (w * P4), 29) * P1,
     }
 }
 
-/// Absorb a string's bytes AND its length: the length fold is what
-/// makes `"ab"` then `"c"` differ from `"a"` then `"bc"`.
-///
-/// SEVEN BYTES A WORD, because one fold is eight modular multiplies and every
-/// content key in the tree rides this loop: `word * 256 + byte` stays below
-/// 2^56, so no lane overflows, and four lanes fold seven bytes where they folded
-/// one. The length still closes the string, so no two lengths can alias.
+/// Absorb one whole number across every lane, so two inputs agreeing in one lane still
+/// separate in another.
+export fn digest_int(d: Digest, v: int) -> Digest { fold_word(d, v) }
+
+/// EIGHT BYTES, BIG-ENDIAN, as one word.
+fn word_at(s: string, at: int) -> int {
+    mut w = 0
+    for j in 0..8 { w = (w << 8) | s.char_code(at + j) }
+    w
+}
+
+/// Absorb a string's bytes AND its length: the length fold is what makes `"ab"` then `"c"`
+/// differ from `"a"` then `"bc"`.
 export fn digest_text(d: Digest, s: string) -> Digest {
     mut out = d
     let n = s.length
     mut i = 0
-    while i + 7 <= n {
-        mut word = 0
-        for j in 0..7 { word = word * 256 + s.char_code(i + j) }
-        out = digest_int(out, word)
-        i = i + 7
+    while i + 8 <= n {
+        out = digest_int(out, word_at(s, i))
+        i = i + 8
     }
     while i < n {
         out = digest_int(out, s.char_code(i))
@@ -66,10 +83,29 @@ export fn digest_text(d: Digest, s: string) -> Digest {
     digest_int(out, n)
 }
 
-/// The digest as a file-name key: four lanes, decimal, dot-separated.
-/// The name a result is STORED under and the name it is LOOKED UP by
-/// are this one derivation.
-export fn digest_key(d: Digest) -> string { "${d.a}.${d.b}.${d.c}.${d.d}" }
+/// A lane's final avalanche (splitmix64's), so every output bit depends on every input
+/// bit and the four lanes do not correlate.
+fn mix_final(x: int) -> int {
+    mut h = x
+    h = h ^ log_shr(h, 30)
+    h = h * M1
+    h = h ^ log_shr(h, 27)
+    h = h * M2
+    h ^ log_shr(h, 31)
+}
+
+/// The digest as a file-name key: four lanes, decimal, dot-separated. The name a result
+/// is STORED under and the name it is LOOKED UP by are this one derivation.
+///
+/// EACH LANE IS MASKED TO 63 BITS, because a lane is now a SIGNED multiply-fold and a key
+/// is handed to the linker as an argument: a leading `-` names an option, and clang read a
+/// negative lane as one. Four 63-bit lanes still leave 252 bits, wider than before.
+export fn digest_key(d: Digest) -> string {
+    "${clear_sign(mix_final(d.a))}.${clear_sign(mix_final(d.b))}.${clear_sign(mix_final(d.c))}.${clear_sign(mix_final(d.d))}"
+}
+
+/// The low 63 bits, as a non-negative number — a key's lane.
+fn clear_sign(x: int) -> int { x & 9223372036854775807 }
 
 /// A whole string's key — the common case.
 export fn digest_of(s: string) -> string { digest_key(digest_text(new_digest(), s)) }
