@@ -35,7 +35,31 @@ fn record_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
     let text = store.get(Stored.Sig, key) ?? ""
     ws.record_texts.set(key, text)
     ws.record_asked.set(key, true)
+    if text != "" { ws.record_lines.set(key, text.split("\n")) }
     text
+}
+
+/// THE RECORD AS LINES — cached, so every phase that needs them gets a pre-split list.
+// LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
+fn record_lines(mut ws: Workspace, store: Store, m: ModulePath) -> List<string> {
+    let key = record_key(ws, m)
+    let cached = ws.record_lines.get(key)
+    if cached != null { return cached! }
+    let text = record_cached(ws, store, m)
+    if text == "" { return [] }
+    ws.record_lines.get(key) ?? []
+}
+
+/// THE RECORD AS TAB-SPLIT FIELDS — each line split once per module, so mint and fill
+/// get pre-parsed fields without a per-declaration tab split.
+// LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
+fn record_fields(mut ws: Workspace, store: Store, m: ModulePath) -> List<List<string>> {
+    let key = record_key(ws, m)
+    let cached = ws.record_fields.get(key)
+    if cached != null { return cached! }
+    let fields = [line.split("\t") for line in record_lines(ws, store, m)]
+    ws.record_fields.set(key, fields)
+    fields
 }
 
 /// A RECORD MOVED, SO EVERY DERIVED KEY MOVES WITH IT: the written record is what the
@@ -45,6 +69,8 @@ fn record_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
 fn forget_keys(mut ws: Workspace) {
     ws.record_texts = {}
     ws.record_asked = {}
+    ws.record_lines = {}
+    ws.record_fields = {}
     ws.bytes_keys = {}
     ws.object_keys = {}
 }
@@ -419,16 +445,16 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     if text == "" {
         return 0
     }
-    let lines = text.split("\n")
+    let fields = record_fields(ws, store, m)
     // FAIL CLOSED: a record the decoder cannot rebuild WHOLE holds NOTHING, and
     // its files parse. A partial hold is how a declaration goes missing — the
     // cache must be a miss rather than a lie.
-    if !record_complete(lines) {
+    if !record_complete(fields) {
         return 0
     }
-    for line in lines {
-        if line.starts_with("import\t") {
-            let imp = module_path(line.substring(7, line.length).split("."))
+    for parts in fields {
+        if parts[0] == "import" {
+            let imp = module_path(parts[1].split("."))
             let key = imp.package()
             if key != null { ws.ensure_package(key!) }
             let _ = load_interface(ws, store, imp, entry)
@@ -437,12 +463,12 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
     for f in ws.module_files(m) {
-        if f != entry && store.has(Stored.Obj, obj_key_cached(ws, store, m, f)) && const_rows_ready(ws, store, m, f, lines) && holdable(lines, f) { ws.hold_only(f) }
+        if f != entry && store.has(Stored.Obj, obj_key_cached(ws, store, m, f)) && const_rows_ready(ws, store, m, f, fields) && holdable(fields, f) { ws.hold_only(f) }
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.
     ws.held_order.push(m)
-    lines.length
+    fields.length
 }
 
 /// PHASE ONE: mint every held module's declarations from its record — a no-op for a
@@ -451,12 +477,10 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
 // LICENSED I39: THE LOADER'S FIRST HALF — the workspace and a store in, nothing out.
 export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
     for m in ws.held_order {
-        let text = record_cached(ws, store, m)
-        for line in text.split("\n") { if !line.starts_with("import\t") { mint_identity(ws, line) } }
+        for parts in record_fields(ws, store, m) { if parts[0] != "import" { mint_identity(ws, parts) } }
     }
     for m in ws.held_order {
-        let text = record_cached(ws, store, m)
-        for line in text.split("\n") { if !line.starts_with("import\t") { link_identity(ws, line) } }
+        for parts in record_fields(ws, store, m) { if parts[0] != "import" { link_identity(ws, parts) } }
     }
 }
 
@@ -465,8 +489,7 @@ export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
 // LICENSED I39: THE LOADER'S SECOND HALF — the workspace and a store in, nothing out.
 export fn fill_interfaces(mut ws: Workspace, store: Store) {
     for m in ws.held_order {
-        let text = record_cached(ws, store, m)
-        for line in text.split("\n") { if !line.starts_with("import\t") { fill_shape(ws, store, m, line) } }
+        for parts in record_fields(ws, store, m) { if parts[0] != "import" { fill_shape(ws, store, m, parts) } }
     }
 }
 
@@ -475,18 +498,14 @@ export fn fill_interfaces(mut ws: Workspace, store: Store) {
 /// reader does not know makes the record short, and a short record refuses the
 /// module rather than contributing a declaration nobody can see.
 // LICENSED I39: a pure PREDICATE — a record's lines in, whether all of them decode out.
-fn record_complete(lines: List<string>) -> bool {
+fn record_complete(fields: List<List<string>>) -> bool {
     // THE ORDINALS MUST BE CONTIGUOUS PER FILE, 0..n-1 IN ORDER: the mint appends each
     // held declaration to its file, so a hole is a record where a declaration would be
     // silently missing. Checking it HERE refuses the whole module instead of truncating.
     mut seen: Map<string, int> = {}
-    for line in lines {
-        if line.starts_with("import\t") || line.starts_with("bytes\t") || line.starts_with("iface\t") { let _ = 0 } else {
-            if !decodable(line) {
-                let p = line.split("\t")
-                return false
-            }
-            let parts = line.split("\t")
+    for parts in fields {
+        if parts[0] == "import" || parts[0] == "bytes" || parts[0] == "iface" { let _ = 0 } else {
+            if !decodable(parts) { return false }
             let ordinal? = wire_number(parts[2]) else { return false }
             let want: int = seen.get(parts[1]) ?? 0
             if ordinal != want {
@@ -500,8 +519,7 @@ fn record_complete(lines: List<string>) -> bool {
 
 /// WHETHER ONE RECORD LINE DECODES — the guard half of the decoder, so a line the
 /// mint would silently skip is caught here and the whole record is refused.
-fn decodable(line: string) -> bool {
-    let parts = line.split("\t")
+fn decodable(parts: List<string>) -> bool {
     if parts.length < 13 || parts[5].is_empty() { return false }
     if wire_number(parts[2]) == null || wire_number(parts[3]) == null { return false }
     if wire_number(parts[8]) == null || wire_number(parts[10]) == null { return false }
@@ -513,10 +531,9 @@ fn decodable(line: string) -> bool {
 /// spellings are their own parse and are not in the interface, so a file that declares
 /// either is a MISS and parses. The honest boundary: the interface carries what it
 /// carries, and a fact it cannot is a rebuild, not a guess.
-fn holdable(lines: List<string>, path: string) -> bool {
-    for line in lines {
-        if !line.starts_with("import\t") {
-            let parts = line.split("\t")
+fn holdable(fields: List<List<string>>, path: string) -> bool {
+    for parts in fields {
+        if parts[0] != "import" {
             if parts.length >= 13 && parts[1] == path {
                 let f? = facts_unblocked(parts[12]) else { return false }
                 if f.is_grammar { return false }
@@ -529,9 +546,8 @@ fn holdable(lines: List<string>, path: string) -> bool {
 /// A file is held only when every value its exported consts may supply is
 /// committed and decodable. A partial cache entry is a miss, never a parse-free
 /// declaration whose value cannot be read.
-fn const_rows_ready(mut ws: Workspace, store: Store, m: ModulePath, path: string, lines: List<string>) -> bool {
-    for line in lines {
-        let parts = line.split("\t")
+fn const_rows_ready(mut ws: Workspace, store: Store, m: ModulePath, path: string, fields: List<List<string>>) -> bool {
+    for parts in fields {
         if parts.length > 5 && parts[0] == "const" && parts[1] == path {
             let raw = store.get(Stored.Unit, const_unit_key(ws, store, m, path, parts[5]))
             if raw == null || settled_from_wire(raw!) == null { return false }
@@ -542,8 +558,7 @@ fn const_rows_ready(mut ws: Workspace, store: Store, m: ModulePath, path: string
 
 /// First pass: restore every declaration's identity and relationships in
 /// source admission order. The shape is filled after all names exist.
-fn mint_identity(mut ws: Workspace, line: string) {
-    let parts = line.split("\t")
+fn mint_identity(mut ws: Workspace, parts: List<string>) {
     if parts.length < 13 || parts[5].is_empty() { return }
     let path = parts[1]
     if !ws.is_held(ws.file_id(path)) { return }
@@ -585,8 +600,7 @@ fn mint_identity(mut ws: Workspace, line: string) {
 /// at the first such member and dropped the rest: `core/nodes.av`, 788 declarations,
 /// became 162 and every derive-generated fn vanished. The parent is a LINK, not a mint
 /// order.
-fn link_identity(mut ws: Workspace, line: string) {
-    let parts = line.split("\t")
+fn link_identity(mut ws: Workspace, parts: List<string>) {
     let id? = row_decl(ws, parts) else { return }
     let parent_at? = wire_number(parts[8]) else { return }
     if parent_at < 0 { return }
@@ -605,8 +619,7 @@ fn row_decl(mut ws: Workspace, parts: List<string>) -> DeclId? {
     ids[ordinal]
 }
 
-fn intern_identity(mut ws: Workspace, line: string) {
-    let parts = line.split("\t")
+fn intern_identity(mut ws: Workspace, parts: List<string>) {
     let id? = row_decl(ws, parts) else { return }
     let word = parts[0]
     if word == "struct" || word == "named" { let _ = ws.decls.types.intern(Type.Struct(id, parts[5])) }
@@ -615,8 +628,7 @@ fn intern_identity(mut ws: Workspace, line: string) {
 
 /// Third pass: fill signatures and restored settled values after every
 /// named type in the import closure and this module has an identity.
-fn fill_shape(mut ws: Workspace, store: Store, m: ModulePath, line: string) {
-    let parts = line.split("\t")
+fn fill_shape(mut ws: Workspace, store: Store, m: ModulePath, parts: List<string>) {
     let id? = row_decl(ws, parts) else { return }
     let f = ws.decls.decl(id).file
     let stmt = ws.decls.decl(id).stmt
