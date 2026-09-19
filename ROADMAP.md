@@ -18131,3 +18131,186 @@ THE ASK, precisely: `catch` should take a STATEMENT or a block after it, so
 `catch return 1` and `catch fail E.Bad(x)` mean what they read as. The forms that exist
 today stay — this is an addition, not a replacement — and the natural spelling is the one
 already used for arms: `catch { return 1 }`.
+
+## Feedback survey — 2026-09-18 (CACHE: the parse-free hold, made sound)
+
+Scope: the build-cache lane only (`cache/cas`, worktree `avra-cache-cas`,
+commit `c509c2c` and the commits since). The tree is SOUND and the held path is
+ON: held 273/276, edit ~4.9s user / 6.1s wall (was ~28s whole-program), no-op
+0.37s; verified by differential (held-built compiler's diagnostics identical to a
+whole-program build's, probe prints 42, it self-builds). What follows is what the
+work WANTED that the tree did not have.
+
+Counts: FRICTION 5, SUGAR 2, FEATURES 4, DEFECTS 2, DOCTRINE 3, PERFORMANCE 2,
+PROCESS 2. Top three by cost: (1) DEFECT — the flat/boxed representation was
+order-dependent, and opaque pointers hid it for most of a session; (2) FRICTION —
+no way to ask WHICH binary built the tree, so "poisoned builder" cycles were
+spent repeatedly; (3) FRICTION — the held path's representation mismatch was
+SILENT (a linked, trapping compiler), with no gate to catch it.
+
+### FRICTION — what cost time
+
+- **WHICH BINARY BUILT THE TREE IS NOT ASKABLE.** `build/avra` can be a binary
+  whose own behavior breaks the source it compiles (a "poisoned" builder — a
+  flattening binary compiling a derive failed at `core/fingerprint.av`, never at
+  the builder). No provenance marker exists, and the shim/`make` never print one;
+  the session re-derived the working state from `md5`/`strings` by hand and still
+  tangled it (m1/m2/m3 experiments each read as a "breakthrough" because the
+  source had silently reverted). ASK: a build stamp (`avra version` / a
+  `CACHE_FORMAT` + binary-content hash) that the harness prints, so a probe
+  result names its base.
+- **"DID NOT STABILIZE" NAMES NO KEY.** `build_cache.av` fails `interface records
+  did not stabilize` without saying WHICH path/key is missing. ASK: name the
+  first missing path and its key.
+- **THE HELD PATH'S FAILURE IS SILENT.** LLVM's opaque pointers let two objects
+  disagree on a value's representation (`ptr` vs `i64`) and the link succeeds; the
+  held-built compiler then TRAPS (`avra: index 0 is out of bounds (length 0)`) on
+  source a whole-program build compiles clean. ASK: a gate — see FEATURES.
+- **`parse 0ms` IS A MISLABELED PHASE.** Parsing happens in `admit_all`/`items`
+  before the timed `"parse"` phase (called from `analyze_all` after the root files
+  are already admitted), so the report shows 0ms while parse is real work. ASK:
+  time the actual parse.
+- **A SCRIPTED EDIT CAN SILENTLY NOT LAND.** A `python`/`sed`/`git checkout`
+  sequence over a long session left the source at an unknown state; the ASK is a
+  habit (grep for the change in the source BEFORE building), not a tool — but a
+  `make` that refuses a build whose source differs from the tree it thinks it has
+  would have saved an hour.
+
+### SUGAR — a construct the language should have
+
+- **AN ANNOTATED `mut` CANNOT FOLLOW A `let`.** `let t = f()` on one line then
+  `mut held: List<ModulePath> = []` on the next is F0100 "expected `=` while
+  parsing `stmt`" AT the `:`. A `mut x: List<T> = []` line is accepted on its own
+  (the subset already records that form); the NEW half is that the PRECEDING
+  `let` makes it fail. Wanting site: `build_cache.av`'s hold branch (reordered to
+  dodge it). ASK: accept an annotated `mut` wherever a statement may begin.
+- **A BLOCK-BODIED LAMBDA AS A PREDICATE.** `parts.fns.any((f: StmtId) -> { let
+  ps = ...; ps.first() != null && ... })` would not parse; the workaround is a
+  named free fn (`writes_receiver`, `typing_impls.av`). UNVERIFIED whether a block
+  lambda is refused or the spelling was wrong — probe before filing.
+- Already-filed, CONFIRMED by this session (subsets, not re-filed): `continue`
+  is not a word (F3000, CLAUDE.md:1419; hit twice in `flatten_records`); a match
+  arm sharing the opening brace's line needs a trailing comma when another arm
+  follows (CLAUDE.md:1504).
+
+### FEATURES — a capability, larger than sugar
+
+- **A CACHE DIFFERENTIAL GATE.** The one thing that would have caught the whole
+  session's bug in minutes: for a package, a **held build's `.ll`/objects must be
+  byte-identical to a whole-program build's**. ASK: `make cache-witness` (or a
+  `avra test` leg) that builds both ways and diffs. The lazy version — the
+  diagnostics differential and the probe — was NOT enough (they were green while
+  the held compiler trapped).
+- **A PROVENANCE STAMP** (see FRICTION 1).
+- **THE UNIT IR — rung 3 of the design.** `docs/2026_09_16_BUILD_CACHE.md`'s
+  "THE STORE": persist the LOWERED UNIT `(declaration, type-args) → IR`,
+  content-keyed. The implementation persists a unit's EDGES only, so a held unit
+  contributes no body and the walk re-derives reachability each build. THE DESIGN
+  GAP: the IR's on-disk form — an exhaustive codec over `Ins` (`core/ir.av`, ~30
+  variants, closed, catch-all-free) and `Body`, with `reg_types` as `type_wire`
+  identities. Specify before building.
+- **A COMPACT / LAZY INTERFACE LOAD.** `load_interface`/`fill_interfaces` decode
+  274 text records each build (measured: `load 1117 + fill 726 + admit 452` ms).
+  ASK: decode a module's record lazily (only when its declarations are read), or a
+  binary/compact form.
+
+### DEFECTS — the compiler blaming itself
+
+- **THE FLAT/BOXED REPRESENTATION WAS ORDER-DEPENDENT** (FIXED at `da7e1b6`).
+  `typing_impls.declare_impl_block` called `unflatten` for EVERY impl's self
+  type, so a DERIVED `Fingerprint` impl sealed `DeclId` and `TypeId` in a parsed
+  build while a HELD build (whose derives never run) left them flat. Logged:
+  `UNFLAT DeclId` / `UNFLAT TypeId` from `unflatten` in `core/types.av`. The two
+  object sets then passed `ptr` vs `i64` for the same value, silently. FIX: the
+  seal is driven by the DECLARATION — a `mut fn` method (`writes_receiver`) —
+  never by an impl's existence.
+- **THE WIRE CACHE TRIPPED THE STABILIZATION RETRY** (UNVERIFIED, reverted). A
+  per-build `Map<string, TypeId>` wire cache in `Decls`, consulted by
+  `interface_type`, made `interface records did not stabilize` fire. The cache is
+  a pure function of the wire string, so the cause is NOT understood; it is filed
+  as a question, not a finding. REPRODUCE before re-attempting the load fix.
+
+### DOCTRINE — a law missing, misleading, or stale
+
+- **"A VALUE RIDES A POINTER BY ITS DECLARATION" HAD NO KEEPER.** The law already
+  existed (CLAUDE.md) and the code violated it, silently, until the cache
+  differential was built. The ROADMAP already has the sibling (`## The
+  `machine_shape` callers — a registry law MISapplied`, 2026-09-15); this is the
+  same shape one law over. ASK: a keeper for the seal law (no `unflatten` off an
+  impl with no `mut fn`).
+- **THE DESIGN'S COST MODEL DISAGREES WITH THE CODE.** `docs/2026_09_16_BUILD_CACHE.md`
+  says the pull walk is "a KEY COMPARISON — O(1)". The code decodes STRUCTURED
+  `Wanted`s (with type wires) per edge and re-interns their arguments. The design
+  says `deps` are keys; the implementation made them payloads.
+- **THE DESIGN'S PERSISTENCE CHOICE DID NOT QUANTIFY THE LOAD.** The
+  resident-vs-persistence review chose persistence; the measurement now shows the
+  stateless load+walk is ~3s of a ~5s edit, which is the floor that argument was
+  missing. UPDATE the review with the number.
+
+### PERFORMANCE — a measured cost
+
+- **THE CACHE'S PHASE REPORT** (`build_cache.av`, `--time`): an edit is
+  `lower 1764, load 1117, fill 726, admit 452, place 519, link 119` ms; ~4.9s
+  user total. Instrument named in the output; scope = `build packages/cli`.
+- **`place` FELL 648ms → 519ms** by linking the store's held objects IN PLACE
+  (`store.path`) instead of copying all 274 to temp paths (`4265e4f`).
+
+### PROCESS — the working discipline itself
+
+- **KEEP**: the watchdog + machine lock (twice a panic); the phase report (it is
+  how every cost here was found); the differential/probe/self-build verification;
+  the source audit doc (`docs/2026_09_18_CACHE_INTERFACE_AUDIT.md`).
+- **CHANGE**: after ANY scripted edit, `grep` the source for the change BEFORE
+  building (a silent no-op edit reads as a broken feature — the run pointed at
+  `core/fingerprint.av` for a change that had never applied); keep a known-good
+  binary aside and NAME it in every receipt.
+
+### Not surveyed
+
+- The wider compiler: only the cache lane was touched; no census/`AVRA_MEM_STATS`
+  run on the final state, so memory is unmeasured here.
+- The `@derive`/meta path beyond what the seal fix exercised.
+- Packages other than `std-avrac` and `cli`.
+
+## Cache perf — 2026-09-18 late (the record cache and the write-through seat)
+
+Continued on `cache/cas`. User CPU for an edit of `build packages/cli`: **6.7 s
+-> 3.8 s** (three-run min; the phase clock is wall-based and the box is shared,
+so the phase report is indicative and `/usr/bin/time -p` user is the metric).
+Two changes, each verified by the whole-program diagnostics differential, the
+`42` probe, and a self-build to a fixed point.
+
+1. **A record is read once.** The held path asked the store for each module's
+   interface at every consumer (held walk, load, mint, fill, object key, link),
+   so 55 records were read and UTF-8-validated hundreds of times, and each
+   file's object key re-digested its source and every import's record. Both are
+   now memoized for the attempt and dropped when an interface is written.
+   `place` 500 ms -> 2 ms, `load` ~1000 ms -> ~290 ms.
+2. **A `mut` seat writes through.** `spec_id` and `drained` read a table and
+   then wrote it in the same function; each read emitted an owned temporary
+   released at scope end, so the write's uniqueness check saw a shared box and
+   CLONED the whole map once per minted unit — the walk was quadratic. A helper
+   taking the table as a `mut` seat writes through in place. `lower`
+   1700 ms -> ~250 ms.
+
+### DEFECT — adding a method to `impl Workspace` breaks an unrelated field's type
+
+Adding ONE method (even `mut fn probe(store: Store) -> string { "" }`) to
+`impl Workspace` in `packages/std-avrac/src/language/workspace.av` makes the
+compiler report
+`error[F2010]: field 'program' is 'fn() -> is_source'` at the `Analysis`
+construction (`analysis.av`'s `program: fn() -> Program`), where the return
+type's name is a NEIGHBOURING FREE FN in workspace.av (`is_source`,
+`segments_of`, ... — it moves with the declaration count). Types, fields and
+free fns added alone are fine; a method alone breaks it. It is a name/type
+resolution order defect, not a cache defect. Worked around by keeping the cache
+helpers as free fns (`// LICENSED I39` at the sites). NOT YET DIAGNOSED.
+
+### Next — the rung that removes the reconstruction (spec first)
+
+The remaining edit cost is reconstructing the declaration/type universe from 55
+records (`fill` ~430 ms) and the once-per-process costs (`inputs()` hash ~300 ms,
+clang link ~150 ms). The design's per-unit IR is the next rung; its missing
+specification is still the IR's on-disk form — an exhaustive codec over `Ins`
+(core/ir.av, closed, catch-all-free) and `Body`, with `reg_types` as `type_wire`
+identities. Write it before building.
