@@ -3,7 +3,7 @@
 //! target (the receiver typed as the target at seat 0), the impl-for
 //! contract (every trait method, exactly, nothing beyond), the orphan
 //! rule, and the voices these laws speak.
-use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type, filled, same_decl}
+use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type, filled, same_decl, Param, NodeStore}
 use core.{SeatMark, plain_mark}
 use diagnostics.{refusal, warning}
 use features.{TypeCx, FnSig, DeclSig, Decl, written_seats, EnumSig}
@@ -106,11 +106,16 @@ impl TypeCx {
         if target == null { return }
         let d = target!
         self.view.decls.record_target(self.decl_of(s), d)
-        // A METHOD MAY WRITE THROUGH `self`. A flat record is a value
-        // in a register with no identity, so behaviour would turn on
-        // a field count — it keeps its box while receivers alias
-        // (ROADMAP: RECEIVER ALIASING).
-        self.view.types.unflatten(self.impl_self_type(d))
+        // A METHOD THAT WRITES THROUGH `self` KEEPS ITS BOX. A flat record is a value in a
+        // register with no identity to write through — but an impl whose methods only READ
+        // (a DERIVED `Fingerprint`, say) never writes, and sealing on its ACCOUNT made a
+        // `DeclId` boxed in a parsed build and bare in a held one: the two objects then
+        // disagreed on the representation and the link mixed `ptr` with `i64` in silence.
+        // THE SEAL IS DRIVEN BY THE DECLARATION — a `mut fn` method — not by an impl's mere
+        // existence.
+        if parts.fns.any((f: StmtId) -> writes_receiver(f, self.view.store)) {
+            self.view.types.unflatten(self.impl_self_type(d))
+        }
         for f in parts.fns {
             let m = self.decl_of(f)
             let _ = self.view.decls.sig(m)
@@ -334,4 +339,11 @@ impl TypeCx {
 fn impl_heading(of: string?, target: string) -> string {
     if of == null { return target }
     "${of!} for ${target}"
+}
+/// Whether a method's receiver is declared `mut` — the ONE fact that forces its target to
+/// keep a box. Read from the PARSE, so it is answerable before the method is signed.
+fn writes_receiver(f: StmtId, store: NodeStore) -> bool {
+    let ps: List<Param> = store.fn_parts(f)?.params ?? []
+    let r: Param? = ps.first()
+    r != null && r!.promises.mutable
 }
