@@ -225,6 +225,11 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     // analysis, no emission, no link. The warnings come from the store, because a program
     // that is not analysed has no voice to ask.
     if store.has(Stored.Bin, key) && store.place(Stored.Bin, key, binary) {
+        // A STORED BINARY IS BYTES; ITS MODE IS NOT IN THE BYTES. The whole-file writer
+        // mints a 0644 temp and renames it, so a linked program placed back from the
+        // store arrives unrunnable — a build's SECOND run would produce a binary the
+        // first could run and it could not. The mode is restored here, and only here.
+        let _ = avra_spawn_status("chmod", ["+x", binary])
         return .Ok(BuildOutcome { words: [], binary: binary, warnings: store.get(Stored.Warn, key) ?? "", reused: true, key: key })
     }
 

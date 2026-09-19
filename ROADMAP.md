@@ -18306,6 +18306,19 @@ free fns added alone are fine; a method alone breaks it. It is a name/type
 resolution order defect, not a cache defect. Worked around by keeping the cache
 helpers as free fns (`// LICENSED I39` at the sites). NOT YET DIAGNOSED.
 
+### DEFECT — the held path refuses an interface change to a file with a trait impl
+
+Adding one exported fn to `packages/std-io/src/io.av` (which holds
+`impl Error for IoError`) makes the HELD build fail
+`error[F0900]: defect: a unit without a body was asked for — '@std.io.IoError.describe'`,
+while the same source builds clean whole-program. Reproduced with the pre-change
+binary (`build/avra.known-good`, hold ON, `.avra-cache/bin` cleared), so it is
+PRE-EXISTING, not this session's. The suspect is a declaration whose ordinal
+moves: adding a top-level fn shifts the trait impl's generated members in the
+record, and a held consumer asks a unit by the name that ordinal used to name.
+Fixing the binary's mode had to avoid `@std/io` for this reason; the driver
+restores it by `chmod` instead (`build_cache.av`).
+
 ### Next — the rung that removes the reconstruction (spec first)
 
 The remaining edit cost is reconstructing the declaration/type universe from 55
