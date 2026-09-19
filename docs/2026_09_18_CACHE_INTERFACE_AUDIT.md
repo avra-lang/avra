@@ -1,4 +1,26 @@
-# Build cache — interface audit, and why the hold is off
+# Build cache — interface audit
+
+## CURRENT (2026-09-18, late): THE HOLD IS ON AND SOUND
+
+The root cause of every held-build miscompile was ONE line of doctrine:
+`typing_impls` unflattened **every** impl's self type, so a DERIVED `Fingerprint`
+impl sealed `DeclId`/`TypeId` — boxed in a parsed build, bare in a held one. A
+record keeps its box because a method may WRITE through `self`, so the seal is
+driven by the DECLARATION (a `mut fn` method), never by an impl's existence.
+
+With that fixed:
+
+- held 273/276, edit **4.94s user / 6.09s wall** (was ~28s whole-program);
+- the held-built compiler's diagnostics over `packages/std-avrac` are IDENTICAL
+  to a whole-program build's, its probe prints 42, and it BUILDS ITSELF cleanly.
+
+Phase split of a no-edit held build: lower 1764ms, load 1117ms, fill 726ms,
+admit 452ms, place 519ms, link 119ms. **Sub-second means making the LOAD and the
+UNIT WALK cheap** — the stateless design re-decodes 274 records and re-walks
+every held unit's edges each build; that is the remaining wall.
+
+Everything below is the trail that led here and is kept as the record.
+
 
 This supersedes the first audit. It records what is now sound, what is
 measurably fast, and the one architectural finding that decides the next rung.
