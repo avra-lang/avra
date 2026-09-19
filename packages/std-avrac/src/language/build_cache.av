@@ -390,10 +390,11 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     }
     for path in held_paths(ws) {
         let m = module_path(ws.module_of(path).split("."))
-        let obj = "${cache.root}/${node_key(Stored.Obj, [digest_of(path)])}.o"
         let okey = obj_key_of(ws, store, m, path)
-        if !store.place(Stored.Obj, okey, obj) { fail "avra: a held object disappeared: ${path} (module ${m.text()}) key ${okey}" }
-        objs.push(obj)
+        // THE LINK READS THE STORE'S OBJECT IN PLACE — a held object is a blob on disk and
+        // copying all 274 of them to temp paths each build was 650ms of pure I/O.
+        if !store.has(Stored.Obj, okey) { fail "avra: a held object disappeared: ${path} (module ${m.text()}) key ${okey}" }
+        objs.push(store.path(Stored.Obj, okey))
     }
     let t_e3 = avra_now_ns()
     let words = link_objects(objs, ws, runtime, binary)
