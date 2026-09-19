@@ -159,3 +159,45 @@ their fresh module (they are new, so the held object cannot define them), or
 assert their names are absent from every held object's symbol table before
 remapping. A `nm` over the mixed object set, diffed against the remapped names,
 answers it in one run.
+
+## ROOT CAUSE: the flat representation is ORDER-DEPENDENT
+
+The mix miscompiles because the two object sets **disagree on `DeclId`'s machine
+representation**:
+
+- a HELD object (`features/decls.av`) defines
+  `Decls.decl(ptr %0, ptr %1)` — `DeclId` as a BOX;
+- the edit's FRESH module (`workspace.av`) passes `DeclId` as `i64` — FLAT.
+
+LLVM's opaque pointers make that silent: the call crosses the boundary with the
+wrong shape and the trap is at run time.
+
+Why they disagree is the law "whether a value rides a pointer is its
+DECLARATION's answer" — and that answer was being given at different TIMES:
+
+- `flatten_record` (the fresh path) marks a one-field `int` record flat **during
+  typing**, so a record whose signature was already emitted before its own
+  declaration was flattened wore the BOX. The whole-program build boxed `DeclId`.
+- `fill_shape` (the held path) marks it flat **at record load**, before typing —
+  so the held build flattened it.
+
+Both paths are internally consistent; they are consistent about DIFFERENT
+answers. This is exactly the recorded trigger (`rides_pointer` answering by
+declaration order).
+
+### The fix, and the second bug it exposes
+
+ONE pass, after every file is admitted and before anything is typed, marking
+every one-field `int` record flat — `flatten_records` — makes the answer
+order-free, so no two builds can disagree. (It also replaces `fill_shape`'s
+broader `spells` condition, which flattened `float`/`bool`/`string` records the
+fresh path never did.)
+
+**It cannot land alone.** Flattening `DeclId` for real makes the `Fingerprint`
+derive emit `.fingerprint()` on a field that is now a bare `int`
+(`F2030: `.fingerprint(…)` calls a method, and `int` has none`, homed at
+`core/fingerprint.av:49`). So the sequence is: (1) teach the derive that a flat
+record's field is its bare shape, (2) land `flatten_records`, (3) then the held
+path is representation-consistent and the hold can be turned on.
+
+Until both land, the hold stays OFF and the whole-program path is sound.
