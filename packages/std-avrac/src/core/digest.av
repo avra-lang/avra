@@ -44,10 +44,21 @@ export fn digest_int(d: Digest, v: int) -> Digest {
 
 /// Absorb a string's bytes AND its length: the length fold is what
 /// makes `"ab"` then `"c"` differ from `"a"` then `"bc"`.
+///
+/// SEVEN BYTES A WORD, because one fold is eight modular multiplies and every
+/// content key in the tree rides this loop: `word * 256 + byte` stays below
+/// 2^56, so no lane overflows, and four lanes fold seven bytes where they folded
+/// one. The length still closes the string, so no two lengths can alias.
 export fn digest_text(d: Digest, s: string) -> Digest {
     mut out = d
     let n = s.length
     mut i = 0
+    while i + 7 <= n {
+        mut word = 0
+        for j in 0..7 { word = word * 256 + s.char_code(i + j) }
+        out = digest_int(out, word)
+        i = i + 7
+    }
     while i < n {
         out = digest_int(out, s.char_code(i))
         i = i + 1
