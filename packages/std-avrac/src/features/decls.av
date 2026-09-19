@@ -141,7 +141,10 @@ export type Decls = {
     // prefix, and a kind spoken there still wears the package
     root_name: List<string>,
     const_types: Map<string, TypeId>,
-    children: List<List<DeclId>>,
+    /// ONE SLOT, SHARED: members are appended through every copy of the table, so
+    /// an append cannot copy it. A plain `List<List<DeclId>>` cloned the whole
+    /// table per child.
+    children: List<Cell<List<DeclId>>>,
     methods: List<List<DeclId>>,
     impls: List<List<DeclId>>,
     // every impl block under the NAME it targets — filled at mint,
@@ -513,7 +516,8 @@ impl Decls {
 
     /// A parent admitted again lists its members afresh.
     fn orphan(parent: DeclId) {
-        self.children.set(parent.index, [])
+        let none: List<DeclId> = []
+        self.children.set(parent.index, Cell.new(none))
     }
 
     /// An id for a key: the existing one (its row refreshed), or the
@@ -535,7 +539,8 @@ impl Decls {
             self.seat_marks.push([])
             self.declared_writes.push(false)
             self.written_seats.push([])
-            self.children.push([])
+            let none: List<DeclId> = []
+            self.children.push(Cell.new(none))
             self.methods.push([])
             self.impls.push([])
             self.faces.push(null)
@@ -557,9 +562,7 @@ impl Decls {
         if kind is .Record || kind is .Named || kind is .Trait { let _ = self.types.intern(Type.Struct(id, name)) }
         if kind is .Enum { let _ = self.types.intern(Type.Enum(id, name)) }
         if parent != null {
-            mut members = self.children[parent!.index]
-            members.push(id)
-            self.children.set(parent!.index, members)
+            self.children[parent!.index].push(id)
         }
         id
     }
@@ -570,10 +573,8 @@ impl Decls {
     mut fn adopt(child: DeclId, parent: DeclId) {
         let d = self.decl(child)
         self.decls.set(child.index, d with { parent: parent })
-        mut members = self.children[parent.index]
-        if !members.any(same_decl(it, child)) {
-            members.push(child)
-            self.children.set(parent.index, members)
+        if !self.children[parent.index].get().any(same_decl(it, child)) {
+            self.children[parent.index].push(child)
         }
     }
 
@@ -1196,7 +1197,7 @@ impl Decls {
 
     /// A declaration's members, in declaration order: a trait's or
     /// impl's methods, a record's defaults.
-    fn children_of(d: DeclId) -> List<DeclId> { self.children[d.index] }
+    fn children_of(d: DeclId) -> List<DeclId> { self.children[d.index].get() }
 
     /// An impl block filed under the name it targets.
     fn note_impl(name: string, id: DeclId) {
