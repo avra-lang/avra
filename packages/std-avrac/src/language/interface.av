@@ -558,8 +558,17 @@ fn mint_identity(mut ws: Workspace, line: string) {
     // every later type reference points at the wrong declaration.
     let ordinal? = wire_number(parts[2]) else { return }
     let id = ws.decls.mint("${path}::held::${ordinal}", f, stmt, parts[5], kind, parts[4] == "1", parts[7], null, parts[9] == "1", root)
-    let prior = ws.decls.decls_of_file(f)
-    if !prior.any(same_decl(it, id)) { ws.decls.file_decls.set(f.index, prior.concat([id])) }
+    // APPEND IN PLACE. A held file was never admitted, so its declarations arrive in
+    // record order and its list is exactly `ordinal` long — the `any` + `concat` this
+    // replaces scanned and rebuilt the list per declaration, quadratic in a file's length.
+    mut prior = ws.decls.decls_of_file(f)
+    if prior.length == ordinal {
+        prior.push(id)
+        ws.decls.file_decls.set(f.index, prior)
+    } else if !prior.any(same_decl(it, id)) {
+        prior.push(id)
+        ws.decls.file_decls.set(f.index, prior)
+    }
     mut by_stmt = ws.decls.decl_ids[f.index]
     by_stmt.grow_to(stmt_index + 1)
     if by_stmt.get(stmt_index) == null { by_stmt.set(stmt_index, id) }
