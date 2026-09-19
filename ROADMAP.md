@@ -18769,3 +18769,32 @@ unchanged.
 cells.set(block, row)`) — fixed by making `cells` a `List<Cell<..>>`, matching
 `pending` two fields above, which had already been fixed for exactly this. It
 measured NEUTRAL (the reads dominate), and is kept as the neighbour's primitive.
+
+## The held walk is gone — the new warm-edit map (2026-09-19)
+
+`45a659a` skips a held unit in `drained` outright and demands every declared unit
+of every NON-HELD file (guarded by "some file IS held", so a cold build does not
+emit dead code). `held_deps` is called **0 times** on a warm edit, and `lower`
+falls **230 ms -> 2 ms**.
+
+The warm-edit CPU split is now:
+
+```
+hold 7   load 142   admit 11   mint+fill 103   analyze 41   lower 2   bodies 39
+```
+
+**THE INTERFACE READS ARE NOT THE COST.** Instrumented per module: `record_cached`
+(the store read) is **9 ms** across the whole load; the 142 ms is the IMPORT WALK
+(`module_path(split("."))`, `ensure_package`, the recursive `load_interface` —
+recursion means the summed number double-counts the tree, so only the top-level
+call's share is real) plus the PER-FILE HELD CHECKS (101 ms: `store.has(Obj, ..)`,
+`const_rows_ready`'s read PER CONST, and `holdable`).
+
+So handoff II/III's "bulk-load the interface records" is aimed at 9 ms, and the
+lever is instead **the per-import and per-file bookkeeping**: `obj_key_cached`
+per file, `const_rows_ready`'s read per const, and `ensure_package` per import.
+Measure those next, not the bundle.
+
+Remaining blocs, in order: `load` 142, `mint+fill` 103, `no-op` 110 (the input
+walk + hash), `analyze` 41, `bodies` 39. `link` (109 ms) and `clang` (36 ms) are
+child processes and do NOT appear in the parent's user CPU.
