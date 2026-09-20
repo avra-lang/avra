@@ -271,23 +271,63 @@ fn undefined_rule<N>(cx: MatchContext<N>, name: string, cursor: int) -> MatchRes
     broke<N>(cx, cursor, [], [defect(name, "undefined rule `${name}`")], null)
 }
 
+/// Whether a branch's first terminals can take `t` — the one question
+/// that lets the engine skip a branch whole.
+fn starts_at(terms: List<Prim>, t: Token) -> bool {
+    terms.any(takes_term(it, t))
+}
+
+/// Whether one closed terminal accepts `t`, exactly as `match_prim`
+/// judges it.
+fn takes_term(p: Prim, t: Token) -> bool {
+    match p {
+        .Lit(text) -> t.lit_matches(text),
+        .Named(term) -> {
+            let k = term_kind(term)
+            if k != null && t.kind_is(k!) { true }
+            else { is_end(term) && closes_body(t) }
+        },
+        .Ref(_) or .Group(_) -> false,
+    }
+}
+
+/// The farthest point a branch that cannot take `tok` would have
+/// contributed — its own expectations at the cursor — or null when
+/// the branch can try (it is nullable, or a terminal accepts).
+fn skip_point(st: BranchStart?, tok: Token, cursor: int) -> FarthestFailure? {
+    if st == null { return null }
+    let s = st!
+    if s.nullable || starts_at(s.terminals, tok) { return null }
+    FarthestFailure { cursor: cursor, expected: s.words, in_rule: s.in_rule }
+}
+
 /// Branches tried top to bottom; the first success wins. A committed
 /// break DEFERS — later branches still try, and the first break
 /// stands only when nothing hits. A wholly-uncommitted failure
 /// carries the merged farthest point of every branch.
+/// A branch whose first terminals cannot take the token cannot
+/// consume it, so it fails at the cursor: it is skipped, and its own
+/// expectations join the farthest point in branch order — a skip must
+/// say what the branch would have.
 fn match_alt<N>(mut cx: MatchContext<N>, rule_name: string, a: Alt,
                 cursor: int, bindings: List<Binding<N>>, acc: bool, capped: bool) -> MatchResult<N> {
     // LICENSED I4: a merge fold (far_merge), not a scan
     mut farthest: FarthestFailure? = null
     // LICENSED I4: the first break's words, held while the fold runs on
     mut fb_diags: List<Diagnostic>? = null
+    let tok = cx.tokens[cursor]
     for br in a.branches {
-        let r = match_seq<N>(cx, rule_name, br, cursor, bindings, acc, capped)
-        farthest = far_merge(farthest, r.farthest)
-        if r.status == MatchStatus.Hit || r.status == MatchStatus.Fatal {
-            return r with { farthest: farthest }
+        let skip = skip_point(br.start, tok, cursor)
+        if skip != null {
+            farthest = far_merge(farthest, skip)
+        } else {
+            let r = match_seq<N>(cx, rule_name, br, cursor, bindings, acc, capped)
+            farthest = far_merge(farthest, r.farthest)
+            if r.status == MatchStatus.Hit || r.status == MatchStatus.Fatal {
+                return r with { farthest: farthest }
+            }
+            if r.status == MatchStatus.Broke && fb_diags == null { fb_diags = r.diagnostics }
         }
-        if r.status == MatchStatus.Broke && fb_diags == null { fb_diags = r.diagnostics }
     }
     if fb_diags == null { return missed<N>(cx, cursor, bindings, cx.silence, farthest) }
     broke<N>(cx, cursor, bindings, fb_diags!, farthest)
@@ -581,7 +621,7 @@ export fn ready(g: Grammar) -> Ready {
             .Ref(_) or .Group(_) -> nothing_noted(),
         }
     }
-    Ready { g: listed_grammar(g), ordinals: ordinals, lit_expects: lits, kind_expects: kinds, defects: g.defects() }
+    Ready { g: listed_grammar(with_branch_starts(g)), ordinals: ordinals, lit_expects: lits, kind_expects: kinds, defects: g.defects() }
 }
 
 /// How a literal reads when it was expected.
