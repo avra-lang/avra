@@ -161,23 +161,23 @@ fixed so a body edit never moves a unit's bucket.
 
 ## 10. Migration (each step green, seed refreshed where packages move)
 
-- **U0 — the blocker: `@derive(Fingerprint)` refuses enum payloads.** A unit's
-  content identity is a fingerprint of the lowered `Body`, which needs
-  `Ins` (an enum) to derive `Fingerprint`. It does not: `@derive(Fingerprint)`
-  on an enum whose payload is a primitive (`int`, `string`, `bool`) generates
-  `.fingerprint()` on that primitive and the compiler refuses it ("`.fingerprint(…)`
-  calls a method, and `int` has none"), while the SAME derive on a record
-  (`type R = { n: int }`) works. The cause is that `payload_kinds`
-  (`compiler/expand.av`) reads the enum's `EnumSig`, and that sig is a CYCLE
-  during the annotated file's own expansion (expansion runs in resolve; sigs
-  run after), so every payload's `Kind` is `Unspelled` and the fold defers to a
-  `fingerprint()` that does not exist. The fix is in the framework — resolve a
-  variant payload's shape during expansion the way a record field's is, or
-  sign enums before expansion — and it is the FIRST task, because the key
-  cannot be content-addressed until it lands. A hand-written `ins_fp` is the
-  shortcut this document exists to refuse: it re-introduces the hand hash the
-  derive replaced, and the derive's own doc says a field with no structural
-  reading must be refused, not skipped.
+- **U0 — the blocker: MULTIPLE DERIVES ON ONE TYPE INTERFERE.** `Ins` carries
+  two (`@derive(Roles, Fingerprint)`). A probe proves the interference, not a
+  general enum-payload gap: a plain `@derive(Fingerprint) enum E { A(x: int) }`
+  compiles, and a plain record compiles, but on `Ins`:
+  - `@derive(Roles, Fingerprint)` → `Fingerprint` sees every payload `Kind` as
+    `Unspelled` and generates `.fingerprint()` on `int`/`string`/`bool`/`Reg?`
+    (`F2030`);
+  - `@derive(Fingerprint, Roles)` → `Fingerprint` resolves, but `Roles` then
+    fails with `F2033` at `trait Roles`;
+  - two separate `@derive(...)` lines → `Fingerprint` sees `Unspelled` again.
+  `derive_directives` (`compiler/expand.av`) runs each trait's `derive` as its
+  own lifted call, each building its own `MetaType` via `crossed_decl_of`; the
+  first derive's directives change what the second's crossing reads. The fix is
+  in the framework: apply every derive to ONE built shape, or keep the crossing
+  stable across a type's derives. It is the FIRST task — the key cannot be
+  content-addressed until it lands. A hand-written `ins_fp` is the shortcut this
+  document exists to refuse.
 - **U1 — unit identity.** `unit_id`/`obj_key` from `body_fp` + type args, in the
   store. No emit change; the existing per-file path still runs.
 - **U2 — per-unit emit.** `emit_unit(l, bd, path)` — declare everything the body
