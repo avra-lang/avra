@@ -997,6 +997,7 @@ impl Machine {
             .StrSplit -> self.fresh_array([Val.S(piece) for piece in pieces_of(self.text_val(vals[0]), self.text_val(vals[1]))]),
             .StrReplace -> Val.S(replaced(self.text_val(vals[0]), self.text_val(vals[1]), self.text_val(vals[2]))),
             .StrCharCode -> self.str_char_code_val(vals),
+            .StrWordAt -> self.str_word_at_val(vals),
             .StrTrim -> Val.S(trimmed(self.text_val(vals[0]))),
             .StrConcat -> Val.S(self.text_val(vals[0]) + self.text_val(vals[1])),
             .BytesLen -> Val.I(self.octets(vals[0]).length),
@@ -1386,6 +1387,18 @@ impl Machine {
         let n = self.byte_length(vals[0])
         if i < 0 || i >= n { return self.out_of_bounds(i, n) }
         Val.I(self.byte_at(vals[0], i))
+    }
+
+    /// EIGHT BYTES, BIG-ENDIAN, as one word — the SAME bytes and the SAME trap the C
+    /// body answers, so a digest folded through it is native's digest too.
+    fn str_word_at_val(vals: List<Val>) -> Val {
+        let i = self.whole(vals[1])
+        let n = self.byte_length(vals[0])
+        let bad = if i < 0 { i } else { n }
+        if i < 0 || i + 8 > n { return self.out_of_bounds(bad, n) }
+        mut w = 0
+        for j in 0..8 { w = (w << 8) | self.byte_at(vals[0], i + j) }
+        Val.I(w)
     }
 
     /// VALUE SEMANTICS, spelled as the spec: the interpreter has no

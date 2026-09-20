@@ -18969,3 +18969,16 @@ of eight calls with one C body and no engine change. It is a patch for the diges
 alone; the lexer still phones per byte. Filed as the interim, hosted `Unhosted`
 so it gates on the standing seed — the row and its first declaration cannot land
 together.
+
+### The interim landed, and its trap is UNREACHABLE BY CONSTRUCTION
+
+`7302842` (row, hosted `Unhosted`) + the follow-up (declared, `RtHost.StrWordAt`,
+evaluator arm, digest caller) are in. `eval == native` was CHECKED, not assumed —
+four inputs through `avra run` and a native build answer byte-identical keys — and
+a no-op still HITS, so no content key in the tree moved.
+
+RECORDED CONDITION (a deadline, not a guarantee): `avra_str_word_at`'s bounds trap
+cannot fire from its only caller, because `digest_text`'s loop runs `while i + 8 <= n`
+and the tail takes single bytes. The trap exists to mirror `char_code`, and it becomes
+reachable the day a caller reads a word without that guard — which is exactly what an
+inlined byte window would let a program do.
