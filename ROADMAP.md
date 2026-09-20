@@ -19034,3 +19034,51 @@ check and a load), then the length rows, then `StrCharCode`.
 
 Measure it the way this session learned to: pick the row, inline it, and price the
 END-TO-END build plus a user-program benchmark — never the microbenchmark alone.
+
+## Cold: where the 28 s is, and the one measured lever (2026-09-19)
+
+Measured on an 8-core / 16 GB machine, `-O1`, a cold `build packages/cli`:
+
+```
+clang 11.0   admit(parse) 8.7   emit 7.6   lower 3.3   analyze 2.7   resolve 1.2
+```
+(28.2 s user, 34.6 s wall, 276 modules, 5.9 MB of bitcode.)
+
+### LEVER 1, MEASURED: the clang phase is SERIAL, and it need not be
+
+`build_cache` compiles every moved module in ONE `clang -c a.bc b.bc ...`, with a
+comment justifying it: "At this size process startup is most of the cost — 18
+modules one at a time measured ~14s". **THAT PREMISE IS STALE**: it was measured
+when the build emitted `.ll` TEXT (parsing text per module was the cost), and
+`4dd9417` moved the path to bitcode. Measured now, clang's startup on a trivial
+module is **20 ms**.
+
+Real numbers, the 8 LARGEST modules:
+
+| | real | user |
+|---|---|---|
+| one invocation (today) | 2.37 s | 2.11 s |
+| eight invocations, in parallel | **0.79 s** | 2.67 s |
+
+**3x wall for the same CPU**, and the machine has 8 cores. Over 276 modules that
+is **11 s -> ~3 s, ~8 s off a 28 s cold build (29%)**.
+
+The work: the runtime has only BLOCKING spawns (`avra_spawn_status`,
+`avra_spawn_in`). Parallelism needs a NON-BLOCKING spawn and a wait — one row, one
+C body, the two-landing ladder (row first, hosted `Unhosted`, seed refreshed; then
+the declaration and the pool). The pool is BOUNDED (`min(6, cores)` — clang is
+~200 MB a process, well inside 16 GB) and the watchdog caps memory regardless.
+
+NOTE the discipline this does NOT break: "one heavy process at a time" is about
+CONCURRENT SESSIONS, which is what panicked the machine twice. A build running its
+own bounded worker pool is `make -j`, and it is the one form of parallelism every
+build system has.
+
+### LEVERS 2-3, UNMEASURED — do not guess at them
+
+`emit` (7.6 s) is in-process LLVM IR CONSTRUCTION, one module at a time, and cannot
+be parallelized without threads. `admit` (8.7 s) is the parse of 5 MB. Both need
+PROFILING before a change: which API call, which allocation, which grammar rule.
+Per the measurements above, the compiler's own code pays ~6 ns per runtime call,
+so the inliner is worth a few hundred ms here — NOT seconds — and must not be sold
+as the cold fix.
