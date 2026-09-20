@@ -66,10 +66,10 @@ fn mangled(name: string) -> string {
 /// `whole` is a WHOLE-PROGRAM module — one that carries every name, which
 /// is what a lone module must do and the only shape there was before the
 /// split. It is a field rather than an absent value so no caller guards.
-type Refs = { whole: bool, bodies: List<string>, hosted: List<string>, statics: List<string> }
+type Refs = { whole: bool, bodies: Map<string, bool>, hosted: Map<string, bool>, statics: Map<string, bool> }
 
 /// A whole-program module: every name is carried, so the lists are unread.
-fn every_name() -> Refs { Refs { whole: true, bodies: [], hosted: [], statics: [] } }
+fn every_name() -> Refs { Refs { whole: true, bodies: {}, hosted: {}, statics: {} } }
 
 /// THE BODIES A MODULE OWNS, and whether it owns every one — the ONE place
 /// the optional file is opened, so no caller guards and none can disagree
@@ -101,15 +101,20 @@ export fn home_of(l: Lowered, b: Body) -> FileId? { b.file }
 /// What these bodies NAME, and their own names with it: a module declares a
 /// body it owns as much as one it only calls.
 fn refs_of(bodies: List<Body>) -> Refs {
-    mut r = Refs { whole: false, bodies: [bd.name for bd in bodies], hosted: [], statics: [] }
+    mut r = Refs { whole: false, bodies: {}, hosted: {}, statics: {} }
+    // SETS, NOT LISTS: a symbol is NAMED once however many instructions name it, and
+    // `carries` asks membership per body, per static and per runtime row. The lists this
+    // replaces held one entry per REFERENCING INSTRUCTION and were SCANNED linearly for
+    // each of them — the repeated-whole-program-scan shape, one `contains` at a time.
+    for bd in bodies { r.bodies.set(bd.name, true) }
     for bd in bodies {
         for i in bd.ins {
             let body = body_symbol(i)
-            if body != null { r.bodies.push(body!) }
+            if body != null { r.bodies.set(body!, true) }
             let host = hosted_symbol(i)
-            if host != null { r.hosted.push(host!) }
+            if host != null { r.hosted.set(host!, true) }
             let st = static_symbol(i)
-            if st != null { r.statics.push(st!) }
+            if st != null { r.statics.set(st!, true) }
         }
     }
     r
@@ -117,7 +122,7 @@ fn refs_of(bodies: List<Body>) -> Refs {
 
 /// Does this module carry the name? Every name in a whole-program module;
 /// only what its own bodies named in a split one.
-fn carries(r: Refs, named: List<string>, name: string) -> bool { r.whole || named.contains(name) }
+fn carries(r: Refs, named: Map<string, bool>, name: string) -> bool { r.whole || named.get(name) != null }
 
 /// Write the program as verified `.ll` text; null means written, a
 /// string is the failure.
@@ -176,7 +181,8 @@ fn emit_mode(l: Lowered, path: string, with_entry: bool, only: FileId?, bitcode:
     // everything); a split one CRASHES on the first entry that calls anything.
     let scanned: List<Body> = if with_entry { own.bodies.concat([l.entry]) } else { own.bodies }
     let refs: Refs = if own.whole { every_name() } else { refs_of(scanned) }
-    let mine: List<string> = [bd.name for bd in own.bodies]
+    mut mine: Map<string, bool> = {}
+    for bd in own.bodies { mine.set(bd.name, true) }
     declare_runtime(lc, m)
     declare_externs(lc, m, l.externs, refs)
     for bd in l.fns {
@@ -187,7 +193,7 @@ fn emit_mode(l: Lowered, path: string, with_entry: bool, only: FileId?, bitcode:
     }
     let rt = rt_index()
     for bd in l.fns {
-        if mine.contains(bd.name) {
+        if mine.get(bd.name) != null {
             let f = avra_llvm_get_named_function(m, mangled(bd.name))
             let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, bd, f)
             if failure != null { return wreck(m, path, failure!) }
