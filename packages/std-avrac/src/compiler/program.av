@@ -1,7 +1,11 @@
 //! One parsed program: the tree, its source, and the owner map —
 //! which feature speaks for which node. Parsing and the statement
 //! spine live here; analysis stacks on top in analysis.av.
-use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, Variant, Case, TypeRef, flatten, BlockVoice}
+use core.{NodeStore, new_node_store, Expr, Stmt, StmtId, ExprId, Span, Param, Variant, Case, TypeRef, flatten, BlockVoice, DeclId, FileId, joined, is_user_kind, same_decl, user_kind}
+use @std.path.{joined_path, normalized, head_segment}
+use @std.errors.{Loc}
+use diagnostics.{Diag, DiagCode, has_errors, render_among, user_code}
+use features.{Decl, NameFacts, Wanted, FnSig}
 use grammar.{Captured, RunOutcome, DocComment, run_grammar, run_from, lex_source, lex_blocks, lex_diagnostic, TokenKind, Diagnostic, Cause}
 use features.{LangNode, NodeSemantics, StmtSemantics, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at, BlockGrammar}
 use features.expr_spine.{SpineSemantics}
@@ -140,4 +144,250 @@ fn program_stmts(store: NodeStore, o: RunOutcome<LangNode>) -> List<StmtId> {
         }
     }
     store.answered(out)
+}
+
+impl Program {
+    /// The entry file's analysis — absent for a program only checked.
+    fn entry_file() -> Analysis? {
+        if self.entry == null { return null }
+        self.files[self.entry!.at]
+    }
+
+    /// An annotation fn's signature, which IS its effect — `avra
+    /// explain @name`. Null when no declared fn wears the name.
+    fn explain_annotation(name: string) -> string? {
+        let decls = self.ws.decls
+        let hit = decls.decls.find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null)
+        if hit == null { return null }
+        let decl = hit!
+        let sig: FnSig? = (decls.sig(decl.id))?.fn_sig()
+        if sig == null { return null }
+        let holes = [decls.types.name_of(pt) for pt in sig!.params]
+        let signature = "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig!.ret)}"
+        let doc = decls.store(decl.id).doc_comment(decl.stmt)
+        if doc == null { signature } else { "${signature}\n\n${doc!.join("\n")}" }
+    }
+
+    /// A file's generated declarations, each in canonical source
+    /// with its origin — the compact listing API retained for tools
+    /// that want only generated declarations.
+    fn generated_lines(f: FileId) -> List<string> {
+        [self.decl_line(d) for d in self.ws.expanded(f)]
+    }
+
+    /// A file as compiled: written nodes in source order, with every
+    /// generated declaration immediately after the declaration its
+    /// annotation wrapped.
+    fn expanded_source(f: FileId) -> string {
+        let made = self.ws.expanded(f)
+        let parsed = self.ws.parsed(f)
+        mut chunks: List<string> = []
+        mut attached: List<DeclId> = []
+        for s in parsed.stmts {
+            chunks.push(render_statement(parsed.store, s))
+            let written: DeclId? = self.ws.decls.decl_of(f, s)
+            if written != null {
+                let name = self.ws.decls.decl(written!).name
+                for d in made {
+                    let provenance = self.ws.decls.provenance_of(d)
+                    if provenance != null && provenance!.original == name {
+                        chunks.push(self.decl_block(d))
+                        attached.push(d)
+                    }
+                }
+            }
+        }
+        // A malformed declaration table must not make a generated
+        // node invisible. Clean programs attach every declaration;
+        // recovery output keeps any orphan at the end.
+        for d in made {
+            if !attached.any(same_decl(it, d)) { chunks.push(self.decl_block(d)) }
+        }
+        joined(chunks, "\n\n")
+    }
+
+    /// One generated declaration as source with provenance appended.
+    fn decl_line(d: DeclId) -> string {
+        let source = render_statement(self.ws.decls.store(d), self.ws.decls.decl(d).stmt)
+        let provenance = self.provenance_line(d)
+        if provenance.is_empty() { source } else { "${source}   ${provenance}" }
+    }
+
+    fn decl_block(d: DeclId) -> string {
+        let source = render_statement(self.ws.decls.store(d), self.ws.decls.decl(d).stmt)
+        let provenance = self.provenance_line(d)
+        if provenance.is_empty() { source } else { "${provenance}\n${source}" }
+    }
+
+    /// `// from @derive on Point — template …/derive.av:24`: who asked,
+    /// what it names, and the quote the declaration was copied from.
+    fn provenance_line(d: DeclId) -> string {
+        let held = self.ws.decls.provenance_of(d)
+        if held == null { return "" }
+        let provenance = held!
+        let template: string? = self.template_word(provenance.template)
+        "// from @${provenance.ann} on ${provenance.original}${template ?? ""}"
+    }
+
+    /// The template's file and line, when the file is loaded.
+    fn template_word(template: Loc?) -> string? {
+        if template == null || template!.file == null { return null }
+        let site = template!
+        let path = site.file!
+        let f: FileId? = self.ws.decls.paths.get(path)
+        if f == null { return null }
+        " — template ${path}:${self.ws.source(f!).linecol(site.lo).line}"
+    }
+
+    fn clean() -> bool { self.defects.is_empty() && !has_errors(self.voices) && !self.files.any(unclean(it)) }
+
+    /// The packages' voices first (a manifest's trouble explains
+    /// the rest), then every file's diagnostics, the workspace's
+    /// defects last; "" means clean.
+    ///
+    /// THE BOUNDARY SPEAKS FIRST, AND ALONE. A refused `@std/meta`
+    /// makes every expansion generate nothing, so every USE of a
+    /// derived accessor refuses — a cascade of "no method" that names
+    /// the boundary NOWHERE. Three build failures in one day read
+    /// exactly that way, from three different causes, and the word
+    /// "boundary" appeared in none of them. When the door refused,
+    /// its refusal IS the report. The VERDICT still counts every
+    /// diagnostic (`clean` is untouched): only the rendering stops
+    /// explaining the wrong thing.
+    fn report() -> string {
+        let moved: string? = self.ws.decls.meta_disagreement()
+        if moved != null { return self.rendered([foreign_package(moved!)]) }
+        let files = [self.rendered(a.diagnostics) for a in self.files if unclean(a)]
+        let heads: List<string> = if self.voices.is_empty() { [] } else { [self.rendered(self.voices)] }
+        let tails: List<string> = if self.defects.is_empty() { [] } else { [self.rendered(self.defects)] }
+        joined(heads.concat(files).concat(tails), "\n\n")
+    }
+
+    /// Diagnostics rendered over EVERY loaded source — a frame's
+    /// window comes from the file its Loc names: a manifest, a file
+    /// of this package, or the dependency file that wrote a template.
+    fn rendered(ds: List<Diag>) -> string {
+        let sources = self.manifests.concat([self.ws.source(f.id) for f in self.ws.decls.files])
+        let codes = self.ws.lang.rows.codes.concat(self.spoken_codes(ds))
+        joined([render_among(d, codes, sources) for d in ds], "\n\n")
+    }
+
+    /// The rows the PACKAGE kinds among `ds` render under — one per
+    /// diagnostic that wears one, its message the summary. A kind
+    /// spoken is registered by being spoken; `kind_rows` is the
+    /// registry `avra explain` walks without a diagnostic in hand.
+    fn spoken_codes(ds: List<Diag>) -> List<DiagCode> {
+        [user_code(d.kind, d.message) for d in ds if is_user_kind(d.kind)]
+    }
+
+    /// THE PACKAGE KINDS `avra explain @scope/name:E1` answers from:
+    /// every `refuse_as("E1", "…")` with a literal kind in the
+    /// annotation fns the workspace holds (the complete walk — a
+    /// dependency's fns are where a package's kinds are spelled, and
+    /// `files` is the root's alone), and every kind an annotation in
+    /// this program SPOKE, which is how a kind computed at run time
+    /// registers.
+    fn kind_rows() -> List<DiagCode> {
+        let spoken = self.spoken_codes(flatten([a.diagnostics for a in self.files]).concat(self.voices))
+        distinct_codes(spoken.concat(flatten([self.kind_rows_of(fi.id) for fi in self.ws.decls.files])))
+    }
+
+    fn kind_rows_of(f: FileId) -> List<DiagCode> {
+        let decls = self.ws.decls
+        let names = self.ws.resolved(f)
+        flatten([self.kind_rows_in(names, d) for d in decls.decls_of_file(f) if decls.decl(d).root != null])
+    }
+
+    /// The kinds one declaration's body spells, hidden branches
+    /// included: every call bound to `@std/meta`'s kinded constructors
+    /// with a literal kind.
+    fn kind_rows_in(names: NameFacts, d: DeclId) -> List<DiagCode> {
+        let decls = self.ws.decls
+        let x = decls.decl(d)
+        let package = decls.package_of(d)
+        let store = decls.store(d)
+        mut rows: List<DiagCode> = []
+        for e in store.every_expr(x.root!) {
+            let spoken: Kinded? = decls.kinded_call(names, store, e)
+            if spoken != null {
+                let k = spoken!
+                let kind: string? = user_kind(package, k.kind)
+                if kind != null { rows.push(user_code(kind!, k.message ?? "spoken by `@${x.name}`")) }
+            }
+        }
+        rows
+    }
+
+    /// The program as IR, memory strategy applied — every unit
+    /// through the workspace's memo.
+    fn lowered() -> Lowered { self.lowered_from(self.entry?.at, false) }
+
+    /// The program lowered from `entry`: its main and what it
+    /// reaches — or, with no entry, every declared body; `every`
+    /// asks for every declared body under an entry too.
+    fn lowered_from(entry: int?, every: bool) -> Lowered {
+        self.lowered_as(entry, every, false)
+    }
+
+    /// The program lowered with EVERY FILE A PROGRAM: each file's main
+    /// under its program symbol, beside every declared body — what a
+    /// programs binary's entry calls in turn.
+    fn programs_checked() -> Result<Lowered, string> {
+        if !self.clean() { return .Err(self.report()) }
+        let lo = self.lowered_as(null, true, true)
+        if !lo.diagnostics.is_empty() { return .Err(self.rendered(lo.diagnostics)) }
+        .Ok(lo)
+    }
+
+    fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
+        let ws = self.ws
+        memory(self.ws.decls.union(self.files, entry, every, programs, (w: Wanted) -> ws.lowered(ws.spec_id(w)), (f: FileId) -> ws.is_held(f))) with { libraries: ws.linked_packages() }
+    }
+
+    /// The lowered program, CHECKED — every file's analysis first,
+    /// then lowering's own refusals.
+    fn lowered_checked() -> Result<Lowered, string> { self.checked_from(self.entry?.at, false) }
+
+    /// The program lowered for its cases, CHECKED: a case is a
+    /// declaration nothing reaches, so every declared body lowers —
+    /// under the entry's laws all the same.
+    fn cases_checked() -> Result<Lowered, string> { self.checked_from(self.entry?.at, true) }
+
+    fn checked_from(entry: int?, every: bool) -> Result<Lowered, string> {
+        if !self.clean() { return .Err(self.report()) }
+        let lo = self.lowered_from(entry, every)
+        if !lo.diagnostics.is_empty() { return .Err(self.rendered(lo.diagnostics)) }
+        .Ok(lo)
+    }
+
+    fn run() -> Result<string, string> {
+        if self.entry == null { return .Err(self.rendered([no_target(self.ws.root)])) }
+        run_lowered(self.lowered_checked()?)
+    }
+
+    /// Every test case the program declares.
+    fn cases() -> List<TestCase> { self.ws.cases() }
+    fn cases_at(path: string) -> List<TestCase> { self.ws.cases_at(path) }
+
+    /// Everything wrong, rendered, as the refusal; or what merely
+    /// warned, rendered, as the answer — "" when nothing spoke.
+    fn check() -> Result<string, string> { self.check_bodies(false) }
+
+    /// `check` over EVERY declared body, as `avra test` lowers them —
+    /// a body nothing reaches from the entry is checked all the same.
+    fn check_every() -> Result<string, string> { self.check_bodies(true) }
+
+    fn check_bodies(every: bool) -> Result<string, string> {
+        if !self.clean() { return .Err(self.report()) }
+        let lowered = self.lowered_from(self.entry?.at, every).diagnostics
+        if has_errors(lowered) { return .Err(self.rendered(lowered)) }
+        .Ok(self.warnings())
+    }
+
+    /// The warnings alone, rendered — what a clean program still
+    /// says.
+    fn warnings() -> string {
+        let spoken = self.voices.concat(flatten([a.diagnostics for a in self.files]))
+        self.rendered([d for d in spoken if is_warning(d)])
+    }
 }

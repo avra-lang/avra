@@ -1,0 +1,68 @@
+//! The filesystem seam: a record of four questions, and the in-memory
+//! host a test hands in. The disk host is the CLI's.
+use core.{sorted_texts}
+use @std.path.{under_dir, joined_path, normalized, head_segment}
+
+/// The filesystem, as four questions.
+export type Host = { exists: fn(string) -> bool, read: fn(string) -> string, write: fn(string, string) -> string?, list: fn(string) -> List<string>, is_dir: fn(string) -> bool, std_root: string? = null, cwd: string = "" }
+
+impl Host {
+    /// One spelling for one directory: a relative path rooted at the
+    /// host's cwd, normalized — the identity two package roots are
+    /// compared by, never the strings as typed.
+    fn absolute(path: string) -> string {
+        normalized(joined_path(self.cwd, path))
+    }
+
+    /// The directory the toolchain's copy of a std package would
+    /// stand in, when the host names a std root: `@std/text` is
+    /// `<std_root>/std-text`.
+    fn std_dir(key: string) -> string? {
+        let root? = self.std_root else { return null }
+        if !key.starts_with("@std/") { return null }
+        joined_path(root, key.substring(1, key.length).replace("/", "-"))
+    }
+}
+
+/// A host over an in-memory file table — the tests' host, and a
+/// lone file's.
+export fn memory_host(files: Map<string, string>, names: List<string>) -> Host {
+    memory_host_at(files, names, "")
+}
+
+/// An in-memory host standing in a directory: a relative path is
+/// looked up under `cwd`, as the disk would.
+export fn memory_host_at(files: Map<string, string>, names: List<string>, cwd: string) -> Host {
+    let held = Cell.new(files)
+    Host {
+        exists: (p: string) -> held.get().get(normalized(joined_path(cwd, p))) != null,
+        read: (p: string) -> held.get().get(normalized(joined_path(cwd, p))) ?? "",
+        write: (p: string, text: string) -> memory_put(held, normalized(joined_path(cwd, p)), text),
+        list: (dir: string) -> children_of(names, normalized(joined_path(cwd, dir))),
+        is_dir: (dir: string) -> names.any(under_dir(it, normalized(joined_path(cwd, dir)))),
+        cwd: cwd,
+    }
+}
+
+/// A write through the in-memory table — a named fn because the field's answer is
+/// `string?` and a lambda ending in `null` answers `null` alone.
+fn memory_put(held: Cell<Map<string, string>>, path: string, text: string) -> string? {
+    mut files = held.get()
+    files.set(path, text)
+    held.set(files)
+    null
+}
+
+/// The direct children of `dir` among `names` — the base names, in
+/// byte order like the disk host's.
+fn children_of(names: List<string>, dir: string) -> List<string> {
+    mut out: List<string> = []
+    for n in names {
+        if under_dir(n, dir) {
+            let rest = if dir.is_empty() { n } else { n.substring(dir.length + 1, n.length) }
+            let child = head_segment(rest)
+            if !child.is_empty() && !out.contains(child) { out.push(child) }
+        }
+    }
+    sorted_texts(out)
+}
