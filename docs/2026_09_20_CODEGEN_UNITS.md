@@ -162,22 +162,34 @@ fixed so a body edit never moves a unit's bucket.
 ## 10. Migration (each step green, seed refreshed where packages move)
 
 - **U0 — the blocker: MULTIPLE DERIVES ON ONE TYPE INTERFERE.** `Ins` carries
-  two (`@derive(Roles, Fingerprint)`). A probe proves the interference, not a
-  general enum-payload gap: a plain `@derive(Fingerprint) enum E { A(x: int) }`
-  compiles, and a plain record compiles, but on `Ins`:
-  - `@derive(Roles, Fingerprint)` → `Fingerprint` sees every payload `Kind` as
-    `Unspelled` and generates `.fingerprint()` on `int`/`string`/`bool`/`Reg?`
-    (`F2030`);
-  - `@derive(Fingerprint, Roles)` → `Fingerprint` resolves, but `Roles` then
-    fails with `F2033` at `trait Roles`;
-  - two separate `@derive(...)` lines → `Fingerprint` sees `Unspelled` again.
-  `derive_directives` (`compiler/expand.av`) runs each trait's `derive` as its
-  own lifted call, each building its own `MetaType` via `crossed_decl_of`; the
-  first derive's directives change what the second's crossing reads. The fix is
-  in the framework: apply every derive to ONE built shape, or keep the crossing
-  stable across a type's derives. It is the FIRST task — the key cannot be
-  content-addressed until it lands. A hand-written `ins_fp` is the shortcut this
-  document exists to refuse.
+  two (`@derive(Roles, Fingerprint)`). A probe rules out a general enum-payload
+  gap (a lone `@derive(Fingerprint) enum E { A(x: int) }` compiles), and pins the
+  interference to the ORDER the derives run in:
+  - `@derive(Roles, Fingerprint)` → `Fingerprint` sees every primitive payload
+    `Kind` as `Unspelled` and generates `.fingerprint()` on `int`/`string`/`bool`;
+  - `@derive(Fingerprint, Roles)` → `Fingerprint` sees REAL kinds (it defers to
+    `Reg`/`Level` fingerprints) and `Roles` then fails `F2033`;
+  - two separate `@derive(...)` lines → the first way again.
+  The first derive's crossing resolves the declaration's types; the second's
+  reads `Type.Error`. `crossed_decl_of` reads each field/payload `Kind` from the
+  declaration's `EnumSig`/`StructSig`, and that sig is unreliable during
+  expansion (a two-tier re-entry mid-resolve).
+
+  **ATTEMPTED AND RULED OUT (all reverted):** derive order; separate `@derive`
+  annotations; pre-signing the declaration in `derive_directives`; memoizing the
+  crossed shape in a `Cell<Map<string, CrossedShape>>` on the workspace; moving
+  the crossing in `lifted_once` BEFORE the derive fn is lowered. None changed
+  the `Unspelled` payloads, so the interaction is not the lowering's revision
+  bump alone. The next move is a RUNTIME TRACE of the expansion (`payload_kinds`
+  when `sig` is null, and which derive's crossing resolves the types) rather
+  than another blind fix — the same discipline the ROADMAP's `str_len` deadline
+  needed.
+
+  A hand-written `ins_fp` remains the shortcut this document refuses: it
+  re-introduces the hand hash the derive replaced. The framework's own
+  sanctioned exit is a hand `impl Fingerprint for Ins` — legitimate, but a
+  17-arm fold that needs the fields-vs-parts diff test, so it is the fallback,
+  not the first move.
 - **U1 — unit identity.** `unit_id`/`obj_key` from `body_fp` + type args, in the
   store. No emit change; the existing per-file path still runs.
 - **U2 — per-unit emit.** `emit_unit(l, bd, path)` — declare everything the body
