@@ -10,12 +10,15 @@ use @std.meta.{derive}
 
 /// A virtual register. Minted in instruction order: the Nth
 /// value-producing instruction defines register N.
+@derive(Fingerprint)
 export type Reg = { index: int }
 
 /// A scope's abstraction level — which memory strategy owns it.
+@derive(Fingerprint)
 export enum Level { Application, Systems, Bare, Hardware }
 
 /// The unary operators.
+@derive(Fingerprint)
 export enum UnOp { Not }
 
 /// The operator's surface symbol — the projection beside its enum.
@@ -152,6 +155,52 @@ export enum Ins {
 
     // Effects.
     Ret(code: int)
+}
+
+/// `Ins`'s content identity, written HERE because the IR vocabulary
+/// carries its own identity — the trait's exit for a type whose fold
+/// the derive cannot serve. The arms mirror `@derive(Fingerprint)`'s
+/// convention exactly: tag 1, the type's name, the variant's index,
+/// then each payload folded by its SHAPE (`fp_list` for a list,
+/// arity for an optional, the value's own `fingerprint()` for a
+/// declared name). A new variant lands an arm here or the fold is
+/// incomplete, which `make fingerprints` reads.
+impl Ins {
+    fn fingerprint() -> int {
+        match self {
+            .ConstInt(dst, v) -> derived([fp_str("Ins"), 0, dst.fingerprint(), v]),
+            .ConstFloat(dst, bits) -> derived([fp_str("Ins"), 1, dst.fingerprint(), bits]),
+            .ConstStr(dst, s) -> derived([fp_str("Ins"), 2, dst.fingerprint(), fp_str(s)]),
+            .ConstBool(dst, v) -> derived([fp_str("Ins"), 3, dst.fingerprint(), (if v { 1 } else { 0 })]),
+            .Bin(dst, op, a, b) -> derived([fp_str("Ins"), 4, dst.fingerprint(), op.fingerprint(), a.fingerprint(), b.fingerprint()]),
+            .Un(dst, op, src) -> derived([fp_str("Ins"), 5, dst.fingerprint(), op.fingerprint(), src.fingerprint()]),
+            .CallRtVoid(callee, args) -> derived([fp_str("Ins"), 6, fp_str(callee), fp_list([x.fingerprint() for x in args])]),
+            .CallRt(dst, callee, args) -> derived([fp_str("Ins"), 7, dst.fingerprint(), fp_str(callee), fp_list([x.fingerprint() for x in args])]),
+            .Pack(dst, elems) -> derived([fp_str("Ins"), 8, dst.fingerprint(), fp_list([x.fingerprint() for x in elems])]),
+            .Extract(dst, src, at) -> derived([fp_str("Ins"), 9, dst.fingerprint(), src.fingerprint(), at]),
+            .FnAddr(dst, sym) -> derived([fp_str("Ins"), 10, dst.fingerprint(), fp_str(sym)]),
+            .StaticAddr(dst, sym) -> derived([fp_str("Ins"), 11, dst.fingerprint(), fp_str(sym)]),
+            .ScopeEnter(tier) -> derived([fp_str("Ins"), 12, tier.fingerprint()]),
+            .ScopeExit(gives) -> derived([fp_str("Ins"), 13, (if gives == null { derived([0]) } else { derived([1, gives!.fingerprint()]) })]),
+            .IfStart(cond) -> derived([fp_str("Ins"), 14, cond.fingerprint()]),
+            .SwitchStart(selector, cases) -> derived([fp_str("Ins"), 15, selector.fingerprint(), fp_list(cases)]),
+            .ArmEnd(gives) -> derived([fp_str("Ins"), 16, gives.fingerprint()]),
+            .RegionEnd(dst, gives) -> derived([fp_str("Ins"), 17, dst.fingerprint(), gives.fingerprint()]),
+            .Call(dst, callee, args) -> derived([fp_str("Ins"), 18, dst.fingerprint(), fp_str(callee), fp_list([x.fingerprint() for x in args])]),
+            .CallPtr(dst, f, args) -> derived([fp_str("Ins"), 19, dst.fingerprint(), f.fingerprint(), fp_list([x.fingerprint() for x in args])]),
+            .RetVal(r) -> derived([fp_str("Ins"), 20, r.fingerprint()]),
+            .FnExit(gives) -> derived([fp_str("Ins"), 21, gives.fingerprint()]),
+            .Alloca(dst) -> derived([fp_str("Ins"), 22, dst.fingerprint()]),
+            .Load(dst, slot) -> derived([fp_str("Ins"), 23, dst.fingerprint(), slot.fingerprint()]),
+            .Store(slot, src) -> derived([fp_str("Ins"), 24, slot.fingerprint(), src.fingerprint()]),
+            .LoopStart -> derived([fp_str("Ins"), 25]),
+            .LoopCond(c) -> derived([fp_str("Ins"), 26, c.fingerprint()]),
+            .LoopEnd -> derived([fp_str("Ins"), 27]),
+            .Retain(r) -> derived([fp_str("Ins"), 28, r.fingerprint()]),
+            .Release(r) -> derived([fp_str("Ins"), 29, r.fingerprint()]),
+            .Ret(code) -> derived([fp_str("Ins"), 30, code]),
+        }
+    }
 }
 
 // ── Static data ─────────────────────────────────────────────────
