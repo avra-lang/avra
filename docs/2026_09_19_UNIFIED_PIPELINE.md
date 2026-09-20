@@ -325,6 +325,14 @@ seed itself is fine (it defines the symbol); the cache is incoherent. The fix
 is `rm -rf .avra-cache` before `seed-check`. A gate that runs `seed-check` after
 a build from a new generation must not trust the previous generation's cache.
 
+**An unresolved environment quirk:** in the long-lived `avra-cache-cas` worktree
+`make traps` fails with `undefined symbol ...text.has_nul` (sqlite's objects
+reach a text body that is not emitted), while the SAME commit in a fresh
+`git worktree`, and this worktree's exact files rsynced to `/tmp`, are GREEN
+(`24 contracts held`) with the same `build/avra`. The source is verified; the
+difference is the worktree path or state not carried by git. A fresh checkout
+is the receipt until it is root-caused.
+
 **Other cruft found, not yet removed:** none tracked beyond `BUILD_SEAM.diff`
 (a parked design record, now repointed).
 
