@@ -19188,3 +19188,36 @@ this tree's defects keep turning out to be.
   would remove the allocation.
 - **`write_bytes`** (~1300 tree samples): the interface records and objects going out.
 - `admit` 7.5-8.9 s — the parse. Still unprofiled at function granularity.
+
+### Cold, after four slices: 34.6 s -> ~22.6 s
+
+| slice | what | measured |
+|---|---|---|
+| parallel clang (`@std/process.parallel`, width 4) | `clang` 11.0 -> ~5.6 s | wall -5 s |
+| closure law asked ONCE, not per module | `emit` 7.6 -> ~1.8 s | wall -6 s |
+| `Refs` symbol lists -> sets | `emit` ~1.8 -> ~1.1 s | wall -0.6 s |
+
+Warm is unchanged throughout (0.56-0.59 s) — every one is a build path.
+
+`admit` (the PARSE) is now the biggest phase by a distance:
+
+```
+admit 7.9-8.2   clang 5.6   lower 3.2-4.2   analyze 2.5-2.9
+resolve 1.2-1.4   bodies 1.2-1.3   emit 0.9-1.9
+```
+
+### NEXT: profile the parse at FUNCTION granularity
+
+The tree names it: `grammar.run_from` 491, `match_alt` 292, `match_seq` 183,
+`match_prim` 105, `ended` 84, `appended_expected` 212 — and behind them the same tax
+as everywhere else (~50% of leaf samples are `rc_release`/`rc_retain`/`array_*`/
+`malloc`). `empty_lists_reg` 217 and `lower_fn` 285 are the lowering side.
+
+THE QUESTION TO ASK FIRST, per this session's own lesson: **is some whole-program (or
+whole-module) question being asked per token?** Every cold win so far was that shape —
+a repeated scan, a `contains`, a mkdir per row. The parse is 5 MB of tokens through a
+grammar engine, so the same shape there would be invisible in a leaf list and obvious
+in a call tree.
+
+`keep`'s row is still on the table too: `make_dirs(self.shard(...))` runs a mkdir per
+stored row (usually EEXIST), and `write_bytes` is ~1.3 s of the tree.
