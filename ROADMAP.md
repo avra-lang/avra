@@ -19082,3 +19082,15 @@ PROFILING before a change: which API call, which allocation, which grammar rule.
 Per the measurements above, the compiler's own code pays ~6 ns per runtime call,
 so the inliner is worth a few hundred ms here — NOT seconds — and must not be sold
 as the cold fix.
+
+### The flag toggle is not a backup (cost: nearly lost a change)
+
+The differential recipe toggles `CACHE_HOLD_ENABLED` by restoring a saved
+`/tmp/bc.bak`. That backup was taken BEFORE the parallel-clang change, so the
+restore reverted the WHOLE FILE — and the next `git commit` said **"nothing to
+commit"**, which reads as a fact and was a symptom. It was caught only by grepping
+for the new code (`grep -c "parallel(jobs"` answered 0).
+
+**Toggle ONE LINE with `sed` in place, never by restoring a file.** And read
+"nothing to commit" as "check what you think you changed", because a wholesale
+restore is silent and the diff it destroys is exactly the one you were working on.
