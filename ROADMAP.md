@@ -18906,3 +18906,66 @@ derivation, every record's `bytes` line rewritten, the const unit keys moved, an
 a witness that a HELD build and a whole-program build agree — the same shape as
 any other format bump, and it owes a deliberate cold build to a consistent key
 space. Filed as that, not as a memo.
+
+## A TEXT BYTE WINDOW THE COMPILER CAN INLINE — the proper fix (2026-09-19)
+
+Found while chasing warm-edits: the hash folds at **~75 MB/s**, and the reason is
+not the hash. `digest_text` is Avra; `fold_word`/`rotl`/`log_shr` are Avra. The
+ONLY C is "give me byte i" —
+
+```avra
+// core/runtime_api.av
+RtSig { name: "avra_str_char_code", … host: RtHost.StrCharCode, inert: true, … }
+```
+
+so `s.char_code(i)` lowers to `Ins.CallRt("avra_str_char_code", …)` — a CALL, and
+inside it a fresh `str_len` and bounds check. Eight bytes cost eight calls.
+
+**AND THE TWO ENGINES ALREADY DISAGREE ABOUT THIS, IN A WAY NOBODY NAMED.** The
+interpreter reads the byte INLINE (`interp.av`, `str_char_code_val`: `byte_length`,
+bounds, `byte_at`) and touches no C. The backend CALLS OUT (`llvm.av`,
+`call_rt_value`). Two engines, one instruction, one of them fast and one of them
+phoning home per byte.
+
+### The ask
+
+**A text byte window the compiler can lower inline** — a machine shape the
+backend emits as a load (and a cold, out-of-line trap), because it already MIRRORS
+the runtime's box layout and static-asserts that the two agree. It built the box;
+it should look inside one.
+
+Shape of the work — the IR-vocabulary protocol, and it is a WEEK not a day
+because the registration IS the exhaustiveness: a new `Ins` (or an `RtHost`-
+dispatched backend arm — see below), every consumer paid (`core/ir.av`, interp,
+memory, ir_text, llvm, features/facts.av), a program test proving eval == native,
+and the IR golden. `make vocab` names the consumers and `avra new ins` prints the
+arm each wants.
+
+THE CLEANEST SEAM IS `RtHost`, NOT A NEW INSTRUCTION. `RtHost` is already an enum
+of runtime operations that the interpreter DISPATCHES ON BY SHAPE
+(`.StrCharCode -> self.str_char_code_val(vals)`), so a backend arm keyed on the
+same variant is dispatch-on-shape, never dispatch-on-name — which is the
+doctrine. A new `Ins` would restate what the row already says.
+
+### Why it is worth a week
+
+- The digest: warm `inputs()` and the object keys — ~130 ms of a warm edit.
+- **The LEXER walks every source byte with `char_code`** (`grammar/lexer.av`:
+  `while j < n && pred(src.char_code(j)) { j = j + 1 }`). That is a slice of the
+  cold build's **7.5 s parse**, and it is the same defect one layer down.
+- Every other text walk in the tree — 9 files name `char_code`.
+
+**AND IT IS THE FIRST PLACE THE TREE NEEDS THE COMPILED PATH AND THE INTERPRETED
+PATH TO AGREE ON A MACHINE OPERATION.** Everywhere else the differential asks
+whether two engines agree on a VALUE; this asks whether they agree on how a byte
+is read. `avra_box.h` is the one layout both must wear, and it is already
+static-asserted into the backend — so the invariant is free, and this is its
+first real customer.
+
+### The interim — landing 1
+
+A bulk row (`avra_str_word_at`: eight bytes as ONE big-endian word) removes seven
+of eight calls with one C body and no engine change. It is a patch for the digest
+alone; the lexer still phones per byte. Filed as the interim, hosted `Unhosted`
+so it gates on the standing seed — the row and its first declaration cannot land
+together.
