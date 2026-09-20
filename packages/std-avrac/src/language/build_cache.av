@@ -16,6 +16,30 @@ use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, disti
 use features.{Decl, DeclSig}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_text, write_text, make_dirs, exists}
+use @std.process.{parallel, cmd, Tool, Outcome, Exit, Env, Streams, status_of, ProcessError}
+
+/// HOW MANY CLANGS AT ONCE. Bounded, because clang is ~200MB a process and the
+/// machine is shared — four buys the wall without saturating it.
+const CLANG_WIDTH: int = 4
+
+/// Whether a child ended the ONE way a build accepts. A projection, because one arm
+/// answers: a payload-carrying enum does not compare.
+fn exited_cleanly(e: Exit) -> bool {
+    match e {
+        .Clean -> true,
+        .Code(_) -> false,
+        .Signal(_, _) -> false,
+    }
+}
+
+/// A child's exit, in the words the failure report needs.
+fn describe_exit(e: Exit) -> string {
+    match e {
+        .Clean -> "cleanly",
+        .Code(n) -> "— exited with code ${n}",
+        .Signal(sig, core) -> "— killed by signal ${sig}",
+    }
+}
 
 /// The compiler's format identity, folded first into every key. The
 /// compiler's own sources, its backend and its runtime are already key
@@ -384,13 +408,29 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
         }
     }
     let t_e1 = avra_now_ns()
-    // ONE CLANG OVER EVERY MOVED MODULE. At this size process startup is most of the cost
-    // — 18 modules one at a time measured ~14s — and one invocation does the same
-    // optimisation work once. `-c a.ll b.ll` writes `a.o`/`b.o` BESIDE its inputs, so the
-    // run is DIRECTORY-SCOPED to the cache root.
+    // ONE CLANG PER MOVED MODULE, `CLANG_WIDTH` OF THEM AT ONCE. `-c a.bc` writes
+    // `a.o` BESIDE its input, so every run is DIRECTORY-SCOPED to the cache root.
+    //
+    // THE SERIAL `clang -c a.bc b.bc ...` THIS REPLACES was justified by process
+    // startup, and that premise expired: it was measured when the path emitted `.ll`
+    // TEXT, where parsing text per module was the cost. `4dd9417` moved the path to
+    // bitcode and startup is ~20ms. Measured here, the eight largest modules: one
+    // invocation 2.37s, the same eight in parallel 0.79s.
+    //
+    // THE COST IS CPU, NOT A FREE WIN: one invocation shared a single LLVM context
+    // across every module and four concurrent ones cannot, so user CPU rises while
+    // the wall falls. Widths measured (wall/user): 3: 30.6/31.4, 4: 29.6/32.6,
+    // 6: 29.1/34.4.
     if !compile_ll.is_empty() {
-        let built = avra_spawn_in(cache.root, linker, ["-w", opt, "-c"].concat(compile_ll))
-        if built != 0 { fail "avra: clang failed compiling — exited with code ${built}" }
+        let clang = Tool { name: "clang", path: linker, terminator: null }
+        let jobs = [cmd(clang, ["-w", opt, "-c", name]) with { cwd: cache.root, env: Env.Inherit, streams: Streams.Inherited, own_group: false } for name in compile_ll]
+        match parallel(jobs, CLANG_WIDTH) {
+            .Err(why) -> { fail "avra: clang could not run — ${why.describe().message}" }
+            .Ok(outs) -> {
+                let bad: Outcome? = outs.find((o: Outcome) -> !exited_cleanly(o.exit))
+                if bad != null { fail "avra: clang failed compiling ${describe_exit(bad!.exit)}" }
+            }
+        }
     }
     let t_e2 = avra_now_ns()
     for po in pending {
