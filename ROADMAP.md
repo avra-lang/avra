@@ -19267,3 +19267,60 @@ the parse's 10 s is, it is not the tables.
 `check`, `test` and `seed` never run the cache driver, so nothing is HELD and every file
 parses every time. A parse win is a dev-loop win, not only a cold one — and the WARM
 build pays ~10 ms of it (the edited file), because a held file answers from its record.
+
+## THE PARSE, MEASURED: 18 match attempts per token (2026-09-19)
+
+`admit` was the biggest cold phase (7.9-8.2 s) and it LUMPS two costs. Timed per file:
+
+```
+parse 10039 ms      mint 169 ms
+```
+
+**`admit` IS the parse; the declaration minting is 169 ms of it.** Then, inside
+`parse_into`:
+
+```
+lex 388 ms      run_grammar 6713 ms      tokens 380,908      bytes 2.20 MB
+```
+
+**LINEAR in tokens** — `us/token` is 14-18 us across every decile, from 1-token files
+to a 25,924-token file. So the packrat memo IS working; there is no exponential
+blowup to find. The problem is the CONSTANT: 17.6 us/token against ~100 ns for a good
+parser, ~175x.
+
+Instrumented the engine: **6,924,554 `match_seq` attempts for 384,828 tokens = 18
+attempts per token**, ~970 ns each.
+
+### WHY, AND THE MACHINERY THAT IS ALREADY THERE
+
+```avra
+fn match_alt<N>(mut cx, rule_name, a, cursor, bindings, acc, capped) -> MatchResult<N> {
+    for br in a.branches {
+        let r = match_seq<N>(cx, rule_name, br, cursor, ...)   // EVERY branch, in order
+```
+
+**The matcher tries every branch of every rule at every position and never consults a
+FIRST set.** `grammar/first.av` computes precisely that — `FirstSet { lits, terms,
+nullable }`, per rule, derived ONCE ("a rule referenced from forty places is walked
+once") — and it is used only at ASSEMBLY time to refuse dead branches. The matcher
+does not read it.
+
+### THE FIX, AND THE THING THAT MAKES IT DELICATE
+
+Close each BRANCH's `terms` into terminals at `ready(g)` (once per grammar, where
+`first_defects` already walks the same graph), and in `match_alt` skip a branch whose
+first terminals cannot take `tokens[cursor]`. 18 attempts/token should fall to 2-3 —
+a several-second win, and it helps `check`/`test`/`seed` too, not just cold.
+
+**THE HAZARD IS THE DIAGNOSTICS, and it is why this is a slice and not a patch.** The
+engine reports "expected A, B or C" from the FARTHEST failure, and `match_alt` folds
+every branch's failure into it (`far_merge`). A skipped branch contributes nothing —
+so the expected list would silently LOSE words, and every golden that pins a parse
+refusal would move. **The skip must SYNTHESIZE the words the branch would have
+contributed, at the same cursor, in the same order** — which is knowable, because a
+branch that cannot start fails AT the cursor with its first terminals' expectations.
+`lit_expects`/`kind_expects` already hold those words per terminal.
+
+ORACLE: the diagnostics goldens and `make gate`. Do not land it on a differential
+alone — a differential proves the two ENGINES agree, and both read the same wrong
+expectation list.
