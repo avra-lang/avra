@@ -22,9 +22,16 @@
 //! inside one branch's groups are written by one author in one place.
 use core.{is_name_start, is_digit, distinct}
 
+/// One terminal a branch can begin with, and the rule whose body
+/// directly holds it — the name a failure there reports.
+type TermStart = { prim: Prim, rule: string }
+
 /// What a branch can begin with, and whether it can begin with
-/// nothing at all.
-type FirstSet = { lits: List<string>, terms: List<string>, nullable: bool }
+/// nothing at all. `lits`/`terms` are a SET for shadowing checks;
+/// `ordered` is the same terminals in the order the engine would
+/// merge their expectations, stopping where the first nullable
+/// branch would.
+type FirstSet = { lits: List<string>, terms: List<string>, nullable: bool, ordered: List<TermStart> = [] }
 
 // `firsts`: each rule's set, derived once — a rule referenced from
 // forty places is walked once, not forty times
@@ -50,29 +57,46 @@ impl FirstCx {
         if body == null { return no_first }
         // LICENSED I15: one call site; a bracket earns itself at the second
         self.visiting.push(name)
-        let f = self.alt_first(body!)
+        let f = self.alt_first(name, body!)
         let _ = self.visiting.pop()
         self.firsts.set(name, f)
         f
     }
 
-    fn alt_first(a: Alt) -> FirstSet {
-        mut out = no_first
-        for s in a.branches { out = first_union(out, self.seq_first(s)) }
-        out
+    fn alt_first(rule: string, a: Alt) -> FirstSet {
+        mut lits: List<string> = []
+        mut terms: List<string> = []
+        mut nullable = false
+        mut ordered: List<TermStart> = []
+        // A nullable branch is the first HIT on a token none can
+        // start on, so the branches after it never run — the engine
+        // never sees their expectations.
+        mut stopped = false
+        for s in a.branches {
+            let f = self.seq_first(rule, s)
+            lits = first_lits(lits, f.lits)
+            terms = first_lits(terms, f.terms)
+            nullable = nullable || f.nullable
+            if !stopped {
+                ordered = ordered.concat(f.ordered)
+                if f.nullable { stopped = true }
+            }
+        }
+        FirstSet { lits: lits, terms: terms, nullable: nullable, ordered: ordered }
     }
 
     /// Walk items left to right: a skippable item's tokens join the
     /// set and the walk continues; the first required item ends it.
     /// All items skippable means the branch can match nothing.
-    fn seq_first(s: Seq) -> FirstSet {
+    fn seq_first(rule: string, s: Seq) -> FirstSet {
         mut out = no_first
         for m in s.items {
-            let f = self.prim_first(m.prim)
+            let f = self.prim_first(rule, m.prim)
             out = FirstSet {
                 lits: first_lits(out.lits, f.lits),
                 terms: first_lits(out.terms, f.terms),
                 nullable: false,
+                ordered: out.ordered.concat(f.ordered),
             }
             let skippable = m.rep == Rep.Opt || m.rep == Rep.Star || f.nullable
             if !skippable { return out }
@@ -80,22 +104,22 @@ impl FirstCx {
         out with { nullable: true }
     }
 
-    fn prim_first(p: Prim) -> FirstSet {
+    fn prim_first(rule: string, p: Prim) -> FirstSet {
         match p {
-            .Lit(text) -> FirstSet { lits: [text], terms: [], nullable: false },
-            .Named(term) -> FirstSet { lits: [], terms: [term], nullable: false },
+            .Lit(text) -> FirstSet { lits: [text], terms: [], nullable: false, ordered: [term_start(p, rule)] },
+            .Named(term) -> FirstSet { lits: [], terms: [term], nullable: false, ordered: [term_start(p, rule)] },
             .Ref(target) -> self.rule_first(target),
-            .Group(inner) -> self.alt_first(inner),
+            .Group(inner) -> self.alt_first(rule, inner),
         }
     }
 
     /// True when the branch's head alone decides it: after its first
     /// required item, every item is skippable — nothing left can
     /// refuse, so the executor never backtracks out.
-    fn commits(s: Seq) -> bool {
+    fn commits(rule: string, s: Seq) -> bool {
         mut seen_head = false
         for m in s.items {
-            let f = self.prim_first(m.prim)
+            let f = self.prim_first(rule, m.prim)
             let skippable = m.rep == Rep.Opt || m.rep == Rep.Star || f.nullable
             if seen_head && !skippable { return false }
             if !skippable { seen_head = true }
@@ -127,6 +151,64 @@ impl FirstCx {
             }
         }
     }
+
+    /// The grammar with every branch's start info filled. First sets
+    /// are read from the ORIGINAL tree, so the memo is shared.
+    fn started(g: Grammar) -> Grammar {
+        g with { rules: [r with { body: self.started_alt(r.name, r.body) } for r in g.rules] }
+    }
+
+    fn started_alt(rule: string, a: Alt) -> Alt {
+        a with { branches: [self.started_seq(rule, s) for s in a.branches] }
+    }
+
+    fn started_seq(rule: string, s: Seq) -> Seq {
+        let f = self.seq_first(rule, s)
+        s with {
+            items: [self.started_item(rule, m) for m in s.items],
+            start: BranchStart {
+                terminals: [t.prim for t in f.ordered],
+                words: distinct([start_word(t.prim) for t in f.ordered]),
+                nullable: f.nullable,
+                in_rule: f.ordered.first()?.rule ?? rule,
+            },
+        }
+    }
+
+    fn started_item(rule: string, m: Item) -> Item {
+        m with { prim: self.started_prim(rule, m.prim) }
+    }
+
+    fn started_prim(rule: string, p: Prim) -> Prim {
+        match p {
+            .Group(inner) -> Prim.Group(self.started_alt(rule, inner)),
+            .Ref(_) or .Lit(_) or .Named(_) -> p,
+        }
+    }
+}
+
+/// How a terminal and the rule that holds it are minted together.
+fn term_start(p: Prim, rule: string) -> TermStart {
+    TermStart { prim: p, rule: rule }
+}
+
+/// How a first terminal reads in an "expected ..." message — the same
+/// spelling the engine's own miss uses.
+fn start_word(p: Prim) -> string {
+    match p {
+        .Lit(text) -> lit_expected(text)[0],
+        .Named(term) -> expected_word(term),
+        .Ref(_) or .Group(_) -> "",
+    }
+}
+
+/// Every branch's start info, filled once per assembly. A branch whose
+/// terminals cannot take the token is skipped whole by the engine, and
+/// the words it would have contributed are closed here, so a skip
+/// still says what it expected.
+export fn with_branch_starts(g: Grammar) -> Grammar {
+    mut cx = FirstCx { g: g, visiting: [], firsts: {}, defects: [] }
+    cx.started(g)
 }
 
 /// A FIRST set is a SET. It is built ONCE per assembly, off every
@@ -134,14 +216,6 @@ impl FirstCx {
 /// literal reaching a branch's head twice would be refused twice.
 fn first_lits(a: List<string>, b: List<string>) -> List<string> {
     distinct(a.concat(b))
-}
-
-fn first_union(a: FirstSet, b: FirstSet) -> FirstSet {
-    FirstSet {
-        lits: first_lits(a.lits, b.lits),
-        terms: first_lits(a.terms, b.terms),
-        nullable: a.nullable || b.nullable,
-    }
 }
 
 /// The token class that would also match this literal's text:
@@ -160,8 +234,8 @@ fn subsuming_term(text: string) -> string? {
 export fn first_defects(g: Grammar) -> List<Diagnostic> {
     mut cx = FirstCx { g: g, visiting: [], firsts: {}, defects: [] }
     for r in g.rules {
-        let firsts = [cx.seq_first(s) for s in r.body.branches]
-        let commit_flags = [cx.commits(s) for s in r.body.branches]
+        let firsts = [cx.seq_first(r.name, s) for s in r.body.branches]
+        let commit_flags = [cx.commits(r.name, s) for s in r.body.branches]
         for i, fi in firsts {
             if fi.nullable && i < firsts.length - 1 {
                 cx.note(defect(r.name,
