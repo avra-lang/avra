@@ -1,0 +1,404 @@
+//! The workspace's analysis and memo: parse/resolve/sig/typeck
+//! families and the lowered program. The core accessors live in
+//! workspace.av.
+use core.{Expr, StmtId, DeclId, FileId, ExprId, flatten, TypeId, Type, touch, spelled}
+use @std.path.{dir_of}
+use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, Decls, Clash, Wanted, nothing, Lifted, bound_decl_of, SeatValue, settled_symbol, quote_meta, SettleRoot}
+use core.{StmtId}
+use diagnostics.{Diag, no_voices, has_errors}
+
+impl Workspace {
+    /// The method-table clashes spoken in a file. Build the index once:
+    /// scanning every type for every file made this a whole-program
+    /// pass repeated for each file.
+    fn method_diagnostics(f: FileId) -> List<Diag> {
+        // A LIFTED CALL RUNS INSIDE A RESOLVE: computing the provider's
+        // analysis must not force ANOTHER file's resolve (a re-entrant
+        // `resolved` is a defect, not a smaller view). The provider's
+        // real diagnostics come from the normal analyze pass.
+        if self.db.family_active(ordinal(Family.Resolved)) { return [] }
+        let previous: MethodDiagIndex? = self.method_diags.first()
+        if previous != null {
+            let held = previous!
+            if held.revision == self.db.revision() && held.decl_count == self.decls.decls.length && f.index < held.by_file.length {
+                return held.by_file[f.index]
+            }
+        }
+        mut by_file: List<List<Diag>> = []
+        mut at = 0
+        // Signing an impl may admit another declaration, so walk the
+        // growing table until every type has had its method query.
+        while at < self.decls.decls.length {
+            let x = self.decls.decls[at]
+            at = at + 1
+            if is_type_decl(x) {
+                touch(self.methods(x.id))
+                let held: List<Clash> = self.method_clashes.at(x.id.index) ?? []
+                for c in held {
+                    while by_file.length <= c.file.index { by_file.push([]) }
+                    mut row = by_file[c.file.index]
+                    row.push(c.diag)
+                    by_file.set(c.file.index, row)
+                }
+            }
+        }
+        while by_file.length < self.decls.files.length { by_file.push([]) }
+        let current = MethodDiagIndex { revision: self.db.revision(), decl_count: self.decls.decls.length, by_file: by_file }
+        if self.method_diags.is_empty() { self.method_diags.push(current) } else { self.method_diags.set(0, current) }
+        by_file[f.index]
+    }
+
+    /// One file's analysis: the snapshot every facade reads.
+    fn analysis(f: FileId) -> Analysis {
+        // A closed one-shot workspace retains no Analysis because its
+        // program closure points back here.
+        if self.closed { return self.analyzed(f) }
+        match self.analyses.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        let out = self.analyzed(f)
+        self.analyses.finish(f.index, out, self.db.revision())
+    }
+
+    /// The record itself: every pass's facts for the file, and the way
+    /// to its program.
+    fn analyzed(f: FileId) -> Analysis {
+        let p = self.parsed(f)
+        let names = self.resolved(f)
+        let facts = self.folded(f)
+        let path = self.decls.file(f).path
+        Analysis {
+            view: file_view(self.lang, p, self.decls, f), names: names, facts: facts, lang: self.lang,
+            diagnostics: flatten([p.voices.list, names.voices.list, self.sig_diagnostics(f), self.method_diagnostics(f), facts.voices.list]),
+            program: () -> self.program(path),
+        }
+    }
+
+    /// A unit's identity: its symbol, interned.
+    mut fn spec_id(w: Wanted) -> int {
+        let known: int? = self.specs.get(w.name)
+        if known != null { return known! }
+        let id = self.asks.length
+        spec_put(self.specs, w.name, id)
+        self.asks.push(w)
+        id
+    }
+
+    /// The program's extern fns by symbol, gathered ONCE per run — every
+    /// file is admitted before the first unit lowers, and the emitters
+    /// asked per body where each walked every declaration.
+    fn extern_symbols() -> List<string> {
+        let held: List<string>? = self.externs.at(0)
+        if held != null { return held! }
+        let names = self.decls.extern_names()
+        self.externs.keep(0, names)
+        names
+    }
+
+    /// One unit lowered and remembered: a body edit re-lowers its own
+    /// unit; the specializations it wants are other units.
+    fn lowered(id: int) -> Unit {
+        match self.units.start_recursive(id) { .Reuse(value) -> { return value }, .Compute -> nothing() }
+        let w = self.asks[id]
+        // A HELD UNIT CONTRIBUTES ITS EDGES, NOT ITS BODY. Its machine code is the stored
+        // object; its DEMANDS are what the fresh lowering must follow, or a fn only a held
+        // body calls is never demanded and the fresh object is not the whole-program one.
+        if self.is_held(w.file) {
+            let deps = self.held_deps(w)
+            if deps != null {
+                // A HELD SPECIALIZATION NEEDS A DECLARATION a fresh caller can name: its body
+                // is in the stored object, but nothing here declares it. `held_stubs` covers
+                // held DECLARATIONS; a specialization's signature is its generic's,
+                // substituted with the type arguments, so no extra row is needed.
+                let stub = self.unit_stub(w)
+                let bodies: List<Body> = if stub == null { [] } else { [stub!] }
+                return self.units.finish(id, Unit { bodies: bodies, wants: deps!, voices: no_voices(), statics: [] }, self.db.revision())
+            }
+        }
+        let out = self.lower_requested(w)
+        if !self.is_held(w.file) { self.remember_deps(w, out.wants) }
+        self.units.finish(id, out, self.db.revision())
+    }
+
+    /// The declaration a held SPECIALIZATION wears — its generic's signature substituted
+    /// with the type arguments. Null for a held declaration (stubbed elsewhere) and for a
+    /// unit with no fn signature (a root or main).
+    fn unit_stub(w: Wanted) -> Body? {
+        if w.sub == null || w.decl == null { return null }
+        let sub = w.sub!
+        // THE METHOD'S OWN SIGNATURE, substituted at the type the Sub names — `sub.target`
+        // is the GENERIC TYPE (whose Vars the seats use), never the method.
+        let base = (self.decls.sig(w.decl!))?.fn_sig()
+        if base == null { return null }
+        Body {
+            name: w.name,
+            params: [self.decls.types.substituted(t, sub.target, sub.args) for t in base!.params],
+            ret: self.decls.types.substituted(base!.ret, sub.target, sub.args),
+            gives: null, ins: [], reg_types: [], file: w.file,
+        }
+    }
+
+    /// The store, attached by a build; null outside one.
+    mut fn attach_store(s: Store) { self.store = s }
+
+    /// ONE DERIVATION for the key a unit's edges live under: the unit's NAME is its
+    /// identity (a declaration's symbol plus the type-argument wires), stable across runs.
+    fn unit_key(name: string) -> string { node_key(Stored.Unit, ["deps", CACHE_FORMAT, name]) }
+
+    /// A held unit's persisted demands, or null when it was never stored (a
+    /// specialization no build has minted before).
+    fn held_deps(w: Wanted) -> List<Wanted>? {
+        let s: Store? = self.store
+        if s == null { return null }
+        let raw = s!.get(Stored.Unit, self.unit_key(w.name))
+        if raw == null { return null }
+        mut ws = self
+        ws.wanted_list_from_wire( raw!)
+    }
+
+    fn remember_deps(w: Wanted, wants: List<Wanted>) {
+        let s: Store? = self.store
+        if s == null { return }
+        let _ = s!.keep(Stored.Unit, self.unit_key(w.name), self.wanted_list_wire( wants), [])
+    }
+
+    /// The one lowering path for a body requested from a held source. A
+    /// specialization may be absent from its cached object, and compile-time
+    /// evaluation also needs the real body.
+    fn lower_requested(w: Wanted) -> Unit {
+        if self.is_held(w.file) {
+            let path = self.decls.file(w.file).path
+            if self.decls.ranged.get(path) == null {
+                let main = self.decls.main_of(w.file)
+                if main != null {
+                    let p = self.parsed(w.file)
+                    self.decls.range_bodies(w.file, p.store, main!)
+                }
+                self.decls.ranged.set(path, true)
+            }
+        }
+        let ws = self
+        let settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> = (f: FileId, root: SettleRoot, seats: List<SeatValue>) -> ws.settled(f, root, seats)
+        lower_unit(self.analysis(w.file), self.extern_symbols(), w, settle)
+    }
+
+    /// An isolated compile-time run needs the body of every function it
+    /// reaches, including one whose machine-code object is held. Parse and
+    /// lower that source on demand; ordinary program lowering still reuses
+    /// the held object through `lowered` above.
+    fn lowered_for_eval(id: int) -> Unit {
+        let w = self.asks[id]
+        if w.decl == null || !self.is_held(w.file) { return self.lowered(id) }
+        self.lower_requested(w)
+    }
+
+    /// A const's value, settled ONCE per workspace: its initializer
+    /// lowered as a program of its own — the units it reaches are the
+    /// program's, memoized — then run in the evaluator. A const whose
+    /// value asks for itself is refused as the cycle it is.
+    fn settled(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
+        self.settled_at(self.settle_id(f, root, seats))
+    }
+
+    fn settle_id(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> int {
+        let name = self.settle_symbol(f, root, seats)
+        let known: int? = self.settle_specs.get(name)
+        if known != null { return known! }
+        let id = self.settle_asks.length
+        self.settle_specs.set(name, id)
+        self.settle_asks.push(SettleAsk { file: f, root: root, name: name, seats: seats })
+        id
+    }
+
+    /// A settlement's key: the const's statement or the expression,
+    /// plus the settled seats' fingerprints when a unit fixes them —
+    /// so two units of one body settle their own values.
+    fn settle_symbol(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> string {
+        let own = match root {
+            .Const(s) -> const_symbol(f, s),
+            .Expr(e) -> expr_symbol(f, e),
+        }
+        settled_symbol(own, seats)
+    }
+
+    /// A const's inferred type is a program fact, like a signature:
+    /// type its declaration on demand and publish the answer through
+    /// Decls so every other body reads the same identity. Answers
+    /// whether THIS ask closed a cycle — a const's value asking for
+    /// the const's own type.
+    fn const_type_at(id: int) -> bool {
+        let error = self.decls.types.intern(Type.Error)
+        match self.const_type_facts.ask(id) {
+            .Cycle -> { return true },
+            .Reuse(_) -> { return false },
+            .Compute -> self.const_type_facts.begin(id),
+        }
+        let ask = self.settle_asks[id]
+        // only a const's statement has a type to publish
+        let held: StmtId? = const_stmt(ask.root)
+        if held == null {
+            let _ = self.const_type_facts.finish(id, error, error.index)
+            return false
+        }
+        let s = held!
+        touch(self.items(ask.file))
+        // a top-level const is a declaration: typing it records the
+        // value's type; a nested one is recorded by the body it is in.
+        // Its typing already OPEN is the same cycle seen from the
+        // other side — the value is asking for the const's own type.
+        let d: DeclId? = self.decls.decl_of(ask.file, s)
+        let cyclic = d != null && self.decl_facts.open(d!.index)
+        if d != null && !cyclic { touch(self.typed(d!)) }
+        let ty = self.decls.held_const_type(ask.file, s) ?? error
+        let _ = self.const_type_facts.finish(id, ty, ty.index)
+        cyclic
+    }
+
+    fn settled_at(id: int) -> Result<Settled, Unsettled> {
+        match self.settlements.ask(id) {
+            .Cycle -> { return .Err(Unsettled.Trap("asks for its own value while settling")) },
+            .Reuse(held) -> { return reused_settlement(held) },
+            .Compute -> self.settlements.begin(id),
+        }
+        let ask = self.settle_asks[id]
+        let root: ExprId = match ask.root {
+            .Const(s) -> self.analysis(ask.file).view.store.const_value(s)!,
+            .Expr(e) -> e,
+        }
+        let r = self.settlement_of(ask.file, root, ask.name, ask.seats)
+        // `embed` is the one permitted build-world read. Make every
+        // file it opened a source input dependency before this query
+        // closes, so its content participates in revalidation.
+        match r {
+            .Ok(value) -> { for path in value.embeds { touch(self.source(self.file_id(path))) } },
+            .Err(_) -> { let _ = 0 },
+        }
+        let held = match r {
+            .Ok(x) -> Settlement.Held(x),
+            .Err(why) -> Settlement.Refused(why),
+        }
+        let _ = self.settlements.finish(id, held, settlement_hash(held))
+        r
+    }
+
+    /// One settlement run: the initializer lowered as a program, its
+    /// laws checked, its value spelled when the type spells one.
+    fn settlement_of(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
+        // The evaluator's source unit and the program's materialized
+        // const unit are different IR under different symbols. The
+        // Lowered memo keys by symbol, so sharing one would make query
+        // order choose which body survives.
+        let l = self.isolated(f, root, "settling$${name}", seats)
+        if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
+        run_settle(l, self.budgets(), dir_of(self.decls.file(f).path))
+    }
+
+    /// One expression lowered as a program of its own, while every
+    /// body it reaches remains a shared `Lowered` query.
+    fn isolated(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Lowered {
+        let ws = self
+        memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root }, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))))
+    }
+
+    /// An annotation argument evaluated directly into the crossing
+    /// transport, including every nested aggregate.
+    fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
+        let l = self.isolated(f, e, expr_symbol(f, e), [])
+        if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
+        match run_crossed(l, self.budgets(), dir_of(self.decls.file(f).path)) {
+            .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)),
+            .Err(why) -> .Err(why),
+        }
+    }
+
+    /// An annotation fn run over a declaration: the fn's own program
+    /// lowered and checked for reach, the declaration crossed in as
+    /// the fn's first seat asks (from the PARSE view, so generating
+    /// an expanded sibling needs no typed answers of this file), each
+    /// argument settled and crossed, and what the fn answered read
+    /// back as what it SAID.
+    fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
+        let name = "lift$${f.index}$${call.index}$${d.index}"
+        let known: int? = self.lift_specs.get(name)
+        if known != null {
+            self.lift_asks.set(known!, lift_ask(d, f, s, args))
+            return self.lifted_at(known!)
+        }
+        let id = self.lift_asks.length
+        self.lift_specs.set(name, id)
+        self.lift_asks.push(lift_ask(d, f, s, args))
+        self.lifted_at(id)
+    }
+
+    /// One annotation query. The kernel's cycle verdict is the
+    /// lowering pass seeing the annotation it is currently proving,
+    /// so that recursive view contributes nothing.
+    fn lifted_at(id: int) -> Result<Lifted, Unsettled> {
+        match self.lift_results.ask(id) {
+            .Cycle -> { return .Err(Unsettled.Recursive) },
+            .Reuse(held) -> { return reused_lift(held) },
+            .Compute -> self.lift_results.begin(id),
+        }
+        let ask = self.lift_asks[id]
+        let r = self.lifted_once(ask.decl, ask.file, ask.stmt, ask.args)
+        let held = match r {
+            .Ok(crossed) -> LiftResult.Crossed(crossed),
+            .Err(why) -> LiftResult.Refused(why),
+        }
+        let _ = self.lift_results.finish(id, held, lift_hash(held))
+        r
+    }
+
+    /// One annotation call after its recursion guard is standing.
+    fn lifted_once(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
+        let x = self.decls.decl(d)
+        let ws = self
+        let l = memory(self.decls.settlement(Wanted { file: x.file, decl: d, name: self.decls.symbol(d), sub: null, seats: [], root: null }, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))))
+        if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
+        let sig = (self.decls.sig(d))?.fn_sig()
+        if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
+        let shape = sig!
+        if shape.params.is_empty() { return .Err(Unsettled.Trap("`${x.name}` takes no declaration to lift")) }
+        mut heap = new_meta_heap()
+        mut vals: List<MetaVal> = [self.crossed_decl(f, s, shape.params.first()!, heap)]
+        for j, e in args {
+            match self.crossed_arg(f, e, shape.params[j + 1], heap) {
+                .Ok(v) -> vals.push(v),
+                .Err(why) -> { return .Err(why) },
+            }
+        }
+        match run_lifted(l, self.decls.symbol(d), vals, heap, self.budgets()) {
+            .Ok(r2) -> .Ok(r2),
+            .Err(why) -> .Err(why),
+        }
+    }
+
+    /// An annotation argument crossed — a LITERAL straight off the
+    /// parse tree (an isolated run needs this file's analysis, which
+    /// is the very resolve the two-tier miss is serving: a cycle),
+    /// anything else through the isolated evaluator.
+    fn crossed_arg(f: FileId, e: ExprId, want: TypeId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
+        let named: DeclId? = if self.decls.takes_a_decl(want) { bound_decl_of(self.resolved(f), e) } else { null }
+        if named != null { return .Ok(self.crossed_decl_of(named!, want, heap)) }
+        let p = self.parsed(f)
+        let raw = p.store.expr(e)
+        let n: int? = (raw).int_of()
+        if n != null { return .Ok(MetaVal.Int(n!)) }
+        let t: string? = (raw).text_of()
+        if t != null { return .Ok(MetaVal.Text(t!)) }
+        let b: bool? = (raw).bool_of()
+        if b != null { return .Ok(MetaVal.Bool(b!)) }
+        let bits: int? = (raw).bits_of()
+        if bits != null { return .Ok(MetaVal.Float(bits!)) }
+        let code: MetaVal? = quote_meta(p.store, self.decls, self.decls.file(f).path, e, heap)
+        if code != null { return .Ok(code!) }
+        self.crossed_expr(f, e, heap)
+    }
+
+    /// A file's GENERATED declarations: every Declares-annotated
+    /// WRITTEN fn's directives materialized as real twins in the file's
+    /// store and decl table — the two-tier namespace's second tier.
+
+
+
+
+}
+
