@@ -1,0 +1,303 @@
+//! Workspace diagnostics and the small shared projections they read.
+//! Moved out of the workspace god-object.
+use core.{StmtId, Span, Param, Mark, TypeRegistry, NodeStore, ModulePath, FileId, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, same_file, TypeRef, spelled}
+use features.{Unsettled, Settlement, MetaVal, MetaHeap, nothing, FileView, spelled_type, ArenaMarks, BlockGrammar}
+use features.{no_kind}
+use @std.meta.{Node, Field as MetaField, Mark as MetaMark, Kind}
+use core.{StmtId, Arm, HoleKind, Unplaced, SyntaxParts, ForeignRange}
+use grammar.{parse_grammar, ready}
+use diagnostics.{defect_at}
+use diagnostics.{Diag, refusal}
+use @std.errors.{Loc}
+use @std.testing.{words}
+
+// ── voices ──
+
+/// A dependency's `[link.raw]`, refused. The whole point of the
+/// typed rows is that a package nobody read cannot put an option on
+/// the linker's line; the hatch is the program's own.
+fn borrowed_raw(pkg: Package) -> Diag {
+    refusal("manifest.borrowed_raw", pkg.at,
+        "`${pkg.key}` asks for raw linker options, and `[link.raw]` is the program's own", "this dependency",
+        "a dependency names what it needs — `objects`, `search`, `libs` under `[link]`; a raw option belongs in the manifest of the program being built")
+}
+
+fn package_form(at: Loc?, m: ModulePath) -> Diag {
+    refusal("resolve.package_form", at, "`${m.text()}` names no package — a package is `@scope.name`", "in this use", "write the scope and the name, then the module: `@scope.name.a.{x}`")
+}
+
+fn no_module(at: Loc?, m: ModulePath) -> Diag {
+    refusal("resolve.no_module", at, "no module `${m.text()}` under the package's source root", "in this use", "a module is a directory of `.av` files or one `.av` file, named from `src/` — `${m.dir_under("")}` was looked for")
+}
+
+fn not_exported(at: Loc?, m: ModulePath, item: string, exports: List<string>) -> Diag {
+    refusal("resolve.not_exported", at, "`${m.text()}` does not export `${item}`", "in this use", "its exports: ${joined(exports, ", ")}")
+}
+
+fn module_ambiguous(at: Loc?, m: ModulePath) -> Diag {
+    refusal("resolve.module_ambiguous", at, "`${m.text()}` is both a directory and a file under the root", "in this use", "a module is one or the other — keep `${m.dir_under("")}/` or `${m.dir_under("")}.av`")
+}
+
+fn listed_twice(at: Loc?, item: string) -> Diag {
+    refusal("resolve.import_clash", at, "`${item}` is listed twice", "in this use", null)
+}
+
+fn unpackaged_use(at: Loc?) -> Diag {
+    refusal("resolve.unpackaged", at, "this file is not in a package — `use` needs a root", "this use", "put an `avra.toml` at the package root, with this file under its `src/` — modules are named from there")
+}
+
+/// The instructions one settlement may run before it is refused.
+
+/// An annotation answer's structural fingerprint for early cutoff.
+fn lift_hash(r: LiftResult) -> int {
+    match r {
+        .Crossed(c) -> fp(77, [meta_hash(c.heap, c.answer)]),
+        .Refused(why) -> fp(47, [unsettled_hash(why)]),
+    }
+}
+
+/// A crossed value's structural fingerprint, the heap followed — what
+/// the evaluator's fingerprinting is to a recalculation's early cutoff.
+fn meta_hash(heap: MetaHeap, v: MetaVal) -> int {
+    match v {
+        .Int(n) -> fp(74, [n]),
+        .Float(bits) -> fp(75, [bits]),
+        .Bool(b) -> fp(76, [if b { 1 } else { 0 }]),
+        .Text(s) -> fp(78, [fp_str(s)]),
+        .Node(id) -> fp(79, [meta_hash(heap, x) for x in heap.nodes[id]]),
+        .Map(id) -> fp(81, [fp_list([fp_str(k) for k in heap.maps[id].keys]), fp_list([meta_hash(heap, x) for x in heap.maps[id].values])]),
+        .Absent -> fp(83, []),
+    }
+}
+
+fn settlement_hash(s: Settlement) -> int {
+    match s {
+        .Held(value) -> fp(41, [value.fingerprint]),
+        .Refused(why) -> fp(73, [unsettled_hash(why)]),
+    }
+}
+
+fn unsettled_hash(why: Unsettled) -> int {
+    match why {
+        .Reach(words) -> fp(59, [fp_str(words)]),
+        .Budget(words) -> fp(61, [fp_str(words)]),
+        .Trap(words) -> fp(67, [fp_str(words)]),
+        .Param(words) -> fp(84, [fp_str(words)]),
+        .Spoken -> fp(71, []),
+        .Recursive -> fp(123, []),
+    }
+}
+
+/// A declared TypeRef as the crossing's text — parsed from the STORE
+/// alone, "" when the word names a type only the namespace knows.
+fn typed_text(types: TypeRegistry, ann: TypeRef?) -> string {
+    let held: TypeId? = spelled_type(types, ann)
+    if held == null { return "" }
+    types.name_of(held!)
+}
+
+/// A shape by position — unspelled past the signature's end, which
+/// is a declaration the crossing reached before its own sig.
+fn kinds_at(rows: List<List<Kind>>, j: int) -> List<Kind> {
+    if j >= rows.length { return [] }
+    rows[j]
+}
+
+fn kind_at(kinds: List<Kind>, j: int) -> Kind {
+    if j >= kinds.length { return no_kind() }
+    kinds[j]
+}
+
+/// A DECLARED PARAMETER AS A `Field`. A record's field and an enum
+/// payload are the SAME shape crossing, so one writer makes both —
+/// a payload's name, its spelling and its shape cannot come from two
+/// places and disagree, which is the property the crossing suite
+/// asserts positionally.
+fn crossed_field(v: FileView, p: Param, kind: Kind) -> MetaField {
+    MetaField { name: p.name.of, ty: written_spelling(p.ty), at: placed(v, p.span), kind: kind, marks: crossed_marks(v, p.marks) }
+}
+
+/// A member's marks as the derive reads them — the word, its words,
+/// and where it stands.
+fn crossed_marks(v: FileView, ms: List<Mark>) -> List<MetaMark> {
+    [MetaMark { name: m.name, args: m.args, at: placed(v, m.span) } for m in ms]
+}
+
+/// A source span as the place a meta value names.
+fn placed(v: FileView, sp: Span?) -> Loc? {
+    if sp == null { return null }
+    Loc { file: v.source.file, lo: sp!.lo, hi: sp!.hi }
+}
+
+/// A type reference as the program WROTE it, "" for a written absence.
+fn written_spelling(t: TypeRef?) -> string {
+    if t == null { return "" }
+    spelled(t!)
+}
+
+/// A claim set that is KNOWN and EMPTY, which is not the same value
+/// as an unknown one — and the empty literal does not adopt a
+/// nullable aggregate's want, so it is bound at its own type here and
+/// the two answers read as the two facts they are.
+fn claims_nothing() -> List<string> {
+    let none: List<string> = []
+    none
+}
+
+/// EVERY PART OR NONE — claim sets folded into one union, absent when
+/// any part is absent. An unanswerable claim set POISONS the union
+/// rather than shrinking it: shrinking would say "nothing reads this"
+/// where the truth is "we cannot say yet", and refuse a mark that is
+/// perfectly well claimed.
+fn all_claims(each: List<List<string>?>) -> List<string>? {
+    if each.any(it == null) { return null }
+    flatten([c! for c in each])
+}
+
+/// A list type's element, or null for any other shape.
+fn elem_of(types: TypeRegistry, ty: TypeId) -> TypeId? {
+    match types.shape_of(ty) {
+        .List(e) -> e,
+        _ -> null,
+    }
+}
+
+/// The arenas' counts now.
+/// A named grammar statement readied for its block word, with the
+/// file whose fns its actions name; null for any other statement or a
+/// notation that does not parse.
+fn readied_grammar(p: Parsed, s: StmtId, path: string) -> BlockGrammar? {
+    let notation: SyntaxParts? = p.store.syntax_parts(s)
+    if notation == null { return null }
+    let gp = parse_grammar(notation!.text)
+    if gp.built == null { return null }
+    BlockGrammar { word: notation!.name, ready: ready(gp.built!), origin: path }
+}
+
+/// A template's body copied: its statements, or its arms.
+type Copied = { stmts: List<StmtId>, arms: List<Arm> }
+
+impl Workspace {
+    /// A copied node whose source a sublanguage minted wears that
+    /// sublanguage's library.
+    fn note_foreign_origin(f: FileId, src: NodeStore, from: ExprId, id: ExprId) {
+        let range: ForeignRange? = src.foreign.find((r: ForeignRange) -> r.lo <= from.index && from.index < r.hi)
+        if range == null { return }
+        let origin = self.file_id(range!.path)
+        if !same_file(origin, f) { self.decls.note_origins(f, [id], [], [], origin) }
+    }
+}
+
+impl Workspace {
+    /// A body of nothing but holes, in the seat it is put in.
+    fn holes_copied(f: FileId, fills: List<Node>, seat: HoleKind) -> Copied {
+        match seat {
+            .Arm -> Copied { stmts: [], arms: flatten([self.spliced_arms(f, x) for x in fills]) },
+            .Expression or .Statement or .Name or .Binder or .Type -> Copied { stmts: flatten([self.spliced_stmts(f, x) for x in fills]), arms: [] },
+        }
+    }
+}
+
+/// Where a directive's code was written: its first template's file
+/// and offset — the outer template when templates nest.
+fn template_site(node: Node) -> Loc? {
+    match node {
+        .Template(file, at, _, _) -> Loc { file: file, lo: at, hi: at },
+        .Many(items) -> { let first: Node? = items.first()
+            if first == null { null } else { template_site(first!) } },
+        .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> null,
+    }
+}
+
+fn nothing_copied() -> Copied { Copied { stmts: [], arms: [] } }
+
+fn misfit_defect(template: string, at: int, k: int) -> Diag {
+    defect_at(at_template(template, at), "defect: hole ${k} of the template at offset ${at} was filled with a shape its seat does not take")
+}
+
+/// A template's own offset as a place — a template has no line.
+fn at_template(template: string, at: int) -> Loc {
+    Loc { file: template, lo: at, hi: at }
+}
+
+/// The words for a fill no seat can hold — the FILL's own, since the
+/// splice cannot re-derive why a shape had nowhere to go.
+fn unplaceable_fill(template: string, at: int, u: Unplaced) -> Diag {
+    refusal("annotation.unplaceable", at_template(template, at),
+            "a hole was filled with something no seat can hold", u.why,
+            "a fill the compiler cannot place is spoken, never spliced")
+}
+
+/// A `List<Code>` — a run of templates — in a seat that holds ONE
+/// value.
+fn many_in_expression() -> string {
+    "a list of templates has no expression position — splice it where a run belongs (statements, arms, binders), or fold the list into one template before the hole"
+}
+
+fn arena_marks(store: NodeStore) -> ArenaMarks {
+    ArenaMarks { exprs: store.exprs.count(), stmts: store.stmts.count(), pats: store.pats.length }
+}
+
+/// A generated declaration's name is already the file's — the
+/// annotation is asked to choose another.
+/// An annotation that could not run — the DECLARING path's voice,
+/// the validating path's words.
+/// A mark no reader on this declaration claims. THE LAW LINE
+/// OUTLIVES ITS MECHANISM: it says a mark is read by something that
+/// CLAIMS it, never "by a derive" — a derive is who claims today, and
+/// a law worded after its implementation goes stale the moment the
+/// implementation moves. The mechanism belongs in the HELP, beside
+/// the claims that ARE standing, so a typo reads as a typo.
+fn unclaimed_mark(m: Mark, claimed: List<string>, at: Loc?) -> Diag {
+    refusal("annotation.unread_mark", at, "every mark is read by something that claims it",
+            "`@${m.name}` — nothing on this declaration reads it",
+            claims_help(claimed))
+}
+
+fn claims_help(claimed: List<string>) -> string {
+    if claimed.is_empty() { return "a mark is read by a `@derive` whose trait declares `marks`" }
+    "the marks read here are ${joined(["`@${c}`" for c in sorted_texts(claimed)], ", ")}"
+}
+
+fn lift_failed(label: string, at: Loc?) -> Diag {
+    refusal("annotation.unsettled", at, "an annotation could not run", label, "an annotation runs at compile time from pure computation alone")
+}
+
+/// THE PACKAGE'S OWN VOICE for a moved `@std/meta` — spoken whether
+/// or not any annotation was reached, because the cascade that
+/// follows a refused boundary can reach a file the crossing never
+/// touched. The words are the annotation door's, so a reader who has
+/// seen one has seen both.
+fn foreign_package(moved: string) -> Diag {
+    refusal("annotation.meta", null, "the compiler crosses `@std/meta`'s own shapes",
+            "the compiler was built against another `@std/meta` — ${moved}",
+            "build against the `@std/meta` this compiler ships")
+}
+
+fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
+    refusal("annotation.generated_taken", at, "`@${ann}` generates `${name}`, which this file already declares", "asked here", "rename the written declaration, or the generated one")
+}
+
+/// REGISTER A UNIT under its name. THE SEAT IS MUT so the write lands in the workspace's
+/// own table — a plain seat would copy the map, and a copy-on-write that runs once per
+/// minted unit turns the walk quadratic.
+fn spec_put(mut specs: Map<string, int>, name: string, id: int) {
+    specs.set(name, id)
+}
+
+/// WHETHER A MODULE'S RECORD NAMES A NAMED GRAMMAR THE `use` LINE TAKES — read from the
+/// persisted interface alone, never a parse. `true` when the record is absent, so the
+/// caller falls back to reading the provider.
+// LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
+fn module_names_syntax(ws: Workspace, m: ModulePath, items: List<string>) -> bool {
+    let s: Store? = ws.store
+    if s == null { return true }
+    let rec = s!.get(Stored.Sig, record_key(ws, m))
+    if rec == null { return true }
+    for line in rec!.split("\n") {
+        let p = line.split("\t")
+        if p.length >= 7 && p[6] == "syntax" && items.any(it == p[5]) { return true }
+    }
+    false
+}
+
