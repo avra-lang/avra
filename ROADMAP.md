@@ -19149,3 +19149,42 @@ streams has no pipe, so its exit has NO event and the pump falls back to a
 Then the interval is not a knob at all. MEASURED as not a performance win at the
 build's granularity (see the audit above) — filed because it is a correctness-of-
 design gap that grows with the child's lifetime, not because it moves the clock today.
+
+## Cold is 34.6 s -> ~23.4 s, and the profile lesson (2026-09-19)
+
+Two changes, both measured:
+
+| change | before | after |
+|---|---|---|
+| `clang` four modules at a time (`@std/process.parallel`) | 11.0 s | ~6.0 s |
+| the closure law asked ONCE, not per module | 7.6 s `emit` | ~1.8 s `emit` |
+| **cold wall** | **34.6 s** | **~23.4 s (-33%)** |
+
+Warm is unchanged (0.57-0.58 s) — both are build-path changes.
+
+### THE LESSON: A LEAF LIST NAMES THE TAX; ONLY THE CALL TREE NAMES WHO PAYS IT
+
+Sampled a cold build (`AVRA_SAMPLE=20 ... ./avra build packages/cli`). The hot LEAVES
+were the runtime's memory traffic — `rc_release` 592, `rc_retain` 367, `array_get` 336,
+`array_made` ~440, `push_grown`/`realloc`/`malloc` ~250 of 4485 leaf samples, ~50%
+between them. Every one of those is REAL and none of them is a bug.
+
+The bug was one line up: `emit_mode` ran `unheld_name(l)` — a whole-program scan — and
+`emit_bitcode` is called ONCE PER FILE. 276 whole-program scans, with three full list
+copies and a map build each, answering the same thing 276 times. The sampler could not
+say so: an allocation is charged to the allocator, never to the caller that asked for
+it. **Only the call tree named it**, and that is where the 6 s was.
+
+So the rule for the next profile: read the leaf list for the TAX and the call tree for
+the SHAPE — and then look for a repeated whole-program question, because that is what
+this tree's defects keep turning out to be.
+
+### What is still on the table (unmeasured, in order)
+
+- **The compiler's own refcount/array traffic** (~50% of leaf samples). That is the
+  inliner campaign plus fewer list rebuilds — a generated-code question, not a cache one.
+- **`appended_expected`** (229 samples): a `concat` per branch tie on the parse's
+  SUCCESS path, with its own comment already weighing the trade. An in-place append
+  would remove the allocation.
+- **`write_bytes`** (~1300 tree samples): the interface records and objects going out.
+- `admit` 7.5-8.9 s — the parse. Still unprofiled at function granularity.
