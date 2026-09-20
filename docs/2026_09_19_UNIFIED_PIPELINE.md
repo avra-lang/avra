@@ -268,6 +268,26 @@ Each step builds, passes the corpus/gate, and refreshes the seed at the end.
 Deletion happens step 6, not before; until then the new modules are the only
 ones gaining consumers.
 
+**Landed so far:**
+- **P0 — the document and its hard benchmarks.** (0.1)
+- **P0.5 — 273 orphaned `.part.ll.o` artifacts removed** (`9537854`); the
+  `.gitignore` hole (`*.av.ll.o` did not catch `*.av.part.ll.o`) closed. The
+  tree carries 6.1 MB less.
+- **P1 (partial) — `language/` renamed to `compiler/`** (`b57956e`): the tier
+  holds the driver, the pass graph, the cache, the backend, and the
+  projections, so the name is now honest. Layering is
+  `core -> query -> grammar -> features -> compiler`. The rename silently
+  narrowed the I39 keeper (`tools/idioms.py` scoped `src/(features|language)/`)
+  and the count fell 57 -> 27; fixed at the site, back to 57.
+- **P1 — the `Backing` seam** (`compiler/backing.av`): a `trait Backing`
+  (`DiskBacking` / `MemBacking`) so one cache can hold either tier, with a
+  spec driving both through the same verbs. The build still uses `Disk`
+  unchanged.
+
+**Still to land:** P2 (`World`), P3 (`Compiled` + one derivation), P4
+(`projections/` + thin CLI), P5 (`test`/`emit` on the `Disk` backing + `link/`),
+P6 (delete the old files), P7 (the `Diags` family).
+
 - **P0 — this document.**
 - **P1 — `cache/`.** Extract `Store` + `BuildCache` behind `trait Backing`
   (`Mem` + `Disk`). No behaviour change; `build` still uses `Disk`. Verify the
