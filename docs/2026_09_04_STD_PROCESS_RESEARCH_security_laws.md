@@ -255,7 +255,7 @@ argv.
 
 Two house rules on T3. It lives in a **package**, so the compiler never names a tool's
 flags (the same reason the fs doc withdrew the hardcoded misnomer list from
-`language/`). And its rows are **data** — a `table<ToolVerb>` — so adding `git fetch`
+`compiler/`). And its rows are **data** — a `table<ToolVerb>` — so adding `git fetch`
 is a row, not a dispatch arm.
 
 **T4 — `Untrusted<string>` (the fs doc's law, extended).** No verb in `@std.process`

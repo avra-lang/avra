@@ -478,7 +478,7 @@ def comma_list_open(lines):
 # becomes its vocabulary.
 STATES = r"TypeCx|LowerCx|ResolveCx|Survey|Workspace|Decls|Builder|Body|Scope"
 STATE_VERB = re.compile(r"^(?:export )?fn \w+\((?:mut )?\w+: (?:" + STATES + r")\b")
-PASS_FILES = re.compile(r"packages/std-avrac/src/(features|language)/[^/]+\.av$")
+PASS_FILES = re.compile(r"packages/std-avrac/src/(features|compiler)/[^/]+\.av$")
 
 def state_verb(lines):
     """A vocabulary verb written as a free fn taking a pass state

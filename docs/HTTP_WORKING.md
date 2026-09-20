@@ -38,7 +38,7 @@ on network data, a NUL makes it a bounded truncation.
   `RtHost` variants, the validator from the runtime-diff paper. Review patch
   for lane A: `docs/patches/bytes-runtime.diff` (delete before committing).
 - Evaluator: `Val.Y(v: List<int>)`, held directly and PERMANENTLY (lane C:
-  immutable means no identity means no handle), `language/interp_bytes.av`.
+  immutable means no identity means no handle), `compiler/interp_bytes.av`.
 - Two collapses in lane C's files, verified by lane C and asked to land ALONE
   ahead of the ruling: `worded` exported from `features/checks.av` (str_lit
   imports it), `lower_is_empty` exported from `features/emit.av` (str_lit and

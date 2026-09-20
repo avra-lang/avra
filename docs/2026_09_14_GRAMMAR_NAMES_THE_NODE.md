@@ -570,7 +570,7 @@ recruits. Everything else in this document is phase D's own.
 >
 > **3 — holds exactly as written.** `grammar/validate.av` still does not
 > and cannot check builder names; the node refusals live in the
-> language's assembly (`bind_nodes`, called from `language/mod.av`),
+> language's assembly (`bind_nodes`, called from `compiler/mod.av`),
 > which is where D0 put them and where D1 left them.
 
 - **The engine's `Captured` stays; the `Builder`'s READERS did not.**

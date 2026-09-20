@@ -28,12 +28,12 @@ rediscovering.
 
 Files that matter, in dependency order:
 
-- **`packages/std-avrac/src/language/store.av`** — the content-addressed store.
+- **`packages/std-avrac/src/compiler/store.av`** — the content-addressed store.
   `Stored` = `{Sig, Fp, Unit, Obj, Mod, Bin, Warn}`; `node_key(family, parts)`
   derives a key; rows live at `<root>/<family>/<shard>/<key>` with a `.deps`
   sidecar; `has` is two `exists` and reads nothing. `CACHE_FORMAT` lives here
   (bump it to invalidate every artifact).
-- **`packages/std-avrac/src/language/interface.av`** — the **waist**. One text
+- **`packages/std-avrac/src/compiler/interface.av`** — the **waist**. One text
   record per *module*: `import` lines, a `bytes`/`iface` digest line, and one
   line per declaration. `keep_interfaces` writes it; `load_interface` /
   `mint_held_interfaces` / `fill_interfaces` rebuild declarations from it without
@@ -42,17 +42,17 @@ Files that matter, in dependency order:
   are the walk. **`type_wire`/`read_type_wire`/`decl_wire`** are the ONE type
   projection (nominal nodes = file + declaration ordinal), and `read_type_wire`
   is its inverse.
-- **`packages/std-avrac/src/language/settlement_wire.av`** — the on-disk forms:
+- **`packages/std-avrac/src/compiler/settlement_wire.av`** — the on-disk forms:
   a settled const (`settled_wire`), and a unit's **edges** (`wanted_list_wire` /
   `wanted_list_from_wire`, encoding `List<Wanted>`). Reuses `wire_field` /
   `wire_value` / `WireReader`.
-- **`packages/std-avrac/src/language/build_cache.av`** — the driver.
+- **`packages/std-avrac/src/compiler/build_cache.av`** — the driver.
   `build_program(ws, entry, mode, opt, runtime, disk, linker)`. Whole-program
   binary cache first; else the hold path: `held_modules` → `load_interface` →
   `admit_all` → `mint_held_interfaces` → `fill_interfaces` → `program` →
   `lowered_checked` → per-file `emit_module` → link. `CACHE_HOLD_ENABLED` is the
   flag (ON). `--time` prints the phase split.
-- **`packages/std-avrac/src/language/workspace.av`** — the query kernel and the
+- **`packages/std-avrac/src/compiler/workspace.av`** — the query kernel and the
   lowering driver. `lowered(id)` consults the store: a **held** unit returns no
   body plus a declaration **stub** and its persisted **edges**; a **fresh** unit
   is lowered and its edges kept (`remember_deps`). `held_deps`/`unit_stub`/
@@ -60,7 +60,7 @@ Files that matter, in dependency order:
 - **`packages/std-avrac/src/core/types.av`** — `TypeRegistry`. A record's
   representation is FLAT (bare field) or BOXED; `mark_flat`/`unflatten`/`is_flat`/
   `machine_shape`/`rides_pointer`. **This is where the soundness lives** (see §5).
-- **`packages/std-avrac/src/language/typing_impls.av`** — contains THE fix.
+- **`packages/std-avrac/src/compiler/typing_impls.av`** — contains THE fix.
 
 Design source of truth: **`docs/2026_09_16_BUILD_CACHE.md`** (read "THE STORE"
 and "THE WAIST"); current state and the trail: **`docs/2026_09_18_CACHE_INTERFACE_AUDIT.md`**.

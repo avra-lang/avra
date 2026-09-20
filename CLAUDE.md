@@ -125,7 +125,7 @@ source and refuses a repeated number.
   SECOND COPY, and the reader believes the words — the flag is
   checked by the code, the prose by nobody. So the WORDS carry the
   CLAIM and the STRUCTURE carries the CATEGORY (`Cause.Builder`
-  projects to F0102, language/codes.av), and the words never restate
+  projects to F0102, compiler/codes.av), and the words never restate
   the category.
 - A projection is ONE match: nested patterns
   (`.Node(.NAlt(a)) -> a, _ -> null`), never an unwrap ladder.
@@ -149,9 +149,9 @@ engine's spec, written by dogfooding.
 ## Rules
 
 - `core/` is infrastructure only. Features never import features.
-- Layering is one-way: core -> query -> grammar -> features -> language.
+- Layering is one-way: core -> query -> grammar -> features -> compiler.
   `query/` is the memo kernel — infrastructure, language-agnostic.
-  `grammar/` is the language-agnostic engine; `language/` is the
+  `grammar/` is the language-agnostic engine; `compiler/` is the
   driver and the ONE definition of Avra (feature order is branch
   order is the language).
 - No string tags or string-matching to detect behavior.
@@ -288,7 +288,7 @@ engine's spec, written by dogfooding.
   and the three unified seats — a call argument, a struct field, an
   enum payload — call it; the payload once short-circuited and
   refused a `dyn` box and an auto-Ok its siblings took
-  (language/tests/seats holds the proof).
+  (compiler/tests/seats holds the proof).
 - EVERY POINTER AVRA HOLDS CARRIES A HEADER. The runtime counts
   references in sixteen bytes BEFORE each payload (tag, kind, rc,
   and a LENGTH — a string's text length, a record's payload bytes),
@@ -1268,7 +1268,7 @@ engine's spec, written by dogfooding.
   statement and expression spines share ONE context per pass
   (`type_stmt(mut cx: TypeCx, s)`): the context IS the pass's
   state, and the walk's verbs are its methods, written where the
-  walk lives (language/typing.av's `impl TypeCx`).
+  walk lives (compiler/typing.av's `impl TypeCx`).
 - Keywords are never listed by hand: they derive from the assembled
   grammar's identifier-shaped literals (`g.keywords()`, a method on
   a Grammar VALUE — Avra has no type-qualified call) — a feature's
@@ -1421,7 +1421,7 @@ Syntax the grammar lacks:
   refusal does not say the loop has no such word. A skip is spelled as
   a guard folded into the body's `if`, or a named predicate. In the
   sugar backlog, asked by the owner, with the wanting sites
-  (`innermost_holding`, `first_start_after` in language/source_text.av —
+  (`innermost_holding`, `first_start_after` in compiler/source_text.av —
   both DELETED since, when the trivia cursor replaced the scans they
   lived in, so the ask now wants a site; each name is licensed in
   `tools/cited.allow` as historical).
@@ -1994,7 +1994,7 @@ Runtime facts, ours to ratify:
   syntax change is, and `cp build/avra build/avra.pre` is the whole
   protocol for it too.
   AND ITS SYMPTOM ACCUSES AN INNOCENT: the `>>` collision surfaced as
-  "@std.avrac.language does not export Program" — from the file that
+  "@std.avrac.compiler does not export Program" — from the file that
   DEFINES `Program` — and the `|` collision as "@std.process does not
   export Tool". Neither named the change that caused it. So ISOLATE
   BEFORE REPAIRING: stash, `make bootstrap`, confirm the clean base

@@ -1437,7 +1437,7 @@ feature owns `@warn`.** A `doc_tags: List<DocTag> = []` config field that
 28 of 28 features leave empty **is `docs: string` happening a second
 time** — this campaign's own presenting fact, reproduced by the campaign,
 in the design meant to fix it. So: ship `doc_tags()` beside `pass_codes()`
-(`language/codes.av:26`), and add the config field **at the first feature
+(`compiler/codes.av:26`), and add the config field **at the first feature
 that actually owns a tag**, not before.
 
 ```avra
@@ -2123,7 +2123,7 @@ diagnostic rows, 47 subset entries. **Zero readers.**
   <feature>` / `<F-code>` / `<method>`, reading the `docs: string` field
   that 28 of 28 features already fill. **One new file
   (`cli/src/commands/doc.av`) plus one line in `main.av`.** `avra()` is a
-  `once fn` (`language/mod.av:171`) already carrying `features` with
+  `once fn` (`compiler/mod.av:171`) already carrying `features` with
   `.name`/`.docs`/`.gram`, plus `rows.codes` and `rows.methods`; and
   `render_grammar` (`grammar/render.av:8`) renders a feature's OWN
   fragment, not only the merged grammar. No workspace, no `Program`, no

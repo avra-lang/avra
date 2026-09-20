@@ -299,7 +299,7 @@ strongest argument for the lead's original instinct.
 
 **Countable with no proxy.** `shows: List<Show> = []` is the default, and
 the metric is a set difference over the 28 features
-(`language/mod.av:118`): `[f.name for f in avra().features if
+(`compiler/mod.av:118`): `[f.name for f in avra().features if
 f.shows.is_empty()]`. The gate's claim is "every feature has at least one
 show"; the baseline lists **feature names, never a count**, per
 DOGFOODING's first law. There is no proxy to drift, which is the property

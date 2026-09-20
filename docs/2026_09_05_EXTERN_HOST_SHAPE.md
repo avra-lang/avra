@@ -1,7 +1,7 @@
 # THE EXTERN HOST — the shape, for lane C
 
 > **Status:** a design, not a patch. Lane C asked for it and will land
-> it; `language/interp.av` is theirs and this lane has written no line
+> it; `compiler/interp.av` is theirs and this lane has written no line
 > in it. Grounded in the campaign's ABI analysis (in git history) and
 > re-verified against the tree where it matters.
 >
@@ -150,7 +150,7 @@ why a return-side f32 is admissible and an argument-side one is not.)*
 
 **~~A NATIVE-ONLY SIGNATURE IS NOT AN ERROR.~~** ~~The native path can host
 variadics perfectly well — LLVM knows the Darwin rule, and `declare`
-already takes the vararg flag (`language/llvm.av:189-195`), hard-wired
+already takes the vararg flag (`compiler/llvm.av:189-195`), hard-wired
 `false` at both call sites. Refusing a variadic extern at its
 declaration would break a program that only ever builds.~~
 
@@ -214,7 +214,7 @@ manifest names. **The answer is forced, and it is not the comfortable
 one.**
 
 **`avra run` interprets inside `build/avra`'s own process**
-(`language/workspace.av:1068-1071`), and a package's `[link]` words
+(`compiler/workspace.av:1068-1071`), and a package's `[link]` words
 reach clang **only when a native binary is built**
 (`cli/src/commands/shared.av:277`). So the compiler's image does not
 contain sqlite3, and `dlsym(RTLD_DEFAULT, "sqlite3_open")` **answers
@@ -329,11 +329,11 @@ and both engines consult the same verdict.
 
 | claim | how verified |
 |---|---|
-| `avra run` interprets inside `build/avra` | `language/workspace.av:1068-1071` |
+| `avra run` interprets inside `build/avra` | `compiler/workspace.av:1068-1071` |
 | `[link]` words reach clang only on a native build | `cli/src/commands/shared.av:277` |
 | therefore `dlsym(RTLD_DEFAULT, "sqlite3_open")` is NULL | follows from the two above — **the finding that forces the two-tier design** |
 | ~~`RtKind` is `{I64, Ptr, Void}`~~ **STALE** — it is `{I64, Ptr, Void, I32, U32, F64}` at `core/ir.av:331`, and `make vocab` names FIVE exhaustive consumers | re-probed 2026-09-07 |
-| `declare` already carries a vararg flag, hard-wired false | `language/llvm.av:189-195`, call sites `:171` and `:187` |
+| `declare` already carries a vararg flag, hard-wired false | `compiler/llvm.av:189-195`, call sites `:171` and `:187` |
 | the extern grammar has no `...` | `features/fns/mod.av:32` |
 | Apple arm64 reads variadic arguments from the stack | the ABI research report §1.2; **not independently re-verified here** — MEDIUM, and it is the load-bearing reason variadics refuse |
 | SQLite's max integer arity is 10, four functions touch `double`, no structs by value | the API-surface report's classification of all 284 entry points |

@@ -1677,7 +1677,7 @@ with nothing hidden and no C written by us.
 //!
 //!  W4  A C `int` IS 32 BITS AND AVRA'S IS 64, AND THE SEAM IS WRONG
 //!      TODAY. `declare_externs` declares every `RtKind.I64` extern as
-//!      `i64` (`language/llvm.av:169-181`) and `rt_kind_of` maps Avra's
+//!      `i64` (`compiler/llvm.av:169-181`) and `rt_kind_of` maps Avra's
 //!      `int` there (`core/runtime_api.av:110-114`), while both ABIs
 //!      leave the bits above a 32-bit result unspecified and both
 //!      compilers zero them. So `sqlite3_column_int` on a column
@@ -2159,7 +2159,7 @@ tree:
   case compares one exact string — the shape `@std/process`'s
   adversarial suite takes with 25 helpers feeding 35 one-line cases.
 - **No value is printed on failure.** The runner prints `✗ <label>` and
-  nothing else (`language/test_run.av:160-166`): **a case's NAME is its
+  nothing else (`compiler/test_run.av:160-166`): **a case's NAME is its
   entire diagnosis**, which is why every name in this tree reads as a
   sentence stating the claim.
 - **A trap kills every later case in the package.** All of a package's

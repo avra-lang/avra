@@ -20,7 +20,7 @@ position within a body). Everything references ids, never nodes.
 **Thirteen query families.** Each is one function: key in, one value
 out, dependencies discovered by execution. In ordinal order — the
 order `enum Family` registers them with the kernel
-(`language/workspace.av`):
+(`compiler/workspace.av`):
 
 | family | key → value | what it depends on |
 |---|---|---|

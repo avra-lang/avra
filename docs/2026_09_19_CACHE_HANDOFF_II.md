@@ -40,7 +40,7 @@ is that the remaining time is no longer in the cache layer — see §5.
 
 ## 2. Architecture (updated)
 
-- `packages/std-avrac/src/language/store.av` — content-addressed store. Families
+- `packages/std-avrac/src/compiler/store.av` — content-addressed store. Families
   `Sig Fp Unit Obj Mod Bin Warn`; rows at `<root>/<family>/<shard>/<key>` + `.deps`.
   `CACHE_FORMAT` here (bump invalidates all).
 - `interface.av` — the waist. One text record per module (imports, an `iface`
@@ -59,7 +59,7 @@ is that the remaining time is no longer in the cache layer — see §5.
 - `core/digest.av` — **now a multiply-xor-rotate fold** (xor, rotate, multiply,
   splitmix finalizer; no division). Lanes masked to 63 bits because a key with a
   leading `-` is read by clang as an option (§8).
-- `backend/llvm_wrapper.c` + `language/llvm.av` — `emit_bitcode` writes `.bc` for
+- `backend/llvm_wrapper.c` + `compiler/llvm.av` — `emit_bitcode` writes `.bc` for
   the build path; `emit_ll`/`emit_module` still write `.ll` for `avra emit`/`split`.
 
 ## 3. Measure and verify

@@ -45,40 +45,40 @@ Ins	packages/std-avrac/src/core/ir.av	viewed_dst	derived:Roles	the register that
 Ins	packages/std-avrac/src/core/ir.av	moved_args	derived:Roles	an Avra call's moved-in seats
 Ins	packages/std-avrac/src/core/ir.av	escapes_in	spelled	which uses let a register outlive its instruction
 Ins	packages/std-avrac/src/core/ir.av	call_symbol	derived:Roles	the body an Avra call enters
-Ins	packages/std-avrac/src/language/interp.av	step	spelled	its MEANING, interpreted
-Ins	packages/std-avrac/src/language/memory.av	memory_ins	spelled	its ownership effect
-Ins	packages/std-avrac/src/language/memory.av	managed_dst	spelled	whether its answer is the caller's to release
-Ins	packages/std-avrac/src/language/memory.av	view_of	spelled	which non-owning read borrows a box
-Ins	packages/std-avrac/src/language/ir_text.av	body_lines	spelled	its human projection
-Ins	packages/std-avrac/src/language/llvm.av	emit_ins	spelled	its machine projection
+Ins	packages/std-avrac/src/compiler/interp.av	step	spelled	its MEANING, interpreted
+Ins	packages/std-avrac/src/compiler/memory.av	memory_ins	spelled	its ownership effect
+Ins	packages/std-avrac/src/compiler/memory.av	managed_dst	spelled	whether its answer is the caller's to release
+Ins	packages/std-avrac/src/compiler/memory.av	view_of	spelled	which non-owning read borrows a box
+Ins	packages/std-avrac/src/compiler/ir_text.av	body_lines	spelled	its human projection
+Ins	packages/std-avrac/src/compiler/llvm.av	emit_ins	spelled	its machine projection
 Ins	packages/std-avrac/src/features/facts.av	give	spelled	whether the runtime registry validates it
 Ins	packages/std-avrac/src/core/ir.av	body_symbol	derived:Roles	the program body it names
 Ins	packages/std-avrac/src/core/ir.av	hosted_symbol	derived:Roles	the hosted fn it calls
 RtKind	packages/std-avrac/src/core/runtime_header.av	c_kind	spelled	the C type, probe and word it crosses as
-RtKind	packages/std-avrac/src/language/llvm.av	ll_rt_kind	spelled	the LLVM type it becomes
-RtKind	packages/std-avrac/src/language/llvm.av	rt_arg	spelled	how an argument crosses the boundary
-RtKind	packages/std-avrac/src/language/llvm.av	answers_word	spelled	how an answer crosses back
-RtKind	packages/std-avrac/src/language/llvm.av	answered	spelled	the SIGN a narrow answer widens with
-RtKind	packages/std-avrac/src/language/llvm.av	narrow_sign	spelled	the SIGN an inout cell normalises with
-RtKind	packages/std-avrac/src/language/interp.av	stage_seat	spelled	how an argument crosses, interpreted
-RtKind	packages/std-avrac/src/language/interp.av	answered	spelled	how an answer crosses back, interpreted
-RtKind	packages/std-avrac/src/language/interp.av	rides_fp	spelled	which register file a seat rides
-RtKind	packages/std-avrac/src/language/interp.av	carries_cell	spelled	whether a seat holds an inout's address
-RtKind	packages/std-avrac/src/language/interp.av	carries_text	spelled	whether a seat could carry text across the seam
+RtKind	packages/std-avrac/src/compiler/llvm.av	ll_rt_kind	spelled	the LLVM type it becomes
+RtKind	packages/std-avrac/src/compiler/llvm.av	rt_arg	spelled	how an argument crosses the boundary
+RtKind	packages/std-avrac/src/compiler/llvm.av	answers_word	spelled	how an answer crosses back
+RtKind	packages/std-avrac/src/compiler/llvm.av	answered	spelled	the SIGN a narrow answer widens with
+RtKind	packages/std-avrac/src/compiler/llvm.av	narrow_sign	spelled	the SIGN an inout cell normalises with
+RtKind	packages/std-avrac/src/compiler/interp.av	stage_seat	spelled	how an argument crosses, interpreted
+RtKind	packages/std-avrac/src/compiler/interp.av	answered	spelled	how an answer crosses back, interpreted
+RtKind	packages/std-avrac/src/compiler/interp.av	rides_fp	spelled	which register file a seat rides
+RtKind	packages/std-avrac/src/compiler/interp.av	carries_cell	spelled	whether a seat holds an inout's address
+RtKind	packages/std-avrac/src/compiler/interp.av	carries_text	spelled	whether a seat could carry text across the seam
 Type	packages/std-avrac/src/features/checks.av	comparable	spelled	which shapes equality may compare
 Type	packages/std-avrac/src/features/str_lit/check.av	printable	spelled	which shapes an interpolation hole may show
 Type	packages/std-avrac/src/features/crossing.av	kind_of	spelled	which @std/meta shape it crosses as
-Type	packages/std-avrac/src/language/llvm.av	names_a_name	spelled	which shapes a callee reads as a NUL-terminated name
+Type	packages/std-avrac/src/compiler/llvm.av	names_a_name	spelled	which shapes a callee reads as a NUL-terminated name
 Type	packages/std-avrac/src/core/types.av	ptr_shape	spelled	whether a shape travels as a pointer
 Type	packages/std-avrac/src/features/unify.av	slot_worthy	spelled	which shapes a slot may hold
-Type	packages/std-avrac/src/language/llvm.av	ll_type_of	spelled	the LLVM type a shape becomes
-Type	packages/std-avrac/src/language/llvm.av	slot_form	spelled	which conversion a category owes the word slot
-SlotForm	packages/std-avrac/src/language/llvm.av	worded	spelled	the cast INTO the slot
-SlotForm	packages/std-avrac/src/language/llvm.av	unworded	spelled	the cast back out of it
-SlotForm	packages/std-avrac/src/language/llvm.av	answer_form	spelled	which of them survives a non-word answer
+Type	packages/std-avrac/src/compiler/llvm.av	ll_type_of	spelled	the LLVM type a shape becomes
+Type	packages/std-avrac/src/compiler/llvm.av	slot_form	spelled	which conversion a category owes the word slot
+SlotForm	packages/std-avrac/src/compiler/llvm.av	worded	spelled	the cast INTO the slot
+SlotForm	packages/std-avrac/src/compiler/llvm.av	unworded	spelled	the cast back out of it
+SlotForm	packages/std-avrac/src/compiler/llvm.av	answer_form	spelled	which of them survives a non-word answer
 Kind	packages/std-avrac/src/features/crossing.av	meta_of_kind	spelled	how it crosses into the evaluator
 Kind	packages/std-meta/src/meta.av	spelled	spelled	the words it is written with
-RtHost	packages/std-avrac/src/language/interp.av	rt_dispatch	spelled	the arm that evaluates a row"
+RtHost	packages/std-avrac/src/compiler/interp.av	rt_dispatch	spelled	the arm that evaluates a row"
 
 # A here-doc, not a pipe: the loop runs in THIS shell, so `exit 1`
 # ends the script rather than a subshell the gate never sees.

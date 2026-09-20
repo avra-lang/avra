@@ -143,8 +143,8 @@ MEASURED at phase E (`1c39ad8`), and the claim does not hold.
 
 `Type` has 22 variants and FORTY exhaustive matches over it across the
 tree. THREE ask the machine-shape question: `ptr_shape`
-(core/types.av), `is_managed` (language/memory.av), and
-`ll_type_of`'s pointer/scalar split (language/llvm.av). The other
+(core/types.av), `is_managed` (compiler/memory.av), and
+`ll_type_of`'s pointer/scalar split (compiler/llvm.av). The other
 thirty-seven are genuine registries answering DIFFERENT questions and
 no property mark derives them — `comparable` and `printable` differ
 only at `Error`; `slot_worthy`, `materializable`, `writable`,
@@ -336,7 +336,7 @@ naming the uncovered ones. A keeper counts what it looked at.
 ## 9. The compiler polices itself, in Avra
 
 ```avra
-use @std.avrac.language.{analyzed, fns_of, projections_in}
+use @std.avrac.compiler.{analyzed, fns_of, projections_in}
 
 lint I13 "the same projection computed twice on one line" {
     for f in fns_of(analyzed(root)) {

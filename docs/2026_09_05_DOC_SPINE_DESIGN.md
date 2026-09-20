@@ -200,7 +200,7 @@ $ echo $?
 ```
 
 Twenty-eight features fill it (one `docs =` per feature `mod.av`; the
-list is `language/mod.av:118`'s `language_features()`), and
+list is `compiler/mod.av:118`'s `language_features()`), and
 `commands/new.av:147` scaffolds `docs = "TODO: the one-line surface."`
 into every new one — the tree asks for the string at birth and has
 never once read it back.
@@ -227,7 +227,7 @@ So `packages/cli/src/commands/doc.av`:
 //! `avra doc <address>` — one answer, from the compiler's own
 //! registries.
 use @std.cli.{Subcommand, CliResult, Runnable, ArgDef}
-use @std.avrac.language.{avra}
+use @std.avrac.compiler.{avra}
 use @std.avrac.features.{LanguageFeature, MethodRow}
 use @std.avrac.grammar.{render_grammar}
 use @std.avrac.diagnostics.{DiagCode}
@@ -254,7 +254,7 @@ fn resolved(q: string) -> int {
 }
 ```
 
-`avra()` is a `once fn` (`language/mod.av:171`) — the assembly is one
+`avra()` is a `once fn` (`compiler/mod.av:171`) — the assembly is one
 value the process shares, and `avra grammar` already pays for it.
 This command opens **no workspace, no Program, no `phased`** — it is
 an `arg_command` like `explain`, and it answers in the time
@@ -509,7 +509,7 @@ string boxes **on every parse of every file, on the compile path,
 where nothing reads them** — `avra check`, `avra build` and `make gate`
 would all pay for `avra doc`. The span indexes `SourceFile.text`
 (`diagnostics/source.av:6`), which every reader of `Parsed` already
-holds (`Parsed.source`, `language/program.av:36-41`), so the docs query
+holds (`Parsed.source`, `compiler/program.av:36-41`), so the docs query
 slices the text out **only when someone asks for a page.** P6: neither
 lossless-ness nor a free compile path has to be given up.
 
@@ -525,7 +525,7 @@ MEASURE-THEN-CHANGE; the prediction is "inside the noise."
 
 ### 1.8 How the doc lines reach `Parsed`
 
-`Parsed` (`language/program.av:36-41`) gains one field:
+`Parsed` (`compiler/program.av:36-41`) gains one field:
 
 ```avra
 export type Parsed = {
@@ -541,13 +541,13 @@ export type Parsed = {
 ```
 
 `Parsed` is constructed at exactly two sites, both in
-`language/program.av` (lines 60 and 67) — the empty case takes `[]`,
+`compiler/program.av` (lines 60 and 67) — the empty case takes `[]`,
 the real one takes `lexed.docs`. **PROBED:**
 
 ```
 $ grep -rn "Parsed {" --include="*.av" packages/
-packages/std-avrac/src/language/program.av:60:        return Parsed { store: ..., stmts: [], source: src, voices: ... }
-packages/std-avrac/src/language/program.av:67:    Parsed {
+packages/std-avrac/src/compiler/program.av:60:        return Parsed { store: ..., stmts: [], source: src, voices: ... }
+packages/std-avrac/src/compiler/program.av:67:    Parsed {
 ```
 
 (the other four hits are `-> Parsed` return types.)
@@ -562,7 +562,7 @@ sees them, and no pass fact accretes onto it.
 
 ### 2.1 The cost of the fourteenth family — every site
 
-`Family` (`language/workspace.av:114-129`) has thirteen rows today, and
+`Family` (`compiler/workspace.av:114-129`) has thirteen rows today, and
 the enum is guarded by two exhaustive matches by design (its own doc
 comment: *"both exhaustive, so a new family cannot ship
 half-registered"*). Adding `Docs` after `Folded` costs exactly:
@@ -606,7 +606,7 @@ export fn disarmed(mut ws: Workspace) {
 
 The comment names the rule: `ws.analyses` is cleared **because `Analysis`
 holds a closure**, and it does — `program: fn() -> Program`
-(`language/analysis.av:18`), the only `fn` field in the struct. The
+(`compiler/analysis.av:18`), the only `fn` field in the struct. The
 Workspace's **thirteen other** value tables (`sources`, `manifests`,
 `externs`, `programs`, `file_items`, `module_names`, `visibles`,
 `name_facts`, `sig_voices`, `decl_facts`, `method_clashes`, `folds`,
@@ -892,11 +892,11 @@ are today."* The parallel does not hold, and following it repeats the
 `docs: string` mistake.
 
 **READ.** `DiagCode` rows live in two places: `builtin_codes()`
-(`language/codes.av:44`) — the **driver's** table, holding the engine's
+(`compiler/codes.av:44`) — the **driver's** table, holding the engine's
 five causes and ten pass codes — and `f.diags` per feature, holding
 codes that feature **owns** (`features/enums/mod.av:32-41` registers
 F2012/F2013/F2015/F2016/F2038/F2039/F2040/F2043, all of them enum
-laws). `code_registry` (`language/mod.av:112`) concatenates them. A
+laws). `code_registry` (`compiler/mod.av:112`) concatenates them. A
 feature contributes a row *because the row is that feature's law.*
 
 **No feature owns `@warn`, `@see`, `@since`, `@unit` or `@example`.**
@@ -904,7 +904,7 @@ They are language-wide, exactly like `resolve.unresolved` in
 `pass_codes()`. So:
 
 - `doc_tags() -> List<DocTag>` is a `table<DocTag>` in the docs module,
-  shaped like `pass_codes()` (`language/codes.av:26-41`).
+  shaped like `pass_codes()` (`compiler/codes.av:26-41`).
 - `LanguageFeature` gains **no** `doc_tags` field until a feature
   actually owns a tag. Adding a config field that 0 features fill is
   how `docs: string` got here.
@@ -1178,8 +1178,8 @@ one-file-per-subcommand rule.
 | step | touches | gate | blocked by |
 |---|---|---|---|
 | **D0** `avra doc <feature>` / `<F-code>` | `cli/src/commands/doc.av` (new), `main.av` (+1 line) | `make test` | nothing |
-| **D1** doc lines survive lexing | `grammar/lexer.av` (~15 edits), `language/program.av` (2 literals + 1 field) | `make gate` + 4 new lexer tests + the K0 fixture | nothing |
-| **D2** the `docs` family | `workspace.av` (7 sites), `language/docs.av` (new), `language/codes.av` (+1 row) | `make gate` + the two-revision staleness fixture | D1 |
+| **D1** doc lines survive lexing | `grammar/lexer.av` (~15 edits), `compiler/program.av` (2 literals + 1 field) | `make gate` + 4 new lexer tests + the K0 fixture | nothing |
+| **D2** the `docs` family | `workspace.av` (7 sites), `compiler/docs.av` (new), `compiler/codes.av` (+1 row) | `make gate` + the two-revision staleness fixture | D1 |
 | **D3** `avra doc <symbol>` | `commands/doc.av` (+1 arm) | `make test` | D2 |
 
 **D0 does not block on anything and should land first.** It is the

@@ -106,7 +106,7 @@ the premise.
 | **comptime (values) vs macros (syntax)** | Zig values only (so no `@derive`); Rust both, separately | **Code is a value.** `Decls`, `Code<T>` are ordinary types; a `quote` is a literal of that type. A derive is a fn from a `Type` to `Decls`. |
 | **annotation vs function** | every language: a registry, a naming convention (`derive_X`), a plugin API | **An annotation IS a call.** `@name(args) decl` evaluates `name(decl, args)` at compile time. Resolution is `use`. There is no registration API. |
 | **declared effect vs actual effect** | spec 30.3's `Effect.{metadata, validate, transform_body, derive}` enum | **The answer type is the effect.** `-> Decls` adds beside; `Fn -> Fn` replaces; `-> Diagnostics` validates; `-> void` is metadata. A flag can lie; a signature cannot. |
-| **comptime evaluator vs runtime semantics** | Zig (comptime int ≠ runtime int), Nim (VM gaps), old tree (two 400-line codecs) | **One IR, one interpreter, already built.** `language/interp.av` runs the post-memory stream; `eval == native` is a gate. Comptime is that interpreter with arguments. |
+| **comptime evaluator vs runtime semantics** | Zig (comptime int ≠ runtime int), Nim (VM gaps), old tree (two 400-line codecs) | **One IR, one interpreter, already built.** `compiler/interp.av` runs the post-memory stream; `eval == native` is a gate. Comptime is that interpreter with arguments. |
 | **comptime params vs generics** | Zig `comptime T: type`; C++ non-type template params | **`const` is a seat mark, like `mut`.** Mono already keys on types (`Sub`); a `const` seat adds its value to the key. Zig's whole system is two words we have. |
 | **quote vs embedded sublanguage** | every macro system has its own quasi-quote | **A quote is Avra as a sublanguage.** `grammar { }`, `table<R> { }`, `sql { }` and `quote { }` are one shape: a block parsed by a grammar, typed by its builder, holes spelled `${}`. |
 
@@ -420,7 +420,7 @@ are provisional; the wording is the point.
 
 ### 4.1 Evaluation is the interpreter, given arguments
 
-`language/interp.av` runs the post-memory instruction stream with a
+`compiler/interp.av` runs the post-memory instruction stream with a
 `Val` enum (`:16-33`) and hosts every registry row (`rt_dispatch`
 `:516`, 61 arms, the registry's fifth consumer). Its one gap for
 comptime is a public seat: `run_body(b, args)` (`:128`) is private and
@@ -512,7 +512,7 @@ live bytes of the compiler's own heap beyond what stood when the run
 began (`avra_mem_live`, always counted; never a sampler's number).
 Either crossed is F2061, whose help names the manifest row:
 `[lifted] steps = N` (instructions) and `memory = M` (MiB), read by
-language/manifest.av and resolved to the defaults where unwritten.
+compiler/manifest.av and resolved to the defaults where unwritten.
 
 THE DEFAULTS ARE MEASURED (2026-09-13, comptime/static, `AVRA_DEBUG=1`
 prints one `settle: <unit> steps=<n> bytes=<b>` line per run; the run
@@ -569,7 +569,7 @@ a pointer register, and it is a name, never a number.
   literal, generated declarations inlined after their annotated
   declaration, each headed `// from @derive(Show) on Pt
   (std-show/show.av:12)`. The exhaustive **source printer** for nodes
-  is now `language/source_text.av`; `fmt` can consume the same
+  is now `compiler/source_text.av`; `fmt` can consume the same
   projection. Const literal substitution and richer provenance text
   arrive with the slices that produce those values/templates.
 - The provenance side table (§3.5) is what `expand` and the LSP read.
@@ -703,7 +703,7 @@ THE MECHANICS — where the seams are:
 
 TESTS: `annotations/tests/traced/` (program test, eval == native ==
 expected), `annotations_adversarial_test.av` (20 cases, including exact
-expanded-source goldens), and `language/tests/source_text_test.av` (12
+expanded-source goldens), and `compiler/tests/source_text_test.av` (12
 canonical/structural round trips). The loop per commit is work ->
 `/red-team` -> `/review-round` -> `/feedback`; the `/feedback` skill
 files findings under ROADMAP.md.
@@ -814,7 +814,7 @@ NEXT SLICE — S3d THE ACTIVE LIST (opened 2026-09-10):
       `Provenance { ann, original, at }` per generated declaration, and
       `avra expand <file>` now prints the whole canonical file and
       inlines each generated declaration after its annotated origin.
-      `language/source_text.av` exhaustively projects Expr, Stmt and
+      `compiler/source_text.av` exhaustively projects Expr, Stmt and
       Pat nodes; source quoting protects interpolation openers, types
       preserve `dyn`, fn arrows and `mut` seats, and the test suite
       proves parse/print fixed points plus statement fingerprints.
@@ -1061,7 +1061,7 @@ to start cold; the size is the design's estimate.
       (`Program.check_every`, one `check_bodies(every)` behind both
       verbs) lowers every declared body under the entry's laws, so a
       lane can probe a template body without writing a package test.
-      Proof: `language/tests/check_every_test.av` — an unreached body's
+      Proof: `compiler/tests/check_every_test.av` — an unreached body's
       settlement trap is silent under `check` and spoken under
       `check_every`; a reached one speaks under both.
 - [x] **S4r — the `Code` value and the claim. LANDED (2026-09-13),
@@ -1242,7 +1242,7 @@ plus the big dispatch tables). The classes, and HONESTLY which the
   `match x { .V(s) -> s, _ -> null }`, so a provider DERIVES the body
   from the variant metadata; nothing is spelled twice.
   - `DeclSig` (features/contract.av): DONE (`@derive(Projections)`).
-  - `Val` (language/interp.av): `array_id(.A)`, `map_id(.M)`,
+  - `Val` (compiler/interp.av): `array_id(.A)`, `map_id(.M)`,
     `call_ptr_val(.I)` — 3 fns, clean, would become `v.array_id()`.
   - `Expr` value protocol (core/nodes.av): DONE — `@derive(ValueProtocol)`
     in `core/protocol.av`; the six free fns are gone, call sites read

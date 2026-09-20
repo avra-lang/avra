@@ -710,7 +710,7 @@ step above it.
    `e45f818`, the Makefile taken whole; `corpus/net`'s manifest kept
    the lead's shape rather than this lane's `[link]` row, because the
    corpus program was rewritten to speak the package's face.
-2. **S2 — the extern host.** (lane C's `language/interp.av`; lane A's
+2. **S2 — the extern host.** (lane C's `compiler/interp.av`; lane A's
    `core/` and `runtime/`; designed with SQLITE-LEAD and lane C.)
    The evaluator calls any linked extern by name through a uniform
    frame over `RtKind` seats; a variadic callee refuses by name. The
@@ -1074,7 +1074,7 @@ have been refused by the keeper.
 
 ### 5.6.6 WHAT THE SLICE OWES
 
-- `RtKind` gains TWO new exhaustive consumers in `language/interp.av`
+- `RtKind` gains TWO new exhaustive consumers in `compiler/interp.av`
   — the argument coercion and the answer coercion — and both must join
   `tools/vocab.sh`'s table in the SAME slice. All five of today's
   consumers are in `llvm.av`; a keeper that has only ever guarded one

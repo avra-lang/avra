@@ -367,7 +367,7 @@ are.
 - 2.2 an `RtHost` variant per row.
 - 2.3 **`RtKind` is untouched.** A `Bytes` crosses as `Ptr`.
 
-### 3 — `language/interp.av` (lane C)
+### 3 — `compiler/interp.av` (lane C)
 
 - 3.1 one `rt_dispatch` arm per `RtHost` variant. Mechanical, and the
   dispatch is exhaustive so the compiler names every one it is owed.
@@ -384,7 +384,7 @@ are.
   encode absence differently. They cannot disagree. There is ONE
   definition, `TypeRegistry.opt_rides_pointer` (`core/types.av:192`,
   `self.rides_pointer(inner) || self.is_flat(inner)`), and
-  `opt_ll_type` (`language/llvm.av:222-223`) ASKS IT rather than
+  `opt_ll_type` (`compiler/llvm.av:222-223`) ASKS IT rather than
   re-deriving it. So telling the single predicate about `Bytes` — which
   is what `rides_pointer` TRUE does — is inherited by both readers at
   once. *One predicate, two readers, no second copy: the shape that did

@@ -8,7 +8,7 @@
 //     second `make` is never called.
 //   * A KEY NAMES CONTENT, and the family is folded first, so two families naming the
 //     same parts stay apart.
-use @std.avrac.language.{Store, store_at, node_key, Stored}
+use @std.avrac.compiler.{Store, store_at, node_key, Stored, Backing, mem_backing, disk_backing}
 use @std.io.{make_dirs, write_text}
 
 /// A store of one spec's own, so two specs cannot see each other's rows.
@@ -79,6 +79,21 @@ spec "store" {
             let _ = s.keep(Stored.Fp, dead, "dropped", [])
             let dropped = s.sweep(Stored.Fp, [live])
             dropped == 1 && s.has(Stored.Fp, live) && !s.has(Stored.Fp, dead)
+        }
+    }
+
+    given "the backing seam" {
+        then "a memory backing holds a row and answers the same verbs" {
+            let b: dyn Backing = mem_backing()
+            let k = node_key(Stored.Unit, ["mem"])
+            let _ = b.put(Stored.Unit, k, "in memory", ["dep"])
+            b.name() == "mem" && b.has(Stored.Unit, k) && b.get(Stored.Unit, k) == "in memory"
+        }
+        then "the disk backing answers the same verbs" {
+            let b: dyn Backing = disk_backing(at("backing"))
+            let k = node_key(Stored.Sig, ["disk"])
+            let _ = b.put(Stored.Sig, k, "on disk", [])
+            b.name() == "disk" && b.get(Stored.Sig, k) == "on disk"
         }
     }
 }

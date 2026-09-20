@@ -999,7 +999,7 @@ exits immediately.
 
 The interesting finding is that the usual parity argument does not apply here.
 
-`packages/std-avrac/src/language/interp.av:503-546` — `rt_dispatch` looks up
+`packages/std-avrac/src/compiler/interp.av:503-546` — `rt_dispatch` looks up
 `rt_sig_of(callee)` **first**, and only falls through to the externs table
 if there is no row. An extern with no row traps: *"`X` is extern — the
 evaluator cannot host it; build natively."* So:
@@ -1252,5 +1252,5 @@ the ROADMAP's sugar backlog, not in v1's twelve.
   `avra-lane-b/runtime/avra_runtime.c:20-100, 880-1015`;
   `packages/std-avrac/src/core/ir.av:216-266`;
   `packages/std-avrac/src/core/runtime_api.av`;
-  `packages/std-avrac/src/language/interp.av:503-550`;
+  `packages/std-avrac/src/compiler/interp.av:503-550`;
   `packages/std-avrac/src/features/fns/lower.av:6-45`

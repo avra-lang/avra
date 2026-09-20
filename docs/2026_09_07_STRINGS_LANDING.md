@@ -401,7 +401,7 @@ general idea about patterns, not a line of enums.
 `PatSemantics` with three methods (`pat_types`, `pat_accepts`,
 `pat_binds`), and a `pat_semantics_of` map beside its two twins in
 **`features/dispatch.av`** — `semantics_of` at :54, `stmt_semantics_of`
-at :79 — not in `language/program.av`, which is where this paper first
+at :79 — not in `compiler/program.av`, which is where this paper first
 put it. Each twin carries a doc line saying a new variant breaks *there*
 at compile time and that the impl it names owes every pass; the third
 carries the same. Enums' three bodies move behind `EnumPatSemantics`;
@@ -448,8 +448,8 @@ rule, not shared infrastructure, and the root would acquire a resident
 that does not belong to it.
 
 **Recommendation: A, with C as the fallback.** Either way S2 touches
-lane C's territory — `language/mod.av`, `core/nodes.av`,
-`features/enums/`, and under A `language/program.av` — so the lead's
+lane C's territory — `compiler/mod.av`, `core/nodes.av`,
+`features/enums/`, and under A `compiler/program.av` — so the lead's
 ruling and lane C's agreement are wanted before S2 opens. §11 says what
 proceeds meanwhile.
 
@@ -868,7 +868,7 @@ scan the pattern lowers, plus a record construction. Cost: one new
 has **four consumers** — its definition in `impls/callee.av`,
 `impls/check.av`, `impls/lower.av` and `features/contexts.av` — one
 directory, and its own doc says a new receiver kind breaks both passes at
-compile time. (Grep the FILE, not the name: `language/receivers.av` has a
+compile time. (Grep the FILE, not the name: `compiler/receivers.av` has a
 different enum also called `Callee`.) What it costs: no format exists at
 run time, so a grammar cannot be PASSED as a value — Move 1's
 `handle(RequestLine)` does not compile. What it buys: parsing costs
@@ -1009,7 +1009,7 @@ it — which is the point of asking.
    ladder-count case with **ownership** (§3.3), which admits no "two
    copies may wait" reply. And the seam's home is
    `features/dispatch.av` beside its two twins, not
-   `language/program.av`. Both corrections are in §3.3.
+   `compiler/program.av`. Both corrections are in §3.3.
 2. **`avra_str_index_of_from`:** asked of lane A with this lane's
    wanting site. S2 ships the one-copy fallback and swaps when the row
    lands. *Unchanged.*
@@ -1746,6 +1746,6 @@ with the compiler bootstrapped from that tree.
 | one name can be a type and a value at once | `type Line` plus `let Line = Line { … }` runs, answering `GET` |
 | a generic impl's answer can follow its type argument | `Fmt<T>` with `fn parse(…) -> T?` answers `Line?` under `Fmt<Line>` |
 | a generic struct literal cannot pin its arguments | `Fmt<Line> { pieces: [] }` is F0100, "expected BREAK while parsing `stmt`" |
-| the semantics twins live in `features/dispatch.av` | `semantics_of` at :54, `stmt_semantics_of` at :79 — not `language/program.av` |
+| the semantics twins live in `features/dispatch.av` | `semantics_of` at :54, `stmt_semantics_of` at :79 — not `compiler/program.av` |
 | `TypeRef` is a plain record a builder can construct | `core/nodes.av:332`, seven fields, no arena |
 | the `TypeRef`-for-a-name shape is hand-spelled five times | `decls.av:786` (private), `builder.av:154` (exported as `void_ref`), `nodes_test.av:8` plus four literals |

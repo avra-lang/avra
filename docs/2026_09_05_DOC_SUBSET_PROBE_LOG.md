@@ -621,7 +621,7 @@ had started accepting that morning. Confirmed working today:
 
 Lane B reported the quoted code as no longer existing. It is worse than
 that, and more instructive. **F0102 exists and always has** —
-`packages/std-avrac/src/language/codes.av:19` files it as
+`packages/std-avrac/src/compiler/codes.av:19` files it as
 `"build.failed" | "a builder rejected its captures"`, unchanged since the
 projection seam was created. The deleted rule was never a registry row at
 all; it was a hand-written string inside a builder:

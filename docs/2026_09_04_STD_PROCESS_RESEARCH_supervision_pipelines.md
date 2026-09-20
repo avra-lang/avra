@@ -698,7 +698,7 @@ and sandboxing are orthogonal knobs** — `no-sandbox` actions "may still be cac
 network is reachable only through a **fixed-output derivation** that declares
 `outputHash` up front, which Nix verifies afterwards — network access traded for a
 runtime-checked hash equality
-([advanced attributes](https://nix.dev/manual/nix/2.24/language/advanced-attributes.html)).
+([advanced attributes](https://nix.dev/manual/nix/2.24/compiler/advanced-attributes.html)).
 One number matters enormously for Avra: **`sandbox` defaults to `true` on Linux and
 `false` everywhere else** ([nix.conf](https://nix.dev/manual/nix/2.34/command-ref/conf-file.html)).
 Even Nix does not claim hermeticity on macOS by default.

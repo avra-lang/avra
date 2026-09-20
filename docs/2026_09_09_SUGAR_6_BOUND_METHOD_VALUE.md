@@ -42,7 +42,7 @@ sites landed as wrapper lambdas in the sugar 1 sweep and name the
 want: core/nodes.av `any_rides`/`any_stmt_rides`, features/unify.av's
 three `all`/`find` folds, features/checks.av `same_root`,
 features/contexts.av `decl_named`, features/builder.av
-`starts_between`, language/workspace.av `parse_clean` and
+`starts_between`, compiler/workspace.av `parse_clean` and
 `registering`.
 
 ## What it buys

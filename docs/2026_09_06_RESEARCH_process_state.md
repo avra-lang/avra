@@ -876,7 +876,7 @@ migration to threads is a no-op.**
 
 **Swift**
 - SE-0412, Strict concurrency for global variables — https://github.com/swiftlang/swift-evolution/blob/main/proposals/0412-strict-concurrency-for-global-variables.md
-- The Swift Programming Language, Properties — https://docs.swift.org/swift-book/documentation/the-swift-programming-language/properties/
+- The Swift Programming Language, Properties — https://docs.swift.org/swift-book/documentation/the-swift-programming-compiler/properties/
 
 **Erlang/Elixir**
 - `persistent_term` — https://www.erlang.org/doc/apps/erts/persistent_term.html

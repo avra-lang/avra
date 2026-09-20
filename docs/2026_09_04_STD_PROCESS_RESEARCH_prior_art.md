@@ -1122,7 +1122,7 @@ alternatives.
 
 ### 1.30 Bazel / Nix — a process as a cacheable pure function
 
-<https://bazel.build/basics/hermeticity> · <https://bazel.build/remote/cache-remote> · <https://nix.dev/manual/nix/2.18/language/derivations>
+<https://bazel.build/basics/hermeticity> · <https://bazel.build/remote/cache-remote> · <https://nix.dev/manual/nix/2.18/compiler/derivations>
 
 **Bazel**: every build step is an *action* — a closed set of declared inputs, a
 command (argv + env), declared outputs. The Remote Execution API formalises the
