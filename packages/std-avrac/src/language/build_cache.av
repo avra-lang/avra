@@ -423,12 +423,14 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     // 6: 29.1/34.4.
     if !compile_ll.is_empty() {
         let clang = Tool { name: "clang", path: linker, terminator: null }
-        let jobs = [cmd(clang, ["-w", opt, "-c", name]) with { cwd: cache.root, env: Env.Inherit, streams: Streams.Inherited, own_group: false } for name in compile_ll]
+        let jobs = [cmd(clang, ["-w", opt, "-c", name]) with { cwd: cache.root, env: Env.Inherit, streams: Streams.Captured, own_group: false } for name in compile_ll]
         match parallel(jobs, CLANG_WIDTH) {
             .Err(why) -> { fail "avra: clang could not run — ${why.describe().message}" }
             .Ok(outs) -> {
                 let bad: Outcome? = outs.find((o: Outcome) -> !exited_cleanly(o.exit))
-                if bad != null { fail "avra: clang failed compiling ${describe_exit(bad!.exit)}" }
+                // THE CHILD'S OWN WORDS, not the code alone: a capture is drained before
+                // the exit is reported, so a refusal speaks with clang's diagnostic in it.
+                if bad != null { fail "avra: clang failed compiling ${describe_exit(bad!.exit)}\n${bad!.out.stderr}" }
             }
         }
     }

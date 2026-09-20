@@ -19094,3 +19094,40 @@ for the new code (`grep -c "parallel(jobs"` answered 0).
 **Toggle ONE LINE with `sed` in place, never by restoring a file.** And read
 "nothing to commit" as "check what you think you changed", because a wholesale
 restore is silent and the diff it destroys is exactly the one you were working on.
+
+## `@std/process` audit: polling is not the hack, but the interval is a gap (2026-09-19)
+
+Asked whether the parallel-clang work "polls", and whether the package is as good
+as it could be. Both answers are in `std_process.c`.
+
+**POLLING HERE IS `poll(2)`, NOT A SPIN, and the receipt is in the function.**
+`avra_proc_ready` calls `poll(fds, n, timeout_ms)` over the child's pipes — a
+BLOCKING kernel wait that costs no CPU — and where there is nothing to watch it
+`nanosleep`s the timeout it was asked for. Its own comment records the time this
+was NOT true:
+
+> NOTHING TO WATCH IS STILL A WAIT. … polling no descriptors returns at once, so a
+> driver that waits a grace OUT … turned this row into a spin — a core burned for
+> the whole grace, two seconds per command by default.
+
+That is this tree's own order-and-granularity law ("a grace waited out after the
+child was reaped SPUN a core for its whole window") living in the C that got it
+right. **So: not a hack.**
+
+**THE GAP IS AN EXIT THAT HAS NO EVENT SOURCE.** `poll` on pipes sees OUTPUT and
+EOF — so a CAPTURED child's exit IS event-driven. A child with INHERITED streams
+has no pipes, so its exit has no event, and the pump falls back to a
+`turn_ms = 20` interval. Both platforms offer the missing event:
+
+- Linux: `pidfd_open(pid)` + `poll(pidfd)`
+- macOS: `kqueue` + `EVFILT_PROC`
+
+Either removes the interval. WORTH DOING for LONG children, where a 20 ms turn is a
+real latency; NOT worth chasing for the build, and MEASURED as such: `turn_ms`
+20 -> 2 changed nothing outside noise (clang 5.2-6.6 s either way — each clang is
+40-160 ms, an order above the turn), and inherited -> captured measured neutral too.
+The interval's size is a LATENCY knob whose correctness was already made separate
+(`pumped`'s three ORDER invariants), which is why the doc comment's claim stands.
+
+**FILED, NOT FIXED — the honest verdict is "a real design gap, and correctly not a
+performance one at this granularity."**
