@@ -18982,3 +18982,55 @@ cannot fire from its only caller, because `digest_text`'s loop runs `while i + 8
 and the tail takes single bytes. The trap exists to mirror `char_code`, and it becomes
 reachable the day a caller reads a word without that guard — which is exactly what an
 inlined byte window would let a program do.
+
+## RETRACTED, then REFRAMED: the byte window is not the prize (2026-09-19)
+
+The entry above ("a week, and worth it") was written from a **guess at the payoff**.
+It was PRICED before it was built, and the price says no.
+
+**The measurement.** Landings 1+2 replaced eight `avra_str_char_code` calls per
+digest word with one `avra_str_word_at`. That removed ~5.25M calls (750k words x 7)
+and bought **31 ms** — `load` 142 -> 111, warm edit 0.58 -> 0.55. **A runtime call
+costs ~6 ns.** They are cheap individually; there are simply many.
+
+So inlining the byte read buys:
+- the LEXER: ~1 call per source byte, ~5M calls -> **~30 ms** against a 7.5 s cold
+  parse — **0.4%**
+- the digest, now one call per word -> **~5 ms** warm
+
+That does not buy a multi-day change to the backend. The byte window is filed as
+NOT WORTH DOING on its own terms.
+
+### What the same grep found, and it IS the prize
+
+```avra
+// features/lists/walks.av
+cx.emit(Ins.CallRt(raw, "avra_array_get", [xs, at]))
+// features/emit.av — `.length` on anything
+self.emit(Ins.CallRt(len, word!, [r]))
+```
+
+**THE BACKEND INLINES NOTHING.** Every list index, every `.length`, every map
+lookup, every string byte, every arithmetic-on-boxed-value is a CALL into the
+runtime — because the runtime is a separate object and clang cannot see through it
+without LTO. `CallRt` is the escape hatch the tree named as such, and it is the
+only road the backend has.
+
+**THAT IS GENERATED-CODE QUALITY, NOT BUILD-CACHE SPEED, AND IT IS WHAT STANDS
+BETWEEN THIS COMPILER AND P4.** It compounds: the compiler IS an Avra program, so
+it pays this tax in its own lexer, its own mint, its own analysis — every
+millisecond chased in `load`/`mint` below has it baked in, and every user program
+pays it too.
+
+### The campaign
+
+**Teach the backend to inline the primitive operations.** The spec an inliner needs
+already exists: `rt_sigs()` declares each row's kinds, its boxes, its ownership
+(`owns_result`, `has_owned_twin`, `lends`, `keeps`), its effect (`reach`) and
+whether it is `inert` — which is exactly the question "may this be reordered,
+folded, or hoisted out of a loop". The work is the IR-vocabulary protocol paid
+ONCE per inlined row, and the first customer should be `avra_array_get` (a bounds
+check and a load), then the length rows, then `StrCharCode`.
+
+Measure it the way this session learned to: pick the row, inline it, and price the
+END-TO-END build plus a user-program benchmark — never the microbenchmark alone.
