@@ -290,17 +290,33 @@ ones gaining consumers.
   messages, a push loop made a comprehension, hand-interned scalar types
   spelled as literals, and the 30 I39 free verbs moved into their state's
   impl. `make idioms` reports 0 across 514 files / 19 packages.
-- **P6 (started) — `workspace.av` split** (`b8aad81`): `Host` moved to
-  `host.av` and the `Program` view to `program.av`; 3,125 -> 2,818 lines.
+- **P6 (started) — `workspace.av` split 3,125 -> 1,264 lines** (`b8aad81`,
+  `914b6fc`, `71fb238`): `host.av` (the filesystem seam), `program.av` (the
+  Program view), `expand.av` (macros/derives/marks), `modules.av` (paths and
+  files), `whole.av` (analysis/entries/cases/hold), `packages.av` (the manifest
+  closure), `voices.av` (its diagnostics).
+- **Cache/backend file splits** (`13bb325`): `record.av` (the record format)
+  out of `interface.av` (984 -> 420), `link.av` (clang argv/exit/binary) out of
+  `build_cache.av` (499 -> 440).
+- **The shared compile seam** (`862b6f9`, `0f776a5`): `compile_lowered` is now
+  the emit-moved-files + parallel-clang + link half of the build, a `Workspace`
+  method, so a suite can compile through the SAME per-file object cache and
+  link path. This is the seam P5 needs.
 
 **Still to land:** P2 (`World`), P3 (`Compiled` + one derivation), P4
-(`projections/` + thin CLI), P5 (`test`/`emit` on the `Disk` backing + `link/`),
-P6 (finish the split; merge `typing_*`/`lower_*`; fold `interface`+`store`+
-`build_cache` into `cache/`+`link/`), P7 (the `Diags` family).
+(`projections/` + thin CLI), P5 (`test`/`emit` on the `Disk` backing —
+`compile_lowered` is extracted and ready to be called by a suite), P6 (finish
+the split; merge `typing_*`/`lower_*`), P7 (the `Diags` family).
 
-**Other cruft found, not yet removed:** `packages/std-sqlite/BUILD_SEAM.diff`
-(a committed patch that references dead `language/` paths) and
-`main_stamped`'s sibling `packages/cli/src/main_stamped.av` if it exists.
+**A cache hazard, hit twice this session:** `seed-check` (and `gate`) can fail
+with `undefined symbol ...prelude.eprintln` when the `.avra-cache` was written
+by a *different compiler generation* than the seed compiler reading it. The
+seed itself is fine (it defines the symbol); the cache is incoherent. The fix
+is `rm -rf .avra-cache` before `seed-check`. A gate that runs `seed-check` after
+a build from a new generation must not trust the previous generation's cache.
+
+**Other cruft found, not yet removed:** none tracked beyond `BUILD_SEAM.diff`
+(a parked design record, now repointed).
 
 - **P0 — this document.**
 - **P1 — `cache/`.** Extract `Store` + `BuildCache` behind `trait Backing`
