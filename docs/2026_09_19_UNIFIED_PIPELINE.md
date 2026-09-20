@@ -313,6 +313,26 @@ The fix is a mode in the object key, or per-ITEM codegen keyed by the body
 fingerprint (the design's `codegen(item)`), not per-file reachability.
 `compile_lowered` is the seam; the key discipline is the work.
 
+**CONFIRMED (pre-existing on `cache/cas`, not introduced this session): a
+per-file object key does not fold the REACHABLE body set, so two programs that
+share a cache and a file collide.** Minimal repro:
+
+```
+ra:  deps @std/text;   use @std.text.{from_codepoint};  ... from_codepoint(65)
+txj: deps @std/sqlite; open/prepare/... (sqlite reaches @std.text.has_nul)
+
+rm -rf .avra-cache && ./avra build build/scratch/ra && ./avra build build/scratch/txj
+  -> Undefined symbols: _av_$40std$2Etext$2Ehas_nul, referenced from sqlite
+```
+
+`ra` emits `text.av`'s object with only the bodies it reaches; `txj` reuses it
+under the same `obj_key_of` and links a binary missing `has_nul`. Reproduces at
+`b581270` (the branch base) with the same probe. This is what makes `make traps`
+order/cache-dependent: a trap that reaches `text.from_codepoint` pollutes the
+object a later sqlite trap reuses. The fix is per-ITEM codegen keyed by the body
+fingerprint (the design's `codegen(item)`), or folding each file's reachable
+body fingerprints into its object key — not per-file reachability.
+
 **Still to land:** P2 (`World`), P3 (`Compiled` + one derivation), P4
 (`projections/` + thin CLI), P5 (`test`/`emit` on the `Disk` backing —
 `compile_lowered` is extracted and ready to be called by a suite), P6 (finish
