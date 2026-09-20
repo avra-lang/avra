@@ -303,6 +303,16 @@ ones gaining consumers.
   method, so a suite can compile through the SAME per-file object cache and
   link path. This is the seam P5 needs.
 
+**P5 is subtler than it looks — and must not be wired naively.** The build
+lowers only what the entry REACHES; a suite lowers EVERY declared body (a case
+is a declaration nothing reaches). `obj_key_of` folds the file's bytes and its
+imports' interfaces, NOT the lowering mode — so the same file yields two
+different objects (one carrying the file's unreachable bodies, one not) under
+one key. Reusing a build object in a suite would link a binary missing bodies.
+The fix is a mode in the object key, or per-ITEM codegen keyed by the body
+fingerprint (the design's `codegen(item)`), not per-file reachability.
+`compile_lowered` is the seam; the key discipline is the work.
+
 **Still to land:** P2 (`World`), P3 (`Compiled` + one derivation), P4
 (`projections/` + thin CLI), P5 (`test`/`emit` on the `Disk` backing —
 `compile_lowered` is extracted and ready to be called by a suite), P6 (finish

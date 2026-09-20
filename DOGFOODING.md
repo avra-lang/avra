@@ -128,9 +128,7 @@ gate — there is no amnesty left to hide in.
       loops that cited them are comprehensions now.
 - I4  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
       the scan is `xs.index_of(x)` (returns -1 on a miss — wrap to
-      `int?`), as `core/modules.av` reads a key's cut. `overlay_hit`
-      stays a loop: reverse
-      scan, licensed until a reversed iterator exists.
+      `int?`), as `core/modules.av` reads a key's cut.
 - I5  the dedupe/union fold — NAMED: core `distinct(xs)` (STRING-
       only on purpose — `contains` compares non-strings by
       identity). The grammar's own folds use it — `first.av`,
