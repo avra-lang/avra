@@ -316,16 +316,18 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
     // SIGNATURE with no instructions: a caller's module declares what it NAMES, so a call
     // to a held function finds a declaration — and it is defined NOWHERE, because the file
     // it belongs to is never emitted. Its machine code is the object the store holds.
-    compile_lowered(self, store, cache, p, lo, ent.view.file, key, binary, opt, runtime, linker, attempt, trace)
+    self.compile_lowered(store, cache, p, lo, ent.view.file, key, binary, opt, runtime, linker, attempt, trace)
 }
 }
 
+impl Workspace {
+
 /// Emit the moved files, clang them in parallel, and link — the half a
 /// build and a suite share. `entry` is the file the entry body lives in.
-fn compile_lowered(mut w: Workspace, store: Store, cache: BuildCache, p: Program, lo: Lowered,
+fn compile_lowered(store: Store, cache: BuildCache, p: Program, lo: Lowered,
                    entry: FileId, key: string, binary: string, opt: string, runtime: string,
                    linker: string, attempt: int, trace: List<string>) -> Result<BuildOutcome, string> {
-    let stubs = held_stubs(w)
+    let stubs = held_stubs(self)
     // A BODY IS EMITTED WHERE ITS HOME IS, and a home that is HELD cannot emit it: the
     // object comes from the store, and a WRAPPER a fresh caller minted (`$w`, whose home
     // is the file that DECLARES what it wraps) is not in that stored object — the link
@@ -346,7 +348,7 @@ fn compile_lowered(mut w: Workspace, store: Store, cache: BuildCache, p: Program
             active.push(bd with { weak: true })
         } else {
             let home: FileId? = home_of(bd)
-            if home != null && w.is_held(home!) {
+            if home != null && self.is_held(home!) {
                 active.push(bd with { file: entry, weak: true })
             } else {
                 active.push(bd)
@@ -369,10 +371,10 @@ fn compile_lowered(mut w: Workspace, store: Store, cache: BuildCache, p: Program
     let t_e0 = avra_now_ns()
     for a in p.files {
         let path = a.view.source.file
-        let m = module_path(w.module_of(path).split("."))
+        let m = module_path(self.module_of(path).split("."))
         let base = node_key(Stored.Obj, [digest_of(path)])
         let obj = "${cache.root}/${base}.o"
-        let okey = obj_key_cached(w, store, m, path)
+        let okey = obj_key_cached(self, store, m, path)
         // A FILE WHOSE OBJECT IS ALREADY KEYED needs no emission: it was re-parsed (its
         // module moved) but its own inputs did not.
         if store.place(Stored.Obj, okey, obj) {
@@ -417,16 +419,16 @@ fn compile_lowered(mut w: Workspace, store: Store, cache: BuildCache, p: Program
         let _ = store.keep_file(Stored.Obj, po.okey, po.obj, [])
         objs.push(po.obj)
     }
-    for path in held_paths(w) {
-        let m = module_path(w.module_of(path).split("."))
-        let okey = obj_key_cached(w, store, m, path)
+    for path in held_paths(self) {
+        let m = module_path(self.module_of(path).split("."))
+        let okey = obj_key_cached(self, store, m, path)
         // THE LINK READS THE STORE'S OBJECT IN PLACE — a held object is a blob on disk and
         // copying all 274 of them to temp paths each build was 650ms of pure I/O.
         if !store.has(Stored.Obj, okey) { fail "avra: a held object disappeared: ${path} (module ${m.text()}) key ${okey}" }
         objs.push(store.path(Stored.Obj, okey))
     }
     let t_e3 = avra_now_ns()
-    let words = link_objects(objs, w, runtime, binary)
+    let words = link_objects(objs, self, runtime, binary)
     // THE LINK RUNS HERE, not in the CLI: the build owns its pipeline, and a thin caller
     // is one that decides nothing.
     let code = avra_spawn_status(linker, words)
@@ -439,10 +441,11 @@ fn compile_lowered(mut w: Workspace, store: Store, cache: BuildCache, p: Program
     let warnings = p.warnings()
     // WHAT EACH PHASE COST, because a build that cannot say where its time went is a
     // build whose next optimisation is a guess.
-    let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases].concat(["held ${held_paths(w).length}/${w.decls.files.length}", "attempt ${attempt}", "emit ${(t_e1 - t_e0) / 1000000}ms", "clang ${(t_e2 - t_e1) / 1000000}ms", "place ${(t_e3 - t_e2) / 1000000}ms", "link ${(t_e4 - t_e3) / 1000000}ms"]).concat(trace), ", ")
+    let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases].concat(["held ${held_paths(self).length}/${self.decls.files.length}", "attempt ${attempt}", "emit ${(t_e1 - t_e0) / 1000000}ms", "clang ${(t_e2 - t_e1) / 1000000}ms", "place ${(t_e3 - t_e2) / 1000000}ms", "link ${(t_e4 - t_e3) / 1000000}ms"]).concat(trace), ", ")
     // THE RESULT IS THE BUILD'S OWN OUTPUT, so it is the build that remembers it: the
     // binary under one family and what was said about it under another.
     let _ = store.keep_file(Stored.Bin, key, binary, [key])
     let _ = store.keep(Stored.Warn, key, warnings, [key])
     .Ok(fresh_build(words, binary, warnings, key, spent))
+}
 }

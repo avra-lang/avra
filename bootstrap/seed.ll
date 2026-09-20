@@ -343873,7 +343873,7 @@ endif146:                                         ; preds = %else145, %postret15
   call void @avra_rc_retain(ptr %4)
   call void @avra_rc_retain(ptr %6)
   call void @avra_rc_retain(ptr %ld158)
-  %186 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2Ecompile_lowered"(ptr %0, ptr %9, ptr %11, ptr %67, ptr %regval57, i64 %185, ptr %13, ptr %14, ptr %3, ptr %4, ptr %6, i64 %7, ptr %ld158)
+  %186 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2EWorkspace$2Ecompile_lowered"(ptr %0, ptr %9, ptr %11, ptr %67, ptr %regval57, i64 %185, ptr %13, ptr %14, ptr %3, ptr %4, ptr %6, i64 %7, ptr %ld158)
   call void @avra_cell_release(ptr %slot21)
   call void @avra_cell_release(ptr %slot14)
   call void @avra_cell_release(ptr %slot13)
@@ -344123,7 +344123,7 @@ postret155:                                       ; No predecessors!
   br label %endif146
 }
 
-define ptr @"av_$40std$2Eavrac$2Ecompiler$2Ecompile_lowered"(ptr %0, ptr %1, ptr %2, ptr %3, ptr %4, i64 %5, ptr %6, ptr %7, ptr %8, ptr %9, ptr %10, i64 %11, ptr %12) {
+define ptr @"av_$40std$2Eavrac$2Ecompiler$2EWorkspace$2Ecompile_lowered"(ptr %0, ptr %1, ptr %2, ptr %3, ptr %4, i64 %5, ptr %6, ptr %7, ptr %8, ptr %9, ptr %10, i64 %11, ptr %12) {
 entry:
   %slot160 = alloca i64, align 8
   %slot135 = alloca ptr, align 8
