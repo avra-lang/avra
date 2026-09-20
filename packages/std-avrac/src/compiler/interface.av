@@ -14,7 +14,7 @@
 //! type's identity is a per-run id and its SHAPE lives in its declaration. So a struct
 //! carries its fields, an enum its variants, and loading walks the IMPORTS FIRST — a field
 //! of another module's type is only internable once that module's types exist.
-use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, sorted_texts, distinct, same_file, same_decl, module_path, ModulePath, TypeRegistry, Type, TypeId, DeclId, FileId, StmtId, ExprId, DeclKind, SeatMark, Span, TypeRef}
+use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, sorted_texts, distinct, same_file, same_decl, module_path, ModulePath, TypeRegistry, TypeLit, Type, TypeId, DeclId, FileId, StmtId, ExprId, DeclKind, SeatMark, Span, TypeRef}
 use features.{Decl, DeclSig, FnSig, StructSig, EnumSig, NamedSig, Decls, Namespace, SettleRoot, kind_word, spelled_type, scalar_named, DeclFacts}
 
 /// THE NAME A MODULE'S RECORD IS STORED UNDER. The ROOT module's name is EMPTY — it holds
@@ -154,7 +154,7 @@ fn type_wire(decls: Decls, id: TypeId) -> string {
         .Opt(t) -> "O~${type_wire(decls, t).substring(1, type_wire(decls, t).length)}",
         .Map(k, v) -> "M~${type_wire(decls, k).substring(1, type_wire(decls, k).length)}~${type_wire(decls, v).substring(1, type_wire(decls, v).length)}",
         .Res(ok, err) -> "Q~${type_wire(decls, ok).substring(1, type_wire(decls, ok).length)}~${type_wire(decls, err).substring(1, type_wire(decls, err).length)}",
-        .Fn(params, marks, ret) -> joined(["F", "${params.length}"].concat([type_wire(decls, t).substring(1, type_wire(decls, t).length) for t in params]).concat([joined([mark_word(if j < marks.length { marks[j] } else { SeatMark { mutable: false, settled: false } }) for j in 0..params.length], ""), type_wire(decls, ret).substring(1, type_wire(decls, ret).length)]), "~"),
+        .Fn(params, marks, ret) -> joined(["F", "${params.length}"].concat([type_wire(decls, t).substring(1, type_wire(decls, t).length) for t in params]).concat([joined([mark_word(if j < marks.length { marks[j] } else { no_seat_mark }) for j in 0..params.length], ""), type_wire(decls, ret).substring(1, type_wire(decls, ret).length)]), "~"),
     }
     "^${body}"
 }
@@ -243,6 +243,12 @@ fn read_type_wire(mut decls: Decls, words: List<string>, at: int) -> WireType? {
 /// EVERY NAME A MODULE EXPORTS — its imports first, so a reader can walk the closure in
 /// the order that makes each shape internable.
 // LICENSED I39: a pure PROJECTION — the workspace, a store and a module in, its record out.
+/// A seat with neither promise written.
+const no_seat_mark: SeatMark = SeatMark { mutable: false, settled: false }
+
+/// Whether a declaration stands among a file's top-level items.
+fn on_top(top: List<DeclId>, d: DeclId) -> bool { top.any(same_decl(it, d)) }
+
 fn record_of(mut ws: Workspace, store: Store, m: ModulePath) -> string {
     let prior = record_cached(ws, store, m)
     let prior_lines = prior.split("\n")
@@ -261,9 +267,7 @@ fn record_of(mut ws: Workspace, store: Store, m: ModulePath) -> string {
             items = items.concat([line for line in prior_lines if named_file(line) == path])
         } else {
             let top = ws.items(f)
-            for ordinal, id in ws.decls.decls_of_file(f) {
-                items.push(record_line(ws, ws.decl_at(id), ordinal, top.any(same_decl(it, id))))
-            }
+            items = items.concat([record_line(ws, ws.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in ws.decls.decls_of_file(f)])
         }
     }
     joined(["iface\t${iface_digest(items)}"].concat(here).concat(items), "\n")
@@ -679,7 +683,7 @@ fn mark_word(m: SeatMark) -> string {
 /// The inverse — an unknown word is the plain unwritten seat, the shape of every
 /// seat that promises nothing.
 fn mark_of_word(w: string) -> SeatMark {
-    if w == "m" { SeatMark { mutable: true, settled: false } } else if w == "s" { SeatMark { mutable: false, settled: true } } else { SeatMark { mutable: false, settled: false } }
+    if w == "m" { SeatMark { mutable: true, settled: false } } else if w == "s" { SeatMark { mutable: false, settled: true } } else { no_seat_mark }
 }
 
 /// A SPELLING AS A TYPE — the registry for every DECLARED name, the type grammar only for
@@ -727,9 +731,9 @@ fn interface_plain(mut ws: Workspace, owner: DeclId, a: TypeRef) -> TypeId? {
         if j != null && j! >= 0 { return ws.decls.types.intern(Type.Var(owner, j!, a.name)) }
         let word: Type? = scalar_named(a.name)
         if word != null { return ws.decls.types.intern(word!) }
-        if a.name == "void" { return ws.decls.types.intern(Type.Void) }
-        if a.name == "ptr" { return ws.decls.types.intern(Type.Ptr) }
-        if a.name == "bytes" { return ws.decls.types.intern(Type.Bytes) }
+        if a.name == "void" { return ws.decls.types.interned(TypeLit.Void) }
+        if a.name == "ptr" { return ws.decls.types.interned(TypeLit.Ptr) }
+        if a.name == "bytes" { return ws.decls.types.interned(TypeLit.Bytes) }
         return null
     }
     mut args: List<TypeId> = []

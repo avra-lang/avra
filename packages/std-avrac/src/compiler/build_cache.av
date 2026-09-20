@@ -16,7 +16,7 @@ use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, disti
 use features.{Decl, DeclSig}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_text, write_text, make_dirs, exists}
-use @std.process.{parallel, cmd, Tool, Outcome, Exit, Env, Streams, status_of, ProcessError}
+use @std.process.{parallel, cmd, Tool, Outcome, Exit, Env, Streams}
 
 /// HOW MANY CLANGS AT ONCE. Bounded, because clang is ~200MB a process and the
 /// machine is shared — four buys the wall without saturating it.
@@ -73,6 +73,11 @@ const CACHE_HOLD_ENABLED: bool = true
 /// A build's result: the words that link it, the binary they produce,
 /// the warnings to speak, and whether a held artifact was reused.
 export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool, key: string, emitted: int = 0, reused_files: int = 0, phases: string = "" }
+
+/// The outcome a fresh build answers.
+fn fresh_build(words: List<string>, binary: string, warnings: string, key: string, phases: string) -> BuildOutcome {
+    BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key, phases: phases }
+}
 
 /// A module emitted but not yet compiled: its object's key, and where clang will write it.
 type PendingObj = { okey: string, obj: string }
@@ -313,12 +318,12 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
         }
         let words = link_objects([obj], ws, runtime, binary)
         let code = avra_spawn_status(linker, words)
-        if code != 0 { fail "avra: clang failed linking — exited with code ${code}" }
+        if code != 0 { fail clang_link_failed(code) }
         let warnings = p.warnings()
         let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases], ", ")
         let _ = store.keep_file(Stored.Bin, key, binary, [key])
         let _ = store.keep(Stored.Warn, key, warnings, [key])
-        return .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key, phases: spent })
+        return .Ok(fresh_build(words, binary, warnings, key, spent))
     }
     // THE MODULE'S OWN CONTENT IS ITS OBJECT'S KEY, so a module that did not move reuses
     // its machine code and CLANG IS NEVER RUN. The optimizer is the largest single cost in
@@ -372,7 +377,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
         } else if bd.name.ends_with("$w") {
             active.push(bd with { weak: true })
         } else {
-            let home: FileId? = home_of(whole, bd)
+            let home: FileId? = home_of(bd)
             if home != null && ws.is_held(home!) {
                 active.push(bd with { file: ent.view.file, weak: true })
             } else {
@@ -458,7 +463,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     // is one that decides nothing.
     let code = avra_spawn_status(linker, words)
     if code != 0 {
-        fail "avra: clang failed linking — exited with code ${code}"
+        fail clang_link_failed(code)
     }
     let t_e4 = avra_now_ns()
     // REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it — the data a
@@ -471,10 +476,16 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     // binary under one family and what was said about it under another.
     let _ = store.keep_file(Stored.Bin, key, binary, [key])
     let _ = store.keep(Stored.Warn, key, warnings, [key])
-    .Ok(BuildOutcome { words: words, binary: binary, warnings: warnings, reused: false, key: key, phases: spent })
+    .Ok(fresh_build(words, binary, warnings, key, spent))
 }
 
 /// clang's words for a module: the level, the runtime, the packages' own
+/// The one voice for a failed link — the words a reader sees when clang
+/// refuses a program.
+fn clang_link_failed(code: int) -> string {
+    "avra: clang failed linking — exited with code ${code}"
+}
+
 /// objects and flags, then the binary's path. The runtime object is passed
 /// in — it is a TOOLCHAIN fact found from the binary's own directory, and a
 /// lone file's host is in memory and knows nothing of a disk.

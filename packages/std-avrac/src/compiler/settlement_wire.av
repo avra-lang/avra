@@ -1,6 +1,7 @@
 //! The disk form of a settled const. Fields carry their byte length, so text,
 //! including newlines and NULs, can round trip without an escape language.
 use features.{Settled, MetaVal, MetaHeap, MetaMap}
+use core.{is_digit}
 
 fn wire_field(s: string) -> string { "${s.length}:${s}" }
 
@@ -37,6 +38,15 @@ fn settled_wire(s: Settled) -> string {
 
 type WireReader = { raw: string, pos: int }
 
+/// A reader at the head of a wire payload — every wire starts two bytes in.
+fn wire_reader(raw: string) -> WireReader { WireReader { raw: raw, pos: 2 } }
+
+/// A map node of a settled heap.
+fn meta_map(keys: List<string>, values: List<MetaVal>) -> MetaMap { MetaMap { keys: keys, values: values } }
+
+/// A heap of settled nodes and maps.
+fn meta_heap(nodes: List<List<MetaVal>>, maps: List<MetaMap>) -> MetaHeap { MetaHeap { nodes: nodes, maps: maps } }
+
 fn wire_number(s: string) -> int? {
     if s.is_empty() { return null }
     let neg = s.char_code(0) == 45
@@ -54,7 +64,7 @@ fn wire_number(s: string) -> int? {
 impl WireReader {
     mut fn field() -> string? {
         mut at = self.pos
-        while at < self.raw.length && self.raw.char_code(at) >= 48 && self.raw.char_code(at) <= 57 { at = at + 1 }
+        while at < self.raw.length && is_digit(self.raw.char_code(at)) { at = at + 1 }
         if at == self.pos || at >= self.raw.length || self.raw.char_code(at) != 58 { return null }
         let size? = wire_number(self.raw.substring(self.pos, at)) else { return null }
         if size < 0 || size > self.raw.length - at - 1 { return null }
@@ -87,7 +97,7 @@ impl WireReader {
 
 fn settled_from_wire(raw: string) -> Settled? {
     if !raw.starts_with("S1") { return null }
-    mut r = WireReader { raw: raw, pos: 2 }
+    mut r = wire_reader(raw)
     let fp? = r.number() else { return null }
     let embed_count? = r.number() else { return null }
     if embed_count < 0 { return null }
@@ -123,11 +133,11 @@ fn settled_from_wire(raw: string) -> Settled? {
             keys.push(key)
             values.push(v)
         }
-        maps.push(MetaMap { keys: keys, values: values })
+        maps.push(meta_map(keys, values))
     }
     let answer? = r.value() else { return null }
     if r.pos != raw.length { return null }
-    Settled { answer: answer, heap: MetaHeap { nodes: nodes, maps: maps }, embeds: embeds, fingerprint: fp }
+    Settled { answer: answer, heap: meta_heap(nodes, maps), embeds: embeds, fingerprint: fp }
 }
 
 // ── A unit's DEMANDS ──────────────────────────────────────────────
@@ -196,7 +206,7 @@ fn wanted_list_wire(ws: Workspace, xs: List<Wanted>) -> string {
 /// would be inexact again.
 fn wanted_list_from_wire(mut ws: Workspace, raw: string) -> List<Wanted>? {
     if !raw.starts_with("W1") { return null }
-    mut r = WireReader { raw: raw, pos: 2 }
+    mut r = wire_reader(raw)
     let count? = r.number() else { return null }
     if count < 0 { return null }
     mut out: List<Wanted> = []
@@ -208,8 +218,7 @@ fn wanted_list_from_wire(mut ws: Workspace, raw: string) -> List<Wanted>? {
         let f: FileId? = ws.decls.paths.get(file_path)
         if f == null { return null }
         let decl = decl_from_ref(ws, decl_raw)
-        mut sub: Sub? = null
-        if sub_mark == "+" {
+        let sub: Sub? = if sub_mark == "+" {
             let target_raw? = r.field() else { return null }
             let target = decl_from_ref(ws, target_raw)
             if target == null { return null }
@@ -229,8 +238,8 @@ fn wanted_list_from_wire(mut ws: Workspace, raw: string) -> List<Wanted>? {
                 let c? = r.field() else { return null }
                 consts.push(c)
             }
-            sub = Sub { target: target!, args: args, consts: consts }
-        }
+            Sub { target: target!, args: args, consts: consts }
+        } else { null }
         let seat_count? = r.number() else { return null }
         if seat_count < 0 { return null }
         mut seats: List<SeatValue> = []
@@ -268,9 +277,9 @@ fn wanted_list_from_wire(mut ws: Workspace, raw: string) -> List<Wanted>? {
                     keys.push(key)
                     values.push(v)
                 }
-                maps.push(MetaMap { keys: keys, values: values })
+                maps.push(meta_map(keys, values))
             }
-            seats.push(SeatValue { index: index, fp: fp, ty: ty!, value: value, heap: MetaHeap { nodes: nodes, maps: maps } })
+            seats.push(SeatValue { index: index, fp: fp, ty: ty!, value: value, heap: meta_heap(nodes, maps) })
         }
         out.push(Wanted { file: f!, decl: decl, name: name, sub: sub, seats: seats, root: null })
     }
