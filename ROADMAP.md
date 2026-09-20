@@ -19221,3 +19221,49 @@ in a call tree.
 
 `keep`'s row is still on the table too: `make_dirs(self.shard(...))` runs a mkdir per
 stored row (usually EEXIST), and `write_bytes` is ~1.3 s of the tree.
+
+## The parse is 10 s, and it is NOT the mint (2026-09-19)
+
+`admit` was the biggest phase (7.9-8.2 s of a 22 s cold build) and lumped two very
+different costs. Timed per file, over all 275:
+
+```
+parse 10039 ms      mint 169 ms
+```
+
+**SO `admit` IS THE PARSE.** The declaration minting — every table write that the warm
+sessions fought (`children`, `decl_ids`, the member tables) — is 169 ms of it. Whatever
+the parse's 10 s is, it is not the tables.
+
+### What is established about that 10 s
+
+- It is `parsed(f)` = LEX + `run_from`, and `run_from` is a PACKRAT engine:
+  `Memo { slots: filled(g.rules.length * stride * 2, 0), stride: tokens.length + 1 }`
+  — a `rules x tokens x 2` slot table, ALLOCATED AND ZERO-FILLED PER FILE.
+- `filled` is a COMPREHENSION (`[v for i in 0..n]`), so that table is built one push at
+  a time, n of them, per file.
+- The sampler's tree for the parse is almost entirely `release_dead` — i.e. the parser
+  is RELEASE-bound, allocating per token and per attempt and freeing after.
+- 5 MB of source in 10 s is ~0.5 MB/s.
+
+### WHAT TO MEASURE NEXT, in this order — do not skip to a fix
+
+1. **TOKENS, not statements.** `p.stmts.length` was printed first and it is the wrong
+   denominator: 4095 statements over 275 files says nothing about a 5 MB source. Print
+   `stride` (tokens + 1) and re-correlate parse time against TOKENS. The question is
+   whether the parse is LINEAR in a file's tokens or SUPER-LINEAR — the latter means the
+   packrat memo is not hitting, and a memo that does not hit turns a linear parser into
+   an exponential one without changing a line of the grammar.
+2. **The memo's size**: `rules x tokens x 2` ints, zero-filled by a comprehension, PER
+   FILE. Name it with a number before touching it (the sampler charges `filled`-shaped
+   work at only ~5% of leaf samples, which is why it is a suspect rather than a finding).
+3. **Only then** the allocation-per-attempt work (`appended_expected` 212 samples, the
+   far-record merges) — and note the doctrine's own measurement recorded against chasing
+   it: "deduplicating `far_merge`'s expected sets measured 3% SLOWER, and skipping an
+   empty concat measured neutral."
+
+### WHO ELSE PAYS FOR A PARSE WIN
+
+`check`, `test` and `seed` never run the cache driver, so nothing is HELD and every file
+parses every time. A parse win is a dev-loop win, not only a cold one — and the WARM
+build pays ~10 ms of it (the edited file), because a held file answers from its record.
