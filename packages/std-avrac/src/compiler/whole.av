@@ -1,0 +1,354 @@
+//! The whole program: every file analyzed, the entries, the cases, the
+//! hold, and the link words. Moved out of the workspace god-object.
+use core.{NodeStore, DeclId, FileId, UseParts, ExprId, Case, flatten, SpecParts, spelled, user_kind, is_kind_word}
+use @std.path.{under_dir, joined_path, normalized}
+use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of}
+use @std.meta.{Named}
+use diagnostics.{SourceFile, Diag, refusal, has_errors, DiagCode}
+use @std.testing.{CaseRef, words}
+
+impl Workspace {
+
+    // ── The whole program ──
+    /// Every file under the root analyzed, in FileId order — each step
+    /// asked for every file before the next, so the phases time apart.
+    fn analyze_all() -> List<Analysis> {
+        let t0 = self.clock()
+        for path in self.root_files() { let _ = self.items(self.file_id(path)) }
+        self.timed("parse", self.clock() - t0)
+        // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
+        // MINTED from its record, so every consumer sees the interface it had — and its
+        // BODY is not wanted, because its object comes from the store. THIS IS WHERE THE
+        // SUB-SECOND EDIT LIVES: one file read, 199 answered from what a previous build
+        // wrote down.
+        let t1 = self.clock()
+        for fi in self.decls.files { if !self.is_held(fi.id) { let _ = self.resolved(fi.id) } }
+        self.timed("resolve", self.clock() - t1)
+        let t2 = self.clock()
+        for fi in self.decls.files { if !self.is_held(fi.id) { let _ = self.sig_diagnostics(fi.id) } }
+        self.timed("sigs", self.clock() - t2)
+        let t3 = self.clock()
+        let out = [self.analysis(fi.id) for fi in self.decls.files if !self.is_held(fi.id)]
+        self.timed("bodies", self.clock() - t3)
+        out
+    }
+
+
+    /// One file's analysis by path.
+    fn analyze_file(path: string) -> Analysis {
+        self.analysis(self.file_id(path))
+    }
+
+    /// The program rooted at `ws.root`, entered at one of its files.
+    fn program(entry: string?) -> Program {
+        let files = self.analyze_all()
+        let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
+        let seat: Entry? = if at == null { null } else { Entry { at: at! } }
+        Program {
+            ws: self, files: files, entry: seat, phases: self.phases, cache: self.db.stats(), defects: self.defects,
+            voices: self.packages_voiced(), manifests: [self.manifest_source(pkg) for pkg in self.packages if self.has_manifest(pkg)],
+        }
+    }
+
+    /// Every case of every file, in file and declaration order.
+    fn cases() -> List<TestCase> {
+        flatten([self.file_cases(fi.id) for fi in self.decls.files])
+    }
+
+    /// The cases a workspace holds, known from PARSING alone: every
+    /// file's items minted, nothing typed — so a package without cases
+    /// says so before its dependencies are analyzed.
+    mut fn parsed_cases() -> List<TestCase> {
+        // the file table fills as files are first asked for — the root's
+        // sources are entered here, each one's items minted; the parse
+        // is timed as the parse phase it is
+        let t0 = self.clock()
+        for path in self.root_files() { let _ = self.items(self.file_id(path)) }
+        self.timed("parse", self.clock() - t0)
+        self.cases()
+    }
+
+    /// Whether every root source PARSED clean. A package that parsed to
+    /// no cases has none only when nothing refused to parse — a broken
+    /// spec file parses to nothing, and saying "no cases" of it would
+    /// be a green over a red.
+    /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
+    /// question the analysis asks before it does anything at all.
+    fn is_held(f: FileId) -> bool { self.decls.held.get(self.decls.file(f).path) != null }
+
+    /// WHETHER ONE FILE IS HELD — the hold is per FILE, because a module with fifty files
+    /// holds forty-nine.
+    mut fn hold_only(path: string) { self.decls.held.set(path, true) }
+
+    /// ADMIT EVERY FILE — parse and mint the whole closure, which GROWS as a file's `use`
+    /// lines admit packages. Held sigs are rebuilt from records and may name a PARSED
+    /// module's type, so every name must exist before any held shape is filled.
+    mut fn admit_all() {
+        mut i = 0
+        while i < self.decls.files.length {
+            let _ = self.items(self.decls.files[i].id)
+            i = i + 1
+        }
+    }
+
+    /// HOLD A FILE: from here it contributes its MINTED declarations and its stored
+    /// object, and nothing reads it.
+    mut fn hold_file(path: string) { self.decls.held.set(path, true) }
+
+    /// ADMIT THE PACKAGE A MODULE NAMES. A held file's `use` lines are never
+    /// resolved, so a package they would have admitted is admitted here instead:
+    /// the import graph is part of the interface, not a side effect of the parse.
+    fn ensure_package(key: string) {
+        let _ = self.std_admitted(key)
+    }
+
+    fn parse_clean() -> bool {
+        self.root_files().all((f) -> !has_errors(self.parsed(self.file_id(f)).voices.list))
+    }
+
+    /// The cases of ONE file, named by the path it MEANS: both sides
+    /// normalized, so `./` and a doubled slash select what the listing
+    /// spelled cleanly.
+    fn cases_at(path: string) -> List<TestCase> {
+        let wanted = normalized(path)
+        [c for c in self.cases() if normalized(c.at.file) == wanted]
+    }
+
+    /// A file's cases, its items minted first: a file enters the table
+    /// at first mention, and a mention alone mints nothing.
+    fn file_cases(f: FileId) -> List<TestCase> {
+        let _ = self.items(f)
+        let src = self.source(f)
+        let store = self.decls.store_of(f)
+        [self.test_case(src, store, self.decl_at(d)) for d in self.decls.decls_of_file(f) if self.is_case(d)]
+    }
+
+    fn is_case(d: DeclId) -> bool {
+        self.decl_at(d).kind is .Case
+    }
+
+    /// The case's group from its spec's own list — its body is the key
+    /// — and its line from the source.
+    fn test_case(src: SourceFile, store: NodeStore, x: Decl) -> TestCase {
+        let parts: SpecParts? = store.spec_parts(x.stmt)
+        let written: Case = parts!.cases.find(same_body(it, x.root!))!
+        let lo = self.decls.decl_span(x.id)!.lo
+        TestCase {
+            at: CaseRef { suite: x.owner, group: written.group, name: x.name, file: src.file, line: src.linecol(lo).line },
+            symbol: self.decls.symbol(x.id),
+        }
+    }
+
+    /// WHAT THE PROGRAM LINKS: every package's `[link]` promise, in
+    /// package order — the objects it names under its own root, the
+    /// directories it searches, the libraries it needs. A package that
+    /// declares `extern fn` says here who keeps the promise.
+    ///
+    /// THE ROWS ARE TYPED AND THE OPTION LETTER IS OURS. A dependency
+    /// names a directory or a library; `-L` and `-l` are written here,
+    /// so no word a package spells can BECOME an option — the linker
+    /// reads what it was told to read. `[link.raw]` carries an option
+    /// verbatim and is heard from the program's own manifest alone.
+    /// Each word is ONE argv element, so nothing in any of them means
+    /// anything to a shell.
+    fn link_words() -> List<string> {
+        flatten([self.package_link(pkg) for pkg in self.packages])
+    }
+
+    fn package_link(pkg: Package) -> List<string> {
+        let m = self.manifest(pkg.ordinal)
+        [joined_path(pkg.root, o) for o in filled_words(m.objects)]
+            .concat(["-L${d}" for d in filled_words(m.search)])
+            .concat(["-l${l}" for l in filled_words(m.libs)])
+            .concat(if pkg.ordinal == 0 { filled_words(m.raw) } else { [] })
+    }
+
+    /// THE PROGRAM'S OWN CLOSURE AS LIBRARIES the evaluator may open —
+    /// one per package that owns native code, derived from the package's
+    /// manifest NAME and never from a path a manifest wrote: a manifest
+    /// path the toolchain OPENS is a load primitive, which is the
+    /// write-primitive law at the same force.
+    ///
+    /// THE STEM CARRIES NO SUFFIX, so the platform question never enters
+    /// the compiler: the evaluator tries the ones it knows and the
+    /// refusal names the PACKAGE rather than a path only one machine has.
+    /// A disagreement with `tools/libs.py`, which derives the same stem
+    /// on the build side, is LOUD: nothing opens and the refusal names
+    /// the package.
+    fn linked_packages() -> List<LinkedPackage> {
+        [self.linked_of(pkg) for pkg in self.packages if self.owns_native(pkg)]
+    }
+
+    fn owns_native(pkg: Package) -> bool {
+        !self.manifest(pkg.ordinal).objects.is_empty()
+    }
+
+    fn linked_of(pkg: Package) -> LinkedPackage {
+        let named = self.manifest(pkg.ordinal).name
+        LinkedPackage { name: named, library: "build/lib${library_stem(named)}" }
+    }
+
+    /// The root package's entry file: its `[bin]` path, else
+    /// `src/main.av` when that exists, else absence.
+    fn entry_of() -> string? {
+        let pkg = self.packages[0]
+        let bin: string? = self.manifest(0).bin
+        let path = joined_path(pkg.root, bin ?? "src/main.av")
+        if bin == null && !self.host.exists(path) { return null }
+        path
+    }
+}
+
+fn is_type_decl(x: Decl) -> bool {
+    x.kind is .Record || x.kind is .Named || x.kind is .Enum
+}
+
+/// A file's own module name: its path with `.av` dropped and `/`
+/// as `.`.
+fn own_module(rel: string) -> string {
+    let stemmed = if rel.ends_with(".av") { rel.substring(0, rel.length - 3) } else { rel }
+    stemmed.replace("/", ".")
+}
+
+/// A path's tail under a directory — the path itself when it is
+/// not under it.
+fn below(path: string, dir: string) -> string {
+    if dir.is_empty() || !under_dir(path, dir) { return path }
+    path.substring(dir.length + 1, path.length)
+}
+
+/// A source file: `.av`, or anything at all under the empty root —
+/// a lone file's package of one holds exactly what it was given.
+fn is_source(name: string, dir: string) -> bool {
+    name.ends_with(".av") || dir.is_empty()
+}
+
+fn use_lines(p: Parsed) -> List<UseParts> {
+    mut out: List<UseParts> = []
+    for s in p.stmts {
+        let u: UseParts? = p.store.use_parts(s)
+        if u != null { out.push(u!) }
+    }
+    out
+}
+
+/// What one `use` line brought in, and what it earned.
+type Imported = { imports: List<Import>, diagnostics: List<Diag> }
+
+fn segments_of(dotted_text: string) -> List<string> {
+    if dotted_text.is_empty() { return [] }
+    dotted_text.split(".")
+}
+
+/// A whole program: every file analyzed together, and the entry
+/// among them (none when the program is only checked). It answers
+/// as a lone Analysis does — report, lowered, run — so every engine
+/// takes either.
+export type Program = { ws: Workspace, files: List<Analysis>, entry: Entry?, phases: List<Phase>, cache: string, defects: List<Diag>, voices: List<Diag>, manifests: List<SourceFile> }
+
+/// A warning's kind under its package when it is a word; a kind
+/// that is not one is dropped — the warning speaks kind-less.
+fn worded_kind(package: string, kind: string?) -> string? {
+    if kind == null || !is_kind_word(kind!) { return null }
+    user_kind(package, kind)
+}
+
+/// Each kind once, the first row of a name kept.
+fn distinct_codes(rows: List<DiagCode>) -> List<DiagCode> {
+    mut seen: Map<string, bool> = {}
+    mut out: List<DiagCode> = []
+    for r in rows {
+        if seen.get(r.kind) == null {
+            seen.set(r.kind, true)
+            out.push(r)
+        }
+    }
+    out
+}
+
+/// A kinded constructor call as its source spells it: the kind
+/// literal, and the message when that is a literal too.
+type Kinded = { kind: string, message: string? }
+
+impl Decls {
+    /// A call to one of `@std/meta`'s KINDED constructors (`refuse_as`,
+    /// `refuse_as_at`) whose kind is a literal; null for any other
+    /// expression — the callee is judged by its DECLARATION's package,
+    /// never by its written name.
+    fn kinded_call(names: NameFacts, store: NodeStore, e: ExprId) -> Kinded? {
+        let held: List<ExprId>? = match store.expr(e) { .Call(_, _, xs) -> xs, rest -> null }
+        if held == null { return null }
+        let args = held!
+        let d: DeclId? = bound_decl_of(names, e)
+        if d == null || self.package_of(d!) != "@std.meta" { return null }
+        let message_at: int? = match self.decl(d!).name { "refuse_as" -> 1, "refuse_as_at" -> 2, _ -> null }
+        if message_at == null || args.length <= message_at! { return null }
+        let kind: string? = (store.expr(args[0])).text_of()
+        if kind == null { return null }
+        Kinded { kind: kind!, message: (store.expr(args[message_at!])).text_of() }
+    }
+}
+
+/// The entry's seat among the program's files.
+type Entry = { at: int }
+
+/// One test case as the runner sees it: the library's reference —
+/// its three names and its place — and the symbol that runs it.
+export type TestCase = { at: CaseRef, symbol: string }
+
+/// The case in one line — what a listing prints, and what a test
+/// of the listing reads.
+export fn case_words(c: TestCase) -> string {
+    words(c.at)
+}
+
+fn same_body(c: Case, body: ExprId) -> bool {
+    // LICENSED I9: node identity — ids compare by index
+    c.body.index == body.index
+}
+
+/// A row's words with their `${NAME}` holes filled, dropping any
+/// that fill to nothing. A hole naming nothing asks for NO WORD:
+/// an empty one would be an argument the linker still counts, and a
+/// bare `-L` eats the word after it.
+/// A package's manifest name as a library stem: `@std/sqlite` becomes
+/// `std-sqlite` — ONE leading `@` dropped, every `/` a `-`. The rule
+/// is spelled twice, here and in `tools/libs.py`, and the halves must
+/// be copyable into each other: "strip one leading `@`" is,
+/// "strip every `@`" is not.
+fn library_stem(named: string) -> string {
+    let stripped = if named.starts_with("@") { named.substring(1, named.length) } else { named }
+    stripped.replace("/", "-")
+}
+
+fn filled_words(words: List<string>) -> List<string> {
+    [w for w in [expanded(x) for x in words] if !w.is_empty()]
+}
+
+/// A link input with its `${NAME}` holes filled from the
+/// environment: a machine's own paths belong to the machine, not to
+/// a checked-in manifest.
+fn expanded(flag: string) -> string {
+    let opens = flag.index_of("\${")
+    if opens < 0 { return flag }
+    let closes = closing_brace(flag, opens)
+    if closes < opens { return flag }
+    let head = flag.substring(0, opens)
+    let name = flag.substring(opens + 2, closes)
+    let tail = flag.substring(closes + 1, flag.length)
+    expanded("${head}${avra_host_env(name)}${tail}")
+}
+
+/// Where the hole closes, or -1.
+fn closing_brace(s: string, from: int) -> int {
+    let at = s.substring(from, s.length).index_of("}")
+    if at < 0 { return 0 - 1 }
+    from + at
+}
+
+fn index_of_file(files: List<Analysis>, path: string) -> int? {
+    for i, a in files {
+        if a.view.source.file == path { return i }
+    }
+    null
+}
