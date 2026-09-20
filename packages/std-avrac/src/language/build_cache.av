@@ -388,6 +388,11 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     mut objs: List<string> = []
     mut compile_ll: List<string> = []
     mut pending: List<PendingObj> = []
+    // THE CLOSURE LAW ASKED ONCE. `program_closed` scans every instruction of every
+    // body — a whole-program question with ONE answer — and `emit_module` below is
+    // the emit that trusts it, so 276 modules cost it once instead of 276 times.
+    let unclosed: string? = program_closed(full)
+    if unclosed != null { fail "internal compiler error: nothing declares `${unclosed!}` — the program is not closed" }
     let t_e0 = avra_now_ns()
     for a in p.files {
         let path = a.view.source.file
@@ -401,7 +406,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
             objs.push(obj)
         } else {
             let ll = "${cache.root}/${base}.bc"
-            let broke = emit_bitcode(full, ll, same_file(a.view.file, ent.view.file), a.view.file)
+            let broke = emit_closed(full, ll, same_file(a.view.file, ent.view.file), a.view.file)
             if broke != null { fail broke! }
             compile_ll.push("${base}.bc")
             pending.push(PendingObj { okey: okey, obj: obj })
