@@ -270,9 +270,11 @@ ones gaining consumers.
 
 **Landed so far:**
 - **P0 — the document and its hard benchmarks.** (0.1)
-- **P0.5 — 273 orphaned `.part.ll.o` artifacts removed** (`9537854`); the
-  `.gitignore` hole (`*.av.ll.o` did not catch `*.av.part.ll.o`) closed. The
-  tree carries 6.1 MB less.
+- **P0.5 — tracked artifacts removed.** `9537854` removed 273 orphaned
+  `.part.ll.o` (6.1 MB; nothing read them, and `.gitignore` caught
+  `*.av.ll.o` but not `*.av.part.ll.o`). `62b032f` removed two committed
+  Mach-O artifacts (`main_stamped`, 1.6 MB, and `main.av.entry.ll.o`) and
+  made the ignore `*.ll.o`.
 - **P1 (partial) — `language/` renamed to `compiler/`** (`b57956e`): the tier
   holds the driver, the pass graph, the cache, the backend, and the
   projections, so the name is now honest. Layering is
@@ -283,10 +285,22 @@ ones gaining consumers.
   (`DiskBacking` / `MemBacking`) so one cache can hold either tier, with a
   spec driving both through the same verbs. The build still uses `Disk`
   unchanged.
+- **IDIOM DEBT ZERO** (`1e511c3`, `f49cb8b`): all 57 sites burned down —
+  unused imports, identical literals named as constructors, duplicated
+  messages, a push loop made a comprehension, hand-interned scalar types
+  spelled as literals, and the 30 I39 free verbs moved into their state's
+  impl. `make idioms` reports 0 across 514 files / 19 packages.
+- **P6 (started) — `workspace.av` split** (`b8aad81`): `Host` moved to
+  `host.av` and the `Program` view to `program.av`; 3,125 -> 2,818 lines.
 
 **Still to land:** P2 (`World`), P3 (`Compiled` + one derivation), P4
 (`projections/` + thin CLI), P5 (`test`/`emit` on the `Disk` backing + `link/`),
-P6 (delete the old files), P7 (the `Diags` family).
+P6 (finish the split; merge `typing_*`/`lower_*`; fold `interface`+`store`+
+`build_cache` into `cache/`+`link/`), P7 (the `Diags` family).
+
+**Other cruft found, not yet removed:** `packages/std-sqlite/BUILD_SEAM.diff`
+(a committed patch that references dead `language/` paths) and
+`main_stamped`'s sibling `packages/cli/src/main_stamped.av` if it exists.
 
 - **P0 — this document.**
 - **P1 — `cache/`.** Extract `Store` + `BuildCache` behind `trait Backing`
