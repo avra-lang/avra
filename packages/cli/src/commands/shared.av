@@ -288,17 +288,6 @@ fn package_root(dir: string) -> string? {
     null
 }
 
-/// clang links the `.ll` with Avra's runtime — and whatever the
-/// program's packages promised their externs — into a native binary.
-/// The command is a `Command`, never a shell line: a `[link]` row from
-/// any package, the project's own or a dependency's, is one word that
-/// means only itself. It runs where the developer does — their
-/// environment, their terminal for its words, their Ctrl-C.
-/// A PRODUCT links optimized: what `build` answers is run many times.
-fn link(ll_path: string, p: Program) -> int {
-    linked(ll_path, p, "-O1")
-}
-
 /// THE HAND-OFF: every binary a run needs is linked and run by a
 /// FRESH image of this program — the stage word, then the plans — so
 /// the workspaces this process holds are gone while clang and the
@@ -335,13 +324,6 @@ fn plan_unwritten(message: string) -> string {
 /// dynamic table (Darwin's are there by default).
 fn clang_words(ll_path: string, p: Program, opt: string) -> List<string> {
     ["-w", opt, "-rdynamic", ll_path, runtime_object()].concat(p.ws.link_words()).concat(["-o", binary_name(ll_path)])
-}
-
-fn linked(ll_path: string, p: Program, opt: string) -> int {
-    match clang_ran(clang_words(ll_path, p, opt)) {
-        .Ok(x) -> judged_link(x, ll_path),
-        .Err(e) -> refused_by_host(e),
-    }
 }
 
 /// clang over its words, at the terminal: its exit, or the host's
@@ -388,13 +370,6 @@ export fn judged_link(x: Exit, ll_path: string) -> int {
     1
 }
 
-/// Linked, and the binary's path said — what `build` answers.
-fn spoken_link(ll_path: string, p: Program) -> int {
-    let code = link(ll_path, p)
-    if code == 0 { println(binary_name(ll_path)) }
-    code
-}
-
 // -- THE BUILD CACHE ------------------------------------------------------------------
 // The cache is @std.avrac's; what a COMMAND owes it is an argued path, a host that
 // can write, and clang run over the words it answers.
@@ -410,76 +385,8 @@ fn build_entry(ws: Workspace, path: string) -> string? {
     if is_dir(path) { ws.entry_of() } else { path }
 }
 
-/// clang over a build's words: 0 clean, else the refusal spoken.
-fn run_words(words: List<string>) -> int {
-    match clang_ran(words) {
-        .Ok(.Clean) -> 0,
-        .Ok(x) -> {
-            eprintln("avra: clang failed linking — exited ${exit_text(x)}")
-            1
-        },
-        .Err(e) -> refused_by_host(e),
-    }
-}
-
 fn hit_line(reused: bool) -> string {
     if reused { "time: lower+emit · cache hit" } else { "time: lower+emit · built" }
-}
-
-/// A file COPY, argv-only — no shell, so no character in a path means
-/// anything but itself.
-fn copy_file(from: string, to: string) -> bool {
-    match tool("cp") {
-        .Err(_) -> false,
-        .Ok(cp) -> match cmd(cp, [from, to]).outcome() {
-            .Ok(x) -> x.exit is .Clean,
-            .Err(_) -> false,
-        },
-    }
-}
-
-/// THE LINKED BINARY, KEPT. The link is the whole cost of a no-op build —
-/// the module is already cached, so a hit pays clang and nothing else.
-/// The binary is kept under the same key, and `cp` preserves its mode, so
-/// a hit is a copy rather than a link.
-fn cached_binary(ws: Workspace, key: string) -> string { "${build_cache_root(ws)}/${key}.bin" }
-
-/// THE CACHE KEEPS A BOUNDED NUMBER OF KEYS: an edit makes a new key and
-/// the oldest goes. WITHOUT THIS THE CACHE GROWS BY A WHOLE MODULE PER
-/// EDIT — 19MB a key, and this machine has hit ENOSPC to zero three times.
-/// Kept well above one so that reverting an edit still HITS.
-const cache_kept: int = 8
-
-/// The keys, most recently used first — the cache's whole policy, in a
-/// file a reader can open.
-fn recent_keys(ws: Workspace) -> List<string> {
-    let path = "${build_cache_root(ws)}/recent"
-    if !exists(path) { return [] }
-    match read_text(path) {
-        .Ok(text) -> [k for k in text.split("\n") if k != ""],
-        .Err(_) -> [],
-    }
-}
-
-/// This key is the most recent; everything else slides down.
-fn touch_key(ws: Workspace, key: string) {
-    let kept = [key].concat([k for k in recent_keys(ws) if k != key])
-    let _ = make_dirs(build_cache_root(ws))
-    let _ = write_text("${build_cache_root(ws)}/recent", joined(kept, "\n"))
-}
-
-/// Every artifact of one key, gone.
-fn drop_key(ws: Workspace, key: string) {
-    for ext in ["ll", "bin", "plan", "warn"] { let _ = remove("${build_cache_root(ws)}/${key}.${ext}") }
-}
-
-/// Keys past the kept bound, collected. The newest are at the front, so
-/// the tail is the least recently used.
-fn collect_keys(ws: Workspace) {
-    let held = recent_keys(ws)
-    if held.length <= cache_kept { return }
-    for k in held.slice(cache_kept, held.length) { drop_key(ws, k) }
-    let _ = write_text("${build_cache_root(ws)}/recent", joined(held.slice(0, cache_kept), "\n"))
 }
 
 /// `avra build`: a program's module reused when these exact inputs were built before,
