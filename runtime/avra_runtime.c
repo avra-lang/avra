@@ -1915,6 +1915,33 @@ int64_t avra_str_char_code(const char* s, int64_t i) {
     return (unsigned char)s[i];
 }
 
+// EIGHT BYTES AS ONE BIG-ENDIAN WORD — the eight `avra_str_char_code` calls a
+// digest word costs, made one. It reads the SAME bytes through the SAME header,
+// so a fold that gathers its words here answers the same digest it always did.
+//
+// THE PROPER FIX IS NOT A FASTER ROW: it is a text byte window the COMPILER
+// lowers inline, so no call is needed per byte at all — the backend already
+// mirrors `avra_box.h` and static-asserts that the two agree, so it built the box
+// and should look inside one. This row is the interim that removes seven calls in
+// eight; the lexer still pays one per byte. See the roadmap.
+//
+// The bound mirrors the byte reader it replaces: the Avra loop this stands in for
+// traps at the FIRST index out of range, so a caller that ran off the end hears
+// the same words about the same index.
+int64_t avra_str_word_at(const char* s, int64_t i) {
+    int64_t n = (int64_t)str_len(s);
+    if (i < 0 || i + 8 > n) {
+        int64_t bad = i < 0 ? i : n;
+        char msg[80];
+        snprintf(msg, sizeof msg, "index %lld is out of bounds (length %lld)",
+                 (long long)bad, (long long)n);
+        avra_trap(msg);
+    }
+    uint64_t w = 0;
+    for (int j = 0; j < 8; j++) w = (w << 8) | (unsigned char)s[i + j];
+    return (int64_t)w;
+}
+
 // `.length` on text — the header's count, no walk.
 int64_t avra_str_len(const char* s) {
     return (int64_t)str_len(s);

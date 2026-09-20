@@ -163,6 +163,8 @@ _Static_assert(__builtin_classify_type(avra_str_replace(AVRA_RT_PTR, AVRA_RT_PTR
     "avra_str_replace: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_str_char_code(AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
     "avra_str_char_code: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_str_word_at(AVRA_RT_PTR, AVRA_RT_I64)), int64_t),
+    "avra_str_word_at: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_str_trim(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_str_trim: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_bytes_len(AVRA_RT_PTR)), int64_t),
@@ -223,5 +225,7 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_exec_self(AVRA_RT_PT
     "avra_exec_self: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_spawn_status(AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
     "avra_spawn_status: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_spawn_in(AVRA_RT_PTR, AVRA_RT_PTR, AVRA_RT_PTR)), int64_t),
+    "avra_spawn_in: its row answers i64, so its C body answers int64_t");
 
 #endif
