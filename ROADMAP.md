@@ -19131,3 +19131,21 @@ The interval's size is a LATENCY knob whose correctness was already made separat
 
 **FILED, NOT FIXED — the honest verdict is "a real design gap, and correctly not a
 performance one at this granularity."**
+
+### ASK: an exit event source in `@std/process`
+
+**WANTING SITE:** `std_process.c`'s `avra_proc_ready` — the `else if (timeout_ms > 0)
+nanosleep(...)` arm, and every driver that supervises a child with INHERITED streams
+(a child whose exit has no pipe to EOF). The build's parallel clang pass is one.
+
+`poll` on the child's pipes is an event source for OUTPUT and for a CAPTURED child's
+EOF, which is why a captured child's exit is event-driven. A child with inherited
+streams has no pipe, so its exit has NO event and the pump falls back to a
+`turn_ms = 20` interval. The event exists on both platforms and costs one fd:
+
+- Linux: `pidfd_open(pid)` + `poll(pidfd, POLLIN)`
+- macOS: `kqueue` + `EVFILT_PROC` / `NOTE_EXIT`
+
+Then the interval is not a knob at all. MEASURED as not a performance win at the
+build's granularity (see the audit above) — filed because it is a correctness-of-
+design gap that grows with the child's lifetime, not because it moves the clock today.
