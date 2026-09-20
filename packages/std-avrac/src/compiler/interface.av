@@ -108,137 +108,18 @@ fn obj_key_cached(mut ws: Workspace, store: Store, m: ModulePath, path: string) 
 // LICENSED I39: a pure PROJECTION — a registry and a declaration's signature in, its line out.
 fn shape_line(ws: Workspace, s: DeclSig) -> string {
     match s {
-        .Record(r) -> "struct\t${joined([r.names[i] + ":" + type_wire(ws.decls, r.types[i]) for i in 0..r.names.length], ";")}",
-        .Enum(e) -> "enum\t${joined([e.names[i] + ":" + joined([type_wire(ws.decls, t) for t in e.payloads[i]], "|") for i in 0..e.names.length], ";")}",
-        .Named(n) -> "named\t${type_wire(ws.decls, n.of)}",
-        .Fn(f) -> "fn\t${joined([type_wire(ws.decls, t) for t in f.params], ";")}\t${type_wire(ws.decls, f.ret)}",
+        .Record(r) -> "struct\t${joined([r.names[i] + ":" + ws.decls.type_wire( r.types[i]) for i in 0..r.names.length], ";")}",
+        .Enum(e) -> "enum\t${joined([e.names[i] + ":" + joined([ws.decls.type_wire( t) for t in e.payloads[i]], "|") for i in 0..e.names.length], ";")}",
+        .Named(n) -> "named\t${ws.decls.type_wire( n.of)}",
+        .Fn(f) -> "fn\t${joined([ws.decls.type_wire( t) for t in f.params], ";")}\t${ws.decls.type_wire( f.ret)}",
     }
 }
 
-/// A type in an interface is a tree of tagged tokens. Nominal nodes name
-/// their source file and declaration ordinal; the registry's human-readable
-/// name is not an identity (several packages declare `Type`, for example).
-/// This one projection serves fields, variants, consts, callable seats AND a
-/// specialization's name, so it takes `Decls` (not `Workspace`) and lowering can
-/// call it; `read_type_wire` is its inverse, which is why it can carry the wire.
-fn decl_wire(decls: Decls, d: DeclId) -> string {
-    let x = decls.decl(d)
-    mut at = 0
-    for j, id in decls.decls_of_file(x.file) {
-        if same_decl(id, d) { at = j }
-    }
-    "${decls.file(x.file).path}~${at}"
-}
 
-fn type_wire(decls: Decls, id: TypeId) -> string {
-    let body = match decls.types.shape_of(id) {
-        .Int -> "i",
-        .Float -> "f",
-        .Bool -> "b",
-        .Str -> "s",
-        .Bytes -> "y",
-        .Ptr -> "p",
-        .Void -> "v",
-        .Null -> "n",
-        .EmptyList -> "e",
-        .EmptyMap -> "h",
-        .Error -> "x",
-        .Struct(d, _) -> "S~${decl_wire(decls, d)}",
-        .Enum(d, _) -> "E~${decl_wire(decls, d)}",
-        .Dyn(d, _) -> "D~${decl_wire(decls, d)}",
-        .TypeName(d, _) -> "N~${decl_wire(decls, d)}",
-        .Var(d, j, _) -> "R~${decl_wire(decls, d)}~${j}",
-        .App(d, _, args) -> "A~${decl_wire(decls, d)}~${args.length}~${joined([type_wire(decls, a).substring(1, type_wire(decls, a).length) for a in args], "~")}",
-        .List(t) -> "L~${type_wire(decls, t).substring(1, type_wire(decls, t).length)}",
-        .Cell(t) -> "C~${type_wire(decls, t).substring(1, type_wire(decls, t).length)}",
-        .Opt(t) -> "O~${type_wire(decls, t).substring(1, type_wire(decls, t).length)}",
-        .Map(k, v) -> "M~${type_wire(decls, k).substring(1, type_wire(decls, k).length)}~${type_wire(decls, v).substring(1, type_wire(decls, v).length)}",
-        .Res(ok, err) -> "Q~${type_wire(decls, ok).substring(1, type_wire(decls, ok).length)}~${type_wire(decls, err).substring(1, type_wire(decls, err).length)}",
-        .Fn(params, marks, ret) -> joined(["F", "${params.length}"].concat([type_wire(decls, t).substring(1, type_wire(decls, t).length) for t in params]).concat([joined([mark_word(if j < marks.length { marks[j] } else { no_seat_mark }) for j in 0..params.length], ""), type_wire(decls, ret).substring(1, type_wire(decls, ret).length)]), "~"),
-    }
-    "^${body}"
-}
 
 type WireType = { id: TypeId, next: int }
 
-fn wire_decl(decls: Decls, words: List<string>, at: int) -> DeclId? {
-    if at + 1 >= words.length { return null }
-    let ordinal? = wire_number(words[at + 1]) else { return null }
-    let f: FileId? = decls.paths.get(words[at])
-    if f == null || ordinal < 0 { return null }
-    let ids = decls.decls_of_file(f!)
-    if ordinal >= ids.length { return null }
-    ids[ordinal]
-}
 
-fn read_type_wire(mut decls: Decls, words: List<string>, at: int) -> WireType? {
-    if at >= words.length { return null }
-    let tag = words[at]
-    let scalar: Type? = match tag {
-        "i" -> Type.Int, "f" -> Type.Float, "b" -> Type.Bool,
-        "s" -> Type.Str, "y" -> Type.Bytes, "p" -> Type.Ptr,
-        "v" -> Type.Void, "n" -> Type.Null, "e" -> Type.EmptyList,
-        "h" -> Type.EmptyMap, "x" -> Type.Error, _ -> null,
-    }
-    if scalar != null { return WireType { id: decls.types.intern(scalar!), next: at + 1 } }
-    if tag == "S" || tag == "E" || tag == "D" || tag == "N" || tag == "R" || tag == "A" {
-        let d? = wire_decl(decls, words, at + 1) else { return null }
-        let x = decls.decl(d)
-        if tag == "S" { return WireType { id: decls.types.intern(Type.Struct(d, x.name)), next: at + 3 } }
-        if tag == "E" { return WireType { id: decls.types.intern(Type.Enum(d, x.name)), next: at + 3 } }
-        if tag == "D" { return WireType { id: decls.types.intern(Type.Dyn(d, x.name)), next: at + 3 } }
-        if tag == "N" { return WireType { id: decls.types.intern(Type.TypeName(d, x.name)), next: at + 3 } }
-        if at + 3 >= words.length { return null }
-        let n? = wire_number(words[at + 3]) else { return null }
-        if tag == "R" {
-            let names = decls.tparams(d)
-            if n < 0 || n >= names.length { return null }
-            return WireType { id: decls.types.intern(Type.Var(d, n, names[n])), next: at + 4 }
-        }
-        if n < 0 { return null }
-        mut args: List<TypeId> = []
-        mut cursor = at + 4
-        for j in 0..n {
-            let child? = read_type_wire(decls, words, cursor) else { return null }
-            args.push(child.id)
-            cursor = child.next
-        }
-        return WireType { id: decls.types.intern(Type.App(d, x.name, args)), next: cursor }
-    }
-    if tag == "L" || tag == "C" || tag == "O" {
-        let child? = read_type_wire(decls, words, at + 1) else { return null }
-        let raw = if tag == "L" { Type.List(child.id) } else if tag == "C" { Type.Cell(child.id) } else { Type.Opt(child.id) }
-        return WireType { id: decls.types.intern(raw), next: child.next }
-    }
-    if tag == "M" || tag == "Q" {
-        let a? = read_type_wire(decls, words, at + 1) else { return null }
-        let b? = read_type_wire(decls, words, a.next) else { return null }
-        let raw = if tag == "M" { Type.Map(a.id, b.id) } else { Type.Res(a.id, b.id) }
-        return WireType { id: decls.types.intern(raw), next: b.next }
-    }
-    if tag == "F" {
-        if at + 1 >= words.length { return null }
-        let n? = wire_number(words[at + 1]) else { return null }
-        mut params: List<TypeId> = []
-        mut cursor = at + 2
-        if n < 0 { return null }
-        for j in 0..n {
-            let child? = read_type_wire(decls, words, cursor) else { return null }
-            params.push(child.id)
-            cursor = child.next
-        }
-        if cursor >= words.length { return null }
-        let bits = words[cursor]
-        mut marks: List<SeatMark> = []
-        for j in 0..n {
-            if j >= bits.length { return null }
-            marks.push(mark_of_word(bits.substring(j, j + 1)))
-        }
-        let ret? = read_type_wire(decls, words, cursor + 1) else { return null }
-        return WireType { id: decls.types.intern(Type.Fn(params, marks, ret.id)), next: ret.next }
-    }
-    null
-}
 
 /// EVERY NAME A MODULE EXPORTS — its imports first, so a reader can walk the closure in
 /// the order that makes each shape internable.
@@ -249,29 +130,6 @@ const no_seat_mark: SeatMark = SeatMark { mutable: false, settled: false }
 /// Whether a declaration stands among a file's top-level items.
 fn on_top(top: List<DeclId>, d: DeclId) -> bool { top.any(same_decl(it, d)) }
 
-fn record_of(mut ws: Workspace, store: Store, m: ModulePath) -> string {
-    let prior = record_cached(ws, store, m)
-    let prior_lines = prior.split("\n")
-    let remembered = [line for line in prior_lines if line.starts_with("import\t")]
-    let fresh = flatten([ws.imported_by(path) for path in ws.module_files(m) if !ws.is_held(ws.file_id(path))])
-    let here = distinct(remembered.concat(["import\t${d.text()}" for d in fresh]))
-    mut items: List<string> = []
-    for path in ws.module_files(m) {
-        let f = ws.file_id(path)
-        // A HELD FILE'S LINES ARE COPIED VERBATIM, never regenerated. A record's
-        // DECLARATION text may move between two builds of identical bytes (the written
-        // bits, a parse-order detail), and a held file must keep the lines it was held
-        // against. The BYTES line is regenerated for the module WHOLE, so it cannot
-        // drift from the files.
-        if ws.is_held(f) {
-            items = items.concat([line for line in prior_lines if named_file(line) == path])
-        } else {
-            let top = ws.items(f)
-            items = items.concat([record_line(ws, ws.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in ws.decls.decls_of_file(f)])
-        }
-    }
-    joined(["iface\t${iface_digest(items)}"].concat(here).concat(items), "\n")
-}
 
 /// A MODULE'S INTERFACE, AS ONE DIGEST — the identity a dependent keys on. It covers what
 /// a caller can SEE (names, kinds, visibility, type parameters, bounds, seat names, and
@@ -305,52 +163,7 @@ fn named_file(line: string) -> string {
     parts[1]
 }
 
-fn interface_decls(mut ws: Workspace, m: ModulePath) -> List<Decl> {
-    mut ids: List<DeclId> = []
-    for path in ws.module_files(m) {
-        let f = ws.file_id(path)
-        let _ = ws.items(f)
-        ids = ids.concat(ws.decls.decls_of_file(f))
-    }
-    [ws.decl_at(id) for id in ids]
-}
 
-/// The source file travels with each item. A module can have many files, and a
-/// held declaration must retain the file whose object and const unit own it.
-fn record_line(mut ws: Workspace, d: Decl, ordinal: int, item: bool) -> string {
-    let sig = if d.kind is .Const { null } else { ws.sig(d.id) }
-    let shape = if d.kind is .Const {
-        let ty = ws.decls.type_of_const(d.file, d.stmt) ?? ws.decls.types.intern(Type.Error)
-        "const\t${type_wire(ws.decls, ty)}"
-    } else if sig == null {
-        "opaque"
-    } else if d.kind is .Fn || d.kind is .Method {
-        // THE SEATS' CONTRACTS AND WHAT THE BODY WROTE are parse facts a held file
-        // cannot answer, and a caller's `mut`/retain decision reads them. They ride
-        // the fn's payload: one word per seat, then one bit per seat.
-        let n = ws.decls.seat_count(d.id)
-        let marks = joined([mark_word(ws.decls.seat_mark(d.id, j)) for j in 0..n], ";")
-        let writes = joined([if ws.decls.seat_written_so_far(d.id, j) { "1" } else { "0" } for j in 0..n], "")
-        "${shape_line(ws, sig!)}\t${marks}\t${writes}"
-    } else {
-        shape_line(ws, sig!)
-    }
-    let at = shape.index_of("\t")
-    let visibility = if d.exported { "1" } else { "0" }
-    // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
-    // and a held file has no store, so the record must carry it: the word is the one
-    // column every kind already has, and the payload's layout is unchanged.
-    let first = if ws.decls.is_extern(d.id) { "extern" } else if at < 0 { shape } else { shape.substring(0, at) }
-    let payload = if at < 0 { "" } else { shape.substring(at + 1, shape.length) }
-    mut parent_at = 0 - 1
-    if d.parent != null {
-        for j, id in ws.decls.decls_of_file(d.file) {
-            if same_decl(id, d.parent!) { parent_at = j }
-        }
-    }
-    let root = d.root?.index ?? (0 - 1)
-    "${first}\t${ws.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${d.name}\t${kind_word(d.kind)}\t${d.owner}\t${parent_at}\t${if d.nested { "1" } else { "0" }}\t${root}\t${if item { "1" } else { "0" }}\t${facts_block(ws.decls.facts_or(d.id))}\t${payload}"
-}
 
 /// A DECLARATION'S FACTS, as the record's block — the encoder of `facts_unblocked`, and
 /// the pair is ONE unit. `split` DROPS a trailing empty field, so a list is encoded as
@@ -416,7 +229,7 @@ export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModuleP
     mut kept = 0
     for m in modules {
         if true {
-            let _ = store.keep(Stored.Sig, record_key(ws, m), record_of(ws, store, m), [])
+            let _ = store.keep(Stored.Sig, record_key(ws, m), ws.record_of( store, m), [])
             kept = kept + 1
         }
     }
@@ -459,7 +272,7 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
     for f in ws.module_files(m) {
-        if f != entry && store.has(Stored.Obj, obj_key_cached(ws, store, m, f)) && const_rows_ready(ws, store, m, f, fields) && holdable(fields, f) { ws.hold_only(f) }
+        if f != entry && store.has(Stored.Obj, obj_key_cached(ws, store, m, f)) && ws.const_rows_ready( store, m, f, fields) && holdable(fields, f) { ws.hold_only(f) }
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.
@@ -473,10 +286,10 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
 // LICENSED I39: THE LOADER'S FIRST HALF — the workspace and a store in, nothing out.
 export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
     for m in ws.held_order {
-        for parts in record_fields(ws, store, m) { if parts[0] != "import" { mint_identity(ws, parts) } }
+        for parts in record_fields(ws, store, m) { if parts[0] != "import" { ws.mint_identity( parts) } }
     }
     for m in ws.held_order {
-        for parts in record_fields(ws, store, m) { if parts[0] != "import" { link_identity(ws, parts) } }
+        for parts in record_fields(ws, store, m) { if parts[0] != "import" { ws.link_identity( parts) } }
     }
 }
 
@@ -485,7 +298,7 @@ export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
 // LICENSED I39: THE LOADER'S SECOND HALF — the workspace and a store in, nothing out.
 export fn fill_interfaces(mut ws: Workspace, store: Store) {
     for m in ws.held_order {
-        for parts in record_fields(ws, store, m) { if parts[0] != "import" { fill_shape(ws, store, m, parts) } }
+        for parts in record_fields(ws, store, m) { if parts[0] != "import" { ws.fill_shape( store, m, parts) } }
     }
 }
 
@@ -539,141 +352,10 @@ fn holdable(fields: List<List<string>>, path: string) -> bool {
     true
 }
 
-/// A file is held only when every value its exported consts may supply is
-/// committed and decodable. A partial cache entry is a miss, never a parse-free
-/// declaration whose value cannot be read.
-fn const_rows_ready(mut ws: Workspace, store: Store, m: ModulePath, path: string, fields: List<List<string>>) -> bool {
-    for parts in fields {
-        if parts.length > 5 && parts[0] == "const" && parts[1] == path {
-            let raw = store.get(Stored.Unit, const_unit_key(ws, store, m, path, parts[5]))
-            if raw == null || settled_from_wire(raw!) == null { return false }
-        }
-    }
-    true
-}
 
-/// First pass: restore every declaration's identity and relationships in
-/// source admission order. The shape is filled after all names exist.
-fn mint_identity(mut ws: Workspace, parts: List<string>) {
-    if parts.length < 13 || parts[5].is_empty() { return }
-    let path = parts[1]
-    if !ws.is_held(ws.file_id(path)) { return }
-    let f = ws.file_id(path)
-    let stmt_index? = wire_number(parts[3]) else { return }
-    let root_at? = wire_number(parts[10]) else { return }
-    let kind? = declared_kind(parts[0], parts[6]) else { return }
-    let root: ExprId? = if root_at < 0 { null } else { ExprId { index: root_at } }
-    let stmt = StmtId { index: stmt_index }
-    // The ordinal is the record's stable identity within a held file. A
-    // name/kind key collapses generated members and same-named methods, then
-    // every later type reference points at the wrong declaration.
-    let ordinal? = wire_number(parts[2]) else { return }
-    let id = ws.decls.mint("${path}::held::${ordinal}", f, stmt, parts[5], kind, parts[4] == "1", parts[7], null, parts[9] == "1", root)
-    // APPEND IN PLACE. A held file was never admitted, so its declarations arrive in
-    // record order and its list is exactly `ordinal` long — the `any` + `concat` this
-    // replaces scanned and rebuilt the list per declaration, quadratic in a file's length.
-    if ws.decls.decls_of_file(f).length == ordinal {
-        ws.decls.file_decls[f.index].push(id)
-    } else if !ws.decls.decls_of_file(f).any(same_decl(it, id)) {
-        ws.decls.file_decls[f.index].push(id)
-    }
-    mut by_stmt = ws.decls.decl_ids[f.index].get()
-    by_stmt.grow_to(stmt_index + 1)
-    if by_stmt.get(stmt_index) == null { by_stmt.set(stmt_index, id) }
-    ws.decls.decl_ids[f.index].set(by_stmt)
-    if kind is .Main { ws.decls.mains.set(f.index, id) }
-    if parts[11] == "1" { ws.decls.remember_held_item(f, id) }
-    let facts? = facts_unblocked(parts[12]) else { return }
-    ws.decls.adopt_facts(id, facts)
-}
 
-/// THE SECOND PASS: a declaration's PARENT, once every declaration in the module exists.
-/// A GENERATED MEMBER PRECEDES THE IMPL THAT OWNS IT in `decls_of_file` order — a method
-/// at ordinal 162 with its impl at 765 — so a mint that demanded the parent first stopped
-/// at the first such member and dropped the rest: `core/nodes.av`, 788 declarations,
-/// became 162 and every derive-generated fn vanished. The parent is a LINK, not a mint
-/// order.
-fn link_identity(mut ws: Workspace, parts: List<string>) {
-    let id? = row_decl(ws, parts) else { return }
-    let parent_at? = wire_number(parts[8]) else { return }
-    if parent_at < 0 { return }
-    let f = ws.decls.decl(id).file
-    let ids = ws.decls.decls_of_file(f)
-    if parent_at < ids.length { ws.decls.adopt(id, ids[parent_at]) }
-}
 
-fn row_decl(mut ws: Workspace, parts: List<string>) -> DeclId? {
-    if parts.length < 13 { return null }
-    let f = ws.file_id(parts[1])
-    if !ws.is_held(f) { return null }
-    let ordinal? = wire_number(parts[2]) else { return null }
-    let ids = ws.decls.decls_of_file(f)
-    if ordinal < 0 || ordinal >= ids.length { return null }
-    ids[ordinal]
-}
 
-/// Third pass: fill signatures and restored settled values after every
-/// named type in the import closure and this module has an identity.
-fn fill_shape(mut ws: Workspace, store: Store, m: ModulePath, parts: List<string>) {
-    let id? = row_decl(ws, parts) else { return }
-    let f = ws.decls.decl(id).file
-    let stmt = ws.decls.decl(id).stmt
-    let path = parts[1]
-    // A SHAPE NAMES OTHER TYPES, and `by_name` can only answer for types that EXIST — a
-    // spelling it does not know is a DEFECT in the record, not a name to guess at. The
-    // fallback is `error`, the ABSORBING type, so a broken record produces a type that
-    // refuses rather than one that is silently wrong.
-    // AN `extern fn`'s record word is `extern`; its payload is a fn's, so the shape
-    // branch below is the fn branch.
-    let word = if parts[0] == "extern" { "fn" } else { parts[0] }
-    if word == "const" {
-        let ty = interface_type(ws, id, parts[13])
-        ws.decls.record_const_type(f, stmt, ty)
-        let key = const_unit_key(ws, store, m, path, parts[5])
-        let bytes = store.get(Stored.Unit, key)
-        if bytes != null {
-            let value = settled_from_wire(bytes!)
-            if value != null { ws.decls.remember_held_value(id, value!) }
-        }
-    }
-    if word == "named" {
-        let of = interface_type(ws, id, parts[13])
-        ws.decls.declare(id, .Named(NamedSig { of: of }))
-        let named = ws.decls.types.intern(Type.Struct(id, parts[5]))
-        ws.decls.types.mark_named(named, of)
-        ws.decls.types.mark_flat(named, [of])
-    }
-    if word == "struct" {
-        let fields = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
-        ws.decls.declare(id, .Record(StructSig {
-            names: [field_name(f) for f in fields],
-            types: [interface_type(ws, id, name_of_field(f)) for f in fields],
-            defaults: [ws.decls.default_named(id, field_name(f)) for f in fields],
-        }))
-        if fields.length == 1 {
-            let ty = interface_type(ws, id, name_of_field(fields[0]))
-            let named = ws.decls.types.intern(Type.Struct(id, parts[5]))
-            if ws.decls.types.spells(ty) { ws.decls.types.mark_flat(named, [ty]) }
-        }
-    }
-    if word == "enum" {
-        let arms = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
-        ws.decls.declare(id, .Enum(EnumSig { names: [field_name(a) for a in arms], payloads: [payload_of(ws, id, a) for a in arms] }))
-    }
-    if word == "fn" {
-        let seats = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
-        let marks: List<SeatMark> = if parts.length > 15 && !parts[15].is_empty() { [mark_of_word(w) for w in parts[15].split(";")] } else { [] }
-        ws.decls.record_seats(id, marks)
-        ws.decls.declare(id, .Fn(FnSig {
-            params: [interface_type(ws, id, s) for s in seats],
-            ret: interface_type(ws, id, parts[14]),
-        }))
-        if parts.length > 16 {
-            let bits = parts[16]
-            for j in 0..bits.length { if bits.char_code(j) == 49 { ws.decls.record_seat_written(id, j) } }
-        }
-    }
-}
 
 /// A SEAT'S PROMISE as one character — the record's spelling of `SeatMark`.
 fn mark_word(m: SeatMark) -> string {
@@ -686,76 +368,8 @@ fn mark_of_word(w: string) -> SeatMark {
     if w == "m" { SeatMark { mutable: true, settled: false } } else if w == "s" { SeatMark { mutable: false, settled: true } } else { no_seat_mark }
 }
 
-/// A SPELLING AS A TYPE — the registry for every DECLARED name, the type grammar only for
-/// the shape. `spelled_type` decodes `List`/`Map`/scalars and answers nothing for a name a
-/// program declared, so every held `Memo<SourceFile>` interned `error`. A NAME resolves
-/// HERE: a declared type by the registry, a type parameter by the OWNING declaration, a
-/// `dyn` as its trait, `?` as an `Opt`.
-fn interface_type(mut ws: Workspace, owner: DeclId, name: string) -> TypeId {
-    if name.starts_with("^") {
-        let words = name.substring(1, name.length).split("~")
-        let decoded = read_type_wire(ws.decls, words, 0)
-        if decoded != null && decoded!.next == words.length { return decoded!.id }
-        return ws.decls.types.intern(Type.Error)
-    }
-    let known = ws.decls.types.by_name(name)
-    if known != null { return known! }
-    let written = parse_type_ref(ws.lang, name)
-    if written == null { return ws.decls.types.intern(Type.Error) }
-    let ty: TypeId? = interface_spelled(ws, owner, written!)
-    ty ?? ws.decls.types.intern(Type.Error)
-}
 
-fn interface_spelled(mut ws: Workspace, owner: DeclId, a: TypeRef) -> TypeId? {
-    let plain: TypeId? = interface_plain(ws, owner, a)
-    if plain == null { return null }
-    let held = plain!
-    // A NULLABLE IS ITS OWN TYPE, scalar or boxed: the interface decodes what the SOURCE
-    // grammar refuses (`int?` is legal there), so no `rides_pointer` gate here.
-    if !a.optional { return held }
-    ws.decls.types.type(held?)
-}
 
-fn interface_plain(mut ws: Workspace, owner: DeclId, a: TypeRef) -> TypeId? {
-    if a.dynamic {
-        let base: TypeId? = ws.decls.types.by_name(a.name)
-        if base == null { return null }
-        let decl: DeclId? = nominal_decl(ws.decls.types, base!)
-        if decl == null { return null }
-        return ws.decls.types.intern(Type.Dyn(decl!, a.name))
-    }
-    if a.args.is_empty() {
-        let named: TypeId? = ws.decls.types.by_name(a.name)
-        if named != null { return named! }
-        let j: int? = ws.decls.tparams(owner).index_of(a.name)
-        if j != null && j! >= 0 { return ws.decls.types.intern(Type.Var(owner, j!, a.name)) }
-        let word: Type? = scalar_named(a.name)
-        if word != null { return ws.decls.types.intern(word!) }
-        if a.name == "void" { return ws.decls.types.interned(TypeLit.Void) }
-        if a.name == "ptr" { return ws.decls.types.interned(TypeLit.Ptr) }
-        if a.name == "bytes" { return ws.decls.types.interned(TypeLit.Bytes) }
-        return null
-    }
-    mut args: List<TypeId> = []
-    for g in a.args {
-        let t: TypeId? = interface_spelled(ws, owner, g)
-        if t == null { return null }
-        args.push(t!)
-    }
-    if a.name == "List" && args.length == 1 {
-        let elem = args[0]
-        return ws.decls.types.type(List<elem>)
-    }
-    if a.name == "Map" && args.length == 2 {
-        let val = args[1]
-        return ws.decls.types.type(Map<string, val>)
-    }
-    let base: TypeId? = ws.decls.types.by_name(a.name)
-    if base == null { return null }
-    let decl: DeclId? = nominal_decl(ws.decls.types, base!)
-    if decl == null { return null }
-    ws.decls.types.intern(Type.App(decl!, a.name, args))
-}
 
 /// A NOMINAL type's declaration — the one place the registry knows which types a program
 /// declared. `rest -> null` is the licensed remainder: a structural or scalar shape names
@@ -785,7 +399,7 @@ fn name_of_field(pair: string) -> string {
 /// A variant's PAYLOAD, from its `name:t1,t2` pair — no types when it carries none.
 // LICENSED I39: a RECORD DECODER — a workspace and one arm's text in, the payload's types out.
 fn payload_of(mut ws: Workspace, owner: DeclId, arm: string) -> List<TypeId> {
-    [interface_type(ws, owner, t) for t in name_of_field(arm).split("|") if t != ""]
+    [ws.interface_type( owner, t) for t in name_of_field(arm).split("|") if t != ""]
 }
 
 /// THE DECLARATION KIND a record's word names. A record line says which SHAPE it carries,
@@ -810,33 +424,7 @@ fn declared_kind(shape: string, word: string) -> DeclKind? {
     }
 }
 
-fn const_unit_key(mut ws: Workspace, store: Store, m: ModulePath, path: string, name: string) -> string {
-    node_key(Stored.Unit, ["const", CACHE_FORMAT, obj_key_cached(ws, store, m, path), name])
-}
 
-/// Persist each exported const's settled result after a clean program has
-/// lowered. Subsequent builds can materialize it without parsing its file.
-export fn keep_const_units(mut ws: Workspace, store: Store, modules: List<ModulePath>) -> int {
-    mut count = 0
-    for m in modules {
-        for d in interface_decls(ws, m) {
-            if d.kind is .Const && !ws.is_held(d.file) {
-                let path = ws.decls.file(d.file).path
-                let key = const_unit_key(ws, store, m, path, d.name)
-                if !store.has(Stored.Unit, key) {
-                    match ws.settled(d.file, SettleRoot.Const(d.stmt), []) {
-                        .Ok(value) -> {
-                            let _ = store.keep(Stored.Unit, key, settled_wire(value), [obj_key_of(ws, store, m, path)])
-                            count = count + 1
-                        },
-                        .Err(_) -> { let _ = 0 },
-                    }
-                }
-            }
-        }
-    }
-    count
-}
 
 // ── THE OBJECT'S KEY, FROM INPUTS ───────────────────────────────────
 
@@ -955,19 +543,423 @@ export fn held_paths(ws: Workspace) -> List<string> {
 export fn held_stubs(mut ws: Workspace) -> List<Body> {
     mut out: List<Body> = []
     for d in ws.decls.decls {
-        let stub = if ws.is_held(d.file) { stub_of(ws, d) } else { null }
+        let stub = if ws.is_held(d.file) { ws.stub_of( d) } else { null }
         if stub != null { out.push(stub!) }
     }
     out
 }
 
-/// ONE STUB — the name a caller sees, the signature it wears, and no instructions — or
-/// nothing when the declaration is not a FUNCTION, because a type needs no declaration to
-/// call through.
-fn stub_of(mut ws: Workspace, d: Decl) -> Body? {
-    let s? = ws.sig(d.id) else { return null }
+impl Workspace {
+
+fn keep_const_units(store: Store, modules: List<ModulePath>) -> int {
+    mut count = 0
+    for m in modules {
+        for d in self.interface_decls( m) {
+            if d.kind is .Const && !self.is_held(d.file) {
+                let path = self.decls.file(d.file).path
+                let key = self.const_unit_key( store, m, path, d.name)
+                if !store.has(Stored.Unit, key) {
+                    match self.settled(d.file, SettleRoot.Const(d.stmt), []) {
+                        .Ok(value) -> {
+                            let _ = store.keep(Stored.Unit, key, settled_wire(value), [obj_key_of(self, store, m, path)])
+                            count = count + 1
+                        },
+                        .Err(_) -> { let _ = 0 },
+                    }
+                }
+            }
+        }
+    }
+    count
+}
+
+fn const_rows_ready(store: Store, m: ModulePath, path: string, fields: List<List<string>>) -> bool {
+    for parts in fields {
+        if parts.length > 5 && parts[0] == "const" && parts[1] == path {
+            let raw = store.get(Stored.Unit, self.const_unit_key( store, m, path, parts[5]))
+            if raw == null || settled_from_wire(raw!) == null { return false }
+        }
+    }
+    true
+}
+
+fn const_unit_key(store: Store, m: ModulePath, path: string, name: string) -> string {
+    node_key(Stored.Unit, ["const", CACHE_FORMAT, obj_key_cached(self, store, m, path), name])
+}
+
+fn fill_shape(store: Store, m: ModulePath, parts: List<string>) {
+    let id? = self.row_decl( parts) else { return }
+    let f = self.decls.decl(id).file
+    let stmt = self.decls.decl(id).stmt
+    let path = parts[1]
+    // A SHAPE NAMES OTHER TYPES, and `by_name` can only answer for types that EXIST — a
+    // spelling it does not know is a DEFECT in the record, not a name to guess at. The
+    // fallback is `error`, the ABSORBING type, so a broken record produces a type that
+    // refuses rather than one that is silently wrong.
+    // AN `extern fn`'s record word is `extern`; its payload is a fn's, so the shape
+    // branch below is the fn branch.
+    let word = if parts[0] == "extern" { "fn" } else { parts[0] }
+    if word == "const" {
+        let ty = self.interface_type( id, parts[13])
+        self.decls.record_const_type(f, stmt, ty)
+        let key = self.const_unit_key( store, m, path, parts[5])
+        let bytes = store.get(Stored.Unit, key)
+        if bytes != null {
+            let value = settled_from_wire(bytes!)
+            if value != null { self.decls.remember_held_value(id, value!) }
+        }
+    }
+    if word == "named" {
+        let of = self.interface_type( id, parts[13])
+        self.decls.declare(id, .Named(NamedSig { of: of }))
+        let named = self.decls.types.intern(Type.Struct(id, parts[5]))
+        self.decls.types.mark_named(named, of)
+        self.decls.types.mark_flat(named, [of])
+    }
+    if word == "struct" {
+        let fields = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
+        self.decls.declare(id, .Record(StructSig {
+            names: [field_name(f) for f in fields],
+            types: [self.interface_type( id, name_of_field(f)) for f in fields],
+            defaults: [self.decls.default_named(id, field_name(f)) for f in fields],
+        }))
+        if fields.length == 1 {
+            let ty = self.interface_type( id, name_of_field(fields[0]))
+            let named = self.decls.types.intern(Type.Struct(id, parts[5]))
+            if self.decls.types.spells(ty) { self.decls.types.mark_flat(named, [ty]) }
+        }
+    }
+    if word == "enum" {
+        let arms = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
+        self.decls.declare(id, .Enum(EnumSig { names: [field_name(a) for a in arms], payloads: [payload_of(self, id, a) for a in arms] }))
+    }
+    if word == "fn" {
+        let seats = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
+        let marks: List<SeatMark> = if parts.length > 15 && !parts[15].is_empty() { [mark_of_word(w) for w in parts[15].split(";")] } else { [] }
+        self.decls.record_seats(id, marks)
+        self.decls.declare(id, .Fn(FnSig {
+            params: [self.interface_type( id, s) for s in seats],
+            ret: self.interface_type( id, parts[14]),
+        }))
+        if parts.length > 16 {
+            let bits = parts[16]
+            for j in 0..bits.length { if bits.char_code(j) == 49 { self.decls.record_seat_written(id, j) } }
+        }
+    }
+}
+
+fn interface_decls(m: ModulePath) -> List<Decl> {
+    mut ids: List<DeclId> = []
+    for path in self.module_files(m) {
+        let f = self.file_id(path)
+        let _ = self.items(f)
+        ids = ids.concat(self.decls.decls_of_file(f))
+    }
+    [self.decl_at(id) for id in ids]
+}
+
+fn interface_plain(owner: DeclId, a: TypeRef) -> TypeId? {
+    if a.dynamic {
+        let base: TypeId? = self.decls.types.by_name(a.name)
+        if base == null { return null }
+        let decl: DeclId? = nominal_decl(self.decls.types, base!)
+        if decl == null { return null }
+        return self.decls.types.intern(Type.Dyn(decl!, a.name))
+    }
+    if a.args.is_empty() {
+        let named: TypeId? = self.decls.types.by_name(a.name)
+        if named != null { return named! }
+        let j: int? = self.decls.tparams(owner).index_of(a.name)
+        if j != null && j! >= 0 { return self.decls.types.intern(Type.Var(owner, j!, a.name)) }
+        let word: Type? = scalar_named(a.name)
+        if word != null { return self.decls.types.intern(word!) }
+        if a.name == "void" { return self.decls.types.interned(TypeLit.Void) }
+        if a.name == "ptr" { return self.decls.types.interned(TypeLit.Ptr) }
+        if a.name == "bytes" { return self.decls.types.interned(TypeLit.Bytes) }
+        return null
+    }
+    mut args: List<TypeId> = []
+    for g in a.args {
+        let t: TypeId? = self.interface_spelled( owner, g)
+        if t == null { return null }
+        args.push(t!)
+    }
+    if a.name == "List" && args.length == 1 {
+        let elem = args[0]
+        return self.decls.types.type(List<elem>)
+    }
+    if a.name == "Map" && args.length == 2 {
+        let val = args[1]
+        return self.decls.types.type(Map<string, val>)
+    }
+    let base: TypeId? = self.decls.types.by_name(a.name)
+    if base == null { return null }
+    let decl: DeclId? = nominal_decl(self.decls.types, base!)
+    if decl == null { return null }
+    self.decls.types.intern(Type.App(decl!, a.name, args))
+}
+
+fn interface_spelled(owner: DeclId, a: TypeRef) -> TypeId? {
+    let plain: TypeId? = self.interface_plain( owner, a)
+    if plain == null { return null }
+    let held = plain!
+    // A NULLABLE IS ITS OWN TYPE, scalar or boxed: the interface decodes what the SOURCE
+    // grammar refuses (`int?` is legal there), so no `rides_pointer` gate here.
+    if !a.optional { return held }
+    self.decls.types.type(held?)
+}
+
+fn interface_type(owner: DeclId, name: string) -> TypeId {
+    if name.starts_with("^") {
+        let words = name.substring(1, name.length).split("~")
+        let decoded = self.decls.read_type_wire( words, 0)
+        if decoded != null && decoded!.next == words.length { return decoded!.id }
+        return self.decls.types.intern(Type.Error)
+    }
+    let known = self.decls.types.by_name(name)
+    if known != null { return known! }
+    let written = parse_type_ref(self.lang, name)
+    if written == null { return self.decls.types.intern(Type.Error) }
+    let ty: TypeId? = self.interface_spelled( owner, written!)
+    ty ?? self.decls.types.intern(Type.Error)
+}
+
+fn link_identity(parts: List<string>) {
+    let id? = self.row_decl( parts) else { return }
+    let parent_at? = wire_number(parts[8]) else { return }
+    if parent_at < 0 { return }
+    let f = self.decls.decl(id).file
+    let ids = self.decls.decls_of_file(f)
+    if parent_at < ids.length { self.decls.adopt(id, ids[parent_at]) }
+}
+
+fn mint_identity(parts: List<string>) {
+    if parts.length < 13 || parts[5].is_empty() { return }
+    let path = parts[1]
+    if !self.is_held(self.file_id(path)) { return }
+    let f = self.file_id(path)
+    let stmt_index? = wire_number(parts[3]) else { return }
+    let root_at? = wire_number(parts[10]) else { return }
+    let kind? = declared_kind(parts[0], parts[6]) else { return }
+    let root: ExprId? = if root_at < 0 { null } else { ExprId { index: root_at } }
+    let stmt = StmtId { index: stmt_index }
+    // The ordinal is the record's stable identity within a held file. A
+    // name/kind key collapses generated members and same-named methods, then
+    // every later type reference points at the wrong declaration.
+    let ordinal? = wire_number(parts[2]) else { return }
+    let id = self.decls.mint("${path}::held::${ordinal}", f, stmt, parts[5], kind, parts[4] == "1", parts[7], null, parts[9] == "1", root)
+    // APPEND IN PLACE. A held file was never admitted, so its declarations arrive in
+    // record order and its list is exactly `ordinal` long — the `any` + `concat` this
+    // replaces scanned and rebuilt the list per declaration, quadratic in a file's length.
+    if self.decls.decls_of_file(f).length == ordinal {
+        self.decls.file_decls[f.index].push(id)
+    } else if !self.decls.decls_of_file(f).any(same_decl(it, id)) {
+        self.decls.file_decls[f.index].push(id)
+    }
+    mut by_stmt = self.decls.decl_ids[f.index].get()
+    by_stmt.grow_to(stmt_index + 1)
+    if by_stmt.get(stmt_index) == null { by_stmt.set(stmt_index, id) }
+    self.decls.decl_ids[f.index].set(by_stmt)
+    if kind is .Main { self.decls.mains.set(f.index, id) }
+    if parts[11] == "1" { self.decls.remember_held_item(f, id) }
+    let facts? = facts_unblocked(parts[12]) else { return }
+    self.decls.adopt_facts(id, facts)
+}
+
+fn record_line(d: Decl, ordinal: int, item: bool) -> string {
+    let sig = if d.kind is .Const { null } else { self.sig(d.id) }
+    let shape = if d.kind is .Const {
+        let ty = self.decls.type_of_const(d.file, d.stmt) ?? self.decls.types.intern(Type.Error)
+        "const\t${self.decls.type_wire( ty)}"
+    } else if sig == null {
+        "opaque"
+    } else if d.kind is .Fn || d.kind is .Method {
+        // THE SEATS' CONTRACTS AND WHAT THE BODY WROTE are parse facts a held file
+        // cannot answer, and a caller's `mut`/retain decision reads them. They ride
+        // the fn's payload: one word per seat, then one bit per seat.
+        let n = self.decls.seat_count(d.id)
+        let marks = joined([mark_word(self.decls.seat_mark(d.id, j)) for j in 0..n], ";")
+        let writes = joined([if self.decls.seat_written_so_far(d.id, j) { "1" } else { "0" } for j in 0..n], "")
+        "${shape_line(self, sig!)}\t${marks}\t${writes}"
+    } else {
+        shape_line(self, sig!)
+    }
+    let at = shape.index_of("\t")
+    let visibility = if d.exported { "1" } else { "0" }
+    // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
+    // and a held file has no store, so the record must carry it: the word is the one
+    // column every kind already has, and the payload's layout is unchanged.
+    let first = if self.decls.is_extern(d.id) { "extern" } else if at < 0 { shape } else { shape.substring(0, at) }
+    let payload = if at < 0 { "" } else { shape.substring(at + 1, shape.length) }
+    mut parent_at = 0 - 1
+    if d.parent != null {
+        for j, id in self.decls.decls_of_file(d.file) {
+            if same_decl(id, d.parent!) { parent_at = j }
+        }
+    }
+    let root = d.root?.index ?? (0 - 1)
+    "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${d.name}\t${kind_word(d.kind)}\t${d.owner}\t${parent_at}\t${if d.nested { "1" } else { "0" }}\t${root}\t${if item { "1" } else { "0" }}\t${facts_block(self.decls.facts_or(d.id))}\t${payload}"
+}
+
+fn record_of(store: Store, m: ModulePath) -> string {
+    let prior = record_cached(self, store, m)
+    let prior_lines = prior.split("\n")
+    let remembered = [line for line in prior_lines if line.starts_with("import\t")]
+    let fresh = flatten([self.imported_by(path) for path in self.module_files(m) if !self.is_held(self.file_id(path))])
+    let here = distinct(remembered.concat(["import\t${d.text()}" for d in fresh]))
+    mut items: List<string> = []
+    for path in self.module_files(m) {
+        let f = self.file_id(path)
+        // A HELD FILE'S LINES ARE COPIED VERBATIM, never regenerated. A record's
+        // DECLARATION text may move between two builds of identical bytes (the written
+        // bits, a parse-order detail), and a held file must keep the lines it was held
+        // against. The BYTES line is regenerated for the module WHOLE, so it cannot
+        // drift from the files.
+        if self.is_held(f) {
+            items = items.concat([line for line in prior_lines if named_file(line) == path])
+        } else {
+            let top = self.items(f)
+            items = items.concat([self.record_line( self.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in self.decls.decls_of_file(f)])
+        }
+    }
+    joined(["iface\t${iface_digest(items)}"].concat(here).concat(items), "\n")
+}
+
+fn row_decl(parts: List<string>) -> DeclId? {
+    if parts.length < 13 { return null }
+    let f = self.file_id(parts[1])
+    if !self.is_held(f) { return null }
+    let ordinal? = wire_number(parts[2]) else { return null }
+    let ids = self.decls.decls_of_file(f)
+    if ordinal < 0 || ordinal >= ids.length { return null }
+    ids[ordinal]
+}
+
+fn stub_of(d: Decl) -> Body? {
+    let s? = self.sig(d.id) else { return null }
     match s {
-        .Fn(sig) -> Body { name: ws.decls.symbol(d.id), params: sig.params, ret: sig.ret, gives: null, ins: [], reg_types: [], file: d.file },
+        .Fn(sig) -> Body { name: self.decls.symbol(d.id), params: sig.params, ret: sig.ret, gives: null, ins: [], reg_types: [], file: d.file },
         rest -> null,
     }
+}
+}
+
+impl Decls {
+
+fn decl_wire(d: DeclId) -> string {
+    let x = self.decl(d)
+    mut at = 0
+    for j, id in self.decls_of_file(x.file) {
+        if same_decl(id, d) { at = j }
+    }
+    "${self.file(x.file).path}~${at}"
+}
+
+fn read_type_wire(words: List<string>, at: int) -> WireType? {
+    if at >= words.length { return null }
+    let tag = words[at]
+    let scalar: Type? = match tag {
+        "i" -> Type.Int, "f" -> Type.Float, "b" -> Type.Bool,
+        "s" -> Type.Str, "y" -> Type.Bytes, "p" -> Type.Ptr,
+        "v" -> Type.Void, "n" -> Type.Null, "e" -> Type.EmptyList,
+        "h" -> Type.EmptyMap, "x" -> Type.Error, _ -> null,
+    }
+    if scalar != null { return WireType { id: self.types.intern(scalar!), next: at + 1 } }
+    if tag == "S" || tag == "E" || tag == "D" || tag == "N" || tag == "R" || tag == "A" {
+        let d? = self.wire_decl( words, at + 1) else { return null }
+        let x = self.decl(d)
+        if tag == "S" { return WireType { id: self.types.intern(Type.Struct(d, x.name)), next: at + 3 } }
+        if tag == "E" { return WireType { id: self.types.intern(Type.Enum(d, x.name)), next: at + 3 } }
+        if tag == "D" { return WireType { id: self.types.intern(Type.Dyn(d, x.name)), next: at + 3 } }
+        if tag == "N" { return WireType { id: self.types.intern(Type.TypeName(d, x.name)), next: at + 3 } }
+        if at + 3 >= words.length { return null }
+        let n? = wire_number(words[at + 3]) else { return null }
+        if tag == "R" {
+            let names = self.tparams(d)
+            if n < 0 || n >= names.length { return null }
+            return WireType { id: self.types.intern(Type.Var(d, n, names[n])), next: at + 4 }
+        }
+        if n < 0 { return null }
+        mut args: List<TypeId> = []
+        mut cursor = at + 4
+        for j in 0..n {
+            let child? = self.read_type_wire( words, cursor) else { return null }
+            args.push(child.id)
+            cursor = child.next
+        }
+        return WireType { id: self.types.intern(Type.App(d, x.name, args)), next: cursor }
+    }
+    if tag == "L" || tag == "C" || tag == "O" {
+        let child? = self.read_type_wire( words, at + 1) else { return null }
+        let raw = if tag == "L" { Type.List(child.id) } else if tag == "C" { Type.Cell(child.id) } else { Type.Opt(child.id) }
+        return WireType { id: self.types.intern(raw), next: child.next }
+    }
+    if tag == "M" || tag == "Q" {
+        let a? = self.read_type_wire( words, at + 1) else { return null }
+        let b? = self.read_type_wire( words, a.next) else { return null }
+        let raw = if tag == "M" { Type.Map(a.id, b.id) } else { Type.Res(a.id, b.id) }
+        return WireType { id: self.types.intern(raw), next: b.next }
+    }
+    if tag == "F" {
+        if at + 1 >= words.length { return null }
+        let n? = wire_number(words[at + 1]) else { return null }
+        mut params: List<TypeId> = []
+        mut cursor = at + 2
+        if n < 0 { return null }
+        for j in 0..n {
+            let child? = self.read_type_wire( words, cursor) else { return null }
+            params.push(child.id)
+            cursor = child.next
+        }
+        if cursor >= words.length { return null }
+        let bits = words[cursor]
+        mut marks: List<SeatMark> = []
+        for j in 0..n {
+            if j >= bits.length { return null }
+            marks.push(mark_of_word(bits.substring(j, j + 1)))
+        }
+        let ret? = self.read_type_wire( words, cursor + 1) else { return null }
+        return WireType { id: self.types.intern(Type.Fn(params, marks, ret.id)), next: ret.next }
+    }
+    null
+}
+
+fn type_wire(id: TypeId) -> string {
+    let body = match self.types.shape_of(id) {
+        .Int -> "i",
+        .Float -> "f",
+        .Bool -> "b",
+        .Str -> "s",
+        .Bytes -> "y",
+        .Ptr -> "p",
+        .Void -> "v",
+        .Null -> "n",
+        .EmptyList -> "e",
+        .EmptyMap -> "h",
+        .Error -> "x",
+        .Struct(d, _) -> "S~${self.decl_wire( d)}",
+        .Enum(d, _) -> "E~${self.decl_wire( d)}",
+        .Dyn(d, _) -> "D~${self.decl_wire( d)}",
+        .TypeName(d, _) -> "N~${self.decl_wire( d)}",
+        .Var(d, j, _) -> "R~${self.decl_wire( d)}~${j}",
+        .App(d, _, args) -> "A~${self.decl_wire( d)}~${args.length}~${joined([self.type_wire( a).substring(1, self.type_wire( a).length) for a in args], "~")}",
+        .List(t) -> "L~${self.type_wire( t).substring(1, self.type_wire( t).length)}",
+        .Cell(t) -> "C~${self.type_wire( t).substring(1, self.type_wire( t).length)}",
+        .Opt(t) -> "O~${self.type_wire( t).substring(1, self.type_wire( t).length)}",
+        .Map(k, v) -> "M~${self.type_wire( k).substring(1, self.type_wire( k).length)}~${self.type_wire( v).substring(1, self.type_wire( v).length)}",
+        .Res(ok, err) -> "Q~${self.type_wire( ok).substring(1, self.type_wire( ok).length)}~${self.type_wire( err).substring(1, self.type_wire( err).length)}",
+        .Fn(params, marks, ret) -> joined(["F", "${params.length}"].concat([self.type_wire( t).substring(1, self.type_wire( t).length) for t in params]).concat([joined([mark_word(if j < marks.length { marks[j] } else { no_seat_mark }) for j in 0..params.length], ""), self.type_wire( ret).substring(1, self.type_wire( ret).length)]), "~"),
+    }
+    "^${body}"
+}
+
+fn wire_decl(words: List<string>, at: int) -> DeclId? {
+    if at + 1 >= words.length { return null }
+    let ordinal? = wire_number(words[at + 1]) else { return null }
+    let f: FileId? = self.paths.get(words[at])
+    if f == null || ordinal < 0 { return null }
+    let ids = self.decls_of_file(f!)
+    if ordinal >= ids.length { return null }
+    ids[ordinal]
+}
 }

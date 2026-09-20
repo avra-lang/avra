@@ -236,16 +236,42 @@ impl BuildCache {
 // build that means to link runs the linker itself and is the only place that knows how.
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one standard signature.
 export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string) -> Result<BuildOutcome, string> {
-    build_program_attempt(ws, entry, mode, opt, runtime, disk, linker, 0)
+    ws.build_program_attempt( entry, mode, opt, runtime, disk, linker, 0)
 }
 
-fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string, attempt: int) -> Result<BuildOutcome, string> {
-    mut fresh = ws
-    let store = store_at(build_cache_root(ws))
+
+/// clang's words for a module: the level, the runtime, the packages' own
+/// The one voice for a failed link — the words a reader sees when clang
+/// refuses a program.
+fn clang_link_failed(code: int) -> string {
+    "avra: clang failed linking — exited with code ${code}"
+}
+
+/// objects and flags, then the binary's path. The runtime object is passed
+/// in — it is a TOOLCHAIN fact found from the binary's own directory, and a
+/// lone file's host is in memory and knows nothing of a disk.
+// LICENSED I39: a pure PROJECTION — a path, an opt level and a toolchain
+// fact in, clang's words out. It owns no state and takes the workspace
+// second, because the module's path is what it is about.
+fn link_objects(objs: List<string>, ws: Workspace, runtime: string, out: string) -> List<string> {
+    ["-w", "-rdynamic"].concat(objs).concat([runtime]).concat(ws.link_words()).concat(["-o", out])
+}
+
+/// `x.av.ll` builds `x`.
+export fn binary_name(ll_path: string) -> string {
+    let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
+    if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
+}
+
+impl Workspace {
+
+fn build_program_attempt(entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string, attempt: int) -> Result<BuildOutcome, string> {
+    mut fresh = self
+    let store = store_at(build_cache_root(self))
     // THE UNIT DEPS ARE THE HOLD'S CURRENCY: a build that holds nothing reads none, so it
     // does not pay to write them.
-    if CACHE_HOLD_ENABLED { ws.attach_store(store) }
-    let cache = build_cache(ws, disk)
+    if CACHE_HOLD_ENABLED { self.attach_store(store) }
+    let cache = build_cache(self, disk)
     let inputs = cache.inputs()
     let key = cache.key(entry, mode, inputs)
     let binary = binary_name(entry)
@@ -268,28 +294,28 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     mut trace: List<string> = []
     mut held: List<ModulePath> = []
     let l0 = avra_now_ns()
-    if CACHE_HOLD_ENABLED { held = held_modules(ws, store) }
+    if CACHE_HOLD_ENABLED { held = held_modules(self, store) }
     trace.push("mods ${held.length}")
     let l1 = avra_now_ns()
-    for m in held { let _ = load_interface(ws, store, m, entry) }
+    for m in held { let _ = load_interface(self, store, m, entry) }
     let l2 = avra_now_ns()
-    trace.push("files-held ${held_paths(ws).length}")
+    trace.push("files-held ${held_paths(self).length}")
     // NAMES, THEN SHAPES, GLOBALLY: admit every file (its declared names interned at mint),
     // re-mint the held records over it (generated declarations land, written ones refresh),
     // then fill held shapes — every spelling now resolves.
-    ws.admit_all()
+    self.admit_all()
     let l3 = avra_now_ns()
-    mint_held_interfaces(ws, store)
-    fill_interfaces(ws, store)
+    mint_held_interfaces(self, store)
+    fill_interfaces(self, store)
     let l4 = avra_now_ns()
     trace.push("mods ${held.length} hold ${(l1-l0)/1000000} load ${(l2-l1)/1000000} admit ${(l3-l2)/1000000} fill ${(l4-l3)/1000000}")
 
     let l5 = avra_now_ns()
-    let p = ws.program(entry)
+    let p = self.program(entry)
     trace.push("analyze ${(avra_now_ns()-l5)/1000000}")
     if !p.clean() { fail p.report() }
     let view = p.entry_file()
-    if view == null { return .Err(p.rendered([no_target(ws.root)])) }
+    if view == null { return .Err(p.rendered([no_target(self.root)])) }
     let ent = view!
     if ent.view.stmts.is_empty() { fail "the program is empty" }
     // A HELD BUILD LOWERS EVERY DECLARATION OF THE FILES IT PARSED. Lowering a fresh
@@ -316,7 +342,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
             if built != 0 { fail "avra: clang failed compiling — exited with code ${built}" }
             let _ = store.keep_file(Stored.Obj, obj_key, obj, [obj_key])
         }
-        let words = link_objects([obj], ws, runtime, binary)
+        let words = link_objects([obj], self, runtime, binary)
         let code = avra_spawn_status(linker, words)
         if code != 0 { fail clang_link_failed(code) }
         let warnings = p.warnings()
@@ -336,28 +362,28 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     // records DO exist, looks for it under a key over their text and never finds it. Nothing
     // was held for exactly that reason (measured: `held modules: 0`), with the records
     // written a few lines below the emission.
-    let built_modules = [module_path(name.split(".")) for name in distinct([ws.module_of(a.view.source.file) for a in p.files])]
+    let built_modules = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
     let l7 = avra_now_ns()
-    let _ = keep_interfaces(ws, store, built_modules)
+    let _ = keep_interfaces(self, store, built_modules)
     // THE RECORDS JUST MOVED. Every derived key below folds the record that was written,
     // and the per-build caches still hold the previous state — drop them so the object
     // keys are read from the interface as it now stands.
-    forget_keys(ws)
-    let _ = keep_const_units(ws, store, built_modules)
+    forget_keys(self)
+    let _ = self.keep_const_units( store, built_modules)
     // A changed interface can move a dependent object's key after the first
     // provisional hold. Restart from the untouched workspace against the new
     // records, so that file parses and recompiles instead of linking stale code.
-    let missing = [path for path in held_paths(ws) if !store.has(Stored.Obj, obj_key_cached(ws, store, module_path(ws.module_of(path).split(".")), path))]
+    let missing = [path for path in held_paths(self) if !store.has(Stored.Obj, obj_key_cached(self, store, module_path(self.module_of(path).split(".")), path))]
     if !missing.is_empty() {
         if attempt >= 2 { fail "avra: interface records did not stabilize" }
-        return build_program_attempt(fresh, entry, mode, opt, runtime, disk, linker, attempt + 1)
+        return fresh.build_program_attempt( entry, mode, opt, runtime, disk, linker, attempt + 1)
     }
 
     // THE HELD MODULES' FUNCTIONS GO IN AS DECLARATIONS ONLY. A stub is a NAME and a
     // SIGNATURE with no instructions: a caller's module declares what it NAMES, so a call
     // to a held function finds a declaration — and it is defined NOWHERE, because the file
     // it belongs to is never emitted. Its machine code is the object the store holds.
-    let stubs = held_stubs(ws)
+    let stubs = held_stubs(self)
     // A BODY IS EMITTED WHERE ITS HOME IS, and a home that is HELD cannot emit it: the
     // object comes from the store, and a WRAPPER a fresh caller minted (`$w`, whose home
     // is the file that DECLARES what it wraps) is not in that stored object — the link
@@ -378,7 +404,7 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
             active.push(bd with { weak: true })
         } else {
             let home: FileId? = home_of(bd)
-            if home != null && ws.is_held(home!) {
+            if home != null && self.is_held(home!) {
                 active.push(bd with { file: ent.view.file, weak: true })
             } else {
                 active.push(bd)
@@ -401,10 +427,10 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     let t_e0 = avra_now_ns()
     for a in p.files {
         let path = a.view.source.file
-        let m = module_path(ws.module_of(path).split("."))
+        let m = module_path(self.module_of(path).split("."))
         let base = node_key(Stored.Obj, [digest_of(path)])
         let obj = "${cache.root}/${base}.o"
-        let okey = obj_key_cached(ws, store, m, path)
+        let okey = obj_key_cached(self, store, m, path)
         // A FILE WHOSE OBJECT IS ALREADY KEYED needs no emission: it was re-parsed (its
         // module moved) but its own inputs did not.
         if store.place(Stored.Obj, okey, obj) {
@@ -449,16 +475,16 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
         let _ = store.keep_file(Stored.Obj, po.okey, po.obj, [])
         objs.push(po.obj)
     }
-    for path in held_paths(ws) {
-        let m = module_path(ws.module_of(path).split("."))
-        let okey = obj_key_cached(ws, store, m, path)
+    for path in held_paths(self) {
+        let m = module_path(self.module_of(path).split("."))
+        let okey = obj_key_cached(self, store, m, path)
         // THE LINK READS THE STORE'S OBJECT IN PLACE — a held object is a blob on disk and
         // copying all 274 of them to temp paths each build was 650ms of pure I/O.
         if !store.has(Stored.Obj, okey) { fail "avra: a held object disappeared: ${path} (module ${m.text()}) key ${okey}" }
         objs.push(store.path(Stored.Obj, okey))
     }
     let t_e3 = avra_now_ns()
-    let words = link_objects(objs, ws, runtime, binary)
+    let words = link_objects(objs, self, runtime, binary)
     // THE LINK RUNS HERE, not in the CLI: the build owns its pipeline, and a thin caller
     // is one that decides nothing.
     let code = avra_spawn_status(linker, words)
@@ -471,33 +497,11 @@ fn build_program_attempt(mut ws: Workspace, entry: string, mode: string, opt: st
     let warnings = p.warnings()
     // WHAT EACH PHASE COST, because a build that cannot say where its time went is a
     // build whose next optimisation is a guess.
-    let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases].concat(["held ${held_paths(ws).length}/${ws.decls.files.length}", "attempt ${attempt}", "emit ${(t_e1 - t_e0) / 1000000}ms", "clang ${(t_e2 - t_e1) / 1000000}ms", "place ${(t_e3 - t_e2) / 1000000}ms", "link ${(t_e4 - t_e3) / 1000000}ms"]).concat(trace), ", ")
+    let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases].concat(["held ${held_paths(self).length}/${self.decls.files.length}", "attempt ${attempt}", "emit ${(t_e1 - t_e0) / 1000000}ms", "clang ${(t_e2 - t_e1) / 1000000}ms", "place ${(t_e3 - t_e2) / 1000000}ms", "link ${(t_e4 - t_e3) / 1000000}ms"]).concat(trace), ", ")
     // THE RESULT IS THE BUILD'S OWN OUTPUT, so it is the build that remembers it: the
     // binary under one family and what was said about it under another.
     let _ = store.keep_file(Stored.Bin, key, binary, [key])
     let _ = store.keep(Stored.Warn, key, warnings, [key])
     .Ok(fresh_build(words, binary, warnings, key, spent))
 }
-
-/// clang's words for a module: the level, the runtime, the packages' own
-/// The one voice for a failed link — the words a reader sees when clang
-/// refuses a program.
-fn clang_link_failed(code: int) -> string {
-    "avra: clang failed linking — exited with code ${code}"
-}
-
-/// objects and flags, then the binary's path. The runtime object is passed
-/// in — it is a TOOLCHAIN fact found from the binary's own directory, and a
-/// lone file's host is in memory and knows nothing of a disk.
-// LICENSED I39: a pure PROJECTION — a path, an opt level and a toolchain
-// fact in, clang's words out. It owns no state and takes the workspace
-// second, because the module's path is what it is about.
-fn link_objects(objs: List<string>, ws: Workspace, runtime: string, out: string) -> List<string> {
-    ["-w", "-rdynamic"].concat(objs).concat([runtime]).concat(ws.link_words()).concat(["-o", out])
-}
-
-/// `x.av.ll` builds `x`.
-export fn binary_name(ll_path: string) -> string {
-    let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
-    if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
 }

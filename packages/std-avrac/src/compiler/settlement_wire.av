@@ -151,24 +151,9 @@ fn settled_from_wire(raw: string) -> Settled? {
 use core.{FileId, DeclId, TypeId}
 use features.{Wanted, Sub, SeatValue}
 
-fn file_ref(ws: Workspace, f: FileId) -> string { ws.decls.file(f).path }
 
-fn decl_ref(ws: Workspace, d: DeclId?) -> string {
-    if d == null { return "" }
-    decl_wire(ws.decls, d!)
-}
 
-fn type_ref(ws: Workspace, t: TypeId) -> string { type_wire(ws.decls, t) }
 
-fn sub_wire(ws: Workspace, sub: Sub?) -> string {
-    if sub == null { return wire_field("-") }
-    let s = sub!
-    mut out = wire_field("+") + wire_field(decl_ref(ws, s.target)) + wire_field("${s.args.length}")
-    for a in s.args { out = out + wire_field(type_ref(ws, a)) }
-    out = out + wire_field("${s.consts.length}")
-    for c in s.consts { out = out + wire_field(c) }
-    out
-}
 
 fn heap_wire(h: MetaHeap) -> string {
     mut out = wire_field("${h.nodes.length}")
@@ -184,27 +169,52 @@ fn heap_wire(h: MetaHeap) -> string {
     out
 }
 
-fn seat_wire(ws: Workspace, s: SeatValue) -> string {
-    wire_field("${s.index}") + wire_field(s.fp) + wire_field(type_ref(ws, s.ty)) + wire_value(s.value) + heap_wire(s.heap)
+impl Workspace {
+
+fn decl_from_ref(raw: string) -> DeclId? {
+    if raw == "" { return null }
+    let parts = raw.split("~")
+    if parts.length != 2 { return null }
+    let f: FileId? = self.decls.paths.get(parts[0])
+    if f == null { return null }
+    let at? = wire_number(parts[1]) else { return null }
+    let ids = self.decls.decls_of_file(f!)
+    if at < 0 || at >= ids.length { return null }
+    ids[at]
 }
 
-fn wanted_wire(ws: Workspace, w: Wanted) -> string {
-    mut out = wire_field(w.name) + wire_field(file_ref(ws, w.file)) + wire_field(decl_ref(ws, w.decl))
-    out = out + sub_wire(ws, w.sub) + wire_field("${w.seats.length}")
-    for s in w.seats { out = out + seat_wire(ws, s) }
+fn decl_ref(d: DeclId?) -> string {
+    if d == null { return "" }
+    self.decls.decl_wire( d!)
+}
+
+fn file_ref(f: FileId) -> string { self.decls.file(f).path }
+
+fn seat_wire(s: SeatValue) -> string {
+    wire_field("${s.index}") + wire_field(s.fp) + wire_field(self.type_ref( s.ty)) + wire_value(s.value) + heap_wire(s.heap)
+}
+
+fn sub_wire(sub: Sub?) -> string {
+    if sub == null { return wire_field("-") }
+    let s = sub!
+    mut out = wire_field("+") + wire_field(self.decl_ref( s.target)) + wire_field("${s.args.length}")
+    for a in s.args { out = out + wire_field(self.type_ref( a)) }
+    out = out + wire_field("${s.consts.length}")
+    for c in s.consts { out = out + wire_field(c) }
     out
 }
 
-fn wanted_list_wire(ws: Workspace, xs: List<Wanted>) -> string {
-    mut out = "W1" + wire_field("${xs.length}")
-    for w in xs { out = out + wanted_wire(ws, w) }
-    out
+fn type_from_wire(raw: string) -> TypeId? {
+    if !raw.starts_with("^") { return null }
+    let words = raw.substring(1, raw.length).split("~")
+    let d = self.decls.read_type_wire( words, 0)
+    if d == null || d!.next != words.length { return null }
+    d!.id
 }
 
-/// The inverse. A wire that does not decode WHOLE is refused, so a unit's edges are
-/// never guessed — a partial decode would demand the wrong units and the fresh lowering
-/// would be inexact again.
-fn wanted_list_from_wire(mut ws: Workspace, raw: string) -> List<Wanted>? {
+fn type_ref(t: TypeId) -> string { self.decls.type_wire( t) }
+
+fn wanted_list_from_wire(raw: string) -> List<Wanted>? {
     if !raw.starts_with("W1") { return null }
     mut r = wire_reader(raw)
     let count? = r.number() else { return null }
@@ -215,19 +225,19 @@ fn wanted_list_from_wire(mut ws: Workspace, raw: string) -> List<Wanted>? {
         let file_path? = r.field() else { return null }
         let decl_raw? = r.field() else { return null }
         let sub_mark? = r.field() else { return null }
-        let f: FileId? = ws.decls.paths.get(file_path)
+        let f: FileId? = self.decls.paths.get(file_path)
         if f == null { return null }
-        let decl = decl_from_ref(ws, decl_raw)
+        let decl = self.decl_from_ref( decl_raw)
         let sub: Sub? = if sub_mark == "+" {
             let target_raw? = r.field() else { return null }
-            let target = decl_from_ref(ws, target_raw)
+            let target = self.decl_from_ref( target_raw)
             if target == null { return null }
             let arg_count? = r.number() else { return null }
             if arg_count < 0 { return null }
             mut args: List<TypeId> = []
             for j in 0..arg_count {
                 let tw? = r.field() else { return null }
-                let ty = type_from_wire(ws, tw)
+                let ty = self.type_from_wire( tw)
                 if ty == null { return null }
                 args.push(ty!)
             }
@@ -247,7 +257,7 @@ fn wanted_list_from_wire(mut ws: Workspace, raw: string) -> List<Wanted>? {
             let index? = r.number() else { return null }
             let fp? = r.field() else { return null }
             let tw? = r.field() else { return null }
-            let ty = type_from_wire(ws, tw)
+            let ty = self.type_from_wire( tw)
             if ty == null { return null }
             let value? = r.value() else { return null }
             let node_count? = r.number() else { return null }
@@ -287,22 +297,16 @@ fn wanted_list_from_wire(mut ws: Workspace, raw: string) -> List<Wanted>? {
     out
 }
 
-fn decl_from_ref(ws: Workspace, raw: string) -> DeclId? {
-    if raw == "" { return null }
-    let parts = raw.split("~")
-    if parts.length != 2 { return null }
-    let f: FileId? = ws.decls.paths.get(parts[0])
-    if f == null { return null }
-    let at? = wire_number(parts[1]) else { return null }
-    let ids = ws.decls.decls_of_file(f!)
-    if at < 0 || at >= ids.length { return null }
-    ids[at]
+fn wanted_list_wire(xs: List<Wanted>) -> string {
+    mut out = "W1" + wire_field("${xs.length}")
+    for w in xs { out = out + self.wanted_wire( w) }
+    out
 }
 
-fn type_from_wire(mut ws: Workspace, raw: string) -> TypeId? {
-    if !raw.starts_with("^") { return null }
-    let words = raw.substring(1, raw.length).split("~")
-    let d = read_type_wire(ws.decls, words, 0)
-    if d == null || d!.next != words.length { return null }
-    d!.id
+fn wanted_wire(w: Wanted) -> string {
+    mut out = wire_field(w.name) + wire_field(self.file_ref( w.file)) + wire_field(self.decl_ref( w.decl))
+    out = out + self.sub_wire( w.sub) + wire_field("${w.seats.length}")
+    for s in w.seats { out = out + self.seat_wire( s) }
+    out
+}
 }

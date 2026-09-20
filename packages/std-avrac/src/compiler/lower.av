@@ -501,17 +501,6 @@ fn empty_main(types: TypeRegistry) -> LoweredBody {
     }
 }
 
-/// The specialization's name: uncollidable (`$`, `@` are unwritable) and STABLE ACROSS
-/// RUNS — each type argument is its CROSS-RUN IDENTITY (`type_wire`, the SAME projection
-/// the interface record uses, whose nominal nodes are a file and a declaration ordinal),
-/// then the settled seats' value fingerprints after `@`. A symbol built from an interned
-/// ordinal names a different specialization in the next build, so a held object defines a
-/// name the fresh code never demands.
-fn mangle(decls: Decls, name: string, sub: Sub) -> string {
-    let ids = joined([type_wire(decls, a) for a in sub.args], "_")
-    if sub.consts.is_empty() { return "${name}$${ids}" }
-    "${name}$${ids}@${joined(sub.consts, "_")}"
-}
 
 // ── voices ──
 
@@ -525,4 +514,13 @@ fn claim_seen(mut seen: Map<string, bool>, name: string) -> bool {
     if seen.get(name) != null { return false }
     seen.set(name, true)
     true
+}
+
+impl Decls {
+
+fn mangle(name: string, sub: Sub) -> string {
+    let ids = joined([self.type_wire( a) for a in sub.args], "_")
+    if sub.consts.is_empty() { return "${name}$${ids}" }
+    "${name}$${ids}@${joined(sub.consts, "_")}"
+}
 }
