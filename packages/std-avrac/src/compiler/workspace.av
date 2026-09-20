@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, Mark, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped}
 use @std.path.{dir_of, head_segment, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
+use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
 use @std.meta.{Diagnostic, Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Mark as MetaMark, Decls as MetaDecls, Kind}
 use core.{Stmt, StmtId, Arm, BodyParts, BodyView, HoleKind, Filled, Unplaced, copier, quote_kind, all_codes, is_name_cont, SyntaxParts, ForeignRange}
@@ -24,7 +24,6 @@ use grammar.{parse_grammar, ready}
 use diagnostics.{defect_at}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error, user_code, DiagCode}
 use query.{Db, new_db, Key, Memo, Loaded, new_memo}
-use core.{debug}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
 use @std.testing.{CaseRef, words}
 
@@ -692,11 +691,7 @@ impl Workspace {
             return self.decls.sigs[d.index]
         }
         self.db.begin(k)
-        // A sig signed WHILE ITS FILE RESOLVES is signed from a smaller
-        // view — legitimate for the two-tier re-entry, and the first
-        // thing to look at when a generated impl's methods go missing.
-        if self.db.active(key(Family.Resolved, x.file.index)) { debug("sig mid-resolve: ${x.name} in ${self.decls.file(x.file).path}") }
-        mut t = self.type_cx_for(x)
+        mut t = self.sign_cx_for(x)
         t.declare_one(x)
         self.sig_voices.keep(d.index, t.facts.voices)
         let out: DeclSig? = self.decls.sigs[d.index]
@@ -757,11 +752,27 @@ impl Workspace {
         self.db.active(key(Family.Sig, d.index))
     }
 
-    /// A type context over one declaration's expression range, in its
-    /// file.
+    /// A type context over one declaration's BODY: reads the file's
+    /// resolved names, because a body's expressions are what resolve
+    /// computed.
     fn type_cx_for(x: Decl) -> TypeCx {
+        self.cx_over(x, self.resolved(x.file))
+    }
+
+    /// A type context for SIGNING a declaration. A signature resolves
+    /// the names its TypeRefs write and types no body, so it reads the
+    /// file's `visible` NAMESPACE — never `resolved`, whose own
+    /// computation is in flight when a signature is asked from inside
+    /// a derive's crossing.
+    fn sign_cx_for(x: Decl) -> TypeCx {
+        self.cx_over(x, new_name_facts(0, self.visible(x.file)))
+    }
+
+    /// The one context over a declaration's expression range: the view
+    /// of its file, the names it reads.
+    fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
         let p = self.parsed(x.file)
-        new_type_cx(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, x.file), self.resolved(x.file), x.lo, x.hi)
+        new_type_cx(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, x.file), names, x.lo, x.hi)
     }
 
     /// One declaration's body typed — a table over its own expression
