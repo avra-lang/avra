@@ -2,22 +2,23 @@
 //! Lowering emitted pure semantics; this pass inserts the memory
 //! instructions each scope's strategy demands. Today every scope is
 //! Application — reference counting, releases in reverse binding
-//! order. The calling convention is CALLEE-CLEANS: the caller
-//! retains each managed argument (ownership transfers in), the
-//! callee's params arrive owned and release at its exit minus what
-//! RetVal keeps, and the caller owns the call's result. Systems
-//! ownership lands here later as a strategy, touching neither
-//! lowering nor the backend.
-use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, owned_dst, viewed_dst, moved_args, reads_of, same_reg, rt_owns, rt_lends, rt_owned_twin, reversed}
-use compiler.lower.{Body, Lowered}
+//! order. The calling convention is A PARAMETER IS BORROWED: the
+//! caller keeps every managed argument standing for the call and the
+//! callee owns none of its params — what it KEEPS (a store, a push, a
+//! pack, a yield, its answer) takes a reference of its own, as any
+//! value a scope does not own does. A call that only reads costs no
+//! count at all. The caller owns the call's result. Systems ownership
+//! lands here later as a strategy, touching neither lowering nor the
+//! backend.
+use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, owned_dst, viewed_dst, lent_args, reads_of, same_reg, rt_owns, rt_lends, rt_owned_twin, reversed}
+use compiler.lower.{Lowered}
 
 /// Managed registers bound in one open scope, its tier remembered.
 export type Scope = { tier: Level, managed: List<Reg>, cells: List<Reg> }
 
 export fn memory(l: Lowered) -> Lowered {
-    let fns = [b with { ins: memory_ins(l.types, b.reg_types, b.ins, managed_params(l.types, b)) }
-               for b in l.fns]
-    let entry = l.entry with { ins: memory_ins(l.types, l.entry.reg_types, l.entry.ins, []) }
+    let fns = [b with { ins: body_ins(l.types, b.reg_types, b.ins, b.params.length) } for b in l.fns]
+    let entry = l.entry with { ins: body_ins(l.types, l.entry.reg_types, l.entry.ins, 0) }
     l with { fns: fns, entry: entry }
 }
 
@@ -55,19 +56,63 @@ fn flat_managed(types: TypeRegistry, ty: TypeId) -> bool {
     is_managed(types, types.flat_fields(ty)[0])
 }
 
-/// A fn's managed params — they arrive owned, so its first scope
-/// owns them from birth.
-fn managed_params(types: TypeRegistry, b: Body) -> List<Reg> {
-    mut out: List<Reg> = []
-    for j, pt in b.params {
-        if is_managed(types, pt) { out.push(Reg { index: j }) }
+/// One body's memory instructions: its params are registers 0..`seats`, and
+/// every scope's exit names what escapes it.
+fn body_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seats: int) -> List<Ins> {
+    let immortal = immortal_regs(reg_types.length, ins)
+    [i for i in memory_ins(types, reg_types, ins, standing_regs(immortal, ins, seats)) if !retains_immortal(i, immortal)]
+}
+
+/// THE REGISTERS THAT STAND FOR ANY CALL THEY ARE HANDED TO, whoever owns them: a
+/// param (the caller's caller keeps it for this whole body), the binary's own
+/// data, and a cell's load — a cell never leaves its body, so no callee changes
+/// it. What is left is a VIEW into a box, which a callee may empty.
+fn standing_regs(immortal: List<bool>, ins: List<Ins>, seats: int) -> List<bool> {
+    mut out = [immortal[j] || j < seats for j in 0..immortal.length]
+    for i in ins {
+        let d: Reg? = loaded_dst(i)
+        if d != null { out.set(d!.index, true) }
     }
     out
 }
 
-/// One body's memory instructions. `seed` joins the outermost scope
-/// at its open; every scope's exit names what escapes it.
-fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed: List<Reg>) -> List<Ins> {
+fn loaded_dst(i: Ins) -> Reg? {
+    match i {
+        .Load(d, _) -> d,
+        _ -> null,
+    }
+}
+
+/// THE REGISTERS THAT HOLD THE BINARY'S OWN DATA — a string constant, a settled
+/// aggregate's address. The runtime never counts an immortal box, so a retain of
+/// one is a call that does nothing, and none is placed.
+fn immortal_regs(count: int, ins: List<Ins>) -> List<bool> {
+    mut out = [false for j in 0..count]
+    for i in ins {
+        let d: Reg? = immortal_dst(i)
+        if d != null { out.set(d!.index, true) }
+    }
+    out
+}
+
+fn immortal_dst(i: Ins) -> Reg? {
+    match i {
+        .ConstStr(d, _) -> d,
+        .StaticAddr(d, _) -> d,
+        rest -> null,
+    }
+}
+
+fn retains_immortal(i: Ins, immortal: List<bool>) -> bool {
+    match i {
+        .Retain(r) -> immortal[r.index],
+        _ -> false,
+    }
+}
+
+/// The memory instructions as every scope's strategy places them — the pass's
+/// one dispatch over the instruction set.
+fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, standing: List<bool>) -> List<Ins> {
     mut out: List<Ins> = []
     mut open_scopes: Stack<Scope> = new_stack()
     for at, raw in ins {
@@ -76,9 +121,6 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
             .ScopeEnter(tier) -> {
                 // LICENSED I15: a scope STACK walked by the pass, not a bracket body
                 open_scopes.push(Scope { tier: tier, managed: [], cells: [] })
-                if open_scopes.depth() == 1 {
-                    for r in seed { takes(open_scopes, r) }
-                }
                 out.push(i)
             }
             // A scope YIELDS like a branch: released never here,
@@ -88,15 +130,14 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 let scope = open_scopes.pop() ?? empty_scope()
                 // LICENSED I3: the pass's OUTPUT accumulates; `.concat()` per scope copies it all
                 for s in scope.settled(gives) { out.push(s) }
-                // a yield is retained only where something RECEIVES
-                // it: an enclosing scope adopts, or — at the
-                // outermost — the CALLER takes it as the answer, and
-                // the reference it carries is the one already held
-                if !open_scopes.is_empty() {
-                    // LICENSED I3: the pass's OUTPUT accumulates
-                    for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
-                    adopts(types, reg_types, open_scopes, gives)
-                }
+                // SOMETHING ALWAYS RECEIVES A YIELD: an enclosing scope adopts
+                // it, or — at the outermost — the caller takes it as the
+                // answer. A yield the scope does not own takes its own
+                // reference either way: a param answered is the caller's
+                // to keep, and the param was never this body's.
+                // LICENSED I3: the pass's OUTPUT accumulates
+                for s in moved_out(types, reg_types, scope, gives) { out.push(s) }
+                adopts(types, reg_types, open_scopes, gives)
                 out.push(i)
             }
             // A branch is a scope at its enclosing tier. Its yield
@@ -126,25 +167,24 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
             }
-            // The caller's half of callee-cleans: retain what the
-            // callee will release. The indirect call wears the same
-            // ABI — a binding cannot ride an or-arm, so the arm is
-            // spelled twice; the law once.
-            .Call(_, _, _) -> {
+            // THE CALLER KEEPS ITS ARGUMENTS STANDING, and most stand already.
+            // A VIEW does not — the callee may empty the box it looks into —
+            // so it is held across the call. The indirect call wears the
+            // same convention.
+            .Call(_, _, _) or .CallPtr(_, _, _) -> {
+                let lent = [ar for ar in lent_args(i) if is_managed(types, reg_types[ar.index]) && !standing[ar.index] && !owned_open(open_scopes, ar)]
                 // LICENSED I3: the pass's OUTPUT accumulates
-                for r in retained_args(types, reg_types, i) { out.push(r) }
+                for r in lent { out.push(Ins.Retain(r)) }
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
-            }
-            .CallPtr(_, _, _) -> {
                 // LICENSED I3: the pass's OUTPUT accumulates
-                for r in retained_args(types, reg_types, i) { out.push(r) }
-                manages(types, reg_types, open_scopes, i)
-                out.push(i)
+                for r in lent { out.push(Ins.Release(r)) }
             }
             // An EARLY exit settles EVERY open scope's debts at the
             // site — nothing pops, because other paths continue.
             .FnExit(gives) -> {
+                // an answer no scope owns is the caller's to keep: its own reference, first
+                if is_managed(types, reg_types[gives.index]) && !owned_open(open_scopes, gives) { out.push(Ins.Retain(gives)) }
                 // LICENSED I3: the pass's OUTPUT accumulates
                 for c in exit_cells(open_scopes) { out.push(cell_settle(c)) }
                 for r in exit_releases(open_scopes, gives) { out.push(Ins.Release(r)) }
@@ -550,8 +590,7 @@ impl Scope {
     }
 }
 
-/// The caller's retains for a call's managed arguments — the seats
-/// the IR declares MOVE IN (`@moves`), never the whole argument list.
-export fn retained_args(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> List<Ins> {
-    [Ins.Retain(ar) for ar in moved_args(i) if is_managed(types, reg_types[ar.index])]
+/// Whether an open scope owns the register — its box stands until that scope closes.
+fn owned_open(open_scopes: Stack<Scope>, r: Reg) -> bool {
+    [open_scopes.at(j) for j in 0..open_scopes.depth()].any((s: Scope) -> s.managed.any(same_reg(it, r)))
 }

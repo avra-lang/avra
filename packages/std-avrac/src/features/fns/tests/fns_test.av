@@ -1,7 +1,7 @@
 // Functions, vertically: declarations parse, calls resolve
 // program-wide (recursion free), signatures are the law, one frame
-// per call, and the IR carries the callee-cleans ABI — retains at
-// the call, param releases at the exit, the answer kept.
+// per call, and the IR carries the ABI — a parameter is borrowed: no
+// count at the call, none at the exit, and a param answered takes its own.
 use @std.avrac.core.{RtKind, RtSig, joined}
 use @std.avrac.compiler.{analyze_source, avra}
 use @std.avrac.testing.{refused_with, shown, ir_of, refused_at_run, refusals}
@@ -260,25 +260,34 @@ spec "features/fns" {
         }
     }
     given "the ABI in the IR, as `avra ir` prints it" {
-        then "the caller retains what the callee will release; the answer is kept" {
-            let expected = """fn shout(r0: string) -> string
+        then "a parameter is BORROWED: the seat costs no count, and a param answered takes its own reference" {
+            let expected = """fn id(r0: string) -> string
 scope application {
-  r1 = str "!"
-  release r0
-  yield r1
+  retain r0
+  yield r0
 }
-ret r1
+ret r0
 
 scope application {
-  r0 = str "hi"
-  retain r0
-  r1 = call shout(r0)
-  call avra_puts(r1)
-  release r1
-  release r0
+  r0 = str "a"
+  r1 = str "b"
+  r2 = call avra_str_concat(r0, r1)
+  r3 = call id(r2)
+  call avra_puts(r3)
+  release r3
+  release r2
 }
 ret 0"""
-            render_ir(ir_of("fn shout(s: string) -> string { \"!\" }\nshout(\"hi\")")) == expected
+            render_ir(ir_of("fn id(s: string) -> string { s }\nid(\"a\" + \"b\")")) == expected
+        }
+        then "a callee that only reads counts nothing at all" {
+            let expected = """fn size(r0: string) -> int
+scope application {
+  r1 = call avra_str_len(r0)
+  yield r1
+}
+ret r1"""
+            render_ir(ir_of("fn size(s: string) -> int { s.length }\nsize(\"a\" + \"b\")")).starts_with(expected)
         }
     }
     given "a trailing comma in every comma list" {

@@ -1,0 +1,65 @@
+// A PARAMETER IS BORROWED: the caller keeps an argument standing for the call,
+// and a callee that KEEPS one takes its own reference. Each shape hands a box
+// over and then ends every other hold on it — what was kept must still stand.
+// Every box is made at run time and dropped in a scope that has closed: a
+// literal never dies, and a box its maker's scope still holds cannot dangle.
+type Bag = { items: List<string>, rows: List<List<string>>, tag: string }
+
+fn fresh(n: int) -> List<string> { ["s${i}" for i in 0..n] }
+
+/// A param answered is the caller's to keep.
+fn same(xs: List<string>) -> List<string> { xs }
+
+/// The same, by an early exit.
+fn pick(a: List<string>, b: List<string>, first: bool) -> List<string> {
+    if first { return a }
+    b
+}
+
+/// A param answered through a region's merge.
+fn chosen(a: List<string>, b: List<string>, first: bool) -> List<string> {
+    let got = if first { a } else { b }
+    got
+}
+
+/// A param kept in a field, a list and a cell.
+fn put(mut b: Bag, xs: List<string>) { b.items = xs }
+
+fn filed(mut all: List<List<string>>, xs: List<string>) { all.push(xs) }
+
+fn celled(xs: List<string>) -> int {
+    mut held = xs
+    held.push("more")
+    held.length + xs.length
+}
+
+/// A VIEW handed over while the callee empties the box it looks into.
+fn emptied(mut b: Bag, row: List<string>) -> string {
+    b.rows = []
+    b.tag = "gone"
+    row[1]
+}
+
+fn rowed(mut b: Bag, n: int) { b.rows = [fresh(n)] }
+
+/// The same through a fn value.
+fn through(f: fn(List<string>) -> List<string>, n: int) -> List<string> { f(fresh(n)) }
+
+mut kept = fresh(0)
+mut early = fresh(0)
+mut merged = fresh(0)
+mut called = fresh(0)
+mut b = Bag { items: fresh(0), rows: [], tag: "" }
+mut all: List<List<string>> = []
+if kept.is_empty() {
+    kept = same(fresh(2))
+    early = pick(fresh(3), fresh(1), true)
+    merged = chosen(fresh(1), fresh(4), false)
+    called = through(same, 5)
+    put(b, fresh(6))
+    rowed(b, 2)
+    filed(all, fresh(7))
+}
+let n = celled(kept)
+let first = emptied(b, b.rows[0])
+"${kept.length} ${early.length} ${merged.length} ${called.length} ${all[0].length} ${n} ${first} ${b.tag} ${b.rows.length} ${b.items.length} ${kept[1]}${early[2]}${merged[3]}${called[4]}${all[0][6]}"

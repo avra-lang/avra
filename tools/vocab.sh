@@ -43,7 +43,6 @@ Ins	packages/std-avrac/src/core/ir.av	seat_regs	derived:Roles	an Avra call's arg
 Ins	packages/std-avrac/src/core/ir.av	owned_dst	derived:Roles	the register it defines that owns a reference
 Ins	packages/std-avrac/src/core/ir.av	viewed_dst	derived:Roles	the register that is a view of another box
 Ins	packages/std-avrac/src/core/ir.av	moved_args	derived:Roles	an Avra call's moved-in seats
-Ins	packages/std-avrac/src/core/ir.av	escapes_in	spelled	which uses let a register outlive its instruction
 Ins	packages/std-avrac/src/core/ir.av	call_symbol	derived:Roles	the body an Avra call enters
 Ins	packages/std-avrac/src/compiler/backend/interp.av	step	spelled	its MEANING, interpreted
 Ins	packages/std-avrac/src/compiler/memory/memory.av	memory_ins	spelled	its ownership effect
@@ -177,7 +176,7 @@ EOF
 # register the step DEFINES does with its reference; on a payload that
 # is not `@dst` the claim has no subject, and the readers
 # (`owned_dst`/`viewed_dst`) would answer a register the step never
-# defines. `@moves` is the one role that stands on a SOURCE, so it is
+# defines. `@lent` is the one role that stands on a SOURCE, so it is
 # not asked to carry `@dst`.
 #
 # CHECKED PER PAYLOAD, NEVER PER LINE: a variant's payloads share one

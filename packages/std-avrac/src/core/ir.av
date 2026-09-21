@@ -62,7 +62,8 @@ export enum Ins {
     /// constant, so what an instruction MEANS never depends on where
     /// its answer is going.
     ConstFloat(@dst dst: Reg, bits: int)
-    ConstStr(@dst @owns dst: Reg, s: string)
+    /// A string constant is the binary's own data — immortal, so it owns nothing.
+    ConstStr(@dst dst: Reg, s: string)
     ConstBool(@dst dst: Reg, v: bool)
     /// The eager binary operations — operands same-typed. The lazy
     /// ops (And/Or) never reach here: they lower as regions.
@@ -118,13 +119,13 @@ export enum Ins {
     ArmEnd(gives: Reg)
     /// End of the LAST arm: every arm's yield merges into `dst`.
     RegionEnd(@dst @owns dst: Reg, gives: Reg)
-    /// A call to an Avra fn body. The ABI is callee-cleans: the
-    /// caller retains managed arguments in, the callee's exit
-    /// releases its params minus what RetVal keeps.
-    Call(@dst @owns dst: Reg, @body callee: string, @seats @moves args: List<Reg>)
+    /// A call to an Avra fn body. A PARAMETER IS BORROWED: the caller
+    /// keeps each managed argument standing for the call, and the
+    /// callee owns none of them — what it keeps takes its own reference.
+    Call(@dst @owns dst: Reg, @body callee: string, @seats @lent args: List<Reg>)
     /// An INDIRECT call through a register-held fn address — dyn
     /// dispatch (and, ahead, closures). The ABI is `Call`'s.
-    CallPtr(@dst @owns dst: Reg, f: Reg, @seats @moves args: List<Reg>)
+    CallPtr(@dst @owns dst: Reg, f: Reg, @seats @lent args: List<Reg>)
     /// A fn body's answer, after its scope has settled its debts.
     RetVal(r: Reg)
     /// An EARLY answer — `return` from anywhere in a body. The
@@ -252,51 +253,6 @@ export fn closes_region(i: Ins) -> bool {
 export fn same_reg(a: Reg, b: Reg) -> bool {
     // LICENSED I9: register identity, not type agreement — ids compare by index
     a.index == b.index
-}
-
-/// Does `i` let `r` OUTLIVE the call that handed it over? A seat
-/// that never escapes needs no caller retain, which is exactly what
-/// a conditional ABI would stop spending. A REGISTRY: every arm is
-/// spelled, so a new instruction breaks the build until it answers.
-///
-/// A RUNTIME ROW BORROWS ITS ARGUMENTS, so a `CallRt` seat is not an
-/// escape — EXCEPT at a seat the row KEEPS, which `RtSig.keeps`
-/// declares. AND A RETAIN IS NOT AN ESCAPE EITHER: it is
-/// the instruction the ABI removes, so counting it would make the
-/// question circular — every escape it accompanies (a call seat, an
-/// answered value) is counted by that escape's own arm.
-export fn escapes_in(i: Ins, r: Reg) -> bool {
-    match i {
-        // written into memory, or packed into a structure
-        .Pack(_, elems) -> elems.any(same_reg(it, r)),
-        .Store(_, src) -> same_reg(src, r),
-        // answered outward, or flowed to a region's answer
-        .RetVal(v) -> same_reg(v, r),
-        .FnExit(v) -> same_reg(v, r),
-        .ArmEnd(v) -> same_reg(v, r),
-        .RegionEnd(_, v) -> same_reg(v, r),
-        .ScopeExit(gives) -> gives != null && same_reg(gives!, r),
-        // handed to a callee that may keep it
-        .Call(_, _, _) -> moved_args(i).any(same_reg(it, r)),
-        .CallPtr(_, f, _) -> same_reg(f, r) || moved_args(i).any(same_reg(it, r)),
-        // a row borrows every seat but the ones it keeps
-        .CallRt(_, callee, args) -> kept_seat(callee, args, r),
-        .CallRtVoid(callee, args) -> kept_seat(callee, args, r),
-        // read and spent: a field pulled out is its own reference, a
-        // slot's address is not its contents, a release is the
-        // opposite of keeping
-        .Retain(_) or .Extract(_, _, _) or .Bin(_, _, _, _) or .Un(_, _, _) or
-        .Load(_, _) or .Release(_) or .IfStart(_) or
-        .SwitchStart(_, _) or .LoopCond(_) or .ScopeEnter(_) or
-        .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or
-        .ConstBool(_, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .Alloca(_) or
-        .LoopStart or .LoopEnd or .Ret(_) -> false,
-    }
-}
-
-/// Does `r` fill a seat this row keeps?
-fn kept_seat(callee: string, args: List<Reg>, r: Reg) -> bool {
-    [j for j, a in args if same_reg(a, r)].any(rt_keeps(callee, it))
 }
 
 /// A slot in a runtime signature — the CallRt contract's currency,
@@ -522,12 +478,12 @@ export fn owned_dst(i: Ins) -> Reg? { owned_dst_role(i) }
 /// somebody else holds and owns nothing of its own.
 export fn viewed_dst(i: Ins) -> Reg? { viewed_dst_role(i) }
 
-/// An AVRA CALL's argument registers the caller RETAINS — the seats
-/// that MOVE IN under callee-cleans. `@seats` is the structural claim
-/// (these are an Avra call's arguments); `@moves` is the ABI claim
-/// (the caller hands its reference over). A runtime row BORROWS its
-/// arguments, so its args carry neither, and are no seats here.
-export fn moved_args(i: Ins) -> List<Reg> { moved_args_role(i) }
+/// An AVRA CALL's argument registers, as the memory pass reads them: the
+/// seats the caller LENDS. `@seats` is the structural claim (these are an
+/// Avra call's arguments); `@lent` is the ABI claim (the caller keeps each
+/// standing for the call, and holds a VIEW across it). A runtime row's
+/// arguments are its own registry's, and are no seats here.
+export fn lent_args(i: Ins) -> List<Reg> { lent_args_role(i) }
 
 /// The symbol an AVRA call names, when it is a known body — a
 /// `CallPtr` names none, so its seats can never be shown read-only.
