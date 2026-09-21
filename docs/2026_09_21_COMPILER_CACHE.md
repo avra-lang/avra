@@ -16,7 +16,7 @@ Worktree `avra-cache-cas`, branch `cache/cas`.
 | cold | 22.7 s | 24.0 s | **21.0 s** | 23 s |
 | no-op | 0.4 s | 0.4 s | **0.4 s** | 0.8 s |
 | one-file edit, leaf | 1.2 s | 26.1 s | **1.3 s** (phases ~0.8 s) | 1.5 s |
-| one-file edit, core file | *did not link* | 26.1 s | **1.9 s** | 2 s |
+| one-file edit, core file | *did not link* | 26.1 s | `whole.av` **1.9 s**; most core files are REFUSED and rebuilt from sources (§2.6) | 2 s |
 
 Where a warm edit goes today (ms): resolve 250 · load 120 · fill 105 ·
 link 110–220 · bodies 65 · lower 65 · emit 30 · clang 30.
@@ -45,6 +45,20 @@ ANALYSIS, and only a hold skips it.
 5. **A restart is a NEW workspace** (`anew`). A copy of a workspace shares its
    tables — probed, both engines — so a restart from a copy keeps every hold.
 
+6. **The sources are the hold's oracle.** A build that fails under a hold is
+   answered again from the sources alone. A refusal that survives is the
+   program's; one that does not prints "the hold was refused". A hold bug costs
+   time, never a wrong answer. A trap still escapes it.
+
+**THE HOLD IS NOT YET RIGHT FOR THE COMPILER'S OWN SOURCE.** A comment in any
+`grammar/*.av` or in `core/nodes.av` fails to link under the hold — 165 plain
+`impl LowerCx` methods of `compiler/lower_walk.av` undefined; a stored object
+defines them and is not on the link line, root cause open — and one in
+`compiler/program.av` is refused with a false `F2024` (a `dyn` box over a held
+impl). The fail-safe makes these correct and SLOW. `tools/hold_sweep.sh`
+enumerates them: grammar/ is 11 of 11 refused. Nothing else in §5 lands until
+the sweep is clean — the rest stands on the hold.
+
 ## 3. Laws this layer paid for
 
 - **Move the content, not the key.** A key over lowered bodies can never match
@@ -59,10 +73,24 @@ ANALYSIS, and only a hold skips it.
   only ever linked for LEAF edits, which is all anyone had measured.
 - **"interface records did not stabilize" was never cache poison.** It was
   the restart inheriting attempt 0's holds. `rm -rf .avra-cache` hid it.
+- **The gate never edits a file**, so it cannot see a hold that is wrong for an
+  edit nobody tried. Slice 1 was called sound on two measured edits; a third
+  broke it. The sweep touches every file.
+- **A workspace is an identity, never a value.** Its hooks capture it, and a
+  copy shares its tables: a restart from a copy keeps every hold, and a changed
+  copy is asked through hooks that answer for the original.
+- **The declaration answers, never the ask.** A plain fn wanted from inside an
+  instantiation carries its caller's substitution and is the same body.
 - **A suite that never held attacked nothing.** `tools/cache_attacks.sh` ran
   22 green steps at `held 0/6`. It now counts holds and refuses zero.
 
-## 4. The keeper
+## 4. The keepers
+
+`sh tools/hold_sweep.sh [pkg] [path filter]` — every source touched, one at a
+time, built through the hold, the outcome filed by class in
+`build/hold-sweep.out`. Not in the gate (315 builds); run it after any change
+to the hold, the records or the keys, and drive it to zero.
+
 
 `make cache-attacks` (in the gate, 27 s): two programs and a library through
 ONE store, 23 builds, each binary held to the evaluator, which reads no
