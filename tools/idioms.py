@@ -302,6 +302,57 @@ def opening_bracket(text, at):
                 return j
     return None
 
+# A ONE-PARAMETER LAMBDA HANDED TO A METHOD CALL. `it` binds at the NEAREST
+# enclosing method call, so a parameter that sits inside ANOTHER method call's
+# arguments cannot be the pronoun — that lambda is the language's own spelling
+# and is never a site. A block body, a nested lambda and a body that already
+# says `it` are left alone too: each is a second scope the pronoun cannot name.
+PRONOUN_LAMBDA = re.compile(r"\.[a-z_]+\(\(\s*([a-z_][a-z0-9_]*)\s*(?::[^()]*)?\)\s*->\s*")
+
+def lambda_body(line, start):
+    """The lambda's body: from `start` to the paren that closes the call."""
+    depth = 0
+    for k in range(start, len(line)):
+        c = line[k]
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            if depth == 0:
+                return line[start:k]
+            depth -= 1
+    return None
+
+def in_method_arguments(body, name):
+    """Whether any use of `name` sits inside the arguments of a METHOD call."""
+    for m in re.finditer(r"\b" + re.escape(name) + r"\b", body):
+        depth = 0
+        for k in range(m.start() - 1, -1, -1):
+            c = body[k]
+            if c in ")]}":
+                depth += 1
+            elif c in "([{":
+                if depth == 0:
+                    if c == "(" and re.search(r"\.[a-z_]+$", body[:k]):
+                        return True
+                else:
+                    depth -= 1
+    return False
+
+def pronoun_lambda(lines):
+    """A lambda `it` would say (I50)."""
+    for i, l in enumerate(lines):
+        if l.strip().startswith("//"):
+            continue
+        for m in PRONOUN_LAMBDA.finditer(l):
+            name, body = m.group(1), lambda_body(l, m.end())
+            if body is None or body.lstrip().startswith("{") or "->" in body:
+                continue
+            if not re.search(r"\b" + re.escape(name) + r"\b", body) or re.search(r"\bit\b", body):
+                continue
+            if not in_method_arguments(body, name):
+                yield i, l.strip()
+                break
+
 def bool_comprehension(lines):
     """A comprehension over a LIST, built only to be folded to a
     bool, is a SCAN. `xs.all(pred)` stops at the first answer and
@@ -593,6 +644,10 @@ RULES = {
     "I40": (spelled_shape,
             "a structural type interned by hand — `intern(Type.Opt(intern(Type.Str)))` — "
             "where a type literal spells it: `cx.type(string?)`, `types.type(List<elem>)`"),
+    "I50": (pronoun_lambda,
+            "a one-parameter lambda handed to a method call — that is `it`: "
+            "`xs.any(it.ready)`, `rows.find(it.word == w)`. A parameter handed on to "
+            "ANOTHER method call must stay a lambda, and this never accuses one"),
     "I43": (hand_sized_column,
             "a fact column sized by hand, or an id read through an offset — "
             "`SideTable<V>` states the window, the growth and the out-of-window "
@@ -713,6 +768,11 @@ CLEAN = {
     "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
             ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
+    "I50": [["    let gone = held.find((o: Made) -> !store.has(Stored.Obj, o.key))"],
+            ["    xs.any((k) -> self.rides(k))"],
+            ["    rows.all((s: Scope) -> s.managed.any(same_reg(it, r)))"],
+            ["    let f = xs.map((x) -> {"],
+            ["    built(host, (p: string) -> exists(p))"]],
     "I48": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
@@ -733,6 +793,10 @@ SPECIMENS = {
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
+    "I50": [["    if cases.any((c: CaseCall?) -> c == null) { return null }"],
+            ["    let found = declared.find((g: BlockGrammar) -> g.word == item)"],
+            ["    self.packages.find((p) -> p.origin is .Root)?.src ?? self.root"],
+            ["    seats.all((r: Reg) -> retains_of(ins, r) == 0)"]],
     "I48": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
             ["    [b.ieq_at(0, b.length, w) for w in written_by].any(it)"],
             ["    ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)"]],

@@ -708,6 +708,19 @@ reintroducing I3's blind spot names the two spellings it lost.
       synthetic". Not ratcheted: the smell is a naming choice, not a
       shape a grep can see.
 
+- I50 A ONE-PARAMETER LAMBDA HANDED TO A METHOD CALL IS `it` —
+      `cases.any(it == null)`, `declared.find(it.word == item)`,
+      `seats.all(retains_of(ins, it) == 0)`. The pronoun says the
+      predicate and nothing else: no binder, no annotation, no arrow.
+      THE ONE LAMBDA THAT STAYS: `it` binds at the NEAREST enclosing
+      method call, so a parameter handed on to ANOTHER method call
+      (`held.find((o) -> !store.has(k, o.key))`, `xs.any((k) ->
+      self.rides(k))`) cannot be the pronoun — that is the language's
+      own spelling, and the matcher never accuses it; nor a block body,
+      a nested lambda, or a body that already says `it`. Ratcheted
+      (`pronoun_lambda`). Sugar backlog: a pronoun that names its OWN
+      call, which would retire the half that stays.
+
 - I49 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
       conversions that are inverses name their categories ONCE, as a
       registry enum, and each direction is an exhaustive match over

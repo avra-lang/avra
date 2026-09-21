@@ -15,7 +15,7 @@ fn indexed(index: Map<string, RtSig>, s: RtSig) -> bool {
 }
 
 fn count_releases(l: Lowered) -> int {
-    l.entry.ins.filter((i: Ins) -> i is .Release).length
+    l.entry.ins.filter(it is .Release).length
 }
 
 /// Every box a program builds, across all bodies — the counting
@@ -61,7 +61,7 @@ fn addr_syms(l: Lowered) -> List<string> {
 }
 
 fn call_ptrs(l: Lowered) -> int {
-    l.entry.ins.filter((i: Ins) -> i is .CallPtr).length
+    l.entry.ins.filter(it is .CallPtr).length
 }
 
 /// Does every load in the entry wear a POINTER — the mut fn cell's
@@ -157,9 +157,9 @@ spec "language/lower" {
             let l = ir_of("1 + 2")
             l.diagnostics.is_empty() &&
                 l.entry.ins[0] is .ScopeEnter && l.entry.ins.last()! is .Ret &&
-                l.entry.ins.filter((i: Ins) -> i is .Bin).length == 1 &&
-                l.entry.ins.filter((i: Ins) -> i is .ConstInt).length == 2 &&
-                l.entry.ins.filter((i: Ins) -> i is .CallRtVoid).length == 1
+                l.entry.ins.filter(it is .Bin).length == 1 &&
+                l.entry.ins.filter(it is .ConstInt).length == 2 &&
+                l.entry.ins.filter(it is .CallRtVoid).length == 1
         }
         then "an ident adds NO instruction — SSA by construction" {
             let direct = ir_of("1 + 2")
@@ -179,7 +179,7 @@ spec "language/lower" {
             count_releases(ir_of("let n = 1 + 2\nn < 4")) == 0
         }
         then "string == lowers through the runtime" {
-            ir_of("let t = \"a\" == \"b\"\n\"done\"").entry.ins.filter((i: Ins) -> i is .CallRt).length == 1
+            ir_of("let t = \"a\" == \"b\"\n\"done\"").entry.ins.filter(it is .CallRt).length == 1
         }
         then "an interpolated string still lowers to ONE join over its pieces" {
             render_ir(ir_of("let x = 1\nlet s = \"a \${x} b\"\ns")).contains("call avra_str_join")
@@ -308,7 +308,7 @@ ret 0"""
         then "a lambda lifts once, named for its file and its node" {
             let l = ir_of("let f = (x: int) -> x + 1\nf(2)")
             let names = [b.name for b in l.fns]
-            addr_syms(l).length == 1 && names.any((n: string) -> n.ends_with("$l3"))
+            addr_syms(l).length == 1 && names.any(it.ends_with("$l3"))
         }
         then "a named fn boxes behind its wrapper" {
             let l = ir_of("fn double(x: int) -> int {\n    x * 2\n}\nfn apply(f: fn(int) -> int, v: int) -> int {\n    f(v)\n}\napply(double, 4)")
@@ -397,7 +397,7 @@ fn viewed_seat() -> string {
 /// No `@lent` seat of any call in the slice is retained: each stands.
 fn no_call_seat_counted(ins: List<Ins>) -> bool {
     let calls = [i for i in ins if i is .Call]
-    flatten([lent_args(i) for i in calls]).all((r: Reg) -> retains_of(ins, r) == 0)
+    flatten([lent_args(i) for i in calls]).all(retains_of(ins, it) == 0)
 }
 
 /// The destination of the first pack in the slice.
@@ -437,7 +437,7 @@ fn called_in(ins: List<Ins>) -> Reg? {
 }
 
 fn releases_of(ins: List<Ins>, r: Reg) -> int {
-    ins.filter((i: Ins) -> releases(i, r)).length
+    ins.filter(releases(it, r)).length
 }
 
 fn releases(i: Ins, r: Reg) -> bool {
@@ -460,7 +460,7 @@ fn loaded_in(ins: List<Ins>) -> Reg? {
 }
 
 fn retains_of(ins: List<Ins>, r: Reg) -> int {
-    ins.filter((i: Ins) -> retains(i, r)).length
+    ins.filter(retains(it, r)).length
 }
 
 fn retains(i: Ins, r: Reg) -> bool {
