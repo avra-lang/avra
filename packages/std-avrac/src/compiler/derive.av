@@ -1,0 +1,176 @@
+//! THE DERIVATION — a program analysed and lowered over everything the store
+//! can stand in for. Every command asks here; what it WANTS decides what may
+//! stand in for a file it does not read.
+//!
+//! A held file is not parsed, resolved, typed or lowered: its declarations are
+//! minted from its module's record, its warnings and its object come from the
+//! store. The sources are the hold's oracle — a derivation that fails under a
+//! hold is answered again from the sources alone.
+use core.{distinct, joined, module_path, FileId, DeclId}
+
+/// What a command wants of a program. A file's warnings stand in for it
+/// always; its object and its asks too when the want LINKS.
+export enum Want { Diagnostics, Binary }
+
+/// One attempt: the files it reads whatever the store holds, whether it holds
+/// anything, and how many times the records moved under it.
+type Attempt = { parse: List<string> = [], hold: bool = true, moved: int = 0 }
+
+/// A program derived: clean, every parsed body lowered, its records and its
+/// files' warnings kept. `program.ws` is the workspace the attempt that stood
+/// ran in.
+export type Derived = { program: Program, lowered: Lowered, store: Store, warnings: string, trace: List<string> }
+
+/// Where a file's warnings live: beside its object, under the object's key.
+fn warnings_key(okey: string) -> string { node_key(Stored.Warn, ["file", CACHE_FORMAT, okey]) }
+
+/// Where a program's instantiation homes are remembered, by its entry.
+fn homes_key(entry: string) -> string { node_key(Stored.Unit, ["homes", CACHE_FORMAT, entry]) }
+
+/// The homes this program's derivations have reported.
+fn remembered_homes(store: Store, entry: string) -> List<string> { (store.get(Stored.Unit, homes_key(entry)) ?? "").split("\n") }
+
+impl Workspace {
+    /// The program at `entry`, derived — under the hold, and from the sources
+    /// alone when the hold's attempt refused.
+    mut fn derived(entry: string?, want: Want) -> Result<Derived, string> {
+        let held = self.attempted(entry, want, Attempt { })
+        if held is .Ok || held_paths(self).is_empty() { return held }
+        let plain = self.again(entry, want, Attempt { hold: false })
+        if plain is .Ok { eprintln(hold_refused(held)) }
+        plain
+    }
+
+    /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
+    fn stands_in(s: Store, okey: string, want: Want) -> bool {
+        if !s.has(Stored.Warn, warnings_key(okey)) { return false }
+        match want {
+            .Diagnostics -> true,
+            .Binary -> self.object_kept(s, okey),
+        }
+    }
+
+    /// A fresh workspace's attempt — a restart never inherits a hold.
+    fn again(entry: string?, want: Want, at: Attempt) -> Result<Derived, string> {
+        mut fresh = self.anew()
+        fresh.attempted(entry, want, at)
+    }
+
+    mut fn attempted(entry: string?, want: Want, at: Attempt) -> Result<Derived, string> {
+        let store = store_at(build_cache_root(self))
+        self.attach_store(store)
+        let known_as = entry ?? self.root
+        for path in remembered_homes(store, known_as).concat(at.parse) { self.homes.set(path, true) }
+        let t0 = self.clock()
+        if at.hold {
+            for m in held_modules(self, store) { let _ = load_interface(self, store, m, entry, want) }
+        }
+        let t1 = self.clock()
+        // names, then shapes: a held shape may name a parsed module's type
+        self.admit_all()
+        let t2 = self.clock()
+        mint_held_interfaces(self, store)
+        fill_interfaces(self, store)
+        let t3 = self.clock()
+        let p = self.program(entry)
+        let t4 = self.clock()
+        if self.bodies_asked(store, known_as) { return self.again(entry, want, at) }
+        if !p.clean() { fail p.report() }
+        if self.layouts_moved(store, p) { return self.again(entry, want, at with { hold: false }) }
+        if want is .Binary {
+            let main = p.entry_file()
+            if main == null { fail p.rendered([no_target(self.root)]) }
+            if main!.view.stmts.is_empty() { fail "the program is empty" }
+            let unread = self.read_held_asks(store)
+            if !unread.is_empty() { return self.again(entry, want, at with { parse: at.parse.concat(unread) }) }
+        }
+        let lowered = p.every_body_checked()
+        if self.bodies_asked(store, known_as) { return self.again(entry, want, at) }
+        let lo = lowered?
+        let t5 = self.clock()
+        // an instantiation lowers from its generic's body, and a held home has none
+        let homes = distinct([self.decls.file(f).path for f in lo.homes])
+        if homes.any((path) -> self.homes.get(path) == null) {
+            let _ = store.keep(Stored.Unit, homes_key(known_as), joined(distinct(remembered_homes(store, known_as).concat(homes)), "\n"), [])
+        }
+        if lo.homes.any((f) -> self.is_held(f)) { return self.again(entry, want, at) }
+        // the records land before any key that folds them is read
+        let moved = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
+        keep_interfaces(self, store, moved)
+        forget_keys(self)
+        let _ = self.keep_const_units(store, moved)
+        let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), want)]
+        if !adrift.is_empty() {
+            if at.moved >= 2 { fail records_adrift(adrift) }
+            return self.again(entry, want, at with { moved: at.moved + 1 })
+        }
+        let trace = ["held ${held_paths(self).length}/${self.decls.files.length}", "attempt ${at.moved}", "load ${(t1 - t0) / 1000000}", "admit ${(t2 - t1) / 1000000}", "fill ${(t3 - t2) / 1000000}", "analyze ${(t4 - t3) / 1000000}", "lower ${(t5 - t4) / 1000000}"]
+        .Ok(Derived { program: p, lowered: lo, store: store, warnings: self.spoken_warnings(store, p), trace: trace })
+    }
+
+    /// WHETHER A SEALED LAYOUT MOVED UNDER THE HOLD. A seal boxes a flat record from
+    /// ANY file, and a held file's seal is not re-met. So a record a held line keeps
+    /// flat and this attempt boxed, or one a parsed file's last record kept boxed and
+    /// this attempt did not, is a layout the stored objects and this analysis read
+    /// two ways — and only the sources whole can say which.
+    fn layouts_moved(store: Store, p: Program) -> bool {
+        if held_paths(self).is_empty() { return false }
+        if self.held_flat.any((t) -> !self.decls.types.is_flat(t)) { return true }
+        p.files.any((a: Analysis) -> self.kept_boxed(store, a.view.file).any((d: DeclId) -> !self.decls.types.boxed_flat(self.decls.record_type(d))))
+    }
+
+    /// The records of a parsed file its module's last record kept BOXED, as they
+    /// are declared now — by name, since an edit moves ordinals.
+    fn kept_boxed(store: Store, f: FileId) -> List<DeclId> {
+        let path = self.decls.file(f).path
+        let names = [parts[5] for parts in record_fields(self, store, module_path(self.module_of(path).split("."))) if parts.length > 5 && parts[0] == "boxed" && parts[1] == path]
+        [d for d in self.decls.decls_of_file(f) if self.names_record(d, names)]
+    }
+
+    fn names_record(d: DeclId, names: List<string>) -> bool {
+        let x = self.decl_at(d)
+        x.kind is .Record && names.contains(x.name)
+    }
+
+    /// WHETHER THIS ATTEMPT ASKED A HELD FILE FOR A BODY — and if so, the files
+    /// are remembered beside the program's other homes, so every later
+    /// derivation parses them.
+    fn bodies_asked(store: Store, known_as: string) -> bool {
+        let asked = distinct(self.body_asks.get())
+        if asked.is_empty() { return false }
+        let _ = store.keep(Stored.Unit, homes_key(known_as), joined(distinct(remembered_homes(store, known_as).concat(asked)), "\n"), [])
+        true
+    }
+
+    /// Every warning the program speaks, in file order: a parsed file's
+    /// rendered and KEPT, a held file's as the store kept it.
+    fn spoken_warnings(store: Store, p: Program) -> string {
+        mut fresh: Map<string, string> = {}
+        for a in p.files { fresh.set(a.view.source.file, p.warned(a.diagnostics)) }
+        let said = [self.file_warnings(store, fi.path, fresh.get(fi.path)) for fi in self.decls.files]
+        joined([text for text in [p.warned(p.voices)].concat(said) if !text.is_empty()], "\n\n")
+    }
+
+    /// One file's warnings: kept under its key when it parsed, read from
+    /// there when it did not.
+    fn file_warnings(store: Store, path: string, fresh: string?) -> string {
+        let key = warnings_key(self.held_okey(store, path))
+        if fresh == null { return store.get(Stored.Warn, key) ?? "" }
+        let _ = store.keep(Stored.Warn, key, fresh!, [])
+        fresh!
+    }
+}
+
+// ── The voices ──
+
+/// What the hold said before the sources overruled it.
+fn hold_refused(held: Result<Derived, string>) -> string {
+    match held {
+        .Ok(_) -> "",
+        .Err(why) -> "avra: the hold was refused — this program builds from its sources, and under the hold it said:\n${why}",
+    }
+}
+
+fn records_adrift(paths: List<string>) -> string {
+    "avra: interface records did not stabilize — still moving under ${joined(paths, ", ")}"
+}

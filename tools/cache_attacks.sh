@@ -64,11 +64,18 @@ cat > $R/lib/src/made.av <<'AV'
 use @std.meta.{Decls}
 export fn quoted() -> Decls { quote { fn two(s: string) -> string { s } } }
 AV
+# a SIBLING's signature moves and its caller is never edited: a file sees its own module
+cat > $R/lib/src/sib.av <<'AV'
+export fn sized() -> int { 3 }
+AV
+cat > $R/lib/src/sibcall.av <<'AV'
+export fn shown() -> string { "${sized()}" }
+AV
 cat > $R/lib/src/lib.av <<'AV'
 export fn mid() -> int { one() + pick(10, 20, true) }
 AV
 cat > $R/a/src/main.av <<'AV'
-use @rt.lib.{mid, one, pick, foo, bar_x, label, K, Shape, Sq, two, HEAD, Word, ratio, word, tick}
+use @rt.lib.{mid, one, pick, foo, bar_x, label, K, Shape, Sq, two, HEAD, Word, ratio, word, tick, shown}
 // a held impl must still say what it implements, and a settled const runs a held body
 const TWICE: int = two() + two()
 fn apply(f: fn(int) -> string, n: int) -> string { f(n) }
@@ -76,7 +83,7 @@ let f = foo()
 let held = [f, f]
 let sh: dyn Shape = Sq { s: 3 }
 let big = if ratio().r > 0.4 { "big" } else { "small" }
-println("a ${HEAD.head?.text ?? "-"} ${HEAD.at.n} ${big} ${word(Word { text: "w" })} ${tick().n} ${sh.area()} ${TWICE} ${mid()} ${one()} ${pick(3, 4, false)} ${bar_x(held[1])} ${apply(label, 3)} ${K}")
+println("a ${shown()} ${HEAD.head?.text ?? "-"} ${HEAD.at.n} ${big} ${word(Word { text: "w" })} ${tick().n} ${sh.area()} ${TWICE} ${mid()} ${one()} ${pick(3, 4, false)} ${bar_x(held[1])} ${apply(label, 3)} ${K}")
 AV
 cat > $R/b/src/main.av <<'AV'
 use @rt.lib.{two, pick}
@@ -109,6 +116,7 @@ PY
 S "cold a" a; S "b after a (shared leaf, other bodies + other instantiation)" b
 S "no-op a" a; S "no-op b" b
 S "c seals a record the store's objects hold flat" c
+ed $R/c/src/main.av 'println("c ' 'println("cc ';                   S "c again: its own records keep the sealed layout" c
 ed $R/lib/src/leaf.av "{ 1 }" "{ 100 }";                       S "leaf body edit" a; S "leaf body edit" b
 ed $R/lib/src/lib.av "one() +" "one() + two() +";              S "mid now calls a fn a never reached" a
 ed $R/a/src/main.av '${K}' '${K} ${pick("p", "q", false)}';    S "new instantiation, home may be held" a
@@ -122,16 +130,29 @@ ed $R/lib/src/leaf.av '"n=${n}"' '"N:${n}"';                   S "body of a fn t
 ed $R/lib/src/leaf.av "K: int = 5" "K: int = 6";               S "exported const edit" a
 ed $R/lib/src/leaf.av "fn two() -> int { 2 }" "fn two() -> int { 20 }"; S "a held body a settled const RUNS" a
 ed $R/lib/src/shape.av "self.s * self.s" "self.s + self.s";      S "a held impl a dyn box dispatches through" a
+ed $R/lib/src/sib.av "fn sized() -> int { 3 }" "fn sized() -> string { \"three\" }"; S "a sibling's answer type moves, its caller unedited" a
+ed $R/b/src/main.av 'println("b ' 'fn bump(mut t: Tick) { t.n = t.n + 1 }
+mut bt = tick()
+bump(bt)
+println("b ${bt.n} '
+ed $R/b/src/main.av "use @rt.lib.{two, pick}" "use @rt.lib.{two, pick, Tick, tick}"; S "a seal arrives from a file that does not declare the record" b
+ed $R/a/src/main.av 'println("a ' 'println("a. ';                   S "a, whose objects read it flat" a
 printf 'export fn extra() -> int { 40 }\n' > $R/lib/src/extra.av
 ed $R/lib/src/lib.av "one(1) +" "one(1) + extra() +";          S "file added" a
 ed $R/lib/src/lib.av "one(1) + extra() +" "one(1) +"; rm $R/lib/src/extra.av; S "file deleted" a; S "b after delete" b
-ed $R/a/src/main.av 'println("a ' 'println("A ';                     S "entry-only edit" a
+ed $R/a/src/main.av 'println("a. ' 'println("A ';                     S "entry-only edit" a
 ed $R/a/src/main.av ' ${pick("p", "q", false)}' '';            S "instantiation removed" a
 ud=$(find .avra-cache -type d -iname 'unit*' | head -1)
 [ -n "$ud" ] || { echo "FAIL  no Unit family directory under .avra-cache: $(ls .avra-cache)"; fails=$((fails+1)); }
 rm -rf "$ud"; S "every Unit row deleted (asks, homes, consts)" a; S "same, b" b
-ed $R/c/src/main.av 'println("c ' 'println("C ';                     S "c again, over a's objects" c
+ed $R/c/src/main.av 'println("cc ' 'println("C ';                     S "c again, over a's objects" c
 S "final no-op a" a
+# CHECK SPEAKS THE SAME under a hold as from the sources
+for app in a b c; do
+    held_says=$(./avra check $R/$app 2>&1 | grep -v '^watch:')
+    rm -rf .avra-cache; plain_says=$(./avra check $R/$app 2>&1 | grep -v '^watch:')
+    steps=$((steps+1)); [ "$held_says" = "$plain_says" ] || { fails=$((fails+1)); echo "FAIL  check [$app] speaks otherwise under the hold"; }
+done
 echo "cache-attacks: $steps builds through one store, $holds under a hold, $fails failed"
 # A RUN THAT NEVER HELD ATTACKED NOTHING: every step above is green on the no-hold path.
 [ "$holds" -gt 0 ] || { echo "cache-attacks: no step ran under a hold — the attacks examined nothing"; exit 1; }

@@ -70,13 +70,17 @@ fn fill_shape(store: Store, m: ModulePath, parts: List<string>) {
         self.decls.types.mark_named(named, of)
         self.decls.types.mark_flat(named, [of])
     }
-    if word == "struct" {
+    if word == "struct" || word == "boxed" {
+        // a seal is sticky, so the layout the record kept lands before the declaration
+        if word == "boxed" { self.decls.types.unflatten(self.decls.record_type(id)) }
         let fields = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
         self.decls.declare(id, .Record(StructSig {
             names: [field_name(f) for f in fields],
             types: [self.interface_type( id, name_of_field(f)) for f in fields],
             defaults: [self.decls.default_named(id, field_name(f)) for f in fields],
         }))
+        let made = self.decls.record_type(id)
+        if self.decls.types.is_flat(made) { self.held_flat.push(made) }
     }
     if word == "enum" {
         let arms = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
@@ -183,7 +187,7 @@ fn link_identity(parts: List<string>) {
 }
 
 fn mint_identity(parts: List<string>) {
-    if parts.length < 13 || parts[5].is_empty() { return }
+    if parts.length < 13 || nameless(parts) { return }
     let path = parts[1]
     if !self.is_held(self.file_id(path)) { return }
     let f = self.file_id(path)
@@ -229,9 +233,9 @@ fn record_line(d: Decl, ordinal: int, item: bool) -> string {
         let n = self.decls.seat_count(d.id)
         let marks = joined([mark_word(self.decls.seat_mark(d.id, j)) for j in 0..n], ";")
         let writes = joined([if self.decls.seat_written_so_far(d.id, j) { "1" } else { "0" } for j in 0..n], "")
-        "${shape_line(self, sig!)}\t${marks}\t${writes}"
+        "${shape_line(self, sig!, "")}\t${marks}\t${writes}"
     } else {
-        shape_line(self, sig!)
+        shape_line(self, sig!, if d.kind is .Record && self.decls.types.boxed_flat(self.decls.record_type(d.id)) { "boxed" } else { "struct" })
     }
     let at = shape.index_of("\t")
     let visibility = if d.exported { "1" } else { "0" }
@@ -247,7 +251,7 @@ fn record_line(d: Decl, ordinal: int, item: bool) -> string {
         }
     }
     let root = d.root?.index ?? (0 - 1)
-    "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${d.name}\t${kind_word(d.kind)}\t${d.owner}\t${parent_at}\t${if d.nested { "1" } else { "0" }}\t${root}\t${if item { "1" } else { "0" }}\t${facts_block(self.decls.facts_or(d.id))}\t${payload}"
+    "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${if d.nested { "1" } else { "0" }}\t${root}\t${if item { "1" } else { "0" }}\t${facts_block(self.decls.facts_or(d.id))}\t${payload}"
 }
 
 fn record_of(store: Store, m: ModulePath) -> string {

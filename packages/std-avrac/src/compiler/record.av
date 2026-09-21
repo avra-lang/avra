@@ -57,9 +57,33 @@ fn record_fields(mut ws: Workspace, store: Store, m: ModulePath) -> List<List<st
     let key = record_key(ws, m)
     let cached = ws.record_fields.get(key)
     if cached != null { return cached! }
-    let fields = [line.split("\t") for line in record_lines(ws, store, m)]
+    let fields = [read_fields(line) for line in record_lines(ws, store, m)]
     ws.record_fields.set(key, fields)
     fields
+}
+
+/// A NAME IS ANY TEXT — a case's is a sentence — so the two name fields spell the
+/// record's own separators out, and a tab or a line break in one stays one field.
+fn field_text(s: string) -> string { s.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n") }
+
+/// `field_text`, read back.
+fn text_of_field(s: string) -> string {
+    if !s.contains("\\") { return s }
+    mut out = ""
+    mut i = 0
+    while i < s.length {
+        let escaped = s.char_code(i) == 92 && i + 1 < s.length
+        let at = if escaped { i + 1 } else { i }
+        let c = s.substring(at, at + 1)
+        out = out + if !escaped { c } else { match c { "t" -> "\t", "n" -> "\n", _ -> c } }
+        i = at + 1
+    }
+    out
+}
+
+/// One record line as its fields, the two NAME fields read back.
+fn read_fields(line: string) -> List<string> {
+    [if j == 5 || j == 7 { text_of_field(x) } else { x } for j, x in line.split("\t")]
 }
 
 /// A RECORD MOVED, SO EVERY DERIVED KEY MOVES WITH IT: the written record is what the
@@ -72,6 +96,7 @@ fn forget_keys(mut ws: Workspace) {
     ws.record_lines = {}
     ws.record_fields = {}
     ws.bytes_keys = {}
+    ws.view_keys = {}
     ws.object_keys = {}
 }
 
@@ -106,9 +131,9 @@ fn obj_key_cached(mut ws: Workspace, store: Store, m: ModulePath, path: string) 
 /// fields and invents declarations (`body:dyn Runnable` became `body:dyn` and a field
 /// named `Runnable`). Neither `;` nor `|` is in the type grammar.
 // LICENSED I39: a pure PROJECTION — a registry and a declaration's signature in, its line out.
-fn shape_line(ws: Workspace, s: DeclSig) -> string {
+fn shape_line(ws: Workspace, s: DeclSig, layout: string) -> string {
     match s {
-        .Record(r) -> "struct\t${joined([r.names[i] + ":" + ws.decls.type_wire( r.types[i]) for i in 0..r.names.length], ";")}",
+        .Record(r) -> "${layout}\t${joined([r.names[i] + ":" + ws.decls.type_wire( r.types[i]) for i in 0..r.names.length], ";")}",
         .Enum(e) -> "enum\t${joined([e.names[i] + ":" + joined([ws.decls.type_wire( t) for t in e.payloads[i]], "|") for i in 0..e.names.length], ";")}",
         .Named(n) -> "named\t${ws.decls.type_wire( n.of)}",
         .Fn(f) -> "fn\t${joined([ws.decls.type_wire( t) for t in f.params], ";")}\t${ws.decls.type_wire( f.ret)}",
@@ -240,14 +265,12 @@ export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModuleP
 /// `.Builtin` is: nothing lowers a module that was not read. The day something does, these
 /// rows are lies.
 // LICENSED I39: THE LOADER — a workspace, a store and a module in, the count minted out.
-export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: string) -> int {
+export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) -> int {
     let key = record_key(ws, m)
     if ws.loaded_records.get(key) != null { return 0 }
     ws.loaded_records.set(key, true)
     let text = record_cached(ws, store, m)
-    if text == "" {
-        return 0
-    }
+    if text == "" { return 0 }
     let fields = record_fields(ws, store, m)
     // FAIL CLOSED: a record the decoder cannot rebuild WHOLE holds NOTHING, and
     // its files parse. A partial hold is how a declaration goes missing — the
@@ -262,7 +285,7 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
             let imp = module_path(parts[1].split("."))
             let key = imp.package()
             if key != null { ws.ensure_package(key!) }
-            let _ = load_interface(ws, store, imp, entry)
+            let _ = load_interface(ws, store, imp, entry, want)
         }
     }
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
@@ -272,7 +295,9 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
         // never met is neither parsed nor linked, and a home no parsed file imports is
         // met nowhere else.
         let text = ws.source(ws.file_id(f)).text
-        if f != entry && ws.homes.get(f) == null && written_from(fields, f, text) && ws.object_kept(store, obj_key_cached(ws, store, m, f)) && ws.const_rows_ready( store, m, f, fields) && holdable(fields, f) { ws.hold_only(f) }
+        // the entry's module is the PROGRAM's: what roams rides it, so a link never holds it
+        let linked_entry = want is .Binary && entry != null && f == entry!
+        if !linked_entry && ws.homes.get(f) == null && written_from(fields, f, text) && ws.stands_in(store, obj_key_cached(ws, store, m, f), want) && ws.const_rows_ready( store, m, f, fields) && holdable(fields, f) { ws.hold_only(f) }
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.
@@ -341,10 +366,14 @@ fn record_complete(fields: List<List<string>>) -> bool {
     true
 }
 
+/// Whether a line names nothing where a name is owed: a CASE's name is any text,
+/// the empty one included.
+fn nameless(parts: List<string>) -> bool { parts[5].is_empty() && parts[6] != "case" }
+
 /// WHETHER ONE RECORD LINE DECODES — the guard half of the decoder, so a line the
 /// mint would silently skip is caught here and the whole record is refused.
 fn decodable(parts: List<string>) -> bool {
-    if parts.length < 13 || parts[5].is_empty() { return false }
+    if parts.length < 13 || nameless(parts) { return false }
     if wire_number(parts[2]) == null || wire_number(parts[3]) == null { return false }
     if wire_number(parts[8]) == null || wire_number(parts[10]) == null { return false }
     if facts_unblocked(parts[12]) == null { return false }
@@ -422,7 +451,7 @@ fn payload_of(mut ws: Workspace, owner: DeclId, arm: string) -> List<TypeId> {
 /// and the kind is that shape's own — so `struct` is a `Record` and `enum` an `Enum`,
 /// never a generic "type" the tree does not have.
 fn declared_kind(shape: string, word: string) -> DeclKind? {
-    if shape == "struct" { return .Record }
+    if shape == "struct" || shape == "boxed" { return .Record }
     if shape == "named" { return .Named }
     match word {
         "fn" -> .Fn,
@@ -492,8 +521,6 @@ export fn bytes_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
 /// text: a key is a function of the program's meaning, never of a projection that churns.
 // LICENSED I39: a KEY DERIVATION — a workspace, a store, a module and a file in, the object's key out.
 export fn obj_key_of(mut ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
-    let rec = record_cached(ws, store, m)
-    let deps = [line.substring(7, line.length) for line in rec.split("\n") if line.starts_with("import\t")]
     mut d = new_digest()
     d = digest_text(d, CACHE_FORMAT)
     d = digest_text(d, m.text())
@@ -501,8 +528,36 @@ export fn obj_key_of(mut ws: Workspace, store: Store, m: ModulePath, path: strin
         d = digest_text(d, path)
         d = digest_text(d, ws.source(ws.file_id(path)).text)
     }
-    for dep in sorted_texts(distinct(deps)) { d = digest_text(d, bytes_key_cached(ws, store, module_path(dep.split(".")))) }
-    digest_key(d)
+    digest_key(digest_text(d, view_key(ws, store, m)))
+}
+
+/// THE INTERFACES A MODULE'S FILES SEE, as one digest — memoized for the build, since
+/// every file of a module sees the same ones.
+// LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
+fn view_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
+    let known: string? = ws.view_keys.get(m.text())
+    if known != null { return known! }
+    let made = digest_of(joined([bytes_key_cached(ws, store, module_path(dep.split("."))) for dep in seen_modules(ws, store, m)], "\n"))
+    ws.view_keys.set(m.text(), made)
+    made
+}
+
+/// EVERY MODULE A FILE OF `m` CAN SEE A TYPE OF: its own — a sibling file's names need no
+/// import — and the closure of its imports, since a type reaches a body through a
+/// signature the body never names. In name order.
+// LICENSED I39: a pure PROJECTION — the workspace, a store and a module in, the modules it sees out.
+fn seen_modules(mut ws: Workspace, store: Store, m: ModulePath) -> List<string> {
+    // LICENSED I16: a WORKLIST — the list grows while it is walked
+    mut seen: List<string> = [m.text()]
+    mut at = 0
+    while at < seen.length {
+        let rec = record_cached(ws, store, module_path(seen[at].split(".")))
+        for dep in [line.substring(7, line.length) for line in rec.split("\n") if line.starts_with("import\t")] {
+            if !seen.contains(dep) { seen.push(dep) }
+        }
+        at = at + 1
+    }
+    sorted_texts(seen)
 }
 
 /// EVERY ROOT MODULE A PREVIOUS BUILD WROTE DOWN — where the held walk starts. Whether

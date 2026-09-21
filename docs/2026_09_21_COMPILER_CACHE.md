@@ -16,9 +16,9 @@ One slice = red-team + review round + ONE gate + commit + seed.
 - [x] S1 a file's object is the FILE's; the hold is sound
 - [x] S2 fail-safe; the sweep
 - [x] S3 the sweep to 3
-- [ ] **S4 the sweep to 0** — one flat law (`Decls.declare`), a nested decl is no
+- [x] **S4 the sweep to 0** (`63cc6a6`) — one flat law (`Decls.declare`), a nested decl is no
       symbol, a program that boxes a flat record builds whole
-- [ ] S5 THE HELD DERIVATION — `build_program_attempt`'s first half as one verb
+- [ ] **S5 THE HELD DERIVATION** — `build_program_attempt`'s first half as one verb
       every command asks; per-file diagnostics persist; `check` holds
 - [ ] S6 `test` on the derivation: case symbols content-stable, cases ride the
       record, the suite's binary is cached
@@ -34,11 +34,11 @@ One slice = red-team + review round + ONE gate + commit + seed.
 
 | | 09-19 | 09-20 (regressed) | now | gate |
 |---|---|---|---|---|
-| cold | 22.7 s | 24.0 s | **21.0 s** | 23 s |
-| no-op | 0.4 s | 0.4 s | **0.4 s** | 0.8 s |
-| one-file edit, leaf | 1.2 s | 26.1 s | **1.3 s** (phases ~0.8 s) | 1.5 s |
-| one-file edit, core file (`whole.av`) | *did not link* | 26.1 s | **1.6 s** | 2 s |
-| one-file edit, `grammar/first.av` | *did not link* | 26.1 s | **1.2 s** | 2 s |
+| `build cli` cold | 22.7 s | 24.0 s | **16–18 s** | 23 s |
+| `build cli` no-op | 0.4 s | 0.4 s | **0.4 s** | 0.8 s |
+| `build cli`, one-file edit | 1.2 s | 26.1 s | **1.3–1.6 s** | 2 s |
+| `check cli` | 9.7 s | — | cold 9.2 s · warm **1.0 s** · one edit **1.0 s** | 2 s |
+| `check std-avrac` | 11.6 s, RED | — | cold 13 s · warm **~1.5 s**, clean | 2 s |
 
 Where a warm edit goes today (ms), held 274/291: admit 165–190 (the 17 files
 that parse) · load 140 · link 105–125 · analyze 90–110 · fill 95 · lower 50 ·
@@ -47,9 +47,15 @@ emit 30 · clang 30–420 (the entry module, when its instantiations move).
 
 ## 2. The model
 
-A build holds a file when it can skip it entirely: no parse, no typing, no
-lowering, no clang. That is where the edit loop lives — an edit's cost is
-ANALYSIS, and only a hold skips it.
+ONE DERIVATION (`compiler/derive.av`, `Workspace.derived(entry, want)`): hold,
+load, admit, analyse, restart, lower every parsed body, write the records.
+`build` links it (`build_cache.av`), `check` prints it. What a command WANTS
+decides what may stand in for a file: its warnings always (`Stored.Warn` under
+the file's key), its object and asks too when the want links.
+
+A held file is skipped entirely: no parse, no typing, no lowering, no clang.
+That is where the edit loop lives — an edit's cost is ANALYSIS, and only a hold
+skips it.
 
 1. **A file's object is the FILE's.** It holds every plain body the file
    declares (`every_body_checked`), so no program's reach shapes it. Key:
@@ -73,10 +79,16 @@ ANALYSIS, and only a hold skips it.
    program's; one that does not prints "the hold was refused". A hold bug costs
    time, never a wrong answer. A trap still escapes it.
 
-7. **A layout is ONE law's answer.** A record's signature lands in
-   `Decls.declare` whether it was typed from source or read from a record,
-   and the flat law runs there. A seal that boxes a flat record makes that
-   layout the PROGRAM's: such a build reads no stored object and keeps none.
+7. **A layout is ONE law's answer, and it is in the interface.** A record's
+   signature lands in `Decls.declare` from source and from a record alike, and
+   the flat law runs there. A SEAL boxes a flat record from any file, so a
+   boxed record's line says `boxed`: the layout is in its module's interface
+   digest, and every key that sees the module moves with it. A layout that a
+   held line and this analysis read two ways (`layouts_moved`) sends the
+   attempt back to the sources whole.
+8. **A file's key folds what its bodies can SEE:** its text, its own module's
+   interface (a sibling's names need no import), and the closure of its
+   imports (a type reaches a body through a signature it never names).
 
 **THE SWEEP: 315 of 315 edits hold clean.** `tools/hold_sweep.sh packages/cli` touches every
 source, one at a time, and builds through the hold.
@@ -116,6 +128,22 @@ source, one at a time, and builds through the hold.
 - **A refused hold hid a native crash.** The sealed-flat program linked
   objects of two layouts and printed nothing; the differential caught it
   because the suite compares against the evaluator, which reads no cache.
+
+- **A memo keyed on nothing answers for the day it was filled.** The extern
+  symbols were gathered "once per run" — and a compile-time run lowers a unit
+  before the last `use` line has admitted its package. `check std-avrac` was
+  RED for it (51 "unknown runtime callee"); the memo is per table size now.
+- **A text record spends its separators.** A case's name is any sentence; one
+  holding a line break split its record line and un-held the whole module.
+  The two name fields spell their separators out. (The end state is a typed
+  snapshot, S8: no hand wire at all.)
+- **The empty name is a name.** `then ""` is a legal case; "a line with no name
+  is undecodable" refused its module.
+- **One module, two spellings, two records.** A root file's `use @std.avrac.core`
+  and `use core` named one module under two record keys. Imports are canonical.
+- **A guard sized to the symptom un-holds the innocent.** "A program that boxes
+  a flat record builds whole" took the hold from std-avrac's entire suite for
+  one program test's `Counter`. The layout belongs in the interface.
 
 ## 4. The keepers
 

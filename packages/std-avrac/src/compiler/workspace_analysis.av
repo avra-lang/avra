@@ -82,14 +82,15 @@ impl Workspace {
         id
     }
 
-    /// The program's extern fns by symbol, gathered ONCE per run — every
-    /// file is admitted before the first unit lowers, and the emitters
-    /// asked per body where each walked every declaration.
+    /// The program's extern fns by symbol, remembered for ONE SIZE of the
+    /// declaration table — which grows as `use` lines admit packages, and a
+    /// compile-time run may lower a unit before the last has been.
     fn extern_symbols() -> List<string> {
-        let held: List<string>? = self.externs.at(0)
-        if held != null { return held! }
+        let known = self.decls.decls.length
+        let held: ExternNames? = self.externs.at(0)
+        if held != null && held!.decls == known { return held!.names }
         let names = self.decls.extern_names()
-        self.externs.keep(0, names)
+        self.externs.keep(0, ExternNames { decls: known, names: names })
         names
     }
 
