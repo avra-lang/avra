@@ -3,7 +3,7 @@
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef}
 use @std.avrac.compiler.{Program, Analysis, Workspace, lone_workspace, timed_workspace, programs_workspace, avra, stage_words, build_program, Toolchain}
 use @std.avrac.core.{joined, distinct}
-use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized}
+use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, file_name}
 use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit}
 use @std.time.{now_ns}
 use @std.errors.{Error}
@@ -16,6 +16,7 @@ use @std.avrac.compiler.host.{Host, no_target}
 // "where does this image stand".
 extern fn avra_exec_self(args: List<string>) -> int
 extern fn avra_self_dir() -> string
+extern fn avra_selfhost_get_arg_cstr(i: int) -> string
 
 /// The disk, as the workspace's four questions — a listing the host
 /// refuses reads as empty (the workspace asks `exists` first); a FILE
@@ -30,7 +31,13 @@ fn disk_host() -> Host {
         stamp: (p: string) -> stamp(p),
         std_root: std_root(),
         cwd: env("PWD") ?? ".",
+        compiler: own_binary(),
     }
+}
+
+/// This binary's own path — the compiler a store's rows are the work of.
+fn own_binary() -> string? {
+    toolchain_files([file_name(avra_selfhost_get_arg_cstr(0))]).find(exists(it))
 }
 
 /// Write a file, making its directory first — a cache keeps artifacts

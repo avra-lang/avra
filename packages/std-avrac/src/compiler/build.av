@@ -1,28 +1,20 @@
 //! THE BUILD — a derivation's objects, linked. An unchanged program costs a
 //! hash: its binary is kept under a key over every input's bytes. A changed
-//! one emits the files that moved, compiles them in parallel, and links them
-//! with the objects the store holds for the rest.
+//! one makes the objects of the files that moved and links them with the ones
+//! the store holds for the rest.
 use core.{new_digest, digest_text, digest_bytes, digest_key, digest_of, joined, distinct, sorted_texts, fp_list, FileId, RtSig}
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes}
-use @std.process.{parallel, cmd, Tool, Outcome, Env, Streams}
 use compiler.backend.{emit_object, Owned, emit_closed, home_of, not_closed, program_closed}
 use compiler.lower.{Body, Lowered, program_symbol}
-use compiler.store.{CACHE_FORMAT, Stored, node_key, store_at}
+use compiler.store.{Stored, node_key, store_at}
 use compiler.host.{Host, no_target}
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 
 /// A build's result: the words that linked it, the binary, the warnings to
 /// speak, whether the kept binary was reused, and where a fresh one's time went.
 export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool, key: string, phases: string = "" }
-
-/// A file whose object the store does not hold: the object's key, where it is
-/// written, the name its module is emitted under, and the file.
-type PendingObj = { okey: string, obj: string, base: string, file: FileId }
-
-/// How many moved modules a build compiles itself before it hands them to clang.
-const MADE_HERE: int = 2
 
 /// clang's `-O<n>` as its number.
 fn opt_level(opt: string) -> int { if opt.starts_with("-O") && opt.length == 3 { opt.char_code(2) - 48 } else { 0 } }
@@ -34,12 +26,70 @@ export type ProgramModule = { entry: Body, rows: List<RtSig> = [] }
 /// the linker the host found.
 export type Toolchain = { opt: string, runtime: string, linker: string }
 
-/// WHERE A TREE'S ARTIFACTS LIVE — one store for the whole checkout, so a
-/// dependency's artifacts serve every package that reaches it, and the store
-/// dies with the worktree. Every artifact is content-keyed and verified on
-/// read, so the location is never a correctness question.
+/// WHERE A TREE'S ARTIFACTS LIVE — one place for the whole checkout, so a
+/// dependency's artifacts serve every package that reaches it, and it dies with
+/// the worktree. A STORE IS ONE COMPILER'S: every row is the work of the
+/// compiler that wrote it, so the store stands under that compiler's print and
+/// a new compiler reads none of an old one's — the build after a pass changed
+/// compiles every body with it.
 // LICENSED I39: a pure PROJECTION — a workspace in, its store's directory out.
-export fn build_cache_root(ws: Workspace) -> string { joined_path(tree_root(ws), ".avra-cache") }
+export fn build_cache_root(ws: Workspace) -> string {
+    if ws.store_root.get() == "" { ws.store_root.set(joined_path(stores_dir(ws), compiler_print(ws))) }
+    ws.store_root.get()
+}
+
+/// Where a tree's stores stand, one a compiler.
+// LICENSED I39: a pure PROJECTION — a workspace in, a directory out.
+fn stores_dir(ws: Workspace) -> string { joined_path(tree_root(ws), ".avra-cache") }
+
+/// How many compilers' stores a tree keeps — the newest.
+const STORES_KEPT: int = 4
+
+/// The store of a host that names no compiler: a test's, in memory.
+const UNNAMED_STORE: string = "shared"
+
+/// THE RUNNING COMPILER'S PRINT — its binary's bytes as a digest, kept on the
+/// tree's ROLL beside the binary's stamp, so an unmoved compiler is not read to
+/// be named. The roll lists the stores kept, newest last.
+// LICENSED I39: a pure PROJECTION — a workspace in, its compiler's print out.
+fn compiler_print(ws: Workspace) -> string {
+    let at? = ws.host.compiler else { return UNNAMED_STORE }
+    let roll = joined_path(stores_dir(ws), "compilers")
+    let lines = [line for line in (if ws.host.exists(roll) { ws.host.read(roll) } else { "" }).split("\n") if !line.is_empty()]
+    // a binary that just moved has no stamp: it is read, and its line matches no later ask
+    let stamp: int? = ws.host.stamp(at)
+    let mark = if stamp == null { "" } else { "${stamp!}" }
+    let known: string? = if stamp == null { null } else { lines.find(it.ends_with("\t${at}\t${mark}")) }
+    if known != null && lines.last() == known { return print_of(known!) }
+    let print = if known != null { print_of(known!) } else { digest_of_binary(at) }
+    if print == UNNAMED_STORE { return print }
+    rolled(ws, roll, [line for line in lines if print_of(line) != print].concat(["${print}\t${at}\t${mark}"]))
+    print
+}
+
+/// A roll line's print: the line up to its first tab.
+// LICENSED I18: a TEXT SCAN's absence — no tab — is an answer, not a protocol read.
+fn print_of(line: string) -> string { line.substring(0, line.index_of("\t") ?? line.length) }
+
+/// A binary's bytes as one digest — unnamed when it cannot be read.
+fn digest_of_binary(at: string) -> string {
+    match read_bytes(at) {
+        .Ok(bytes) -> digest_key(digest_bytes(new_digest(), bytes)),
+        .Err(_) -> UNNAMED_STORE,
+    }
+}
+
+/// The roll written back, cut to the newest stores — and everything else under
+/// the stores' directory swept: a store no roll line names is no compiler's.
+// LICENSED I39: a pure PROJECTION's write-back — a workspace, a path and the lines in.
+fn rolled(ws: Workspace, roll: string, lines: List<string>) {
+    let kept = lines.slice(if lines.length > STORES_KEPT { lines.length - STORES_KEPT } else { 0 }, lines.length)
+    let _ = ws.host.write(roll, joined(kept, "\n"))
+    let named = [print_of(line) for line in kept].concat(["compilers", UNNAMED_STORE])
+    for name in ws.host.list(stores_dir(ws)) {
+        if !named.contains(name) { let _ = avra_spawn_status("rm", ["-rf", joined_path(stores_dir(ws), name)]) }
+    }
+}
 
 /// The HIGHEST ancestor that looks like a checkout. A lone file has no tree
 /// above it and is its own root.
@@ -76,15 +126,6 @@ export fn build_program(mut ws: Workspace, entry: string, tools: Toolchain) -> R
     d.program.ws.linked(d, ProgramModule { entry: runner_entry(d.lowered.types, program_symbol(entry)) }, Keyed { named: entry, beside: [] }, binary, tools)
 }
 
-/// THE PROGRAM MODULE'S KEY — its own bytes, and what compiles them. A
-/// module that cannot be read back has no key: an empty read would key every
-/// program alike.
-fn entry_key(bc: string, tools: Toolchain) -> Result<string, string> {
-    match read_bytes(bc) {
-        .Ok(bytes) -> .Ok(node_key(Stored.Obj, ["entry", CACHE_FORMAT, digest_key(digest_bytes(new_digest(), bytes)), tools.opt, tools.runtime])),
-        .Err(_) -> .Err("avra: the entry's module could not be read back — ${bc}"),
-    }
-}
 
 impl Workspace {
     /// A binary these exact inputs linked before, placed where a fresh one would
@@ -109,7 +150,7 @@ impl Workspace {
     }
 
     /// Where a program's closure is remembered.
-    fn closure_key(named: string) -> string { node_key(Stored.Unit, ["closure", CACHE_FORMAT, self.root, named]) }
+    fn closure_key(named: string) -> string { node_key(Stored.Unit, ["closure", self.root, named]) }
 
     /// The closure as it stands now, remembered for the next key.
     fn keep_closure(named: string) {
@@ -130,7 +171,7 @@ impl Workspace {
         let named_inputs = self.build_inputs(named).concat(beside)
         let inputs = joined([self.input_line(f) for f in named_inputs], "\n")
         self.keep_stamps(named_inputs)
-        digest_key(digest_text(digest_text(digest_text(new_digest(), CACHE_FORMAT), relative_path(self.root, named)), inputs))
+        digest_key(digest_text(digest_text(new_digest(), relative_path(self.root, named)), inputs))
     }
 
     fn input_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.text_digest(path)}" }
@@ -203,14 +244,26 @@ impl Workspace {
         lo with { entry: m.entry, externs: lo.externs.concat(m.rows), fns: held_stubs(self).concat(owed).concat(stay).concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))]) }
     }
 
-    /// Emit the files that moved and the program's module, compile them
-    /// `CLANG_WIDTH` at once, and link them with the store's objects for the rest.
+    /// THE PROGRAM MODULE'S KEY BY ITS OWN BYTES — written as bitcode at `bc`, and
+    /// what compiles them. A module that cannot be read back has no key: an empty
+    /// read would key every program alike.
+    fn bytes_keyed(full: Lowered, bc: string, tools: Toolchain) -> Result<string, string> {
+        let broke = emit_closed(full, bc, Owned.Program)
+        if broke != null { fail broke! }
+        match read_bytes(bc) {
+            .Ok(bytes) -> .Ok(node_key(Stored.Obj, ["entry", digest_key(digest_bytes(new_digest(), bytes)), tools.opt, tools.runtime])),
+            .Err(_) -> .Err("avra: the entry's module could not be read back — ${bc}"),
+        }
+    }
+
+    /// The objects of the files that moved and of the program's module, made and
+    /// kept; then every object linked, the store's standing in for the rest.
     fn linked(d: Derived, m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<BuildOutcome, string> {
         let store = d.store
         let p = d.program
         // THE PROGRAM'S MODULE BY WHAT IT IS A FUNCTION OF. Instantiations nobody
         // lowered are owed unless a build of these very asks kept them.
-        let in_key = node_key(Stored.Obj, ["program", CACHE_FORMAT, d.asked, "${fp_list([i.fingerprint() for i in m.entry.ins])}", tools.opt, tools.runtime])
+        let in_key = node_key(Stored.Obj, ["program", d.asked, "${fp_list([i.fingerprint() for i in m.entry.ins])}", tools.opt, tools.runtime])
         if !d.unlowered.is_empty() && !store.has(Stored.Obj, in_key) {
             let whole = self.whole(d, [])?
             return whole.program.ws.linked(whole, m, under, binary, tools)
@@ -221,67 +274,50 @@ impl Workspace {
         if unclosed != null { fail not_closed(unclosed!) }
         // `source<TAB>object`: the link's order is the SOURCES', never the hold's
         mut made: List<string> = []
-        mut moved: List<string> = []
-        mut pending: List<PendingObj> = []
-        mut owed_keys: List<string> = []
+        let opt = opt_level(tools.opt)
         let t0 = self.clock()
+        // AN OBJECT IS MADE ONE WAY — here, by the compiler that runs — so a tree's
+        // objects are the same bytes however many of them a build had to make
         for a in p.files {
             let path = a.view.source.file
-            let base = node_key(Stored.Obj, [digest_of(path)])
-            let obj = "${root}/${base}.o"
+            let obj = "${root}/${node_key(Stored.Obj, [digest_of(path)])}.o"
             let okey = self.held_okey(store, path)
-            if store.place(Stored.Obj, okey, obj) { made.push("${path}\t${obj}") } else { pending.push(PendingObj { okey: okey, obj: obj, base: base, file: a.view.file }) }
-        }
-        // A BUILD THAT MOVED A MODULE OR TWO makes their objects HERE, with the
-        // compiler it already holds; one that moved many hands bitcode to clang,
-        // `CLANG_WIDTH` at once.
-        let here = pending.length <= MADE_HERE
-        for po in pending {
-            let broke = if here { emit_object(full, po.obj, Owned.File(po.file), opt_level(tools.opt)) } else { emit_closed(full, "${root}/${po.base}.bc", Owned.File(po.file)) }
-            if broke != null { fail broke! }
-            if !here { moved.push("${po.base}.bc") }
-        }
-        // THE PROGRAM'S MODULE is keyed by its own bytes: emitted every build,
-        // compiled only when they moved
-        let base = node_key(Stored.Obj, [digest_of(binary)])
-        let program = "${root}/${base}.o"
-        if d.unlowered.is_empty() {
-            // lowered here: keyed by its own bytes too, so a home's edit that moves
-            // no instantiation compiles nothing
-            let broke = emit_closed(full, "${root}/${base}.bc", Owned.Program)
-            if broke != null { fail broke! }
-            let pkey = entry_key("${root}/${base}.bc", tools)?
-            if !store.place(Stored.Obj, pkey, program) {
-                moved.push("${base}.bc")
-                owed_keys.push(pkey)
+            if !store.place(Stored.Obj, okey, obj) {
+                let broke = emit_object(full, obj, Owned.File(a.view.file), opt)
+                if broke != null { fail broke! }
+                let _ = store.keep_file(Stored.Obj, okey, obj, [])
             }
-        } else if !store.place(Stored.Obj, in_key, program) {
-            fail object_gone(binary)
+            made.push("${path}\t${obj}")
         }
+        // THE PROGRAM'S MODULE is keyed by its own bytes when it was lowered here —
+        // written every build, compiled only when they moved, so a home's edit that
+        // moves no instantiation compiles nothing — and by its inputs when it was not
+        let base = "${root}/${node_key(Stored.Obj, [digest_of(binary)])}"
+        let program = "${base}.o"
+        let pkey = if d.unlowered.is_empty() { self.bytes_keyed(full, "${base}.bc", tools)? } else { in_key }
+        if !store.place(Stored.Obj, pkey, program) {
+            if !d.unlowered.is_empty() { fail object_gone(binary) }
+            let broke = emit_object(full, program, Owned.Program, opt)
+            if broke != null { fail broke! }
+            let _ = store.keep_file(Stored.Obj, pkey, program, [])
+        }
+        if !store.has(Stored.Obj, in_key) { let _ = store.keep_file(Stored.Obj, in_key, program, []) }
         let t1 = self.clock()
-        let _ = compiled(moved, root, tools)?
-        let t2 = self.clock()
-        for po in pending {
-            let _ = store.keep_file(Stored.Obj, po.okey, po.obj, [])
-            made.push("${self.decls.file(po.file).path}\t${po.obj}")
-        }
-        // the program's module under its bytes and under what it is a function of
-        for pkey in owed_keys.concat(if store.has(Stored.Obj, in_key) { [] } else { [in_key] }) { let _ = store.keep_file(Stored.Obj, pkey, program, []) }
         // a held object links in place
         for path in held_paths(self) {
             let okey = self.held_okey(store, path)
             if !store.has(Stored.Obj, okey) { fail object_gone(path) }
             made.push("${path}\t${store.path(Stored.Obj, okey)}")
         }
-        let t3 = self.clock()
+        let t2 = self.clock()
         let words = link_objects([line.split("\t")[1] for line in sorted_texts(made)].concat([program]), self, tools.runtime, binary)
         let code = avra_spawn_status(tools.linker, words)
         if code != 0 { fail clang_link_failed(code) }
-        let t4 = self.clock()
+        let t3 = self.clock()
         let key = self.kept_key(under)
         let _ = store.keep_file(Stored.Bin, key, binary, [key])
         let _ = store.keep(Stored.Warn, key, d.warnings, [key])
-        let spent = d.timed(["emit ${(t1 - t0) / 1000000}ms", "clang ${(t2 - t1) / 1000000}ms", "place ${(t3 - t2) / 1000000}ms", "link ${(t4 - t3) / 1000000}ms"])
+        let spent = d.timed(["emit ${(t1 - t0) / 1000000}ms", "place ${(t2 - t1) / 1000000}ms", "link ${(t3 - t2) / 1000000}ms"])
         .Ok(BuildOutcome { words: words, binary: binary, warnings: d.warnings, reused: false, key: key, phases: spent })
     }
 }
@@ -292,26 +328,10 @@ const stamps_read: int = 1
 const stamps_moved: int = 2
 
 /// Where the tree's stamps are kept.
-fn stamps_key() -> string { node_key(Stored.Fp, ["stamps", CACHE_FORMAT]) }
+fn stamps_key() -> string { node_key(Stored.Fp, ["stamps"]) }
 
 /// A file's bytes as their length and their digest.
 fn digest_of_file(text: string) -> string { "${text.length}.${digest_of(text)}" }
-
-/// One clang per moved module, `CLANG_WIDTH` at once. `-c a.bc` writes `a.o`
-/// beside its input, so every run stands in the store's root.
-fn compiled(modules: List<string>, root: string, tools: Toolchain) -> Result<int, string> {
-    if modules.is_empty() { return 0 }
-    let clang = Tool { name: "clang", path: tools.linker, terminator: null }
-    let jobs = [cmd(clang, ["-w", tools.opt, "-c", name]) with { cwd: root, env: Env.Inherit, streams: Streams.Captured, own_group: false } for name in modules]
-    match parallel(jobs, CLANG_WIDTH) {
-        .Err(why) -> .Err("avra: clang could not run — ${why.describe().message}"),
-        .Ok(outs) -> {
-            let bad: Outcome? = outs.find((o: Outcome) -> !exited_cleanly(o.exit))
-            if bad == null { return modules.length }
-            .Err("avra: clang failed compiling ${describe_exit(bad!.exit)}\n${bad!.out.stderr}")
-        },
-    }
-}
 
 // ── The voices ──
 

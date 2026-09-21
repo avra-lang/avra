@@ -62,7 +62,7 @@ matches a feature's node.
 
 A failure under a hold is asked again of the sources; only that answer is the
 program's. `check` prints `Derived.warnings`. `build` links it
-(`build.av`: a file's object is the file's; the PROGRAM's module is what
+(`build.av`: a file's object is the file's, made in process; the PROGRAM's module is what
 no file owns plus an entry that calls). `test` is a build whose entry calls every
 case and runs every program test (`suite.av`). `run`, `emit`, `ir` still lower
 from the entry's reach with nothing held: the evaluator reads IR, and a held
@@ -82,4 +82,6 @@ file has none (S8 ends that).
 | a program's closure | `Unit` | the root, the program's name |
 | the tree's stamps | `Fp` | one row: path → stamp, digest |
 
-A refusal is never kept.
+The store stands under the running compiler's print — `.avra-cache/<print>/`,
+the newest four kept on `.avra-cache/compilers` — so every row is the work of
+the compiler that reads it. A refusal is never kept.

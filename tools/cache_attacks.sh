@@ -222,6 +222,23 @@ S "a use reaches a package the closure has not met" d;  K "no-op d" hit
 printf '\n// moved\n' >> $later;    K "and that package moves" built
 back; trap - EXIT INT TERM
 
+# A STORE IS ONE COMPILER'S, named by the compiler's BYTES: the same compiler
+# from another path reads its own rows, and one of other bytes reads none of them.
+# Both stand beside `build/avra`, where a compiler finds its toolchain.
+W() { # W <label> <compiler> <want: hit|built>
+    steps=$((steps+1)); out=$(AVRA_CWD=$PWD $2 build --time $R/d 2>&1); got=built
+    case "$out" in *"cache hit"*) got=hit ;; esac
+    if [ "$got" = "$3" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [d] -> $got"; else fails=$((fails+1)); echo "FAIL  $1 [d] wanted $3, got $got"; fi
+}
+K "d, by the compiler itself" hit; stores=$(ls .avra-cache | grep -vc compilers)
+cp build/avra build/avra.twin;                 W "the same bytes from another path" build/avra.twin hit
+strip -x build/avra -o build/avra.other 2>/dev/null && { codesign -f -s - build/avra.other 2>/dev/null || true; }
+W "a compiler of other bytes" build/avra.other built
+steps=$((steps+1)); [ "$(ls .avra-cache | grep -vc compilers)" -gt "$stores" ] || { fails=$((fails+1)); echo "FAIL  a compiler of other bytes wrote into another's store"; }
+W "and its own store serves it" build/avra.other hit
+K "while the first compiler's still serves the first" hit
+rm -f build/avra.twin build/avra.other
+
 # CHECK SPEAKS THE SAME under a hold as from the sources
 for app in a b c; do
     held_says=$(./avra check $R/$app 2>&1 | grep -v '^watch:')

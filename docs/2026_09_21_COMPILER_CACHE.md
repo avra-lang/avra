@@ -33,7 +33,7 @@ One slice = red-team + review round + ONE gate + commit + seed.
 
 | | 09-19 | now | gate |
 |---|---|---|---|
-| `build cli` cold | 22.7 s | **17–19 s** | 23 s |
+| `build cli` cold | 22.7 s | **18–21 s** (every object made in process, one after another: the wall of four clangs, two thirds of their CPU) | 23 s |
 | `build cli` no-op | 0.4 s | **0.08 s** | 0.3 s |
 | `build cli`, one body edit | 1.2 s | **0.37–0.42 s** | 0.5 s |
 | `build cli`, a generic's home edited | — | ~3 s (the homes are read from the start; the program's module recompiles) | 5 s |
@@ -90,7 +90,7 @@ skips it.
 2. **An instantiation is the PROGRAM's.** A generic at its type arguments, a
    fn at its settled seats, a root (`instantiated(w)`). Owned by no file
    (`Body.file = null`), weak, it rides the ENTRY's module — which is keyed by
-   its own bitcode bytes (`entry_key`).
+   its own bitcode bytes (`bytes_keyed`).
 3. **What stands in for a held file is ONE content key's worth:** its object,
    its asks (the instantiations its bodies demand), and record lines that
    say what text they were read from (`written_from`). All three, or it parses.
@@ -218,9 +218,26 @@ three callers was the ceremony the plan warned of.
 - **A box dangles only when its PLACE holds the only reference.** A literal is
   the binary's own data; a maker's register holds its box to the scope's end.
   A hostile shape sets the place in a scope that has CLOSED, or it bites nothing.
-- **No key folds the compiler.** An unsound compiler was served the sound
-  object until the cache was moved aside: a probe of a codegen change runs from
-  a cold cache, and `CACHE_FORMAT` moves when what an object IS moves. (§7.)
+- **No key folded the compiler,** so after a codegen fix `make avra` twice never
+  reached a held body: the second generation linked objects the first compiler
+  made, and CLAUDE.md's second-build law held only from a cache wiped by hand. A
+  hand-kept format number was the stand-in, and a number nobody must move is
+  moved by nobody. A STORE IS ONE COMPILER'S now: its root is named by the
+  running binary's bytes (`compiler_print`, kept on the tree's roll beside the
+  binary's stamp; the newest four stores stay). A compiler developer pays one
+  cold build per ADOPTED compiler — `check` and `test` of an edited source run
+  the standing compiler, warm — and a user pays nothing.
+- **"No telling" is not "nobody".** A binary written within two seconds has no
+  stamp; read as "this host names no compiler" it sent every back-to-back
+  `make avra` to the shared store, silently, and only there. No stamp means
+  read the bytes. A fallback that WORKS is the dangerous one.
+- **Two ways to make an object are two objects under one key.** The file that
+  moved was made in process and the rest by `clang -O1`, so a warm build and a
+  cold one of the same tree linked different bytes — and a warm-built compiler
+  was a different compiler from its cold twin. An object is made ONE way, here
+  (`emit_object`, tuned for the triple's baseline CPU as clang tunes the C
+  beside it); clang links and nothing else. One tree, one binary, however it
+  was reached — which is what lets the store be named by the compiler's bytes.
 - **The binary's key covered the whole toolchain,** so one compiler edit missed
   every suite and program in the tree. It covers the closure the last
   derivation ADMITTED, remembered (`closure`): the key is asked before anything
@@ -276,6 +293,11 @@ Objects made in process, 80. The tree's stamps in one row, 60.
 
 **Left, none of it owed to the bar:**
 
+0. **The cold build makes its objects one after another** (emit ~9 s of 20).
+   LLVM is thread-safe a context a thread; `emit_object` over a list, a worker
+   a core, would take the cold build toward 13 s. The modules are built in the
+   global context today, which is the work.
+
 1. **A verdict kept beside a suite's binary.** `test std-avrac` warm is 13 s of
    RUNNING binaries nothing moved. A suite whose binary is a hit could answer
    from its last verdict — sound only for a hermetic suite, and the cli's cases
@@ -329,14 +351,6 @@ sh tools/watch.sh 4000 make gate
   law until it is read; its record should say it RUNS, and be read.
 - `program_key` folds every file under every closure root, tests included: a
   test edit misses the binary (the derivation then holds everything).
-- NO KEY FOLDS THE COMPILER'S IDENTITY. After a codegen fix, `make avra` twice
-  does not reach a held body: the second generation links objects the first
-  compiler made, so CLAUDE.md's second-build law holds only from a cold cache
-  (`rm -rf .avra-cache`) or a `CACHE_FORMAT` bump. The design that pays it: the
-  store's root named by the running binary's digest (the link is reproducible
-  now, so an unchanged compiler keeps its store), the newest few kept. It costs
-  a compiler developer one cold build per adopted compiler and costs a user
-  nothing.
 - `@derive(Roles)` + `@derive(Fingerprint)` on `Ins` compiles clean and
   miscompiles; `Ins` wears a hand fold.
 - The receiver seal's body scan is O(all statements) per impl (`writes_receiver`).

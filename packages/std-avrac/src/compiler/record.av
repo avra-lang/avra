@@ -13,14 +13,14 @@
 use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, sorted_texts, distinct, same_file, same_decl, module_path, ModulePath, TypeRegistry, TypeLit, Type, TypeId, DeclId, FileId, StmtId, ExprId, DeclKind, SeatMark, Span, TypeRef}
 use features.{Decl, DeclSig, FnSig, StructSig, EnumSig, NamedSig, Decls, Namespace, SettleRoot, kind_word, spelled_type, scalar_named, DeclFacts}
 use compiler.lower.{Body, program_symbol}
-use compiler.store.{CACHE_FORMAT, Store, Stored, node_key}
+use compiler.store.{Store, Stored, node_key}
 
 /// THE NAME A MODULE'S RECORD IS STORED UNDER. The ROOT module's name is EMPTY — it holds
 /// the entry file and its neighbours — and an empty name has no shard to live in and no key
 /// to be asked for, so it is spelled here rather than special-cased at every reader.
 // LICENSED I39: a pure PROJECTION — a module in, the name its record is stored under out.
 fn record_key(ws: Workspace, m: ModulePath) -> string {
-    node_key(Stored.Sig, [CACHE_FORMAT, ws.root, m.text()])
+    node_key(Stored.Sig, [ws.root, m.text()])
 }
 
 /// ONE READ PER RECORD PER BUILD. The record for a module, from the cache when this
@@ -563,7 +563,6 @@ fn declared_kind(shape: string, word: string) -> DeclKind? {
 // LICENSED I39: a KEY DERIVATION — a workspace and a module in, the digest of its bytes out.
 export fn module_bytes(mut ws: Workspace, m: ModulePath) -> string {
     mut d = new_digest()
-    d = digest_text(d, CACHE_FORMAT)
     for path in sorted_texts(ws.module_files(m)) {
         d = digest_text(d, path)
         d = digest_text(d, ws.text_digest(path))
@@ -588,7 +587,6 @@ export fn bytes_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
 // LICENSED I39: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
 export fn obj_key_of(mut ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
     mut d = new_digest()
-    d = digest_text(d, CACHE_FORMAT)
     d = digest_text(d, m.text())
     if path != "" {
         d = digest_text(d, path)
