@@ -261,6 +261,7 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
     let l6 = avra_now_ns()
     let lo = p.lowered_checked()?
     trace.push("lower ${(avra_now_ns()-l6)/1000000}")
+    self.seed_content_keys(lo, p.files)
     // Until the interface can answer every cross-file query, no file is held.
     // The whole-program module keeps that safe path within the cold-build
     // budget; compiling one object per file costs much more on the compiler.
@@ -324,6 +325,18 @@ impl Workspace {
 
 /// Emit the moved files, clang them in parallel, and link — the half a
 /// build and a suite share. `entry` is the file the entry body lives in.
+/// Seed each file's CONTENT digest — the bodies this build emits, by home.
+/// An object's key must digest everything its content depends on, and a
+/// file's content is the bodies homed in it: a key over the file's bytes
+/// alone collides when two programs reach different subsets of them.
+    mut fn seed_content_keys(lo: Lowered, files: List<Analysis>) {
+        for a in files {
+            let f = a.view.file
+            let fps = [bd.fingerprint() for bd in lo.fns if bd.file != null && same_file(bd.file!, f)]
+            self.content_keys.set(a.view.source.file, digest_of(joined(["${n}" for n in fps], ",")))
+        }
+    }
+
 fn compile_lowered(store: Store, cache: BuildCache, p: Program, lo: Lowered,
                    entry: FileId, key: string, binary: string, opt: string, runtime: string,
                    linker: string, attempt: int, trace: List<string>) -> Result<BuildOutcome, string> {

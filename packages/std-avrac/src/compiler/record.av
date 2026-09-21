@@ -484,6 +484,11 @@ export fn obj_key_of(mut ws: Workspace, store: Store, m: ModulePath, path: strin
     if path != "" {
         d = digest_text(d, path)
         d = digest_text(d, ws.source(ws.file_id(path)).text)
+        // THE FILE'S BYTES DO NOT SAY WHICH OF ITS BODIES THE PROGRAM EMITS.
+        // Two programs that share a cache and a file but reach different
+        // subsets of its bodies would wear one key over different content;
+        // `seed_content_keys` records the content this build emits.
+        d = digest_text(d, ws.content_keys.get(path) ?? "")
     }
     for dep in sorted_texts(distinct(deps)) { d = digest_text(d, bytes_key_cached(ws, store, module_path(dep.split(".")))) }
     digest_key(d)
