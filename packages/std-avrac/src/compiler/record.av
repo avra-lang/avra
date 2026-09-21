@@ -240,7 +240,7 @@ export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModuleP
 /// `.Builtin` is: nothing lowers a module that was not read. The day something does, these
 /// rows are lies.
 // LICENSED I39: THE LOADER — a workspace, a store and a module in, the count minted out.
-export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: string) -> int {
+export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) -> int {
     let key = record_key(ws, m)
     if ws.loaded_records.get(key) != null { return 0 }
     ws.loaded_records.set(key, true)
@@ -262,7 +262,7 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
             let imp = module_path(parts[1].split("."))
             let key = imp.package()
             if key != null { ws.ensure_package(key!) }
-            let _ = load_interface(ws, store, imp, entry)
+            let _ = load_interface(ws, store, imp, entry, want)
         }
     }
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
@@ -272,7 +272,9 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
         // never met is neither parsed nor linked, and a home no parsed file imports is
         // met nowhere else.
         let text = ws.source(ws.file_id(f)).text
-        if f != entry && ws.homes.get(f) == null && written_from(fields, f, text) && ws.object_kept(store, obj_key_cached(ws, store, m, f)) && ws.const_rows_ready( store, m, f, fields) && holdable(fields, f) { ws.hold_only(f) }
+        // the entry's module is the PROGRAM's: what roams rides it, so a link never holds it
+        let linked_entry = want is .Binary && entry != null && f == entry!
+        if !linked_entry && ws.homes.get(f) == null && written_from(fields, f, text) && ws.stands_in(store, obj_key_cached(ws, store, m, f), want) && ws.const_rows_ready( store, m, f, fields) && holdable(fields, f) { ws.hold_only(f) }
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.

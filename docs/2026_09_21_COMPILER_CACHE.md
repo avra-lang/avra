@@ -16,7 +16,7 @@ One slice = red-team + review round + ONE gate + commit + seed.
 - [x] S1 a file's object is the FILE's; the hold is sound
 - [x] S2 fail-safe; the sweep
 - [x] S3 the sweep to 3
-- [ ] **S4 the sweep to 0** — one flat law (`Decls.declare`), a nested decl is no
+- [x] **S4 the sweep to 0** (`63cc6a6`) — one flat law (`Decls.declare`), a nested decl is no
       symbol, a program that boxes a flat record builds whole
 - [ ] S5 THE HELD DERIVATION — `build_program_attempt`'s first half as one verb
       every command asks; per-file diagnostics persist; `check` holds
