@@ -26,7 +26,7 @@ binary included — as a projection. The layers, from zero:
   INTERPRETER. The same semantics object runs interpreted
   (comptime, tests, REPL), JITted (dev), and AOT (release).
   eval == native graduates from our best test into a structural
-  impossibility. LANDED (same day): language/interp.av walks the
+  impossibility. LANDED (same day): compiler/interp.av walks the
   lowered stream — a Val enum, bracket-scan control flow, frames
   and heaps in machine tables, and the runtime registry's fifth
   consumer hosting every CallRt row with matched refusal wording.
@@ -427,7 +427,7 @@ the compiler checking itself 28.8s.
           integer register is silently wrong and no test that stays
           inside Avra can see it.
         * A NEW SCALAR TYPE MUST JOIN `is_managed`'s unmanaged arm
-          (language/memory.av): `.Ptr or .Int or .Bool or .TypeName
+          (compiler/memory.av): `.Ptr or .Int or .Bool or .TypeName
           or .Var or .Null or .Error or .Void -> false`. One line —
           but omit it and the memory pass treats the new type as a
           BOX, retaining and releasing a number. `Ptr` is the closest
@@ -1612,7 +1612,7 @@ std-lib chapter, so dogfooding decides the surface.
   - [ ] `@std/time`: now_ns, a duration's text — what `--time` and
         the bench print by hand today.
 
-LANE C — ROADMAP INTO RENT (owns language/ and features/ typing and
+LANE C — ROADMAP INTO RENT (owns compiler/ and features/ typing and
 lowering). The first item unblocks the two biggest ledger entries;
 the order is the dependency.
   - [ ] `mut self` — RATIFY the design (rung 14's mutating methods:
@@ -1635,7 +1635,7 @@ the order is the dependency.
         51 test strings rewritten by script; the compiler compiles
         itself in the new spelling (1618 cases, corpus 72/72).
         S1 LANDED 2026-09-04: `mut` parameters parse (fns, `mut fn`,
-        trait sigs); the receivers pass (`language/receivers.av`, a
+        trait sigs); the receivers pass (`compiler/receivers.av`, a
         whole-program fixpoint, one memo family) records every
         writing method; the seat law and the exclusivity law refuse,
         the receiver law WARNS — 981 sites in the compiler's own
@@ -1676,7 +1676,7 @@ the order is the dependency.
         carries the pass's state (the seats in scope, the narrows,
         the promises, the lambda barriers, the paired heads, the
         dispatch) and the walk's verbs are its methods in
-        language/typing.av — `walk`, `walk_under`, `type_stmts`,
+        compiler/typing.av — `walk`, `walk_under`, `type_stmts`,
         `block_type`, `walk_narrowed`, `lambda_body`, `feed`,
         `speak_hungry`; `StmtTypeCx` and its `cx.expr` are gone (44
         sites), the thunked `answering` bracket is a push and a pop at
@@ -1719,7 +1719,7 @@ the order is the dependency.
         program scope, the overlays, the lambda frames, the floors,
         the receivers, the open body's `mut` seats, the walked and
         scoped bits, the seat names in scope, `in_block`) and the
-        walk's verbs are its methods in language/resolve.av —
+        walk's verbs are its methods in compiler/resolve.av —
         `resolve_stmts`, `walk`, `walk_under`, `scope_stmts`,
         `bound_scope`, `block_scope`, `arm_scope`, `lambda_scope`,
         `impl_stmts`; the four name-use verbs wear the contract's
@@ -1742,7 +1742,7 @@ the order is the dependency.
         S4b IS DONE: `LowerCx` carries the body's state (the
         emitter, the registers and slots, the instantiation and the
         declared answer, the dispatch, the mono worklist) and the
-        walk's verbs are its methods in language/lower_walk.av —
+        walk's verbs are its methods in compiler/lower_walk.av —
         `reg_of`, `lower_block`, `lower_stmts`, the narrow/widen
         edge, the dyn lift, the printed answer — with the state's
         vocabulary in lower_state.av; `StmtLowerCx` is gone (29
@@ -2916,7 +2916,7 @@ the order is the dependency.
         blind — `fielded_call` carries `arrow.muts` into
         `mut_seats_law`, and `self.app` is a lawful `mut` place, so
         the seat law rightly said nothing. THE BLINDNESS WAS IN
-        `language/receivers.av`, the survey that INFERS whether a
+        `compiler/receivers.av`, the survey that INFERS whether a
         method writes its receiver: its own `Callee` enum had
         `Row`/`Method`/`Static`/`Contract`/`None` and NO fn-field
         case, so the call fell to `declared_method`, found no method
@@ -3219,8 +3219,8 @@ CLAUDE.md, the cli entry, this ledger's bs2 section).
         five counting `while` loops now `for i in 0..n`; `code_at`
         calls read `s.char_code(i)` at 39 sites. THE LEDGER LINE WAS
         FALSE and is corrected 2026-09-05: the shim did not stay for
-        `core/text.av` alone — `language/manifest.av` and
-        `language/interp.av` were never swept and their `code_at`
+        `core/text.av` alone — `compiler/manifest.av` and
+        `compiler/interp.av` were never swept and their `code_at`
         predates the sweep by two days. Six readers, retired together
         with the shim. Spec cases in seven
         feature test files; corpus/comprehensions.av proves the new
@@ -3243,7 +3243,7 @@ LANE SQLITE — THE DRIVER THAT GROWS THE LANGUAGE (opened 2026-09-05;
 owns `packages/std-sqlite/` and the FFI surface — the extern grammar in
 `features/fns/`, the ownership annotations, `opaque type`, and the
 interpreter's extern host; BORROWS `core/` and `runtime/` from lane A,
-`language/interp.av` from lane C).
+`compiler/interp.av` from lane C).
 
 THE MISSION: `@std/sqlite`, the full SQLite surface, test-driven, as the
 substrate a later ORM is built on. THE RULE THE OWNER SET: a gap in the
@@ -4038,7 +4038,7 @@ driver forced someone to read a seam nobody had grown before.
   BOUNDARY.
     `>>` CANNOT BE ONE TOKEN, BECAUSE IT CLOSES NESTED GENERICS.
     `Table<List<string>>` lexed its last two characters as a shift, so
-    `workspace.av` never parsed and the cascade read `@std.avrac.language
+    `workspace.av` never parsed and the cascade read `@std.avrac.compiler
     does not export Program` — FROM THE FILE THAT DEFINES `Program`. The
     split every generic language makes somewhere: **`<<` MUNCHES, `>>`
     DOES NOT** — shift-right is two adjacent `>` the GRAMMAR joins (both
@@ -4444,7 +4444,7 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
     as the row does natively. RECORDED TRIGGER: a byte-lossless
     evaluator string, or a `Bytes` twin for the text rows, retires the
     refusal (`refused_octets`, interp.av) and its spec in
-    `language/tests/run_test.av`. `corpus/bytes-as-text` pins the
+    `compiler/tests/run_test.av`. `corpus/bytes-as-text` pins the
     decode on both engines.
   - THE KEEPER GAP THAT OPENS THE DAY THE TYPE LANDS (lane A's, theirs to
     close in the same hour): `tools/externs.py`'s `seat_fits` ABSTAINS
@@ -4883,7 +4883,7 @@ real scale; the design sources of truth live in
       context, engine-attributed spans, compose-time coherence
 - [x] Statement layer: same-name rule merging, `stmt_spine`,
       `let_stmt` (recovery), `expr_stmt`
-- [x] `language/` driver seam: `assemble` + `parse_program`; recovery
+- [x] `compiler/` driver seam: `assemble` + `parse_program`; recovery
       holes are explicit `Stmt.Error` nodes
 - [x] Harness retirement: feature tests parse through the driver;
       private test plumbing deleted
@@ -5737,7 +5737,7 @@ protocol and the paste-ready arms, and `make vocab` (in the gate)
 fails if any of the five grows a `_ ->` that would let the next
 variant ship unimplemented.
 
-CONSIDERED AND REFUSED — per-instruction spec files (`language/ins/
+CONSIDERED AND REFUSED — per-instruction spec files (`compiler/ins/
 switch.av` holding all five behaviors as fn fields, registered in a
 table, exactly as LanguageFeature does for features). The mechanism
 WOULD work (BuilderRow already proves fn-field tables in bs2), and
@@ -7201,7 +7201,7 @@ COLLISION IS FOUND ONLY BY BUILDING (~20 min, two cycles). Axes
 DOCTRINE and DEFECTS are the heaviest; PERFORMANCE came back with one
 row and an honest unmeasured. NOT SURVEYED: the runtime C, the memory
 pass, anything outside `core/`, `features/enums`, `features/builder`,
-`language/escapes` and `tools/vocab.sh`; and §6, which I measured as
+`compiler/escapes` and `tools/vocab.sh`; and §6, which I measured as
 blocked and did not build.
 
 ### FRICTION
@@ -7460,7 +7460,7 @@ and the cli.
 ### SUGAR
 
 - **A TRAVERSE — `List<T?>` TO `List<T>?`.** `all_claims`
-  (language/workspace.av) hand-writes "if any part is absent the whole
+  (compiler/workspace.av) hand-writes "if any part is absent the whole
   is absent, else concatenate", which is the shape every
   all-or-nothing fold wants. ALREADY FILED as avra-8sb5.11.55
   (`flatten` over `List<T?>`); SHARPENING the ask — what is wanted is
@@ -7526,7 +7526,7 @@ and the cli.
   defensive two-arm match for a shape that needs none.
 - **A FILE'S HEADER STATED A LAW THREE DRIVERS BROKE.**
   `core/parts.av` opens "every pass reads them here, NEVER BY MATCHING
-  A NODE ITSELF", and `language/workspace.av` held three hand-written
+  A NODE ITSELF", and `compiler/workspace.av` held three hand-written
   twins of projections parts.av already owned — and C0 added a fourth
   before the review round caught it. All four now live in parts.av;
   driver-side statement matching is zero (the two survivors are
@@ -7971,7 +7971,7 @@ their gated suite, any lane but this one.
 ### SUGAR — a construct the language should have
 
 - A NULLABLE SCALAR STRUCT FIELD (`{ steps: int? }`): F2008 "a struct
-  field cannot hold this yet". WANTING SITES: language/manifest.av's
+  field cannot hold this yet". WANTING SITES: compiler/manifest.av's
   `[lifted]` rows (resolved to defaults at read time instead), the
   static-data red team's `optfield` fixture. CLAUDE.md "The subset
   today" now carries the refusal. THE ASK: the pair repr in a slot (a
@@ -8111,7 +8111,7 @@ PERFORMANCE 1, PROCESS 2.
 - **A DEBUG PRINT NEEDS NO DECLARATION DANCE.** Adding `extern fn
   avra_eputs(line: string)` to `features/decls.av` was F3017
   "`avra_eputs` is declared twice in this module — here and in
-  `language/interp.av`": the extern wall is MODULE-wide, and a
+  `compiler/interp.av`": the extern wall is MODULE-wide, and a
   `core`/`features` file cannot see the `language` module's row. THE
   ASK: one always-available debug verb (a `core`-level `say` builtin),
   so instrumenting a pass never edits an import or an extern.
@@ -8146,7 +8146,7 @@ PERFORMANCE 1, PROCESS 2.
   a scalar or string, found `MetaVal`". THE ASK: a derived `Show` (S4
   `@derive`) reachable from interpolation, or a `--debug` form.
 - **SHORTEN THE IMPORT WALL.** Every new helper edits a 40-name `use
-  core.{…}` (language/workspace.av:17). THE ASK: a module-qualified
+  core.{…}` (compiler/workspace.av:17). THE ASK: a module-qualified
   reference or a glob form, so a helper's home does not cost a
   line-long edit.
 
@@ -8161,7 +8161,7 @@ PERFORMANCE 1, PROCESS 2.
   order. THE ASK: `avra ir <decl>` lowers only that declaration (or
   prints what it can), so a broken sibling does not hide a good one.
 - **A TRAP BREADCRUMB ON EVERY PATH.** `avra_case_begin` is set only
-  by language/test_run.av, so a trap under `avra run`/`check` names
+  by compiler/test_run.av, so a trap under `avra run`/`check` names
   no case; the test runner proves the machinery works. THE ASK: every
   driver announces the declaration/statement in hand, so a wreck names
   where it died (FRICTION "a trap names its site", reused).
@@ -8237,7 +8237,7 @@ PERFORMANCE 1, PROCESS 2.
 ### ADDENDUM — S3g node source printer, same day (`bc5a7a7`)
 
 - **FEATURES — `AVRA EXPAND` NOW SHOWS THE FILE, CLOSED.** The earlier
-  survey's request is landed: `language/source_text.av` exhaustively
+  survey's request is landed: `compiler/source_text.av` exhaustively
   projects the AST, and `Program.expanded_source` inserts generated
   declarations immediately after their annotated origins. Evidence:
   `./avra expand …/annotations/tests/traced/src/main.av` printed the
@@ -8249,7 +8249,7 @@ PERFORMANCE 1, PROCESS 2.
   the mixed-bitwise law requires). `numeric` now gives a negative
   folded literal unary precedence, and mixed bitwise left children
   retain their group. Both witnesses are permanent in
-  `language/tests/source_text_test.av`.
+  `compiler/tests/source_text_test.av`.
 - **DOCTRINE — A SOURCE PROJECTION PROVES ITS TREE, NOT ONLY ITS
   TEXT.** The printer suite reparses every fixture, reaches a textual
   fixed point, and compares top-level statement fingerprints before
@@ -8283,7 +8283,7 @@ PERFORMANCE 1, PROCESS 2.
   statement fingerprint, so a doc-only edit cannot be cut off by the
   parsed-program memo. Evidence: `avra expand` reproduces all 31 doc
   lines of `@std/meta/src/meta.av` and all 321 of
-  `language/workspace.av`, and a doc-bearing program is `eval == native`.
+  `compiler/workspace.av`, and a doc-bearing program is `eval == native`.
 - **DEFECTS — TWO SILENT DOC LOSSES, FOUND BY THE RED TEAM AND FIXED.**
   (1) An EMPTY doc line vanished: the printer re-split a joined string,
   and `split` drops a trailing empty segment while `""` splits to `[]`,
@@ -8295,8 +8295,8 @@ PERFORMANCE 1, PROCESS 2.
   A comment is now transparent; only a BLANK line (or a non-declaration
   token) detaches. `avra expand` on `grammar/lexer.av` now reproduces
   all 122 doc lines (was 120). Witnesses:
-  `language/tests/docs_adversarial_test.av`, `grammar/tests/lexer_test.av`,
-  `language/tests/source_text_test.av`.
+  `compiler/tests/docs_adversarial_test.av`, `grammar/tests/lexer_test.av`,
+  `compiler/tests/source_text_test.av`.
 - **DEFECT (OPEN, ATTRIBUTED, PRE-EXISTING AT `eb35bea`) — `avra
   expand` ON A STATEMENT-LESS PROGRAM TRAPS.** `avra: index 0 is out of
   bounds (length 0)`, exit 2, where the command's own guard says "the
@@ -8568,8 +8568,8 @@ debt, filed).
   settlement law is not landed. The seams, mapped so the next lane
   does not re-derive: `Sub` (`features/contract.av`), its record
   `record_subst` (`features/facts.av:192`), the name/mangle
-  `symbol_at`/`wanted`/`mangle` (`language/lower_state.av:45`,
-  `language/lower.av:448`), the call entry `dispatched_call`
+  `symbol_at`/`wanted`/`mangle` (`compiler/lower_state.av:45`,
+  `compiler/lower.av:448`), the call entry `dispatched_call`
   (`features/fns/check.av:87`), the view `viewed`
   (`features/contexts.av:275`). S5b widens `Sub` and the mangling; S5c
   binds the seat's value in the unit so `const prog = compile(pattern)`
@@ -8637,7 +8637,7 @@ idiom gate's first-draft catch (the gate working).
 
 - **THE SETTLEMENT MACHINERY IS SINGLE-UNIT BY CONSTRUCTION, WHICH IS
   S5c'S WHOLE PROBLEM.** `settlement_of`/`isolated`
-  (`language/workspace.av:793`) lower a const's initializer as a
+  (`compiler/workspace.av:793`) lower a const's initializer as a
   standalone program with `Wanted { sub: null, root }`, so a `const`
   inside a specialized body (`const prog = compile(pattern)`) is
   lowered WITHOUT the unit's settled-seat values: the parameter has no
@@ -8988,7 +8988,7 @@ The `/feedback` run for the slice that lifted the two S5b boundaries: a settled 
 ### DOCTRINE — a law missing, misleading, or stale
 
 - **THE S5b NOTE UNDER-SPECIFIED THE FILL.** It said "a literal or a `const` (computed ones included)"; it did not say a SETTLED SEAT of the ENCLOSING fn may be FORWARDED, nor that an AGGREGATE must be fully written (an omitted default is a body the evaluator runs, so it is not source-spelled). Both are now pinned in the design doc's queue.
-- **A TEMPLATE BODY FALLS BACK TO THE PLAIN CALLEE.** A forwarded seat is per-unit; a template has none, so it calls the plain body (whose consts are already skipped). That is now a comment at `seats_complete` (language/lower_state.av).
+- **A TEMPLATE BODY FALLS BACK TO THE PLAIN CALLEE.** A forwarded seat is per-unit; a template has none, so it calls the plain body (whose consts are already skipped). That is now a comment at `seats_complete` (compiler/lower_state.av).
 - **A SEAT FINGERPRINT CARRIES ITS KIND.** A source-spelled fill `e`s and a settled fill `v`s the hash, so the `_` join of a call's seats can never read one seat's role as another's — the flat-concatenation law applied to `settled_symbol`'s join.
 
 ### PROCESS — the working discipline itself
@@ -9039,7 +9039,7 @@ std-avrac and cli, and performance beyond the two numbers below.
 - Filed above: **A MULTI-LINE CELL** (the witness wants to ride the
   `DiagCode` row and cannot, because a `table` cell spends its
   alignment on `"enum E {\n    a(int)\n ..."`). Wanting site
-  `packages/std-avrac/src/language/witnesses.av`.
+  `packages/std-avrac/src/compiler/witnesses.av`.
 - **A TYPED `DiagId`.** The witness registry keys on the F-code as a
   STRING, which is avra-9cbe's trap one domain over. It is safe here
   only because both directions of the key are refused
@@ -9176,12 +9176,12 @@ riding the same commit (CLAUDE.md). It is a small slice of its own.
 WANT (phase G, 2026-09-15) — A MULTI-LINE CELL, so a witness can ride
 its own row. §8's witness belongs ON the `DiagCode` row — one
 definition, and `explain` reads it from the row it already has. It
-lives in `language/witnesses.av` instead because a witness is a whole
+lives in `compiler/witnesses.av` instead because a witness is a whole
 PROGRAM: `Witness.Source("enum E {\n    a(int)\n    b\n}\nmatch …")`
 in a `table<DiagCode>` cell spends exactly the alignment a `table`
 buys (the vocabulary seam rule), and the 21 feature code tables would
 each have to become struct-literal lists to hold it. WANTING SITE:
-`packages/std-avrac/src/language/witnesses.av`'s row list, against the
+`packages/std-avrac/src/compiler/witnesses.av`'s row list, against the
 `codes = table<DiagCode>` in every feature's mod.av. PROBED at phase
 G, both true: a `table<T>` header may OMIT a defaulted column (so the
 column could land without touching the 21 tables), and a cell may hold
@@ -9444,13 +9444,13 @@ evidence under "Feedback survey — 2026-09-11"):
   `MetaVal` is F2007. Wants a derived `Show` (S4 `@derive`) reachable
   from interpolation.
 - SHORTEN THE IMPORT WALL — every new helper edits a 40-name `use
-  core.{…}` (language/workspace.av:17). Wants a module-qualified
+  core.{…}` (compiler/workspace.av:17). Wants a module-qualified
   reference or a glob form.
 - MEMBER AND MODULE DOCS HAVE NO TABLE — a `///` on an enum variant or
   a struct field, and a module's `//!`, are dropped by the source
   projection (`core/nodes.av` loses 158 lines, `features/mod.av` 5).
   WANTING SITE: `fmt`, which would delete them the day it consumes
-  `language/source_text.av`. Needs a doc seat on `Variant`/`Param` (or
+  `compiler/source_text.av`. Needs a doc seat on `Variant`/`Param` (or
   an anchor-keyed table) and one for the module header.
 
 
@@ -9660,7 +9660,7 @@ evidence under "Feedback survey — 2026-09-11"):
   `.pop()` sites hides a trap the source does not show, and a reader
   cannot tell a pop that CANNOT fail from one that can. The dead `??`
   proves the confusion is live: query/db.av's `self.marks.pop() ?? 0`
-  and language/lower.av's `?? "the entry"` are both F2044 "`??` never
+  and compiler/lower.av's `?? "the entry"` are both F2044 "`??` never
   fires" — each an author reaching for a fallback the API refuses,
   and db.av's would TRAP where its author wrote 0.
   THE ASK: `pop` answers `T?`, joining `find`'s settled `T?`. Absence
@@ -9732,7 +9732,7 @@ evidence under "Feedback survey — 2026-09-11"):
   LLVM global, the interpreter as a machine-level cell) plus a
   presence guard; the mut-cell protocol already owns the cell's one
   reference. Typing refuses `once` on a fn with parameters or one
-  that reads a `mut`. Wanting sites: `avra()` (language/mod.av),
+  that reads a `mut`. Wanting sites: `avra()` (compiler/mod.av),
   every `shown(src)` in 1578 cases through `analyze_source`, and the
   CLI's own `avra()` per command; `rt_sig_of(name)`, which rebuilds
   the whole 48-row runtime table on EVERY call — the memory pass per
@@ -10214,7 +10214,7 @@ and probes in the same commit):
 - ONE DECLARATION-PARAM READ. A declaration's parameters are read
   three ways: `store.fn_parts(stmt)?.params` (`features/checks.av`
   `seat_names`), `declared_params(store, stmt)`
-  (`language/workspace.av:1977`), and `written_seats(keywords, params)`
+  (`compiler/workspace.av:1977`), and `written_seats(keywords, params)`
   (`features/contexts.av:125`, a filter). THE ASK: one
   `Decls.params(d)` verb (reading the DECLARATION's own store — the
   cross-file read that crashed S5b), with the receiver-implicit truth
@@ -11565,7 +11565,7 @@ by meaning; each is a slice for lane D unless a lane is named.
   answers are gone (a `Bounded` receiver at lowering is a mono
   defect, named). The IR of all 74 corpus programs is byte-identical;
   eleven attacks agree eval == native; the field-over-method
-  precedence is pinned by a test. language/receivers.av's own
+  precedence is pinned by a test. compiler/receivers.av's own
   `Callee` (Row/Method/Contract/None) is the third copy of this
   decision — lane C's to fold onto impls' when it next touches it.
 - ~~D. THE ERROR-ABSORB VERB~~ — DONE 2026-09-05 (lane D): 43 sites
@@ -11644,7 +11644,7 @@ by meaning; each is a slice for lane D unless a lane is named.
   language-agnostic LEXER hardcodes Avra's words (`grammar`, `else`,
   `or`, `with`, an operator list with `|>`) and `line_boundary` is a
   callback whose body is `true` -> a `LexFlavor` VALUE supplied by
-  language/, as `Grammar.keywords()` already supplies the keywords.
+  compiler/, as `Grammar.keywords()` already supplies the keywords.
 - F-VERDICTS (lane A, 2026-09-05): the eight that reached lane A were
   re-verified against HEAD, one skeptic each, refute-by-default, plus
   five fresh lenses over grammar/ and core/. SEVEN of eight hold; every
@@ -11714,7 +11714,7 @@ by meaning; each is a slice for lane D unless a lane is named.
   PROBED (records a WORKING shape, so the fear shrinks): an `or`-RUN
   over STRING literals in a match arm compiles and runs
   (`"+" or "-" or ... -> true`). It had no precedent in the tree.
-- G. LANGUAGE + CLI (lane C owns language/; SENT to lane C
+- G. LANGUAGE + CLI (lane C owns compiler/; SENT to lane C
   2026-09-05. STRUCK by verification: the mono mangling by TypeId
   ordinal (real mechanism, wrong harm — those ordinals index the
   COMPILED program's registry, so a compiler refactor leaves
@@ -12558,7 +12558,7 @@ multi-line struct literals, if/else STATEMENTS with effect bodies
 
 15b.1 LANDED (2026-09-03): `@std/toml` is its own package
 (packages/std-toml — the reader the manifest reads with, self-
-contained, in the idiom ratchet's roots); `language/manifest.av`
+contained, in the idiom ratchet's roots); `compiler/manifest.av`
 reads `avra.toml` into facts and speaks every rule as
 `manifest.*` (F4000–F4031; unknown sections and keys WARN — the
 first Warning producer, and `clean()` now means no ERRORS);
@@ -12687,7 +12687,7 @@ rather than a one-off driver.
 15a LANDED (2026-09-02) — what it is, in one breath: a program is
 every `.av` file under a root, typed together, run as one. The
 pieces, each one file:
-- `language/db.av` — THE QUERY KERNEL (D6): cells with deps,
+- `compiler/db.av` — THE QUERY KERNEL (D6): cells with deps,
   changed_at/verified_at, red-green `needs_compute`, early cutoff
   in `settle`, one verifier per family, hit/miss counters. Values
   live in the families' typed tables; the kernel is bookkeeping.
@@ -12695,7 +12695,7 @@ pieces, each one file:
   `dir_under`/`file_under`), `module_symbol(module, name)` (a fn's
   symbol is its name under its module — `util.twice`; the root's
   stay bare, so lone files are unchanged), `dir_of`/`last_slash`.
-- `language/workspace.av` — the families `source` (input, hashed),
+- `compiler/workspace.av` — the families `source` (input, hashed),
   `parsed`, `items` (a file's declarations, ids minted as `base +
   statement index` — THE SAME arithmetic the typing table uses, so
   the workspace's ids ARE typing's), `surface`, `foreign_of`;
@@ -12787,7 +12787,7 @@ the adversarial suite as the oracle:
    `DeclTable`/`Home` and the workspace's parallel `Decl` list are
    gone; ~10 rows per real declaration became one.
 2. THE KERNEL is its own module, `query/` (core -> query -> grammar
-   -> features -> language): typed keys (family number + dense id,
+   -> features -> compiler): typed keys (family number + dense id,
    two list indexes, no strings), cycle detection (`Verdict.Cycle`
    instead of recursion), a sweep, and — for the first time — its
    own spec (reuse, early cutoff, cycle, sweep).
@@ -12996,8 +12996,8 @@ it stood when this was written). What the round REMOVED:
     `Lower` and `Analysis` — each holds ONE `FileView` now, which
     gained the file's STATEMENTS (`runtime_stmts` is a view read).
     `TypeCx` is 4 data fields + 11 verbs, `LowerCx` 7 + 7.
-    `language/namespace.av` moved to `features/namespace.av`,
-    `language/runtime_api.av` to `core/runtime_api.av`; the fact
+    `compiler/namespace.av` moved to `features/namespace.av`,
+    `compiler/runtime_api.av` to `core/runtime_api.av`; the fact
     structs and their reads live in `features/facts.av` (new).
   - The Map `length` miscompile: `m.length` has its own property
     row (`check_map_length`/`lower_map_length`), corpus/maps prints
@@ -14922,7 +14922,7 @@ local could shadow.
 - Bare component instantiation (registry spans files)
 - ~~Query engine (L6 red-green memoization) wraps the pure passes~~
   — LANDED 2026-09-02 (15a): `query/db.av` is the kernel, the twelve
-  families in `language/workspace.av` are the passes as queries.
+  families in `compiler/workspace.av` are the passes as queries.
 - A real feature-extensible language lexer
 
 Update this file whenever a slice lands or the plan changes — the
@@ -15262,12 +15262,12 @@ lanes' trees, and anything outside `packages/std-avrac` + `tools/`.
   CONFIRMS, with the NEW angle worth having: it fires on
   index-to-method conversion, which is exactly the shape a sweep
   makes, so every such sweep should expect it. EVIDENCE:
-  `language/resolve.av:688`, build refused, one edit.
+  `compiler/resolve.av:688`, build refused, one edit.
 - **A TYPE'S FIELD CHANGE BREAKS ITS TESTS AT THE GATE, NOT AT THE
   BUILD.** `TypeFacts.of_expr` changing from `List<TypeId>` to
   `SideTable<TypeId>` compiled clean and failed inside `make gate`'s
   `tested` step with `SideTable has no method filter`. Three minutes
-  per cycle to learn it, twice. EVIDENCE: `language/tests/
+  per cycle to learn it, twice. EVIDENCE: `compiler/tests/
   typing_test.av:16,23,37,44`. THE ASK: none obvious — the suites
   ARE product code and the compiler did its job; recorded as the
   measured cost of a type migration.
@@ -15626,7 +15626,7 @@ not watched to the end. Not surveyed: H2, and anything outside
   `fn answer(n: int)`, where `int` resolves). STANDING: `kind` is
   correct beside it now (B2b), and moving `ty` to the same door is a
   slice of its own, because the crossing suite's pinned words move.
-  EVIDENCE: `language/workspace.av`'s `typed_text`;
+  EVIDENCE: `compiler/workspace.av`'s `typed_text`;
   `features/contexts.av`'s `spelled_type`/`spelled_plain`; pinned in
   `features/tests/kinds`.
 
@@ -16062,7 +16062,7 @@ are empty by scope and not by sweep.
   prose restating it lied. Reworded: a paraphrase of a flag is a
   second copy; words carry the claim, structure the category, and
   the words never restate the category. EVIDENCE:
-  `grammar/executor.av:374`, `language/codes.av:19`.
+  `grammar/executor.av:374`, `compiler/codes.av:19`.
 
 ### PROCESS — the working discipline
 
@@ -18296,7 +18296,7 @@ Two changes, each verified by the whole-program diagnostics differential, the
 ### DEFECT — adding a method to `impl Workspace` breaks an unrelated field's type
 
 Adding ONE method (even `mut fn probe(store: Store) -> string { "" }`) to
-`impl Workspace` in `packages/std-avrac/src/language/workspace.av` makes the
+`impl Workspace` in `packages/std-avrac/src/compiler/workspace.av` makes the
 compiler report
 `error[F2010]: field 'program' is 'fn() -> is_source'` at the `Analysis`
 construction (`analysis.av`'s `program: fn() -> Program`), where the return
@@ -19324,3 +19324,403 @@ branch that cannot start fails AT the cursor with its first terminals' expectati
 ORACLE: the diagnostics goldens and `make gate`. Do not land it on a differential
 alone — a differential proves the two ENGINES agree, and both read the same wrong
 expectation list.
+
+## Feedback survey — 2026-09-19 (cache/cas, cold+warm perf, head 2ecbaf9)
+
+A perf session that halved the warm edit (1.16 -> 0.56 s) and cut cold by a third
+(34.6 -> 21.7 s). Counts per axis: FRICTION 8, SUGAR 3, FEATURES 5, DEFECTS 2,
+DOCTRINE 7, PERFORMANCE 5, PROCESS 6. **Top three by cost:** the poisoned cache
+presenting as a type error in an untouched core file (hours, session one); the
+sampler's leaf list attributing allocations to the allocator rather than the caller
+(nearly a 3-day wrong project); a `/tmp/bc.bak` restore that silently reverted a
+change while `git commit` reported "nothing to commit" (~4 cold builds).
+
+### FRICTION
+
+- **A POISONED CACHE PRESENTS AS SOMEBODY ELSE'S TYPE ERROR.** `rm -rf` mid-session
+  leaves objects incoherent and the next link fails on an undefined symbol
+  (`prelude.eprintln`, twice); a poisoned `.avra-cache` produced `F2030
+  .fingerprint(…) calls a method, and int has none` in `core/fingerprint.av` — a file
+  nobody touched — and survived `make avra`, `make bootstrap`, and restoring a
+  known-good binary. EVIDENCE: the fix was `rm -rf .avra-cache && make bootstrap`.
+  ASK: name the cache in the refusal, or make an incoherent cache a MISS rather than
+  a lie. ATTRIBUTION: cache/cas, 2026-09-19.
+- **CLEAR THE CACHE BETWEEN BUILDS, NEVER BETWEEN A BUILD AND ITS LINK.** Repeated
+  self-inflicted breakage: the same `rm -rf` after an emit leaves the .o/.bc set
+  half-written. EVIDENCE: the emit loop writes objects, then clang, then the link.
+  ASK: a law beside "an early-cutoff hash must cover the whole value". ATTRIBUTION:
+  this session; the law is doctrine now (see DOCTRINE).
+- **AN A/B MUST RESTORE A GOOD COMPILER.** A semantic-breaking variant installed as
+  `build/avra` corrupts every later build, and the first symptom is a bogus error in
+  the source. EVIDENCE: `cp build/avra.good-<hash> build/avra` before each variant,
+  `rm -rf .avra-cache`, rebuild. ASK: a helper, `tools/ab.sh <variant>`, that saves
+  the binary, clears, builds, measures, and restores. ATTRIBUTION: cache/cas.
+- **A FLAG TOGGLE IS NOT A BACKUP.** The differential recipe restored `/tmp/bc.bak`
+  to flip `CACHE_HOLD_ENABLED`; that backup predated the change under test, so the
+  restore reverted the WHOLE FILE and the next commit said "nothing to commit" —
+  which reads as a fact and is a symptom. EVIDENCE: caught by `grep -c
+  "parallel(jobs" …` answering 0. ASK: toggle with `sed` in place; a script that
+  refuses to restore a file whose mtime predates the branch. ATTRIBUTION: cache/cas.
+- **`Exit` CARRIES PAYLOADS, SO IT CANNOT COMPARE.** `o.exit != Exit.Clean` is F2000
+  ("`!=` compares scalars for now"); a three-arm projection answers it. First use of
+  `@std/process` from `std-avrac`. EVIDENCE: the compiler's own build refused.
+  ASK: `Exit.is_clean()` on the enum, or a payload-free `Clean`/`NotClean` view.
+  ATTRIBUTION: cache/cas.
+- **THE PHASE PRINT TRUNCATES SUB-MS TO `0ms`.** A per-phase budget cannot be read
+  when a phase costing 40 us per call prints `0ms`; and per-declaration clocks add
+  ~2 us each, so timing every item inflates what it measures. EVIDENCE: `m-decode 0ms
+  total over 6425 calls`. ASK: print nanoseconds, or a summed row per phase NAME
+  rather than one entry per call. ATTRIBUTION: cache/cas.
+- **THE SAMPLER'S LEAF LIST CANNOT ATTRIBUTE A COST TO ITS CALLER.** See DOCTRINE —
+  filed there because the lesson is a law, not a tool wart.
+- **A RED SUITE ON THE BRANCH COSTS A VERIFICATION CYCLE.** `./avra test
+  packages/std-avrac` fails with `Self has no method bump` (a trait-defaults fixture)
+  before and after every change; proving it pre-existing cost a stash + a rebuild.
+  EVIDENCE: reproduced on a stashed tree. ASK: fix or quarantine the fixture, or a
+  `make test-baseline` that records known-red and diffs. ATTRIBUTION: cache/cas.
+
+### SUGAR
+
+- **IN-PLACE NESTED MUTATION** — confirmed, already filed with its eight wanting
+  sites (`def2a14`). `t[i].push(x)` consumes `t`, which forces the read-modify-write
+  and so the copy.
+- **A SPELLED SHARED AGGREGATE** — confirmed, filed (`def2a14`). `List<List<T>>` and
+  `List<Cell<List<T>>>` are two mutation models that look alike.
+- **A BULK FILL** — `filled(n, v)` is a comprehension (`[v for i in 0..n]`), so a
+  table of n zeros is n pushes. WANTING SITE: `grammar/executor.av`'s
+  `Memo { slots: filled(g.rules.length * stride * 2, 0) }`, per file. ASK: a fill
+  that is one allocation and one store loop, since the language already has the
+  shape in `Bytes`/`array_sized`. ATTRIBUTION: cache/cas.
+
+### FEATURES
+
+- **THE FIRST-SET DISPATCH** — filed with the full design and its diagnostic hazard
+  (see the parse entry above). This is the next task.
+- **A BACKEND INLINER** — confirmed, filed. The backend inlines NOTHING: `xs[i]` is
+  `CallRt("avra_array_get")`, `.length` is `CallRt`. Generated-code quality, P4.
+- **AN EXIT EVENT SOURCE in `@std/process`** — confirmed, filed with its wanting site
+  (`avra_proc_ready`'s nanosleep arm): `pidfd_open`+`poll` / `kqueue`+`EVFILT_PROC`.
+- **A PER-BUILD COPY COUNTER** — filed. `AVRA_MEM_STATS` exists; a `copies: N` line
+  makes a copy regression visible on the FIRST build instead of at the next
+  benchmark. This session's whole class of bug was invisible without one.
+- **`avra profile <cmd>`** — the sampler needs `sample` + a named file + knowing that
+  blocked time is sampled and leaves are misattributed. A command that runs a step
+  under the sampler, attaches the call tree, and prints the top by SELF time would
+  have saved the wrong-denominator and leaf-vs-tree rounds. ATTRIBUTION: cache/cas.
+
+### DEFECTS
+
+- **A POISONED CACHE CAN PRODUCE A WRONG REFUSAL RATHER THAN A MISS.** The compiler
+  read incoherent objects and reported a defect-shaped type error about a file the
+  user never touched. This is the "fail closed" law's missing half: the record path
+  fails closed and the OBJECT path does not. EVIDENCE: `F2030 .fingerprint(…)` in
+  `core/fingerprint.av` with an untouched source. ASK: an object whose bytes do not
+  match its key is a MISS. ATTRIBUTION: cache/cas.
+- **AN `unheld_name` SCAN WAS RUN PER MODULE** — fixed (`0b28012`), recorded here
+  because the SHAPE is the defect class: 276 whole-program scans, three full list
+  copies each, answering one thing. See DOCTRINE.
+
+### DOCTRINE
+
+- **A LEAF LIST NAMES THE TAX; ONLY THE CALL TREE NAMES WHO PAYS IT.** The hot leaves
+  were `rc_release` 592, `array_get` 336, `array_made` ~440 — all real, none the bug.
+  The bug was `unheld_name`, whose ALLOCATIONS were charged to the allocator. EVIDENCE:
+  the call tree named it; the leaf list could not. ASK: the law, beside "measure, then
+  change". ATTRIBUTION: cache/cas.
+- **MEASURE THE COMPONENT, NEVER A STUB THAT CHANGES THE WORK.** Stubbing `held_deps`
+  to `[]` emptied the worklist — less work, not the same work faster — and read as
+  "only 20 ms". Two invalid A/Bs from this shape before a per-call timer summed over
+  the run answered it as 241 ms. ASK: the law. ATTRIBUTION: cache/cas.
+- **THE RECURRING SHAPE: A REPEATED WHOLE-PROGRAM QUESTION.** Every cold win this
+  session was one — `unheld_name` per module, `carries` per body, `Refs` built by
+  pushing per referencing instruction, a `mkdir` per stored row. ASK: ask it FIRST on
+  every profile, before reading any leaf. ATTRIBUTION: cache/cas.
+- **A STATED RATIONALE IS A CLAIM WITH A DATE ON IT.** `build_cache` compiled 276
+  modules in one serial `clang -c a.bc b.bc …`, justified by a comment: "process
+  startup is most of the cost — 18 modules one at a time measured ~14s". That was
+  measured when the path emitted `.ll` TEXT; `4dd9417` moved it to bitcode and startup
+  is 20 ms. The comment preserved the dead reason well enough that nobody re-checked,
+  and the serial pass cost ~5 s. EVIDENCE: measured 2.37 s serial vs 0.79 s parallel on
+  the eight largest modules. ASK: a rationale comment that names the measurement's
+  BASE (which commit/tree answered it). ATTRIBUTION: cache/cas.
+- **A KEY MUST BE A PURE FUNCTION OF THE VALUE IT NAMES.** Memoizing the per-file
+  source digest for the object keys was attempted THREE ways and broke each time —
+  and the isolation (no cache at all) proved the blocker was the key FORM, not the
+  memo: `obj_key_of`'s value is also the hold check, the const unit keys, and
+  `module_bytes`' STORED record line. EVIDENCE: warm edit 10.4 s + F2030 in an
+  untouched file, three times. ATTRIBUTION: cache/cas; the retraction and the correct
+  framing are filed above.
+- **HANDOFF II'S §6.1 LEVER WAS WRONG.** "A compact per-module declaration bundle" is
+  aimed at FORMAT PARSING, which measured 47 ms of a 310 ms mint. The real cost was a
+  per-declaration copy-on-write. EVIDENCE: handoff III, and the `Cell` family.
+  ATTRIBUTION: cache/cas.
+- **A SEMANTIC CHANGE NEEDS THE LINK, NOT ONLY `check`.** `check` does not link, so a
+  change that skips whole units' bodies (the held-walk skip, `45a659a`) is verified by
+  the differential for DIAGNOSTICS and by `make avra` + the probe for the LINK.
+  EVIDENCE: the probe (42, fresh and cached) and the fixed point were the load-bearing
+  checks. ASK: state it in the verification recipe. ATTRIBUTION: cache/cas.
+- **AN UNREACHABLE TRAP IS A DEADLINE, NOT A GUARANTEE.** `avra_str_word_at`'s bounds
+  trap cannot fire from its only caller — `digest_text`'s loop guarantees `i + 8 <= n`.
+  RECORDED CONDITION: it becomes reachable the day a caller reads a word without that
+  guard. ATTRIBUTION: cache/cas; filed with the row.
+
+### PERFORMANCE
+
+- **WARM EDIT 1.16 -> 0.56 s user.** The shared-table copy law: a vocabulary write
+  through a shared intermediate deep-copies it. EIGHT tables -> `Cell` (`dbca4db`,
+  `7e83fe2`, `c6012b4`, `8520baa`); a record's tab-split computed once per module
+  (`7fe0d00`); the held walk skipped (`45a659a`).
+- **COLD 34.6 -> 21.7 s wall.** `clang` four-at-a-time via `@std/process.parallel`
+  (`5c05f3e`, -5 s); the closure law asked ONCE per program (`0b28012`, -6 s); `Refs`
+  symbol lists -> sets (`7d989f0`, -0.6 s). The CPU cost of the parallel clang is REAL
+  and named: user 28.2 -> 32.2 at width 4.
+- **THE PARSE IS 10.0 s AND THE MINT IS 0.17 s.** Linear in tokens (14-18 us/token
+  across every decile), 6.9M `match_seq` attempts = 18 per token at ~970 ns. Filed
+  with the fix and the hazard.
+- **THE BACKEND INLINER IS WORTH ~30 ms, MEASURED.** Replacing eight runtime calls per
+  digest word with one bought 31 ms, so a runtime call costs ~6 ns and the "text byte
+  window" would buy ~0.4% of the parse. Filed and RETRACTED on price (`4d75a8f`); the
+  inliner's real audience is generated-code quality, not the build clock.
+- **`make census`/`AVRA_MEM_STATS` were NOT used this session** — every number came
+  from `/usr/bin/time` + phase timers + `sample`. Naming the instrument that was NOT
+  reached for is part of the record.
+
+### PROCESS
+
+- **KEEP: save the binary first.** `cp build/avra build/avra.good-$(git rev-parse
+  --short HEAD)` before any A/B — it rescued the session twice.
+- **KEEP: the differential + probe + fixed point + idioms + seed-check.** Five checks,
+  every change; the differential needs the `sed` toggle, never a backup.
+- **KEEP: `/usr/bin/time -p ./avra build packages/cli` as the stable oracle.** Wall
+  swings 2.5x; user CPU does not.
+- **CHANGE: clear `.avra-cache` only BETWEEN builds.** Filed as a law above.
+- **CHANGE: one heavy process at a time is about SESSIONS, not a build's own
+  parallelism.** A bounded worker pool inside one build under the machine lock is
+  `make -j`, and it is the one form of parallelism every build system has. Say so in
+  the rule, so the next session does not read it as forbidding this.
+- **CHANGE: the sampler is a two-part instrument.** Read the leaf list for the TAX and
+  the call tree for the SHAPE, and know that blocked time is sampled. Put it in the
+  perf tip sheet, because the wrong reading nearly bought a 3-day project.
+
+### NOT SURVEYED
+
+The packages outside `std-avrac`/`std-process` (sqlite, io, text, http); the cold
+frontend beyond the parse; the interpreter/FFI paths; the `agents`/`tasks` machinery;
+the seed-bootstrap ladder beyond its use here; the wider compiler outside `cache/cas`.
+
+## Feedback survey — 2026-09-20 (cache/cas: the reachability collision, closed; head `64ced80`)
+
+Scope: the build-cache layer, and the five non-cache bugs the work uncovered on the
+way. One heavy process at a time under `tools/watch.sh`, as the discipline requires.
+NOT surveyed: the packages outside `std-avrac` (only what `make gate` reaches was
+opened); the cold frontend beyond the parse; the interpreter/FFI paths; the
+`agents`/`tasks` machinery; the history in the seven older cache handoffs.
+
+### FRICTION
+
+- **A COMPILER-SOURCE CHANGE NEEDS A REBUILD BEFORE YOU CAN PROBE IT.** The standing
+  `build/avra` is what runs `check`, `emit` and expansion, so a probe run before
+  `make bootstrap` answers about the OLD compiler. Cost: ~15 rebuild cycles in this
+  session, several of them spent reading a stale answer as a new one. **ASK:** say
+  this in the perf/handoff tip sheet as the FIRST rule, and make `./avra` refuse (or
+  warn) when the source is newer than the binary.
+- **THE CACHE'S POISON SPEAKS AS AN INTERFACE MESSAGE.** `avra: interface records
+  did not stabilize` means the cache holds a stale interface; the fix is
+  `rm -rf .avra-cache && make bootstrap`. It cost two detours (it looked like a
+  non-determinism bug in `resolved`). **ASK:** name the cache in the message and put
+  the one-line recovery in it.
+- **`emit` IS STRICTER THAN `check` AND `build`.** Three F2030s (`DeclFacts`/
+  `StructSig` have no `fingerprint`) were invisible to `check packages/std-avrac` and
+  to `make bootstrap`, and blocked `make seed` — hence the gate. **ASK:** a keeper
+  that runs `emit`'s stricter path over the compiler's own source at gate time, so the
+  gap is found by the gate and not by a downstream step.
+- **THE SEED LAW MAKES EVERY SOURCE CHANGE A THREE-STEP DANCE** (commit source →
+  `make seed` → commit `bootstrap/seed.ll` + `seed.sources` → re-gate), and
+  `seed-guard` compares BOTH sides at HEAD, so the seed must be committed before it
+  passes. Cost: 4 seed refreshes, each ~1–2 min plus a re-gate. **ASK:** a Makefile
+  target that does the whole dance (or a gate step that says which half is stale).
+- **A TRAP FROM THE EVALUATOR HAS NO SITE.** `avra: index 130 is out of bounds
+  (length 109)` comes from `compiler/interp.av`'s `out_of_bounds` — the IR EVALUATOR —
+  and names neither the const nor the annotation being settled. It took a bisect
+  (comment the trait lookup, then the seal) to learn it was the seal, not the lookup.
+  **ASK:** the evaluator's trap carries the settled root's name, as `defect_at` carries
+  a location.
+- **`avra test` REPORTS A TRAP BY THE WRONG NAME.** `STOPPED — the case or program
+  named above trapped` names the last F2047 WARNING, not the failing case, because the
+  runner prints no per-case progress. **ASK:** the runner names the case it was on.
+- **`tools/traps.sh` SHARES ONE CACHE ACROSS ALL 24 ROWS**, so a row's failure can be
+  another row's object. There is no filter and no `--no-cache`, so isolating one row
+  means PATCHING the script. **ASK:** a row filter and a per-row cache switch; the
+  per-row-clear patch is how this session proved the collision (`traps: 24 contracts
+  held`).
+- **A RED FIXTURE BLOCKS A WHOLE SUITE.** `features/impls/tests/trait_defaults/` halted
+  `avra test packages/std-avrac` at its first case, so the session ran the suite with
+  the directory moved aside — twice — and only found the two bugs inside it late.
+  **ASK:** a suite runner that runs the rest and reports the failure, or a documented
+  quarantine list.
+- **`check <pkg>` REPORTS ITS DEPENDENCIES' DEFECTS.** `check packages/std-avrac`
+  showed 51 `F0900 unknown runtime callee avra_proc_*`/`avra_io_*` that belong to
+  `@std/process`/`@std/io` (`check packages/std-process` alone is 0). Two hours went
+  to reading them as `@std/avrac`'s. **ASK:** the check summary groups by owning
+  package, or the count is deduped by `file:line` before it prints.
+- **THE DERIVE DEBUG WAS BLIND FOR WANT OF A TRACE.** Five fixes were ruled out before
+  the answer (a signature signed from the wrong view) was found, because the failing
+  quantity (`Kind` per payload) had no print. **ASK:** a documented probe recipe for
+  derive/expansion questions (add an `eprintln` to `payload_kinds`, rebuild, read it) —
+  the trace protocol, written down.
+- **NO `continue` AND NO `break`.** `writes_receiver`'s scan wanted
+  `if t == null { continue }` and the language refuses both words (`F3000: 'continue'
+  is not defined`). It is in "The subset today"; the cost is real and it recurs.
+- **A CLOSURE CAPTURING `self` BY VALUE CANNOT FILL A `mut` SEAT.** `F2048: self is
+  captured by value — a lambda's copy cannot fill seat 1 of writes_receiver` forced the
+  seal out of `any(...)` into a plain loop. **ASK:** say the exit at the refusal
+  ("hoist the call out of the closure").
+- **`@derive(A, B)` IS INVALID AND REFUSES AS A CASCADE.** `@std/meta`'s
+  `derive(what: Named, tr: Trait)` takes ONE trait, so `@derive(Roles, Fingerprint)` is
+  a count error — but it reports F2033 "a generic fn is not a value" at the trait,
+  because `check_annotation` types the extra argument before it judges the count.
+  **ASK:** judge the count BEFORE typing the arguments, so the words name the mistake.
+
+### SUGAR
+
+- **`continue` / `break`** — wanting site `compiler/typing_impls.av`'s
+  `writes_receiver` scan (`if t == null { continue }`). Already filed; this is the
+  recurrence.
+- **A DECLARATION'S STATEMENT RANGE.** `Decl.lo..hi` is an EXPRESSION range and
+  statements live in their own arena, so no caller can ask "this declaration's
+  statements". Wanting site: `writes_receiver`, which scans `0..stmts.count()`.
+  **ASK:** `store.decl_stmts(d) -> (int, int)`, one query, in the store's vocabulary.
+- **A LIST FOLD, NOT A STRING JOIN.** `seed_content_keys` digests
+  `joined(["${n}" for n in fps], ",")` where `fp_list` is the encoding every other
+  fingerprint uses. The wanting site is one line; the ask is discipline: **never join
+  ints to digest them.**
+
+### FEATURES
+
+- **`avra test --case <substring>`** (or a `--filter`). There is no way to run one
+  failing case; this session built a whole package around a probe instead.
+- **`--no-cache` / `AVRA_NO_CACHE=1`.** The one switch that separates "the cache did
+  it" from "the compiler did it" — this session patched `traps.sh` to get it.
+- **`avra cache explain <file>`.** Prints the object key and the inputs it folded
+  (module, path, bytes, imports, content digest) so a collision is DIAGNOSED rather
+  than bisected.
+- **A BUILD TRACE.** `held modules`, the per-phase ms and the object-key hits are
+  computed (`trace`, `p.phases`) and never printed. A `--trace` flag would have made
+  the hold question (§FRICTION above) a measurement instead of a guess.
+
+### DEFECTS
+
+- **THE MULTI-DERIVE CORRUPTION — a miscompile, still open.** `@derive(Roles)` +
+  `@derive(Fingerprint)` on `enum Ins` in `core/ir.av` compiles CLEAN and produces
+  WRONG CODE: the compiled `cases` binary segfaults in `av_features.compose_grammar`
+  (`avra_array_get` on a null list), and the suite traps at its first spec case. Isolated
+  to that pair — `DeclSig` (`Projections` + `Fingerprint`) works, so multi-derive is not
+  inherently broken. Worked around by the trait's sanctioned exit (a hand `impl Ins`),
+  which is a hand-maintained second spelling. Repro: add the second `@derive` to `Ins`,
+  `make bootstrap`, `./avra test packages/std-avrac`.
+- **THE HELD-BUILD SEAL HOLE — latent.** `declare_impl_block` seals (boxes) a target
+  when a method writes through its receiver; a held impl has no body, so
+  `writes_receiver` is false there. Unless the interface carries the flat/unflat mark,
+  a parsed build boxes and a held one does not — the `ptr`/`i64` mix the original
+  comment warned about, whose warning this session deleted.
+- **THE `held_modules`/SEED ORDERING — a stale memo.** `build_cache.av:230` calls
+  `held_modules`, which asks `obj_key_cached` for every file and MEMOIZES it in
+  `ws.object_keys` — before `seed_content_keys` at `:264`. `hold_only` (`record.av:275`)
+  then reads a pre-seed key. Safe today only because that key finds no object.
+- **`lo..hi` IS AN EXPRESSION RANGE — a trap waiting.** Scanning
+  `assign_target(StmtId{lo..hi})` traps (`index 130 is out of bounds (length 109)`).
+  Nothing in the tree says so at the declaration; see the SUGAR row.
+- **`methods` FORCES A WHOLE-FILE RESOLVE.** `workspace.av`'s `methods(target)` now
+  begins `let _ = self.resolved(self.decls.decl(target).file)`. It fixed a real
+  ordering bug (a generated impl is minted into the target's file) with a hammer.
+- **51 `F0900 unknown runtime callee avra_proc_*`/`avra_io_*`, latent.**
+  `core/runtime_api.av` has zero `avra_proc` rows, and the externs of a DEPENDENCY are
+  not in `self.externs` on a `check` sweep. Unmasked when `trait_defaults` stopped
+  halting the pipeline. `check packages/std-process` alone is 0.
+- **FIXED THIS SESSION (for the record):** the receiver-write `F0900`; the
+  `DeclFacts`/`StructSig` F2030 that blocked `make seed`; `Self`'s bound; the signing
+  context; `writes_receiver`'s seats; the cache reachability collision.
+
+### DOCTRINE
+
+- **THE `Roles` COMMENT'S "two `match` expressions in one `Decls` alias their pattern
+  nodes" IS STALE (or context-specific).** `core/ir_roles.av` justifies nine
+  one-fn-per-directive quotes with it, yet `features/projections.av`'s `derive` emits
+  ONE `impl` holding four `match` bodies and works. Either the bug is real for a shape
+  nobody named or the comment is a workaround for a fixed defect. **ASK:** re-probe and
+  correct or delete; a stale comment here sent this session's `Ins` work down the wrong
+  path.
+- **THE `writes_receiver` COMMENT AND THE CODE DISAGREED.** "A method's receiver seat
+  first, never declared" sat above `params.first().promises.mutable` — which reads the
+  first WRITTEN seat, not the receiver. A reader believed the comment. Fixed; the
+  lesson is the one CLAUDE.md already carries ("measure what a thing does before
+  explaining why two differ").
+- **A DELETED WARNING.** `declare_impl_block`'s "never by a body scan, so a parsed
+  build and a held one seal alike" was removed when the body scan landed, and the
+  commit message asserted the agreement instead. The claim is unverified; the warning
+  is the honest state.
+- **"The subset today" LACKS THE RECEIVER-WRITE GAP.** `self.n = …` on a one-field
+  record through a plain `fn` needed a seal the declaration did not drive; the tests
+  say "a warning until the tree's own sites are places" but no entry lists the gap.
+- **THE DESIGN'S `ra`/`txj` REPRO IS RIGHT, THE TREE'S MANIFESTATION DIFFERED.** The
+  collision shows up in `make traps` between ROWS (a shared cache), not across two
+  hand-built programs — worth saying in `2026_09_20_CODEGEN_UNITS.md` §1, because the
+  first thing a reader does is try to reproduce it by hand.
+
+### PERFORMANCE
+
+- **THE BODY SCAN IS O(ALL STATEMENTS) PER IMPL** (`writes_receiver`). Unmeasured; it
+  should be a statement range. `check packages/std-avrac` is 13.9 s, but no before/after
+  was taken. **ASK:** measure before the next change here.
+- **`methods` FORCING A RESOLVE** — unmeasured cost, per method-table read.
+- **THE CONTENT KEY KEEPS THE INTERFACE HOLD OFF** — the fix's real price, unmeasured.
+  Record `held modules` and cold/warm `./avra build packages/cli` before touching it.
+- **`derived(...)` IS A CALL WHERE `fp(1, …)` WAS INLINE** — every derived fold gained
+  a call. It buys the tag-in-one-place law; the cost is unmeasured.
+
+### PROCESS
+
+- **KEEP: the watchdog and the one-heavy-process rule.** Every gate, seed and traps run
+  went through `tools/watch.sh`; no panic, no bypass.
+- **KEEP: `cp build/avra build/avra.pre`.** Not needed this session, and that is why it
+  is worth keeping — the two builds that failed (`make avra` on a poisoned cache) would
+  have been recoveries without it.
+- **KEEP: the per-row cache clear as an ISOLATION TECHNIQUE.** Patching `traps.sh` to
+  clear `.avra-cache` before each row is what proved the collision in one run. Make it a
+  flag.
+- **KEEP: `make bootstrap`, never `make avra`, after a language/compiler change.**
+- **CHANGE: the cache layer has TEN documents and they supersede each other.** A reader
+  cannot tell a retracted fact from a live one without reading all of them. Collapse to
+  the design + one state doc when the layer lands.
+- **CHANGE: a finding without a number is a question.** This session filed four perf
+  rows as "unmeasured" — honest, and each one is a task someone must close.
+
+### HOMES — where each finding routes
+
+The survey is the breadth; this is the routing, so no row is lost when the survey
+scrolls away.
+
+- **The multi-derive corruption** -> this section's DEFECTS (the defect ledger); it is
+  the top open defect and blocks the per-function-unit work if it is not root-caused.
+- **`continue`/`break`** -> CONFIRMED against CLAUDE.md's "The subset today" (both words
+  already listed) and the sugar backlog; this row is the recurrence, not a re-file.
+- **The statement-range query, the list-fold discipline** -> code asks, not language
+  sugar; the wanting sites are cited in SUGAR and the fix is one store verb.
+- **`avra test --case`, `--no-cache`, `avra cache explain`, a build trace** -> the
+  toolchain ledger (`cli`); each names the command it extends.
+- **The `Roles` staleness, the deleted seal warning, the receiver-write gap in "The
+  subset today"** -> DOCTRINE above; each is a doc correction at a named site.
+- **The `held_modules`/seed ordering, the held-build seal hole, the body scan's cost,
+  the hold being off** -> the cache layer's own state doc
+  (`docs/2026_09_20_CACHE_AUDIT_AND_HANDOFF.md` §2) and the next session's prompt
+  (`docs/2026_09_20_CACHE_NEXT_AGENT_PROMPT.md` §1), which is where the work will be
+  scheduled.
+- **The standing-binary rule, the cache-poison message, the per-row cache clear** ->
+  the perf/handoff tip sheet and PROCESS above.
+
+### NOT SURVEYED
+
+The packages outside `std-avrac` (sqlite, io, text, http, process) beyond what the gate
+runs; the cold frontend beyond the parse; the interpreter/FFI paths; the `agents`/`tasks`
+machinery; the seven older cache handoffs' history; `@std/meta`'s derive machinery
+beyond the corruption isolated above.

@@ -18,7 +18,7 @@ One slice = red-team + review round + ONE gate + commit + seed.
 - [x] S3 the sweep to 3
 - [x] **S4 the sweep to 0** (`63cc6a6`) — one flat law (`Decls.declare`), a nested decl is no
       symbol, a program that boxes a flat record builds whole
-- [ ] **S5 THE HELD DERIVATION** — `build_program_attempt`'s first half as one verb
+- [x] **S5 THE HELD DERIVATION** (`a2c99e0`) — `build_program_attempt`'s first half as one verb
       every command asks; per-file diagnostics persist; `check` holds
 - [ ] S6 `test` on the derivation: case symbols content-stable, cases ride the
       record, the suite's binary is cached
