@@ -4,6 +4,14 @@
 the deletion ledger. It supersedes the ad-hoc per-command plumbing; the north
 star in `ROADMAP.md` still governs the layers.
 
+> **State and direction live in `2026_09_21_COMPILER_CACHE.md`.** Two things
+> below have moved. P5's blocker is PAID: a file's object now holds every body
+> the file declares, so a build's object and a suite's are the same object and
+> `test` may call `compile_lowered` as it stands. And the order changes:
+> semantics before folders — put every command on the one path (P5, the
+> persistent `parsed` query), THEN `World`/`Compiled`/`Projection` (P2–P4) as a
+> rename-and-delete pass, THEN the folder split (P6).
+
 ## 0. Why
 
 Build was optimised for two days and is the most current path in the tree.
