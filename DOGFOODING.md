@@ -764,6 +764,19 @@ reintroducing I3's blind spot names the two spellings it lost.
       field list must be in hand at once to judge it). Ratcheted
       (`modified_copy_literal`).
 
+- I54 AN if/else-if LADDER OF 3+ ARMS ANSWERING A VALUE IS `when` —
+      `let base = if a { x } else if b { y } else { z }` becomes
+      `let base = when { a -> x, b -> y, _ -> z }`, and the same
+      reads over a match arm's `->`, a `return`, or a fn's tail. THE
+      ONE LADDER THAT STAYS: an arm that is not a single-line VALUE
+      — a `return`/`fail`/`break`/`continue`, an assignment, a
+      nested `if`, or a body spanning more than one line — since
+      `when`'s arms are values and this never combines a nested
+      condition into one; a ladder of only two arms; and a bare
+      `if` mid-body that closes some OTHER block (a `while`, a
+      `for`) rather than standing as its own fn's tail. Ratcheted
+      (`when_ladder`).
+
 - I49 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
       conversions that are inverses name their categories ONCE, as a
       registry enum, and each direction is an exhaustive match over

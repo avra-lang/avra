@@ -285,7 +285,7 @@ fn record_line(d: Decl, ordinal: int, item: bool) -> string {
     // AN `extern fn` WEARS ITS OWN SHAPE WORD. The fact is a STORE read (`extern_parts`),
     // and a held file has no store, so the record must carry it: the word is the one
     // column every kind already has, and the payload's layout is unchanged.
-    let first = if self.decls.is_extern(d.id) { "extern" } else if at < 0 { shape } else { shape.substring(0, at) }
+    let first = when { self.decls.is_extern(d.id) -> "extern", at < 0 -> shape, _ -> shape.substring(0, at) }
     let payload = if at < 0 { "" } else { shape.substring(at + 1, shape.length) }
     mut parent_at = 0 - 1
     if d.parent != null {
@@ -436,7 +436,7 @@ fn read_type_wire(words: List<string>, at: int) -> WireType? {
     }
     if tag == "L" || tag == "C" || tag == "O" {
         let child? = self.read_type_wire( words, at + 1) else { return null }
-        let raw = if tag == "L" { Type.List(child.id) } else if tag == "C" { Type.Cell(child.id) } else { Type.Opt(child.id) }
+        let raw = when { tag == "L" -> Type.List(child.id), tag == "C" -> Type.Cell(child.id), _ -> Type.Opt(child.id) }
         return WireType { id: self.types.intern(raw), next: child.next }
     }
     if tag == "M" || tag == "Q" {

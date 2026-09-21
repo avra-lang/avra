@@ -23,7 +23,7 @@ A FOURTH law keeps the rules from rotting: every I-code in
 DOGFOODING.md must have a matcher here or an entry in UNRATCHETED
 with its reason. The registry can never again outrun the ratchet.
 """
-import collections, os, re, sys, glob
+import bisect, collections, os, re, sys, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # EVERY PACKAGE'S SOURCE, never a list: a listed root forgets the next
@@ -578,6 +578,72 @@ def modified_copy_literal(lines):
                     yield i, l.strip()
                     break
 
+# AN if/else-if LADDER OF 3+ ARMS, USED AS AN EXPRESSION, IS `when`.
+# Restricted to a chain whose EVERY arm (the final `else` included) is
+# a single line with no embedded newline, and reads as a VALUE rather
+# than a statement — no `return`/`fail`/break`/`continue`, no
+# assignment, and no NESTED `if` (a nested arm needs its conditions
+# combined, which this never attempts). The chain must stand where an
+# expression stands: after `=`, `->`, `return`, or as a fn's tail (a
+# bare `if` immediately followed by the block's own closing `}`) — a
+# bare `if` mid-body that closes some OTHER block (a `while`, a `for`)
+# is never mistaken for a tail, because its arms still answer void
+# through mutation or an early exit, which the body check above
+# already refuses.
+WHEN_TRIGGER = re.compile(r"(?:[=]|->|\breturn)[ \t]+if\b|^[ \t]*if\b", re.MULTILINE)
+WHEN_BAD_BODY = re.compile(r"^(return\b|fail\b|break\b|continue\b|if\b|[a-zA-Z_][\w.\[\]]*(?:\[[^\]]*\])?\s*=(?!=))")
+
+def when_body_ok(body):
+    b = body.strip()
+    return bool(b) and "\n" not in b and not WHEN_BAD_BODY.match(b)
+
+def when_ladder(lines):
+    """A 3+ arm if/else-if ladder in expression position (I54)."""
+    text = "\n".join(lines)
+    starts = [0]
+    for l in lines:
+        starts.append(starts[-1] + len(l) + 1)
+    for m in WHEN_TRIGGER.finditer(text):
+        km = re.search(r"\bif\b", m.group(0))
+        if_pos = m.start() + km.start()
+        is_bare = m.group(0).lstrip().startswith("if")
+        pos, arms, ok, last_close = if_pos, 0, True, None
+        while True:
+            brace_m = re.search(r"\{", text[pos:pos + 400])
+            if not brace_m:
+                ok = False
+                break
+            brace_open = pos + brace_m.start()
+            close = closing_brace(text, brace_open)
+            if close is None or not when_body_ok(text[brace_open + 1:close]):
+                ok = False
+                break
+            arms += 1
+            last_close = close
+            rest = text[close + 1:close + 400]
+            em = re.match(r"[ \t\n]*else[ \t\n]+if\b", rest)
+            if em:
+                pos = close + 1 + em.end() - 2
+                continue
+            em2 = re.match(r"[ \t\n]*else[ \t\n]*\{", rest)
+            if not em2:
+                ok = False
+                break
+            else_open = close + 1 + rest.index("{", em2.end() - 1)
+            else_close = closing_brace(text, else_open)
+            if else_close is None or not when_body_ok(text[else_open + 1:else_close]):
+                ok = False
+                break
+            arms += 1
+            last_close = else_close
+            break
+        if not ok or arms < 3:
+            continue
+        if is_bare and not re.match(r"[ \t\n]*\}", text[last_close + 1:last_close + 40]):
+            continue
+        li = bisect.bisect_right(starts, if_pos) - 1
+        yield li, lines[li].strip()
+
 def if_null_ternary(lines):
     """A null test picking the value or a default — `x ?? d` (I52)."""
     for i, l in enumerate(lines):
@@ -915,6 +981,11 @@ RULES = {
     "I40": (spelled_shape,
             "a structural type interned by hand — `intern(Type.Opt(intern(Type.Str)))` — "
             "where a type literal spells it: `cx.type(string?)`, `types.type(List<elem>)`"),
+    "I54": (when_ladder,
+            "an if/else-if ladder of 3+ arms answering a value — that is `when`. "
+            "Accused only where every arm is a one-line expression (no return/fail/"
+            "break/continue, no assignment, no nested if) standing after `=`, `->`, "
+            "`return`, or as a fn's tail"),
     "I53": (modified_copy_literal,
             "a struct literal copying every other field from one value — that is "
             "`with`. Accused only when `v`'s declared type is confirmed to match "
@@ -1051,6 +1122,14 @@ CLEAN = {
     "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
             ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
+    "I54": [["    let base = if a { x } else { y }"],
+            ["    if a { x = 1 } else if b { x = 2 } else { x = 3 }"],
+            ["    if a { if c { p } else { q } } else if b { y } else { z }"],
+            ["    if a { return x } else if b { y } else { z }"],
+            ["fn f() {",
+             "    if a { g() } else if b { h() } else { j() }",
+             "    k()",
+             "}"]],
     "I53": [["    fn built(w: Other) -> Widget {",
              "        Widget { name: w.name, tier: w.tier, extra: 5 }",
              "    }"],
@@ -1102,6 +1181,12 @@ SPECIMENS = {
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
+    "I54": [["    let base = if a { x } else if b { y } else { z }"],
+            ["    .A -> if a { x } else if b { y } else { z },"],
+            ["fn f() -> string {",
+             "    if a { \"x\" } else if b { \"y\" } else { \"z\" }",
+             "}"],
+            ["    return if a { x } else if b { y } else { z }"]],
     "I53": [["impl Widget {",
              "    fn grown() -> Widget {",
              "        Widget { name: self.name, tier: self.tier, extra: 1 }",
