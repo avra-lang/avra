@@ -111,8 +111,9 @@ impl TypeCx {
         // (a DERIVED `Fingerprint`, say) never writes, and sealing on its ACCOUNT made a
         // `DeclId` boxed in a parsed build and bare in a held one: the two objects then
         // disagreed on the representation and the link mixed `ptr` with `i64` in silence.
-        // THE SEAL IS DRIVEN BY THE DECLARATION — a `mut fn` method — not by an impl's mere
-        // existence.
+        // THE SEAL IS DRIVEN BY THE DECLARATION — a `mut fn` method —
+        // not by an impl's mere existence and never by a body scan, so
+        // a parsed build and a held one seal alike.
         if parts.fns.any((f: StmtId) -> writes_receiver(f, self.view.store)) {
             self.view.types.unflatten(self.impl_self_type(d))
         }
@@ -340,10 +341,14 @@ fn impl_heading(of: string?, target: string) -> string {
     if of == null { return target }
     "${of!} for ${target}"
 }
-/// Whether a method's receiver is declared `mut` — the ONE fact that forces its target to
-/// keep a box. Read from the PARSE, so it is answerable before the method is signed.
+/// Whether a method's receiver is declared `mut` — the ONE fact that
+/// forces its target to keep a box, so a flat record's `self` is a
+/// place to write through. A method's receiver is never a written
+/// seat: its `mut` is the fn's own word, and the written seats that
+/// follow may carry their own. Read from the PARSE, so it is
+/// answerable before the method is signed.
 fn writes_receiver(f: StmtId, store: NodeStore) -> bool {
+    if store.is_mutating(f) { return true }
     let ps: List<Param> = store.fn_parts(f)?.params ?? []
-    let r: Param? = ps.first()
-    r != null && r!.promises.mutable
+    ps.any((p: Param) -> p.promises.mutable)
 }
