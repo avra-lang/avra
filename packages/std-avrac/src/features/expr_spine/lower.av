@@ -5,7 +5,7 @@
 //! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
 use core.{ExprId, BinOp, UnOp, Reg, Ins, Type, TypeId}
-use features.{LowerCx, StructSig, EnumSig, variant_defect, PropertyRow, property_of}
+use features.{LowerCx, EnumSig, variant_defect, PropertyRow, property_of}
 
 fn spine_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
@@ -67,9 +67,8 @@ fn prop_reg(mut cx: LowerCx, e: ExprId, s: ExprId, name: string) -> Reg {
     // A NAME IS TRANSPARENT AT A READ, and the register already IS
     // the shape's — so the SHAPE's layout decides, never the name's.
     let sty = cx.seen(cx.type_at(s))
-    let sig: StructSig? = cx.fields_of(sty)
-    if sig == null { return property_reg(cx, e, s, name) }
-    let slot: int? = sig!.slot_of(name)
+    let sig? = cx.fields_of(sty) else { return property_reg(cx, e, s, name) }
+    let slot: int? = sig.slot_of(name)
     if slot == null {
         return cx.lower_defect(e, "a fieldless property on a struct survived typing")
     }

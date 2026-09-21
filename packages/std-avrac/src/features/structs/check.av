@@ -1,7 +1,7 @@
 //! The literal's typing law: the name resolved to a declaration
 //! (resolve spoke otherwise), and the written fields match it —
 //! each declared field exactly once, each value the field's type.
-use core.{ExprId, StmtId, Type, TypeId, StructParts, DeclId}
+use core.{ExprId, StmtId, Type, TypeId, DeclId}
 use features.{no_pins, Pins, TypeCx, StructSig, this_is, fields_are, repeated_at, slot_worthy, tparams_refused, unpinned_of, slice_promise}
 use diagnostics.{refusal}
 
@@ -19,24 +19,21 @@ fn structs_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 fn with_type(mut cx: TypeCx, e: ExprId, subject: ExprId, fields: List<string>, values: List<ExprId>) -> TypeId {
     let ty = cx.type_at(subject)
     if cx.errored_ty(ty) { return cx.error_type }
-    let sig: StructSig? = cx.fields_of(ty)
-    if sig == null { return not_a_struct(cx, e, subject) }
-    written_checks(cx, cx.view.types.name_of(ty), fields, values, sig!)
+    let sig? = cx.fields_of(ty) else { return not_a_struct(cx, e, subject) }
+    written_checks(cx, cx.view.types.name_of(ty), fields, values, sig)
     ty
 }
 
 fn lit_type(mut cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: List<ExprId>) -> TypeId {
     cx.warn_use(e)
-    let decl: DeclId? = cx.bound_decl(e)
-    if decl == null { return cx.error_type }
-    let target = decl!
+    let decl? = cx.bound_decl(e) else { return cx.error_type }
+    let target = decl
     let ty = cx.view.types.intern(Type.Struct(target, name))
-    let sig: StructSig? = cx.fields_of(ty)
-    if sig == null { return not_a_record(cx, e, name) }
+    let sig? = cx.fields_of(ty) else { return not_a_record(cx, e, name) }
     if !cx.tparams(target).is_empty() {
-        return generic_lit(cx, e, name, fields, values, target, sig!)
+        return generic_lit(cx, e, name, fields, values, target, sig)
     }
-    check_fields(cx, e, name, fields, values, sig!)
+    check_fields(cx, e, name, fields, values, sig)
     ty
 }
 
@@ -73,9 +70,8 @@ fn generic_lit(mut cx: TypeCx, e: ExprId, name: string, fields: List<string>,
 /// field falls back to the ordinary law, so widening still rides.
 fn generic_field(mut cx: TypeCx, name: string, sig: StructSig, f: string, v: ExprId,
                  dup: bool, decl: DeclId, mut bound: Pins) -> bool {
-    let slot: int? = field_slot(cx, name, sig, f, v, dup)
-    if slot == null { return false }
-    let want = sig.types[slot!]
+    let slot? = field_slot(cx, name, sig, f, v, dup) else { return false }
+    let want = sig.types[slot]
     if cx.agreed(v, want, decl, bound) { return true }
     wrong_field_type(cx, v, f, want)
     false
@@ -192,9 +188,8 @@ export fn on_nominal(t: Type) -> bool {
 
 /// `x.of` answers the shape the name stands over.
 export fn check_named_of(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {
-    let of: TypeId? = cx.view.types.stands_for(ty)
-    if of == null { return not_a_name(cx, e, ty) }
-    of!
+    let of? = cx.view.types.stands_for(ty) else { return not_a_name(cx, e, ty) }
+    of
 }
 
 fn not_a_name(mut cx: TypeCx, e: ExprId, ty: TypeId) -> TypeId {

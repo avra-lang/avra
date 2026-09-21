@@ -1,7 +1,7 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef}
-use @std.avrac.compiler.{Program, Analysis, Workspace, lone_workspace, timed_workspace, programs_workspace, avra, stage_words, build_program, Toolchain}
+use @std.avrac.compiler.{Program, Workspace, lone_workspace, timed_workspace, programs_workspace, avra, stage_words, build_program, Toolchain}
 use @std.avrac.core.{joined, distinct}
 use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, file_name}
 use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit}
@@ -135,9 +135,8 @@ fn program_arg(args: CliResult) -> Program? {
 /// test sits beside its `avra.toml` and every file there is a program
 /// of its own; the lone file otherwise.
 fn file_workspace(path: string) -> Workspace {
-    let held: string? = package_root(dir_of(path))
-    if held == null { return lone(path) }
-    let root = held!
+    let held? = package_root(dir_of(path)) else { return lone(path) }
+    let root = held
     let src = joined_path(root, "src")
     if !exists(src) { return programs_workspace(disk_host(), root, avra(), () -> now_ns()) }
     if !under_dir(path, src) { return lone(path) }
@@ -177,9 +176,8 @@ fn program_at(args: CliResult) -> Program? {
 /// A command over the argued program — every command's one prologue:
 /// no such file exits 2.
 fn on_program(args: CliResult, act: fn(Program) -> int) -> int {
-    let held: Program? = program_at(args)
-    if held == null { return 2 }
-    act(held!)
+    let held? = program_at(args) else { return 2 }
+    act(held)
 }
 
 /// Analyze, refuse with the report, or write the verified `.ll`
@@ -187,11 +185,10 @@ fn on_program(args: CliResult, act: fn(Program) -> int) -> int {
 /// both do before they differ.
 fn lowered_or_report(p: Program) -> Result<string, string> {
     if !p.clean() { return .Err(p.report()) }
-    let entry: Analysis? = p.entry_file()
-    if entry == null { return .Err(p.rendered([no_target(p.ws.root)])) }
-    if entry!.view.stmts.is_empty() { return .Err("the program is empty") }
+    let entry? = p.entry_file() else { return .Err(p.rendered([no_target(p.ws.root)])) }
+    if entry.view.stmts.is_empty() { return .Err("the program is empty") }
     let lo = p.lowered_checked()?
-    let path = "${entry!.view.source.file}.ll"
+    let path = "${entry.view.source.file}.ll"
     let failure: string? = emit_ll(lo, path)
     if failure != null { return .Err(failure!) }
     .Ok(path)

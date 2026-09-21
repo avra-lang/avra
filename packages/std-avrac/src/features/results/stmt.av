@@ -27,9 +27,8 @@ impl StmtSemantics for FailSemantics {
 /// `fail v` — legal only inside a fn promising a `Result`, with `v`
 /// ACCEPTED by the err side (widening recorded, like every slot).
 fn check_fail(mut cx: TypeCx, s: StmtId) {
-    let held: ExprId? = cx.view.store.stmt_value(s)
-    if held == null { return }
-    let v = held!
+    let held? = cx.view.store.stmt_value(s) else { return }
+    let v = held
     let ret: TypeId? = cx.enclosing_ret()
     if ret == null {
         cx.emit(refusal("type.fail", cx.stmt_loc(s), "a `fail` raises to a caller, and there is none enclosing", "raised here", "at the top level there is no failure channel"))
@@ -53,14 +52,13 @@ fn check_fail(mut cx: TypeCx, s: StmtId) {
 /// `errdefer`s run first; the memory pass settles every open scope
 /// at the site; other paths continue.
 fn lower_fail(mut cx: LowerCx, s: StmtId) -> Reg? {
-    let v: Reg? = cx.lower_value(s)
-    if v == null { return null }
+    let v? = cx.lower_value(s) else { return null }
     let ret: TypeId? = cx.enclosing_ret()
     if ret == null {
         cx.defect("a `fail` without an enclosing fn survived typing")
         return null
     }
-    let raised = cx.failed(ret!, v!)
+    let raised = cx.failed(ret!, v)
     cx.failing()
     cx.emit(Ins.FnExit(raised))
     null

@@ -4,7 +4,7 @@
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, FileId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, NodeStore, SeatMark, is_literal, settled_mark, Static, StaticBox}
 use diagnostics.{loc_at, refusal, Diag}
-use features.{LowerCx, capture_lane, Sub, Cap, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, new_meta_heap, literal_meta}
+use features.{LowerCx, capture_lane, Sub, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, new_meta_heap, literal_meta}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -25,9 +25,8 @@ impl LowerCx {
     /// seats THEMSELVES: a FORWARDED seat's value is per-unit, so
     /// only the caller's unit can key it.
     fn symbol_at(d: DeclId, e: ExprId) -> string {
-        let held: Sub? = self.facts.subst_at(e)
-        if held == null { return self.wanted(d, null, []) }
-        let sub = held!
+        let held? = self.facts.subst_at(e) else { return self.wanted(d, null, []) }
+        let sub = held
         let seats: List<SeatValue> = self.call_seats(d, e)
         if !self.seats_complete(d, e, seats) { return self.wanted(d, null, []) }
         self.wanted(d, Sub { target: sub.target, args: [self.concrete(t) for t in sub.args], consts: [sv.fp for sv in seats] }, seats)
@@ -104,9 +103,8 @@ impl LowerCx {
     /// ENCLOSING unit forwarded (its value — and so its key — is
     /// per-unit), or a value the source alone spells.
     fn seat_fill(a: ExprId, index: int) -> SeatValue? {
-        let found: Binding? = self.names.binding(a)
-        if found == null { return self.spelled_seat(a, index) }
-        let b = found!
+        let found? = self.names.binding(a) else { return self.spelled_seat(a, index) }
+        let b = found
         match b {
             .Param(_) -> self.forwarded_seat(b, index),
             // a body's own `const`: spelled, or settled on this unit's seats
@@ -144,9 +142,8 @@ impl LowerCx {
     /// alike, and a bare join of the two would make one call's seats
     /// read as another's.
     fn spelled_seat(a: ExprId, index: int) -> SeatValue? {
-        let src: ExprId? = self.spelled_source(a)
-        if src == null { return null }
-        let e = src!
+        let src? = self.spelled_source(a) else { return null }
+        let e = src
         mut heap = new_meta_heap()
         let value: MetaVal? = literal_meta(self.view.store, self.view.decls, self.facts, e, heap)
         if value == null { return null }
@@ -167,9 +164,8 @@ impl LowerCx {
     /// null outside a unit, where the seat has no value.
     fn forwarded_seat(b: Binding, index: int) -> SeatValue? {
         let i: int = match b { .Param(x) -> x, rest -> 0 }
-        let outer: SeatValue? = self.seat_at(i)
-        if outer == null { return null }
-        let held = outer!
+        let outer? = self.seat_at(i) else { return null }
+        let held = outer
         held with { index: index }
     }
 
@@ -177,9 +173,8 @@ impl LowerCx {
     /// argument itself, or a body's own `const` name's initializer.
     /// Null for a run-time value.
     fn spelled_source(a: ExprId) -> ExprId? {
-        let b: Binding? = self.names.binding(a)
-        if b == null { return a }
-        match b! {
+        let b? = self.names.binding(a) else { return a }
+        match b {
             .Def(s) -> self.view.store.const_value(s),
             rest -> a,
         }
@@ -217,9 +212,8 @@ impl LowerCx {
     /// 0..N-1), or its definition's slot — LOADED first when the
     /// slot is a memory cell, so the ident rule stays dumb.
     fn def_reg(e: ExprId) -> Reg? {
-        let b: Binding? = self.names.binding(e)
-        if b == null { return null }
-        self.read_binding(e, b!)
+        let b? = self.names.binding(e) else { return null }
+        self.read_binding(e, b)
     }
 
     /// A binding's VALUE in the current body, worn at the reading
@@ -380,9 +374,8 @@ impl LowerCx {
     /// emits nothing, so an annotation's lift is re-emitted at every
     /// use.
     fn settled_reg(e: ExprId, value: Expr) -> Reg? {
-        let raw: Reg? = self.constant_reg(value)
-        if raw == null { return null }
-        self.lifted_constant(e, raw!)
+        let raw? = self.constant_reg(value) else { return null }
+        self.lifted_constant(e, raw)
     }
 
     /// A literal's register, minted at the literal's OWN shape.
@@ -405,10 +398,9 @@ impl LowerCx {
             self.out.give(Ins.ConstBool(dst, b!))
             return dst
         }
-        let bits: int? = (value).bits_of()
-        if bits == null { return null }
+        let bits? = (value).bits_of() else { return null }
         let dst = self.shaped(Type.Float)
-        self.out.give(Ins.ConstFloat(dst, bits!))
+        self.out.give(Ins.ConstFloat(dst, bits))
         dst
     }
 
@@ -492,10 +484,9 @@ impl LowerCx {
     /// env), worn at the CAPTURE's type: the node here is the
     /// lambda, whose type is a box, and a captured `int` is not.
     fn capture_regs(e: ExprId) -> List<Reg> {
-        let cap: Cap? = self.names.capture(e)
-        if cap == null { return [] }
+        let cap? = self.names.capture(e) else { return [] }
         mut out: List<Reg> = []
-        for j, b in cap!.sources {
+        for j, b in cap.sources {
             let r: Reg? = self.read_wearing(e, b, self.capture_ty(e, j))
             if r == null {
                 self.out.defect("a capture without a value survived resolve")
@@ -509,15 +500,14 @@ impl LowerCx {
     /// The box a call goes THROUGH, when the callee is a fn-typed
     /// VALUE — null for a declared fn (the direct path).
     fn indirect_callee(e: ExprId) -> Reg? {
-        let b: Binding? = self.names.binding(e)
-        if b == null { return null }
-        let direct: bool = match b! {
+        let b? = self.names.binding(e) else { return null }
+        let direct: bool = match b {
             .Decl(d) -> self.view.decls.fn_name(d) != null,
             .Def(_) -> false,
             .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
         }
         if direct { return null }
-        self.callee_binding(e, b!)
+        self.callee_binding(e, b)
     }
 
     /// The BOX a call goes THROUGH. The node doing the reading is
@@ -560,9 +550,8 @@ impl LowerCx {
     /// statement's location.
     fn answer_loc() -> Loc? {
         let valued = self.view.stmts.filter((s: StmtId) -> self.view.store.stmt_value(s) != null)
-        let speaker: StmtId? = valued.last()
-        if speaker == null { return null }
-        loc_at(self.view.source.file, self.view.store.stmt_span(speaker!))
+        let speaker? = valued.last() else { return null }
+        loc_at(self.view.source.file, self.view.store.stmt_span(speaker))
     }
 
 }

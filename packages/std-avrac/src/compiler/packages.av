@@ -140,9 +140,8 @@ impl Workspace {
     /// The package a module path names: the root package for a local
     /// path, a dependency by key, absence when no package has the key.
     fn holder(m: ModulePath) -> Package? {
-        let k: string? = m.package()
-        if k == null { return self.packages[0] }
-        self.packages.find(it.key == k!)
+        let k? = m.package() else { return self.packages[0] }
+        self.packages.find(it.key == k)
     }
 
     /// A package reaches itself — its own files `use` it by name —
@@ -164,10 +163,9 @@ impl Workspace {
     /// another package's manifest): the path relative to the asking
     /// package's root after its last dependency.
     fn dependency_fix(from: Package, k: string) -> List<Suggestion> {
-        let known: Package? = self.packages.find(it.key == k)
-        if known == null { return [] }
+        let known? = self.packages.find(it.key == k) else { return [] }
         let m = self.manifest(from.ordinal)
-        let line = "\"${k}\" = { path = \"${relative_path(from.root, known!.root)}\" }"
+        let line = "\"${k}\" = { path = \"${relative_path(from.root, known.root)}\" }"
         let manifest_path = joined_path(from.root, "avra.toml")
         let text = if m.deps_at == null { "\n[dependencies]\n${line}\n" } else { "\n${line}" }
         let at = deps_offset(m) ?? self.host.read(manifest_path).length

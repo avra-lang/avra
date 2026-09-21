@@ -225,9 +225,8 @@ impl Emit {
     /// boundary, so a new RtKind must state its answer here or the
     /// build fails — an `is` test would silently answer "not a word".
     fn answers_word(callee: string) -> bool {
-        let sig: RtSig? = self.callee_sig(callee)
-        if sig == null { return false }
-        match sig!.ret {
+        let sig? = self.callee_sig(callee) else { return false }
+        match sig.ret {
             .I64 -> true,
             // a width answers an Avra `int`, never a pointer's word
             // a width answers an Avra `int`, and a double answers in
@@ -246,10 +245,9 @@ impl Emit {
     /// than guess a sign, and names these two builders when it does.
     /// This match is the caller it means — the row already said which.
     fn answered(callee: string, raw: ptr) -> ptr {
-        let sig: RtSig? = self.callee_sig(callee)
-        if sig == null { return raw }
+        let sig? = self.callee_sig(callee) else { return raw }
         let wide = avra_llvm_int64_type(self.lc)
-        match sig!.ret {
+        match sig.ret {
             .I32 -> avra_llvm_build_sext(self.b, raw, wide, "wide"),
             .U32 -> avra_llvm_build_zext(self.b, raw, wide, "wide"),
             // a double is already the width its seat declared
@@ -288,9 +286,8 @@ impl Emit {
     /// (it traps on every one today), and it must read the width
     /// from the same `cells` column.
     fn normalized_cells(callee: string, args: List<Reg>) {
-        let sig: RtSig? = self.callee_sig(callee)
-        if sig == null { return }
-        let cells = sig!.cells
+        let sig? = self.callee_sig(callee) else { return }
+        let cells = sig.cells
         for j, r in args {
             if j < cells.length { self.normalized_cell(cells[j], r) }
         }
@@ -343,9 +340,8 @@ impl Emit {
     /// UNCONVERTED — the conversions all live in the branch it skips.
     fn rt_arg(callee: string, j: int, r: Reg) -> ptr {
         let v = self.vals[r.index]
-        let found: RtSig? = self.callee_sig(callee)
-        if found == null { return v }
-        let sig = found!
+        let found? = self.callee_sig(callee) else { return v }
+        let sig = found
         if j >= sig.params.length { return v }
         match sig.params[j] {
             .I64 -> self.worded(r, v),

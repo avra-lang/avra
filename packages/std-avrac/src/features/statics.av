@@ -56,9 +56,8 @@ impl StaticBuild {
         // a FLAT record IS its field, whether a record declared it or
         // a NAME stands over it — the registry answers for both
         if self.decls.types.is_flat(ty) { return self.slot_of(v, heap, self.decls.types.flat_fields(ty)[0]) }
-        let sig: StructSig? = self.decls.fields_of_type(ty)
-        if sig == null { return null }
-        self.array_slot(heap.slots(v), heap, sig!.types)
+        let sig? = self.decls.fields_of_type(ty) else { return null }
+        self.array_slot(heap.slots(v), heap, sig.types)
     }
 
     /// A variant: its tag at slot 0, its payloads after — the tagged
@@ -68,32 +67,27 @@ impl StaticBuild {
         let slots = heap.slots(v)
         if held == null || slots.is_empty() { return null }
         let sig = held!
-        let raw: int? = match slots[0] { .Int(n) -> n, rest -> null }
-        if raw == null { return null }
-        let tag = raw!
+        let raw? = match slots[0] { .Int(n) -> n, rest -> null } else { return null }
+        let tag = raw
         if tag < 0 || tag >= sig.payloads.length { return null }
-        let payloads: List<Slot>? = self.slots_of(slots.slice(1, slots.length), heap, sig.payloads[tag])
-        if payloads == null { return null }
-        self.pushed(StaticBox.Slots([Slot.Int(tag)].concat(payloads!)))
+        let payloads? = self.slots_of(slots.slice(1, slots.length), heap, sig.payloads[tag]) else { return null }
+        self.pushed(StaticBox.Slots([Slot.Int(tag)].concat(payloads)))
     }
 
     /// A slot array of `slots`, each under its type — a list's
     /// elements, a record's fields.
     mut fn array_slot(slots: List<MetaVal>, heap: MetaHeap, types: List<TypeId>) -> Slot? {
-        let cells: List<Slot>? = self.slots_of(slots, heap, types)
-        if cells == null { return null }
-        self.pushed(StaticBox.Slots(cells!))
+        let cells? = self.slots_of(slots, heap, types) else { return null }
+        self.pushed(StaticBox.Slots(cells))
     }
 
     /// A map: its keys in written order beside its values, each under
     /// the map's value type.
     mut fn table_slot(v: MetaVal, heap: MetaHeap, value_ty: TypeId) -> Slot? {
-        let id: int? = match v { .Map(i) -> i, rest -> null }
-        if id == null { return null }
-        let row = heap.maps[id!]
-        let cells: List<Slot>? = self.slots_of(row.values, heap, filled<TypeId>(row.values.length, value_ty))
-        if cells == null { return null }
-        self.pushed(StaticBox.Table(row.keys, cells!))
+        let id? = match v { .Map(i) -> i, rest -> null } else { return null }
+        let row = heap.maps[id]
+        let cells? = self.slots_of(row.values, heap, filled<TypeId>(row.values.length, value_ty)) else { return null }
+        self.pushed(StaticBox.Table(row.keys, cells))
     }
 
     /// Each value as its slot, or null at the first that does not fit.
@@ -101,9 +95,8 @@ impl StaticBuild {
         if slots.length != types.length { return null }
         mut cells: List<Slot> = []
         for j, x in slots {
-            let c: Slot? = self.slot_of(x, heap, types[j])
-            if c == null { return null }
-            cells.push(c!)
+            let c? = self.slot_of(x, heap, types[j]) else { return null }
+            cells.push(c)
         }
         cells
     }

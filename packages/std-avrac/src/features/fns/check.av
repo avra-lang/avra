@@ -52,9 +52,8 @@ fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>
 /// `avra_fd_taken` has answered `Bytes` that way.
 fn crossing_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
     if rt_sigs().any(it.name == hname) { return nothing() }
-    let declared: FnSig? = cx.stmt_sig(s)
-    if declared == null { return nothing() }
-    let sig = declared!
+    let declared? = cx.stmt_sig(s) else { return nothing() }
+    let sig = declared
     for j, p in sig.params {
         if !hparams[j].promises.mutable && !crossable(cx.view.types, p) { seat_cannot_cross(cx, s, hname, j, p) }
     }
@@ -210,9 +209,8 @@ fn fits_box(t: TypeRef?, b: Box) -> bool {
 /// prototypes and wrong for nineteen must make the author say which,
 /// and `i64` is how they say "the wide one" out loud.
 fn inout_able(t: TypeRef?) -> bool {
-    let written: TypeRef? = t
-    if written == null { return false }
-    ["ptr", "i64", "i32", "u32"].contains(written!.name)
+    let written? = t else { return false }
+    ["ptr", "i64", "i32", "u32"].contains(written.name)
 }
 
 fn checked_fn(mut cx: TypeCx, s: StmtId, fname: string, fret: TypeRef, body: ExprId) {
@@ -235,9 +233,8 @@ fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
         .Call(callee, pins, args) -> {
             cx.warn_use(e)
-            let sig: FnSig? = cx.sig_of(e)
-            if sig == null { return cx.settled_call(args, valued_call(cx, e, callee.of, pins, args)) }
-            cx.settled_call(args, dispatched_call(cx, e, callee.of, pins, args, sig!))
+            let sig? = cx.sig_of(e) else { return cx.settled_call(args, valued_call(cx, e, callee.of, pins, args)) }
+            cx.settled_call(args, dispatched_call(cx, e, callee.of, pins, args, sig))
         }
         _ -> cx.error_type,
     }
@@ -265,14 +262,12 @@ fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, a
 /// and this rule owes no voice of its own. Absent when the callee
 /// names no type, or names one that stands over nothing.
 fn named_construction(mut cx: TypeCx, e: ExprId, callee: string, args: List<ExprId>, bound: TypeId) -> TypeId? {
-    let d: DeclId? = type_name_decl(cx.view.types.shape_of(bound))
-    if d == null { return null }
+    let d? = type_name_decl(cx.view.types.shape_of(bound)) else { return null }
     // the DECLARATION first: the name's mark is made when it is
-    let _ = cx.view.decls.sig(d!)
-    let named = cx.view.decls.self_type_of(d!)
-    let of: TypeId? = cx.view.types.stands_for(named)
-    if of == null { return null }
-    cx.seats_judged(e, callee, [of!], [], named, args)
+    let _ = cx.view.decls.sig(d)
+    let named = cx.view.decls.self_type_of(d)
+    let of? = cx.view.types.stands_for(named) else { return null }
+    cx.seats_judged(e, callee, [of], [], named, args)
 }
 
 /// A GENERIC callee unifies; a plain one type-checks directly. The
@@ -280,9 +275,8 @@ fn named_construction(mut cx: TypeCx, e: ExprId, callee: string, args: List<Expr
 /// resolver already found.
 fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                    args: List<ExprId>, s: FnSig) -> TypeId {
-    let decl: DeclId? = cx.bound_decl(e)
-    if decl == null { return cx.seats_judged(e, callee, s.params, [], s.ret, args) }
-    let d = decl!
+    let decl? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, s.params, [], s.ret, args) }
+    let d = decl
     if !cx.seat_contracts(e, callee, d, 0, args, null) { return cx.error_type }
     if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, d, args) }
     let tp: List<string> = cx.tparams(d)
@@ -331,9 +325,8 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
 /// HUNGRY, like a generic literal, and speaks only when the walk ends
 /// starving.
 fn pinned_by_answer(cx: TypeCx, e: ExprId, ret: TypeId, decl: DeclId, mut bound: Pins) {
-    let wanted: TypeId? = cx.want_at(e)
-    if wanted == null { return }
-    let _ = cx.unify(ret, wanted!, decl, bound)
+    let wanted? = cx.want_at(e) else { return }
+    let _ = cx.unify(ret, wanted, decl, bound)
 }
 
 /// The representation laws re-judge every substituted slot — a
@@ -347,9 +340,8 @@ fn lawful_instantiation(mut cx: TypeCx, e: ExprId, s: FnSig, decl: DeclId, concr
 
 /// One substituted type checked against the representation laws.
 fn refused_instantiation(mut cx: TypeCx, e: ExprId, raw: TypeId, decl: DeclId, concrete: List<TypeId>) -> bool {
-    let offender: TypeId? = cx.unlawful_side(cx.view.types.substituted(raw, decl, concrete))
-    if offender == null { return false }
-    side_unholdable(cx, e, offender!)
+    let offender? = cx.unlawful_side(cx.view.types.substituted(raw, decl, concrete)) else { return false }
+    side_unholdable(cx, e, offender)
     true
 }
 
@@ -386,9 +378,8 @@ fn generic_argument(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: Ex
 /// `return v` — legal only inside a fn, and `v` must be ACCEPTED
 /// by the declared answer (widening recorded, like every slot).
 export fn check_return(mut cx: TypeCx, s: StmtId) {
-    let held: ExprId? = cx.view.store.stmt_value(s)
-    if held == null { return bare_return(cx, s) }
-    let v = held!
+    let held? = cx.view.store.stmt_value(s) else { return bare_return(cx, s) }
+    let v = held
     let early: TypeId? = cx.enclosing_ret()
     if early != null { cx.plant_want(v, early!) }
     cx.walk(v)
@@ -438,9 +429,8 @@ fn inout_args_law(mut cx: TypeCx, callee: string, d: DeclId, args: List<ExprId>)
 /// SEAT LAW's to refuse and it already has, so this law asks only
 /// about what that one accepted: one mistake, one message.
 fn cellless_place(cx: TypeCx, a: ExprId) -> bool {
-    let held: ExprId? = cx.view.store.place_root(a)
-    if held == null { return false }
-    let root = held!
+    let held? = cx.view.store.place_root(a) else { return false }
+    let root = held
     let b: Binding? = cx.names.binding(root)
     cx.is_mut(root) && b != null && !(b! is .Def)
 }
@@ -485,10 +475,9 @@ fn no_fn_to_answer(mut cx: TypeCx, s: StmtId) {
 }
 
 fn bare_return(mut cx: TypeCx, s: StmtId) {
-    let want: TypeId? = cx.enclosing_ret()
-    if want == null { return no_fn_to_answer(cx, s) }
-    if cx.view.types.shape_of(want!) is .Void { return }
-    cx.emit(refusal("type.return", cx.stmt_loc(s), "a bare `return` answers nothing, but this fn declares `${cx.view.types.name_of(want!)}`", "here", "write `return <value>`, or declare no return"))
+    let want? = cx.enclosing_ret() else { return no_fn_to_answer(cx, s) }
+    if cx.view.types.shape_of(want) is .Void { return }
+    cx.emit(refusal("type.return", cx.stmt_loc(s), "a bare `return` answers nothing, but this fn declares `${cx.view.types.name_of(want)}`", "here", "write `return <value>`, or declare no return"))
 }
 
 fn wrong_return(mut cx: TypeCx, s: StmtId, v: ExprId, want: TypeId) {

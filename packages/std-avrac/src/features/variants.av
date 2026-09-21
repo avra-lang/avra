@@ -3,15 +3,14 @@
 //! variant must exist; a carrying variant takes exactly its payload
 //! (which UNIFIES, pinning a generic declaration's Vars); the answer
 //! is the declared type, instantiated when generic.
-use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, PlaceStep, DeclId, same_decl}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, DeclId, same_decl}
 use diagnostics.{Diag, refusal}
 
 impl TypeCx {
     /// The one law, at the call — the module's header states it.
     mut fn construct_variant(e: ExprId, decl: DeclId, tname: string, variant: string, args: List<ExprId>) -> TypeId {
-        let declared: EnumSig? = self.variants_declared(decl, tname)
-        if declared == null { return self.no_variants_here(e, decl, tname, variant) }
-        let sig = declared!
+        let declared? = self.variants_declared(decl, tname) else { return self.no_variants_here(e, decl, tname, variant) }
+        let sig = declared
         if sig.tag_of(variant) == null { return self.no_such_variant(e, tname, variant, sig) }
         let tp = self.view.decls.tparams(decl)
         if tparams_refused(tp) { return self.error_type }
@@ -90,9 +89,8 @@ impl TypeCx {
     /// The bindings with every empty slot filled from the want's type
     /// arguments, when the want has as many.
     mut fn pinned_by_want(e: ExprId, decl: DeclId, bound: Pins) -> Pins {
-        let wanted: TypeId? = self.want_at(e)
-        if wanted == null { return bound }
-        let want = self.view.types.carried(wanted!) ?? wanted!
+        let wanted? = self.want_at(e) else { return bound }
+        let want = self.view.types.carried(wanted) ?? wanted
         if !self.wants_decl(want, decl) { return bound }
         let args = self.view.types.args_of(want)
         if args.length != bound.slots.length { return bound }

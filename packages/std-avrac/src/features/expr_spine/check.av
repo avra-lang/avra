@@ -56,9 +56,8 @@ fn variant_type(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, name: st
     let tp = cx.tparams(decl)
     if !tp.is_empty() { return cx.unit_instantiated(e, tname, name, decl, tp) }
     let ty = cx.view.types.intern(Type.Enum(decl, tname))
-    let sig: EnumSig? = cx.variants_of(ty)
-    if sig == null { return record_read(cx, e, tname) }
-    let declared = sig!
+    let sig? = cx.variants_of(ty) else { return record_read(cx, e, tname) }
+    let declared = sig
     if declared.tag_of(name) == null { return no_variant_read(cx, e, tname, name, declared) }
     // A carrying variant named bare would build a value missing its
     // payload — the arity law belongs on both construction paths.
@@ -149,9 +148,8 @@ fn op_type(mut cx: TypeCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> TypeId
 /// compiler cannot read traps instead — `avra_int_shl` guards it, and
 /// both engines call that same body, so neither can be wrong alone.
 fn shifted_type(mut cx: TypeCx, op: BinOp, l: ExprId, r: ExprId) -> TypeId {
-    let held: int? = (cx.view.store.expr(r)).int_of()
-    if held == null { return op_over(cx, op, l, r, Type.Int, Type.Int) }
-    let count = held!
+    let held? = (cx.view.store.expr(r)).int_of() else { return op_over(cx, op, l, r, Type.Int, Type.Int) }
+    let count = held
     if count < 0 || count > 63 { return bad_shift_count(cx, r, count) }
     op_over(cx, op, l, r, Type.Int, Type.Int)
 }

@@ -22,11 +22,9 @@ impl Decls {
     /// A record field's TYPE by name, or null — the one `slot_of` then
     /// slot read; a non-record or a missing field is absence.
     fn field_type_named(ty: TypeId, name: string) -> TypeId? {
-        let sig: StructSig? = self.fields_of_type(ty)
-        if sig == null { return null }
-        let slot: int? = sig!.slot_of(name)
-        if slot == null { return null }
-        sig!.types[slot!]
+        let sig? = self.fields_of_type(ty) else { return null }
+        let slot? = sig.slot_of(name) else { return null }
+        sig.types[slot]
     }
 
     /// An enum's variants, the declaration's, a Result's, or the
@@ -51,25 +49,22 @@ impl Decls {
 
     /// The impl table's answer — a sig whose params[0] is `self`.
     fn method_sig_of(target: DeclId, mname: string) -> FnSig? {
-        let m: DeclId? = self.method(target, mname)
-        if m == null { return null }
-        (self.sig(m!))?.fn_sig()
+        let m? = self.method(target, mname) else { return null }
+        (self.sig(m))?.fn_sig()
     }
 
     /// A trait method's sig — `Self` at seat 0, like every method — or
     /// absence, the trait by its name in this file's scope.
     fn trait_sig_of(names: NameFacts, tname: string, mname: string) -> FnSig? {
-        let decl: DeclId? = self.trait_named(names, tname)
-        if decl == null { return null }
-        self.trait_sig_under(decl!, mname)
+        let decl? = self.trait_named(names, tname) else { return null }
+        self.trait_sig_under(decl, mname)
     }
 
     /// A trait method's sig under the trait's DECLARATION — what a
     /// `dyn` carries, so a contract dispatches wherever it travels.
     fn trait_sig_under(tdecl: DeclId, mname: string) -> FnSig? {
-        let f: DeclId? = self.trait_member(tdecl, mname)
-        if f == null { return null }
-        (self.sig(f!))?.fn_sig()
+        let f? = self.trait_member(tdecl, mname) else { return null }
+        (self.sig(f))?.fn_sig()
     }
 
     /// A trait's member DECLARATION by name — the contract's own word
@@ -89,24 +84,22 @@ impl Decls {
             voices.speak(self.not_a_value(d))
             return error_type
         }
-        let sig: FnSig? = (self.sig(d))?.fn_sig()
-        if sig == null { return error_type }
+        let sig? = (self.sig(d))?.fn_sig() else { return error_type }
         // A NAMED FN AS A VALUE CARRIES ITS SEATS' CONTRACT: the marks
         // its declaration wrote travel with the type, so a writing fn
         // cannot be stored where nothing may write.
         // A NAMED FN AS A VALUE CARRIES ITS SEATS' CONTRACT: the marks
         // its declaration wrote travel with the type, so a writing fn
         // cannot be stored where nothing may write.
-        let held = sig!
+        let held = sig
         self.types.intern(Type.Fn(held.params, self.marks_of(d, held.params.length), held.ret))
     }
 }
 
 /// The declaration a call's name stands for, when it is one.
 export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
-    let b: Binding? = names.binding(e)
-    if b == null { return null }
-    match b! {
+    let b? = names.binding(e) else { return null }
+    match b {
         .Decl(d) -> d,
         .Def(_) -> null,
         .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
@@ -115,9 +108,8 @@ export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
 
 /// A call's declared signature, when its name is a declared fn.
 export fn sig_of_at(names: NameFacts, decls: Decls, e: ExprId) -> FnSig? {
-    let d: DeclId? = bound_decl_of(names, e)
-    if d == null { return null }
-    (decls.sig(d!))?.fn_sig()
+    let d? = bound_decl_of(names, e) else { return null }
+    (decls.sig(d))?.fn_sig()
 }
 
 /// The seats a fn declares: its written params minus a BARE
@@ -134,9 +126,8 @@ fn takes_a_seat(keywords: List<string>, pp: Param) -> bool {
 
 /// Whether a name reads a `mut` binding.
 export fn is_mut_at(names: NameFacts, store: NodeStore, e: ExprId) -> bool {
-    let b: Binding? = names.binding(e)
-    if b == null { return false }
-    match b! {
+    let b? = names.binding(e) else { return false }
+    match b {
         .Def(s) -> store.stmt(s) is .MutLet,
         // a method's receiver is a place: a write through it is what
         // makes the method a writing one (ROADMAP: the inout receiver)
@@ -209,9 +200,8 @@ export fn def_type_of(facts: TypeFacts, mut view: FileView, error_type: TypeId, 
     let declared: TypeId? = facts.declared_binding(s)
     if declared != null { return declared! }
     if view.store.stmt(s) is .For { return view.types.type(int) }
-    let v: ExprId? = view.store.stmt_value(s)
-    if v == null { return error_type }
-    facts.type_at(v!)
+    let v? = view.store.stmt_value(s) else { return error_type }
+    facts.type_at(v)
 }
 
 impl Decls {
@@ -239,11 +229,9 @@ impl Decls {
 /// A literal const's type can be read without asking the workspace.
 /// Computed and nominal types fall through to the ConstTyped family.
 fn settled_type(store: NodeStore, types: TypeRegistry, s: StmtId) -> TypeId? {
-    let v: ExprId? = store.const_value(s)
-    if v == null { return null }
-    let word: Type? = literal_shape(store.expr(v!))
-    if word == null { return spelled_type(types, store.binding_ty(s)) }
-    let held = types.intern(word!)
+    let v? = store.const_value(s) else { return null }
+    let word? = literal_shape(store.expr(v)) else { return spelled_type(types, store.binding_ty(s)) }
+    let held = types.intern(word)
     if store.binding_ty(s)?.optional ?? false { return types.type(held?) }
     held
 }
@@ -255,9 +243,8 @@ fn settled_type(store: NodeStore, types: TypeRegistry, s: StmtId) -> TypeId? {
 export fn spelled_type(types: TypeRegistry, ann: TypeRef?) -> TypeId? {
     if ann == null { return null }
     let a = ann!
-    let plain: TypeId? = spelled_plain(types, a)
-    if plain == null { return null }
-    let held = plain!
+    let plain? = spelled_plain(types, a) else { return null }
+    let held = plain
     if !a.optional { return held }
     // `?` over a scalar is a box the runtime cannot keep (the once law
     // refuses it too); over a pointer it is the pointer, null for absent
@@ -270,9 +257,8 @@ fn spelled_plain(types: TypeRegistry, a: TypeRef) -> TypeId? {
         let word: Type? = scalar_named(a.name)
         return if word == null { null } else { types.intern(word!) }
     }
-    let inner: TypeId? = spelled_type(types, a.args.last())
-    if inner == null { return null }
-    let elem = inner!
+    let inner? = spelled_type(types, a.args.last()) else { return null }
+    let elem = inner
     match a.name {
         "List" -> if a.args.length == 1 { types.type(List<elem>) } else { null },
         "Map" -> if a.args.length == 2 && keyed_by_text(a.args[0]) { types.type(Map<string, elem>) } else { null },
@@ -333,9 +319,8 @@ impl TypeCx {
     fn stmt_loc(s: StmtId) -> Loc? { self.view.stmt_loc(s) }
     fn emit(d: Diag) { self.facts.speak(d) }
     fn stmt_sig(s: StmtId) -> FnSig? {
-        let d: DeclId? = self.view.decls.decl_of(self.view.file, s)
-        if d == null { return null }
-        (self.view.decls.sig(d!))?.fn_sig()
+        let d? = self.view.decls.decl_of(self.view.file, s) else { return null }
+        (self.view.decls.sig(d))?.fn_sig()
     }
     fn bound_decl(e: ExprId) -> DeclId? { bound_decl_of(self.names, e) }
     fn tparams(d: DeclId) -> List<string> { self.view.decls.tparams(d) }
@@ -351,9 +336,8 @@ impl TypeCx {
     /// typing knows.
     fn is_mut(e: ExprId) -> bool { is_mut_at(self.names, self.view.store, e) || self.heard_mut_at(e) }
     fn heard_mut_at(e: ExprId) -> bool {
-        let b: Binding? = self.names.binding(e)
-        if b == null { return false }
-        match b! {
+        let b? = self.names.binding(e) else { return false }
+        match b {
             .LambdaParam(l, i) -> self.heard_mut(l, i),
             _ -> false,
         }
@@ -404,9 +388,8 @@ impl LowerCx {
         self.view.decls.symbol(d!)
     }
     fn callee_of(e: ExprId, name: string) -> string {
-        let d: DeclId? = bound_decl_of(self.names, e)
-        if d == null { return name }
-        self.symbol_at(d!, e)
+        let d? = bound_decl_of(self.names, e) else { return name }
+        self.symbol_at(d, e)
     }
     fn fields_at(e: ExprId) -> StructSig? { self.view.decls.fields_of_type(self.type_at(e)) }
     fn fields_of(ty: TypeId) -> StructSig? { self.view.decls.fields_of_type(ty) }
@@ -418,9 +401,8 @@ impl LowerCx {
     fn bind_test(p: PatId, regs: List<Reg>) { self.body.bind_test(p, regs) }
     /// A `mut` binding's cell, when the binding lives in one.
     fn cell_of(e: ExprId) -> Reg? {
-        let b: Binding? = self.names.binding(e)
-        if b == null { return null }
-        match b! {
+        let b? = self.names.binding(e) else { return null }
+        match b {
             .Def(s) -> if self.body.is_boxed(s) { self.body.slot_of(s) } else { null },
             .Decl(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
         }

@@ -172,10 +172,9 @@ fn decl_from_ref(raw: string) -> DeclId? {
     if raw == "" { return null }
     let parts = raw.split("~")
     if parts.length != 2 { return null }
-    let f: FileId? = self.decls.paths.get(parts[0])
-    if f == null { return null }
+    let f? = self.decls.paths.get(parts[0]) else { return null }
     let at? = wire_number(parts[1]) else { return null }
-    let ids = self.decls.decls_of_file(f!)
+    let ids = self.decls.decls_of_file(f)
     if at < 0 || at >= ids.length { return null }
     ids[at]
 }
@@ -222,8 +221,7 @@ fn wanted_list_from_wire(raw: string) -> List<Wanted>? {
         let file_path? = r.field() else { return null }
         let decl_raw? = r.field() else { return null }
         let sub_mark? = r.field() else { return null }
-        let f: FileId? = self.decls.paths.get(file_path)
-        if f == null { return null }
+        let f? = self.decls.paths.get(file_path) else { return null }
         let decl = self.decl_from_ref( decl_raw)
         let sub: Sub? = if sub_mark == "+" {
             let target_raw? = r.field() else { return null }
@@ -234,9 +232,8 @@ fn wanted_list_from_wire(raw: string) -> List<Wanted>? {
             mut args: List<TypeId> = []
             for j in 0..arg_count {
                 let tw? = r.field() else { return null }
-                let ty = self.type_from_wire( tw)
-                if ty == null { return null }
-                args.push(ty!)
+                let ty? = self.type_from_wire( tw) else { return null }
+                args.push(ty)
             }
             let const_count? = r.number() else { return null }
             if const_count < 0 { return null }
@@ -288,7 +285,7 @@ fn wanted_list_from_wire(raw: string) -> List<Wanted>? {
             }
             seats.push(SeatValue { index: index, fp: fp, ty: ty!, value: value, heap: meta_heap(nodes, maps) })
         }
-        out.push(Wanted { file: f!, decl: decl, name: name, sub: sub, seats: seats, root: null })
+        out.push(Wanted { file: f, decl: decl, name: name, sub: sub, seats: seats, root: null })
     }
     if r.pos != raw.length { return null }
     out

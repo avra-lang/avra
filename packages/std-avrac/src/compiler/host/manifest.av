@@ -5,7 +5,7 @@
 //! calls itself, the cycle — is the workspace's to judge, in this
 //! file's words.
 use core.{span_of, joined, is_package_key, is_name_word, is_digit, all_codes, Span}
-use @std.toml.{TomlDoc, TomlValue, TomlEntry, TomlHeader, parse_toml, toml_text, toml_field}
+use @std.toml.{TomlDoc, TomlValue, TomlEntry, parse_toml, toml_text, toml_field}
 use features.{Budgets, budgets_of}
 use diagnostics.{SourceFile, Diag, refusal, warning, loc_at}
 use @std.errors.{Loc}
@@ -185,9 +185,8 @@ impl Reader {
     }
 
     fn header_at(section: string) -> Loc? {
-        let h: TomlHeader? = self.doc.headers.find(it.name == section)
-        if h == null { return self.at(0, 0) }
-        self.at(h!.lo, h!.hi)
+        let h? = self.doc.headers.find(it.name == section) else { return self.at(0, 0) }
+        self.at(h.lo, h.hi)
     }
 
     /// Unknown sections and keys warn — a newer manifest loads on
@@ -248,9 +247,8 @@ impl Reader {
     }
 
     fn table_text(section: string, key: string) -> string? {
-        let v: TomlValue? = self.doc.get(section, key)
-        if v == null { return null }
-        toml_text(v!)
+        let v? = self.doc.get(section, key) else { return null }
+        toml_text(v)
     }
 
     /// The row spoken for: an `env` row with no `var`, an `abs` row
@@ -264,11 +262,10 @@ impl Reader {
     /// A `[lifted]` row: a count of at least one, or absent. Anything
     /// else is refused and read as absent — the default, never zero.
     fn budget(key: string) -> int? {
-        let e: TomlEntry? = self.doc.entry("lifted", key)
-        if e == null { return null }
-        let n: int? = match e!.value { .Int(v) -> v, .Str(_) or .Bool(_) or .Strs(_) or .Table(_) -> null }
+        let e? = self.doc.entry("lifted", key) else { return null }
+        let n: int? = match e.value { .Int(v) -> v, .Str(_) or .Bool(_) or .Strs(_) or .Table(_) -> null }
         if n != null && n! >= 1 { return n }
-        self.speak(refusal("manifest.bad_budget", self.entry_at(e!), "`[lifted] ${key}` is a count of at least 1", "here", "`steps = 600000` counts instructions; `memory = 5` counts MiB of the compiler's heap"))
+        self.speak(refusal("manifest.bad_budget", self.entry_at(e), "`[lifted] ${key}` is a count of at least 1", "here", "`steps = 600000` counts instructions; `memory = 5` counts MiB of the compiler's heap"))
         null
     }
 
@@ -277,9 +274,8 @@ impl Reader {
     /// is not declared.
     fn target(section: string, default_path: string) -> string? {
         if !self.doc.has_section(section) { return null }
-        let v: TomlValue? = self.doc.get(section, "path")
-        if v == null { return default_path }
-        toml_text(v!) ?? default_path
+        let v? = self.doc.get(section, "path") else { return default_path }
+        toml_text(v) ?? default_path
     }
 
     /// Every profile's name is a word, and its opt level is one the
@@ -340,9 +336,8 @@ impl Reader {
     }
 
     fn words_of(section: string, key: string) -> List<string> {
-        let e: TomlEntry? = self.doc.entry(section, key)
-        if e == null { return [] }
-        match e!.value {
+        let e? = self.doc.entry(section, key) else { return [] }
+        match e.value {
             .Strs(items) -> items,
             _ -> [],
         }
@@ -352,9 +347,8 @@ impl Reader {
     fn deps_at() -> Span? {
         let last: TomlEntry? = self.doc.entries_of("dependencies").last()
         if last != null { return after(last!.hi) }
-        let h: TomlHeader? = self.doc.headers.find(it.name == "dependencies")
-        if h == null { return null }
-        after(h!.hi)
+        let h? = self.doc.headers.find(it.name == "dependencies") else { return null }
+        after(h.hi)
     }
 
     // ── voices ──
@@ -408,9 +402,8 @@ fn inline_keys(v: TomlValue) -> List<string> {
 
 /// A text field of an inline table; absence when missing or not text.
 fn text_field(v: TomlValue, key: string) -> string? {
-    let f: TomlValue? = toml_field(v, key)
-    if f == null { return null }
-    toml_text(f!)
+    let f? = toml_field(v, key) else { return null }
+    toml_text(f)
 }
 
 /// A tool's end-of-options word: `--` unless written; `false` is none.

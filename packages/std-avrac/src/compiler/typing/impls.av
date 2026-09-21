@@ -13,9 +13,8 @@ impl TypeCx {
     /// type parameter, which a default's body reads as `self` and a
     /// signatory's method answers with its own type.
     fn declare_trait_sig(f: StmtId) {
-        let parts: FnParts? = self.view.store.fn_parts(f)
-        if parts == null { return }
-        let fp = parts!
+        let parts? = self.view.store.fn_parts(f) else { return }
+        let fp = parts
         let contract: DeclId = self.view.decls.decl(self.decl_of(f)).parent!
         // AN ASSOCIATED FN spends no receiver seat: `Self` is not in
         // scope for it, so a signature naming `Self` does not resolve.
@@ -70,12 +69,10 @@ impl TypeCx {
     }
 
     fn declare_under_impl(block: StmtId, f: StmtId) {
-        let ip: ImplParts? = self.view.store.impl_parts(block)
-        if ip == null { return self.seated_wreckage(f) }
-        let parts = ip!
-        let target: DeclId? = self.impl_target(block, parts, false)
-        if target == null { return self.seated_wreckage(f) }
-        let d = target!
+        let ip? = self.view.store.impl_parts(block) else { return self.seated_wreckage(f) }
+        let parts = ip
+        let target? = self.impl_target(block, parts, false) else { return self.seated_wreckage(f) }
+        let d = target
         self.view.decls.record_target(self.decl_of(block), d)
         self.enter_target_scope(d)
         self.declare_method(self.impl_self_type(d), f)
@@ -99,9 +96,8 @@ impl TypeCx {
     /// method table's clash, spoken once per type); then the
     /// contract.
     fn declare_impl_block(s: StmtId) {
-        let ip: ImplParts? = self.view.store.impl_parts(s)
-        if ip == null { return }
-        let parts = ip!
+        let ip? = self.view.store.impl_parts(s) else { return }
+        let parts = ip
         let target: DeclId? = self.impl_target(s, parts, true)
         if target == null { return }
         let d = target!
@@ -161,13 +157,12 @@ impl TypeCx {
     /// pair is refused where it is written rather than shadowed.
     fn static_shadows(f: StmtId, target: DeclId, tname: string) {
         if !self.view.store.is_static(f) { return }
-        let name: string? = self.view.store.fn_parts(f)?.name
-        if name == null { return }
+        let name? = self.view.store.fn_parts(f)?.name else { return }
         // the DECLARATION answers, never an interned type: a record
         // target would mint a bogus `Type.Enum` the registry keeps
         let sig: EnumSig? = (self.view.decls.sig(target))?.enum_sig()
-        if sig == null || sig!.tag_of(name!) == null { return }
-        self.static_names_a_variant(f, tname, name!)
+        if sig == null || sig!.tag_of(name) == null { return }
+        self.static_names_a_variant(f, tname, name)
     }
 
     /// A method the table can serve: plain — generic methods wait.
@@ -205,9 +200,8 @@ impl TypeCx {
     fn seated_wreckage(f: StmtId) { self.declare_holes(f, 1) }
 
     fn declare_holes(f: StmtId, seats: int) {
-        let parts: FnParts? = self.view.store.fn_parts(f)
-        if parts == null { return }
-        self.declare(f, DeclSig.Fn(FnSig { params: filled<TypeId>(seats + parts!.params.length, self.error_type), ret: self.error_type }))
+        let parts? = self.view.store.fn_parts(f) else { return }
+        self.declare(f, DeclSig.Fn(FnSig { params: filled<TypeId>(seats + parts.params.length, self.error_type), ret: self.error_type }))
     }
 
     /// THE ORPHAN RULE (spec 16.5): an impl lives in its type's
@@ -230,13 +224,12 @@ impl TypeCx {
     /// arity, param types, and return — and nothing beyond them
     /// (the recorded bs2 law, now ours).
     fn check_trait_impl(s: StmtId, of: string, target: DeclId, tname: string, fns: List<StmtId>) {
-        let tdecl: DeclId? = self.trait_decl_named(of)
-        if tdecl == null { return self.no_such_trait(s, of) }
-        let members = self.view.decls.trait_fns(tdecl!)
+        let tdecl? = self.trait_decl_named(of) else { return self.no_such_trait(s, of) }
+        let members = self.view.decls.trait_fns(tdecl)
         let wanted = [self.view.decls.fn_name(m) ?? "" for m in members]
         // the impl is recorded FIRST: a member the signatory never
         // wrote is answered by the trait's default through it
-        self.view.decls.record_impl(target, tdecl!)
+        self.view.decls.record_impl(target, tdecl)
         for m in members { self.check_trait_member(s, of, target, tname, m) }
         for f in fns {
             let mn = self.fn_named(f)
@@ -249,17 +242,15 @@ impl TypeCx {
     fn check_trait_member(s: StmtId, of: string, target: DeclId, tname: string, m: DeclId) {
         let mn = self.view.decls.fn_name(m) ?? ""
         let want: FnSig? = (self.view.decls.sig(m))?.fn_sig()
-        let answered: DeclId? = self.view.decls.method(target, mn)
-        if answered == null { return self.unanswered(s, of, tname, mn) }
-        if same_decl(answered!, m) { return }
-        let got: FnSig? = (self.view.decls.sig(answered!))?.fn_sig()
+        let answered? = self.view.decls.method(target, mn) else { return self.unanswered(s, of, tname, mn) }
+        if same_decl(answered, m) { return }
+        let got: FnSig? = (self.view.decls.sig(answered))?.fn_sig()
         if want != null && got != null && !sigs_agree(want!, got!) { self.sig_unworn(s, of, tname, mn) }
     }
 
     fn declare_method(ty: TypeId, f: StmtId) {
-        let parts: FnParts? = self.view.store.fn_parts(f)
-        if parts == null { return }
-        let fp = parts!
+        let parts? = self.view.store.fn_parts(f) else { return }
+        let fp = parts
         if !fp.tparams.is_empty() { return self.generic_method(f, fp.name) }
         if self.view.store.is_once(f) { self.once_is_a_method(f, fp.name) }
         // A STATIC SPENDS NO SEAT ON A RECEIVER: the marks and the
@@ -291,11 +282,9 @@ impl TypeCx {
             self.seat_contract(x, 1)
             return
         }
-        let tdecl: DeclId? = self.trait_decl_named(of!)
-        if tdecl == null { return }
-        let member: DeclId? = self.view.decls.trait_member(tdecl!, x.name)
-        if member == null { return }
-        if writes && !self.view.decls.declares_writing(member!) { self.writes_under_plain_sig(x, of!) }
+        let tdecl? = self.trait_decl_named(of!) else { return }
+        let member? = self.view.decls.trait_member(tdecl, x.name) else { return }
+        if writes && !self.view.decls.declares_writing(member) { self.writes_under_plain_sig(x, of!) }
     }
 
     // ── The declare voices — each refusal worded once, at its name ──

@@ -30,9 +30,8 @@ fn marked_fn(mut b: Builder) -> Result<StmtId, string> {
     let ps = b.tokens(4)?
     let r = b.answer(6)
     let body = b.expr(7)?
-    let ends: int? = b.span_end()
-    if ends == null { return .Err("defect: a fn declaration without a span — the arena and the grammar disagree") }
-    let params = marked_seats(ps, aligned_param_types(ps, b.type_refs(5)?, ends!), muts, consts, n.span.lo)
+    let ends? = b.span_end() else { return .Err("defect: a fn declaration without a span — the arena and the grammar disagree") }
+    let params = marked_seats(ps, aligned_param_types(ps, b.type_refs(5)?, ends), muts, consts, n.span.lo)
     .Ok(b.store.alloc_stmt(Stmt.FnDecl(Scoped(n.text), tparams, params, r, body), b.span))
 }
 
@@ -63,9 +62,8 @@ fn build_impl(mut b: Builder) -> Result<LangNode, string> {
     }
     // with a `for`, the FIRST name is the trait and the for-name
     // is the target; without one, the first name IS the target.
-    let forred: Token? = ib.first()
-    if forred == null { return b.make_stmt(Stmt.ImplDecl(null, Nominal(t.text), fns)) }
-    b.make_stmt(Stmt.ImplDecl(Nominal(t.text), Nominal(forred!.text), fns))
+    let forred? = ib.first() else { return b.make_stmt(Stmt.ImplDecl(null, Nominal(t.text), fns)) }
+    b.make_stmt(Stmt.ImplDecl(Nominal(t.text), Nominal(forred.text), fns))
 }
 
 fn is_fn(b: Builder, s: StmtId) -> bool {
@@ -85,11 +83,10 @@ fn build_trait(mut b: Builder) -> Result<LangNode, string> {
     let tys = b.type_refs(7)?
     let rets = b.type_refs(8)?
     let bodies = b.exprs(9)?
-    let ends: int? = b.span_end()
-    if ends == null { return .Err("defect: a trait declaration without a span — the arena and the grammar disagree") }
+    let ends? = b.span_end() else { return .Err("defect: a trait declaration without a span — the arena and the grammar disagree") }
     mut fns: List<StmtId> = []
     for j, m in mn {
-        let upto = window_end(mn, j, ends!)
+        let upto = window_end(mn, j, ends)
         let sig = member_stmt(b, m, params_between(ps, tys, seat_marks, consts, m.span.lo, upto), ret_between(rets, m.span.lo, upto), body_between(b.store, bodies, m.span.lo, upto))
         // a `mut` between the previous sig and this name is this sig's
         let since = if j == 0 { n.span.lo } else { mn[j - 1].span.lo }

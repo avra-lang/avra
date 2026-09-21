@@ -4,8 +4,8 @@
 use core.{Expr, StmtId, Span, Param, Variant, Mark, same_stmt, DeclId, FileId, ExprId, fp, flatten, TypeId, Type, same_file, FnParts, TypeRef, source_spelled, named_ref, spelled, Scoped}
 use features.{Unsettled, unsettled_label, MetaVal, MetaHeap, Namespace, FnSig, StructSig, EnumSig, nothing, FileView, spelled_type, DeclareWork, Generation}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
-use @std.meta.{Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Decls as MetaDecls, Kind}
-use core.{Stmt, StmtId, Arm, BodyParts, BodyView, HoleKind, Filled, copier, quote_kind, all_codes, is_name_cont}
+use @std.meta.{Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Kind}
+use core.{Stmt, StmtId, Arm, BodyView, HoleKind, Filled, copier, quote_kind, all_codes, is_name_cont}
 use diagnostics.{loc_at}
 use @std.testing.{words}
 
@@ -52,9 +52,8 @@ impl Workspace {
     /// beside the original, and a `twin` mints a fn beside it.
     fn materialized_directive(f: FileId, w: DeclareWork, directive: Directive, vis: Namespace) -> List<DeclId> {
         let ann = self.decls.decl(w.ann).name
-        let source: MetaDecls? = directive.source
-        if source == null { return self.twinned(f, w, directive, ann) }
-        self.admit_code(f, source!.node, ann, w.at, vis)
+        let source? = directive.source else { return self.twinned(f, w, directive, ann) }
+        self.admit_code(f, source.node, ann, w.at, vis)
     }
 
     /// The fn a directive asks for beside the original, when it asks.
@@ -108,9 +107,8 @@ impl Workspace {
 
     /// Whether a return type is `List<Directive>` — the Declares cue.
     fn is_declares(ret: TypeId) -> bool {
-        let elem: TypeId? = elem_of(self.decls.types, ret)
-        if elem == null { return false }
-        match self.decls.types.shape_of(elem!) { .Struct(d, _) -> self.decls.decl(d).name == "Directive", rest -> false }
+        let elem? = elem_of(self.decls.types, ret) else { return false }
+        match self.decls.types.shape_of(elem) { .Struct(d, _) -> self.decls.decl(d).name == "Directive", rest -> false }
     }
 
     /// Whether a return type is `@std.meta.Derived` — the `@derive`
@@ -138,11 +136,9 @@ impl Workspace {
 
     fn hold_the_marks_of(f: FileId, s: StmtId, written: List<Mark>, p: Parsed, vis: Namespace) {
         if written.is_empty() { return }
-        let owner: DeclId? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s))
-        if owner == null { return }
-        let asked: List<string>? = self.claimed_marks(f, owner!, p, vis)
-        if asked == null { return }
-        let claimed = asked!
+        let owner? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s)) else { return }
+        let asked? = self.claimed_marks(f, owner, p, vis) else { return }
+        let claimed = asked
         // LICENSED — matching a mark by its WORD: a mark crosses a
         // package boundary, where a foreign enum has no typed id, so
         // the word is the currency. The doctrine's mitigation is this
@@ -178,9 +174,8 @@ impl Workspace {
     /// answers absence.
     fn trait_claims(tr: DeclId?, w: DeclareWork, f: FileId) -> List<string>? {
         if tr == null { return null }
-        let member: DeclId? = self.decls.trait_marks(tr!)
-        if member == null { return claims_nothing() }
-        let m = member!
+        let member? = self.decls.trait_marks(tr!) else { return claims_nothing() }
+        let m = member
         if same_file(self.decls.decl(m).file, f) { return null }
         if (self.decls.sig(m))?.fn_sig() == null { return null }
         match self.lifted(m, f, w.stmt, w.callee, []) {
@@ -302,12 +297,10 @@ impl Workspace {
     fn copied_expr(f: FileId, file: string, at: int, fills: List<Node>) -> ExprId {
         let stmts = self.copied(f, file, at, fills, HoleKind.Expression).stmts
         mut store = self.decls.store_of(f)
-        let last: StmtId? = stmts.last()
-        if last == null { return store.alloc_expr(Expr.Error, null) }
-        let value: ExprId? = store.answer_of(last!)
-        if value == null { return store.alloc_expr(Expr.Block(stmts, null), null) }
-        if stmts.length == 1 { return value! }
-        store.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value!), null)
+        let last? = stmts.last() else { return store.alloc_expr(Expr.Error, null) }
+        let value? = store.answer_of(last) else { return store.alloc_expr(Expr.Block(stmts, null), null) }
+        if stmts.length == 1 { return value }
+        store.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value), null)
     }
 
     /// A template's body copied into file f's store, each hole filled
@@ -317,16 +310,13 @@ impl Workspace {
     /// fills in the seat asked for. Each copied node records the file
     /// that wrote it, unless that is f itself.
     fn copied(f: FileId, file: string, at: int, fills: List<Node>, seat: HoleKind) -> Copied {
-        let held: FileId? = self.decls.paths.get(file)
-        if held == null { return nothing_copied() }
-        let origin = held!
+        let held? = self.decls.paths.get(file) else { return nothing_copied() }
+        let origin = held
         let src = self.decls.store_of(origin)
-        let q: ExprId? = src.quote_at(at)
-        if q == null { return nothing_copied() }
-        let parts: BodyParts? = (src.expr(q!)).body_of()
-        if parts == null { return nothing_copied() }
-        let body = parts!
-        if quote_kind(src, q!) is .Holes { return self.holes_copied(f, fills, seat) }
+        let q? = src.quote_at(at) else { return nothing_copied() }
+        let parts? = (src.expr(q)).body_of() else { return nothing_copied() }
+        let body = parts
+        if quote_kind(src, q) is .Holes { return self.holes_copied(f, fills, seat) }
         let ws = self
         let thunks = [(kind: HoleKind) -> ws.spliced(f, fill, kind) for fill in fills]
         mut rb = copier(src, self.decls.store_of(f), thunks)
@@ -377,9 +367,8 @@ impl Workspace {
     /// A declaration's NAME in an annotation's argument list, in this
     /// file's scope — a fn, a type, or a trait.
     fn named_arg(p: Parsed, vis: Namespace, e: ExprId) -> DeclId? {
-        let name: string? = p.store.ident_name(e)
-        if name == null { return null }
-        vis.fn_decl(name!) ?? vis.type_decl(name!)
+        let name? = p.store.ident_name(e) else { return null }
+        vis.fn_decl(name) ?? vis.type_decl(name)
     }
 
     /// One trait's associated `derive` over the declaration — its
@@ -387,9 +376,8 @@ impl Workspace {
     fn trait_directives(tr: DeclId?, w: DeclareWork, f: FileId) -> List<Directive> {
         if tr == null { return [] }
         let trait_id = tr!
-        let member: DeclId? = self.decls.trait_derive(trait_id)
-        if member == null { return [] }
-        let m = member!
+        let member? = self.decls.trait_derive(trait_id) else { return [] }
+        let m = member
         // The provider guard: a same-file derive would need this file's
         // names while they are still being made. `check_annotation` speaks.
         if same_file(self.decls.decl(m).file, f) { return [] }
@@ -401,9 +389,8 @@ impl Workspace {
     /// for. Reads the PARSE store only: an expanded sibling is
     /// generated before this file's typed facts exist.
     fn crossed_decl(f: FileId, s: StmtId, want: TypeId, mut heap: MetaHeap) -> MetaVal {
-        let found: DeclId? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s))
-        if found == null { return MetaVal.Absent }
-        self.crossed_decl_of(found!, want, heap)
+        let found? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s)) else { return MetaVal.Absent }
+        self.crossed_decl_of(found, want, heap)
     }
 
     /// A declaration as the meta value its seat names — the receiver
@@ -465,9 +452,8 @@ impl Workspace {
     /// A variant's payload shapes, variant by variant — the enum's
     /// own signature, positionally.
     fn payload_kinds(d: DeclId) -> List<List<Kind>> {
-        let sig: EnumSig? = (self.decls.sig(d))?.enum_sig()
-        if sig == null { return [] }
-        [[kind_of(self.decls.types, t) for t in ps] for ps in sig!.payloads]
+        let sig? = (self.decls.sig(d))?.enum_sig() else { return [] }
+        [[kind_of(self.decls.types, t) for t in ps] for ps in sig.payloads]
     }
 
     /// THE SHAPE COMES FROM THE SIGNATURE, NEVER FROM THE SPELLING.
@@ -479,20 +465,17 @@ impl Workspace {
     /// resolved, positionally; a declaration whose signature is not
     /// earned yet leaves every shape unspelled rather than guessing.
     fn seat_kinds(d: DeclId) -> List<Kind> {
-        let sig: FnSig? = (self.decls.sig(d))?.fn_sig()
-        if sig == null { return [] }
-        [kind_of(self.decls.types, t) for t in sig!.params]
+        let sig? = (self.decls.sig(d))?.fn_sig() else { return [] }
+        [kind_of(self.decls.types, t) for t in sig.params]
     }
 
     fn answer_kind(d: DeclId) -> Kind {
-        let sig: FnSig? = (self.decls.sig(d))?.fn_sig()
-        if sig == null { return no_kind() }
-        kind_of(self.decls.types, sig!.ret)
+        let sig? = (self.decls.sig(d))?.fn_sig() else { return no_kind() }
+        kind_of(self.decls.types, sig.ret)
     }
 
     fn field_kinds(d: DeclId) -> List<Kind> {
-        let sig: StructSig? = (self.decls.sig(d))?.record_sig()
-        if sig == null { return [] }
-        [kind_of(self.decls.types, t) for t in sig!.types]
+        let sig? = (self.decls.sig(d))?.record_sig() else { return [] }
+        [kind_of(self.decls.types, t) for t in sig.types]
     }
 }

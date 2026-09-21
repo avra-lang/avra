@@ -3,7 +3,7 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, Binding, StmtId, NodeStore, SeatMark, mut_mark, settled_mark, is_literal, literal_form, Span, some_list}
+use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, TypeRef, filled, DeclId, Binding, StmtId, NodeStore, SeatMark, mut_mark, settled_mark, is_literal, literal_form, Span, some_list}
 use diagnostics.{Diag, refusal, warning}
 use @std.errors.{Confidence, Edit, Suggestion}
 
@@ -22,9 +22,8 @@ impl TypeCx {
     mut fn warn_use(e: ExprId) {
         if !self.facts.owns(e) { return }
         if self.facts.spoke_warning(e) { return }
-        let b: Binding? = self.names.binding(e)
-        if b == null { return }
-        match b! {
+        let b? = self.names.binding(e) else { return }
+        match b {
             .Decl(d) -> {
                 let held = self.view.decls.marks(d)
                 if held.is_empty() { return }
@@ -141,8 +140,7 @@ impl TypeCx {
         if self.starve(e, want) { return true }
         let got = self.type_at(e)
         if !self.types_disagree(got, want) { return true }
-        let inner: TypeId? = self.view.types.carried(want)
-        if inner == null { return self.other_accepts(e, got, want) }
+        let inner? = self.view.types.carried(want) else { return self.other_accepts(e, got, want) }
         // `null` inhabits every nullable; a present value must be the
         // carried type. Either way the lift is RECORDED, in this one
         // place — absence has no layout of its own, and lowering's
@@ -150,7 +148,7 @@ impl TypeCx {
         let absent: bool = self.view.types.shape_of(got) is .Null
         // a LITERAL fills a named type through the absence too:
         // `let rows: Rows? = [1]` writes the shape and means the name
-        if !absent && self.types_disagree(got, inner!) && !self.named_accepts(e, inner!) { return false }
+        if !absent && self.types_disagree(got, inner) && !self.named_accepts(e, inner) { return false }
         self.widen(e, want)
         true
     }
@@ -162,9 +160,8 @@ impl TypeCx {
     /// happen silently. Recorded at the same one widening edge as the
     /// nullable lift.
     mut fn res_accepts(e: ExprId, got: TypeId, want: TypeId) -> bool {
-        let sides: ResSides? = self.view.types.res_parts(want)
-        if sides == null { return false }
-        let ok = sides!.ok
+        let sides? = self.view.types.res_parts(want) else { return false }
+        let ok = sides.ok
         // the ONE compound lift whose inner step is identity: `[]` Ok-wraps raw
         if self.types_disagree(got, ok) && !self.empty_adopted(got, ok) { return false }
         self.widen(e, want)
@@ -209,9 +206,8 @@ impl TypeCx {
     /// dyn). Only a type that can SIGN boxes; a value already
     /// dyn-shaped met the identity case and never re-boxes.
     mut fn dyn_accepts(e: ExprId, got: TypeId, want: TypeId) -> bool {
-        let tname: string? = dyn_contract(self.view.types.shape_of(want))
-        if tname == null { return false }
-        if !self.boxable(got, tname!) { return false }
+        let tname? = dyn_contract(self.view.types.shape_of(want)) else { return false }
+        if !self.boxable(got, tname) { return false }
         self.widen(e, want)
         true
     }
@@ -456,9 +452,8 @@ impl TypeCx {
     /// already refused unknown fields and non-list indexes. True means
     /// lawful.
     mut fn place_lawful(e: ExprId) -> bool {
-        let step: PlaceStep? = self.view.store.place_step(e)
-        if step == null { return true }
-        match step! {
+        let step? = self.view.store.place_step(e) else { return true }
+        match step {
             .Root(name) -> if self.shape_at(e) is .TypeName { self.type_not_place(e, name.of) } else { true },
             .Field(subject, name) -> self.place_lawful(subject) && self.field_slot_lawful(e, subject, name.of),
             .At(subject, _) -> self.place_lawful(subject),
@@ -547,9 +542,8 @@ impl TypeCx {
     /// did not write, where no span of ours names its text.
     fn written_text(e: ExprId) -> string? {
         if self.view.origin_of(e) != null { return null }
-        let span: Span? = self.view.store.expr_span(e)
-        if span == null { return null }
-        self.view.source.text.substring(span!.lo, span!.hi)
+        let span? = self.view.store.expr_span(e) else { return null }
+        self.view.source.text.substring(span.lo, span.hi)
     }
 
     /// A type literal's HOLE holding the wrong thing — the argument
@@ -666,9 +660,8 @@ impl TypeCx {
     mut fn seat_contracts(e: ExprId, callee: string, d: DeclId, base: int, args: List<ExprId>, receiver: ExprId?) -> bool {
         let marks = self.declared_marks(d, base, args.length)
         self.mut_seats_law(e, callee, marks, args, receiver)
-        let fps: List<string>? = self.const_seats(callee, self.seat_names(d), marks, args)
-        if fps == null { return false }
-        if !fps!.is_empty() { self.record_subst(e, d, [], fps!) }
+        let fps? = self.const_seats(callee, self.seat_names(d), marks, args) else { return false }
+        if !fps.is_empty() { self.record_subst(e, d, [], fps) }
         true
     }
 
@@ -729,9 +722,8 @@ impl TypeCx {
     /// A name that settles: a `const` (a body's own or a declared one),
     /// a forwarded settled seat, or an enum's name under a variant.
     fn settled_name(k: ExprId) -> bool {
-        let b: Binding? = self.names.binding(k)
-        if b == null { return false }
-        match b! {
+        let b? = self.names.binding(k) else { return false }
+        match b {
             .Def(s) -> self.view.store.const_value(s) != null,
             .Decl(d) -> self.view.decls.decl(d).kind is .Const || self.names_enum(k),
             .Param(_) -> self.names.reads_settled_seat(k),
@@ -740,9 +732,8 @@ impl TypeCx {
     }
 
     fn names_enum(k: ExprId) -> bool {
-        let b: Binding? = self.names.binding(k)
-        if b == null { return false }
-        match b! {
+        let b? = self.names.binding(k) else { return false }
+        match b {
             .Decl(d) -> self.view.decls.decl(d).kind is .Enum,
             rest -> false,
         }

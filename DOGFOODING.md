@@ -777,6 +777,22 @@ reintroducing I3's blind spot names the two spellings it lost.
       `for`) rather than standing as its own fn's tail. Ratcheted
       (`when_ladder`).
 
+- I55 `let x = E` GUARDED BY AN IMMEDIATE ABSENCE EXIT IS `let x? = E
+      else { … }` — `let held = get()` then `if held == null { return
+      null }` becomes `let held? = get() else { return null }`, and
+      every later `held!` in the same block reads `held`. THE ONE
+      GUARD THAT STAYS: `x` that is a `mut` binding, a parameter, or
+      a field/path (`self.store == null`) — only an adjacent
+      immutable `let`; a later use of `x` that is not an unwrap
+      (passed to a `T?` seat, compared to null again, `x?.f`) — the
+      rewrite makes `x` non-null for the rest of the block, so a
+      surviving nullable read would refuse or silently change
+      meaning; a guard with `||`/`&&`; a `let` with an explicit
+      NON-nullable annotation; and a name a LATER binding in the
+      same block could SHADOW (a lambda or `for` parameter, a nested
+      `let`/`mut` of the same name) — a text scan cannot then tell
+      which binding a later `x!` names. Ratcheted (`let_else_guard`).
+
 - I49 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
       conversions that are inverses name their categories ONCE, as a
       registry enum, and each direction is an exhaustive match over

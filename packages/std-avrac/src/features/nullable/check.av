@@ -25,9 +25,8 @@ fn nullable_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 /// nullable member is still ONE absence.
 fn chain_type(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string) -> TypeId {
     if cx.errored(subject) { return cx.error_type }
-    let held: TypeId? = cx.view.types.carried(cx.type_at(subject))
-    if held == null { return not_chainable(cx, subject, name) }
-    let member = cx.member_type_of(e, cx.view.types.name_of(held!), held!, name)
+    let held? = cx.view.types.carried(cx.type_at(subject)) else { return not_chainable(cx, subject, name) }
+    let member = cx.member_type_of(e, cx.view.types.name_of(held), held, name)
     if cx.errored_ty(member) { return cx.error_type }
     // a member that is itself nullable IS the chain's answer — the
     // flatten rule: `a?.b` never nests absence
@@ -84,9 +83,8 @@ fn match_opt_type(mut cx: TypeCx, subject: ExprId, bind: string,
     cx.bind_types(present, [held!])
     let pt = cx.walk_type(present)
     let at = cx.walk_type(absent)
-    let both: TypeId? = cx.join_of(pt, at)
-    if both == null { return arms_disagree(cx, present, absent) }
-    let answer = both!
+    let both? = cx.join_of(pt, at) else { return arms_disagree(cx, present, absent) }
+    let answer = both
     let _ = cx.accepts(present, answer)
     let _ = cx.accepts(absent, answer)
     answer
@@ -110,9 +108,8 @@ fn forced_type(mut cx: TypeCx, v: ExprId) -> TypeId {
 /// own walk and must LEAVE, or control would reach the bind with
 /// nothing bound.
 fn check_let_else(mut cx: TypeCx, s: StmtId) {
-    let subject: ExprId? = cx.view.store.stmt_value(s)
-    if subject == null { return }
-    let v = subject!
+    let subject? = cx.view.store.stmt_value(s) else { return }
+    let v = subject
     let bind = cx.view.store.let_name(s) ?? "this binding"
     let held: TypeId? = cx.view.types.carried(cx.type_at(v))
     if held == null && !(cx.errored(v)) {
@@ -159,10 +156,9 @@ fn propagate_res_type(mut cx: TypeCx, v: ExprId, sides: ResSides) -> TypeId {
     }
     let promised = ret!
     if cx.errored_ty(promised) { return cx.error_type }
-    let rsides: ResSides? = cx.view.types.res_parts(promised)
-    if rsides == null { return failure_unpromised(cx, v, promised, sides) }
+    let rsides? = cx.view.types.res_parts(promised) else { return failure_unpromised(cx, v, promised, sides) }
     // LICENSED I9: type identity — interned ids ARE the agreement
-    if rsides!.err.index != sides.err.index { return failures_disagree(cx, v, sides, rsides!) }
+    if rsides.err.index != sides.err.index { return failures_disagree(cx, v, sides, rsides) }
     sides.ok
 }
 

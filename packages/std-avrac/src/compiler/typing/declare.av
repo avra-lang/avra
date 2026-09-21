@@ -3,7 +3,7 @@
 //! annotations, and the laws of the types annotations WRITE — a
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
-use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, NamedParts, TypeRegistry, ExternParts, widthless, width_named, width_words}
+use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, TypeRegistry, widthless, width_named, width_words}
 use diagnostics.{refusal}
 use features.{TypeCx, FnSig, StructSig, EnumSig, NamedSig, DeclSig, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats, declared_decl}
 use @std.errors.{Loc}
@@ -24,9 +24,8 @@ impl TypeCx {
     /// law. The name is marked in the registry, which is what makes
     /// every READ see through it while every SEAT still compares ids.
     fn declare_named(s: StmtId) {
-        let np: NamedParts? = self.view.store.named_parts(s)
-        if np == null { return }
-        let parts = np!
+        let np? = self.view.store.named_parts(s) else { return }
+        let parts = np
         if !parts.tparams.is_empty() { return self.named_is_generic(s, parts.name) }
         let of = self.slot_law(s, "type.named", "a named type cannot stand over this yet",
                                "`${parts.name}` stands over `${spelled(parts.of)}`", parts.of)
@@ -145,12 +144,11 @@ impl TypeCx {
             if self.view.store.is_once(s) { self.once_laws(s, fp) }
             return self.declare_sig(s, fp.params, fp.ret)
         }
-        let host: ExternParts? = self.view.store.extern_parts(s)
-        if host == null { return }
+        let host? = self.view.store.extern_parts(s) else { return }
         // An extern's seats may name a machine WIDTH; the value that
         // crosses is Avra's one integer, so the width is read off
         // the annotation and the sig declares `int`.
-        let c = host!
+        let c = host
         self.declare_sig(s, widthless_seats(c.params), widthless(c.ret) ?? c.ret)
     }
 
@@ -326,9 +324,8 @@ impl TypeCx {
 
     /// `dyn Name` wears a declared trait — the contract is the type.
     fn dyn_type(at: Loc?, name: string) -> TypeId {
-        let tdecl: DeclId? = self.trait_decl_named(name)
-        if tdecl == null { return self.undeclared_contract(at, name) }
-        self.view.types.intern(Type.Dyn(tdecl!, name))
+        let tdecl? = self.trait_decl_named(name) else { return self.undeclared_contract(at, name) }
+        self.view.types.intern(Type.Dyn(tdecl, name))
     }
 
     fn unappliable(at: Loc?, name: string) -> TypeId {
@@ -396,10 +393,9 @@ impl TypeCx {
     /// slots RE-JUDGED under the arguments when the sig is already
     /// declared (source order — a construction judges again anyway).
     fn applied_decl(at: Loc?, name: string, parts: List<TypeId>) -> TypeId {
-        let target: DeclId? = self.type_decl_named(name)
-        if target == null { return self.error_type }
-        if self.refused_app(at, name, target!, parts) { return self.error_type }
-        self.view.types.intern(Type.App(target!, name, parts))
+        let target? = self.type_decl_named(name) else { return self.error_type }
+        if self.refused_app(at, name, target, parts) { return self.error_type }
+        self.view.types.intern(Type.App(target, name, parts))
     }
 
     /// The declaration a type name stands for, in this file's scope.
@@ -422,9 +418,8 @@ impl TypeCx {
     fn declared_slots(decl: DeclId) -> List<TypeId> {
         let rs: StructSig? = (self.view.decls.sig(decl))?.record_sig()
         if rs != null { return rs!.types }
-        let vs: EnumSig? = (self.view.decls.sig(decl))?.enum_sig()
-        if vs == null { return [] }
-        flatten(vs!.payloads)
+        let vs? = (self.view.decls.sig(decl))?.enum_sig() else { return [] }
+        flatten(vs.payloads)
     }
 
     /// What a written NAME stands for: the enclosing fn's type

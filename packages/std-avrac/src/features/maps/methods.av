@@ -15,14 +15,12 @@ export fn on_map(t: Type) -> bool {
 // ── The rows' rules ──
 
 export fn check_get(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    let value: TypeId? = value_held(cx, mc, "get")
-    if value == null { return cx.error_type }
-    got_type(cx, mc.e, mc.args, value!)
+    let value? = value_held(cx, mc, "get") else { return cx.error_type }
+    got_type(cx, mc.e, mc.args, value)
 }
 export fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    let value: TypeId? = value_held(cx, mc, "set")
-    if value == null { return cx.error_type }
-    set_type(cx, mc.e, mc.subject, mc.args, value!)
+    let value? = value_held(cx, mc, "set") else { return cx.error_type }
+    set_type(cx, mc.e, mc.subject, mc.args, value)
 }
 export fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {
     got_reg(cx, mc.e, mc.subject, mc.args[0])
@@ -62,9 +60,8 @@ fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, valu
         cx.wrong_arity(e, "set", 2, args.length)
         return cx.error_type
     }
-    let root: ExprId? = cx.view.store.place_root(subject)
-    if root == null { return cx.not_a_place_call(e, "set") }
-    if !cx.is_mut(root!) { return cx.not_mut_call(e, "set", cx.view.store.ident_name(root!) ?? "this name") }
+    let root? = cx.view.store.place_root(subject) else { return cx.not_a_place_call(e, "set") }
+    if !cx.is_mut(root) { return cx.not_mut_call(e, "set", cx.view.store.ident_name(root) ?? "this name") }
     let key = cx.type(string)
     if !cx.accepts(args[0], key) { cx.wrong_argument("set", 0, key, args[0]) }
     if !cx.accepts(args[1], value) { cx.wrong_argument("set", 1, value, args[1]) }

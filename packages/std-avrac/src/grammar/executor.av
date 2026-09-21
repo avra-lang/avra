@@ -273,12 +273,11 @@ fn expected_word(term: string) -> string {
 }
 
 fn match_rule<N>(mut cx: MatchContext<N>, name: string, cursor: int, capped: bool) -> MatchResult<N> {
-    let ordinal: int? = cx.ordinals.get(name)
-    if ordinal == null { return undefined_rule<N>(cx, name, cursor) }
-    let at = (ordinal! * cx.memo.stride + cursor) * 2 + if capped { 1 } else { 0 }
+    let ordinal? = cx.ordinals.get(name) else { return undefined_rule<N>(cx, name, cursor) }
+    let at = (ordinal * cx.memo.stride + cursor) * 2 + if capped { 1 } else { 0 }
     let known = cx.memo.slots[at]
     if known > 0 { return cx.memo.results[known - 1] }
-    let fresh = match_alt<N>(cx, name, cx.g.rules[ordinal!].body, cursor, [], false, capped)
+    let fresh = match_alt<N>(cx, name, cx.g.rules[ordinal].body, cursor, [], false, capped)
     if plain_miss<N>(fresh) {
         cx.memo.slots.set(at, 1)
         return fresh
@@ -450,9 +449,8 @@ fn built<N>(cx: MatchContext<N>, s: Seq, bindings: List<Binding<N>>,
     // says so where a value is needed, and an empty one would index
     // nothing, so it refuses through the builder's own channel.
     if s.build == null {
-        let only: Captured<N>? = vals.first()
-        if only == null { return .Err("a pass-through branch captured nothing") }
-        return .Ok(only!)
+        let only? = vals.first() else { return .Err("a pass-through branch captured nothing") }
+        return .Ok(only)
     }
     match s.build! {
         .Var(name) -> .Ok(binding_for<N>(bindings, name) ?? cx.absent),

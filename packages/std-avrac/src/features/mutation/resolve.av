@@ -2,15 +2,14 @@
 //! rooted in a name — and that name must land on a `mut` binding;
 //! params and plain lets refuse with the remedy. The path itself
 //! resolves like any expression.
-use core.{StmtId, ExprId, DeclId, Binding, same_expr}
+use core.{StmtId, ExprId, DeclId, same_expr}
 use features.{ResolveCx, nothing}
 use diagnostics.{refusal}
 use @std.errors.{Loc}
 
 export fn resolve_assign(mut cx: ResolveCx, s: StmtId) {
-    let target: ExprId? = cx.view.store.assign_target(s)
-    if target == null { return }
-    let t = target!
+    let target? = cx.view.store.assign_target(s) else { return }
+    let t = target
     let at: Loc? = cx.stmt_loc(s)
     let root: ExprId? = cx.view.store.place_root(t)
     if root == null { return not_a_place(cx, at) }
@@ -20,9 +19,8 @@ export fn resolve_assign(mut cx: ResolveCx, s: StmtId) {
     // the walk bound the root: ask THE BINDING, never the name — a
     // name-keyed table holds locals alone and would let a fn's
     // name through as a place
-    let b: Binding? = cx.facts.binding(r)
-    if b == null { return }
-    match b! {
+    let b? = cx.facts.binding(r) else { return }
+    match b {
         // a method writes through its receiver: a PATH under `self`,
         // never `self` itself
         .Receiver -> if same_expr(t, r) { immutable_receiver(cx, at) } else { nothing() },

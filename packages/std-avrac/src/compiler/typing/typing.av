@@ -7,10 +7,10 @@
 //! never an option and never an Unknown — a hole or unresolved
 //! name types as the interned Error, which ABSORBS: the causing
 //! pass already spoke, so no diagnostic cascades from it.
-use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, DeclId, FnParts, Binding, same_expr, flatten, LambdaParts, mut_mark, Annotation}
+use core.{StmtId, ExprId, TypeId, Type, Param, TypeRef, TypeRegistry, DeclId, FnParts, Binding, same_expr, flatten, mut_mark, Annotation}
 use core.{SeatMark}
 use diagnostics.{refusal}
-use features.{TypeCx, NarrowFrame, Dispatch, semantics_of, stmt_semantics_of, post_order, FnSig, DeclSig, TypeRow, type_row, Decl, Cap, new_type_facts, type_named, TypeFacts, NameFacts, FileView, nothing, scalar_named}
+use features.{TypeCx, NarrowFrame, Dispatch, semantics_of, stmt_semantics_of, post_order, FnSig, DeclSig, TypeRow, type_row, Decl, new_type_facts, type_named, TypeFacts, NameFacts, FileView, nothing, scalar_named}
 use features.structs.{fits_default}
 use features.specs.{fits_case}
 use features.annotations.{check_annotation}
@@ -211,9 +211,8 @@ impl TypeCx {
     /// What the lambda captured, typed in lane order — each the
     /// captured binding's own type.
     fn capture_seats(lam: ExprId) -> List<TypeId> {
-        let cap: Cap? = self.names.capture(lam)
-        if cap == null { return [] }
-        [self.binding_ty(b) for b in cap!.sources]
+        let cap? = self.names.capture(lam) else { return [] }
+        [self.binding_ty(b) for b in cap.sources]
     }
 
     /// THE RESCUE: a hungry lambda re-types under the seats it lands
@@ -222,11 +221,10 @@ impl TypeCx {
     /// the annotations had been written.
     mut fn retype_seated(a: ExprId, seats: List<TypeId>, marks: List<SeatMark>) -> TypeId? {
         if !self.facts.hungry_at(a) { return null }
-        let parts: LambdaParts? = self.view.store.lambda_parts(a)
-        if parts == null { return null }
-        if parts!.params.length != seats.length { return null }
+        let parts? = self.view.store.lambda_parts(a) else { return null }
+        if parts.params.length != seats.length { return null }
         self.facts.absorb_hunger(a)
-        let ret = self.lambda_body(a, seats, marks, parts!.body)
+        let ret = self.lambda_body(a, seats, marks, parts.body)
         let ty = self.view.types.intern(Type.Fn(seats, marks, ret))
         self.facts.set_type(a, ty)
         ty
@@ -261,9 +259,8 @@ impl TypeCx {
     /// subject that cannot be proven simply walks un-narrowed: the
     /// sugar is never load-bearing (spec 10.4).
     mut fn walk_narrowed(subject: ExprId, branch: ExprId) -> TypeId {
-        let b: Binding? = self.names.binding(subject)
-        if b == null { return self.walk_type(branch) }
-        match b! {
+        let b? = self.names.binding(subject) else { return self.walk_type(branch) }
+        match b {
             .Def(s) -> self.narrowed_def_walk(s, branch),
             .Param(i) -> self.framed(Narrowing.Params, i, self.seat_type(i), branch),
             // lambda params, captures and the receiver never narrow — walk wide
@@ -334,9 +331,8 @@ impl TypeCx {
     /// unwraps the read at its one edge). No binding means resolve
     /// already spoke — Error, silently.
     mut fn target_type(e: ExprId) -> TypeId {
-        let b: Binding? = self.names.binding(e)
-        if b == null { return self.error_type }
-        match b! {
+        let b? = self.names.binding(e) else { return self.error_type }
+        match b {
             .Param(i) -> self.narrowed_param(e, i) ?? self.seat_type(i),
             // the receiver rides seat 0 of a method's sig
             .Receiver -> self.seat_type(0),
@@ -393,10 +389,9 @@ impl TypeCx {
     /// One stack's answer: the frame whose key matches, its read
     /// recorded as wearing the frame's OPT.
     mut fn narrow_hit(e: ExprId, frames: List<NarrowFrame>, key: int) -> TypeId? {
-        let hit: NarrowFrame? = frames.find(it.key == key)
-        if hit == null { return null }
-        self.facts.narrow(e, hit!.opt)
-        hit!.inner
+        let hit? = frames.find(it.key == key) else { return null }
+        self.facts.narrow(e, hit.opt)
+        hit.inner
     }
 
     /// A paired head's subject — where `enumerate` may stand.
@@ -455,17 +450,15 @@ impl TypeCx {
 
     /// A lambda param's declared type, by seat.
     fn lambda_param_ty(l: ExprId, i: int) -> TypeId {
-        let ps: List<TypeId>? = self.facts.lambda_seats(l)
-        if ps == null { return self.error_type }
-        ps![i]
+        let ps? = self.facts.lambda_seats(l) else { return self.error_type }
+        ps[i]
     }
 
     /// A capture's type — its SOURCE binding's, chained through
     /// nested lambdas.
     fn capture_ty(l: ExprId, j: int) -> TypeId {
-        let cap: Cap? = self.names.capture(l)
-        if cap == null { return self.error_type }
-        self.binding_ty(cap!.sources[j])
+        let cap? = self.names.capture(l) else { return self.error_type }
+        self.binding_ty(cap.sources[j])
     }
 
     /// The un-narrowed type a binding wears — the capture law's
@@ -501,9 +494,8 @@ impl TypeCx {
     /// A declared generic's arity by NAME, for the applied-type path —
     /// null when the name is not a generic declaration.
     fn declared_arity(name: string) -> int? {
-        let decl: DeclId? = type_named(self.names, name)
-        if decl == null { return null }
-        let arity = self.view.decls.tparams(decl!).length
+        let decl? = type_named(self.names, name) else { return null }
+        let arity = self.view.decls.tparams(decl).length
         if arity == 0 { return null }
         arity
     }

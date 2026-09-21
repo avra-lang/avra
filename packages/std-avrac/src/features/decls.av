@@ -65,10 +65,9 @@ export type DeclFacts = {
 
 /// An extern's raw seat widths: one name per parameter, then the answer's.
 fn extern_host(store: NodeStore, s: StmtId) -> List<string> {
-    let ext = store.extern_parts(s)
-    if ext == null { return [] }
-    let seats = [p.ty?.name ?? "" for p in ext!.params]
-    seats.concat([ext!.ret.name])
+    let ext? = store.extern_parts(s) else { return [] }
+    let seats = [p.ty?.name ?? "" for p in ext.params]
+    seats.concat([ext.ret.name])
 }
 
 /// THE ONE CAPTURE — a parsed declaration's facts, read from its store exactly once.
@@ -281,9 +280,8 @@ impl Decls {
     /// The template a generated declaration was copied from — the
     /// quote's file and offset — beside who asked.
     fn note_template(d: DeclId, template: Loc?) {
-        let held: Provenance? = self.provenance[d.index]
-        if held == null { return }
-        self.provenance.set(d.index, held! with { template: template })
+        let held? = self.provenance[d.index] else { return }
+        self.provenance.set(d.index, held with { template: template })
     }
 
     /// One more generation admitted to a file.
@@ -454,9 +452,8 @@ impl Decls {
     fn const_type(f: FileId, s: StmtId) -> ConstType {
         let ensure = self.ensure_const[0]
         if ensure(f, s) { return ConstType.Cyclic }
-        let held: TypeId? = self.held_const_type(f, s)
-        if held == null { return ConstType.Refused }
-        ConstType.Known(held!)
+        let held? = self.held_const_type(f, s) else { return ConstType.Refused }
+        ConstType.Known(held)
     }
 
     fn held_const_type(f: FileId, s: StmtId) -> TypeId? { self.const_types.get(const_type_key(f, s)) }
@@ -547,9 +544,8 @@ impl Decls {
     /// An impl block's type parameters are its TARGET's — a method
     /// under `impl Arena<N>` instantiates with `Arena`'s Vars.
     fn target_tparams(impl_decl: DeclId) -> List<string> {
-        let t: DeclId? = self.target_of(impl_decl)
-        if t == null { return [] }
-        self.tparams(t!)
+        let t? = self.target_of(impl_decl) else { return [] }
+        self.tparams(t)
     }
 
     // ── the inout seats ──

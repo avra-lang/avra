@@ -55,10 +55,9 @@ fn fielded_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, slot: int, fty:
 fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, name: string, args: List<ExprId>) -> Reg {
     let recv = cx.reg_of(subject)
     let regs = [cx.reg_of(a) for a in args]
-    let m: DeclId? = cx.view.decls.method(decl, name)
-    if m == null { return cx.lower_defect(e, "a method with no symbol survived typing") }
+    let m? = cx.view.decls.method(decl, name) else { return cx.lower_defect(e, "a method with no symbol survived typing") }
     let dst = cx.result(e)
-    cx.emit(Ins.Call(dst, cx.method_symbol(m!, e, cx.type_at(subject)), [recv].concat(regs)))
+    cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(subject)), [recv].concat(regs)))
     dst
 }
 
@@ -75,9 +74,8 @@ fn static_dispatch(mut cx: LowerCx, e: ExprId, m: DeclId, args: List<ExprId>) ->
 /// The type-receiver half lowered: the variant's tagged box — the
 /// same shape enums' own lowering mints, through the same verbs.
 fn built_variant(mut cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> Reg {
-    let sig: EnumSig? = cx.variants_at(e)
-    if sig == null { return cx.lower_defect(e, "a variant built without an enum type") }
-    let which: int? = sig!.tag_of(name)
+    let sig? = cx.variants_at(e) else { return cx.lower_defect(e, "a variant built without an enum type") }
+    let which: int? = sig.tag_of(name)
     if which == null || args.is_empty() { return cx.lower_defect(e, "an undeclared variant survived typing") }
     let carried = [cx.reg_of(a) for a in args]
     let size = cx.box_size(1 + carried.length)

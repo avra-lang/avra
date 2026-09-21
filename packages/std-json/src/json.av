@@ -317,9 +317,8 @@ fn scan_escape(text: string, n: int, j: int) -> Scan {
     if j + 1 >= n { return Scan.Refused(JsonError.BadEscape(j)) }
     let e = text.char_code(j + 1)
     if e == 117 { return scan_unicode(text, n, j) }
-    let piece: string? = simple_escape(e)
-    if piece == null { return Scan.Refused(JsonError.BadEscape(j)) }
-    Scan.Value(Json.Str(piece!), j + 2)
+    let piece? = simple_escape(e) else { return Scan.Refused(JsonError.BadEscape(j)) }
+    Scan.Value(Json.Str(piece), j + 2)
 }
 
 fn simple_escape(e: int) -> string? {
@@ -339,9 +338,8 @@ fn simple_escape(e: int) -> string? {
 /// `\uXXXX`, and a high surrogate followed by `\uXXXX` low as one
 /// code point.
 fn scan_unicode(text: string, n: int, j: int) -> Scan {
-    let high: int? = hex4(text, n, j + 2)
-    if high == null { return Scan.Refused(JsonError.BadEscape(j)) }
-    let code = high!
+    let high? = hex4(text, n, j + 2) else { return Scan.Refused(JsonError.BadEscape(j)) }
+    let code = high
     if code >= 55296 && code < 56320 && at(text, n, j + 6, 92) && at(text, n, j + 7, 117) {
         let low: int? = hex4(text, n, j + 8)
         if low != null {
@@ -360,9 +358,8 @@ fn hex4(text: string, n: int, i: int) -> int? {
     mut v = 0
     mut k = 0
     while k < 4 {
-        let d: int? = hex_value(text.char_code(i + k))
-        if d == null { return null }
-        v = v * 16 + d!
+        let d? = hex_value(text.char_code(i + k)) else { return null }
+        v = v * 16 + d
         k = k + 1
     }
     v

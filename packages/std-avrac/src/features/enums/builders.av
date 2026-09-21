@@ -15,8 +15,7 @@ use grammar.{Token}
 fn build_enum_decl(mut b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
-    let ends: int? = b.span_end()
-    if ends == null { return .Err("defect: an enum declaration without a span — the arena and the grammar disagree") }
+    let ends? = b.span_end() else { return .Err("defect: an enum declaration without a span — the arena and the grammar disagree") }
     let vs = b.tokens(2)?
     let names = b.tokens(4)?
     let tys = b.type_refs(5)?
@@ -30,7 +29,7 @@ fn build_enum_decl(mut b: Builder) -> Result<LangNode, string> {
     }
     mut variants: List<Variant> = []
     for j, v in vs {
-        let upto = window_end(vs, j, ends!)
+        let upto = window_end(vs, j, ends)
         variants.push(Variant { name: Plain(v.text), payloads: payloads_between(names, tys, w, v.span.lo, upto), span: v.span, marks: w.at(v.span.lo) })
     }
     b.make_stmt(Stmt.EnumDecl(Scoped(n.text), [Plain(t.text) for t in tp], variants))

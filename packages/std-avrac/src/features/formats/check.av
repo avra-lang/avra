@@ -12,13 +12,12 @@ use diagnostics.{refusal}
 /// distinctly named, and each hole binds the span it takes — as
 /// text over a `string`, as octets over a `Bytes`.
 export fn format_types(mut cx: TypeCx, p: PatId, parts: List<FormatPart>, expected: TypeId) -> List<TypeId> {
-    let span = span_type(cx, expected)
-    if span == null { return not_text(cx, p, expected) }
+    let span? = span_type(cx, expected) else { return not_text(cx, p, expected) }
     let shape: Fault? = adjacent_fault(parts) ?? repeated_fault(parts)
     if shape != null { return broken(cx, p, shape!) }
     let typed: FormatPart? = parts.find(it.hole.ty != null)
     if typed != null { return unparsed(cx, p, typed!) }
-    [span! for n in bound_names(parts)]
+    [span for n in bound_names(parts)]
 }
 
 /// What a hole's span IS, by what the subject is made of; absence
@@ -76,9 +75,8 @@ export fn on_grammar(t: Type) -> bool {
 /// `Name.parse(text)` — the text this grammar reads, or absence. The
 /// answer is the RECORD the declaration's holes became.
 export fn check_parse(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    let named: TypeId? = record_of(cx, cx.type_at(mc.subject))
-    if named == null { return cx.error_type }
-    cx.worded(mc, "parse", [read_seat(cx, mc)], Type.Opt(named!))
+    let named? = record_of(cx, cx.type_at(mc.subject)) else { return cx.error_type }
+    cx.worded(mc, "parse", [read_seat(cx, mc)], Type.Opt(named))
 }
 
 /// ONE DOOR, TWO SEATS: a grammar reads TEXT, or the OCTETS the text
@@ -104,8 +102,7 @@ fn record_of(mut cx: TypeCx, ty: TypeId) -> TypeId? {
 /// when a value would not survive the round trip. The seat is the
 /// RECORD the declaration's holes became; the answer is its text.
 export fn check_print(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    let named: TypeId? = record_of(cx, cx.type_at(mc.subject))
-    if named == null { return cx.error_type }
-    if !cx.seated(mc, "print", [named!]) { return cx.error_type }
+    let named? = record_of(cx, cx.type_at(mc.subject)) else { return cx.error_type }
+    if !cx.seated(mc, "print", [named]) { return cx.error_type }
     cx.type(string?)
 }

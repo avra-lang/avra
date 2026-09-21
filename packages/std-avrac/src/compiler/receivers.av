@@ -8,7 +8,7 @@
 //! has a declared type along its whole path, so no body is typed to
 //! learn it. Asked through the declaration table's hook, remembered
 //! by the kernel (ROADMAP: the inout receiver).
-use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, Binding, MethodParts, AppliedParts, PlaceStep, fp, fp_list, touch, filled, flatten, SeatMark, mut_mark}
+use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, Binding, MethodParts, fp, fp_list, touch, filled, flatten, SeatMark, mut_mark}
 use features.{NameFacts, Decls, Decl, StructSig, bound_decl_of, row_writes, FnSig, nothing, property_row}
 
 /// One fn's own evidence: which of its seats the body writes
@@ -131,11 +131,9 @@ impl Survey {
     /// receiver is seat 0, a parameter its own seat; null for a value
     /// and for every other binding.
     fn seat_of(e: ExprId) -> int? {
-        let root: ExprId? = self.store.place_root(e)
-        if root == null { return null }
-        let b: Binding? = self.names.binding(root!)
-        if b == null { return null }
-        match b! {
+        let root? = self.store.place_root(e) else { return null }
+        let b? = self.names.binding(root) else { return null }
+        match b {
             .Receiver -> 0,
             .Param(i) -> i,
             .Def(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
@@ -168,19 +166,17 @@ impl Survey {
     mut fn valued_evidence(e: ExprId) {
         let seat: int? = self.called_seat(e)
         if seat != null && seat! < self.seats.length { return self.feed_marks(self.arrow_marks(self.seats[seat!]), self.call_args(e)) }
-        let ap: AppliedParts? = self.store.applied_parts(e)
-        if ap == null { return }
-        let ty: TypeId? = self.place_type(ap!.subject)
-        if ty != null { self.feed_marks(self.arrow_marks(ty!), ap!.args) }
+        let ap? = self.store.applied_parts(e) else { return }
+        let ty: TypeId? = self.place_type(ap.subject)
+        if ty != null { self.feed_marks(self.arrow_marks(ty!), ap.args) }
     }
 
     /// The seat a named call reads its callee from, when the name is a
     /// parameter.
     fn called_seat(e: ExprId) -> int? {
         if self.call_args(e).is_empty() { return null }
-        let b: Binding? = self.names.binding(e)
-        if b == null { return null }
-        match b! {
+        let b? = self.names.binding(e) else { return null }
+        match b {
             .Param(i) -> i,
             _ -> null,
         }
@@ -188,9 +184,8 @@ impl Survey {
 
     /// A fn type's marks — none for any other type.
     fn arrow_marks(ty: TypeId) -> List<SeatMark> {
-        let held: Arrow? = self.decls.types.arrow_parts(ty)
-        if held == null { return [] }
-        held!.marks
+        let held? = self.decls.types.arrow_parts(ty) else { return [] }
+        held.marks
     }
 
     /// A named call's arguments; empty for every other node.
@@ -235,9 +230,8 @@ impl Survey {
     /// this pass cannot type — can carry a write back.
     fn writable(a: ExprId) -> bool {
         if self.measured(a) { return false }
-        let ty: TypeId? = self.place_type(a)
-        if ty == null { return true }
-        match self.decls.types.shape_of(ty!) {
+        let ty? = self.place_type(a) else { return true }
+        match self.decls.types.shape_of(ty) {
             .Int or .Float or .Bytes or .Bool or .Str or .Null or .Void or .Ptr -> false,
             .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Map(_, _) or
             .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .EmptyList or .EmptyMap or .TypeName(_, _) or
@@ -248,9 +242,8 @@ impl Survey {
     /// A MEASURED property (`xs.length`) — a scalar the vocabulary
     /// answers, never a slot: copied at any seat.
     fn measured(a: ExprId) -> bool {
-        let step: PlaceStep? = self.store.place_step(a)
-        if step == null { return false }
-        match step! {
+        let step? = self.store.place_step(a) else { return false }
+        match step {
             .Field(subject, name) -> {
                 let holder: TypeId? = self.place_type(subject)
                 holder != null && property_row(self.ws.lang.rows.properties, name.of, self.decls.types.shape_of(holder!)) != null
@@ -315,55 +308,48 @@ impl Survey {
     /// and a `mut fn` that writes only through such a call is inferred
     /// non-writing — silently.
     fn field_or_method(ty: TypeId, d: DeclId, name: string) -> Callee {
-        let held: Arrow? = self.fn_field_arrow(ty, name)
-        if held == null { return self.declared_method(d, name) }
-        Callee.FnSeats(held!)
+        let held? = self.fn_field_arrow(ty, name) else { return self.declared_method(d, name) }
+        Callee.FnSeats(held)
     }
 
     /// The arrow a fn-typed field of that name holds.
     fn fn_field_arrow(ty: TypeId, name: string) -> Arrow? {
-        let ft: TypeId? = self.decls.field_type_named(ty, name)
-        if ft == null { return null }
-        self.decls.types.arrow_parts(ft!)
+        let ft? = self.decls.field_type_named(ty, name) else { return null }
+        self.decls.types.arrow_parts(ft)
     }
 
     fn declared_method(d: DeclId, name: string) -> Callee {
-        let m: DeclId? = self.decls.method(d, name)
-        if m == null { return Callee.None }
-        Callee.Method(m!)
+        let m? = self.decls.method(d, name) else { return Callee.None }
+        Callee.Method(m)
     }
 
     /// A TYPE NAME's callee: a `static fn` of its impl. A variant
     /// construction names no callee — its payload is a value.
     fn static_member(d: DeclId, name: string) -> Callee {
-        let m: DeclId? = self.decls.method(d, name)
-        if m == null { return Callee.None }
-        if !self.decls.is_static_of(m!) { return Callee.None }
-        Callee.Static(m!)
+        let m? = self.decls.method(d, name) else { return Callee.None }
+        if !self.decls.is_static_of(m) { return Callee.None }
+        Callee.Static(m)
     }
 
     /// A method on a BOUNDED type parameter: the bound's trait's member.
     fn bounded_member(d: DeclId, j: int, name: string) -> Callee {
         let bound = self.decls.bound_name(d, j)
         if bound == "" { return Callee.None }
-        let tdecl: DeclId? = self.decls.trait_named(self.names, bound)
-        if tdecl == null { return Callee.None }
-        self.contract_member(tdecl!, name)
+        let tdecl? = self.decls.trait_named(self.names, bound) else { return Callee.None }
+        self.contract_member(tdecl, name)
     }
 
     fn contract_member(tdecl: DeclId, name: string) -> Callee {
-        let member: DeclId? = self.decls.trait_member(tdecl, name)
-        if member == null { return Callee.None }
-        Callee.Contract(member!)
+        let member? = self.decls.trait_member(tdecl, name) else { return Callee.None }
+        Callee.Contract(member)
     }
 
     /// The declared type along a seat-rooted place: the seat's type at
     /// the root, a field's declared type per field step, the element
     /// per index step — null when a step names nothing declared.
     fn place_type(e: ExprId) -> TypeId? {
-        let step: PlaceStep? = self.store.place_step(e)
-        if step == null { return null }
-        match step! {
+        let step? = self.store.place_step(e) else { return null }
+        match step {
             .Root(_) -> self.root_type(e),
             .Field(subject, name) -> self.field_type(self.place_type(subject), name.of),
             .At(subject, _) -> self.element_type(self.place_type(subject)),
@@ -375,9 +361,8 @@ impl Survey {
     /// is a named call's answer, a construction, or a place — nothing
     /// for any other binding.
     fn root_type(e: ExprId) -> TypeId? {
-        let b: Binding? = self.names.binding(e)
-        if b == null { return null }
-        match b! {
+        let b? = self.names.binding(e) else { return null }
+        match b {
             .Receiver -> self.receiver,
             .Param(i) -> if i < self.seats.length { self.seats[i] } else { null },
             .Def(s) -> self.bound_type(s),
@@ -387,19 +372,16 @@ impl Survey {
 
     /// What a `let`/`mut` holds, by its value's declared answer.
     fn bound_type(s: StmtId) -> TypeId? {
-        let v: ExprId? = self.store.stmt_value(s)
-        if v == null { return null }
-        let value = v!
+        let v? = self.store.stmt_value(s) else { return null }
+        let value = v
         let placed: TypeId? = self.place_type(value)
         if placed != null { return placed }
         let callee: DeclId? = bound_decl_of(self.names, value)
         if callee != null { return (self.decls.sig(callee!))?.fn_sig()?.ret }
-        let mp: MethodParts? = self.store.method_parts(value)
-        if mp == null { return self.constructed_type(value) }
-        let m = mp!
-        let subject: TypeId? = self.place_type(m.subject)
-        if subject == null { return null }
-        match self.callee_of(subject!, m.name) {
+        let mp? = self.store.method_parts(value) else { return self.constructed_type(value) }
+        let m = mp
+        let subject? = self.place_type(m.subject) else { return null }
+        match self.callee_of(subject, m.name) {
             .Method(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
             .Static(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
             .FnSeats(held) -> held.answer,
@@ -411,11 +393,9 @@ impl Survey {
     /// A construction's type — the record it names, in the file's
     /// namespace.
     fn constructed_type(v: ExprId) -> TypeId? {
-        let name: string? = self.store.struct_lit_name(v)
-        if name == null { return null }
-        let d: DeclId? = self.names.names.type_decl(name!)
-        if d == null { return null }
-        self.decls.self_type_of(d!)
+        let name? = self.store.struct_lit_name(v) else { return null }
+        let d? = self.names.names.type_decl(name) else { return null }
+        self.decls.self_type_of(d)
     }
 
     fn field_type(holder: TypeId?, name: string) -> TypeId? {
@@ -453,8 +433,7 @@ impl Workspace {
     /// refused.
     fn receiver_type(x: Decl) -> TypeId? {
         if x.parent == null { return null }
-        let target: DeclId? = self.decls.target_of(x.parent!)
-        if target == null { return null }
-        self.decls.self_type_of(target!)
+        let target? = self.decls.target_of(x.parent!) else { return null }
+        self.decls.self_type_of(target)
     }
 }

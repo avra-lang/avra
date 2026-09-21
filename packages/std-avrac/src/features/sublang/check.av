@@ -1,22 +1,20 @@
 //! A block types as its expansion; a `syntax` declaration readies its
 //! grammar here, in the library, and holds every action to a fn of
 //! its own module with the action's arity — before any user exists.
-use core.{ExprId, StmtId, TypeId, DeclId, SyntaxParts, flatten}
+use core.{ExprId, StmtId, TypeId, DeclId, flatten}
 use features.{TypeCx, FnSig}
 use grammar.{parse_grammar, ready, Grammar, Build, Diagnostic}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
 
 fn block_type(mut cx: TypeCx, e: ExprId) -> TypeId {
-    let x: ExprId? = cx.view.store.expansion_of(e)
-    if x == null { return cx.error_type }
-    cx.type_at(x!)
+    let x? = cx.view.store.expansion_of(e) else { return cx.error_type }
+    cx.type_at(x)
 }
 
 fn check_syntax(mut cx: TypeCx, s: StmtId) {
-    let held: SyntaxParts? = cx.view.store.syntax_parts(s)
-    if held == null { return }
-    let parts = held!
+    let held? = cx.view.store.syntax_parts(s) else { return }
+    let parts = held
     let gp = parse_grammar(parts.text)
     let at = cx.stmt_loc(s)
     if gp.built == null { return cx.emit(unparsed(at, parts.name, first_defect(gp.diagnostics))) }
@@ -50,9 +48,8 @@ fn action_of(b: Build?) -> List<Action> {
 }
 
 fn first_defect(ds: List<Diagnostic>) -> string {
-    let held: Diagnostic? = ds.first()
-    if held == null { return "no rule was built" }
-    held!.message
+    let held? = ds.first() else { return "no rule was built" }
+    held.message
 }
 
 // ── voices ──

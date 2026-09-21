@@ -5,7 +5,7 @@
 //! side, the absent arm, and the chain's absence all run only when
 //! the value is not there.
 use core.{ExprId, StmtId, TypeId, Reg, Ins}
-use features.{LowerCx, StructSig, PropertyRow, property_of}
+use features.{LowerCx, property_of}
 
 fn nullable_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
@@ -85,10 +85,9 @@ fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
 
 /// The absent arm's whole story: the enclosing fn answers absence.
 fn departed(mut cx: LowerCx, e: ExprId) -> Reg {
-    let ret: TypeId? = cx.enclosing_ret()
-    if ret == null { return cx.lower_defect(e, "a propagation without an enclosing fn survived typing") }
+    let ret? = cx.enclosing_ret() else { return cx.lower_defect(e, "a propagation without an enclosing fn survived typing") }
     cx.leaving(null)
-    cx.emit(Ins.FnExit(cx.absent_of(ret!)))
+    cx.emit(Ins.FnExit(cx.absent_of(ret)))
     cx.hollow_of(cx.type_at(e))
 }
 
@@ -98,10 +97,9 @@ fn departed(mut cx: LowerCx, e: ExprId) -> Reg {
 /// (typing enforced it), and yields a hollow the merge never
 /// reads. The driver binds the answered register like any let's.
 fn let_else_reg(mut cx: LowerCx, s: StmtId) -> Reg? {
-    let subject: ExprId? = cx.view.store.stmt_value(s)
-    if subject == null { return null }
-    let v = cx.reg_of(subject!)
-    let held = cx.type_at(subject!)
+    let subject? = cx.view.store.stmt_value(s) else { return null }
+    let v = cx.reg_of(subject)
+    let held = cx.type_at(subject)
     cx.region_as(cx.presence_of(v, held), cx.carried_type(held)) { cx -> cx.carried_of(v, held) } else { cx ->
         cx.arm_stmts(else_stmts_of(cx.view.store.stmt(s)))
         cx.hollow_of(cx.carried_type(held))
@@ -136,12 +134,10 @@ fn lifted_member(mut cx: LowerCx, e: ExprId, v: Reg, held: TypeId,
 /// loudly, not lift twice.
 fn member_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
               name: string, answer: TypeId) -> Reg {
-    let sig: StructSig? = cx.fields_of(held)
-    if sig == null { return cx.adopted(answer, false, chained_row(cx, e, carried, held, name)) }
-    let fields = sig!
-    let slot: int? = fields.slot_of(name)
-    if slot == null { return memberless_chain(cx, e) }
-    let at = slot!
+    let sig? = cx.fields_of(held) else { return cx.adopted(answer, false, chained_row(cx, e, carried, held, name)) }
+    let fields = sig
+    let slot? = fields.slot_of(name) else { return memberless_chain(cx, e) }
+    let at = slot
     let own = fields.types[at]
     if !types_differ(own, answer) { return cx.field_read(carried, held, at, own) }
     if types_differ(own, cx.carried_type(answer)) {
@@ -153,9 +149,8 @@ fn member_reg(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId,
 /// The property the receiver answers, lowered from the carried
 /// register.
 fn chained_row(mut cx: LowerCx, e: ExprId, carried: Reg, held: TypeId, name: string) -> Reg {
-    let row: PropertyRow? = property_of(cx.view.types, cx.view.lang.properties, name, held)
-    if row == null { return memberless_chain(cx, e) }
-    let r = row!
+    let row? = property_of(cx.view.types, cx.view.lang.properties, name, held) else { return memberless_chain(cx, e) }
+    let r = row
     r.lower(cx, e, carried, held)
 }
 

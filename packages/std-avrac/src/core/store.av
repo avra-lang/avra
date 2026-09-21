@@ -104,9 +104,8 @@ impl NodeStore {
 
     /// The quote starting at a source offset, when one does.
     fn quote_at(offset: int) -> ExprId? {
-        let i: int? = self.quotes_at.get("${offset}")
-        if i == null { return null }
-        ExprId { index: i! }
+        let i? = self.quotes_at.get("${offset}") else { return null }
+        ExprId { index: i }
     }
 
     /// A sublanguage block and where its body starts in the source.
@@ -159,9 +158,8 @@ impl NodeStore {
     /// The hole a statement IS — a lone placeholder standing as a
     /// whole statement — by index, or null.
     fn hole_stmt(s: StmtId) -> int? {
-        let v: ExprId? = match self.stmt(s) { .ExprStmt(v) -> v, _ -> null }
-        if v == null { return null }
-        let hole: HoleName? = hole_name(self.ident_name(v!) ?? "")
+        let v? = match self.stmt(s) { .ExprStmt(v) -> v, _ -> null } else { return null }
+        let hole: HoleName? = hole_name(self.ident_name(v) ?? "")
         if hole == null || !hole!.lone() { return null }
         hole!.holes[0]
     }
@@ -230,9 +228,8 @@ impl NodeStore {
     /// that is all the branch holds, else a block answering with its
     /// tail.
     fn branch_value(stmts: List<StmtId>) -> ExprId? {
-        let held: StmtId? = stmts.last()
-        if held == null { return null }
-        let last = held!
+        let held? = stmts.last() else { return null }
+        let last = held
         // a branch that LEAVES answers the fn's promise — a block
         // whose value is absent, as the block law reads it
         if self.diverges(last) { return self.alloc_expr(Expr.Block(stmts, null), self.stmt_span(last)) }
@@ -246,17 +243,15 @@ impl NodeStore {
     /// into the expression statement it is — the top level's tail
     /// law, the same as a block's.
     fn answered(stmts: List<StmtId>) -> List<StmtId> {
-        let held: StmtId? = stmts.last()
-        if held == null { return stmts }
-        let last = held!
+        let held? = stmts.last() else { return stmts }
+        let last = held
         let chained: bool = match self.stmt(last) {
             .IfStmt(_, _, e) -> !e.is_empty(),
             _ -> false,
         }
         if !chained { return stmts }
-        let value: ExprId? = self.answer_of(last)
-        if value == null { return stmts }
-        stmts.slice(0, stmts.length - 1).concat([self.alloc_stmt(Stmt.ExprStmt(value!), self.stmt_span(last))])
+        let value? = self.answer_of(last) else { return stmts }
+        stmts.slice(0, stmts.length - 1).concat([self.alloc_stmt(Stmt.ExprStmt(value), self.stmt_span(last))])
     }
 
     /// The one pattern-allocation seam.
@@ -516,9 +511,8 @@ impl NodeStore {
     /// The binding a place is rooted in — the name at the bottom of
     /// its path; null when the expression is not a place.
     fn place_root(e: ExprId) -> ExprId? {
-        let step: PlaceStep? = self.place_step(e)
-        if step == null { return null }
-        match step! {
+        let step? = self.place_step(e) else { return null }
+        match step {
             .Root(_) -> e,
             .Field(subject, _) -> self.place_root(subject),
             .At(subject, _) -> self.place_root(subject),

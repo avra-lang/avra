@@ -18,8 +18,8 @@ use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, Mark, same_stmt,
 use @std.path.{dir_of, under_dir, joined_path, normalized, relative_path}
 use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
-use @std.meta.{Diagnostic, Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Mark as MetaMark, Decls as MetaDecls, Kind}
-use core.{Stmt, StmtId, Arm, BodyParts, BodyView, HoleKind, Filled, Unplaced, copier, quote_kind, all_codes, is_name_cont, SyntaxParts, ForeignRange}
+use @std.meta.{Diagnostic, Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Mark as MetaMark, Kind}
+use core.{Stmt, StmtId, Arm, BodyView, HoleKind, Filled, Unplaced, copier, quote_kind, all_codes, is_name_cont}
 use grammar.{parse_grammar, ready}
 use diagnostics.{defect_at}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error, user_code, DiagCode}
@@ -476,16 +476,13 @@ impl Workspace {
     /// One annotation's WARNING diagnostics, empty for an annotation
     /// that answers something other than `List<Diagnostic>`.
     fn annotation_warnings(x: Decl, p: Parsed, vis: Namespace, a: Annotation) -> List<Diagnostic> {
-        let found: DeclId? = self.named_arg(p, vis, a.callee)
-        if found == null { return [] }
-        let callee = found!
-        let sig: FnSig? = (self.decls.sig(callee))?.fn_sig()
-        if sig == null { return [] }
-        let s = sig!
+        let found? = self.named_arg(p, vis, a.callee) else { return [] }
+        let callee = found
+        let sig? = (self.decls.sig(callee))?.fn_sig() else { return [] }
+        let s = sig
         if s.params.is_empty() { return [] }
-        let elem: TypeId? = elem_of(self.decls.types, s.ret)
-        if elem == null { return [] }
-        if !self.decls.meta_type(elem!, "Diagnostic") { return [] }
+        let elem? = elem_of(self.decls.types, s.ret) else { return [] }
+        if !self.decls.meta_type(elem, "Diagnostic") { return [] }
         // a warning's kind wears the annotation fn's package here, where
         // that fn is known; a use speaks it under that kind
         match self.lifted(callee, x.file, x.stmt, a.callee, a.args) {

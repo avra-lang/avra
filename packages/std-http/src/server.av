@@ -112,10 +112,9 @@ impl Server<A> {
 
     mut fn served_event(e: Event) -> Result<int, NetError> {
         if e.fd == self.listener.fd { return self.accepted() }
-        let l: Link? = self.link_at(e.fd)
-        if l == null { return .Ok(e.fd) }
-        if e.failed { return self.dropped(l!) }
-        if e.readable || e.hangup { self.readable(l!)? }
+        let l? = self.link_at(e.fd) else { return .Ok(e.fd) }
+        if e.failed { return self.dropped(l) }
+        if e.readable || e.hangup { self.readable(l)? }
         let again: Link? = self.link_at(e.fd)
         if again != null && e.writable { self.kept(again!)? }
         .Ok(e.fd)
@@ -125,9 +124,8 @@ impl Server<A> {
     mut fn accepted() -> Result<int, NetError> {
         mut n = 0
         while true {
-            let pending: Conn? = self.listener.accept()?
-            if pending == null { return .Ok(n) }
-            let c = pending!
+            let pending? = self.listener.accept()? else { return .Ok(n) }
+            let c = pending
             self.poll.watch(c.fd, .Read)?
             self.seated(Link { conn: c, peer: c.peer(), buf: "".bytes(), scanned: 0, head: null, decoder: null, out: "".bytes(), written: 0, closing: false, served: 0, heard: now_ms() })
             n = n + 1

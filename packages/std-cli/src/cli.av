@@ -149,9 +149,8 @@ fn blamed(e: CliError) -> string? {
 /// the rest are its flags, options and positionals.
 export fn parse(app: App, words: List<string>) -> Result<CliResult, CliError> {
     let name = words.first() ?? ""
-    let sub: Subcommand? = app.commands.find(it.meta.name == name)
-    if sub == null { fail CliError.UnknownCommand(name) }
-    read_line(sub!.meta, words.slice(1, words.length))
+    let sub? = app.commands.find(it.meta.name == name) else { fail CliError.UnknownCommand(name) }
+    read_line(sub.meta, words.slice(1, words.length))
 }
 
 /// One token's meaning against a declaration.
@@ -209,10 +208,9 @@ fn classified(meta: CommandSpec, w: string, options_over: bool) -> Token {
     if flag != null { return Token.Flag(plain(flag!.name)) }
     let eq = w.index_of("=")
     let head = if eq < 0 { w } else { w.substring(0, eq) }
-    let option: OptionDef? = meta.options.find(names_option(it, head))
-    if option == null { return Token.Unknown(w) }
-    if eq < 0 { return Token.Option(plain(option!.name), null) }
-    Token.Option(plain(option!.name), w.substring(eq + 1, w.length))
+    let option? = meta.options.find(names_option(it, head)) else { return Token.Unknown(w) }
+    if eq < 0 { return Token.Option(plain(option.name), null) }
+    Token.Option(plain(option.name), w.substring(eq + 1, w.length))
 }
 
 fn names_flag(f: FlagDef, w: string) -> bool {
@@ -370,16 +368,14 @@ impl App {
             println(app_help(self))
             return 0
         }
-        let sub: Subcommand? = self.commands.find(it.meta.name == name!)
-        if sub == null { return self.refused(CliError.UnknownCommand(name!)) }
-        println(command_help(self, sub!.meta))
+        let sub? = self.commands.find(it.meta.name == name!) else { return self.refused(CliError.UnknownCommand(name!)) }
+        println(command_help(self, sub.meta))
         0
     }
 
     fn ran(r: CliResult) -> int {
-        let sub: Subcommand? = self.commands.find(it.meta.name == r.command)
-        if sub == null { return self.refused(CliError.UnknownCommand(r.command)) }
-        sub!.body.run(r)
+        let sub? = self.commands.find(it.meta.name == r.command) else { return self.refused(CliError.UnknownCommand(r.command)) }
+        sub.body.run(r)
     }
 
     /// A refusal spoken: the message, then the help that would have

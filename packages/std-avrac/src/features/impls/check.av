@@ -2,7 +2,7 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, TypeId, Arrow, DeclId, DeclKind}
+use core.{ExprId, TypeId, DeclId, DeclKind}
 use features.{TypeCx, FnSig, this_is, MethodCall}
 use diagnostics.{refusal}
 
@@ -37,10 +37,9 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
 /// The impl table's judgment: the found sig, instantiated for the
 /// receiver, judges arity and every seat; the inout laws follow.
 fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, target: string, name: string, args: List<ExprId>) -> TypeId {
-    let found: FnSig? = cx.method_sig(decl, name)
-    if found == null { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
+    let found? = cx.method_sig(decl, name) else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
     let m: DeclId? = cx.view.decls.method(decl, name)
-    let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found!))
+    let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found))
     let wants = sig.params.length - 1
     if args.length != wants {
         return wrong_method_arity(cx, e, target, name, wants, args.length)
@@ -56,9 +55,8 @@ fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, targe
 /// receiver rides a seat, so every argument judges against the sig
 /// exactly as written and the seats are numbered from zero.
 fn static_call(mut cx: TypeCx, e: ExprId, m: DeclId, target: string, name: string, args: List<ExprId>) -> TypeId {
-    let found: FnSig? = (cx.view.decls.sig(m))?.fn_sig()
-    if found == null { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
-    let sig = found!
+    let found? = (cx.view.decls.sig(m))?.fn_sig() else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
+    let sig = found
     if args.length != sig.params.length { return wrong_static_arity(cx, e, target, name, sig.params.length, args.length) }
     for j, a in args {
         if !cx.accepts(a, sig.params[j]) { wrong_method_argument(cx, target, name, j, sig.params[j], a) }
@@ -72,9 +70,8 @@ fn static_call(mut cx: TypeCx, e: ExprId, m: DeclId, target: string, name: strin
 /// own method names no `Self`, so it passes through.
 fn selfed_sig(mut cx: TypeCx, subject: ExprId, m: DeclId?, sig: FnSig) -> FnSig {
     if m == null { return sig }
-    let parent: DeclId? = cx.view.decls.decl(m!).parent
-    if parent == null { return sig }
-    let contract = parent!
+    let parent? = cx.view.decls.decl(m!).parent else { return sig }
+    let contract = parent
     if !cx.view.decls.is_trait(contract) { return sig }
     let recv = cx.type_at(subject)
     FnSig {
@@ -167,9 +164,8 @@ fn wrong_method_argument(mut cx: TypeCx, target: string, name: string, j: int, w
 /// `cx.walk(v)` calls the value the field holds; the field's arrow
 /// judges the seats.
 fn fielded_call(mut cx: TypeCx, e: ExprId, name: string, fty: TypeId, args: List<ExprId>) -> TypeId {
-    let held: Arrow? = cx.view.types.arrow_parts(fty)
-    if held == null { return cx.error_type }
-    let arrow = held!
+    let held? = cx.view.types.arrow_parts(fty) else { return cx.error_type }
+    let arrow = held
     cx.seats_judged(e, name, arrow.seats, arrow.marks, arrow.answer, args)
 }
 
@@ -199,20 +195,18 @@ fn bound_remedy(kind: DeclKind, tname: string) -> string {
 /// omitted — the boxed value fills that seat at dispatch); the
 /// runtime answers through the box.
 fn dyn_call(mut cx: TypeCx, e: ExprId, subject: ExprId, tdecl: DeclId, tname: string, name: string, args: List<ExprId>) -> TypeId {
-    let member: DeclId? = cx.view.decls.trait_member(tdecl, name)
-    if member == null { return no_dyn_method(cx, e, tname, name) }
-    contract_judged(cx, e, subject, tname, name, args, member!)
+    let member? = cx.view.decls.trait_member(tdecl, name) else { return no_dyn_method(cx, e, tname, name) }
+    contract_judged(cx, e, subject, tname, name, args, member)
 }
 
 /// The contract's own laws, then its judgment: the member's word
 /// decides the receiver and the seats for every signatory.
 fn contract_judged(mut cx: TypeCx, e: ExprId, subject: ExprId, trait_name: string, name: string, args: List<ExprId>, member: DeclId) -> TypeId {
-    let found: FnSig? = (cx.view.decls.sig(member))?.fn_sig()
-    if found == null { return cx.error_type }
+    let found? = (cx.view.decls.sig(member))?.fn_sig() else { return cx.error_type }
     let writes = cx.view.decls.declares_writing(member)
     cx.receiver_law(e, subject, name, writes)
     if !cx.seat_contracts(e, "${trait_name}.${name}", member, 1, args, if writes { subject } else { null }) { return cx.error_type }
-    sig_judged(cx, e, trait_name, name, args, seats_of(selfed_sig(cx, subject, member, found!)))
+    sig_judged(cx, e, trait_name, name, args, seats_of(selfed_sig(cx, subject, member, found)))
 }
 
 /// A method sig past its receiver — what the arguments fill.
@@ -224,11 +218,9 @@ fn seats_of(sig: FnSig) -> FnSig {
 /// the trait's sig judges arity and every seat — or absence when
 /// the trait lacks the method (each caller speaks its own remedy).
 fn trait_judged(mut cx: TypeCx, e: ExprId, subject: ExprId, trait_name: string, name: string, args: List<ExprId>) -> TypeId? {
-    let tdecl: DeclId? = cx.view.decls.trait_named(cx.names, trait_name)
-    if tdecl == null { return null }
-    let member: DeclId? = cx.view.decls.trait_member(tdecl!, name)
-    if member == null { return null }
-    contract_judged(cx, e, subject, trait_name, name, args, member!)
+    let tdecl? = cx.view.decls.trait_named(cx.names, trait_name) else { return null }
+    let member? = cx.view.decls.trait_member(tdecl, name) else { return null }
+    contract_judged(cx, e, subject, trait_name, name, args, member)
 }
 
 /// A method sig's judgment — its seats past the receiver — over the

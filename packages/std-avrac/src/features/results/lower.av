@@ -18,9 +18,8 @@ fn catch_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 fn catched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
                binds: List<string>, values: List<ExprId>) -> Reg {
     let r = cx.reg_of(subject)
-    let sides: ResSides? = cx.view.types.res_parts(cx.type_at(subject))
-    if sides == null { return cx.lower_defect(e, "a catch without a Result survived typing") }
-    let held = sides!
+    let sides? = cx.view.types.res_parts(cx.type_at(subject)) else { return cx.lower_defect(e, "a catch without a Result survived typing") }
+    let held = sides
     cx.region(cx.okness_of(r), e) { cx -> cx.payload_of(r, held.ok) } else { cx -> failure_reg(cx, e, r, held, variants, binds, values) }
 }
 
@@ -47,9 +46,8 @@ fn all_arm_reg(mut cx: LowerCx, r: Reg, sides: ResSides, bind: string, value: Ex
 /// exits with the subject's own box, propagating the unmatched.
 fn switched_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
                 variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
-    let held: EnumSig? = cx.variants_of(sides.err)
-    if held == null { return cx.lower_defect(e, "catch arms without variants survived typing") }
-    let sig = held!
+    let held? = cx.variants_of(sides.err) else { return cx.lower_defect(e, "catch arms without variants survived typing") }
+    let sig = held
     let err = cx.payload_of(r, sides.err)
     let selective = !total(sig, variants)
     let tags = arm_tags(sig, variants, selective)
@@ -72,9 +70,8 @@ fn switched_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
 
 /// One arm's bind: the payload read INSIDE the arm's bracket.
 fn bind_payload(mut cx: LowerCx, err: Reg, sig: EnumSig, vn: string, value: ExprId) {
-    let carried: TypeId? = sig.payload_of(vn)
-    if carried == null { return }
-    cx.bind_patterns(value, [cx.payload_of(err, carried!)])
+    let carried? = sig.payload_of(vn) else { return }
+    cx.bind_patterns(value, [cx.payload_of(err, carried)])
 }
 
 /// Every variant named — the switch needs no propagating default.

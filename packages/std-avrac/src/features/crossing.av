@@ -89,22 +89,18 @@ impl Decls {
 
     /// A record's fields, in order, against the row.
     fn record_disagreement(row: MetaShape) -> string? {
-        let d: DeclId? = self.package_decl(row.pkg, row.name)
-        if d == null { return null }
-        let sig: StructSig? = self.fields_of_type(self.self_type_of(d!))
-        if sig == null { return null }
-        first_difference(row.name, sig!.names, row.fields)
+        let d? = self.package_decl(row.pkg, row.name) else { return null }
+        let sig? = self.fields_of_type(self.self_type_of(d)) else { return null }
+        first_difference(row.name, sig.names, row.fields)
     }
 
     /// `Node`'s variants, in order and by payload count.
     fn node_disagreement() -> string? {
-        let d: DeclId? = self.package_decl("@std.meta", "Node")
-        if d == null { return null }
-        let sig: EnumSig? = self.variants_of_type(self.self_type_of(d!))
-        if sig == null { return null }
+        let d? = self.package_decl("@std.meta", "Node") else { return null }
+        let sig? = self.variants_of_type(self.self_type_of(d)) else { return null }
         let rows = node_readers()
-        let named: string? = first_difference("Node", sig!.names, [r.name for r in rows])
-        named ?? first_arity_difference(sig!.payloads, rows)
+        let named: string? = first_difference("Node", sig.names, [r.name for r in rows])
+        named ?? first_arity_difference(sig.payloads, rows)
     }
 }
 
@@ -118,9 +114,8 @@ impl Decls {
 /// all: this walk is over what the crossing READS, so a trailing
 /// slot is never examined.
 fn first_difference(name: string, loaded: List<string>, built: List<string>) -> string? {
-    let parted: int? = [j for j, x in built if j >= loaded.length || loaded[j] != x].first()
-    if parted == null { return null }
-    let at = parted!
+    let parted? = [j for j, x in built if j >= loaded.length || loaded[j] != x].first() else { return null }
+    let at = parted
     let found = if at >= loaded.length { "nothing" } else { "`${loaded[at]}`" }
     "`${name}` declares ${found} where the crossing reads `${built[at]}`"
 }
@@ -130,9 +125,8 @@ fn first_difference(name: string, loaded: List<string>, built: List<string>) -> 
 /// same length. A variant that GREW one the reader ignores is
 /// growth, and growth is not a moved shape.
 fn first_arity_difference(loaded: List<List<TypeId>>, rows: List<NodeReader>) -> string? {
-    let parted: int? = [j for j, r in rows if loaded[j].length < r.arity].first()
-    if parted == null { return null }
-    let at = parted!
+    let parted? = [j for j, r in rows if loaded[j].length < r.arity].first() else { return null }
+    let at = parted
     "`Node.${rows[at].name}` carries ${loaded[at].length} payloads where the crossing reads ${rows[at].arity}"
 }
 
@@ -191,9 +185,8 @@ fn crossed_directive(heap: MetaHeap, v: MetaVal) -> Directive {
 /// A crossed template record — its one field, the node.
 fn crossed_decls(heap: MetaHeap, v: MetaVal) -> MetaDecls? {
     if v is .Absent { return null }
-    let made: Node? = crossed_node(heap, crossed(heap, v).at(0))
-    if made == null { return null }
-    MetaDecls { node: made! }
+    let made? = crossed_node(heap, crossed(heap, v).at(0)) else { return null }
+    MetaDecls { node: made }
 }
 
 /// A crossed `Node`: its tag chooses the reader, and the slots after

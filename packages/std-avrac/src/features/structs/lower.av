@@ -44,9 +44,8 @@ fn with_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, v
 
 fn lit_reg(mut cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
     let regs = [cx.reg_of(v) for v in values]
-    let held: StructSig? = cx.fields_at(e)
-    if held == null { return cx.lower_defect(e, "a field-less literal survived typing") }
-    let sig = held!
+    let held? = cx.fields_at(e) else { return cx.lower_defect(e, "a field-less literal survived typing") }
+    let sig = held
     mut by_slot: List<Reg?> = filled<Reg?>(sig.names.length, null)
     for j, f in fields {
         let slot: int? = sig.slot_of(f)
@@ -82,10 +81,9 @@ fn packed_lit(mut cx: LowerCx, e: ExprId, sig: StructSig, by_slot: List<Reg?>) -
 /// The default an omitted slot lowers to — typing guaranteed one:
 /// a call to the field's own body, as instantiated at this literal.
 fn defaulted_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
-    let d: DeclId? = sig.defaults[slot]
-    if d == null { return cx.lower_defect(e, "a literal missing a field without a default survived typing") }
+    let d? = sig.defaults[slot] else { return cx.lower_defect(e, "a literal missing a field without a default survived typing") }
     let dst = cx.mint_ty(cx.viewed(sig.types[slot]))
-    cx.emit(Ins.Call(dst, cx.symbol_at(d!, e), []))
+    cx.emit(Ins.Call(dst, cx.symbol_at(d, e), []))
     dst
 }
 

@@ -1,6 +1,6 @@
 //! The resolver's walk: the statement/expression arms of `impl
 //! ResolveCx`. The entry and the frame helpers live in resolve.av.
-use core.{StmtId, ExprId, FileId, Param, closest, Closest, some_list, DeclId, Binding, found_at, LambdaParts, same_file}
+use core.{StmtId, ExprId, FileId, Param, closest, some_list, DeclId, Binding, found_at, same_file}
 use core.{SeatMark}
 use diagnostics.{Diag, error_at, pointed, refusal}
 use features.{ResolveCx, Def, self_word, Cap, Namespace, remedy_for, nothing, Bound}
@@ -166,9 +166,8 @@ impl ResolveCx {
     }
 
     fn lambda_seat_mut(l: ExprId, i: int) -> bool {
-        let parts: LambdaParts? = self.view.store.lambda_parts(l)
-        if parts == null { return false }
-        parts!.params[i].promises.mutable
+        let parts? = self.view.store.lambda_parts(l) else { return false }
+        parts.params[i].promises.mutable
     }
 
     fn seat_is_mut(i: int) -> bool {
@@ -182,10 +181,9 @@ impl ResolveCx {
     /// The mark of the enclosing body's seat `i`, past the receiver
     /// offset — a lambda's seats are its own declaration's.
     fn at_seat(i: int, asks: fn(SeatMark) -> bool) -> bool {
-        let open: List<SeatMark>? = self.marks.last()
-        if open == null { return false }
+        let open? = self.marks.last() else { return false }
         let at = i - self.seat_base()
-        at >= 0 && at < open!.length && asks(open![at])
+        at >= 0 && at < open.length && asks(open[at])
     }
 
     /// A name resolves ONCE — the first walk wins, diagnostics
@@ -304,9 +302,8 @@ impl ResolveCx {
         // THE TWO-TIER SECOND LOOK: a written program knows no such
         // name; a GENERATED declaration may. The workspace's oracle
         // materializes on demand and answers, or says none.
-        let gen: DeclId? = self.generated_named(name, origin)
-        if gen == null { return null }
-        Binding.Decl(gen!)
+        let gen? = self.generated_named(name, origin) else { return null }
+        Binding.Decl(gen)
     }
 
     /// The LOCAL half of the name chain, lambda-aware: the
@@ -332,9 +329,8 @@ impl ResolveCx {
         }
         let idx: int? = found_at(self.scope, name)
         if idx != null { return self.chained(0, name, Binding.Param(idx! + self.seat_base())) }
-        let outer: Binding? = self.outer_binding(name)
-        if outer == null { return null }
-        self.chained(0, name, outer!)
+        let outer? = self.outer_binding(name) else { return null }
+        self.chained(0, name, outer)
     }
 
     /// The top level's binding for a name — unless a fn body is
@@ -429,9 +425,8 @@ impl ResolveCx {
     /// The index a pairing loop names, bound beside its element
     /// under the same naming law.
     fn bind_index(s: StmtId) {
-        let ix: string? = self.view.store.loop_index(s)
-        if ix == null { return }
-        let name = ix!
+        let ix? = self.view.store.loop_index(s) else { return }
+        let name = ix
         if self.refused_binder(name, self.stmt_loc(s)) { return }
         if name == (self.view.store.let_name(s) ?? "") { return self.paired_alike(s, name) }
         self.bind(keyed(name, self.view.origin_of_stmt(s)), Binding.Index(s))
@@ -474,9 +469,8 @@ impl ResolveCx {
     /// A "did you mean" from the given candidates — later and
     /// shadowed names are honest candidates for a typo.
     fn suggested(d: Diag, e: ExprId, name: string, candidates: List<string>) -> Diag {
-        let near: Closest? = closest(name, candidates)
-        if near == null { return d }
-        let n = near!
+        let near? = closest(name, candidates) else { return d }
+        let n = near
         let at: Loc? = self.loc_of(e)
         let edits = [Edit { loc: l, replacement: n.name } for l in some_list(at)]
         let s = Suggestion {

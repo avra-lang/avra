@@ -4,8 +4,8 @@
 //! and every action mints a call of the library's fn, the captures as
 //! arguments — so the expansion's nodes stand right before the block's,
 //! as a parsed child does, and every range law holds.
-use core.{Expr, Stmt, ExprId, NodeStore, Span, HoleName, hole_name, flatten, some_list, BlockVoice, Scoped, BodyView}
-use features.{LangNode, Builder, BlockGrammar, zip_defect_of}
+use core.{Expr, Stmt, ExprId, NodeStore, Span, hole_name, flatten, some_list, BlockVoice, Scoped, BodyView}
+use features.{LangNode, Builder, zip_defect_of}
 use grammar.{run_from, lex_body, runs, Captured, TokenKind, Token, Grammar, Seq, Item, Prim, Build}
 
 /// The declaration always mints; its notation is judged by its typing
@@ -35,9 +35,8 @@ fn build_sublang(mut b: Builder) -> Result<LangNode, string> {
 /// The block's body run through its word's grammar: the root the
 /// actions minted, or null with the refusal spoken at the block.
 fn expanded(mut b: Builder, word: string, body: Token, holes: List<ExprId>) -> ExprId? {
-    let held: BlockGrammar? = b.blocks.find(it.word == word)
-    if held == null { return null }
-    let block = held!
+    let held? = b.blocks.find(it.word == word) else { return null }
+    let block = held
     let at = body.span.lo
     let lexed = lex_body(body.text)
     for x in lexed.errors { b.store.speak_block(BlockVoice { message: x.message, lo: x.span.lo + at, hi: x.span.hi + at, expected: [], in_rule: "(lexing)" }) }
@@ -60,9 +59,8 @@ fn expanded(mut b: Builder, word: string, body: Token, holes: List<ExprId>) -> E
 /// seat's shape says it is a list of one or of none.
 fn listed_seats(g: Grammar, name: string, arity: int) -> List<bool> {
     let seqs = flatten([r.body.branches for r in g.rules])
-    let held: Seq? = seqs.find(calls(it, name, arity))
-    if held == null { return [false for i in 0..arity] }
-    let seq = held!
+    let held? = seqs.find(calls(it, name, arity)) else { return [false for i in 0..arity] }
+    let seq = held
     [accumulates(seq.items, l, false) for l in action_labels(seq.build)]
 }
 
@@ -142,9 +140,8 @@ impl NodeStore {
 
 /// The user's expression a placeholder names.
 fn hole_expr(text: string, holes: List<ExprId>) -> ExprId? {
-    let held: HoleName? = hole_name(text)
-    if held == null { return null }
-    let k: int? = held!.holes.first()
+    let held? = hole_name(text) else { return null }
+    let k: int? = held.holes.first()
     if k == null || k! >= holes.length { return null }
     holes[k!]
 }

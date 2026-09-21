@@ -158,9 +158,8 @@ fn ran(l: Lowered, target: Body) -> Result<Ran, string> {
 
 /// The body a symbol names, or the refusal.
 fn named_body(l: Lowered, symbol: string) -> Result<Body, string> {
-    let target: Body? = body_named(l, symbol)
-    if target == null { return .Err(no_body_named(symbol)) }
-    .Ok(target!)
+    let target? = body_named(l, symbol) else { return .Err(no_body_named(symbol)) }
+    .Ok(target)
 }
 
 /// What a run printed, one line per puts.
@@ -255,11 +254,10 @@ fn crossed_answer(answer: MetaVal, heap: MetaHeap) -> Lifted {
 export fn run_lifted(l: Lowered, symbol: string, args: List<MetaVal>, heap: MetaHeap, budgets: Budgets) -> Result<Lifted, Unsettled> {
     let world: string? = world_reached(l, false)
     if world != null { return .Err(Unsettled.Reach(world!)) }
-    let target: Body? = body_named(l, symbol)
-    if target == null { return .Err(Unsettled.Trap(no_body_named(symbol))) }
+    let target? = body_named(l, symbol) else { return .Err(Unsettled.Trap(no_body_named(symbol))) }
     mut m = budgeted_machine(l, budgets)
     let vals = [m.val_of(heap, a) for a in args]
-    let answer: Val? = m.run_body(target!, vals)
+    let answer: Val? = m.run_body(target, vals)
     m.spent(symbol, budgets)
     if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
@@ -313,9 +311,8 @@ fn world_reached(l: Lowered, permits_embed: bool) -> string? {
 /// The callers between the entry and `offender`, nearest first, as
 /// prose — `, called from `f`, called from `X``. "" at the entry.
 fn callers_from(l: Lowered, offender: string) -> string {
-    let path: List<string>? = call_path(l, offender)
-    if path == null { return "" }
-    let p = path!
+    let path? = call_path(l, offender) else { return "" }
+    let p = path
     if p.length <= 1 { return "" }
     let callers = reversed([p[i] for i in 0..p.length - 1])
     ", " + joined(["called from `${c}`" for c in callers], ", ")
@@ -338,9 +335,8 @@ fn call_path(l: Lowered, offender: string) -> List<string>? {
 }
 
 fn walk_calls(by: Map<string, Body>, from: string, to: string, seen: List<string>) -> List<string>? {
-    let b: Body? = by.get(from)
-    if b == null { return null }
-    for i in b!.ins {
+    let b? = by.get(from) else { return null }
+    for i in b.ins {
         match i {
             .Call(_, callee, _) -> {
                 if callee == to { return [from, to] }
@@ -356,9 +352,8 @@ fn walk_calls(by: Map<string, Body>, from: string, to: string, seen: List<string
 }
 
 fn world_in(rows: Map<string, RtSig>, b: Body, permits_embed: bool) -> string? {
-    let hit: Ins? = b.ins.find(reaches_out(rows, it, permits_embed))
-    if hit == null { return null }
-    let row = hosted_symbol(hit!) ?? ""
+    let hit? = b.ins.find(reaches_out(rows, it, permits_embed)) else { return null }
+    let row = hosted_symbol(hit) ?? ""
     let reach: Reach = rows.get(row)?.reach ?? Reach.World
     if reach is .Embed { return "embeds a file in `${b.name}`, but this compile-time call cannot return build inputs" }
     "reaches `${row}` in `${b.name}`"
@@ -368,11 +363,9 @@ fn world_in(rows: Map<string, RtSig>, b: Body, permits_embed: bool) -> string? {
 /// World, an embed without an input-carrying result — or one unknown,
 /// which is a program's own extern and reaches whatever it likes.
 fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
-    let h: string? = hosted_symbol(i)
-    if h == null { return false }
-    let row: RtSig? = rows.get(h!)
-    if row == null { return true }
-    match row!.reach {
+    let h? = hosted_symbol(i) else { return false }
+    let row? = rows.get(h) else { return true }
+    match row.reach {
         .Pure -> false,
         .Embed -> !permits_embed,
         .World -> true,
@@ -824,11 +817,10 @@ impl Machine {
     fn static_val(sym: string) -> Val {
         let held: Val? = self.statics.get(sym)
         if held != null { return held! }
-        let st: Static? = self.l.statics.find(it.name == sym)
-        if st == null { return self.defect_val("a static read names no data") }
+        let st? = self.l.statics.find(it.name == sym) else { return self.defect_val("a static read names no data") }
         mut built: List<Val> = []
         // LICENSED I3: a fold — each box reads the ones built before it
-        for b in st!.boxes { built.push(self.box_val(b, built)) }
+        for b in st.boxes { built.push(self.box_val(b, built)) }
         let v = built.last() ?? Val.N
         self.statics.set(sym, v)
         v
@@ -861,9 +853,8 @@ impl Machine {
     }
 
     fn call_val(callee: string, args: List<Reg>) -> Val {
-        let target: Body? = body_named(self.l, callee)
-        if target == null { return self.defect_val("a call without a body survived lowering") }
-        self.run_call(target!, args)
+        let target? = body_named(self.l, callee) else { return self.defect_val("a call without a body survived lowering") }
+        self.run_call(target, args)
     }
 
     /// Both call shapes land here: arguments read, the body run, an

@@ -17,9 +17,8 @@ export fn on_list(t: Type) -> bool {
 /// `xs.map(f)` — a list of what the fn answers, which must fit a
 /// slot.
 export fn check_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    let seat: WalkSeat? = walk_seat(cx, mc, "map")
-    if seat == null { return cx.error_type }
-    let answer = seat!.answer
+    let seat? = walk_seat(cx, mc, "map") else { return cx.error_type }
+    let answer = seat.answer
     if !slot_worthy(cx.view.types, cx.view.types.shape_of(answer)) { return uncollectable(cx, mc.e, answer) }
     cx.type(List<answer>)
 }
@@ -33,9 +32,8 @@ export fn check_filter(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 
 /// `xs.find(p)` — the element, nullable.
 export fn check_find(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    let seat: WalkSeat? = predicate_seat(cx, mc, "find")
-    if seat == null { return cx.error_type }
-    cx.view.types.intern(Type.Opt(seat!.elem))
+    let seat? = predicate_seat(cx, mc, "find") else { return cx.error_type }
+    cx.view.types.intern(Type.Opt(seat.elem))
 }
 
 /// `xs.any(p)` / `xs.all(p)` — a verdict.
@@ -135,9 +133,8 @@ export fn check_enumerate(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 
 /// `xs.join(sep)` — text from a list of text.
 export fn check_join(mut cx: TypeCx, mc: MethodCall) -> TypeId {
-    let elem: TypeId? = elem_held(cx, mc, "join")
-    if elem == null { return cx.error_type }
-    if !(cx.view.types.shape_of(elem!) is .Str) { return joins_text(cx, mc.e, elem!) }
+    let elem? = elem_held(cx, mc, "join") else { return cx.error_type }
+    if !(cx.view.types.shape_of(elem) is .Str) { return joins_text(cx, mc.e, elem) }
     if !cx.seated(mc, "join", [cx.type(string)]) { return cx.error_type }
     cx.type(string)
 }
@@ -179,11 +176,10 @@ type WalkSeat = { elem: TypeId, answer: TypeId }
 fn walk_seat(mut cx: TypeCx, mc: MethodCall, name: string) -> WalkSeat? {
     let elem: TypeId? = elem_held(cx, mc, name)
     if elem == null { return null }
-    let held: Arrow? = walk_arg(cx, mc.e, name, elem!, mc.args)
-    if held == null { return null }
+    let held? = walk_arg(cx, mc.e, name, elem!, mc.args) else { return null }
     // a body that erred already spoke — its answer absorbs here
-    if cx.errored_ty(held!.answer) { return null }
-    let seat = WalkSeat { elem: elem!, answer: held!.answer }
+    if cx.errored_ty(held.answer) { return null }
+    let seat = WalkSeat { elem: elem!, answer: held.answer }
     seat
 }
 

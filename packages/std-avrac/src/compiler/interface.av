@@ -119,11 +119,9 @@ fn interface_decls(m: ModulePath) -> List<Decl> {
 
 fn interface_plain(owner: DeclId, a: TypeRef) -> TypeId? {
     if a.dynamic {
-        let base: TypeId? = self.decls.types.by_name(a.name)
-        if base == null { return null }
-        let decl: DeclId? = nominal_decl(self.decls.types, base!)
-        if decl == null { return null }
-        return self.decls.types.intern(Type.Dyn(decl!, a.name))
+        let base? = self.decls.types.by_name(a.name) else { return null }
+        let decl? = nominal_decl(self.decls.types, base) else { return null }
+        return self.decls.types.intern(Type.Dyn(decl, a.name))
     }
     if a.args.is_empty() {
         let named: TypeId? = self.decls.types.by_name(a.name)
@@ -139,9 +137,8 @@ fn interface_plain(owner: DeclId, a: TypeRef) -> TypeId? {
     }
     mut args: List<TypeId> = []
     for g in a.args {
-        let t: TypeId? = self.interface_spelled( owner, g)
-        if t == null { return null }
-        args.push(t!)
+        let t? = self.interface_spelled( owner, g) else { return null }
+        args.push(t)
     }
     if a.name == "List" && args.length == 1 {
         let elem = args[0]
@@ -151,17 +148,14 @@ fn interface_plain(owner: DeclId, a: TypeRef) -> TypeId? {
         let val = args[1]
         return self.decls.types.type(Map<string, val>)
     }
-    let base: TypeId? = self.decls.types.by_name(a.name)
-    if base == null { return null }
-    let decl: DeclId? = nominal_decl(self.decls.types, base!)
-    if decl == null { return null }
-    self.decls.types.intern(Type.App(decl!, a.name, args))
+    let base? = self.decls.types.by_name(a.name) else { return null }
+    let decl? = nominal_decl(self.decls.types, base) else { return null }
+    self.decls.types.intern(Type.App(decl, a.name, args))
 }
 
 fn interface_spelled(owner: DeclId, a: TypeRef) -> TypeId? {
-    let plain: TypeId? = self.interface_plain( owner, a)
-    if plain == null { return null }
-    let held = plain!
+    let plain? = self.interface_plain( owner, a) else { return null }
+    let held = plain
     // A NULLABLE IS ITS OWN TYPE, scalar or boxed: the interface decodes what the SOURCE
     // grammar refuses (`int?` is legal there), so no `rides_pointer` gate here.
     if !a.optional { return held }
@@ -177,9 +171,8 @@ fn interface_type(owner: DeclId, name: string) -> TypeId {
     }
     let known = self.decls.types.by_name(name)
     if known != null { return known! }
-    let written = parse_type_ref(self.lang, name)
-    if written == null { return self.decls.types.intern(Type.Error) }
-    let ty: TypeId? = self.interface_spelled( owner, written!)
+    let written? = parse_type_ref(self.lang, name) else { return self.decls.types.intern(Type.Error) }
+    let ty: TypeId? = self.interface_spelled( owner, written)
     ty ?? self.decls.types.intern(Type.Error)
 }
 

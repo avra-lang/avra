@@ -19,10 +19,9 @@ fn catch_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 fn catched_type(mut cx: TypeCx, e: ExprId, subject: ExprId, variants: List<string>,
                 binds: List<string>, values: List<ExprId>) -> TypeId {
     if cx.errored(subject) { return cx.error_type }
-    let sides: ResSides? = cx.view.types.res_parts(cx.type_at(subject))
-    if sides == null { return not_a_result(cx, subject) }
-    let t = sides!.ok
-    let err = sides!.err
+    let sides? = cx.view.types.res_parts(cx.type_at(subject)) else { return not_a_result(cx, subject) }
+    let t = sides.ok
+    let err = sides.err
     for j, vn in variants { arm_bind(cx, e, err, vn, binds[j], values[j]) }
     for v in values { arm_answer(cx, t, v) }
     if covers(cx, err, variants) { return t }
@@ -75,9 +74,8 @@ fn arm_answer(mut cx: TypeCx, t: TypeId, value: ExprId) {
 /// TOTAL when a catch-all arm exists, or every variant is named.
 fn covers(cx: TypeCx, err: TypeId, variants: List<string>) -> bool {
     if variants.any(it == "") { return true }
-    let sig: EnumSig? = cx.variants_of(err)
-    if sig == null { return false }
-    total(sig!, variants)
+    let sig? = cx.variants_of(err) else { return false }
+    total(sig, variants)
 }
 
 /// The pronoun cannot ride a nested method call — the wrapper can.

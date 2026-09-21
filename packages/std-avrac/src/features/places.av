@@ -6,7 +6,7 @@
 //! observed. The runtime clones by its own owned-map; the
 //! interpreter clones every time (the executable spec). Mutation
 //! and the list vocabulary's `push` both land here.
-use core.{ExprId, Reg, Ins, Type, PlaceStep}
+use core.{ExprId, Reg, Ins, Type}
 
 /// An opened place: a cell (a bare mut name) or a slot of a box
 /// already made unique.
@@ -19,9 +19,8 @@ impl LowerCx {
     /// The place an expression names, opened for one write — null for
     /// a value (resolve refuses those before lowering).
     mut fn opened_place(e: ExprId) -> Place? {
-        let step: PlaceStep? = self.view.store.place_step(e)
-        if step == null { return null }
-        match step! {
+        let step? = self.view.store.place_step(e) else { return null }
+        match step {
             .Root(_) -> self.cell_place(e),
             .Field(subject, name) -> self.field_place(subject, name.of),
             .At(subject, index) -> Place.Slot(self.unique_box(subject), self.reg_of(index)),
@@ -37,17 +36,15 @@ impl LowerCx {
     }
 
     fn cell_place(e: ExprId) -> Place? {
-        let cell: Reg? = self.cell_of(e)
-        if cell == null { return null }
-        Place.Cell(cell!)
+        let cell? = self.cell_of(e) else { return null }
+        Place.Cell(cell)
     }
 
     /// The box a path's subject holds, UNIQUE for writing. Operands
     /// first, the destination last — registers define in mint order.
     mut fn unique_box(s: ExprId) -> Reg {
-        let step: PlaceStep? = self.view.store.place_step(s)
-        if step == null { return self.lower_defect(s, "a mutation through a value survived resolve") }
-        match step! {
+        let step? = self.view.store.place_step(s) else { return self.lower_defect(s, "a mutation through a value survived resolve") }
+        match step {
             .Root(_) -> {
                 let cell: Reg? = self.cell_of(s)
                 if cell != null {

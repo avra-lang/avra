@@ -466,6 +466,65 @@ def in_string_at(line, idx):
 # literal's own. An unknown or a mismatched type is never accused.
 WITH_LIT = re.compile(r"(?<![.\w])([A-Z][A-Za-z0-9_]*)\s*\{([^{}]*)\}")
 
+# A `let x = E` immediately guarded by `if x == null { return … }` (or
+# `fail …`) IS THE ABSENCE-EARLY-EXIT LAW — `let x? = E else { … }`
+# says the same thing once, and every later `x!` in the same block
+# reads `x`. Restricted to an IMMUTABLE `let` (never a `mut`, a
+# parameter, or a field/path) guarded on the VERY NEXT line at the
+# SAME indent, whose body is a single `return`/`fail`; the matcher
+# then requires EVERY bare mention of `x` for the rest of the
+# enclosing block to be an unwrap (`x!`) — one that is not is `x`
+# still read as nullable, which the rewrite would break — and refuses
+# where the name could be SHADOWED there (a lambda or `for` binding,
+# or a nested `let`/`mut` of the same name), since a text scan cannot
+# then tell which binding a later `x!` names.
+LET_GUARD = re.compile(r"^(\s*)let ([a-z_][a-zA-Z0-9_]*)(?::\s*([^=]+))?\s*=\s*(.+)$")
+
+def let_scope_end(lines, indent, from_idx):
+    """First line at LESS than `indent` (blank lines skipped) — the
+    close of the block the `let` was scoped to."""
+    for j in range(from_idx, len(lines)):
+        s = lines[j]
+        if not s.strip():
+            continue
+        if len(s) - len(s.lstrip()) < indent:
+            return j
+    return len(lines)
+
+def let_shadowed(scope_text, name):
+    n = re.escape(name)
+    pats = [
+        rf"\(\s*{n}\s*[:)]", rf"\(\s*{n}\s*,", rf",\s*{n}\s*[:)]",
+        rf"\bfor\s*\(?\s*{n}\s*,", rf",\s*{n}\s*\)?\s*in\b", rf"\bfor\s+{n}\s+in\b",
+        rf"\blet\s+{n}\b", rf"\bmut\s+{n}\b",
+    ]
+    return any(re.search(p, scope_text) for p in pats)
+
+def let_else_guard(lines):
+    """`let x = E` then an immediate absence-exit — `let x? = E else
+    { … }` (I55)."""
+    for i in range(len(lines) - 1):
+        m = LET_GUARD.match(lines[i])
+        if not m:
+            continue
+        indent_s, name, ann, rhs = m.groups()
+        if ann is not None and not ann.strip().endswith("?"):
+            continue
+        indent = len(indent_s)
+        guard = re.compile(
+            r"^" + re.escape(indent_s) + r"if " + re.escape(name)
+            + r" == null \{ (return\b[^{}]*|fail\b[^{}]*) \}\s*$")
+        if not guard.match(lines[i + 1]):
+            continue
+        end = let_scope_end(lines, indent, i + 2)
+        scope = "\n".join(lines[i + 2:end])
+        if let_shadowed(scope, name):
+            continue
+        occ = list(re.finditer(r"(?<![.\w])" + re.escape(name) + r"(?!\w)", scope))
+        if not occ or any(scope[o.end():o.end() + 1] != "!" for o in occ):
+            continue
+        yield i, lines[i].strip()
+
 def with_split_fields(body):
     """`body` cut at its top-level commas — a field's own value may
     hold one inside `(…)`, `[…]` or `<…>`."""
@@ -981,6 +1040,11 @@ RULES = {
     "I40": (spelled_shape,
             "a structural type interned by hand — `intern(Type.Opt(intern(Type.Str)))` — "
             "where a type literal spells it: `cx.type(string?)`, `types.type(List<elem>)`"),
+    "I55": (let_else_guard,
+            "`let x = E` guarded by an immediate `if x == null { return/fail … }` — "
+            "that is `let x? = E else { … }`, and every later `x!` in the block "
+            "reads `x`. Never a `mut`, a parameter, a field/path, or a name a "
+            "later binding could shadow"),
     "I54": (when_ladder,
             "an if/else-if ladder of 3+ arms answering a value — that is `when`. "
             "Accused only where every arm is a one-line expression (no return/fail/"
@@ -1122,6 +1186,21 @@ CLEAN = {
     "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
             ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
+    "I55": [["    mut held = get()",
+             "    if held == null { return null }",
+             "    use(held!)"],
+            ["    let held = get()",
+             "    if held == null { return null }",
+             "    take(held)"],
+            ["    let held = get()",
+             "    if held == null || flag { return null }",
+             "    use(held!)"],
+            ["    let held: Foo = get()",
+             "    if held == null { return null }",
+             "    use(held!)"],
+            ["    let x = get()",
+             "    if x == null { return null }",
+             "    xs.map((x) -> x!)"]],
     "I54": [["    let base = if a { x } else { y }"],
             ["    if a { x = 1 } else if b { x = 2 } else { x = 3 }"],
             ["    if a { if c { p } else { q } } else if b { y } else { z }"],
@@ -1181,6 +1260,15 @@ SPECIMENS = {
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
+    "I55": [["    let held: Foo? = get()",
+             "    if held == null { return null }",
+             "    use(held!)"],
+            ["    let held = get()",
+             "    if held == null { fail \"nope\" }",
+             "    use(held!)"],
+            ["    let x = f()",
+             "    if x == null { return 0 }",
+             "    x! + 1"]],
     "I54": [["    let base = if a { x } else if b { y } else { z }"],
             ["    .A -> if a { x } else if b { y } else { z },"],
             ["fn f() -> string {",

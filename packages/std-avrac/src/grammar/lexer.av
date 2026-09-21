@@ -705,9 +705,8 @@ impl Lexing {
     /// Whether the scanner stands in a raw block's body — the innermost
     /// context a raw frame's own, not one of its holes.
     fn in_raw_body() -> bool {
-        let top: Ctx? = self.stack.last()
-        if top == null { return false }
-        match top! { .Body(f) -> self.frames[f].raw, .StrHole(_) or .QuoteHole(_, _) -> false }
+        let top? = self.stack.last() else { return false }
+        match top { .Body(f) -> self.frames[f].raw, .StrHole(_) or .QuoteHole(_, _) -> false }
     }
 
     /// One byte of a raw body: a hole opens and leaves its placeholder
@@ -828,9 +827,8 @@ impl Lexing {
     /// THE ONE DEPTH LAW: a brace that neither opens a body nor closes
     /// the context nests it by one, every context alike.
     mut fn nested(by: int) {
-        let top: Ctx? = self.stack.last()
-        if top == null { return }
-        match top! {
+        let top? = self.stack.last() else { return }
+        match top {
             .Body(f) -> self.frame_depth(f, by),
             .StrHole(depth) -> self.str_depth(depth + by),
             .QuoteHole(f, depth) -> { self.stack.set(self.stack.length - 1, Ctx.QuoteHole(f, depth + by)) },
@@ -921,9 +919,8 @@ impl Lexing {
     /// The name token just emitted, when it ends exactly where the
     /// hole begins — the run a name-embedded hole continues.
     fn touching_name() -> Token? {
-        let just: Token? = self.sink().last()
-        if just == null { return null }
-        let t = just!
+        let just? = self.sink().last() else { return null }
+        let t = just
         if t.kind == TokenKind.Name && t.span.hi == self.i { t } else { null }
     }
 
@@ -974,9 +971,8 @@ impl Lexing {
     /// Where a token lands: the innermost open quote hole's group, or
     /// the stream itself.
     fn sink() -> List<Token> {
-        let f: int? = self.open_hole_frame()
-        if f == null { return self.raw }
-        self.frames[f!].current
+        let f? = self.open_hole_frame() else { return self.raw }
+        self.frames[f].current
     }
 
     fn open_hole_frame() -> int? {
@@ -1044,9 +1040,8 @@ impl Lexing {
     }
 
     fn in_hole() -> bool {
-        let top: Ctx? = self.stack.last()
-        if top == null { return false }
-        match top! { .Body(_) -> false, .StrHole(_) or .QuoteHole(_, _) -> true }
+        let top? = self.stack.last() else { return false }
+        match top { .Body(_) -> false, .StrHole(_) or .QuoteHole(_, _) -> true }
     }
 
     /// Every open hole abandoned, down to the enclosing body.

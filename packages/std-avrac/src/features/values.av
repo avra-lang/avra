@@ -37,9 +37,8 @@ export fn literal_meta(store: NodeStore, decls: Decls, facts: TypeFacts, e: Expr
     match raw {
         .NullLit -> MetaVal.Absent,
         .ListLit(elems) -> {
-            let slots: List<MetaVal>? = spelled_all(store, decls, facts, elems, heap)
-            if slots == null { return null }
-            heap.node(slots!)
+            let slots? = spelled_all(store, decls, facts, elems, heap) else { return null }
+            heap.node(slots)
         },
         .MapLit(keys, values) -> literal_map(store, decls, facts, keys, values, heap),
         .StructLit(_, fields, values) -> literal_record(store, decls, facts, e, [t.of for t in fields], values, heap),
@@ -52,9 +51,8 @@ export fn literal_meta(store: NodeStore, decls: Decls, facts: TypeFacts, e: Expr
 fn spelled_all(store: NodeStore, decls: Decls, facts: TypeFacts, es: List<ExprId>, mut heap: MetaHeap) -> List<MetaVal>? {
     mut out: List<MetaVal> = []
     for e in es {
-        let v: MetaVal? = literal_meta(store, decls, facts, e, heap)
-        if v == null { return null }
-        out.push(v!)
+        let v? = literal_meta(store, decls, facts, e, heap) else { return null }
+        out.push(v)
     }
     out
 }
@@ -64,14 +62,11 @@ fn literal_map(store: NodeStore, decls: Decls, facts: TypeFacts, keys: List<Expr
     mut ks: List<string> = []
     mut vs: List<MetaVal> = []
     for j, k in keys {
-        let kv: MetaVal? = literal_meta(store, decls, facts, k, heap)
-        if kv == null { return null }
-        let key: string? = match kv! { .Text(s) -> s, rest -> null }
-        if key == null { return null }
-        let vv: MetaVal? = literal_meta(store, decls, facts, values[j], heap)
-        if vv == null { return null }
-        ks.push(key!)
-        vs.push(vv!)
+        let kv? = literal_meta(store, decls, facts, k, heap) else { return null }
+        let key? = match kv { .Text(s) -> s, rest -> null } else { return null }
+        let vv? = literal_meta(store, decls, facts, values[j], heap) else { return null }
+        ks.push(key)
+        vs.push(vv)
     }
     heap.map(ks, vs)
 }
@@ -81,17 +76,14 @@ fn literal_map(store: NodeStore, decls: Decls, facts: TypeFacts, keys: List<Expr
 /// the evaluator runs — not something the source alone spells.
 fn literal_record(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, fields: List<string>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
     let ty = facts.type_at(e)
-    let sig: StructSig? = decls.fields_of_type(ty)
-    if sig == null { return null }
-    let s = sig!
+    let sig? = decls.fields_of_type(ty) else { return null }
+    let s = sig
     if fields.length != s.names.length { return null }
     mut by_slot: List<MetaVal?> = filled<MetaVal?>(s.names.length, null)
     for j, f in fields {
-        let slot: int? = s.slot_of(f)
-        if slot == null { return null }
-        let v: MetaVal? = literal_meta(store, decls, facts, values[j], heap)
-        if v == null { return null }
-        by_slot.set(slot!, v!)
+        let slot? = s.slot_of(f) else { return null }
+        let v? = literal_meta(store, decls, facts, values[j], heap) else { return null }
+        by_slot.set(slot, v)
     }
     mut slots: List<MetaVal> = []
     for x in by_slot {
@@ -107,13 +99,11 @@ fn literal_record(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, f
 /// A variant literal: the tag first, the payloads after — the tagged
 /// slot array both engines already read.
 fn literal_variant(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, name: string, args: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
-    let sig: EnumSig? = decls.variants_of_type(facts.type_at(e))
-    if sig == null { return null }
-    let tag: int = sig!.names.index_of(name)
+    let sig? = decls.variants_of_type(facts.type_at(e)) else { return null }
+    let tag: int = sig.names.index_of(name)
     if tag < 0 { return null }
-    let payloads: List<MetaVal>? = spelled_all(store, decls, facts, args, heap)
-    if payloads == null { return null }
-    heap.node([MetaVal.Int(tag)].concat(payloads!))
+    let payloads? = spelled_all(store, decls, facts, args, heap) else { return null }
+    heap.node([MetaVal.Int(tag)].concat(payloads))
 }
 
 /// A hole-less quote as the crossing tree — a `Template` naming this
@@ -149,9 +139,8 @@ impl LowerCx {
     mut fn materialized(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
         if self.pair_shaped(ty) { return self.meta_pair(v, heap, ty, name) }
         mut build = StaticBuild { decls: self.view.decls }
-        let slot: Slot? = build.slot_of(v, heap, ty)
-        if slot == null { return self.meta_defect(ty) }
-        self.crossed_reg(slot!, ty, name, build.boxes)
+        let slot? = build.slot_of(v, heap, ty) else { return self.meta_defect(ty) }
+        self.crossed_reg(slot, ty, name, build.boxes)
     }
 
     /// A scalar nullable lives in registers as its flag beside its

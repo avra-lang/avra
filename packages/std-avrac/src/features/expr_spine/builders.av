@@ -1,5 +1,5 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, Span, TypeRef, pronoun_param, Plain, Scoped}
+use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, TypeRef, pronoun_param, Plain, Scoped}
 use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, within, chained_binder, marked_seats}
 use grammar.{Token}
 
@@ -90,10 +90,9 @@ fn build_fold_cmp(mut b: Builder) -> Result<LangNode, string> {
     let l = b.expr(0)?
     let asked: Token? = token_at(b.args, 3)
     if asked != null { return b.make_expr(Expr.Is(l, Plain(asked!.text))) }
-    let op_tok: Token? = token_at(b.args, 1)
-    if op_tok == null { return b.wrap_expr(l) }
+    let op_tok? = token_at(b.args, 1) else { return b.wrap_expr(l) }
     let r = b.expr(2)?
-    let op = want(binop_of(op_tok!.text), "a comparison operator")?
+    let op = want(binop_of(op_tok.text), "a comparison operator")?
     b.make_expr(Expr.Binary(op, l, r))
 }
 
@@ -173,9 +172,8 @@ fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
     let spellings = b.type_refs(11)?
     let chained = b.type_refs(12)?
     if links.length != names.length { return .Err(zip_defect) }
-    let held: int? = b.span_end()
-    if held == null { return .Err("defect: a postfix chain without a span — the arena and the grammar disagree") }
-    let ends = held!
+    let held? = b.span_end() else { return .Err("defect: a postfix chain without a span — the arena and the grammar disagree") }
+    let ends = held
     // the five families' cursors — each turn folds the link whose
     // anchor comes first in the source
     mut jn = 0
@@ -281,9 +279,8 @@ fn args_between(b: Builder, margs: List<ExprId>, after: int, before: int) -> Lis
 }
 
 fn span_lo(b: Builder, e: ExprId) -> int? {
-    let sp: Span? = b.store.expr_span(e)
-    if sp == null { return null }
-    sp!.lo
+    let sp? = b.store.expr_span(e) else { return null }
+    sp.lo
 }
 
 /// The node a link token names — the chain when absence rides it.

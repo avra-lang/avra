@@ -41,9 +41,8 @@ fn enums_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 fn asked_type(mut cx: TypeCx, e: ExprId, subject: ExprId, variant: string) -> TypeId {
     let sh: Type = cx.shape_at(subject)
     if sh is .Error { return cx.error_type }
-    let declared: EnumSig? = cx.variants_of(cx.type_at(subject))
-    if declared == null { return not_askable(cx, subject) }
-    if declared!.tag_of(variant) == null { no_variant_asked(cx, e, cx.name_at(subject), variant, declared!) }
+    let declared? = cx.variants_of(cx.type_at(subject)) else { return not_askable(cx, subject) }
+    if declared.tag_of(variant) == null { no_variant_asked(cx, e, cx.name_at(subject), variant, declared) }
     cx.type(bool)
 }
 
@@ -52,12 +51,10 @@ fn asked_type(mut cx: TypeCx, e: ExprId, subject: ExprId, variant: string) -> Ty
 /// included), the variant must be its, and it takes exactly its
 /// payloads, each accepted; the answer is the want itself.
 fn literal_type(mut cx: TypeCx, e: ExprId, name: string, args: List<ExprId>) -> TypeId {
-    let wanted: TypeId? = cx.want_at(e)
-    if wanted == null { return unfed_literal(cx, e, name) }
-    let want = cx.view.types.carried(wanted!) ?? wanted!
-    let declared: EnumSig? = cx.variants_of(want)
-    if declared == null { return unenumerated_want(cx, e, name, want) }
-    let sig = declared!
+    let wanted? = cx.want_at(e) else { return unfed_literal(cx, e, name) }
+    let want = cx.view.types.carried(wanted) ?? wanted
+    let declared? = cx.variants_of(want) else { return unenumerated_want(cx, e, name, want) }
+    let sig = declared
     if sig.tag_of(name) == null { return no_variant_wanted(cx, e, cx.view.types.name_of(want), name, sig) }
     if !cx.seats_fit(e, ".${name}", args, sig.payloads_of(name)) { return cx.error_type }
     want
@@ -128,9 +125,8 @@ export fn bind_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId>
 }
 
 fn variant_types(mut cx: TypeCx, p: PatId, name: string, args: List<PatId>, expected: TypeId) -> List<TypeId> {
-    let declared: EnumSig? = cx.variants_of(expected)
-    if declared == null { return not_variant_shaped(cx, p, name, expected) }
-    let sig = declared!
+    let declared? = cx.variants_of(expected) else { return not_variant_shaped(cx, p, name, expected) }
+    let sig = declared
     if sig.tag_of(name) == null { return unknown_arm(cx, p, cx.view.types.name_of(expected), name, sig) }
     let carried = sig.payloads_of(name)
     if carried.is_empty() && !args.is_empty() { return nothing_to_bind(cx, p, cx.view.types.name_of(expected), name) }
@@ -217,9 +213,8 @@ fn covered(cx: TypeCx, rows: List<Row>, tys: List<TypeId>) -> bool {
     if tys.is_empty() { return !rows.is_empty() }
     let rest = tys.slice(1, tys.length)
     let defaults = [rest_of(r) for r in rows if hole_first(cx, r)]
-    let declared: EnumSig? = cx.variants_of(tys[0])
-    if declared == null { return covered(cx, defaults, rest) }
-    let sig = declared!
+    let declared? = cx.variants_of(tys[0]) else { return covered(cx, defaults, rest) }
+    let sig = declared
     let tested = [n for n in sig.names if tests_first(cx, rows, n)]
     if tested.is_empty() { return covered(cx, defaults, rest) }
     for k, n in sig.names {
@@ -354,10 +349,9 @@ fn hidden_checks(mut cx: TypeCx, hole: PatId, answering: int, hidden: List<strin
 }
 
 fn arms_type(mut cx: TypeCx, values: List<ExprId>) -> TypeId {
-    let head: ExprId? = values.find((v) -> cx.stays(v))
-    if head == null { return cx.error_type }
-    if cx.errored(head!) { return cx.error_type }
-    cx.arms_agree("type.match", "match", "the first arm", head!, values)
+    let head? = values.find((v) -> cx.stays(v)) else { return cx.error_type }
+    if cx.errored(head) { return cx.error_type }
+    cx.arms_agree("type.match", "match", "the first arm", head, values)
 }
 
 /// `v.ordinal` — the variant's place in the declaration, an int. The

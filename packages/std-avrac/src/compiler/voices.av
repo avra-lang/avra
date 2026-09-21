@@ -4,7 +4,7 @@ use core.{StmtId, Span, Param, Mark, TypeRegistry, NodeStore, ModulePath, FileId
 use features.{Unsettled, Settlement, MetaVal, MetaHeap, nothing, FileView, spelled_type, ArenaMarks, BlockGrammar}
 use features.{no_kind}
 use @std.meta.{Node, Field as MetaField, Mark as MetaMark, Kind}
-use core.{StmtId, Arm, HoleKind, Unplaced, SyntaxParts, ForeignRange}
+use core.{StmtId, Arm, HoleKind, Unplaced}
 use grammar.{parse_grammar, ready}
 use diagnostics.{defect_at}
 use diagnostics.{Diag, refusal}
@@ -92,9 +92,8 @@ fn unsettled_hash(why: Unsettled) -> int {
 /// A declared TypeRef as the crossing's text — parsed from the STORE
 /// alone, "" when the word names a type only the namespace knows.
 fn typed_text(types: TypeRegistry, ann: TypeRef?) -> string {
-    let held: TypeId? = spelled_type(types, ann)
-    if held == null { return "" }
-    types.name_of(held!)
+    let held? = spelled_type(types, ann) else { return "" }
+    types.name_of(held)
 }
 
 /// A shape by position — unspelled past the signature's end, which
@@ -168,11 +167,10 @@ fn elem_of(types: TypeRegistry, ty: TypeId) -> TypeId? {
 /// file whose fns its actions name; null for any other statement or a
 /// notation that does not parse.
 fn readied_grammar(p: Parsed, s: StmtId, path: string) -> BlockGrammar? {
-    let notation: SyntaxParts? = p.store.syntax_parts(s)
-    if notation == null { return null }
-    let gp = parse_grammar(notation!.text)
+    let notation? = p.store.syntax_parts(s) else { return null }
+    let gp = parse_grammar(notation.text)
     if gp.built == null { return null }
-    BlockGrammar { word: notation!.name, ready: ready(gp.built!), origin: path }
+    BlockGrammar { word: notation.name, ready: ready(gp.built!), origin: path }
 }
 
 /// A template's body copied: its statements, or its arms.
@@ -182,9 +180,8 @@ impl Workspace {
     /// A copied node whose source a sublanguage minted wears that
     /// sublanguage's library.
     fn note_foreign_origin(f: FileId, src: NodeStore, from: ExprId, id: ExprId) {
-        let range: ForeignRange? = src.foreign.find(it.lo <= from.index && from.index < it.hi)
-        if range == null { return }
-        let origin = self.file_id(range!.path)
+        let range? = src.foreign.find(it.lo <= from.index && from.index < it.hi) else { return }
+        let origin = self.file_id(range.path)
         if !same_file(origin, f) { self.decls.note_origins(f, [id], [], [], origin) }
     }
 }
@@ -291,11 +288,9 @@ fn spec_put(mut specs: Map<string, int>, name: string, id: int) {
 /// caller falls back to reading the provider.
 // LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
 fn module_names_syntax(ws: Workspace, m: ModulePath, items: List<string>) -> bool {
-    let s: Store? = ws.store
-    if s == null { return true }
-    let rec = s!.get(Stored.Sig, record_key(ws, m))
-    if rec == null { return true }
-    for line in rec!.split("\n") {
+    let s? = ws.store else { return true }
+    let rec? = s.get(Stored.Sig, record_key(ws, m)) else { return true }
+    for line in rec.split("\n") {
         let p = line.split("\t")
         if p.length >= 7 && p[6] == "syntax" && items.any(it == p[5]) { return true }
     }

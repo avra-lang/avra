@@ -63,9 +63,8 @@ fn bound_build(s: Seq, outer: Seq, rows: List<PayloadRow>) -> Build? {
 }
 
 fn filled_slots(outer: Seq, owner: string, variant: string, fixed: List<Fixed>, rows: List<PayloadRow>) -> List<Slot>? {
-    let row: PayloadRow? = row_for(rows, owner, variant)
-    if row == null { return null }
-    [filling(p, outer.labels(), fixed) for p in row!.payloads]
+    let row? = row_for(rows, owner, variant) else { return null }
+    [filling(p, outer.labels(), fixed) for p in row.payloads]
 }
 
 /// One payload's slot: the label that captures it, the value the rule
@@ -101,9 +100,8 @@ fn seq_defects(rule: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> List
 
 fn node_defects(rule: string, outer: Seq, owner: string, variant: string,
                 fixed: List<Fixed>, rows: List<PayloadRow>) -> List<Diagnostic> {
-    let row: PayloadRow? = row_for(rows, owner, variant)
-    if row == null { return [node_refusal(rule, no_such_variant(owner, variant))] }
-    judged(rule, outer, row!, fixed)
+    let row? = row_for(rows, owner, variant) else { return [node_refusal(rule, no_such_variant(owner, variant))] }
+    judged(rule, outer, row, fixed)
 }
 
 /// The branch against a variant that EXISTS: what it names, what it
@@ -144,9 +142,8 @@ fn shape_defects(rule: string, s: Seq, row: PayloadRow) -> List<Diagnostic> {
 }
 
 fn payload_shape(rule: string, s: Seq, row: PayloadRow, p: Payload) -> List<Diagnostic> {
-    let hit: Item? = s.deep_items().find(labelled(it, p.name))
-    if hit == null { return [] }
-    let carried: Carrier? = carrier_of(hit!.prim)
+    let hit? = s.deep_items().find(labelled(it, p.name)) else { return [] }
+    let carried: Carrier? = carrier_of(hit.prim)
     if carried == null || carried! == wanted_carrier(p.ty) { return [] }
     [node_refusal(rule, wrong_shape(row, p, carried!))]
 }

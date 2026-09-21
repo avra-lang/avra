@@ -6,9 +6,8 @@ use core.{ExprId, Reg, Ins, DeclId, TypeId, BodyParts, HoleKind, MetaKind, FillC
 use features.{LowerCx}
 
 fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
-    let held: BodyParts? = (cx.view.store.expr(e)).body_of()
-    if held == null { return cx.lower_defect(e, "a quote without its body") }
-    let q = held!
+    let held? = (cx.view.store.expr(e)).body_of() else { return cx.lower_defect(e, "a quote without its body") }
+    let q = held
     let node_ty = meta_self(cx, "Node")
     let kinds = hole_kinds(cx.view.store, e)
     let whole = quote_kind(cx.view.store, e)
@@ -19,10 +18,9 @@ fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     mut fills: List<Reg> = []
     // LICENSED I3: each fill EMITS through the context, which a comprehension element does not
     for k, h in q.holes {
-        let class: FillClass? = classes[k]
-        if class == null { return cx.lower_defect(h, "a hole typing accepted lowers no fill") }
+        let class? = classes[k] else { return cx.lower_defect(h, "a hole typing accepted lowers no fill") }
         let kind = if whole is .Holes { holes_seat(holes_kind([c! for c in classes]) ?? MetaKind.Stmts, q.holes.length) } else { kinds[k] }
-        fills.push(fill_reg(cx, e, class!, kind, h, node_ty))
+        fills.push(fill_reg(cx, e, class, kind, h, node_ty))
     }
     let node = meta_call(cx, e, "template", [file, at, parts, boxed(cx, cx.type(List<node_ty>), fills)], node_ty)
     meta_call(cx, e, wrap_verb(cx, e), [node], cx.type_at(e))
@@ -85,9 +83,8 @@ fn boxed(mut cx: LowerCx, ty: TypeId, items: List<Reg>) -> Reg {
 }
 
 fn meta_self(mut cx: LowerCx, name: string) -> TypeId {
-    let d: DeclId? = cx.view.decls.meta_named(name)
-    if d == null { return cx.type(string) }
-    cx.view.decls.self_type_of(d!)
+    let d? = cx.view.decls.meta_named(name) else { return cx.type(string) }
+    cx.view.decls.self_type_of(d)
 }
 
 /// A `@std/meta` row called by the compiler, answering `ret`.

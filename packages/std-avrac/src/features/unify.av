@@ -3,7 +3,7 @@
 //! wrote, the slot law every aggregate obeys, and the three verbs
 //! every generic surface runs (refused tparams, the unpinned Var,
 //! the closed bindings). Laws only — the voices are the callers'.
-use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, PlaceStep, DeclId, TypeRegistry}
+use core.{ExprId, TypeId, Type, ResSides, Arrow, TypeRef, filled, DeclId, TypeRegistry}
 use diagnostics.{Diag, refusal}
 
 /// THE PINS a unification fills: a Var's slot per type parameter.
@@ -56,9 +56,8 @@ impl TypeCx {
     /// `fn(T) -> T` meets `fn(int) -> int` and binds T. Invariant in
     /// every seat (v1 — variance is recorded).
     fn fn_unifies(wp: List<TypeId>, wr: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
-        let held: Arrow? = self.view.types.arrow_parts(got)
-        if held == null { return false }
-        let g = held!
+        let held? = self.view.types.arrow_parts(got) else { return false }
+        let g = held
         if g.seats.length != wp.length { return false }
         for j, w in wp {
             if !self.unify(w, g.seats[j], target, bound) { return false }
@@ -125,9 +124,8 @@ impl TypeCx {
     }
 
     fn sides_unify(wo: TypeId, we: TypeId, got: TypeId, target: DeclId, mut bound: Pins) -> bool {
-        let sides: ResSides? = self.view.types.res_parts(got)
-        if sides == null { return false }
-        self.unify(wo, sides!.ok, target, bound) && self.unify(we, sides!.err, target, bound)
+        let sides? = self.view.types.res_parts(got) else { return false }
+        self.unify(wo, sides.ok, target, bound) && self.unify(we, sides.err, target, bound)
     }
 
     /// The representation laws, re-judged on a SUBSTITUTED type: every

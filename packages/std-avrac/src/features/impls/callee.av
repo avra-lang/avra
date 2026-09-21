@@ -12,7 +12,7 @@
 //! disagree, and with neither the variant law speaks the refusal —
 //! it is the one that can name what the type does have.
 use core.{Type, TypeId, DeclId}
-use features.{FileView, MethodRow, method_row, StructSig, EnumSig, declared_decl}
+use features.{FileView, MethodRow, method_row, EnumSig, declared_decl}
 
 export enum Callee {
     Variant(decl: DeclId, tname: string)
@@ -53,9 +53,8 @@ fn builtin_static(view: FileView, sh: Type, name: string) -> Callee? {
         .TypeName(decl, tname) -> {
             if !(view.decls.decl(decl).kind is .Builtin) { return null }
             if names_a_variant(view, decl, name) || static_method(view, decl, name) != null { return null }
-            let row: MethodRow? = method_row(view.lang.methods, name, sh)
-            if row == null { return null }
-            Callee.Row(row!)
+            let row? = method_row(view.lang.methods, name, sh) else { return null }
+            Callee.Row(row)
         }
         _ -> null,
     }
@@ -82,9 +81,8 @@ fn type_receiver(view: FileView, decl: DeclId, tname: string, name: string) -> C
     if names_a_variant(view, decl, name) { return Callee.Variant(decl, tname) }
     let door: MethodRow? = grammar_door(view, decl, tname, name)
     if door != null { return Callee.Row(door!) }
-    let m: DeclId? = static_method(view, decl, name)
-    if m == null { return Callee.Variant(decl, tname) }
-    Callee.Static(m!, tname)
+    let m? = static_method(view, decl, name) else { return Callee.Variant(decl, tname) }
+    Callee.Static(m, tname)
 }
 
 /// A `grammar`-declared type's vocabulary door of this name —
@@ -123,13 +121,11 @@ fn stood_over(view: FileView, ty: TypeId, name: string) -> TypeId? {
 
 /// A fn-typed field of the name — the capability-record pattern.
 fn fn_field(view: FileView, ty: TypeId, name: string) -> Callee? {
-    let sig: StructSig? = view.decls.fields_of_type(ty)
-    if sig == null { return null }
-    let slot: int? = sig!.slot_of(name)
-    if slot == null { return null }
-    let fty = sig!.types[slot!]
+    let sig? = view.decls.fields_of_type(ty) else { return null }
+    let slot? = sig.slot_of(name) else { return null }
+    let fty = sig.types[slot]
     if !(view.types.shape_of(fty) is .Fn) { return null }
-    Callee.FnField(slot!, fty)
+    Callee.FnField(slot, fty)
 }
 
 /// The impl table's key and the name the voices use.
