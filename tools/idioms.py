@@ -353,6 +353,74 @@ def pronoun_lambda(lines):
                 yield i, l.strip()
                 break
 
+# A TWO-ARM MATCH ANSWERING ONLY true/false, WHERE ONE SIDE NAMES A
+# BARE VARIANT AND THE OTHER IS THE WILDCARD. The wildcard already
+# answers for every variant not yet written, exactly as `is`'s
+# complement does, so nothing a rewrite could forget — a PROJECTION
+# in CLAUDE.md's own terms (one arm answers, the catch-all is
+# honest). An `or`-run on the untested side spells a REGISTRY's
+# remaining variants by NAME instead (`rides_fp`, `answers_word`),
+# so growing that enum keeps breaking the build; this never accuses
+# one of those, nor a payload arm, nor more than two arms.
+BARE_VARIANT = re.compile(r"^\.[A-Za-z_][A-Za-z0-9_]*$")
+
+def is_wild_pat(p):
+    return p in ("_", "rest")
+
+def is_bare_variant_pat(p):
+    return bool(BARE_VARIANT.match(p))
+
+def match_arms_multiline(lines, i):
+    """The two arms of a `match … {` opened at `i`, each read at
+    depth+4, or None when the block does not hold exactly two."""
+    depth = len(lines[i]) - len(lines[i].lstrip())
+    end = block_end(lines, i)
+    if end < 0:
+        return None
+    arms = []
+    for j in range(i + 1, end):
+        s = lines[j]
+        if len(s) - len(s.lstrip()) != depth + 4 or "->" not in s:
+            continue
+        pat, body = s.strip().split("->", 1)
+        arms.append((pat.strip(), body.strip().rstrip(",").strip()))
+    return arms if len(arms) == 2 else None
+
+def match_arms_oneline(l):
+    """The two arms of a `match … { a -> x, b -> y }` written on one
+    line, or None when it does not hold exactly two."""
+    m = re.search(r"match [^{]+\{([^{}]+)\}\s*$", l.strip())
+    if not m:
+        return None
+    parts = [a.strip() for a in re.split(r",(?![^()]*\))", m.group(1)) if a.strip()]
+    if len(parts) != 2:
+        return None
+    arms = []
+    for a in parts:
+        if "->" not in a:
+            return None
+        pat, body = a.split("->", 1)
+        arms.append((pat.strip(), body.strip().rstrip(",").strip()))
+    return arms
+
+def bool_variant_match(lines):
+    """A `match` that only answers `is`'s question (I51)."""
+    for i, l in enumerate(lines):
+        if l.strip().startswith("//"):
+            continue
+        if re.search(r"match .+\{\s*$", l):
+            arms = match_arms_multiline(lines, i)
+        elif re.search(r"match .+\{.+\}", l):
+            arms = match_arms_oneline(l)
+        else:
+            continue
+        if not arms or {a[1] for a in arms} != {"true", "false"}:
+            continue
+        (p0, _), (p1, _) = arms
+        if ((is_bare_variant_pat(p0) and is_wild_pat(p1))
+                or (is_bare_variant_pat(p1) and is_wild_pat(p0))):
+            yield i, l.strip()
+
 def bool_comprehension(lines):
     """A comprehension over a LIST, built only to be folded to a
     bool, is a SCAN. `xs.all(pred)` stops at the first answer and
@@ -644,6 +712,11 @@ RULES = {
     "I40": (spelled_shape,
             "a structural type interned by hand — `intern(Type.Opt(intern(Type.Str)))` — "
             "where a type literal spells it: `cx.type(string?)`, `types.type(List<elem>)`"),
+    "I51": (bool_variant_match,
+            "a match answering only true/false, one arm a bare variant and the "
+            "other the wildcard — that is `is`: `x is .Ready`, or `!(x is .Ready)` "
+            "with the arms swapped. An `or`-run on the untested side spells a "
+            "registry's remaining variants by name, and this never accuses one"),
     "I50": (pronoun_lambda,
             "a one-parameter lambda handed to a method call — that is `it`: "
             "`xs.any(it.ready)`, `rows.find(it.word == w)`. A parameter handed on to "
@@ -768,6 +841,11 @@ CLEAN = {
     "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
             ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
+    "I51": [["    match v { .Bind(_) -> true, _ -> false }"],
+            ["    match s { .A -> true, .B -> false, .C -> false }"],
+            ["    match k { .Wide -> true, .Narrow or .Ptr or .Void -> false }"],
+            ["    match n { 1 -> true, _ -> false }"],
+            ["    match k { .A -> true, null -> false }"]],
     "I50": [["    let gone = held.find((o: Made) -> !store.has(Stored.Obj, o.key))"],
             ["    xs.any((k) -> self.rides(k))"],
             ["    rows.all((s: Scope) -> s.managed.any(same_reg(it, r)))"],
@@ -793,6 +871,10 @@ SPECIMENS = {
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
+    "I51": [["    match x { .Ready -> true, _ -> false }"],
+            ["    match self {", "        .Other -> false,", "        _ -> true,", "    }"],
+            ["    match k { .A -> true, rest -> false }"],
+            ["    match r {", "        .Void -> false,", "        _ -> true,", "    }"]],
     "I50": [["    if cases.any((c: CaseCall?) -> c == null) { return null }"],
             ["    let found = declared.find((g: BlockGrammar) -> g.word == item)"],
             ["    self.packages.find((p) -> p.origin is .Root)?.src ?? self.root"],

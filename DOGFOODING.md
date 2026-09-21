@@ -721,6 +721,20 @@ reintroducing I3's blind spot names the two spellings it lost.
       (`pronoun_lambda`). Sugar backlog: a pronoun that names its OWN
       call, which would retire the half that stays.
 
+- I51 A MATCH ANSWERING ONLY true/false IS `is` — `match x { .Ready
+      -> true, _ -> false }` becomes `x is .Ready`; with the arms
+      swapped it becomes `!(x is .Ready)`. THE ONE MATCH THAT STAYS:
+      the untested side must be the WILDCARD (`_`/`rest`) — it
+      already answers for every variant not yet written, exactly as
+      `is`'s complement does. An `or`-run there instead SPELLS a
+      registry's remaining variants by name (`rides_fp`,
+      `answers_word` in llvm.av — RtKind is a registry, and folding
+      it to a boolean forgets the next variant exactly as a
+      catch-all would), so the matcher never accuses one; nor an arm
+      carrying a payload, nor a match of more than two arms, nor one
+      over a nullable enum (`is` there is F2013) or over a literal.
+      Ratcheted (`bool_variant_match`).
+
 - I49 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
       conversions that are inverses name their categories ONCE, as a
       registry enum, and each direction is an exhaustive match over
