@@ -651,7 +651,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       sites converted at discovery (three loops, the comprehension
       walk, the block, the fn, the lambda, the entry). LICENSED at
       the four verbs that ARE the spelling; an Emitter's own `give`
-      in a synthesized body (test_run.av) has no context and is not
+      in a synthesized body (suite_entry.av) has no context and is not
       the smell.
 - I39 (ratcheted) A VOCABULARY VERB AS A FREE FN TAKING A PASS
       STATE FIRST — `open_region(cx, c)`, `accepts(cx, e, want)`,
@@ -1565,7 +1565,7 @@ finds a sig, mono finds a home. The alternative was found as a
 crash: `impl Pair` on another module's type spoke its refusal and
 then the body walk indexed an empty param list. One mistake, one
 message, no crash downstream — `declare_wreckage(f)` in typing is
-the one verb (`typing_impls.av`), called for every method of a
+the one verb (`typing/impls.av`), called for every method of a
 refused impl.
 
 ## The hunger protocol: go hungry, be fed, speak when starving

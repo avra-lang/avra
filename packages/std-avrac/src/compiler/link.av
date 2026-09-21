@@ -1,11 +1,13 @@
-//! The process vocabulary a build links with: clang's argv, its exit
-//! words, and the binary a link plan names. Moved out of build_cache.av.
+//! The process vocabulary a build links with: how many clangs run at once,
+//! what a child's exit means, clang's words for a link, and the binary a
+//! source names.
 use @std.process.{Exit}
 
+/// How many clangs run at once: clang is ~200 MB a process and the machine is
+/// shared, so four buys the wall without saturating it.
 const CLANG_WIDTH: int = 4
 
-/// Whether a child ended the ONE way a build accepts. A projection, because one arm
-/// answers: a payload-carrying enum does not compare.
+/// Whether a child ended the ONE way a build accepts.
 fn exited_cleanly(e: Exit) -> bool {
     match e {
         .Clean -> true,
@@ -23,49 +25,24 @@ fn describe_exit(e: Exit) -> string {
     }
 }
 
-/// The compiler's format identity, folded first into every key. The
-/// compiler's own sources, its backend and its runtime are already key
-/// inputs (`Workspace.build_inputs`); this covers only what those files
-/// cannot say — a change to how the key itself is derived.
-
-/// THE PARSE-FREE HOLD IS ON. An object is keyed by the module's own bytes and each
-/// import's STORED bytes digest (`obj_key_of`), never by a record's declaration text —
-/// a name-keyed record can be rewritten under a build and its text can move without a
-/// contract moving, and a key that folds it disagrees with itself between two builds.
-///
-/// A held file's bodies come from its stored object; a file that is NOT held is lowered
-/// WHOLE (`every` below), because reachability alone would miss a fn whose only callers
-/// are held.
-/// THE PARSE-FREE HOLD IS OFF, AND THE REASON IS ARCHITECTURAL, not a missing fact.
-///
-/// It reuses a held file's per-file OBJECT and re-lowers only the files that moved. That
-/// is sound only if a file's object is a pure function of its own inputs — and it is not:
-/// lowering is whole-program (mono mints a specialization in its DECLARING file's unit,
-/// and statics dedup across the program), so `every=true` was added to re-lower every
-/// declaration of a moved file and hope it matches. It does not. A no-edit reuse build is
-/// correct (verified by differential), and an EDIT links and then MISCOMPILES: a
-/// held-built compiler traps on the source a whole-program build compiles clean.
-///
-/// The fix is the design's own rung: persist the LOWERED UNIT (declaration, type-args)
-/// keyed by content, so a held unit's IR is reused and a fresh unit's IR is lowered —
-/// reachability is then exact on both sides and `every=true` dies. Until then the
-/// whole-program path below is SOUND, and soundness outranks speed.
-fn clang_link_failed(code: int) -> string {
-    "avra: clang failed linking — exited with code ${code}"
-}
-
-/// objects and flags, then the binary's path. The runtime object is passed
-/// in — it is a TOOLCHAIN fact found from the binary's own directory, and a
-/// lone file's host is in memory and knows nothing of a disk.
-// LICENSED I39: a pure PROJECTION — a path, an opt level and a toolchain
-// fact in, clang's words out. It owns no state and takes the workspace
-// second, because the module's path is what it is about.
+/// clang's words for a link: the objects, the runtime, the packages' own
+/// objects and flags, then the binary's path. `-rdynamic` is not decoration:
+/// the evaluator resolves an extern through `dlsym(RTLD_DEFAULT)`, which on ELF
+/// reaches the executable only when its globals stand in the dynamic table.
+// LICENSED I39: a pure PROJECTION — the objects, the workspace's link rows and a
+// toolchain fact in, clang's words out.
 fn link_objects(objs: List<string>, ws: Workspace, runtime: string, out: string) -> List<string> {
     ["-w", "-rdynamic"].concat(objs).concat([runtime]).concat(ws.link_words()).concat(["-o", out])
 }
 
-/// `x.av.ll` builds `x`.
-export fn binary_name(ll_path: string) -> string {
-    let base = if ll_path.ends_with(".ll") { ll_path.substring(0, ll_path.length - 3) } else { ll_path }
+/// `x.av` builds `x`.
+export fn binary_name(source: string) -> string {
+    let base = if source.ends_with(".ll") { source.substring(0, source.length - 3) } else { source }
     if base.ends_with(".av") { base.substring(0, base.length - 3) } else { base }
+}
+
+// ── The voices ──
+
+fn clang_link_failed(code: int) -> string {
+    "avra: clang failed linking — exited with code ${code}"
 }

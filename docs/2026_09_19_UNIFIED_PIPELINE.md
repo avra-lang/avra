@@ -1,6 +1,8 @@
 # The unified pipeline — one store, one derivation, one verb
 
-**Status:** aggressive refactor, in progress. This document is the target and
+**Status: HISTORY (2026-09-21).** What landed, and what replaced the rest, is `2026_09_21_COMPILER_CACHE.md`: one derivation (`compiler/derive.av`) every command asks, `test` as a build with another entry, and `compiler/` split into modules. The `World`/`Compiled`/`Projection` types below were not built — one verb and one answer did the job. Kept for its benchmarks and its reasoning.
+
+**Status then:** aggressive refactor, in progress. This document is the target and
 the deletion ledger. It supersedes the ad-hoc per-command plumbing; the north
 star in `ROADMAP.md` still governs the layers.
 

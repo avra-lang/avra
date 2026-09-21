@@ -185,6 +185,14 @@ ed $R/t/src/tests/shown/shown.expected "three is 3" "three is 4"; T "the text a 
 ed $R/t/src/tests/shown/shown.expected "three is 4" "three is 3"; T "and back" green
 ed $R/t/src/tests/lib_test.av "three() == 3" "three() == 3 && true"; T "a case's own body moves" green
 
+# A NAME A HELD FILE REACHES WITHOUT AN IMPORT LEAVES ITS MODULE: the file did not
+# move and is refused all the same — a hold that kept it would hide the refusal
+cp $R/lib/src/sib.av $R/sib.kept
+mkdir -p $R/lib/src/away && mv $R/lib/src/sib.av $R/lib/src/away/sib.av
+steps=$((steps+1)); out=$(./avra build $R/a 2>&1); st=$?
+if [ "$st" -eq 0 ] || ! printf '%s' "$out" | grep -q "sized"; then fails=$((fails+1)); echo "FAIL  a sibling left the module and its caller still built (status $st)"; fi
+mv $R/lib/src/away/sib.av $R/lib/src/sib.av; rmdir $R/lib/src/away; S "and back" a
+
 # CHECK SPEAKS THE SAME under a hold as from the sources
 for app in a b c; do
     held_says=$(./avra check $R/$app 2>&1 | grep -v '^watch:')

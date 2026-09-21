@@ -23,8 +23,8 @@ One slice = red-team + review round + ONE gate + commit + seed.
 - [x] **S6 `test` on the derivation** (`99a6e54`): case symbols content-stable, cases ride the
       record, the suite's binary is cached
 - [ ] **S7 the warm edit to < 500 ms** — 7a `d2d9356` (runs, evaluator, store writes, watchdog), 7b (the program's module by its inputs; one digest pass). LEFT: a stat-keyed digest cache, in-process object emission, the records' text
+- [ ] **S9 `compiler/` organised** — 9a: leaf subsystems are modules (`resolve/ typing/ lower/ memory/ backend/ store/ host/ format/ dev/`); the map is `compiler/mod.av`'s header
 - [ ] S8 `parsed(file)` persists (`avra_snapshot`, two landings); parser fast path
-- [ ] S9 `World`/`Compiled`/`Projection`; cli one line per command; folders
 - [ ] S10 docs: this file is the law; the pipeline doc becomes history
 
 ## 1. Numbers — the non-regression gates
@@ -52,7 +52,7 @@ re-encoded every build (load + fill + keep = 255), which the snapshot (S8) ends.
 
 ONE DERIVATION (`compiler/derive.av`, `Workspace.derived(entry, want)`): hold,
 load, admit, analyse, restart, lower every parsed body, write the records.
-`build` links it (`build_cache.av`), `check` prints it. What a command WANTS
+`build` links it (`build.av`), `check` prints it. What a command WANTS
 decides what may stand in for a file: its warnings always (`Stored.Warn` under
 the file's key), its object and asks too when the want links.
 
@@ -117,6 +117,17 @@ skips it.
 
 **THE SWEEP: 315 of 315 edits hold clean.** `tools/hold_sweep.sh packages/cli` touches every
 source, one at a time, and builds through the hold.
+
+### Where it lives
+
+`compiler/derive.av` the derivation · `record.av` `interface.av`
+`settlement_wire.av` what stands in for a file · `store/` the rows ·
+`build.av` `link.av` the build · `suite.av` `suite_entry.av` the suite ·
+`cli/src/commands/{build,check,test}.av` are a workspace, one verb, a voice.
+The 09-19 plan's `World`/`Compiled`/`Projection` types did not land and are not
+owed: `Workspace.derived(entry, want)` IS the one verb, `Derived` the one
+answer, and a command is the few lines that ask it. A trait with one verb and
+three callers was the ceremony the plan warned of.
 
 ## 3. Laws this layer paid for
 
