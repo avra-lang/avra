@@ -747,6 +747,23 @@ reintroducing I3's blind spot names the two spellings it lost.
       are never part of the matched name).
       Ratcheted (`if_null_ternary`).
 
+- I53 A LITERAL COPYING EVERY OTHER FIELD FROM ONE VALUE IS `with` —
+      `Scope { tier: top.tier, managed: top.managed.concat([r]),
+      cells: top.cells }` becomes `top with { managed:
+      top.managed.concat([r]) }`. THIS SMELL CAN SILENTLY CHANGE
+      BEHAVIOUR: a literal built from a DIFFERENT type than `v` only
+      happens to share field NAMES (`Directive { twin: "", name:
+      t.name, at: t.at, source: … }` where `t: MetaType` — the
+      annotation-crossing convention throughout `core/*_derive.av`),
+      so the matcher traces `v`'s DECLARED type — an enclosing
+      `impl`'s receiver, a parameter's annotation, a `let`'s
+      annotation, or one hop through a bare `x!` unwrap — and
+      accuses only when it can CONFIRM that type equals the
+      literal's own; an unknown or a mismatched type is never
+      accused, nor a literal spanning more than one line (the whole
+      field list must be in hand at once to judge it). Ratcheted
+      (`modified_copy_literal`).
+
 - I49 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
       conversions that are inverses name their categories ONCE, as a
       registry enum, and each direction is an exhaustive match over

@@ -453,6 +453,131 @@ def in_string_at(line, idx):
         k += 1
     return in_str
 
+# A LITERAL THAT COPIES EVERY OTHER FIELD FROM ONE VALUE IS `with`.
+# Restricted to ONE LINE (so the literal's whole field list is in
+# hand at once) with at least two `f: v.f` copies FROM THE SAME `v`
+# and at least one other field. THIS SMELL CAN SILENTLY CHANGE
+# BEHAVIOUR — a literal built from a DIFFERENT type than `v` only
+# happens to share field NAMES (`Directive { twin: "", name: t.name,
+# at: t.at, source: … }` where `t: MetaType`) — so the matcher traces
+# `v`'s DECLARED type (an enclosing `impl`'s receiver, a parameter's
+# annotation, or a `let`'s annotation — one hop through a bare `x!`
+# unwrap) and accuses only when it can CONFIRM that type equals the
+# literal's own. An unknown or a mismatched type is never accused.
+WITH_LIT = re.compile(r"(?<![.\w])([A-Z][A-Za-z0-9_]*)\s*\{([^{}]*)\}")
+
+def with_split_fields(body):
+    """`body` cut at its top-level commas — a field's own value may
+    hold one inside `(…)`, `[…]` or `<…>`."""
+    out, depth, start = [], 0, 0
+    for j, c in enumerate(body):
+        if c in "([<":
+            depth += 1
+        elif c in ")]>":
+            depth -= 1
+        elif c == "," and depth == 0:
+            out.append(body[start:j])
+            start = j + 1
+    return out + [body[start:]]
+
+def with_copy_fields(body):
+    """`k: v` pairs of a struct literal's top-level fields."""
+    out = []
+    for part in with_split_fields(body):
+        part = part.strip()
+        if not part or ":" not in part:
+            continue
+        k, v = part.split(":", 1)
+        k = k.strip()
+        if re.match(r"^[a-zA-Z_]\w*$", k):
+            out.append((k, v.strip()))
+    return out
+
+def with_base_type(t):
+    t = t.strip().rstrip("?").strip()
+    m = re.match(r"^[A-Za-z_]\w*", t)
+    return m.group(0) if m else None
+
+def with_enclosing_impl_type(lines, idx):
+    for j in range(idx, -1, -1):
+        m = re.match(r"^\s*(?:export\s+)?impl\s+([A-Za-z_]\w*)", lines[j])
+        if m:
+            return m.group(1)
+    return None
+
+def with_enclosing_fn_start(lines, idx):
+    for j in range(idx, -1, -1):
+        if re.match(r"^\s*(?:export\s+)?(?:static\s+)?(?:mut\s+)?fn\s+[A-Za-z_]\w*\(", lines[j]):
+            return j
+    return None
+
+def with_param_type(lines, fn_start, name):
+    """`name`'s annotation in the fn header opened at `fn_start`."""
+    text, depth, started = "", 0, False
+    for j in range(fn_start, min(len(lines), fn_start + 15)):
+        text += lines[j] + "\n"
+        for c in lines[j]:
+            if c == "(":
+                depth += 1
+                started = True
+            elif c == ")":
+                depth -= 1
+        if started and depth == 0:
+            break
+    seats = balanced(text, text.index("("))
+    if seats is None:
+        return None
+    for p in split_seats(seats):
+        pm = re.match(r"^\s*(?:mut\s+)?([a-zA-Z_]\w*)\s*:\s*(.+)$", p.strip())
+        if pm and pm.group(1) == name:
+            return pm.group(2).strip()
+    return None
+
+def with_declared_type(lines, idx, name, hops=0):
+    """`name`'s declared type at line `idx` — an `impl` receiver, a
+    parameter's annotation, a `let`'s annotation, or one hop through
+    a bare `x!` unwrap. None where it cannot be confirmed."""
+    if hops > 2:
+        return None
+    if name == "self":
+        t = with_enclosing_impl_type(lines, idx)
+        return with_base_type(t) if t else None
+    fn_start = with_enclosing_fn_start(lines, idx)
+    if fn_start is not None:
+        pt = with_param_type(lines, fn_start, name)
+        if pt:
+            return with_base_type(pt)
+    floor = fn_start if fn_start is not None else 0
+    for j in range(idx, floor - 1, -1):
+        lm = re.match(rf"^\s*(?:mut\s+)?let\s+{re.escape(name)}\s*:\s*([A-Za-z_]\w*)", lines[j])
+        if lm:
+            return lm.group(1)
+        lm2 = re.match(rf"^\s*(?:mut\s+)?let\s+{re.escape(name)}\s*=\s*([a-zA-Z_][\w.]*)!\s*$", lines[j])
+        if lm2:
+            return with_declared_type(lines, j - 1, lm2.group(1).split(".")[0], hops + 1)
+    return None
+
+def modified_copy_literal(lines):
+    """A struct literal copying every other field from one value —
+    `with` — where `v`'s declared type is confirmed to match (I53)."""
+    for i, l in enumerate(lines):
+        if l.strip().startswith("//"):
+            continue
+        for m in WITH_LIT.finditer(l):
+            typename, body = m.group(1), m.group(2)
+            fields = with_copy_fields(body)
+            if len(fields) < 3:
+                continue
+            copy_of = collections.Counter()
+            for k, val in fields:
+                vm = re.match(r"^([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)$", val)
+                if vm and vm.group(2) == k:
+                    copy_of[vm.group(1)] += 1
+            for v, n in copy_of.items():
+                if n >= 2 and n < len(fields) and with_declared_type(lines, i - 1, v) == typename:
+                    yield i, l.strip()
+                    break
+
 def if_null_ternary(lines):
     """A null test picking the value or a default — `x ?? d` (I52)."""
     for i, l in enumerate(lines):
@@ -790,6 +915,10 @@ RULES = {
     "I40": (spelled_shape,
             "a structural type interned by hand — `intern(Type.Opt(intern(Type.Str)))` — "
             "where a type literal spells it: `cx.type(string?)`, `types.type(List<elem>)`"),
+    "I53": (modified_copy_literal,
+            "a struct literal copying every other field from one value — that is "
+            "`with`. Accused only when `v`'s declared type is confirmed to match "
+            "the literal's; an unconfirmed or a different type is never accused"),
     "I52": (if_null_ternary,
             "a null test that picks the value or a default — `if x == null { d } "
             "else { x! }` (or the arms swapped on `!=`) is `x ?? d`"),
@@ -922,6 +1051,21 @@ CLEAN = {
     "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
             ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
+    "I53": [["    fn built(w: Other) -> Widget {",
+             "        Widget { name: w.name, tier: w.tier, extra: 5 }",
+             "    }"],
+            ["    fn one(w: Widget) -> Widget {",
+             "        Widget { name: w.name, tier: 1, extra: 2 }",
+             "    }"],
+            ["    fn mystery() -> Widget {",
+             "        Widget { name: q.name, tier: q.tier, extra: 6 }",
+             "    }"],
+            ["    let maybe: Other? = find()",
+             "    let held = maybe!",
+             "    Widget { name: held.name, tier: held.tier, extra: 7 }"],
+            ["    Widget {",
+             "        name: held.name, tier: held.tier, extra: 8,",
+             "    }"]],
     "I52": [["    if x == null { 0 } else { x!.text() }"],
             ["    if x != null { f(x!) } else { 0 }"],
             ["    if x == null {", "        do_a()", "        do_b()", "    } else {", "        x!", "    }"],
@@ -958,6 +1102,19 @@ SPECIMENS = {
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
+    "I53": [["impl Widget {",
+             "    fn grown() -> Widget {",
+             "        Widget { name: self.name, tier: self.tier, extra: 1 }",
+             "    }",
+             "}"],
+            ["    fn bumped(w: Widget) -> Widget {",
+             "        Widget { name: w.name, tier: w.tier, extra: 2 }",
+             "    }"],
+            ["    let held: Widget = make()",
+             "    Widget { name: held.name, tier: held.tier, extra: 3 }"],
+            ["    let maybe: Widget? = find()",
+             "    let held = maybe!",
+             "    Widget { name: held.name, tier: held.tier, extra: 4 }"]],
     "I52": [["    let id = if known == null { Default { x: 1 } } else { known! }"],
             ["    let one = if held != null { held! } else { defaulted_reg(cx) }"],
             ["    if x == null { 0 } else { x! }"],
