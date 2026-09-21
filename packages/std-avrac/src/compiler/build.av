@@ -7,7 +7,7 @@ use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes}
 use @std.process.{parallel, cmd, Tool, Outcome, Env, Streams}
-use compiler.backend.{Owned, emit_closed, home_of, not_closed, program_closed}
+use compiler.backend.{emit_object, Owned, emit_closed, home_of, not_closed, program_closed}
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.store.{CACHE_FORMAT, Stored, node_key, store_at}
 use compiler.host.{Host, no_target}
@@ -17,9 +17,15 @@ extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 /// speak, whether the kept binary was reused, and where a fresh one's time went.
 export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool, key: string, phases: string = "" }
 
-/// A module emitted but not yet compiled: its object's key, and where clang
-/// writes it.
-type PendingObj = { okey: string, obj: string }
+/// A file whose object the store does not hold: the object's key, where it is
+/// written, the name its module is emitted under, and the file.
+type PendingObj = { okey: string, obj: string, base: string, file: FileId }
+
+/// How many moved modules a build compiles itself before it hands them to clang.
+const MADE_HERE: int = 2
+
+/// clang's `-O<n>` as its number.
+fn opt_level(opt: string) -> int { if opt.starts_with("-O") && opt.length == 3 { opt.char_code(2) - 48 } else { 0 } }
 
 /// THE PROGRAM'S OWN MODULE: its entry, and the runtime rows the entry names.
 export type ProgramModule = { entry: Body, rows: List<RtSig> = [] }
@@ -194,14 +200,16 @@ impl Workspace {
             let base = node_key(Stored.Obj, [digest_of(path)])
             let obj = "${root}/${base}.o"
             let okey = self.held_okey(store, path)
-            if store.place(Stored.Obj, okey, obj) {
-                objs.push(obj)
-            } else {
-                let broke = emit_closed(full, "${root}/${base}.bc", Owned.File(a.view.file))
-                if broke != null { fail broke! }
-                moved.push("${base}.bc")
-                pending.push(PendingObj { okey: okey, obj: obj })
-            }
+            if store.place(Stored.Obj, okey, obj) { objs.push(obj) } else { pending.push(PendingObj { okey: okey, obj: obj, base: base, file: a.view.file }) }
+        }
+        // A BUILD THAT MOVED A MODULE OR TWO makes their objects HERE, with the
+        // compiler it already holds; one that moved many hands bitcode to clang,
+        // `CLANG_WIDTH` at once.
+        let here = pending.length <= MADE_HERE
+        for po in pending {
+            let broke = if here { emit_object(full, po.obj, Owned.File(po.file), opt_level(tools.opt)) } else { emit_closed(full, "${root}/${po.base}.bc", Owned.File(po.file)) }
+            if broke != null { fail broke! }
+            if !here { moved.push("${po.base}.bc") }
         }
         // THE PROGRAM'S MODULE is keyed by its own bytes: emitted every build,
         // compiled only when they moved

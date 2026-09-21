@@ -35,19 +35,19 @@ One slice = red-team + review round + ONE gate + commit + seed.
 |---|---|---|---|
 | `build cli` cold | 22.7 s | **17–18 s** | 23 s |
 | `build cli` no-op | 0.4 s | **0.20 s** | 0.4 s |
-| `build cli`, one body edit | 1.2 s | **~0.7 s** (phases ~0.49 s) | 1.0 s |
+| `build cli`, one body edit | 1.2 s | **~0.67 s** (phases ~0.45 s) | 1.0 s |
 | `build cli`, a generic's home edited | — | ~3 s (the homes are read from the start; the program's module recompiles) | 5 s |
 | `check cli` | 9.7 s | cold 9 s · warm **0.8 s** | 2 s |
 | `check std-avrac` | 11.6 s, RED | cold 13 s · warm **~1.5 s**, clean | 2 s |
 | `test std-json` | 1.6 s | cold 1.7 s · warm **0.4 s** | 1 s |
 | `test std-avrac` (5325 cases, 111 programs, 27 nested) | ~40 s | cold 56 s · one edit **~2 s to compile**, then the 9 s run | — |
 
-Where a warm body edit goes (ms), held 287/291: load 75 · admit 47 · fill 78 ·
-analyze 42 · lower 35 · keep 33 · clang 80 · link 115 — and ~70 before any of it
-for the program's key and the process, ~60 for the shim and the watchdog.
-**Target: under 500 ms wall.** What is left is text and processes: every held
-declaration minted and filled from its record each build (load + fill = 150),
-a clang for one module, and the link.
+Where a warm body edit goes (ms), held 287/291, the machine at load 13: load 75 ·
+admit 48 · fill 85 · analyze 42 · lower 35 · keep 37 · emit 45 (the object,
+made in process) · link 115 — and ~70 before any of it for the program's key
+and the process, ~60 for the shim and the watchdog. **Target: under 500 ms
+wall.** What is left is every held declaration minted and filled from its
+record each build (load + fill = 160), and the link.
 
 ## 2. The model
 
@@ -206,6 +206,10 @@ three callers was the ceremony the plan warned of.
 - **A sweep that asks "clean?" does not ask "held?".** The hold collapsed to
   25/292 on correct builds; the sweep files a thin hold now.
 
+- **A cache can cost more than what it keeps.** Memoizing a type wire to its
+  type doubled `fill` (78 -> 145 ms): hashing a wire of paths costs more than
+  decoding it. A stamp row per file lost to reading the file. Measured, reverted.
+
 ## 4. The keepers
 
 `sh tools/hold_sweep.sh [pkg] [path filter]` — every source touched, one at a
@@ -244,9 +248,10 @@ moved; link 115; clang 80 (a process for one module); the file itself ~125.
    the doctrine already says so), `held_stubs` (stub what a parsed body names).
    This is the file-local-id direction taken one query at a time, and it is
    worth ~200 ms.
-2. **Emit the object in process** for a build that moved one or two modules:
-   `LLVMTargetMachineEmitToFile` behind `backend/llvm_api.av`. ~45 ms, and no
-   second pipeline for the cold build, which stays parallel clang.
+2. ~~Emit the object in process~~ — DONE: a build that moved one or two modules
+   makes their objects with the compiler it holds (`emit_object`,
+   `avra_llvm_emit_object`); more go to clang as bitcode, four at once.
+   emit 5 + clang 80 became emit 45.
 3. **`avra_snapshot`** — freeze a closure-free value, thaw it immortal. It wants a
    LANGUAGE builtin (`snapshot(v)` / `thaw<T>(bytes)`, type-checked closure-free,
    a layout print in the blob) and two runtime rows (two landings). It ends the

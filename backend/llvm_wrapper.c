@@ -7,6 +7,10 @@
 #include <llvm-c/Core.h>
 #include <llvm-c/Analysis.h>
 #include <llvm-c/BitWriter.h>
+#include <llvm-c/Target.h>
+#include <llvm-c/TargetMachine.h>
+#include <llvm-c/Transforms/PassBuilder.h>
+#include <llvm-c/Error.h>
 #include <stdlib.h>
 #include <string.h>
 void avra_trap(const char* msg);
@@ -751,6 +755,60 @@ int64_t avra_llvm_write_bitcode_to_file(LLVMModuleRef m, const char* path) {
         remove(tmp);
         return 1;
     }
+    return 0;
+}
+
+// THE SAME MODULE, AS AN OBJECT, made here: the `default<O1>`-style pipeline
+// clang runs on the bitcode, then the native target's code generator. A build
+// that moved one module pays a compiler it already holds, not a process. The
+// level is clang's: 0..3. Atomic as the writers above — a temp, then rename.
+// Answers 0, or 1 with the reason on stderr.
+int64_t avra_llvm_emit_object(LLVMModuleRef m, const char* path, int64_t level) {
+    static int ready = 0;
+    if (!ready) {
+        if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter()) return 1;
+        ready = 1;
+    }
+    char tmp[4096];
+    if (snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int)getpid()) >= (int)sizeof(tmp)) return 1;
+    char* triple = LLVMGetDefaultTargetTriple();
+    char* error = NULL;
+    LLVMTargetRef target;
+    if (LLVMGetTargetFromTriple(triple, &target, &error)) {
+        fprintf(stderr, "avra: no native target for %s — %s\n", triple, error ? error : "");
+        if (error) LLVMDisposeMessage(error);
+        LLVMDisposeMessage(triple);
+        return 1;
+    }
+    LLVMCodeGenOptLevel cg = level <= 0 ? LLVMCodeGenLevelNone : level == 1 ? LLVMCodeGenLevelLess
+                           : level == 2 ? LLVMCodeGenLevelDefault : LLVMCodeGenLevelAggressive;
+    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, "", "", cg, LLVMRelocPIC, LLVMCodeModelDefault);
+    LLVMSetTarget(m, triple);
+    LLVMTargetDataRef layout = LLVMCreateTargetDataLayout(tm);
+    LLVMSetModuleDataLayout(m, layout);
+    int failed = 0;
+    if (level > 0) {
+        char passes[32];
+        snprintf(passes, sizeof(passes), "default<O%d>", level > 3 ? 3 : (int)level);
+        LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();
+        LLVMErrorRef ran = LLVMRunPasses(m, passes, tm, opts);
+        LLVMDisposePassBuilderOptions(opts);
+        if (ran) {
+            char* why = LLVMGetErrorMessage(ran);
+            fprintf(stderr, "avra: the optimizer refused — %s\n", why);
+            LLVMDisposeErrorMessage(why);
+            failed = 1;
+        }
+    }
+    if (!failed && LLVMTargetMachineEmitToFile(tm, m, tmp, LLVMObjectFile, &error)) {
+        fprintf(stderr, "avra: no object for %s — %s\n", path, error ? error : "");
+        if (error) LLVMDisposeMessage(error);
+        failed = 1;
+    }
+    LLVMDisposeTargetData(layout);
+    LLVMDisposeTargetMachine(tm);
+    LLVMDisposeMessage(triple);
+    if (failed || rename(tmp, path) != 0) { remove(tmp); return 1; }
     return 0;
 }
 

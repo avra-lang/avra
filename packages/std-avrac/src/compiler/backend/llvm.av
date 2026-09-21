@@ -135,20 +135,27 @@ fn carries(r: Refs, named: Map<string, bool>, name: string) -> bool { r.whole ||
 
 /// The whole program as verified `.ll` text; null means written, a string is
 /// the failure.
-export fn emit_ll(l: Lowered, path: string) -> string? { emit_mode(l, path, Owned.Whole, false) }
+export fn emit_ll(l: Lowered, path: string) -> string? { emit_mode(l, path, Owned.Whole, Written.Text) }
 
 /// ONE MODULE OF A SPLIT PROGRAM, as bitcode. It declares what its own bodies
 /// NAME — LLVM wants a called symbol declared where it is called — and lays out
 /// the statics they read: private linkage, so each module's copy is its own.
 /// The caller has asked `program_closed`, a whole-program scan with one answer.
-export fn emit_closed(l: Lowered, path: string, which: Owned) -> string? { emit_mode(l, path, which, true) }
+export fn emit_closed(l: Lowered, path: string, which: Owned) -> string? { emit_mode(l, path, which, Written.Bitcode) }
+
+/// The same module as an OBJECT, optimized and generated in this process at
+/// clang's level — what a build that moved one module does instead of a clang.
+export fn emit_object(l: Lowered, path: string, which: Owned, opt: int) -> string? { emit_mode(l, path, which, Written.Object(opt)) }
+
+/// What a module is written as.
+enum Written { Text, Bitcode, Object(opt: int) }
 
 /// A program with a symbol nothing declares — a DEFECT, in its own words.
 export fn not_closed(missing: string) -> string {
     "internal compiler error: nothing declares `${missing}` — the program is not closed"
 }
 
-fn emit_mode(l: Lowered, path: string, which: Owned, bitcode: bool) -> string? {
+fn emit_mode(l: Lowered, path: string, which: Owned, form: Written) -> string? {
     let lc = avra_llvm_context_create()
     let m = avra_llvm_module_create("avra", lc)
     let b = avra_llvm_create_builder(lc)
@@ -179,7 +186,11 @@ fn emit_mode(l: Lowered, path: string, which: Owned, bitcode: bool) -> string? {
         let failure: string? = emit_entry(lc, m, b, l, rt)
         if failure != null { return wreck(m, path, failure!) }
     }
-    let written = if bitcode { avra_llvm_write_bitcode_to_file(m, path) } else { avra_llvm_print_module_to_file(m, path) }
+    let written = match form {
+        .Text -> avra_llvm_print_module_to_file(m, path),
+        .Bitcode -> avra_llvm_write_bitcode_to_file(m, path),
+        .Object(opt) -> avra_llvm_emit_object(m, path, opt),
+    }
     if written != 0 {
         return "cannot write `${path}`"
     }
