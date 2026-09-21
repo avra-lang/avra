@@ -10,8 +10,8 @@
 //! so a struct carries its fields and an enum its variants, and loading walks
 //! the imports first — a field of another module's type interns only once that
 //! module's types exist.
-use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, sorted_texts, distinct, same_file, same_decl, module_path, ModulePath, TypeRegistry, TypeLit, Type, TypeId, DeclId, FileId, StmtId, ExprId, DeclKind, SeatMark, Span, TypeRef}
-use features.{Decl, DeclSig, FnSig, StructSig, EnumSig, NamedSig, Decls, Namespace, SettleRoot, kind_word, spelled_type, scalar_named, DeclFacts}
+use core.{new_digest, digest_text, digest_key, digest_of, joined, sorted_texts, distinct, same_decl, module_path, ModulePath, TypeRegistry, TypeId, DeclId, DeclKind, SeatMark, Span}
+use features.{DeclSig, DeclFacts}
 use compiler.lower.{Body, program_symbol}
 use compiler.store.{Store, Stored, node_key}
 
@@ -29,10 +29,10 @@ fn record_key(ws: Workspace, m: ModulePath) -> string {
 // LICENSED I39: a Workspace method here trips the compiler's declaration-order defect (F2010).
 fn record_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
     let key = record_key(ws, m)
-    if ws.record_asked.get(key) != null { return ws.record_texts.get(key) ?? "" }
+    let known = ws.record_texts.get(key)
+    if known != null { return known! }
     let text = store.get(Stored.Sig, key) ?? ""
     ws.record_texts.set(key, text)
-    ws.record_asked.set(key, true)
     if text != "" { ws.record_lines.set(key, text.split("\n")) }
     text
 }
@@ -124,7 +124,6 @@ fn record_known(mut ws: Workspace, m: ModulePath, text: string) {
     let key = record_key(ws, m)
     let lines = text.split("\n")
     ws.record_texts.set(key, text)
-    ws.record_asked.set(key, true)
     ws.record_lines.set(key, lines)
     let fields = [read_fields(line) for line in lines]
     ws.record_fields.set(key, fields)
@@ -529,8 +528,8 @@ fn name_of_field(pair: string) -> string {
 
 /// A variant's PAYLOAD, from its `name:t1,t2` pair — no types when it carries none.
 // LICENSED I39: a RECORD DECODER — a workspace and one arm's text in, the payload's types out.
-fn payload_of(mut ws: Workspace, owner: DeclId, arm: string) -> List<TypeId> {
-    [ws.interface_type( owner, t) for t in name_of_field(arm).split("|") if t != ""]
+fn payload_of(mut ws: Workspace, arm: string) -> List<TypeId> {
+    [ws.interface_type(t) for t in name_of_field(arm).split("|") if t != ""]
 }
 
 /// THE DECLARATION KIND a record's word names. A record line says which SHAPE it carries,

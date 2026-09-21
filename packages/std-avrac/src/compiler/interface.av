@@ -1,7 +1,7 @@
 //! The interface's Workspace/Decls verbs: mint, fill, key, and the
 //! wire each record line carries. The record FORMAT lives in record.av.
-use core.{joined, flatten, distinct, sorted_texts, module_path, digest_of, same_decl, ModulePath, TypeLit, Type, TypeId, DeclId, FileId, StmtId, ExprId, SeatMark, TypeRef}
-use features.{Decl, FnSig, StructSig, EnumSig, NamedSig, Decls, SettleRoot, Settled, kind_word, scalar_named}
+use core.{joined, flatten, distinct, sorted_texts, module_path, digest_of, same_decl, ModulePath, Type, TypeId, DeclId, FileId, StmtId, ExprId, SeatMark}
+use features.{Decl, FnSig, StructSig, EnumSig, NamedSig, Decls, SettleRoot, Settled, kind_word}
 use compiler.lower.{Body}
 use compiler.store.{Store, Stored, node_key}
 
@@ -57,7 +57,7 @@ fn fill_shape(store: Store, m: ModulePath, id: DeclId, parts: List<string>) {
     // branch below is the fn branch.
     let word = if parts[0] == "extern" { "fn" } else { parts[0] }
     if word == "const" {
-        let ty = self.interface_type( id, parts[13].split(";").first() ?? "")
+        let ty = self.interface_type(parts[13].split(";").first() ?? "")
         self.decls.record_const_type(f, stmt, ty)
         // a held const has no initializer to settle again: its kept value is the
         // only one, and a row that does not give it back is a defect said
@@ -70,7 +70,7 @@ fn fill_shape(store: Store, m: ModulePath, id: DeclId, parts: List<string>) {
         if aimed != null { self.decls.record_target(id, aimed!) }
     }
     if word == "named" {
-        let of = self.interface_type( id, parts[13])
+        let of = self.interface_type(parts[13])
         self.decls.declare(id, .Named(NamedSig { of: of }))
         let named = self.decls.types.intern(Type.Struct(id, parts[5]))
         self.decls.types.mark_named(named, of)
@@ -82,7 +82,7 @@ fn fill_shape(store: Store, m: ModulePath, id: DeclId, parts: List<string>) {
         let fields = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
         self.decls.declare(id, .Record(StructSig {
             names: [field_name(f) for f in fields],
-            types: [self.interface_type( id, name_of_field(f)) for f in fields],
+            types: [self.interface_type(name_of_field(f)) for f in fields],
             defaults: [self.decls.default_named(id, field_name(f)) for f in fields],
         }))
         let made = self.decls.record_type(id)
@@ -90,15 +90,15 @@ fn fill_shape(store: Store, m: ModulePath, id: DeclId, parts: List<string>) {
     }
     if word == "enum" {
         let arms = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
-        self.decls.declare(id, .Enum(EnumSig { names: [field_name(a) for a in arms], payloads: [payload_of(self, id, a) for a in arms] }))
+        self.decls.declare(id, .Enum(EnumSig { names: [field_name(a) for a in arms], payloads: [payload_of(self, a) for a in arms] }))
     }
     if word == "fn" {
         let seats = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
         let marks: List<SeatMark> = if parts.length > 15 && !parts[15].is_empty() { [mark_of_word(w) for w in parts[15].split(";")] } else { [] }
         self.decls.record_seats(id, marks)
         self.decls.declare(id, .Fn(FnSig {
-            params: [self.interface_type( id, s) for s in seats],
-            ret: self.interface_type( id, parts[14]),
+            params: [self.interface_type(s) for s in seats],
+            ret: self.interface_type(parts[14]),
         }))
         if parts.length > 16 {
             let bits = parts[16]
@@ -117,62 +117,11 @@ fn interface_decls(m: ModulePath) -> List<Decl> {
     [self.decl_at(id) for id in ids]
 }
 
-fn interface_plain(owner: DeclId, a: TypeRef) -> TypeId? {
-    if a.dynamic {
-        let base? = self.decls.types.by_name(a.name) else { return null }
-        let decl? = nominal_decl(self.decls.types, base) else { return null }
-        return self.decls.types.intern(Type.Dyn(decl, a.name))
-    }
-    if a.args.is_empty() {
-        let named: TypeId? = self.decls.types.by_name(a.name)
-        if named != null { return named! }
-        let j: int? = self.decls.tparams(owner).index_of(a.name)
-        if j != null && j! >= 0 { return self.decls.types.intern(Type.Var(owner, j!, a.name)) }
-        let word: Type? = scalar_named(a.name)
-        if word != null { return self.decls.types.intern(word!) }
-        if a.name == "void" { return self.decls.types.interned(TypeLit.Void) }
-        if a.name == "ptr" { return self.decls.types.interned(TypeLit.Ptr) }
-        if a.name == "bytes" { return self.decls.types.interned(TypeLit.Bytes) }
-        return null
-    }
-    mut args: List<TypeId> = []
-    for g in a.args {
-        let t? = self.interface_spelled( owner, g) else { return null }
-        args.push(t)
-    }
-    if a.name == "List" && args.length == 1 {
-        let elem = args[0]
-        return self.decls.types.type(List<elem>)
-    }
-    if a.name == "Map" && args.length == 2 {
-        let val = args[1]
-        return self.decls.types.type(Map<string, val>)
-    }
-    let base? = self.decls.types.by_name(a.name) else { return null }
-    let decl? = nominal_decl(self.decls.types, base) else { return null }
-    self.decls.types.intern(Type.App(decl, a.name, args))
-}
-
-fn interface_spelled(owner: DeclId, a: TypeRef) -> TypeId? {
-    let held? = self.interface_plain( owner, a) else { return null }
-    // A NULLABLE IS ITS OWN TYPE, scalar or boxed: the interface decodes what the SOURCE
-    // grammar refuses (`int?` is legal there), so no `rides_pointer` gate here.
-    if !a.optional { return held }
-    self.decls.types.type(held?)
-}
-
-fn interface_type(owner: DeclId, name: string) -> TypeId {
-    if name.starts_with("^") {
-        let words = name.substring(1, name.length).split("~")
-        let decoded = self.decls.read_type_wire( words, 0)
-        if decoded != null && decoded!.next == words.length { return decoded!.id }
-        return self.decls.types.intern(Type.Error)
-    }
-    let known = self.decls.types.by_name(name)
-    if known != null { return known! }
-    let written? = parse_type_ref(self.lang, name) else { return self.decls.types.intern(Type.Error) }
-    let ty: TypeId? = self.interface_spelled( owner, written)
-    ty ?? self.decls.types.intern(Type.Error)
+/// A type as a record wrote it: a wire, or the error type — a record writes nothing else.
+fn interface_type(name: string) -> TypeId {
+    let words = name.substring(1, name.length).split("~")
+    let decoded? = (if name.starts_with("^") { self.decls.read_type_wire(words, 0) } else { null }) else { return self.decls.types.intern(Type.Error) }
+    if decoded.next == words.length { decoded.id } else { self.decls.types.intern(Type.Error) }
 }
 
 /// A held file's declarations adopted by their parents, in one pass over its
@@ -463,8 +412,12 @@ fn read_type_wire(words: List<string>, at: int) -> WireType? {
     null
 }
 
-fn type_wire(id: TypeId) -> string {
-    let body = match self.types.shape_of(id) {
+/// A type as a record writes it.
+fn type_wire(id: TypeId) -> string { "^${self.wire_body(id)}" }
+
+/// The wire without its mark — what a wire nests.
+fn wire_body(id: TypeId) -> string {
+    match self.types.shape_of(id) {
         .Int -> "i",
         .Float -> "f",
         .Bool -> "b",
@@ -481,15 +434,14 @@ fn type_wire(id: TypeId) -> string {
         .Dyn(d, _) -> "D~${self.decl_wire( d)}",
         .TypeName(d, _) -> "N~${self.decl_wire( d)}",
         .Var(d, j, _) -> "R~${self.decl_wire( d)}~${j}",
-        .App(d, _, args) -> "A~${self.decl_wire( d)}~${args.length}~${joined([self.type_wire( a).substring(1, self.type_wire( a).length) for a in args], "~")}",
-        .List(t) -> "L~${self.type_wire( t).substring(1, self.type_wire( t).length)}",
-        .Cell(t) -> "C~${self.type_wire( t).substring(1, self.type_wire( t).length)}",
-        .Opt(t) -> "O~${self.type_wire( t).substring(1, self.type_wire( t).length)}",
-        .Map(k, v) -> "M~${self.type_wire( k).substring(1, self.type_wire( k).length)}~${self.type_wire( v).substring(1, self.type_wire( v).length)}",
-        .Res(ok, err) -> "Q~${self.type_wire( ok).substring(1, self.type_wire( ok).length)}~${self.type_wire( err).substring(1, self.type_wire( err).length)}",
-        .Fn(params, marks, ret) -> joined(["F", "${params.length}"].concat([self.type_wire( t).substring(1, self.type_wire( t).length) for t in params]).concat([joined([mark_word(if j < marks.length { marks[j] } else { no_seat_mark }) for j in 0..params.length], ""), self.type_wire( ret).substring(1, self.type_wire( ret).length)]), "~"),
+        .App(d, _, args) -> "A~${self.decl_wire( d)}~${args.length}~${joined([self.wire_body(a) for a in args], "~")}",
+        .List(t) -> "L~${self.wire_body(t)}",
+        .Cell(t) -> "C~${self.wire_body(t)}",
+        .Opt(t) -> "O~${self.wire_body(t)}",
+        .Map(k, v) -> "M~${self.wire_body(k)}~${self.wire_body(v)}",
+        .Res(ok, err) -> "Q~${self.wire_body(ok)}~${self.wire_body(err)}",
+        .Fn(params, marks, ret) -> joined(["F", "${params.length}"].concat([self.wire_body(t) for t in params]).concat([joined([mark_word(if j < marks.length { marks[j] } else { no_seat_mark }) for j in 0..params.length], ""), self.wire_body(ret)]), "~"),
     }
-    "^${body}"
 }
 
 fn wire_decl(words: List<string>, at: int) -> DeclId? {

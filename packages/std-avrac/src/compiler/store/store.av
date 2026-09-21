@@ -11,7 +11,7 @@
 //! A ROW IS PRESENT ONLY WHEN ITS EDGES ARE. Data and edges are two files and `has`
 //! wants both, so a write that never finished reads as ABSENT rather than as half a
 //! value: the edges are the COMMIT, not bookkeeping.
-use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove, list_dir}
+use @std.io.{exists, read_text, write_text, read_bytes, write_bytes, make_dirs, remove}
 use @std.path.{joined_path}
 use core.{digest_of, joined}
 
@@ -22,15 +22,13 @@ export enum Stored {
     /// A declaration's interface, stored STRUCTURALLY: a rendered spelling is a lossy
     /// round trip that must REFUSE what it cannot re-render, which is what text did.
     Sig
-    /// A declaration's body, as one number.
+    /// The tree's stamps: one row, each path with its stamp and its digest.
     Fp
-    /// A lowered body at one set of type arguments — THE GRANULARITY WHERE A
-    /// SPECIALIZATION IS SIMPLY A DIFFERENT KEY.
+    /// What a derivation remembers that is no artifact: a file's asks, a settled
+    /// const, a program's homes and closure, a verdict the evaluator agreed with.
     Unit
-    /// Machine code: one unit's, or a file's units `ld -r`'d together.
+    /// Machine code: a file's object, or a program's module.
     Obj
-    /// A file's blob.
-    Mod
     /// The linked program.
     Bin
     /// WHAT THE BUILD SAID about it — the warnings a hit must still speak, and the
@@ -49,7 +47,6 @@ impl Stored {
             .Fp -> "fp",
             .Unit -> "unit",
             .Obj -> "obj",
-            .Mod -> "mod",
             .Bin -> "bin",
             .Warn -> "warn",
         }
@@ -108,15 +105,6 @@ impl Store {
         }
     }
 
-    /// WHAT THIS KEY READ. Recorded where the key is minted, because that is the only
-    /// place that knows.
-    fn deps(family: Stored, key: string) -> List<string> {
-        if !self.has(family, key) { return [] }
-        let text = read_text(self.edge_path(family, key)) catch ""
-        if text == "" { return [] }
-        text.split("\n")
-    }
-
     /// REMEMBER A ROW: the DATA first, then the EDGES, so the second write is what makes
     /// the row visible and a crash between them leaves nothing rather than half.
     fn keep(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
@@ -140,18 +128,6 @@ impl Store {
     /// site in the tree, because this is that ladder with the key, the edges and the body
     /// in one place.
     ///
-    /// THE BODY IS `() -> expr`, AND THE BLOCK FORM DOES NOT REACH HERE: `f(a) { -> x }`
-    /// parses after a bare call and NOT after a method's arguments ("expected `}` to close
-    /// the trailing block"), so this seat takes the lambda spelled out. A probe that tried
-    /// only the bare-call shape said the block worked; the real call site is what found it.
-    fn cached(family: Stored, key: string, read: List<string>, make: fn() -> string) -> string {
-        let held = self.get(family, key)
-        if held != null { return held! }
-        let made = make()
-        let _ = self.keep(family, key, made, read)
-        made
-    }
-
     /// REMEMBER A ROW WHOSE BYTES ARE A FILE — the twinned half of `keep`, because a
     /// linked binary is BYTES and reading it as text is the thing that loses them. The
     /// edges are the commit here too.
@@ -181,22 +157,5 @@ impl Store {
             .Ok(_) -> true,
             .Err(_) -> false,
         }
-    }
-
-    /// FORGET WHAT IS NOT `live` — the collector, and it needs no index either: a key's
-    /// presence IS its file.
-    fn sweep(family: Stored, live: List<string>) -> int {
-        let dir = joined_path(self.root, family.name())
-        mut dropped = 0
-        for shard in list_dir(dir) catch [] {
-            for name in list_dir(joined_path(dir, shard)) catch [] {
-                if !name.ends_with(".deps") && !live.any(it == name) {
-                    let _ = remove(joined_path(joined_path(dir, shard), name))
-                    let _ = remove("${joined_path(joined_path(dir, shard), name)}.deps")
-                    dropped = dropped + 1
-                }
-            }
-        }
-        dropped
     }
 }

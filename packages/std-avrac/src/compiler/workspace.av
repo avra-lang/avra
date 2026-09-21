@@ -14,18 +14,15 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, Expr, StmtId, Span, Param, Variant, Mark, same_stmt, same_decl, TypeRegistry, NodeStore, ModulePath, module_path, key_spelled, DeclId, FileId, ModuleId, UseParts, ExprId, Case, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, SpecParts, FnParts, TypeRef, source_spelled, Annotation, Binding, named_ref, spelled, user_kind, is_user_kind, is_kind_word, Scoped}
-use @std.path.{dir_of, under_dir, joined_path, normalized, relative_path}
-use features.{Unsettled, unsettled_label, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, FnSig, StructSig, EnumSig, Wanted, nothing, FileView, spelled_type, Lifted, DeclareWork, bound_decl_of, SeatValue, settled_symbol, Generation, ArenaMarks, quote_meta, Elsewhere, SettleRoot, Budgets, budgets_of, BlockGrammar}
-use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
-use @std.meta.{Diagnostic, Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Mark as MetaMark, Kind}
-use core.{Stmt, StmtId, Arm, BodyView, HoleKind, Filled, Unplaced, copier, quote_kind, all_codes, is_name_cont}
-use grammar.{parse_grammar, ready}
-use diagnostics.{defect_at}
-use diagnostics.{SourceFile, new_source_file, Diag, Voices, no_voices, error_at, loc_at, render_among, refusal, by_position, has_errors, is_error, user_code, DiagCode}
-use query.{Db, new_db, Key, Memo, Loaded, new_memo}
-use @std.errors.{Loc, Suggestion, Edit, Confidence}
-use @std.testing.{CaseRef, words}
+use core.{Table, new_table, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, Annotation}
+use @std.path.{dir_of, joined_path}
+use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockGrammar}
+use @std.meta.{Diagnostic}
+use core.{StmtId}
+use diagnostics.{SourceFile, new_source_file, Diag, Voices, error_at, render_among, refusal, by_position, has_errors, is_error}
+use query.{Db, new_db, Key, Memo, new_memo}
+use @std.errors.{Loc}
+use @std.testing.{words}
 use compiler.host.{Host, Manifest, memory_host}
 use compiler.store.{Store}
 use compiler.lower.{Unit}
@@ -100,7 +97,6 @@ export type Workspace = {
     /// record. The pair is (whether it was asked, what it answered): a missing row is
     /// not the same as an unread one.
     record_texts: Map<string, string>,
-    record_asked: Map<string, bool>,
     /// ONE RECORD'S LINES, cached: every phase that needs them gets a pre-split list.
     record_lines: Map<string, List<string>>,
     /// ONE RECORD'S TAB-SPLIT FIELDS, cached: mint and fill get pre-parsed fields.
@@ -374,7 +370,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, record_places: {}, bytes_keys: {}, view_keys: {}, text_digests: {}, stamped: {}, stamps_at: Cell.new(0), store_root: Cell.new(""), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, object_keys: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), minted: {}, file_ready: new_table(), holds_settled: Cell.new(false), named_in: {}, held_flat: [], hold_asked: [], read_with: [], read_files: [], runs: {}, settling: Cell.new(no_paths()), defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_lines: {}, record_fields: {}, record_places: {}, bytes_keys: {}, view_keys: {}, text_digests: {}, stamped: {}, stamps_at: Cell.new(0), store_root: Cell.new(""), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, object_keys: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), minted: {}, file_ready: new_table(), holds_settled: Cell.new(false), named_in: {}, held_flat: [], hold_asked: [], read_with: [], read_files: [], runs: {}, settling: Cell.new(no_paths()), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }
