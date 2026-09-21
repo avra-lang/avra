@@ -10,7 +10,7 @@
 //     same parts stay apart.
 
 use @std.io.{make_dirs, write_text}
-use compiler.store.{Backing, Store, Stored, disk_backing, mem_backing, node_key, store_at}
+use compiler.store.{Store, Stored, node_key, store_at}
 
 /// A store of one spec's own, so two specs cannot see each other's rows.
 fn at(name: string) -> Store { store_at("/tmp/avra-store-test/${name}") }
@@ -80,21 +80,6 @@ spec "store" {
             let _ = s.keep(Stored.Fp, dead, "dropped", [])
             let dropped = s.sweep(Stored.Fp, [live])
             dropped == 1 && s.has(Stored.Fp, live) && !s.has(Stored.Fp, dead)
-        }
-    }
-
-    given "the backing seam" {
-        then "a memory backing holds a row and answers the same verbs" {
-            let b: dyn Backing = mem_backing()
-            let k = node_key(Stored.Unit, ["mem"])
-            let _ = b.put(Stored.Unit, k, "in memory", ["dep"])
-            b.name() == "mem" && b.has(Stored.Unit, k) && b.get(Stored.Unit, k) == "in memory"
-        }
-        then "the disk backing answers the same verbs" {
-            let b: dyn Backing = disk_backing(at("backing"))
-            let k = node_key(Stored.Sig, ["disk"])
-            let _ = b.put(Stored.Sig, k, "on disk", [])
-            b.name() == "disk" && b.get(Stored.Sig, k) == "on disk"
         }
     }
 }

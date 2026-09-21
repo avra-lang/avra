@@ -221,48 +221,46 @@ in a module the program never imports, a signature, a fn taken as a value, an
 exported const, file added, file deleted, entry-only edit, every `Unit` row
 deleted. A new hold bug becomes a new step.
 
-## 5. Direction — ranked
+## 5. Where it stands against the bar, and what is left
 
-The cache layer (records, stubs, the restart loop, `is_held` at 20+ sites) is
-a hand-rolled approximation of ONE thing: a persistent, content-addressed
-query cache. The kernel exists in memory. What stops it persisting is that
-nothing can write a compiler value down.
+| the owner's bar | now | verdict |
+|---|---|---|
+| warm `build` < 500 ms | no-op 0.15 s · one body edit **~0.8 s** | the no-op is there; the edit is not |
+| `test` reuses the cache | one binary a suite, linked through the store; an edit compiles in ~2 s, then the run | met |
+| `check` near instant | unchanged 0.20 s · one edit ~0.8 s (was 8–11 s) | met for the no-op; the edit shares the build's floor |
+| every command one derivation | `build` `check` `test`; `run` `emit` `ir` still lower with nothing held | the evaluator needs IR a held file does not have |
 
-1. **`avra_snapshot` — freeze any value, thaw it immortal.** Boxes describe
-   themselves (`runtime/avra_box.h`): a list, record or enum is an `AvraArray`
-   with a per-cell `owned` mark; a map is two arrays; text and octets are raw.
-   One C fn turns a closure-free value graph into one relocatable blob; a thaw
-   is one read plus fix-ups, and the boxes come back IMMORTAL, so retain and
-   release no-op on them. A query family then persists by saying so, and
-   `record.av` / `interface.av` / `settlement_wire.av` die.
-   **First family: `parsed(file)` by content.** `Parsed` is file-local ids and
-   pure data. Parsing is ~75 % of `check` (8.8 of 11.6 s) and ~6 s of a cold
-   build — and `check`, `test`, `emit` and `build` all take it at once.
-   Cost: a runtime row (two landings, one seed); the key folds the compiler's
-   own identity, because a blob's layout is that compiler's.
-2. **The parser's fast path.** `grammar/executor.av` allocates a
-   `FarthestFailure` and a list on every failed terminal and merges them on
-   every alternative — and in a PEG most alternatives fail. Track a far
-   CURSOR; collect the expected set by re-running only on a failed parse.
-3. **File-local ids and a link step.** `TypeId`/`DeclId`/`FileId` are global
-   and dense, numbered by ask order. That alone stops typed facts and lowered
-   IR persisting like parse trees. The shape is `DefId = (file, index)`.
-   After it a held file is just a query whose inputs did not move: the
-   `is_held` branches, the stubs, the records and the restart all go.
-4. **The pipeline as a declared table.** `table<Pass>`: name, inputs, family,
-   persists. `analyze`'s order, `--time`, the memo wiring and the key are
-   projections of it; a command is a `Want` plus a renderer.
-5. **In-process object emission** — for the cold build's 291 clang spawns.
+**The floor under an edit, and what removes it** (ms, of ~550 traced):
+load 95 + fill 75 + keep 85 — every held file's declarations are MINTED and its
+shapes FILLED from text on every build, 15 000 declarations for the one file that
+moved; link 105; clang 70 (a process for one module); the file itself ~120.
+
+1. **Mint what is touched, not what exists.** Records answered per DECLARATION on
+   demand: a namespace wants names, `sig(d)` wants one shape. What blocks it is
+   everything that walks ALL declarations — `impls_by_name` (a method table
+   must know every impl of a name: an index line per record fixes that), the
+   flat law (a layout read before its declaration is asked: ask `sig` first,
+   the doctrine already says so), `held_stubs` (stub what a parsed body names).
+   This is the file-local-id direction taken one query at a time, and it is
+   worth ~200 ms.
+2. **Emit the object in process** for a build that moved one or two modules:
+   `LLVMTargetMachineEmitToFile` behind `backend/llvm_api.av`. ~45 ms, and no
+   second pipeline for the cold build, which stays parallel clang.
+3. **`avra_snapshot`** — freeze a closure-free value, thaw it immortal. It wants a
+   LANGUAGE builtin (`snapshot(v)` / `thaw<T>(bytes)`, type-checked closure-free,
+   a layout print in the blob) and two runtime rows (two landings). It ends the
+   hand wire in `record.av`/`interface.av`/`settlement_wire.av`, persists
+   `parsed(file)` (parse is 3 s of a cold build, 7 s of `check std-avrac`), and
+   gives the evaluator IR for held files — which is what puts `run`/`emit` on the
+   derivation.
+4. **The parser's fast path** — `grammar/executor.av` builds a farthest-failure
+   record per failed terminal; a PEG fails most alternatives.
+5. A home's edit reads the homes AFTER a first derivation that could not use
+   them: when the file that moved IS a remembered home, start with `homes: true`.
 
 **Refused: per-function codegen units** (the 09-20 design). Once the hold
 works they buy ~30 ms of clang on the one edited file, and cost thousands of
 objects at link and every cross-fn inline at `-O1` (P4).
-
-**Does 1–3 waste the build work?** No. What was bought is the store
-(content-addressed, verify-on-read), the keys, parallel clang, the binary
-cache, link-in-place, the phase timing, and this model — all of which the
-persistent query cache keeps and generalises to every command. What dies is
-the hand wire format, and only after its replacement is measured faster.
 
 ## 6. Protocol and traps
 
@@ -285,14 +283,38 @@ sh tools/watch.sh 4000 make gate
 
 ## 7. Open
 
+- THE SEAL IS WHOLE-PROGRAM (avra-8sb5.21): a `mut` seat boxes a flat record
+  from any file. The cache carries it in the interface and restarts when it
+  moves; the root fix is an inout ABI, so a layout is its declaration's alone.
+- A `dyn` field boxes its value only where the trait is imported, spelled or
+  not (avra-8sb5.22).
+- A lone file outside a checkout has no prelude (avra-8sb5.20) — on main too.
+- A record naming a deleted file un-holds its whole module for one build.
+- A held non-entry file with top-level statements is not refused by the entry's
+  law until it is read; its record should say it RUNS, and be read.
+- `program_key` folds every file under every closure root, tests included: a
+  test edit misses the binary (the derivation then holds everything).
 - `@derive(Roles)` + `@derive(Fingerprint)` on `Ins` compiles clean and
-  miscompiles; `Ins` wears a hand fold. Nothing in the cache reads a body
-  fingerprint any more, so the fold's only reader is the keeper — delete the
-  IR fingerprints or root-cause the pair.
-- The receiver seal's body scan is O(all statements) per impl
-  (`writes_receiver`); statements and expressions are separate arenas.
-- A held impl has no body, so `writes_receiver` is false there: prove the
-  flat/boxed mark crosses the interface, or treat the hole as live.
-- An object key folds neither `opt` nor the runtime's identity.
-- A file's key folds its DIRECT imports' digests. A layout reached through a
-  type it never imports is covered by the attack suite today, not by the key.
+  miscompiles; `Ins` wears a hand fold.
+- The receiver seal's body scan is O(all statements) per impl (`writes_receiver`).
+- An object key folds neither `opt` nor the runtime's identity (the program's
+  module does).
+
+## 8. What the campaign wanted from the language (the end-of-life survey)
+
+1. **`export use`** — moving a file between modules rewrote every importer;
+   a module could not keep its surface while its files moved (F3014).
+2. **A Map you can walk and unset** — `held`, `homes`, every memo is a
+   `Map<string, bool>` that can only grow; a hold could not be withdrawn, so
+   holds are ASKED and settled in a second pass.
+3. **A `Set`** — `distinct`, `contains` on lists, and worklists licensed `I16`
+   are all one missing type.
+4. **Read-modify-write that does not copy** — `mut x = self.xs[i]; x.push(v);
+   self.xs.set(i, x)` is the obvious spelling and it is O(n) per write; the
+   compiler could see the last read and move.
+5. **Generic rows at the C boundary** — `snapshot<T>` cannot be written: a
+   record does not fit a `ptr` seat, so the feature needs a builtin.
+6. **A string compare in the runtime** — `text_before` walks code points in
+   Avra; sorting paths was a visible cost.
+7. **A way to say "this import is for an impl"** — a module nobody imports a
+   name from is never admitted, so its `impl` blocks never register.

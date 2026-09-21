@@ -56,29 +56,13 @@ impl Workspace {
         flatten([self.file_cases(fi.id) for fi in self.decls.files])
     }
 
-    /// The cases a workspace holds, known from PARSING alone: every
-    /// file's items minted, nothing typed — so a package without cases
-    /// says so before its dependencies are analyzed.
-    mut fn parsed_cases() -> List<TestCase> {
-        // the file table fills as files are first asked for — the root's
-        // sources are entered here, each one's items minted; the parse
-        // is timed as the parse phase it is
-        let t0 = self.clock()
-        for path in self.root_files() { let _ = self.items(self.file_id(path)) }
-        self.timed("parse", self.clock() - t0)
-        self.cases()
-    }
-
-    /// Whether every root source PARSED clean. A package that parsed to
-    /// no cases has none only when nothing refused to parse — a broken
-    /// spec file parses to nothing, and saying "no cases" of it would
-    /// be a green over a red.
     /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
     /// question the analysis asks before it does anything at all.
     fn is_held(f: FileId) -> bool { self.decls.held.get(self.decls.file(f).path) != null }
 
-    /// WHETHER ONE FILE IS HELD — the hold is per FILE, because a module with fifty files
-    /// holds forty-nine.
+    /// HOLD A FILE: from here it contributes its minted declarations and what the
+    /// store keeps for it, and nothing reads it. Per FILE — a module with fifty
+    /// files holds forty-nine.
     mut fn hold_only(path: string) { self.decls.held.set(path, true) }
 
     /// ADMIT EVERY FILE — parse and mint the whole closure, which GROWS as a file's `use`
@@ -92,19 +76,11 @@ impl Workspace {
         }
     }
 
-    /// HOLD A FILE: from here it contributes its MINTED declarations and its stored
-    /// object, and nothing reads it.
-    mut fn hold_file(path: string) { self.decls.held.set(path, true) }
-
     /// ADMIT THE PACKAGE A MODULE NAMES. A held file's `use` lines are never
     /// resolved, so a package they would have admitted is admitted here instead:
     /// the import graph is part of the interface, not a side effect of the parse.
     fn ensure_package(key: string) {
         let _ = self.std_admitted(key)
-    }
-
-    fn parse_clean() -> bool {
-        self.root_files().all((f) -> !has_errors(self.parsed(self.file_id(f)).voices.list))
     }
 
     /// The cases of ONE file, named by the path it MEANS: both sides

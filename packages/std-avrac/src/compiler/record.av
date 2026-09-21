@@ -1,19 +1,15 @@
-//! THE INTERFACE, REMEMBERED AND REBUILT.
+//! THE INTERFACE, REMEMBERED AND REBUILT — what stands in for a file's
+//! declarations when the file is not read.
 //!
-//! A caller needs a declaration's SIGNATURE, never its body — so a whole module can be
-//! answered from what a previous build wrote down, without parsing it. That is the waist:
-//! what crosses a file boundary is small, and it is the only thing that must persist.
-//!
-//! THE RECORD IS FLAT TEXT, one line per item, because a reader that needs a parser to
-//! answer "what does this module export?" has moved the cost, not removed it. Every line
-//! is a KIND and then names and SPELLINGS — `name_of`'s own text, which is the registry's
-//! printing projection and therefore the one spelling that can be re-interned.
-//!
-//! A SHAPE IS CARRIED, NOT JUST A NAME, and that is the whole lesson of the first attempt:
-//! a signature naming a USER type cannot be re-interned from its name alone, because a
-//! type's identity is a per-run id and its SHAPE lives in its declaration. So a struct
-//! carries its fields, an enum its variants, and loading walks the IMPORTS FIRST — a field
-//! of another module's type is only internable once that module's types exist.
+//! A caller needs a declaration's SIGNATURE, never its body, so a module is
+//! answered from its RECORD: flat text, one line per declaration — a shape word,
+//! the file, the ordinal, the name, the kind, the facts, the shape's payload —
+//! beside the module's interface digest, its imports, and one `file` line per
+//! file: the text its lines were read from and the files its compile-time runs
+//! read. A SHAPE IS CARRIED, not just a name: a type's identity is a per-run id,
+//! so a struct carries its fields and an enum its variants, and loading walks
+//! the imports first — a field of another module's type interns only once that
+//! module's types exist.
 use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, sorted_texts, distinct, same_file, same_decl, module_path, ModulePath, TypeRegistry, TypeLit, Type, TypeId, DeclId, FileId, StmtId, ExprId, DeclKind, SeatMark, Span, TypeRef}
 use features.{Decl, DeclSig, FnSig, StructSig, EnumSig, NamedSig, Decls, Namespace, SettleRoot, kind_word, spelled_type, scalar_named, DeclFacts}
 use compiler.lower.{Body, program_symbol}
@@ -547,24 +543,7 @@ fn declared_kind(shape: string, word: string) -> DeclKind? {
 
 // ── THE OBJECT'S KEY, FROM INPUTS ───────────────────────────────────
 
-/// A MODULE'S OBJECT KEY, COMPUTED FROM INPUTS ALONE — its own sources, and the records of
-/// the modules it imports. NOTHING IS PARSED and NOTHING IS EMITTED to state it, which is
-/// the whole point: the first attempt keyed an object by its own content, and to learn that
-/// a module had not moved you had to EMIT it, so the key cost the work it exists to skip
-/// (measured: 83s cold against 43s, 57s on an edit against 28s).
-///
-/// THE RECORD'S OWN DIGEST STANDS IN FOR THE INTERFACE, so a caller's key moves when what
-/// it sees moves — a signature, a shape, anything — without a walk over the import closure.
-// LICENSED I39: a KEY DERIVATION — the workspace, a store and a module in, the object's key out.
-export fn obj_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
-    obj_key_of(ws, store, m, "")
-}
-
-/// ONE MODULE'S BYTES — a digest over every file it holds, in path order. Parse-free.
-/// This is the identity a dependent keys on, and it is STORED in the module's record so
-/// a later build can read it without admitting the module's package: computing it from
-/// the files works only when the package is already admitted, which at the top of a
-/// build it is not.
+/// A module with no record yet, as its files' bytes: it over-invalidates, never under.
 // LICENSED I39: a KEY DERIVATION — a workspace and a module in, the digest of its bytes out.
 export fn module_bytes(mut ws: Workspace, m: ModulePath) -> string {
     mut d = new_digest()
@@ -576,24 +555,21 @@ export fn module_bytes(mut ws: Workspace, m: ModulePath) -> string {
     digest_key(d)
 }
 
-/// A MODULE'S OWN BYTES, FROM ITS RECORD — the parse-free read, and the one a dependent
-/// keys on. A record's DECLARATION text is not an interface (it carries the receivers
-/// pass's written bits, which move without a contract moving); the bytes line is.
-// LICENSED I39: a KEY DERIVATION — a store and a module in, its stored bytes digest out.
+/// WHAT A DEPENDENT KEYS ON: a module's interface digest, from its record. A record's
+/// declaration TEXT is no interface — it carries the receivers pass's written bits,
+/// which move without a contract moving.
+// LICENSED I39: a KEY DERIVATION — a store and a module in, its interface digest out.
 export fn bytes_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
     let rec = record_cached(ws, store, m)
     for line in rec.split("\n") {
         if line.starts_with("iface\t") { return line.substring(6, line.length) }
     }
-    // A record written before the interface digest existed: fall back to the module's
-    // bytes, which is sound (it over-invalidates, never under).
     module_bytes(ws, m)
 }
 
-/// THE SAME KEY, FOR ONE FILE OF A MODULE. The module's record supplies the imports — what
-/// the file can SEE — and each import contributes ITS OWN BYTES' digest, never its record's
-/// text: a key is a function of the program's meaning, never of a projection that churns.
-// LICENSED I39: a KEY DERIVATION — a workspace, a store, a module and a file in, the object's key out.
+/// ONE FILE'S KEY — what its object, what it said and what it asks are kept under: its
+/// text, the texts its compile-time runs read, and the interfaces its bodies can see.
+// LICENSED I39: a KEY DERIVATION — a workspace, a store, a module and a file in, the key out.
 export fn obj_key_of(mut ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
     mut d = new_digest()
     d = digest_text(d, CACHE_FORMAT)
