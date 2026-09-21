@@ -57,6 +57,10 @@ export type DeclFacts = {
     /// them, and that computation reads the declaration's PARSE — so a held decl must say
     /// whether it has any, or asking its marks parses a file the hold exists to skip.
     annotated: bool,
+    /// THE TRAIT AN `impl … for` BLOCK ANSWERS, empty otherwise. The name lives in the
+    /// parse alone, and a held block that cannot say it implements nothing: a `dyn` box
+    /// over its type is refused in a file that merely parsed beside it.
+    of: string,
 }
 
 /// An extern's raw seat widths: one name per parameter, then the answer's.
@@ -84,12 +88,13 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
         seats: if readable { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },
         host: if readable { extern_host(store, x.stmt) } else { [] },
         annotated: readable && !store.annotations_of(x.stmt).is_empty(),
+        of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
     }
 }
 
 /// The facts a declaration minted with no store wears: a synthetic or builtin body has no
 /// receiver and declares nothing about the source.
-fn no_facts() -> DeclFacts { DeclFacts { external: false, stat: true, is_grammar: false, span: null, tparams: [], bounds: [], seats: [], host: [], annotated: false } }
+fn no_facts() -> DeclFacts { DeclFacts { external: false, stat: true, is_grammar: false, span: null, tparams: [], bounds: [], seats: [], host: [], annotated: false, of: "" } }
 
 export type Decls = {
     types: TypeRegistry,
@@ -113,7 +118,6 @@ export type Decls = {
     held_items: Map<string, List<DeclId>>,
     /// Lazy expression-range reconstruction is once per held file, even
     /// when dozens of specializations ask for bodies from that file.
-    ranged: Map<string, bool>,
     /// THE DECLARATION'S PARSE FACTS, captured at admit and loaded for a held file — the
     /// ONE place a pass reads them, so no pass reaches into a store after admission.
     faces: List<DeclFacts?>,
@@ -214,7 +218,7 @@ fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
-        stores: [], ensure_store: [no_store], decl_ids: [], file_decls: [], generations: [], origins: [], expansion_voices: [], meta_ids: {}, decls: [], held: {}, held_items: {}, ranged: {}, faces: [], held_values: {}, keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], root_name: [""], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
+        stores: [], ensure_store: [no_store], decl_ids: [], file_decls: [], generations: [], origins: [], expansion_voices: [], meta_ids: {}, decls: [], held: {}, held_items: {}, faces: [], held_values: {}, keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], root_name: [""], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
         ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
         seat_marks: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
         lifter: [no_lifter],

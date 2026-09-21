@@ -128,20 +128,13 @@ impl Workspace {
         obj_key_cached(ws, s, module_path(self.module_of(path).split(".")), path)
     }
 
-    /// The one lowering path for a body requested from a held source. A
-    /// specialization may be absent from its cached object, and compile-time
-    /// evaluation also needs the real body.
+    /// One unit lowered. A HELD FILE HAS NO BODY TO LOWER: asked for one — a
+    /// compile-time run reads the body it calls — it answers nothing and NOTES the
+    /// file, and the build starts again with that file parsed.
     fn lower_requested(w: Wanted) -> Unit {
         if self.is_held(w.file) {
-            let path = self.decls.file(w.file).path
-            if self.decls.ranged.get(path) == null {
-                let main = self.decls.main_of(w.file)
-                if main != null {
-                    let p = self.parsed(w.file)
-                    self.decls.range_bodies(w.file, p.store, main!)
-                }
-                self.decls.ranged.set(path, true)
-            }
+            self.body_asks.set(self.body_asks.get().concat([self.decls.file(w.file).path]))
+            return Unit { bodies: [], wants: [], voices: no_voices(), statics: [] }
         }
         let ws = self
         let settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled> = (f: FileId, root: SettleRoot, seats: List<SeatValue>) -> ws.settled(f, root, seats)

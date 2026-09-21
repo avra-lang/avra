@@ -27,6 +27,9 @@ use query.{Db, new_db, Key, Memo, Loaded, new_memo}
 use @std.errors.{Loc, Suggestion, Edit, Confidence}
 use @std.testing.{CaseRef, words}
 
+/// No paths, typed — a Cell's first value says what it holds.
+fn no_paths() -> List<string> { [] }
+
 /// The host's environment — what a `${NAME}` hole in a link row fills from.
 extern fn avra_host_env(name: string) -> string
 
@@ -103,6 +106,9 @@ export type Workspace = {
     homes: Map<string, bool>,
     /// The instantiations the held files' bodies demand, read from the store.
     held_wants: List<Wanted>,
+    /// THE HELD FILES WHOSE BODIES THIS BUILD ASKED FOR — a compile-time run reads a
+    /// body, and a held file has none. A Cell: the ask comes from inside a query.
+    body_asks: Cell<List<string>>,
     /// THE MODULES A HELD LOAD TOUCHED, in order — phase one mints and INTERNS every name;
     /// phase two FILLS every shape. A mutual import (language <-> features <-> core) is a
     /// cycle, and one module's shapes cannot be filled until every other module's NAMES are
@@ -305,7 +311,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, bytes_keys: {}, object_keys: {}, homes: {}, held_wants: [], held_order: [], defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, bytes_keys: {}, object_keys: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), held_order: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }
@@ -769,6 +775,18 @@ impl Workspace {
     /// children are the table's entries.
     fn held_methods(target: DeclId, block: DeclId) {
         for m in self.decls.children_of(block) { self.decls.declare_method(target, m) }
+        let tr = self.held_trait(block)
+        if tr != null { self.decls.record_impl(target, tr!) }
+    }
+
+    /// The trait a held `impl … for` block answers. A held block has no namespace to
+    /// resolve the name in, so the name must be ONE trait's: two of a name answer
+    /// nothing, and the box that wanted the impl is refused rather than guessed.
+    fn held_trait(block: DeclId) -> DeclId? {
+        let of = self.decls.facts_of(block)?.of
+        if of == null || of! == "" { return null }
+        let named = [d.id for d in self.decls.decls if d.kind is .Trait && d.name == of!]
+        if named.length == 1 { named.first() } else { null }
     }
 
     /// Whether a declaration's signature is being computed right now.

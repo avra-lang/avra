@@ -43,15 +43,23 @@ export type Foo = { b: Bar, tag: string }
 export fn foo() -> Foo { Foo { b: Bar { x: 7 }, tag: "t" } }
 export fn bar_x(f: Foo) -> int { f.b.x }
 AV
+cat > $R/lib/src/shape.av <<'AV'
+export trait Shape { fn area() -> int }
+export type Sq = { s: int }
+impl Shape for Sq { fn area() -> int { self.s * self.s } }
+AV
 cat > $R/lib/src/lib.av <<'AV'
 export fn mid() -> int { one() + pick(10, 20, true) }
 AV
 cat > $R/a/src/main.av <<'AV'
-use @rt.lib.{mid, one, pick, foo, bar_x, label, K}
+use @rt.lib.{mid, one, pick, foo, bar_x, label, K, Shape, Sq, two}
+// a held impl must still say what it implements, and a settled const runs a held body
+const TWICE: int = two() + two()
 fn apply(f: fn(int) -> string, n: int) -> string { f(n) }
 let f = foo()
 let held = [f, f]
-println("a ${mid()} ${one()} ${pick(3, 4, false)} ${bar_x(held[1])} ${apply(label, 3)} ${K}")
+let sh: dyn Shape = Sq { s: 3 }
+println("a ${sh.area()} ${TWICE} ${mid()} ${one()} ${pick(3, 4, false)} ${bar_x(held[1])} ${apply(label, 3)} ${K}")
 AV
 cat > $R/b/src/main.av <<'AV'
 use @rt.lib.{two, pick}
@@ -63,6 +71,8 @@ S() { # S <label> <app>
     held=$(grep -oE "held [0-9]+/[0-9]+" $R/$2.err | tail -1)
     case "$held" in "held 0/"*|"") ;; *) holds=$((holds+1)) ;; esac
     if [ ! -x "$bin" ]; then fails=$((fails+1)); echo "FAIL  $1 [$2] did not build (status $st): $(printf '%s\n' "$out" | cat - $R/$2.err | grep -vE '^watch:|^time:' | head -4 | tr '\n' ' ')"; return; fi
+    # A REFUSED HOLD IS A FINDING HERE: the build is right and the hold was wrong.
+    if grep -q "the hold was refused" $R/$2.err; then fails=$((fails+1)); echo "FAIL  $1 [$2] the hold was refused: $(grep -A1 'the hold was refused' $R/$2.err | tail -1 | cut -c1-160)"; return; fi
     nat=$("$bin" 2>&1); ev=$(./avra run $R/$2 2>/dev/null | grep -v '^watch:')
     if [ "$nat" = "$ev" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [$2] ($held) -> $nat"; else fails=$((fails+1)); echo "FAIL  $1 [$2] ($held) native='$nat' eval='$ev'"; fi
 }
@@ -84,6 +94,8 @@ ed $R/lib/src/lib.av "one() +" "one(1) +"
 ed $R/a/src/main.av '${one()}' '${one(2)}';                    S "signature change" a; S "b untouched by it" b
 ed $R/lib/src/leaf.av '"n=${n}"' '"N:${n}"';                   S "body of a fn taken as a VALUE (wrapper)" a
 ed $R/lib/src/leaf.av "K: int = 5" "K: int = 6";               S "exported const edit" a
+ed $R/lib/src/leaf.av "fn two() -> int { 2 }" "fn two() -> int { 20 }"; S "a held body a settled const RUNS" a
+ed $R/lib/src/shape.av "self.s * self.s" "self.s + self.s";      S "a held impl a dyn box dispatches through" a
 printf 'export fn extra() -> int { 40 }\n' > $R/lib/src/extra.av
 ed $R/lib/src/lib.av "one(1) +" "one(1) + extra() +";          S "file added" a
 ed $R/lib/src/lib.av "one(1) + extra() +" "one(1) +"; rm $R/lib/src/extra.av; S "file deleted" a; S "b after delete" b

@@ -193,8 +193,16 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
     // is the program's, and one that does not was the hold's — said, never hidden.
     if held is .Ok || held_paths(ws).is_empty() { return held }
     let plain = ws.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, 0, [], false)
-    if plain is .Ok { eprintln("avra: the hold was refused — this program builds from its sources, and did not under the hold") }
+    if plain is .Ok { eprintln(hold_refused(held)) }
     plain
+}
+
+/// What the hold said before the sources overruled it — its words are the defect's trail.
+fn hold_refused(held: Result<BuildOutcome, string>) -> string {
+    match held {
+        .Ok(_) -> "",
+        .Err(why) -> "avra: the hold was refused — this program builds from its sources, and under the hold it said:\n${why}",
+    }
 }
 
 
@@ -246,6 +254,10 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
     let l5 = avra_now_ns()
     let p = self.program(entry)
     trace.push("analyze ${(avra_now_ns()-l5)/1000000}")
+    // A BODY WAS ASKED OF A HELD FILE. Whatever the analysis then said was said without
+    // it, so nothing it said is read: the file is remembered beside the instantiation
+    // homes — a file whose BODIES this program's build reads — and the attempt restarts.
+    if self.bodies_asked(store, entry) { return self.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, attempt, parse, hold) }
     if !p.clean() { fail p.report() }
     let view = p.entry_file()
     if view == null { return .Err(p.rendered([no_target(self.root)])) }
@@ -257,7 +269,9 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
     let unread = self.read_held_asks(store)
     if !unread.is_empty() { return self.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, attempt, parse.concat(unread), hold) }
     let l6 = avra_now_ns()
-    let lo = p.every_body_checked()?
+    let lowered = p.every_body_checked()
+    if self.bodies_asked(store, entry) { return self.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, attempt, parse, hold) }
+    let lo = lowered?
     trace.push("lower ${(avra_now_ns()-l6)/1000000}")
     // AN INSTANTIATION LOWERS FROM ITS GENERIC'S BODY, and a held home has none: the
     // homes this lowering reported parse from the start of the next attempt, and of
@@ -311,6 +325,15 @@ fn entry_key(bc: string, opt: string, runtime: string) -> Result<string, string>
 }
 
 impl Workspace {
+
+    /// WHETHER THIS ATTEMPT ASKED A HELD FILE FOR A BODY — and if so, the files are
+    /// remembered beside the program's other homes, so every later build parses them.
+    fn bodies_asked(store: Store, entry: string) -> bool {
+        let asked = distinct(self.body_asks.get())
+        if asked.is_empty() { return false }
+        let _ = store.keep(Stored.Unit, homes_key(entry), joined(distinct(remembered_homes(store, entry).concat(asked)), "\n"), [])
+        true
+    }
 
     /// Whether a body's home cannot emit it: the home is held, so its object is the store's.
     fn homed_in_held(bd: Body) -> bool {
