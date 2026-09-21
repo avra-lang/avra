@@ -16,10 +16,12 @@ Worktree `avra-cache-cas`, branch `cache/cas`.
 | cold | 22.7 s | 24.0 s | **21.0 s** | 23 s |
 | no-op | 0.4 s | 0.4 s | **0.4 s** | 0.8 s |
 | one-file edit, leaf | 1.2 s | 26.1 s | **1.3 s** (phases ~0.8 s) | 1.5 s |
-| one-file edit, core file | *did not link* | 26.1 s | `whole.av` **1.9 s**; most core files are REFUSED and rebuilt from sources (§2.6) | 2 s |
+| one-file edit, core file (`whole.av`) | *did not link* | 26.1 s | **1.6 s** | 2 s |
+| one-file edit, `grammar/first.av` | *did not link* | 26.1 s | **1.2 s** | 2 s |
 
-Where a warm edit goes today (ms): resolve 250 · load 120 · fill 105 ·
-link 110–220 · bodies 65 · lower 65 · emit 30 · clang 30.
+Where a warm edit goes today (ms), held 274/291: admit 165–190 (the 17 files
+that parse) · load 140 · link 105–125 · analyze 90–110 · fill 95 · lower 50 ·
+emit 30 · clang 30–420 (the entry module, when its instantiations move).
 **Target: 200–500 ms.**
 
 ## 2. The model
@@ -50,14 +52,13 @@ ANALYSIS, and only a hold skips it.
    program's; one that does not prints "the hold was refused". A hold bug costs
    time, never a wrong answer. A trap still escapes it.
 
-**THE HOLD IS NOT YET RIGHT FOR THE COMPILER'S OWN SOURCE.** A comment in any
-`grammar/*.av` or in `core/nodes.av` fails to link under the hold — 165 plain
-`impl LowerCx` methods of `compiler/lower_walk.av` undefined; a stored object
-defines them and is not on the link line, root cause open — and one in
-`compiler/program.av` is refused with a false `F2024` (a `dyn` box over a held
-impl). The fail-safe makes these correct and SLOW. `tools/hold_sweep.sh`
-enumerates them: grammar/ is 11 of 11 refused. Nothing else in §5 lands until
-the sweep is clean — the rest stands on the hold.
+**THE SWEEP: 312 of 315 edits hold clean.** `tools/hold_sweep.sh packages/cli`
+found 9 that did not; three causes were paid (a home no parsed file imports was
+never registered, so never linked; a compile-time run asking a held file for a
+body; a held `impl … for` that never said what it implements). STILL REFUSED,
+and rebuilt from the sources by the fail-safe: `core/fingerprint.av` ("LLVM
+verification failed for `@std.avrac.core.body_of`") and `grammar/parse.av`,
+`grammar/render.av` ("a compile-time value did not cross as `Grammar`").
 
 ## 3. Laws this layer paid for
 
