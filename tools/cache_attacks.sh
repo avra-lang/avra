@@ -193,6 +193,35 @@ steps=$((steps+1)); out=$(./avra build $R/a 2>&1); st=$?
 if [ "$st" -eq 0 ] || ! printf '%s' "$out" | grep -q "sized"; then fails=$((fails+1)); echo "FAIL  a sibling left the module and its caller still built (status $st)"; fi
 mv $R/lib/src/away/sib.av $R/lib/src/sib.av; rmdir $R/lib/src/away; S "and back" a
 
+# THE BINARY'S KEY COVERS WHAT THE PROGRAM REACHES, and nothing else: a toolchain
+# package is admitted only as a `use` reaches for it, so the closure is remembered.
+# The toolchain's own files are touched with a comment and put back, whatever ends the run.
+mkdir -p $R/d/src
+printf '[package]\nname = "rt-d"\nversion = "0.1.0"\n' > $R/d/avra.toml
+printf 'use @std.path.{stem_of}\nprintln("d ${stem_of("x/y.av")}")\n' > $R/d/src/main.av
+reached=$(ls packages/std-path/src/*.av | head -1); later=$(ls packages/std-text/src/*.av | head -1); never=$(ls packages/std-json/src/*.av | head -1)
+for f in $reached $later $never; do cp $f $R/$(basename $(dirname $(dirname $f))).kept; done
+back() { cp $R/std-path.kept $reached; cp $R/std-text.kept $later; cp $R/std-json.kept $never; }
+trap back EXIT INT TERM
+K() { # K <label> <want: hit|built>
+    steps=$((steps+1)); out=$(./avra build --time $R/d 2>&1); got=built
+    case "$out" in *"cache hit"*) got=hit ;; esac
+    if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [d] -> $got"; else fails=$((fails+1)); echo "FAIL  $1 [d] wanted $2, got $got"; fi
+}
+K "cold d" built; K "no-op d" hit
+printf '\n// moved\n' >> $reached;  K "a toolchain package d reaches moves" built
+cp $R/std-path.kept $reached;         K "and back, to a key the store knows" hit
+printf '\n// moved\n' >> $never;    K "a toolchain package d never reaches moves" hit
+cp $R/std-json.kept $never
+printf '\n// moved\n' >> $later;    K "one d does not reach YET moves" hit
+cp $R/std-text.kept $later
+ed $R/d/src/main.av 'use @std.path.{stem_of}' 'use @std.path.{stem_of}
+use @std.text.{from_codepoint}'
+ed $R/d/src/main.av 'println("d ' 'println("d ${from_codepoint(65)} '
+S "a use reaches a package the closure has not met" d;  K "no-op d" hit
+printf '\n// moved\n' >> $later;    K "and that package moves" built
+back; trap - EXIT INT TERM
+
 # CHECK SPEAKS THE SAME under a hold as from the sources
 for app in a b c; do
     held_says=$(./avra check $R/$app 2>&1 | grep -v '^watch:')

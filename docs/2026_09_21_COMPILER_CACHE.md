@@ -22,7 +22,7 @@ One slice = red-team + review round + ONE gate + commit + seed.
       every command asks; per-file diagnostics persist; `check` holds
 - [x] **S6 `test` on the derivation** (`99a6e54`): case symbols content-stable, cases ride the
       record, the suite's binary is cached
-- [ ] **S7 the warm edit to < 500 ms** — 7a `d2d9356` (runs, evaluator, store writes, watchdog), 7b (the program's module by its inputs; one digest pass). LEFT: a stat-keyed digest cache, in-process object emission, the records' text
+- [x] **S7 the warm edit to < 500 ms** — 7a `d2d9356` (runs, evaluator, store writes, watchdog), 7b (the program's module by its inputs; one digest pass), stamps, in-process objects, `22cb2da` a held module is minted when read, **`7cd2db3` the memory pass no longer pins a box a later write opens** — 0.65 s → 0.37 s
 - [ ] **S9 `compiler/` organised** — 9a: leaf subsystems are modules (`resolve/ typing/ lower/ memory/ backend/ store/ host/ format/ dev/`); the map is `compiler/mod.av`'s header
 - [ ] S8 `parsed(file)` persists (`avra_snapshot`, two landings); parser fast path
 - [ ] S10 docs: this file is the law; the pipeline doc becomes history
@@ -33,21 +33,21 @@ One slice = red-team + review round + ONE gate + commit + seed.
 
 | | 09-19 | now | gate |
 |---|---|---|---|
-| `build cli` cold | 22.7 s | **17–18 s** | 23 s |
-| `build cli` no-op | 0.4 s | **0.10 s** | 0.3 s |
-| `build cli`, one body edit | 1.2 s | **~0.65 s** (phases ~0.43 s) | 1.0 s |
+| `build cli` cold | 22.7 s | **17–19 s** | 23 s |
+| `build cli` no-op | 0.4 s | **0.08 s** | 0.3 s |
+| `build cli`, one body edit | 1.2 s | **0.37–0.42 s** | 0.5 s |
 | `build cli`, a generic's home edited | — | ~3 s (the homes are read from the start; the program's module recompiles) | 5 s |
-| `check cli` | 9.7 s | cold 9 s · unchanged **0.17 s** · one edit **0.6 s** | 2 s |
+| `check cli` | 9.7 s | cold 9 s · unchanged **0.08 s** · one edit **0.25 s** | 0.5 s |
 | `check std-avrac` | 11.6 s, RED | cold 13 s · warm **~1.5 s**, clean | 2 s |
-| `test std-json` | 1.6 s | cold 1.7 s · warm **0.4 s** | 1 s |
-| `test std-avrac` (5325 cases, 111 programs, 27 nested) | ~40 s | cold 56 s · one edit **~2 s to compile**, then the 9 s run | — |
+| `test std-json` | 1.6 s | cold 1.7 s · warm **0.3 s** · one edit 0.7 s | 1 s |
+| `test std-avrac` (5319 cases, 111 programs, 27 nested) | ~40 s | cold 47 s · warm 13 s, ALL of it the run (the suite's binary alone is 6.7 s) · one edit ~2 s to compile, and a nested suite it cannot reach is a hit | — |
 
-Where a warm body edit goes (ms), held 287/291, the machine at load 9–13:
-load 76 · admit 46 · fill 64 · analyze 42 · lower 33 · keep 36 · emit 54 (the
-object, made in process) · link 126 — ~70 before any of it for the program's
-key and the process, and the shim. **Target: under 500 ms wall.** What is left
-is every held declaration minted and filled from its record each build
-(load + fill = 140), and the link.
+Where a warm body edit goes (ms), held 288/291, the machine at load 10–14:
+parse 24 · load 40 · admit 8 · analyze 50 · lower 20 · keep 21 · emit 8 · link
+110 — ~70 before any of it for the program's key, the process and the shim.
+The link is the floor: a hello-world links in 44 here, `-lLLVM` adds 29, the
+288 objects 46. `ld -r` over the held objects saves 8, `ld` without the driver
+5 — measured, and not taken.
 
 ## 2. The model
 
@@ -206,6 +206,28 @@ three callers was the ceremony the plan warned of.
 - **A sweep that asks "clean?" does not ask "held?".** The hold collapsed to
   25/292 on correct builds; the sweep files a thin hold now.
 
+- **A read pinned the box a later write opens.** `if m.get(k) == null {
+  m.set(k, v) }` cloned the WHOLE map per insert — 20k inserts 2.36 s against
+  0.00 s — and every memo in the compiler is that line. The borrow scan made a
+  load OWN when a use stood past any bracket (`m.get` is a `has` and a `get` in
+  a region), and made a ROOT own when a child view was returned though the
+  child takes its owned twin. It reads through a bracket opened since the load
+  now (`leaves_or_changes`), and a self-owning child rides nobody
+  (`takes_twin`). Proof: `features/mutation/tests/borrows`, each shape
+  witnessed trapping under a compiler with the scan removed.
+- **A box dangles only when its PLACE holds the only reference.** A literal is
+  the binary's own data; a maker's register holds its box to the scope's end.
+  A hostile shape sets the place in a scope that has CLOSED, or it bites nothing.
+- **No key folds the compiler.** An unsound compiler was served the sound
+  object until the cache was moved aside: a probe of a codegen change runs from
+  a cold cache, and `CACHE_FORMAT` moves when what an object IS moves. (§7.)
+- **The binary's key covered the whole toolchain,** so one compiler edit missed
+  every suite and program in the tree. It covers the closure the last
+  derivation ADMITTED, remembered (`closure`): the key is asked before anything
+  is read, and a `use` that reaches a new package is an edit to a covered file.
+- **The link's order was the hold's.** Held objects were named after made ones,
+  so one source tree linked to different bytes by which files were read. The
+  order is the sources' (`linked`): one tree, one binary.
 - **A cache can cost more than what it keeps.** Memoizing a type wire to its
   type doubled `fill` (78 -> 145 ms): hashing a wire of paths costs more than
   decoding it. A stamp row per file lost to reading the file. Measured, reverted.
@@ -218,57 +240,62 @@ time, built through the hold, the outcome filed by class in
 to the hold, the records or the keys, and drive it to zero.
 
 
-`make cache-attacks` (in the gate, 27 s): two programs and a library through
-ONE store, 23 builds, each binary held to the evaluator, which reads no
+`make cache-attacks` (in the gate, ~40 s): programs and a library through
+ONE store, 55 builds, each binary held to the evaluator, which reads no
 cache. Steps: shared file / other bodies, leaf body edit, a fn nobody
 reached, a new instantiation under a hold, a generic's body, a type's layout
 in a module the program never imports, a signature, a fn taken as a value, an
 exported const, file added, file deleted, entry-only edit, every `Unit` row
-deleted. A new hold bug becomes a new step.
+deleted, the suite's verdict under a hold, `check` under a hold against the
+sources, and the binary's key against the toolchain (a package the program
+reaches, one it never does, one a new `use` reaches). A new hold bug becomes a
+new step.
+
+`--time` names the files a record knows that were READ all the same, each with
+why (`Reads`: the entry, a home owed, its text moved, nothing kept stands in, a
+const's value gone, unholdable, run by another file). A thin hold explains itself.
+
+PROFILING A 0.4 s RUN: `sample` attaches too late. Derive N times in one
+process (a throwaway loop in `cached_build`, never committed) and run it under
+`AVRA_SAMPLE=8 AVRA_SAMPLE_AFTER=1 sh tools/watch.sh 4000 ./avra build <pkg>`.
+That is how the pinned maps were found; no phase timer pointed at them.
 
 ## 5. Where it stands against the bar, and what is left
 
-| the owner's bar | now | verdict |
+| the owner's bar | now (load 10–14) | verdict |
 |---|---|---|
-| warm `build` < 500 ms | no-op 0.10 s · one body edit **~0.65 s** at load 9–13 | the no-op is there; the edit is 0.15 s short on a busy machine |
-| `test` reuses the cache | one binary a suite, linked through the store; an edit compiles in ~2 s, then the run | met |
-| `check` near instant | unchanged 0.17 s · one edit ~0.6 s (was 8–11 s) | met for the no-op; the edit shares the build's floor |
+| warm `build` < 500 ms | no-op 0.08 s · one body edit **0.37–0.42 s** | met |
+| `test` reuses the cache | one binary a suite, linked through the store; warm compiles nothing; an edit compiles ~2 s of a 500-file suite; a nested suite the edit cannot reach is a hit | met |
+| `check` near instant | unchanged 0.08 s · one edit **0.25 s** (was 8–11 s) | met |
 | every command one derivation | `build` `check` `test`; `run` `emit` `ir` still lower with nothing held | the evaluator needs IR a held file does not have |
 
-**The floor under an edit, and what removes it** (ms, of ~490 traced):
-load 75 + fill 78 — every held file's declarations are MINTED and its shapes
-FILLED from text on every build, 15 000 declarations for the one file that
-moved; link 115; clang 80 (a process for one module); the file itself ~125.
+**What got the edit under the bar, in order of worth.** The memory pass pinned
+every memo map (§3: a read pinned the box a write opens) — a third of the
+compiler's samples, 170 ms of the edit. A held module minted when read, 110.
+Objects made in process, 80. The tree's stamps in one row, 60.
 
-1. **Mint a MODULE when it is touched, not every module every build.** Minting
-   and filling are eager over all 55 records; an edit's typing reaches a
-   fraction. The doors are few: `namespace(m)`, a type wire's `path~ordinal`,
-   and `methods(target)` — which needs an index of impl targets by module, one
-   scan of the `impl` lines at load. Module-eager keeps every intra-module
-   invariant (the flat law, the receivers pass reading a held callee's written
-   bits), which a per-DECLARATION lazy fill would not: that pass reads those
-   bits hook-free. `admit_all` must stop asking held files for their items.
-   Worth ~60 ms for a compiler file, more for a leaf.
-2. ~~Emit the object in process~~ — DONE: a build that moved one or two modules
-   makes their objects with the compiler it holds (`emit_object`,
-   `avra_llvm_emit_object`); more go to clang as bitcode, four at once.
-   emit 5 + clang 80 became emit 45.
-3. **`avra_snapshot`** — freeze a closure-free value, thaw it immortal. `Parsed`
-   qualifies (no cell, no closure). It does NOT move the edit loop — the file
-   that moved must parse, and a held one never does — so its worth is the cold
-   paths: parse is 3 s of a cold build, 7 s of a cold `check std-avrac`, and
-   all of `run`/`emit`/`ir` over a big package. A typed surface needs no
-   language change: a pair of `extern fn`s per persisted type over one C body,
-   written to a file (a `Bytes` the runtime did not allocate must not reach
-   its free lists), with a layout print in the header.
-4. **The parser's fast path** — `grammar/executor.av` builds a farthest-failure
-   record per failed terminal; a PEG fails most alternatives.
-5. A home's edit reads the homes AFTER a first derivation that could not use
-   them: when the file that moved IS a remembered home, start with `homes: true`.
+**Left, none of it owed to the bar:**
+
+1. **A verdict kept beside a suite's binary.** `test std-avrac` warm is 13 s of
+   RUNNING binaries nothing moved. A suite whose binary is a hit could answer
+   from its last verdict — sound only for a hermetic suite, and the cli's cases
+   spawn the compiler. It wants a manifest word (`[test] hermetic = true`) and
+   `--rerun`, which is the owner's call.
+2. **`avra_snapshot`** — freeze a closure-free value, thaw it immortal. `Parsed`
+   qualifies. It does not move the edit loop (the file that moved must parse; a
+   held one never does); its worth is the cold paths — parse is 3 s of a cold
+   build, 7 s of a cold `check std-avrac`.
+3. **The parser's fast path** — `grammar/executor.av` builds a farthest-failure
+   record per failed terminal; a PEG fails most alternatives. Cold paths again.
+4. **`holdable` decodes every declaration's facts at load** to find a grammar;
+   the record's `file` line could say it. ~10 ms.
+5. `run`, `emit`, `ir` on the derivation — needs IR for a held body (S8).
 
 **Refused: per-function codegen units** (the 09-20 design). Once the hold
 works they buy ~30 ms of clang on the one edited file, and cost thousands of
 objects at link and every cross-fn inline at `-O1` (P4).
+**Refused by measurement:** a type-wire memo in fill (78 → 145 ms), a stamp row
+per file (slower than reading the files), `ld -r` prelinking, `ld` direct.
 
 ## 6. Protocol and traps
 
@@ -302,6 +329,14 @@ sh tools/watch.sh 4000 make gate
   law until it is read; its record should say it RUNS, and be read.
 - `program_key` folds every file under every closure root, tests included: a
   test edit misses the binary (the derivation then holds everything).
+- NO KEY FOLDS THE COMPILER'S IDENTITY. After a codegen fix, `make avra` twice
+  does not reach a held body: the second generation links objects the first
+  compiler made, so CLAUDE.md's second-build law holds only from a cold cache
+  (`rm -rf .avra-cache`) or a `CACHE_FORMAT` bump. The design that pays it: the
+  store's root named by the running binary's digest (the link is reproducible
+  now, so an unchanged compiler keeps its store), the newest few kept. It costs
+  a compiler developer one cold build per adopted compiler and costs a user
+  nothing.
 - `@derive(Roles)` + `@derive(Fingerprint)` on `Ins` compiles clean and
   miscompiles; `Ins` wears a hand fold.
 - The receiver seal's body scan is O(all statements) per impl (`writes_receiver`).

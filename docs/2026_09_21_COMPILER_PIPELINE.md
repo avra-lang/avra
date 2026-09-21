@@ -51,8 +51,9 @@ matches a feature's node.
 1. **hold** — for every file: is its text the text its module's record was
    written from, and does the store hold what stands in for it under this
    `want`? A file that will be read brings the files its compile-time runs read.
-2. **load · admit · mint · fill** — held files' declarations from records,
-   read files' from their parse.
+2. **load · admit** — a read file's declarations from its parse. A held
+   module's are minted from its record the first time anything reads them
+   (`mint_module`), never all of them every build.
 3. **analyse** — the stages above, for read files only.
 4. **lower** — every body of every read file, and each file's top level under
    its program symbol (`Program.files_checked`). Instantiations whose generic's
@@ -77,7 +78,8 @@ file has none (S8 ends that).
 | a settled const | `Unit` | its file's key, its name |
 | "these instantiations lowered clean" | `Unit` | the program's asks |
 | a program the evaluator agreed with | `Unit` | the text it must print, every text it can reach |
-| the binary, a suite's binary, `check`'s verdict | `Bin`, `Warn` | every input's path, length and digest |
+| the binary, a suite's binary, `check`'s verdict | `Bin`, `Warn` | every input's path, length and digest — the inputs of the closure its last derivation admitted |
+| a program's closure | `Unit` | the root, the program's name |
 | the tree's stamps | `Fp` | one row: path → stamp, digest |
 
 A refusal is never kept.

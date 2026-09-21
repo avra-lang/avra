@@ -58,19 +58,22 @@ fn looks_like_tree(host: Host, dir: string) -> bool {
     host.is_dir(joined_path(dir, ".git")) || host.exists(joined_path(dir, "avra.toml"))
 }
 
+/// What names a kept program: its name among the root's, and the inputs beside
+/// its sources.
+export type Keyed = { named: string, beside: List<string> }
+
 /// A program built: its kept binary when these exact inputs were built
 /// before, else derived, compiled and linked now. A refusal is never kept.
 // LICENSED I39: THE ENTRY POINT — the one standard signature.
 export fn build_program(mut ws: Workspace, entry: string, tools: Toolchain) -> Result<BuildOutcome, string> {
-    let key = ws.program_key(entry, [])
     let binary = binary_name(entry)
-    let kept = ws.kept_binary(key, binary)
+    let kept = ws.kept_binary(ws.program_key(entry, []), binary)
     if kept != null { return .Ok(kept!) }
     let d = ws.derived(entry, Want.Binary)?
     let main = d.program.entry_file()
     if main == null { fail d.program.rendered([no_target(ws.root)]) }
     if main!.view.stmts.is_empty() { fail "the program is empty" }
-    d.program.ws.linked(d, ProgramModule { entry: runner_entry(d.lowered.types, program_symbol(entry)) }, key, binary, tools)
+    d.program.ws.linked(d, ProgramModule { entry: runner_entry(d.lowered.types, program_symbol(entry)) }, Keyed { named: entry, beside: [] }, binary, tools)
 }
 
 /// THE PROGRAM MODULE'S KEY — its own bytes, and what compiles them. A
@@ -94,11 +97,37 @@ impl Workspace {
         BuildOutcome { words: [], binary: binary, warnings: store.get(Stored.Warn, key) ?? "", reused: true, key: key }
     }
 
+    /// EVERY PACKAGE A PROGRAM'S KEY COVERS, each as `src<TAB>root`: the admitted
+    /// ones, and the ones its last derivation admitted. `@std/*` is admitted only
+    /// as a `use` reaches for it and the key is asked before anything is read, so
+    /// the closure is REMEMBERED — and it only grows: over-covering costs a
+    /// rebuild, under-covering is a silently wrong binary. A `use` that reaches a
+    /// package the row has not met is an edit to a file the row covers.
+    fn closure(named: string) -> List<string> {
+        let kept = remembered(store_at(build_cache_root(self)), self.closure_key(named))
+        sorted_texts(distinct(["${p.src}\t${p.root}" for p in self.packages].concat([line for line in kept if !line.is_empty()])))
+    }
+
+    /// Where a program's closure is remembered.
+    fn closure_key(named: string) -> string { node_key(Stored.Unit, ["closure", CACHE_FORMAT, self.root, named]) }
+
+    /// The closure as it stands now, remembered for the next key.
+    fn keep_closure(named: string) {
+        remember(store_at(build_cache_root(self)), self.closure_key(named), ["${p.src}\t${p.root}" for p in self.packages])
+    }
+
+    /// The key a finished derivation keeps under: its closure remembered first,
+    /// so the next ask — before anything is read — names the same inputs.
+    fn kept_key(under: Keyed) -> string {
+        self.keep_closure(under.named)
+        self.program_key(under.named, under.beside)
+    }
+
     /// THE PROGRAM'S KEY — every input's path, length and digest, under what
     /// names the program: a whitespace-only edit moves it. `beside` are inputs
     /// that are not sources.
     fn program_key(named: string, beside: List<string>) -> string {
-        let named_inputs = self.build_inputs().concat(beside)
+        let named_inputs = self.build_inputs(named).concat(beside)
         let inputs = joined([self.input_line(f) for f in named_inputs], "\n")
         self.keep_stamps(named_inputs)
         digest_key(digest_text(digest_text(digest_text(new_digest(), CACHE_FORMAT), relative_path(self.root, named)), inputs))
@@ -176,7 +205,7 @@ impl Workspace {
 
     /// Emit the files that moved and the program's module, compile them
     /// `CLANG_WIDTH` at once, and link them with the store's objects for the rest.
-    fn linked(d: Derived, m: ProgramModule, key: string, binary: string, tools: Toolchain) -> Result<BuildOutcome, string> {
+    fn linked(d: Derived, m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<BuildOutcome, string> {
         let store = d.store
         let p = d.program
         // THE PROGRAM'S MODULE BY WHAT IT IS A FUNCTION OF. Instantiations nobody
@@ -184,13 +213,14 @@ impl Workspace {
         let in_key = node_key(Stored.Obj, ["program", CACHE_FORMAT, d.asked, "${fp_list([i.fingerprint() for i in m.entry.ins])}", tools.opt, tools.runtime])
         if !d.unlowered.is_empty() && !store.has(Stored.Obj, in_key) {
             let whole = self.whole(d, [])?
-            return whole.program.ws.linked(whole, m, key, binary, tools)
+            return whole.program.ws.linked(whole, m, under, binary, tools)
         }
         let full = self.homed(d.lowered, m, d.unlowered)
         let root = build_cache_root(self)
         let unclosed: string? = program_closed(full)
         if unclosed != null { fail not_closed(unclosed!) }
-        mut objs: List<string> = []
+        // `source<TAB>object`: the link's order is the SOURCES', never the hold's
+        mut made: List<string> = []
         mut moved: List<string> = []
         mut pending: List<PendingObj> = []
         mut owed_keys: List<string> = []
@@ -200,7 +230,7 @@ impl Workspace {
             let base = node_key(Stored.Obj, [digest_of(path)])
             let obj = "${root}/${base}.o"
             let okey = self.held_okey(store, path)
-            if store.place(Stored.Obj, okey, obj) { objs.push(obj) } else { pending.push(PendingObj { okey: okey, obj: obj, base: base, file: a.view.file }) }
+            if store.place(Stored.Obj, okey, obj) { made.push("${path}\t${obj}") } else { pending.push(PendingObj { okey: okey, obj: obj, base: base, file: a.view.file }) }
         }
         // A BUILD THAT MOVED A MODULE OR TWO makes their objects HERE, with the
         // compiler it already holds; one that moved many hands bitcode to clang,
@@ -215,7 +245,6 @@ impl Workspace {
         // compiled only when they moved
         let base = node_key(Stored.Obj, [digest_of(binary)])
         let program = "${root}/${base}.o"
-        objs.push(program)
         if d.unlowered.is_empty() {
             // lowered here: keyed by its own bytes too, so a home's edit that moves
             // no instantiation compiles nothing
@@ -234,7 +263,7 @@ impl Workspace {
         let t2 = self.clock()
         for po in pending {
             let _ = store.keep_file(Stored.Obj, po.okey, po.obj, [])
-            objs.push(po.obj)
+            made.push("${self.decls.file(po.file).path}\t${po.obj}")
         }
         // the program's module under its bytes and under what it is a function of
         for pkey in owed_keys.concat(if store.has(Stored.Obj, in_key) { [] } else { [in_key] }) { let _ = store.keep_file(Stored.Obj, pkey, program, []) }
@@ -242,17 +271,18 @@ impl Workspace {
         for path in held_paths(self) {
             let okey = self.held_okey(store, path)
             if !store.has(Stored.Obj, okey) { fail object_gone(path) }
-            objs.push(store.path(Stored.Obj, okey))
+            made.push("${path}\t${store.path(Stored.Obj, okey)}")
         }
         let t3 = self.clock()
-        let words = link_objects(objs, self, tools.runtime, binary)
+        let words = link_objects([line.split("\t")[1] for line in sorted_texts(made)].concat([program]), self, tools.runtime, binary)
         let code = avra_spawn_status(tools.linker, words)
         if code != 0 { fail clang_link_failed(code) }
         let t4 = self.clock()
+        let key = self.kept_key(under)
         let _ = store.keep_file(Stored.Bin, key, binary, [key])
         let _ = store.keep(Stored.Warn, key, d.warnings, [key])
-        let spent = ["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases].concat(d.trace).concat(["emit ${(t1 - t0) / 1000000}ms", "clang ${(t2 - t1) / 1000000}ms", "place ${(t3 - t2) / 1000000}ms", "link ${(t4 - t3) / 1000000}ms"])
-        .Ok(BuildOutcome { words: words, binary: binary, warnings: d.warnings, reused: false, key: key, phases: joined(spent, ", ") })
+        let spent = d.timed(["emit ${(t1 - t0) / 1000000}ms", "clang ${(t2 - t1) / 1000000}ms", "place ${(t3 - t2) / 1000000}ms", "link ${(t4 - t3) / 1000000}ms"])
+        .Ok(BuildOutcome { words: words, binary: binary, warnings: d.warnings, reused: false, key: key, phases: spent })
     }
 }
 

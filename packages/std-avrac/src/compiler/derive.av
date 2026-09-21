@@ -8,6 +8,7 @@
 //! hold is answered again from the sources alone.
 use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
 use features.{SettleRoot, Wanted}
+use @std.path.{relative_path}
 use compiler.store.{CACHE_FORMAT, Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
 
@@ -33,7 +34,22 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall> }
 /// lower, and `asked` names what they and every other would lower to: the
 /// program's root asks, and the key of every home it has ever lowered from. The
 /// same `asked` is the same instantiations, whoever lowered them.
-export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, trace: List<string> }
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, trace: List<string>, read: List<ReadFile> }
+
+/// How many read files `--time` names before it counts the rest.
+const READ_NAMED: int = 12
+
+impl Derived {
+    /// WHAT `--time` SAYS: the phases and what followed them on one line, then
+    /// the files a record knows that were read all the same, each with why.
+    fn timed(more: List<string>) -> string {
+        let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in self.program.phases].concat(self.trace).concat(more), ", ")
+        if self.read.is_empty() { return spent }
+        let named = ["  ${relative_path(self.program.ws.root, r.path)} — ${r.why.says()}" for r in self.read.slice(0, READ_NAMED)]
+        let rest = if self.read.length > READ_NAMED { ["  … and ${self.read.length - READ_NAMED} more"] } else { [] }
+        joined([spent, "read:"].concat(named).concat(rest), "\n")
+    }
+}
 
 /// Where what a file said lives: beside its object, under the object's key.
 fn said_key(okey: string) -> string { node_key(Stored.Warn, ["said", CACHE_FORMAT, okey]) }
@@ -76,7 +92,7 @@ fn remember(store: Store, key: string, paths: List<string>) {
 
 /// What `check` says of a clean program: its warnings, and whether they were kept
 /// from a check of these exact inputs.
-export type Checked = { warnings: string, reused: bool, trace: List<string> }
+export type Checked = { warnings: string, reused: bool, timed: string }
 
 impl Workspace {
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
@@ -84,12 +100,13 @@ impl Workspace {
     /// refusal is never kept.
     mut fn checked(entry: string?) -> Result<Checked, string> {
         let store = store_at(build_cache_root(self))
-        let key = self.program_key("check:${entry ?? ""}", [])
-        let kept: string? = store.get(Stored.Warn, key)
-        if kept != null { return Checked { warnings: kept!, reused: true, trace: [] } }
+        let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
+        let kept: string? = store.get(Stored.Warn, self.program_key(under.named, under.beside))
+        if kept != null { return Checked { warnings: kept!, reused: true, timed: "" } }
         let d = self.derived(entry, Want.Diagnostics)?
+        let key = d.program.ws.kept_key(under)
         let _ = store.keep(Stored.Warn, key, d.warnings, [key])
-        Checked { warnings: d.warnings, reused: false, trace: ["${ph.name} ${ph.ns / 1000000}ms" for ph in d.program.phases].concat(d.trace) }
+        Checked { warnings: d.warnings, reused: false, timed: d.timed([]) }
     }
 
     /// The program at `entry`, derived — under the hold, and from the sources
@@ -202,7 +219,7 @@ impl Workspace {
         let asked = self.asked_print(store, known_as, roots)
         let unlowered = [w for w in roots if self.is_held(w.file)]
         if unlowered.is_empty() { let _ = store.keep_once(Stored.Unit, clean_key(asked), "", []) }
-        .Ok(Derived { entry: entry, want: want, program: p, lowered: lo, store: store, said: said!, warnings: joined([text for text in spoken if !text.is_empty()], "\n\n"), unlowered: unlowered, asked: asked, trace: trace })
+        .Ok(Derived { entry: entry, want: want, program: p, lowered: lo, store: store, said: said!, warnings: joined([text for text in spoken if !text.is_empty()], "\n\n"), unlowered: unlowered, asked: asked, trace: trace, read: self.read_files })
     }
 
     /// WHETHER A SEALED LAYOUT MOVED UNDER THE HOLD. A seal boxes a flat record from
@@ -259,7 +276,10 @@ impl Workspace {
         mut at = 0
         while at < reads.length {
             for path in kept_runs(record_places(self, store, module_path(self.module_of(reads[at]).split("."))).get(reads[at])) {
-                if !reads.contains(path) { reads.push(path) }
+                if !reads.contains(path) {
+                    reads.push(path)
+                    if self.hold_asked.contains(path) { self.read_files.push(ReadFile { path: path, why: Reads.RunBy(relative_path(self.root, reads[at])) }) }
+                }
             }
             at = at + 1
         }

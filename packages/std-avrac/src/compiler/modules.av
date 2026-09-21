@@ -168,18 +168,6 @@ impl Workspace {
         if std == "" { "" } else { dir_of(std) }
     }
 
-    /// Every directory a build reads: each admitted package's source
-    /// root, and each of the toolchain's packages. Deliberately wide —
-    /// `@std/*` is admitted only when a `use` first reaches for one, so
-    /// a key over `self.packages` alone would miss the toolchain and
-    /// reuse a stale artifact. Over-covering costs a rebuild; UNDER-
-    /// covering is a silently wrong binary.
-    fn closure_roots() -> List<string> {
-        let std = self.host.std_root ?? ""
-        let toolchain: List<string> = if std == "" { [] } else { [joined_path(std, d) for d in self.host.list(std) if self.host.is_dir(joined_path(std, d))] }
-        sorted_texts([p.src for p in self.packages].concat(toolchain))
-    }
-
     /// Every source file under a directory, `.av` alone — the same
     /// filter `all_files` applies, without its package boundary: the
     /// backend's and runtime's own trees hold no packages.
@@ -199,16 +187,12 @@ impl Workspace {
     /// reaches for the last group, so nothing else would put them in
     /// the key, and a code-generator change must invalidate every
     /// module it could have emitted.
-    export fn build_inputs() -> List<string> {
+    export fn build_inputs(named: string) -> List<string> {
+        let covered = [line.split("\t") for line in self.closure(named)]
         let tree = self.toolchain_root()
         let engine: List<string> = if tree == "" { [] } else { [joined_path(tree, "Makefile")].concat(self.engine_sources(joined_path(tree, "backend"))).concat(self.engine_sources(joined_path(tree, "runtime"))) }
-        sorted_texts(flatten([self.all_files(r) for r in self.closure_roots()]).concat(self.manifest_paths()).concat(engine))
-    }
-
-    /// Each closure root's manifest, where it has one.
-    fn manifest_paths() -> List<string> {
-        let at = [joined_path(r, "avra.toml") for r in self.closure_roots()]
-        [p for p in at if self.host.exists(p)]
+        let manifests = [joined_path(at[1], "avra.toml") for at in covered if at.length > 1 && self.host.exists(joined_path(at[1], "avra.toml"))]
+        sorted_texts(flatten([self.all_files(at[0]) for at in covered]).concat(manifests).concat(engine))
     }
 
     /// A module's exported declarations, in file and declaration order.

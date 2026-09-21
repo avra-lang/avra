@@ -38,9 +38,9 @@ impl Workspace {
     /// One suite's binary, or null when there is nothing to prove.
     mut fn suite(only: string?, told_from: string, tools: Toolchain) -> Result<BuildOutcome?, string> {
         let programs = if only == null { self.program_tests() } else { [] }
-        let key = self.program_key("suite:${only ?? ""}", [beside(path, "expected") for path in programs])
+        let under = Keyed { named: "suite:${only ?? ""}", beside: [beside(path, "expected") for path in programs] }
         let binary = joined_path(joined_path(self.root, "build"), "suite")
-        let kept = self.kept_binary(key, binary)
+        let kept = self.kept_binary(self.program_key(under.named, under.beside), binary)
         if kept != null { return kept }
         let store = store_at(build_cache_root(self))
         let owed = [path for path in programs if !self.native_only(path) && !store.has(Stored.Unit, self.proved_key(store, path))]
@@ -49,7 +49,7 @@ impl Workspace {
         if cases.is_empty() && programs.is_empty() { return .Ok(null) }
         let _ = make_dirs(dir_of(binary))
         let calls = [self.program_call(path, told_from) for path in programs]
-        let made: BuildOutcome? = d.program.ws.linked(d, ProgramModule { entry: suite_entry(d.lowered.types, cases, calls), rows: program_rows }, key, binary, tools)?
+        let made: BuildOutcome? = d.program.ws.linked(d, ProgramModule { entry: suite_entry(d.lowered.types, cases, calls), rows: program_rows }, under, binary, tools)?
         made
     }
 

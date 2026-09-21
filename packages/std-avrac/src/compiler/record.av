@@ -364,18 +364,62 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
         // never met is neither parsed nor linked, and a home no parsed file imports is
         // met nowhere else.
         let _ = ws.file_id(f)
-        // the entry is read: its law over every other file is spoken from its parse
-        let is_entry = entry != null && f == entry!
         // a hold is ASKED here and settled once every module is met: a file that
         // will be read runs bodies at compile time, and those files are read with it
         let at: Placed? = places.get(f)
-        let rows = file_rows(fields, at)
-        let asked = !is_entry && ws.homes.get(f) == null && written_from(at, ws.text_digest(f)) && ws.stands_in(store, obj_key_cached(ws, store, m, f), want) && ws.const_rows_ready(store, m, f, rows) && holdable(rows)
-        if asked { ws.hold_asked.push(f) } else { ws.read_with = ws.read_with.concat(kept_runs(at)) }
+        let is_entry = entry != null && f == entry!
+        let why: Reads? = read_why(ws, store, m, f, at, is_entry, want)
+        if why == null {
+            ws.hold_asked.push(f)
+        } else {
+            ws.read_files.push(ReadFile { path: f, why: why! })
+            ws.read_with = ws.read_with.concat(kept_runs(at))
+        }
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.
     fields.length
+}
+
+/// WHY A FILE IS READ and not held — a thin hold says so itself under `--time`.
+export enum Reads {
+    Entry
+    Home
+    Moved
+    Unkept
+    Consts
+    Unholdable
+    RunBy(string)
+}
+
+export type ReadFile = { path: string, why: Reads }
+
+impl Reads {
+    fn says() -> string {
+        match self {
+            .Entry -> "the entry",
+            .Home -> "a home of instantiations owed",
+            .Moved -> "its text moved",
+            .Unkept -> "nothing kept stands in: what it sees moved, or it was never built",
+            .Consts -> "a const's kept value is gone",
+            .Unholdable -> "it declares what a record cannot carry",
+            .RunBy(by) -> "its bodies run while ${by} compiles",
+        }
+    }
+}
+
+/// Why a file a record knows is read — null when its hold may be asked. The entry
+/// is read: its law over every other file is spoken from its parse.
+// LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
+fn read_why(mut ws: Workspace, store: Store, m: ModulePath, f: string, at: Placed?, is_entry: bool, want: Want) -> Reads? {
+    if is_entry { return Reads.Entry }
+    if ws.homes.get(f) != null { return Reads.Home }
+    if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
+    if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
+    let rows = file_rows(record_fields(ws, store, m), at)
+    if !ws.const_rows_ready(store, m, f, rows) { return Reads.Consts }
+    if !holdable(rows) { return Reads.Unholdable }
+    null
 }
 
 /// WHETHER A RECORD'S LINES FOR A FILE WERE WRITTEN FROM THIS TEXT. A record is kept
