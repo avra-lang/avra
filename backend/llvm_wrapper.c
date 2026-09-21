@@ -822,10 +822,6 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
     return 0;
 }
 
-int64_t avra_llvm_emit_object(LLVMModuleRef m, const char* path, int64_t level) {
-    return native_target_ready() || object_written(m, path, level);
-}
-
 // ── Objects, made by workers ────────────────────────────────────
 // A module is built on the program's one thread and HANDED OVER with its
 // context; a worker writes its object and disposes the context, the module

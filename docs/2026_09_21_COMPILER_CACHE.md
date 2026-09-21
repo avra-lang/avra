@@ -36,12 +36,12 @@ One slice = red-team + review round + ONE gate + commit + seed.
 |---|---|---|---|
 | `build cli` cold | 22.7 s | **~13 s** (every object made in process, four workers at once: emit 4.5 s where bitcode + four clangs took 7.3) | 16 s |
 | `build cli` no-op | 0.4 s | **0.08 s** | 0.3 s |
-| `build cli`, one body edit | 1.2 s | **0.37–0.42 s** | 0.5 s |
-| `build cli`, a generic's home edited | — | ~3 s (the homes are read from the start; the program's module recompiles) | 5 s |
-| `check cli` | 9.7 s | cold 9 s · unchanged **0.08 s** · one edit **0.25 s** | 0.5 s |
+| `build cli`, one body edit | 1.2 s | **0.38–0.42 s** | 0.5 s |
+| `build cli`, a generic's home edited | — | **~1.4 s** (the homes are read from the start; 20 files, and the program's module written to be keyed) | 3 s |
+| `check cli` | 9.7 s | cold 9 s · unchanged **0.08–0.15 s** · one edit **0.28–0.36 s** | 0.5 s |
 | `check std-avrac` | 11.6 s, RED | cold 13 s · warm **~1.5 s**, clean | 2 s |
-| `test std-json` | 1.6 s | cold 1.7 s · warm **0.3 s** · one edit 0.7 s | 1 s |
-| `test std-avrac` (5319 cases, 111 programs, 27 nested) | ~40 s | cold 47 s · warm 13 s, ALL of it the run (the suite's binary alone is 6.7 s) · one edit ~2 s to compile, and a nested suite it cannot reach is a hit | — |
+| `test std-json` | 1.6 s | cold 1.7 s · warm **0.25 s** · one edit 0.7 s | 1 s |
+| `test std-avrac` (5319 cases, 111 programs, 27 nested) | ~40 s | cold **38 s** · warm 13 s, ALL of it the run (the suite's binary alone is 6.7 s) · one edit **16.7 s**: ~3.7 s to compile, 27 of the 28 suites served from the store | — |
 
 Where a warm body edit goes (ms), held 288/291, the machine at load 10–14:
 parse 24 · load 40 · admit 8 · analyze 50 · lower 20 · keep 21 · emit 8 · link
@@ -284,7 +284,7 @@ That is how the pinned maps were found; no phase timer pointed at them.
 
 | the owner's bar | now (load 10–14) | verdict |
 |---|---|---|
-| warm `build` < 500 ms | no-op 0.08 s · one body edit **0.37–0.42 s** | met |
+| warm `build` < 500 ms | no-op 0.08 s · one body edit **0.38–0.42 s** · cold 13 s | met |
 | `test` reuses the cache | one binary a suite, linked through the store; warm compiles nothing; an edit compiles ~2 s of a 500-file suite; a nested suite the edit cannot reach is a hit | met |
 | `check` near instant | unchanged 0.08 s · one edit **0.25 s** (was 8–11 s) | met |
 | every command one derivation | `build` `check` `test`; `run` `emit` `ir` still lower with nothing held | the evaluator needs IR a held file does not have |
@@ -307,9 +307,14 @@ Objects made in process, 80. The tree's stamps in one row, 60.
    build, 7 s of a cold `check std-avrac`.
 3. **The parser's fast path** — `grammar/executor.av` builds a farthest-failure
    record per failed terminal; a PEG fails most alternatives. Cold paths again.
-4. **`holdable` decodes every declaration's facts at load** to find a grammar;
+4. **The program's module is WRITTEN to be keyed** (`bytes_keyed`): ~300 ms of
+   a home's edit on the cli, ~2 s of a suite's. A fold over its IR would key it
+   unwritten — and must cover every register's type by SHAPE, every static and
+   every extern, or it is the hash that forgets a payload. Bitcode forgets
+   nothing, which is why it is the key.
+5. **`holdable` decodes every declaration's facts at load** to find a grammar;
    the record's `file` line could say it. ~10 ms.
-5. `run`, `emit`, `ir` on the derivation — needs IR for a held body (S8).
+6. `run`, `emit`, `ir` on the derivation — needs IR for a held body (S8).
 
 **Refused: per-function codegen units** (the 09-20 design). Once the hold
 works they buy ~30 ms of clang on the one edited file, and cost thousands of
