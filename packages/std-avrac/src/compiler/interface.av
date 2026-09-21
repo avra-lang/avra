@@ -27,9 +27,9 @@ fn keep_const_units(store: Store, modules: List<ModulePath>) -> int {
     count
 }
 
-fn const_rows_ready(store: Store, m: ModulePath, path: string, fields: List<List<string>>) -> bool {
-    for parts in fields {
-        if parts.length > 5 && parts[0] == "const" && parts[1] == path {
+fn const_rows_ready(store: Store, m: ModulePath, path: string, rows: List<List<string>>) -> bool {
+    for parts in rows {
+        if parts.length > 5 && parts[0] == "const" {
             let raw = store.get(Stored.Unit, self.const_unit_key( store, m, path, parts[5]))
             if raw == null || settled_from_wire(raw!) == null { return false }
         }
@@ -190,37 +190,45 @@ fn link_identity(parts: List<string>) {
     if parent_at < ids.length { self.decls.adopt(id, ids[parent_at]) }
 }
 
-fn mint_identity(parts: List<string>) {
-    if parts.length < 13 || nameless(parts) { return }
-    let path = parts[1]
-    if !self.is_held(self.file_id(path)) { return }
+/// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The
+/// file's statement table is written ONCE: read out and stored back per line, it
+/// is held twice while it is written, and every line copies it.
+fn mint_file(path: string, rows: List<List<string>>) {
     let f = self.file_id(path)
-    let stmt_index? = wire_number(parts[3]) else { return }
-    let root_at? = wire_number(parts[10]) else { return }
-    let kind? = declared_kind(parts[0], parts[6]) else { return }
-    let root: ExprId? = if root_at < 0 { null } else { ExprId { index: root_at } }
-    let stmt = StmtId { index: stmt_index }
-    // The ordinal is the record's stable identity within a held file. A
-    // name/kind key collapses generated members and same-named methods, then
-    // every later type reference points at the wrong declaration.
-    let ordinal? = wire_number(parts[2]) else { return }
-    let id = self.decls.mint("${path}::held::${ordinal}", f, stmt, parts[5], kind, parts[4] == "1", parts[7], null, parts[9] == "1", root)
-    // APPEND IN PLACE. A held file was never admitted, so its declarations arrive in
-    // record order and its list is exactly `ordinal` long — the `any` + `concat` this
-    // replaces scanned and rebuilt the list per declaration, quadratic in a file's length.
-    if self.decls.decls_of_file(f).length == ordinal {
-        self.decls.file_decls[f.index].push(id)
-    } else if !self.decls.decls_of_file(f).any(same_decl(it, id)) {
-        self.decls.file_decls[f.index].push(id)
-    }
     mut by_stmt = self.decls.decl_ids[f.index].get()
-    by_stmt.grow_to(stmt_index + 1)
-    if by_stmt.get(stmt_index) == null { by_stmt.set(stmt_index, id) }
+    for parts in rows {
+        let id: DeclId? = self.minted(f, path, parts)
+        let stmt_index = wire_number(parts[3]) ?? 0
+        by_stmt.grow_to(stmt_index + 1)
+        if id != null && by_stmt.get(stmt_index) == null { by_stmt.set(stmt_index, id!) }
+    }
     self.decls.decl_ids[f.index].set(by_stmt)
-    if kind is .Main { self.decls.mains.set(f.index, id) }
+}
+
+/// One record line as a declaration — null for a line that names nothing. A line
+/// that does not decode is a DEFECT spoken: the hold's attempt fails, and the
+/// sources answer.
+fn minted(f: FileId, path: string, parts: List<string>) -> DeclId? {
+    if parts.length < 13 || nameless(parts) { return null }
+    let stmt_index = wire_number(parts[3])
+    let root_at = wire_number(parts[10])
+    let ordinal = wire_number(parts[2])
+    let kind = declared_kind(parts[0], parts[6])
+    let facts = facts_unblocked(parts[12])
+    if stmt_index == null || root_at == null || ordinal == null || kind == null || facts == null {
+        self.defect("a record line did not decode — ${path}")
+        return null
+    }
+    let root: ExprId? = if root_at! < 0 { null } else { ExprId { index: root_at! } }
+    // the ordinal is the record's identity within a held file: a name/kind key
+    // collapses generated members and same-named methods
+    let id = self.decls.mint("${f.index}#held#${ordinal!}", f, StmtId { index: stmt_index! }, parts[5], kind!, parts[4] == "1", parts[7], null, parts[9] == "1", root)
+    let mine = self.decls.decls_of_file(f)
+    if mine.length == ordinal! || !mine.any(same_decl(it, id)) { self.decls.file_decls[f.index].push(id) }
+    if kind! is .Main { self.decls.mains.set(f.index, id) }
     if parts[11] == "1" { self.decls.remember_held_item(f, id) }
-    let facts? = facts_unblocked(parts[12]) else { return }
-    self.decls.adopt_facts(id, facts)
+    self.decls.adopt_facts(id, facts!)
+    id
 }
 
 fn record_line(d: Decl, ordinal: int, item: bool) -> string {
@@ -311,7 +319,7 @@ fn ran_by(store: Store, path: string) -> List<string> {
 /// its module's last record kept them.
 fn ran_directly(store: Store, path: string) -> List<string> {
     if !self.is_held(self.file_id(path)) { return self.runs.get(path) ?? [] }
-    kept_runs(record_fields(self, store, module_path(self.module_of(path).split("."))), path)
+    kept_runs(record_places(self, store, module_path(self.module_of(path).split("."))).get(path))
 }
 
 fn row_decl(parts: List<string>) -> DeclId? {

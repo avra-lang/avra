@@ -87,7 +87,9 @@ impl Workspace {
     /// names the program: a whitespace-only edit moves it. `beside` are inputs
     /// that are not sources.
     fn program_key(named: string, beside: List<string>) -> string {
-        let inputs = joined([self.input_line(f) for f in self.build_inputs().concat(beside)], "\n")
+        let named_inputs = self.build_inputs().concat(beside)
+        let inputs = joined([self.input_line(f) for f in named_inputs], "\n")
+        self.keep_stamps(named_inputs)
         digest_key(digest_text(digest_text(digest_text(new_digest(), CACHE_FORMAT), relative_path(self.root, named)), inputs))
     }
 
@@ -97,10 +99,46 @@ impl Workspace {
     fn text_digest(path: string) -> string {
         let known: string? = self.text_digests.get(path)
         if known != null { return known! }
-        let text = self.host.read(path)
-        let made = "${text.length}.${digest_of(text)}"
+        let made = self.kept_digest(path, self.host.stamp(path))
         self.text_digests.set(path, made)
         made
+    }
+
+    /// A text's digest, kept beside its file's stamp: one path under one stamp is
+    /// the same bytes, so an unmoved file is not read to be named. The stamps are
+    /// ONE row for the tree, read once — a row a file costs more than the file.
+    fn kept_digest(path: string, stamp: int?) -> string {
+        let at? = stamp else { return digest_of_file(self.host.read(path)) }
+        let mark = "${at}\t"
+        let kept = self.stamps().get(path) ?? ""
+        if kept.starts_with(mark) { return kept.substring(mark.length, kept.length) }
+        let made = digest_of_file(self.host.read(path))
+        self.stamped.set(path, mark + made)
+        self.stamps_at.set(stamps_moved)
+        made
+    }
+
+    /// The tree's stamps, by path: `stamp<TAB>digest`.
+    fn stamps() -> Map<string, string> {
+        if self.stamps_at.get() != stamps_unread { return self.stamped }
+        self.stamps_at.set(stamps_read)
+        for line in (store_at(build_cache_root(self)).get(Stored.Fp, stamps_key()) ?? "").split("\n") {
+            let at = line.index_of("\t")
+            if at > 0 { self.stamped.set(line.substring(0, at), line.substring(at + 1, line.length)) }
+        }
+        self.stamped
+    }
+
+    fn stamp_line(path: string) -> string? {
+        let kept? = self.stamped.get(path) else { return null }
+        "${path}\t${kept}"
+    }
+
+    /// The stamps written back, when a file moved under one.
+    fn keep_stamps(paths: List<string>) {
+        if self.stamps_at.get() != stamps_moved { return }
+        let lines = [line! for line in [self.stamp_line(path) for path in paths] if line != null]
+        let _ = store_at(build_cache_root(self)).keep(Stored.Fp, stamps_key(), joined(lines, "\n"), [])
     }
 
     /// Whether a body's home cannot emit it: the home is held, so its object
@@ -204,6 +242,17 @@ impl Workspace {
         .Ok(BuildOutcome { words: words, binary: binary, warnings: d.warnings, reused: false, key: key, phases: joined(spent, ", ") })
     }
 }
+
+/// Where a run stands with the tree's stamps.
+const stamps_unread: int = 0
+const stamps_read: int = 1
+const stamps_moved: int = 2
+
+/// Where the tree's stamps are kept.
+fn stamps_key() -> string { node_key(Stored.Fp, ["stamps", CACHE_FORMAT]) }
+
+/// A file's bytes as their length and their digest.
+fn digest_of_file(text: string) -> string { "${text.length}.${digest_of(text)}" }
 
 /// One clang per moved module, `CLANG_WIDTH` at once. `-c a.bc` writes `a.o`
 /// beside its input, so every run stands in the store's root.

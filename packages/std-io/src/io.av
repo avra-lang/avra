@@ -19,6 +19,7 @@ use @std.text.{nul_at}
 // and no bytes cross here.
 extern fn avra_io_kind(path: string) -> int
 extern fn avra_io_open(path: string) -> int
+extern fn avra_io_stamp(path: string) -> int
 extern fn avra_io_close(fd: int) -> int
 extern fn avra_io_mkdir(path: string) -> int
 extern fn avra_io_remove(path: string) -> int
@@ -129,6 +130,18 @@ fn entry_of(kind: int) -> Entry {
         2 -> Entry.Dir,
         _ -> Entry.Other,
     }
+}
+
+/// A FILE'S STAMP — its size, its times and its inode as one number — or null
+/// when there is no telling: the path is no file, or it moved within the last
+/// two seconds, where two writes can wear one time. One path under one stamp
+/// is the same bytes, so a reader that kept what it made of them need not read
+/// them again.
+export fn stamp(path: string) -> int? {
+    let held = one_path(path) catch ""
+    if held.is_empty() { return null }
+    let s = avra_io_stamp(held)
+    if s <= 0 { null } else { s }
 }
 
 /// Whether anything stands at the path — one the host will not

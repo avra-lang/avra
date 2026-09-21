@@ -72,7 +72,24 @@ fn remember(store: Store, key: string, paths: List<string>) {
     if paths.any((path) -> !known.contains(path)) { let _ = store.keep(Stored.Unit, key, joined(distinct(known.concat(paths)), "\n"), []) }
 }
 
+/// What `check` says of a clean program: its warnings, and whether they were kept
+/// from a check of these exact inputs.
+export type Checked = { warnings: string, reused: bool, trace: List<string> }
+
 impl Workspace {
+    /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
+    /// kept under the program's key, so an unchanged program costs a hash. A
+    /// refusal is never kept.
+    mut fn checked(entry: string?) -> Result<Checked, string> {
+        let store = store_at(build_cache_root(self))
+        let key = self.program_key("check:${entry ?? ""}", [])
+        let kept: string? = store.get(Stored.Warn, key)
+        if kept != null { return Checked { warnings: kept!, reused: true, trace: [] } }
+        let d = self.derived(entry, Want.Diagnostics)?
+        let _ = store.keep(Stored.Warn, key, d.warnings, [key])
+        Checked { warnings: d.warnings, reused: false, trace: ["${ph.name} ${ph.ns / 1000000}ms" for ph in d.program.phases].concat(d.trace) }
+    }
+
     /// The program at `entry`, derived — under the hold, and from the sources
     /// alone when the hold's attempt refused.
     mut fn derived(entry: string?, want: Want) -> Result<Derived, string> { self.derived_reading(entry, want, []) }
@@ -231,7 +248,7 @@ impl Workspace {
         mut reads: List<string> = distinct(self.read_with)
         mut at = 0
         while at < reads.length {
-            for path in kept_runs(record_fields(self, store, module_path(self.module_of(reads[at]).split("."))), reads[at]) {
+            for path in kept_runs(record_places(self, store, module_path(self.module_of(reads[at]).split("."))).get(reads[at])) {
                 if !reads.contains(path) { reads.push(path) }
             }
             at = at + 1

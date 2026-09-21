@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 /* What stands at the path: 0 nothing, 1 a file, 2 a directory, 3
    something else; -errno when the host will not say. */
@@ -22,6 +23,30 @@ int64_t avra_io_kind(const char* path) {
     if (S_ISREG(st.st_mode)) return 1;
     if (S_ISDIR(st.st_mode)) return 2;
     return 3;
+}
+
+/* A file's STAMP: its size, its two times and its inode folded to one
+   positive number — what says "these are the bytes you read before"
+   without reading them. 0 when there is no telling: the path is no
+   file, or it moved within the last two seconds, where two writes can
+   wear one time. */
+int64_t avra_io_stamp(const char* path) {
+    struct stat st;
+    struct timespec now;
+    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
+#ifdef __APPLE__
+    struct timespec m = st.st_mtimespec, c = st.st_ctimespec;
+#else
+    struct timespec m = st.st_mtim, c = st.st_ctim;
+#endif
+    clock_gettime(CLOCK_REALTIME, &now);
+    if (now.tv_sec - m.tv_sec < 2 || now.tv_sec - c.tv_sec < 2) return 0;
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    uint64_t parts[6] = { (uint64_t)st.st_size, (uint64_t)m.tv_sec, (uint64_t)m.tv_nsec,
+                          (uint64_t)c.tv_sec, (uint64_t)c.tv_nsec, (uint64_t)st.st_ino };
+    for (int i = 0; i < 6; i++) { h ^= parts[i]; h *= 0x100000001B3ull; h ^= h >> 29; }
+    h &= 0x7FFFFFFFFFFFFFFFull;
+    return h == 0 ? 1 : (int64_t)h;
 }
 
 /* A read descriptor for the path, or -errno. A DIRECTORY is refused

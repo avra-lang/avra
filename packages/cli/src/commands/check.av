@@ -2,7 +2,7 @@
 //! of a package root. The program is DERIVED as a build derives it, so a
 //! file the store stands in for is not read and still speaks its warnings.
 use @std.cli.{Subcommand, CliResult, Runnable}
-use @std.avrac.compiler.{Want, Derived}
+use @std.avrac.compiler.{Checked}
 use @std.avrac.core.{joined}
 use @std.io.{exists}
 
@@ -16,8 +16,8 @@ impl Runnable for CheckCmd {
             return 2
         }
         mut ws = build_workspace(path)
-        match ws.derived(build_entry(ws, path), Want.Diagnostics) {
-            .Ok(d) -> checked(args, d),
+        match ws.checked(build_entry(ws, path)) {
+            .Ok(c) -> said(args, c),
             .Err(report) -> {
                 println(report)
                 1
@@ -27,9 +27,9 @@ impl Runnable for CheckCmd {
 }
 
 /// A clean program's warnings, printed; exit 0.
-fn checked(args: CliResult, d: Derived) -> int {
-    if !d.warnings.is_empty() { println(d.warnings) }
-    if timed(args) { eprintln("time: ${joined(["${ph.name} ${ms(ph.ns)}" for ph in d.program.phases].concat(d.trace), ", ")}") }
+fn said(args: CliResult, c: Checked) -> int {
+    if !c.warnings.is_empty() { println(c.warnings) }
+    if timed(args) { eprintln(if c.reused { "time: check · cache hit" } else { "time: ${joined(c.trace, ", ")}" }) }
     0
 }
 

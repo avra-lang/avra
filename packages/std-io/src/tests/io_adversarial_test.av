@@ -4,7 +4,7 @@
 // name too long, and `env("PATH=")` answered PATH's value because the
 // C library reads a name up to its `=`.
 use @std.text.{from_codepoint}
-use @std.io.{IoError, Entry, kind_of, exists, is_file, is_dir, read_text, write_text, read_bytes, write_bytes, list_dir, make_dirs, remove, env, env_or}
+use @std.io.{IoError, Entry, kind_of, exists, is_file, is_dir, read_text, write_text, read_bytes, write_bytes, list_dir, make_dirs, remove, env, env_or, stamp}
 
 /// The scratch directory for the adversarial set, made.
 fn pit() -> string {
@@ -287,6 +287,29 @@ spec "std/io — adversarial" {
                     rest -> false,
                 },
             }
+        }
+    }
+}
+
+spec "io/stamp" {
+    given "a path" {
+        then "nothing standing there has no stamp" {
+            stamp("${pit()}/never-made") == null
+        }
+        then "a directory has no stamp" {
+            stamp(pit()) == null
+        }
+        then "a path holding a NUL has no stamp" {
+            stamp("/etc/hosts${from_codepoint(0)}x") == null
+        }
+        then "a file written this second has none — two writes can wear one time" {
+            let p = "${cleared("stamp")}/now"
+            let _ = write_text(p, "x")
+            stamp(p) == null
+        }
+        then "a file that has stood is stamped, and the same twice" {
+            let first = stamp("/etc/hosts")
+            first != null && first == stamp("/etc/hosts")
         }
     }
 }
