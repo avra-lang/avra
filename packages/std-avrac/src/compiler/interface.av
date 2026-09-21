@@ -186,7 +186,7 @@ fn interface_type(owner: DeclId, name: string) -> TypeId {
 /// A held file's declarations adopted by their parents, in one pass over its
 /// lines: the file and its declarations are found ONCE, never per line.
 fn link_file(path: string, rows: List<List<string>>) {
-    let ids = self.decls.decls_of_file(self.file_id(path))
+    let ids = self.decls.decls_so_far(self.file_id(path))
     for parts in rows {
         let id: DeclId? = row_of(ids, parts)
         let parent_at = if parts.length > 8 { wire_number(parts[8]) ?? (0 - 1) } else { 0 - 1 }
@@ -196,11 +196,27 @@ fn link_file(path: string, rows: List<List<string>>) {
 
 /// A held file's shapes filled, the same way.
 fn fill_file(store: Store, m: ModulePath, path: string, rows: List<List<string>>) {
-    let ids = self.decls.decls_of_file(self.file_id(path))
+    let ids = self.decls.decls_so_far(self.file_id(path))
     for parts in rows {
         let id: DeclId? = row_of(ids, parts)
         if id != null { self.fill_shape(store, m, id!, parts) }
     }
+}
+
+/// ONE HELD MODULE, MINTED: every held file's declarations from its record lines,
+/// each adopted by its parent, then every shape filled — names before shapes, since
+/// a shape names a type of its own module. A shape naming ANOTHER module's type
+/// mints that module on the way (`Decls.decls_of_file` asks), and the flag stands
+/// before the work does, so two modules that name each other meet once.
+fn mint_module(store: Store, m: ModulePath) {
+    if self.minted.get(m.text()) != null { return }
+    self.minted.set(m.text(), true)
+    let fields = record_fields(self, store, m)
+    let places = record_places(self, store, m)
+    let held = [path for path in self.module_files(m) if self.decls.held.get(path) != null]
+    for path in held { self.mint_file(path, file_rows(fields, places.get(path))) }
+    for path in held { self.link_file(path, file_rows(fields, places.get(path))) }
+    for path in held { self.fill_file(store, m, path, file_rows(fields, places.get(path))) }
 }
 
 /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The
@@ -215,7 +231,7 @@ fn mint_file(path: string, rows: List<List<string>>) {
         by_stmt.grow_to(stmt_index + 1)
         if id != null && by_stmt.get(stmt_index) == null { by_stmt.set(stmt_index, id!) }
     }
-    self.decls.decl_ids[f.index].set(by_stmt)
+    self.decls.keep_stmt_decls(f, by_stmt)
 }
 
 /// One record line as a declaration — null for a line that names nothing. A line
@@ -236,10 +252,7 @@ fn minted(f: FileId, path: string, parts: List<string>) -> DeclId? {
     // the ordinal is the record's identity within a held file: a name/kind key
     // collapses generated members and same-named methods
     let id = self.decls.mint("${f.index}#held#${ordinal!}", f, StmtId { index: stmt_index! }, parts[5], kind!, parts[4] == "1", parts[7], null, parts[9] == "1", root)
-    let mine = self.decls.decls_of_file(f)
-    if mine.length == ordinal! || !mine.any(same_decl(it, id)) { self.decls.file_decls[f.index].push(id) }
-    if kind! is .Main { self.decls.mains.set(f.index, id) }
-    if parts[11] == "1" { self.decls.remember_held_item(f, id) }
+    self.decls.held_joins(f, id, ordinal!, kind! is .Main, parts[11] == "1")
     self.decls.adopt_facts(id, facts!)
     id
 }

@@ -107,6 +107,9 @@ export type Decls = {
     mains: List<DeclId?>,
     stores: List<NodeStore?>,
     ensure_store: List<fn(FileId)>,
+    /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
+    /// workspace arms, called before a file's declarations are read.
+    ensure_file: List<fn(FileId)>,
     /// ONE SLOT, SHARED — see `children`: a write must not copy the table.
     decl_ids: List<Cell<SideTable<DeclId?>>>,
     /// ONE SLOT, SHARED — see `children`: an append must not copy the table.
@@ -218,7 +221,7 @@ fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 export fn new_decls() -> Decls {
     Decls {
         types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
-        stores: [], ensure_store: [no_store], decl_ids: [], file_decls: [], generations: [], origins: [], expansion_voices: [], meta_ids: {}, decls: [], held: {}, held_items: {}, faces: [], held_values: {}, keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], root_name: [""], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
+        stores: [], ensure_store: [no_store], ensure_file: [no_store], decl_ids: [], file_decls: [], generations: [], origins: [], expansion_voices: [], meta_ids: {}, decls: [], held: {}, held_items: {}, faces: [], held_values: {}, keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], root_name: [""], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
         ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
         seat_marks: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
         lifter: [no_lifter],
@@ -437,6 +440,7 @@ impl Decls {
         self.ensure_writes.set(0, no_ensure)
         self.ensure_marks.set(0, no_marks)
         self.ensure_store.set(0, no_store)
+        self.ensure_file.set(0, no_store)
         self.lifter.set(0, no_lifter)
     }
 

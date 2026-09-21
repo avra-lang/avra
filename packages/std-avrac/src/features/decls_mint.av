@@ -1,7 +1,7 @@
 //! The declaration table's mint half: files, modules, and the mint
 //! path that turns a statement into a declared id. The rest of the
 //! impl lives in decls.av.
-use core.{side_table, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, Param, filled, flatten, same_decl, SpecParts, ImplParts, no_stmt, Type, TypeRef, Stmt, Expr, Scoped}
+use core.{side_table, SideTable, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, Span, NodeStore, Param, filled, flatten, same_decl, SpecParts, ImplParts, no_stmt, Type, TypeRef, Stmt, Expr, Scoped}
 use diagnostics.{Diag}
 use features.{generated_key, Decl, no_origins}
 
@@ -184,14 +184,38 @@ impl Decls {
     /// This file's declarations, every kind, in the order admitted:
     /// each top-level one with its members, then Main, then the
     /// nested ones.
-    fn decls_of_file(f: FileId) -> List<DeclId> { self.file_decls[f.index].get() }
+    fn decls_of_file(f: FileId) -> List<DeclId> {
+        self.ensure_file[0](f)
+        self.file_decls[f.index].get()
+    }
 
-    fn held_items_of_file(f: FileId) -> List<DeclId> { self.held_items.get(self.file(f).path) ?? [] }
+    /// The same, as the table stands — the minter's own read.
+    fn decls_so_far(f: FileId) -> List<DeclId> { self.file_decls[f.index].get() }
+
+    fn arm_file(ensure: fn(FileId)) { self.ensure_file.set(0, ensure) }
+
+    fn held_items_of_file(f: FileId) -> List<DeclId> {
+        self.ensure_file[0](f)
+        self.held_items.get(self.file(f).path) ?? []
+    }
+
+    /// A held declaration joins its file: the list once, the main's seat, the
+    /// items. The tables are written HERE — a vocabulary write on `ws.decls.…`
+    /// copies the declarations when a reader up the stack holds them.
+    mut fn held_joins(f: FileId, d: DeclId, ordinal: int, main: bool, item: bool) {
+        let mine = self.decls_so_far(f)
+        if mine.length == ordinal || !mine.any(same_decl(it, d)) { self.file_decls[f.index].push(d) }
+        if main { self.mains.set(f.index, d) }
+        if item { self.remember_held_item(f, d) }
+    }
+
+    /// A file's statement table, written whole.
+    mut fn keep_stmt_decls(f: FileId, by_stmt: SideTable<DeclId?>) { self.decl_ids[f.index].set(by_stmt) }
 
     fn remember_held_item(f: FileId, d: DeclId) {
         let path = self.file(f).path
         // IN PLACE: `concat([d])` rebuilt the list per item, quadratic in a file's items.
-        mut xs = self.held_items_of_file(f)
+        mut xs = self.held_items.get(path) ?? []
         xs.push(d)
         self.held_items.set(path, xs)
     }

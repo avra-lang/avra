@@ -140,13 +140,20 @@ export type Workspace = {
     /// bodies of the last time it was: read with it, so its runs find them.
     hold_asked: List<string>,
     read_with: List<string>,
+    /// THE HELD MODULES MINTED SO FAR, by name — a held module's declarations are
+    /// minted when something reads them, never all of them every build; the files
+    /// whose declarations stand (read, or minted); whether the holds are settled,
+    /// before which no file's standing is known; and where every impl and trait of
+    /// a name lives, since a method table wants them all.
+    minted: Map<string, bool>,
+    file_ready: Table<bool>,
+    holds_settled: Cell<bool>,
+    named_in: Map<string, List<string>>,
     /// The records a held file's line declared FLAT.
     held_flat: List<TypeId>,
     /// THE MODULES A HELD LOAD TOUCHED, in order — phase one mints and INTERNS every name;
     /// phase two FILLS every shape. A mutual import (language <-> features <-> core) is a
     /// cycle, and one module's shapes cannot be filled until every other module's NAMES are
-    /// interned, so the two passes must be GLOBAL, not per module.
-    held_order: List<ModulePath>,
     defects: List<Diag>,
     packages: List<Package>,
     package_voices: List<Diag>,
@@ -344,7 +351,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, record_places: {}, bytes_keys: {}, view_keys: {}, text_digests: {}, stamped: {}, stamps_at: Cell.new(0), module_names_of: {}, import_lists: {}, object_keys: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), held_flat: [], hold_asked: [], read_with: [], runs: {}, settling: Cell.new(no_paths()), held_order: [], defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, record_places: {}, bytes_keys: {}, view_keys: {}, text_digests: {}, stamped: {}, stamps_at: Cell.new(0), module_names_of: {}, import_lists: {}, object_keys: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), minted: {}, file_ready: new_table(), holds_settled: Cell.new(false), named_in: {}, held_flat: [], hold_asked: [], read_with: [], runs: {}, settling: Cell.new(no_paths()), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }
@@ -354,6 +361,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     // the table's reads ARE the queries
     ws.decls.arm((d: DeclId) -> ws.ensured(d))
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
+    ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
@@ -382,6 +390,20 @@ impl Workspace {
 
     fn ensured(d: DeclId) {
         let _ = self.sig(d)
+    }
+
+    /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
+    /// parse, a held file's minted with its module the first time anything asks.
+    fn file_ensured(f: FileId) {
+        if self.file_ready.at(f.index) != null || !self.holds_settled.get() { return }
+        self.file_ready.keep(f.index, true)
+        if self.is_held(f) && self.store != null { self.mint_module(self.store!, module_path(segments_of(self.module_of(self.decls.file(f).path)))) }
+    }
+
+    /// Every held module that declares an impl or a trait of this name, minted.
+    fn named_minted(name: string) {
+        if self.store == null { return }
+        for m in self.named_in.get(name) ?? [] { self.mint_module(self.store!, module_path(segments_of(m))) }
     }
 
     /// A held declaration may need syntax-only facts that were not part of
@@ -768,6 +790,7 @@ impl Workspace {
         // its record, so its table is whole without a parse.
         let home = self.decls.decl(target).file
         if !self.is_held(home) { let _ = self.resolved(home) }
+        self.named_minted(self.decls.decl(target).name)
         let blocks = self.decls.children_of(target).concat([b for b in self.decls.impls_named(self.decls.decl(target).name) if self.aims_at(b, target)])
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a
@@ -816,9 +839,10 @@ impl Workspace {
     /// resolve the name in, so the name must be ONE trait's: two of a name answer
     /// nothing, and the box that wanted the impl is refused rather than guessed.
     fn held_trait(block: DeclId) -> DeclId? {
-        let of = self.decls.facts_of(block)?.of
-        if of == null || of! == "" { return null }
-        let named = [d.id for d in self.decls.decls if d.kind is .Trait && d.name == of!]
+        let of? = self.decls.facts_of(block)?.of else { return null }
+        if of == "" { return null }
+        self.named_minted(of)
+        let named = [d.id for d in self.decls.decls if d.kind is .Trait && d.name == of]
         if named.length == 1 { named.first() } else { null }
     }
 

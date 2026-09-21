@@ -354,6 +354,11 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
     let places = record_places(ws, store, m)
+    // a method table wants EVERY impl of a name, and a held impl names its trait by
+    // name: where those live is known before any module is minted
+    for parts in fields {
+        if parts.length > 6 && (parts[6] == "impl" || parts[6] == "trait") { ws.named_in.set(parts[5], distinct((ws.named_in.get(parts[5]) ?? []).concat([m.text()]))) }
+    }
     for f in ws.module_files(m) {
         // EVERY FILE OF THE MODULE IS REGISTERED HERE, held or not: a file the workspace
         // never met is neither parsed nor linked, and a home no parsed file imports is
@@ -370,36 +375,7 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.
-    ws.held_order.push(m)
     fields.length
-}
-
-/// PHASE ONE: mint every held module's declarations from its record — a no-op for a
-/// WRITTEN declaration `admit` already made (same identity key), a fresh mint for a
-/// derive-GENERATED one. Runs AFTER every file is admitted, so the two never collide.
-// LICENSED I39: THE LOADER'S FIRST HALF — the workspace and a store in, nothing out.
-export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
-    for m in ws.held_order {
-        let fields = record_fields(ws, store, m)
-        let places = record_places(ws, store, m)
-        for path in ws.module_files(m) { if ws.decls.held.get(path) != null { ws.mint_file(path, file_rows(fields, places.get(path))) } }
-    }
-    for m in ws.held_order {
-        let fields = record_fields(ws, store, m)
-        let places = record_places(ws, store, m)
-        for path in ws.module_files(m) { if ws.decls.held.get(path) != null { ws.link_file(path, file_rows(fields, places.get(path))) } }
-    }
-}
-
-/// PHASE TWO: fill every held module's shapes, once ALL its names exist. A shape names
-/// other types, so the registry must answer for every module before any shape is read.
-// LICENSED I39: THE LOADER'S SECOND HALF — the workspace and a store in, nothing out.
-export fn fill_interfaces(mut ws: Workspace, store: Store) {
-    for m in ws.held_order {
-        let fields = record_fields(ws, store, m)
-        let places = record_places(ws, store, m)
-        for path in ws.module_files(m) { if ws.decls.held.get(path) != null { ws.fill_file(store, m, path, file_rows(fields, places.get(path))) } }
-    }
 }
 
 /// WHETHER A RECORD'S LINES FOR A FILE WERE WRITTEN FROM THIS TEXT. A record is kept
