@@ -1,0 +1,90 @@
+// A BORROWED READ AND THE WRITES AROUND IT: each shape reads a box out of a
+// place, changes the place, and reads the box again — the answer is the box
+// as it was read, and a write after a read lands in place. Every box is made
+// at run time and is its place's ALONE (set in a scope that has closed): a
+// literal never dies, and a box its maker's scope still holds cannot dangle.
+type Memo = { seen: Map<string, string>, names: List<string> }
+
+fn fresh(n: int) -> List<string> { ["s${i}" for i in 0..n] }
+
+fn count(xs: List<string>, n: int) -> int { xs.length + n }
+
+impl Memo {
+    mut fn reset(n: int) { self.names = fresh(n) }
+
+    /// The memo idiom: a read, then a write the read must not pin.
+    mut fn note(k: string) -> string {
+        let known: string? = self.seen.get(k)
+        if known != null { return known! }
+        self.seen.set(k, "v${k}")
+        "new"
+    }
+
+    /// The field replaced while a read of it is still used.
+    mut fn swapped() -> int {
+        let old = self.names
+        self.names = fresh(1)
+        old.length
+    }
+
+    /// The field replaced in a branch, the read used after it.
+    mut fn swapped_under(c: bool) -> string {
+        let old = self.names
+        if c { self.names = fresh(0) }
+        old.first() ?? "none"
+    }
+}
+
+/// A local replaced in a branch BETWEEN a read and the read's use.
+fn changed_under(c: bool) -> int {
+    mut xs = fresh(1)
+    if c { xs = fresh(3) }
+    count(xs, if c {
+        xs = fresh(0)
+        1
+    } else {
+        2
+    })
+}
+
+/// A local replaced inside a loop a read of it runs across: the change stands
+/// after the use, and meets it on the next turn.
+fn rerun() -> string {
+    mut xs = fresh(1)
+    if xs.length == 1 { xs = fresh(2) }
+    let old = xs
+    mut said = ""
+    for i in 0..3 {
+        said = said + old[1]
+        xs = fresh(i)
+    }
+    "${said}${xs.length}"
+}
+
+/// A read used inside a branch, the write after it.
+fn guarded(n: int) -> int {
+    mut seen: Map<string, bool> = {}
+    for i in 0..n {
+        let k = "k${i % 7}"
+        if seen.get(k) == null { seen.set(k, true) }
+    }
+    seen.length
+}
+
+/// A child read out of a box that is then dropped.
+fn child_outlives() -> string {
+    mut rows: List<List<string>> = []
+    if rows.is_empty() { rows = [fresh(2)] }
+    let first = rows[0]
+    rows = []
+    first.join(",")
+}
+
+mut m = Memo { seen: {}, names: [] }
+let a = m.note("1")
+let b = m.note("1")
+m.reset(3)
+let c = m.swapped()
+m.reset(1)
+let d = m.swapped_under(true)
+"${a} ${b} ${c} ${d} ${m.names.length} ${changed_under(true)} ${rerun()} ${guarded(50)} ${child_outlives()}"

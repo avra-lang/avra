@@ -230,8 +230,9 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, seed
 /// the loaded register rides it. The borrow earns its own +1 only
 /// when it must OUTLIVE that reference — it is given UPWARD, or a
 /// use of it (or of a borrow taken from it) stands past a step
-/// that could change the cell, or past a bracket. Conservative by
-/// construction: what the scan cannot read as safe owns.
+/// that could change the cell, or past the close of a bracket open
+/// at the load. Conservative by construction: what the scan cannot
+/// read as safe owns.
 ///
 /// THE +1 IS NOT BOOKKEEPING. `avra_cell_unique` copies only when
 /// the count is above one, so a borrow that does NOT retain is
@@ -254,13 +255,36 @@ fn borrow_outlives(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>,
             if gives_upward(i) { return true }
             last = j
             let d: Reg? = view_of(i)
-            if d != null && is_managed(types, reg_types[d!.index]) { views.push(d!) }
+            // a child that takes its OWN reference rides nobody's
+            if d != null && is_managed(types, reg_types[d!.index]) && !takes_twin(types, reg_types, ins, j, i) { views.push(d!) }
         }
         j = j + 1
     }
+    leaves_or_changes(ins, at, last, slot)
+}
+
+/// WHETHER THE CELL'S REFERENCE MAY NOT STAND for the whole stretch a borrow is
+/// used: the cell changes, or a bracket open AT the load closes — the cell may
+/// be that scope's. A bracket opened since the load nests inside the cell's
+/// life and is read through; a LOOP opened since runs again, so its whole body
+/// is the stretch — a change after the last use meets that use next turn.
+fn leaves_or_changes(ins: List<Ins>, at: int, last: int, slot: Reg) -> bool {
+    mut depth = 0
+    mut loops = 0
     mut k = at + 1
-    while k <= last {
-        if brackets(ins[k]) || changes_cell(ins[k], slot) { return true }
+    while k < ins.length && (k <= last || loops > 0) {
+        let i = ins[k]
+        if changes_cell(i, slot) { return true }
+        if opens(i) {
+            depth = depth + 1
+            if i is .LoopStart { loops = loops + 1 }
+        } else if closes(i) {
+            if depth == 0 { return true }
+            depth = depth - 1
+            if i is .LoopEnd { loops = loops - 1 }
+        } else if depth == 0 && turns(i) {
+            return true
+        }
         k = k + 1
     }
     false
@@ -291,12 +315,13 @@ fn changes_cell(i: Ins, slot: Reg) -> bool {
     reads_of(i).any(same_reg(it, slot))
 }
 
-/// Every BRACKET in the stream. A borrow whose use stands across
-/// one may outlive the cell, so the scan refuses to reason past it.
-fn brackets(i: Ins) -> bool {
-    i is .ScopeEnter || i is .ScopeExit || i is .IfStart || i is .SwitchStart ||
-        i is .ArmEnd || i is .RegionEnd || i is .LoopStart || i is .LoopCond || i is .LoopEnd
-}
+/// THE BRACKETS, by what each does to the nesting: one OPENS a region, one
+/// CLOSES it, and one TURNS it — ends a region's part and begins the next.
+fn opens(i: Ins) -> bool { i is .ScopeEnter || i is .IfStart || i is .SwitchStart || i is .LoopStart }
+
+fn closes(i: Ins) -> bool { i is .ScopeExit || i is .RegionEnd || i is .LoopEnd }
+
+fn turns(i: Ins) -> bool { i is .ArmEnd || i is .LoopCond }
 
 /// The uses that give a value UPWARD — out of its scope, into a
 /// cell, or into an aggregate. A borrow that escapes must own.
@@ -467,11 +492,18 @@ fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: 
             let twin: string? = rt_owned_twin(callee)
             if twin != null && pushes_managed(types, reg_types, args) { Ins.CallRtVoid(twin!, args) } else { i }
         }
-        .CallRt(dst, callee, args) -> {
-            let twin: string? = rt_owned_twin(callee)
-            if twin != null && is_managed(types, reg_types[dst.index]) && (!rt_lends(callee) || read_outlives(types, reg_types, ins, at, dst, args)) { Ins.CallRt(dst, twin!, args) } else { i }
-        }
+        .CallRt(dst, callee, args) -> if takes_twin(types, reg_types, ins, at, i) { Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args) } else { i },
         rest -> i,
+    }
+}
+
+/// WHETHER A READ TAKES ITS OWNED TWIN — its answer its own +1, riding nobody's
+/// reference: a managed answer of a row that has a twin, which a LENDING row
+/// declines only while the child stays a borrow.
+fn takes_twin(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: int, i: Ins) -> bool {
+    match i {
+        .CallRt(dst, callee, args) -> rt_owned_twin(callee) != null && is_managed(types, reg_types[dst.index]) && (!rt_lends(callee) || read_outlives(types, reg_types, ins, at, dst, args)),
+        rest -> false,
     }
 }
 
