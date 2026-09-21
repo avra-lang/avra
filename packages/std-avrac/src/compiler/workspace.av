@@ -98,8 +98,11 @@ export type Workspace = {
     /// object key. Cleared after the interfaces are written, when a record moves.
     bytes_keys: Map<string, string>,
     object_keys: Map<string, string>,
-    /// THE FILES THIS PROGRAM'S INSTANTIATIONS LOWER FROM, by path — never held.
+    /// THE FILES A BUILD MUST PARSE, by path: a home an instantiation lowers from, and a
+    /// file whose stored asks could not be read.
     homes: Map<string, bool>,
+    /// The instantiations the held files' bodies demand, read from the store.
+    held_wants: List<Wanted>,
     /// THE MODULES A HELD LOAD TOUCHED, in order — phase one mints and INTERNS every name;
     /// phase two FILLS every shape. A mutual import (language <-> features <-> core) is a
     /// cycle, and one module's shapes cannot be filled until every other module's NAMES are
@@ -277,8 +280,10 @@ fn language_decls(lang: Language) -> Decls {
 /// The workspace with its families registered, its table armed,
 /// and its packages loaded from the root's manifest outward.
 impl Workspace {
-    /// THE SAME PROGRAM WITH NOTHING REMEMBERED — what a build restarts from. A copy of a
-    /// workspace shares its tables, so a restart from one keeps every hold it made.
+    /// THE SAME PROGRAM WITH NOTHING REMEMBERED — what a build restarts from. A WORKSPACE
+    /// IS AN IDENTITY, NEVER A VALUE: its hooks capture it, and a copy shares its tables,
+    /// so a restart from a copy keeps every hold and a changed copy is asked through
+    /// hooks that still answer for the original.
     fn anew() -> Workspace {
         built(self.host, self.root, self.packages.find((p) -> p.origin is .Root)?.src ?? self.root, self.lang, self.clock, self.lone, self.per_file)
     }
@@ -300,7 +305,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, bytes_keys: {}, object_keys: {}, homes: {}, held_order: [], defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, bytes_keys: {}, object_keys: {}, homes: {}, held_wants: [], held_order: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }
