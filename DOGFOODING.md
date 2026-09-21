@@ -735,6 +735,18 @@ reintroducing I3's blind spot names the two spellings it lost.
       over a nullable enum (`is` there is F2013) or over a literal.
       Ratcheted (`bool_variant_match`).
 
+- I52 A NULL TEST THAT PICKS THE VALUE OR A DEFAULT IS `??` —
+      `if x == null { d } else { x! }` is `x ?? d`, and with the arms
+      swapped on `!= null` it is the same thing. THE ONE TERNARY THAT
+      STAYS: a present branch that does anything MORE than `x!`
+      (`x!.text()`, `f(x!)`) — `??` hands back `x` itself, never a
+      derived value, so those stay written out. Restricted to ONE
+      PHYSICAL LINE, which is what keeps a default from ever being a
+      block of statements (a statement cannot span a `;`) and a
+      subject from ever being a call written twice (a call's parens
+      are never part of the matched name).
+      Ratcheted (`if_null_ternary`).
+
 - I49 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
       conversions that are inverses name their categories ONCE, as a
       registry enum, and each direction is an exhaustive match over

@@ -403,6 +403,84 @@ def match_arms_oneline(l):
         arms.append((pat.strip(), body.strip().rstrip(",").strip()))
     return arms
 
+# A NULL TEST THAT PICKS THE VALUE OR A DEFAULT — `if x == null { d }
+# else { x! }` and `if x != null { x! } else { d }` — is `x ?? d`.
+# Restricted to ONE PHYSICAL LINE: a statement cannot span a `;`, so a
+# single line's braces hold exactly one expression each, which is
+# what keeps the DEFAULT from ever being a block of statements. A
+# subject that is a call is never captured (the name class excludes
+# `(`), so a side-effecting call written twice is never a site.
+IF_NULL_TERNARY = re.compile(r"\bif ([A-Za-z_][\w.\[\]]*) (==|!=) null \{")
+
+def closing_brace(text, at):
+    """Index of the `}` that closes the `{` at `text[at]`, quoted text
+    skipped, or None when the line does not close it."""
+    depth, in_str, k = 0, False, at
+    while k < len(text):
+        c = text[k]
+        if in_str:
+            if c == "\\":
+                k += 2
+                continue
+            if c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return k
+        k += 1
+    return None
+
+def in_string_at(line, idx):
+    """Whether `line[idx]` sits inside a quoted string — a fixture
+    quoting Avra SOURCE as text (a compiler test's own subject) is
+    not a site, however it reads."""
+    in_str, k = False, 0
+    while k < idx:
+        c = line[k]
+        if in_str:
+            if c == "\\":
+                k += 2
+                continue
+            if c == '"':
+                in_str = False
+        elif c == '"':
+            in_str = True
+        k += 1
+    return in_str
+
+def if_null_ternary(lines):
+    """A null test picking the value or a default — `x ?? d` (I52)."""
+    for i, l in enumerate(lines):
+        if l.strip().startswith("//"):
+            continue
+        for m in IF_NULL_TERNARY.finditer(l):
+            if in_string_at(l, m.start()):
+                continue
+            name, op = m.group(1), m.group(2)
+            brace1 = m.end() - 1
+            close1 = closing_brace(l, brace1)
+            if close1 is None:
+                continue
+            em = re.match(r"\s*else\s*\{", l[close1 + 1:])
+            if not em:
+                continue
+            brace2 = close1 + 1 + em.end() - 1
+            close2 = closing_brace(l, brace2)
+            if close2 is None:
+                continue
+            branch1 = l[brace1 + 1:close1].strip()
+            branch2 = l[brace2 + 1:close2].strip()
+            bare = name + "!"
+            present, default = (branch2, branch1) if op == "==" else (branch1, branch2)
+            if present == bare and default != bare:
+                yield i, l.strip()
+                break
+
 def bool_variant_match(lines):
     """A `match` that only answers `is`'s question (I51)."""
     for i, l in enumerate(lines):
@@ -712,6 +790,9 @@ RULES = {
     "I40": (spelled_shape,
             "a structural type interned by hand — `intern(Type.Opt(intern(Type.Str)))` — "
             "where a type literal spells it: `cx.type(string?)`, `types.type(List<elem>)`"),
+    "I52": (if_null_ternary,
+            "a null test that picks the value or a default — `if x == null { d } "
+            "else { x! }` (or the arms swapped on `!=`) is `x ?? d`"),
     "I51": (bool_variant_match,
             "a match answering only true/false, one arm a bare variant and the "
             "other the wildcard — that is `is`: `x is .Ready`, or `!(x is .Ready)` "
@@ -841,6 +922,12 @@ CLEAN = {
     "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
             ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
+    "I52": [["    if x == null { 0 } else { x!.text() }"],
+            ["    if x != null { f(x!) } else { 0 }"],
+            ["    if x == null {", "        do_a()", "        do_b()", "    } else {", "        x!", "    }"],
+            ["    if f() == null { 0 } else { f()! }"],
+            ["    if x == null { x! } else { x! }"],
+            ['    shown("fn f(v: int?) -> int { if v != null { v! } else { 0 } }") == "1"']],
     "I51": [["    match v { .Bind(_) -> true, _ -> false }"],
             ["    match s { .A -> true, .B -> false, .C -> false }"],
             ["    match k { .Wide -> true, .Narrow or .Ptr or .Void -> false }"],
@@ -871,6 +958,10 @@ SPECIMENS = {
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
+    "I52": [["    let id = if known == null { Default { x: 1 } } else { known! }"],
+            ["    let one = if held != null { held! } else { defaulted_reg(cx) }"],
+            ["    if x == null { 0 } else { x! }"],
+            ["    if y != null { y! } else { \"-\" }"]],
     "I51": [["    match x { .Ready -> true, _ -> false }"],
             ["    match self {", "        .Other -> false,", "        _ -> true,", "    }"],
             ["    match k { .A -> true, rest -> false }"],
