@@ -2,7 +2,7 @@
 // its definition's register), scopes are structure, and the memory
 // pass releases a scope's managed values at its exit — Application
 // strategy, reverse binding order.
-use @std.avrac.core.{Ins, RtSig, Reg, Type, TypeId, same_reg, distinct, moved_args, flatten, new_type_registry}
+use @std.avrac.core.{Ins, RtSig, Reg, Type, TypeId, same_reg, distinct, lent_args, flatten, new_type_registry}
 
 use @std.avrac.core.{rt_sigs, rt_sig_of, rt_owns, rt_index}
 use @std.avrac.testing.{ir_of, halver, shown}
@@ -80,9 +80,9 @@ fn load_rides_pointer(l: Lowered, i: Ins) -> bool {
     d == null || l.types.rides_pointer(l.entry.reg_types[d!.index])
 }
 
-/// Every call THROUGH a box in the lifted bodies takes a seat the
-/// caller retained first — callee-cleans' other half, which a lane
-/// read typed as a bare pointer once skipped.
+/// Every call THROUGH a box in the lifted bodies HOLDS that box across the
+/// call: it was read out of another box — a VIEW, which the caller cannot
+/// promise stands — and a read typed as a bare pointer once skipped it.
 fn every_callptr_seat_retained(l: Lowered) -> bool {
     mut ok = true
     for b in l.fns {
@@ -169,8 +169,11 @@ spec "language/lower" {
     }
     given "strings under the Application strategy" {
         then "each managed binding releases once, at scope exit" {
-            let l = ir_of("let a = \"x\"\nlet b = \"y\"\nb")
+            let l = ir_of("let a = \"x\" + \"1\"\nlet b = \"y\" + \"2\"\nb")
             count_releases(l) == 2
+        }
+        then "a string CONSTANT is the binary's own data — never counted" {
+            count_releases(ir_of("let a = \"x\"\nlet b = \"y\"\nb")) == 0
         }
         then "scalars never release" {
             count_releases(ir_of("let n = 1 + 2\nn < 4")) == 0
@@ -189,11 +192,11 @@ spec "language/lower" {
         then "the element read is a VIEW — no retain, no release of its own" {
             extract_carries_no_reference(all_ins(ir_of(pair_read())))
         }
-        then "a call's `@moves` seat is RETAINED before the call — the caller's half" {
-            every_call_seat_retained(ir_of(moved_seat()).entry.ins)
+        then "a seat that STANDS is handed over uncounted — a parameter is borrowed" {
+            no_call_seat_counted(ir_of(moved_seat()).entry.ins)
         }
-        then "`avra ir` SHOWS the moved seat's retain, placed Before the call that releases it" {
-            render_ir(ir_of(moved_seat())).contains("retain r0\n  r1 = call id(r0)")
+        then "a VIEW handed over is HELD across the call — the callee may empty the box it looks into" {
+            render_ir(ir_of(viewed_seat())).contains("retain r8\n  r9 = call n(r8)\n  release r8")
         }
     }
     given "THE LAW: nullability never allocates" {
@@ -380,18 +383,21 @@ fn all_ins(l: Lowered) -> List<Ins> {
     flatten([b.ins for b in l.fns]).concat(l.entry.ins)
 }
 
-/// An Avra call whose one argument is managed — the `@moves` seat the
+/// An Avra call whose one argument is managed — the `@lent` seat the
 /// caller must retain before handing its reference over.
 fn moved_seat() -> string {
-    "fn id(s: string) -> string { s }\nid(\"a\")"
+    "fn id(s: string) -> string { s }\nid(\"a\" + \"b\")"
 }
 
-/// Every managed `@moves` seat of every call in the slice is retained
-/// exactly once — what `retained_args` reads off the declaration.
-fn every_call_seat_retained(ins: List<Ins>) -> bool {
+/// A call whose argument is a view into a box the caller holds.
+fn viewed_seat() -> string {
+    "type B = { xs: List<string> }\nfn n(xs: List<string>) -> int { xs.length }\nlet b = B { xs: [\"a\" + \"b\"] }\nn(b.xs)"
+}
+
+/// No `@lent` seat of any call in the slice is retained: each stands.
+fn no_call_seat_counted(ins: List<Ins>) -> bool {
     let calls = [i for i in ins if i is .Call]
-    let seats = flatten([moved_args(i) for i in calls])
-    seats.all((r: Reg) -> retains_of(ins, r) == 1)
+    flatten([lent_args(i) for i in calls]).all((r: Reg) -> retains_of(ins, r) == 0)
 }
 
 /// The destination of the first pack in the slice.

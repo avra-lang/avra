@@ -15,7 +15,7 @@
 // `Reg?`, and agreed everywhere. That was the receipt; this is the
 // keeper.
 use @std.avrac.core.{Ins, Reg, Level, BinOp, UnOp,
-    dst_of, reads_of, seat_regs, owned_dst, viewed_dst, moved_args,
+    dst_of, reads_of, seat_regs, owned_dst, viewed_dst, lent_args,
     call_symbol, body_symbol, hosted_symbol}
 
 /// One instruction per variant, beside what a person reads off the
@@ -23,42 +23,42 @@ use @std.avrac.core.{Ins, Reg, Level, BinOp, UnOp,
 /// order, its Avra call seats, the register it OWNS, the register
 /// that is a VIEW, the seats that MOVE IN, the body it enters, the
 /// body it names, and the hosted fn it calls. `-` is absence.
-type Row = { ins: Ins, dst: string, reads: string, seats: string, owns: string, view: string, moves: string, call: string, body: string, host: string }
+type Row = { ins: Ins, dst: string, reads: string, seats: string, owns: string, view: string, lent: string, call: string, body: string, host: string }
 
 fn rows() -> List<Row> {
     [
-        Row { ins: Ins.ConstInt(r(1), 7),                      dst: "1",  reads: "",      seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.ConstFloat(r(2), 0),                    dst: "2",  reads: "",      seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.ConstStr(r(3), "s"),                    dst: "3",  reads: "",      seats: "", owns: "3",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.ConstBool(r(4), true),                  dst: "4",  reads: "",      seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.Bin(r(5), BinOp.Add, r(6), r(7)),       dst: "5",  reads: "6,7",   seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.Un(r(8), UnOp.Not, r(9)),               dst: "8",  reads: "9",     seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.CallRtVoid("rt_v", [r(10), r(11)]),     dst: "-",  reads: "10,11", seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "rt_v" },
-        Row { ins: Ins.CallRt(r(12), "rt", [r(13), r(14)]),    dst: "12", reads: "13,14", seats: "", owns: "12", view: "-",  moves: "",      call: "-",      body: "-",      host: "rt" },
-        Row { ins: Ins.Pack(r(15), [r(16), r(17)]),            dst: "15", reads: "16,17", seats: "", owns: "15", view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.Extract(r(18), r(19), 1),               dst: "18", reads: "19",    seats: "", owns: "-",  view: "18", moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.FnAddr(r(20), "body_a"),                dst: "20", reads: "",      seats: "", owns: "20", view: "-",  moves: "",      call: "-",      body: "body_a", host: "-" },
-        Row { ins: Ins.StaticAddr(r(21), "static_a"),          dst: "21", reads: "",      seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.ScopeEnter(Level.Application),          dst: "-",  reads: "",      seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.ScopeExit(r(22)),                       dst: "-",  reads: "22",    seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.ScopeExit(null),                        dst: "-",  reads: "",      seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.IfStart(r(23)),                         dst: "-",  reads: "23",    seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.SwitchStart(r(24), [0, 1]),             dst: "-",  reads: "24",    seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.ArmEnd(r(25)),                          dst: "-",  reads: "25",    seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.RegionEnd(r(26), r(27)),                dst: "26", reads: "27",    seats: "", owns: "26", view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.Call(r(28), "body_b", [r(29), r(30)]),  dst: "28", reads: "29,30", seats: "29,30", owns: "28", view: "-", moves: "29,30", call: "body_b", body: "body_b", host: "-" },
-        Row { ins: Ins.CallPtr(r(31), r(32), [r(33), r(34)]),  dst: "31", reads: "32,33,34", seats: "33,34", owns: "31", view: "-", moves: "33,34", call: "-", body: "-",   host: "-" },
-        Row { ins: Ins.RetVal(r(35)),                          dst: "-",  reads: "35",    seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.FnExit(r(36)),                          dst: "-",  reads: "36",    seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.Alloca(r(37)),                          dst: "37", reads: "",      seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.Load(r(38), r(39)),                     dst: "38", reads: "39",    seats: "", owns: "38", view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.Store(r(40), r(41)),                    dst: "-",  reads: "40,41", seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.LoopStart,                              dst: "-",  reads: "",      seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.LoopCond(r(42)),                        dst: "-",  reads: "42",    seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.LoopEnd,                                dst: "-",  reads: "",      seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.Retain(r(43)),                          dst: "-",  reads: "43",    seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.Release(r(44)),                         dst: "-",  reads: "44",    seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
-        Row { ins: Ins.Ret(0),                                 dst: "-",  reads: "",      seats: "", owns: "-",  view: "-",  moves: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.ConstInt(r(1), 7),                      dst: "1",  reads: "",      seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.ConstFloat(r(2), 0),                    dst: "2",  reads: "",      seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.ConstStr(r(3), "s"),                    dst: "3",  reads: "",      seats: "", owns: "-", view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.ConstBool(r(4), true),                  dst: "4",  reads: "",      seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.Bin(r(5), BinOp.Add, r(6), r(7)),       dst: "5",  reads: "6,7",   seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.Un(r(8), UnOp.Not, r(9)),               dst: "8",  reads: "9",     seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.CallRtVoid("rt_v", [r(10), r(11)]),     dst: "-",  reads: "10,11", seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "rt_v" },
+        Row { ins: Ins.CallRt(r(12), "rt", [r(13), r(14)]),    dst: "12", reads: "13,14", seats: "", owns: "12", view: "-",  lent: "",      call: "-",      body: "-",      host: "rt" },
+        Row { ins: Ins.Pack(r(15), [r(16), r(17)]),            dst: "15", reads: "16,17", seats: "", owns: "15", view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.Extract(r(18), r(19), 1),               dst: "18", reads: "19",    seats: "", owns: "-",  view: "18", lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.FnAddr(r(20), "body_a"),                dst: "20", reads: "",      seats: "", owns: "20", view: "-",  lent: "",      call: "-",      body: "body_a", host: "-" },
+        Row { ins: Ins.StaticAddr(r(21), "static_a"),          dst: "21", reads: "",      seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.ScopeEnter(Level.Application),          dst: "-",  reads: "",      seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.ScopeExit(r(22)),                       dst: "-",  reads: "22",    seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.ScopeExit(null),                        dst: "-",  reads: "",      seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.IfStart(r(23)),                         dst: "-",  reads: "23",    seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.SwitchStart(r(24), [0, 1]),             dst: "-",  reads: "24",    seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.ArmEnd(r(25)),                          dst: "-",  reads: "25",    seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.RegionEnd(r(26), r(27)),                dst: "26", reads: "27",    seats: "", owns: "26", view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.Call(r(28), "body_b", [r(29), r(30)]),  dst: "28", reads: "29,30", seats: "29,30", owns: "28", view: "-", lent: "29,30", call: "body_b", body: "body_b", host: "-" },
+        Row { ins: Ins.CallPtr(r(31), r(32), [r(33), r(34)]),  dst: "31", reads: "32,33,34", seats: "33,34", owns: "31", view: "-", lent: "33,34", call: "-", body: "-",   host: "-" },
+        Row { ins: Ins.RetVal(r(35)),                          dst: "-",  reads: "35",    seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.FnExit(r(36)),                          dst: "-",  reads: "36",    seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.Alloca(r(37)),                          dst: "37", reads: "",      seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.Load(r(38), r(39)),                     dst: "38", reads: "39",    seats: "", owns: "38", view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.Store(r(40), r(41)),                    dst: "-",  reads: "40,41", seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.LoopStart,                              dst: "-",  reads: "",      seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.LoopCond(r(42)),                        dst: "-",  reads: "42",    seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.LoopEnd,                                dst: "-",  reads: "",      seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.Retain(r(43)),                          dst: "-",  reads: "43",    seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.Release(r(44)),                         dst: "-",  reads: "44",    seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
+        Row { ins: Ins.Ret(0),                                 dst: "-",  reads: "",      seats: "", owns: "-",  view: "-",  lent: "",      call: "-",      body: "-",      host: "-" },
     ]
 }
 
@@ -99,8 +99,8 @@ fn view_agree(row: Row) -> bool {
     shown_reg(viewed_dst(row.ins)) == row.view
 }
 
-fn moves_agree(row: Row) -> bool {
-    shown_regs(moved_args(row.ins)) == row.moves
+fn lent_agree(row: Row) -> bool {
+    shown_regs(lent_args(row.ins)) == row.lent
 }
 
 fn call_agrees(row: Row) -> bool {
@@ -135,8 +135,8 @@ spec "core/ir — a role projection answers what a person reads off the declarat
         then "`viewed_dst` answers the `@view` payload, and a pack is not a view" {
             rows().all(view_agree(it))
         }
-        then "`moved_args` answers the seats that MOVE IN, and a runtime row's are not seats" {
-            rows().all(moves_agree(it))
+        then "`lent_args` answers the seats a call is LENT, and a runtime row's are not seats" {
+            rows().all(lent_agree(it))
         }
         then "`call_symbol` answers the body a call ENTERS" {
             rows().all(call_agrees(it))

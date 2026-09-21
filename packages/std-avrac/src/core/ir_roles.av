@@ -2,15 +2,15 @@
 //! projections, read off the ROLE each payload declares. `@dst` is
 //! the register the step DEFINES, and every OTHER reg-shaped payload
 //! is an operand in declaration order, which is the whole of
-//! `reads_of`. `@seats` are an Avra call's arguments (callee-cleans,
-//! so a runtime row's are not seats), `@body` the symbol of a body a
+//! `reads_of`. `@seats` are an Avra call's arguments (a runtime row's
+//! are its registry's, not seats), `@body` the symbol of a body a
 //! call ENTERS, `@code` a body's address taken as a value, `@host` a
 //! hosted fn's name.
 //!
 //! THE OWNERSHIP ROLES ARE THE SAME CHANNEL, a second fact on that
 //! payload's marks: `@owns` is the register that owns a reference
 //! when its value is managed, `@view` the register that is a VIEW of
-//! another box, `@moves` an Avra call's seats the caller RETAINS.
+//! another box, `@lent` an Avra call's seats, which the caller keeps standing.
 //! A destination carrying only `@dst` owns nothing — a scalar's
 //! word, a cell, an immortal static address — so absence is a role
 //! and the memory pass reads the IR's declaration instead of holding
@@ -61,8 +61,8 @@ trait Roles {
             }
          }),
          made(t, quote {
-            export fn moved_args_role(i: ${t}) -> List<Reg> {
-                match i { ${[answering(v, holding(v, "moves"), quote { [] }) for v in t.variants]} }
+            export fn lent_args_role(i: ${t}) -> List<Reg> {
+                match i { ${[answering(v, holding(v, "lent"), quote { [] }) for v in t.variants]} }
             }
          }),
          made(t, quote {
@@ -83,7 +83,7 @@ trait Roles {
     }
 
     /// The words this derive reads off a payload.
-    static fn marks(t: MetaType) -> List<string> { ["dst", "seats", "body", "code", "host", "owns", "view", "moves"] }
+    static fn marks(t: MetaType) -> List<string> { ["dst", "seats", "body", "code", "host", "owns", "view", "lent"] }
 }
 
 fn made(t: MetaType, code: Decls) -> Directive {

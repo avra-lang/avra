@@ -322,14 +322,23 @@ engine's spec, written by dogfooding.
   revision one, every sig it will ask for is held, and an Analysis
   asked after is remade over the memoized parts, never kept. The
   language's answer is in the sugar backlog: weak captures.
-- A RETAIN THE CALLEE RELEASES MUST BE EMITTED: callee-cleans means
-  every managed seat of a call is retained by the caller, and a
-  seat typed as unmanaged (`Ptr`, `Int`) is a release with no
-  retain — under the registry a silent leak of nothing, under the
-  header a write into freed memory. `AVRA_RC_GUARD=1` names it as
-  "released an already-dead box"; the capture lane read as `Ptr`
-  was one (`callee_binding`), and a mut fn CELL loaded at the
-  call's answer type was its twin (the box read as `i64`, LLVM
+- A PARAMETER IS BORROWED, AND WHAT A CALLEE KEEPS TAKES ITS OWN
+  REFERENCE. The caller keeps every managed argument STANDING for
+  the call — a param, a register a scope owns, a cell's load and the
+  binary's own data stand already; a VIEW into a box does not, since
+  the callee may empty that box, so it is held across the call
+  (memory.av's `standing_regs`, `lent`). The callee owns none of its
+  params: a store, a push, a pack, a yield and its ANSWER each take
+  a reference of their own, as any value a scope does not own does.
+  A call that only reads costs no count at all — callee-cleans spent
+  a retain and a release a managed seat, 1.3 billion counts in one
+  cold `check` of the cli and 15% of its CPU. THE PROOF IS
+  features/fns/tests/borrowed_params, each rule witnessed failing
+  without it under `AVRA_RC_GUARD=1`. AND THE TYPE STILL DECIDES: a
+  seat typed as unmanaged (`Ptr`, `Int`) is a view never held and an
+  answer never retained — a read of freed memory. The capture lane
+  read as `Ptr` was one (`callee_binding`), and a mut fn CELL loaded
+  at the call's answer type was its twin (the box read as `i64`, LLVM
   refused). The fourth and fifth instances of A READ WEARS THE
   TYPE OF WHAT IS READ: a capture wears the CAPTURED binding's
   type, seated by typing (`TypeFacts.captures`), a cell's load the
@@ -454,11 +463,10 @@ engine's spec, written by dogfooding.
   so it cannot become an error — a name that is IN `rt_sigs`
   redeclared with a different answer is not skew, and needs its own
   refusal at the declaration.
-- A RUNTIME ROW BORROWS ITS ARGUMENTS — callee-cleans is the AVRA
-  call's convention, not the registry's. `retained_args` retains for
-  `.Call` and `.CallPtr` alone; a `CallRt`/`CallRtVoid` argument
-  arrives borrowed, which is why `avra_array_push_owned` exists as a
-  TWIN and why `avra_slot_set_owned` retains at the pack. A C body
+- A RUNTIME ROW BORROWS ITS ARGUMENTS, as an Avra call does — and a
+  row's KEEPING is C's to do, where the memory pass cannot place it:
+  that is why `avra_array_push_owned` exists as a TWIN and why
+  `avra_slot_set_owned` retains at the pack. A C body
   that KEEPS what it was handed takes its OWN reference
   (`avra_rc_retain`), and one that answers a value it keeps answers
   it retained (`owns_result: true`, as `avra_insist` does). A body
