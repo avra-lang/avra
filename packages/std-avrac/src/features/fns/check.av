@@ -52,8 +52,7 @@ fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>
 /// `avra_fd_taken` has answered `Bytes` that way.
 fn crossing_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
     if rt_sigs().any(it.name == hname) { return nothing() }
-    let declared? = cx.stmt_sig(s) else { return nothing() }
-    let sig = declared
+    let sig? = cx.stmt_sig(s) else { return nothing() }
     for j, p in sig.params {
         if !hparams[j].promises.mutable && !crossable(cx.view.types, p) { seat_cannot_cross(cx, s, hname, j, p) }
     }
@@ -275,8 +274,7 @@ fn named_construction(mut cx: TypeCx, e: ExprId, callee: string, args: List<Expr
 /// resolver already found.
 fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                    args: List<ExprId>, s: FnSig) -> TypeId {
-    let decl? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, s.params, [], s.ret, args) }
-    let d = decl
+    let d? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, s.params, [], s.ret, args) }
     if !cx.seat_contracts(e, callee, d, 0, args, null) { return cx.error_type }
     if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, d, args) }
     let tp: List<string> = cx.tparams(d)
@@ -378,8 +376,7 @@ fn generic_argument(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: Ex
 /// `return v` — legal only inside a fn, and `v` must be ACCEPTED
 /// by the declared answer (widening recorded, like every slot).
 export fn check_return(mut cx: TypeCx, s: StmtId) {
-    let held? = cx.view.store.stmt_value(s) else { return bare_return(cx, s) }
-    let v = held
+    let v? = cx.view.store.stmt_value(s) else { return bare_return(cx, s) }
     let early: TypeId? = cx.enclosing_ret()
     if early != null { cx.plant_want(v, early!) }
     cx.walk(v)
@@ -429,8 +426,7 @@ fn inout_args_law(mut cx: TypeCx, callee: string, d: DeclId, args: List<ExprId>)
 /// SEAT LAW's to refuse and it already has, so this law asks only
 /// about what that one accepted: one mistake, one message.
 fn cellless_place(cx: TypeCx, a: ExprId) -> bool {
-    let held? = cx.view.store.place_root(a) else { return false }
-    let root = held
+    let root? = cx.view.store.place_root(a) else { return false }
     let b: Binding? = cx.names.binding(root)
     cx.is_mut(root) && b != null && !(b! is .Def)
 }

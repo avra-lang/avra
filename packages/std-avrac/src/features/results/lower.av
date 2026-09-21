@@ -18,8 +18,7 @@ fn catch_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 fn catched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, variants: List<string>,
                binds: List<string>, values: List<ExprId>) -> Reg {
     let r = cx.reg_of(subject)
-    let sides? = cx.view.types.res_parts(cx.type_at(subject)) else { return cx.lower_defect(e, "a catch without a Result survived typing") }
-    let held = sides
+    let held? = cx.view.types.res_parts(cx.type_at(subject)) else { return cx.lower_defect(e, "a catch without a Result survived typing") }
     cx.region(cx.okness_of(r), e) { cx -> cx.payload_of(r, held.ok) } else { cx -> failure_reg(cx, e, r, held, variants, binds, values) }
 }
 
@@ -46,8 +45,7 @@ fn all_arm_reg(mut cx: LowerCx, r: Reg, sides: ResSides, bind: string, value: Ex
 /// exits with the subject's own box, propagating the unmatched.
 fn switched_reg(mut cx: LowerCx, e: ExprId, r: Reg, sides: ResSides,
                 variants: List<string>, binds: List<string>, values: List<ExprId>) -> Reg {
-    let held? = cx.variants_of(sides.err) else { return cx.lower_defect(e, "catch arms without variants survived typing") }
-    let sig = held
+    let sig? = cx.variants_of(sides.err) else { return cx.lower_defect(e, "catch arms without variants survived typing") }
     let err = cx.payload_of(r, sides.err)
     let selective = !total(sig, variants)
     let tags = arm_tags(sig, variants, selective)

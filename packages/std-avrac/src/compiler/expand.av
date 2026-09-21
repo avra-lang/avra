@@ -137,8 +137,7 @@ impl Workspace {
     fn hold_the_marks_of(f: FileId, s: StmtId, written: List<Mark>, p: Parsed, vis: Namespace) {
         if written.is_empty() { return }
         let owner? = self.decls.decls_of_file(f).find((c: DeclId) -> same_stmt(self.decls.decl(c).stmt, s)) else { return }
-        let asked? = self.claimed_marks(f, owner, p, vis) else { return }
-        let claimed = asked
+        let claimed? = self.claimed_marks(f, owner, p, vis) else { return }
         // LICENSED — matching a mark by its WORD: a mark crosses a
         // package boundary, where a foreign enum has no typed id, so
         // the word is the currency. The doctrine's mitigation is this
@@ -174,8 +173,7 @@ impl Workspace {
     /// answers absence.
     fn trait_claims(tr: DeclId?, w: DeclareWork, f: FileId) -> List<string>? {
         if tr == null { return null }
-        let member? = self.decls.trait_marks(tr!) else { return claims_nothing() }
-        let m = member
+        let m? = self.decls.trait_marks(tr!) else { return claims_nothing() }
         if same_file(self.decls.decl(m).file, f) { return null }
         if (self.decls.sig(m))?.fn_sig() == null { return null }
         match self.lifted(m, f, w.stmt, w.callee, []) {
@@ -310,12 +308,10 @@ impl Workspace {
     /// fills in the seat asked for. Each copied node records the file
     /// that wrote it, unless that is f itself.
     fn copied(f: FileId, file: string, at: int, fills: List<Node>, seat: HoleKind) -> Copied {
-        let held? = self.decls.paths.get(file) else { return nothing_copied() }
-        let origin = held
+        let origin? = self.decls.paths.get(file) else { return nothing_copied() }
         let src = self.decls.store_of(origin)
         let q? = src.quote_at(at) else { return nothing_copied() }
-        let parts? = (src.expr(q)).body_of() else { return nothing_copied() }
-        let body = parts
+        let body? = (src.expr(q)).body_of() else { return nothing_copied() }
         if quote_kind(src, q) is .Holes { return self.holes_copied(f, fills, seat) }
         let ws = self
         let thunks = [(kind: HoleKind) -> ws.spliced(f, fill, kind) for fill in fills]
@@ -376,8 +372,7 @@ impl Workspace {
     fn trait_directives(tr: DeclId?, w: DeclareWork, f: FileId) -> List<Directive> {
         if tr == null { return [] }
         let trait_id = tr!
-        let member? = self.decls.trait_derive(trait_id) else { return [] }
-        let m = member
+        let m? = self.decls.trait_derive(trait_id) else { return [] }
         // The provider guard: a same-file derive would need this file's
         // names while they are still being made. `check_annotation` speaks.
         if same_file(self.decls.decl(m).file, f) { return [] }
