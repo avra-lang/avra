@@ -711,7 +711,10 @@ impl Workspace {
         // or a caller in another file sees a table missing the derived
         // methods. The kernel's recursion guard makes the re-entry (a
         // target whose own file is resolving) answer the smaller view.
-        let _ = self.resolved(self.decls.decl(target).file)
+        // A HELD FILE NEVER EXPANDS: its generated impls were minted from
+        // its record, so its table is whole without a parse.
+        let home = self.decls.decl(target).file
+        if !self.is_held(home) { let _ = self.resolved(home) }
         let blocks = self.decls.children_of(target).concat([b for b in self.decls.impls_named(self.decls.decl(target).name) if self.aims_at(b, target)])
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a
