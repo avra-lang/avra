@@ -135,7 +135,7 @@ build/%.o: %.c build/%.sha
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: census traps test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header witnesses libs libscope \
+.PHONY: census traps cache-attacks test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -296,6 +296,12 @@ build/%.sha: %.c FORCE
 # else's defect.
 traps: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 	@sh tools/traps.sh
+
+# THE BUILD CACHE, ATTACKED: two programs and a library through ONE store, every edit
+# kind a hold must survive, each binary held to the evaluator. It CLEARS the store, so
+# it runs last, and it refuses a run in which no step held.
+cache-attacks: $(COMPILER_OBJS) $(PACKAGE_OBJS)
+	@sh tools/cache_attacks.sh
 
 # Exact refcount and list-write counts; the shipping runtime is put
 # back on every exit.   make census CMD="check packages/std-avrac"
@@ -531,7 +537,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # THE RECEIPT: a green gate names the tree it proved, so an
 # integration that takes that exact tree need not prove it again
 # (tools/gate_receipt.sh). A dirty tree writes none.
-gate: seed-check stems vocab fingerprints rt-header witnesses externs idioms cited attack tested traps witness
+gate: seed-check stems vocab fingerprints rt-header witnesses externs idioms cited attack tested traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/gate_receipt.sh write
 

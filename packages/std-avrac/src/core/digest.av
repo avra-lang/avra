@@ -78,6 +78,27 @@ export fn digest_text(d: Digest, s: string) -> Digest {
     digest_int(out, n)
 }
 
+/// Absorb octets and their count, eight to a word.
+export fn digest_bytes(d: Digest, b: Bytes) -> Digest {
+    mut out = d
+    let n = b.length
+    mut i = 0
+    while i + 8 <= n {
+        out = digest_int(out, word_at(b, i))
+        i = i + 8
+    }
+    while i < n {
+        out = digest_int(out, b.at(i))
+        i = i + 1
+    }
+    digest_int(out, n)
+}
+
+/// Eight octets as one little-endian word.
+fn word_at(b: Bytes, at: int) -> int {
+    b.at(at) | (b.at(at + 1) << 8) | (b.at(at + 2) << 16) | (b.at(at + 3) << 24) | (b.at(at + 4) << 32) | (b.at(at + 5) << 40) | (b.at(at + 6) << 48) | (b.at(at + 7) << 56)
+}
+
 /// A lane's final avalanche (splitmix64's), so every output bit depends on every input
 /// bit and the four lanes do not correlate.
 fn mix_final(x: int) -> int {

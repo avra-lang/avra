@@ -98,7 +98,8 @@ export type Workspace = {
     /// object key. Cleared after the interfaces are written, when a record moves.
     bytes_keys: Map<string, string>,
     object_keys: Map<string, string>,
-    content_keys: Map<string, string>,
+    /// THE FILES THIS PROGRAM'S INSTANTIATIONS LOWER FROM, by path — never held.
+    homes: Map<string, bool>,
     /// THE MODULES A HELD LOAD TOUCHED, in order — phase one mints and INTERNS every name;
     /// phase two FILLS every shape. A mutual import (language <-> features <-> core) is a
     /// cycle, and one module's shapes cannot be filled until every other module's NAMES are
@@ -275,6 +276,14 @@ fn language_decls(lang: Language) -> Decls {
 
 /// The workspace with its families registered, its table armed,
 /// and its packages loaded from the root's manifest outward.
+impl Workspace {
+    /// THE SAME PROGRAM WITH NOTHING REMEMBERED — what a build restarts from. A copy of a
+    /// workspace shares its tables, so a restart from one keeps every hold it made.
+    fn anew() -> Workspace {
+        built(self.host, self.root, self.packages.find((p) -> p.origin is .Root)?.src ?? self.root, self.lang, self.clock, self.lone, self.per_file)
+    }
+}
+
 fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool, per_file: bool) -> Workspace {
     let db = new_db()
     mut ws = Workspace {
@@ -291,7 +300,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, bytes_keys: {}, object_keys: {}, content_keys: {}, held_order: [], defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, bytes_keys: {}, object_keys: {}, homes: {}, held_order: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }
@@ -711,7 +720,10 @@ impl Workspace {
         // or a caller in another file sees a table missing the derived
         // methods. The kernel's recursion guard makes the re-entry (a
         // target whose own file is resolving) answer the smaller view.
-        let _ = self.resolved(self.decls.decl(target).file)
+        // A HELD FILE NEVER EXPANDS: its generated impls were minted from
+        // its record, so its table is whole without a parse.
+        let home = self.decls.decl(target).file
+        if !self.is_held(home) { let _ = self.resolved(home) }
         let blocks = self.decls.children_of(target).concat([b for b in self.decls.impls_named(self.decls.decl(target).name) if self.aims_at(b, target)])
         // A table that cannot be COMPLETED is not the table, and must
         // not be memoized: an impl still registering, or an impl in a

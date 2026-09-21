@@ -1,6 +1,6 @@
 //! The interface's Workspace/Decls verbs: mint, fill, key, and the
 //! wire each record line carries. The record FORMAT lives in record.av.
-use core.{joined, flatten, distinct, same_decl, ModulePath, TypeLit, Type, TypeId, DeclId, FileId, StmtId, ExprId, SeatMark, TypeRef}
+use core.{joined, flatten, distinct, digest_of, same_decl, ModulePath, TypeLit, Type, TypeId, DeclId, FileId, StmtId, ExprId, SeatMark, TypeRef}
 use features.{Decl, FnSig, StructSig, EnumSig, NamedSig, Decls, SettleRoot, kind_word, scalar_named}
 
 impl Workspace {
@@ -276,7 +276,10 @@ fn record_of(store: Store, m: ModulePath) -> string {
             items = items.concat([self.record_line( self.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in self.decls.decls_of_file(f)])
         }
     }
-    joined(["iface\t${iface_digest(items)}"].concat(here).concat(items), "\n")
+    // WHAT EACH FILE'S LINES WERE READ FROM — outside the interface digest, which a body
+    // edit must not move.
+    let read = ["file\t${path}\t${digest_of(self.source(self.file_id(path)).text)}" for path in self.module_files(m)]
+    joined(["iface\t${iface_digest(items)}"].concat(here).concat(read).concat(items), "\n")
 }
 
 fn row_decl(parts: List<string>) -> DeclId? {

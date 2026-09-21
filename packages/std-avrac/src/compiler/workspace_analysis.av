@@ -1,7 +1,7 @@
 //! The workspace's analysis and memo: parse/resolve/sig/typeck
 //! families and the lowered program. The core accessors live in
 //! workspace.av.
-use core.{Expr, StmtId, DeclId, FileId, ExprId, flatten, TypeId, Type, touch, spelled}
+use core.{Expr, StmtId, DeclId, FileId, ExprId, flatten, TypeId, Type, touch, spelled, module_path}
 use @std.path.{dir_of}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, Decls, Clash, Wanted, nothing, Lifted, bound_decl_of, SeatValue, settled_symbol, quote_meta, SettleRoot}
 use core.{StmtId}
@@ -97,67 +97,30 @@ impl Workspace {
     /// unit; the specializations it wants are other units.
     fn lowered(id: int) -> Unit {
         match self.units.start_recursive(id) { .Reuse(value) -> { return value }, .Compute -> nothing() }
-        let w = self.asks[id]
-        // A HELD UNIT CONTRIBUTES ITS EDGES, NOT ITS BODY. Its machine code is the stored
-        // object; its DEMANDS are what the fresh lowering must follow, or a fn only a held
-        // body calls is never demanded and the fresh object is not the whole-program one.
-        if self.is_held(w.file) {
-            let deps = self.held_deps(w)
-            if deps != null {
-                // A HELD SPECIALIZATION NEEDS A DECLARATION a fresh caller can name: its body
-                // is in the stored object, but nothing here declares it. `held_stubs` covers
-                // held DECLARATIONS; a specialization's signature is its generic's,
-                // substituted with the type arguments, so no extra row is needed.
-                let stub = self.unit_stub(w)
-                let bodies: List<Body> = if stub == null { [] } else { [stub!] }
-                return self.units.finish(id, Unit { bodies: bodies, wants: deps!, voices: no_voices(), statics: [] }, self.db.revision())
-            }
-        }
-        let out = self.lower_requested(w)
-        if !self.is_held(w.file) { self.remember_deps(w, out.wants) }
-        self.units.finish(id, out, self.db.revision())
-    }
-
-    /// The declaration a held SPECIALIZATION wears — its generic's signature substituted
-    /// with the type arguments. Null for a held declaration (stubbed elsewhere) and for a
-    /// unit with no fn signature (a root or main).
-    fn unit_stub(w: Wanted) -> Body? {
-        if w.sub == null || w.decl == null { return null }
-        let sub = w.sub!
-        // THE METHOD'S OWN SIGNATURE, substituted at the type the Sub names — `sub.target`
-        // is the GENERIC TYPE (whose Vars the seats use), never the method.
-        let base = (self.decls.sig(w.decl!))?.fn_sig()
-        if base == null { return null }
-        Body {
-            name: w.name,
-            params: [self.decls.types.substituted(t, sub.target, sub.args) for t in base!.params],
-            ret: self.decls.types.substituted(base!.ret, sub.target, sub.args),
-            gives: null, ins: [], reg_types: [], file: w.file,
-        }
+        self.units.finish(id, self.lower_requested(self.asks[id]), self.db.revision())
     }
 
     /// The store, attached by a build; null outside one.
     mut fn attach_store(s: Store) { self.store = s }
 
-    /// ONE DERIVATION for the key a unit's edges live under: the unit's NAME is its
-    /// identity (a declaration's symbol plus the type-argument wires), stable across runs.
-    fn unit_key(name: string) -> string { node_key(Stored.Unit, ["deps", CACHE_FORMAT, name]) }
+    /// Where a file's asks live: beside its object, under the object's key.
+    fn asks_key(okey: string) -> string { node_key(Stored.Unit, ["asks", CACHE_FORMAT, okey]) }
 
-    /// A held unit's persisted demands, or null when it was never stored (a
-    /// specialization no build has minted before).
-    fn held_deps(w: Wanted) -> List<Wanted>? {
-        let s: Store? = self.store
-        if s == null { return null }
-        let raw = s!.get(Stored.Unit, self.unit_key(w.name))
-        if raw == null { return null }
+    /// WHETHER AN OBJECT MAY STAND IN FOR ITS FILE: it is kept, and so are the
+    /// asks a held build reads in place of the file's bodies.
+    fn object_kept(s: Store, okey: string) -> bool { s.has(Stored.Obj, okey) && s.has(Stored.Unit, self.asks_key(okey)) }
+
+    /// EVERY INSTANTIATION THE HELD FILES' BODIES DEMAND — read where the
+    /// bodies are not. A held file's `hold_only` proved each row present.
+    fn held_asks() -> List<Wanted> {
+        let s? = self.store else { return [] }
         mut ws = self
-        ws.wanted_list_from_wire( raw!)
+        flatten([ws.wanted_list_from_wire(s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "") ?? [] for path in held_paths(self)])
     }
 
-    fn remember_deps(w: Wanted, wants: List<Wanted>) {
-        let s: Store? = self.store
-        if s == null { return }
-        let _ = s!.keep(Stored.Unit, self.unit_key(w.name), self.wanted_list_wire( wants), [])
+    fn held_okey(s: Store, path: string) -> string {
+        mut ws = self
+        obj_key_cached(ws, s, module_path(self.module_of(path).split(".")), path)
     }
 
     /// The one lowering path for a body requested from a held source. A

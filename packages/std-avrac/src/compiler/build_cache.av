@@ -12,15 +12,14 @@
 //! The key and the names its artifacts are stored under are ONE
 //! derivation (`key`), so the store and the lookup cannot fall out of
 //! step.
-use core.{new_digest, digest_text, digest_key, digest_of, joined, flatten, distinct, same_file, module_path, ModulePath, TypeRegistry, DeclId, FileId}
-use features.{Decl, DeclSig}
+use core.{new_digest, digest_text, digest_bytes, digest_key, digest_of, joined, flatten, distinct, sorted_texts, same_file, module_path, ModulePath, TypeRegistry, DeclId, FileId}
+use features.{Decl, DeclSig, Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
-use @std.io.{read_text, write_text, make_dirs, exists}
+use @std.io.{read_text, read_bytes, write_text, make_dirs, exists}
 use @std.process.{parallel, cmd, Tool, Outcome, Exit, Env, Streams}
 
 /// HOW MANY CLANGS AT ONCE. Bounded, because clang is ~200MB a process and the
 /// machine is shared — four buys the wall without saturating it.
-const CACHE_HOLD_ENABLED: bool = true
 
 /// A build's result: the words that link it, the binary they produce,
 /// the warnings to speak, and whether a held artifact was reused.
@@ -32,7 +31,7 @@ fn fresh_build(words: List<string>, binary: string, warnings: string, key: strin
 }
 
 /// A module emitted but not yet compiled: its object's key, and where clang will write it.
-type PendingObj = { okey: string, obj: string }
+type PendingObj = { okey: string, obj: string, asks: List<Wanted> }
 
 /// Where a program's artifacts are kept — beside the program, so a
 /// worktree's cache dies with the worktree.
@@ -159,7 +158,7 @@ impl BuildCache {
         if held_inputs == null || held_inputs! != inputs { return null }
         // NO SINGLE MODULE IS REQUIRED ANY MORE, and requiring one is how the
         // no-op went from 0.25s to 15.8s: the modules are per FILE now and live on
-        // disk under their own `unit_key`s, so a hit re-links nothing and re-emits
+        // disk under their own keys, so a hit re-links nothing and re-emits
         // nothing — it places the BINARY the plan already named.
         let ll = "${entry}.ll"
         BuildOutcome { words: plan!.split("\n"), binary: binary_name(ll), warnings: self.held(key, ".warn") ?? "", reused: true, key: key }
@@ -199,11 +198,9 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
 impl Workspace {
 
 fn build_program_attempt(entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string, attempt: int) -> Result<BuildOutcome, string> {
-    mut fresh = self
     let store = store_at(build_cache_root(self))
-    // THE UNIT DEPS ARE THE HOLD'S CURRENCY: a build that holds nothing reads none, so it
-    // does not pay to write them.
-    if CACHE_HOLD_ENABLED { self.attach_store(store) }
+    self.attach_store(store)
+    for path in remembered_homes(store, entry) { self.homes.set(path, true) }
     let cache = build_cache(self, disk)
     let inputs = cache.inputs()
     let key = cache.key(entry, mode, inputs)
@@ -221,18 +218,12 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
         return .Ok(BuildOutcome { words: [], binary: binary, warnings: store.get(Stored.Warn, key) ?? "", reused: true, key: key })
     }
 
-    // The current interface record does not yet cover every fact a caller asks
-    // of a held declaration (including fn seat contracts). Keep the parse-free
-    // hold disabled until the interface is complete and proven on the compiler.
     mut trace: List<string> = []
-    mut held: List<ModulePath> = []
     let l0 = avra_now_ns()
-    if CACHE_HOLD_ENABLED { held = held_modules(self, store) }
-    trace.push("mods ${held.length}")
+    let held = held_modules(self, store)
     let l1 = avra_now_ns()
     for m in held { let _ = load_interface(self, store, m, entry) }
     let l2 = avra_now_ns()
-    trace.push("files-held ${held_paths(self).length}")
     // NAMES, THEN SHAPES, GLOBALLY: admit every file (its declared names interned at mint),
     // re-mint the held records over it (generated declarations land, written ones refresh),
     // then fill held shapes — every spelling now resolves.
@@ -251,54 +242,26 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
     if view == null { return .Err(p.rendered([no_target(self.root)])) }
     let ent = view!
     if ent.view.stmts.is_empty() { fail "the program is empty" }
-    // A HELD BUILD LOWERS EVERY DECLARATION OF THE FILES IT PARSED. Lowering a fresh
-    // file's bodies by reachability alone misses a fn whose only callers are HELD: their
-    // calls sit in a stored object, so nothing fresh demands the body, it lowers to
-    // nothing, and re-compiling that file OVERWRITES the good stored object with a
-    // bodyless one — the link then misses every symbol it defined. `every` seeds the
-    // worklist with every declaration of every file in hand, which is exactly the
-    // non-held set here.
+    // A FILE'S OBJECT HOLDS EVERY BODY THE FILE DECLARES, so its content is the FILE's
+    // and no program's reach shapes it: two programs sharing a store share the object,
+    // and a fn only held code calls is in the object that code links against.
     let l6 = avra_now_ns()
-    let lo = p.lowered_checked()?
+    let lo = p.every_body_checked()?
     trace.push("lower ${(avra_now_ns()-l6)/1000000}")
-    self.seed_content_keys(lo, p.files)
-    // Until the interface can answer every cross-file query, no file is held.
-    // The whole-program module keeps that safe path within the cold-build
-    // budget; compiling one object per file costs much more on the compiler.
-    if !CACHE_HOLD_ENABLED {
-        let ll = "${ent.view.source.file}.bc"
-        let failure = emit_bitcode(lo, ll, true, null)
-        if failure != null { fail failure! }
-        let obj_key = node_key(Stored.Obj, [digest_of(read_text(ll) catch ""), opt, runtime])
-        let obj = "${ll}.o"
-        if !store.place(Stored.Obj, obj_key, obj) {
-            let built = avra_spawn_status(linker, ["-w", opt, "-c", ll, "-o", obj])
-            if built != 0 { fail "avra: clang failed compiling — exited with code ${built}" }
-            let _ = store.keep_file(Stored.Obj, obj_key, obj, [obj_key])
-        }
-        let words = link_objects([obj], self, runtime, binary)
-        let code = avra_spawn_status(linker, words)
-        if code != 0 { fail clang_link_failed(code) }
-        let warnings = p.warnings()
-        let spent = joined(["${ph.name} ${ph.ns / 1000000}ms" for ph in p.phases], ", ")
-        let _ = store.keep_file(Stored.Bin, key, binary, [key])
-        let _ = store.keep(Stored.Warn, key, warnings, [key])
-        return .Ok(fresh_build(words, binary, warnings, key, spent))
+    // AN INSTANTIATION LOWERS FROM ITS GENERIC'S BODY, and a held home has none: the
+    // homes this lowering reported parse from the start of the next attempt, and of
+    // every later build of this program.
+    let homes = distinct([self.decls.file(f).path for f in lo.homes])
+    if homes.any((path) -> self.homes.get(path) == null) {
+        let _ = store.keep(Stored.Unit, homes_key(entry), joined(distinct(remembered_homes(store, entry).concat(homes)), "\n"), [])
     }
-    // THE MODULE'S OWN CONTENT IS ITS OBJECT'S KEY, so a module that did not move reuses
-    // its machine code and CLANG IS NEVER RUN. The optimizer is the largest single cost in
-    // a build — 15s over the compiler's module against 333ms to link — and it is the one
-    // thing that does not need doing twice. A content key is the whole proof: same bytes,
-    // same object, and `has` answers it with one `exists`.
-    // THE INTERFACES ARE WRITTEN BEFORE THE OBJECTS ARE KEYED, and that order is the whole
-    // contract: `obj_key_of` folds the imports' RECORDS, so an object stored before its
-    // module's record exists is stored under a key over nothing — and the next build, whose
-    // records DO exist, looks for it under a key over their text and never finds it. Nothing
-    // was held for exactly that reason (measured: `held modules: 0`), with the records
-    // written a few lines below the emission.
+    if lo.homes.any((f) -> self.is_held(f)) { return self.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, attempt) }
+    // THE INTERFACES ARE WRITTEN BEFORE THE OBJECTS ARE KEYED: `obj_key_of` folds the
+    // imports' RECORDS, so an object stored before its module's record exists is stored
+    // under a key over nothing, and no later build looks for it there.
     let built_modules = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
     let l7 = avra_now_ns()
-    let _ = keep_interfaces(self, store, built_modules)
+    keep_interfaces(self, store, built_modules)
     // THE RECORDS JUST MOVED. Every derived key below folds the record that was written,
     // and the per-build caches still hold the previous state — drop them so the object
     // keys are read from the interface as it now stands.
@@ -309,8 +272,8 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
     // records, so that file parses and recompiles instead of linking stale code.
     let missing = [path for path in held_paths(self) if !store.has(Stored.Obj, obj_key_cached(self, store, module_path(self.module_of(path).split(".")), path))]
     if !missing.is_empty() {
-        if attempt >= 2 { fail "avra: interface records did not stabilize" }
-        return fresh.build_program_attempt( entry, mode, opt, runtime, disk, linker, attempt + 1)
+        if attempt >= 2 { fail "avra: interface records did not stabilize — still moving under ${joined(missing, ", ")}" }
+        return self.anew().build_program_attempt( entry, mode, opt, runtime, disk, linker, attempt + 1)
     }
 
     // THE HELD MODULES' FUNCTIONS GO IN AS DECLARATIONS ONLY. A stub is a NAME and a
@@ -321,54 +284,44 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
 }
 }
 
+/// Where a program's instantiation homes are remembered, by its entry.
+fn homes_key(entry: string) -> string { node_key(Stored.Unit, ["homes", CACHE_FORMAT, entry]) }
+
+/// The homes this program's builds have reported.
+fn remembered_homes(store: Store, entry: string) -> List<string> { (store.get(Stored.Unit, homes_key(entry)) ?? "").split("\n") }
+
+/// THE ENTRY OBJECT'S KEY — its module's own bytes, and what compiles them. A module that
+/// cannot be read back has no key: an empty read would key every program alike.
+fn entry_key(bc: string, opt: string, runtime: string) -> Result<string, string> {
+    match read_bytes(bc) {
+        .Ok(bytes) -> .Ok(node_key(Stored.Obj, ["entry", CACHE_FORMAT, digest_key(digest_bytes(new_digest(), bytes)), opt, runtime])),
+        .Err(_) -> .Err("avra: the entry's module could not be read back — ${bc}"),
+    }
+}
+
 impl Workspace {
+
+    /// Whether a body's home cannot emit it: the home is held, so its object is the store's.
+    fn homed_in_held(bd: Body) -> bool {
+        let home? = home_of(bd) else { return false }
+        self.is_held(home)
+    }
 
 /// Emit the moved files, clang them in parallel, and link — the half a
 /// build and a suite share. `entry` is the file the entry body lives in.
-/// Seed each file's CONTENT digest — the bodies this build emits, by home.
-/// An object's key must digest everything its content depends on, and a
-/// file's content is the bodies homed in it: a key over the file's bytes
-/// alone collides when two programs reach different subsets of them.
-    mut fn seed_content_keys(lo: Lowered, files: List<Analysis>) {
-        for a in files {
-            let f = a.view.file
-            let fps = [bd.fingerprint() for bd in lo.fns if bd.file != null && same_file(bd.file!, f)]
-            self.content_keys.set(a.view.source.file, digest_of(joined(["${n}" for n in fps], ",")))
-        }
-    }
-
 fn compile_lowered(store: Store, cache: BuildCache, p: Program, lo: Lowered,
                    entry: FileId, key: string, binary: string, opt: string, runtime: string,
                    linker: string, attempt: int, trace: List<string>) -> Result<BuildOutcome, string> {
-    let stubs = held_stubs(self)
-    // A BODY IS EMITTED WHERE ITS HOME IS, and a home that is HELD cannot emit it: the
-    // object comes from the store, and a WRAPPER a fresh caller minted (`$w`, whose home
-    // is the file that DECLARES what it wraps) is not in that stored object — the link
-    // then misses it. Remap by HOME, never by `bd.file`, which for a wrapper is the ASKER
-    // (fresh, so the old test kept it and `owns` filed it under a module with no emitter).
-    let all: List<Body> = lo.fns.concat(stubs)
-    let whole = Lowered { fns: all, entry: lo.entry, types: lo.types, diagnostics: lo.diagnostics, externs: lo.externs, statics: lo.statics, libraries: lo.libraries }
-    mut active: List<Body> = []
-    for bd in all {
-        // A STUB IS NEVER EMITTED — it has no instructions and only declares a name.
-        // A WRAPPER IS EMITTED WEAK where its asker lives, so two askers' copies coalesce
-        // and a stored object's copy does too. Every other real body whose home is held
-        // moves to the entry, weak, because the store's object cannot contain what this
-        // build just lowered.
-        if bd.ins.is_empty() {
-            active.push(bd)
-        } else if bd.name.ends_with("$w") {
-            active.push(bd with { weak: true })
-        } else {
-            let home: FileId? = home_of(bd)
-            if home != null && self.is_held(home!) {
-                active.push(bd with { file: entry, weak: true })
-            } else {
-                active.push(bd)
-            }
-        }
+    // A FILE'S MODULE IS ITS PLAIN BODIES. What a PROGRAM asked for — an instantiation
+    // (no file owns it), or a body whose home is held and whose stored object cannot contain what
+    // this build lowered — rides the ENTRY's module, weak, in NAME order so the module's
+    // bytes are the same whatever order the walk met them in.
+    mut homed: List<Body> = held_stubs(self)
+    mut roaming: Map<string, Body> = {}
+    for bd in lo.fns {
+        if home_of(bd) == null || self.homed_in_held(bd) { roaming.set(bd.name, bd with { file: entry, weak: true }) } else { homed.push(bd) }
     }
-    let full = Lowered { fns: active, entry: lo.entry, types: lo.types, diagnostics: lo.diagnostics, externs: lo.externs, statics: lo.statics, libraries: lo.libraries }
+    let full = lo with { fns: homed.concat([roaming.get(n)! for n in sorted_texts(distinct([bd.name for bd in lo.fns if roaming.get(bd.name) != null]))]) }
 
     // ONE OBJECT PER FILE: the files that MOVED are emitted, and the files that did not
     // come out of the store. Emitting every file was the mistake that made this cost 40s —
@@ -387,17 +340,26 @@ fn compile_lowered(store: Store, cache: BuildCache, p: Program, lo: Lowered,
         let m = module_path(self.module_of(path).split("."))
         let base = node_key(Stored.Obj, [digest_of(path)])
         let obj = "${cache.root}/${base}.o"
-        let okey = obj_key_cached(self, store, m, path)
+        let is_entry = same_file(a.view.file, entry)
+        let ll = "${cache.root}/${base}.bc"
+        // THE ENTRY'S MODULE IS THE PROGRAM'S — what roams rides it — so its key is its
+        // own BYTES: emitted every build, compiled only when they moved.
+        if is_entry {
+            let broke = emit_closed(full, ll, true, a.view.file)
+            if broke != null { fail broke! }
+        }
+        let okey = if is_entry { entry_key(ll, opt, runtime)? } else { obj_key_cached(self, store, m, path) }
         // A FILE WHOSE OBJECT IS ALREADY KEYED needs no emission: it was re-parsed (its
         // module moved) but its own inputs did not.
         if store.place(Stored.Obj, okey, obj) {
             objs.push(obj)
         } else {
-            let ll = "${cache.root}/${base}.bc"
-            let broke = emit_closed(full, ll, same_file(a.view.file, entry), a.view.file)
-            if broke != null { fail broke! }
+            if !is_entry {
+                let broke = emit_closed(full, ll, false, a.view.file)
+                if broke != null { fail broke! }
+            }
             compile_ll.push("${base}.bc")
-            pending.push(PendingObj { okey: okey, obj: obj })
+            pending.push(PendingObj { okey: okey, obj: obj, asks: [k.want for k in lo.asks if same_file(k.by, a.view.file)] })
         }
     }
     let t_e1 = avra_now_ns()
@@ -428,7 +390,10 @@ fn compile_lowered(store: Store, cache: BuildCache, p: Program, lo: Lowered,
         }
     }
     let t_e2 = avra_now_ns()
+    // THE ASKS LAND BEFORE THE OBJECT: `hold_only` takes a file whose object AND asks are
+    // both kept, so an object without its asks is never a hold.
     for po in pending {
+        let _ = store.keep(Stored.Unit, self.asks_key(po.okey), self.wanted_list_wire(po.asks), [])
         let _ = store.keep_file(Stored.Obj, po.okey, po.obj, [])
         objs.push(po.obj)
     }

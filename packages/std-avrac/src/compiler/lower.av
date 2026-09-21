@@ -32,6 +32,14 @@ export type Body = {
     weak: bool = false,
 }
 
+/// An instantiation `want`, demanded by a body `by` declares.
+export type Ask = { by: FileId, want: Wanted }
+
+/// WHETHER A UNIT EXISTS BECAUSE A PROGRAM ASKED: a generic at its type
+/// arguments, a fn at its settled seats, a root. A plain declaration's
+/// body is its FILE's content; an instantiation is its PROGRAM's.
+export fn instantiated(w: Wanted) -> bool { w.sub != null || !w.seats.is_empty() || w.root != null }
+
 /// The lowering facts: every fn body, the entry body (`main` — its
 /// specialness is explicit: no params, the answer's puts, exit 0), the
 /// registry that names the types, and any defects.
@@ -45,6 +53,12 @@ export type LinkedPackage = { name: string, library: string }
 export type Lowered = {
     fns: List<Body>,
     entry: Body,
+    /// The instantiations each file's own bodies demand — what a later
+    /// build reads in place of those bodies when the file is held.
+    asks: List<Ask> = [],
+    /// Every file an instantiation lowers FROM. Its generic's body is what
+    /// each asking program reads, so such a file is never held.
+    homes: List<FileId> = [],
     types: TypeRegistry,
     diagnostics: List<Diag>,
     // the host fns the program declares `extern` — rows the backend
@@ -127,7 +141,7 @@ fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, seats: List<SeatValue>,
 /// A lone file's program, lowered without a memo — the tests' seam.
 export fn lower(a: Analysis) -> Lowered {
     let externs = a.view.decls.extern_names()
-    a.view.decls.union([a], 0, false, false, (w: Wanted) -> lower_unit(a, externs, w, no_settle), (_f: FileId) -> false)
+    a.view.decls.union([a], 0, false, false, [], (w: Wanted) -> lower_unit(a, externs, w, no_settle), (_f: FileId) -> false)
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
@@ -186,7 +200,7 @@ impl Decls {
     /// test run asks for `every` declared body under its entry, whose
     /// laws (a module file runs nothing) still hold. A unit is asked
     /// once per symbol; the guard is the polymorphic-recursion refusal.
-    fn union(files: List<Analysis>, entry: int?, every: bool, programs: bool, unit_of: fn(Wanted) -> Unit, is_held: fn(FileId) -> bool) -> Lowered {
+    fn union(files: List<Analysis>, entry: int?, every: bool, programs: bool, held_asks: List<Wanted>, unit_of: fn(Wanted) -> Unit, is_held: fn(FileId) -> bool) -> Lowered {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
         let at: int = entry ?? 0
@@ -209,19 +223,11 @@ impl Decls {
             wants = wants.concat(mu.wants)
             statics = mu.statics
         }
-        // EVERY FRESH UNIT IS DEMANDED. A held unit's edges are NOT walked — its
-        // body is the stored object — so a body only held code calls would never
-        // be emitted. Demanding every non-held declared unit covers exactly those.
-        // ONLY WHEN THE WALK TRUNCATES: with nothing held the walk already reaches every
-        // declared body, and demanding them all would emit dead code.
-        if entry != null && !every && files.any((a: Analysis) -> is_held(a.view.file)) {
-            wants = wants.concat(flatten([declared(a) for a in files if !is_held(a.view.file)]))
-        }
-        let d = drained(wants, unit_of, is_held)
+        let d = drained(wants.concat(held_asks), unit_of, is_held)
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
         spoken = spoken.concat(minted_pointers(self.types, fns.concat([entry_body])))
-        Lowered { fns: fns, entry: entry_body, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(statics.concat(d.statics)), libraries: [] }
+        Lowered { fns: fns, entry: entry_body, asks: d.asks, homes: d.homes, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(statics.concat(d.statics)), libraries: [] }
     }
 
     /// A const's initializer as a program of its own: the root unit's
@@ -240,36 +246,45 @@ impl Decls {
 
 /// The bodies a worklist reaches, each name once, the statics they
 /// read, and what they spoke.
-type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static> }
+type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId> }
 
 fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit, is_held: fn(FileId) -> bool) -> Drained {
     mut wants = [w for w in pending]
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
     mut statics: List<Static> = []
+    mut asks: List<Ask> = []
+    mut homes: List<FileId> = []
     mut seen: Map<string, bool> = {}
     mut minted = 0
     while !wants.is_empty() && minted < unit_ceiling {
         let w = wants.pop()
-        if claim_seen(seen, w.name) {
-            if !is_held(w.file) {
-                minted = minted + 1
-                let u = unit_of(w)
-                // LICENSED I3: a comprehension would COPY the list, which is the bug.
-                for b in u.bodies { fns.push(b) }
-                // LICENSED I3: a comprehension would COPY the list, which is the bug.
-                for d in u.voices.list { spoken.push(d) }
-                // LICENSED I3: a comprehension would COPY the list, which is the bug.
-                for more in u.wants { wants.push(more) }
-                // LICENSED I3: a comprehension would COPY the list, which is the bug.
-                for st in u.statics { statics.push(st) }
+        // A HELD FILE'S BODIES ARE ITS STORED OBJECT, so they are never asked for.
+        // An instantiation is no file's content: it lowers in every program that
+        // wants it, WEAK and owned by no file — and its home is reported, because
+        // a home that is held has no body to lower from.
+        let roams = instantiated(w)
+        if roams { homes.push(w.file) }
+        if claim_seen(seen, w.name) && !is_held(w.file) {
+            minted = minted + 1
+            let u = unit_of(w)
+            // LICENSED I3: a comprehension would COPY the list, which is the bug.
+            for b in u.bodies { fns.push(if roams { b with { file: null, weak: true } } else { b }) }
+            // LICENSED I3: a comprehension would COPY the list, which is the bug.
+            for d in u.voices.list { spoken.push(d) }
+            // LICENSED I3: a comprehension would COPY the list, which is the bug.
+            for more in u.wants {
+                if !roams && instantiated(more) { asks.push(Ask { by: w.file, want: more }) }
+                wants.push(more)
             }
+            // LICENSED I3: a comprehension would COPY the list, which is the bug.
+            for st in u.statics { statics.push(st) }
         }
     }
     if !wants.is_empty() {
         spoken.push(defect_at(null, "specializations exploded past ${unit_ceiling} — polymorphic recursion is not supported"))
     }
-    Drained { fns: fns, spoken: spoken, statics: statics }
+    Drained { fns: fns, spoken: spoken, statics: statics, asks: asks, homes: homes }
 }
 
 /// Each static once: units read one const independently and each

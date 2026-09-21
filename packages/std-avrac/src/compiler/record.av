@@ -157,7 +157,7 @@ fn interface_form(line: string) -> string {
 
 /// The path a record line names, or "" — the second column, and nothing for a header line.
 fn named_file(line: string) -> string {
-    if line.starts_with("import\t") || line.starts_with("bytes\t") || line.starts_with("iface\t") { return "" }
+    if line.starts_with("import\t") || line.starts_with("bytes\t") || line.starts_with("iface\t") || line.starts_with("file\t") { return "" }
     let parts = line.split("\t")
     if parts.length < 2 { return "" }
     parts[1]
@@ -224,16 +224,9 @@ fn facts_unblocked(block: string) -> DeclFacts? {
 }
 
 /// REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it.
-// LICENSED I39: THE RECORD STEP — a workspace, a store and a module list in, the count out.
-export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModulePath>) -> int {
-    mut kept = 0
-    for m in modules {
-        if true {
-            let _ = store.keep(Stored.Sig, record_key(ws, m), ws.record_of( store, m), [])
-            kept = kept + 1
-        }
-    }
-    kept
+// LICENSED I39: THE RECORD STEP — a workspace, a store and a module list in, the records written.
+export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModulePath>) {
+    for m in modules { let _ = store.keep(Stored.Sig, record_key(ws, m), ws.record_of(store, m), []) }
 }
 
 // ── REBUILDING ──────────────────────────────────────────────────────
@@ -258,9 +251,11 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     // FAIL CLOSED: a record the decoder cannot rebuild WHOLE holds NOTHING, and
     // its files parse. A partial hold is how a declaration goes missing — the
     // cache must be a miss rather than a lie.
-    if !record_complete(fields) {
-        return 0
-    }
+    //
+    // AND A RECORD NAMING A FILE THE MODULE NO LONGER HAS is a previous tree's: minting
+    // its declarations asks the host for a source that is gone.
+    let here = ws.module_files(m)
+    if !record_complete(fields) || fields.any((parts) -> declares(parts) && !here.contains(parts[1])) { return 0 }
     for parts in fields {
         if parts[0] == "import" {
             let imp = module_path(parts[1].split("."))
@@ -272,7 +267,7 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
     // this same module finds it.
     for f in ws.module_files(m) {
-        if f != entry && store.has(Stored.Obj, obj_key_cached(ws, store, m, f)) && ws.const_rows_ready( store, m, f, fields) && holdable(fields, f) { ws.hold_only(f) }
+        if f != entry && ws.homes.get(f) == null && written_from(fields, f, ws.source(ws.file_id(f)).text) && ws.object_kept(store, obj_key_cached(ws, store, m, f)) && ws.const_rows_ready( store, m, f, fields) && holdable(fields, f) { ws.hold_only(f) }
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.
@@ -286,10 +281,10 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
 // LICENSED I39: THE LOADER'S FIRST HALF — the workspace and a store in, nothing out.
 export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
     for m in ws.held_order {
-        for parts in record_fields(ws, store, m) { if parts[0] != "import" { ws.mint_identity( parts) } }
+        for parts in record_fields(ws, store, m) { if speaks(ws, parts) { ws.mint_identity( parts) } }
     }
     for m in ws.held_order {
-        for parts in record_fields(ws, store, m) { if parts[0] != "import" { ws.link_identity( parts) } }
+        for parts in record_fields(ws, store, m) { if speaks(ws, parts) { ws.link_identity( parts) } }
     }
 }
 
@@ -298,9 +293,26 @@ export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
 // LICENSED I39: THE LOADER'S SECOND HALF — the workspace and a store in, nothing out.
 export fn fill_interfaces(mut ws: Workspace, store: Store) {
     for m in ws.held_order {
-        for parts in record_fields(ws, store, m) { if parts[0] != "import" { ws.fill_shape( store, m, parts) } }
+        for parts in record_fields(ws, store, m) { if speaks(ws, parts) { ws.fill_shape( store, m, parts) } }
     }
 }
+
+/// WHETHER A RECORD'S LINES FOR A FILE WERE WRITTEN FROM THIS TEXT. A record is kept
+/// under its module's NAME and an object under its file's CONTENT, so two programs share
+/// the object and not the record: one that holds a file by an object another stored
+/// would read lines it wrote itself, before the edit. The record says what it read.
+fn written_from(fields: List<List<string>>, path: string, text: string) -> bool {
+    fields.any((parts) -> parts.length == 3 && parts[0] == "file" && parts[1] == path && parts[2] == digest_of(text))
+}
+
+/// A RECORD LINE SPEAKS FOR A HELD FILE ALONE. A record is a MODULE's and a hold is a
+/// FILE's: a file that parsed declares itself, and a line written before its edit would
+/// lay the shape it HAD over the one it has.
+// LICENSED I39: a pure PREDICATE — the workspace and a record line in, one answer out.
+fn speaks(ws: Workspace, parts: List<string>) -> bool { declares(parts) && ws.decls.held.get(parts[1]) != null }
+
+/// Whether a record line is a DECLARATION's — the rest say what the module imports and digests to.
+fn declares(parts: List<string>) -> bool { parts[0] != "import" && parts[0] != "bytes" && parts[0] != "iface" && parts[0] != "file" }
 
 /// WHETHER A RECORD CAN BE REBUILT WHOLE — a total check, run BEFORE any file is
 /// held, over the SAME decoder the mint uses. A field the writer adds that this
@@ -313,13 +325,11 @@ fn record_complete(fields: List<List<string>>) -> bool {
     // silently missing. Checking it HERE refuses the whole module instead of truncating.
     mut seen: Map<string, int> = {}
     for parts in fields {
-        if parts[0] == "import" || parts[0] == "bytes" || parts[0] == "iface" { let _ = 0 } else {
+        if declares(parts) {
             if !decodable(parts) { return false }
             let ordinal? = wire_number(parts[2]) else { return false }
             let want: int = seen.get(parts[1]) ?? 0
-            if ordinal != want {
-                return false
-            }
+            if ordinal != want { return false }
             seen.set(parts[1], want + 1)
         }
     }
@@ -340,6 +350,7 @@ fn decodable(parts: List<string>) -> bool {
 /// spellings are their own parse and are not in the interface, so a file that declares
 /// either is a MISS and parses. The honest boundary: the interface carries what it
 /// carries, and a fact it cannot is a rebuild, not a guess.
+
 fn holdable(fields: List<List<string>>, path: string) -> bool {
     for parts in fields {
         if parts[0] != "import" {
@@ -484,42 +495,18 @@ export fn obj_key_of(mut ws: Workspace, store: Store, m: ModulePath, path: strin
     if path != "" {
         d = digest_text(d, path)
         d = digest_text(d, ws.source(ws.file_id(path)).text)
-        // THE FILE'S BYTES DO NOT SAY WHICH OF ITS BODIES THE PROGRAM EMITS.
-        // Two programs that share a cache and a file but reach different
-        // subsets of its bodies would wear one key over different content;
-        // `seed_content_keys` records the content this build emits.
-        d = digest_text(d, ws.content_keys.get(path) ?? "")
     }
     for dep in sorted_texts(distinct(deps)) { d = digest_text(d, bytes_key_cached(ws, store, module_path(dep.split(".")))) }
     digest_key(d)
 }
 
-/// EVERY MODULE WHOSE OBJECT IS ALREADY IN THE STORE — that is, whose sources AND whose
-/// imports' interfaces are the ones the object was built from. THE EXISTENCE OF THE OBJECT
-/// UNDER A KEY OVER THE INPUTS IS THE PROOF; there is no second check to disagree with it.
-// LICENSED I39: THE HELD WALK — a workspace and a store in, the modules that need no work out.
-// LICENSED I39: THE HELD WALK — a workspace and a store in, the modules that need no work out.
+/// EVERY ROOT MODULE A PREVIOUS BUILD WROTE DOWN — where the held walk starts. Whether
+/// a FILE is held is `load_interface`'s question, asked per file of its object and its
+/// asks; a module is walked for its record alone, because the entry's object is keyed
+/// by its own bytes and a root that is only an entry has no other.
+// LICENSED I39: THE HELD WALK — a workspace and a store in, the modules worth loading out.
 export fn held_modules(mut ws: Workspace, store: Store) -> List<ModulePath> {
-    // PER FILE, NOT PER MODULE: a module with fifty files holds forty-nine and rebuilds the
-    // one that moved. A per-module hold made the ROOT all-or-nothing, and its fifty files
-    // emitted at ~1.5s each is 75s — measured.
-    //
-    // AND THE ROOT IS INCLUDED. Filtering an empty name out of this walk excluded the module
-    // that holds the entry file and its forty-nine neighbours — the largest module in the
-    // tree — and nothing was ever held (`held modules: 0` while 276 objects sat in the
-    // store). `record_key` names it, so there is nothing to filter.
-    let splits = ws.root_files()
-    let names = distinct([ws.module_of(p) for p in splits])
-    let mods = [module_path(n.split(".")) for n in names]
-    mut out: List<ModulePath> = []
-    for m in mods {
-        let rec = record_cached(ws, store, m)
-        let paths = ws.module_files(m)
-        let keys = [obj_key_cached(ws, store, m, p) for p in paths]
-        let any_here = keys.any((k) -> store.has(Stored.Obj, k))
-        if rec != "" && any_here { out.push(m) }
-    }
-    out
+    [m for m in [module_path(n.split(".")) for n in distinct([ws.module_of(p) for p in ws.root_files()])] if record_cached(ws, store, m) != ""]
 }
 
 /// EVERY HELD FILE, by path — ONE derivation for the stubs, the objects and the
