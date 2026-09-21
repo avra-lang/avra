@@ -45,8 +45,7 @@ fn const_unit_key(store: Store, m: ModulePath, path: string, name: string) -> st
     node_key(Stored.Unit, ["const", CACHE_FORMAT, obj_key_cached(self, store, m, path), name])
 }
 
-fn fill_shape(store: Store, m: ModulePath, parts: List<string>) {
-    let id? = self.row_decl( parts) else { return }
+fn fill_shape(store: Store, m: ModulePath, id: DeclId, parts: List<string>) {
     let f = self.decls.decl(id).file
     let stmt = self.decls.decl(id).stmt
     let path = parts[1]
@@ -184,13 +183,24 @@ fn interface_type(owner: DeclId, name: string) -> TypeId {
     ty ?? self.decls.types.intern(Type.Error)
 }
 
-fn link_identity(parts: List<string>) {
-    let id? = self.row_decl( parts) else { return }
-    let parent_at? = wire_number(parts[8]) else { return }
-    if parent_at < 0 { return }
-    let f = self.decls.decl(id).file
-    let ids = self.decls.decls_of_file(f)
-    if parent_at < ids.length { self.decls.adopt(id, ids[parent_at]) }
+/// A held file's declarations adopted by their parents, in one pass over its
+/// lines: the file and its declarations are found ONCE, never per line.
+fn link_file(path: string, rows: List<List<string>>) {
+    let ids = self.decls.decls_of_file(self.file_id(path))
+    for parts in rows {
+        let id: DeclId? = row_of(ids, parts)
+        let parent_at = if parts.length > 8 { wire_number(parts[8]) ?? (0 - 1) } else { 0 - 1 }
+        if id != null && parent_at >= 0 && parent_at < ids.length { self.decls.adopt(id!, ids[parent_at]) }
+    }
+}
+
+/// A held file's shapes filled, the same way.
+fn fill_file(store: Store, m: ModulePath, path: string, rows: List<List<string>>) {
+    let ids = self.decls.decls_of_file(self.file_id(path))
+    for parts in rows {
+        let id: DeclId? = row_of(ids, parts)
+        if id != null { self.fill_shape(store, m, id!, parts) }
+    }
 }
 
 /// ONE HELD FILE'S DECLARATIONS, minted from its record lines in record order. The
@@ -343,15 +353,17 @@ fn ran_directly(store: Store, path: string) -> List<string> {
     kept_runs(record_places(self, store, module_path(self.module_of(path).split("."))).get(path))
 }
 
-fn row_decl(parts: List<string>) -> DeclId? {
+}
+
+/// The declaration a record line speaks for, among its file's: by ordinal.
+fn row_of(ids: List<DeclId>, parts: List<string>) -> DeclId? {
     if parts.length < 13 { return null }
-    let f = self.file_id(parts[1])
-    if !self.is_held(f) { return null }
     let ordinal? = wire_number(parts[2]) else { return null }
-    let ids = self.decls.decls_of_file(f)
     if ordinal < 0 || ordinal >= ids.length { return null }
     ids[ordinal]
 }
+
+impl Workspace {
 
 /// A NESTED declaration joins no namespace, so no symbol names it.
 fn stub_of(d: Decl) -> Body? {

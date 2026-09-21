@@ -385,7 +385,9 @@ export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
         for path in ws.module_files(m) { if ws.decls.held.get(path) != null { ws.mint_file(path, file_rows(fields, places.get(path))) } }
     }
     for m in ws.held_order {
-        for parts in record_fields(ws, store, m) { if speaks(ws, parts) { ws.link_identity( parts) } }
+        let fields = record_fields(ws, store, m)
+        let places = record_places(ws, store, m)
+        for path in ws.module_files(m) { if ws.decls.held.get(path) != null { ws.link_file(path, file_rows(fields, places.get(path))) } }
     }
 }
 
@@ -394,7 +396,9 @@ export fn mint_held_interfaces(mut ws: Workspace, store: Store) {
 // LICENSED I39: THE LOADER'S SECOND HALF — the workspace and a store in, nothing out.
 export fn fill_interfaces(mut ws: Workspace, store: Store) {
     for m in ws.held_order {
-        for parts in record_fields(ws, store, m) { if speaks(ws, parts) { ws.fill_shape( store, m, parts) } }
+        let fields = record_fields(ws, store, m)
+        let places = record_places(ws, store, m)
+        for path in ws.module_files(m) { if ws.decls.held.get(path) != null { ws.fill_file(store, m, path, file_rows(fields, places.get(path))) } }
     }
 }
 
@@ -405,12 +409,6 @@ export fn fill_interfaces(mut ws: Workspace, store: Store) {
 fn written_from(at: Placed?, print: string) -> bool {
     at != null && at!.file.length >= 3 && at!.file[2] == print
 }
-
-/// A RECORD LINE SPEAKS FOR A HELD FILE ALONE. A record is a MODULE's and a hold is a
-/// FILE's: a file that parsed declares itself, and a line written before its edit would
-/// lay the shape it HAD over the one it has.
-// LICENSED I39: a pure PREDICATE — the workspace and a record line in, one answer out.
-fn speaks(ws: Workspace, parts: List<string>) -> bool { declares(parts) && ws.decls.held.get(parts[1]) != null }
 
 /// Whether a record line is a DECLARATION's — the rest say what the module imports and digests to.
 fn declares(parts: List<string>) -> bool { parts[0] != "import" && parts[0] != "bytes" && parts[0] != "iface" && parts[0] != "file" }

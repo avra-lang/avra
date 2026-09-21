@@ -206,33 +206,38 @@ tree_rss() {
             print int(s/1024)
         }'
 }
-# A SHORT RUN ENDS INSIDE ONE WAIT, so the wait looks for its end in 50 ms
-# steps and comes FIRST: a warm build is 80 ms of work, and a poll that reads
-# every process and walks a footprint before it looks cost that run 0.3 s. The
-# tripwire's cadence is unchanged — RSS every 0.25 s, the footprint every
-# fourth poll, never the first.
-polls=0
-while kill -0 "$pid" 2>/dev/null; do
-    n=0
-    while [ "$n" -lt 5 ] && kill -0 "$pid" 2>/dev/null; do sleep 0.05; n=$((n + 1)); done
-    kill -0 "$pid" 2>/dev/null || break
-    rss=$(tree_rss "$pid")
-    [ -z "$rss" ] && rss=0
-    mem=$rss
-    if [ $((polls % 4)) -eq 3 ]; then
-        fp=$(tree_mem "$pid")
-        [ -n "$fp" ] && [ "$fp" -gt "$mem" ] && mem=$fp
-    fi
-    polls=$((polls + 1))
-    [ "$mem" -gt "$peak" ] && peak=$mem
-    if [ "$mem" -gt "$cap_mb" ]; then
-        fired=1
-        tree_kill "$pid"
-        break
-    fi
-done
+# THE STEP IS WAITED FOR, THE TRIPWIRE POLLS BESIDE IT. A warm build is 80 ms of
+# work: a loop that looked for its end between polls cost it the poll, and one
+# that slept between looks cost it the sleep. The poller keeps the tripwire's
+# cadence — RSS every 0.25 s, the footprint every fourth poll, never the first —
+# and says what it saw in the lock's own directory, which dies with the step.
+state="$lock/watch"
+( polls=0; seen=0
+  while kill -0 "$pid" 2>/dev/null; do
+      sleep 0.25
+      kill -0 "$pid" 2>/dev/null || break
+      rss=$(tree_rss "$pid")
+      [ -z "$rss" ] && rss=0
+      mem=$rss
+      if [ $((polls % 4)) -eq 3 ]; then
+          fp=$(tree_mem "$pid")
+          [ -n "$fp" ] && [ "$fp" -gt "$mem" ] && mem=$fp
+      fi
+      polls=$((polls + 1))
+      if [ "$mem" -gt "$seen" ]; then seen=$mem; echo "$seen" > "$state.peak"; fi
+      if [ "$mem" -gt "$cap_mb" ]; then
+          echo 1 > "$state.fired"
+          tree_kill "$pid"
+          break
+      fi
+  done ) &
+poller=$!
 wait "$pid" 2>/dev/null
 status=$?
+kill "$poller" 2>/dev/null
+wait "$poller" 2>/dev/null
+[ -f "$state.peak" ] && peak=$(cat "$state.peak")
+[ -f "$state.fired" ] && fired=1
 [ -n "$sampler" ] && wait "$sampler" 2>/dev/null
 [ "$fired" -eq 1 ] && status=137
 echo "watch: peak ${peak} MB, status ${status}" >&2

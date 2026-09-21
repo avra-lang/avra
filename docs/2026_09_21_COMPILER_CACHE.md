@@ -34,20 +34,20 @@ One slice = red-team + review round + ONE gate + commit + seed.
 | | 09-19 | now | gate |
 |---|---|---|---|
 | `build cli` cold | 22.7 s | **17–18 s** | 23 s |
-| `build cli` no-op | 0.4 s | **0.20 s** | 0.4 s |
-| `build cli`, one body edit | 1.2 s | **~0.67 s** (phases ~0.45 s) | 1.0 s |
+| `build cli` no-op | 0.4 s | **0.10 s** | 0.3 s |
+| `build cli`, one body edit | 1.2 s | **~0.65 s** (phases ~0.43 s) | 1.0 s |
 | `build cli`, a generic's home edited | — | ~3 s (the homes are read from the start; the program's module recompiles) | 5 s |
-| `check cli` | 9.7 s | cold 9 s · warm **0.8 s** | 2 s |
+| `check cli` | 9.7 s | cold 9 s · unchanged **0.17 s** · one edit **0.6 s** | 2 s |
 | `check std-avrac` | 11.6 s, RED | cold 13 s · warm **~1.5 s**, clean | 2 s |
 | `test std-json` | 1.6 s | cold 1.7 s · warm **0.4 s** | 1 s |
 | `test std-avrac` (5325 cases, 111 programs, 27 nested) | ~40 s | cold 56 s · one edit **~2 s to compile**, then the 9 s run | — |
 
-Where a warm body edit goes (ms), held 287/291, the machine at load 13: load 75 ·
-admit 48 · fill 85 · analyze 42 · lower 35 · keep 37 · emit 45 (the object,
-made in process) · link 115 — and ~70 before any of it for the program's key
-and the process, ~60 for the shim and the watchdog. **Target: under 500 ms
-wall.** What is left is every held declaration minted and filled from its
-record each build (load + fill = 160), and the link.
+Where a warm body edit goes (ms), held 287/291, the machine at load 9–13:
+load 76 · admit 46 · fill 64 · analyze 42 · lower 33 · keep 36 · emit 54 (the
+object, made in process) · link 126 — ~70 before any of it for the program's
+key and the process, and the shim. **Target: under 500 ms wall.** What is left
+is every held declaration minted and filled from its record each build
+(load + fill = 140), and the link.
 
 ## 2. The model
 
@@ -230,9 +230,9 @@ deleted. A new hold bug becomes a new step.
 
 | the owner's bar | now | verdict |
 |---|---|---|
-| warm `build` < 500 ms | no-op 0.15 s · one body edit **~0.7 s** | the no-op is there; the edit is 0.2 s short |
+| warm `build` < 500 ms | no-op 0.10 s · one body edit **~0.65 s** at load 9–13 | the no-op is there; the edit is 0.15 s short on a busy machine |
 | `test` reuses the cache | one binary a suite, linked through the store; an edit compiles in ~2 s, then the run | met |
-| `check` near instant | unchanged 0.20 s · one edit ~0.8 s (was 8–11 s) | met for the no-op; the edit shares the build's floor |
+| `check` near instant | unchanged 0.17 s · one edit ~0.6 s (was 8–11 s) | met for the no-op; the edit shares the build's floor |
 | every command one derivation | `build` `check` `test`; `run` `emit` `ir` still lower with nothing held | the evaluator needs IR a held file does not have |
 
 **The floor under an edit, and what removes it** (ms, of ~490 traced):
@@ -240,25 +240,27 @@ load 75 + fill 78 — every held file's declarations are MINTED and its shapes
 FILLED from text on every build, 15 000 declarations for the one file that
 moved; link 115; clang 80 (a process for one module); the file itself ~125.
 
-1. **Mint what is touched, not what exists.** Records answered per DECLARATION on
-   demand: a namespace wants names, `sig(d)` wants one shape. What blocks it is
-   everything that walks ALL declarations — `impls_by_name` (a method table
-   must know every impl of a name: an index line per record fixes that), the
-   flat law (a layout read before its declaration is asked: ask `sig` first,
-   the doctrine already says so), `held_stubs` (stub what a parsed body names).
-   This is the file-local-id direction taken one query at a time, and it is
-   worth ~200 ms.
+1. **Mint a MODULE when it is touched, not every module every build.** Minting
+   and filling are eager over all 55 records; an edit's typing reaches a
+   fraction. The doors are few: `namespace(m)`, a type wire's `path~ordinal`,
+   and `methods(target)` — which needs an index of impl targets by module, one
+   scan of the `impl` lines at load. Module-eager keeps every intra-module
+   invariant (the flat law, the receivers pass reading a held callee's written
+   bits), which a per-DECLARATION lazy fill would not: that pass reads those
+   bits hook-free. `admit_all` must stop asking held files for their items.
+   Worth ~60 ms for a compiler file, more for a leaf.
 2. ~~Emit the object in process~~ — DONE: a build that moved one or two modules
    makes their objects with the compiler it holds (`emit_object`,
    `avra_llvm_emit_object`); more go to clang as bitcode, four at once.
    emit 5 + clang 80 became emit 45.
-3. **`avra_snapshot`** — freeze a closure-free value, thaw it immortal. It wants a
-   LANGUAGE builtin (`snapshot(v)` / `thaw<T>(bytes)`, type-checked closure-free,
-   a layout print in the blob) and two runtime rows (two landings). It ends the
-   hand wire in `record.av`/`interface.av`/`settlement_wire.av`, persists
-   `parsed(file)` (parse is 3 s of a cold build, 7 s of `check std-avrac`), and
-   gives the evaluator IR for held files — which is what puts `run`/`emit` on the
-   derivation.
+3. **`avra_snapshot`** — freeze a closure-free value, thaw it immortal. `Parsed`
+   qualifies (no cell, no closure). It does NOT move the edit loop — the file
+   that moved must parse, and a held one never does — so its worth is the cold
+   paths: parse is 3 s of a cold build, 7 s of a cold `check std-avrac`, and
+   all of `run`/`emit`/`ir` over a big package. A typed surface needs no
+   language change: a pair of `extern fn`s per persisted type over one C body,
+   written to a file (a `Bytes` the runtime did not allocate must not reach
+   its free lists), with a layout print in the header.
 4. **The parser's fast path** — `grammar/executor.av` builds a farthest-failure
    record per failed terminal; a PEG fails most alternatives.
 5. A home's edit reads the homes AFTER a first derivation that could not use
