@@ -1,9 +1,12 @@
 //! The interface's Workspace/Decls verbs: mint, fill, key, and the
 //! wire each record line carries. The record FORMAT lives in record.av.
 use core.{joined, flatten, distinct, sorted_texts, module_path, digest_of, same_decl, ModulePath, TypeLit, Type, TypeId, DeclId, FileId, StmtId, ExprId, SeatMark, TypeRef}
-use features.{Decl, FnSig, StructSig, EnumSig, NamedSig, Decls, SettleRoot, kind_word, scalar_named}
+use features.{Decl, FnSig, StructSig, EnumSig, NamedSig, Decls, SettleRoot, Settled, kind_word, scalar_named}
 use compiler.lower.{Body}
 use compiler.store.{CACHE_FORMAT, Store, Stored, node_key}
+
+/// One file's lines in its module's record, and the digest of what a caller can see of them.
+type FileLines = { path: string, lines: List<string>, iface: string }
 
 impl Workspace {
 
@@ -32,8 +35,7 @@ fn keep_const_units(store: Store, modules: List<ModulePath>) -> int {
 fn const_rows_ready(store: Store, m: ModulePath, path: string, rows: List<List<string>>) -> bool {
     for parts in rows {
         if parts.length > 5 && parts[0] == "const" {
-            let raw = store.get(Stored.Unit, self.const_unit_key( store, m, path, parts[5]))
-            if raw == null || settled_from_wire(raw!) == null { return false }
+            if !store.has(Stored.Unit, self.const_unit_key(store, m, path, parts[5])) { return false }
         }
     }
     true
@@ -58,12 +60,11 @@ fn fill_shape(store: Store, m: ModulePath, parts: List<string>) {
     if word == "const" {
         let ty = self.interface_type( id, parts[13].split(";").first() ?? "")
         self.decls.record_const_type(f, stmt, ty)
-        let key = self.const_unit_key( store, m, path, parts[5])
-        let bytes = store.get(Stored.Unit, key)
-        if bytes != null {
-            let value = settled_from_wire(bytes!)
-            if value != null { self.decls.remember_held_value(id, value!) }
-        }
+        // a held const has no initializer to settle again: its kept value is the
+        // only one, and a row that does not give it back is a defect said
+        let value: Settled? = settled_from_wire(store.get(Stored.Unit, self.const_unit_key(store, m, path, parts[5])) ?? "")
+        if value == null { return self.defect("a held const's value did not decode — `${parts[5]}` in ${path}") }
+        self.decls.remember_held_value(id, value!)
     }
     if word == "aims" {
         let aimed = self.decl_from_ref(parts[13])
@@ -270,7 +271,12 @@ fn record_line(d: Decl, ordinal: int, item: bool) -> string {
         }
     }
     let root = d.root?.index ?? (0 - 1)
-    "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${if d.nested { "1" } else { "0" }}\t${root}\t${if item { "1" } else { "0" }}\t${facts_block(self.decls.facts_or(d.id))}\t${payload}"
+    let facts = self.decls.facts_or(d.id)
+    let block = facts_block(facts)
+    // THE CODEC IS HELD TO ITSELF WHERE IT WRITES: a fact the decoder does not give
+    // back is a defect said now, never a check every reader pays
+    if facts_unblocked(block)?.fingerprint() != facts.fingerprint() { self.defect("`${d.name}`'s facts do not survive their record") }
+    "${first}\t${self.decls.file(d.file).path}\t${ordinal}\t${d.stmt.index}\t${visibility}\t${field_text(d.name)}\t${kind_word(d.kind)}\t${field_text(d.owner)}\t${parent_at}\t${if d.nested { "1" } else { "0" }}\t${root}\t${if item { "1" } else { "0" }}\t${block}\t${payload}"
 }
 
 fn record_of(store: Store, m: ModulePath) -> string {
@@ -279,12 +285,25 @@ fn record_of(store: Store, m: ModulePath) -> string {
     let kept = lines_by_file(prior_lines)
     let fresh = flatten([self.imported_by(path) for path in files if !self.is_held(self.file_id(path))])
     let here = distinct([line for line in prior_lines if line.starts_with("import\t")].concat(["import\t${d.text()}" for d in fresh]))
-    // a held file's lines are copied verbatim: it is held against them
-    let items = flatten([if self.is_held(self.file_id(path)) { kept.get(path) ?? [] } else { self.lines_of(path) } for path in files])
-    // what each file's lines were read from stands outside the interface digest,
-    // which a body edit must not move
-    let read = ["file\t${path}\t${self.text_digest(path)}\t${joined(self.ran_by(store, path), "|")}" for path in files]
-    joined(["iface\t${iface_digest(items)}"].concat(here).concat(read).concat(items), "\n")
+    let parts = [self.file_lines(store, m, path, kept) for path in files]
+    // what a file's lines were read from, what its runs read and its own interface
+    // stand on its `file` line; the module's interface is its files', in name order
+    let read = ["file\t${f.path}\t${self.text_digest(f.path)}\t${joined(self.ran_by(store, f.path), "|")}\t${f.iface}" for f in parts]
+    let iface = digest_of(joined(sorted_texts([f.iface for f in parts]), "\n"))
+    joined(["iface\t${iface}"].concat(here).concat(read).concat(flatten([f.lines for f in parts])), "\n")
+}
+
+/// One file's part of its module's record. A HELD file's lines are copied
+/// verbatim — it is held against them — and its interface digest with them, so a
+/// body edit elsewhere in the module reads no held line.
+fn file_lines(store: Store, m: ModulePath, path: string, kept: Map<string, List<string>>) -> FileLines {
+    if !self.is_held(self.file_id(path)) {
+        let lines = self.lines_of(path)
+        return FileLines { path: path, lines: lines, iface: iface_digest(lines) }
+    }
+    let lines = kept.get(path) ?? []
+    let at: Placed? = record_places(self, store, m).get(path)
+    FileLines { path: path, lines: lines, iface: if at != null && at!.file.length > 4 { at!.file[4] } else { iface_digest(lines) } }
 }
 
 /// A parsed file's record lines, one per declaration.

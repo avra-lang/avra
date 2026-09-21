@@ -152,6 +152,9 @@ impl Workspace {
         let t0 = self.clock()
         if at.hold {
             for m in held_modules(self, store) { let _ = load_interface(self, store, m, entry, want) }
+            // a HOME whose text moved moves what lowers from it: the instantiations
+            // are owed for certain, so the homes are read from the start
+            if !at.homes && remembered(store, homes_key(known_as)).any((path) -> self.home_moved(store, path)) { return self.again(entry, want, at with { homes: true }) }
             self.settle_holds(store)
         }
         let t1 = self.clock()
@@ -242,6 +245,13 @@ impl Workspace {
     /// them, and the next attempt reads them. The file that ran them keeps the
     /// list in its record, so a later derivation reads them with it.
     fn bodies_asked() -> List<string> { distinct(self.body_asks.get()) }
+
+    /// Whether a remembered home still stands and is no longer the text its
+    /// module's record was written from.
+    fn home_moved(store: Store, path: string) -> bool {
+        if path.is_empty() || !self.host.exists(path) { return false }
+        !written_from(record_places(self, store, module_path(self.module_of(path).split("."))).get(path), self.text_digest(path))
+    }
 
     /// THE HOLDS, SETTLED: every hold asked for, but a file a read file's
     /// compile-time runs read — and what THAT file's runs read, since it runs too.

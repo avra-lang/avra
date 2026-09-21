@@ -35,18 +35,19 @@ One slice = red-team + review round + ONE gate + commit + seed.
 |---|---|---|---|
 | `build cli` cold | 22.7 s | **17–18 s** | 23 s |
 | `build cli` no-op | 0.4 s | **0.20 s** | 0.4 s |
-| `build cli`, one body edit | 1.2 s | **0.8–0.9 s** (phases ~0.5 s) | 1.2 s |
-| `build cli`, a generic's home edited | — | 3 s (the homes are read, the program's module recompiles) | 5 s |
+| `build cli`, one body edit | 1.2 s | **~0.7 s** (phases ~0.49 s) | 1.0 s |
+| `build cli`, a generic's home edited | — | ~3 s (the homes are read from the start; the program's module recompiles) | 5 s |
 | `check cli` | 9.7 s | cold 9 s · warm **0.8 s** | 2 s |
 | `check std-avrac` | 11.6 s, RED | cold 13 s · warm **~1.5 s**, clean | 2 s |
 | `test std-json` | 1.6 s | cold 1.7 s · warm **0.4 s** | 1 s |
 | `test std-avrac` (5325 cases, 111 programs, 27 nested) | ~40 s | cold 56 s · one edit **~2 s to compile**, then the 9 s run | — |
 
-Where a warm body edit goes (ms), held 288/292: load 85 · admit 50 · fill 90 ·
-analyze 40 · lower 40 · keep 80 · clang 75 · link 105 — and ~80 before any of it,
-hashing every input for the program's key, ~60 for the shim and the watchdog.
-**Target: under 500 ms wall.** What is left is text: records decoded and
-re-encoded every build (load + fill + keep = 255), which the snapshot (S8) ends.
+Where a warm body edit goes (ms), held 287/291: load 75 · admit 47 · fill 78 ·
+analyze 42 · lower 35 · keep 33 · clang 80 · link 115 — and ~70 before any of it
+for the program's key and the process, ~60 for the shim and the watchdog.
+**Target: under 500 ms wall.** What is left is text and processes: every held
+declaration minted and filled from its record each build (load + fill = 150),
+a clang for one module, and the link.
 
 ## 2. The model
 
@@ -225,15 +226,15 @@ deleted. A new hold bug becomes a new step.
 
 | the owner's bar | now | verdict |
 |---|---|---|
-| warm `build` < 500 ms | no-op 0.15 s · one body edit **~0.8 s** | the no-op is there; the edit is not |
+| warm `build` < 500 ms | no-op 0.15 s · one body edit **~0.7 s** | the no-op is there; the edit is 0.2 s short |
 | `test` reuses the cache | one binary a suite, linked through the store; an edit compiles in ~2 s, then the run | met |
 | `check` near instant | unchanged 0.20 s · one edit ~0.8 s (was 8–11 s) | met for the no-op; the edit shares the build's floor |
 | every command one derivation | `build` `check` `test`; `run` `emit` `ir` still lower with nothing held | the evaluator needs IR a held file does not have |
 
-**The floor under an edit, and what removes it** (ms, of ~550 traced):
-load 95 + fill 75 + keep 85 — every held file's declarations are MINTED and its
-shapes FILLED from text on every build, 15 000 declarations for the one file that
-moved; link 105; clang 70 (a process for one module); the file itself ~120.
+**The floor under an edit, and what removes it** (ms, of ~490 traced):
+load 75 + fill 78 — every held file's declarations are MINTED and its shapes
+FILLED from text on every build, 15 000 declarations for the one file that
+moved; link 115; clang 80 (a process for one module); the file itself ~125.
 
 1. **Mint what is touched, not what exists.** Records answered per DECLARATION on
    demand: a namespace wants names, `sig(d)` wants one shape. What blocks it is
