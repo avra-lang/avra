@@ -3,7 +3,7 @@
 //! target (the receiver typed as the target at seat 0), the impl-for
 //! contract (every trait method, exactly, nothing beyond), the orphan
 //! rule, and the voices these laws speak.
-use core.{StmtId, TypeId, DeclId, FnParts, ImplParts, Type, filled, same_decl, Param, NodeStore}
+use core.{StmtId, ExprId, TypeId, DeclId, FnParts, ImplParts, Type, filled, same_decl, Param, NodeStore}
 use core.{SeatMark, plain_mark}
 use diagnostics.{refusal, warning}
 use features.{TypeCx, FnSig, DeclSig, Decl, written_seats, EnumSig}
@@ -111,10 +111,13 @@ impl TypeCx {
         // (a DERIVED `Fingerprint`, say) never writes, and sealing on its ACCOUNT made a
         // `DeclId` boxed in a parsed build and bare in a held one: the two objects then
         // disagreed on the representation and the link mixed `ptr` with `i64` in silence.
-        // THE SEAL IS DRIVEN BY THE DECLARATION — a `mut fn` method —
-        // not by an impl's mere existence and never by a body scan, so
-        // a parsed build and a held one seal alike.
-        if parts.fns.any((f: StmtId) -> writes_receiver(f, self.view.store)) {
+        // THE SEAL IS DRIVEN BY THE DECLARATION — a `mut fn` method, a
+        // `mut` seat, or an assignment rooted at `self` in the body —
+        // never by an impl's mere existence, so an impl that only READS
+        // does not box its target.
+        mut seals = false
+        for f in parts.fns { if self.writes_receiver(f) { seals = true } }
+        if seals {
             self.view.types.unflatten(self.impl_self_type(d))
         }
         for f in parts.fns {
@@ -124,6 +127,33 @@ impl TypeCx {
             self.static_shadows(f, d, parts.target)
         }
         if parts.of != null { self.check_trait_impl(s, parts.of!, d, parts.target, parts.fns) }
+    }
+
+    /// Whether a method's receiver is a place to write through — the ONE
+    /// fact that forces its target to keep a box, so a flat record's
+    /// `self` is a place. Read from the PARSE, so it is answerable before
+    /// the method is signed: the `mut fn` word, a written `mut` seat, or
+    /// an assignment whose PLACE ROOT is `self` in the method's own body.
+    fn writes_receiver(f: StmtId) -> bool {
+        let store = self.view.store
+        if store.is_mutating(f) { return true }
+        let ps: List<Param> = store.fn_parts(f)?.params ?? []
+        if ps.any((p: Param) -> p.promises.mutable) { return true }
+        let x = self.view.decls.decl(self.decl_of(f))
+        // A declaration's range is over the EXPRESSION arena; statements are
+        // their own, so walk the statements and keep the targets this method
+        // owns by their place's index.
+        for i in 0..store.stmts.count() {
+            let t: ExprId? = store.assign_target(StmtId { index: i })
+            if t != null {
+                let root: ExprId? = store.place_root(t!)
+                if root != null {
+                        let r = root!
+                        if r.index >= x.lo && r.index < x.hi && store.expr(r) is .Receiver { return true }
+                    }
+            }
+        }
+        false
     }
 
     /// A `static fn` and a VARIANT of the same name are two things
@@ -341,14 +371,4 @@ fn impl_heading(of: string?, target: string) -> string {
     if of == null { return target }
     "${of!} for ${target}"
 }
-/// Whether a method's receiver is declared `mut` — the ONE fact that
-/// forces its target to keep a box, so a flat record's `self` is a
-/// place to write through. A method's receiver is never a written
-/// seat: its `mut` is the fn's own word, and the written seats that
-/// follow may carry their own. Read from the PARSE, so it is
-/// answerable before the method is signed.
-fn writes_receiver(f: StmtId, store: NodeStore) -> bool {
-    if store.is_mutating(f) { return true }
-    let ps: List<Param> = store.fn_parts(f)?.params ?? []
-    ps.any((p: Param) -> p.promises.mutable)
-}
+
