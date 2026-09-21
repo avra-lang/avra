@@ -1037,7 +1037,7 @@ engine's spec, written by dogfooding.
   derive's resolve. A consumer of such a table filters by what the
   impl's FILE can name (`aims_at`: `visible(file).types`), which
   needs no resolve. And the RECEIVERS pass is the third whole-program
-  pass guarded against running inside a resolve (design doc, S4r).
+  pass guarded against running inside a resolve (docs/2026_09_21_COMPILER.md §5).
 - Grammar authoring: a greedy star cannot be told to stop early. An
   arm that could also START the star's required tail (`_` is a
   NAME; a keyword is a NAME) must be an ordered choice INSIDE the
