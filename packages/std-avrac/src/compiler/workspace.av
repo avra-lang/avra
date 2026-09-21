@@ -104,6 +104,7 @@ export type Workspace = {
     /// object key. Cleared after the interfaces are written, when a record moves.
     bytes_keys: Map<string, string>,
     view_keys: Map<string, string>,
+    import_lists: Map<string, List<string>>,
     object_keys: Map<string, string>,
     /// THE FILES A BUILD MUST PARSE, by path: a home an instantiation lowers from, and a
     /// file whose stored asks could not be read.
@@ -113,10 +114,12 @@ export type Workspace = {
     /// THE HELD FILES WHOSE BODIES THIS BUILD ASKED FOR — a compile-time run reads a
     /// body, and a held file has none. A Cell: the ask comes from inside a query.
     body_asks: Cell<List<string>>,
-    /// THE FILES WHOSE LOWERING RAN ANOTHER BODY AT COMPILE TIME, by path: a const
-    /// settled through a fn, an annotation lifted. Their objects read bodies, never
-    /// interfaces alone.
-    runs: Map<string, bool>,
+    /// WHAT EACH FILE'S COMPILE-TIME RUNS READ, by path: the file of every body a
+    /// settled const or a lifted annotation ran, and of every const it read. An
+    /// object that bakes a run's answer in reads those TEXTS, never interfaces alone.
+    runs: Map<string, List<string>>,
+    /// The files whose runs are being lowered, innermost last.
+    settling: Cell<List<string>>,
     /// The records a held file's line declared FLAT.
     held_flat: List<TypeId>,
     /// THE MODULES A HELD LOAD TOUCHED, in order — phase one mints and INTERNS every name;
@@ -321,7 +324,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, bytes_keys: {}, view_keys: {}, object_keys: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), held_flat: [], runs: {}, held_order: [], defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, bytes_keys: {}, view_keys: {}, import_lists: {}, object_keys: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), held_flat: [], runs: {}, settling: Cell.new(no_paths()), held_order: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }

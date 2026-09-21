@@ -71,19 +71,23 @@ AV
 cat > $R/lib/src/sibcall.av <<'AV'
 export fn shown() -> string { "${sized()}" }
 AV
+# a const that RUNS a fn that READS a const: the value three files away is baked in
+printf 'export const J: int = 7\n' > $R/lib/src/deep.av
+printf 'export fn beyond() -> int { J + 1 }\n' > $R/lib/src/reach.av
 cat > $R/lib/src/lib.av <<'AV'
 export fn mid() -> int { one() + pick(10, 20, true) }
 AV
 cat > $R/a/src/main.av <<'AV'
-use @rt.lib.{mid, one, pick, foo, bar_x, label, K, Shape, Sq, two, HEAD, Word, ratio, word, tick, shown}
+use @rt.lib.{mid, one, pick, foo, bar_x, label, K, Shape, Sq, two, HEAD, Word, ratio, word, tick, shown, beyond}
 // a held impl must still say what it implements, and a settled const runs a held body
 const TWICE: int = two() + two()
+const FAR: int = beyond()
 fn apply(f: fn(int) -> string, n: int) -> string { f(n) }
 let f = foo()
 let held = [f, f]
 let sh: dyn Shape = Sq { s: 3 }
 let big = if ratio().r > 0.4 { "big" } else { "small" }
-println("a ${shown()} ${HEAD.head?.text ?? "-"} ${HEAD.at.n} ${big} ${word(Word { text: "w" })} ${tick().n} ${sh.area()} ${TWICE} ${mid()} ${one()} ${pick(3, 4, false)} ${bar_x(held[1])} ${apply(label, 3)} ${K}")
+println("a ${FAR} ${shown()} ${HEAD.head?.text ?? "-"} ${HEAD.at.n} ${big} ${word(Word { text: "w" })} ${tick().n} ${sh.area()} ${TWICE} ${mid()} ${one()} ${pick(3, 4, false)} ${bar_x(held[1])} ${apply(label, 3)} ${K}")
 AV
 cat > $R/b/src/main.av <<'AV'
 use @rt.lib.{two, pick}
@@ -129,6 +133,7 @@ ed $R/a/src/main.av '${one()}' '${one(2)}';                    S "signature chan
 ed $R/lib/src/leaf.av '"n=${n}"' '"N:${n}"';                   S "body of a fn taken as a VALUE (wrapper)" a
 ed $R/lib/src/leaf.av "K: int = 5" "K: int = 6";               S "exported const edit" a
 ed $R/lib/src/leaf.av "fn two() -> int { 2 }" "fn two() -> int { 20 }"; S "a held body a settled const RUNS" a
+ed $R/lib/src/deep.av "J: int = 7" "J: int = 70";                 S "a const a RUN read, two files from the const that ran it" a
 ed $R/lib/src/shape.av "self.s * self.s" "self.s + self.s";      S "a held impl a dyn box dispatches through" a
 ed $R/lib/src/sib.av "fn sized() -> int { 3 }" "fn sized() -> string { \"three\" }"; S "a sibling's answer type moves, its caller unedited" a
 ed $R/b/src/main.av 'println("b ' 'fn bump(mut t: Tick) { t.n = t.n + 1 }

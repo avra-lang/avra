@@ -1,7 +1,7 @@
 //! The workspace's analysis and memo: parse/resolve/sig/typeck
 //! families and the lowered program. The core accessors live in
 //! workspace.av.
-use core.{Expr, StmtId, DeclId, FileId, ExprId, flatten, TypeId, Type, touch, spelled, module_path}
+use core.{Expr, StmtId, DeclId, FileId, ExprId, flatten, distinct, TypeId, Type, touch, spelled, module_path}
 use @std.path.{dir_of}
 use features.{Unsettled, Settled, Settlement, const_symbol, expr_symbol, MetaVal, MetaHeap, new_meta_heap, Decls, Clash, Wanted, nothing, Lifted, bound_decl_of, SeatValue, settled_symbol, quote_meta, SettleRoot}
 use core.{StmtId}
@@ -157,7 +157,29 @@ impl Workspace {
     /// program's, memoized — then run in the evaluator. A const whose
     /// value asks for itself is refused as the cycle it is.
     fn settled(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
+        // a run that reads this const reads its file
+        let reader: string? = self.settling.get().last()
+        if reader != null { self.read_by(reader!, [self.decls.file(f).path]) }
         self.settled_at(self.settle_id(f, root, seats))
+    }
+
+    /// `paths` joined to what `reader`'s compile-time runs read.
+    fn read_by(reader: string, paths: List<string>) {
+        self.runs.set(reader, distinct((self.runs.get(reader) ?? []).concat(paths)))
+    }
+
+    /// A RUN'S PROGRAM, lowered for `f`: every body it reaches remains a shared
+    /// `Lowered` query, the consts it reads are noted as `f`'s, and so is the file
+    /// of every body it will run.
+    fn run_lowered_for(f: FileId, root: Wanted) -> Lowered {
+        let ws = self
+        let reader = self.decls.file(f).path
+        self.settling.set(self.settling.get().concat([reader]))
+        let l = memory(self.decls.settlement(root, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))))
+        let open = self.settling.get()
+        self.settling.set(open.slice(0, open.length - 1))
+        self.read_by(reader, [self.decls.file(bd.file!).path for bd in l.fns if bd.file != null])
+        l
     }
 
     fn settle_id(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> int {
@@ -241,12 +263,6 @@ impl Workspace {
         r
     }
 
-    /// A compile-time run in `f` that reached a body: what `f` lowers to now reads
-    /// that body's text, and its key must.
-    fn ran(f: FileId, l: Lowered) {
-        if !l.fns.is_empty() { self.runs.set(self.decls.file(f).path, true) }
-    }
-
     /// One settlement run: the initializer lowered as a program, its
     /// laws checked, its value spelled when the type spells one.
     fn settlement_of(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
@@ -255,7 +271,6 @@ impl Workspace {
         // Lowered memo keys by symbol, so sharing one would make query
         // order choose which body survives.
         let l = self.isolated(f, root, "settling$${name}", seats)
-        self.ran(f, l)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         run_settle(l, self.budgets(), dir_of(self.decls.file(f).path))
     }
@@ -263,15 +278,13 @@ impl Workspace {
     /// One expression lowered as a program of its own, while every
     /// body it reaches remains a shared `Lowered` query.
     fn isolated(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Lowered {
-        let ws = self
-        memory(self.decls.settlement(Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root }, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))))
+        self.run_lowered_for(f, Wanted { file: f, decl: null, name: name, sub: null, seats: seats, root: root })
     }
 
     /// An annotation argument evaluated directly into the crossing
     /// transport, including every nested aggregate.
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
         let l = self.isolated(f, e, expr_symbol(f, e), [])
-        self.ran(f, l)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         match run_crossed(l, self.budgets(), dir_of(self.decls.file(f).path)) {
             .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)),
@@ -320,9 +333,9 @@ impl Workspace {
     /// One annotation call after its recursion guard is standing.
     fn lifted_once(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
         let x = self.decls.decl(d)
-        let ws = self
-        let l = memory(self.decls.settlement(Wanted { file: x.file, decl: d, name: self.decls.symbol(d), sub: null, seats: [], root: null }, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))))
-        self.runs.set(self.decls.file(f).path, true)
+        let l = self.run_lowered_for(f, Wanted { file: x.file, decl: d, name: self.decls.symbol(d), sub: null, seats: [], root: null })
+        // the annotation's own body is the first thing the run reads
+        self.read_by(self.decls.file(f).path, [self.decls.file(x.file).path])
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         let sig = (self.decls.sig(d))?.fn_sig()
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }

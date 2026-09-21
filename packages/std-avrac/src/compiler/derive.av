@@ -7,6 +7,7 @@
 //! store. The sources are the hold's oracle — a derivation that fails under a
 //! hold is answered again from the sources alone.
 use core.{distinct, joined, module_path, FileId, DeclId}
+use features.{SettleRoot}
 
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
@@ -118,6 +119,9 @@ impl Workspace {
         let unread = if want is .Binary { self.read_held_asks(store) } else { [] }
         if !unread.is_empty() { return self.again(entry, want, at with { parse: at.parse.concat(unread) }) }
         let lowered = p.files_checked()
+        // a parsed const nothing parsed reads is settled HERE, while a held body it
+        // runs can still send the attempt back — its value is in its module's record
+        self.settle_consts(p)
         if self.bodies_asked(store, known_as) { return self.again(entry, want, at) }
         let lo = lowered?
         let t5 = self.clock()
@@ -168,6 +172,16 @@ impl Workspace {
         x.kind is .Record && names.contains(x.name)
     }
 
+    /// Every declared const of every parsed file, settled.
+    fn settle_consts(p: Program) {
+        for a in p.files {
+            for d in self.decls.decls_of_file(a.view.file) {
+                let x = self.decl_at(d)
+                if x.kind is .Const && !x.nested { let _ = self.settled(x.file, SettleRoot.Const(x.stmt), []) }
+            }
+        }
+    }
+
     /// WHETHER THIS ATTEMPT ASKED A HELD FILE FOR A BODY — and if so, the files
     /// are remembered beside the program's other homes, so every later
     /// derivation parses them.
@@ -202,7 +216,7 @@ impl Workspace {
             let kept? = store.get(Stored.Warn, key) else { return null }
             return said_of(path, kept)
         }
-        let _ = store.keep(Stored.Warn, key, said_wire(fresh!), [])
+        let _ = store.keep_once(Stored.Warn, key, said_wire(fresh!), [])
         fresh
     }
 }

@@ -1,6 +1,6 @@
 //! The interface's Workspace/Decls verbs: mint, fill, key, and the
 //! wire each record line carries. The record FORMAT lives in record.av.
-use core.{joined, flatten, distinct, digest_of, same_decl, ModulePath, TypeLit, Type, TypeId, DeclId, FileId, StmtId, ExprId, SeatMark, TypeRef}
+use core.{joined, flatten, distinct, sorted_texts, module_path, digest_of, same_decl, ModulePath, TypeLit, Type, TypeId, DeclId, FileId, StmtId, ExprId, SeatMark, TypeRef}
 use features.{Decl, FnSig, StructSig, EnumSig, NamedSig, Decls, SettleRoot, kind_word, scalar_named}
 
 impl Workspace {
@@ -264,30 +264,24 @@ fn record_line(d: Decl, ordinal: int, item: bool) -> string {
 }
 
 fn record_of(store: Store, m: ModulePath) -> string {
-    let prior = record_cached(self, store, m)
-    let prior_lines = prior.split("\n")
-    let remembered = [line for line in prior_lines if line.starts_with("import\t")]
-    let fresh = flatten([self.imported_by(path) for path in self.module_files(m) if !self.is_held(self.file_id(path))])
-    let here = distinct(remembered.concat(["import\t${d.text()}" for d in fresh]))
-    mut items: List<string> = []
-    for path in self.module_files(m) {
-        let f = self.file_id(path)
-        // A HELD FILE'S LINES ARE COPIED VERBATIM, never regenerated. A record's
-        // DECLARATION text may move between two builds of identical bytes (the written
-        // bits, a parse-order detail), and a held file must keep the lines it was held
-        // against. The BYTES line is regenerated for the module WHOLE, so it cannot
-        // drift from the files.
-        if self.is_held(f) {
-            items = items.concat([line for line in prior_lines if named_file(line) == path])
-        } else {
-            let top = self.items(f)
-            items = items.concat([self.record_line( self.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in self.decls.decls_of_file(f)])
-        }
-    }
-    // WHAT EACH FILE'S LINES WERE READ FROM — outside the interface digest, which a body
-    // edit must not move.
-    let read = ["file\t${path}\t${digest_of(self.source(self.file_id(path)).text)}\t${if self.runs_bodies(prior_lines, path) { "1" } else { "0" }}" for path in self.module_files(m)]
+    let prior_lines = record_cached(self, store, m).split("\n")
+    let files = self.module_files(m)
+    let kept = lines_by_file(prior_lines)
+    let fresh = flatten([self.imported_by(path) for path in files if !self.is_held(self.file_id(path))])
+    let here = distinct([line for line in prior_lines if line.starts_with("import\t")].concat(["import\t${d.text()}" for d in fresh]))
+    // a held file's lines are copied verbatim: it is held against them
+    let items = flatten([if self.is_held(self.file_id(path)) { kept.get(path) ?? [] } else { self.lines_of(path) } for path in files])
+    // what each file's lines were read from stands outside the interface digest,
+    // which a body edit must not move
+    let read = ["file\t${path}\t${digest_of(self.source(self.file_id(path)).text)}\t${joined(self.ran_by(store, path), "|")}" for path in files]
     joined(["iface\t${iface_digest(items)}"].concat(here).concat(read).concat(items), "\n")
+}
+
+/// A parsed file's record lines, one per declaration.
+fn lines_of(path: string) -> List<string> {
+    let f = self.file_id(path)
+    let top = self.items(f)
+    [self.record_line(self.decl_at(id), ordinal, on_top(top, id)) for ordinal, id in self.decls.decls_of_file(f)]
 }
 
 /// A settled const's value as one number — 0 for one that did not settle.
@@ -298,11 +292,26 @@ fn const_print(d: Decl) -> int {
     }
 }
 
-/// Whether a file's lowering runs bodies at compile time: as this build met it,
-/// or, for a held file, as its module's last record kept it.
-fn runs_bodies(prior_lines: List<string>, path: string) -> bool {
-    if !self.is_held(self.file_id(path)) { return self.runs.get(path) != null }
-    prior_lines.any((line) -> line.starts_with("file\t${path}\t") && line.ends_with("\t1"))
+/// EVERY FILE WHOSE TEXT A FILE'S COMPILE-TIME RUNS READ — its own runs', and the
+/// runs of every const those read. In name order.
+fn ran_by(store: Store, path: string) -> List<string> {
+    // LICENSED I16: a WORKLIST — the list grows while it is walked
+    mut seen: List<string> = [path]
+    mut at = 0
+    while at < seen.length {
+        for q in self.ran_directly(store, seen[at]) {
+            if !seen.contains(q) { seen.push(q) }
+        }
+        at = at + 1
+    }
+    sorted_texts(seen.slice(1, seen.length))
+}
+
+/// What one file's runs read: as this build met them, or, for a held file, as
+/// its module's last record kept them.
+fn ran_directly(store: Store, path: string) -> List<string> {
+    if !self.is_held(self.file_id(path)) { return self.runs.get(path) ?? [] }
+    kept_runs(record_fields(self, store, module_path(self.module_of(path).split("."))), path)
 }
 
 fn row_decl(parts: List<string>) -> DeclId? {

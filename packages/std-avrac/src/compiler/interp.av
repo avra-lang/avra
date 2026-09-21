@@ -506,15 +506,10 @@ impl Machine {
         arr[at]
     }
 
-    /// A register written in the TOP frame — the frame is a value, so
-    /// the frame that holds the write is stored back over the old one.
-    mut fn put(d: Reg, v: Val) {
-        let at = self.frames.length - 1
-        mut regs = self.frames[at]
-        regs.set(d.index, v)
-        self.frames.set(at, regs)
-
-    }
+    /// A register written in the TOP frame — IN PLACE: a frame read out and
+    /// stored back is held twice while it is written, so every write copies it.
+    // LICENSED I7: a PLACE, not a read — `last()` answers a copy, and the write must land in the frame
+    mut fn put(d: Reg, v: Val) { self.frames[self.frames.length - 1].set(d.index, v) }
 
     fn put_at(d: Reg, v: Val, pc: int) -> int {
         self.put(d, v)
@@ -1340,15 +1335,11 @@ impl Machine {
     }
 
     mut fn popped(id: int) -> Val {
-        mut arr = self.arrays[id]
-        if arr.is_empty() {
+        if self.arrays[id].is_empty() {
             self.trapped("pop on an empty list")
             return Val.I(0)
         }
-        let last = arr.pop()
-        self.arrays.set(id, arr)
-        last
-
+        self.arrays[id].pop()
     }
 
     fn array_concat_val(vals: List<Val>) -> Val {
@@ -1491,10 +1482,9 @@ impl Machine {
     }
 
     mut fn slot_written(id: int, at: int, v: Val) -> Val {
-        mut arr = self.arrays[id]
-        if at < 0 || at >= arr.length { return self.out_of_bounds(at, arr.length) }
-        arr.set(at, v)
-        self.arrays.set(id, arr)
+        let n = self.arrays[id].length
+        if at < 0 || at >= n { return self.out_of_bounds(at, n) }
+        self.arrays[id].set(at, v)
         Val.I(0)
     }
 
@@ -1509,9 +1499,7 @@ impl Machine {
     }
 
     mut fn pushed(id: int, v: Val) -> Val {
-        mut arr = self.arrays[id]
-        arr.push(v)
-        self.arrays.set(id, arr)
+        self.arrays[id].push(v)
         Val.I(0)
     }
 

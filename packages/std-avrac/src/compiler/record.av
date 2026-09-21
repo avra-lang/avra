@@ -97,6 +97,7 @@ fn forget_keys(mut ws: Workspace) {
     ws.record_fields = {}
     ws.bytes_keys = {}
     ws.view_keys = {}
+    ws.import_lists = {}
     ws.object_keys = {}
 }
 
@@ -180,6 +181,16 @@ fn interface_form(line: string) -> string {
     joined([p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], stable, payload, seats], "|")
 }
 
+/// A record's declaration lines, by the file each names.
+fn lines_by_file(lines: List<string>) -> Map<string, List<string>> {
+    mut out: Map<string, List<string>> = {}
+    for line in lines {
+        let path = named_file(line)
+        if path != "" { out.set(path, (out.get(path) ?? []).concat([line])) }
+    }
+    out
+}
+
 /// The path a record line names, or "" — the second column, and nothing for a header line.
 fn named_file(line: string) -> string {
     if line.starts_with("import\t") || line.starts_with("bytes\t") || line.starts_with("iface\t") || line.starts_with("file\t") { return "" }
@@ -252,7 +263,11 @@ fn facts_unblocked(block: string) -> DeclFacts? {
 /// REMEMBER EVERY MODULE'S INTERFACE, once the build has computed it.
 // LICENSED I39: THE RECORD STEP — a workspace, a store and a module list in, the records written.
 export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModulePath>) {
-    for m in modules { let _ = store.keep(Stored.Sig, record_key(ws, m), ws.record_of(store, m), []) }
+    for m in modules {
+        let made = ws.record_of(store, m)
+        // a record is keyed by its module's NAME: a write is owed when its words moved
+        if made != record_cached(ws, store, m) { let _ = store.keep(Stored.Sig, record_key(ws, m), made, []) }
+    }
 }
 
 // ── REBUILDING ──────────────────────────────────────────────────────
@@ -529,21 +544,15 @@ export fn obj_key_of(mut ws: Workspace, store: Store, m: ModulePath, path: strin
         d = digest_text(d, path)
         d = digest_text(d, ws.source(ws.file_id(path)).text)
     }
-    // a file that RUNS bodies at compile time reads their text, never their interface alone
-    let runs = record_fields(ws, store, m).any((parts) -> parts.length == 4 && parts[0] == "file" && parts[1] == path && parts[3] == "1")
-    digest_key(digest_text(digest_text(d, view_key(ws, store, m)), if runs { texts_key(ws, store, m) } else { "" }))
+    // an object that bakes a compile-time run's answer in reads the TEXT the run read
+    for ran in kept_runs(record_fields(ws, store, m), path) { d = digest_text(d, if ws.host.exists(ran) { digest_of(ws.source(ws.file_id(ran)).text) } else { "" }) }
+    digest_key(digest_text(d, view_key(ws, store, m)))
 }
 
-/// THE TEXT OF EVERY FILE A MODULE'S FILES SEE, as one digest — memoized for the build.
-// LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
-fn texts_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
-    let name = "texts\t${m.text()}"
-    let known: string? = ws.view_keys.get(name)
-    if known != null { return known! }
-    let files = flatten([ws.module_files(module_path(dep.split("."))) for dep in seen_modules(ws, store, m)])
-    let made = digest_of(joined([digest_of(ws.source(ws.file_id(f)).text) for f in files], "\n"))
-    ws.view_keys.set(name, made)
-    made
+/// The files a record says one file's compile-time runs read.
+fn kept_runs(fields: List<List<string>>, path: string) -> List<string> {
+    let line = fields.find((parts) -> parts.length > 3 && parts[0] == "file" && parts[1] == path)
+    if line == null { [] } else { line![3].split("|") }
 }
 
 /// THE INTERFACES A MODULE'S FILES SEE, as one digest — memoized for the build, since
@@ -557,6 +566,16 @@ fn view_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
     made
 }
 
+/// The modules a module's record says it imports — memoized for the build.
+// LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
+fn imports_kept(mut ws: Workspace, store: Store, name: string) -> List<string> {
+    let known: List<string>? = ws.import_lists.get(name)
+    if known != null { return known! }
+    let made = [line.substring(7, line.length) for line in record_lines(ws, store, module_path(name.split("."))) if line.starts_with("import\t")]
+    ws.import_lists.set(name, made)
+    made
+}
+
 /// EVERY MODULE A FILE OF `m` CAN SEE A TYPE OF: its own — a sibling file's names need no
 /// import — and the closure of its imports, since a type reaches a body through a
 /// signature the body never names. In name order.
@@ -566,8 +585,7 @@ fn seen_modules(mut ws: Workspace, store: Store, m: ModulePath) -> List<string> 
     mut seen: List<string> = [m.text()]
     mut at = 0
     while at < seen.length {
-        let rec = record_cached(ws, store, module_path(seen[at].split(".")))
-        for dep in [line.substring(7, line.length) for line in rec.split("\n") if line.starts_with("import\t")] {
+        for dep in imports_kept(ws, store, seen[at]) {
             if !seen.contains(dep) { seen.push(dep) }
         }
         at = at + 1

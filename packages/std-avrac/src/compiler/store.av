@@ -61,7 +61,7 @@ export type Store = { root: string }
 
 /// THE COMPILER'S FORMAT IDENTITY, folded into every persistent key. A change to how a
 /// key or a row is derived bumps it, and every artifact from before is a miss.
-export const CACHE_FORMAT: string = "avra-build-cache-29"
+export const CACHE_FORMAT: string = "avra-build-cache-30"
 
 // LICENSED I39: a CONSTRUCTOR — the root in, the store out, like `new_db`.
 export fn store_at(root: string) -> Store { Store { root: root } }
@@ -131,6 +131,12 @@ impl Store {
             .Ok(_) -> true,
             .Err(_) -> false,
         }
+    }
+
+    /// A ROW WHOSE KEY IS ITS CONTENT is kept once: the same key names the same
+    /// bytes, and a write is two files opened, written and closed.
+    fn keep_once(family: Stored, key: string, bytes: string, read: List<string>) -> bool {
+        self.has(family, key) || self.keep(family, key, bytes, read)
     }
 
     /// THE ONE VERB MOST CALLERS WANT: the stored bytes, or compute, remember, hand back.
