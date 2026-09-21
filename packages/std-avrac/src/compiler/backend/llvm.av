@@ -143,11 +143,24 @@ export fn emit_ll(l: Lowered, path: string) -> string? { emit_mode(l, path, Owne
 /// The caller has asked `program_closed`, a whole-program scan with one answer.
 export fn emit_closed(l: Lowered, path: string, which: Owned) -> string? { emit_mode(l, path, which, Written.Bitcode) }
 
+/// How many objects are made at once: a worker is a thread of this process and
+/// holds one module, and the machine is shared — four buys the wall without
+/// saturating it.
+const EMIT_WIDTH: int = 4
+
 /// The same module as an OBJECT, optimized and generated in this process at
-/// clang's level — what a build that moved one module does instead of a clang.
+/// clang's level — BY A WORKER: the module is built here and handed over, and
+/// `objects_made` waits for every one handed.
 export fn emit_object(l: Lowered, path: string, which: Owned, opt: int) -> string? { emit_mode(l, path, which, Written.Object(opt)) }
 
-/// What a module is written as.
+/// Every object handed to a worker, written — null — or the refusal.
+export fn objects_made() -> string? {
+    let unwritten = avra_llvm_objects_unwritten()
+    if unwritten == 0 { null } else { "avra: ${unwritten} object(s) could not be written" }
+}
+
+/// What a module is written as. An `Object`'s module leaves with its context,
+/// for a worker to write and dispose.
 enum Written { Text, Bitcode, Object(opt: int) }
 
 /// A program with a symbol nothing declares — a DEFECT, in its own words.
@@ -186,17 +199,15 @@ fn emit_mode(l: Lowered, path: string, which: Owned, form: Written) -> string? {
         let failure: string? = emit_entry(lc, m, b, l, rt)
         if failure != null { return wreck(m, path, failure!) }
     }
+    avra_llvm_dispose_builder(b)
     let written = match form {
         .Text -> avra_llvm_print_module_to_file(m, path),
         .Bitcode -> avra_llvm_write_bitcode_to_file(m, path),
-        .Object(opt) -> avra_llvm_emit_object(m, path, opt),
+        .Object(opt) -> avra_llvm_emit_object_later(m, lc, path, opt, EMIT_WIDTH),
     }
-    if written != 0 {
-        return "cannot write `${path}`"
-    }
-    avra_llvm_dispose_builder(b)
-    avra_llvm_context_dispose(lc)
-    null
+    // a handed module's context is its worker's
+    if !(form is .Object) { avra_llvm_context_dispose(lc) }
+    if written == 0 { null } else { "cannot write `${path}`" }
 }
 
 /// One static as its globals: every box under its own name, the

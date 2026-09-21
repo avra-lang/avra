@@ -16,6 +16,7 @@
 void avra_trap(const char* msg);
 #include <stdio.h>
 #include <unistd.h>
+#include <pthread.h>
 #include <stddef.h>
 #include "../runtime/avra_box.h"
 
@@ -758,23 +759,26 @@ int64_t avra_llvm_write_bitcode_to_file(LLVMModuleRef m, const char* path) {
     return 0;
 }
 
-// THE SAME MODULE, AS AN OBJECT, made here: the `default<O1>`-style pipeline
-// clang runs on the bitcode, then the native target's code generator. A build
-// that moved one module pays a compiler it already holds, not a process. The
-// level is clang's: 0..3. Atomic as the writers above — a temp, then rename.
-// Answers 0, or 1 with the reason on stderr.
 /* The CPU every machine of a triple has — clang's own default, so an object
    made here is tuned as the C beside it is. Unnamed where clang names none. */
 static const char* baseline_cpu(const char* triple) {
     return strncmp(triple, "arm64-apple", 11) == 0 ? "apple-m1" : "";
 }
 
-int64_t avra_llvm_emit_object(LLVMModuleRef m, const char* path, int64_t level) {
+/* The native target, registered once — on the program's own thread, before any
+   worker reads the registry. 0 when it stands. */
+static int native_target_ready(void) {
     static int ready = 0;
-    if (!ready) {
-        if (LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter()) return 1;
-        ready = 1;
-    }
+    if (!ready && !(LLVMInitializeNativeTarget() || LLVMInitializeNativeAsmPrinter())) ready = 1;
+    return ready ? 0 : 1;
+}
+
+// A MODULE AS AN OBJECT: the `default<O1>`-style pipeline clang runs on
+// bitcode, then the native target's code generator, at clang's level 0..3.
+// Atomic as the writers above — a temp, then rename. Answers 0, or 1 with the
+// reason on stderr. It touches its module's context and nothing shared, so a
+// worker runs it.
+static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
     char tmp[4096];
     if (snprintf(tmp, sizeof(tmp), "%s.tmp.%d", path, (int)getpid()) >= (int)sizeof(tmp)) return 1;
     char* triple = LLVMGetDefaultTargetTriple();
@@ -816,6 +820,96 @@ int64_t avra_llvm_emit_object(LLVMModuleRef m, const char* path, int64_t level) 
     LLVMDisposeMessage(triple);
     if (failed || rename(tmp, path) != 0) { remove(tmp); return 1; }
     return 0;
+}
+
+int64_t avra_llvm_emit_object(LLVMModuleRef m, const char* path, int64_t level) {
+    return native_target_ready() || object_written(m, path, level);
+}
+
+// ── Objects, made by workers ────────────────────────────────────
+// A module is built on the program's one thread and HANDED OVER with its
+// context; a worker writes its object and disposes the context, the module
+// with it. LLVM is safe a context a thread, and a module here has a context of
+// its own. The queue is BOUNDED: a builder that outruns the workers waits, so
+// the modules alive are the workers' and a few more.
+
+typedef struct EmitJob { LLVMModuleRef m; LLVMContextRef lc; char* path; int64_t level; struct EmitJob* next; } EmitJob;
+
+static pthread_mutex_t emit_mu = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t emit_work = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t emit_room = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t emit_idle = PTHREAD_COND_INITIALIZER;
+static EmitJob* emit_head = NULL;
+static EmitJob* emit_tail = NULL;
+static int emit_queued = 0, emit_active = 0, emit_workers = 0, emit_failed = 0;
+
+static void* emit_worker(void* unused) {
+    (void)unused;
+    for (;;) {
+        pthread_mutex_lock(&emit_mu);
+        while (!emit_head) pthread_cond_wait(&emit_work, &emit_mu);
+        EmitJob* j = emit_head;
+        emit_head = j->next;
+        if (!emit_head) emit_tail = NULL;
+        emit_queued--;
+        emit_active++;
+        pthread_cond_signal(&emit_room);
+        pthread_mutex_unlock(&emit_mu);
+        int bad = object_written(j->m, j->path, j->level);
+        LLVMContextDispose(j->lc);
+        free(j->path);
+        free(j);
+        pthread_mutex_lock(&emit_mu);
+        emit_active--;
+        emit_failed += bad;
+        if (!emit_head && !emit_active) pthread_cond_broadcast(&emit_idle);
+        pthread_mutex_unlock(&emit_mu);
+    }
+    return NULL;
+}
+
+// THE MODULE AND ITS CONTEXT ARE THE WORKERS' FROM HERE: the caller touches
+// neither again. `workers` is how many may run at once, heard the first time.
+// Answers 0, or 1 when the module could not be handed over — it is disposed
+// all the same.
+int64_t avra_llvm_emit_object_later(LLVMModuleRef m, LLVMContextRef lc, const char* path, int64_t level, int64_t workers) {
+    EmitJob* j = native_target_ready() ? NULL : (EmitJob*)malloc(sizeof(EmitJob));
+    char* kept = j ? strdup(path) : NULL;
+    if (!kept) { free(j); LLVMContextDispose(lc); return 1; }
+    *j = (EmitJob){ m, lc, kept, level, NULL };
+    pthread_mutex_lock(&emit_mu);
+    while (emit_workers < workers) {
+        pthread_t t;
+        if (pthread_create(&t, NULL, emit_worker, NULL) != 0) break;
+        pthread_detach(t);
+        emit_workers++;
+    }
+    if (emit_workers == 0) {
+        pthread_mutex_unlock(&emit_mu);
+        int bad = object_written(m, kept, level);
+        LLVMContextDispose(lc);
+        free(kept);
+        free(j);
+        return bad;
+    }
+    while (emit_queued >= 2 * emit_workers) pthread_cond_wait(&emit_room, &emit_mu);
+    if (emit_tail) emit_tail->next = j; else emit_head = j;
+    emit_tail = j;
+    emit_queued++;
+    pthread_cond_signal(&emit_work);
+    pthread_mutex_unlock(&emit_mu);
+    return 0;
+}
+
+// EVERY MODULE HANDED OVER, WRITTEN: waits for the workers, and answers how
+// many objects were NOT written — counted once, so the next build starts at none.
+int64_t avra_llvm_objects_unwritten(void) {
+    pthread_mutex_lock(&emit_mu);
+    while (emit_head || emit_active) pthread_cond_wait(&emit_idle, &emit_mu);
+    int64_t failed = emit_failed;
+    emit_failed = 0;
+    pthread_mutex_unlock(&emit_mu);
+    return failed;
 }
 
 int64_t avra_llvm_verify_module_print(LLVMModuleRef m) {

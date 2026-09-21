@@ -2,7 +2,7 @@
 """THE EXTERN WALL'S WIDTH KEEPER.
 
 Avra's `int` is 64 bits; C's `int` is 32. An `extern fn f() -> int`
-is declared `i64` at the seam (language/llvm.av's `declare_externs`),
+is declared `i64` at the seam (compiler/backend/llvm.av's `declare_externs`),
 but a C body answering a narrow type writes only the low half — and
 neither ABI promises the bits above it. Both compilers materialise a
 32-bit result with a 32-bit write, which ZEROES the upper half, so a
@@ -263,7 +263,7 @@ def c_returns(sources):
     return out
 
 # WHERE AN EXTERN CAN BE DECLARED. `packages/**` reaches a package's
-# PROGRAM TESTS too — `language/tests/externs/externs.av` is the file that
+# PROGRAM TESTS too — `compiler/tests/externs/externs.av` is the file that
 # DEMONSTRATES this seam, the one place a reader looks to learn what
 # an extern may do. A keeper blind to its own subject's showcase is
 # the untested-instrument shape.
@@ -1254,7 +1254,7 @@ def wrong_boxes(sigs):
 TERMINATES = re.compile(
     r"\b(getenv|setenv|unsetenv|putenv|fopen|freopen|open|openat|creat|stat|lstat|access"
     r"|mkdir|rmdir|remove|unlink|rename|opendir|execvp|execv|execve|system|popen|realpath"
-    r"|dlopen|dlsym|sqlite3_open|sqlite3_open_v2|sqlite3_bind_text)\s*\(")
+    r"|dlopen|dlsym|strdup|sqlite3_open|sqlite3_open_v2|sqlite3_bind_text)\s*\(")
 
 
 def text_taking_externs():

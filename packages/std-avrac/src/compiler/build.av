@@ -6,15 +6,19 @@ use core.{new_digest, digest_text, digest_bytes, digest_key, digest_of, joined, 
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes}
-use compiler.backend.{emit_object, Owned, emit_closed, home_of, not_closed, program_closed}
+use compiler.backend.{emit_object, objects_made, Owned, emit_closed, home_of, not_closed, program_closed}
 use compiler.lower.{Body, Lowered, program_symbol}
-use compiler.store.{Stored, node_key, store_at}
+use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.host.{Host, no_target}
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
 
 /// A build's result: the words that linked it, the binary, the warnings to
 /// speak, whether the kept binary was reused, and where a fresh one's time went.
 export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool, key: string, phases: string = "" }
+
+/// ONE OBJECT OF A BUILD: what it is an object of, the key it is kept under,
+/// where it stands for the link, and the source the link orders it by.
+type Made = { which: Owned, key: string, obj: string, source: string }
 
 /// clang's `-O<n>` as its number.
 fn opt_level(opt: string) -> int { if opt.starts_with("-O") && opt.length == 3 { opt.char_code(2) - 48 } else { 0 } }
@@ -256,6 +260,13 @@ impl Workspace {
         }
     }
 
+    /// A read file's object: kept under the file's key, standing beside the
+    /// store's for the link.
+    fn object_of(store: Store, root: string, a: Analysis) -> Made {
+        let path = a.view.source.file
+        Made { which: Owned.File(a.view.file), key: self.held_okey(store, path), obj: "${root}/${node_key(Stored.Obj, [digest_of(path)])}.o", source: path }
+    }
+
     /// The objects of the files that moved and of the program's module, made and
     /// kept; then every object linked, the store's standing in for the rest.
     fn linked(d: Derived, m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<BuildOutcome, string> {
@@ -272,23 +283,13 @@ impl Workspace {
         let root = build_cache_root(self)
         let unclosed: string? = program_closed(full)
         if unclosed != null { fail not_closed(unclosed!) }
-        // `source<TAB>object`: the link's order is the SOURCES', never the hold's
-        mut made: List<string> = []
-        let opt = opt_level(tools.opt)
         let t0 = self.clock()
+        let read = [self.object_of(store, root, a) for a in p.files]
+        // `source<TAB>object`: the link's order is the SOURCES', never the hold's
+        mut made: List<string> = ["${o.source}\t${o.obj}" for o in read]
         // AN OBJECT IS MADE ONE WAY — here, by the compiler that runs — so a tree's
         // objects are the same bytes however many of them a build had to make
-        for a in p.files {
-            let path = a.view.source.file
-            let obj = "${root}/${node_key(Stored.Obj, [digest_of(path)])}.o"
-            let okey = self.held_okey(store, path)
-            if !store.place(Stored.Obj, okey, obj) {
-                let broke = emit_object(full, obj, Owned.File(a.view.file), opt)
-                if broke != null { fail broke! }
-                let _ = store.keep_file(Stored.Obj, okey, obj, [])
-            }
-            made.push("${path}\t${obj}")
-        }
+        mut owed = [o for o in read if !store.place(Stored.Obj, o.key, o.obj)]
         // THE PROGRAM'S MODULE is keyed by its own bytes when it was lowered here —
         // written every build, compiled only when they moved, so a home's edit that
         // moves no instantiation compiles nothing — and by its inputs when it was not
@@ -297,10 +298,13 @@ impl Workspace {
         let pkey = if d.unlowered.is_empty() { self.bytes_keyed(full, "${base}.bc", tools)? } else { in_key }
         if !store.place(Stored.Obj, pkey, program) {
             if !d.unlowered.is_empty() { fail object_gone(binary) }
-            let broke = emit_object(full, program, Owned.Program, opt)
-            if broke != null { fail broke! }
-            let _ = store.keep_file(Stored.Obj, pkey, program, [])
+            owed.push(Made { which: Owned.Program, key: pkey, obj: program, source: "" })
         }
+        // the workers are waited for whatever broke: a module handed over is theirs
+        let broke = handed(full, owed, opt_level(tools.opt))
+        let unwritten = objects_made()
+        if broke != null || unwritten != null { fail broke ?? unwritten! }
+        for o in owed { let _ = store.keep_file(Stored.Obj, o.key, o.obj, []) }
         if !store.has(Stored.Obj, in_key) { let _ = store.keep_file(Stored.Obj, in_key, program, []) }
         let t1 = self.clock()
         // a held object links in place
@@ -332,6 +336,16 @@ fn stamps_key() -> string { node_key(Stored.Fp, ["stamps"]) }
 
 /// A file's bytes as their length and their digest.
 fn digest_of_file(text: string) -> string { "${text.length}.${digest_of(text)}" }
+
+/// Every owed object's module built and handed to a worker — the first
+/// refusal, or null. `objects_made` waits for them.
+fn handed(full: Lowered, owed: List<Made>, opt: int) -> string? {
+    for o in owed {
+        let broke = emit_object(full, o.obj, o.which, opt)
+        if broke != null { return broke }
+    }
+    null
+}
 
 // ── The voices ──
 

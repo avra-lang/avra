@@ -23,9 +23,10 @@ One slice = red-team + review round + ONE gate + commit + seed.
 - [x] **S6 `test` on the derivation** (`99a6e54`): case symbols content-stable, cases ride the
       record, the suite's binary is cached
 - [x] **S7 the warm edit to < 500 ms** — 7a `d2d9356` (runs, evaluator, store writes, watchdog), 7b (the program's module by its inputs; one digest pass), stamps, in-process objects, `22cb2da` a held module is minted when read, **`7cd2db3` the memory pass no longer pins a box a later write opens** — 0.65 s → 0.37 s
-- [ ] **S9 `compiler/` organised** — 9a: leaf subsystems are modules (`resolve/ typing/ lower/ memory/ backend/ store/ host/ format/ dev/`); the map is `compiler/mod.av`'s header
+- [x] **S9 `compiler/` organised** (`eadbdf0`) — `language/` is gone; leaf subsystems are modules (`resolve/ typing/ lower/ memory/ backend/ store/ host/ format/ dev/`); the map is `compiler/mod.av`'s header
 - [ ] S8 `parsed(file)` persists (`avra_snapshot`, two landings); parser fast path
-- [ ] S10 docs: this file is the law; the pipeline doc becomes history
+- [x] S10 docs: this file is the law; `2026_09_21_COMPILER_PIPELINE.md` is the map of every stage; the 09-19 pipeline doc is history
+- [x] **S11 one tree, one binary** (`0ac0735`, `fe65869`) — the binary's key covers the closure it reached; the link's order is the sources'; a store is one compiler's; an object is made one way
 
 ## 1. Numbers — the non-regression gates
 
@@ -33,7 +34,7 @@ One slice = red-team + review round + ONE gate + commit + seed.
 
 | | 09-19 | now | gate |
 |---|---|---|---|
-| `build cli` cold | 22.7 s | **18–21 s** (every object made in process, one after another: the wall of four clangs, two thirds of their CPU) | 23 s |
+| `build cli` cold | 22.7 s | **~13 s** (every object made in process, four workers at once: emit 4.5 s where bitcode + four clangs took 7.3) | 16 s |
 | `build cli` no-op | 0.4 s | **0.08 s** | 0.3 s |
 | `build cli`, one body edit | 1.2 s | **0.37–0.42 s** | 0.5 s |
 | `build cli`, a generic's home edited | — | ~3 s (the homes are read from the start; the program's module recompiles) | 5 s |
@@ -236,7 +237,9 @@ three callers was the ceremony the plan warned of.
   cold one of the same tree linked different bytes — and a warm-built compiler
   was a different compiler from its cold twin. An object is made ONE way, here
   (`emit_object`, tuned for the triple's baseline CPU as clang tunes the C
-  beside it); clang links and nothing else. One tree, one binary, however it
+  beside it) — built on the program's one thread and handed to a WORKER with
+  its context, four at once, which is where a cold build's 9 s of codegen
+  went to 4.5; clang links and nothing else. One tree, one binary, however it
   was reached — which is what lets the store be named by the compiler's bytes.
 - **The binary's key covered the whole toolchain,** so one compiler edit missed
   every suite and program in the tree. It covers the closure the last
@@ -292,11 +295,6 @@ compiler's samples, 170 ms of the edit. A held module minted when read, 110.
 Objects made in process, 80. The tree's stamps in one row, 60.
 
 **Left, none of it owed to the bar:**
-
-0. **The cold build makes its objects one after another** (emit ~9 s of 20).
-   LLVM is thread-safe a context a thread; `emit_object` over a list, a worker
-   a core, would take the cold build toward 13 s. The modules are built in the
-   global context today, which is the work.
 
 1. **A verdict kept beside a suite's binary.** `test std-avrac` warm is 13 s of
    RUNNING binaries nothing moved. A suite whose binary is a hit could answer

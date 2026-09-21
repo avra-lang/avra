@@ -132,8 +132,10 @@ packages/std-avrac/src/
   query/       the memo kernel: red-green cells, families, revisions
   grammar/     the grammar engine (language-agnostic)
   features/    the language, one directory per feature; the contract
-  language/    the driver: assembly, the workspace's query families,
-               passes, interp, backend
+  compiler/    the driver: assembly, the derivation every command asks, the
+               workspace's query families, and a module a subsystem — resolve,
+               typing, lower, memory, backend, store, host (the map is the
+               header of compiler/mod.av)
   diagnostics/ structured errors and their rendering
   testing/     what every spec asks of a program: shown, refused_with
 packages/*/corpus/  a package's proof by example, both engines

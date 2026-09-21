@@ -666,7 +666,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       receivers, typing, lower, interp) became methods in one
       scripted sweep, every call site with them; the IR of 88
       programs was byte-identical before and after. THE REACH is
-      the pass's own files — features/*.av and language/*.av —
+      the pass's own files — features/*.av and compiler/**.av —
       where the shared vocabularies live; a feature dir's rule
       bodies (`call_type(cx, e)`) are dispatch targets and stay
       free. NOT the smell: a pass ENTRY POINT taking the pass's
@@ -1480,7 +1480,7 @@ its trigger, not before.
 
 A pass context (`TypeCx`, `LowerCx`, `ResolveCx`) is the pass's own
 STATE, declared in features/contract.av and given its verbs as
-METHODS: the walk's verbs where the walk lives (language/typing.av's
+METHODS: the walk's verbs where the walk lives (compiler/typing/typing.av's
 `impl TypeCx`), the reads over facts (features/contexts.av), and the
 shared vocabularies every feature speaks (checks.av, emit.av,
 values.av, unify.av, variants.av, places.av) — so a feature's rule
@@ -1510,7 +1510,7 @@ by its builders).
 ## One semantics: lowering IS the meaning
 
 A feature defines what its constructs DO exactly once — in
-lower.av. Evaluation is the IR interpreted (language/interp.av)
+lower.av. Evaluation is the IR interpreted (compiler/backend/interp.av)
 over the SAME instruction stream the backend compiles, so eval and
 native cannot disagree by construction; the interpreter's Val enum
 and runtime dispatch are the host twins of runtime/avra_runtime.c,

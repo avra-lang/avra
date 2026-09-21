@@ -472,7 +472,7 @@ def comma_list_open(lines):
 # THE PASS STATES: the structs whose impl IS their vocabulary. A verb
 # over one is a method (`cx.open_region(c)`), never a free fn taking
 # the state first (`open_region(cx, c)`) — the rule reaches the pass's
-# own files (features/*.av, language/*.av), where the shared
+# own files (features/*.av, compiler/**.av), where the shared
 # vocabularies live; a feature dir's rule bodies dispatch on the
 # state and stay free. A new state struct joins here when its impl
 # becomes its vocabulary.
