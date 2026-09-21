@@ -45,6 +45,18 @@ impl Workspace {
     /// directory holding its own `avra.toml` is a package, never a
     /// module of the one above it.
     fn module_files(m: ModulePath) -> List<string> {
+        // a listing is the host's to give, and a `use` line asks it of the same
+        // module a hundred times: remembered for ONE size of the package table,
+        // since a package admitted later answers for modules it holds
+        let slot = "${self.packages.length}\t${m.text()}"
+        let known: List<string>? = self.files_of.get(slot)
+        if known != null { return known! }
+        let made = self.listed_files(m)
+        self.files_of.set(slot, made)
+        made
+    }
+
+    fn listed_files(m: ModulePath) -> List<string> {
         let pkg: Package? = self.holder(m)
         if pkg == null { return [] }
         let src = pkg!.src
@@ -206,8 +218,12 @@ impl Workspace {
 
     /// A module's exported names.
     fn surface(m: ModulePath) -> Map<string, DeclId> {
+        let slot = "${self.packages.length}\t${m.text()}"
+        let known: Map<string, DeclId>? = self.surfaces.get(slot)
+        if known != null { return known! }
         mut out: Map<string, DeclId> = {}
         for d in self.exported_decls(m) { out.set(d.name, d.id) }
+        self.surfaces.set(slot, out)
         out
     }
 

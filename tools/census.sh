@@ -15,8 +15,11 @@ cd "$(dirname "$0")/.."
 # disk, and the worst, because this one deletes the compiler on
 # purpose as its first act. A copy cannot fail that way.
 saved=build/avra.census-saved
+stores=.avra-cache.census-saved
 restore() {
     rm -f build/avra_runtime.o
+    # the tree's stores come back as they stood: the census's own are its run's
+    if [ -d "$stores" ]; then rm -rf .avra-cache; mv "$stores" .avra-cache; fi
     if [ -f "$saved" ]; then
         mv -f "$saved" build/avra
     else
@@ -39,6 +42,12 @@ make --no-print-directory avra > /dev/null
 # and hid `retain:` when that did — twice, in one session, from the
 # author of both. An OMISSION is invisible and NOISE is not, so this
 # refuses only the one label it knows it does not want.
+# THE MEASURED RUN STARTS COLD. A store is one compiler's, and the build above
+# filled the census compiler's own — so the run would be answered from it and
+# count a hold, not the work. The tree's stores stand aside and come back on
+# every exit; a census compiler is never run again, so its store is dropped.
+rm -rf "$stores"
+[ -d .avra-cache ] && mv .avra-cache "$stores"
 out="$(AVRA_MEM_STATS=1 AVRA_CENSUS_SITES=1 sh tools/watch.sh 4000 ./avra "$@" 2>&1 >/dev/null \
     | grep -Ev '^(mem:|watch:)' || true)"
 
