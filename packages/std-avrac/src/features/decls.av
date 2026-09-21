@@ -505,8 +505,25 @@ impl Decls {
         }
     }
 
+    /// A declaration's signature — and with a record's, its LAYOUT: a
+    /// signature typed from source and one read from an interface both
+    /// land here, so a layout has one law.
     fn declare(d: DeclId, sig: DeclSig) {
         self.sigs.set(d.index, sig)
+        let r? = sig.record_sig() else { return }
+        self.flatten(d, r.types)
+    }
+
+    /// THE FLAT LAW: a record of ONE `int` field and no type parameters
+    /// IS its field — an id, a register: the values a compiler makes
+    /// millions of. A pointer-riding field keeps the box, because that
+    /// reference must still be counted; a `bool` waits on the runtime's
+    /// i64 seams, which coerce by shape; a wider record waits on the
+    /// slot law carrying aggregates.
+    fn flatten(record: DeclId, types: List<TypeId>) {
+        if types.length != 1 || !self.tparams(record).is_empty() { return }
+        if !(self.types.shape_of(types[0]) is .Int) { return }
+        self.types.mark_flat(self.types.intern(Type.Struct(record, self.decl(record).name)), types)
     }
 
     fn tparams(d: DeclId) -> List<string> {

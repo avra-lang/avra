@@ -139,7 +139,7 @@ export enum TypeLit {
 /// the sealed answer is STICKY. `stands_for` is kept BESIDE the
 /// fields, not read out of them: sealing empties the fields and a
 /// name must outlive that.
-export type RepRow = { fields: List<TypeId>, sealed: bool, stands_for: TypeId? = null }
+export type RepRow = { fields: List<TypeId>, sealed: bool, stands_for: TypeId? = null, boxed_flat: bool = false }
 
 /// The interner: shapes in, ids out — assigned once, compared as
 /// ints forever. The index map is keyed by each shape's CANONICAL
@@ -347,7 +347,7 @@ impl TypeRegistry {
     /// ALIASING), which the adversarial suite pins as a PARITY.
     fn unflatten(id: TypeId) {
         if self.stands_for(id) != null { return }
-        self.reps.set(id.index, RepRow { fields: [], sealed: true })
+        self.reps.set(id.index, RepRow { fields: [], sealed: true, boxed_flat: self.reps[id.index].boxed_flat || self.is_flat(id) })
     }
 
     /// Mark a type FLAT: the value IS its fields, with no box of its
@@ -355,9 +355,14 @@ impl TypeRegistry {
     /// holds exactly what its shape holds, and the memory pass asks
     /// the field. A SEALED record refuses.
     fn mark_flat(id: TypeId, fields: List<TypeId>) {
-        if self.reps[id.index].sealed { return }
+        if self.reps[id.index].sealed { return self.reps.set(id.index, self.reps[id.index] with { boxed_flat: true }) }
         self.reps.set(id.index, self.reps[id.index] with { fields: fields })
     }
+
+    /// Whether a seal boxed a record its declaration makes flat. That
+    /// layout is the PROGRAM's answer, never the declaration's, so no
+    /// other program's object agrees with it.
+    fn boxes_a_flat() -> bool { self.reps.any((r: RepRow) -> r.boxed_flat) }
 
     /// What a nullable carries, or absent when the id is not one —
     /// THE projection (values.av's `carried_type` is its cx-space

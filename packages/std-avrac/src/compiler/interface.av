@@ -77,11 +77,6 @@ fn fill_shape(store: Store, m: ModulePath, parts: List<string>) {
             types: [self.interface_type( id, name_of_field(f)) for f in fields],
             defaults: [self.decls.default_named(id, field_name(f)) for f in fields],
         }))
-        if fields.length == 1 {
-            let ty = self.interface_type( id, name_of_field(fields[0]))
-            let named = self.decls.types.intern(Type.Struct(id, parts[5]))
-            if self.decls.types.spells(ty) { self.decls.types.mark_flat(named, [ty]) }
-        }
     }
     if word == "enum" {
         let arms = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
@@ -292,7 +287,9 @@ fn row_decl(parts: List<string>) -> DeclId? {
     ids[ordinal]
 }
 
+/// A NESTED declaration joins no namespace, so no symbol names it.
 fn stub_of(d: Decl) -> Body? {
+    if d.nested { return null }
     let s? = self.sig(d.id) else { return null }
     match s {
         .Fn(sig) -> Body { name: self.decls.symbol(d.id), params: sig.params, ret: sig.ret, gives: null, ins: [], reg_types: [], file: d.file },

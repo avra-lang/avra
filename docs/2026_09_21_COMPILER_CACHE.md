@@ -7,6 +7,27 @@ target) and `2026_09_16_BUILD_CACHE.md` (the history).
 
 Worktree `avra-cache-cas`, branch `cache/cas`.
 
+## 0. THE PLAN — the campaign to its end (owner's bar, 2026-09-21)
+
+Warm `build` < 500 ms · `test` on the cache · `check` near instant · every
+command ONE derivation · `compiler/` organised · code clean, derived, sugared.
+One slice = red-team + review round + ONE gate + commit + seed.
+
+- [x] S1 a file's object is the FILE's; the hold is sound
+- [x] S2 fail-safe; the sweep
+- [x] S3 the sweep to 3
+- [ ] **S4 the sweep to 0** — one flat law (`Decls.declare`), a nested decl is no
+      symbol, a program that boxes a flat record builds whole
+- [ ] S5 THE HELD DERIVATION — `build_program_attempt`'s first half as one verb
+      every command asks; per-file diagnostics persist; `check` holds
+- [ ] S6 `test` on the derivation: case symbols content-stable, cases ride the
+      record, the suite's binary is cached
+- [ ] S7 the warm edit to < 500 ms: shard the entry module, prelink held
+      packages, one input digest pass, record load/fill
+- [ ] S8 `parsed(file)` persists (`avra_snapshot`, two landings); parser fast path
+- [ ] S9 `World`/`Compiled`/`Projection`; cli one line per command; folders
+- [ ] S10 docs: this file is the law; the pipeline doc becomes history
+
 ## 1. Numbers — the non-regression gates
 
 `./avra build packages/cli --time`, under the machine lock.
@@ -52,13 +73,13 @@ ANALYSIS, and only a hold skips it.
    program's; one that does not prints "the hold was refused". A hold bug costs
    time, never a wrong answer. A trap still escapes it.
 
-**THE SWEEP: 312 of 315 edits hold clean.** `tools/hold_sweep.sh packages/cli`
-found 9 that did not; three causes were paid (a home no parsed file imports was
-never registered, so never linked; a compile-time run asking a held file for a
-body; a held `impl … for` that never said what it implements). STILL REFUSED,
-and rebuilt from the sources by the fail-safe: `core/fingerprint.av` ("LLVM
-verification failed for `@std.avrac.core.body_of`") and `grammar/parse.av`,
-`grammar/render.av` ("a compile-time value did not cross as `Grammar`").
+7. **A layout is ONE law's answer.** A record's signature lands in
+   `Decls.declare` whether it was typed from source or read from a record,
+   and the flat law runs there. A seal that boxes a flat record makes that
+   layout the PROGRAM's: such a build reads no stored object and keeps none.
+
+**THE SWEEP: 315 of 315 edits hold clean.** `tools/hold_sweep.sh packages/cli` touches every
+source, one at a time, and builds through the hold.
 
 ## 3. Laws this layer paid for
 
@@ -84,6 +105,17 @@ verification failed for `@std.avrac.core.body_of`") and `grammar/parse.av`,
   instantiation carries its caller's substitution and is the same body.
 - **A suite that never held attacked nothing.** `tools/cache_attacks.sh` ran
   22 green steps at `held 0/6`. It now counts holds and refuses zero.
+
+- **Two copies of a law disagree the day one moves.** Typing made a record
+  flat over ONE `int`; the record loader made it flat over any scalar or
+  text. A parsed file then read `{ message: string }` as its field while every
+  held object boxed it — caught only because a static refused to cross.
+- **A nested declaration is no symbol.** A `quote { fn body_of() … }` mints a
+  NESTED decl; a stub gave it its module's symbol, and it collided with the
+  real `body_of` the day that file was the one that parsed.
+- **A refused hold hid a native crash.** The sealed-flat program linked
+  objects of two layouts and printed nothing; the differential caught it
+  because the suite compares against the evaluator, which reads no cache.
 
 ## 4. The keepers
 

@@ -259,6 +259,9 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
     // homes — a file whose BODIES this program's build reads — and the attempt restarts.
     if self.bodies_asked(store, entry) { return self.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, attempt, parse, hold) }
     if !p.clean() { fail p.report() }
+    // A SEAL THAT BOXED A FLAT RECORD made that layout the PROGRAM's. No stored object
+    // agrees with it, so this build reads none and keeps none.
+    if hold && self.decls.types.boxes_a_flat() { return self.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, attempt, parse, false) }
     let view = p.entry_file()
     if view == null { return .Err(p.rendered([no_target(self.root)])) }
     let ent = view!
@@ -366,6 +369,7 @@ fn compile_lowered(store: Store, cache: BuildCache, p: Program, lo: Lowered,
     // THE CLOSURE LAW ASKED ONCE. `program_closed` scans every instruction of every
     // body — a whole-program question with ONE answer — and `emit_module` below is
     // the emit that trusts it, so 276 modules cost it once instead of 276 times.
+    let shared = !self.decls.types.boxes_a_flat()
     let unclosed: string? = program_closed(full)
     if unclosed != null { fail "internal compiler error: nothing declares `${unclosed!}` — the program is not closed" }
     let t_e0 = avra_now_ns()
@@ -385,7 +389,7 @@ fn compile_lowered(store: Store, cache: BuildCache, p: Program, lo: Lowered,
         let okey = if is_entry { entry_key(ll, opt, runtime)? } else { obj_key_cached(self, store, m, path) }
         // A FILE WHOSE OBJECT IS ALREADY KEYED needs no emission: it was re-parsed (its
         // module moved) but its own inputs did not.
-        if store.place(Stored.Obj, okey, obj) {
+        if shared && store.place(Stored.Obj, okey, obj) {
             objs.push(obj)
         } else {
             if !is_entry {
@@ -427,8 +431,10 @@ fn compile_lowered(store: Store, cache: BuildCache, p: Program, lo: Lowered,
     // THE ASKS LAND BEFORE THE OBJECT: `hold_only` takes a file whose object AND asks are
     // both kept, so an object without its asks is never a hold.
     for po in pending {
-        let _ = store.keep(Stored.Unit, self.asks_key(po.okey), self.wanted_list_wire(po.asks), [])
-        let _ = store.keep_file(Stored.Obj, po.okey, po.obj, [])
+        if shared {
+            let _ = store.keep(Stored.Unit, self.asks_key(po.okey), self.wanted_list_wire(po.asks), [])
+            let _ = store.keep_file(Stored.Obj, po.okey, po.obj, [])
+        }
         objs.push(po.obj)
     }
     for path in held_paths(self) {
