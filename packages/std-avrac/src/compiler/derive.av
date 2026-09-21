@@ -6,16 +6,17 @@
 //! minted from its module's record, its warnings and its object come from the
 //! store. The sources are the hold's oracle — a derivation that fails under a
 //! hold is answered again from the sources alone.
-use core.{distinct, joined, module_path, FileId, DeclId}
-use features.{SettleRoot}
+use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
+use features.{SettleRoot, Wanted}
 
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
 export enum Want { Diagnostics, Binary }
 
-/// One attempt: the files it reads whatever the store holds, whether it holds
-/// anything, and how many times the records moved under it.
-type Attempt = { parse: List<string> = [], hold: bool = true, moved: int = 0 }
+/// One attempt: the files it reads whatever the store holds, whether it reads
+/// the program's instantiation HOMES, whether it holds anything, and how many
+/// times the records moved under it.
+type Attempt = { parse: List<string> = [], homes: bool = false, hold: bool = true, moved: int = 0 }
 
 /// What a file SAID the last time it parsed: its warnings, rendered, and the
 /// cases it declares — what stands in for it under every want.
@@ -24,7 +25,13 @@ export type Said = { path: string, warnings: string, cases: List<CaseCall> }
 /// A program derived: clean, every parsed body lowered, its records and what
 /// each file said kept. `program.ws` is the workspace the attempt that stood
 /// ran in.
-export type Derived = { program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, trace: List<string> }
+///
+/// AN INSTANTIATION LOWERS FROM ITS GENERIC'S BODY, and a held home has none. So
+/// `unlowered` are the instantiations this derivation asked for and did not
+/// lower, and `asked` names what they and every other would lower to: the
+/// program's root asks, and the key of every home it has ever lowered from. The
+/// same `asked` is the same instantiations, whoever lowered them.
+export type Derived = { entry: string?, want: Want, program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, unlowered: List<Wanted>, asked: string, trace: List<string> }
 
 /// Where what a file said lives: beside its object, under the object's key.
 fn said_key(okey: string) -> string { node_key(Stored.Warn, ["said", CACHE_FORMAT, okey]) }
@@ -53,8 +60,17 @@ fn case_of(line: string) -> CaseCall? {
 /// Where a program's instantiation homes are remembered, by its entry.
 fn homes_key(entry: string) -> string { node_key(Stored.Unit, ["homes", CACHE_FORMAT, entry]) }
 
-/// The homes this program's derivations have reported.
-fn remembered_homes(store: Store, entry: string) -> List<string> { (store.get(Stored.Unit, homes_key(entry)) ?? "").split("\n") }
+/// Where "these instantiations lowered clean" is remembered.
+fn clean_key(asked: string) -> string { node_key(Stored.Unit, ["clean", CACHE_FORMAT, asked]) }
+
+/// The paths a row remembers.
+fn remembered(store: Store, key: string) -> List<string> { (store.get(Stored.Unit, key) ?? "").split("\n") }
+
+/// `paths` joined to the ones a row remembers — written when it grows.
+fn remember(store: Store, key: string, paths: List<string>) {
+    let known = remembered(store, key)
+    if paths.any((path) -> !known.contains(path)) { let _ = store.keep(Stored.Unit, key, joined(distinct(known.concat(paths)), "\n"), []) }
+}
 
 impl Workspace {
     /// The program at `entry`, derived — under the hold, and from the sources
@@ -64,10 +80,25 @@ impl Workspace {
     /// `derived`, with files read whatever the store holds for them.
     mut fn derived_reading(entry: string?, want: Want, parse: List<string>) -> Result<Derived, string> {
         let held = self.attempted(entry, want, Attempt { parse: parse })
-        if held is .Ok || held_paths(self).is_empty() { return held }
+        if held is .Ok { return self.checked_whole(held?) }
+        if held_paths(self).is_empty() { return held }
         let plain = self.from_sources(entry, want)
         if plain is .Ok { eprintln(hold_refused(held)) }
         plain
+    }
+
+    /// A derivation that only SPEAKS owes its instantiations' verdict: lowered now,
+    /// unless these very instantiations lowered clean before.
+    fn checked_whole(d: Derived) -> Result<Derived, string> {
+        if !(d.want is .Diagnostics) || d.unlowered.is_empty() || d.store.has(Stored.Unit, clean_key(d.asked)) { return d }
+        d.program.ws.whole(d, [])
+    }
+
+    /// The derivation with every instantiation lowered: the homes read, and
+    /// `parse` with them.
+    fn whole(d: Derived, parse: List<string>) -> Result<Derived, string> {
+        if d.unlowered.is_empty() { return d }
+        self.again(d.entry, d.want, Attempt { parse: parse, homes: true })
     }
 
     /// The program derived with nothing held — the hold's oracle.
@@ -75,11 +106,8 @@ impl Workspace {
 
     /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
     fn stands_in(s: Store, okey: string, want: Want) -> bool {
-        if !s.has(Stored.Warn, said_key(okey)) { return false }
-        match want {
-            .Diagnostics -> true,
-            .Binary -> self.object_kept(s, okey),
-        }
+        if !s.has(Stored.Warn, said_key(okey)) || !s.has(Stored.Unit, self.asks_key(okey)) { return false }
+        want is .Diagnostics || s.has(Stored.Obj, okey)
     }
 
     /// The attempt again with nothing held. An attempt that held nothing has no
@@ -99,10 +127,13 @@ impl Workspace {
         let store = store_at(build_cache_root(self))
         self.attach_store(store)
         let known_as = entry ?? self.root
-        for path in remembered_homes(store, known_as).concat(at.parse) { self.homes.set(path, true) }
+        // a home is read only when the instantiations are owed
+        let homes = if at.homes { remembered(store, homes_key(known_as)) } else { [] }
+        for path in homes.concat(at.parse) { self.homes.set(path, true) }
         let t0 = self.clock()
         if at.hold {
             for m in held_modules(self, store) { let _ = load_interface(self, store, m, entry, want) }
+            self.settle_holds(store)
         }
         let t1 = self.clock()
         // names, then shapes: a held shape may name a parsed module's type
@@ -113,39 +144,45 @@ impl Workspace {
         let t3 = self.clock()
         let p = self.program(entry)
         let t4 = self.clock()
-        if self.bodies_asked(store, known_as) { return self.again(entry, want, at) }
+        let ran = self.bodies_asked()
+        if !ran.is_empty() { return self.again(entry, want, at with { parse: at.parse.concat(ran) }) }
         if !p.clean() { fail p.report() }
         if self.layouts_moved(store, p) { return self.unheld(entry, want, at, "a sealed layout moved") }
-        let unread = if want is .Binary { self.read_held_asks(store) } else { [] }
+        let unread = self.read_held_asks(store)
         if !unread.is_empty() { return self.again(entry, want, at with { parse: at.parse.concat(unread) }) }
         let lowered = p.files_checked()
         // a parsed const nothing parsed reads is settled HERE, while a held body it
         // runs can still send the attempt back — its value is in its module's record
         self.settle_consts(p)
-        if self.bodies_asked(store, known_as) { return self.again(entry, want, at) }
+        let run = self.bodies_asked()
+        if !run.is_empty() { return self.again(entry, want, at with { parse: at.parse.concat(run) }) }
         let lo = lowered?
         let t5 = self.clock()
-        // an instantiation lowers from its generic's body, and a held home has none
-        let homes = distinct([self.decls.file(f).path for f in lo.homes])
-        if homes.any((path) -> self.homes.get(path) == null) {
-            let _ = store.keep(Stored.Unit, homes_key(known_as), joined(distinct(remembered_homes(store, known_as).concat(homes)), "\n"), [])
-        }
-        if lo.homes.any((f) -> self.is_held(f)) { return self.again(entry, want, at) }
+        remember(store, homes_key(known_as), distinct([self.decls.file(f).path for f in lo.homes]))
+        // the homes were read and one is held all the same: it is new, and remembered now
+        if at.homes && lo.homes.any((f) -> self.is_held(f)) { return self.again(entry, want, at) }
         // the records land before any key that folds them is read
         let moved = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
         keep_interfaces(self, store, moved)
-        forget_keys(self)
         let _ = self.keep_const_units(store, moved)
         let adrift = [path for path in held_paths(self) if !self.stands_in(store, self.held_okey(store, path), want)]
         if !adrift.is_empty() {
             if at.moved >= 2 { fail records_adrift(adrift) }
             return self.again(entry, want, at with { moved: at.moved + 1 })
         }
+        // what stands in for a file lands whole: what it said, and what its bodies ask
+        for a in p.files {
+            let _ = store.keep_once(Stored.Unit, self.asks_key(self.held_okey(store, a.view.source.file)), self.wanted_list_wire([k.want for k in lo.asks if same_file(k.by, a.view.file)]), [])
+        }
         let said = self.all_said(store, p)
         if said == null { return self.unheld(entry, want, at, "what a held file said could not be read") }
-        let trace = ["held ${held_paths(self).length}/${self.decls.files.length}", "attempt ${at.moved}", "load ${(t1 - t0) / 1000000}", "admit ${(t2 - t1) / 1000000}", "fill ${(t3 - t2) / 1000000}", "analyze ${(t4 - t3) / 1000000}", "lower ${(t5 - t4) / 1000000}"]
+        let trace = ["held ${held_paths(self).length}/${self.decls.files.length}", "attempt ${at.moved}", "load ${(t1 - t0) / 1000000}", "admit ${(t2 - t1) / 1000000}", "fill ${(t3 - t2) / 1000000}", "analyze ${(t4 - t3) / 1000000}", "lower ${(t5 - t4) / 1000000}", "keep ${(self.clock() - t5) / 1000000}"]
         let spoken = [p.warned(p.voices)].concat([s.warnings for s in said!])
-        .Ok(Derived { program: p, lowered: lo, store: store, said: said!, warnings: joined([text for text in spoken if !text.is_empty()], "\n\n"), trace: trace })
+        let roots = self.held_wants.concat([k.want for k in lo.asks])
+        let asked = self.asked_print(store, known_as, roots)
+        let unlowered = [w for w in roots if self.is_held(w.file)]
+        if unlowered.is_empty() { let _ = store.keep_once(Stored.Unit, clean_key(asked), "", []) }
+        .Ok(Derived { entry: entry, want: want, program: p, lowered: lo, store: store, said: said!, warnings: joined([text for text in spoken if !text.is_empty()], "\n\n"), unlowered: unlowered, asked: asked, trace: trace })
     }
 
     /// WHETHER A SEALED LAYOUT MOVED UNDER THE HOLD. A seal boxes a flat record from
@@ -182,14 +219,32 @@ impl Workspace {
         }
     }
 
-    /// WHETHER THIS ATTEMPT ASKED A HELD FILE FOR A BODY — and if so, the files
-    /// are remembered beside the program's other homes, so every later
-    /// derivation parses them.
-    fn bodies_asked(store: Store, known_as: string) -> bool {
-        let asked = distinct(self.body_asks.get())
-        if asked.is_empty() { return false }
-        let _ = store.keep(Stored.Unit, homes_key(known_as), joined(distinct(remembered_homes(store, known_as).concat(asked)), "\n"), [])
-        true
+    /// THE HELD FILES THIS ATTEMPT ASKED A BODY OF: a compile-time run reached
+    /// them, and the next attempt reads them. The file that ran them keeps the
+    /// list in its record, so a later derivation reads them with it.
+    fn bodies_asked() -> List<string> { distinct(self.body_asks.get()) }
+
+    /// THE HOLDS, SETTLED: every hold asked for, but a file a read file's
+    /// compile-time runs read — and what THAT file's runs read, since it runs too.
+    mut fn settle_holds(store: Store) {
+        // LICENSED I16: a WORKLIST — the list grows while it is walked
+        mut reads: List<string> = distinct(self.read_with)
+        mut at = 0
+        while at < reads.length {
+            for path in kept_runs(record_fields(self, store, module_path(self.module_of(reads[at]).split("."))), reads[at]) {
+                if !reads.contains(path) { reads.push(path) }
+            }
+            at = at + 1
+        }
+        for path in self.hold_asked { if !reads.contains(path) { self.hold_only(path) } }
+    }
+
+    /// WHAT THE PROGRAM'S INSTANTIATIONS ARE A FUNCTION OF: its root asks, and the
+    /// key of every home it has lowered from — a home's text, and the interfaces
+    /// it sees. An ask a home's own body makes is that home's content.
+    fn asked_print(store: Store, known_as: string, roots: List<Wanted>) -> string {
+        let homes = [path for path in sorted_texts(remembered(store, homes_key(known_as))) if !path.is_empty()]
+        digest_of(joined(sorted_texts(distinct([self.wanted_wire(w) for w in roots])).concat(["${path}\t${self.held_okey(store, path)}" for path in homes]), "\n"))
     }
 
     /// What every file said, in file order: a parsed file's KEPT, a held file's

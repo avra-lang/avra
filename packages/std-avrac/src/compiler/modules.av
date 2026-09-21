@@ -18,6 +18,17 @@ impl Workspace {
     /// source root, `.`-joined — "" for a file at the root package's
     /// source root, `@scope.name.a` for a dependency's.
     fn module_of(path: string) -> string {
+        // the answer is a walk over every package, and packages are admitted as
+        // `use` lines reach them: it is remembered for ONE size of that table
+        let slot = "${self.packages.length}\t${path}"
+        let known: string? = self.module_names_of.get(slot)
+        if known != null { return known! }
+        let made = self.module_named(path)
+        self.module_names_of.set(slot, made)
+        made
+    }
+
+    fn module_named(path: string) -> string {
         let pkg = self.packages[self.holder_of_path(path)]
         // EVERY FILE ITS OWN MODULE in a directory of programs: the
         // module is the file's path under the root, stem included, so

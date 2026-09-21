@@ -2,7 +2,7 @@
 //! hash: its binary is kept under a key over every input's bytes. A changed
 //! one emits the files that moved, compiles them in parallel, and links them
 //! with the objects the store holds for the rest.
-use core.{new_digest, digest_text, digest_bytes, digest_key, digest_of, joined, distinct, sorted_texts, same_file, module_path, FileId, RtSig}
+use core.{new_digest, digest_text, digest_bytes, digest_key, digest_of, joined, distinct, sorted_texts, fp_list, FileId, RtSig}
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes}
@@ -12,9 +12,9 @@ use @std.process.{parallel, cmd, Tool, Outcome, Env, Streams}
 /// speak, whether the kept binary was reused, and where a fresh one's time went.
 export type BuildOutcome = { words: List<string>, binary: string, warnings: string, reused: bool, key: string, phases: string = "" }
 
-/// A module emitted but not yet compiled: its object's key, where clang
-/// writes it, and the instantiations its bodies demand.
-type PendingObj = { okey: string, obj: string, asks: List<Wanted> }
+/// A module emitted but not yet compiled: its object's key, and where clang
+/// writes it.
+type PendingObj = { okey: string, obj: string }
 
 /// THE PROGRAM'S OWN MODULE: its entry, and the runtime rows the entry names.
 export type ProgramModule = { entry: Body, rows: List<RtSig> = [] }
@@ -91,9 +91,16 @@ impl Workspace {
         digest_key(digest_text(digest_text(digest_text(new_digest(), CACHE_FORMAT), relative_path(self.root, named)), inputs))
     }
 
-    fn input_line(path: string) -> string {
+    fn input_line(path: string) -> string { "${relative_path(self.root, path)}\t${self.text_digest(path)}" }
+
+    /// A file's bytes as one digest — walked once a build, whoever asks.
+    fn text_digest(path: string) -> string {
+        let known: string? = self.text_digests.get(path)
+        if known != null { return known! }
         let text = self.host.read(path)
-        "${relative_path(self.root, path)}\t${text.length}\t${digest_of(text)}"
+        let made = "${text.length}.${digest_of(text)}"
+        self.text_digests.set(path, made)
+        made
     }
 
     /// Whether a body's home cannot emit it: the home is held, so its object
@@ -107,12 +114,15 @@ impl Workspace {
     /// what ROAMS — an instantiation no file owns, a body whose held home cannot
     /// emit it — owned by no file and weak, in name order, so the program's
     /// module has the same bytes whatever order the walk met them in.
-    fn homed(lo: Lowered, m: ProgramModule) -> Lowered {
+    fn homed(lo: Lowered, m: ProgramModule, unlowered: List<Wanted>) -> Lowered {
         let roams = [bd for bd in lo.fns if home_of(bd) == null || self.homed_in_held(bd)]
         mut by_name: Map<string, Body> = {}
-        for bd in roams { by_name.set(bd.name, bd with { file: null, weak: true }) }
+        // with instantiations owed, the program's module is the STORE's: what roams
+        // here is already in it, and stands as a declaration alone
+        for bd in roams { by_name.set(bd.name, if unlowered.is_empty() { bd with { file: null, weak: true } } else { bd with { file: null, weak: true, ins: [], reg_types: [] } }) }
         let stay = [bd for bd in lo.fns if by_name.get(bd.name) == null]
-        lo with { entry: m.entry, externs: lo.externs.concat(m.rows), fns: held_stubs(self).concat(stay).concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))]) }
+        let owed = [stub! for stub in [self.decls.unlowered_stub(w) for w in unlowered] if stub != null]
+        lo with { entry: m.entry, externs: lo.externs.concat(m.rows), fns: held_stubs(self).concat(owed).concat(stay).concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))]) }
     }
 
     /// Emit the files that moved and the program's module, compile them
@@ -120,13 +130,21 @@ impl Workspace {
     fn linked(d: Derived, m: ProgramModule, key: string, binary: string, tools: Toolchain) -> Result<BuildOutcome, string> {
         let store = d.store
         let p = d.program
-        let full = self.homed(d.lowered, m)
+        // THE PROGRAM'S MODULE BY WHAT IT IS A FUNCTION OF. Instantiations nobody
+        // lowered are owed unless a build of these very asks kept them.
+        let in_key = node_key(Stored.Obj, ["program", CACHE_FORMAT, d.asked, "${fp_list([i.fingerprint() for i in m.entry.ins])}", tools.opt, tools.runtime])
+        if !d.unlowered.is_empty() && !store.has(Stored.Obj, in_key) {
+            let whole = self.whole(d, [])?
+            return whole.program.ws.linked(whole, m, key, binary, tools)
+        }
+        let full = self.homed(d.lowered, m, d.unlowered)
         let root = build_cache_root(self)
         let unclosed: string? = program_closed(full)
         if unclosed != null { fail not_closed(unclosed!) }
         mut objs: List<string> = []
         mut moved: List<string> = []
         mut pending: List<PendingObj> = []
+        mut owed_keys: List<string> = []
         let t0 = self.clock()
         for a in p.files {
             let path = a.view.source.file
@@ -139,30 +157,36 @@ impl Workspace {
                 let broke = emit_closed(full, "${root}/${base}.bc", Owned.File(a.view.file))
                 if broke != null { fail broke! }
                 moved.push("${base}.bc")
-                pending.push(PendingObj { okey: okey, obj: obj, asks: [k.want for k in d.lowered.asks if same_file(k.by, a.view.file)] })
+                pending.push(PendingObj { okey: okey, obj: obj })
             }
         }
         // THE PROGRAM'S MODULE is keyed by its own bytes: emitted every build,
         // compiled only when they moved
         let base = node_key(Stored.Obj, [digest_of(binary)])
-        let broke = emit_closed(full, "${root}/${base}.bc", Owned.Program)
-        if broke != null { fail broke! }
-        let pkey = entry_key("${root}/${base}.bc", tools)?
-        if !store.place(Stored.Obj, pkey, "${root}/${base}.o") {
-            moved.push("${base}.bc")
-            pending.push(PendingObj { okey: pkey, obj: "${root}/${base}.o", asks: [] })
-        } else {
-            objs.push("${root}/${base}.o")
+        let program = "${root}/${base}.o"
+        objs.push(program)
+        if d.unlowered.is_empty() {
+            // lowered here: keyed by its own bytes too, so a home's edit that moves
+            // no instantiation compiles nothing
+            let broke = emit_closed(full, "${root}/${base}.bc", Owned.Program)
+            if broke != null { fail broke! }
+            let pkey = entry_key("${root}/${base}.bc", tools)?
+            if !store.place(Stored.Obj, pkey, program) {
+                moved.push("${base}.bc")
+                owed_keys.push(pkey)
+            }
+        } else if !store.place(Stored.Obj, in_key, program) {
+            fail object_gone(binary)
         }
         let t1 = self.clock()
         let _ = compiled(moved, root, tools)?
         let t2 = self.clock()
-        // the asks land before the object: a hold wants both
         for po in pending {
-            let _ = store.keep_once(Stored.Unit, self.asks_key(po.okey), self.wanted_list_wire(po.asks), [])
             let _ = store.keep_file(Stored.Obj, po.okey, po.obj, [])
             objs.push(po.obj)
         }
+        // the program's module under its bytes and under what it is a function of
+        for pkey in owed_keys.concat(if store.has(Stored.Obj, in_key) { [] } else { [in_key] }) { let _ = store.keep_file(Stored.Obj, pkey, program, []) }
         // a held object links in place
         for path in held_paths(self) {
             let okey = self.held_okey(store, path)

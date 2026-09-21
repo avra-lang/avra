@@ -54,7 +54,10 @@ impl Workspace {
     /// not run again. A quarrel under a hold is asked again of the sources: a
     /// held body the record did not foresee is no verdict on the program.
     mut fn evaluated(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
-        let d = self.derived_reading(null, Want.Binary, flatten([self.seen_files(store, path) for path in owed]))?
+        let reach = flatten([self.seen_files(store, path) for path in owed])
+        let met = self.derived_reading(null, Want.Binary, reach)?
+        // the evaluator runs bodies, an instantiation's among them
+        let d = if owed.is_empty() { met } else { met.program.ws.whole(met, reach)? }
         let first = d.program.ws.quarrels(d, owed, told_from)
         if first.is_empty() { return d.program.ws.agreed(store, d, owed) }
         if held_paths(d.program.ws).is_empty() { fail joined(first, "\n") }
@@ -107,7 +110,7 @@ impl Workspace {
     /// must print and the text of every file it can reach — a BODY moves a run,
     /// so an interface digest would not do.
     fn proved_key(store: Store, path: string) -> string {
-        let texts = [digest_of(self.source(self.file_id(f)).text) for f in self.seen_files(store, path)]
+        let texts = [self.text_digest(f) for f in self.seen_files(store, path)]
         node_key(Stored.Unit, ["proved", CACHE_FORMAT, path, self.host.read(beside(path, "expected")), joined(texts, "\n")])
     }
 }

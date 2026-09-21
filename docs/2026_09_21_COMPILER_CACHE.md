@@ -20,10 +20,9 @@ One slice = red-team + review round + ONE gate + commit + seed.
       symbol, a program that boxes a flat record builds whole
 - [x] **S5 THE HELD DERIVATION** (`a2c99e0`) — `build_program_attempt`'s first half as one verb
       every command asks; per-file diagnostics persist; `check` holds
-- [ ] **S6 `test` on the derivation**: case symbols content-stable, cases ride the
+- [x] **S6 `test` on the derivation** (`99a6e54`): case symbols content-stable, cases ride the
       record, the suite's binary is cached
-- [ ] S7 the warm edit to < 500 ms: shard the entry module, prelink held
-      packages, one input digest pass, record load/fill
+- [ ] **S7 the warm edit to < 500 ms** — 7a `d2d9356` (runs, evaluator, store writes, watchdog), 7b (the program's module by its inputs; one digest pass). LEFT: a stat-keyed digest cache, in-process object emission, the records' text
 - [ ] S8 `parsed(file)` persists (`avra_snapshot`, two landings); parser fast path
 - [ ] S9 `World`/`Compiled`/`Projection`; cli one line per command; folders
 - [ ] S10 docs: this file is the law; the pipeline doc becomes history
@@ -32,20 +31,22 @@ One slice = red-team + review round + ONE gate + commit + seed.
 
 `./avra build packages/cli --time`, under the machine lock.
 
-| | 09-19 | 09-20 (regressed) | now | gate |
-|---|---|---|---|---|
-| `build cli` cold | 22.7 s | 24.0 s | **16–18 s** | 23 s |
-| `build cli` no-op | 0.4 s | 0.4 s | **0.4 s** | 0.8 s |
-| `build cli`, one-file edit | 1.2 s | 26.1 s | **1.3–1.6 s** | 2 s |
-| `check cli` | 9.7 s | — | cold 9.2 s · warm **1.0 s** · one edit **1.0 s** | 2 s |
-| `check std-avrac` | 11.6 s, RED | — | cold 13 s · warm **~1.5 s**, clean | 2 s |
-| `test std-json` | 1.6 s | — | cold 1.7 s · warm **0.4 s** | 1 s |
-| `test std-avrac` (5324 cases, 111 programs, 27 nested) | ~40 s | — | cold 56 s · one edit **~2 s to compile**, then the run (9 s) | — |
+| | 09-19 | now | gate |
+|---|---|---|---|
+| `build cli` cold | 22.7 s | **17–18 s** | 23 s |
+| `build cli` no-op | 0.4 s | **0.20 s** | 0.4 s |
+| `build cli`, one body edit | 1.2 s | **0.8–0.9 s** (phases ~0.5 s) | 1.2 s |
+| `build cli`, a generic's home edited | — | 3 s (the homes are read, the program's module recompiles) | 5 s |
+| `check cli` | 9.7 s | cold 9 s · warm **0.8 s** | 2 s |
+| `check std-avrac` | 11.6 s, RED | cold 13 s · warm **~1.5 s**, clean | 2 s |
+| `test std-json` | 1.6 s | cold 1.7 s · warm **0.4 s** | 1 s |
+| `test std-avrac` (5325 cases, 111 programs, 27 nested) | ~40 s | cold 56 s · one edit **~2 s to compile**, then the 9 s run | — |
 
-Where a warm edit goes today (ms), held 274/291: admit 165–190 (the 17 files
-that parse) · load 140 · link 105–125 · analyze 90–110 · fill 95 · lower 50 ·
-emit 30 · clang 30–420 (the entry module, when its instantiations move).
-**Target: 200–500 ms.**
+Where a warm body edit goes (ms), held 288/292: load 85 · admit 50 · fill 90 ·
+analyze 40 · lower 40 · keep 80 · clang 75 · link 105 — and ~80 before any of it,
+hashing every input for the program's key, ~60 for the shim and the watchdog.
+**Target: under 500 ms wall.** What is left is text: records decoded and
+re-encoded every build (load + fill + keep = 255), which the snapshot (S8) ends.
 
 ## 2. The model
 
@@ -66,6 +67,16 @@ for a package's cases and its program tests. A file's `Said` row — its
 warnings and its cases — is what stands in for it under every want; the
 evaluator's agreement with a program is remembered under the text of every
 file the program can reach.
+
+A BODY EDIT READS ONE FILE. An instantiation lowers from its generic's body,
+so its HOME used to be read every build. The program's module is a function
+of its INPUTS — the root asks (every file's `asks` row) and the key of every
+home it ever lowered from (`Derived.asked`) — so it is kept under that, and a
+derivation that owes instantiations nobody lowered (`unlowered`) only reads
+the homes when no build of those very asks kept the module (`whole`). `check`
+asks the same of a "lowered clean" mark. And a file that WILL be read brings
+exactly the files its compile-time runs read the last time (`settle_holds`,
+from its record's `file` line), never a list that only grows.
 
 A held file is skipped entirely: no parse, no typing, no lowering, no clang.
 That is where the edit loop lives — an edit's cost is ANALYSIS, and only a hold
@@ -172,6 +183,16 @@ source, one at a time, and builds through the hold.
 - **A restart from the sources that can restart is a loop,** and each turn is a
   workspace that never dies: 6 GB in a minute. `unheld` refuses the second.
 - **The root module's name is empty, and `split` drops a trailing empty field.**
+
+- **A list that only grows is a hold that only shrinks.** "Remember every
+  file a compile-time run ever asked a body of" read ten files on every edit
+  after one unlucky one. A file's record keeps what ITS runs read.
+- **The watchdog cost the warm build more than the build.** 80 ms of work,
+  0.3 s of a poll that read every process before it looked for the end.
+- **`mut x = self.xs[i]; x.set(..); self.xs.set(i, x)` COPIES.** The element is
+  held twice while it is written. The evaluator did it on every register write.
+- **A sweep that asks "clean?" does not ask "held?".** The hold collapsed to
+  25/292 on correct builds; the sweep files a thin hold now.
 
 ## 4. The keepers
 

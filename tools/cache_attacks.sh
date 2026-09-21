@@ -112,7 +112,7 @@ S() { # S <label> <app>
     nat=$("$bin" 2>&1); ev=$(./avra run $R/$2 2>/dev/null | grep -v '^watch:')
     if [ "$nat" = "$ev" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [$2] ($held) -> $nat"; else fails=$((fails+1)); echo "FAIL  $1 [$2] ($held) native='$nat' eval='$ev'"; fi
 }
-ed() { python3 - "$@" <<'PY'
+ed() { python3 - "$@" <<'PY' || { fails=$((fails+1)); echo "FAIL  a fixture edit found nothing to edit: $1 <- $2"; }
 import sys
 p,old,new=sys.argv[1:4]; t=open(p).read(); assert old in t,(p,old); open(p,'w').write(t.replace(old,new,1))
 PY
@@ -125,6 +125,8 @@ ed $R/lib/src/leaf.av "{ 1 }" "{ 100 }";                       S "leaf body edit
 ed $R/lib/src/lib.av "one() +" "one() + two() +";              S "mid now calls a fn a never reached" a
 ed $R/a/src/main.av '${K}' '${K} ${pick("p", "q", false)}';    S "new instantiation, home may be held" a
 ed $R/lib/src/gen.av "{ a } else { b }" "{ b } else { a }";    S "generic body edit" a; S "generic body edit" b
+ed $R/lib/src/gen.av "{ b } else { a }" "{ a } else { b }"
+printf '// moved\n' >> $R/lib/src/leaf.av;                       S "a home back to a text the store knows, a file moved beside it" a; S "same, b" b
 ed $R/lib/src/inner/bar.av "Bar = { x: int }" "Bar = { x: int, y: int }"
 ed $R/lib/src/shapes.av "Bar { x: 7 }" "Bar { x: 7, y: 9 }";   S "layout: a module a never imports moves Bar flat -> boxed, a holds Foo" a
 ed $R/lib/src/leaf.av 'fn one() -> int { 100 }' 'fn one(k: int) -> int { 100 + k }'

@@ -239,6 +239,14 @@ impl Decls {
         Lowered { fns: fns, entry: entry_body, asks: d.asks, homes: d.homes, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(statics.concat(d.statics)), libraries: [] }
     }
 
+    /// AN INSTANTIATION NOBODY LOWERED, as the declaration a caller's module needs:
+    /// its signature under its type arguments — what `lower_fn` would give it.
+    fn unlowered_stub(w: Wanted) -> Body? {
+        let d? = w.decl else { return null }
+        let sig? = (self.sig(d))?.fn_sig() else { return null }
+        Body { name: w.name, params: [viewed(self.types, w.sub, pt) for pt in sig.params], ret: viewed(self.types, w.sub, sig.ret), gives: null, ins: [], reg_types: [], weak: true }
+    }
+
     /// THE ENTRY'S LAW over every other file: a module file runs nothing.
     fn outside_entry(files: List<Analysis>, entry: int?) -> List<Diag> {
         if entry == null { return [] }
