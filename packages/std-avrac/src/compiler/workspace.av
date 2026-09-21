@@ -233,6 +233,21 @@ export enum Origin {
 /// One timed phase, in nanoseconds of the workspace's clock.
 export type Phase = { name: string, ns: int }
 
+impl Phase {
+    fn shown() -> string { "${self.name} ${self.ns / 1000000}ms" }
+}
+
+/// A PHASE CLOCK: each mark closes the span since the last one.
+export type Marks = { now: fn() -> int, last: int, spans: List<Phase> }
+
+impl Marks {
+    mut fn mark(name: string) {
+        let at = self.now()
+        self.spans.push(Phase { name: name, ns: at - self.last })
+        self.last = at
+    }
+}
+
 /// THE FAMILIES — the compiler's query vocabulary, in pipeline
 /// order. Keys by FileId (`Source` … `Resolved`, `Folded`,
 /// `Analysis`), ModuleId (`Namespace`), DeclId (`Sig`, `Methods`,
@@ -505,6 +520,9 @@ impl Workspace {
         }
         self.db.changed_at(key(f, arg))
     }
+
+    /// A clock started now.
+    fn marking() -> Marks { Marks { now: self.clock, last: self.clock(), spans: [] } }
 
     fn timed(name: string, ns: int) {
         self.phases.push(Phase { name: name, ns: ns })

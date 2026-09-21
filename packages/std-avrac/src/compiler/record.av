@@ -327,12 +327,12 @@ export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModuleP
 /// `.Builtin` is: nothing lowers a module that was not read. The day something does, these
 /// rows are lies.
 // LICENSED I39: THE LOADER — a workspace, a store and a module in, the count minted out.
-export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) -> int {
+export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
     let key = record_key(ws, m)
-    if ws.loaded_records.get(key) != null { return 0 }
+    if ws.loaded_records.get(key) != null { return }
     ws.loaded_records.set(key, true)
     let text = record_cached(ws, store, m)
-    if text == "" { return 0 }
+    if text == "" { return }
     let fields = record_fields(ws, store, m)
     // FAIL CLOSED: a record the decoder cannot rebuild WHOLE holds NOTHING, and
     // its files parse. A partial hold is how a declaration goes missing — the
@@ -341,14 +341,14 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     // AND A RECORD NAMING A FILE THE MODULE NO LONGER HAS is a previous tree's: minting
     // its declarations asks the host for a source that is gone.
     let here = ws.module_files(m)
-    if !record_complete(fields) || fields.any((parts) -> declares(parts) && !here.contains(parts[1])) { return 0 }
+    if !record_complete(fields) || fields.any((parts) -> declares(parts) && !here.contains(parts[1])) { return }
     for parts in fields {
         if parts[0] == "import" {
             // the ROOT module's name is empty, and `split` drops a trailing empty field
             let imp = module_path((if parts.length > 1 { parts[1] } else { "" }).split("."))
             let key = imp.package()
             if key != null { ws.ensure_package(key!) }
-            let _ = load_interface(ws, store, imp, entry, want)
+            load_interface(ws, store, imp, entry, want)
         }
     }
     // NAMES BEFORE SHAPES: every declaration is minted first, so a shape naming a type in
@@ -378,7 +378,6 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
     // pass only REMEMBERS the module for the shape pass. One parser, one minter.
-    fields.length
 }
 
 /// WHY A FILE IS READ and not held — a thin hold says so itself under `--time`.
