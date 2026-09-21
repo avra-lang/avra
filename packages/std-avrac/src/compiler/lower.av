@@ -35,10 +35,21 @@ export type Body = {
 /// An instantiation `want`, demanded by a body `by` declares.
 export type Ask = { by: FileId, want: Wanted }
 
-/// WHETHER A UNIT EXISTS BECAUSE A PROGRAM ASKED: a generic at its type
-/// arguments, a fn at its settled seats, a root. A plain declaration's
-/// body is its FILE's content; an instantiation is its PROGRAM's.
-export fn instantiated(w: Wanted) -> bool { w.sub != null || !w.seats.is_empty() || w.root != null }
+impl Decls {
+    /// WHETHER A UNIT EXISTS BECAUSE A PROGRAM ASKED: a generic at its type
+    /// arguments, a fn at its settled seats, a root. A plain declaration's body
+    /// is its FILE's content; an instantiation is its PROGRAM's. THE DECLARATION
+    /// ANSWERS, never the ask: a plain fn wanted from inside an instantiation
+    /// arrives under its caller's substitution and is the same body all the same.
+    fn instantiated(w: Wanted) -> bool {
+        if w.root != null || !w.seats.is_empty() { return true }
+        let d? = w.decl else { return false }
+        w.sub != null && self.generic(d)
+    }
+
+    /// Whether a body lowers only at type arguments: its own, or its type's.
+    fn generic(d: DeclId) -> bool { !self.tparams(d).is_empty() || !self.tparams(self.decl(d).parent ?? d).is_empty() }
+}
 
 /// The lowering facts: every fn body, the entry body (`main` — its
 /// specialness is explicit: no params, the answer's puts, exit 0), the
@@ -223,7 +234,7 @@ impl Decls {
             wants = wants.concat(mu.wants)
             statics = mu.statics
         }
-        let d = drained(wants.concat(held_asks), unit_of, is_held)
+        let d = drained(wants.concat(held_asks), unit_of, is_held, (w: Wanted) -> self.instantiated(w))
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
         spoken = spoken.concat(minted_pointers(self.types, fns.concat([entry_body])))
@@ -236,7 +247,7 @@ impl Decls {
     /// lowers once.
     fn settlement(root: Wanted, unit_of: fn(Wanted) -> Unit) -> Lowered {
         let ru = unit_of(root)
-        let d = drained(ru.wants, unit_of, (_f: FileId) -> false)
+        let d = drained(ru.wants, unit_of, (_f: FileId) -> false, (_w: Wanted) -> false)
         let entry = ru.bodies.first() ?? empty_main(self.types).body
         let fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
         let spoken = ru.voices.list.concat(d.spoken).concat(minted_pointers(self.types, fns.concat([entry])))
@@ -248,7 +259,7 @@ impl Decls {
 /// read, and what they spoke.
 type Drained = { fns: List<Body>, spoken: List<Diag>, statics: List<Static>, asks: List<Ask>, homes: List<FileId> }
 
-fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit, is_held: fn(FileId) -> bool) -> Drained {
+fn drained(pending: List<Wanted>, unit_of: fn(Wanted) -> Unit, is_held: fn(FileId) -> bool, instantiated: fn(Wanted) -> bool) -> Drained {
     mut wants = [w for w in pending]
     mut fns: List<Body> = []
     mut spoken: List<Diag> = []
@@ -359,8 +370,7 @@ fn declared(a: Analysis) -> List<Wanted> {
 /// A body lowered without an instantiation: one that has no type
 /// parameters of its own or its type's.
 fn lowers_plain(a: Analysis, d: DeclId) -> bool {
-    let x = a.view.decls.decl(d)
-    x.root != null && a.view.decls.tparams(d).is_empty() && a.view.decls.tparams(x.parent ?? d).is_empty()
+    a.view.decls.decl(d).root != null && !a.view.decls.generic(d)
 }
 
 /// A module file holds declarations; run-time statements belong to

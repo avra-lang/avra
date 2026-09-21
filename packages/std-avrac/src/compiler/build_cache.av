@@ -187,7 +187,14 @@ impl BuildCache {
 // build that means to link runs the linker itself and is the only place that knows how.
 // LICENSED I39: THE ENTRY POINT, which I39 exempts by name — the one standard signature.
 export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string) -> Result<BuildOutcome, string> {
-    ws.build_program_attempt( entry, mode, opt, runtime, disk, linker, 0)
+    let held = ws.build_program_attempt(entry, mode, opt, runtime, disk, linker, 0, [], true)
+    // THE HOLD IS AN OPTIMISATION, AND THE SOURCES ARE ITS ORACLE. A build that fails
+    // under a hold is answered again from the sources alone: a refusal that survives
+    // is the program's, and one that does not was the hold's — said, never hidden.
+    if held is .Ok || held_paths(ws).is_empty() { return held }
+    let plain = ws.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, 0, [], false)
+    if plain is .Ok { eprintln("avra: the hold was refused — this program builds from its sources, and did not under the hold") }
+    plain
 }
 
 
@@ -197,10 +204,12 @@ export fn build_program(mut ws: Workspace, entry: string, mode: string, opt: str
 
 impl Workspace {
 
-fn build_program_attempt(entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string, attempt: int) -> Result<BuildOutcome, string> {
+/// `parse` names files this attempt reads whatever the store holds for them; without
+/// `hold` it reads them all.
+fn build_program_attempt(entry: string, mode: string, opt: string, runtime: string, disk: Host, linker: string, attempt: int, parse: List<string>, hold: bool) -> Result<BuildOutcome, string> {
     let store = store_at(build_cache_root(self))
     self.attach_store(store)
-    for path in remembered_homes(store, entry) { self.homes.set(path, true) }
+    for path in remembered_homes(store, entry).concat(parse) { self.homes.set(path, true) }
     let cache = build_cache(self, disk)
     let inputs = cache.inputs()
     let key = cache.key(entry, mode, inputs)
@@ -220,7 +229,7 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
 
     mut trace: List<string> = []
     let l0 = avra_now_ns()
-    let held = held_modules(self, store)
+    let held = if hold { held_modules(self, store) } else { [] }
     let l1 = avra_now_ns()
     for m in held { let _ = load_interface(self, store, m, entry) }
     let l2 = avra_now_ns()
@@ -245,6 +254,8 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
     // A FILE'S OBJECT HOLDS EVERY BODY THE FILE DECLARES, so its content is the FILE's
     // and no program's reach shapes it: two programs sharing a store share the object,
     // and a fn only held code calls is in the object that code links against.
+    let unread = self.read_held_asks(store)
+    if !unread.is_empty() { return self.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, attempt, parse.concat(unread), hold) }
     let l6 = avra_now_ns()
     let lo = p.every_body_checked()?
     trace.push("lower ${(avra_now_ns()-l6)/1000000}")
@@ -255,7 +266,7 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
     if homes.any((path) -> self.homes.get(path) == null) {
         let _ = store.keep(Stored.Unit, homes_key(entry), joined(distinct(remembered_homes(store, entry).concat(homes)), "\n"), [])
     }
-    if lo.homes.any((f) -> self.is_held(f)) { return self.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, attempt) }
+    if lo.homes.any((f) -> self.is_held(f)) { return self.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, attempt, parse, hold) }
     // THE INTERFACES ARE WRITTEN BEFORE THE OBJECTS ARE KEYED: `obj_key_of` folds the
     // imports' RECORDS, so an object stored before its module's record exists is stored
     // under a key over nothing, and no later build looks for it there.
@@ -273,7 +284,7 @@ fn build_program_attempt(entry: string, mode: string, opt: string, runtime: stri
     let missing = [path for path in held_paths(self) if !store.has(Stored.Obj, obj_key_cached(self, store, module_path(self.module_of(path).split(".")), path))]
     if !missing.is_empty() {
         if attempt >= 2 { fail "avra: interface records did not stabilize — still moving under ${joined(missing, ", ")}" }
-        return self.anew().build_program_attempt( entry, mode, opt, runtime, disk, linker, attempt + 1)
+        return self.anew().build_program_attempt(entry, mode, opt, runtime, disk, linker, attempt + 1, parse, hold)
     }
 
     // THE HELD MODULES' FUNCTIONS GO IN AS DECLARATIONS ONLY. A stub is a NAME and a

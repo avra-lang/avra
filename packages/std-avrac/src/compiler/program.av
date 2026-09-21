@@ -6,7 +6,7 @@ use @std.path.{joined_path, normalized, head_segment}
 use @std.errors.{Loc}
 use diagnostics.{Diag, DiagCode, has_errors, render_among, user_code}
 use features.{Decl, NameFacts, Wanted, FnSig}
-use grammar.{Captured, RunOutcome, DocComment, run_grammar, run_from, lex_source, lex_blocks, lex_diagnostic, TokenKind, Diagnostic, Cause}
+use grammar.{Captured, RunOutcome, DocComment, run_grammar, run_untold, run_from, lex_source, lex_blocks, lex_diagnostic, TokenKind, Diagnostic, Cause}
 use features.{LangNode, NodeSemantics, StmtSemantics, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at, BlockGrammar}
 use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
@@ -68,21 +68,34 @@ export fn new_dispatch() -> Dispatch {
 /// Parse a source into a FRESH store — the whole-file entry — under
 /// the sublanguage words the file imports (none for a file that
 /// imports none).
+///
+/// THE UNTOLD RUN FIRST: a file that parses clean is parsed once, with no miss
+/// keeping its story. Anything spoken is spoken again by the telling run, over a
+/// store of its own — the builders wrote into the first.
 export fn parse_program(lang: Language, src: SourceFile, blocks: List<BlockGrammar>) -> Parsed {
+    let quiet = parsed_fresh(lang, src, blocks, false)
+    if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, blocks, true) }
+}
+
+fn parsed_fresh(lang: Language, src: SourceFile, blocks: List<BlockGrammar>, telling: bool) -> Parsed {
     mut store = new_node_store()
-    parse_into(lang, store, src, blocks)
+    parsed_as(lang, store, src, blocks, telling)
 }
 
 /// Parse into a store ALREADY standing — the target file's, when a
 /// generated declaration's source is admitted beside the one that
 /// asked for it. The returned statements are the newly minted ones.
 export fn parse_into(lang: Language, mut store: NodeStore, src: SourceFile, blocks: List<BlockGrammar>) -> Parsed {
+    parsed_as(lang, store, src, blocks, true)
+}
+
+fn parsed_as(lang: Language, mut store: NodeStore, src: SourceFile, blocks: List<BlockGrammar>, telling: bool) -> Parsed {
     if lang.syntax == null {
         return Parsed { store: store, stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
     }
     let lexed = lex_blocks(src.text, [b.word for b in blocks])
     let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, src.text, blocks)
-    let o = run_grammar<LangNode>(lang.syntax!, lexed.tokens, build)
+    let o = if telling { run_grammar<LangNode>(lang.syntax!, lexed.tokens, build) } else { run_untold<LangNode>(lang.syntax!, lexed.tokens, build) }
     attach_docs(store, lexed.docs)
     // a remark means nothing to any pass; it rides the store so the
     // printer can put it back where it was written
@@ -341,7 +354,7 @@ impl Program {
 
     fn lowered_as(entry: int?, every: bool, programs: bool) -> Lowered {
         let ws = self.ws
-        memory(self.ws.decls.union(self.files, entry, every, programs, ws.held_asks(), (w: Wanted) -> ws.lowered(ws.spec_id(w)), (f: FileId) -> ws.is_held(f))) with { libraries: ws.linked_packages() }
+        memory(self.ws.decls.union(self.files, entry, every, programs, ws.held_wants, (w: Wanted) -> ws.lowered(ws.spec_id(w)), (f: FileId) -> ws.is_held(f))) with { libraries: ws.linked_packages() }
     }
 
     /// The lowered program, CHECKED — every file's analysis first,

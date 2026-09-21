@@ -87,6 +87,11 @@ type MatchContext<N> = {
     silence: List<Diagnostic>,
     build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>,
     memo: Memo<N>,
+    // whether misses tell their story — a parse that ends clean never reads one
+    tracking: bool,
+    // THE PLAIN MISS, made once: a miss with no story and no words says only that it
+    // missed, and it is the engine's commonest answer — `memo.results[0]` is this one
+    miss: MatchResult<N>,
 }
 
 /// The memo: one table of `rules x (tokens + 1) x 2` slots — a rule
@@ -95,6 +100,14 @@ type MatchContext<N> = {
 /// costs two reads and no key is ever spelled. A struct because a
 /// write reaches a place through its field.
 type Memo<N> = { slots: List<int>, results: List<MatchResult<N>>, stride: int }
+
+impl MatchContext<N> {
+    /// What a miss at `cursor` would have taken — told only to a run that tracks.
+    fn miss_story(cursor: int, in_rule: string, expected: List<string>) -> FarthestFailure? {
+        if !self.tracking { return null }
+        FarthestFailure { cursor: cursor, expected: expected, in_rule: in_rule }
+    }
+}
 
 /// Captured.Absent with its type parameter pinned.
 fn captured_absent<N>() -> Captured<N> { Captured.Absent }
@@ -119,6 +132,8 @@ fn matched<N>(cursor: int, bindings: List<Binding<N>>, v: Captured<N>, diagnosti
 /// (a sub-match's, passed straight through) calls it directly.
 fn ended<N>(cx: MatchContext<N>, status: MatchStatus, cursor: int, bindings: List<Binding<N>>,
             diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
+    // no reader asks a plain miss where it was or what was bound: it missed
+    if status == MatchStatus.Miss && farthest == null && diagnostics.is_empty() { return cx.miss }
     MatchResult {
         status: status, cursor: cursor, bindings: bindings, value: cx.absent,
         diagnostics: diagnostics, farthest: farthest,
@@ -128,6 +143,9 @@ fn ended<N>(cx: MatchContext<N>, status: MatchStatus, cursor: int, bindings: Lis
 fn missed<N>(cx: MatchContext<N>, cursor: int, bindings: List<Binding<N>>, diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
     ended<N>(cx, MatchStatus.Miss, cursor, bindings, diagnostics, farthest)
 }
+
+/// Whether a result is the plain miss — nothing in it but that it missed.
+fn plain_miss<N>(r: MatchResult<N>) -> bool { r.status == MatchStatus.Miss && r.farthest == null && r.diagnostics.is_empty() }
 
 fn broke<N>(cx: MatchContext<N>, cursor: int, bindings: List<Binding<N>>, diagnostics: List<Diagnostic>, farthest: FarthestFailure?) -> MatchResult<N> {
     ended<N>(cx, MatchStatus.Broke, cursor, bindings, diagnostics, farthest)
@@ -261,6 +279,10 @@ fn match_rule<N>(mut cx: MatchContext<N>, name: string, cursor: int, capped: boo
     let known = cx.memo.slots[at]
     if known > 0 { return cx.memo.results[known - 1] }
     let fresh = match_alt<N>(cx, name, cx.g.rules[ordinal!].body, cursor, [], false, capped)
+    if plain_miss<N>(fresh) {
+        cx.memo.slots.set(at, 1)
+        return fresh
+    }
     cx.memo.results.push(fresh)
     cx.memo.slots.set(at, cx.memo.results.length)
     fresh
@@ -294,11 +316,15 @@ fn takes_term(p: Prim, t: Token) -> bool {
 /// The farthest point a branch that cannot take `tok` would have
 /// contributed — its own expectations at the cursor — or null when
 /// the branch can try (it is nullable, or a terminal accepts).
-fn skip_point(st: BranchStart?, tok: Token, cursor: int) -> FarthestFailure? {
-    if st == null { return null }
-    let s = st!
-    if s.nullable || starts_at(s.terminals, tok) { return null }
-    FarthestFailure { cursor: cursor, expected: s.words, in_rule: s.in_rule }
+fn skip_point(st: BranchStart, cursor: int) -> FarthestFailure {
+    FarthestFailure { cursor: cursor, expected: st.words, in_rule: st.in_rule }
+}
+
+/// Whether a branch cannot consume `tok`: it is not nullable and none of
+/// its first terminals accepts.
+fn cannot_take(st: BranchStart?, tok: Token) -> bool {
+    let s? = st else { return false }
+    !s.nullable && !starts_at(s.terminals, tok)
 }
 
 /// Branches tried top to bottom; the first success wins. A committed
@@ -317,9 +343,8 @@ fn match_alt<N>(mut cx: MatchContext<N>, rule_name: string, a: Alt,
     mut fb_diags: List<Diagnostic>? = null
     let tok = cx.tokens[cursor]
     for br in a.branches {
-        let skip = skip_point(br.start, tok, cursor)
-        if skip != null {
-            farthest = far_merge(farthest, skip)
+        if cannot_take(br.start, tok) {
+            if cx.tracking { farthest = far_merge(farthest, skip_point(br.start!, cursor)) }
         } else {
             let r = match_seq<N>(cx, rule_name, br, cursor, bindings, acc, capped)
             farthest = far_merge(farthest, r.farthest)
@@ -551,8 +576,7 @@ fn match_prim<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
             if t.lit_matches(text) {
                 matched<N>(cursor + 1, bindings, captured_terminal<N>(t), cx.silence, null)
             } else {
-                let far = FarthestFailure { cursor: cursor, expected: cx.lit_expects.get(text) ?? lit_expected(text), in_rule: rule_name }
-                missed<N>(cx, cursor, bindings, cx.silence, far)
+                missed<N>(cx, cursor, bindings, cx.silence, cx.miss_story(cursor, rule_name, cx.lit_expects.get(text) ?? lit_expected(text)))
             }
         }
         .Named(term) -> {
@@ -567,8 +591,7 @@ fn match_prim<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
                 // the body's to consume.
                 matched<N>(cursor, bindings, captured_terminal<N>(t), cx.silence, null)
             } else {
-                let far = FarthestFailure { cursor: cursor, expected: cx.kind_expects.get(term) ?? [expected_word(term)], in_rule: rule_name }
-                missed<N>(cx, cursor, bindings, cx.silence, far)
+                missed<N>(cx, cursor, bindings, cx.silence, cx.miss_story(cursor, rule_name, cx.kind_expects.get(term) ?? [expected_word(term)]))
             }
         }
         .Ref(target) -> {
@@ -652,21 +675,35 @@ export fn run_grammar<N>(rd: Ready, tokens: List<Token>,
     run_from<N>(rd, rd.g.start, tokens, build)
 }
 
+/// THE SAME RUN, UNTOLD: no miss keeps its story, so a failure here says less than
+/// it could. A parse that ends clean never read one — most do, and most of an
+/// ordered choice is misses — so a caller runs this first and, when anything
+/// spoke, runs `run_grammar` over a FRESH builder state for the words.
+export fn run_untold<N>(rd: Ready, tokens: List<Token>,
+                        build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>) -> RunOutcome<N> {
+    run_as<N>(rd, rd.g.start, tokens, build, false)
+}
+
 /// Run `rd` from the rule named `start` — a FRAGMENT parse, for a
 /// spelling that is one type or one expression rather than a program.
 export fn run_from<N>(rd: Ready, start: string, tokens: List<Token>,
                       build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>) -> RunOutcome<N> {
+    run_as<N>(rd, start, tokens, build, true)
+}
+
+fn run_as<N>(rd: Ready, start: string, tokens: List<Token>,
+             build: fn(string, List<Captured<N>>, Span?) -> Result<Captured<N>, string>, tracking: bool) -> RunOutcome<N> {
     if !rd.defects.is_empty() {
         return RunOutcome { result: null, diagnostics: rd.defects }
     }
     let g = rd.g
     let stride = tokens.length + 1
-    let answers: List<MatchResult<N>> = []
-    let memo: Memo<N> = Memo { slots: filled(g.rules.length * stride * 2, 0), results: answers, stride: stride }
     let silence: List<Diagnostic> = []
+    let miss: MatchResult<N> = MatchResult { status: MatchStatus.Miss, cursor: 0, bindings: [], value: captured_absent<N>(), diagnostics: silence, farthest: null }
+    let memo: Memo<N> = Memo { slots: filled(g.rules.length * stride * 2, 0), results: [miss], stride: stride }
     mut cx: MatchContext<N> = MatchContext {
         g: g, tokens: tokens, ordinals: rd.ordinals, lit_expects: rd.lit_expects, kind_expects: rd.kind_expects,
-        absent: captured_absent<N>(), silence: silence, build: build, memo: memo,
+        absent: captured_absent<N>(), silence: silence, build: build, memo: memo, tracking: tracking, miss: miss,
     }
     let r = match_rule<N>(cx, start, 0, false)
     mut diagnostics = [d for d in r.diagnostics]

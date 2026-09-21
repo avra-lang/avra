@@ -110,12 +110,17 @@ impl Workspace {
     /// asks a held build reads in place of the file's bodies.
     fn object_kept(s: Store, okey: string) -> bool { s.has(Stored.Obj, okey) && s.has(Stored.Unit, self.asks_key(okey)) }
 
-    /// EVERY INSTANTIATION THE HELD FILES' BODIES DEMAND — read where the
-    /// bodies are not. A held file's `hold_only` proved each row present.
-    fn held_asks() -> List<Wanted> {
-        let s? = self.store else { return [] }
-        mut ws = self
-        flatten([ws.wanted_list_from_wire(s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "") ?? [] for path in held_paths(self)])
+    /// EVERY INSTANTIATION THE HELD FILES' BODIES DEMAND, read where the bodies are
+    /// not — kept for the lowering — and the held files whose row could NOT be read.
+    /// An unread row is a file that must parse: holding it would link a program
+    /// missing whatever its bodies ask for.
+    mut fn read_held_asks(s: Store) -> List<string> {
+        mut unread: List<string> = []
+        for path in held_paths(self) {
+            let wants = self.wanted_list_from_wire(s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
+            if wants == null { unread.push(path) } else { self.held_wants = self.held_wants.concat(wants!) }
+        }
+        unread
     }
 
     fn held_okey(s: Store, path: string) -> string {
