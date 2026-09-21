@@ -325,7 +325,7 @@ hand fold call, so `make fingerprints` sees the tag claimed once.
 
 ## 7. The doc map — read in this order
 
-The cache layer has **seven** documents before this one, and they SUPERSEDE each
+The cache layer has **eight** documents before this one, and they SUPERSEDE each
 other rather than accumulating. A fact quoted from an older one may be retracted
 (CLAUDE.md: "a retracted fact spreads by citation").
 
