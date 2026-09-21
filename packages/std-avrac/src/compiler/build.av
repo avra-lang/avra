@@ -2,7 +2,7 @@
 //! hash: its binary is kept under a key over every input's bytes. A changed
 //! one makes the objects of the files that moved and links them with the ones
 //! the store holds for the rest.
-use core.{new_digest, digest_text, digest_bytes, digest_key, digest_of, joined, distinct, flatten, sorted_texts, fp_list, RtSig}
+use core.{new_digest, digest_text, digest_bytes, digest_key, digest_of, joined, distinct, flatten, sorted_texts, fp_list, RtSig, TypeRegistry}
 use features.{Wanted}
 use @std.path.{joined_path, relative_path, dir_of}
 use @std.io.{read_bytes}
@@ -24,7 +24,14 @@ type Made = { which: Owned, key: string, obj: string, source: string }
 fn opt_level(opt: string) -> int { if opt.starts_with("-O") && opt.length == 3 { opt.char_code(2) - 48 } else { 0 } }
 
 /// THE PROGRAM'S OWN MODULE: its entry, and the runtime rows the entry names.
-export type ProgramModule = { entry: Body, rows: List<RtSig> = [] }
+/// WHAT A PROGRAM ADDS TO ITS FILES. `main` is a RECIPE, never a body: a link asked
+/// again of the sources is another workspace, with another registry and other file
+/// ids, and an entry built over the first one's would read this one's by index.
+/// `cases` are the cases it calls, each with the file that holds its body.
+export type ProgramModule = { main: fn(TypeRegistry) -> ProgramMain, rows: List<RtSig> = [], cases: List<CaseHome> = [] }
+
+/// A case the entry calls, and the path of the file its body is in.
+export type CaseHome = { call: CaseCall, path: string }
 
 /// What one build links with: the optimisation level, the runtime object and
 /// the linker the host found.
@@ -125,7 +132,7 @@ export fn build_program(mut ws: Workspace, entry: string, tools: Toolchain) -> R
     let d = ws.derived(entry, Want.Binary)?
     let main? = d.program.entry_file() else { fail d.program.rendered([no_target(ws.root)]) }
     if main.view.stmts.is_empty() { fail "the program is empty" }
-    d.program.ws.linked(d, ProgramModule { entry: runner_entry(d.lowered.types, program_symbol(entry)) }, Keyed { named: entry, beside: [] }, binary, tools)
+    d.program.ws.linked(d, ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)) }, Keyed { named: entry, beside: [] }, binary, tools)
 }
 
 
@@ -235,7 +242,7 @@ impl Workspace {
     /// what ROAMS — an instantiation no file owns, a body whose held home cannot
     /// emit it — owned by no file and weak, in name order, so the program's
     /// module has the same bytes whatever order the walk met them in.
-    fn homed(lo: Lowered, m: ProgramModule, unlowered: List<Wanted>) -> Lowered {
+    fn homed(lo: Lowered, m: ProgramModule, main: ProgramMain, unlowered: List<Wanted>) -> Lowered {
         let roams = [bd for bd in lo.fns if home_of(bd) == null || self.homed_in_held(bd)]
         mut by_name: Map<string, Body> = {}
         // with instantiations owed, the program's module is the STORE's: what roams
@@ -243,7 +250,10 @@ impl Workspace {
         for bd in roams { by_name.set(bd.name, if unlowered.is_empty() { bd with { file: null, weak: true } } else { bd with { file: null, weak: true, ins: [], reg_types: [] } }) }
         let stay = [bd for bd in lo.fns if by_name.get(bd.name) == null]
         let owed = [stub! for stub in [self.decls.unlowered_stub(w) for w in unlowered] if stub != null]
-        lo with { entry: m.entry, externs: lo.externs.concat(m.rows), fns: held_stubs(self).concat(owed).concat(stay).concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))]) }
+        let stand = held_stubs(self).concat(owed).concat(stay).concat([by_name.get(n)! for n in sorted_texts(distinct([bd.name for bd in roams]))])
+        // a held module nobody read is never minted, so nothing else declares its cases
+        let brought = [main.case_stub(c.call, self.file_id(c.path)) for c in m.cases]
+        lo with { entry: main.body, types: main.types, externs: lo.externs.concat(m.rows), fns: undeclared(brought, stand).concat(stand) }
     }
 
     /// THE PROGRAM MODULE'S KEY BY ITS OWN BYTES — written as bitcode at `bc`, and
@@ -262,14 +272,15 @@ impl Workspace {
     /// module made or placed, the held ones standing in the store — linked in their
     /// SOURCES' order, and the binary kept under its key.
     fn linked(d: Derived, m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<BuildOutcome, string> {
-        let asked = program_asked_key(d, m, tools)
+        let main = m.main(d.lowered.types)
+        let asked = program_asked_key(d, main, tools)
         // instantiations nobody lowered are owed, unless a build of these very asks kept them
         if !d.unlowered.is_empty() && !d.store.has(Stored.Obj, asked) {
             let whole = self.whole(d, [])?
             return whole.program.ws.linked(whole, m, under, binary, tools)
         }
         mut clock = self.marking()
-        let full = closed(self.homed(d.lowered, m, d.unlowered))?
+        let full = closed(self.homed(d.lowered, m, main, d.unlowered))?
         let program = self.program_object(d, full, asked, binary, tools)?
         let read = [self.object_of(d.store, a) for a in d.program.files]
         self.objects_kept(d, full, read.concat([program]), tools)?
@@ -335,8 +346,20 @@ impl Workspace {
 
 /// WHAT THE PROGRAM'S MODULE IS A FUNCTION OF: the program's asks, its entry, and
 /// what compiles it.
-fn program_asked_key(d: Derived, m: ProgramModule, tools: Toolchain) -> string {
-    node_key(Stored.Obj, ["program", d.asked, "${fp_list([i.fingerprint() for i in m.entry.ins])}", tools.opt, tools.runtime])
+fn program_asked_key(d: Derived, main: ProgramMain, tools: Toolchain) -> string {
+    node_key(Stored.Obj, ["program", d.asked, "${fp_list([i.fingerprint() for i in main.body.ins])}", tools.opt, tools.runtime])
+}
+
+/// The declarations a program's module brings that nothing standing makes — each once.
+fn undeclared(brought: List<Body>, stand: List<Body>) -> List<Body> {
+    mut named: Map<string, bool> = {}
+    for bd in stand { named.set(bd.name, true) }
+    mut out: List<Body> = []
+    for c in brought {
+        if named.get(c.name) == null { out.push(c) }
+        named.set(c.name, true)
+    }
+    out
 }
 
 /// The program lowered whole, or the symbol nothing declares.

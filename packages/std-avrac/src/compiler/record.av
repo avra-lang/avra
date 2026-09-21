@@ -199,7 +199,7 @@ fn on_top(top: List<DeclId>, d: DeclId) -> bool { top.any(same_decl(it, d)) }
 /// receivers pass recomputes. A body edit therefore does not move a dependent's key; a
 /// seat or shape change does, because both are in the digest.
 // LICENSED I39: a pure PROJECTION — a module's declaration lines in, its interface digest out.
-fn iface_digest(items: List<string>) -> string {
+export fn iface_digest(items: List<string>) -> string {
     digest_of(joined([interface_form(line) for line in sorted_texts(items)], "\n"))
 }
 
@@ -210,10 +210,8 @@ fn interface_form(line: string) -> string {
     let p = line.split("\t")
     if p.length < 13 { return "" }
     let facts = p[12].split(";")
-    let stable = when { facts.length >= 10 -> joined([facts[0], facts[1], facts[2], facts[5], facts[6], facts[7], facts[8], facts[9]], ";"), facts.length >= 9 -> joined([facts[0], facts[1], facts[2], facts[5], facts[6], facts[7], facts[8]], ";"), facts.length >= 8 -> joined([facts[0], facts[1], facts[2], facts[5], facts[6], facts[7]], ";"), _ -> p[12] }
-    let payload = if p.length > 13 { p[13] } else { "" }
-    let seats = if p.length > 15 { joined([p[14], p[15]], ";") } else { "" }
-    joined([p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], stable, payload, seats], "|")
+    let seen = if facts.length >= 8 { facts.slice(0, 3).concat(facts.slice(5, 10)) } else { facts }
+    [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen.join(";")].concat(p.slice(13, 16)).join("\t")
 }
 
 /// A record's declaration lines, by the file each names.
@@ -342,6 +340,9 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     // its declarations asks the host for a source that is gone.
     let here = ws.module_files(m)
     if !record_complete(fields) || fields.any((parts) -> declares(parts) && !here.contains(parts[1])) { return }
+    // every module sees the prelude and none imports it
+    ws.ensure_package(prelude_key)
+    load_interface(ws, store, prelude_module(), entry, want)
     for parts in fields {
         if parts[0] == "import" {
             // the ROOT module's name is empty, and `split` drops a trailing empty field

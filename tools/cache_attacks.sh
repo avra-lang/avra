@@ -185,6 +185,13 @@ ed $R/t/src/tests/shown/shown.expected "three is 3" "three is 4"; T "the text a 
 ed $R/t/src/tests/shown/shown.expected "three is 4" "three is 3"; T "and back" green
 ed $R/t/src/tests/lib_test.av "three() == 3" "three() == 3 && true"; T "a case's own body moves" green
 
+# ONE FILE'S CASES, WITH EVERY FILE HELD: nothing is read, so no module is minted and
+# no type interned — the entry declares the cases it calls and is built over the
+# registry that links it, or the module is refused.
+steps=$((steps+1)); out=$(./avra test --time $R/t/src/tests/lib_test.av 2>&1); st=$?
+case "$out" in *"held 0/"*|*"cache hit"*) ;; *"held "*) holds=$((holds+1)) ;; esac
+if [ "$st" -eq 0 ]; then [ -n "${VERBOSE:-}" ] && echo "ok    one file's cases under a whole hold [t]"; else fails=$((fails+1)); echo "FAIL  one file's cases under a whole hold [t]: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -3 | tr '\n' ' ')"; fi
+
 # A NAME A HELD FILE REACHES WITHOUT AN IMPORT LEAVES ITS MODULE: the file did not
 # move and is refused all the same — a hold that kept it would hide the refusal
 cp $R/lib/src/sib.av $R/sib.kept

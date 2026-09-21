@@ -4,7 +4,7 @@
 //! and leaves a VERDICT in the exit status — 0 all passed, 1 some
 //! failed. Running the cases NATIVELY is what keeps a suite of a
 //! thousand cases in seconds instead of an hour.
-use core.{Ins, Reg, TypeId, Type, TypeRegistry, BinOp, Level, RtKind, RtSig, extern_row, counted}
+use core.{Ins, Reg, TypeId, Type, TypeRegistry, BinOp, Level, RtKind, RtSig, extern_row, counted, FileId}
 use compiler.lower.{Body}
 
 /// One case as the entry needs it: the symbol that runs it and the
@@ -71,7 +71,7 @@ export fn staged_binaries(words: List<string>) -> List<string>? {
 /// program run with its output captured and held to what it must print. A cell
 /// counts failures, and the verdict leaves through the exit status. One
 /// compiler, one link, one process for every proof a package carries.
-export fn suite_entry(types: TypeRegistry, cases: List<CaseCall>, programs: List<ProgramCall>) -> Body {
+export fn suite_entry(types: TypeRegistry, cases: List<CaseCall>, programs: List<ProgramCall>) -> ProgramMain {
     mut e = new_entry(types)
     let tally = e.counter()
     for c in cases { one_case(e, c, tally) }
@@ -86,8 +86,7 @@ export fn suite_entry(types: TypeRegistry, cases: List<CaseCall>, programs: List
 fn one_program(mut e: EntryBuild, pr: ProgramCall, tally: Reg) {
     e.give(Ins.CallRtVoid("avra_case_begin", [e.text(pr.label)]))
     e.give(Ins.CallRtVoid("avra_capture_begin", []))
-    let answered = e.mint(e.types.type(int))
-    e.give(Ins.Call(answered, pr.symbol, []))
+    let answered = e.called(pr.symbol, e.types.type(int))
     let got = e.mint(e.types.type(string))
     e.give(Ins.CallRt(got, "avra_capture_end", []))
     // THE MINT LAW: operands first, the answer last
@@ -119,9 +118,9 @@ fn legs_of(pr: ProgramCall) -> string {
 /// A BUILD'S ENTRY: the program's own top level, called. A file's top level is
 /// a body of its object like any other, so the entry's module is this call and
 /// what no file owns.
-export fn runner_entry(types: TypeRegistry, symbol: string) -> Body {
+export fn runner_entry(types: TypeRegistry, symbol: string) -> ProgramMain {
     mut e = new_entry(types)
-    e.give(Ins.Call(e.mint(e.types.type(int)), symbol, []))
+    let _ = e.called(symbol, e.types.type(int))
     e.give(Ins.ScopeExit(null))
     e.give(Ins.Ret(0))
     e.built()
@@ -146,8 +145,7 @@ fn tally_line(mut e: EntryBuild, total: int, failed: Reg) {
 /// One case: called, judged, and counted when it fails.
 fn one_case(mut e: EntryBuild, c: CaseCall, tally: Reg) {
     e.give(Ins.CallRtVoid("avra_case_begin", [e.text(c.label)]))
-    let ok = e.mint(e.types.type(bool))
-    e.give(Ins.Call(ok, c.symbol, []))
+    let ok = e.called(c.symbol, e.types.type(bool))
     e.give(Ins.IfStart(ok))
     e.give(Ins.ArmEnd(e.constant(0)))
     // only a FAILURE speaks — a green case is the tally's business
@@ -162,6 +160,20 @@ fn one_case(mut e: EntryBuild, c: CaseCall, tally: Reg) {
     let gives = e.constant(0)
     let merged = e.mint(e.types.type(int))
     e.give(Ins.RegionEnd(merged, gives))
+}
+
+/// A PROGRAM'S `main`, AND THE REGISTRY IT WAS BUILT OVER. A registry is a value:
+/// a type the entry interned is in ITS registry alone, and with every file held
+/// nothing else has interned even `int` — so the module is emitted over these.
+/// `verdict` is the type a case answers, as this registry knows it.
+export type ProgramMain = { body: Body, types: TypeRegistry, verdict: TypeId }
+
+impl ProgramMain {
+    /// A CASE AS A DECLARATION ALONE, in the file that holds its body. A held
+    /// module nobody read is never minted, so nothing else declares its cases.
+    fn case_stub(c: CaseCall, file: FileId) -> Body {
+        Body { name: c.symbol, params: [], ret: self.verdict, gives: null, ins: [], reg_types: [], file: file }
+    }
 }
 
 /// A body under construction: registers minted in instruction order,
@@ -182,6 +194,13 @@ impl EntryBuild {
     fn mint(ty: TypeId) -> Reg {
         self.tys.push(ty)
         Reg { index: self.tys.length - 1 }
+    }
+
+    /// A call of a fn of no arguments.
+    fn called(symbol: string, ret: TypeId) -> Reg {
+        let answer = self.mint(ret)
+        self.give(Ins.Call(answer, symbol, []))
+        answer
     }
 
     /// An int constant in a fresh register.
@@ -245,8 +264,8 @@ impl EntryBuild {
         same
     }
 
-    fn built() -> Body {
-        Body { name: "main", params: [], ret: self.types.type(int),
-               gives: null, ins: self.ins, reg_types: self.tys }
+    fn built() -> ProgramMain {
+        let ret = self.types.type(int)
+        ProgramMain { body: Body { name: "main", params: [], ret: ret, gives: null, ins: self.ins, reg_types: self.tys }, types: self.types, verdict: self.types.type(bool) }
     }
 }

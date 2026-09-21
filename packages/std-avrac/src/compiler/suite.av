@@ -3,7 +3,7 @@
 //! it must print beside it. Every proof is both engines: a program the
 //! evaluator has not agreed with since anything it can see last moved runs
 //! there first, and a disagreement stops the run before a binary exists.
-use core.{sorted_texts, joined, flatten, digest_of, module_path}
+use core.{sorted_texts, joined, flatten, digest_of, module_path, TypeRegistry}
 use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized}
 use @std.io.{make_dirs}
 use compiler.backend.{run_program}
@@ -45,11 +45,13 @@ impl Workspace {
         let store = store_at(build_cache_root(self))
         let owed = [path for path in programs if !self.native_only(path) && !store.has(Stored.Unit, self.proved_key(store, path))]
         let d = self.evaluated(store, owed, told_from)?
-        let cases = flatten([s.cases for s in d.said if only == null || normalized(s.path) == normalized(only!)])
+        let told = [s for s in d.said if only == null || normalized(s.path) == normalized(only!)]
+        let cases = flatten([s.cases for s in told])
         if cases.is_empty() && programs.is_empty() { return .Ok(null) }
         let _ = make_dirs(dir_of(binary))
         let calls = [self.program_call(path, told_from) for path in programs]
-        let made: BuildOutcome? = d.program.ws.linked(d, ProgramModule { entry: suite_entry(d.lowered.types, cases, calls), rows: program_rows }, under, binary, tools)?
+        let homes = flatten([[CaseHome { call: c, path: s.path } for c in s.cases] for s in told])
+        let made: BuildOutcome? = d.program.ws.linked(d, ProgramModule { main: (types: TypeRegistry) -> suite_entry(types, cases, calls), rows: program_rows, cases: homes }, under, binary, tools)?
         made
     }
 

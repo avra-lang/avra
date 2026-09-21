@@ -3,7 +3,7 @@
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef}
 use @std.avrac.compiler.{Program, Workspace, lone_workspace, timed_workspace, programs_workspace, avra, stage_words, build_program, Toolchain}
 use @std.avrac.core.{joined, distinct}
-use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, file_name}
+use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, file_name, stem_of}
 use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit}
 use @std.time.{now_ns}
 use @std.errors.{Error}
@@ -179,15 +179,15 @@ fn on_program(args: CliResult, act: fn(Program) -> int) -> int {
     act(held)
 }
 
-/// Analyze, refuse with the report, or write the verified `.ll`
-/// beside the source and answer its path — what `emit` and `build`
-/// both do before they differ.
+/// Analyze, refuse with the report, or write the verified `.ll` under the
+/// package's `build/` and answer its path.
 fn lowered_or_report(p: Program) -> Result<string, string> {
     if !p.clean() { return .Err(p.report()) }
     let entry? = p.entry_file() else { return .Err(p.rendered([no_target(p.ws.root)])) }
     if entry.view.stmts.is_empty() { return .Err("the program is empty") }
     let lo = p.lowered_checked()?
-    let path = "${entry.view.source.file}.ll"
+    let path = joined_path(joined_path(p.ws.root, "build"), "${stem_of(entry.view.source.file)}.ll")
+    let _ = make_dirs(dir_of(path))
     let failure: string? = emit_ll(lo, path)
     if failure != null { return .Err(failure!) }
     .Ok(path)
