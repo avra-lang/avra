@@ -220,9 +220,7 @@ impl Decls {
         // a body under the program's own symbol, for a runner's entry to
         // call in turn — every program in one binary
         mut wants: List<Wanted> = if programs { bodies.concat([program_main(a) for a in files]) } else { bodies }
-        for i, a in files {
-            if entry != null && i != at { spoken = spoken.concat(entry_only(a, files[at])) }
-        }
+        spoken = spoken.concat(self.outside_entry(files, entry))
         let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: "main", sub: null, seats: [], root: null }) }
         mut entry_body: Body = empty_main(self.types).body
         mut statics: List<Static> = []
@@ -239,6 +237,12 @@ impl Decls {
         spoken = spoken.concat(d.spoken)
         spoken = spoken.concat(minted_pointers(self.types, fns.concat([entry_body])))
         Lowered { fns: fns, entry: entry_body, asks: d.asks, homes: d.homes, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(statics.concat(d.statics)), libraries: [] }
+    }
+
+    /// THE ENTRY'S LAW over every other file: a module file runs nothing.
+    fn outside_entry(files: List<Analysis>, entry: int?) -> List<Diag> {
+        if entry == null { return [] }
+        flatten([entry_only(a, files[entry!]) for i, a in files if i != entry!])
     }
 
     /// A const's initializer as a program of its own: the root unit's
@@ -503,7 +507,7 @@ fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileI
     LoweredBody {
         body: Body {
             name: name, params: [], ret: a.view.decls.types.type(int),
-            gives: null, ins: lo.out.ins, reg_types: lo.out.reg_types,
+            gives: null, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file,
         },
         voices: lo.out.voices, jobs: lo.jobs,
     }

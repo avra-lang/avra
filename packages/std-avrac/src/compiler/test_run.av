@@ -49,40 +49,34 @@ export fn verdict_of(status: int) -> Verdict {
     }
 }
 
-/// The binary a link plan names: the word after `-o`, null when the
-/// plan has none.
-export fn plan_binary(words: List<string>) -> string? {
-    let at = words.index_of("-o")
-    if at < 0 || at + 1 >= words.length { return null }
-    words[at + 1]
-}
-
 /// THE HAND-OFF'S FIRST WORD: no command wears it, so a fresh image
 /// reads it before its commands do, and no one reaches the light
 /// phase by name.
 const stage_word = "@stage"
 
-/// A hand-off's words: the stage word, then the plans.
-export fn stage_words(plans: List<string>) -> List<string> {
-    [stage_word].concat(plans)
+/// A hand-off's words: the stage word, then the binaries to run.
+export fn stage_words(binaries: List<string>) -> List<string> {
+    [stage_word].concat(binaries)
 }
 
-/// The plans a hand-off carries — null for any other line, the stage
-/// word alone included: a hand-off always carries a plan.
-export fn staged_plans(words: List<string>) -> List<string>? {
+/// The binaries a hand-off carries — null for any other line, the stage
+/// word alone included: a hand-off always carries one.
+export fn staged_binaries(words: List<string>) -> List<string>? {
     if words.first() != stage_word || words.length < 2 { return null }
     words.slice(1, words.length)
 }
 
-/// THE PROGRAMS BINARY'S ENTRY: every program run in turn with its
-/// output captured and compared to what it must print; a mismatch
-/// speaks and counts; the verdict leaves through the exit status.
-/// One compiler, one clang, one process for every program.
-export fn program_entry(types: TypeRegistry, programs: List<ProgramCall>) -> Body {
+/// THE SUITE'S ENTRY: each case called and judged, the tally said; then each
+/// program run with its output captured and held to what it must print. A cell
+/// counts failures, and the verdict leaves through the exit status. One
+/// compiler, one link, one process for every proof a package carries.
+export fn suite_entry(types: TypeRegistry, cases: List<CaseCall>, programs: List<ProgramCall>) -> Body {
     mut e = new_entry(types)
     let tally = e.counter()
+    for c in cases { one_case(e, c, tally) }
+    if !cases.is_empty() { e.tally(cases.length, e.failures(tally)) }
     for pr in programs { one_program(e, pr, tally) }
-    e.leaves_by_verdict(e.failures(tally), "${counted(programs.length, "program")} proved")
+    e.leaves_by_verdict(e.failures(tally), if programs.is_empty() { null } else { "${counted(programs.length, "program")} proved" })
     e.built()
 }
 
@@ -121,15 +115,14 @@ fn legs_of(pr: ProgramCall) -> string {
     if pr.evaluated { "eval == native" } else { "native" }
 }
 
-/// The entry: a cell counts failures, each case decides which line
-/// prints, and the verdict leaves through the exit status.
-export fn cases_entry(types: TypeRegistry, cases: List<CaseCall>) -> Body {
+/// A BUILD'S ENTRY: the program's own top level, called. A file's top level is
+/// a body of its object like any other, so the entry's module is this call and
+/// what no file owns.
+export fn runner_entry(types: TypeRegistry, symbol: string) -> Body {
     mut e = new_entry(types)
-    let tally = e.counter()
-    for c in cases { one_case(e, c, tally) }
-    let failed = e.failures(tally)
-    e.tally(cases.length, failed)
-    e.leaves_by_verdict(failed, null)
+    e.give(Ins.Call(e.mint(e.types.type(int)), symbol, []))
+    e.give(Ins.ScopeExit(null))
+    e.give(Ins.Ret(0))
     e.built()
 }
 

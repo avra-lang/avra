@@ -18,9 +18,9 @@ One slice = red-team + review round + ONE gate + commit + seed.
 - [x] S3 the sweep to 3
 - [x] **S4 the sweep to 0** (`63cc6a6`) — one flat law (`Decls.declare`), a nested decl is no
       symbol, a program that boxes a flat record builds whole
-- [ ] **S5 THE HELD DERIVATION** — `build_program_attempt`'s first half as one verb
+- [x] **S5 THE HELD DERIVATION** (`a2c99e0`) — `build_program_attempt`'s first half as one verb
       every command asks; per-file diagnostics persist; `check` holds
-- [ ] S6 `test` on the derivation: case symbols content-stable, cases ride the
+- [ ] **S6 `test` on the derivation**: case symbols content-stable, cases ride the
       record, the suite's binary is cached
 - [ ] S7 the warm edit to < 500 ms: shard the entry module, prelink held
       packages, one input digest pass, record load/fill
@@ -39,6 +39,8 @@ One slice = red-team + review round + ONE gate + commit + seed.
 | `build cli`, one-file edit | 1.2 s | 26.1 s | **1.3–1.6 s** | 2 s |
 | `check cli` | 9.7 s | — | cold 9.2 s · warm **1.0 s** · one edit **1.0 s** | 2 s |
 | `check std-avrac` | 11.6 s, RED | — | cold 13 s · warm **~1.5 s**, clean | 2 s |
+| `test std-json` | 1.6 s | — | cold 1.7 s · warm **0.4 s** | 1 s |
+| `test std-avrac` (5324 cases, 111 programs, 27 nested) | ~40 s | — | cold 56 s · one edit **~2 s to compile**, then the run (9 s) | — |
 
 Where a warm edit goes today (ms), held 274/291: admit 165–190 (the 17 files
 that parse) · load 140 · link 105–125 · analyze 90–110 · fill 95 · lower 50 ·
@@ -52,6 +54,18 @@ load, admit, analyse, restart, lower every parsed body, write the records.
 `build` links it (`build_cache.av`), `check` prints it. What a command WANTS
 decides what may stand in for a file: its warnings always (`Stored.Warn` under
 the file's key), its object and asks too when the want links.
+
+THE PROGRAM'S MODULE IS NO FILE'S. Every file — the entry included — is an
+ordinary object: its declared bodies, and its top level as a body under its
+program symbol. What a PROGRAM adds is one small module keyed by its own
+bytes: the instantiations no file owns, and an entry that CALLS — a build's
+the entry file's program symbol, a suite's every case and every program
+(`Owned { Whole, File, Program }`, `ProgramModule`). So `test` is a build with
+another entry (`compiler/suite.av`): the same objects, one link, one binary
+for a package's cases and its program tests. A file's `Said` row — its
+warnings and its cases — is what stands in for it under every want; the
+evaluator's agreement with a program is remembered under the text of every
+file the program can reach.
 
 A held file is skipped entirely: no parse, no typing, no lowering, no clang.
 That is where the edit loop lives — an edit's cost is ANALYSIS, and only a hold
@@ -144,6 +158,20 @@ source, one at a time, and builds through the hold.
 - **A guard sized to the symptom un-holds the innocent.** "A program that boxes
   a flat record builds whole" took the hold from std-avrac's entire suite for
   one program test's `Counter`. The layout belongs in the interface.
+
+- **An object reads more than interfaces the day it bakes a value in.** The
+  entry used to be re-emitted every build and hid it: a reader bakes a foreign
+  const's VALUE, so the value is in the const's interface line; a const that
+  RUNS a fn bakes that fn's BODY, so a file whose lowering ran anything folds
+  the text of every file it can see (`runs`, in the record's `file` line).
+- **A symbol outlives every id a run hands out.** A case was `spec$<DeclId>`;
+  a held object's case would have answered to another file's number.
+- **Held by NAME is held by accident.** A held `impl` aimed at every record of
+  its target's name — two program tests' `P.show` met. The record keeps the
+  declaration it aims at.
+- **A restart from the sources that can restart is a loop,** and each turn is a
+  workspace that never dies: 6 GB in a minute. `unheld` refuses the second.
+- **The root module's name is empty, and `split` drops a trailing empty field.**
 
 ## 4. The keepers
 

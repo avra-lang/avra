@@ -16,13 +16,38 @@ export enum Want { Diagnostics, Binary }
 /// anything, and how many times the records moved under it.
 type Attempt = { parse: List<string> = [], hold: bool = true, moved: int = 0 }
 
-/// A program derived: clean, every parsed body lowered, its records and its
-/// files' warnings kept. `program.ws` is the workspace the attempt that stood
-/// ran in.
-export type Derived = { program: Program, lowered: Lowered, store: Store, warnings: string, trace: List<string> }
+/// What a file SAID the last time it parsed: its warnings, rendered, and the
+/// cases it declares — what stands in for it under every want.
+export type Said = { path: string, warnings: string, cases: List<CaseCall> }
 
-/// Where a file's warnings live: beside its object, under the object's key.
-fn warnings_key(okey: string) -> string { node_key(Stored.Warn, ["file", CACHE_FORMAT, okey]) }
+/// A program derived: clean, every parsed body lowered, its records and what
+/// each file said kept. `program.ws` is the workspace the attempt that stood
+/// ran in.
+export type Derived = { program: Program, lowered: Lowered, store: Store, said: List<Said>, warnings: string, trace: List<string> }
+
+/// Where what a file said lives: beside its object, under the object's key.
+fn said_key(okey: string) -> string { node_key(Stored.Warn, ["said", CACHE_FORMAT, okey]) }
+
+/// A `Said` as its row: the case count, a line per case, then the warnings.
+fn said_wire(s: Said) -> string {
+    joined(["${s.cases.length}"].concat(["${c.symbol}\t${field_text(c.label)}" for c in s.cases]).concat([s.warnings]), "\n")
+}
+
+/// `said_wire`, read back — null for a row that is not one.
+fn said_of(path: string, raw: string) -> Said? {
+    let lines = raw.split("\n")
+    let n? = wire_number(lines.first() ?? "") else { return null }
+    if n < 0 || lines.length < n + 1 { return null }
+    let cases = [case_of(line) for line in lines.slice(1, n + 1)]
+    if cases.any((c: CaseCall?) -> c == null) { return null }
+    Said { path: path, warnings: joined(lines.slice(n + 1, lines.length), "\n"), cases: [c! for c in cases] }
+}
+
+fn case_of(line: string) -> CaseCall? {
+    let at = line.index_of("\t")
+    if at < 0 { return null }
+    CaseCall { symbol: line.substring(0, at), label: text_of_field(line.substring(at + 1, line.length)) }
+}
 
 /// Where a program's instantiation homes are remembered, by its entry.
 fn homes_key(entry: string) -> string { node_key(Stored.Unit, ["homes", CACHE_FORMAT, entry]) }
@@ -33,21 +58,34 @@ fn remembered_homes(store: Store, entry: string) -> List<string> { (store.get(St
 impl Workspace {
     /// The program at `entry`, derived — under the hold, and from the sources
     /// alone when the hold's attempt refused.
-    mut fn derived(entry: string?, want: Want) -> Result<Derived, string> {
-        let held = self.attempted(entry, want, Attempt { })
+    mut fn derived(entry: string?, want: Want) -> Result<Derived, string> { self.derived_reading(entry, want, []) }
+
+    /// `derived`, with files read whatever the store holds for them.
+    mut fn derived_reading(entry: string?, want: Want, parse: List<string>) -> Result<Derived, string> {
+        let held = self.attempted(entry, want, Attempt { parse: parse })
         if held is .Ok || held_paths(self).is_empty() { return held }
-        let plain = self.again(entry, want, Attempt { hold: false })
+        let plain = self.from_sources(entry, want)
         if plain is .Ok { eprintln(hold_refused(held)) }
         plain
     }
 
+    /// The program derived with nothing held — the hold's oracle.
+    fn from_sources(entry: string?, want: Want) -> Result<Derived, string> { self.again(entry, want, Attempt { hold: false }) }
+
     /// WHETHER THE STORE STANDS IN FOR A FILE under this want.
     fn stands_in(s: Store, okey: string, want: Want) -> bool {
-        if !s.has(Stored.Warn, warnings_key(okey)) { return false }
+        if !s.has(Stored.Warn, said_key(okey)) { return false }
         match want {
             .Diagnostics -> true,
             .Binary -> self.object_kept(s, okey),
         }
+    }
+
+    /// The attempt again with nothing held. An attempt that held nothing has no
+    /// hold to blame: asking again would ask forever.
+    fn unheld(entry: string?, want: Want, at: Attempt, why: string) -> Result<Derived, string> {
+        if !at.hold { fail "internal compiler error: ${why}, and nothing was held" }
+        self.again(entry, want, at with { hold: false })
     }
 
     /// A fresh workspace's attempt — a restart never inherits a hold.
@@ -76,15 +114,10 @@ impl Workspace {
         let t4 = self.clock()
         if self.bodies_asked(store, known_as) { return self.again(entry, want, at) }
         if !p.clean() { fail p.report() }
-        if self.layouts_moved(store, p) { return self.again(entry, want, at with { hold: false }) }
-        if want is .Binary {
-            let main = p.entry_file()
-            if main == null { fail p.rendered([no_target(self.root)]) }
-            if main!.view.stmts.is_empty() { fail "the program is empty" }
-            let unread = self.read_held_asks(store)
-            if !unread.is_empty() { return self.again(entry, want, at with { parse: at.parse.concat(unread) }) }
-        }
-        let lowered = p.every_body_checked()
+        if self.layouts_moved(store, p) { return self.unheld(entry, want, at, "a sealed layout moved") }
+        let unread = if want is .Binary { self.read_held_asks(store) } else { [] }
+        if !unread.is_empty() { return self.again(entry, want, at with { parse: at.parse.concat(unread) }) }
+        let lowered = p.files_checked()
         if self.bodies_asked(store, known_as) { return self.again(entry, want, at) }
         let lo = lowered?
         let t5 = self.clock()
@@ -104,8 +137,11 @@ impl Workspace {
             if at.moved >= 2 { fail records_adrift(adrift) }
             return self.again(entry, want, at with { moved: at.moved + 1 })
         }
+        let said = self.all_said(store, p)
+        if said == null { return self.unheld(entry, want, at, "what a held file said could not be read") }
         let trace = ["held ${held_paths(self).length}/${self.decls.files.length}", "attempt ${at.moved}", "load ${(t1 - t0) / 1000000}", "admit ${(t2 - t1) / 1000000}", "fill ${(t3 - t2) / 1000000}", "analyze ${(t4 - t3) / 1000000}", "lower ${(t5 - t4) / 1000000}"]
-        .Ok(Derived { program: p, lowered: lo, store: store, warnings: self.spoken_warnings(store, p), trace: trace })
+        let spoken = [p.warned(p.voices)].concat([s.warnings for s in said!])
+        .Ok(Derived { program: p, lowered: lo, store: store, said: said!, warnings: joined([text for text in spoken if !text.is_empty()], "\n\n"), trace: trace })
     }
 
     /// WHETHER A SEALED LAYOUT MOVED UNDER THE HOLD. A seal boxes a flat record from
@@ -142,22 +178,32 @@ impl Workspace {
         true
     }
 
-    /// Every warning the program speaks, in file order: a parsed file's
-    /// rendered and KEPT, a held file's as the store kept it.
-    fn spoken_warnings(store: Store, p: Program) -> string {
-        mut fresh: Map<string, string> = {}
-        for a in p.files { fresh.set(a.view.source.file, p.warned(a.diagnostics)) }
-        let said = [self.file_warnings(store, fi.path, fresh.get(fi.path)) for fi in self.decls.files]
-        joined([text for text in [p.warned(p.voices)].concat(said) if !text.is_empty()], "\n\n")
+    /// What every file said, in file order: a parsed file's KEPT, a held file's
+    /// as the store kept it — null when a held row cannot be read. A file the
+    /// table knows and nothing read said nothing.
+    fn all_said(store: Store, p: Program) -> List<Said>? {
+        mut fresh: Map<string, Said> = {}
+        for a in p.files { fresh.set(a.view.source.file, self.says(p, a)) }
+        let said = [self.file_said(store, fi.path, fresh.get(fi.path)) for fi in self.decls.files if fresh.get(fi.path) != null || self.is_held(fi.id)]
+        if said.any((s: Said?) -> s == null) { return null }
+        [s! for s in said]
     }
 
-    /// One file's warnings: kept under its key when it parsed, read from
-    /// there when it did not.
-    fn file_warnings(store: Store, path: string, fresh: string?) -> string {
-        let key = warnings_key(self.held_okey(store, path))
-        if fresh == null { return store.get(Stored.Warn, key) ?? "" }
-        let _ = store.keep(Stored.Warn, key, fresh!, [])
-        fresh!
+    /// What a parsed file says now.
+    fn says(p: Program, a: Analysis) -> Said {
+        Said { path: a.view.source.file, warnings: p.warned(a.diagnostics), cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)] }
+    }
+
+    /// One file's `Said`: kept under its key when it parsed, read from there
+    /// when it did not.
+    fn file_said(store: Store, path: string, fresh: Said?) -> Said? {
+        let key = said_key(self.held_okey(store, path))
+        if fresh == null {
+            let kept? = store.get(Stored.Warn, key) else { return null }
+            return said_of(path, kept)
+        }
+        let _ = store.keep(Stored.Warn, key, said_wire(fresh!), [])
+        fresh
     }
 }
 

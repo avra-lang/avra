@@ -54,7 +54,7 @@ fn fill_shape(store: Store, m: ModulePath, parts: List<string>) {
     // branch below is the fn branch.
     let word = if parts[0] == "extern" { "fn" } else { parts[0] }
     if word == "const" {
-        let ty = self.interface_type( id, parts[13])
+        let ty = self.interface_type( id, parts[13].split(";").first() ?? "")
         self.decls.record_const_type(f, stmt, ty)
         let key = self.const_unit_key( store, m, path, parts[5])
         let bytes = store.get(Stored.Unit, key)
@@ -62,6 +62,10 @@ fn fill_shape(store: Store, m: ModulePath, parts: List<string>) {
             let value = settled_from_wire(bytes!)
             if value != null { self.decls.remember_held_value(id, value!) }
         }
+    }
+    if word == "aims" {
+        let aimed = self.decl_from_ref(parts[13])
+        if aimed != null { self.decls.record_target(id, aimed!) }
     }
     if word == "named" {
         let of = self.interface_type( id, parts[13])
@@ -223,7 +227,12 @@ fn record_line(d: Decl, ordinal: int, item: bool) -> string {
     let sig = if d.kind is .Const { null } else { self.sig(d.id) }
     let shape = if d.kind is .Const {
         let ty = self.decls.type_of_const(d.file, d.stmt) ?? self.decls.types.intern(Type.Error)
-        "const\t${self.decls.type_wire( ty)}"
+        // a reader bakes the VALUE in, so the value is the interface
+        "const\t${self.decls.type_wire( ty)};${self.const_print(d)}"
+    } else if d.kind is .Impl {
+        // an impl is filed under its target's NAME, and a held one has no namespace to
+        // ask which declaration of that name it means
+        "aims\t${self.decl_ref(self.decls.target_of(d.id))}"
     } else if sig == null {
         "opaque"
     } else if d.kind is .Fn || d.kind is .Method {
@@ -277,8 +286,23 @@ fn record_of(store: Store, m: ModulePath) -> string {
     }
     // WHAT EACH FILE'S LINES WERE READ FROM — outside the interface digest, which a body
     // edit must not move.
-    let read = ["file\t${path}\t${digest_of(self.source(self.file_id(path)).text)}" for path in self.module_files(m)]
+    let read = ["file\t${path}\t${digest_of(self.source(self.file_id(path)).text)}\t${if self.runs_bodies(prior_lines, path) { "1" } else { "0" }}" for path in self.module_files(m)]
     joined(["iface\t${iface_digest(items)}"].concat(here).concat(read).concat(items), "\n")
+}
+
+/// A settled const's value as one number — 0 for one that did not settle.
+fn const_print(d: Decl) -> int {
+    match self.settled(d.file, SettleRoot.Const(d.stmt), []) {
+        .Ok(value) -> value.fingerprint,
+        .Err(_) -> 0,
+    }
+}
+
+/// Whether a file's lowering runs bodies at compile time: as this build met it,
+/// or, for a held file, as its module's last record kept it.
+fn runs_bodies(prior_lines: List<string>, path: string) -> bool {
+    if !self.is_held(self.file_id(path)) { return self.runs.get(path) != null }
+    prior_lines.any((line) -> line.starts_with("file\t${path}\t") && line.ends_with("\t1"))
 }
 
 fn row_decl(parts: List<string>) -> DeclId? {

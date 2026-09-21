@@ -113,6 +113,10 @@ export type Workspace = {
     /// THE HELD FILES WHOSE BODIES THIS BUILD ASKED FOR — a compile-time run reads a
     /// body, and a held file has none. A Cell: the ask comes from inside a query.
     body_asks: Cell<List<string>>,
+    /// THE FILES WHOSE LOWERING RAN ANOTHER BODY AT COMPILE TIME, by path: a const
+    /// settled through a fn, an annotation lifted. Their objects read bodies, never
+    /// interfaces alone.
+    runs: Map<string, bool>,
     /// The records a held file's line declared FLAT.
     held_flat: List<TypeId>,
     /// THE MODULES A HELD LOAD TOUCHED, in order — phase one mints and INTERNS every name;
@@ -317,7 +321,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, bytes_keys: {}, view_keys: {}, object_keys: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), held_flat: [], held_order: [], defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_asked: {}, record_lines: {}, record_fields: {}, bytes_keys: {}, view_keys: {}, object_keys: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), held_flat: [], runs: {}, held_order: [], defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }
@@ -767,11 +771,11 @@ impl Workspace {
     /// is asking — `@std.meta.Code` and the compiler's own `Code` met
     /// so, inside a derive, and poisoned a sig computed mid-resolve.
     fn aims_at(b: DeclId, target: DeclId) -> bool {
-        // A HELD IMPL HAS NO NAMESPACE TO ASK — its file was never parsed, so the
-        // record's own name is the identity: the impl was filed under the target's
-        // name and its file was admitted to the same package.
-        let bd = self.decls.decl(b)
-        if self.is_held(bd.file) { return bd.name == self.decls.decl(target).name }
+        // a held impl has no namespace to ask: its record kept the declaration it aims at
+        if self.is_held(self.decls.decl(b).file) {
+            let aimed = self.decls.target_of(b)
+            return aimed != null && same_decl(aimed!, target)
+        }
         let seen: DeclId? = self.visible(self.decls.decl(b).file).type_decl(self.decls.decl(target).name)
         seen != null && same_decl(seen!, target)
     }

@@ -1,0 +1,145 @@
+//! THE SUITE — every proof a package carries, as ONE binary linked through the
+//! store: its spec cases, and its PROGRAM tests — a source file with the text
+//! it must print beside it. Every proof is both engines: a program the
+//! evaluator has not agreed with since anything it can see last moved runs
+//! there first, and a disagreement stops the run before a binary exists.
+use core.{sorted_texts, joined, flatten, digest_of, module_path}
+use @std.path.{joined_path, dir_of, stem_of, relative_path, normalized}
+use @std.io.{make_dirs}
+
+impl Workspace {
+    /// EVERY SUITE THE PACKAGE CARRIES: its own, and one per package nested under
+    /// its sources — a module tree, a vendored dependency, a test that reaches
+    /// past the library's own dependencies — each proved on its own. `only` is
+    /// one file's cases and nothing else; labels are told from `told_from`.
+    mut fn suites(only: string?, told_from: string, tools: Toolchain) -> Result<List<BuildOutcome>, string> {
+        let own: BuildOutcome? = self.suite(only, told_from, tools)?
+        mut out: List<BuildOutcome> = if own == null { [] } else { [own!] }
+        if only != null { return out }
+        for root in nested_roots(self.host, joined_path(self.root, "src")) {
+            mut inner = self.nested_at(root)
+            let made: BuildOutcome? = inner.suite(null, told_from, tools)?
+            if made != null { out.push(made!) }
+        }
+        out
+    }
+
+    /// A nested root as a workspace: one with a `src/` is a package, one without
+    /// a DIRECTORY OF PROGRAMS — every file there its own module.
+    fn nested_at(root: string) -> Workspace {
+        let src = joined_path(root, "src")
+        if self.host.is_dir(src) { built(self.host, root, src, self.lang, self.clock, false, false) } else { built(self.host, root, root, self.lang, self.clock, false, true) }
+    }
+
+    /// One suite's binary, or null when there is nothing to prove.
+    mut fn suite(only: string?, told_from: string, tools: Toolchain) -> Result<BuildOutcome?, string> {
+        let programs = if only == null { self.program_tests() } else { [] }
+        let key = self.program_key("suite:${only ?? ""}", [beside(path, "expected") for path in programs])
+        let binary = joined_path(joined_path(self.root, "build"), "suite")
+        let kept = self.kept_binary(key, binary)
+        if kept != null { return kept }
+        let store = store_at(build_cache_root(self))
+        let owed = [path for path in programs if !self.native_only(path) && !store.has(Stored.Unit, self.proved_key(store, path))]
+        let d = self.evaluated(store, owed, told_from)?
+        let cases = flatten([s.cases for s in d.said if only == null || normalized(s.path) == normalized(only!)])
+        if cases.is_empty() && programs.is_empty() { return .Ok(null) }
+        let _ = make_dirs(dir_of(binary))
+        let calls = [self.program_call(path, told_from) for path in programs]
+        let made: BuildOutcome? = d.program.ws.linked(d, ProgramModule { entry: suite_entry(d.lowered.types, cases, calls), rows: program_rows }, key, binary, tools)?
+        made
+    }
+
+    /// The program derived with every program the evaluator owes a run READ,
+    /// each run and held to its text — and remembered, so an unmoved program is
+    /// not run again. A quarrel under a hold is asked again of the sources: a
+    /// held body the record did not foresee is no verdict on the program.
+    mut fn evaluated(store: Store, owed: List<string>, told_from: string) -> Result<Derived, string> {
+        let d = self.derived_reading(null, Want.Binary, flatten([self.seen_files(store, path) for path in owed]))?
+        let first = d.program.ws.quarrels(d, owed, told_from)
+        if first.is_empty() { return d.program.ws.agreed(store, d, owed) }
+        if held_paths(d.program.ws).is_empty() { fail joined(first, "\n") }
+        let sure = self.from_sources(null, Want.Binary)?
+        let last = sure.program.ws.quarrels(sure, owed, told_from)
+        if !last.is_empty() { fail joined(last, "\n") }
+        sure.program.ws.agreed(store, sure, owed)
+    }
+
+    /// The evaluator agreed with each: remembered under what the program can see.
+    fn agreed(store: Store, d: Derived, owed: List<string>) -> Derived {
+        for path in owed { let _ = store.keep(Stored.Unit, self.proved_key(store, path), "", []) }
+        d
+    }
+
+    /// Every program the evaluator did not say, in its own words.
+    fn quarrels(d: Derived, owed: List<string>, told_from: string) -> List<string> {
+        flatten([quarrel(d.lowered, self.program_call(path, told_from)) for path in owed])
+    }
+
+    /// The package's program tests, in name order.
+    fn program_tests() -> List<string> {
+        sorted_texts([f for f in self.root_files() if self.host.exists(beside(f, "expected"))])
+    }
+
+    /// A marker beside a program drops the evaluator's leg — the seam is the
+    /// host's, and the marker's text says why.
+    fn native_only(path: string) -> bool { self.host.exists(beside(path, "native-only")) }
+
+    /// One program as the binary needs it: the text beside it with its final
+    /// newline dropped — the shape the capture answers.
+    fn program_call(path: string, told_from: string) -> ProgramCall {
+        let text = self.host.read(beside(path, "expected"))
+        ProgramCall {
+            symbol: program_symbol(path),
+            label: relative_path(told_from, joined_path(dir_of(path), stem_of(path))),
+            expected: if text.ends_with("\n") { text.substring(0, text.length - 1) } else { text },
+            evaluated: !self.native_only(path),
+        }
+    }
+
+    /// Every file a program's bodies can reach: the files of the modules its
+    /// own module sees.
+    fn seen_files(store: Store, path: string) -> List<string> {
+        mut ws = self
+        flatten([self.module_files(module_path(dep.split("."))) for dep in seen_modules(ws, store, module_path(self.module_of(path).split(".")))])
+    }
+
+    /// WHERE THE EVALUATOR'S AGREEMENT IS REMEMBERED: under the text the program
+    /// must print and the text of every file it can reach — a BODY moves a run,
+    /// so an interface digest would not do.
+    fn proved_key(store: Store, path: string) -> string {
+        let texts = [digest_of(self.source(self.file_id(f)).text) for f in self.seen_files(store, path)]
+        node_key(Stored.Unit, ["proved", CACHE_FORMAT, path, self.host.read(beside(path, "expected")), joined(texts, "\n")])
+    }
+}
+
+/// The file beside a program that wears its stem and this extension.
+fn beside(path: string, extension: string) -> string { joined_path(dir_of(path), "${stem_of(path)}.${extension}") }
+
+/// Every nested package under a directory: one holding its own manifest is a
+/// package, and nothing under it is asked again.
+fn nested_roots(host: Host, dir: string) -> List<string> {
+    if !host.is_dir(dir) { return [] }
+    flatten([nested_under(host, joined_path(dir, name)) for name in sorted_texts(host.list(dir)) if host.is_dir(joined_path(dir, name))])
+}
+
+fn nested_under(host: Host, dir: string) -> List<string> {
+    if host.exists(joined_path(dir, "avra.toml")) { [dir] } else { nested_roots(host, dir) }
+}
+
+/// One program's disagreement with the evaluator, as none or one.
+fn quarrel(lo: Lowered, pr: ProgramCall) -> List<string> {
+    match run_program(lo, pr.symbol) {
+        .Ok(out) -> if out == pr.expected { [] } else { [said_otherwise(pr, out)] },
+        .Err(why) -> [eval_wrecked(pr, why)],
+    }
+}
+
+// ── The voices ──
+
+fn said_otherwise(pr: ProgramCall, out: string) -> string {
+    "${pr.label}: eval != expected\n${out}"
+}
+
+fn eval_wrecked(pr: ProgramCall, why: string) -> string {
+    "${pr.label}: eval FAILED\n${why}"
+}

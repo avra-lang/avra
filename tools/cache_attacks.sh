@@ -147,6 +147,37 @@ ud=$(find .avra-cache -type d -iname 'unit*' | head -1)
 rm -rf "$ud"; S "every Unit row deleted (asks, homes, consts)" a; S "same, b" b
 ed $R/c/src/main.av 'println("cc ' 'println("C ';                     S "c again, over a's objects" c
 S "final no-op a" a
+# THE SUITE THROUGH THE SAME STORE: a verdict must follow a body a held test calls
+mkdir -p $R/t/src/tests/shown
+cat > $R/t/avra.toml <<'TOML'
+[package]
+name = "@rt/t"
+version = "0.1.0"
+
+[lib]
+name = "rt-t"
+path = "src/lib.av"
+TOML
+printf 'export fn three() -> int { 3 }\n' > $R/t/src/lib.av
+cat > $R/t/src/tests/lib_test.av <<'AV'
+use @rt.t.{three}
+spec "three" { given "the fn" { then "it answers three" { three() == 3 } } }
+AV
+printf 'use @rt.t.{three}\nprintln("three is ${three()}")\n' > $R/t/src/tests/shown/shown.av
+printf 'three is 3\n' > $R/t/src/tests/shown/shown.expected
+T() { # T <label> <want: green|red>
+    steps=$((steps+1)); out=$(./avra test --time $R/t 2>&1); st=$?
+    case "$out" in *"held 0/"*|*"cache hit"*) ;; *"held "*) holds=$((holds+1)) ;; esac
+    got=green; [ "$st" -ne 0 ] && got=red
+    if [ "$got" = "$2" ]; then [ -n "${VERBOSE:-}" ] && echo "ok    $1 [t] -> $got"; else fails=$((fails+1)); echo "FAIL  $1 [t] wanted $2, got $got: $(printf '%s' "$out" | grep -vE '^watch:|^time:' | tail -3 | tr '\n' ' ')"; fi
+}
+T "suite cold" green; T "suite no-op" green
+ed $R/t/src/lib.av "{ 3 }" "{ 4 }";                           T "a body a HELD case calls moves: the verdict follows" red
+ed $R/t/src/lib.av "{ 4 }" "{ 3 }";                           T "and back" green
+ed $R/t/src/tests/shown/shown.expected "three is 3" "three is 4"; T "the text a program must print moves" red
+ed $R/t/src/tests/shown/shown.expected "three is 4" "three is 3"; T "and back" green
+ed $R/t/src/tests/lib_test.av "three() == 3" "three() == 3 && true"; T "a case's own body moves" green
+
 # CHECK SPEAKS THE SAME under a hold as from the sources
 for app in a b c; do
     held_says=$(./avra check $R/$app 2>&1 | grep -v '^watch:')

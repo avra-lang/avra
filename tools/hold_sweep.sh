@@ -11,6 +11,7 @@ pkg="${1:-packages/cli}"; filter="${2:-}"; out=build/hold-sweep.out; : > "$out"
 files=$(git ls-files 'packages/*.av' | grep -v '/tests/' | grep "$filter")
 n=0; bad=0
 for f in $files; do
+    [ -f "$f" ] || continue   # listed by git, deleted in the tree
     n=$((n+1)); cp "$f" "$f.sweep"; printf '\n// swept\n' >> "$f"
     msg=$(./avra build --time "$pkg" 2>&1 >/dev/null); st=$?
     mv "$f.sweep" "$f"

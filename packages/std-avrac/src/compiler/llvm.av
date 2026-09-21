@@ -71,14 +71,21 @@ type Refs = { whole: bool, bodies: Map<string, bool>, hosted: Map<string, bool>,
 /// A whole-program module: every name is carried, so the lists are unread.
 fn every_name() -> Refs { Refs { whole: true, bodies: {}, hosted: {}, statics: {} } }
 
-/// THE BODIES A MODULE OWNS, and whether it owns every one — the ONE place
-/// the optional file is opened, so no caller guards and none can disagree
-/// with another about which bodies are the module's.
-type ModuleBodies = { whole: bool, bodies: List<Body> }
+/// WHICH BODIES A MODULE DEFINES: every one; one file's; or the PROGRAM's — what
+/// no file owns (an instantiation, a wrapper several files ask for) and the
+/// entry. Exactly one module of a program defines the entry.
+export enum Owned { Whole, File(f: FileId), Program }
 
-fn bodies_of(l: Lowered, only: FileId?) -> ModuleBodies {
-    if only == null { ModuleBodies { whole: true, bodies: l.fns } }
-    else { ModuleBodies { whole: false, bodies: [bd for bd in l.fns if owns(bd, only!)] } }
+impl Owned {
+    fn defines(b: Body) -> bool {
+        match self {
+            .Whole -> true,
+            .File(f) -> owns(b, f),
+            .Program -> home_of(b) == null,
+        }
+    }
+
+    fn carries_entry() -> bool { !(self is .File) }
 }
 
 /// WHERE A BODY BELONGS — `Body.file`, the file that asked for it. A WRAPPER is asked
@@ -124,57 +131,31 @@ fn refs_of(bodies: List<Body>) -> Refs {
 /// only what its own bodies named in a split one.
 fn carries(r: Refs, named: Map<string, bool>, name: string) -> bool { r.whole || named.get(name) != null }
 
-/// Write the program as verified `.ll` text; null means written, a
-/// string is the failure.
-export fn emit_ll(l: Lowered, path: string) -> string? { emit_module(l, path, true, null) }
+/// The whole program as verified `.ll` text; null means written, a string is
+/// the failure.
+export fn emit_ll(l: Lowered, path: string) -> string? { emit_mode(l, path, Owned.Whole, false) }
 
-/// The same, with the ENTRY optional and the BODIES filterable.
-///
-/// `with_entry` false leaves `main` out — EXACTLY ONE module in a program may
-/// define the entry, or the link fails on a duplicate symbol. `only` names the
-/// file whose bodies this module DEFINES; null defines every body.
-///
-/// WHAT A SPLIT MODULE DECLARES IS WHAT ITS OWN BODIES NAME. LLVM requires a
-/// called symbol to be declared in the module that calls it, so declarations
-/// cannot be shared across modules the way bytes can — but they need not be
-/// REPEATED either, and repeating them is what made a split cost 11x the disk
-/// of one whole-program module. A null `only` keeps the whole-program shape:
-/// every declaration, every static, which is what a lone module must carry.
-///
-/// THE STATICS ARE LAID OUT PER MODULE, and that is safe rather than lazy:
-/// they carry PRIVATE linkage, so each copy is module-local and the linker
-/// renames them — no duplicate symbol — and a settled aggregate is immutable
-/// read-only data, so the copies are identical by construction.
-export fn emit_module(l: Lowered, path: string, with_entry: bool, only: FileId?) -> string? {
-    emit_mode(l, path, with_entry, only, false)
-}
-
-/// THE SAME EMIT, for a caller that has ALREADY asked `program_closed` — which is a
-/// WHOLE-PROGRAM scan and answers one thing for one program, never once per module.
-/// A build that emits 276 modules asks before its loop and comes here inside it.
-export fn emit_closed(l: Lowered, path: string, with_entry: bool, only: FileId?) -> string? {
-    emit_mode(l, path, with_entry, only, true)
-}
+/// ONE MODULE OF A SPLIT PROGRAM, as bitcode. It declares what its own bodies
+/// NAME — LLVM wants a called symbol declared where it is called — and lays out
+/// the statics they read: private linkage, so each module's copy is its own.
+/// The caller has asked `program_closed`, a whole-program scan with one answer.
+export fn emit_closed(l: Lowered, path: string, which: Owned) -> string? { emit_mode(l, path, which, true) }
 
 /// A program with a symbol nothing declares — a DEFECT, in its own words.
 fn not_closed(missing: string) -> string {
     "internal compiler error: nothing declares `${missing}` — the program is not closed"
 }
 
-fn emit_mode(l: Lowered, path: string, with_entry: bool, only: FileId?, bitcode: bool) -> string? {
+fn emit_mode(l: Lowered, path: string, which: Owned, bitcode: bool) -> string? {
     let lc = avra_llvm_context_create()
     let m = avra_llvm_module_create("avra", lc)
     let b = avra_llvm_create_builder(lc)
-    let own = bodies_of(l, only)
-    // THE ENTRY IS NOT IN `l.fns`. It is carried beside them and emitted by
-    // `emit_entry`, so a split module that collected only its OWN bodies' names
-    // never saw what the entry CALLS — and the entry is exactly the body that
-    // calls the program. A whole-program module hides this (it declares
-    // everything); a split one CRASHES on the first entry that calls anything.
-    let scanned: List<Body> = if with_entry { own.bodies.concat([l.entry]) } else { own.bodies }
-    let refs: Refs = if own.whole { every_name() } else { refs_of(scanned) }
+    let own = [bd for bd in l.fns if which.defines(bd)]
+    // the entry is carried beside `l.fns`, and it names what it calls
+    let scanned: List<Body> = if which.carries_entry() { own.concat([l.entry]) } else { own }
+    let refs: Refs = if which is .Whole { every_name() } else { refs_of(scanned) }
     mut mine: Map<string, bool> = {}
-    for bd in own.bodies { mine.set(bd.name, true) }
+    for bd in own { mine.set(bd.name, true) }
     declare_runtime(lc, m)
     declare_externs(lc, m, l.externs, refs)
     for bd in l.fns {
@@ -192,7 +173,7 @@ fn emit_mode(l: Lowered, path: string, with_entry: bool, only: FileId?, bitcode:
             if bd.weak { avra_llvm_set_weak_odr(f) }
         }
     }
-    if with_entry {
+    if which.carries_entry() {
         let failure: string? = emit_entry(lc, m, b, l, rt)
         if failure != null { return wreck(m, path, failure!) }
     }

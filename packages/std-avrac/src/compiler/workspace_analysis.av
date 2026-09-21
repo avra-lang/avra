@@ -241,6 +241,12 @@ impl Workspace {
         r
     }
 
+    /// A compile-time run in `f` that reached a body: what `f` lowers to now reads
+    /// that body's text, and its key must.
+    fn ran(f: FileId, l: Lowered) {
+        if !l.fns.is_empty() { self.runs.set(self.decls.file(f).path, true) }
+    }
+
     /// One settlement run: the initializer lowered as a program, its
     /// laws checked, its value spelled when the type spells one.
     fn settlement_of(f: FileId, root: ExprId, name: string, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
@@ -249,6 +255,7 @@ impl Workspace {
         // Lowered memo keys by symbol, so sharing one would make query
         // order choose which body survives.
         let l = self.isolated(f, root, "settling$${name}", seats)
+        self.ran(f, l)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         run_settle(l, self.budgets(), dir_of(self.decls.file(f).path))
     }
@@ -264,6 +271,7 @@ impl Workspace {
     /// transport, including every nested aggregate.
     fn crossed_expr(f: FileId, e: ExprId, mut heap: MetaHeap) -> Result<MetaVal, Unsettled> {
         let l = self.isolated(f, e, expr_symbol(f, e), [])
+        self.ran(f, l)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         match run_crossed(l, self.budgets(), dir_of(self.decls.file(f).path)) {
             .Ok(x) -> .Ok(heap.adopt(x.heap, x.answer)),
@@ -314,6 +322,7 @@ impl Workspace {
         let x = self.decls.decl(d)
         let ws = self
         let l = memory(self.decls.settlement(Wanted { file: x.file, decl: d, name: self.decls.symbol(d), sub: null, seats: [], root: null }, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))))
+        self.runs.set(self.decls.file(f).path, true)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         let sig = (self.decls.sig(d))?.fn_sig()
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }

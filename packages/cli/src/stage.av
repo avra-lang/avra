@@ -1,49 +1,29 @@
-//! THE LIGHT PHASE of a suite run, in a fresh image: link each module
-//! the heavy phase emitted, run its binary, judge its status. Not a
-//! command — `test` re-executes this program with the hand-off's own
-//! first word, and the entry reads it before its commands do. The
-//! first red plan stops the run, so a failure names one thing.
-use @std.avrac.compiler.{verdict_of, plan_binary, staged_plans}
+//! THE LIGHT PHASE of a suite run, in a fresh image: run each binary the
+//! heavy phase linked and judge its status, with the compiler's workspaces
+//! gone. Not a command — `test` re-executes this program with the hand-off's
+//! own first word, and the entry reads it before its commands do. The first
+//! red suite stops the run, so a failure names one thing.
+use @std.avrac.compiler.{verdict_of, staged_binaries}
 use @std.process.{status_of}
-use @std.io.{read_text}
-use commands.{clang_ran, run_binary, judged_link, refused_by_host}
+use commands.{run_binary, refused_by_host}
 
 /// The light phase's exit when the words are a hand-off; null when
 /// they are a person's line.
 export fn light_phase(words: List<string>) -> int? {
-    let plans? = staged_plans(words) else { return null }
-    first_red(plans)
+    let binaries? = staged_binaries(words) else { return null }
+    first_red(binaries)
 }
 
-/// Each plan linked and run in turn: the first red one's code, or 0.
-fn first_red(plans: List<string>) -> int {
-    for plan in plans {
-        let code = plan_ran(plan)
+/// Each suite run in turn: the first red one's code, or 0.
+fn first_red(binaries: List<string>) -> int {
+    for binary in binaries {
+        let code = match run_binary(binary) {
+            .Ok(x) -> judged(status_of(x)),
+            .Err(e) -> refused_by_host(e),
+        }
         if code != 0 { return code }
     }
     0
-}
-
-/// One plan read: its words run, or the host's refusal spoken.
-fn plan_ran(plan: string) -> int {
-    match read_text(plan) {
-        .Ok(text) -> words_ran(plan, text.split("\n")),
-        .Err(e) -> unreadable_plan(plan, e.describe().message),
-    }
-}
-
-/// A plan's words: linked, run, judged.
-fn words_ran(plan: string, words: List<string>) -> int {
-    let binary? = plan_binary(words) else { return not_a_plan(plan) }
-    let linked: int = match clang_ran(words) {
-        .Ok(x) -> judged_link(x, binary),
-        .Err(e) -> refused_by_host(e),
-    }
-    if linked != 0 { return 1 }
-    match run_binary(binary) {
-        .Ok(x) -> judged(status_of(x)),
-        .Err(e) -> refused_by_host(e),
-    }
 }
 
 /// The verdict as an exit code, its two wrecks spoken.
@@ -60,16 +40,4 @@ fn judged(status: int) -> int {
             1
         }
     }
-}
-
-// ── The voices ──
-
-fn not_a_plan(plan: string) -> int {
-    eprintln("avra: ${plan} is not a link plan — clang's words, the binary after `-o`")
-    2
-}
-
-fn unreadable_plan(plan: string, message: string) -> int {
-    eprintln("avra: could not read the link plan ${plan} — ${message}")
-    2
 }

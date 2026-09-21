@@ -796,14 +796,16 @@ impl Decls {
     }
 
     /// THE symbol a declaration lowers to — its name under its
-    /// module; a member's under its type's name first. Every symbol
-    /// a body or a call site carries comes from here.
+    /// module; a member's under its type's name first; a case's its
+    /// file and its body's node, since a stored object outlives every
+    /// id a run hands out. Every symbol a body or a call site carries
+    /// comes from here.
     fn symbol(d: DeclId) -> string {
         let x = self.decl(d)
         if self.is_extern(d) { return x.name }
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
-            .Case -> "spec$${x.id.index}",
+            .Case -> "${stem_of(self.file(x.file).path)}$case${x.root?.index ?? x.stmt.index}",
             .Fn or .Const or .Record or .Named or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
