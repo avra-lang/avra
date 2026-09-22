@@ -32,13 +32,142 @@
 # The window must
 # END before the step does, or `sample` writes nothing.
 # Exit status is the command's, or 137 when the cap fired.
+
+# TWO FIXTURES, EACH IN A LOCK OF ITS OWN (AVRA_BUILD_LOCK), so a
+# self-test never contends the real machine-wide queue every other
+# session on this box is standing in. Fixture 1 proves a QUEUED
+# waiter's ticket is dropped and the process actually exits on TERM,
+# never just detouring through the trap and looping on. Fixture 2
+# proves a HOLDING watcher's TERM kills the guarded child before
+# releasing the lock, rather than orphaning it unwatched.
+self_test() {
+    # A self-test run FROM INSIDE a held lock (`make gate` under this
+    # very watchdog) inherits AVRA_WATCH_HELD, and the re-entrancy
+    # check at the top of the file would exec every fixture straight
+    # through with no lock, no ticket, no "waiting" line at all —
+    # not a failure of the fix, a self-test that never exercised it.
+    unset AVRA_WATCH_HELD
+    here="$(cd "$(dirname "$0")" && pwd)"
+    watch="$here/$(basename "$0")"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+
+    lock1="$tmp/lock1"
+    mkdir -p "$lock1"
+    echo $$ > "$lock1/pid"
+    AVRA_BUILD_LOCK="$lock1" AVRA_BUILD_SLOTS=1 sh "$watch" 4000 sleep 30 \
+        > "$tmp/waiter.out" 2>&1 &
+    waiter=$!
+    i=0
+    while [ $i -lt 40 ] && ! grep -q "busy — waiting" "$tmp/waiter.out" 2>/dev/null; do
+        sleep 0.25; i=$((i + 1))
+    done
+    if ! grep -q "busy — waiting" "$tmp/waiter.out" 2>/dev/null; then
+        echo "watch: self-test: fixture 1 never reported waiting"; kill -9 "$waiter" 2>/dev/null
+        return 1
+    fi
+    kill -TERM "$waiter"
+    i=0
+    while [ $i -lt 40 ] && kill -0 "$waiter" 2>/dev/null; do sleep 0.25; i=$((i + 1)); done
+    if kill -0 "$waiter" 2>/dev/null; then
+        echo "watch: self-test: a QUEUED waiter ignored TERM"; kill -9 "$waiter" 2>/dev/null
+        return 1
+    fi
+    if [ -n "$(ls "$lock1.q" 2>/dev/null)" ]; then
+        echo "watch: self-test: a TERM'd waiter's ticket was not dropped"
+        return 1
+    fi
+
+    lock2="$tmp/lock2"
+    AVRA_BUILD_LOCK="$lock2" AVRA_BUILD_SLOTS=1 sh "$watch" 4000 sleep 30 \
+        > "$tmp/holder.out" 2>&1 &
+    holder=$!
+    i=0
+    while [ $i -lt 40 ] && [ ! -f "$lock2/pid" ]; do sleep 0.25; i=$((i + 1)); done
+    if [ ! -f "$lock2/pid" ]; then
+        echo "watch: self-test: fixture 2 never acquired the lock"; kill -9 "$holder" 2>/dev/null
+        return 1
+    fi
+    child=$(ps -eo pid=,ppid=,comm= | awk -v p="$holder" '$2==p && $3=="sleep"{print $1; exit}')
+    if [ -z "$child" ]; then
+        echo "watch: self-test: fixture 2's guarded child was never found"; kill -9 "$holder" 2>/dev/null
+        return 1
+    fi
+    kill -TERM "$holder"
+    i=0
+    while [ $i -lt 40 ] && kill -0 "$holder" 2>/dev/null; do sleep 0.25; i=$((i + 1)); done
+    if kill -0 "$holder" 2>/dev/null; then
+        echo "watch: self-test: a HOLDING watcher ignored TERM"; kill -9 "$holder" 2>/dev/null
+        return 1
+    fi
+    if [ -d "$lock2" ]; then
+        echo "watch: self-test: a TERM'd holder left the lock in place"
+        return 1
+    fi
+    sleep 0.3
+    if kill -0 "$child" 2>/dev/null; then
+        echo "watch: self-test: a TERM'd holder orphaned its guarded child"; kill -9 "$child" 2>/dev/null
+        return 1
+    fi
+    echo "watch: self-test passed — 2 fixtures"
+}
+if [ "$1" = "--self-test" ]; then
+    self_test
+    exit $?
+fi
 cap_mb="$1"; shift
 if [ -n "$AVRA_WATCH_HELD" ]; then
     exec "$@"
 fi
 slots="${AVRA_BUILD_SLOTS:-1}"
-lock=/tmp/avra-build.lock
+lock="${AVRA_BUILD_LOCK:-/tmp/avra-build.lock}"
 floor="${AVRA_MEM_FLOOR:-20}"
+
+# THE TREE WALKERS, DEFINED BEFORE ANY TRAP CAN FIRE. A signal trap
+# that calls tree_kill must find it already a function, not a line
+# further down the file that has not run yet — so these three own no
+# state and are safe wherever a trap needs them.
+tree_mem() {
+    pids=$(ps -eo pid=,ppid= | awk -v root="$1" '
+        { pp[$1]=$2 }
+        END {
+            n=0; q[n++]=root
+            for (i=0; i<n; i++) { printf "%s ", q[i]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
+        }')
+    [ -n "$AVRA_WATCH_TRACE" ] && footprint $pids 2>/dev/null | awk '/\[[0-9]+\]:.*Footprint:/ { for (i=1; i<=NF; i++) if ($i=="Footprint:") printf "%s %s%s  ", $1, $(i+1), $(i+2) } END { print "" }' >&2
+    # a per-process header reads `name [pid]: … Footprint: N MB`; the
+    # Summary that follows several pids repeats their total
+    footprint $pids 2>/dev/null | awk '
+        /\[[0-9]+\]:.*Footprint:/ {
+            for (i=1; i<=NF; i++) if ($i=="Footprint:") {
+                v=$(i+1)+0; u=$(i+2)
+                if (u=="GB") v*=1024; else if (u=="KB") v/=1024; else if (u=="B") v=0
+                s+=v
+            }
+        }
+        END { print int(s) }'
+}
+tree_kill() {
+    ps -eo pid=,ppid= | awk -v root="$1" '
+        { pp[$1]=$2 }
+        END {
+            n=0; q[n++]=root
+            for (i=0; i<n; i++) { print q[i]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
+        }' | xargs kill -9 2>/dev/null
+}
+# THE TRIPWIRE IS RSS, read by ps in milliseconds; the footprint —
+# `footprint` walks the process's whole map, seconds on a big one —
+# is read every fourth poll for the honest peak. A process once grew
+# from 7 GB to 16 GB between two footprint polls.
+tree_rss() {
+    ps -eo pid=,ppid=,rss= | awk -v root="$1" '
+        { pp[$1]=$2; rss[$1]=$3 }
+        END {
+            n=0; q[n++]=root; s=0
+            for (i=0; i<n; i++) { s+=rss[q[i]]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
+            print int(s/1024)
+        }'
+}
 
 # A LINK THAT RUNS OUT OF DISK DELETES `build/avra`. `make bootstrap`
 # links straight at it (`-o build/avra`), so an ENOSPC there leaves the
@@ -85,7 +214,16 @@ while ! mkdir "$qdir/$mine" 2>/dev/null; do mine=$(( mine + 1 )); done
 echo $$ > "$qdir/$mine/pid"
 # Until a slot is held, the trap clears the TICKET alone: `$lock` still
 # names slot 1, and removing it here would free another lane's slot.
-trap 'rm -rf "$qdir/$mine"' EXIT INT TERM
+# A SIGNAL TRAP THAT NEVER EXITS IS NOT A HANDLER, IT IS A DETOUR: a
+# bare `trap 'cleanup' EXIT INT TERM` runs `cleanup` on a signal and
+# then RESUMES the script at the next statement, because nothing in
+# that body says to stop. Ctrl-C on a queued waiter dropped its
+# ticket and kept polling forever, invisibly — proven live (a
+# `sleep`-loop orphan survived its own TERM). EXIT gets its own
+# cleanup-only trap; INT and TERM get the same cleanup AND an exit,
+# so a queued wait actually stops when told to.
+trap 'rm -rf "$qdir/$mine"' EXIT
+trap 'rm -rf "$qdir/$mine"; echo "watch: signalled while queued (ticket $mine) — ticket dropped, exiting" >&2; exit 143' INT TERM
 # WHO HOLDS WHAT, so a caller told to wait sees the cost rather than
 # a bare ticket number. Scans every held slot that exists, not only
 # 1..$slots — a caller running fewer slots than another's still sees
@@ -146,7 +284,17 @@ lock="$held"
 # and N slots would serve one lane at a time — the queue defeating the
 # capacity it was put in front of (witnessed: four runs, no overlap).
 rm -rf "$qdir/$mine"
-trap 'rm -rf "$lock"' EXIT INT TERM
+# THE SAME DETOUR, ONE STAGE LATER, AND WORSE: a bare EXIT INT TERM
+# trap here only released the LOCK on a signal and fell through to
+# keep running — the memory floor wait, then `"$@" &` regardless of
+# whether the lock was still this process's to hold. Proven live in
+# an isolated repro of this exact shape: TERM during `wait "$pid"`
+# freed the lock while the backgrounded child kept running, unkilled
+# and unwatched — ONE HEAVY PROCESS AT A TIME held only as long as
+# nobody presses Ctrl-C. `pid` is unset until `"$@" &` runs below, so
+# the INT/TERM handler kills the tree only once there is one.
+trap 'rm -rf "$lock"' EXIT
+trap '[ -n "$pid" ] && tree_kill "$pid"; rm -rf "$lock"; echo "watch: signalled — the guarded tree was killed, the lock released" >&2; exit 143' INT TERM
 echo $$ > "$lock/pid"
 printf '%s\n' "$*" > "$lock/cmd"
 while :; do
@@ -189,48 +337,9 @@ peak=0
 fired=0
 # The tree's PHYSICAL FOOTPRINT in MB — `footprint`'s number, which
 # counts a page the compressor holds. RSS does not, and read a
-# 2.4 GB compiler as 1.4 GB on a machine that then panicked.
-tree_mem() {
-    pids=$(ps -eo pid=,ppid= | awk -v root="$1" '
-        { pp[$1]=$2 }
-        END {
-            n=0; q[n++]=root
-            for (i=0; i<n; i++) { printf "%s ", q[i]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
-        }')
-    [ -n "$AVRA_WATCH_TRACE" ] && footprint $pids 2>/dev/null | awk '/\[[0-9]+\]:.*Footprint:/ { for (i=1; i<=NF; i++) if ($i=="Footprint:") printf "%s %s%s  ", $1, $(i+1), $(i+2) } END { print "" }' >&2
-    # a per-process header reads `name [pid]: … Footprint: N MB`; the
-    # Summary that follows several pids repeats their total
-    footprint $pids 2>/dev/null | awk '
-        /\[[0-9]+\]:.*Footprint:/ {
-            for (i=1; i<=NF; i++) if ($i=="Footprint:") {
-                v=$(i+1)+0; u=$(i+2)
-                if (u=="GB") v*=1024; else if (u=="KB") v/=1024; else if (u=="B") v=0
-                s+=v
-            }
-        }
-        END { print int(s) }'
-}
-tree_kill() {
-    ps -eo pid=,ppid= | awk -v root="$1" '
-        { pp[$1]=$2 }
-        END {
-            n=0; q[n++]=root
-            for (i=0; i<n; i++) { print q[i]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
-        }' | xargs kill -9 2>/dev/null
-}
-# THE TRIPWIRE IS RSS, read by ps in milliseconds; the footprint —
-# `footprint` walks the process's whole map, seconds on a big one —
-# is read every fourth poll for the honest peak. A process once grew
-# from 7 GB to 16 GB between two footprint polls.
-tree_rss() {
-    ps -eo pid=,ppid=,rss= | awk -v root="$1" '
-        { pp[$1]=$2; rss[$1]=$3 }
-        END {
-            n=0; q[n++]=root; s=0
-            for (i=0; i<n; i++) { s+=rss[q[i]]; for (p in pp) if (pp[p]==q[i]) q[n++]=p }
-            print int(s/1024)
-        }'
-}
+# 2.4 GB compiler as 1.4 GB on a machine that then panicked. (tree_mem,
+# tree_kill and tree_rss are defined above, ahead of the traps that
+# may need to call tree_kill before this point in the file runs.)
 # THE STEP IS WAITED FOR, THE TRIPWIRE POLLS BESIDE IT. A warm build is 80 ms of
 # work: a loop that looked for its end between polls cost it the poll, and one
 # that slept between looks cost it the sleep. The poller keeps the tripwire's

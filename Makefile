@@ -542,6 +542,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # its status is discarded here exactly as sprite-build.sh's call does.
 gate: seed-check stems vocab fingerprints rt-header witnesses externs idioms cited attack tested traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
+	@sh tools/watch.sh --self-test
 	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
