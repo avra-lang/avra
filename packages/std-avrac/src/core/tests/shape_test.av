@@ -3,16 +3,6 @@
 // the subject.
 use @std.avrac.core.{Span, new_node_store, Expr, Stmt, Pat, Arm, BinOp, At, Shape, shape_at, matched, ExprId, StmtId, PatId, same_expr, same_stmt, same_pat}
 
-fn kid_is_expr(k: At, want: ExprId) -> bool {
-    match k { .Expr(id) -> same_expr(id, want), _ -> false }
-}
-fn kid_is_stmt(k: At, want: StmtId) -> bool {
-    match k { .Stmt(id) -> same_stmt(id, want), _ -> false }
-}
-fn kid_is_pat(k: At, want: PatId) -> bool {
-    match k { .Pat(id) -> same_pat(id, want), _ -> false }
-}
-
 spec "core/shape" {
     given "a hole" {
         then "binds the node at its seat: `H + 1` over `n + 1` answers [n]; over `n + 2` null; over `n - 1` null" {
@@ -20,7 +10,7 @@ spec "core/shape" {
             let h = s.alloc_expr(Expr.Ident("H"), null)
             let one = s.alloc_expr(Expr.IntLit(1), null)
             let pat_src = s.alloc_expr(Expr.Binary(BinOp.Add, h, one), null)
-            let pat = shape_at(s, At.Expr(pat_src), [At.Expr(h)])
+            let pat = shape_at(s, At.Expr(pat_src), [At.Expr(h)])!
 
             let n = s.alloc_expr(Expr.Ident("n"), null)
             let hit = s.alloc_expr(Expr.Binary(BinOp.Add, n, s.alloc_expr(Expr.IntLit(1), null)), null)
@@ -40,7 +30,7 @@ spec "core/shape" {
             let one = s.alloc_expr(Expr.IntLit(1), null)
             let inner_a = s.alloc_stmt(Stmt.Discard(one), null)
             let block_pat_src = s.alloc_expr(Expr.Block([inner_a], null), null)
-            let block_pat = shape_at(s, At.Expr(block_pat_src), [At.Stmt(inner_a)])
+            let block_pat = shape_at(s, At.Expr(block_pat_src), [At.Stmt(inner_a)])!
             let two = s.alloc_expr(Expr.IntLit(2), null)
             let inner_b = s.alloc_stmt(Stmt.Discard(two), null)
             let block_subj = s.alloc_expr(Expr.Block([inner_b], null), null)
@@ -48,7 +38,7 @@ spec "core/shape" {
 
             let p1 = s.alloc_pat(Pat.Wild, null)
             let variant_pat_src = s.alloc_pat(Pat.Variant("V", [p1]), null)
-            let pat_pat = shape_at(s, At.Pat(variant_pat_src), [At.Pat(p1)])
+            let pat_pat = shape_at(s, At.Pat(variant_pat_src), [At.Pat(p1)])!
             let p2 = s.alloc_pat(Pat.Wild, null)
             let variant_subj = s.alloc_pat(Pat.Variant("V", [p2]), null)
             let r_pat = matched(s, At.Pat(variant_subj), pat_pat)
@@ -62,7 +52,7 @@ spec "core/shape" {
             mut s = new_node_store()
             let h = s.alloc_expr(Expr.Ident("H"), null)
             let pat_src = s.alloc_expr(Expr.Binary(BinOp.Eq, h, h), null)
-            let pat = shape_at(s, At.Expr(pat_src), [At.Expr(h)])
+            let pat = shape_at(s, At.Expr(pat_src), [At.Expr(h)])!
 
             let a1 = s.alloc_expr(Expr.Ident("a"), null)
             let a2 = s.alloc_expr(Expr.Ident("a"), null)
@@ -76,6 +66,29 @@ spec "core/shape" {
             r_same != null && r_same!.length == 1 && r_diff == null
         }
     }
+    given "a listed hole" {
+        then "not reached under the root answers no Shape — `shape_at` refuses rather than `matched` trapping" {
+            mut s = new_node_store()
+            let d = s.alloc_expr(Expr.Ident("d"), null)
+            let x = s.alloc_expr(Expr.Ident("x"), null)
+            let pat_src = s.alloc_expr(Expr.Not(x), null)
+            shape_at(s, At.Expr(pat_src), [At.Expr(d), At.Expr(x)]) == null
+        }
+        then "bound in LIST order, not tree walk order: holes [x, d] over `d + x` answers [x's node, d's node]" {
+            mut s = new_node_store()
+            let dh = s.alloc_expr(Expr.Ident("D"), null)
+            let xh = s.alloc_expr(Expr.Ident("X"), null)
+            let pat_src = s.alloc_expr(Expr.Binary(BinOp.Add, dh, xh), null)
+            let pat = shape_at(s, At.Expr(pat_src), [At.Expr(xh), At.Expr(dh)])!
+
+            let d = s.alloc_expr(Expr.Ident("d"), null)
+            let x = s.alloc_expr(Expr.Ident("x"), null)
+            let subj = s.alloc_expr(Expr.Binary(BinOp.Add, d, x), null)
+            let r = matched(s, At.Expr(subj), pat)
+
+            r != null && r!.length == 2 && kid_is_expr(r![0], x) && kid_is_expr(r![1], d)
+        }
+    }
     given "layout" {
         then "two subjects differing only in spans match alike" {
             mut s = new_node_store()
@@ -85,7 +98,7 @@ spec "core/shape" {
             let x2 = s.alloc_expr(Expr.Ident("x"), at(90, 91))
             let one2 = s.alloc_expr(Expr.IntLit(1), at(92, 93))
             let subj_b = s.alloc_expr(Expr.Binary(BinOp.Add, x2, one2), at(80, 99))
-            let pat = shape_at(s, At.Expr(subj_a), [])
+            let pat = shape_at(s, At.Expr(subj_a), [])!
             matched(s, At.Expr(subj_b), pat) != null
         }
     }
@@ -97,7 +110,7 @@ spec "core/shape" {
             let c = s.alloc_expr(Expr.IntLit(3), null)
             let call2 = s.alloc_expr(Expr.Call("f", [], [a, b]), null)
             let call3 = s.alloc_expr(Expr.Call("f", [], [a, b, c]), null)
-            let call_pat = shape_at(s, At.Expr(call2), [])
+            let call_pat = shape_at(s, At.Expr(call2), [])!
             let call_arity_holds = matched(s, At.Expr(call3), call_pat) == null
 
             let rest = s.alloc_pat(Pat.Rest, null)
@@ -106,12 +119,12 @@ spec "core/shape" {
             let g = s.alloc_expr(Expr.BoolLit(true), null)
             let guarded = s.alloc_expr(Expr.Match(subj, [Arm { pats: [rest], guard: g, value: val }]), null)
             let unguarded = s.alloc_expr(Expr.Match(subj, [Arm { pats: [rest], value: val }]), null)
-            let guard_pat = shape_at(s, At.Expr(guarded), [])
+            let guard_pat = shape_at(s, At.Expr(guarded), [])!
             let guard_arity_holds = matched(s, At.Expr(unguarded), guard_pat) == null
 
             let empty_list = s.alloc_expr(Expr.ListLit([]), null)
             let one_list = s.alloc_expr(Expr.ListLit([a]), null)
-            let empty_pat = shape_at(s, At.Expr(empty_list), [])
+            let empty_pat = shape_at(s, At.Expr(empty_list), [])!
             let list_arity_holds = matched(s, At.Expr(one_list), empty_pat) == null
 
             call_arity_holds && guard_arity_holds && list_arity_holds
@@ -121,7 +134,7 @@ spec "core/shape" {
         then "a Stmt subject against an Expr shape is a miss" {
             mut s = new_node_store()
             let val = s.alloc_expr(Expr.IntLit(1), null)
-            let pat = shape_at(s, At.Expr(val), [])
+            let pat = shape_at(s, At.Expr(val), [])!
             let let_stmt = s.alloc_stmt(Stmt.Let("x", null, val), null)
             matched(s, At.Stmt(let_stmt), pat) == null
         }
@@ -166,4 +179,14 @@ spec "core/shape" {
             match_order && if_order && call_order && let_order
         }
     }
+}
+
+fn kid_is_expr(k: At, want: ExprId) -> bool {
+    match k { .Expr(id) -> same_expr(id, want), _ -> false }
+}
+fn kid_is_stmt(k: At, want: StmtId) -> bool {
+    match k { .Stmt(id) -> same_stmt(id, want), _ -> false }
+}
+fn kid_is_pat(k: At, want: PatId) -> bool {
+    match k { .Pat(id) -> same_pat(id, want), _ -> false }
 }

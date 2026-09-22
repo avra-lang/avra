@@ -8,7 +8,7 @@ spec "core/shape adversarial" {
         then "a bare hole at the root matches any subject" {
             mut s = new_node_store()
             let h = s.alloc_expr(Expr.Ident("H"), null)
-            let pat = shape_at(s, At.Expr(h), [At.Expr(h)])
+            let pat = shape_at(s, At.Expr(h), [At.Expr(h)])!
             let subj = s.alloc_expr(Expr.StrLit("anything"), null)
             let r = matched(s, At.Expr(subj), pat)
             r != null && r!.length == 1 && kid_is_expr(r![0], subj)
@@ -17,23 +17,19 @@ spec "core/shape adversarial" {
             mut s = new_node_store()
             let h = s.alloc_expr(Expr.Ident("H"), null)
             let one_hole_src = s.alloc_expr(Expr.ListLit([h]), null)
-            let one_hole_pat = shape_at(s, At.Expr(one_hole_src), [At.Expr(h)])
+            let one_hole_pat = shape_at(s, At.Expr(one_hole_src), [At.Expr(h)])!
             let empty_src = s.alloc_expr(Expr.ListLit([]), null)
-            let empty_pat = shape_at(s, At.Expr(empty_src), [])
+            let empty_pat = shape_at(s, At.Expr(empty_src), [])!
             let x = s.alloc_expr(Expr.IntLit(1), null)
             let one_elem_subj = s.alloc_expr(Expr.ListLit([x]), null)
             matched(s, At.Expr(empty_src), one_hole_pat) == null &&
                 matched(s, At.Expr(one_elem_subj), empty_pat) == null
         }
-        then "a hole under a hole: the outer absorbs its subtree, the inner placeholder never surfaces" {
+        then "a hole under a hole: the outer absorbs its subtree, so the inner placeholder is never reached — refused, not silently dropped" {
             mut s = new_node_store()
             let inner = s.alloc_expr(Expr.Ident("inner"), null)
             let outer = s.alloc_expr(Expr.Not(inner), null)
-            let pat = shape_at(s, At.Expr(outer), [At.Expr(outer), At.Expr(inner)])
-            let subj_inner = s.alloc_expr(Expr.IntLit(9), null)
-            let subj_outer = s.alloc_expr(Expr.Not(subj_inner), null)
-            let r = matched(s, At.Expr(subj_outer), pat)
-            r != null && r!.length == 1 && kid_is_expr(r![0], subj_outer)
+            shape_at(s, At.Expr(outer), [At.Expr(outer), At.Expr(inner)]) == null
         }
     }
     given "repeated binders" {
@@ -41,7 +37,7 @@ spec "core/shape adversarial" {
             mut s = new_node_store()
             let h = s.alloc_expr(Expr.Ident("H"), null)
             let triple_src = s.alloc_expr(Expr.ListLit([h, h, h]), null)
-            let pat = shape_at(s, At.Expr(triple_src), [At.Expr(h)])
+            let pat = shape_at(s, At.Expr(triple_src), [At.Expr(h)])!
 
             let a1 = s.alloc_expr(Expr.IntLit(1), null)
             let a2 = s.alloc_expr(Expr.IntLit(1), null)
@@ -70,11 +66,25 @@ spec "core/shape adversarial" {
                 s.shallow_expr(Expr.Match(subj_e, [Arm { pats: [w2], guard: false_guard, value: val2 }]))
 
             let true_arm_src = s.alloc_expr(Expr.Match(subj_e, [Arm { pats: [w1], guard: true_guard, value: val1 }]), null)
-            let pat = shape_at(s, At.Expr(true_arm_src), [])
+            let pat = shape_at(s, At.Expr(true_arm_src), [])!
             let false_arm = s.alloc_expr(Expr.Match(subj_e, [Arm { pats: [w2], guard: false_guard, value: val2 }]), null)
             let r = matched(s, At.Expr(false_arm), pat)
 
             arity_equal && r == null
+        }
+        then "a placeholder listed twice, then a fresh one after it, never produces a gap `matched` could trap on" {
+            mut s = new_node_store()
+            let h = s.alloc_expr(Expr.Ident("H"), null)
+            let y = s.alloc_expr(Expr.Ident("Y"), null)
+            let pat_src = s.alloc_expr(Expr.ListLit([h, y]), null)
+            let pat = shape_at(s, At.Expr(pat_src), [At.Expr(h), At.Expr(h), At.Expr(y)])!
+
+            let a = s.alloc_expr(Expr.IntLit(1), null)
+            let b = s.alloc_expr(Expr.IntLit(2), null)
+            let subj = s.alloc_expr(Expr.ListLit([a, b]), null)
+            let r = matched(s, At.Expr(subj), pat)
+
+            r != null && r!.length == 2 && kid_is_expr(r![0], a) && kid_is_expr(r![1], b)
         }
     }
     given "nesting" {
@@ -83,7 +93,7 @@ spec "core/shape adversarial" {
             let lit = s.alloc_expr(Expr.IntLit(1), null)
             let inner_stmt = s.alloc_stmt(Stmt.Discard(lit), null)
             let body_src = s.alloc_expr(Expr.Body("quote", ["", ""], [], BodyView.Verbatim([inner_stmt], [])), null)
-            let pat = shape_at(s, At.Expr(body_src), [At.Stmt(inner_stmt)])
+            let pat = shape_at(s, At.Expr(body_src), [At.Stmt(inner_stmt)])!
 
             let lit2 = s.alloc_expr(Expr.IntLit(2), null)
             let inner_stmt2 = s.alloc_stmt(Stmt.Discard(lit2), null)
@@ -101,7 +111,7 @@ spec "core/shape adversarial" {
             let leaf_src = s.alloc_pat(Pat.Wild, null)
             let mid_src = s.alloc_pat(Pat.Variant("Inner", [leaf_src]), null)
             let outer_src = s.alloc_pat(Pat.Variant("Outer", [mid_src]), null)
-            let pat = shape_at(s, At.Pat(outer_src), [])
+            let pat = shape_at(s, At.Pat(outer_src), [])!
 
             let leaf_subj = s.alloc_pat(Pat.Wild, null)
             let mid_subj = s.alloc_pat(Pat.Variant("Inner", [leaf_subj]), null)
@@ -118,7 +128,7 @@ spec "core/shape adversarial" {
         then "a shallow hole pattern matches a subject far deeper than the pattern itself" {
             mut s = new_node_store()
             let h = s.alloc_expr(Expr.Ident("H"), null)
-            let pat = shape_at(s, At.Expr(h), [At.Expr(h)])
+            let pat = shape_at(s, At.Expr(h), [At.Expr(h)])!
             let deep = deep_binary(s, 12)
             let r = matched(s, At.Expr(deep), pat)
             r != null && r!.length == 1 && kid_is_expr(r![0], deep)
