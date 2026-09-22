@@ -187,7 +187,11 @@ impl Workspace {
 
     /// A file's bytes as one digest — walked once a build, whoever asks.
     fn text_digest(path: string) -> string {
-        memoized<string>(self.keys.text_digests, path, () -> self.kept_digest(path, self.host.stamp(path)))
+        let known: string? = self.keys.text_digests.get().get(path)
+        if known != null { return known! }
+        let made = self.kept_digest(path, self.host.stamp(path))
+        self.keys.text_digests.put(path, made)
+        made
     }
 
     /// A text's digest, kept beside its file's stamp: one path under one stamp is
@@ -199,24 +203,24 @@ impl Workspace {
         let kept = self.stamps().get(path) ?? ""
         if kept.starts_with(mark) { return kept.substring(mark.length, kept.length) }
         let made = digest_of_file(self.host.read(path))
-        self.keys.stamped.set(path, mark + made)
+        self.keys.stamped.put(path, mark + made)
         self.keys.stamps_at.set(stamps_moved)
         made
     }
 
     /// The tree's stamps, by path: `stamp<TAB>digest`.
     fn stamps() -> Map<string, string> {
-        if self.keys.stamps_at.get() != stamps_unread { return self.keys.stamped }
+        if self.keys.stamps_at.get() != stamps_unread { return self.keys.stamped.get() }
         self.keys.stamps_at.set(stamps_read)
         for line in (store_at(build_cache_root(self)).get(Stored.Fp, stamps_key()) ?? "").split("\n") {
             let at = line.index_of("\t")
-            if at > 0 { self.keys.stamped.set(line.substring(0, at), line.substring(at + 1, line.length)) }
+            if at > 0 { self.keys.stamped.put(line.substring(0, at), line.substring(at + 1, line.length)) }
         }
-        self.keys.stamped
+        self.keys.stamped.get()
     }
 
     fn stamp_line(path: string) -> string? {
-        let kept? = self.keys.stamped.get(path) else { return null }
+        let kept? = self.keys.stamped.get().get(path) else { return null }
         "${path}\t${kept}"
     }
 
