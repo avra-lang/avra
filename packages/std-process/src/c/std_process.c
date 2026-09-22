@@ -447,13 +447,13 @@ int64_t avra_proc_cpu_ms(void) {
    write end has no such middle case — POLLERR or POLLHUP on it means
    the reader is gone and no later write will ever succeed, so it
    retires the moment either appears. */
-static int gone_out(int fd, short revents) {
+static int read_end_gone(int fd, short revents) {
     if (!(revents & POLLHUP)) return 0;
     int avail = 0;
     if (ioctl(fd, FIONREAD, &avail) != 0) return 1;
     return avail == 0;
 }
-static int gone_in(short revents) { return (revents & (POLLERR | POLLHUP)) != 0; }
+static int write_end_gone(short revents) { return (revents & (POLLERR | POLLHUP)) != 0; }
 
 int64_t avra_proc_ready(int64_t h, int64_t timeout_ms) {
     Proc* p = proc_at(h);
@@ -470,15 +470,15 @@ int64_t avra_proc_ready(int64_t h, int64_t timeout_ms) {
         if (r > 0) {
             if (slot_out >= 0 && fds[slot_out].revents) {
                 ev |= READY_OUT;
-                if (gone_out(p->out_fd, fds[slot_out].revents)) p->out_gone = 1;
+                if (read_end_gone(p->out_fd, fds[slot_out].revents)) p->out_gone = 1;
             }
             if (slot_err >= 0 && fds[slot_err].revents) {
                 ev |= READY_ERR;
-                if (gone_out(p->err_fd, fds[slot_err].revents)) p->err_gone = 1;
+                if (read_end_gone(p->err_fd, fds[slot_err].revents)) p->err_gone = 1;
             }
             if (slot_in >= 0 && (fds[slot_in].revents & (POLLOUT | POLLERR | POLLHUP))) {
                 ev |= READY_IN;
-                if (gone_in(fds[slot_in].revents)) p->in_gone = 1;
+                if (write_end_gone(fds[slot_in].revents)) p->in_gone = 1;
             }
         }
     } else if (timeout_ms > 0) {
