@@ -116,4 +116,27 @@ spec "features/annotations — a call over a declaration" {
             refusals("@nope\nfn f() -> int {\n    1\n}\nf()") == 1
         }
     }
+    given "an annotation over a fn's tail expression" {
+        then "an unknown name still refuses — the tail is a statement first" {
+            refused_with("fn g() -> int {\n    @nope\n    1\n}\ng()", "not defined")
+        }
+        then "the same annotation over a body's last LET refuses identically" {
+            refused_with("fn g() -> int {\n    @nope\n    let x = 1\n    x\n}\ng()", "not defined")
+        }
+        then "the tail still answers the body's declared type — no second, invented mismatch" {
+            refusals("fn g() -> int {\n    @nope\n    1\n}\ng()") == 1
+        }
+        then "an unrelated mistake IN the tail is still one mistake — the kept statement does not double it" {
+            refusals("fn g() -> int {\n    @nope\n    unknown_name\n}\ng()") == 2
+        }
+        then "an `if` branch's tail is the same seat — the THEN side" {
+            refused_with("fn g(c: bool) -> int {\n    if c {\n        @nope\n        1\n    } else {\n        2\n    }\n}\ng(true)", "not defined")
+        }
+        then "an `if` branch's tail is the same seat — the ELSE side" {
+            refused_with("fn g(c: bool) -> int {\n    if c {\n        1\n    } else {\n        @nope\n        2\n    }\n}\ng(false)", "not defined")
+        }
+        then "a top-level if-chain's tail is the same seat" {
+            refused_with("@nope\nif true {\n    1\n} else {\n    2\n}", "not defined")
+        }
+    }
 }

@@ -226,7 +226,9 @@ impl NodeStore {
 
     /// A branch's statements as its answer: the one expression when
     /// that is all the branch holds, else a block answering with its
-    /// tail.
+    /// tail. AN ANNOTATED TAIL STAYS A STATEMENT here too, `block_of`'s
+    /// law: kept AND still the value, safe because a seat's receiver
+    /// never fits a non-declaration, so lowering never sees it twice.
     fn branch_value(stmts: List<StmtId>) -> ExprId? {
         let held? = stmts.last() else { return null }
         let last = held
@@ -235,13 +237,17 @@ impl NodeStore {
         if self.diverges(last) { return self.alloc_expr(Expr.Block(stmts, null), self.stmt_span(last)) }
         let value: ExprId? = self.answer_of(last)
         if value == null { return null }
+        if !self.annotations_of(last).is_empty() { return self.alloc_expr(Expr.Block(stmts, value!), self.stmt_span(last)) }
         if stmts.length == 1 { return value }
         self.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value!), self.stmt_span(last))
     }
 
     /// The statements with a trailing if-chain that answers turned
     /// into the expression statement it is — the top level's tail
-    /// law, the same as a block's.
+    /// law, the same as a block's. THE MINT REPLACES THE STATEMENT,
+    /// so an annotated chain is left UNCONVERTED: the fresh copy
+    /// would carry no annotation, and the original would no longer
+    /// stand in the list for `type_annotations` to read.
     fn answered(stmts: List<StmtId>) -> List<StmtId> {
         let held? = stmts.last() else { return stmts }
         let last = held
@@ -249,7 +255,7 @@ impl NodeStore {
             .IfStmt(_, _, e) -> !e.is_empty(),
             _ -> false,
         }
-        if !chained { return stmts }
+        if !chained || !self.annotations_of(last).is_empty() { return stmts }
         let value? = self.answer_of(last) else { return stmts }
         stmts.slice(0, stmts.length - 1).concat([self.alloc_stmt(Stmt.ExprStmt(value), self.stmt_span(last))])
     }

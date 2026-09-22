@@ -165,9 +165,16 @@ impl Builder {
     /// that means — void, or the fn's promise when the statement
     /// leaves. A scope holding nothing but its value IS the value: no
     /// node is minted for it.
+    /// AN ANNOTATED TAIL STAYS A STATEMENT: kept in `stmts`, where
+    /// `type_annotations` reads it, and still answers as the value —
+    /// one node walked both ways. Safe because no seat's receiver
+    /// ever fits a non-declaration, so an annotated tail always
+    /// refuses and the doubled node never reaches lowering.
     fn block_of(stmts: List<StmtId>) -> ExprId {
         if stmts.is_empty() { return self.expr_node(Expr.Block(stmts, null)) }
-        let value? = self.store.answer_of(stmts.last()!) else { return self.expr_node(Expr.Block(stmts, null)) }
+        let tail = stmts.last()!
+        let value? = self.store.answer_of(tail) else { return self.expr_node(Expr.Block(stmts, null)) }
+        if !self.store.annotations_of(tail).is_empty() { return self.expr_node(Expr.Block(stmts, value)) }
         if stmts.length == 1 { return value }
         self.expr_node(Expr.Block(stmts.slice(0, stmts.length - 1), value))
     }
