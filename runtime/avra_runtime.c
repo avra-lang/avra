@@ -687,6 +687,56 @@ const char* avra_int_text(int64_t v) {
     return buf;
 }
 
+// TEXT -> INT, the walk `avra_int_text` inverts. `-`? digits, the
+// ceiling on both sides, nothing else — no space, no `+`, no
+// fraction. Reads the header's LENGTH, never `strlen`: a NUL inside
+// is an ordinary byte the digit test refuses on sight, not a place
+// the walk stops early and calls the prefix a number.
+//
+// THE MAGNITUDE ACCUMULATES NEGATIVE, whichever sign the text wears,
+// and is negated back only for a positive answer. A POSITIVE walk
+// bounded by `9223372036854775807` can never reach
+// `-9223372036854775808` without first wrapping past it — the same
+// wall the lexer's own token grammar hits, and why that literal has
+// no spelling in the language today. Walking negative instead needs
+// no wider type: the accumulator's floor is `INT64_MIN` for a `-`
+// text and one short of it for a bare one, so a positive answer's
+// final negation never overflows either.
+static int64_t avra_int_parse_walk(const char* s, int64_t n, int64_t* out) {
+    int64_t i = 0;
+    int64_t negative = 0;
+    if (n > 0 && s[0] == '-') { negative = 1; i = 1; }
+    if (i == n) return 0;
+    int64_t limit = negative ? (0 - 9223372036854775807 - 1) : (0 - 9223372036854775807);
+    int64_t limit_div10 = limit / 10;
+    int64_t limit_last = 0 - (limit - limit_div10 * 10);
+    int64_t v = 0;
+    for (; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c < '0' || c > '9') return 0;
+        int64_t d = c - '0';
+        if (v < limit_div10 || (v == limit_div10 && d > limit_last)) return 0;
+        v = v * 10 - d;
+    }
+    *out = negative ? v : (0 - v);
+    return 1;
+}
+
+// Whether `s` is exactly an int, by the walk above.
+int64_t avra_str_parses_int(const char* s) {
+    int64_t out = 0;
+    return avra_int_parse_walk(s, (int64_t)str_len(s), &out);
+}
+
+// The int `s` spells — meaningful only where `avra_str_parses_int`
+// answered true, so the two must read the SAME bytes: one walk, two
+// exported doors onto it.
+int64_t avra_str_parsed_int(const char* s) {
+    int64_t out = 0;
+    avra_int_parse_walk(s, (int64_t)str_len(s), &out);
+    return out;
+}
+
 // A bool's keyword — static, immortal.
 const char* avra_bool_text(int64_t b) {
     static const char* words[2] = { NULL, NULL };
