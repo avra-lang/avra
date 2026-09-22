@@ -239,14 +239,14 @@ impl Workspace {
             .Many(items) -> flatten([self.spliced_stmts(f, i) for i in items]),
             .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> {
                 let e = self.spliced_expr(f, node)
-                mut store = self.decls.store_of(f)
+                let store = self.decls.store_of(f)
                 [store.alloc_stmt(Stmt.ExprStmt(e), null)]
             },
         }
     }
 
     fn spliced_expr(f: FileId, node: Node) -> ExprId {
-        mut store = self.decls.store_of(f)
+        let store = self.decls.store_of(f)
         match node {
             .Template(file, at, _, fills) -> self.copied_expr(f, file, at, fills),
             .Name(t) -> store.alloc_expr(Expr.Ident(Scoped(t)), null),
@@ -293,7 +293,7 @@ impl Workspace {
     /// block of its statements around the last one's.
     fn copied_expr(f: FileId, file: string, at: int, fills: List<Node>) -> ExprId {
         let stmts = self.copied(f, file, at, fills, HoleKind.Expression).stmts
-        mut store = self.decls.store_of(f)
+        let store = self.decls.store_of(f)
         let last? = stmts.last() else { return store.alloc_expr(Expr.Error, null) }
         let value? = store.answer_of(last) else { return store.alloc_expr(Expr.Block(stmts, null), null) }
         if stmts.length == 1 { return value }

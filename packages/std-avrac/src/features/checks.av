@@ -3,7 +3,7 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, filled, DeclId, Binding, SeatMark, mut_mark, settled_mark, is_literal, literal_form, some_list}
+use core.{ExprId, StmtId, TypeId, Type, Expr, ResSides, Arrow, filled, DeclId, Binding, SeatMark, mut_mark, settled_mark, is_literal, literal_form, some_list}
 use diagnostics.{Diag, refusal, warning}
 use @std.errors.{Confidence, Edit, Suggestion}
 
@@ -602,7 +602,8 @@ impl TypeCx {
     /// refusal `not_mut_call` speaks here (ROADMAP: the inout receiver,
     /// S4).
     mut fn receiver_law(e: ExprId, subject: ExprId, name: string, writes: bool) {
-        if !writes || self.mut_place(subject) { return }
+        if !writes { return }
+        if self.mut_place(subject) { return self.alias_copy_law(e, self.place_binding_root(subject)!) }
         let root: ExprId? = self.place_binding_root(subject)
         if root == null { return self.emit(warning("type.receiver", self.loc_of(e), "`${name}` writes its receiver, and this is a value", "a value", "bind it `mut` first — the receiver becomes the caller's own place")) }
         let n = self.root_word(root!)
@@ -622,6 +623,39 @@ impl TypeCx {
     fn captured(root: ExprId) -> bool {
         let b: Binding? = self.names.binding(root)
         b != null && b! is .Capture
+    }
+
+    /// THE ALIAS-COPY LAW: a `mut` place already passes
+    /// the ordinary receiver and vocabulary laws (a writing method's
+    /// `receiver_law`, a list or map mutation's `is_mut` prelude) — but
+    /// a BARE `mut` LOCAL among those places may itself be a COPY, not
+    /// a window: initialized FROM a place (a name, a field path, an
+    /// index) rather than a fresh value, it holds what that place held
+    /// the moment it was bound, and a write through it — at any depth
+    /// under it — never reaches back. `self`, a parameter, and every
+    /// place rooted in either are excluded by construction:
+    /// `bare_mut_stmt` answers only a plain `mut q = …` local. Fires
+    /// once per declaring statement; `root` is the write's place root,
+    /// already known `mut` by every caller.
+    mut fn alias_copy_law(e: ExprId, root: ExprId) {
+        let s? = self.bare_mut_stmt(root) else { return }
+        if self.aliased_warned.contains(s.index) { return }
+        let v? = self.view.store.stmt_value(s) else { return }
+        let from? = self.place_binding_root(v) else { return }
+        self.aliased_warned.push(s.index)
+        let q = self.root_word(root)
+        let p = self.root_word(from)
+        self.emit(warning("type.alias_copy", self.loc_of(e), "`${q}` is a copy of `${p}` — a write through it will not reach `${p}`", "a copy", "write through `${p}` directly if the write should reach it, or `Cell<T>` it if the copy must still share"))
+    }
+
+    /// A bare `mut` local's own declaring statement — null for `self`,
+    /// a parameter, and every place that is not a plain `mut` name.
+    fn bare_mut_stmt(e: ExprId) -> StmtId? {
+        let b? = self.names.binding(e) else { return null }
+        match b {
+            .Def(s) -> if self.view.store.stmt(s) is .MutLet { s } else { null },
+            _ -> null,
+        }
     }
 
     /// THE SEAT LAW: every `mut` seat of a call is filled by a `mut`

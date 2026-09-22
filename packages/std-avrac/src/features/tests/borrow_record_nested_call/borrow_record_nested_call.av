@@ -1,0 +1,24 @@
+// MEASURED, not asserted as right: spec 11.5 wants a receiver and its
+// own argument, both writing methods on the SAME `mut` local in one
+// call (`s.pat_fingerprint(s.alloc_pat(...))`, core/fingerprint.av's
+// shape), to read the box the argument left behind, with the
+// receiver's own cell read AFTER the argument, never frozen before
+// it. The declared-method receiver still ALIASES today (F2095 warns
+// at the `mut q = p` line); this case flips to "1 1 0" the day that
+// receiver copies.
+type R = { n: int, xs: List<int> }
+impl R {
+    mut fn add(v: int) -> int {
+        self.xs.push(v)
+        self.xs.length - 1
+    }
+    fn total(offset: int) -> int { self.xs.length + offset }
+}
+fn shadow(p: R) -> int {
+    mut q = p
+    q.total(q.add(5))
+}
+let r = R { n: 0, xs: [] }
+let first = shadow(r)
+let second = shadow(r)
+"${first} ${second} ${r.xs.length}"
