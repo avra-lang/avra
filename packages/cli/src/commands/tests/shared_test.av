@@ -1,0 +1,109 @@
+//! `file_workspace`'s ROUTING: a file's workspace is never chosen by hope.
+//! A root with no `src/` is a directory of programs, and a directory of
+//! programs never recurses (`all_files`), so a file it cannot reach is a
+//! LONE file, judged on its own — never silently reported clean.
+use @std.io.{make_dirs, write_text}
+use commands.{file_workspace}
+
+/// A tree root of one bare manifest, no `src/` — the shape this repo's own
+/// root carries, and the shape `programs_workspace` was built for.
+fn rootless_pkg(name: string) -> string {
+    let root = "/tmp/avra-checknoop-test/${name}"
+    let _ = make_dirs(root)
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    root
+}
+
+/// A file several directories below the root — the shape a scratch probe
+/// always takes, and the shape a directory of programs never reaches.
+fn nested_file(root: string, text: string) -> string {
+    let dir = "${root}/build/scratch"
+    let _ = make_dirs(dir)
+    let path = "${dir}/probe.av"
+    let _ = write_text(path, text)
+    path
+}
+
+/// A file directly in the root — the one shape `programs_workspace` DOES
+/// reach, since a flat directory's own listing holds it.
+fn direct_file(root: string, text: string) -> string {
+    let path = "${root}/probe.av"
+    let _ = write_text(path, text)
+    path
+}
+
+/// A package with a real `src/` — the ORDINARY shape `file_workspace`'s
+/// sibling branch (`under_dir(path, src)`) routes, untouched by this fix.
+fn pkg_with_src(name: string) -> string {
+    let root = "/tmp/avra-checknoop-test/${name}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n\n[lib]\nname = \"${name}\"\npath = \"src/main.av\"\n")
+    root
+}
+
+/// A file under a package's own `src/` — the file `under_dir` admits.
+fn src_file(root: string, text: string) -> string {
+    let path = "${root}/src/main.av"
+    let _ = write_text(path, text)
+    path
+}
+
+/// A file beside `src/` — in the package root, but not under it, the one
+/// shape `under_dir` refuses even though a `src/` sibling stands right there.
+fn stray_file(root: string, text: string) -> string {
+    let path = "${root}/stray.av"
+    let _ = write_text(path, text)
+    path
+}
+
+/// Whether checking `path` — routed the same way the CLI routes it —
+/// refuses it, naming the given code.
+fn refused_at(path: string, code: string) -> bool {
+    mut ws = file_workspace(path)
+    match ws.checked(path) {
+        .Err(report) -> report.contains(code),
+        .Ok(_) -> false,
+    }
+}
+
+/// Whether checking `path` answers clean — examined, and nothing wrong.
+fn checks_clean(path: string) -> bool {
+    mut ws = file_workspace(path)
+    match ws.checked(path) {
+        .Ok(c) -> c.warnings.is_empty(),
+        .Err(_) -> false,
+    }
+}
+
+spec "commands/shared file_workspace" {
+    given "a file nested under a root avra.toml with no src/" {
+        then "a garbage file is refused, never reported clean" {
+            refused_at(nested_file(rootless_pkg("nested-garbage"), "garbage ((((\n"), "F0100")
+        }
+        then "a well-formed file is checked and answers clean" {
+            checks_clean(nested_file(rootless_pkg("nested-clean"), "let a = 1\na + 1\n"))
+        }
+    }
+    given "a file directly in a root avra.toml with no src/" {
+        then "a garbage file is refused — the flat case still works" {
+            refused_at(direct_file(rootless_pkg("direct-garbage"), "garbage ((((\n"), "F0100")
+        }
+        then "a well-formed file is checked and answers clean — the guard's own boundary, unchanged" {
+            checks_clean(direct_file(rootless_pkg("direct-clean"), "let a = 1\na + 1\n"))
+        }
+    }
+    given "a package WITH src/ — the sibling branch this fix does not touch" {
+        then "a file under src/ is checked as part of the package" {
+            checks_clean(src_file(pkg_with_src("has-src-clean"), "export fn f() -> int { 1 }\n"))
+        }
+        then "a garbage file under src/ is refused, never reported clean" {
+            refused_at(src_file(pkg_with_src("has-src-garbage"), "garbage ((((\n"), "F0100")
+        }
+        then "a file beside src/ — not under it — falls back to lone, and a garbage one is refused" {
+            refused_at(stray_file(pkg_with_src("beside-src-garbage"), "garbage ((((\n"), "F0100")
+        }
+        then "a file beside src/ — not under it — falls back to lone, and a well-formed one answers clean" {
+            checks_clean(stray_file(pkg_with_src("beside-src-clean"), "let a = 1\na + 1\n"))
+        }
+    }
+}

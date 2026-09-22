@@ -130,13 +130,19 @@ fn program_arg(args: CliResult) -> Program? {
 
 /// THE WORKSPACE A NAMED FILE BELONGS TO: its package when it sits
 /// under one's `src/` — an `avra.toml` ancestor marks the root; the
-/// DIRECTORY OF PROGRAMS when that root has no `src/`, since a program
-/// test sits beside its `avra.toml` and every file there is a program
-/// of its own; the lone file otherwise.
-fn file_workspace(path: string) -> Workspace {
+/// DIRECTORY OF PROGRAMS when that root has no `src/` and the file
+/// sits DIRECTLY in it, since a program test sits beside its
+/// `avra.toml` and every file there is a program of its own; the
+/// lone file otherwise. A directory of programs never recurses
+/// (`all_files`), so a file it would not find is not one of its
+/// programs — checked on its own, never silently skipped.
+export fn file_workspace(path: string) -> Workspace {
     let root? = package_root(dir_of(path)) else { return lone(path) }
     let src = joined_path(root, "src")
-    if !exists(src) { return programs_workspace(disk_host(), root, avra(), () -> now_ns()) }
+    if !exists(src) {
+        if dir_of(path) != root { return lone(path) }
+        return programs_workspace(disk_host(), root, avra(), () -> now_ns())
+    }
     if !under_dir(path, src) { return lone(path) }
     timed_workspace(disk_host(), root, avra(), () -> now_ns())
 }
