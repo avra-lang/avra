@@ -11,6 +11,7 @@ use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.host.{Host, no_target}
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
+extern fn avra_mem_live() -> int
 
 /// A build's result: the words that linked it, the binary, the warnings to
 /// speak, whether the kept binary was reused, and where a fresh one's time went.
@@ -126,6 +127,8 @@ export type Keyed = { named: string, beside: List<string> }
 /// before, else derived, compiled and linked now. A refusal is never kept.
 // LICENSED I39: THE ENTRY POINT — the one standard signature.
 export fn build_program(mut ws: Workspace, entry: string, tools: Toolchain) -> Result<BuildOutcome, string> {
+    let maybe_n = drive_n()
+    if maybe_n > 0 { return drive(ws, entry, tools, maybe_n) }
     let binary = binary_name(entry)
     let kept = ws.kept_binary(ws.program_key(entry, []), binary)
     if kept != null { return .Ok(kept!) }
@@ -395,4 +398,74 @@ fn handed(full: Lowered, owed: List<Made>, opt: int) -> string? {
 
 fn object_gone(path: string) -> string {
     "avra: a held object disappeared: ${path}"
+}
+
+// ── TEMPORARY: the DRIVE harness (measurement only) ──
+
+/// `AVRA_DRIVE=<n>` runs n derivations of one tree in ONE process, each from a
+/// fresh workspace, and prints the measurement table to stderr. Removed after the
+/// report; no CLI surface, no API.
+fn drive_n() -> int {
+    let raw = avra_host_env("AVRA_DRIVE")
+    if raw.is_empty() { return 0 }
+    drive_int(raw)
+}
+
+fn drive_int(s: string) -> int {
+    mut n = 0
+    for c in 0..s.length {
+        let d = s.char_code(c) - 48
+        if d < 0 || d > 9 { return n }
+        n = n * 10 + d
+    }
+    n
+}
+
+/// A file's read reason as the table's tag — the seven arms, spelled.
+fn drive_tag(r: Reads) -> string {
+    match r {
+        .Entry -> "entry",
+        .Home -> "home owed",
+        .Moved -> "text moved",
+        .Unkept -> "nothing kept",
+        .Consts -> "const gone",
+        .Unholdable -> "unholdable",
+        .RunBy(_) -> "run by another file",
+    }
+}
+
+fn drive_count(rs: List<ReadFile>, tag: string) -> int { [r for r in rs if drive_tag(r.why) == tag].length }
+
+/// THE DRIVER: n full builds (derive + link), each from `anew()`; the counts, the
+/// reasons, the phases, and the memory witness (live bytes after each, against the
+/// first).
+fn drive(mut ws: Workspace, entry: string, tools: Toolchain, n: int) -> Result<BuildOutcome, string> {
+    let slots = avra_host_env("AVRA_BUILD_SLOTS")
+    eprintln("DRIVE n=${n} entry=${entry} slots='${slots}'")
+    mut cur: Workspace = ws.anew()
+    mut i = 0
+    mut base = 0
+    while i < n {
+        let d = cur.derived(entry, Want.Binary)?
+        let main? = d.program.entry_file() else { fail d.program.rendered([no_target(cur.root)]) }
+        let binary = binary_name(entry)
+        let rs = d.read
+        let held = d.held
+        let files = d.files
+        let turns = d.turns
+        let phases = joined([ph.shown() for ph in d.spans.concat(d.program.phases)], " ")
+        let skip = avra_host_env("AVRA_DRIVE_SKIP_LINK") != ""
+        let out = if skip { BuildOutcome { binary: "", warnings: "", reused: false } } else { d.program.ws.linked(d, ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)) }, Keyed { named: entry, beside: [] }, binary, tools)? }
+        // A WORKSPACE'S HOOKS CAPTURE IT — a driver is the accumulation loop that
+        // cycle was written for; dispose each one after its derivation.
+        cur.disarmed()
+        let live = avra_mem_live()
+        if i == 0 { base = live }
+        eprintln("DRIVE ${i} held=${held}/${files} turns=${turns} reused=${out.reused} live=${live} base=${base} delta=${live - base} read=${rs.length}")
+        eprintln("DRIVE ${i} why entry=${drive_count(rs, "entry")} home=${drive_count(rs, "home owed")} moved=${drive_count(rs, "text moved")} unkept=${drive_count(rs, "nothing kept")} consts=${drive_count(rs, "const gone")} unholdable=${drive_count(rs, "unholdable")} runby=${drive_count(rs, "run by another file")}")
+        eprintln("DRIVE ${i} time ${phases}")
+        cur = cur.anew()
+        i = i + 1
+    }
+    fail "DRIVE complete: n=${n} base=${base}"
 }
