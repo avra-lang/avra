@@ -31,9 +31,12 @@ moves to UNRATCHETED, saying so. What stays HERE is what the language
 cannot yet say on its own: whole-file/cross-declaration reasoning
 (Bucket C — I11, I12, I13, I20, I21, I23, I24, I26, I38), and rules
 still needing a language gap (Bucket B — avra-8sb5.25.16's own
-catalog). The same baseline ratchets both kinds of finding; a native
-one carries no `// LICENSED` window, since the rule reads no comment
-of its own — accepted debt for it lives in the baseline only.
+catalog). The same baseline ratchets both kinds of finding. A native
+finding still HONOURS a `// LICENSED I<n>` comment written under the
+PREDECESSOR code its regex was retired under (NATIVE_PREDECESSOR) —
+a human's prior review is not re-litigated the day enforcement
+changes hands — but reads no license of its own: what is not already
+licensed under the retired code becomes baseline debt.
 """
 import bisect, collections, os, re, subprocess, sys, glob
 
@@ -1363,6 +1366,25 @@ def licensed(lines, i, code):
 # adversarial test's report() assertion QUOTES this exact shape).
 WARN_RE = re.compile(r"^warning\[([^\]]+)\]:[^\n]*\n\s*╭─\[([^:]+):(\d+):\d+\]", re.M)
 
+# A native kind's PREDECESSOR I-number — the ratchet a site already
+# passed, under the regex this rule replaced. A `// LICENSED I<n>`
+# comment written for that regex is real, reviewed acceptance; a
+# native rule reading none of its own must not re-litigate it.
+NATIVE_PREDECESSOR = {
+    "rule.lists.last_index": "I7",
+    "type.index_compared": "I9",
+    "style.protocol_defaulted": "I18",
+    "style.refusal_assembled": "I28",
+    "style.uncounted_refusal": "I30",
+    "style.raw_region": "I33",
+    "style.raw_scope": "I35",
+    "style.quadratic_growth": "I36",
+    "style.interned_by_hand": "I40",
+    "rule.compiler.interned_int": "I40",
+    "rule.compiler.interned_str": "I40",
+    "style.hand_sized_column": "I43",
+}
+
 def native_findings():
     """Every finding `avra check` reports on its own — a Bucket-A idiom
     ported as a `rule` (avra-8sb5.25.16) is enforced HERE, never by a
@@ -1371,15 +1393,20 @@ def native_findings():
     kind is always dotted (`style.x`, `type.x`, `rule.module.name`),
     which is the whole filter.
 
+    A site the OLD regex already ratcheted carries `// LICENSED
+    I<n>: reason` under that regex's own number (NATIVE_PREDECESSOR)
+    — read here too, so a human's already-reviewed acceptance is not
+    re-litigated the moment its enforcement changes hands. A NEW
+    native finding (no predecessor comment) has no license window of
+    its own: a rule reads no comment when it matches, so what is not
+    already licensed under the code it replaced becomes baseline
+    debt, reviewed once at adoption (avra-8sb5.25.16) and every time
+    after — never re-licensed under a code the rule was never filed
+    as.
+
     Fingerprinted the same way a matcher's finding is: by the site's
     own TEXT, never a line number, so an edit above a site does not
-    churn the debt list. THERE IS NO LICENSE WINDOW HERE — a rule
-    fires wherever it structurally matches, reading no comment of its
-    own; the baseline is the only record of accepted debt for a
-    native site (avra-8sb5.25.16's own finding: a `// LICENSED I<n>`
-    comment written for the old regex tool is invisible to `avra
-    check`, so a site once licensed there is ACCEPTED DEBT here, on
-    the same baseline, not re-licensed)."""
+    churn the debt list."""
     binary = os.path.join(ROOT, "build", "avra")
     if not os.path.exists(binary):
         return {}, 0
@@ -1404,8 +1431,11 @@ def native_findings():
 
     found = {}
     for kind, rel, line in sorted(sites):
-        code = "native:" + kind
         src_lines = open(os.path.join(ROOT, rel)).read().split("\n")
+        predecessor = NATIVE_PREDECESSOR.get(kind)
+        if predecessor and licensed(src_lines, line - 1, predecessor):
+            continue
+        code = "native:" + kind
         text = src_lines[line - 1].strip() if 0 < line <= len(src_lines) else ""
         n = 0
         key = f"{code}\t{rel}\t{text}#{n}"
@@ -1464,17 +1494,17 @@ def load():
 def save(fps):
     with open(BASELINE, "w") as f:
         f.write("# KNOWN idiom debt, one site per line. This file only ever\n")
-        f.write("# SHRINKS: no tool path adds to it. A regex finding is fixed\n")
-        f.write("# in the code or annotated `// LICENSED I<n>: reason` at the\n")
-        f.write("# site. A `native:` finding carries no such comment (the rule\n")
-        f.write("# reads none of its own) — it is fixed, or stays here, reviewed\n")
-        f.write("# at adoption (avra-8sb5.25.16) and every time after. Most of\n")
-        f.write("# the `native:` debt is STRUCTURAL, not owed: a rule's own\n")
-        f.write("# quote pattern spells the shape it detects, so it fires on\n")
-        f.write("# itself (compiler/idioms.av's own sites) or on the type's\n")
-        f.write("# canonical identity comparison (core/nodes.av's `same_*`,\n")
-        f.write("# already `// LICENSED I9` for the retired regex) — an\n")
-        f.write("# irreducible base case, not a copy waiting to be centralized.\n")
+        f.write("# SHRINKS: no tool path adds to it. A finding is fixed in the\n")
+        f.write("# code, or annotated `// LICENSED I<n>: reason` at the site —\n")
+        f.write("# a `native:` finding honours a license under its PREDECESSOR\n")
+        f.write("# code too (NATIVE_PREDECESSOR, tools/idioms.py), so a site a\n")
+        f.write("# human already reviewed under the retired regex is not\n")
+        f.write("# re-litigated the day the rule that replaced it starts\n")
+        f.write("# enforcing on its own. What sits below has no license under\n")
+        f.write("# either code: a `native:` site is either a RULE MATCHING\n")
+        f.write("# ITS OWN QUOTE PATTERN (compiler/idioms.av's declarations —\n")
+        f.write("# a structural artifact, since a pattern necessarily spells\n")
+        f.write("# the shape it detects) or genuinely unreviewed debt.\n")
         f.write("# `make idioms-accept` prunes what is gone. Burn it down.\n")
         for fp in sorted(fps):
             f.write(fp + "\n")
