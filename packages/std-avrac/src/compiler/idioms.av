@@ -38,9 +38,8 @@ fn quadratic_growth(s: Code, piece: Code) -> Fix {
 /// A payload the value-protocol dispatch GUARANTEES, papered over
 /// with a `??` default — absence here is a DEFECT the caller should
 /// speak (`cx.lower_defect(e, ...)`), never a plausible fallback.
-/// Two of the protocol's projections (`bool_of`, `text_of`); the
-/// others (`int_of`, `pairs_of`, `elems_of`, `bits_of`) are the same
-/// shape, not yet ported (avra-8sb5.25.16).
+/// All six of core/protocol.av's projections (`bool_of`, `text_of`,
+/// `int_of`, `bits_of`, `elems_of`, `pairs_of`) are the same shape.
 // LICENSED I18: a DIFFERENT protocol projection than this rule's own — still the family's shape
 @keeps("(raw).int_of() ?? 0")
 export rule bool_of_defaulted {
@@ -55,18 +54,61 @@ export rule text_of_defaulted {
     quote { (${e}).text_of() ?? ${d} } -> protocol_default_papered(e, d, "text_of")
 }
 
+// LICENSED I18: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).bool_of() ?? false")
+export rule int_of_defaulted {
+    // LICENSED I18: the pattern's own text names the shape it detects
+    quote { (${e}).int_of() ?? ${d} } -> protocol_default_papered(e, d, "int_of")
+}
+
+// LICENSED I18: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).bool_of() ?? false")
+export rule bits_of_defaulted {
+    // LICENSED I18: the pattern's own text names the shape it detects
+    quote { (${e}).bits_of() ?? ${d} } -> protocol_default_papered(e, d, "bits_of")
+}
+
+// LICENSED I18: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).bool_of() ?? false")
+export rule elems_of_defaulted {
+    // LICENSED I18: the pattern's own text names the shape it detects
+    quote { (${e}).elems_of() ?? ${d} } -> protocol_default_papered(e, d, "elems_of")
+}
+
+// LICENSED I18: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).bool_of() ?? false")
+export rule pairs_of_defaulted {
+    // LICENSED I18: the pattern's own text names the shape it detects
+    quote { (${e}).pairs_of() ?? ${d} } -> protocol_default_papered(e, d, "pairs_of")
+}
+
 fn protocol_default_papered(e: Code, d: Code, verb: string) -> Fix {
     Fix.Say(warning("style.protocol_defaulted", e.loc(), "`${e.text()}.${verb}()` is guaranteed by its dispatch — defaulting it with `?? ${d.text()}` papers over a DEFECT this call should speak instead (`cx.lower_defect(e, …)`)", "this projection", null))
 }
 
 /// A refusal asserted as `>= 1` — a cascade of five passes it just
 /// as easily as one; pin the count (`refused_with`, `refused_n`, or
-/// `== n`). The `refusals(...)` receiver only; `a.diagnostics.length
-/// >= 1` and `p.voices.list.length >= 1` are the same shape, not yet
-/// ported (avra-8sb5.25.16).
+/// `== n`). Every receiver shape the tree has worn it in:
+/// `refusals(...)`, `.diagnostics`/`.diagnostics.length`, and
+/// `.voices.list.length`.
 @keeps("refusals(src) == 1")
 export rule uncounted_refusal {
     quote { refusals(${src}) >= 1 } -> uncounted(src)
+}
+
+@keeps("a.diagnostics.length == 1")
+export rule diagnostics_uncounted {
+    quote { ${a}.diagnostics >= 1 } -> uncounted(a)
+}
+
+@keeps("a.diagnostics == 1")
+export rule diagnostics_length_uncounted {
+    quote { ${a}.diagnostics.length >= 1 } -> uncounted(a)
+}
+
+@keeps("p.voices.list.length == 1")
+export rule voices_uncounted {
+    quote { ${p}.voices.list.length >= 1 } -> uncounted(p)
 }
 
 fn uncounted(src: Code) -> Fix {
@@ -76,8 +118,9 @@ fn uncounted(src: Code) -> Fix {
 /// A region instruction emitted raw in a feature — the emission
 /// vocabulary (features/emit.av) speaks it: `open_region`, `arm_end`,
 /// `close_region`/`close_region_as`. The vocabulary's own file is
-/// exempt. `IfStart`/`LoopStart` here; `ArmEnd`, `RegionEnd`,
-/// `LoopCond`, `LoopEnd` are the same shape, not yet ported.
+/// exempt. Every `Ins` variant `open_region`'s family covers:
+/// `IfStart`, `ArmEnd`, `RegionEnd`, `LoopStart`, `LoopCond`,
+/// `LoopEnd`.
 // LICENSED I33: a DIFFERENT raw Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.ArmEnd(v))")
 export rule if_start_raw {
@@ -90,6 +133,30 @@ export rule loop_start_raw {
     quote { ${cx}.emit(Ins.LoopStart) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopStart")
 }
 
+// LICENSED I33: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.RegionEnd(dst, last))")
+export rule arm_end_raw {
+    quote { ${cx}.emit(Ins.ArmEnd(${v})) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "ArmEnd")
+}
+
+// LICENSED I33: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.LoopCond(more))")
+export rule region_end_raw {
+    quote { ${cx}.emit(Ins.RegionEnd(${dst}, ${last})) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "RegionEnd")
+}
+
+// LICENSED I33: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.LoopStart)")
+export rule loop_cond_raw {
+    quote { ${cx}.emit(Ins.LoopCond(${more})) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopCond")
+}
+
+// LICENSED I33: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.IfStart(c))")
+export rule loop_end_raw {
+    quote { ${cx}.emit(Ins.LoopEnd) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopEnd")
+}
+
 fn raw_region_ins(cx: Code, name: string) -> Fix {
     Fix.Say(warning("style.raw_region", cx.loc(), "a region/loop instruction (${name}) emitted raw — speak features/emit.av's verb (open_region / arm_end / close_region / loop_start / loop_cond / loop_end) instead", "this call", null))
 }
@@ -97,23 +164,31 @@ fn raw_region_ins(cx: Code, name: string) -> Fix {
 /// A raw scope bracket through a lowering context — the frame verbs
 /// (`scope_enter`/`scope_exit`, `seats_enter`/`seats_exit`,
 /// `arm_stmts`) are the spelling; a raw bracket is invisible to the
-/// `defer` frames. `ScopeEnter` here; `ScopeExit` is the same shape,
-/// not yet ported.
+/// `defer` frames. Their own implementation
+/// (compiler/lower/walk.av) is exempt.
 // LICENSED I35: a DIFFERENT raw scope Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.ScopeExit(g))")
 export rule scope_enter_raw {
-    quote { ${cx}.emit(Ins.ScopeEnter(${tier})) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_scope_ins(cx)
+    quote { ${cx}.emit(Ins.ScopeEnter(${tier})) } if !e.of.view.source.file.ends_with("lower/walk.av") -> raw_scope_ins(cx)
+}
+
+// LICENSED I35: a DIFFERENT raw scope Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.ScopeEnter(t))")
+export rule scope_exit_raw {
+    quote { ${cx}.emit(Ins.ScopeExit(${gives})) } if !e.of.view.source.file.ends_with("lower/walk.av") -> raw_scope_ins(cx)
 }
 
 fn raw_scope_ins(cx: Code) -> Fix {
-    Fix.Say(warning("style.raw_scope", cx.loc(), "a raw ScopeEnter through a lowering context — the frame verbs (scope_enter/scope_exit, seats_enter/seats_exit, arm_stmts) are the spelling; a raw bracket is invisible to the defer frames", "this call", null))
+    Fix.Say(warning("style.raw_scope", cx.loc(), "a raw scope bracket through a lowering context — the frame verbs (scope_enter/scope_exit, seats_enter/seats_exit, arm_stmts) are the spelling; a raw bracket is invisible to the defer frames", "this call", null))
 }
 
 /// A structural type interned by hand where a type literal spells
 /// it — a scalar shape's own constructor call, held by hand instead
-/// of read off the surface syntax. The scalar shapes (int/string)
-/// here; the aggregate ones (Opt/List/Map/Res) are the same idea,
-/// not yet ported.
+/// of read off the surface syntax. The scalar shapes rewrite
+/// directly; the aggregate ones (`Opt`/`List`/`Map`/`Res`) carry an
+/// inner shape a rewrite cannot re-spell without re-deriving it
+/// (`intern(Type.Str)` vs `Type.Str` vs an already-bound `TypeId`
+/// all reach the same inner type by different routes), so they Say.
 // LICENSED I40: the example's own text names the shape it detects
 @fixes("types.intern(Type.Int)", "types.type(int)")
 export rule interned_int {
@@ -126,6 +201,42 @@ export rule interned_int {
 export rule interned_str {
     // LICENSED I40: the pattern's own text names the shape it detects
     quote { ${r}.intern(Type.Str) } -> quote { ${r}.type(string) }
+}
+
+/// core/types.av's own `interned`/`substituted` is the fold that
+/// GIVES a type literal its meaning, recursing through `intern(...)`
+/// by construction — the family's one exempt file, mirrored on each
+/// aggregate rule below.
+// LICENSED I40: a DIFFERENT constructor than this rule's own — still the family's shape
+@keeps("types.type(string?)")
+export rule interned_opt {
+    // LICENSED I40: the pattern's own text names the shape it detects
+    quote { ${r}.intern(Type.Opt(${inner})) } if !e.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "Opt", "T?")
+}
+
+// LICENSED I40: a DIFFERENT constructor than this rule's own — still the family's shape
+@keeps("types.type(List<string>)")
+export rule interned_list {
+    // LICENSED I40: the pattern's own text names the shape it detects
+    quote { ${r}.intern(Type.List(${inner})) } if !e.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "List", "List<T>")
+}
+
+// LICENSED I40: a DIFFERENT constructor than this rule's own — still the family's shape
+@keeps("types.type(Map<string, int>)")
+export rule interned_map {
+    // LICENSED I40: the pattern's own text names the shape it detects
+    quote { ${r}.intern(Type.Map(${key}, ${value})) } if !e.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "Map", "Map<K, V>")
+}
+
+// LICENSED I40: a DIFFERENT constructor than this rule's own — still the family's shape
+@keeps("types.type(Result<int, string>)")
+export rule interned_res {
+    // LICENSED I40: the pattern's own text names the shape it detects
+    quote { ${r}.intern(Type.Res(${ok}, ${err})) } if !e.of.view.source.file.ends_with("core/types.av") -> spelled_by_hand(r, "Res", "Result<T, E>")
+}
+
+fn spelled_by_hand(r: Code, shape: string, literal: string) -> Fix {
+    Fix.Say(warning("style.interned_by_hand", r.loc(), "`${r.text()}.intern(Type.${shape}(…))` — a structural shape a type literal spells: `${r.text()}.type(${literal})`", "this call", null))
 }
 
 /// A fact column sized by hand, or an id read through an offset —
