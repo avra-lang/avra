@@ -411,6 +411,12 @@ idioms:
 idioms-accept:
 	@sh tools/idioms.sh --accept
 
+# The formatter's real receipt: `fmt(x) == x`, byte-exact, over every
+# `.av` file in the tree — never idempotence. Reports; does not fail
+# the gate (docs/2026_09_21_FORMATTER_DESIGN.md).
+fmt-lossless:
+	@sh tools/fmt_lossless.sh
+
 # The survivor baseline: a mutant `avra attack` accepts is a decision,
 # never a silent pass — a NEW one is refused (tools/attack.baseline).
 attack:
