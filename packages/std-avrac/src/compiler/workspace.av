@@ -95,6 +95,23 @@ fn new_hold() -> Hold {
     }
 }
 
+/// A MODULE'S RECORD, AS THIS BUILD HAS READ IT — ONE read per record per
+/// build, since a record is asked for by every consumer (the held walk, the
+/// load, the mint, the fill, the object key): whether it has been loaded
+/// into declarations yet, its raw text, split into lines, tab-split into
+/// fields, and each file's place within it (record.av's `Placed`).
+type Records = {
+    loaded_records: Map<string, bool>,
+    record_texts: Map<string, string>,
+    record_lines: Map<string, List<string>>,
+    record_fields: Map<string, List<List<string>>>,
+    record_places: Map<string, Map<string, Placed>>,
+}
+
+fn new_records() -> Records {
+    Records { loaded_records: {}, record_texts: {}, record_lines: {}, record_fields: {}, record_places: {} }
+}
+
 /// The families' value tables, sparse by their keys and grown as
 /// values are placed; `sigs` and `methods` live in the declaration
 /// table itself.
@@ -140,20 +157,8 @@ export type Workspace = {
     settle_specs: Map<string, int>,
     settle_asks: List<SettleAsk>,
     settlements: Memo<Settlement>,
-    loaded_records: Map<string, bool>,
-    /// THE INTERFACE RECORDS THIS BUILD HAS READ, by record key, with the answer for
-    /// the keys that have none — ONE read per record per build, because a record is
-    /// asked for by every consumer (the held walk, the load, the mint, the fill, the
-    /// object key) and a text read is a syscall plus a UTF-8 validation of the whole
-    /// record. The pair is (whether it was asked, what it answered): a missing row is
-    /// not the same as an unread one.
-    record_texts: Map<string, string>,
-    /// ONE RECORD'S LINES, cached: every phase that needs them gets a pre-split list.
-    record_lines: Map<string, List<string>>,
-    /// ONE RECORD'S TAB-SPLIT FIELDS, cached: mint and fill get pre-parsed fields.
-    record_fields: Map<string, List<List<string>>>,
-    /// Where each file stands in its module's record.
-    record_places: Map<string, Map<string, Placed>>,
+    /// A MODULE'S RECORD, AS THIS BUILD HAS READ IT.
+    records: Records,
     /// PER-BUILD KEY MEMOIZATION — digests, stamps, and where this compiler's
     /// store stands.
     keys: Keys,
@@ -381,7 +386,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_lines: {}, record_fields: {}, record_places: {}, keys: new_keys(), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, hold: new_hold(), defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), records: new_records(), keys: new_keys(), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, hold: new_hold(), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }

@@ -29,11 +29,11 @@ fn record_key(ws: Workspace, m: ModulePath) -> string {
 // LICENSED I39: a Workspace method here trips the compiler's declaration-order defect (F2010).
 fn record_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
     let key = record_key(ws, m)
-    let known = ws.record_texts.get(key)
+    let known = ws.records.record_texts.get(key)
     if known != null { return known! }
     let text = store.get(Stored.Sig, key) ?? ""
-    ws.record_texts.set(key, text)
-    if text != "" { ws.record_lines.set(key, text.split("\n")) }
+    ws.records.record_texts.set(key, text)
+    if text != "" { ws.records.record_lines.set(key, text.split("\n")) }
     text
 }
 
@@ -46,10 +46,10 @@ type Placed = { file: List<string>, lo: int, hi: int }
 // LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_places(mut ws: Workspace, store: Store, m: ModulePath) -> Map<string, Placed> {
     let key = record_key(ws, m)
-    let known: Map<string, Placed>? = ws.record_places.get(key)
+    let known: Map<string, Placed>? = ws.records.record_places.get(key)
     if known != null { return known! }
     let made = places_of(record_fields(ws, store, m))
-    ws.record_places.set(key, made)
+    ws.records.record_places.set(key, made)
     made
 }
 
@@ -75,11 +75,11 @@ fn file_rows(fields: List<List<string>>, at: Placed?) -> List<List<string>> {
 // LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_lines(mut ws: Workspace, store: Store, m: ModulePath) -> List<string> {
     let key = record_key(ws, m)
-    let cached = ws.record_lines.get(key)
+    let cached = ws.records.record_lines.get(key)
     if cached != null { return cached! }
     let text = record_cached(ws, store, m)
     if text == "" { return [] }
-    ws.record_lines.get(key) ?? []
+    ws.records.record_lines.get(key) ?? []
 }
 
 /// THE RECORD AS TAB-SPLIT FIELDS — each line split once per module, so mint and fill
@@ -87,10 +87,10 @@ fn record_lines(mut ws: Workspace, store: Store, m: ModulePath) -> List<string> 
 // LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_fields(mut ws: Workspace, store: Store, m: ModulePath) -> List<List<string>> {
     let key = record_key(ws, m)
-    let cached = ws.record_fields.get(key)
+    let cached = ws.records.record_fields.get(key)
     if cached != null { return cached! }
     let fields = [read_fields(line) for line in record_lines(ws, store, m)]
-    ws.record_fields.set(key, fields)
+    ws.records.record_fields.set(key, fields)
     fields
 }
 
@@ -188,11 +188,11 @@ impl Row {
 fn record_known(mut ws: Workspace, m: ModulePath, text: string) {
     let key = record_key(ws, m)
     let lines = text.split("\n")
-    ws.record_texts.set(key, text)
-    ws.record_lines.set(key, lines)
+    ws.records.record_texts.set(key, text)
+    ws.records.record_lines.set(key, lines)
     let fields = [read_fields(line) for line in lines]
-    ws.record_fields.set(key, fields)
-    ws.record_places.set(key, places_of(fields))
+    ws.records.record_fields.set(key, fields)
+    ws.records.record_places.set(key, places_of(fields))
 }
 
 /// What OTHER modules' keys read of a record: its interface digest and its imports.
@@ -405,8 +405,8 @@ export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModuleP
 // LICENSED I39: THE LOADER — a workspace, a store and a module in, the count minted out.
 export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: string?, want: Want) {
     let key = record_key(ws, m)
-    if ws.loaded_records.get(key) != null { return }
-    ws.loaded_records.set(key, true)
+    if ws.records.loaded_records.get(key) != null { return }
+    ws.records.loaded_records.set(key, true)
     let text = record_cached(ws, store, m)
     if text == "" { return }
     let fields = record_fields(ws, store, m)
