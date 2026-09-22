@@ -3,14 +3,16 @@
 
 /// A null test that picks the value or a default is `??`.
 ///
-/// NOT YET IN `avra test`'s gate (`compiler/rule_suite.av` names
-/// why): the quote-pattern matcher cannot yet structurally match a
-/// `Stmt.IfStmt` whose `then` and `else` are both non-empty — a
-/// pre-existing defect, confirmed on the tree from before this
-/// rule existed, both engines. The declaration is correct; its own
-/// proof is blocked on that fix.
-@fixes("if x == null { 0 } else { x! }", "x ?? 0")
-@keeps("if next() == null { 0 } else { next()! }")
+/// Written over the EXPRESSION `if` (`Expr.If`), never the
+/// statement one (avra-8sb5.25.18: `Stmt.IfStmt`'s own quote-pattern
+/// walk is broken when `then`/`else` are both non-empty — confirmed
+/// pre-existing, both engines, filed for its own fix). The
+/// parenthesised body is what forces the quote's parse to the
+/// expression form — parens mint no node, so the pattern still
+/// roots at the bare `Expr.If` — and it is where this idiom's real
+/// targets live anyway: an arm's value, a `let`'s.
+@fixes("let v = if x == null { 0 } else { x! }", "x ?? 0")
+@keeps("let v = if next() == null { 0 } else { next()! }")
 export rule if_null_ternary {
-    quote { if ${x} == null { ${d} } else { ${x}! } } if x.pure() -> quote { ${x} ?? ${d} }
+    quote { (if ${x} == null { ${d} } else { ${x}! }) } if x.pure() -> quote { ${x} ?? ${d} }
 }

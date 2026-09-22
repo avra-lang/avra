@@ -9,6 +9,7 @@
 //! own `@fixes`/`@keeps`, which 4b's generic discovery removes the
 //! need to name at all.
 use compiler.{checks_fixes, checks_keeps}
+use features.nullable.{if_null_ternary}
 use features.lists.{last_index}
 use features.structs.{index_compared}
 
@@ -20,20 +21,10 @@ fn checked(label: string, ok: bool) -> ExampleCheck { ExampleCheck { label: labe
 /// Every ported rule's examples, checked. `avra test` reports the
 /// count and fails the build on any miss — an example is part of
 /// what a rule PROVES, the same way a program's `.expected` is.
-///
-/// `nullable.if_null_ternary`'s OWN examples are excluded here —
-/// NOT because the rule is wrong, but because `avra check`'s own
-/// quote-PATTERN matcher cannot yet structurally match a
-/// `Stmt.IfStmt` whose `then_stmts` AND `else_stmts` are both
-/// non-empty (confirmed on the clean pre-slice-4a tree too, both
-/// engines: `Code.kids()`/the matcher's `kids_at` answers `[itself]`
-/// instead of `[cond, then, else]` — `while`, an elseless `if`, and
-/// an `if`/`else` with EITHER branch empty all match correctly; only
-/// both populated fails). The rule is declared, `@fixes`/`@keeps`
-/// and all, exactly to the design — this list is what cannot yet
-/// PROVE it, and belongs back here the day that matcher is fixed.
 export fn rule_examples_checked() -> List<ExampleCheck> {
     [
+        checked("nullable.if_null_ternary @fixes", checks_fixes(if_null_ternary, "let v = if x == null { 0 } else { x! }", "x ?? 0")),
+        checked("nullable.if_null_ternary @keeps", checks_keeps(if_null_ternary, "let v = if next() == null { 0 } else { next()! }")),
         // LICENSED I7: the example text names the idiom it proves —
         // the site the scanner is built to find, held as a string
         checked("lists.last_index @fixes", checks_fixes(last_index, "xs[xs.length - 1]", "xs.last()!")),
