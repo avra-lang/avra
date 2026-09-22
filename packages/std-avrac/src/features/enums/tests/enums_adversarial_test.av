@@ -228,6 +228,26 @@ spec "features/enums (adversarial)" {
             refused_at_run("${ab()}E.a(1)", "no text projection yet")
         }
     }
+    given "`null` as a literal pattern" {
+        then "alone, with no catch-all, still needs one" {
+            refused_with("enum K {\n    A\n    B\n}\nfn f(k: K?) -> int {\n    match k {\n        null -> 0\n    }\n}\nf(null)", "a `match` over `K?` needs a catch-all arm")
+        }
+        then "over a NON-nullable subject still refuses — null never inhabits an unwrapped enum" {
+            refused_with("enum K {\n    A\n    B\n}\nfn f(k: K) -> int {\n    match k {\n        null -> 0\n        .A -> 1\n        .B -> 2\n    }\n}\nf(K.A)", "a `null` never matches `K`")
+        }
+        then "beside a variant arm still refuses — mixing variants with a nullable subject stays F2013" {
+            refused_with("enum K {\n    A\n    B\n}\nfn f(k: K?) -> int {\n    match k {\n        .A -> 1\n        .B -> 2\n        null -> 0\n    }\n}\nf(null)", "`match` chooses over an enum, found `K?`")
+        }
+        then "beside only a wildcard, over a nullable subject, matches — null inhabits every nullable" {
+            shown("enum K {\n    A\n    B\n}\nfn f(k: K?) -> int {\n    match k {\n        null -> 100\n        _ -> 200\n    }\n}\nf(null) + f(K.A) + f(K.B)") == "500"
+        }
+        then "in an or-pattern with a wildcard, over a nullable subject, matches" {
+            shown("enum K {\n    A\n    B\n}\nfn f(k: K?) -> int {\n    match k {\n        null or _ -> 7\n    }\n}\nf(null) + f(K.A)") == "14"
+        }
+        then "one payload down: `null` tests an optional carried field, not the match's own subject" {
+            shown("enum Node {\n    Leaf(string?)\n}\nfn describe(n: Node) -> string {\n    match n {\n        .Leaf(null) -> \"empty\"\n        .Leaf(v) -> v ?? \"?\"\n    }\n}\ndescribe(Node.Leaf(null)) + \"/\" + describe(Node.Leaf(\"x\"))") == "empty/x"
+        }
+    }
 }
 
 spec "features/enums — an or-run's shape" {

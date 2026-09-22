@@ -223,6 +223,47 @@ spec "features/fns (adversarial)" {
             shown("extern fn avra_selfhost_get_arg_cstr(i: int) -> string\nextern fn avra_str_len(s: string) -> int\navra_str_len(avra_selfhost_get_arg_cstr(0)) > 0") == "true"
         }
     }
+    given "an extern read as a value — under attack" {
+        then "a struct field seat reads it bare" {
+            refused_with("extern fn avra_host_is_dir(path: string) -> int\ntype Box = { f: fn(string) -> int }\nlet b = Box { f: avra_host_is_dir }\n1", "an extern fn is not a value")
+        }
+        then "a comprehension element reads it bare" {
+            refused_with("extern fn avra_host_is_dir(path: string) -> int\nlet xs = [avra_host_is_dir for n in [1, 2]]\n1", "an extern fn is not a value")
+        }
+        then "a `mut`-seat extern is refused the same way — the marks change nothing" {
+            refused_with("extern fn avra_selfhost_argc(mut out: i64) -> int\nlet f = avra_selfhost_argc\n1", "an extern fn is not a value")
+        }
+        then "the misuse does not cascade onto an ordinary call of the same symbol" {
+            let a = analyze_source("extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\navra_host_is_dir(\"packages\") > 0")
+            a.diagnostics.length == 1
+        }
+        then "a value read behind a lambda barrier is still caught" {
+            refused_with("extern fn avra_host_is_dir(path: string) -> int\nlet g = () -> {\n    let f = avra_host_is_dir\n    1\n}\ng()", "an extern fn is not a value")
+        }
+        then "a runtime-row extern is a value no less than a plain one" {
+            refused_with("extern fn avra_now_ns() -> int\nlet f = avra_now_ns\n1", "an extern fn is not a value")
+        }
+        then "a `mut let` holding it is still the declaration's own refusal" {
+            refused_with("extern fn avra_host_is_dir(path: string) -> int\nmut f = avra_host_is_dir\n1", "an extern fn is not a value")
+        }
+        then "an assignment reads it bare too, not only a `let`" {
+            refused_with("extern fn avra_host_is_dir(path: string) -> int\nfn other(x: string) -> int { 1 }\nmut f = other\nf = avra_host_is_dir\n1", "an extern fn is not a value")
+        }
+        then "a `once fn` body reading it bare is caught the same way" {
+            refused_with("extern fn avra_host_is_dir(path: string) -> int\nonce fn seed() -> string {\n    let f = avra_host_is_dir\n    \"x\"\n}\nseed()", "an extern fn is not a value")
+        }
+        then "a fn's own tail — the extern wearing a fn-typed return" {
+            refused_with("extern fn avra_host_is_dir(path: string) -> int\nfn make() -> fn(string) -> int { avra_host_is_dir }\n1", "an extern fn is not a value")
+        }
+        then "TWO independent misuses answer TWO diagnostics, each at its own read — not a cascade" {
+            let a = analyze_source("extern fn avra_host_is_dir(path: string) -> int\nlet f = if true { avra_host_is_dir } else { avra_host_is_dir }\n1")
+            a.diagnostics.length == 2 &&
+                a.report().contains(":2:19") && a.report().contains(":2:45")
+        }
+        then "a LOCAL shadowing the extern's own name is read as the local, not refused" {
+            shown("extern fn avra_host_is_dir(path: string) -> int\nfn shadow() -> int {\n    let avra_host_is_dir = 5\n    avra_host_is_dir\n}\nshadow()") == "5"
+        }
+    }
     given "ownership across the extern seam — a pointer the callee owns" {
         // A foreign `const char*` answered as `string` is text with
         // no header of ours in front of it. It is BORROWED, so a

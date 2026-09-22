@@ -36,7 +36,7 @@ spec "features/enums adversarial — mechanical" {
         then ". x ( x )" { parses(". x ( x )") == parses(". x ( x , x )") }
         then ". x ( x , x , x )" { parses(". x ( x , x , x )") == parses(". x ( x , x )") }
     }
-    given "malformed surface — must be diagnosed" {
+    given "malformed surface (delete, duplicate, swap) — must be diagnosed" {
         then "x < x , x , > { \n } \n" { tolerates("x < x , x , > { \n } \n") }
         then "enum < x , x , > { \n } \n" { tolerates("enum < x , x , > { \n } \n") }
         then "enum x x , x , > { \n } \n" { tolerates("enum x x , x , > { \n } \n") }
@@ -180,5 +180,57 @@ spec "features/enums adversarial — mechanical" {
         then "false false" { tolerates("false false") }
         then "1 1" { tolerates("1 1") }
         then "x x" { tolerates("x x") }
+    }
+    given "keyword-replace — must be diagnosed or a valid program" {
+        then "match x < x , x , > { \n } \n" { tolerates("match x < x , x , > { \n } \n") }
+        then "enum enum < x , x , > { \n } \n" { tolerates("enum enum < x , x , > { \n } \n") }
+        then "enum x enum x , x , > { \n } \n" { tolerates("enum x enum x , x , > { \n } \n") }
+        then "enum x < enum , x , > { \n } \n" { tolerates("enum x < enum , x , > { \n } \n") }
+        then "enum x < x enum x , > { \n } \n" { tolerates("enum x < x enum x , > { \n } \n") }
+        then "enum x < x , enum , > { \n } \n" { tolerates("enum x < x , enum , > { \n } \n") }
+        then "enum x < x , x enum > { \n } \n" { tolerates("enum x < x , x enum > { \n } \n") }
+        then "enum x < x , x , enum { \n } \n" { tolerates("enum x < x , x , enum { \n } \n") }
+        then "enum x < x , x , > enum \n } \n" { tolerates("enum x < x , x , > enum \n } \n") }
+        then "enum x < x , x , > { enum } \n" { tolerates("enum x < x , x , > { enum } \n") }
+        then "enum x < x , x , > { \n enum \n" { tolerates("enum x < x , x , > { \n enum \n") }
+        then "enum x < x , x , > { \n } enum" { tolerates("enum x < x , x , > { \n } enum") }
+        then "enum x ( x , x , )" { tolerates("enum x ( x , x , )") }
+        then ". enum ( x , x , )" { tolerates(". enum ( x , x , )") }
+        then ". x enum x , x , )" { tolerates(". x enum x , x , )") }
+        then ". x ( enum , x , )" { tolerates(". x ( enum , x , )") }
+        then ". x ( x enum x , )" { tolerates(". x ( x enum x , )") }
+        then ". x ( x , enum , )" { tolerates(". x ( x , enum , )") }
+        then ". x ( x , x enum )" { tolerates(". x ( x , x enum )") }
+        then ". x ( x , x , enum" { tolerates(". x ( x , x , enum") }
+        then "enum x { \n }" { tolerates("enum x { \n }") }
+        then "match enum { \n }" { tolerates("match enum { \n }") }
+        then "match x enum \n }" { tolerates("match x enum \n }") }
+        then "match x { enum }" { tolerates("match x { enum }") }
+        then "match x { \n enum" { tolerates("match x { \n enum") }
+        then "enum x ( x , x ) or . x ( x , x ) -> x" { tolerates("enum x ( x , x ) or . x ( x , x ) -> x") }
+        then ". enum ( x , x ) or . x ( x , x ) -> x" { tolerates(". enum ( x , x ) or . x ( x , x ) -> x") }
+        then ". x enum x , x ) or . x ( x , x ) -> x" { tolerates(". x enum x , x ) or . x ( x , x ) -> x") }
+        then ". x ( enum , x ) or . x ( x , x ) -> x" { tolerates(". x ( enum , x ) or . x ( x , x ) -> x") }
+        then ". x ( x enum x ) or . x ( x , x ) -> x" { tolerates(". x ( x enum x ) or . x ( x , x ) -> x") }
+        then ". x ( x , enum ) or . x ( x , x ) -> x" { tolerates(". x ( x , enum ) or . x ( x , x ) -> x") }
+        then ". x ( x , x enum or . x ( x , x ) -> x" { tolerates(". x ( x , x enum or . x ( x , x ) -> x") }
+        then ". x ( x , x ) enum . x ( x , x ) -> x" { tolerates(". x ( x , x ) enum . x ( x , x ) -> x") }
+        then ". x ( x , x ) or enum x ( x , x ) -> x" { tolerates(". x ( x , x ) or enum x ( x , x ) -> x") }
+        then ". x ( x , x ) or . enum ( x , x ) -> x" { tolerates(". x ( x , x ) or . enum ( x , x ) -> x") }
+        then ". x ( x , x ) or . x enum x , x ) -> x" { tolerates(". x ( x , x ) or . x enum x , x ) -> x") }
+        then ". x ( x , x ) or . x ( enum , x ) -> x" { tolerates(". x ( x , x ) or . x ( enum , x ) -> x") }
+        then ". x ( x , x ) or . x ( x enum x ) -> x" { tolerates(". x ( x , x ) or . x ( x enum x ) -> x") }
+        then ". x ( x , x ) or . x ( x , enum ) -> x" { tolerates(". x ( x , x ) or . x ( x , enum ) -> x") }
+        then ". x ( x , x ) or . x ( x , x enum -> x" { tolerates(". x ( x , x ) or . x ( x , x enum -> x") }
+        then ". x ( x , x ) or . x ( x , x ) enum x" { tolerates(". x ( x , x ) or . x ( x , x ) enum x") }
+        then ". x ( x , x ) or . x ( x , x ) -> enum" { tolerates(". x ( x , x ) or . x ( x , x ) -> enum") }
+        then "enum" { tolerates("enum") }
+        then "enum x ( x , x )" { tolerates("enum x ( x , x )") }
+        then ". enum ( x , x )" { tolerates(". enum ( x , x )") }
+        then ". x enum x , x )" { tolerates(". x enum x , x )") }
+        then ". x ( enum , x )" { tolerates(". x ( enum , x )") }
+        then ". x ( x enum x )" { tolerates(". x ( x enum x )") }
+        then ". x ( x , enum )" { tolerates(". x ( x , enum )") }
+        then ". x ( x , x enum" { tolerates(". x ( x , x enum") }
     }
 }

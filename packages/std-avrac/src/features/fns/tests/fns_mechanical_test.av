@@ -40,7 +40,7 @@ spec "features/fns adversarial — mechanical" {
         then "x ( x , )" { parses("x ( x , )") == parses("x ( x , x , )") }
         then "x ( x , x , x , )" { parses("x ( x , x , x , )") == parses("x ( x , x , )") }
     }
-    given "malformed surface — must be diagnosed" {
+    given "malformed surface (delete, duplicate, swap) — must be diagnosed" {
         then "fn x ( const mut x : x , const mut x : x , ) -> x \n" { tolerates("fn x ( const mut x : x , const mut x : x , ) -> x \n") }
         then "extern x ( const mut x : x , const mut x : x , ) -> x \n" { tolerates("extern x ( const mut x : x , const mut x : x , ) -> x \n") }
         then "extern fn ( const mut x : x , const mut x : x , ) -> x \n" { tolerates("extern fn ( const mut x : x , const mut x : x , ) -> x \n") }
@@ -311,5 +311,100 @@ spec "features/fns adversarial — mechanical" {
         then "x ( x x , , )" { tolerates("x ( x x , , )") }
         then "x ( x , , x )" { tolerates("x ( x , , x )") }
         then "x ( x , x ) ," { tolerates("x ( x , x ) ,") }
+    }
+    given "keyword-replace — must be diagnosed or a valid program" {
+        then "fn fn x ( const mut x : x , const mut x : x , ) -> x \n" { tolerates("fn fn x ( const mut x : x , const mut x : x , ) -> x \n") }
+        then "extern extern x ( const mut x : x , const mut x : x , ) -> x \n" { tolerates("extern extern x ( const mut x : x , const mut x : x , ) -> x \n") }
+        then "extern fn extern ( const mut x : x , const mut x : x , ) -> x \n" { tolerates("extern fn extern ( const mut x : x , const mut x : x , ) -> x \n") }
+        then "extern fn x extern const mut x : x , const mut x : x , ) -> x \n" { tolerates("extern fn x extern const mut x : x , const mut x : x , ) -> x \n") }
+        then "extern fn x ( extern mut x : x , const mut x : x , ) -> x \n" { tolerates("extern fn x ( extern mut x : x , const mut x : x , ) -> x \n") }
+        then "extern fn x ( const extern x : x , const mut x : x , ) -> x \n" { tolerates("extern fn x ( const extern x : x , const mut x : x , ) -> x \n") }
+        then "extern fn x ( const mut extern : x , const mut x : x , ) -> x \n" { tolerates("extern fn x ( const mut extern : x , const mut x : x , ) -> x \n") }
+        then "extern fn x ( const mut x extern x , const mut x : x , ) -> x \n" { tolerates("extern fn x ( const mut x extern x , const mut x : x , ) -> x \n") }
+        then "extern fn x ( const mut x : extern , const mut x : x , ) -> x \n" { tolerates("extern fn x ( const mut x : extern , const mut x : x , ) -> x \n") }
+        then "extern fn x ( const mut x : x extern const mut x : x , ) -> x \n" { tolerates("extern fn x ( const mut x : x extern const mut x : x , ) -> x \n") }
+        then "extern fn x ( const mut x : x , extern mut x : x , ) -> x \n" { tolerates("extern fn x ( const mut x : x , extern mut x : x , ) -> x \n") }
+        then "extern fn x ( const mut x : x , const extern x : x , ) -> x \n" { tolerates("extern fn x ( const mut x : x , const extern x : x , ) -> x \n") }
+        then "extern fn x ( const mut x : x , const mut extern : x , ) -> x \n" { tolerates("extern fn x ( const mut x : x , const mut extern : x , ) -> x \n") }
+        then "extern fn x ( const mut x : x , const mut x extern x , ) -> x \n" { tolerates("extern fn x ( const mut x : x , const mut x extern x , ) -> x \n") }
+        then "extern fn x ( const mut x : x , const mut x : extern , ) -> x \n" { tolerates("extern fn x ( const mut x : x , const mut x : extern , ) -> x \n") }
+        then "extern fn x ( const mut x : x , const mut x : x extern ) -> x \n" { tolerates("extern fn x ( const mut x : x , const mut x : x extern ) -> x \n") }
+        then "extern fn x ( const mut x : x , const mut x : x , extern -> x \n" { tolerates("extern fn x ( const mut x : x , const mut x : x , extern -> x \n") }
+        then "extern fn x ( const mut x : x , const mut x : x , ) extern x \n" { tolerates("extern fn x ( const mut x : x , const mut x : x , ) extern x \n") }
+        then "extern fn x ( const mut x : x , const mut x : x , ) -> extern \n" { tolerates("extern fn x ( const mut x : x , const mut x : x , ) -> extern \n") }
+        then "extern fn x ( const mut x : x , const mut x : x , ) -> x extern" { tolerates("extern fn x ( const mut x : x , const mut x : x , ) -> x extern") }
+        then "extern x < x : x , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("extern x < x : x , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn extern < x : x , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn extern < x : x , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x extern x : x , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x extern x : x , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < extern : x , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < extern : x , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x extern x , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x extern x , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : extern , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : extern , x : x , > ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x extern x : x , > ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x extern x : x , > ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , extern : x , > ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , extern : x , > ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x extern x , > ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x extern x , > ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : extern , > ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x : extern , > ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x extern > ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x : x extern > ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , extern ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x : x , extern ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > extern const mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x : x , > extern const mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( extern mut x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( extern mut x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const extern x : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( const extern x : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut extern : x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( const mut extern : x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x extern x , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( const mut x extern x , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : extern , const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( const mut x : extern , const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x extern const mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( const mut x : x extern const mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x , extern mut x : x , ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( const mut x : x , extern mut x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x , const extern x : x , ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( const mut x : x , const extern x : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x , const mut extern : x , ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( const mut x : x , const mut extern : x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x , const mut x extern x , ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( const mut x : x , const mut x extern x , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x , const mut x : extern , ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( const mut x : x , const mut x : extern , ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x , const mut x : x extern ) -> x x \n" { tolerates("fn x < x : x , x : x , > ( const mut x : x , const mut x : x extern ) -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x , const mut x : x , extern -> x x \n" { tolerates("fn x < x : x , x : x , > ( const mut x : x , const mut x : x , extern -> x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x , const mut x : x , ) extern x x \n" { tolerates("fn x < x : x , x : x , > ( const mut x : x , const mut x : x , ) extern x x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x , const mut x : x , ) -> extern x \n" { tolerates("fn x < x : x , x : x , > ( const mut x : x , const mut x : x , ) -> extern x \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x , const mut x : x , ) -> x extern \n" { tolerates("fn x < x : x , x : x , > ( const mut x : x , const mut x : x , ) -> x extern \n") }
+        then "fn x < x : x , x : x , > ( const mut x : x , const mut x : x , ) -> x x extern" { tolerates("fn x < x : x , x : x , > ( const mut x : x , const mut x : x , ) -> x x extern") }
+        then "once extern x ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("once extern x ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "once fn extern ( const mut x : x , const mut x : x , ) -> x x \n" { tolerates("once fn extern ( const mut x : x , const mut x : x , ) -> x x \n") }
+        then "once fn x extern const mut x : x , const mut x : x , ) -> x x \n" { tolerates("once fn x extern const mut x : x , const mut x : x , ) -> x x \n") }
+        then "once fn x ( extern mut x : x , const mut x : x , ) -> x x \n" { tolerates("once fn x ( extern mut x : x , const mut x : x , ) -> x x \n") }
+        then "once fn x ( const extern x : x , const mut x : x , ) -> x x \n" { tolerates("once fn x ( const extern x : x , const mut x : x , ) -> x x \n") }
+        then "once fn x ( const mut extern : x , const mut x : x , ) -> x x \n" { tolerates("once fn x ( const mut extern : x , const mut x : x , ) -> x x \n") }
+        then "once fn x ( const mut x extern x , const mut x : x , ) -> x x \n" { tolerates("once fn x ( const mut x extern x , const mut x : x , ) -> x x \n") }
+        then "once fn x ( const mut x : extern , const mut x : x , ) -> x x \n" { tolerates("once fn x ( const mut x : extern , const mut x : x , ) -> x x \n") }
+        then "once fn x ( const mut x : x extern const mut x : x , ) -> x x \n" { tolerates("once fn x ( const mut x : x extern const mut x : x , ) -> x x \n") }
+        then "once fn x ( const mut x : x , extern mut x : x , ) -> x x \n" { tolerates("once fn x ( const mut x : x , extern mut x : x , ) -> x x \n") }
+        then "once fn x ( const mut x : x , const extern x : x , ) -> x x \n" { tolerates("once fn x ( const mut x : x , const extern x : x , ) -> x x \n") }
+        then "once fn x ( const mut x : x , const mut extern : x , ) -> x x \n" { tolerates("once fn x ( const mut x : x , const mut extern : x , ) -> x x \n") }
+        then "once fn x ( const mut x : x , const mut x extern x , ) -> x x \n" { tolerates("once fn x ( const mut x : x , const mut x extern x , ) -> x x \n") }
+        then "once fn x ( const mut x : x , const mut x : extern , ) -> x x \n" { tolerates("once fn x ( const mut x : x , const mut x : extern , ) -> x x \n") }
+        then "once fn x ( const mut x : x , const mut x : x extern ) -> x x \n" { tolerates("once fn x ( const mut x : x , const mut x : x extern ) -> x x \n") }
+        then "once fn x ( const mut x : x , const mut x : x , extern -> x x \n" { tolerates("once fn x ( const mut x : x , const mut x : x , extern -> x x \n") }
+        then "once fn x ( const mut x : x , const mut x : x , ) extern x x \n" { tolerates("once fn x ( const mut x : x , const mut x : x , ) extern x x \n") }
+        then "once fn x ( const mut x : x , const mut x : x , ) -> extern x \n" { tolerates("once fn x ( const mut x : x , const mut x : x , ) -> extern x \n") }
+        then "once fn x ( const mut x : x , const mut x : x , ) -> x extern \n" { tolerates("once fn x ( const mut x : x , const mut x : x , ) -> x extern \n") }
+        then "once fn x ( const mut x : x , const mut x : x , ) -> x x extern" { tolerates("once fn x ( const mut x : x , const mut x : x , ) -> x x extern") }
+        then "extern x \n" { tolerates("extern x \n") }
+        then "return extern \n" { tolerates("return extern \n") }
+        then "return x extern" { tolerates("return x extern") }
+        then "extern < x , x , > ( x , x , )" { tolerates("extern < x , x , > ( x , x , )") }
+        then "x extern x , x , > ( x , x , )" { tolerates("x extern x , x , > ( x , x , )") }
+        then "x < extern , x , > ( x , x , )" { tolerates("x < extern , x , > ( x , x , )") }
+        then "x < x extern x , > ( x , x , )" { tolerates("x < x extern x , > ( x , x , )") }
+        then "x < x , extern , > ( x , x , )" { tolerates("x < x , extern , > ( x , x , )") }
+        then "x < x , x extern > ( x , x , )" { tolerates("x < x , x extern > ( x , x , )") }
+        then "x < x , x , extern ( x , x , )" { tolerates("x < x , x , extern ( x , x , )") }
+        then "x < x , x , > extern x , x , )" { tolerates("x < x , x , > extern x , x , )") }
+        then "x < x , x , > ( extern , x , )" { tolerates("x < x , x , > ( extern , x , )") }
+        then "x < x , x , > ( x extern x , )" { tolerates("x < x , x , > ( x extern x , )") }
+        then "x < x , x , > ( x , extern , )" { tolerates("x < x , x , > ( x , extern , )") }
+        then "x < x , x , > ( x , x extern )" { tolerates("x < x , x , > ( x , x extern )") }
+        then "x < x , x , > ( x , x , extern" { tolerates("x < x , x , > ( x , x , extern") }
+        then "extern ( x , x , )" { tolerates("extern ( x , x , )") }
+        then "x extern x , x , )" { tolerates("x extern x , x , )") }
+        then "x ( extern , x , )" { tolerates("x ( extern , x , )") }
+        then "x ( x extern x , )" { tolerates("x ( x extern x , )") }
+        then "x ( x , extern , )" { tolerates("x ( x , extern , )") }
+        then "x ( x , x extern )" { tolerates("x ( x , x extern )") }
+        then "x ( x , x , extern" { tolerates("x ( x , x , extern") }
     }
 }

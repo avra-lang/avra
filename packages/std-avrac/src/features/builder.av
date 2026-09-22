@@ -1,6 +1,7 @@
 //! The builder-authoring surface: one `Builder` carries a build call's
 //! world, and its methods are the whole vocabulary a feature needs.
-use core.{NodeStore, Payload, found_at, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, Mark, flatten, some_list, SeatMark, plain_mark, Scoped}
+use core.{NodeStore, found_at, Expr, Stmt, ExprId, StmtId, Span, TypeRef, named_ref, want, Param, Pat, PatId, Arm, Case, Mark, flatten, some_list, SeatMark, plain_mark, Scoped}
+use @std.meta.{Field}
 use grammar.{Captured, Token, Ready}
 
 /// One build call's world: the store, the captured arguments in
@@ -8,7 +9,7 @@ use grammar.{Captured, Token, Ready}
 /// matched, and the source being parsed — a template keeps its
 /// runs of source as its printing projection. Builders read
 /// arguments and make nodes through this.
-export type Builder = { store: NodeStore, args: List<Captured<LangNode>>, span: Span?, text: string = "", blocks: List<BlockGrammar> = [], payloads: List<Payload> = [] }
+export type Builder = { store: NodeStore, args: List<Captured<LangNode>>, span: Span?, text: string = "", blocks: List<BlockGrammar> = [], payloads: List<Field> = [] }
 
 /// A sublanguage the file imports: its block word, its grammar
 /// readied, and the file whose fns its actions name.
@@ -163,13 +164,17 @@ impl Builder {
     /// A block's value is its final expression; one that ends in any
     /// other statement (or is empty) has none, and TYPING says what
     /// that means — void, or the fn's promise when the statement
-    /// leaves. A scope holding nothing but its value IS the value: no
-    /// node is minted for it.
+    /// leaves. AN EXPLICIT SCOPE IS A NODE, even when its only content
+    /// is its value: the braces are the author's form, and returning
+    /// the value drops them (the printer cannot keep what the parse
+    /// never minted) — `tail_scoped` (core/store.av) is where a found
+    /// value gets wrapped back in, shared with `branch_value` so the
+    /// two cannot drift.
     fn block_of(stmts: List<StmtId>) -> ExprId {
         if stmts.is_empty() { return self.expr_node(Expr.Block(stmts, null)) }
-        let value? = self.store.answer_of(stmts.last()!) else { return self.expr_node(Expr.Block(stmts, null)) }
-        if stmts.length == 1 { return value }
-        self.expr_node(Expr.Block(stmts.slice(0, stmts.length - 1), value))
+        let tail = stmts.last()!
+        let value? = self.store.answer_of(tail) else { return self.expr_node(Expr.Block(stmts, null)) }
+        self.store.tail_scoped(stmts, tail, value, self.span)
     }
 
     /// Where this build's branch ENDED — the bound a positional
@@ -436,7 +441,7 @@ fn mark_within(t: Token, after: int, before: int) -> bool {
 }
 
 /// A build asked for a payload its variant does not declare.
-fn unknown_payload(ps: List<Payload>, n: string) -> string {
+fn unknown_payload(ps: List<Field>, n: string) -> string {
     if ps.is_empty() { return "no payload `${n}` — this build carries none" }
     "no payload `${n}` — this build carries `${[p.name for p in ps].join("`, `")}`"
 }

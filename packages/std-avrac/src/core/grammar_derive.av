@@ -1,14 +1,21 @@
 //! `@derive(Grammar)` — a node enum's variants as PAYLOAD ROWS, read
-//! off the declaration: each payload's name with its type's spelling,
-//! in declaration order. A grammar rule that names a node
-//! (`-> Expr.StrLit`) is bound against these, so the rows are the one
-//! source of truth for what a variant carries and in what order.
+//! off the declaration: each payload as a FIELD, with its name, its
+//! spelling and its SHAPE, in declaration order. A grammar rule that
+//! names a node (`-> Expr.StrLit`) is bound against these, so the
+//! rows are the one source of truth for what a variant carries and in
+//! what order.
+//!
+//! THE FIELD IS EMITTED WHOLE — name, spelling, place, shape and
+//! marks. The shape is what lets the binding ask "is this a list",
+//! "may it be absent", "does a token fill it" structurally; the
+//! spelling beside it is only ever a diagnostic's words.
 //!
 //! It stands ALONE in this file on purpose: running a derive TYPES
 //! the file that declares it, and a file that also walked the nodes
 //! would be typed while the annotated file's own impls are still
 //! registering (CLAUDE.md).
-use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive, Code, literal}
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Kind, Mark as MetaMark, Seat, Directive, Code, literal, int_node, bool_node, as_code}
+use @std.errors.{Loc}
 
 /// The compiler's derive for the node model's payload rows. Each
 /// enum answers its own fn, so one file may carry several.
@@ -29,13 +36,76 @@ fn row_of(t: MetaType, v: MetaVariant) -> Code {
         PayloadRow {
             owner: ${literal(t.name)},
             variant: ${literal(v.name)},
-            payloads: ${as_list_expr([payload_of(f) for f in v.fields])},
+            payloads: ${as_list_expr([field_of(f) for f in v.fields])},
         }
     }
 }
 
-fn payload_of(f: Field) -> Code {
-    quote { Payload { name: ${literal(f.name)}, ty: ${literal(f.ty)} } }
+/// ONE PAYLOAD, AS THE CROSSING'S FIELD — the shape every other
+/// reader of a declared member already takes, so the row carries
+/// structure rather than a spelling.
+fn field_of(f: Field) -> Code {
+    quote {
+        Field {
+            name: ${literal(f.name)},
+            ty: ${literal(f.ty)},
+            at: ${loc_code(f.at)},
+            kind: ${kind_code(f.kind)},
+            marks: ${marks_code(f.marks)},
+        }
+    }
+}
+
+/// A payload's SHAPE as the source that writes it. ONE ROW PER KIND,
+/// every variant answering: a shape `Kind` gains and this does not
+/// still compiles, and the shape reaches the row unchanged.
+fn kind_code(k: Kind) -> Code {
+    match k {
+        .Int -> quote { .Int },
+        .Float -> quote { .Float },
+        .Bool -> quote { .Bool },
+        .Str -> quote { .Str },
+        .Ptr -> quote { .Ptr },
+        .Void -> quote { .Void },
+        .List(elem) -> quote { .List(${kind_code(elem)}) },
+        .Cell(inner) -> quote { .Cell(${kind_code(inner)}) },
+        .Map(key, value) -> quote { .Map(${kind_code(key)}, ${kind_code(value)}) },
+        .Opt(inner) -> quote { .Opt(${kind_code(inner)}) },
+        .Result(ok, err) -> quote { .Result(${kind_code(ok)}, ${kind_code(err)}) },
+        .Named(name, args) -> quote { .Named(${literal(name)}, ${as_list_expr([kind_code(a) for a in args])}) },
+        .Fn(seats, answer) -> quote { .Fn(${as_list_expr([seat_code(s) for s in seats])}, ${kind_code(answer)}) },
+        .Dyn(name) -> quote { .Dyn(${literal(name)}) },
+        .Var(name) -> quote { .Var(${literal(name)}) },
+        .Unspelled(text) -> quote { .Unspelled(${literal(text)}) },
+    }
+}
+
+/// One fn seat: its shape and the contract it carries.
+fn seat_code(s: Seat) -> Code {
+    quote { Seat { kind: ${kind_code(s.kind)}, mutable: ${as_code(bool_node(s.mutable))}, settled: ${as_code(bool_node(s.settled))} } }
+}
+
+/// A payload's PLACE, or absence when it has none.
+fn loc_code(at: Loc?) -> Code {
+    if at == null { return quote { null } }
+    let p = at!
+    quote { Loc { file: ${text_code(p.file)}, lo: ${as_code(int_node(p.lo))}, hi: ${as_code(int_node(p.hi))} } }
+}
+
+/// A possibly-absent text, as the source that writes it.
+fn text_code(t: string?) -> Code {
+    if t == null { return quote { null } }
+    quote { ${literal(t!)} }
+}
+
+/// A payload's marks — empty for every node payload today, and the
+/// words carried through when one is written.
+fn marks_code(ms: List<MetaMark>) -> Code {
+    as_list_expr([mark_code(m) for m in ms])
+}
+
+fn mark_code(m: MetaMark) -> Code {
+    quote { MetaMark { name: ${literal(m.name)}, args: ${as_list_expr([literal(a) for a in m.args])}, at: ${loc_code(m.at)} } }
 }
 
 /// The parts as ONE list expression — each part an ELEMENT, so each

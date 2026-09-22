@@ -3,7 +3,7 @@
 //! values are strings, integers, booleans, string arrays, and
 //! one-level inline tables. Reading never aborts: a bad line is one
 //! refusal, and the reader continues at the next line.
-use @std.text.{builder}
+use @std.text.{builder, parse_int}
 
 /// A TOML value: the subset a manifest uses.
 export enum TomlValue {
@@ -273,23 +273,13 @@ fn unescaped(e: int) -> string? {
 }
 
 /// An integer, `-` allowed in front; a `-` with no digits is a word.
+/// Past the ceiling on either side is a refusal, not a wrap.
 fn scan_int(text: string, n: int, i: int) -> ValueScan {
     let start = if text.char_code(i) == 45 { i + 1 } else { i }
     let end = run_end(text, n, start, is_digit)
     if end == start { return scan_word(text, n, i) }
-    let v = int_of_digits(text, start, end)
-    ValueScan.Value(TomlValue.Int(if start > i { 0 - v } else { v }), end)
-}
-
-/// The integer the digits in [lo, hi) spell.
-fn int_of_digits(text: string, lo: int, hi: int) -> int {
-    mut v = 0
-    mut i = lo
-    while i < hi {
-        v = v * 10 + (text.char_code(i) - 48)
-        i = i + 1
-    }
-    v
+    let v? = parse_int(text.substring(i, end)) else { return ValueScan.Refused(number_overflow(i)) }
+    ValueScan.Value(TomlValue.Int(v), end)
 }
 
 /// `true` or `false`; an empty run is no value at all, any other
@@ -472,6 +462,8 @@ fn missing_value(at: int) -> Refusal { refusal("expected a value after `=`", at)
 fn unknown_value(word: string, at: int) -> Refusal {
     refusal("unknown value form `${word}`: a value is a string, an integer, `true`/`false`, an array, or an inline table", at)
 }
+
+fn number_overflow(at: int) -> Refusal { refusal("this number does not fit an int", at) }
 
 fn unterminated(at: int, what: string) -> Refusal { refusal("unterminated ${what}", at) }
 

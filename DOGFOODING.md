@@ -793,7 +793,7 @@ reintroducing I3's blind spot names the two spellings it lost.
       `let`/`mut` of the same name) — a text scan cannot then tell
       which binding a later `x!` names. Ratcheted (`let_else_guard`).
 
-- I56 (unratcheted) A MATCH ARM'S VALUE THAT IS `if c { x } else { y }`,
+- I57 (unratcheted) A MATCH ARM'S VALUE THAT IS `if c { x } else { y }`,
       WHERE ONE BRANCH ANSWERS WHAT ANOTHER ARM OF THE SAME MATCH
       ALREADY ANSWERS, IS A GUARD — the branch that duplicates becomes
       the fall-through, and the arm keeps only the branch that does
@@ -823,6 +823,22 @@ reintroducing I3's blind spot names the two spellings it lost.
       landed before arm guards existed (avra-8sb5.25.1): 23 converted,
       29 stayed — most of the survivors are the wide-registry shape,
       the rest genuinely answer two unrelated values.
+
+- I56 (unratcheted) A NAMED TYPE'S REPRESENTATION IS NOT PART OF
+      `Kind` — `Kind.Named(name, args)` answers a declared name and
+      its type arguments alone, never whether the declaration is a
+      real record or enum (boxed, built) or a flat wrapper over one
+      scalar (`type X = string`, free at runtime, filled from a
+      token exactly as the scalar itself is). A rule that must tell
+      these apart — `node_grammar.av`'s `flat_named`, deciding
+      whether a grammar payload is text-filled or built — has no
+      `Kind` arm to dispatch on, so it names the tree's three free
+      wrappers (`Scoped`, `Plain`, `Nominal`) by hand, LICENSED at
+      the site. THE SMELL nothing greps for cleanly: any OTHER named
+      type this check would need to widen for is itself the trigger
+      to give `Kind` (or `Field`) a representation bit, not to grow
+      this list further. Not ratcheted — the exception is one closed
+      site, not a shape a grep can generalize from.
 
 - I49 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
       conversions that are inverses name their categories ONCE, as a

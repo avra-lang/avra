@@ -32,139 +32,101 @@
 # The window must
 # END before the step does, or `sample` writes nothing.
 # Exit status is the command's, or 137 when the cap fired.
+
+# TWO FIXTURES, EACH IN A LOCK OF ITS OWN (AVRA_BUILD_LOCK), so a
+# self-test never contends the real machine-wide queue every other
+# session on this box is standing in. Fixture 1 proves a QUEUED
+# waiter's ticket is dropped and the process actually exits on TERM,
+# never just detouring through the trap and looping on. Fixture 2
+# proves a HOLDING watcher's TERM kills the guarded child before
+# releasing the lock, rather than orphaning it unwatched.
+self_test() {
+    # A self-test run FROM INSIDE a held lock (`make gate` under this
+    # very watchdog) inherits AVRA_WATCH_HELD, and the re-entrancy
+    # check at the top of the file would exec every fixture straight
+    # through with no lock, no ticket, no "waiting" line at all —
+    # not a failure of the fix, a self-test that never exercised it.
+    unset AVRA_WATCH_HELD
+    here="$(cd "$(dirname "$0")" && pwd)"
+    watch="$here/$(basename "$0")"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+
+    lock1="$tmp/lock1"
+    mkdir -p "$lock1"
+    echo $$ > "$lock1/pid"
+    AVRA_BUILD_LOCK="$lock1" AVRA_BUILD_SLOTS=1 sh "$watch" 4000 sleep 30 \
+        > "$tmp/waiter.out" 2>&1 &
+    waiter=$!
+    i=0
+    while [ $i -lt 40 ] && ! grep -q "busy — waiting" "$tmp/waiter.out" 2>/dev/null; do
+        sleep 0.25; i=$((i + 1))
+    done
+    if ! grep -q "busy — waiting" "$tmp/waiter.out" 2>/dev/null; then
+        echo "watch: self-test: fixture 1 never reported waiting"; kill -9 "$waiter" 2>/dev/null
+        return 1
+    fi
+    kill -TERM "$waiter"
+    i=0
+    while [ $i -lt 40 ] && kill -0 "$waiter" 2>/dev/null; do sleep 0.25; i=$((i + 1)); done
+    if kill -0 "$waiter" 2>/dev/null; then
+        echo "watch: self-test: a QUEUED waiter ignored TERM"; kill -9 "$waiter" 2>/dev/null
+        return 1
+    fi
+    if [ -n "$(ls "$lock1.q" 2>/dev/null)" ]; then
+        echo "watch: self-test: a TERM'd waiter's ticket was not dropped"
+        return 1
+    fi
+
+    lock2="$tmp/lock2"
+    AVRA_BUILD_LOCK="$lock2" AVRA_BUILD_SLOTS=1 sh "$watch" 4000 sleep 30 \
+        > "$tmp/holder.out" 2>&1 &
+    holder=$!
+    i=0
+    while [ $i -lt 40 ] && [ ! -f "$lock2/pid" ]; do sleep 0.25; i=$((i + 1)); done
+    if [ ! -f "$lock2/pid" ]; then
+        echo "watch: self-test: fixture 2 never acquired the lock"; kill -9 "$holder" 2>/dev/null
+        return 1
+    fi
+    child=$(ps -eo pid=,ppid=,comm= | awk -v p="$holder" '$2==p && $3=="sleep"{print $1; exit}')
+    if [ -z "$child" ]; then
+        echo "watch: self-test: fixture 2's guarded child was never found"; kill -9 "$holder" 2>/dev/null
+        return 1
+    fi
+    kill -TERM "$holder"
+    i=0
+    while [ $i -lt 40 ] && kill -0 "$holder" 2>/dev/null; do sleep 0.25; i=$((i + 1)); done
+    if kill -0 "$holder" 2>/dev/null; then
+        echo "watch: self-test: a HOLDING watcher ignored TERM"; kill -9 "$holder" 2>/dev/null
+        return 1
+    fi
+    if [ -d "$lock2" ]; then
+        echo "watch: self-test: a TERM'd holder left the lock in place"
+        return 1
+    fi
+    sleep 0.3
+    if kill -0 "$child" 2>/dev/null; then
+        echo "watch: self-test: a TERM'd holder orphaned its guarded child"; kill -9 "$child" 2>/dev/null
+        return 1
+    fi
+    echo "watch: self-test passed — 2 fixtures"
+}
+if [ "$1" = "--self-test" ]; then
+    self_test
+    exit $?
+fi
 cap_mb="$1"; shift
 if [ -n "$AVRA_WATCH_HELD" ]; then
     exec "$@"
 fi
-slots="${AVRA_BUILD_SLOTS:-3}"
-lock=/tmp/avra-build.lock
+slots="${AVRA_BUILD_SLOTS:-1}"
+lock="${AVRA_BUILD_LOCK:-/tmp/avra-build.lock}"
 floor="${AVRA_MEM_FLOOR:-20}"
 
-# A LINK THAT RUNS OUT OF DISK DELETES `build/avra`. `make bootstrap`
-# links straight at it (`-o build/avra`), so an ENOSPC there leaves the
-# tree with NO COMPILER — the same class this file's memory floor
-# exists to prevent, on the other resource, with a worse ending.
-# AND DISK DOES NOT FREE ITSELF, which is why this REFUSES where the
-# memory floor WAITS: memory pressure passes when a process exits, a
-# full volume stays full, and a wait loop there spins forever while
-# looking like patience. Checked BEFORE the lock, so a refusal does
-# not queue behind someone else's build.
-disk_floor="${AVRA_DISK_FLOOR_MB:-2048}"
-free_mb=$(df -Pm . 2>/dev/null | awk 'NR==2 {print $4}')
-if [ -n "$free_mb" ] && [ "$free_mb" -lt "$disk_floor" ]; then
-    echo "watch: ${free_mb} MB free, under the ${disk_floor} MB floor — refusing to start" >&2
-    echo "watch:   a link that runs out of disk DELETES build/avra, and \`make bootstrap\`" >&2
-    echo "watch:   links straight at it. Free space first; AVRA_DISK_FLOOR_MB moves the floor." >&2
-    exit 2
-fi
-# THE SLOTS, AND THE QUEUE IN FRONT OF THEM. The lock is N
-# directories, not one: a gate peaks at ~0.83 GB on a 16 GB machine,
-# so serialising every heavy step was a cap set for a tree whose gate
-# cost 2.4 GB and leaked, and the guard outlived its reason. SLOT 1
-# KEEPS THE OLD PATH, so a worktree still running the one-slot script
-# contends for it and the two exclude each other during a rollout.
-# AND THE SLOTS ARE ENTERED IN ARRIVAL ORDER, because N slots taken by
-# `mkdir` alone is still a race: a lane running back-to-back steps
-# re-takes a slot before a waiting lane's next poll, and one lane lost
-# 161 times while queueing correctly. A waiter takes a TICKET above
-# every ticket outstanding and tries the slots only when no older
-# ticket is WAITING — a ticket is dropped the moment a slot is taken,
-# or the queue would serve one lane at a time and the slots would buy
-# nothing. A ticket or a slot whose holder died is reaped, or it
-# blocks the queue forever.
-qdir=$lock.q
-mkdir -p "$qdir"
-last=$(ls "$qdir" 2>/dev/null | sort -n | tail -1)
-mine=$(( ${last:--1} + 1 ))
-while ! mkdir "$qdir/$mine" 2>/dev/null; do mine=$(( mine + 1 )); done
-echo $$ > "$qdir/$mine/pid"
-# Until a slot is held, the trap clears the TICKET alone: `$lock` still
-# names slot 1, and removing it here would free another lane's slot.
-trap 'rm -rf "$qdir/$mine"' EXIT INT TERM
-held=""
-said=no
-while [ -z "$held" ]; do
-    ahead=no
-    for t in "$qdir"/*; do
-        [ -d "$t" ] || continue
-        h=$(cat "$t/pid" 2>/dev/null)
-        if [ -n "$h" ] && ! kill -0 "$h" 2>/dev/null; then
-            rm -rf "$t"
-            continue
-        fi
-        n=${t##*/}
-        [ "$n" -lt "$mine" ] 2>/dev/null && ahead=yes
-    done
-    if [ "$ahead" = no ]; then
-        n=1
-        while [ "$n" -le "$slots" ]; do
-            [ "$n" = 1 ] && cand="$lock" || cand="$lock.$n"
-            if mkdir "$cand" 2>/dev/null; then held="$cand"; break; fi
-            holder=$(cat "$cand/pid" 2>/dev/null)
-            if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
-                rm -rf "$cand"
-                continue
-            fi
-            n=$(( n + 1 ))
-        done
-    fi
-    [ -n "$held" ] && break
-    if [ "$said" = no ]; then
-        echo "watch: all $slots build slots busy — waiting (ticket $mine)" >&2
-        said=yes
-    fi
-    sleep 5
-done
-lock="$held"
-# A TICKET MEANS "WAITING", NOT "RUNNING". Dropping it at the moment a
-# slot is taken is what lets the other slots fill: a ticket held for
-# the whole run would make every later arrival wait behind THIS one,
-# and N slots would serve one lane at a time — the queue defeating the
-# capacity it was put in front of (witnessed: four runs, no overlap).
-rm -rf "$qdir/$mine"
-trap 'rm -rf "$lock"' EXIT INT TERM
-echo $$ > "$lock/pid"
-while :; do
-    level=$(sysctl -n kern.memorystatus_level 2>/dev/null || echo 100)
-    [ "$level" -ge "$floor" ] && break
-    echo "watch: the machine has ${level}% available, under the ${floor}% floor — waiting" >&2
-    sleep 5
-done
-AVRA_WATCH_HELD=$$
-export AVRA_WATCH_HELD
-"$@" &
-pid=$!
-if [ -n "$AVRA_SAMPLE" ]; then
-    mkdir -p build
-    prof="${AVRA_SAMPLE_FILE:-build/avra-sample.txt}"
-    # A PROFILE NAMES ITS SUBJECT. `$!` is the command this watchdog
-    # launched — right when that command EXECS (`./avra` does), and the
-    # WRONG process the moment it forks a worker and waits. A profile
-    # of the wrong pid does not fail; it reports its subject as idle,
-    # and a reader with two hypotheses and no pid cannot tell that from
-    # a slow syscall. Say which pid, so the question is answerable.
-    # A PROFILE NAMES ITS SUBJECT, FROM THE REPORT ITSELF. `$!` is the
-    # command this watchdog launched — the right pid when that command
-    # EXECS, as `./avra` does, and the WRONG one the moment something
-    # forks a worker and waits on it. A profile of the wrong process
-    # does not fail: it reports its subject as IDLE, and a reader with
-    # no pid cannot tell that from a slow syscall.
-    # ASKING `ps` IS NOT THE WAY. Read at launch it answers `/bin/sh`
-    # for every `./avra` run, because the script has not reached its
-    # `exec` yet — a diagnostic that lies in the same direction as the
-    # defect it exists to expose. `sample`'s own header cannot race:
-    # it names what the sampler actually attached to.
-    ( sleep "${AVRA_SAMPLE_AFTER:-0}"
-      sample "$pid" "$AVRA_SAMPLE" -file "$prof" > "$prof.log" 2>&1
-      head -1 "$prof" 2>/dev/null | sed 's/^/watch: profiled /' >&2
-      echo "watch: profile at $prof" >&2 ) &
-    sampler=$!
-fi
-peak=0
-fired=0
-# The tree's PHYSICAL FOOTPRINT in MB — `footprint`'s number, which
-# counts a page the compressor holds. RSS does not, and read a
-# 2.4 GB compiler as 1.4 GB on a machine that then panicked.
+# THE TREE WALKERS, DEFINED BEFORE ANY TRAP CAN FIRE. A signal trap
+# that calls tree_kill must find it already a function, not a line
+# further down the file that has not run yet — so these three own no
+# state and are safe wherever a trap needs them.
 tree_mem() {
     pids=$(ps -eo pid=,ppid= | awk -v root="$1" '
         { pp[$1]=$2 }
@@ -206,6 +168,178 @@ tree_rss() {
             print int(s/1024)
         }'
 }
+
+# A LINK THAT RUNS OUT OF DISK DELETES `build/avra`. `make bootstrap`
+# links straight at it (`-o build/avra`), so an ENOSPC there leaves the
+# tree with NO COMPILER — the same class this file's memory floor
+# exists to prevent, on the other resource, with a worse ending.
+# AND DISK DOES NOT FREE ITSELF, which is why this REFUSES where the
+# memory floor WAITS: memory pressure passes when a process exits, a
+# full volume stays full, and a wait loop there spins forever while
+# looking like patience. Checked BEFORE the lock, so a refusal does
+# not queue behind someone else's build.
+disk_floor="${AVRA_DISK_FLOOR_MB:-2048}"
+free_mb=$(df -Pm . 2>/dev/null | awk 'NR==2 {print $4}')
+if [ -n "$free_mb" ] && [ "$free_mb" -lt "$disk_floor" ]; then
+    echo "watch: ${free_mb} MB free, under the ${disk_floor} MB floor — refusing to start" >&2
+    echo "watch:   a link that runs out of disk DELETES build/avra, and \`make bootstrap\`" >&2
+    echo "watch:   links straight at it. Free space first; AVRA_DISK_FLOOR_MB moves the floor." >&2
+    exit 2
+fi
+# THE SLOTS, AND THE QUEUE IN FRONT OF THEM. The lock is N
+# directories, not one: a gate peaks at ~0.83 GB on a 16 GB machine,
+# so serialising every heavy step was a cap set for a tree whose gate
+# cost 2.4 GB and leaked, and the guard outlived its reason. SLOT 1
+# KEEPS THE OLD PATH, so a worktree still running the one-slot script
+# contends for it and the two exclude each other during a rollout.
+# AND THE SLOTS ARE ENTERED IN ARRIVAL ORDER, because N slots taken by
+# `mkdir` alone is still a race: a lane running back-to-back steps
+# re-takes a slot before a waiting lane's next poll, and one lane lost
+# 161 times while queueing correctly. A waiter takes a TICKET above
+# every ticket outstanding and tries the slots only when no older
+# ticket is WAITING — a ticket is dropped the moment a slot is taken,
+# or the queue would serve one lane at a time and the slots would buy
+# nothing. A ticket or a slot whose holder died is reaped, or it
+# blocks the queue forever.
+#
+# ONE SLOT BY DEFAULT: a full build is CPU-bound on a shared box, so
+# concurrent slots serialise work rather than parallelising it. Raise
+# AVRA_BUILD_SLOTS deliberately, never as the default. A waiting
+# caller is told who holds each slot — its pid and its command.
+qdir=$lock.q
+mkdir -p "$qdir"
+last=$(ls "$qdir" 2>/dev/null | sort -n | tail -1)
+mine=$(( ${last:--1} + 1 ))
+while ! mkdir "$qdir/$mine" 2>/dev/null; do mine=$(( mine + 1 )); done
+echo $$ > "$qdir/$mine/pid"
+# Until a slot is held, the trap clears the TICKET alone: `$lock` still
+# names slot 1, and removing it here would free another lane's slot.
+# A SIGNAL TRAP THAT NEVER EXITS IS NOT A HANDLER, IT IS A DETOUR: a
+# bare `trap 'cleanup' EXIT INT TERM` runs `cleanup` on a signal and
+# then RESUMES the script at the next statement, because nothing in
+# that body says to stop. Ctrl-C on a queued waiter dropped its
+# ticket and kept polling forever, invisibly — proven live (a
+# `sleep`-loop orphan survived its own TERM). EXIT gets its own
+# cleanup-only trap; INT and TERM get the same cleanup AND an exit,
+# so a queued wait actually stops when told to.
+trap 'rm -rf "$qdir/$mine"' EXIT
+trap 'rm -rf "$qdir/$mine"; echo "watch: signalled while queued (ticket $mine) — ticket dropped, exiting" >&2; exit 143' INT TERM
+# WHO HOLDS WHAT, so a caller told to wait sees the cost rather than
+# a bare ticket number. Scans every held slot that exists, not only
+# 1..$slots — a caller running fewer slots than another's still sees
+# the slots that other one holds.
+slot_holders() {
+    for cand in "$lock" "$lock".[0-9]*; do
+        [ -d "$cand" ] || continue
+        case "$cand" in
+            "$lock") n=1 ;;
+            *) n="${cand##*.}" ;;
+        esac
+        h=$(cat "$cand/pid" 2>/dev/null)
+        if [ -n "$h" ] && kill -0 "$h" 2>/dev/null; then
+            c=$(cat "$cand/cmd" 2>/dev/null)
+            echo "watch:   slot $n: pid $h — ${c:-?}" >&2
+        fi
+    done
+}
+held=""
+said=no
+while [ -z "$held" ]; do
+    ahead=no
+    for t in "$qdir"/*; do
+        [ -d "$t" ] || continue
+        h=$(cat "$t/pid" 2>/dev/null)
+        if [ -n "$h" ] && ! kill -0 "$h" 2>/dev/null; then
+            rm -rf "$t"
+            continue
+        fi
+        n=${t##*/}
+        [ "$n" -lt "$mine" ] 2>/dev/null && ahead=yes
+    done
+    if [ "$ahead" = no ]; then
+        n=1
+        while [ "$n" -le "$slots" ]; do
+            [ "$n" = 1 ] && cand="$lock" || cand="$lock.$n"
+            if mkdir "$cand" 2>/dev/null; then held="$cand"; break; fi
+            holder=$(cat "$cand/pid" 2>/dev/null)
+            if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+                rm -rf "$cand"
+                continue
+            fi
+            n=$(( n + 1 ))
+        done
+    fi
+    [ -n "$held" ] && break
+    if [ "$said" = no ]; then
+        echo "watch: all $slots build slots busy — waiting (ticket $mine)" >&2
+        slot_holders
+        said=yes
+    fi
+    sleep 5
+done
+lock="$held"
+# A TICKET MEANS "WAITING", NOT "RUNNING". Dropping it at the moment a
+# slot is taken is what lets the other slots fill: a ticket held for
+# the whole run would make every later arrival wait behind THIS one,
+# and N slots would serve one lane at a time — the queue defeating the
+# capacity it was put in front of (witnessed: four runs, no overlap).
+rm -rf "$qdir/$mine"
+# THE SAME DETOUR, ONE STAGE LATER, AND WORSE: a bare EXIT INT TERM
+# trap here only released the LOCK on a signal and fell through to
+# keep running — the memory floor wait, then `"$@" &` regardless of
+# whether the lock was still this process's to hold. Proven live in
+# an isolated repro of this exact shape: TERM during `wait "$pid"`
+# freed the lock while the backgrounded child kept running, unkilled
+# and unwatched — ONE HEAVY PROCESS AT A TIME held only as long as
+# nobody presses Ctrl-C. `pid` is unset until `"$@" &` runs below, so
+# the INT/TERM handler kills the tree only once there is one.
+trap 'rm -rf "$lock"' EXIT
+trap '[ -n "$pid" ] && tree_kill "$pid"; rm -rf "$lock"; echo "watch: signalled — the guarded tree was killed, the lock released" >&2; exit 143' INT TERM
+echo $$ > "$lock/pid"
+printf '%s\n' "$*" > "$lock/cmd"
+while :; do
+    level=$(sysctl -n kern.memorystatus_level 2>/dev/null || echo 100)
+    [ "$level" -ge "$floor" ] && break
+    echo "watch: the machine has ${level}% available, under the ${floor}% floor — waiting" >&2
+    sleep 5
+done
+AVRA_WATCH_HELD=$$
+export AVRA_WATCH_HELD
+"$@" &
+pid=$!
+if [ -n "$AVRA_SAMPLE" ]; then
+    mkdir -p build
+    prof="${AVRA_SAMPLE_FILE:-build/avra-sample.txt}"
+    # A PROFILE NAMES ITS SUBJECT. `$!` is the command this watchdog
+    # launched — right when that command EXECS (`./avra` does), and the
+    # WRONG process the moment it forks a worker and waits. A profile
+    # of the wrong pid does not fail; it reports its subject as idle,
+    # and a reader with two hypotheses and no pid cannot tell that from
+    # a slow syscall. Say which pid, so the question is answerable.
+    # A PROFILE NAMES ITS SUBJECT, FROM THE REPORT ITSELF. `$!` is the
+    # command this watchdog launched — the right pid when that command
+    # EXECS, as `./avra` does, and the WRONG one the moment something
+    # forks a worker and waits on it. A profile of the wrong process
+    # does not fail: it reports its subject as IDLE, and a reader with
+    # no pid cannot tell that from a slow syscall.
+    # ASKING `ps` IS NOT THE WAY. Read at launch it answers `/bin/sh`
+    # for every `./avra` run, because the script has not reached its
+    # `exec` yet — a diagnostic that lies in the same direction as the
+    # defect it exists to expose. `sample`'s own header cannot race:
+    # it names what the sampler actually attached to.
+    ( sleep "${AVRA_SAMPLE_AFTER:-0}"
+      sample "$pid" "$AVRA_SAMPLE" -file "$prof" > "$prof.log" 2>&1
+      head -1 "$prof" 2>/dev/null | sed 's/^/watch: profiled /' >&2
+      echo "watch: profile at $prof" >&2 ) &
+    sampler=$!
+fi
+peak=0
+fired=0
+# The tree's PHYSICAL FOOTPRINT in MB — `footprint`'s number, which
+# counts a page the compressor holds. RSS does not, and read a
+# 2.4 GB compiler as 1.4 GB on a machine that then panicked. (tree_mem,
+# tree_kill and tree_rss are defined above, ahead of the traps that
+# may need to call tree_kill before this point in the file runs.)
 # THE STEP IS WAITED FOR, THE TRIPWIRE POLLS BESIDE IT. A warm build is 80 ms of
 # work: a loop that looked for its end between polls cost it the poll, and one
 # that slept between looks cost it the sleep. The poller keeps the tripwire's

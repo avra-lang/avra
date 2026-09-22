@@ -1,15 +1,25 @@
 //! What every spec file needs to ask of a program, in one place.
 //! Test files are separate compilation units, so each used to carry
 //! its own copy of these — 26 of them, byte-identical.
-use compiler.{analyze_source, Program}
+use compiler.{analyze_source, parse_source, Program}
 use @std.avrac.diagnostics.{Diag}
 use @std.avrac.core.{flatten}
 use @std.meta.{embed}
 use compiler.lower.{Lowered}
+use compiler.format.{render_source}
 
 /// A program's printed value, or "<refused>".
 export fn shown(source: string) -> string {
     analyze_source(source).ran() ?? "<refused>"
+}
+
+/// The source projected through the printer's canonical form — "<parse
+/// refused>" when it does not parse. Two test files carried this
+/// byte-identical.
+export fn projected(source: string) -> string {
+    let p = parse_source(source)
+    if !p.voices.list.is_empty() { return "<parse refused>" }
+    render_source(p.store, p.stmts)
 }
 
 /// How many diagnostics one program earns. The COUNT is half of a

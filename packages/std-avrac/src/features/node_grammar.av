@@ -13,7 +13,13 @@
 //! `List<X>` payload nothing names is `[]`, an `X?` payload nothing
 //! names is `null`, and any other unnamed payload REFUSES THE
 //! ASSEMBLY. That is what lets one rule cover `{ }` and `{ k: v }`.
-use core.{flatten, joined, Payload, PayloadRow, row_for}
+//!
+//! A PAYLOAD'S SHAPE, NEVER ITS SPELLING, decides what may fill it —
+//! `Field.kind` answers "is this a list", "is this text-filled"
+//! structurally, so the answer holds under renaming and cannot forget
+//! the next declared type the way a string table would.
+use core.{flatten, joined, PayloadRow, row_for}
+use @std.meta.{Field, Kind}
 use grammar.{Grammar, Alt, Seq, Item, Prim, Build, Slot, Fixed, Diagnostic, defect}
 
 /// A grammar with every node build bound, and what binding refused.
@@ -70,7 +76,7 @@ fn filled_slots(outer: Seq, owner: string, variant: string, fixed: List<Fixed>, 
 /// One payload's slot: the label that captures it, the value the rule
 /// states, or nothing — which the arity law permits only for a list
 /// or a nullable.
-fn filling(p: Payload, labels: List<string>, fixed: List<Fixed>) -> Slot {
+fn filling(p: Field, labels: List<string>, fixed: List<Fixed>) -> Slot {
     if labels.contains(p.name) { return Slot.Label(p.name) }
     let stated: Fixed? = fixed.find(it.name == p.name)
     if stated != null { return Slot.Fixed(stated!.text) }
@@ -124,13 +130,19 @@ fn stranger_defects(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) 
 fn unfilled_defects(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
     let labels = s.labels()
     [node_refusal(rname, nothing_fills(row, p)) for p in row.payloads
-     if !labels.contains(p.name) && !fixed.any(it.name == p.name) && !absence_is_a_value(p.ty)]
+     if !labels.contains(p.name) && !fixed.any(it.name == p.name) && !absence_is_a_value(p.kind)]
 }
 
 /// A LIST holds nothing and a NULLABLE is absent; every other payload
-/// must be filled.
-fn absence_is_a_value(ty: string) -> bool {
-    ty.starts_with("List<") || ty.ends_with("?")
+/// must be filled. Two answering arms over our own enum is a
+/// REGISTRY: every `Kind` is spelled, so the next variant a rule
+/// could ask about is a compile error here, not a silent `false`.
+fn absence_is_a_value(k: Kind) -> bool {
+    match k {
+        .List(_) or .Opt(_) -> true,
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or
+        .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
 }
 
 /// Each payload's SHAPE against what its label matches: a node payload
@@ -141,10 +153,10 @@ fn shape_defects(rname: string, s: Seq, row: PayloadRow) -> List<Diagnostic> {
     flatten([payload_shape(rname, s, row, p) for p in row.payloads])
 }
 
-fn payload_shape(rname: string, s: Seq, row: PayloadRow, p: Payload) -> List<Diagnostic> {
+fn payload_shape(rname: string, s: Seq, row: PayloadRow, p: Field) -> List<Diagnostic> {
     let hit? = s.deep_items().find(labelled(it, p.name)) else { return [] }
     let carried: Carrier? = carrier_of(hit.prim)
-    if carried == null || carried! == wanted_carrier(p.ty) { return [] }
+    if carried == null || carried! == wanted_carrier(p.kind) { return [] }
     [node_refusal(rname, wrong_shape(row, p, carried!))]
 }
 
@@ -152,25 +164,38 @@ fn payload_shape(rname: string, s: Seq, row: PayloadRow, p: Payload) -> List<Dia
 enum Carrier { Built, Text }
 
 /// What a payload's declared type must be filled from.
-fn wanted_carrier(ty: string) -> Carrier {
-    if texted(ty) { return Carrier.Text }
+fn wanted_carrier(k: Kind) -> Carrier {
+    if texted(k) { return Carrier.Text }
     Carrier.Built
 }
 
-/// The payload types a TOKEN fills — every other is a built node.
-/// Its element spelling is what a list of them is asked about, so one
-/// list answers both.
-fn texted(ty: string) -> bool {
-    text_types.contains(element_of(ty))
+/// The payload shapes a TOKEN fills — every other is a built node. A
+/// list or a nullable is asked about its ELEMENT, which `Kind`'s own
+/// nesting answers directly: no string is sliced to find it.
+fn texted(k: Kind) -> bool {
+    match k {
+        .Str or .Int or .Bool -> true,
+        .List(elem) -> texted(elem),
+        .Opt(inner) -> texted(inner),
+        .Named(name, _) -> flat_named(name),
+        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or
+        .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+    }
 }
 
-const text_types: List<string> = ["string", "int", "bool", "Scoped", "Plain", "Nominal"]
-
-/// A type's element: `List<X>` and `X?` are asked about their `X`.
-fn element_of(ty: string) -> string {
-    if ty.starts_with("List<") { return element_of(ty.substring(5, ty.length - 1)) }
-    if ty.ends_with("?") { return ty.substring(0, ty.length - 1) }
-    ty
+/// THE ONE GAP `Kind` LEAVES OPEN: `Scoped`, `Plain` and `Nominal` are
+/// each `type X = string` — free at runtime, one scalar field, so a
+/// rule fills them from a token exactly as it fills a bare `string`.
+/// `Kind.Named(name, args)` carries the same shape for these as for a
+/// real record or enum (`Arm`, `BodyView`) — the crossing does not
+/// carry a declaration's REPRESENTATION, only its name and arguments
+/// — so there is no `Kind` arm to dispatch on here; the three names
+/// ARE the fact. A node payload never names a fourth free named type
+/// without this list learning it by hand.
+// LICENSED I56: Kind.Named carries no representation bit, so the
+// three free wrappers are named by hand until one does
+fn flat_named(name: string) -> bool {
+    name == "Scoped" || name == "Plain" || name == "Nominal"
 }
 
 /// The item this label names.
@@ -198,12 +223,12 @@ fn no_such_payload(row: PayloadRow, name: string, names: List<string>) -> string
     "names `${name}`, and `${row.owner}.${row.variant}` has no such payload — it carries ${listed(names)}"
 }
 
-fn nothing_fills(row: PayloadRow, p: Payload) -> string {
+fn nothing_fills(row: PayloadRow, p: Field) -> string {
     "builds `${row.owner}.${row.variant}` and nothing fills `${p.name}: ${p.ty}` — only a list or a nullable payload may go unnamed"
 }
 
-fn wrong_shape(row: PayloadRow, p: Payload, got: Carrier) -> string {
-    "gives `${row.owner}.${row.variant}`'s `${p.name}: ${p.ty}` ${carrier_word(got)}, and it holds ${carrier_word(wanted_carrier(p.ty))}"
+fn wrong_shape(row: PayloadRow, p: Field, got: Carrier) -> string {
+    "gives `${row.owner}.${row.variant}`'s `${p.name}: ${p.ty}` ${carrier_word(got)}, and it holds ${carrier_word(wanted_carrier(p.kind))}"
 }
 
 fn carrier_word(c: Carrier) -> string {

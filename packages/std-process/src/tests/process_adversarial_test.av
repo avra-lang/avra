@@ -366,6 +366,71 @@ fn cpu_of_held_grace(g: int) -> Result<int, ProcessError> {
     avra_proc_cpu_ms() - cpu
 }
 
+/// A child that closes an UNUSED stream AT ONCE and keeps living for
+/// `secs` more, writing nothing anywhere — one watched descriptor
+/// answers HUP for the rest of the run while the process itself is
+/// not gone. The state `avra_proc_ready`'s row must not spin on: the
+/// same law as a grace with nothing left to watch, one member short
+/// of an empty set.
+fn hup_alive(secs: int) -> Result<int, ProcessError> {
+    let began = now_ms()
+    let _ = (shell("exec 2>&- ; sleep ${secs}")?).outcome()?
+    now_ms() - began
+}
+
+fn cpu_of_hup_alive(secs: int) -> Result<int, ProcessError> {
+    let cpu = avra_proc_cpu_ms()
+    let _ = (shell("exec 2>&- ; sleep ${secs}")?).outcome()?
+    avra_proc_cpu_ms() - cpu
+}
+
+/// A GRANDCHILD HOLDING THE PIPE UNDER `parallel`: one stage's direct
+/// child exits at once, and a sibling it left behind writes into the
+/// inherited pipe a beat later, inside the drain grace. A collector
+/// that reads a stage's own reap as "the capture is whole" misses a
+/// word still arriving after it.
+fn parallel_grandchild_word() -> Result<string, ProcessError> {
+    let outs = parallel([
+        shell("echo p1")?,
+        (shell("echo p2; (sleep 0.1; echo said) &")? with { drain_grace: ms(500) }),
+        shell("echo p3")?,
+    ], 3)?
+    [o.out.stdout.replace("\n", "/").trim() for o in outs].join("+")
+}
+
+/// The same shape through `race`: the winner is the stage with the
+/// grandchild, and its word must still land.
+fn race_grandchild_word() -> Result<string, ProcessError> {
+    let r = race([
+        (shell("echo winner; (sleep 0.1; echo said) &")? with { drain_grace: ms(500) }),
+        shell("sleep 5")?,
+    ], ms(0))?
+    r.out.stdout.replace("\n", "/").trim()
+}
+
+/// A grandchild that NEVER exits under `parallel`: the grace floor
+/// expires, the tree is killed, and the capture is TRUNCATED — never a
+/// silent short answer with nothing to tell the caller apart.
+fn parallel_grandchild_never_exits() -> Result<string, ProcessError> {
+    let outs = parallel([
+        (shell("echo a; sleep 30 &")? with { drain_grace: ms(200) }),
+    ], 1)?
+    "${outs[0].out.truncated}/${outs[0].out.stdout.trim()}"
+}
+
+/// A capped stage under `parallel`, a grandchild present too: the cap
+/// is a bound break and wins at once — no grace is paid once broken,
+/// so this returns fast despite a five-second grace on the command.
+fn parallel_capped_pays_no_grace() -> Result<int, ProcessError> {
+    let began = now_ms()
+    match parallel([
+        (shell("yes | head -c 200000; (sleep 0.2; echo late) &")? with { max_capture: 1000, drain_grace: secs(5) }),
+    ], 1) {
+        .Ok(_) -> .Err(ProcessError.Empty("expected TooMuch")),
+        .Err(_) -> .Ok(now_ms() - began),
+    }
+}
+
 spec "std/process adversarial" {
     given "a NUL makes a value two values, so the host is never handed one" {
         then "a tool path holding a NUL refuses — it does NOT run the truncated program" {
@@ -612,6 +677,40 @@ spec "std/process adversarial" {
         // gets its whole floor — the case above proves that one waits.
         then "a grace with nothing left to hold it ends with the pipes, not the clock" {
             (quick_with_grace(2000) catch 9999) < 500
+        }
+    }
+
+    given "one stream hung up while the child lives — the wait is a wait, never a spin" {
+        // STDERR CLOSES AT ONCE and the child sleeps on unwritten. POLLHUP
+        // is sticky, so a row that leaves a hung-up descriptor in its
+        // poll set answers every later call at once regardless of the
+        // timeout it was asked for — measured before this law held: a
+        // core pegged for the child's whole life, ~250,000 calls in
+        // just over a second. WHETHER THE PIPE IS TRULY EMPTY IS NOT
+        // POLLIN's TO ANSWER EITHER: Darwin sets it alongside POLLHUP
+        // the whole time the peer is gone, so a check keyed on POLLIN
+        // alone holds on Linux and lies on Darwin. FIONREAD settles it
+        // on both.
+        then "the wait is elapsed time" {
+            (hup_alive(1) catch 0) >= 900
+        }
+        then "and it costs almost no CPU" {
+            (cpu_of_hup_alive(1) catch 9999) < 100
+        }
+    }
+
+    given "a grandchild holding the pipe, one door out — a collector that declares on stop" {
+        then "parallel pays the grace, and a sibling's word is not lost" {
+            shown(parallel_grandchild_word()) == "p1/+p2/said/+p3/"
+        }
+        then "race pays the grace too — the winner's sibling still lands" {
+            shown(race_grandchild_word()) == "winner/said/"
+        }
+        then "a grandchild that never exits is truncated, not hung on forever" {
+            shown(parallel_grandchild_never_exits()) == "true/a"
+        }
+        then "a bound break pays no grace — a capped stage returns fast" {
+            (parallel_capped_pays_no_grace() catch 9999) < 500
         }
     }
 }

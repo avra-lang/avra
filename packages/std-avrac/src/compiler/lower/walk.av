@@ -211,6 +211,11 @@ impl LowerCx {
     /// promise for a block that departed, void for one that merely
     /// ended. Every merge it feeds is typed by that same answer.
     mut fn lower_block(stmts: List<StmtId>, value: ExprId?, ty: TypeId) -> Reg {
+        // A SCOPE THAT HOLDS ONLY ITS VALUE IS ITS VALUE. No statements
+        // means no bindings and no `defer`s to frame, so an explicit
+        // `{ 7 }` lowers as `7`: the block node is the author's FORM
+        // (the printer keeps its braces) and the IR owes it no scope.
+        if stmts.is_empty() && value != null { return self.reg_of(value!) }
         self.scope_enter()
         self.lower_stmts(stmts)
         let r = if value == null { self.hollow_of(ty) } else { self.reg_of(value!) }

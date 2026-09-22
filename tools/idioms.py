@@ -995,12 +995,19 @@ UNRATCHETED = {
     "I52": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
            "           (features/nullable/idioms.av) — ratcheted by the native-findings\n"
            "           phase below",
-    "I56": "telling \"this branch answers what a DIFFERENT arm already\n"
+    "I57": "telling \"this branch answers what a DIFFERENT arm already\n"
            "           answers\" needs reading every other arm's own answer and judging\n"
            "           whether they are the same computation — and, when the target is a\n"
            "           payload-blind or-run, whether widening it to the guarded variant's\n"
            "           own pattern is honest at that site. No grep links two arms as\n"
            "           answering the same thing",
+    "I56": "no grep tells a representation-bearing named-type check from an\n"
+           "           ordinary string comparison — the shape is identical either way,\n"
+           "           and only the DOMAIN (a closed, named set of the tree's own free\n"
+           "           wrappers) tells them apart. The keeper is the doc comment beside\n"
+           "           `flat_named` and this entry: the next named type the check must\n"
+           "           widen for is the trigger to give `Kind` a representation bit,\n"
+           "           not to grow the list",
     "I47": "no grep tells a COMPLETE anchor list from a partial one — the anchors\n"
            "           are whatever the grammar can put in the range, so a helper taking\n"
            "           `List<Token>` of names reads identically whether or not the span\n"

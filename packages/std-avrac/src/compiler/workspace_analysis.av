@@ -76,12 +76,15 @@ impl Workspace {
         }
     }
 
-    /// A unit's identity: its symbol, interned.
-    mut fn spec_id(w: Wanted) -> int {
-        let known: int? = self.specs.get(w.name)
-        if known != null { return known! }
-        let id = self.asks.length
-        spec_put(self.specs, w.name, id)
+    /// A unit's identity: its symbol, interned in place in the ONE unit
+    /// table. The table is a Cell the capture shares, so minting is a
+    /// read of the receiver — the write a capture would hide is gone,
+    /// and with it the warning that spoke about it.
+    fn spec_id(w: Wanted) -> int {
+        let held = self.asks.get()
+        let known = [i for i, x in held if x.name == w.name]
+        if !known.is_empty() { return known[0] }
+        let id = held.length
         self.asks.push(w)
         id
     }
@@ -91,10 +94,12 @@ impl Workspace {
     /// compile-time run may lower a unit before the last has been.
     fn extern_symbols() -> List<string> {
         let known = self.decls.decls.length
-        let held: ExternNames? = self.externs.at(0)
+        let held: ExternNames? = self.externs.get().at(0)
         if held != null && held!.decls == known { return held!.names }
         let names = self.decls.extern_names()
-        self.externs.keep(0, ExternNames { decls: known, names: names })
+        mut kept = self.externs.get()
+        kept.keep(0, ExternNames { decls: known, names: names })
+        self.externs.set(kept)
         names
     }
 
@@ -102,7 +107,7 @@ impl Workspace {
     /// unit; the specializations it wants are other units.
     fn lowered(id: int) -> Unit {
         match self.units.start_recursive(id) { .Reuse(value) -> { return value }, .Compute -> nothing() }
-        self.units.finish(id, self.lower_requested(self.asks[id]), self.db.revision())
+        self.units.finish(id, self.lower_requested(self.asks.get()[id]), self.db.revision())
     }
 
     /// The store, attached by a build; null outside one.
@@ -147,7 +152,7 @@ impl Workspace {
     /// lower that source on demand; ordinary program lowering still reuses
     /// the held object through `lowered` above.
     fn lowered_for_eval(id: int) -> Unit {
-        let w = self.asks[id]
+        let w = self.asks.get()[id]
         if w.decl == null || !self.is_held(w.file) { return self.lowered(id) }
         self.lower_requested(w)
     }
@@ -165,7 +170,9 @@ impl Workspace {
 
     /// `paths` joined to what `reader`'s compile-time runs read.
     fn read_by(reader: string, paths: List<string>) {
-        self.hold.runs.set(reader, distinct((self.hold.runs.get(reader) ?? []).concat(paths)))
+        mut runs = self.hold.runs.get()
+        runs.set(reader, distinct((runs.get(reader) ?? []).concat(paths)))
+        self.hold.runs.set(runs)
     }
 
     /// A RUN'S PROGRAM, lowered for `f`: every body it reaches remains a shared
@@ -184,10 +191,10 @@ impl Workspace {
 
     fn settle_id(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> int {
         let name = self.settle_symbol(f, root, seats)
-        let known: int? = self.settle_specs.get(name)
-        if known != null { return known! }
-        let id = self.settle_asks.length
-        self.settle_specs.set(name, id)
+        let held = self.settle_asks.get()
+        let known = [i for i, a in held if a.name == name]
+        if !known.is_empty() { return known[0] }
+        let id = held.length
         self.settle_asks.push(SettleAsk { file: f, root: root, name: name, seats: seats })
         id
     }
@@ -215,7 +222,7 @@ impl Workspace {
             .Reuse(_) -> { return false },
             .Compute -> self.const_type_facts.begin(id),
         }
-        let ask = self.settle_asks[id]
+        let ask = self.settle_asks.get()[id]
         // only a const's statement has a type to publish
         let held: StmtId? = const_stmt(ask.root)
         if held == null {
@@ -242,7 +249,7 @@ impl Workspace {
             .Reuse(held) -> { return reused_settlement(held) },
             .Compute -> self.settlements.begin(id),
         }
-        let ask = self.settle_asks[id]
+        let ask = self.settle_asks.get()[id]
         let root: ExprId = match ask.root {
             .Const(s) -> self.analysis(ask.file).view.store.const_value(s)!,
             .Expr(e) -> e,
@@ -300,14 +307,14 @@ impl Workspace {
     /// back as what it SAID.
     fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
         let name = "lift$${f.index}$${call.index}$${d.index}"
-        let known: int? = self.lift_specs.get(name)
-        if known != null {
-            self.lift_asks.set(known!, lift_ask(d, f, s, args))
-            return self.lifted_at(known!)
+        let held = self.lift_asks.get()
+        let known = [i for i, a in held if a.name == name]
+        if !known.is_empty() {
+            self.lift_asks.set_at(known[0], lift_ask(name, d, f, s, args))
+            return self.lifted_at(known[0])
         }
-        let id = self.lift_asks.length
-        self.lift_specs.set(name, id)
-        self.lift_asks.push(lift_ask(d, f, s, args))
+        let id = held.length
+        self.lift_asks.push(lift_ask(name, d, f, s, args))
         self.lifted_at(id)
     }
 
@@ -320,7 +327,7 @@ impl Workspace {
             .Reuse(held) -> { return reused_lift(held) },
             .Compute -> self.lift_results.begin(id),
         }
-        let ask = self.lift_asks[id]
+        let ask = self.lift_asks.get()[id]
         let r = self.lifted_once(ask.decl, ask.file, ask.stmt, ask.args)
         let held = match r {
             .Ok(crossed) -> LiftResult.Crossed(crossed),

@@ -1525,8 +1525,10 @@ Syntax the grammar lacks:
   Each arm on its own line is the ordinary spelling and parses.
 - A PRESENT-BIND arm after a COMMA-ended arm (`null -> a,` then `v?
   -> b`): "expected `}` to close the `match`" — the comma continues
-  the line and `v?` is read into it. Separate such arms by line, as
-  the program tests do; variant and literal arms take the comma.
+  the line and `v?` is read into it. AND A PRESENT-BIND ARM ENDING IN
+  A COMMA (`v? -> v,` then `null -> 0`) refuses the same way, at the
+  first arm. Separate such arms by line, as the program tests do;
+  variant and literal arms take the comma.
 - A match arm whose body is an EMPTY BLOCK (`1 -> {}` in statement
   position): `{}` is an empty map — F2013 "a `match`'s arms
   disagree: `void` vs the first arm's `{}`".
@@ -1554,12 +1556,13 @@ Syntax the grammar lacks:
   hold this yet" (help: "nullable slots arrive with ownership's next
   slice"). A writing verb answers what it wrote instead —
   `@std/io`'s `write_text`/`make_dirs`/`remove` answer the path.
-- A `mut` SEAT CANNOT BE ASSIGNED WHOLE: `a = a + 1` on a `mut a:
-  int` parameter is F3005 "`a` is a `mut` seat — assigning it whole
-  arrives with the inout ABI", help "write a path under it (`a.field
-  = …`), or answer the new value". A `mut` seat is a place the
-  CALLER owns; writing a path under it reaches the caller's value,
-  replacing it whole does not.
+- A `mut` SEAT CANNOT BE ASSIGNED WHOLE, BY DESIGN, NOT PENDING
+  MACHINERY: `a = a + 1` on a `mut a: int` parameter is F3005 "`a`
+  is a `mut` seat — a seat is written along a path, never replaced
+  whole", help "wrap the value in a `Cell<T>` and `.set(…)` it,
+  write a path under it (`a.field = …`), or answer the new value".
+  `Cell<T>` is the door for whole reassignment from inside a callee
+  (docs/2026_09_22_S2C_CELL_SEAT_DESIGN.md).
 - A TOP-LEVEL `const` IS A DECLARATION, like a fn: module-wide,
   order-free, exported only when it says `export`. Two in one module
   clash (F3003 in one file, F3017 across files); a `let` of the same
@@ -1777,6 +1780,22 @@ Runtime facts, ours to ratify:
   and `avra build` are native and have no such floor (5000 deep
   runs). The limit is what keeps a runaway a trap; measure, never
   guess, when it moves.
+- `parse_int` TAKES EXACTLY `-`? DIGITS, NEVER MORE — no leading
+  `+`, no surrounding space, no digit separator, no fraction or
+  exponent, so `"+42"`, `" 42"` and `"4_2"` are all absent; the
+  caller trims and strips a sign prefix first, on the two-hats law
+  (a parser accepting two spellings of one number is the hazard).
+  Past the ceiling on EITHER side answers absent rather than
+  wrapping — except the smallest int itself, `-9223372036854775808`,
+  which `parse_int` answers WHOLE though the LANGUAGE'S OWN INT
+  LITERAL cannot spell it: the lexer's token grammar has no leading
+  sign, so the unsigned digit run overflows one short of where a
+  trailing `-` would land. The row is two calls over one guarded
+  walk (`avra_str_parses_int`/`avra_str_parsed_int`,
+  `avra_int_parse_walk` in avra_runtime.c) — `RtKind`'s one-scalar
+  answer has no shape for a nullable int yet, so a presence question
+  and a value question is the crossing, the way `avra_map_has`/
+  `avra_map_get` already do it.
 
 ## Working discipline
 
@@ -1840,6 +1859,13 @@ Runtime facts, ours to ratify:
   small programs: its log is bounded but a guarded compiler run
   over a package is still a machine's worth. Scratch probes
   (`./avra check` of one file) are sub-second and need no lock.
+  AND A PROBE LIVES OUTSIDE THE TREE: `./avra check build/scratch/x.av`
+  under any directory with an `avra.toml` above it answers exit 0
+  and NOTHING for a file full of syntax errors — the file is not a
+  program of that workspace, so nothing is examined and nothing is
+  said (a check that examined nothing, in the CLI's own clothes;
+  filed the day it was found). Probe from the session scratchpad or
+  `/tmp`, where a refusal actually prints.
 - A PATCH SCRIPT that inserts before an anchor, or replaces `old`
   with `new` where `new` CONTAINS `old` (an `export` prefix, a doc
   comment), applies TWICE when re-run after a partial failure: the

@@ -6,7 +6,7 @@
 //! exponent is refused by name rather than rounded. Strings decode
 //! every escape, `\uXXXX` and surrogate pairs included. Every
 //! refusal is a `JsonError` that says where.
-use @std.text.{builder, repeat, from_codepoint}
+use @std.text.{builder, repeat, from_codepoint, parse_int}
 use @std.errors.{Error, ErrorInfo, info}
 
 // ── The value ───────────────────────────────────────────────────
@@ -184,6 +184,7 @@ export enum JsonError {
     BadEscape(at: int)
     Fraction(at: int)
     Trailing(at: int)
+    Overflow(at: int)
 }
 
 impl Error for JsonError {
@@ -194,6 +195,7 @@ impl Error for JsonError {
             .BadEscape(at) -> info("json.bad_escape", "the escape at byte ${at} names nothing"),
             .Fraction(at) -> info("json.fraction", "the number at byte ${at} has a fraction or exponent — numbers are integers here"),
             .Trailing(at) -> info("json.trailing", "text goes on past the value, at byte ${at}"),
+            .Overflow(at) -> info("json.overflow", "the number at byte ${at} does not fit an int"),
         }
     }
 }
@@ -374,7 +376,8 @@ fn hex_value(c: int) -> int? {
 }
 
 /// `-`? digits — an integer. A `.`, `e` or `E` after them is the
-/// fraction this reader refuses by name.
+/// fraction this reader refuses by name; past the ceiling on either
+/// side is `Overflow`.
 fn scan_number(text: string, n: int, i: int) -> Scan {
     mut j = i
     if at(text, n, j, 45) { j = j + 1 }
@@ -382,19 +385,8 @@ fn scan_number(text: string, n: int, i: int) -> Scan {
     while j < n && is_digit(text.char_code(j)) { j = j + 1 }
     if j == digits_from { return Scan.Refused(unexpected(text, n, j, "a digit")) }
     if at(text, n, j, 46) || at(text, n, j, 101) || at(text, n, j, 69) { return Scan.Refused(JsonError.Fraction(i)) }
-    Scan.Value(Json.Int(int_of(text, i, j)), j)
-}
-
-fn int_of(text: string, lo: int, hi: int) -> int {
-    let negative = text.char_code(lo) == 45
-    mut v = 0
-    mut k = if negative { lo + 1 } else { lo }
-    while k < hi {
-        v = v * 10 + (text.char_code(k) - 48)
-        k = k + 1
-    }
-    if negative { return 0 - v }
-    v
+    let v? = parse_int(text.substring(i, j)) else { return Scan.Refused(JsonError.Overflow(i)) }
+    Scan.Value(Json.Int(v), j)
 }
 
 /// `true`, `false` or `null` — any other word is unexpected.

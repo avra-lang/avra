@@ -75,7 +75,7 @@ type Hold = {
     homes: Map<string, bool>,
     held_wants: List<Wanted>,
     body_asks: Cell<List<string>>,
-    runs: Map<string, List<string>>,
+    runs: Cell<Map<string, List<string>>>,
     settling: Cell<List<string>>,
     hold_asked: List<string>,
     read_with: List<string>,
@@ -88,8 +88,9 @@ type Hold = {
 }
 
 fn new_hold() -> Hold {
+    let no_runs: Map<string, List<string>> = {}
     Hold {
-        homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), runs: {}, settling: Cell.new(no_paths()),
+        homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), runs: Cell.new(no_runs), settling: Cell.new(no_paths()),
         hold_asked: [], read_with: [], read_files: [], minted: {}, file_ready: new_table(), holds_settled: Cell.new(false),
         named_in: {}, held_flat: [],
     }
@@ -133,7 +134,7 @@ export type Workspace = {
     manifests: Memo<Manifest>,
     // the program's extern symbols, gathered once at the first
     // lowering (index 0)
-    externs: Table<ExternNames>,
+    externs: Cell<Table<ExternNames>>,
     programs: Memo<Parsed>,
     plain: Memo<Parsed>,
     file_items: Memo<List<DeclId>>,
@@ -147,15 +148,12 @@ export type Workspace = {
     method_diags: List<MethodDiagIndex>,
     folds: Memo<TypeFacts>,
     analyses: Memo<Analysis>,
-    specs: Map<string, int>,
-    asks: List<Wanted>,
+    asks: Cell<List<Wanted>>,
     units: Memo<Unit>,
-    lift_specs: Map<string, int>,
-    lift_asks: List<LiftAsk>,
+    lift_asks: Cell<List<LiftAsk>>,
     lift_results: Memo<LiftResult>,
     generated: Memo<List<DeclId>>,
-    settle_specs: Map<string, int>,
-    settle_asks: List<SettleAsk>,
+    settle_asks: Cell<List<SettleAsk>>,
     settlements: Memo<Settlement>,
     /// A MODULE'S RECORD, AS THIS BUILD HAS READ IT.
     records: Records,
@@ -188,7 +186,7 @@ export type Workspace = {
 
 /// One annotation query's stable inputs. Its dense list position is
 /// the `Lifted` family's key; the call expression mints that identity.
-type LiftAsk = { decl: DeclId, file: FileId, stmt: StmtId, args: List<ExprId> }
+type LiftAsk = { name: string, decl: DeclId, file: FileId, stmt: StmtId, args: List<ExprId> }
 
 /// A const site's stable inputs. The dense list position is the
 /// `Settled` family's key; its initializer is read inside the query.
@@ -202,8 +200,8 @@ fn const_stmt(root: SettleRoot) -> StmtId? {
     }
 }
 
-fn lift_ask(d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> LiftAsk {
-    LiftAsk { decl: d, file: f, stmt: s, args: args }
+fn lift_ask(name: string, d: DeclId, f: FileId, s: StmtId, args: List<ExprId>) -> LiftAsk {
+    LiftAsk { name: name, decl: d, file: f, stmt: s, args: args }
 }
 
 /// The query family's held value. A refusal remains here in full so a
@@ -372,9 +370,12 @@ impl Workspace {
 
 fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> int, lone: bool, per_file: bool) -> Workspace {
     let db = new_db()
+    let no_asks: List<Wanted> = []
+    let no_lifts: List<LiftAsk> = []
+    let no_settles: List<SettleAsk> = []
     mut ws = Workspace {
         host: host, root: root, lang: lang, db: db, decls: language_decls(lang), store: null,
-        sources: new_memo<SourceFile>(db, ordinal(Family.Source)), manifests: new_memo<Manifest>(db, ordinal(Family.Manifest)), externs: new_table(),
+        sources: new_memo<SourceFile>(db, ordinal(Family.Source)), manifests: new_memo<Manifest>(db, ordinal(Family.Manifest)), externs: Cell.new(new_table<ExternNames>()),
         programs: new_memo<Parsed>(db, ordinal(Family.Parsed)),
         plain: new_memo<Parsed>(db, ordinal(Family.Plain)),
         file_items: new_memo<List<DeclId>>(db, ordinal(Family.Items)),
@@ -383,10 +384,10 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)), sig_voices: new_table(),
         decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), const_type_facts: new_memo<TypeId>(db, ordinal(Family.ConstTyped)), method_clashes: new_table(), method_diags: [],
         folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
-        analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
-        lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
+        analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), asks: Cell.new(no_asks),
+        lift_asks: Cell.new(no_lifts), lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), records: new_records(), keys: new_keys(), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, hold: new_hold(), defects: [],
+        settle_asks: Cell.new(no_settles), settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), records: new_records(), keys: new_keys(), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, hold: new_hold(), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }

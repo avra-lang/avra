@@ -536,10 +536,14 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # second compile of the whole compiler for one case.
 # THE RECEIPT: a green gate names the tree it proved, so an
 # integration that takes that exact tree need not prove it again
-# (tools/gate_receipt.sh). A dirty tree writes none.
+# (tools/gate_receipt.sh). A dirty tree writes none, and neither does
+# one with no git tree to name (a Sprite's synced copy) — `write`
+# refuses in that case, which is honest and not a gate failure, so
+# its status is discarded here exactly as sprite-build.sh's call does.
 gate: seed-check stems vocab fingerprints rt-header witnesses externs idioms cited attack tested traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
-	@sh tools/gate_receipt.sh write
+	@sh tools/watch.sh --self-test
+	@sh tools/gate_receipt.sh write || true
 
 tested: $(COMPILER_OBJS) $(PACKAGE_OBJS) libs
 	@rm -rf packages/std-avrac/src/features/zz_probe

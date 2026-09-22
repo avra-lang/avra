@@ -1,18 +1,13 @@
 // The AST source projection: its output parses, reaches a fixed point
 // after one projection, and keeps the structure readers depend on.
 use @std.avrac.compiler.{parse_source}
-use @std.avrac.compiler.format.{render_source, render_statement, render_expression}
+use @std.avrac.compiler.format.{render_statement, render_expression}
 use @std.avrac.core.{Expr, Stmt, new_node_store}
-
-fn canonical(source: string) -> string {
-    let parsed = parse_source(source)
-    if !parsed.voices.list.is_empty() { return "<parse refused>" }
-    render_source(parsed.store, parsed.stmts)
-}
+use @std.avrac.testing.{projected}
 
 fn stable(source: string) -> bool {
-    let projected = canonical(source)
-    projected != "<parse refused>" && canonical(projected) == projected && same_tree(source, projected)
+    let out = projected(source)
+    out != "<parse refused>" && projected(out) == out && same_tree(source, out)
 }
 
 fn same_tree(source: string, projected: string) -> bool {
@@ -28,7 +23,7 @@ fn same_tree(source: string, projected: string) -> bool {
 spec "source text" {
     given "a small program" {
         then "layout and precedence have one canonical spelling" {
-            canonical("let x=1+2*3\nif x>2 {\nlet y=x\ny\n} else {\n0\n}") ==
+            projected("let x=1+2*3\nif x>2 {\nlet y=x\ny\n} else {\n0\n}") ==
                 "let x = 1 + 2 * 3\nif x > 2 {\n    let y = x\n    y\n} else {\n    0\n}"
         }
     }
@@ -40,14 +35,14 @@ spec "source text" {
             before.store.stmt_fingerprint(before.stmts[0]) != after.store.stmt_fingerprint(after.stmts[0])
         }
         then "an empty documentation line survives as `///`" {
-            canonical("///\nfn a() -> int { 1 }") == "///\nfn a() -> int {\n    1\n}" &&
+            projected("///\nfn a() -> int { 1 }") == "///\nfn a() -> int {\n    1\n}" &&
                 stable("///\nfn a() -> int { 1 }") &&
-                canonical("/// a\n///\nfn a() -> int { 1 }") == "/// a\n///\nfn a() -> int {\n    1\n}" &&
+                projected("/// a\n///\nfn a() -> int { 1 }") == "/// a\n///\nfn a() -> int {\n    1\n}" &&
                 stable("/// a\n///\nfn a() -> int { 1 }")
         }
         then "documentation survives annotations, modifiers, and nested trait members" {
             let source = "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int { 1 }\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}"
-            canonical(source) == "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int {\n    1\n}\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}" && stable(source)
+            projected(source) == "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int {\n    1\n}\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}" && stable(source)
         }
         then "declarations, control flow and effects reach a fixed point" {
             stable("""

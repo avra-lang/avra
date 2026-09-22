@@ -20,14 +20,24 @@ use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, TokenKind, term_kind}
 use compiler.{analyze_source}
 
 /// The class a case belongs to.
-export enum AttackClass { Degenerate, Malformed }
+export enum AttackClass { Degenerate, Malformed, Keyword }
 
 /// The malformed cases the compiler ACCEPTS. A survivor is a mutant
 /// the tolerance law lets through, and it is NOT a failure — it may be
 /// a valid program. It is recorded in `tools/attack.baseline` so a NEW
 /// one is refused: the baseline never grows without a decision.
 export fn survivors_of(g: Generated) -> List<Attack> {
-    [a for a in g.cases if a.class is .Malformed && accepts(a.source)]
+    [a for a in g.cases if is_mutant(a.class) && accepts(a.source)]
+}
+
+/// A case whose verdict the compiler CHOSE — every class but the one
+/// that asserts stability. A survivor is one of these the compiler
+/// accepts.
+fn is_mutant(c: AttackClass) -> bool {
+    match c {
+        .Degenerate -> false,
+        .Malformed or .Keyword -> true,
+    }
 }
 
 fn accepts(src: string) -> bool {
@@ -82,7 +92,7 @@ fn rule_attacks(g: Grammar, r: Rule) -> List<Attack> {
 fn branch_attacks(g: Grammar, r: Rule, branch: int) -> List<Attack> {
     let s = r.body.branches[branch]
     let base = seq_sample(g, s, [r.name], null, [])
-    degenerate(g, r, s).concat(malformed(base))
+    degenerate(g, r, s).concat(malformed(base)).concat(keyworded(g, base))
 }
 
 /// The degenerate class: every repeated item in a branch, spelled
@@ -136,6 +146,35 @@ fn malformed(base: string) -> List<Attack> {
     if toks.is_empty() { return [] }
     let sources = distinct(deletions(toks).concat(duplications(toks)).concat(swap_mutants(toks)))
     [Attack { class: AttackClass.Malformed, source: src } for src in sources]
+}
+
+/// The keyword-replace class: a token replaced by a keyword the
+/// grammar ITSELF spells, different from the token. The LAW is
+/// tolerance, not refusal — replacing `true` with `false` in bool_lit
+/// is a VALID program, and a refusal assertion there would manufacture
+/// a survivor; a new survivor is a decision in `tools/attack.baseline`.
+fn keyworded(g: Grammar, base: string) -> List<Attack> {
+    let toks = [t for t in base.split(" ") if !t.is_empty()]
+    let words = g.keywords()
+    if toks.is_empty() || words.is_empty() { return [] }
+    let sources = distinct([join_replace(toks, j, other_word(toks[j], words)) for j, t in toks])
+    [Attack { class: AttackClass.Keyword, source: src } for src in sources]
+}
+
+/// A grammar keyword that is not the token being replaced, so the
+/// mutant is a real substitution; the token stands when the grammar
+/// spells only that one word, and the dedupe drops the no-op.
+fn other_word(token: string, words: List<string>) -> string {
+    words.find(it != token) ?? token
+}
+
+fn join_replace(xs: List<string>, at: int, word: string) -> string {
+    joined([worded(t, j, at, word) for j, t in xs], " ")
+}
+
+fn worded(t: string, j: int, at: int, word: string) -> string {
+    if j == at { return word }
+    t
 }
 
 /// A token removed — but an EMPTY surface is a VALID empty program,
@@ -337,7 +376,8 @@ export fn attack_test_source(feature: string, g: Generated) -> string {
 
 fn case_blocks(cases: List<Attack>) -> List<string> {
     [given_block(AttackClass.Degenerate, "degenerate shapes — a valid surface, and must stay valid", cases),
-     given_block(AttackClass.Malformed, "malformed surface — must be diagnosed", cases)]
+     given_block(AttackClass.Malformed, "malformed surface (delete, duplicate, swap) — must be diagnosed", cases),
+     given_block(AttackClass.Keyword, "keyword-replace — must be diagnosed or a valid program", cases)]
 }
 
 /// Whether a case belongs to the class a block renders — a `match`,
@@ -346,6 +386,7 @@ fn in_class(have: AttackClass, want: AttackClass) -> bool {
     match have {
         .Degenerate -> want is .Degenerate,
         .Malformed -> want is .Malformed,
+        .Keyword -> want is .Keyword,
     }
 }
 
@@ -366,7 +407,7 @@ fn attack_case(a: Attack) -> string {
         // keyword can yield a VALID program (`{"s"}` is a block), so a
         // refusal assertion there is false and manufactures a survivor.
         // A TRAP is not a verdict and dies in the call, failing the case.
-        .Malformed -> "tolerates(${quoted_text(a.source)})",
+        .Malformed or .Keyword -> "tolerates(${quoted_text(a.source)})",
     }
     "        then ${quoted_text(a.source)} { ${want} }"
 }
