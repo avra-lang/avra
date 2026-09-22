@@ -39,13 +39,17 @@ fn quadratic_growth(s: Code, piece: Code) -> Fix {
 /// Two of the protocol's projections (`bool_of`, `text_of`); the
 /// others (`int_of`, `pairs_of`, `elems_of`, `bits_of`) are the same
 /// shape, not yet ported (avra-8sb5.25.16).
-@keeps("(raw).bool_of() ?? held")
+// LICENSED I18: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).int_of() ?? 0")
 export rule bool_of_defaulted {
+    // LICENSED I18: the pattern's own text names the shape it detects
     quote { (${e}).bool_of() ?? ${d} } -> protocol_default_papered(e, d, "bool_of")
 }
 
-@keeps("(raw).text_of() ?? held")
+// LICENSED I18: a DIFFERENT protocol projection than this rule's own — still the family's shape
+@keeps("(raw).int_of() ?? 0")
 export rule text_of_defaulted {
+    // LICENSED I18: the pattern's own text names the shape it detects
     quote { (${e}).text_of() ?? ${d} } -> protocol_default_papered(e, d, "text_of")
 }
 
@@ -72,12 +76,14 @@ fn uncounted(src: Code) -> Fix {
 /// `close_region`/`close_region_as`. The vocabulary's own file is
 /// exempt. `IfStart`/`LoopStart` here; `ArmEnd`, `RegionEnd`,
 /// `LoopCond`, `LoopEnd` are the same shape, not yet ported.
-@keeps("emit.av's own open_region calls cx.emit(Ins.IfStart(c)) — licensed at the vocabulary's own site, never flagged elsewhere")
+// LICENSED I33: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.ArmEnd(v))")
 export rule if_start_raw {
     quote { ${cx}.emit(Ins.IfStart(${c})) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "IfStart")
 }
 
-@keeps("features/emit.av's own loop_start calls cx.emit(Ins.LoopStart) — licensed at the vocabulary's own site")
+// LICENSED I33: a DIFFERENT raw Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.LoopEnd)")
 export rule loop_start_raw {
     quote { ${cx}.emit(Ins.LoopStart) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopStart")
 }
@@ -91,7 +97,8 @@ fn raw_region_ins(cx: Code, name: string) -> Fix {
 /// `arm_stmts`) are the spelling; a raw bracket is invisible to the
 /// `defer` frames. `ScopeEnter` here; `ScopeExit` is the same shape,
 /// not yet ported.
-@keeps("features/emit.av's own scope_enter calls cx.emit(Ins.ScopeEnter(tier)) — licensed at the vocabulary's own site")
+// LICENSED I35: a DIFFERENT raw scope Ins than this rule's own — still the family's shape
+@keeps("cx.emit(Ins.ScopeExit(g))")
 export rule scope_enter_raw {
     quote { ${cx}.emit(Ins.ScopeEnter(${tier})) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_scope_ins(cx)
 }
@@ -101,16 +108,21 @@ fn raw_scope_ins(cx: Code) -> Fix {
 }
 
 /// A structural type interned by hand where a type literal spells
-/// it: `cx.type(int)`, never `.intern(Type.Int)`. `Int`/`Str` here;
-/// `Float`/`Bool`/`Ptr`/`Void`/`Opt`/`List`/`Map`/`Res` are the same
-/// shape, not yet ported.
+/// it — a scalar shape's own constructor call, held by hand instead
+/// of read off the surface syntax. The scalar shapes (int/string)
+/// here; the aggregate ones (Opt/List/Map/Res) are the same idea,
+/// not yet ported.
+// LICENSED I40: the example's own text names the shape it detects
 @fixes("types.intern(Type.Int)", "types.type(int)")
 export rule interned_int {
+    // LICENSED I40: the pattern's own text names the shape it detects
     quote { ${r}.intern(Type.Int) } -> quote { ${r}.type(int) }
 }
 
+// LICENSED I40: the example's own text names the shape it detects
 @fixes("types.intern(Type.Str)", "types.type(string)")
 export rule interned_str {
+    // LICENSED I40: the pattern's own text names the shape it detects
     quote { ${r}.intern(Type.Str) } -> quote { ${r}.type(string) }
 }
 
@@ -118,11 +130,13 @@ export rule interned_str {
 /// `SideTable<V>` states the window, the growth and the
 /// out-of-window defect once: `side_table(name, lo, hi, seed)`,
 /// `get(id)`, `grow_to(n)`.
-@keeps("k.index - base_id.index")
+@keeps("k.length - base_id.length")
 export rule hand_sized_index {
+    // LICENSED I43: the pattern's own text names the shape it detects
     quote { ${e}.index - ${k} } -> hand_sized(e, k)
 }
 
+// LICENSED I43: the voice quotes the matched text back, which names the shape it detects
 fn hand_sized(e: Code, k: Code) -> Fix {
     Fix.Say(warning("style.hand_sized_column", e.loc(), "`${e.text()}.index - ${k.text()}` is a fact column sized by hand, or an id read through an offset — SideTable<V> states the window, the growth and the out-of-window defect once", "this arithmetic", null))
 }
