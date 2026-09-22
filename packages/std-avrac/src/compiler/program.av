@@ -138,13 +138,15 @@ export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
     type_ref_at([o.result!], 0)
 }
 
-/// A declared STRUCT's own TypeId, by name — null when no declared
-/// struct wears it (a fn, an enum and a named alias all answer null
-/// here too; each has its own signature shape, not a struct's).
-fn struct_type_ref(decls: Decls, name: string) -> TypeId? {
-    let decl? = decls.decls.get().find(it.name == name) else { return null }
-    let _sig? = (decls.sig(decl.id))?.record_sig() else { return null }
-    decls.record_type(decl.id)
+impl Decls {
+    /// A declared STRUCT's own TypeId, by name — null when no declared
+    /// struct wears it (a fn, an enum and a named alias all answer null
+    /// here too; each has its own signature shape, not a struct's).
+    fn struct_type_ref(name: string) -> TypeId? {
+        let decl? = self.decls.get().find(it.name == name) else { return null }
+        let _sig? = (self.sig(decl.id))?.record_sig() else { return null }
+        self.record_type(decl.id)
+    }
 }
 
 /// Attach each source-ordered doc group to the nearest statement
@@ -206,7 +208,7 @@ impl Program {
     fn explain_repr(type_text: string) -> string? {
         let ann? = parse_type_ref(avra(), type_text) else { return null }
         mut decls = self.ws.decls
-        let base? = spelled_type(decls.types, ann with { optional: false }) ?? struct_type_ref(decls, ann.name) else { return null }
+        let base? = spelled_type(decls.types, ann with { optional: false }) ?? decls.struct_type_ref(ann.name) else { return null }
         let ty = if ann.optional { decls.types.type(base?) } else { base }
         repr_word(decls.types, ty)
     }
@@ -227,7 +229,7 @@ impl Program {
         let decls = self.ws.decls
         let decl? = decls.decls.get().find((d: Decl) -> d.name == fn_name && decls.fn_name(d.id) != null) else { return null }
         if decls.seat_count(decl.id) == 0 { return null }
-        let chain? = write_chain(self.ws, decls, decl.id, 0, []) else { return null }
+        let chain? = self.ws.write_chain(decl.id, 0, []) else { return null }
         chain.join(" -> ")
     }
 

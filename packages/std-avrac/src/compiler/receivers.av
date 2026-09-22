@@ -436,26 +436,29 @@ impl Workspace {
     }
 }
 
-/// A WITNESS for why seat `i` of `d` is written — one path through
-/// the fixpoint's own edges, from the asked seat to the fn whose
-/// declaration or body writes it directly. `settle_writers` proves
-/// the boolean; this walks it back to its cause — `avra explain
-/// writes` prints the same names, in the same order, as fn names
-/// joined by their calls. `ws.summary(d)` is recomputed here rather
-/// than read from a stored table: the pass keeps only the fixpoint's
-/// OUTCOME (`seat_written_so_far`), never the per-fn edges it
-/// settled from, so a witness asks for the evidence again — pure and
-/// cheap, one fn at a time, never the whole-program pass. Null when
-/// the seat is not written, or no ACYCLIC witness reaches a cause (a
-/// cycle where every fn in it is written only through another
-/// member of it).
-fn write_chain(ws: Workspace, decls: Decls, d: DeclId, i: int, seen: List<DeclId>) -> List<string>? {
-    if !decls.seat_writes_so_far(d, i) { return null }
-    let hop = decls.decl(d).name
-    let s = ws.summary(d)
-    if (i == 0 && decls.declares_writing(d)) || s.own[i] { return [hop] }
-    if seen.any(same_decl(it, d)) { return null }
-    let edge? = s.edges.find((f: Flow) -> f.from == i && decls.seat_writes_so_far(f.callee, f.to)) else { return null }
-    let rest? = write_chain(ws, decls, edge.callee, edge.to, seen.concat([d])) else { return null }
-    [hop].concat(rest)
+impl Workspace {
+    /// A WITNESS for why seat `i` of `d` is written — one path through
+    /// the fixpoint's own edges, from the asked seat to the fn whose
+    /// declaration or body writes it directly. `settle_writers` proves
+    /// the boolean; this walks it back to its cause — `avra explain
+    /// writes` prints the same names, in the same order, as fn names
+    /// joined by their calls. `self.summary(d)` is recomputed here
+    /// rather than read from a stored table: the pass keeps only the
+    /// fixpoint's OUTCOME (`seat_written_so_far`), never the per-fn
+    /// edges it settled from, so a witness asks for the evidence
+    /// again — pure and cheap, one fn at a time, never the
+    /// whole-program pass. Null when the seat is not written, or no
+    /// ACYCLIC witness reaches a cause (a cycle where every fn in it
+    /// is written only through another member of it).
+    fn write_chain(d: DeclId, i: int, seen: List<DeclId>) -> List<string>? {
+        let decls = self.decls
+        if !decls.seat_writes_so_far(d, i) { return null }
+        let hop = decls.decl(d).name
+        let s = self.summary(d)
+        if (i == 0 && decls.declares_writing(d)) || s.own[i] { return [hop] }
+        if seen.any(same_decl(it, d)) { return null }
+        let edge? = s.edges.find((f: Flow) -> f.from == i && decls.seat_writes_so_far(f.callee, f.to)) else { return null }
+        let rest? = self.write_chain(edge.callee, edge.to, seen.concat([d])) else { return null }
+        [hop].concat(rest)
+    }
 }
