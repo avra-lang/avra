@@ -6,25 +6,44 @@
 //! fingerprint (span-blind; text equality is too strict), a keep
 //! answered by absence alone. `avra test` (`suite.av`) runs one of
 //! these per example, for every rule the package under test declares.
+use core.{root_of}
 use features.{Code, Fix}
 use features.rules.{nearest_fix}
 use compiler.{analyze_source, Analysis}
 
 /// The example's own root: an expression statement stands as its
-/// expression (the same reduction a rule's own pattern root takes),
+/// expression (the same reduction a rule's own pattern root takes,
+/// `core.root_of` — never the language's OWN tail-if-chain
+/// promotion, which would root a both-branches-answering
+/// `if`/`else` example at a SYNTHESISED `Expr.If` while the
+/// pattern it is tested against stays `Stmt.IfStmt`; avra-8sb5.25.18),
 /// every other statement as itself; absent for text that parsed to
 /// no statement at all (an @fixes/@keeps whose text does not parse
 /// is the honest miss it looks like, never a crash).
 fn example_root(a: Analysis) -> Code? {
     let s? = a.view.stmts.first() else { return null }
-    let e? = a.view.store.answer_of(s) else { return a.code_at(.Stmt(s)) }
-    a.code_at(.Expr(e))
+    a.code_at(root_of(a.view.store, s))
+}
+
+/// An example, analysed with a harmless trailing statement appended.
+/// The language's own tail-if-chain law canonicalises a BOTH-
+/// BRANCHES-ANSWERING trailing `if`/`else` into the `Expr.If` it
+/// answers — correct everywhere a program is read, and invisible to
+/// `example_root`'s `root_of` reduction, which runs AFTER that
+/// canonicalisation already happened: the written `Stmt.IfStmt`
+/// never reaches the tree at all when it is the example's only
+/// statement. A rule author's example names a NODE SHAPE, not a
+/// tail position, so the seam is closed here rather than asking
+/// every `@fixes`/`@keeps` to know this and pad its own text
+/// (avra-8sb5.25.18).
+fn analyzed_example(text: string) -> Analysis {
+    analyze_source("${text}\n0\n")
 }
 
 /// Whether `rule`, applied to `before`, answers a rewrite whose
 /// rendered text — re-parsed — is span-blind equal to `after`.
 export fn checks_fixes(applied: fn(Code) -> Fix?, before: string, after: string) -> bool {
-    let root? = example_root(analyze_source(before)) else { return false }
+    let root? = example_root(analyzed_example(before)) else { return false }
     let hit? = nearest_fix(applied, root) else { return false }
     let text? = hit.rendered() else { return false }
     same_fingerprint(text, after)
@@ -32,12 +51,12 @@ export fn checks_fixes(applied: fn(Code) -> Fix?, before: string, after: string)
 
 /// Whether the rule answers nothing anywhere in `before`.
 export fn checks_keeps(applied: fn(Code) -> Fix?, before: string) -> bool {
-    let root? = example_root(analyze_source(before)) else { return true }
+    let root? = example_root(analyzed_example(before)) else { return true }
     nearest_fix(applied, root) == null
 }
 
 fn same_fingerprint(rendered: string, after: string) -> bool {
-    let r? = example_root(analyze_source(rendered)) else { return false }
-    let a? = example_root(analyze_source(after)) else { return false }
+    let r? = example_root(analyzed_example(rendered)) else { return false }
+    let a? = example_root(analyzed_example(after)) else { return false }
     r.of.view.store.subtree_fp(r.at) == a.of.view.store.subtree_fp(a.at)
 }

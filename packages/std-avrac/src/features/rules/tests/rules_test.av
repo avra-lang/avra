@@ -26,6 +26,27 @@ export rule seen_typed {
     quote { ${x} } if x.declared() != null -> Fix.Say(warning("test.seen_typed", x.loc(), "a bound name", "here", null))
 }
 
+/// avra-8sb5.25.18's own repro: a pattern rooted at `Stmt.IfStmt`
+/// (unparenthesised — the statement form) whose example is a bare
+/// if/else, both branches non-empty and each answering a value. The
+/// example text is exactly what once made `checks_fixes` answer
+/// false — not `@derive(Matchable)`'s `kids_stmt` (proved correct
+/// directly, core/tests/shape_test.av), and `avra expand` showing
+/// it twice is a rendering artifact (every `@derive(Matchable)`
+/// method is shown twice, byte-identical). The real cause: parsed as
+/// a WHOLE, STANDALONE program, this if/else is the program's only
+/// (hence trailing) statement, so the language's own tail-if-chain
+/// law canonicalises it into `Stmt.ExprStmt(Expr.If(...))` before
+/// ANY root-finding runs — the written `Stmt.IfStmt` never reaches
+/// the tree. `compiler/rule_examples.av`'s `analyzed_example` closes
+/// this by appending a harmless trailing statement before parsing,
+/// so an example's own first statement is never also its last.
+@fixes("if x == null { 0 } else { x! }", "x ?? 0")
+@keeps("if next() == null { 0 } else { next()! }")
+export rule stmt_if_null_ternary {
+    quote { if ${x} == null { ${d} } else { ${x}! } } if x.pure() -> quote { ${x} ?? ${d} }
+}
+
 /// Whether `applied` fires anywhere in `a`'s first statement.
 fn fires(applied: fn(Code) -> Fix?, a: Analysis) -> bool {
     match a.view.stmts.first() {
@@ -54,6 +75,14 @@ spec "features/rules (mechanics)" {
         }
         then "a plain literal, bound to nothing, decides it does not" {
             !fires(seen_typed, analyze_source("fn h() -> int { 1 + 2 }"))
+        }
+    }
+    given "a pattern rooted at Stmt.IfStmt (avra-8sb5.25.18)" {
+        then "a bare if/else example, both branches answering a value, still fires" {
+            checks_fixes(stmt_if_null_ternary, "if x == null { 0 } else { x! }", "x ?? 0")
+        }
+        then "an impure branch keeps" {
+            checks_keeps(stmt_if_null_ternary, "if next() == null { 0 } else { next()! }")
         }
     }
 }
