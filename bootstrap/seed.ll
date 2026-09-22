@@ -334014,13 +334014,32 @@ define i1 @"av_$40std$2Eavrac$2Ecompiler$2Echecks_keeps"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2Eanalyze_source"(ptr %1)
   %3 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2Eexample_root"(ptr %2)
-  %4 = call ptr @"av_$40std$2Eavrac$2Efeatures$2Erules$2Enearest_fix"(ptr %0, ptr %3)
-  %cmp = icmp ne ptr %4, null
-  %not = xor i1 %cmp, true
+  %cmp = icmp ne ptr %3, null
+  br i1 %cmp, label %then, label %else
+
+then:                                             ; preds = %entry
+  call void @avra_rc_retain(ptr %3)
+  br label %endif
+
+else:                                             ; preds = %entry
+  call void @avra_rc_release(ptr %3)
+  call void @avra_rc_release(ptr %2)
+  ret i1 true
+
+endif:                                            ; preds = %postret, %then
+  %regval = phi ptr [ %3, %then ], [ null, %postret ]
+  %4 = call ptr @"av_$40std$2Eavrac$2Efeatures$2Erules$2Enearest_fix"(ptr %0, ptr %regval)
+  %cmp1 = icmp ne ptr %4, null
+  %not = xor i1 %cmp1, true
   call void @avra_rc_release(ptr %4)
+  call void @avra_rc_release(ptr %regval)
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %2)
   ret i1 %not
+
+postret:                                          ; No predecessors!
+  call void @avra_rc_retain(ptr null)
+  br label %endif
 }
 
 define ptr @"av_$40std$2Eavrac$2Efeatures$2Erules$2Enearest_fix"(ptr %0, ptr %1) {
@@ -334164,48 +334183,90 @@ lbody:                                            ; preds = %lhead
 
 define ptr @"av_$40std$2Eavrac$2Ecompiler$2Eexample_root"(ptr %0) {
 entry:
+  %slot = alloca ptr, align 8
+  store ptr null, ptr %slot, align 8
   %1 = call i64 @avra_array_get(ptr %0, i64 0)
   %boxed = inttoptr i64 %1 to ptr
   %2 = call i64 @avra_array_get(ptr %boxed, i64 2)
   %boxed1 = inttoptr i64 %2 to ptr
-  %3 = call i64 @avra_array_get(ptr %boxed1, i64 0)
-  %4 = call i64 @avra_array_get(ptr %0, i64 0)
-  %boxed2 = inttoptr i64 %4 to ptr
-  %5 = call i64 @avra_array_get(ptr %boxed2, i64 1)
-  %boxed3 = inttoptr i64 %5 to ptr
-  call void @avra_rc_retain(ptr %boxed3)
-  %6 = call ptr @"av_$40std$2Eavrac$2Ecore$2ENodeStore$2Eanswer_of"(ptr %boxed3, i64 %3)
-  call void @avra_rc_release(ptr %boxed3)
-  %cmp = icmp ne ptr %6, null
+  call void @avra_rc_retain(ptr null)
+  call void @avra_cell_release(ptr %slot)
+  store ptr null, ptr %slot, align 8
+  %3 = call i64 @avra_array_len(ptr %boxed1)
+  %cmp = icmp slt i64 0, %3
   br i1 %cmp, label %then, label %else
 
 then:                                             ; preds = %entry
-  %7 = call i64 @avra_array_get(ptr %6, i64 0)
+  %4 = call i64 @avra_array_get(ptr %boxed1, i64 0)
+  %5 = call ptr @avra_array_sized(i64 1)
+  call void @avra_array_push(ptr %5, i64 %4)
+  call void @avra_rc_retain(ptr %5)
+  call void @avra_cell_release(ptr %slot)
+  store ptr %5, ptr %slot, align 8
+  call void @avra_rc_release(ptr %5)
   br label %endif
 
 else:                                             ; preds = %entry
-  %8 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %8, i64 1)
-  call void @avra_array_push(ptr %8, i64 %3)
-  %9 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2EAnalysis$2Ecode_at"(ptr %0, ptr %8)
-  call void @avra_rc_release(ptr %8)
-  call void @avra_rc_release(ptr %6)
-  ret ptr %9
+  br label %endif
 
-endif:                                            ; preds = %postret, %then
-  %regval = phi i64 [ %7, %then ], [ 0, %postret ]
-  %10 = call ptr @avra_array_sized(i64 2)
-  call void @avra_array_push(ptr %10, i64 0)
-  call void @avra_array_push(ptr %10, i64 %regval)
-  %11 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2EAnalysis$2Ecode_at"(ptr %0, ptr %10)
-  call void @avra_rc_release(ptr %10)
-  call void @avra_rc_release(ptr %6)
-  ret ptr %11
+endif:                                            ; preds = %else, %then
+  %regval = phi i64 [ 0, %then ], [ 0, %else ]
+  %ld = load ptr, ptr %slot, align 8
+  %cmp2 = icmp ne ptr %ld, null
+  br i1 %cmp2, label %then3, label %else4
+
+then3:                                            ; preds = %endif
+  %6 = call i64 @avra_array_get(ptr %ld, i64 0)
+  br label %endif5
+
+else4:                                            ; preds = %endif
+  call void @avra_cell_release(ptr %slot)
+  ret ptr null
+
+endif5:                                           ; preds = %postret, %then3
+  %regval6 = phi i64 [ %6, %then3 ], [ 0, %postret ]
+  %7 = call i64 @avra_array_get(ptr %0, i64 0)
+  %boxed7 = inttoptr i64 %7 to ptr
+  %8 = call i64 @avra_array_get(ptr %boxed7, i64 1)
+  %boxed8 = inttoptr i64 %8 to ptr
+  call void @avra_rc_retain(ptr %boxed8)
+  %9 = call ptr @"av_$40std$2Eavrac$2Ecore$2ENodeStore$2Eanswer_of"(ptr %boxed8, i64 %regval6)
+  call void @avra_rc_release(ptr %boxed8)
+  %cmp9 = icmp ne ptr %9, null
+  br i1 %cmp9, label %then10, label %else11
 
 postret:                                          ; No predecessors!
+  br label %endif5
+
+then10:                                           ; preds = %endif5
+  %10 = call i64 @avra_array_get(ptr %9, i64 0)
+  br label %endif12
+
+else11:                                           ; preds = %endif5
+  %11 = call ptr @avra_array_sized(i64 2)
+  call void @avra_array_push(ptr %11, i64 1)
+  call void @avra_array_push(ptr %11, i64 %regval6)
+  %12 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2EAnalysis$2Ecode_at"(ptr %0, ptr %11)
+  call void @avra_cell_release(ptr %slot)
+  call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %9)
-  call void @avra_rc_release(ptr %8)
-  br label %endif
+  ret ptr %12
+
+endif12:                                          ; preds = %postret13, %then10
+  %regval14 = phi i64 [ %10, %then10 ], [ 0, %postret13 ]
+  %13 = call ptr @avra_array_sized(i64 2)
+  call void @avra_array_push(ptr %13, i64 0)
+  call void @avra_array_push(ptr %13, i64 %regval14)
+  %14 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2EAnalysis$2Ecode_at"(ptr %0, ptr %13)
+  call void @avra_cell_release(ptr %slot)
+  call void @avra_rc_release(ptr %13)
+  call void @avra_rc_release(ptr %9)
+  ret ptr %14
+
+postret13:                                        ; No predecessors!
+  call void @avra_rc_release(ptr %12)
+  call void @avra_rc_release(ptr %11)
+  br label %endif12
 }
 
 define ptr @"av_$40std$2Eavrac$2Ecompiler$2EAnalysis$2Ecode_at"(ptr %0, ptr %1) {
@@ -334240,24 +334301,22 @@ define i1 @"av_$40std$2Eavrac$2Ecompiler$2Echecks_fixes"(ptr %0, ptr %1, ptr %2)
 entry:
   %3 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2Eanalyze_source"(ptr %1)
   %4 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2Eexample_root"(ptr %3)
-  %5 = call ptr @"av_$40std$2Eavrac$2Efeatures$2Erules$2Enearest_fix"(ptr %0, ptr %4)
-  %cmp = icmp ne ptr %5, null
+  %cmp = icmp ne ptr %4, null
   br i1 %cmp, label %then, label %else
 
 then:                                             ; preds = %entry
-  call void @avra_rc_retain(ptr %5)
+  call void @avra_rc_retain(ptr %4)
   br label %endif
 
 else:                                             ; preds = %entry
-  call void @avra_rc_release(ptr %5)
   call void @avra_rc_release(ptr %4)
   call void @avra_rc_release(ptr %3)
   ret i1 false
 
 endif:                                            ; preds = %postret, %then
-  %regval = phi ptr [ %5, %then ], [ null, %postret ]
-  %6 = call ptr @"av_$40std$2Eavrac$2Efeatures$2EFix$2Erendered"(ptr %regval)
-  %cmp1 = icmp ne ptr %6, null
+  %regval = phi ptr [ %4, %then ], [ null, %postret ]
+  %5 = call ptr @"av_$40std$2Eavrac$2Efeatures$2Erules$2Enearest_fix"(ptr %0, ptr %regval)
+  %cmp1 = icmp ne ptr %5, null
   br i1 %cmp1, label %then2, label %else3
 
 postret:                                          ; No predecessors!
@@ -334265,71 +334324,135 @@ postret:                                          ; No predecessors!
   br label %endif
 
 then2:                                            ; preds = %endif
-  call void @avra_rc_retain(ptr %6)
+  call void @avra_rc_retain(ptr %5)
   br label %endif4
 
 else3:                                            ; preds = %endif
-  call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr %regval)
   call void @avra_rc_release(ptr %5)
+  call void @avra_rc_release(ptr %regval)
   call void @avra_rc_release(ptr %4)
   call void @avra_rc_release(ptr %3)
   ret i1 false
 
 endif4:                                           ; preds = %postret5, %then2
-  %regval6 = phi ptr [ %6, %then2 ], [ null, %postret5 ]
-  %7 = call i1 @"av_$40std$2Eavrac$2Ecompiler$2Esame_fingerprint"(ptr %regval6, ptr %2)
-  call void @avra_rc_release(ptr %regval6)
-  call void @avra_rc_release(ptr %6)
-  call void @avra_rc_release(ptr %regval)
-  call void @avra_rc_release(ptr %5)
-  call void @avra_rc_release(ptr %4)
-  call void @avra_rc_release(ptr %3)
-  ret i1 %7
+  %regval6 = phi ptr [ %5, %then2 ], [ null, %postret5 ]
+  %6 = call ptr @"av_$40std$2Eavrac$2Efeatures$2EFix$2Erendered"(ptr %regval6)
+  %cmp7 = icmp ne ptr %6, null
+  br i1 %cmp7, label %then8, label %else9
 
 postret5:                                         ; No predecessors!
   call void @avra_rc_retain(ptr null)
   br label %endif4
+
+then8:                                            ; preds = %endif4
+  call void @avra_rc_retain(ptr %6)
+  br label %endif10
+
+else9:                                            ; preds = %endif4
+  call void @avra_rc_release(ptr %6)
+  call void @avra_rc_release(ptr %regval6)
+  call void @avra_rc_release(ptr %5)
+  call void @avra_rc_release(ptr %regval)
+  call void @avra_rc_release(ptr %4)
+  call void @avra_rc_release(ptr %3)
+  ret i1 false
+
+endif10:                                          ; preds = %postret11, %then8
+  %regval12 = phi ptr [ %6, %then8 ], [ null, %postret11 ]
+  %7 = call i1 @"av_$40std$2Eavrac$2Ecompiler$2Esame_fingerprint"(ptr %regval12, ptr %2)
+  call void @avra_rc_release(ptr %regval12)
+  call void @avra_rc_release(ptr %6)
+  call void @avra_rc_release(ptr %regval6)
+  call void @avra_rc_release(ptr %5)
+  call void @avra_rc_release(ptr %regval)
+  call void @avra_rc_release(ptr %4)
+  call void @avra_rc_release(ptr %3)
+  ret i1 %7
+
+postret11:                                        ; No predecessors!
+  call void @avra_rc_retain(ptr null)
+  br label %endif10
 }
 
 define i1 @"av_$40std$2Eavrac$2Ecompiler$2Esame_fingerprint"(ptr %0, ptr %1) {
 entry:
   %2 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2Eanalyze_source"(ptr %0)
   %3 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2Eexample_root"(ptr %2)
+  %cmp = icmp ne ptr %3, null
+  br i1 %cmp, label %then, label %else
+
+then:                                             ; preds = %entry
+  call void @avra_rc_retain(ptr %3)
+  br label %endif
+
+else:                                             ; preds = %entry
+  call void @avra_rc_release(ptr %3)
+  call void @avra_rc_release(ptr %2)
+  ret i1 false
+
+endif:                                            ; preds = %postret, %then
+  %regval = phi ptr [ %3, %then ], [ null, %postret ]
   %4 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2Eanalyze_source"(ptr %1)
   %5 = call ptr @"av_$40std$2Eavrac$2Ecompiler$2Eexample_root"(ptr %4)
-  %6 = call ptr @avra_array_get_owned(ptr %3, i64 0)
+  %cmp1 = icmp ne ptr %5, null
+  br i1 %cmp1, label %then2, label %else3
+
+postret:                                          ; No predecessors!
+  call void @avra_rc_retain(ptr null)
+  br label %endif
+
+then2:                                            ; preds = %endif
+  call void @avra_rc_retain(ptr %5)
+  br label %endif4
+
+else3:                                            ; preds = %endif
+  call void @avra_rc_release(ptr %5)
+  call void @avra_rc_release(ptr %4)
+  call void @avra_rc_release(ptr %regval)
+  call void @avra_rc_release(ptr %3)
+  call void @avra_rc_release(ptr %2)
+  ret i1 false
+
+endif4:                                           ; preds = %postret5, %then2
+  %regval6 = phi ptr [ %5, %then2 ], [ null, %postret5 ]
+  %6 = call ptr @avra_array_get_owned(ptr %regval, i64 0)
   %7 = call i64 @avra_array_get(ptr %6, i64 0)
   %boxed = inttoptr i64 %7 to ptr
   %8 = call i64 @avra_array_get(ptr %boxed, i64 1)
-  %boxed1 = inttoptr i64 %8 to ptr
-  %9 = call i64 @avra_array_get(ptr %3, i64 1)
-  %boxed2 = inttoptr i64 %9 to ptr
-  call void @avra_rc_retain(ptr %boxed1)
-  call void @avra_rc_retain(ptr %boxed2)
-  %10 = call i64 @"av_$40std$2Eavrac$2Ecore$2ENodeStore$2Esubtree_fp"(ptr %boxed1, ptr %boxed2)
-  call void @avra_rc_release(ptr %boxed1)
-  call void @avra_rc_release(ptr %boxed2)
-  %11 = call ptr @avra_array_get_owned(ptr %5, i64 0)
+  %boxed7 = inttoptr i64 %8 to ptr
+  %9 = call i64 @avra_array_get(ptr %regval, i64 1)
+  %boxed8 = inttoptr i64 %9 to ptr
+  call void @avra_rc_retain(ptr %boxed7)
+  call void @avra_rc_retain(ptr %boxed8)
+  %10 = call i64 @"av_$40std$2Eavrac$2Ecore$2ENodeStore$2Esubtree_fp"(ptr %boxed7, ptr %boxed8)
+  call void @avra_rc_release(ptr %boxed7)
+  call void @avra_rc_release(ptr %boxed8)
+  %11 = call ptr @avra_array_get_owned(ptr %regval6, i64 0)
   %12 = call i64 @avra_array_get(ptr %11, i64 0)
-  %boxed3 = inttoptr i64 %12 to ptr
-  %13 = call i64 @avra_array_get(ptr %boxed3, i64 1)
-  %boxed4 = inttoptr i64 %13 to ptr
-  %14 = call i64 @avra_array_get(ptr %5, i64 1)
-  %boxed5 = inttoptr i64 %14 to ptr
-  call void @avra_rc_retain(ptr %boxed4)
-  call void @avra_rc_retain(ptr %boxed5)
-  %15 = call i64 @"av_$40std$2Eavrac$2Ecore$2ENodeStore$2Esubtree_fp"(ptr %boxed4, ptr %boxed5)
-  call void @avra_rc_release(ptr %boxed4)
-  call void @avra_rc_release(ptr %boxed5)
-  %cmp = icmp eq i64 %10, %15
+  %boxed9 = inttoptr i64 %12 to ptr
+  %13 = call i64 @avra_array_get(ptr %boxed9, i64 1)
+  %boxed10 = inttoptr i64 %13 to ptr
+  %14 = call i64 @avra_array_get(ptr %regval6, i64 1)
+  %boxed11 = inttoptr i64 %14 to ptr
+  call void @avra_rc_retain(ptr %boxed10)
+  call void @avra_rc_retain(ptr %boxed11)
+  %15 = call i64 @"av_$40std$2Eavrac$2Ecore$2ENodeStore$2Esubtree_fp"(ptr %boxed10, ptr %boxed11)
+  call void @avra_rc_release(ptr %boxed10)
+  call void @avra_rc_release(ptr %boxed11)
+  %cmp12 = icmp eq i64 %10, %15
   call void @avra_rc_release(ptr %11)
   call void @avra_rc_release(ptr %6)
+  call void @avra_rc_release(ptr %regval6)
   call void @avra_rc_release(ptr %5)
   call void @avra_rc_release(ptr %4)
+  call void @avra_rc_release(ptr %regval)
   call void @avra_rc_release(ptr %3)
   call void @avra_rc_release(ptr %2)
-  ret i1 %cmp
+  ret i1 %cmp12
+
+postret5:                                         ; No predecessors!
+  call void @avra_rc_retain(ptr null)
+  br label %endif4
 }
 
 define ptr @"av_$40std$2Eavrac$2Efeatures$2EFix$2Erendered"(ptr %0) {
