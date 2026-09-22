@@ -45,8 +45,8 @@ export type Toolchain = { opt: string, runtime: string, linker: string }
 /// compiles every body with it.
 // LICENSED I39: a pure PROJECTION — a workspace in, its store's directory out.
 export fn build_cache_root(ws: Workspace) -> string {
-    if ws.store_root.get() == "" { ws.store_root.set(joined_path(stores_dir(ws), compiler_print(ws))) }
-    ws.store_root.get()
+    if ws.keys.store_root.get() == "" { ws.keys.store_root.set(joined_path(stores_dir(ws), compiler_print(ws))) }
+    ws.keys.store_root.get()
 }
 
 /// Where a tree's stores stand, one a compiler.
@@ -187,11 +187,7 @@ impl Workspace {
 
     /// A file's bytes as one digest — walked once a build, whoever asks.
     fn text_digest(path: string) -> string {
-        let known: string? = self.text_digests.get(path)
-        if known != null { return known! }
-        let made = self.kept_digest(path, self.host.stamp(path))
-        self.text_digests.set(path, made)
-        made
+        memoized<string>(self.keys.text_digests, path, () -> self.kept_digest(path, self.host.stamp(path)))
     }
 
     /// A text's digest, kept beside its file's stamp: one path under one stamp is
@@ -203,30 +199,30 @@ impl Workspace {
         let kept = self.stamps().get(path) ?? ""
         if kept.starts_with(mark) { return kept.substring(mark.length, kept.length) }
         let made = digest_of_file(self.host.read(path))
-        self.stamped.set(path, mark + made)
-        self.stamps_at.set(stamps_moved)
+        self.keys.stamped.set(path, mark + made)
+        self.keys.stamps_at.set(stamps_moved)
         made
     }
 
     /// The tree's stamps, by path: `stamp<TAB>digest`.
     fn stamps() -> Map<string, string> {
-        if self.stamps_at.get() != stamps_unread { return self.stamped }
-        self.stamps_at.set(stamps_read)
+        if self.keys.stamps_at.get() != stamps_unread { return self.keys.stamped }
+        self.keys.stamps_at.set(stamps_read)
         for line in (store_at(build_cache_root(self)).get(Stored.Fp, stamps_key()) ?? "").split("\n") {
             let at = line.index_of("\t")
-            if at > 0 { self.stamped.set(line.substring(0, at), line.substring(at + 1, line.length)) }
+            if at > 0 { self.keys.stamped.set(line.substring(0, at), line.substring(at + 1, line.length)) }
         }
-        self.stamped
+        self.keys.stamped
     }
 
     fn stamp_line(path: string) -> string? {
-        let kept? = self.stamped.get(path) else { return null }
+        let kept? = self.keys.stamped.get(path) else { return null }
         "${path}\t${kept}"
     }
 
     /// The stamps written back, when a file moved under one.
     fn keep_stamps(paths: List<string>) {
-        if self.stamps_at.get() != stamps_moved { return }
+        if self.keys.stamps_at.get() != stamps_moved { return }
         let lines = [line! for line in [self.stamp_line(path) for path in paths] if line != null]
         let _ = store_at(build_cache_root(self)).keep(Stored.Fp, stamps_key(), joined(lines, "\n"), [])
     }

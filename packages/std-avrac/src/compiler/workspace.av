@@ -44,6 +44,17 @@ type MethodDiagIndex = { revision: int, decl_count: int, by_file: List<List<Diag
 /// The extern symbols of a declaration table of one size.
 type ExternNames = { decls: int, names: List<string> }
 
+/// PER-BUILD KEY MEMOIZATION: a module's interface digest and view digest, a
+/// file's object key and text digest (record.av's key derivations), the
+/// tree's stamps and where this compiler's store stands (build.av). Cleared
+/// piecemeal by `keep_interfaces`: `object_keys` every record write, the rest
+/// only when a record's SEEN part (its interface or imports) moved.
+type Keys = { bytes_keys: Map<string, string>, view_keys: Map<string, string>, object_keys: Map<string, string>, text_digests: Map<string, string>, stamped: Map<string, string>, stamps_at: Cell<int>, store_root: Cell<string> }
+
+fn new_keys() -> Keys {
+    Keys { bytes_keys: {}, view_keys: {}, object_keys: {}, text_digests: {}, stamped: {}, stamps_at: Cell.new(0), store_root: Cell.new("") }
+}
+
 /// The families' value tables, sparse by their keys and grown as
 /// values are placed; `sigs` and `methods` live in the declaration
 /// table itself.
@@ -103,19 +114,9 @@ export type Workspace = {
     record_fields: Map<string, List<List<string>>>,
     /// Where each file stands in its module's record.
     record_places: Map<string, Map<string, Placed>>,
-    /// TWO PER-BUILD FOLDS OF A RECORD, memoized because they are asked hundreds of
-    /// times over the same 55 records: a module's interface digest, and one file's
-    /// object key. Cleared after the interfaces are written, when a record moves.
-    bytes_keys: Map<string, string>,
-    view_keys: Map<string, string>,
-    /// A file's bytes as one digest, by path — every key that reads a text reads it
-    /// here, so a build walks each file's bytes once.
-    text_digests: Map<string, string>,
-    /// The tree's stamps as the store kept them and this run met them.
-    stamped: Map<string, string>,
-    stamps_at: Cell<int>,
-    /// Where this compiler's store stands, once asked.
-    store_root: Cell<string>,
+    /// PER-BUILD KEY MEMOIZATION — digests, stamps, and where this compiler's
+    /// store stands.
+    keys: Keys,
     /// A path's module, asked once: the answer walks every package.
     module_names_of: Map<string, string>,
     /// A module's files and its exported names, each remembered for one size of
@@ -123,7 +124,6 @@ export type Workspace = {
     files_of: Map<string, List<string>>,
     surfaces: Map<string, Map<string, DeclId>>,
     import_lists: Map<string, List<string>>,
-    object_keys: Map<string, string>,
     /// THE FILES A BUILD MUST PARSE, by path: a home an instantiation lowers from, and a
     /// file whose stored asks could not be read.
     homes: Map<string, bool>,
@@ -370,7 +370,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_lines: {}, record_fields: {}, record_places: {}, bytes_keys: {}, view_keys: {}, text_digests: {}, stamped: {}, stamps_at: Cell.new(0), store_root: Cell.new(""), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, object_keys: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), minted: {}, file_ready: new_table(), holds_settled: Cell.new(false), named_in: {}, held_flat: [], hold_asked: [], read_with: [], read_files: [], runs: {}, settling: Cell.new(no_paths()), defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_lines: {}, record_fields: {}, record_places: {}, keys: new_keys(), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), minted: {}, file_ready: new_table(), holds_settled: Cell.new(false), named_in: {}, held_flat: [], hold_asked: [], read_with: [], read_files: [], runs: {}, settling: Cell.new(no_paths()), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }

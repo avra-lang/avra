@@ -200,13 +200,27 @@ fn seen_part(text: string) -> string {
     joined([line for line in text.split("\n") if line.starts_with("iface\t") || line.starts_with("import\t")], "\n")
 }
 
+/// THE MEMO PATTERN, ONCE: a cache checked, a value made and kept on a miss.
+/// A generic METHOD is recorded, not landed (F2031), so this is a free fn —
+/// `mut cache` is what lets its write land in the caller's map. NOT for a
+/// `make` that itself needs a `mut` seat on the value the cache lives in — a
+/// lambda's capture is a copy, and a copy cannot fill a `mut` seat (F2048);
+/// `bytes_key_cached`/`obj_key_cached`/`view_key` below stay hand-written.
+fn memoized<T>(mut cache: Map<string, T>, key: string, make: fn() -> T) -> T {
+    let known: T? = cache.get(key)
+    if known != null { return known! }
+    let made = make()
+    cache.set(key, made)
+    made
+}
+
 /// A MODULE'S INTERFACE DIGEST, memoized for the build.
 // LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn bytes_key_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
-    let known: string? = ws.bytes_keys.get(m.text())
+    let known: string? = ws.keys.bytes_keys.get(m.text())
     if known != null { return known! }
     let made = bytes_key(ws, store, m)
-    ws.bytes_keys.set(m.text(), made)
+    ws.keys.bytes_keys.set(m.text(), made)
     made
 }
 
@@ -215,10 +229,10 @@ fn bytes_key_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
 // LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn obj_key_cached(mut ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
     let key = "${m.text()}\t${path}"
-    let known: string? = ws.object_keys.get(key)
+    let known: string? = ws.keys.object_keys.get(key)
     if known != null { return known! }
     let made = obj_key_of(ws, store, m, path)
-    ws.object_keys.set(key, made)
+    ws.keys.object_keys.set(key, made)
     made
 }
 
@@ -371,10 +385,10 @@ export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModuleP
     }
     // A BODY EDIT MOVES A RECORD'S `file` LINES, and with them no key but its own
     // files'. Only a moved interface or import list moves what other modules see.
-    ws.object_keys = {}
+    ws.keys.object_keys = {}
     if seen_moved {
-        ws.bytes_keys = {}
-        ws.view_keys = {}
+        ws.keys.bytes_keys = {}
+        ws.keys.view_keys = {}
         ws.import_lists = {}
     }
 }
@@ -683,10 +697,10 @@ fn kept_runs(at: Placed?) -> List<string> {
 /// every file of a module sees the same ones.
 // LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn view_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
-    let known: string? = ws.view_keys.get(m.text())
+    let known: string? = ws.keys.view_keys.get(m.text())
     if known != null { return known! }
     let made = digest_of(joined([bytes_key_cached(ws, store, module_path(dep.split("."))) for dep in seen_modules(ws, store, m)], "\n"))
-    ws.view_keys.set(m.text(), made)
+    ws.keys.view_keys.set(m.text(), made)
     made
 }
 
