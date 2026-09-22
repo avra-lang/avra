@@ -53,4 +53,30 @@ spec "std/text — parse_int" {
             parse_int("12" + from_codepoint(0)) == null
         }
     }
+    given "composed with the rest of the language" {
+        then "a present-bind match arm reads the value" {
+            match parse_int("7") {
+                null -> "none"
+                v? -> "some ${v}"
+            } == "some 7"
+        }
+        then "an absent match arm reads null" {
+            match parse_int("x") {
+                null -> "none"
+                v? -> "some ${v}"
+            } == "none"
+        }
+        then "a mut binding reassigned from present to absent" {
+            mut v = parse_int("1")
+            v = parse_int("x")
+            v == null
+        }
+        then "?? falls back the way any nullable does" {
+            (parse_int("x") ?? 0 - 1) == 0 - 1
+        }
+        then "a call site's own fn is a value — no wrapper needed" {
+            let f: fn(string) -> int? = parse_int
+            f("9") == 9
+        }
+    }
 }

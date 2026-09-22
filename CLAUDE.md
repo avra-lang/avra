@@ -1774,6 +1774,22 @@ Runtime facts, ours to ratify:
   and `avra build` are native and have no such floor (5000 deep
   runs). The limit is what keeps a runaway a trap; measure, never
   guess, when it moves.
+- `parse_int` TAKES EXACTLY `-`? DIGITS, NEVER MORE — no leading
+  `+`, no surrounding space, no digit separator, no fraction or
+  exponent, so `"+42"`, `" 42"` and `"4_2"` are all absent; the
+  caller trims and strips a sign prefix first, on the two-hats law
+  (a parser accepting two spellings of one number is the hazard).
+  Past the ceiling on EITHER side answers absent rather than
+  wrapping — except the smallest int itself, `-9223372036854775808`,
+  which `parse_int` answers WHOLE though the LANGUAGE'S OWN INT
+  LITERAL cannot spell it: the lexer's token grammar has no leading
+  sign, so the unsigned digit run overflows one short of where a
+  trailing `-` would land. The row is two calls over one guarded
+  walk (`avra_str_parses_int`/`avra_str_parsed_int`,
+  `avra_int_parse_walk` in avra_runtime.c) — `RtKind`'s one-scalar
+  answer has no shape for a nullable int yet, so a presence question
+  and a value question is the crossing, the way `avra_map_has`/
+  `avra_map_get` already do it.
 
 ## Working discipline
 
