@@ -27,7 +27,7 @@ use compiler.host.{Host, Manifest, memory_host}
 use compiler.store.{Store}
 use compiler.lower.{Unit}
 use compiler.typing.{new_type_cx}
-use compiler.format.{render_source_of}
+use compiler.format.{render_source_of, lossless_defect}
 use compiler.resolve.{resolve}
 
 /// No paths, typed — a Cell's first value says what it holds.
@@ -572,6 +572,18 @@ impl Workspace {
         let parsed = self.parsed(f)
         if !has_errors(parsed.voices.list) { return .Ok(render_source_of(parsed.store, parsed.stmts, self.source(f).text)) }
         .Err(joined([render_among(d, self.lang.rows.codes, [self.source(f)]) for d in parsed.voices.list], "\n\n"))
+    }
+
+    /// `formatted_source`, gated for `--write`: the LOSSLESS RECEIPT
+    /// must hold — the same significant tokens, remarks and doc
+    /// groups the input carried, in order (compiler/format/
+    /// receipt.av) — before the answer is safe to put on disk. Errs
+    /// with the parse report OR with what the receipt found moved;
+    /// this fn writes nothing itself, it only answers the safe text.
+    fn write_checked_source(f: FileId) -> Result<string, string> {
+        let text = self.formatted_source(f)?
+        let bad? = lossless_defect(self.source(f).text, text) else { return .Ok(text) }
+        .Err("avra fmt: refusing to write — ${bad}")
     }
 
     /// An INPUT: the file's text, hashed; the revision moves only when

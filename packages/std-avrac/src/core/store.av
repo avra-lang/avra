@@ -407,9 +407,19 @@ impl NodeStore {
     /// `@name(args)` crossed this declaration: the call the compiler
     /// makes over it, recorded as a fact of the declaration — its
     /// callee an ident node, so every pass reads it as one.
+    ///
+    /// STACKED ANNOTATIONS ARE BUILT INSIDE-OUT: `@a @b decl` parses
+    /// as `a` wrapping a recursive `stmt` that is `b` wrapping `decl`,
+    /// so the INNER build (`b`, closer to `decl` in the grammar, later
+    /// in the source) runs before the OUTER one (`a`, first in the
+    /// source) — the recursion returns outside-in. `annotate` is
+    /// therefore called nearest-to-farthest from the declaration, the
+    /// reverse of reading order, so it PREPENDS: the first call
+    /// (nearest) seeds the list and every call after it stands for
+    /// something written EARLIER, ahead of what is already there.
     mut fn annotate(s: StmtId, a: Annotation) {
         mut held = self.annotations[s.index]
-        held.push(a)
+        held = [a].concat(held)
         self.annotations.set(s.index, held)
         self.stmt_fingerprints.set(s.index, fp(114, [self.stmt_fingerprints[s.index], self.expr_fingerprint(a.callee), fp_list(self.expr_fps(a.args))]))
     }

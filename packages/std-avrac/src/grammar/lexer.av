@@ -604,7 +604,7 @@ fn lex_with(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bo
 fn lex_words(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: bool, words: List<string>, placeholders: bool) -> LexResult {
     mut lx = Lexing {
         src: src, n: src.length, interpolate: interpolate, words: words, placeholders: placeholders,
-        raw: [], docs: [], remarks: [], blank_run: false, pending: [], pending_at: 0, errors: [], stack: [], frames: [],
+        raw: [], docs: [], remarks: [], blank_run: false, pending: [], pending_at: 0, pending_ats: [], errors: [], stack: [], frames: [],
         line_comment: false, line_has_token: false, i: 0,
     }
     lx.run()
@@ -616,7 +616,33 @@ fn lex_words(src: string, boundary: fn(List<Token>, int) -> bool, interpolate: b
         tokens.push(token(TokenKind.Break, "", src.length, src.length))
     }
     tokens.push(token(TokenKind.Eof, "", src.length, src.length))
-    LexResult { tokens: tokens, docs: lx.docs, remarks: lx.remarks, errors: lx.errors }
+    LexResult { tokens: tokens, docs: lx.docs, remarks: sorted_remarks(lx.remarks), errors: lx.errors }
+}
+
+/// `remarks`, by `at` ascending. Every push during a scan already
+/// lands in order EXCEPT an orphaned `///` group's: it is flushed at
+/// the NEXT real token, which can stand after a plain `//` an
+/// interleaved line already pushed straight to the list — so the
+/// list is sorted once, the printer's cursor being a single forward
+/// walk that a single out-of-order entry would desync for good.
+// LICENSED I4: a sort; the subset has no sort_by
+fn sorted_remarks(rs: List<Remark>) -> List<Remark> {
+    mut remaining = rs
+    mut out: List<Remark> = []
+    while !remaining.is_empty() {
+        let m = lowest_at_index(remaining)
+        out.push(remaining[m])
+        remaining = remaining.slice(0, m).concat(remaining.slice(m + 1, remaining.length))
+    }
+    out
+}
+
+fn lowest_at_index(rs: List<Remark>) -> int {
+    mut best = 0
+    for i, r in rs {
+        if r.at < rs[best].at { best = i }
+    }
+    best
 }
 
 /// What the scanner is INSIDE, innermost last: a quote's or block's
@@ -673,6 +699,9 @@ type Lexing = {
     blank_run: bool,
     pending: List<string>,
     pending_at: int,
+    // one offset per pending line, so an orphaned group can still
+    // replay each line at its own position when it turns into remarks
+    pending_ats: List<int>,
     errors: List<LexError>,
     stack: List<Ctx>,
     frames: List<QuoteFrame>,
@@ -998,12 +1027,17 @@ impl Lexing {
                 self.blank_run = true
             }
             self.line_has_token = false
-            if !self.pending.is_empty() && !self.line_comment { self.pending = [] }
+            if !self.pending.is_empty() && !self.line_comment { self.orphan_pending() }
             self.line_comment = false
         } else {
             if !self.pending.is_empty() {
-                if declaration_start(t) { self.docs.push(DocComment { lines: self.pending, before: t.span.lo, at: self.pending_at }) }
-                self.pending = []
+                if declaration_start(t) {
+                    self.docs.push(DocComment { lines: self.pending, before: t.span.lo, at: self.pending_at })
+                    self.pending = []
+                    self.pending_ats = []
+                } else {
+                    self.orphan_pending()
+                }
             }
             self.line_has_token = true
             self.line_comment = false
@@ -1063,10 +1097,18 @@ impl Lexing {
     mut fn noted_comment() {
         if !line_comment_at(self.src, self.n, self.i) { return }
         self.line_comment = true
-        if self.line_has_token { return }
+        if self.line_has_token {
+            // A TRAILING REMARK SHARES ITS LINE WITH CODE. It is kept
+            // whole and by position like an own-line remark, marked
+            // same-line so the printer appends it to the code it
+            // trails instead of giving it a line of its own.
+            self.remarks.push(Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, self.i)), at: self.i, same_line: true })
+            return
+        }
         if self.i + 2 < self.n && self.src.char_code(self.i + 2) == 47 {
             if self.pending.is_empty() { self.pending_at = self.i }
             self.pending.push(doc_line(self.src, self.n, self.i))
+            self.pending_ats.push(self.i)
             return
         }
         // AN OWN-LINE REMARK IS KEPT WHOLE AND BY POSITION. It becomes
@@ -1074,6 +1116,18 @@ impl Lexing {
         // and it is never dropped, so a comment with no statement
         // after it survives as much as one with.
         self.remarks.push(Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, self.i)), at: self.i })
+    }
+
+    /// A `///` GROUP THAT NEVER REACHES A DECLARATION IS NOT
+    /// DOCUMENTATION OF ANYTHING — kept whole, as the ordinary remarks
+    /// it always could have been, one line per offset it was written
+    /// at. Otherwise the group's lines join the file's every-`//`-line
+    /// law only by an accident of where they land: attached, they
+    /// print through `docs`; unattached, they were silently dropped.
+    mut fn orphan_pending() {
+        for at in self.pending_ats { self.remarks.push(Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, at)), at: at }) }
+        self.pending = []
+        self.pending_ats = []
     }
 
     /// What the input ended inside: an open hole or an open quote.

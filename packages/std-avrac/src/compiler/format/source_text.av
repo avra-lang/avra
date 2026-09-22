@@ -80,21 +80,49 @@ export fn render_expression(store: NodeStore, expr: ExprId) -> string {
 
 type SourceText = { store: NodeStore, trivia: List<Remark>, next: int, text: string? }
 
+/// A `given` block, as read back off a `Spec`'s flat `cases`: a run
+/// of CONSECUTIVE cases sharing one non-empty group name. Two
+/// `given "a"` blocks the author wrote apart stay apart — nothing
+/// between them shares the run — and an empty group is never
+/// merged: it is a bare `then`, one case to its own group.
+type CaseGroup = { group: string, cases: List<Case> }
+
+/// `cases` folded into its `given` runs, in order.
+fn grouped_cases(cases: List<Case>) -> List<CaseGroup> {
+    mut out: List<CaseGroup> = []
+    for c in cases {
+        let prev: CaseGroup? = out.last()
+        if prev != null && !c.group.is_empty() && prev!.group == c.group {
+            out.set(out.length - 1, prev! with { cases: prev!.cases.concat([c]) })
+        } else {
+            out.push(CaseGroup { group: c.group, cases: [c] })
+        }
+    }
+    out
+}
+
 impl SourceText {
     /// A statement, its documentation and its annotations.
     ///
     /// THE DOC AND ITS REMARKS INTERLEAVE: a `//` may sit before or
     /// after the `///` group, so the drain happens either side of it
     /// and the author's order is kept.
+    ///
+    /// THE STATEMENT'S OWN LAST LINE MAY TRAIL A COMMENT: the cursor
+    /// sits right past the statement's tokens once `statement_node`
+    /// returns, so a same-line remark found there is the one this
+    /// statement's own text carries and is appended to it, never
+    /// given a line of its own.
     mut fn statement(s: StmtId, depth: int) -> List<string> {
         let decl = start_of(self.store.stmt_span(s))
         let at = self.store.doc_at(s)
         let doc = if at < 0 { decl } else { at }
-        self.trivia_before(doc, depth)
+        let lead = self.trivia_before(doc, depth)
             .concat(self.doc_lines(s, depth))
             .concat(self.trivia_before(decl, depth))
             .concat([source_line(depth, self.annotation(a, depth)) for a in self.store.annotations_of(s)])
-            .concat(self.statement_node(s, depth))
+        let node_lines = self.statement_node(s, depth)
+        lead.concat(trailed(node_lines, self.trailing()))
     }
 
     /// Every remark written before `at`, at `depth` — the ONE placement
@@ -113,6 +141,19 @@ impl SourceText {
     mut fn trivia_rest(depth: int) -> List<string> {
         if self.next >= self.trivia.length { return [] }
         self.trivia_before(self.trivia.last()!.at + 1, depth)
+    }
+
+    /// A trailing comment sharing the line just finished, as text to
+    /// APPEND — never its own line. The forward-only cursor is what
+    /// makes this a peek-and-take: whatever remark stands next, right
+    /// where the caller's own line just ended, is the one that trails
+    /// it or nothing does.
+    mut fn trailing() -> string {
+        if self.next >= self.trivia.length { return "" }
+        let r = self.trivia[self.next]
+        if !r.same_line { return "" }
+        self.next = self.next + 1
+        " ${remark_text(r.trivia)}"
     }
 
     /// Whether the author wrote this span on ONE line — the form a
@@ -138,6 +179,23 @@ fn trivia_line(t: Trivia, depth: int) -> string {
         .Comment(text) -> source_line(depth, text),
         .Blank -> "",
     }
+}
+
+/// A remark's own text — same-line trivia is always a `Comment`, but
+/// the match stays exhaustive over `Trivia` rather than assuming it.
+fn remark_text(t: Trivia) -> string {
+    match t {
+        .Comment(text) -> text,
+        .Blank -> "",
+    }
+}
+
+/// `lines` with `trail` appended to its last entry — absence and an
+/// empty list both pass through untouched.
+fn trailed(lines: List<string>, trail: string) -> List<string> {
+    if trail.is_empty() { return lines }
+    let last? = lines.last() else { return lines }
+    lines.slice(0, lines.length - 1).concat(["${last}${trail}"])
 }
 
 /// A line already carrying `depth` levels of indent, without them — what
@@ -183,7 +241,7 @@ impl SourceText {
             .EnumDecl(name, tparams, variants) -> [self.enum_decl(exported, name.of, [t.of for t in tparams], variants, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Spec(name, cases) -> [self.spec_decl(name, cases, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Defer(body, on_error) -> [source_line(depth, "${if on_error { "errdefer" } else { "defer" }} ${self.deferred(body, depth)}")],
-            .Rule(name, arms, _) -> [self.rule_decl(name.of, arms, self.stmt_end(s), self.stmt_flat(s), depth)],
+            .Rule(name, arms, _) -> [self.rule_decl(exported, name.of, arms, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Error -> [source_line(depth, "__error")],
         }
     }
@@ -260,8 +318,16 @@ impl SourceText {
     mut fn braced(stmts: List<StmtId>, value: ExprId?, end: int, one_line: bool, depth: int) -> string {
         let body = flatten([self.statement(s, depth + 1) for s in stmts])
         let lines = if value == null { body } else {
-            body.concat(self.trivia_before(start_of(self.store.expr_span(value!)), depth + 1))
-                .concat([source_line(depth + 1, self.expression(value!, 0, depth + 1))])
+            let before = self.trivia_before(start_of(self.store.expr_span(value!)), depth + 1)
+            let line = source_line(depth + 1, self.expression(value!, 0, depth + 1))
+            // A ONE-LINE BLOCK CANNOT CARRY A TRAILING COMMENT ON ITS
+            // VALUE: `//` reaches to the end of the physical line, so
+            // a comment there would already have eaten the closing
+            // brace — the source could not have parsed. Draining the
+            // cursor only when the value gets its own line is what
+            // keeps a one-liner from stealing the NEXT line's remark.
+            let trail = if one_line { "" } else { self.trailing() }
+            body.concat(before).concat(["${line}${trail}"])
         }
         let all = lines.concat(self.trivia_before(end, depth + 1))
         if all.is_empty() { return "{}" }
@@ -347,7 +413,7 @@ impl SourceText {
     }
 
     mut fn spec_decl(name: string, cases: List<Case>, end: int, one_line: bool, depth: int) -> string {
-        let body = flatten([self.case_lines(c, one_line, depth + 1) for c in cases]).concat(self.trivia_before(end, depth + 1))
+        let body = flatten([self.given_lines(g, one_line, depth + 1) for g in grouped_cases(cases)]).concat(self.trivia_before(end, depth + 1))
         if body.is_empty() { return source_line(depth, "spec ${quoted_text(name)} {}") }
         if one_line && body.length == 1 { return source_line(depth, "spec ${quoted_text(name)} { ${unpadded(body[0], depth + 1)} }") }
         "${source_line(depth, "spec ${quoted_text(name)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
@@ -355,24 +421,32 @@ impl SourceText {
 
     /// A rule's arms print exactly as a `match`'s do — no subject,
     /// since a rule's is fixed and implicit.
-    mut fn rule_decl(name: string, arms: List<Arm>, end: int, one_line: bool, depth: int) -> string {
+    mut fn rule_decl(exported: string, name: string, arms: List<Arm>, end: int, one_line: bool, depth: int) -> string {
+        let head = "${exported}rule ${source_name(name)}"
         let body = flatten([self.trivia_before(self.arm_start(a), depth + 1)
-            .concat([source_line(depth + 1, "${self.arm_head(a, depth + 1)} -> ${self.expression(a.value, 0, depth + 1)}")]) for a in arms])
+            .concat([self.arm_line(a, depth + 1)]) for a in arms])
             .concat(self.trivia_before(end, depth + 1))
-        if body.is_empty() { return source_line(depth, "rule ${source_name(name)} {}") }
-        if one_line && body.length == 1 { return source_line(depth, "rule ${source_name(name)} { ${unpadded(body[0], depth + 1)} }") }
-        "${source_line(depth, "rule ${source_name(name)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+        if body.is_empty() { return source_line(depth, "${head} {}") }
+        if one_line && body.length == 1 { return source_line(depth, "${head} { ${unpadded(body[0], depth + 1)} }") }
+        "${source_line(depth, "${head} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
-    /// One case. A `given` group is a body too, so a spec the author
-    /// wrote on one line keeps `given g { then n { … } }` as written.
-    mut fn case_lines(c: Case, one_line: bool, depth: int) -> List<string> {
-        let at = depth + if c.group.is_empty() { 0 } else { 1 }
-        let one = self.trivia_before(start_of(self.store.expr_span(c.body)), at)
+    /// One case's `then` line, standing alone (its group is empty).
+    mut fn then_line(c: Case, at: int) -> List<string> {
+        self.trivia_before(start_of(self.store.expr_span(c.body)), at)
             .concat([source_line(at, "then ${quoted_text(c.name)} ${self.block(c.body, self.span_flat(self.store.expr_span(c.body)), at)}")])
-        if c.group.is_empty() { return one }
-        if one_line && one.length == 1 { return [source_line(depth, "given ${quoted_text(c.group)} { ${unpadded(one[0], at)} }")] }
-        [source_line(depth, "given ${quoted_text(c.group)} {")].concat(one).concat([source_line(depth, "}")])
+    }
+
+    /// A `given` group's lines: every case it holds shares ONE
+    /// wrapper, as the author wrote them — a spec the author wrote on
+    /// one line keeps `given g { then n { … } }` as written, and a
+    /// bare `then` (an empty group) wraps nothing.
+    mut fn given_lines(g: CaseGroup, one_line: bool, depth: int) -> List<string> {
+        if g.group.is_empty() { return self.then_line(g.cases[0], depth) }
+        let at = depth + 1
+        let thens = flatten([self.then_line(c, at) for c in g.cases])
+        if one_line && thens.length == 1 { return [source_line(depth, "given ${quoted_text(g.group)} { ${unpadded(thens[0], at)} }")] }
+        [source_line(depth, "given ${quoted_text(g.group)} {")].concat(thens).concat([source_line(depth, "}")])
     }
 
     mut fn deferred(body: ExprId, depth: int) -> string {
@@ -529,8 +603,9 @@ impl SourceText {
 
     mut fn when_expr(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId, end: int, depth: int) -> string {
         let arms = flatten([self.trivia_before(start_of(self.store.expr_span(c)), depth + 1)
-            .concat([source_line(depth + 1, "${self.expression(c, 0, depth + 1)} -> ${self.expression(values[j], 0, depth + 1)}")]) for j, c in conds])
-        let tail = self.trivia_before(end, depth + 1).concat([source_line(depth + 1, "_ -> ${self.expression(fallback, 0, depth + 1)}")])
+            .concat(["${source_line(depth + 1, "${self.expression(c, 0, depth + 1)} -> ${self.expression(values[j], 0, depth + 1)}")}${self.trailing()}"]) for j, c in conds])
+        let fallback_line = "${source_line(depth + 1, "_ -> ${self.expression(fallback, 0, depth + 1)}")}"
+        let tail = self.trivia_before(end, depth + 1).concat(["${fallback_line}${self.trailing()}"])
         "when {\n${joined(arms.concat(tail), "\n")}\n${source_line(depth, "}")}"
     }
 
@@ -540,7 +615,7 @@ impl SourceText {
         // than it has node kinds.
         let head = self.expression(subject, loosest_tier, depth)
         let body = flatten([self.trivia_before(self.arm_start(a), depth + 1)
-            .concat([source_line(depth + 1, "${self.arm_head(a, depth + 1)} -> ${self.expression(a.value, 0, depth + 1)}")]) for a in arms])
+            .concat([self.arm_line(a, depth + 1)]) for a in arms])
             .concat(self.trivia_before(end, depth + 1))
         "match ${head} {\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
@@ -550,6 +625,14 @@ impl SourceText {
         let pats = joined([self.pattern(p, depth) for p in a.pats], " or ")
         let g? = a.guard else { return pats }
         "${pats} if ${self.expression(g, loosest_tier, depth)}"
+    }
+
+    /// One arm's whole line, its own trailing comment consumed and
+    /// appended — an arm is not a statement, so `statement`'s hook
+    /// never reaches it.
+    mut fn arm_line(a: Arm, depth: int) -> string {
+        let line = source_line(depth, "${self.arm_head(a, depth)} -> ${self.expression(a.value, 0, depth)}")
+        "${line}${self.trailing()}"
     }
 
     mut fn match_optional(subject: ExprId, bind: string, present: ExprId, absent: ExprId, parent: int, end: int, depth: int) -> string {
@@ -580,7 +663,7 @@ impl SourceText {
             return "${held} catch ${head}${self.expression(values[0], 2, depth)}"
         }
         let arms = flatten([self.trivia_before(start_of(self.store.expr_span(v)), depth + 1)
-            .concat([source_line(depth + 1, "${self.catch_head(variants[j], binds[j])}${self.expression(v, 0, depth + 1)}")]) for j, v in values])
+            .concat(["${source_line(depth + 1, "${self.catch_head(variants[j], binds[j])}${self.expression(v, 0, depth + 1)}")}${self.trailing()}"]) for j, v in values])
             .concat(self.trivia_before(end, depth + 1))
         "${held} catch {\n${joined(arms, "\n")}\n${source_line(depth, "}")}"
     }
