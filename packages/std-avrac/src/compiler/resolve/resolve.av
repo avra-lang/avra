@@ -17,6 +17,7 @@ use core.{side_table, Binder}
 use diagnostics.{refusal, Voices}
 use features.modules.{module_laws}
 use features.{ResolveCx, Def, LFrame, Dispatch, Namespace, NameFacts, new_name_facts, FileView, written_seats, semantics_of, stmt_semantics_of, post_order, Elsewhere, Bound}
+use features.rules.{example_marks}
 
 /// Words the spec reserves for future levels, memory, and
 /// concurrency: refusing them as names today means they become
@@ -60,7 +61,9 @@ impl ResolveCx {
         self.in_block = in_block
         for s in stmts {
             stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).resolve_stmt(self, s)
-            for a in self.view.store.annotations_of(s) { self.walk_annotation(a) }
+            // A rule's `@fixes`/`@keeps` name no declared fn — recognised
+            // by NAME, never resolved (features/rules/check.av judges them).
+            for a in self.view.store.annotations_of(s) { if !example_marks(a.name) { self.walk_annotation(a) } }
         }
         self.in_block = was
     }

@@ -1,0 +1,20 @@
+//! The rule declaration's StmtSemantics: dispatch only — resolve
+//! binds its synthesized seat, typing lives in check.av. Its
+//! runtime value is nothing; lowering collects it on the same axis
+//! as any other declared body.
+use core.{StmtId}
+use features.{StmtSemantics, ResolveCx, TypeCx}
+
+export type RuleStmtSemantics = { }
+
+impl StmtSemantics for RuleStmtSemantics {
+    fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
+        if cx.refuses_nested(s, "resolve.nested_rule", "rule declarations") { return }
+        let p? = cx.view.store.rule_parts(s) else { return }
+        cx.walk_under(rule_seat(), p.body)
+    }
+
+    fn type_stmt(mut cx: TypeCx, s: StmtId) {
+        check_rule(cx, s)
+    }
+}

@@ -7,9 +7,11 @@
 //! PATTERN matches against and a rule reads FACTS off, as methods.
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
-use core.{At, ExprId, DeclId, TypeId, TypeRegistry, NodeStore, Binding, Type, Span}
+use core.{At, ExprId, DeclId, TypeId, TypeRegistry, NodeStore, Binding, Type, Span, Expr}
 use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row}
 use features.enums.{answering_arms}
+use diagnostics.{loc_at}
+use @std.errors.{Loc}
 
 /// What every bound hole shares: the file a rule reads, and the two
 /// pass tables a fact comes from — one per analysis, never copied or
@@ -112,6 +114,50 @@ impl Code {
             null -> false
             n? -> n >= 2
         }
+    }
+
+    /// Where this code stands in its file — a Say's own location, so
+    /// a rule's finding points at the code that earned it rather than
+    /// at the rule's declaration.
+    fn loc() -> Loc? {
+        loc_at(self.of.view.source.file, self.of.view.store.span_at(self.at))
+    }
+
+    /// Whether this node prints unambiguously wherever it is
+    /// spliced — no operator outside it can steal its neighbours.
+    /// A registry over `Expr`, the way `pure()`'s is; a Stmt/Pat
+    /// seat is never atomic on its own terms (a rule's held fills
+    /// are always expression holes).
+    fn atomic() -> bool {
+        match self.at {
+            .Expr(id) -> atomic_at(self.of.view.store.expr(id)),
+            .Stmt(_) or .Pat(_) -> false,
+        }
+    }
+}
+
+/// A HELD `Code`'s own text, spliced as an expression — parenthesised
+/// when its top node is not atomic, so `${x}` filling `${x} * 2`
+/// never lets an outer operator read past what `x` bound.
+export fn spliced_text(c: Code) -> string {
+    if c.atomic() { c.text() } else { "(${c.text()})" }
+}
+
+/// The atomic registry ITSELF — every leaf and postfix-chain shape
+/// (a literal, a name, an index, a call, a method call, a property,
+/// a construction) needs no parentheses wherever it lands; anything
+/// with an outer operator or a lower-precedence form does.
+fn atomic_at(e: Expr) -> bool {
+    match e {
+        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or
+        .Ident(_) or .Receiver or .ListLit(_) or .MapLit(_, _) or .Index(_, _) or
+        .Prop(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .VariantLit(_, _) or
+        .Call(_, _, _) or .MethodCall(_, _, _) or .CallValue(_, _) or .Force(_) or
+        .Block(_, _) -> true,
+        .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Match(_, _) or
+        .Binary(_, _, _) or .Not(_) or .Comp(_, _, _, _, _, _) or .Coalesce(_, _) or
+        .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Chain(_, _) or .Is(_, _) or
+        .Propagate(_) or .Catch(_, _, _, _) or .Error -> false,
     }
 }
 

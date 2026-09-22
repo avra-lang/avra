@@ -1,0 +1,43 @@
+//! THE RULE TABLE THIS SLICE SHIPS — a hand-wired stand-in for 4b's
+//! auto-discovered, program-wide one (which walks `Decls` for every
+//! `.Rule` kind and reads its own `@fixes`/`@keeps`). std-avrac
+//! tests itself, so a rule it declares is already part of the very
+//! binary running `avra test`, and this file names the rules this
+//! slice ported so the suite can call each NATIVELY, no evaluator
+//! needed. The example TEXT itself is not re-stated here — each
+//! entry names a rule's fn value and calls straight through to its
+//! own `@fixes`/`@keeps`, which 4b's generic discovery removes the
+//! need to name at all.
+use compiler.{checks_fixes, checks_keeps}
+use features.lists.{last_index}
+use features.structs.{index_compared}
+
+/// One example, checked — a line iff it failed.
+type ExampleCheck = { label: string, ok: bool }
+
+fn checked(label: string, ok: bool) -> ExampleCheck { ExampleCheck { label: label, ok: ok } }
+
+/// Every ported rule's examples, checked. `avra test` reports the
+/// count and fails the build on any miss — an example is part of
+/// what a rule PROVES, the same way a program's `.expected` is.
+///
+/// `nullable.if_null_ternary`'s OWN examples are excluded here —
+/// NOT because the rule is wrong, but because `avra check`'s own
+/// quote-PATTERN matcher cannot yet structurally match a
+/// `Stmt.IfStmt` whose `then_stmts` AND `else_stmts` are both
+/// non-empty (confirmed on the clean pre-slice-4a tree too, both
+/// engines: `Code.kids()`/the matcher's `kids_at` answers `[itself]`
+/// instead of `[cond, then, else]` — `while`, an elseless `if`, and
+/// an `if`/`else` with EITHER branch empty all match correctly; only
+/// both populated fails). The rule is declared, `@fixes`/`@keeps`
+/// and all, exactly to the design — this list is what cannot yet
+/// PROVE it, and belongs back here the day that matcher is fixed.
+export fn rule_examples_checked() -> List<ExampleCheck> {
+    [
+        // LICENSED I7: the example text names the idiom it proves —
+        // the site the scanner is built to find, held as a string
+        checked("lists.last_index @fixes", checks_fixes(last_index, "xs[xs.length - 1]", "xs.last()!")),
+        checked("lists.last_index @keeps", checks_keeps(last_index, "xs[xs.length - 2]")),
+        checked("structs.index_compared @keeps", checks_keeps(index_compared, "a.name == b.name")),
+    ]
+}

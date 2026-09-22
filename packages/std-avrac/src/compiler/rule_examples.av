@@ -1,0 +1,39 @@
+//! A rule's own proof: each `@fixes`/`@keeps` example, checked
+//! exactly as `avra check` would read it — the before-text analysed,
+//! the rule's nearest hit found (`features/rules/apply.av`'s
+//! `nearest_fix` — a rule fires at a node, an example names a
+//! program), a rewrite's rendered text re-parsed and compared by
+//! fingerprint (span-blind; text equality is too strict), a keep
+//! answered by absence alone. `avra test` (`suite.av`) runs one of
+//! these per example, for every rule the package under test declares.
+use features.{Code, Fix}
+use features.rules.{nearest_fix}
+use compiler.{analyze_source, Analysis}
+
+/// The example's own root: an expression statement stands as its
+/// expression (the same reduction a rule's own pattern root takes),
+/// every other statement as itself.
+fn example_root(a: Analysis) -> Code {
+    let s = a.view.stmts[0]
+    let e? = a.view.store.answer_of(s) else { return a.code_at(.Stmt(s)) }
+    a.code_at(.Expr(e))
+}
+
+/// Whether `rule`, applied to `before`, answers a rewrite whose
+/// rendered text — re-parsed — is span-blind equal to `after`.
+export fn checks_fixes(applied: fn(Code) -> Fix?, before: string, after: string) -> bool {
+    let hit? = nearest_fix(applied, example_root(analyze_source(before))) else { return false }
+    let text? = hit.rendered() else { return false }
+    same_fingerprint(text, after)
+}
+
+/// Whether the rule answers nothing anywhere in `before`.
+export fn checks_keeps(applied: fn(Code) -> Fix?, before: string) -> bool {
+    nearest_fix(applied, example_root(analyze_source(before))) == null
+}
+
+fn same_fingerprint(rendered: string, after: string) -> bool {
+    let r = example_root(analyze_source(rendered))
+    let a = example_root(analyze_source(after))
+    r.of.view.store.subtree_fp(r.at) == a.of.view.store.subtree_fp(a.at)
+}

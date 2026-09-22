@@ -258,6 +258,7 @@ export fn kind_word(k: DeclKind) -> string {
         .Main -> "main",
         .Case -> "case",
         .Const -> "const",
+        .Rule -> "rule",
         .Builtin -> "builtin",
     }
 }
@@ -394,6 +395,25 @@ impl Decls {
     /// does not load `@std/avrac`.
     fn avrac_named(name: string) -> DeclId? {
         self.package_decl("@std.avrac", name)
+    }
+
+    /// Whether a type IS one declaration a package exports, by NAME —
+    /// `meta_type`'s door, generalized past `.Struct` to `.Enum` too,
+    /// so `@std/avrac`'s `Fix` (an enum) answers through the same
+    /// check `Code` (a struct) does.
+    fn declared_as(ty: TypeId, pkg: string, name: string) -> bool {
+        let d: DeclId? = match self.types.shape_of(ty) {
+            .Struct(d, _) -> d,
+            .Enum(d, _) -> d,
+            rest -> null,
+        }
+        d != null && self.decl(d!).name == name && self.package_of(d!) == pkg
+    }
+
+    /// A type IS `@std/avrac`'s declaration of this name — the same
+    /// door `avrac_named` opens for a value, read back over a type.
+    fn avrac_type(ty: TypeId, name: string) -> bool {
+        self.declared_as(ty, "@std.avrac", name)
     }
 
     /// A declaration a PACKAGE exports, by name — the door to a
@@ -775,15 +795,16 @@ impl Decls {
         match x.kind {
             .Record or .Named or .Enum -> x.name,
             .Builtin -> x.name,
-            .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const -> null,
+            .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Rule -> null,
         }
     }
 
-    /// A fn's name — free fns and methods.
+    /// A fn's name — free fns, methods, and rules (a rule IS a fn of
+    /// one synthetic seat).
     fn fn_name(d: DeclId) -> string? {
         let x = self.decl(d)
         match x.kind {
-            .Fn or .Method -> x.name,
+            .Fn or .Method or .Rule -> x.name,
             .Record or .Named or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const -> null,
         }
     }
@@ -845,7 +866,7 @@ impl Decls {
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
             .Case -> "${stem_of(self.file(x.file).path)}$case${x.root?.index ?? x.stmt.index}",
-            .Fn or .Const or .Record or .Named or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin -> x.name,
+            .Fn or .Const or .Record or .Named or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Rule -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
     }

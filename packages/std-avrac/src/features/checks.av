@@ -185,7 +185,22 @@ impl TypeCx {
         }
         if self.named_accepts(e, want) { return true }
         if self.dyn_accepts(e, got, want) { return true }
+        if self.fix_accepts(got, want) {
+            self.widen(e, want)
+            return true
+        }
         self.res_accepts(e, got, want)
+    }
+
+    /// A generated template LIFTS into a rule's `Fix` — the fifth form
+    /// at the one widening edge (nullable, auto-Ok, empty-list, dyn):
+    /// `quote { … }` answers `@std.meta.Code`, and a rule's arm wants
+    /// `Fix`, so this is what turns `quote { ${x} ?? ${d} }` into a
+    /// `Fix.Rewrite` with no `.Rewrite(...)` in sight. The runtime tag
+    /// is minted at the one widening edge lowering already owns
+    /// (`compiler/lower/walk.av`'s `widened`), never here.
+    fn fix_accepts(got: TypeId, want: TypeId) -> bool {
+        self.view.decls.avrac_type(want, "Fix") && self.view.decls.meta_type(got, "Code")
     }
 
     /// A LITERAL FILLS A NAMED SEAT: the name's shape becomes the

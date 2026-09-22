@@ -1,0 +1,90 @@
+//! The rule's own laws: at least one written arm, and every arm's
+//! value answers the rule's declared `Fix?` — the widen door
+//! (`checks.av`'s `other_accepts`) is where a `quote` answering
+//! `Code` lifts into `Fix.Rewrite`, exactly as auto-Ok lifts a bare
+//! value into its `Result`.
+use core.{ExprId, TypeId, StmtId, Arm, NodeStore, Annotation}
+use features.{TypeCx, nothing}
+use diagnostics.{refusal, Diag}
+use @std.errors.{Loc}
+
+export fn check_rule(mut cx: TypeCx, s: StmtId) {
+    match cx.view.store.stmt(s) {
+        .Rule(name, arms, body) -> checked_rule(cx, s, name.of, arms, body),
+        rest -> nothing(),
+    }
+}
+
+fn checked_rule(mut cx: TypeCx, s: StmtId, rname: string, arms: List<Arm>, body: ExprId) {
+    if arms.is_empty() { cx.emit(no_arms(cx.stmt_loc(s), rname)) }
+    checked_examples(cx, s, rname)
+    cx.walk_under(s, body)
+    let opt_want: TypeId = cx.stmt_sig(s)?.ret ?? cx.error_type
+    let want: TypeId = cx.view.types.carried(opt_want) ?? opt_want
+    for a in arms {
+        if !arm_answers(cx, a, want) { cx.emit(bad_answer(cx.loc_of(a.value), rname, cx.name_at(a.value))) }
+    }
+    // THE MATCH'S OWN TYPE, RIGHT NOW: `walk_under` ran the ordinary
+    // match law, which joins BOTTOM-UP from the arms' own types (a
+    // `Code` beside a `null` joins to `Code?`) — it never reads the
+    // want a boundary plants. That join is wrong for a rule, whose
+    // arms answer `Fix` only once `accepts` above has widened them,
+    // so the tail's `null` — already widened once, against the
+    // WRONG bottom-up type — is re-widened here against the rule's
+    // real declared answer, and the match's own recorded type is
+    // corrected to match: lowering mints its merge register FROM
+    // THIS, at every arm chain and jump table alike.
+    rewiden_miss(cx, body, opt_want)
+    cx.facts.set_type(body, opt_want)
+}
+
+/// A rule proves itself against at least one `@fixes`/`@keeps`, each
+/// exactly the words it claims — two string literals, or one; never
+/// a computed argument, since these are read before this file's own
+/// names resolve.
+fn checked_examples(mut cx: TypeCx, s: StmtId, rname: string) {
+    let anns = [a for a in cx.view.store.annotations_of(s) if example_marks(a.name)]
+    if anns.is_empty() { cx.emit(no_examples(cx.stmt_loc(s), rname)) }
+    for a in anns {
+        if !example_shaped(cx.view.store, a) { cx.emit(bad_example_shape(cx.loc_of(a.callee), rname)) }
+    }
+}
+
+fn example_shaped(store: NodeStore, a: Annotation) -> bool {
+    let want = if a.name == "fixes" { 2 } else { 1 }
+    a.args.length == want && a.args.all((e: ExprId) -> (store.expr(e)).text_of() != null)
+}
+
+fn arm_answers(mut cx: TypeCx, a: Arm, want: TypeId) -> bool {
+    cx.errored(a.value) || cx.accepts(a.value, want)
+}
+
+fn rewiden_miss(mut cx: TypeCx, body: ExprId, opt_want: TypeId) {
+    let tail? = last_arm_value(cx.view.store, body) else { return }
+    let _ = cx.accepts(tail, opt_want)
+}
+
+fn last_arm_value(store: NodeStore, body: ExprId) -> ExprId? {
+    match store.expr(body) {
+        .Match(_, arms) -> arms.last()?.value,
+        rest -> null,
+    }
+}
+
+// ── voices ──
+
+fn no_arms(at: Loc?, rname: string) -> Diag {
+    refusal("type.rule_no_arms", at, "`rule ${rname}` declares no arms — it can never answer a fix", "declared here", "write at least one `pattern -> value` arm")
+}
+
+fn bad_answer(at: Loc?, rname: string, found: string) -> Diag {
+    refusal("type.rule_answer", at, "a `rule ${rname}` arm answers `${found}`, not a `Fix`", "this arm", "answer a `quote { … }` (a rewrite), a named voice fn's `Fix`, or `.Say(…)`")
+}
+
+fn no_examples(at: Loc?, rname: string) -> Diag {
+    refusal("type.rule_examples", at, "`rule ${rname}` has no `@fixes` or `@keeps` — nothing proves it against real code", "declared here", "add `@fixes(\"before\", \"after\")` or `@keeps(\"still\")`")
+}
+
+fn bad_example_shape(at: Loc?, rname: string) -> Diag {
+    refusal("type.rule_example_shape", at, "`rule ${rname}`'s example takes string literals, written — never computed", "this example", "`@fixes(\"before\", \"after\")` or `@keeps(\"still\")`, both literal")
+}

@@ -1,0 +1,37 @@
+//! `rule name { arms }` — a declaration whose body is ordinary
+//! `match` arms over the code in hand: `rule default { quote { if
+//! ${x} != null { ${x}! } else { ${d} } } if x.pure() -> quote {
+//! ${x} ?? ${d} } }` reads as, and IS, `fn default(e: Code) -> Fix?
+//! { match e { …, _ -> null } }`. The subject name is `e`, fixed;
+//! a miss answers `null`. `@fixes`/`@keeps` on a rule are its
+//! examples, read from their literal args and run by `avra test`.
+use features.{LanguageFeature, BuilderRow}
+use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
+use diagnostics.{DiagCode}
+
+export fn rules() -> LanguageFeature {
+    let rows = table<BuilderRow> {
+        name          | build
+        "rule_decl"   | build_rule_decl
+    }
+    let codes = table<DiagCode> {
+        kind                  | id      | summary
+        "type.rule_no_arms"   | "F2097" | "a rule with no arms answers nothing to match"
+        "type.rule_avrac"     | "F2098" | "a rule reads code and answers a fix — this program does not load `@std/avrac`"
+        "type.rule_answer"    | "F2099" | "a rule's arm answers something other than a `Fix`"
+        "type.rule_examples"  | "F2100" | "a rule with no `@fixes` has nothing to prove itself against"
+        "type.rule_keeps_fired" | "F2101" | "a `@keeps` example fired — the rule rewrote code it promised to leave alone"
+        "type.rule_fixes_missed" | "F2102" | "a `@fixes` example did not produce its `after` — the rule missed, or answered a different rewrite"
+        "type.rule_example_shape" | "F2103" | "`@fixes` takes two string literals, `@keeps` one — each written, never computed"
+    }
+    component LanguageFeature f {
+        name = "rules"
+        docs = "`rule name { p if c -> v, ... }` declares a rule: ordinary match arms over the code in hand, answering a `Fix?`. `@fixes(\"before\", \"after\")` and `@keeps(\"still\")` are its examples, run by `avra test`."
+        gram = grammar {
+            stmt = "rule" n:NAME "{" ( BREAK | "," | a:arm | a:hole_arm )* "}" END @recover(sync_to: "END") -> rule_decl(n, a)
+        }
+        builders = rows
+        diags = codes
+    }
+    f
+}

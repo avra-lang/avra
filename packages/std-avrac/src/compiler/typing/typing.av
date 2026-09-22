@@ -14,6 +14,7 @@ use features.{TypeCx, NarrowFrame, Dispatch, semantics_of, stmt_semantics_of, po
 use features.structs.{fits_default}
 use features.specs.{fits_case}
 use features.annotations.{check_annotation}
+use features.rules.{example_marks}
 
 /// A type context over one expression range of a file, reading the
 /// SHARED declaration table — a signature may name any file's
@@ -54,6 +55,7 @@ impl TypeCx {
             .Method -> self.method_body(x),
             .Default -> self.default_body(x),
             .Case -> self.case_body(x),
+            .Rule -> self.rule_body(x),
             .Record or .Named or .Enum -> self.type_stmts([x.stmt]),
             .Const -> self.type_stmts([x.stmt]),
             .Syntax -> self.type_stmts([x.stmt]),
@@ -68,6 +70,14 @@ impl TypeCx {
     mut fn fn_body(x: Decl) {
         self.type_stmts([x.stmt])
         self.seat_contract(x, 0)
+    }
+
+    /// A rule's body: its synthesized `Match(Ident(e), arms ++ [_ ->
+    /// null])` walks under its synthesized seat, exactly as a fn body
+    /// does — the arm law (coverage, agreement) is `match`'s own, and
+    /// the `_ -> null` tail is what makes a miss the honest answer.
+    mut fn rule_body(x: Decl) {
+        self.type_stmts([x.stmt])
     }
 
     /// A method's body, then its receiver's contract — the trait's word
@@ -149,7 +159,12 @@ impl TypeCx {
     /// a declaration's own context passes it by.
     mut fn type_annotations(s: StmtId) {
         for a in self.view.store.annotations_of(s) {
-            if self.facts.owns(a.callee) {
+            // A rule's `@fixes`/`@keeps` are recognised by NAME, like
+            // `@derive` — but unlike it, neither resolves to a
+            // declared fn at all, so the general call law never
+            // reaches them; `features/rules/check.av` judges their
+            // own shape instead.
+            if !example_marks(a.name) && self.facts.owns(a.callee) {
                 self.walk_annotation(a)
                 check_annotation(self, s, a)
             }

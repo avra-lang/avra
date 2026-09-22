@@ -107,6 +107,12 @@ export enum FillClass {
     Text
     Texts
     Named
+    /// A `features.Code` HANDLE — the compiler's own, never
+    /// `@std.meta.Code` — spliced as its own source text: an
+    /// expression seat only, and a rule's ONE way to answer a
+    /// rewrite around a bound hole (`quote { ${x} ?? ${d} }` with
+    /// `x` bound from a pattern).
+    Held
 }
 
 /// THE SEAT LAW, one registry read by typing and by the splice: what
@@ -116,30 +122,30 @@ export fn fits(class: FillClass, kind: HoleKind) -> bool {
     match kind {
         .Expression -> match class {
             .Template(k) -> k is .Code,
-            .Int or .Bool -> true,
+            .Int or .Bool or .Held -> true,
             .Templates(_) or .Text or .Texts or .Named -> false,
         },
         .Name -> match class {
             .Text or .Int or .Named -> true,
-            .Template(_) or .Templates(_) or .Bool or .Texts -> false,
+            .Template(_) or .Templates(_) or .Bool or .Texts or .Held -> false,
         },
         .Binder -> match class {
             .Text or .Int or .Named or .Texts -> true,
-            .Template(_) or .Templates(_) or .Bool -> false,
+            .Template(_) or .Templates(_) or .Bool or .Held -> false,
         },
         .Type -> match class {
             .Text or .Named -> true,
-            .Template(_) or .Templates(_) or .Int or .Bool or .Texts -> false,
+            .Template(_) or .Templates(_) or .Int or .Bool or .Texts or .Held -> false,
         },
         .Statement -> match class {
             .Template(k) -> !(k is .Arms),
             .Templates(k) -> !(k is .Arms),
-            .Int or .Bool or .Text or .Texts or .Named -> false,
+            .Int or .Bool or .Text or .Texts or .Named or .Held -> false,
         },
         .Arm -> match class {
             .Template(k) -> k is .Arms,
             .Templates(k) -> k is .Arms,
-            .Int or .Bool or .Text or .Texts or .Named -> false,
+            .Int or .Bool or .Text or .Texts or .Named or .Held -> false,
         },
     }
 }
@@ -159,7 +165,7 @@ export fn class_kind(c: FillClass) -> MetaKind? {
     match c {
         .Template(k) -> k,
         .Templates(k) -> many_of(k),
-        .Int or .Bool -> MetaKind.Code,
+        .Int or .Bool or .Held -> MetaKind.Code,
         .Text or .Texts or .Named -> null,
     }
 }
