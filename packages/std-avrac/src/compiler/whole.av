@@ -20,6 +20,13 @@ impl Workspace {
             if !self.is_held(f) { let _ = self.items(f) }
         }
         self.timed("parse", self.clock() - t0)
+        // `rules_table()`'s body is SYNTHESISED at lowering from every
+        // `rule` declaration `@std/avrac` carries (compiler/lower/lower.av)
+        // — forced admitted here, by the same door a target program's own
+        // `use` graph never reaches on its own, and BEFORE resolve/sigs so
+        // every one of them is analysed (and its own diagnostics rendered)
+        // like any other file, not skipped past those phases.
+        let _ = self.rule_decls()
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
         // MINTED from its record, so every consumer sees the interface it had — and its
         // BODY is not wanted, because its object comes from the store. THIS IS WHERE THE
@@ -59,24 +66,26 @@ impl Workspace {
         flatten([self.file_cases(fi.id) for fi in self.decls.files])
     }
 
-    /// Every `rule` declaration this package's OWN sources carry, in
-    /// file and declaration order — the same walk as `cases()`, by
-    /// `DeclKind.Rule` instead of `.Case`. `cases()`'s callers reach
-    /// it after a program's own analysis has admitted every file;
-    /// this one may be asked EARLIER (the suite's own self-check
-    /// runs before a program is derived at all), so it admits the
-    /// package's root files itself before minting each one's items.
-    /// A file under a `tests/` directory is a FIXTURE proving the
-    /// `rule` declaration itself, never a rule the compiler carries
-    /// — `program_tests`'s own `tests/` convention, reused.
+    /// Every `rule` declaration this compiler carries: `@std/avrac`'s
+    /// OWN files, forced admitted here whether it is the root being
+    /// built or a dependency of the program that carries it — a
+    /// target program's `use` graph never reaches these on its own.
+    /// `/tests/` is excluded — `is_test_path`'s law: a fixture is a
+    /// standalone PROGRAM, never a module of the build admitting it,
+    /// and the entry law (`outside_entry`) refuses one that runs
+    /// top-level statements outside the actual entry. May be asked
+    /// EARLIER than a program is derived at all (the suite's own
+    /// self-check runs before one exists); either way, what
+    /// admission leaves is `Decls.rule_decls`'s to read.
     fn rule_decls() -> List<Decl> {
-        for path in self.root_files() { let _ = self.file_id(path) }
-        flatten([self.file_rule_decls(fi.id) for fi in self.decls.files if !fi.path.contains("/tests/")])
-    }
-
-    fn file_rule_decls(f: FileId) -> List<Decl> {
-        let _ = self.items(f)
-        [x for x in [self.decl_at(d) for d in self.decls.decls_of_file(f)] if x.kind is .Rule]
+        let pkg? = self.packages.find(it.key == "@std/avrac") else { return [] }
+        for path in self.all_files(pkg.src) {
+            if !self.is_test_path(path) {
+                let f = self.file_id(path)
+                if !self.is_held(f) { let _ = self.items(f) }
+            }
+        }
+        self.decls.rule_decls()
     }
 
     /// WHETHER A FILE IS HELD — answered from a record rather than read. The one

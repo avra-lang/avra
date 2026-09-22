@@ -8,10 +8,10 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
-use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static}
+use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot}
-use compiler.{Analysis}
+use compiler.{Analysis, any_root}
 
 /// One lowered body: instructions in order and each register's type
 /// (dense by Reg). For a fn, the first `params.length` registers ARE
@@ -175,7 +175,12 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(F
         out.defect("a unit without a body was asked for — `${w.name}`")
         return Unit { bodies: [], wants: [], voices: out.voices, statics: [] }
     }
-    let first = when { w.root != null -> lower_root(a, w.root!, w.name, w.seats, externs, settle), w.decl == null -> lower_main(a, w.name, externs, settle), _ -> lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle) }
+    let first = when {
+        w.root != null -> lower_root(a, w.root!, w.name, w.seats, externs, settle),
+        w.decl == null -> lower_main(a, w.name, externs, settle),
+        is_rules_table(a, w.decl!) -> lower_rules_table(a, a.view.decls.decl(w.decl!), w.name, externs, settle),
+        _ -> lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle),
+    }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
     mut wants: List<Wanted> = first.jobs.pending
@@ -469,6 +474,111 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
         Ins.RetVal(dst),
     ]
     Body { name: w.name, params: [fnty].concat(w.seats), ret: w.ret, gives: dst, ins: ins, reg_types: tys, file: a.view.file, weak: true }
+}
+
+/// Whether `d` is the one declaration `compiler/rules_table.av`
+/// names: its body is SYNTHESISED (`lower_rules_table`), never
+/// lowered from its own (trivial) source.
+fn is_rules_table(a: Analysis, d: DeclId) -> bool {
+    let x = a.view.decls.decl(d)
+    x.name == "rules_table" && a.view.decls.file(x.file).path.ends_with("compiler/rules_table.av")
+}
+
+/// `rules_table()`'s body: one `RuleEntry` per `DeclKind.Rule` this
+/// compiler declares — SYNTHESISED, no AST, `wrapped_body`'s shape,
+/// keyed on the one declaration above. `Workspace.analyze_all`
+/// forces every rule file admitted before any body lowers, so
+/// `a.view.decls` — shared across every file's `Analysis` — already
+/// carries every one of them here.
+fn lower_rules_table(a: Analysis, x: Decl, fname: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
+    let sig: FnSig? = (a.view.decls.sig(x.id))?.fn_sig()
+    let rt: TypeId = sig?.ret ?? a.view.decls.types.intern(Type.Error)
+    mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle))
+    lo.out.seeded()
+    lo.seats_enter()
+    let r = rules_table_reg(lo, a, rt)
+    lo.seats_exit(r)
+    lo.out.give(Ins.RetVal(r))
+    LoweredBody {
+        body: Body { name: fname, params: [], ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: false },
+        voices: lo.out.voices, jobs: lo.jobs,
+    }
+}
+
+/// The list itself: every rule declaration, in a FIXED order — its
+/// own identity (`module.name`) sorted, never the host's directory
+/// listing order, which a build must not depend on — each packed
+/// into `RuleEntry`'s own slots.
+fn rules_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId) -> Reg {
+    let entry_ty: TypeId = lo.view.types.element(rt) ?? rt
+    let found = ordered_rule_decls(a)
+    mut regs: List<Reg> = []
+    // LICENSED I3: each entry EMITS through the context, which a comprehension element does not
+    for d in found { regs.push(rule_entry_reg(lo, a, entry_ty, d)) }
+    let size = lo.box_size(regs.length)
+    let dst = lo.mint_ty(rt)
+    lo.grown_box(dst, size, regs)
+    dst
+}
+
+fn ordered_rule_decls(a: Analysis) -> List<Decl> {
+    let found = a.view.decls.rule_decls()
+    let keys = sorted_texts([rule_sort_key(a, d) for d in found])
+    [found.find(rule_sort_key(a, it) == k)! for k in keys]
+}
+
+fn rule_sort_key(a: Analysis, d: Decl) -> string { "${a.view.decls.short_module_of(d.id)}.${d.name}" }
+
+/// One `RuleEntry`: its fields read by NAME off `RuleEntry`'s own
+/// signature, so their declared order never has to match the order
+/// these mint in.
+fn rule_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, d: Decl) -> Reg {
+    let sig? = lo.fields_of(entry_ty) else { return lo.mint_ty(entry_ty) }
+    let store = a.view.decls.store_of(d.file)
+    let parts? = store.rule_parts(d.stmt) else {
+        lo.defect("`${d.name}`'s declaration carries no rule body")
+        return lo.mint_ty(entry_ty)
+    }
+    let run_ty: TypeId = a.view.decls.field_type_named(entry_ty, "run") ?? lo.view.types.intern(Type.Error)
+    mut byname: Map<string, Reg> = {}
+    byname.set("name", lo.const_str(d.name))
+    byname.set("module", lo.const_str(a.view.decls.short_module_of(d.id)))
+    byname.set("run", rule_run_reg(lo, d.id, run_ty))
+    byname.set("root", lo.const_int(root_kind_of(store, parts.arms) ?? any_root))
+    byname.set("doc", lo.const_str(rule_doc(store, d.stmt)))
+    lo.packed_struct(entry_ty, [byname.get(n)! for n in sig.names])
+}
+
+/// A NAMED fn as a value, at the reference's own site — `fn_value_reg`'s
+/// twin (compiler/lower/state.av) with no `ExprId`: a rule fn is never
+/// CALLED by name here, only ever referenced, as `RuleEntry.run`.
+fn rule_run_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
+    let symbol = lo.wanted(d, null, [])
+    let wname = "${symbol}$w"
+    if lo.unseen(wname) {
+        let held: Arrow? = lo.view.decls.types.arrow_parts(fnty)
+        lo.jobs.wraps.push(Wrap { target: symbol, seats: held?.seats ?? [], ret: held?.answer ?? lo.view.decls.types.intern(Type.Error), name: wname })
+    }
+    let size = lo.box_size(1)
+    let dst = lo.mint_ty(fnty)
+    lo.fn_box(dst, size, wname, [])
+    dst
+}
+
+/// The declaration's own doc comment, its first paragraph joined —
+/// what the hand-kept table's rows always carried by hand, read now
+/// at the one place its `///` already lives.
+fn rule_doc(store: NodeStore, s: StmtId) -> string {
+    joined(doc_first_paragraph(store.doc_comment(s) ?? []), " ")
+}
+
+fn doc_first_paragraph(lines: List<string>) -> List<string> {
+    mut out: List<string> = []
+    for l in lines {
+        if l == "" { return out }
+        out.push(l)
+    }
+    out
 }
 
 /// A file's run-time statements as a body under `name` — `main` for

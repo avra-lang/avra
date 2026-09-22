@@ -64,13 +64,12 @@ fn same_fingerprint(rendered: string, after: string) -> bool {
 }
 
 // ── THE TABLE'S OWN PROOF ──
-// `avra test packages/std-avrac` is the one build where every rule
-// this compiler declares stands in `ws.decls` — that IS the program
-// under test — so this is where `rules_table()` is held to what is
-// actually declared, BY KIND (`ws.rule_decls`, whole.av), never by a
-// restated list. An example's text is read live off its declaration
-// (`examples_of`), so it has one home; a root-kind index is
-// recomputed from the same declaration and held to the table's row.
+// `rules_table()`'s rows are SYNTHESISED, at lowering, from these
+// same declarations (compiler/lower/lower.av) — there is no
+// restated list left to hold a row against. What stays worth
+// proving is that the SYNTHESIS agrees with a FRESH read of the
+// same declaration (the root-kind index) and that the rule's own
+// LOGIC does what its `@fixes`/`@keeps` claim.
 
 /// One example, checked — a line iff it failed.
 export type ExampleCheck = { label: string, ok: bool }
@@ -78,25 +77,20 @@ export type ExampleCheck = { label: string, ok: bool }
 fn checked(label: string, ok: bool) -> ExampleCheck { ExampleCheck { label: label, ok: ok } }
 
 impl Workspace {
-    /// Every rule the table names, proven against what is actually
-    /// declared: a table row with no live declaration, a declaration
-    /// with no table row, a drifted root-kind index, and every
-    /// `@fixes`/`@keeps` the declaration itself carries — read once
-    /// here, never duplicated at the row.
+    /// Every rule's synthesised entry, proved against its live
+    /// declaration: the root-kind index `lower_rules_table` baked in,
+    /// recomputed fresh — and every `@fixes`/`@keeps` the declaration
+    /// itself carries.
     fn rules_checked() -> List<ExampleCheck> {
-        let entries = rules_table()
-        let found = self.rule_decls()
-        let missing = [checked("rules_table: ${rule_id(r)} has no live `rule` declaration", false) for r in entries if !found.any(named(r, it))]
-        let extra = [checked("rules_table: `${d.name}` is declared but not in rules_table()", false) for d in found if !entries.any(named(it, d))]
-        missing.concat(extra).concat(flatten([self.entry_checked(r, found) for r in entries]))
+        flatten([self.entry_checked(r) for r in rules_table()])
     }
 
-    fn entry_checked(r: RuleEntry, found: List<Decl>) -> List<ExampleCheck> {
-        let d? = found.find(named(r, it)) else { return [] }
+    fn entry_checked(r: RuleEntry) -> List<ExampleCheck> {
+        let d? = self.rule_decls().find(named(r, it)) else { return [] }
         let store = self.decls.store_of(d.file)
-        let parts? = store.rule_parts(d.stmt) else { return [checked("rules_table: ${rule_id(r)}'s declaration carries no rule body", false)] }
+        let parts? = store.rule_parts(d.stmt) else { return [checked("${rule_id(r)}'s declaration carries no rule body", false)] }
         // LICENSED I18: any_root is root_kind_of's documented absence case, not a papered-over default
-        let root_check = checked("rules_table: ${rule_id(r)}'s root-kind index matches its declaration", (root_kind_of(store, parts.arms) ?? any_root) == r.root)
+        let root_check = checked("${rule_id(r)}'s synthesised root-kind index matches its declaration", (root_kind_of(store, parts.arms) ?? any_root) == r.root)
         [root_check].concat([example_checked(rule_id(r), r.run, e) for e in examples_of(store, d.stmt)])
     }
 }

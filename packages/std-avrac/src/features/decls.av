@@ -373,6 +373,23 @@ impl Decls {
         if named.is_empty() { self.root_name[0] } else { named }
     }
 
+    /// A declaration's module, package prefix dropped: `nullable`
+    /// for one under `features/nullable/`, wherever the package
+    /// that carries it sits in a build — a rule's identity
+    /// (`rule_id`, compiler/rules_table.av) is named after this, so
+    /// it must read the same whether `@std/avrac` is the root being
+    /// built or a dependency of the program that carries it.
+    fn short_module_of(d: DeclId) -> string { self.module_of(d).split(".").last()! }
+
+    /// Every `rule` declaration admitted so far — the same predicate
+    /// `is_case` reads for `.Case`, over `.Rule`; a fixture proving
+    /// one (`/tests/`) is not the compiler's own rule, `is_test_path`'s
+    /// law here too. Admission is the caller's: `Workspace.rule_decls`
+    /// forces every one of `@std/avrac`'s own files in first.
+    fn rule_decls() -> List<Decl> {
+        [d for d in self.decls if d.kind is .Rule && !self.file(d.file).path.contains("/tests/")]
+    }
+
     /// The root package's manifest name, kept in the dotted spelling.
     fn name_root(name: string) { self.root_name.set(0, name.replace("/", ".")) }
 
