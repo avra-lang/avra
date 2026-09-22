@@ -222,7 +222,8 @@ def registry_catchall(lines):
         arms, catch = 0, False
         for j in range(i + 1, min(len(lines), i + 40)):
             s = lines[j]
-            if s.strip() == "}" and len(s) - len(s.lstrip()) == depth:
+            # the match's own close, a let-else's `} else {` included
+            if s.strip().startswith("}") and len(s) - len(s.lstrip()) == depth:
                 break
             # Only THIS match's arms count: a nested `when`'s own
             # catch-all sits deeper and is not this match's business.
@@ -1202,6 +1203,22 @@ UNRATCHETED = {
 # below now reads its own source for a table defined twice, as it
 # already does for a number claimed twice.
 CLEAN = {
+    # a let-else's match ends at `} else {`, and the scan must stop there
+    # rather than count the next fn's projection as this match's arms
+    "I22": [["    fn f() -> int? {",
+             "        let at? = match v {",
+             "            .I(j) -> j,",
+             "            rest -> null,",
+             "        } else { return null }",
+             "        at",
+             "    }",
+             "",
+             "    fn g(v: V) -> int {",
+             "        match v {",
+             "            .A(x) -> x,",
+             "            _ -> 0,",
+             "        }",
+             "    }"]],
     "I20": [
         ['        then "k" {', '            a.report().contains("x") && a.diagnostics.length == 1'],
         ['        then "k" {', '            a.report().contains("x") && a.voices.length == 1'],

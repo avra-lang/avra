@@ -100,8 +100,11 @@ spec "features/consts (adversarial)" {
 
     // red team, comptime S1: the evaluator settles a computed const
     given "degenerate settlements" {
-        then "the evaluator's call depth is the settlement's, and its words say so" {
-            refused_at_run("fn d(n: int) -> int { if n == 0 { 0 } else { 1 + d(n - 1) } }\nconst D: int = d(500)\nD", "recursion too deep")
+        then "a settlement recurses on the machine's own stack, past where the host's would end" {
+            shown("fn d(n: int) -> int { if n == 0 { 0 } else { 1 + d(n - 1) } }\nconst D: int = d(500)\nD") == "500"
+        }
+        then "a runaway recursion is refused by the settlement's budget, in its words" {
+            refused_at_run("fn d(n: int) -> int { 1 + d(n + 1) }\nconst D: int = d(0)\nD", "ran past its budget")
         }
         then "an overflow wraps as the program's would" {
             shown("fn m() -> int { 9223372036854775807 + 1 }\nconst M: int = m()\nM") == "-9223372036854775808"

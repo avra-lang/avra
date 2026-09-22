@@ -598,7 +598,11 @@ const char* avra_case_now(void) {
 
 // A TRAP IS A WRECK, not a verdict: status 2 keeps it distinct from
 // the 1 a program leaves when it merely disagrees with its input.
+// The program's own lines come first: stdout is block-buffered into a
+// pipe, so without the flush a trap's words land AHEAD of lines printed
+// before it, in exactly the logs a reader reads after a wreck.
 void avra_trap(const char* msg) {
+    fflush(stdout);
     if (g_case) {
         fputs("avra: while running ", stderr);
         fputs(g_case, stderr);
@@ -2234,7 +2238,9 @@ int64_t avra_selfhost_write_file(const char* path, const char* content) {
 // adoption row of docs/2026_09_06_FOREIGN_TEXT_ADOPTION.md, which is
 // the owner's to export — the day it lands this leaves too.
 
+// A line to stderr keeps the program's order against stdout's buffer.
 void avra_eputs(const char* s) {
+    fflush(stdout);
     if (s) fwrite(s, 1, str_len(s), stderr);
     fputc('\n', stderr);
 }

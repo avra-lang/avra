@@ -1793,11 +1793,14 @@ Runtime facts, ours to ratify:
   carved out is gone with it — f57372a's own message says so, and
   the HTTP lane confirmed `Bytes` never rested on this premise.
   Probed both engines, minted and foreign alike, before and after.
-- `avra run` INTERPRETS, and recursion past 400 calls traps
-  ("recursion too deep — 400 nested calls", exit 1); `avra test`
-  and `avra build` are native and have no such floor (5000 deep
-  runs). The limit is what keeps a runaway a trap; measure, never
-  guess, when it moves.
+- `avra run` INTERPRETS ON ITS OWN STACK: a call saves the caller's
+  place on the machine's stack and never recurses on the host's, so a
+  50000-deep recursion runs (it trapped at 400 while the evaluator
+  recursed natively). A runaway traps at 100000 ("recursion too deep —
+  100000 nested calls"); a const settlement meets its memory budget
+  first (F2061). Measure, never guess, when either moves. AND IT ENDS
+  AS A NATIVE PROGRAM ENDS: lines stream as printed (`run_live`), a
+  trap says `avra: <words>` after them and exits 2.
 - `parse_int` TAKES EXACTLY `-`? DIGITS, NEVER MORE — no leading
   `+`, no surrounding space, no digit separator, no fraction or
   exponent, so `"+42"`, `" 42"` and `"4_2"` are all absent; the
