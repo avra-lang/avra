@@ -1,0 +1,200 @@
+//! The structural matcher: a `Shape` pattern built once from a store
+//! subtree, matched many times against another — never materialising
+//! the subject. `@derive(Matchable)` (shape_derive.av) generates the
+//! per-kind arity fold (`shallow_*`) and child walk (`kids_*`) this
+//! file recurses through; every match over Expr/Stmt/Pat is generated
+//! there, never hand-written here.
+
+/// One node of any kind — the currency a pattern's children and a
+/// match's bound answers share. An Arm is not a node: it is spelled
+/// through its parts (pats, guard, value), each already an `At`.
+export enum At {
+    Expr(id: ExprId)
+    Stmt(id: StmtId)
+    Pat(id: PatId)
+}
+
+/// A PATTERN over the store. `Node` pins a subject's ARITY (`shallow`,
+/// Matchable's fold) and recurses into its children positionally;
+/// `Hole` accepts anything at that seat and binds the subject there,
+/// by binder INDEX — the same index appearing twice demands the same
+/// SUBTREE fingerprint, span-blind, not a repeated structural match.
+/// A NAME hole (2b) reads the bound subject's own shape back from
+/// `matched`'s answer; `Hole` itself stays uniform.
+export enum Shape {
+    Hole(index: int)
+    Node(shallow: int, kids: List<Shape>)
+}
+
+impl NodeStore {
+    /// The arity fold for any node, dispatched by kind — what a
+    /// non-hole `Shape.Node` compares a subject's root against.
+    fn shallow_at(at: At) -> int {
+        match at {
+            .Expr(id) -> self.shallow_expr(self.expr(id)),
+            .Stmt(id) -> self.shallow_stmt(self.stmt(id)),
+            .Pat(id) -> self.shallow_pat(self.pat(id)),
+        }
+    }
+
+    /// A node's children, dispatched by kind — read lazily; the
+    /// subject is never built into a value of its own.
+    fn kids_at(at: At) -> List<At> {
+        match at {
+            .Expr(id) -> self.kids_expr(self.expr(id)),
+            .Stmt(id) -> self.kids_stmt(self.stmt(id)),
+            .Pat(id) -> self.kids_pat(self.pat(id)),
+        }
+    }
+
+    /// A node's own content fingerprint, span-blind — what a
+    /// binder's repeated occurrence is checked against.
+    fn subtree_fp(at: At) -> int {
+        match at {
+            .Expr(id) -> self.expr_fingerprint(id),
+            .Stmt(id) -> self.stmt_fingerprint(id),
+            .Pat(id) -> self.pat_fingerprint(id),
+        }
+    }
+}
+
+/// An arm run's ARITY: each arm's pattern count and guard presence,
+/// in order. The arm's VALUE and each PATTERN's own content are
+/// matched through `kids`, never folded here — this only pins the
+/// shape a hole list must line up against.
+fn shallow_arms(arms: List<Arm>) -> int {
+    fp_list([fp(300, [a.pats.length, flagged(a.guard != null)]) for a in arms])
+}
+
+/// An arm run's children, in payload order: every arm's patterns,
+/// its guard when it has one, then its value.
+fn kids_arms(arms: List<Arm>) -> List<At> {
+    flatten([kids_of_arm(a) for a in arms])
+}
+
+fn kids_of_arm(a: Arm) -> List<At> {
+    [At.Pat(p) for p in a.pats].concat([At.Expr(g) for g in some_list(a.guard)]).concat([At.Expr(a.value)])
+}
+
+/// A body's shallow shape: which case, and a parsed quote's own
+/// arity. An EXPANSION carries none — it stands in for the holes
+/// rather than being part of what the node is, exactly as its own
+/// identity fold (`view_fp`) already treats it.
+fn shallow_view(v: BodyView) -> int {
+    match v {
+        .None -> fp(301, []),
+        .Verbatim(stmts, arms) -> fp(302, [stmts.length, shallow_arms(arms)]),
+        .Expanded(_) -> fp(303, []),
+    }
+}
+
+/// A body's children: a parsed quote's own statements and arms.
+fn kids_view(v: BodyView) -> List<At> {
+    match v {
+        .None -> [],
+        .Verbatim(stmts, arms) -> [At.Stmt(s) for s in stmts].concat(kids_arms(arms)),
+        .Expanded(_) -> [],
+    }
+}
+
+/// Two `At`s name the same node — same kind, same arena index.
+fn same_at(a: At, b: At) -> bool {
+    match a {
+        .Expr(x) -> match b { .Expr(y) -> same_expr(x, y), _ -> false },
+        .Stmt(x) -> match b { .Stmt(y) -> same_stmt(x, y), _ -> false },
+        .Pat(x) -> match b { .Pat(y) -> same_pat(x, y), _ -> false },
+    }
+}
+
+/// `at`'s first position in `holes`, or absence — a placeholder
+/// listed twice binds once, at its first position.
+fn hole_index(holes: List<At>, at: At) -> int? {
+    // LICENSED I4: `find_index` is not in the subset — a hand scan for a matching `At`
+    mut i = 0
+    while i < holes.length {
+        if same_at(holes[i], at) { return i }
+        i = i + 1
+    }
+    null
+}
+
+/// A pattern built from a store subtree: every node at or under `at`
+/// keeps its own shape, except a node LISTED in `holes`, which
+/// becomes a binder at its first position there.
+export fn shape_at(store: NodeStore, at: At, holes: List<At>) -> Shape {
+    let h? = hole_index(holes, at) else {
+        return Shape.Node(store.shallow_at(at), [shape_at(store, k, holes) for k in store.kids_at(at)])
+    }
+    Shape.Hole(h)
+}
+
+/// The greatest binder index anywhere under `shape`, or -1 when it
+/// holds none — one past it is how many binders `matched` owes.
+fn max_hole(shape: Shape) -> int {
+    match shape {
+        .Hole(h) -> h,
+        .Node(_, kids) -> max_of_holes(kids),
+    }
+}
+
+fn max_of_holes(kids: List<Shape>) -> int {
+    // LICENSED I4: a max fold; the subset has no reduce/max_by
+    mut best = 0 - 1
+    for k in kids {
+        let inner = max_hole(k)
+        if inner > best { best = inner }
+    }
+    best
+}
+
+/// A binder seat: the FIRST occurrence records the subject; a REPEAT
+/// occurrence must name the SAME subtree, span-blind — same binder,
+/// same code.
+fn bound_hole(store: NodeStore, subject: At, hole: int, acc: List<At?>) -> List<At?>? {
+    let seen: At? = acc[hole]
+    if seen == null {
+        mut next = acc
+        next.set(hole, subject)
+        return next
+    }
+    if store.subtree_fp(seen!) == store.subtree_fp(subject) { acc } else { null }
+}
+
+/// One recursive step: `subject` against `shape`, given the binds
+/// collected so far — the updated binds on a hit, absence on a miss.
+/// Arity is never checked at a `Node`'s own kids count: it was
+/// already pinned by the shallow fold agreeing, so a length mismatch
+/// here cannot arise.
+fn match_shape(store: NodeStore, subject: At, shape: Shape, acc: List<At?>) -> List<At?>? {
+    match shape {
+        .Hole(h) -> bound_hole(store, subject, h, acc),
+        .Node(shallow, kids) -> match_node(store, subject, shallow, kids, acc),
+    }
+}
+
+fn match_node(store: NodeStore, subject: At, shallow: int, kids: List<Shape>, acc: List<At?>) -> List<At?>? {
+    if store.shallow_at(subject) != shallow { return null }
+    if kids.is_empty() { return acc }
+    match_kids(store, store.kids_at(subject), kids, acc)
+}
+
+fn match_kids(store: NodeStore, subjects: List<At>, shapes: List<Shape>, acc: List<At?>) -> List<At?>? {
+    mut cur = acc
+    for j, s in shapes {
+        let next? = match_shape(store, subjects[j], s, cur) else { return null }
+        cur = next
+    }
+    cur
+}
+
+/// Match `subject` against `shape`: null on a miss, one bound `At`
+/// per binder in binder order on a hit. A kind mismatch (an Expr
+/// subject against a Stmt-rooted shape) is a miss like any other —
+/// the type's NAME rides the shallow fold's first part, so the two
+/// spaces never collide. Parentheses mint no node and spans are
+/// never folded, so neither ever matters.
+export fn matched(store: NodeStore, subject: At, shape: Shape) -> List<At>? {
+    let seed: List<At?> = [null for i in 0..(max_hole(shape) + 1)]
+    let acc? = match_shape(store, subject, shape, seed) else { return null }
+    [b! for b in acc]
+}

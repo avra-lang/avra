@@ -1,0 +1,140 @@
+// Attacks on the structural matcher, assuming it is broken: degenerate
+// shapes, binders repeated more than twice, nesting through Pat and
+// through a quote body, and a subject deeper than its pattern.
+use @std.avrac.core.{new_node_store, NodeStore, Expr, Stmt, Pat, Arm, BinOp, BodyView, At, shape_at, matched, ExprId}
+
+spec "core/shape adversarial" {
+    given "degenerate shapes" {
+        then "a bare hole at the root matches any subject" {
+            mut s = new_node_store()
+            let h = s.alloc_expr(Expr.Ident("H"), null)
+            let pat = shape_at(s, At.Expr(h), [At.Expr(h)])
+            let subj = s.alloc_expr(Expr.StrLit("anything"), null)
+            let r = matched(s, At.Expr(subj), pat)
+            r != null && r!.length == 1 && kid_is_expr(r![0], subj)
+        }
+        then "[] never matches a hole-bearing [H], and [H] never matches []" {
+            mut s = new_node_store()
+            let h = s.alloc_expr(Expr.Ident("H"), null)
+            let one_hole_src = s.alloc_expr(Expr.ListLit([h]), null)
+            let one_hole_pat = shape_at(s, At.Expr(one_hole_src), [At.Expr(h)])
+            let empty_src = s.alloc_expr(Expr.ListLit([]), null)
+            let empty_pat = shape_at(s, At.Expr(empty_src), [])
+            let x = s.alloc_expr(Expr.IntLit(1), null)
+            let one_elem_subj = s.alloc_expr(Expr.ListLit([x]), null)
+            matched(s, At.Expr(empty_src), one_hole_pat) == null &&
+                matched(s, At.Expr(one_elem_subj), empty_pat) == null
+        }
+        then "a hole under a hole: the outer absorbs its subtree, the inner placeholder never surfaces" {
+            mut s = new_node_store()
+            let inner = s.alloc_expr(Expr.Ident("inner"), null)
+            let outer = s.alloc_expr(Expr.Not(inner), null)
+            let pat = shape_at(s, At.Expr(outer), [At.Expr(outer), At.Expr(inner)])
+            let subj_inner = s.alloc_expr(Expr.IntLit(9), null)
+            let subj_outer = s.alloc_expr(Expr.Not(subj_inner), null)
+            let r = matched(s, At.Expr(subj_outer), pat)
+            r != null && r!.length == 1 && kid_is_expr(r![0], subj_outer)
+        }
+    }
+    given "repeated binders" {
+        then "the same binder three times requires all three occurrences to share one subtree fingerprint" {
+            mut s = new_node_store()
+            let h = s.alloc_expr(Expr.Ident("H"), null)
+            let triple_src = s.alloc_expr(Expr.ListLit([h, h, h]), null)
+            let pat = shape_at(s, At.Expr(triple_src), [At.Expr(h)])
+
+            let a1 = s.alloc_expr(Expr.IntLit(1), null)
+            let a2 = s.alloc_expr(Expr.IntLit(1), null)
+            let a3 = s.alloc_expr(Expr.IntLit(1), null)
+            let all_same = s.alloc_expr(Expr.ListLit([a1, a2, a3]), null)
+            let r_same = matched(s, At.Expr(all_same), pat)
+
+            let b = s.alloc_expr(Expr.IntLit(2), null)
+            let last_differs = s.alloc_expr(Expr.ListLit([a1, a2, b]), null)
+            let r_differs = matched(s, At.Expr(last_differs), pat)
+
+            r_same != null && r_same!.length == 1 && r_differs == null
+        }
+        then "two arms with the same pats but different guard content are told apart by kids, not by shallow" {
+            mut s = new_node_store()
+            let w1 = s.alloc_pat(Pat.Wild, null)
+            let true_guard = s.alloc_expr(Expr.BoolLit(true), null)
+            let val1 = s.alloc_expr(Expr.IntLit(1), null)
+            let subj_e = s.alloc_expr(Expr.IntLit(0), null)
+
+            let w2 = s.alloc_pat(Pat.Wild, null)
+            let false_guard = s.alloc_expr(Expr.BoolLit(false), null)
+            let val2 = s.alloc_expr(Expr.IntLit(1), null)
+
+            let arity_equal = s.shallow_expr(Expr.Match(subj_e, [Arm { pats: [w1], guard: true_guard, value: val1 }])) ==
+                s.shallow_expr(Expr.Match(subj_e, [Arm { pats: [w2], guard: false_guard, value: val2 }]))
+
+            let true_arm_src = s.alloc_expr(Expr.Match(subj_e, [Arm { pats: [w1], guard: true_guard, value: val1 }]), null)
+            let pat = shape_at(s, At.Expr(true_arm_src), [])
+            let false_arm = s.alloc_expr(Expr.Match(subj_e, [Arm { pats: [w2], guard: false_guard, value: val2 }]), null)
+            let r = matched(s, At.Expr(false_arm), pat)
+
+            arity_equal && r == null
+        }
+    }
+    given "nesting" {
+        then "a quote body's Verbatim statements are matched through kids, and arity still refuses an extra one" {
+            mut s = new_node_store()
+            let lit = s.alloc_expr(Expr.IntLit(1), null)
+            let inner_stmt = s.alloc_stmt(Stmt.Discard(lit), null)
+            let body_src = s.alloc_expr(Expr.Body("quote", ["", ""], [], BodyView.Verbatim([inner_stmt], [])), null)
+            let pat = shape_at(s, At.Expr(body_src), [At.Stmt(inner_stmt)])
+
+            let lit2 = s.alloc_expr(Expr.IntLit(2), null)
+            let inner_stmt2 = s.alloc_stmt(Stmt.Discard(lit2), null)
+            let body_subj = s.alloc_expr(Expr.Body("quote", ["", ""], [], BodyView.Verbatim([inner_stmt2], [])), null)
+            let r = matched(s, At.Expr(body_subj), pat)
+
+            let extra_stmt = s.alloc_stmt(Stmt.Discard(lit2), null)
+            let body_wrong = s.alloc_expr(Expr.Body("quote", ["", ""], [], BodyView.Verbatim([inner_stmt2, extra_stmt], [])), null)
+            let r_wrong = matched(s, At.Expr(body_wrong), pat)
+
+            r != null && r!.length == 1 && kid_is_stmt(r![0], inner_stmt2) && r_wrong == null
+        }
+        then "a Pat subject with nested variants matches through every level, and a deep mismatch still misses" {
+            mut s = new_node_store()
+            let leaf_src = s.alloc_pat(Pat.Wild, null)
+            let mid_src = s.alloc_pat(Pat.Variant("Inner", [leaf_src]), null)
+            let outer_src = s.alloc_pat(Pat.Variant("Outer", [mid_src]), null)
+            let pat = shape_at(s, At.Pat(outer_src), [])
+
+            let leaf_subj = s.alloc_pat(Pat.Wild, null)
+            let mid_subj = s.alloc_pat(Pat.Variant("Inner", [leaf_subj]), null)
+            let outer_subj = s.alloc_pat(Pat.Variant("Outer", [mid_subj]), null)
+            let r_hit = matched(s, At.Pat(outer_subj), pat)
+
+            let wrong_leaf = s.alloc_pat(Pat.Rest, null)
+            let mid_wrong = s.alloc_pat(Pat.Variant("Inner", [wrong_leaf]), null)
+            let outer_wrong = s.alloc_pat(Pat.Variant("Outer", [mid_wrong]), null)
+            let r_miss = matched(s, At.Pat(outer_wrong), pat)
+
+            r_hit != null && r_miss == null
+        }
+        then "a shallow hole pattern matches a subject far deeper than the pattern itself" {
+            mut s = new_node_store()
+            let h = s.alloc_expr(Expr.Ident("H"), null)
+            let pat = shape_at(s, At.Expr(h), [At.Expr(h)])
+            let deep = deep_binary(s, 12)
+            let r = matched(s, At.Expr(deep), pat)
+            r != null && r!.length == 1 && kid_is_expr(r![0], deep)
+        }
+    }
+}
+
+/// A right-nested `... + i + (i-1) + ... + 0` chain, `depth` levels
+/// deep — a subject a shallow hole pattern must never need to open.
+fn deep_binary(mut s: NodeStore, depth: int) -> ExprId {
+    mut cur = s.alloc_expr(Expr.IntLit(0), null)
+    mut i = 0
+    while i < depth {
+        let lit = s.alloc_expr(Expr.IntLit(i), null)
+        cur = s.alloc_expr(Expr.Binary(BinOp.Add, cur, lit), null)
+        i = i + 1
+    }
+    cur
+}
