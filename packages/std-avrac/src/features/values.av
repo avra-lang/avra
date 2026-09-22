@@ -186,9 +186,10 @@ impl LowerCx {
         self.const_int(n)
     }
 
-    mut fn grown_box(dst: Reg, size: Reg, slots: List<Reg>) {
-        self.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
+    mut fn grown_box(sh: Type, size: Reg, slots: List<Reg>) -> Reg {
+        let dst = self.array_sized(sh, size)
         for r in slots { self.push_slot(dst, r) }
+        dst
     }
 
     /// A value's TEXT register, by its shape: a string as it is, a
@@ -198,45 +199,36 @@ impl LowerCx {
         let v = self.reg_of(h)
         match self.seen_at(h) {
             .Str -> v,
-            .Int -> self.spelled_by("avra_int_text", v),
-            .Float -> self.spelled_by("avra_float_text", v),
-            .Bool -> self.spelled_by("avra_bool_text", v),
+            .Int -> self.int_text(Type.Str, v),
+            .Float -> self.float_text(Type.Str, v),
+            .Bool -> self.bool_text(Type.Str, v),
             .Ptr or .Bytes or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or
             .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or
             .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> v,
         }
     }
 
-    mut fn spelled_by(callee: string, v: Reg) -> Reg {
-        let dst = self.mint_shape(Type.Str)
-        self.emit(Ins.CallRt(dst, callee, [v]))
-        dst
-    }
-
-    /// A method answered by ONE runtime call: the receiver, the
-    /// arguments, then `extra` — the answer minted last.
-    mut fn rt_method(mc: MethodCall, callee: string, extra: List<Reg>) -> Reg {
-        let args = [self.reg_of(mc.subject)].concat([self.reg_of(a) for a in mc.args]).concat(extra)
-        let dst = self.result(mc.e)
-        self.emit(Ins.CallRt(dst, callee, args))
-        dst
-    }
-
     /// One more slot.
     mut fn push_slot(box: Reg, v: Reg) {
-        self.emit(Ins.CallRtVoid("avra_array_push", [box, v]))
+        self.array_push(box, v)
     }
 
     /// Equality of two values of one type as a bool register — an enum
-    /// by its tag, a managed value by its equality word, a scalar by
-    /// the Eq operator.
+    /// by its tag, text and bytes by their runtime rows, every other
+    /// scalar by the Eq operator.
     mut fn same_value(a: Reg, b: Reg, ty: TypeId) -> Reg {
-        let sh = self.view.types.seen_shape(ty)
-        if sh is .Enum { return self.same_tag(a, b) }
-        let dst = self.mint_shape(Type.Bool)
-        let word: string? = equality_word(sh)
-        self.emit(if word == null { Ins.Bin(dst, BinOp.Eq, a, b) } else { Ins.CallRt(dst, word!, [a, b]) })
-        dst
+        match self.view.types.seen_shape(ty) {
+            .Enum(_, _) -> self.same_tag(a, b),
+            .Str -> self.streq(Type.Bool, a, b),
+            .Bytes -> self.bytes_eq(Type.Bool, a, b),
+            .Int or .Float or .Bool or .Ptr or .List(_) or .Cell(_) or .Map(_, _) or .Struct(_, _) or .Opt(_) or
+            .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or
+            .EmptyList or .EmptyMap or .Error or .Void -> {
+                let dst = self.mint_shape(Type.Bool)
+                self.emit(Ins.Bin(dst, BinOp.Eq, a, b))
+                dst
+            },
+        }
     }
 
     /// Two enum values of one type compare by TAG — what a unit enum's
@@ -250,13 +242,13 @@ impl LowerCx {
     }
 
     /// THE TAGGED VALUE: an enum's variant is a slot array holding its
-    /// TAG at slot 0 and its payloads, in order, at slots 1... `dst` is
-    /// minted by the caller — the box verbs' shared contract.
-    mut fn tagged_value(dst: Reg, size: Reg, tag: int, payloads: List<Reg>) {
-        self.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
+    /// TAG at slot 0 and its payloads, in order, at slots 1...
+    mut fn tagged_value(sh: Type, size: Reg, tag: int, payloads: List<Reg>) -> Reg {
+        let dst = self.array_sized(sh, size)
         let slot = self.const_int(tag)
         self.push_slot(dst, slot)
         for p in payloads { self.push_slot(dst, p) }
+        dst
     }
 
     /// The TAG a tagged value carries. Slot 0, always an int — asking
@@ -298,9 +290,8 @@ impl LowerCx {
     /// emission order. An absent type reads as an int.
     mut fn slot_read(v: Reg, n: int, ty: TypeId?) -> Reg {
         let at = self.const_int(n)
-        let got = if ty == null { self.mint_shape(Type.Int) } else { self.mint_ty(ty!) }
-        self.emit(Ins.CallRt(got, "avra_array_get", [v, at]))
-        got
+        let sh = if ty == null { Type.Int } else { self.view.types.shape_of(ty!) }
+        self.array_get(sh, v, at)
     }
 
     // ── The Result, behind its verbs ────────────────────────────────
@@ -311,17 +302,13 @@ impl LowerCx {
     /// A success, wrapped — the auto-Ok lift's mint.
     mut fn okayed(into: TypeId, r: Reg) -> Reg {
         let size = self.box_size(2)
-        let dst = self.mint_ty(into)
-        self.tagged_value(dst, size, 0, [r])
-        dst
+        self.tagged_value(self.view.types.shape_of(into), size, 0, [r])
     }
 
     /// A failure, wrapped — what `fail` exits with.
     mut fn failed(into: TypeId, r: Reg) -> Reg {
         let size = self.box_size(2)
-        let dst = self.mint_ty(into)
-        self.tagged_value(dst, size, 1, [r])
-        dst
+        self.tagged_value(self.view.types.shape_of(into), size, 1, [r])
     }
 
     /// Is the result an ANSWER — its tag read against Ok's, as an i1.
@@ -340,12 +327,13 @@ impl LowerCx {
     // file's business alone.
     /// The box, minted: the code address first, the captures in lane
     /// order — the lifted body reads them back by `capture_lane`.
-    mut fn fn_box(dst: Reg, size: Reg, sym: string, caps: List<Reg>) {
-        self.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
+    mut fn fn_box(sh: Type, size: Reg, sym: string, caps: List<Reg>) -> Reg {
+        let dst = self.array_sized(sh, size)
         let ad = self.mint_shape(Type.Int)
         self.emit(Ins.FnAddr(ad, sym))
         self.push_slot(dst, ad)
         for r in caps { self.push_slot(dst, r) }
+        dst
     }
 
     /// The call THROUGH a box: slot 0 is the code, the box rides seat
@@ -466,9 +454,7 @@ impl LowerCx {
     mut fn boxed_adoption(into: TypeId, from_null: bool, r: Reg) -> Reg {
         if from_null { return self.absent_of(into) }
         let size = self.box_size(1)
-        let dst = self.mint_ty(into)
-        self.grown_box(dst, size, [r])
-        dst
+        self.grown_box(self.view.types.shape_of(into), size, [r])
     }
 
     mut fn pair_adoption(into: TypeId, from_null: bool, r: Reg) -> Reg {
@@ -561,23 +547,18 @@ impl LowerCx {
     /// after. A register that wore the CARRIED type would be unmanaged,
     /// and the box would never be released.
     mut fn insisted_boxed(v: Reg, opt: TypeId) -> Reg {
-        let box = self.mint_ty(opt)
-        self.emit(Ins.CallRt(box, "avra_insist", [v]))
+        let box = self.insist(self.view.types.shape_of(opt), v)
         self.boxed_carried(box, self.carried_type(opt))
     }
 
     mut fn insisted_niche(e: ExprId, v: Reg) -> Reg {
-        let dst = self.result(e)
-        self.emit(Ins.CallRt(dst, "avra_insist", [v]))
-        dst
+        self.insist(self.shape_at(e), v)
     }
 
     mut fn insisted_pair(e: ExprId, v: Reg, opt: TypeId) -> Reg {
         let flag = self.extracted(v, 0, self.mint_shape(Type.Bool))
         let payload = self.extracted(v, 1, self.mint_ty(self.carried_type(opt)))
-        let dst = self.result(e)
-        self.emit(Ins.CallRt(dst, "avra_insist_scalar", [flag, payload]))
-        dst
+        self.insist_scalar(self.shape_at(e), flag, payload)
     }
 
     /// An effects-only ARM closes on a throwaway zero — shared with
@@ -617,29 +598,3 @@ enum Repr {
     Boxed
 }
 
-/// The runtime word that compares two values of a shape by VALUE, or
-/// null where the operator itself is the comparison.
-export fn equality_word(sh: Type) -> string? {
-    match sh {
-        .Str -> "avra_streq",
-        .Bytes -> "avra_bytes_eq",
-        .Int or .Float or .Bool or .Ptr or .List(_) or .Cell(_) or .Map(_, _) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Null or
-        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or
-        .EmptyList or .EmptyMap or .Error or .Void -> null,
-    }
-}
-
-/// THE `length` table: the runtime word that measures a shape, or
-/// absence for a shape nothing measures. Every `length` — a
-/// property row's, a nullable chain's — reads this one row.
-export fn length_word(sh: Type) -> string? {
-    match sh {
-        .Str -> "avra_str_len",
-        .Bytes -> "avra_bytes_len",
-        .List(_) -> "avra_array_len",
-        .Map(_, _) -> "avra_map_len",
-        .Ptr or .Int or .Float or .Bool or .Cell(_) or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or
-        .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .Error or .Void or .EmptyMap or
-        .Struct(_, _) or .Enum(_, _) -> null,
-    }
-}

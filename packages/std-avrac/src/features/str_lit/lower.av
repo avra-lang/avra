@@ -2,7 +2,7 @@
 //! (part or stringified hole) pushes into an array, and ONE
 //! str_join answers — zero new instructions, the escape hatch
 //! carrying the feature again.
-use core.{ExprId, Reg, Ins}
+use core.{ExprId, Reg}
 use features.{LowerCx, MethodCall}
 
 fn interp_reg(mut cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
@@ -12,34 +12,24 @@ fn interp_reg(mut cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprI
         pieces.push(cx.const_str(parts[j + 1]))
     }
     let size = cx.box_size(pieces.length)
-    let arr = cx.mint_ty(cx.type_at(e))
-    cx.grown_box(arr, size, pieces)
+    let arr = cx.grown_box(cx.view.types.shape_of(cx.type_at(e)), size, pieces)
     let sep = cx.const_str("")
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_str_join", [arr, sep]))
-    dst
+    cx.str_join(cx.shape_at(e), arr, sep)
 }
 
 // ── The method rows' rules: one runtime call each ──
 
-export fn lower_contains(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, "avra_str_contains", []) }
-export fn lower_starts_with(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, "avra_str_starts_with", []) }
-export fn lower_ends_with(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, "avra_str_ends_with", []) }
-export fn lower_index_of(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, "avra_str_index_of", []) }
-export fn lower_substring(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, "avra_str_substring", []) }
-export fn lower_split(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, "avra_str_split", []) }
-export fn lower_replace(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, "avra_str_replace", []) }
-export fn lower_trim(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, "avra_str_trim", []) }
+export fn lower_contains(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.str_contains(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
+export fn lower_starts_with(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.str_starts_with(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
+export fn lower_ends_with(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.str_ends_with(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
+export fn lower_index_of(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.str_index_of(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
+export fn lower_substring(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.str_substring(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1])) }
+export fn lower_split(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.str_split(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
+export fn lower_replace(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.str_replace(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1])) }
+export fn lower_trim(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.str_trim(cx.shape_at(mc.e), cx.reg_of(mc.subject)) }
 
 /// `s.char_code()` reads the start; `s.char_code(i)` the byte at `i`.
 export fn lower_char_code(mut cx: LowerCx, mc: MethodCall) -> Reg {
-    if !mc.args.is_empty() { return cx.rt_method(mc, "avra_str_char_code", []) }
-    let start = cx.const_int(0)
-    cx.rt_method(mc, "avra_str_char_code", [start])
-}
-
-fn rt1(mut cx: LowerCx, e: ExprId, callee: string, v: Reg) -> Reg {
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, callee, [v]))
-    dst
+    let at = if mc.args.is_empty() { cx.const_int(0) } else { cx.reg_of(mc.args[0]) }
+    cx.str_char_code(cx.shape_at(mc.e), cx.reg_of(mc.subject), at)
 }

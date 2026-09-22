@@ -296,3 +296,73 @@ claim a C body`, `6026/6026 tests passed` over `packages/std-avrac`):
 
 No existing call site swept yet; old raw-string `Ins.CallRt` sites are
 untouched and still compile. Commit history follows.
+
+**Rung 1** — the sweep, gate green:
+
+The survey undercounted. `grep 'Ins.CallRt('` only finds DIRECT
+sites; `values.av`'s `rt_method(mc, "avra_...", extra)` wrapper (a
+method-call shape: subject + `mc.args` + extra, dst minted at
+`result(mc.e)`) had 21 further call sites invisible to that grep —
+`bytes/lower.av` (8), `lists/walks.av` (3), `str_lit/lower.av` (10,
+one of them `char_code`'s two-branch form). Counting these, the true
+site count was ~79, not 56.
+
+Three helper fns (`values.av`'s `grown_box`, `tagged_value`, `fn_box`)
+took an ALREADY-MINTED `dst: Reg` as a parameter — their own single
+`avra_array_sized` call target, pre-minted by ~17 callers across 10
+files so the same register could be pushed into afterward. Since a
+generated method always mints its OWN destination, these three were
+refactored to mint internally and RETURN the register instead —
+mechanically safe because every one of the 17 callers minted `dst`
+solely to hand it to the helper and used it for nothing else in
+between (checked at each site). One site
+(`compiler/lower/state.av`'s `fn_value_reg`) minted through a
+MONO-SUBSTITUTED type (`self.concrete(self.facts.type_at(e))`, not
+plain `self.type_at(e)`) — preserved exactly via
+`self.view.types.shape_of(self.concrete(self.facts.type_at(e)))`,
+which is provably the same register by the interning identity
+`intern(shape_of(ty)) == ty`.
+
+Where a destination was minted via `self.result(e)`/`cx.result(mc.e)`
+(an expression's own answer register) rather than a literal `Type`,
+call sites use `cx.shape_at(e)`/`self.view.types.shape_of(ty)` — both
+provably equivalent to the original minting path via the same
+interning identity, confirmed by the IR-diff proof below.
+
+Found and deleted along the way: `str_lit/lower.av` carried its own
+private `rt1` wrapper, wholly UNUSED (dead code predating this sugar
+— its only references were in a different file, `formats/lower.av`,
+which has its OWN separate `rt1`/`rt2` — two independent copies of
+one shape, one of them already dead). `equality_word`/`length_word`
+(the two `string?`-returning registries named in the survey) are
+retired — inlined as exhaustive `match`es over `Type` at their one
+call site each (`values.av`'s `same_value`, `emit.av`'s
+`measure_of`), calling the generated methods directly in the
+text/bytes arms.
+
+Swept: `values.av`, `emit.av`, `places.av`, `cells/mod.av`,
+`maps/methods.av`, `maps/lower.av`, `formats/lower.av`,
+`lists/walks.av`, `lists/lower.av`, `expr_spine/lower.av`,
+`mutation/lower.av`, `structs/lower.av`, `str_lit/lower.av`,
+`bytes/lower.av`, `quote/lower.av`, `closures/lower.av`,
+`enums/lower.av`, `impls/lower.av`, `compiler/lower/walk.av`,
+`compiler/lower/state.av` — 20 files, ~79 sites, zero raw-string
+`Ins.CallRt`/`CallRtVoid` sites left outside `emit.av`'s three
+primitives and the two named exceptions (confirmed by
+`grep -rn 'Ins.CallRt(Void)?(' packages/std-avrac/src` after the
+sweep — every remaining hit is `row.name`-keyed in `emit.av`, a
+package-extern symbol in `fns/lower.av`, or `compiler/suite_entry.av`/
+`compiler/memory/memory.av`'s named exceptions).
+
+`make avra` succeeded on the FIRST build after the sweep (no syntax
+change, so no four-generation ladder was needed) — `cp build/avra
+build/avra.pre` was taken first regardless, per the plan, and proved
+unnecessary this rung. `./avra test packages/std-avrac`:
+`eval == native == expected` on every program, unchanged. IR-identity
+proved directly: `avra.pre ir <file>` vs the swept `avra ir <file>`,
+byte-for-byte, over every test file under `features/lists/tests`,
+`features/maps/tests`, `features/structs/tests`, `features/enums/tests`,
+`features/cells/tests`, and `features/bytes/tests/bytes_scan` (154
+lines, exercising `avra_bytes_run`/`eq_at`/`ieq_at`/`of_str` and list
+comprehension) — zero diffs. `make gate`: green, no new warnings in
+any swept file. `make seed`: regenerated.

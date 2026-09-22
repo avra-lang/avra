@@ -200,9 +200,7 @@ impl LowerCx {
     /// This turn's element — a RUNTIME index, so the read stays raw.
     /// Asked of a list's walk only; a range's has no box.
     mut fn turn_elem(w: Walk, here: Reg) -> Reg {
-        let v = self.mint_ty(w.elem)
-        self.emit(Ins.CallRt(v, "avra_array_get", [w.xs!, here]))
-        v
+        self.array_get(self.view.types.shape_of(w.elem), w.xs!, here)
     }
 
     /// The step, and the turn's close.
@@ -224,10 +222,15 @@ impl LowerCx {
     /// The length of a register already in hand, as a scratch int — the
     /// same word, the same defect; `e` locates the defect.
     mut fn measure_of(e: ExprId, r: Reg, ty: TypeId) -> Reg {
-        let word? = length_word(self.view.types.seen_shape(ty)) else { return self.unmeasurable(e) }
-        let len = self.mint_shape(Type.Int)
-        self.emit(Ins.CallRt(len, word, [r]))
-        len
+        match self.view.types.seen_shape(ty) {
+            .Str -> self.str_len(Type.Int, r),
+            .Bytes -> self.bytes_len(Type.Int, r),
+            .List(_) -> self.array_len(Type.Int, r),
+            .Map(_, _) -> self.map_len(Type.Int, r),
+            .Ptr or .Int or .Float or .Bool or .Cell(_) or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or
+            .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .Error or .Void or .EmptyMap or
+            .Struct(_, _) or .Enum(_, _) -> self.unmeasurable(e),
+        }
     }
 
     mut fn unmeasurable(e: ExprId) -> Reg {

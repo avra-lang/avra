@@ -77,11 +77,9 @@ fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
     let cell = cx.mint_ty(opt)
     cx.emit(Ins.Alloca(cell))
     cx.emit(Ins.Store(cell, cx.absent_of(opt)))
-    let has = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.CallRt(has, "avra_map_has", [m, k]))
+    let has = cx.map_has(Type.Bool, m, k)
     cx.void_region(has) { cx ->
-        let raw = cx.mint_ty(cx.carried_type(opt))
-        cx.emit(Ins.CallRt(raw, "avra_map_get", [m, k]))
+        let raw = cx.map_get(cx.view.types.shape_of(cx.carried_type(opt)), m, k)
         cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
     }
     let dst = cx.result(e)
@@ -93,7 +91,7 @@ fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
 /// the answer is nothing.
 fn set_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: ExprId) -> Reg {
     let box = cx.unique_box(subject)
-    cx.emit(Ins.CallRtVoid("avra_map_set", [box, cx.reg_of(key), cx.reg_of(value)]))
+    cx.map_set(box, cx.reg_of(key), cx.reg_of(value))
     cx.zero(e)
 }
 

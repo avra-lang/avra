@@ -1,7 +1,7 @@
 //! `Cell<T>` — one explicit shared slot. Copies of a cell share its
 //! referent; `get` copies the held value and `set` replaces it without
 //! requiring the cell binding itself to be `mut`.
-use core.{Type, TypeId, Reg, Ins}
+use core.{Type, TypeId, Reg}
 use features.{LanguageFeature, MethodRow, ReceiverEffect, TypeRow, TypeArgs, MethodCall, TypeCx, LowerCx, no_law, no_variants, slot_worthy}
 
 export fn cells() -> LanguageFeature {
@@ -68,9 +68,7 @@ fn lower_new(mut cx: LowerCx, mc: MethodCall) -> Reg {
     if mc.args.length != 1 { return cx.lower_defect(mc.e, "a Cell.new without one value survived typing") }
     let value = cx.reg_of(mc.args[0])
     let size = cx.box_size(1)
-    let dst = cx.result(mc.e)
-    cx.grown_box(dst, size, [value])
-    dst
+    cx.grown_box(cx.shape_at(mc.e), size, [value])
 }
 
 fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {
@@ -80,7 +78,7 @@ fn lower_get(mut cx: LowerCx, mc: MethodCall) -> Reg {
 fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let box = cx.reg_of(mc.subject)
     let at = cx.const_int(0)
-    cx.emit(Ins.CallRtVoid("avra_slot_set", [box, at, cx.reg_of(mc.args[0])]))
+    cx.slot_set(box, at, cx.reg_of(mc.args[0]))
     cx.hollow_of(cx.type_at(mc.e))
 }
 
@@ -102,7 +100,7 @@ fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let held: TypeId? = cx.view.types.cell_inner(cx.type_at(mc.subject))
     if held == null { return cx.lower_defect(mc.e, "a Cell.push whose cell has no held type survived typing") }
     let list = cx.slot_read(cx.reg_of(mc.subject), 0, held)
-    cx.emit(Ins.CallRtVoid("avra_array_push", [list, cx.reg_of(first)]))
+    cx.array_push(list, cx.reg_of(first))
     cx.hollow_of(cx.type_at(mc.e))
 }
 
@@ -122,7 +120,7 @@ fn lower_set_at(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let held: TypeId? = cx.view.types.cell_inner(cx.type_at(mc.subject))
     if held == null { return cx.lower_defect(mc.e, "a Cell.set_at whose cell has no held type survived typing") }
     let list = cx.slot_read(cx.reg_of(mc.subject), 0, held)
-    cx.emit(Ins.CallRtVoid("avra_slot_set", [list, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1])]))
+    cx.slot_set(list, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1]))
     cx.hollow_of(cx.type_at(mc.e))
 }
 

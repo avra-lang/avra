@@ -53,9 +53,7 @@ fn presence_reg(mut cx: LowerCx, e: ExprId, op: BinOp, subject: ExprId) -> Reg {
 fn index_reg(mut cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
     let arr = cx.reg_of(s)
     let idx = cx.reg_of(i)
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_get", [arr, idx]))
-    dst
+    cx.array_get(cx.shape_at(e), arr, idx)
 }
 
 /// A property read, by the subject's shape: a TYPE NAME builds a
@@ -89,9 +87,7 @@ fn variant_reg(mut cx: LowerCx, e: ExprId, name: string) -> Reg {
         return cx.lower_defect(e, variant_defect)
     }
     let size = cx.box_size(1)
-    let dst = cx.result(e)
-    cx.tagged_value(dst, size, which!, [])
-    dst
+    cx.tagged_value(cx.shape_at(e), size, which!, [])
 }
 fn ident_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     let def: Reg? = cx.def_reg(e)
@@ -120,9 +116,7 @@ fn binary_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Re
         return negated_when(cx, e, op == BinOp.Ne, nullable_eq_reg(cx, e, l, r))
     }
     if op == BinOp.Add && sh is .Str {
-        let dst = cx.result(e)
-        cx.emit(Ins.CallRt(dst, "avra_str_concat", [a, b]))
-        return dst
+        return cx.str_concat(cx.shape_at(e), a, b)
     }
     // text and enums compare through the one value-equality verb;
     // scalars are the operator itself

@@ -65,8 +65,7 @@ impl LowerCx {
             self.defect("a dyn lift from an unnamed shape survived typing")
             return r
         }
-        let dst = self.out.mint_ty(into)
-        self.out.give(Ins.CallRt(dst, "avra_array_new", []))
+        let dst = self.array_new(self.view.decls.types.shape_of(into))
         self.push_slot(dst, r)
         for mn in self.view.decls.trait_method_names(tdecl!) {
             let m: DeclId? = self.view.decls.method(target!, mn)
@@ -104,11 +103,10 @@ impl LowerCx {
         // the pointer, so the guard is the presence protocol and the
         // present arm's carry is identity
         let maybe = self.view.decls.types.type(answer?)
-        let held = self.mint_ty(maybe)
-        self.emit(Ins.CallRt(held, "avra_once_get", [key]))
+        let held = self.once_get(self.view.decls.types.shape_of(maybe), key)
         self.region_as(self.presence_of(held, maybe), answer) { cx -> cx.carried_of(held, maybe) } else { cx ->
             let made = cx.reg_of(root)
-            cx.emit(Ins.CallRtVoid("avra_once_set", [key, made]))
+            cx.once_set(key, made)
             made
         }
     }
@@ -146,16 +144,16 @@ impl LowerCx {
         if unprintable != null { return self.no_projection(unprintable!) }
         let text: Reg? = match sh {
             .Str -> last,
-            .Int -> self.text_call("avra_int_text", last),
-            .Float -> self.text_call("avra_float_text", last),
-            .Bool -> self.text_call("avra_bool_text", last),
-            .List(elem) -> self.text_call(self.list_text_callee(elem), last),
+            .Int -> self.int_text(Type.Str, last),
+            .Float -> self.float_text(Type.Str, last),
+            .Bool -> self.bool_text(Type.Str, last),
+            .List(elem) -> self.list_texted(elem, last),
             .Ptr or .Bytes or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or
             .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) -> null,
             .Opt(_) or .Null or .EmptyList -> null,
             .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
-        if text != null { self.out.give(Ins.CallRtVoid("avra_puts", [text!])) }
+        if text != null { self.puts(text!) }
         null
     }
 
@@ -165,17 +163,11 @@ impl LowerCx {
         refusal("lower.no_projection", self.answer_loc(), "the program's answer is a `${tname}`, which has no text projection yet", "this is the answer", "project a field instead — `p.x` prints")
     }
 
-    mut fn text_call(callee: string, v: Reg) -> Reg {
-        let t = self.out.mint_ty(self.view.decls.types.type(string))
-        self.out.give(Ins.CallRt(t, callee, [v]))
-        t
-    }
-
     /// The runtime printer for a list, by its element shape.
-    fn list_text_callee(elem: TypeId) -> string {
-        if self.view.decls.types.shape_of(elem) is .Bool { return "avra_bools_text" }
-        if self.view.decls.types.shape_of(elem) is .Str { return "avra_strs_text" }
-        "avra_ints_text"
+    mut fn list_texted(elem: TypeId, v: Reg) -> Reg {
+        if self.view.decls.types.shape_of(elem) is .Bool { return self.bools_text(Type.Str, v) }
+        if self.view.decls.types.shape_of(elem) is .Str { return self.strs_text(Type.Str, v) }
+        self.ints_text(Type.Str, v)
     }
 
     /// A block is a scope: statements lower in order into it, and

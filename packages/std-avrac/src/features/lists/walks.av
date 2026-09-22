@@ -52,7 +52,7 @@ export fn lower_index_of(mut cx: LowerCx, mc: MethodCall) -> Reg {
 export fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let first? = mc.args.first() else { return cx.lower_defect(mc.e, "a push without its value survived typing") }
     let box = cx.unique_box(mc.subject)
-    cx.emit(Ins.CallRtVoid("avra_array_push", [box, cx.reg_of(first)]))
+    cx.array_push(box, cx.reg_of(first))
     nothing_reg(cx, mc.e)
 }
 
@@ -60,16 +60,14 @@ export fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
 /// last slot (the memory pass hands a managed one over as owned).
 export fn lower_pop(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let box = cx.unique_box(mc.subject)
-    let dst = cx.result(mc.e)
-    cx.emit(Ins.CallRt(dst, "avra_array_pop", [box]))
-    dst
+    cx.array_pop(cx.shape_at(mc.e), box)
 }
 
 /// `xs.set(i, v)` — the place opens unique, the runtime rewrites
 /// the slot (retain-at-pack is the memory pass's).
 export fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let box = cx.unique_box(mc.subject)
-    cx.emit(Ins.CallRtVoid("avra_slot_set", [box, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1])]))
+    cx.slot_set(box, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1]))
     nothing_reg(cx, mc.e)
 }
 
@@ -77,9 +75,9 @@ export fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
 export fn lower_first(mut cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, false) }
 export fn lower_last(mut cx: LowerCx, mc: MethodCall) -> Reg { edge(cx, mc, true) }
 
-export fn lower_concat(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, "avra_array_concat", []) }
-export fn lower_slice(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, "avra_array_slice", []) }
-export fn lower_join(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.rt_method(mc, "avra_str_join", []) }
+export fn lower_concat(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.array_concat(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
+export fn lower_slice(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.array_slice(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1])) }
+export fn lower_join(mut cx: LowerCx, mc: MethodCall) -> Reg { cx.str_join(cx.shape_at(mc.e), cx.reg_of(mc.subject), cx.reg_of(mc.args[0])) }
 
 /// `xs.enumerate()` is the list — the paired `for` head does the
 /// pairing.
@@ -113,8 +111,7 @@ type Box = { f: Reg, fp: Reg }
 /// `xs.map(f)` — a fresh box, one pushed answer per element.
 fn mapped(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let size = cx.box_size(0)
-    let out = cx.result(mc.e)
-    cx.grown_box(out, size, [])
+    let out = cx.grown_box(cx.shape_at(mc.e), size, [])
     let f = boxed(cx, s.arg)
     let w = cx.opened(mc.subject, s.elem)
     cx.turn_open(w)
@@ -127,8 +124,7 @@ fn mapped(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
 /// `xs.filter(p)` — the same box, the elements the predicate keeps.
 fn kept(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     let size = cx.box_size(0)
-    let out = cx.result(mc.e)
-    cx.grown_box(out, size, [])
+    let out = cx.grown_box(cx.shape_at(mc.e), size, [])
     let f = boxed(cx, s.arg)
     let w = cx.opened(mc.subject, s.elem)
     cx.turn_open(w)
@@ -218,8 +214,7 @@ fn edge(mut cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
     cx.emit(Ins.Bin(some, BinOp.Lt, zero, len))
     cx.void_region(some) { cx ->
         let at = if last { decremented(cx, len) } else { zero }
-        let raw = cx.mint_ty(cx.carried_type(opt))
-        cx.emit(Ins.CallRt(raw, "avra_array_get", [xs, at]))
+        let raw = cx.array_get(cx.view.types.shape_of(cx.carried_type(opt)), xs, at)
         cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
     }
     cx.loaded(mc.e, cell)
