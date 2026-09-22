@@ -9,7 +9,7 @@
 //! are both anchors — a window set short of the payloads reads a
 //! variant's last payload's mark as the NEXT variant's.
 use core.{Expr, Stmt, Param, Pat, Variant, TypeRef, plain_mark, Plain, Scoped}
-use features.{LangNode, Builder, window_end, pat_ids_at, arms_at, ref_within, within, marks_at, type_lo, MarkWindows}
+use features.{LangNode, Builder, window_end, pat_ids_at, arms_at, ref_within, within, marks_at, type_lo, MarkWindows, expr_id_at}
 use grammar.{Token}
 
 fn build_enum_decl(mut b: Builder) -> Result<LangNode, string> {
@@ -59,17 +59,17 @@ fn build_match(mut b: Builder) -> Result<LangNode, string> {
 }
 
 fn build_arm(b: Builder) -> Result<LangNode, string> {
-    let value = b.expr(1)?
-    b.make_arm(pat_ids_at(b.args, 0), value)
+    let value = b.expr(2)?
+    b.make_arm(pat_ids_at(b.args, 0), value, expr_id_at(b.args, 1))
 }
 
 /// A template's hole standing as a whole arm: the one hole as the
 /// arm's pattern and its value, so the walk that classifies holes
-/// reads it as an ARM seat.
+/// reads it as an ARM seat. Never guarded — the hole IS the arm.
 fn build_hole_arm(mut b: Builder) -> Result<LangNode, string> {
     let h = b.token(0)?
     let value = b.expr_node(Expr.Ident(Scoped(h.text)))
-    b.make_arm([b.store.alloc_pat(Pat.Bind(Scoped(h.text)), b.span)], value)
+    b.make_arm([b.store.alloc_pat(Pat.Bind(Scoped(h.text)), b.span)], value, null)
 }
 
 fn build_variant_pat(mut b: Builder) -> Result<LangNode, string> {

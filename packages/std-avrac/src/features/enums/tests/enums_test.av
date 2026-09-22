@@ -214,6 +214,34 @@ spec "features/enums" {
             shown("enum S<T,> {\n    A(x: T, y: int,)\n    B\n}\nmatch S.A(1, 2) {\n    .A(x, y) -> x + y\n    .B -> 0\n}") == "3"
         }
     }
+    given "guards" {
+        then "a non-bool guard refuses, naming the law" {
+            let a = analyze_source("${pair()}match E.a(1) {\n    .a(n) if n -> 1\n    .a(_) -> 2\n    .b -> 0\n}")
+            a.diagnostics.length == 1 &&
+                a.report().contains("a match guard is a `bool`, found `int`")
+        }
+        then "a guarded variant alone leaves it unhandled — the guard proves nothing" {
+            let a = analyze_source("${pair()}match E.a(1) {\n    .a(n) if n > 0 -> 1\n    .b -> 0\n}")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`match` on `E` must handle `.a`")
+        }
+        then "a guarded `_` is not a catch-all — coverage still asks for the rest" {
+            let a = analyze_source("${pair()}match E.a(1) {\n    .a(n) -> n\n    _ if true -> 0\n}")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`match` on `E` must handle `.b`")
+        }
+        then "a guarded arm and an unguarded arm over the same variant never repeat" {
+            analyze_source("${pair()}match E.a(1) {\n    .a(n) if n > 0 -> 1\n    .a(_) -> 2\n    .b -> 0\n}").diagnostics.is_empty()
+        }
+        then "a guarded hole never feeds the registry-hole warning — the real gap still refuses, plainly" {
+            let a = analyze_source("enum K {\n    a\n    b\n    c\n}\nmatch K.a {\n    .a -> 1\n    .b -> 2\n    _ if true -> 3\n}")
+            a.diagnostics.length == 1 &&
+                a.report().contains("`match` on `K` must handle `.c`")
+        }
+        then "a false guard tries the next arm — over the same variant, and a different one" {
+            shown("${pair()}fn f(e: E) -> int {\n    match e {\n        .a(n) if n > 10 -> 100\n        .b -> 9\n        .a(_) -> 1\n    }\n}\n\"\${f(E.a(3))} \${f(E.a(20))} \${f(E.b)}\"") == "1 100 9"
+        }
+    }
     given "`ordinal` — the variant's place in the declaration" {
         then "unit and carrying variants alike, from a value or a literal" {
             shown("enum K {\n    A\n    B(x: int)\n    C\n}\nlet k = K.B(4)\n\"\${K.A.ordinal} \${k.ordinal} \${K.C.ordinal}\"") == "0 1 2"

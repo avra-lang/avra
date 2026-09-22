@@ -65,9 +65,11 @@ fn switchable(cx: LowerCx, arms: List<Arm>, count: int) -> bool {
     true
 }
 
-/// The one variant an arm tests whole, when that is all it does.
+/// The one variant an arm tests whole, when that is all it does. A
+/// guarded arm never qualifies — its acceptance depends on a value no
+/// jump table can read, so it falls to the chain.
 fn whole_test(cx: LowerCx, a: Arm) -> string? {
-    if a.pats.length != 1 { return null }
+    if a.guard != null || a.pats.length != 1 { return null }
     match cx.view.store.pat(a.pats[0]) {
         .Variant(name, args) -> if all_irrefutable(cx.view.store, args) { name.of } else { null },
         .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) -> null,
@@ -176,7 +178,9 @@ fn payload_binds(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: 
 
 /// Whether the arm accepts the subject: any alternative does —
 /// `a || b` as the lazy region, so a later alternative is tested
-/// only when the earlier ones refused.
+/// only when the earlier ones refused — AND, when the arm carries
+/// one, its guard: read only once a pattern already accepted, so an
+/// untaken arm's payloads are never read to evaluate it.
 fn accepts_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm) -> Reg {
     mut acc = pat_accepts_of(cx, a.pats[0], v, vty)
     mut j = 1
@@ -185,7 +189,17 @@ fn accepts_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm) -> Reg {
         acc = cx.region_as(acc, cx.type(bool)) { cx -> cx.const_bool(true) } else { cx -> pat_accepts_of(cx, p, v, vty) }
         j = j + 1
     }
-    acc
+    let g? = a.guard else { return acc }
+    cx.region_as(acc, cx.type(bool)) { cx -> guard_reg(cx, v, vty, a, g) } else { cx -> cx.const_bool(false) }
+}
+
+/// The guard itself, once its arm's pattern already accepted — its
+/// binds read fresh, here, so the guard sees them and an untaken
+/// arm's payloads are never touched.
+fn guard_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm, g: ExprId) -> Reg {
+    let regs: List<Reg> = if a.pats.length == 1 { pat_binds_of(cx, a.pats[0], v, vty) } else { [] }
+    cx.bind_patterns(a.value, regs)
+    cx.reg_of(g)
 }
 
 /// Whether one pattern accepts the value: a hole or a name always;

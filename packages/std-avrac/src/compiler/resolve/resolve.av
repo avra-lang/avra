@@ -109,18 +109,20 @@ impl ResolveCx {
     }
 
     /// One match arm's scope: its binds (in pattern order) hold for
-    /// the arm's value and die with it — the first scope in the
-    /// language opened by an EXPRESSION rather than a statement.
-    mut fn arm_scope(binds: List<Bound>, value: ExprId) {
+    /// the arm's guard AND value, and die with both — the first scope
+    /// in the language opened by an EXPRESSION rather than a
+    /// statement. `guard` is null for an unguarded arm.
+    mut fn arm_scope(binds: List<Bound>, guard: ExprId?, value: ExprId) {
         self.open_overlay()
-        self.arm_body(binds, value)
+        self.arm_body(binds, guard, value)
         self.close_overlay()
     }
 
-    mut fn arm_body(binds: List<Bound>, value: ExprId) {
+    mut fn arm_body(binds: List<Bound>, guard: ExprId?, value: ExprId) {
         for j, b in binds {
             if !self.refused_binder(b.name, self.loc_of(value)) { self.bind(keyed(b.name, b.origin), Binding.Pattern(value, j)) }
         }
+        if guard != null { self.walk(guard!) }
         self.walk(value)
     }
 

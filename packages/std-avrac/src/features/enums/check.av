@@ -78,10 +78,23 @@ fn matched_type(mut cx: TypeCx, e: ExprId, subject: ExprId, arms: List<Arm>) -> 
     if cx.variants_of(subject_ty) == null && arms.any(tests_variant(cx, it)) { return not_matchable(cx, subject) }
     for a in arms { arm_checks(cx, subject_ty, a) }
     // The arms are hidden from the walk, so type them HERE — their
-    // binds are spoken above, in time for the names inside.
-    for a in arms { let _ = cx.walk_type(a.value) }
+    // binds are spoken above, in time for the names inside; a guard
+    // walks under the same binds and must answer `bool`.
+    for a in arms {
+        guard_checks(cx, a)
+        let _ = cx.walk_type(a.value)
+    }
     coverage_checks(cx, e, subject, subject_ty, arms)
     arms_type(cx, [a.value for a in arms])
+}
+
+/// A guard is typed under its arm's binds, spoken by `arm_checks`
+/// above, and must answer `bool` — it decides whether the arm, once
+/// its pattern accepted, is taken.
+fn guard_checks(mut cx: TypeCx, a: Arm) {
+    let g? = a.guard else { return }
+    let _ = cx.walk_type(g)
+    cx.require_bool(g, "a match guard", "this decides whether the arm is taken")
 }
 
 /// One arm: each alternative fits the subject; the binds come from
@@ -168,8 +181,10 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
         for n in covers(cx, a) {
             if covered.contains(n) { repeated_arm(cx, a.value, n) } else { covered.push(n) }
         }
+        // A GUARDED HOLE IS NOT A CATCH-ALL: it may fall through, so
+        // it neither ends coverage nor answers hidden_checks' question.
         let hole: PatId? = hole_of(cx.view.store, a.pats)
-        if hole != null {
+        if hole != null && a.guard == null {
             if declared != null {
                 let sig = declared!
                 hidden_checks(cx, hole!, answering, uncovered(cx, before, sig))
@@ -179,7 +194,9 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
         // AFTER the hole test, so an arm that both answers and holes
         // does not count itself
         if tests_variant(cx, a) { answering = answering + 1 }
-        before = before.concat(a.pats)
+        // A guarded arm never enters `before` — it covers nothing,
+        // so a later hole must not read it as already handled.
+        if a.guard == null { before = before.concat(a.pats) }
     }
     if declared == null { return needs_catch_all(cx, e, sname) }
     let sig = declared!
@@ -305,8 +322,11 @@ fn tests_variant(cx: TypeCx, a: Arm) -> bool {
 }
 
 /// The variants an arm accepts WHOLE: each alternative that tests a
-/// variant and refuses none of its payloads.
+/// variant and refuses none of its payloads. A guarded arm covers
+/// NOTHING — a false guard falls through, so nothing it tests is
+/// settled.
 fn covers(cx: TypeCx, a: Arm) -> List<string> {
+    if a.guard != null { return [] }
     mut out: List<string> = []
     for p in a.pats {
         let n: string? = whole_variant(cx, p)

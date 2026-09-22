@@ -1,0 +1,61 @@
+// proves: `pattern if cond -> value` — a guard is typed under its
+// arm's binds and answers `bool`; a false guard tries the NEXT arm,
+// even one naming a different variant; a guard reads more than one
+// bind, and an or-run's; and it is READ only once its own pattern
+// already accepted, so a variant whose payload the guard would
+// misread as another's is never touched.
+enum Pick {
+    A(n: int)
+    B
+    C(x: int, y: int)
+}
+
+/// A guard false on the FIRST arm falls PAST a different variant's
+/// arm before landing on its own catch.
+fn sized(p: Pick) -> string {
+    match p {
+        .A(n) if n > 10 -> "big",
+        .B -> "none",
+        .A(_) -> "small",
+        .C(_, _) -> "other",
+    }
+}
+
+/// A guard reading two payload binds at once.
+fn summed(p: Pick) -> string {
+    match p {
+        .C(x, y) if x + y > 10 -> "over",
+        .C(_, _) -> "under",
+        .A(_) or .B -> "elsewhere",
+    }
+}
+
+/// An or-run's guard — its alternatives bind nothing, so it reads an
+/// outer value instead.
+fn flagged(p: Pick, on: bool) -> string {
+    match p {
+        .B or .C(_, _) if on -> "flagged",
+        .B or .C(_, _) -> "plain",
+        .A(_) -> "other",
+    }
+}
+
+enum Load {
+    Full(xs: List<int>)
+    Empty
+}
+
+/// The guard is never read on an `.Empty` — reading `xs` there would
+/// read past what its box allocated.
+fn heavy(l: Load) -> bool {
+    match l {
+        .Full(xs) if xs.length > 2 -> true,
+        .Full(_) -> false,
+        .Empty -> false,
+    }
+}
+
+"${sized(Pick.A(5))} ${sized(Pick.A(50))} ${sized(Pick.B)} " +
+"${summed(Pick.C(4, 9))} ${summed(Pick.C(1, 2))} " +
+"${flagged(Pick.B, true)} ${flagged(Pick.B, false)} " +
+"${heavy(Load.Empty)} ${heavy(Load.Full([1, 2, 3]))} ${heavy(Load.Full([1]))}"

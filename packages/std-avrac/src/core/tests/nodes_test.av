@@ -177,6 +177,19 @@ spec "core/nodes" {
             let split = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest_a], value: recv }, Arm { pats: [rest_b], value: tail }]), null)
             s.expr_fingerprint(wide) != s.expr_fingerprint(split)
         }
+        then "a guard is part of an arm's identity — guarded, unguarded and two different guards all differ" {
+            mut s = new_node_store()
+            let rest = s.alloc_pat(Pat.Rest, null)
+            let subject = s.alloc_expr(Expr.IntLit(1), null)
+            let tail = s.alloc_expr(Expr.IntLit(9), null)
+            let g1 = s.alloc_expr(Expr.BoolLit(true), null)
+            let g2 = s.alloc_expr(Expr.BoolLit(false), null)
+            let unguarded = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], value: tail }]), null)
+            let guarded1 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g1, value: tail }]), null)
+            let guarded2 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g2, value: tail }]), null)
+            s.expr_fingerprint(unguarded) != s.expr_fingerprint(guarded1) &&
+                s.expr_fingerprint(guarded1) != s.expr_fingerprint(guarded2)
+        }
         then "dropping a `?` KEEPS every other field — a fn type's seat marks survive it" {
             let marked = TypeRef { name: "fn", args: [ty("int", false), ty("int", false)], optional: true, dynamic: false, arrow: true, span: null, marks: [SeatMark { mutable: true, settled: false }, plain_mark] }
             let dropped = plain(marked)
