@@ -1,8 +1,9 @@
 //! `Cell<T>` — one explicit shared slot. Copies of a cell share its
 //! referent; `get` copies the held value and `set` replaces it without
 //! requiring the cell binding itself to be `mut`.
-use core.{Type, TypeId, Reg, Ins}
+use core.{Type, TypeId, ExprId, Reg, Ins}
 use features.{LanguageFeature, MethodRow, ReceiverEffect, TypeRow, TypeArgs, MethodCall, TypeCx, LowerCx, no_law, no_variants, slot_worthy}
+use diagnostics.{DiagCode, refusal}
 
 export fn cells() -> LanguageFeature {
     let methods = table<MethodRow> {
@@ -12,16 +13,22 @@ export fn cells() -> LanguageFeature {
         "set" | on_cell      | check_set | lower_set | ReceiverEffect.Shared
         "push" | on_cell     | check_push | lower_push | ReceiverEffect.Shared
         "set_at" | on_cell   | check_set_at | lower_set_at | ReceiverEffect.Shared
+        "put" | on_cell      | check_put | lower_put | ReceiverEffect.Shared
     }
     let types = table<TypeRow> {
         name   | arity | slots | judge  | builds     | variants
         "Cell" | 1     | true  | no_law | cell_shape | no_variants
+    }
+    let codes = table<DiagCode> {
+        kind            | id      | summary
+        "type.cell_map" | "F2094" | "`put` needs a cell holding a map"
     }
     component LanguageFeature f {
         name = "cells"
         docs = "`Cell.new(v)` creates an explicit shared `Cell<T>`; copies share one slot, `get()` reads its value, and `set(v)` replaces it through any copy."
         methods = methods
         types = types
+        diags = codes
     }
     f
 }
@@ -126,4 +133,34 @@ fn lower_set_at(mut cx: LowerCx, mc: MethodCall) -> Reg {
     cx.hollow_of(cx.type_at(mc.e))
 }
 
+/// `c.put(k, v)` — insert into the map the cell HOLDS.
+///
+/// THE MAP TWIN of `push`: a read-modify-write through `get`/`set`
+/// copies the held map once per key, because the value `get` hands
+/// back stays shared with the cell. The cell OWNS its map, so this
+/// reads slot 0 and inserts — no `unique_box`, no round trip.
+fn check_put(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let held? = held_type(cx, mc) else { return cx.error_type }
+    let value? = cx.view.types.map_value(held) else { return cell_holds_no_map(cx, mc.e, held) }
+    if !cx.seated(mc, "put", [cx.type(string), value]) { return cx.error_type }
+    cx.type(void)
+}
+
+fn lower_put(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    if mc.args.length != 2 { return cx.lower_defect(mc.e, "a put without its key and value survived typing") }
+    let held: TypeId? = cx.view.types.cell_inner(cx.type_at(mc.subject))
+    if held == null { return cx.lower_defect(mc.e, "a Cell.put whose cell has no held type survived typing") }
+    let map = cx.slot_read(cx.reg_of(mc.subject), 0, held)
+    cx.emit(Ins.CallRtVoid("avra_map_set", [map, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1])]))
+    cx.hollow_of(cx.type_at(mc.e))
+}
+
 fn cell_shape(args: TypeArgs) -> Type { Type.Cell(args.parts[0]) }
+
+// ── The voices ──
+
+/// `put` inserts into the map a cell holds — a cell holding anything
+/// else has no map to insert into.
+fn cell_holds_no_map(mut cx: TypeCx, e: ExprId, held: TypeId) -> TypeId {
+    cx.spoken(refusal("type.cell_map", cx.loc_of(e), "`put` inserts into the map a cell holds, and this cell holds `${cx.view.types.name_of(held)}`", "not a map", "put values in through a `Cell<Map<string, V>>`"))
+}
