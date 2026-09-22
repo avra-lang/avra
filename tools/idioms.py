@@ -926,6 +926,26 @@ def raw_rt_call(lines):
         if RAW_RT_CALL.search(l):
             yield i, l.strip()
 
+ARM_LINE = re.compile(r"^(\s*)(\.[A-Z]\w*.*?)\s->\s(.+?),?\s*$")
+
+def one_body_arms(lines):
+    """Two ADJACENT variant arms answering ONE body are one arm: an
+    `or` joins their patterns, and since the alternatives may bind
+    (every one binding the same names at the same types, F2039's law),
+    `.Struct(d, _) -> d` and `.Enum(d, _) -> d` are `.Struct(d, _) or
+    .Enum(d, _) -> d`. Single-line arms only — a block body is a
+    different sentence each time. A pair whose names bind at
+    DIFFERENT types (`.F(v)`, a float, beside `.B(v)`, a bool) cannot
+    join and is licensed at the site (I57)."""
+    for i in range(1, len(lines)):
+        a, b = ARM_LINE.match(lines[i - 1]), ARM_LINE.match(lines[i])
+        if not a or not b or a.group(1) != b.group(1):
+            continue
+        body = a.group(3)
+        if body.endswith("{") or body != b.group(3):
+            continue
+        yield i, lines[i].strip()
+
 COMMA_LIST = re.compile(r'\(\s*","[^()]*\)\*')
 
 def comma_list_open(lines):
@@ -1045,6 +1065,9 @@ RULES = {
     "I33": (raw_region,
             "a region instruction emitted raw in a feature — speak emit.av's verb "
             "(open_region / arm_end / close_region)"),
+    "I57": (one_body_arms,
+            "two adjacent arms answer one body — join their patterns with `or`; the "
+            "alternatives may bind, each binding the same names at the same types"),
     "I56": (raw_rt_call,
             "a runtime row named by a bare string — `Ins.CallRt(dst, \"avra_x\", args)` — "
             "where a generated method carries the row (`cx.x(sh, args)`, features/rt.av); "
@@ -1203,6 +1226,10 @@ UNRATCHETED = {
 # below now reads its own source for a table defined twice, as it
 # already does for a number claimed twice.
 CLEAN = {
+    "I57": [["        .Struct(d, _) or .Enum(d, _) -> d,",
+             "        .Var(_, _, n) -> n,"],
+            ["        .A(x) -> {",
+             "        .B(x) -> {"]],
     # a let-else's match ends at `} else {`, and the scan must stop there
     # rather than count the next fn's projection as this match's arms
     "I22": [["    fn f() -> int? {",
@@ -1391,6 +1418,10 @@ SPECIMENS = {
     "I39": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
             ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
             ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
+    "I57": [["        .Struct(d, _) -> d,",
+             "        .Enum(d, _) -> d,"],
+            ["            .Ok(.Eof) -> false,",
+             "            .Ok(.Pending) -> false,"]],
     "I56": [['    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))'],
             ['    self.emit(Ins.CallRtVoid("avra_array_push", [box, v]))'],
             ['        cx.emit(Ins.CallRt(got, "avra_map_get", [m, k]))']],
