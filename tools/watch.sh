@@ -36,7 +36,7 @@ cap_mb="$1"; shift
 if [ -n "$AVRA_WATCH_HELD" ]; then
     exec "$@"
 fi
-slots="${AVRA_BUILD_SLOTS:-3}"
+slots="${AVRA_BUILD_SLOTS:-1}"
 lock=/tmp/avra-build.lock
 floor="${AVRA_MEM_FLOOR:-20}"
 
@@ -72,6 +72,11 @@ fi
 # or the queue would serve one lane at a time and the slots would buy
 # nothing. A ticket or a slot whose holder died is reaped, or it
 # blocks the queue forever.
+#
+# ONE SLOT BY DEFAULT: a full build is CPU-bound on a shared box, so
+# concurrent slots serialise work rather than parallelising it. Raise
+# AVRA_BUILD_SLOTS deliberately, never as the default. A waiting
+# caller is told who holds each slot — its pid and its command.
 qdir=$lock.q
 mkdir -p "$qdir"
 last=$(ls "$qdir" 2>/dev/null | sort -n | tail -1)
@@ -81,6 +86,24 @@ echo $$ > "$qdir/$mine/pid"
 # Until a slot is held, the trap clears the TICKET alone: `$lock` still
 # names slot 1, and removing it here would free another lane's slot.
 trap 'rm -rf "$qdir/$mine"' EXIT INT TERM
+# WHO HOLDS WHAT, so a caller told to wait sees the cost rather than
+# a bare ticket number. Scans every held slot that exists, not only
+# 1..$slots — a caller running fewer slots than another's still sees
+# the slots that other one holds.
+slot_holders() {
+    for cand in "$lock" "$lock".[0-9]*; do
+        [ -d "$cand" ] || continue
+        case "$cand" in
+            "$lock") n=1 ;;
+            *) n="${cand##*.}" ;;
+        esac
+        h=$(cat "$cand/pid" 2>/dev/null)
+        if [ -n "$h" ] && kill -0 "$h" 2>/dev/null; then
+            c=$(cat "$cand/cmd" 2>/dev/null)
+            echo "watch:   slot $n: pid $h — ${c:-?}" >&2
+        fi
+    done
+}
 held=""
 said=no
 while [ -z "$held" ]; do
@@ -111,6 +134,7 @@ while [ -z "$held" ]; do
     [ -n "$held" ] && break
     if [ "$said" = no ]; then
         echo "watch: all $slots build slots busy — waiting (ticket $mine)" >&2
+        slot_holders
         said=yes
     fi
     sleep 5
@@ -124,6 +148,7 @@ lock="$held"
 rm -rf "$qdir/$mine"
 trap 'rm -rf "$lock"' EXIT INT TERM
 echo $$ > "$lock/pid"
+printf '%s\n' "$*" > "$lock/cmd"
 while :; do
     level=$(sysctl -n kern.memorystatus_level 2>/dev/null || echo 100)
     [ "$level" -ge "$floor" ] && break
