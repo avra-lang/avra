@@ -2,8 +2,9 @@
 //! every expression a node holds, named by its payload TYPES. An
 //! `ExprId` is a child, a `List<ExprId>` is children, an `ExprId?` is
 //! a child when present, a `List<StmtId>` reaches through its
-//! statements and a `List<Arm>` through its arms' values. Everything
-//! else carries no expression and contributes none.
+//! statements and a `List<Arm>` through each arm's guard (when it
+//! has one) and its value. Everything else carries no expression and
+//! contributes none.
 //!
 //! IT IS NOT `kids`, AND THE DIFFERENCE IS THE POINT. A feature's
 //! `kids` answers WHICH CHILDREN THAT FEATURE TYPES and hides some
@@ -103,7 +104,7 @@ fn reach(f: Field) -> Code? {
         "ExprId?" -> quote { some_list(${b}) },
         "List<ExprId>" -> b,
         "List<StmtId>" -> quote { self.stmts_exprs(${b}) },
-        "List<Arm>" -> quote { [a.value for a in ${b}] },
+        "List<Arm>" -> quote { flatten([some_list(a.guard).concat([a.value]) for a in ${b}]) },
         "BodyView" -> quote { self.body_view_children(${b}) },
         _ -> null,
     }

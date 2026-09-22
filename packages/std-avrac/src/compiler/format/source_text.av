@@ -525,9 +525,16 @@ impl SourceText {
         // than it has node kinds.
         let head = self.expression(subject, loosest_tier, depth)
         let body = flatten([self.trivia_before(self.arm_start(a), depth + 1)
-            .concat([source_line(depth + 1, "${joined([self.pattern(p, depth + 1) for p in a.pats], " or ")} -> ${self.expression(a.value, 0, depth + 1)}")]) for a in arms])
+            .concat([source_line(depth + 1, "${self.arm_head(a, depth + 1)} -> ${self.expression(a.value, 0, depth + 1)}")]) for a in arms])
             .concat(self.trivia_before(end, depth + 1))
         "match ${head} {\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    /// An arm's patterns, then its guard when it has one.
+    mut fn arm_head(a: Arm, depth: int) -> string {
+        let pats = joined([self.pattern(p, depth) for p in a.pats], " or ")
+        let g? = a.guard else { return pats }
+        "${pats} if ${self.expression(g, loosest_tier, depth)}"
     }
 
     mut fn match_optional(subject: ExprId, bind: string, present: ExprId, absent: ExprId, parent: int, end: int, depth: int) -> string {
