@@ -1,0 +1,103 @@
+// ADVERSARIAL: core/grammar_derive's Field emission, attacked across
+// every `Kind` shape the registry match answers and against a
+// payload carrying a MARK — none of which the compiler's own node
+// model exercises today (Expr/Stmt/Pat's payloads are Int/Bool/Str
+// and Named/List/Opt over them alone), so kind_code/seat_code/
+// marks_code/mark_code have never run for real before this file.
+use @std.avrac.core.{PayloadRow, row_for, Grammar}
+use @std.meta.{derive, Field, Kind, Seat}
+use @std.errors.{Loc}
+
+@derive(Grammar)
+enum Wide {
+    Scalars(i: int, fl: float, b: bool, s: string, p: ptr)
+    Boxes(l: List<int>, c: Cell<int>, m: Map<string, int>, r: Result<int, string>)
+    Opts(o: Loc?, oo: List<Loc?>, lo: List<Loc>?)
+    Fns(f: fn(int) -> int, g: fn(mut int, int) -> bool)
+    Poly(d: dyn Show)
+}
+
+trait Show {
+    fn show() -> string
+}
+
+@derive(Grammar)
+enum Poly2<T> { X(t: T) }
+
+@derive(Grammar)
+@derive(Claims)
+enum Marked {
+    One(@dst v: int, w: int)
+}
+
+fn kind_shown(k: Kind) -> string {
+    match k {
+        .Int -> "int", .Float -> "float", .Bool -> "bool", .Str -> "string",
+        .Ptr -> "ptr", .Void -> "void",
+        .List(e) -> "List<${kind_shown(e)}>",
+        .Cell(i) -> "Cell<${kind_shown(i)}>",
+        .Map(kk, v) -> "Map<${kind_shown(kk)}, ${kind_shown(v)}>",
+        .Opt(i) -> "${kind_shown(i)}?",
+        .Result(o, e) -> "Result<${kind_shown(o)}, ${kind_shown(e)}>",
+        .Named(n, args) -> if args.is_empty() { n } else { "${n}<${[kind_shown(a) for a in args].join(", ")}>" },
+        .Fn(seats, ans) -> "fn(${[seat_shown(s) for s in seats].join(", ")}) -> ${kind_shown(ans)}",
+        .Dyn(n) -> "dyn ${n}",
+        .Var(n) -> n,
+        .Unspelled(t) -> "?${t}?",
+    }
+}
+
+fn seat_shown(s: Seat) -> string {
+    "${if s.mutable { "mut " } else { "" }}${kind_shown(s.kind)}"
+}
+
+/// ONE rendering, so a mismatch on either side shows as a string
+/// diff rather than a `List<string> == List<string>` this subset
+/// does not carry (F2000).
+fn kinds_shown(rows: List<PayloadRow>, owner: string, variant: string) -> string {
+    let row? = row_for(rows, owner, variant) else { return "<no such variant>" }
+    [kind_shown(p.kind) for p in row.payloads].join(" | ")
+}
+
+spec "core/grammar_derive — adversarial: every Kind shape" {
+    given "scalars" {
+        then "int, float, bool, string, ptr all round-trip through kind_code" {
+            kinds_shown(grammar_payloads_Wide(), "Wide", "Scalars") == "int | float | bool | string | ptr"
+        }
+    }
+    given "boxes" {
+        then "list, cell, map, result all round-trip" {
+            kinds_shown(grammar_payloads_Wide(), "Wide", "Boxes") == "List<int> | Cell<int> | Map<string, int> | Result<int, string>"
+        }
+    }
+    given "nested optionality" {
+        then "a bare optional, a list of optionals, and an optional list all round-trip" {
+            kinds_shown(grammar_payloads_Wide(), "Wide", "Opts") == "Loc? | List<Loc?> | List<Loc>?"
+        }
+    }
+    given "fn seats" {
+        then "a plain seat and a mut seat both round-trip, in order" {
+            kinds_shown(grammar_payloads_Wide(), "Wide", "Fns") == "fn(int) -> int | fn(mut int, int) -> bool"
+        }
+    }
+    given "dyn" {
+        then "a trait object round-trips" {
+            kinds_shown(grammar_payloads_Wide(), "Wide", "Poly") == "dyn Show"
+        }
+    }
+    given "a generic declaration's own type parameter" {
+        then "an unpinned `T` round-trips as Var, not Unspelled" {
+            kinds_shown(grammar_payloads_Poly2(), "Poly2", "X") == "T"
+        }
+    }
+    given "a payload carrying a mark, claimed so F2092 stays quiet" {
+        then "the mark rides through field_of/marks_code onto the row" {
+            let row? = row_for(grammar_payloads_Marked(), "Marked", "One") else { return false }
+            row.payloads[0].marks.length == 1 && row.payloads[0].marks[0].name == "dst"
+        }
+        then "the payload beside it carries none" {
+            let row? = row_for(grammar_payloads_Marked(), "Marked", "One") else { return false }
+            row.payloads[1].marks.is_empty()
+        }
+    }
+}
