@@ -29,4 +29,20 @@ void avra_fiber_sleep(int64_t ms);
 // and 0 when the time ran out.
 int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms);
 
+// ── The evaluator's tasks: no stack; the policy above files them and
+// names the next, and the evaluator switches its own call stacks. ──
+
+// A new task, filed nowhere until readied or parked.
+int64_t avra_vtask_new(void);
+void avra_vtask_free(int64_t t);
+void avra_vtask_ready(int64_t t);
+void avra_vtask_sleep(int64_t t, int64_t ms);
+// 1 when parked; 0 when the descriptor cannot be watched, and the
+// task is ready at once so its read or write reports the error.
+int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t timeout_ms);
+int64_t avra_vtask_timed_out(int64_t t);
+// The next task to run, waiting on the world as long as it takes; a
+// world with nothing to wait on and nothing ready traps, deadlocked.
+int64_t avra_vtask_next(void);
+
 #endif

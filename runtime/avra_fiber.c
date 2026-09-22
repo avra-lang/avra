@@ -133,6 +133,7 @@ struct Fiber {
     int parked_write;
     int timed_out;       // whether the last park ended by its deadline
     size_t timer;        // 1 + its index in the timer heap, 0 when none
+    int virtual;         // the evaluator's: filed here, switched by the evaluator
 };
 
 // A TASK IS A RECORD: a slot array the core reclaims like any other,
@@ -503,7 +504,10 @@ static int g_turns_since_poll = 0;
 // A world with nothing to wait on and nobody ready is a deadlock,
 // and a deadlock is never a hang.
 __attribute__((noinline))
-static void run_next_with_world(void) {
+// THE POLICY, ONE FOR BOTH ENGINES: who runs next. A compiled program
+// switches to the fiber it answers; the evaluator is handed it and
+// switches call stacks itself — so both interleave tasks alike.
+static Fiber* next_ready(void) {
     for (;;) {
         fire_due_timers();
         if (g_parked_fds > 0 && ++g_turns_since_poll >= FAIR_TURNS) {
@@ -511,12 +515,19 @@ static void run_next_with_world(void) {
             poller_wait(0);
         }
         Fiber* next = ready_pop();
-        if (next) { switch_to(next); return; }
+        if (next) return next;
         if (g_timers_len == 0 && g_parked_fds == 0) avra_trap("every task is waiting — deadlock");
         pool_trim();
         int64_t wait = g_timers_len > 0 ? g_timers[0].at - now_ns() : -1;
         poller_wait(g_timers_len > 0 && wait < 0 ? 0 : wait);
     }
+}
+
+__attribute__((noinline))
+static void run_next_with_world(void) {
+    Fiber* next = next_ready();
+    if (next->virtual) avra_trap("defect: a compiled task's scheduler met one of the evaluator's");
+    switch_to(next);
 }
 
 // A COLD PATH IN A HOT LEAF COSTS EVERY SWITCH A FRAME: while no timer
@@ -702,4 +713,80 @@ int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms) {
     if (timeout_ms >= 0) timer_set(self, deadline_after(timeout_ms));
     run_next();
     return self->timed_out ? 0 : 1;
+}
+
+// ── The evaluator's tasks ───────────────────────────────────────
+//
+// A VIRTUAL task has no stack: the evaluator runs every interpreted
+// task on its own machine and asks the policy above which one is next.
+// Its id is its record's address.
+
+static Fiber* virtual_at(int64_t t) { return (Fiber*)(uintptr_t)t; }
+
+int64_t avra_vtask_new(void) {
+    Fiber* f = calloc(1, sizeof(Fiber));
+    if (!f) avra_trap("the scheduler ran out of memory for a task");
+    f->parked_fd = -1;
+    f->virtual = 1;
+    f->state = FIBER_PARKED;
+    return (int64_t)(uintptr_t)f;
+}
+
+// A task leaves every place the policy files it before it goes: its
+// deadline, a descriptor's waiters, the ready queue.
+void avra_vtask_free(int64_t t) {
+    Fiber* f = virtual_at(t);
+    if (f->timer) timer_cancel(f);
+    if (f->parked_fd >= 0) {
+        int fd = f->parked_fd;
+        waiter_remove(f);
+        fd_arm(fd);
+    }
+    if (f->state == FIBER_READY) {
+        Fiber* prev = NULL;
+        for (Fiber* q = g_ready_head; q; prev = q, q = q->next) {
+            if (q != f) continue;
+            if (prev) prev->next = q->next; else g_ready_head = q->next;
+            if (g_ready_tail == q) g_ready_tail = prev;
+            break;
+        }
+    }
+    free(f);
+}
+
+void avra_vtask_ready(int64_t t) { ready_push(virtual_at(t)); }
+
+void avra_vtask_sleep(int64_t t, int64_t ms) {
+    Fiber* f = virtual_at(t);
+    if (ms < 1) { ready_push(f); return; }
+    f->state = FIBER_PARKED;
+    timer_set(f, deadline_after(ms));
+}
+
+int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t timeout_ms) {
+    Fiber* f = virtual_at(t);
+    if (fd < 0 || fd > INT32_MAX) { f->timed_out = 0; ready_push(f); return 0; }
+    poller_open();
+    f->parked_fd = (int)fd;
+    f->parked_write = writable != 0;
+    waiter_add(f);
+    if (!fd_arm((int)fd)) {
+        waiter_remove(f);
+        f->parked_fd = -1;
+        f->timed_out = 0;
+        ready_push(f);
+        return 0;
+    }
+    f->state = FIBER_PARKED;
+    if (timeout_ms >= 0) timer_set(f, deadline_after(timeout_ms));
+    return 1;
+}
+
+int64_t avra_vtask_timed_out(int64_t t) { return virtual_at(t)->timed_out; }
+
+int64_t avra_vtask_next(void) {
+    Fiber* next = next_ready();
+    if (!next->virtual) avra_trap("defect: the evaluator's scheduler met a compiled task");
+    next->state = FIBER_RUNNING;
+    return (int64_t)(uintptr_t)next;
 }
