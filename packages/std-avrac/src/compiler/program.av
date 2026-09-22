@@ -177,7 +177,7 @@ impl Program {
     /// explain @name`. Null when no declared fn wears the name.
     fn explain_annotation(name: string) -> string? {
         let decls = self.ws.decls
-        let decl? = decls.decls.find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null) else { return null }
+        let decl? = decls.decls.get().find((d: Decl) -> d.name == name && decls.fn_name(d.id) != null) else { return null }
         let sig? = (decls.sig(decl.id))?.fn_sig() else { return null }
         let holes = [decls.types.name_of(pt) for pt in sig.params]
         let signature = "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig.ret)}"
@@ -249,7 +249,7 @@ impl Program {
         if template == null || template!.file == null { return null }
         let site = template!
         let path = site.file!
-        let f? = self.ws.decls.paths.get(path) else { return null }
+        let f? = self.ws.decls.paths.get().get(path) else { return null }
         " — template ${path}:${self.ws.source(f).linecol(site.lo).line}"
     }
 
@@ -281,7 +281,7 @@ impl Program {
     /// window comes from the file its Loc names: a manifest, a file
     /// of this package, or the dependency file that wrote a template.
     fn rendered(ds: List<Diag>) -> string {
-        let sources = self.manifests.concat([self.ws.source(f.id) for f in self.ws.decls.files])
+        let sources = self.manifests.concat([self.ws.source(f.id) for f in self.ws.decls.files.get()])
         let codes = self.ws.lang.rows.codes.concat(self.spoken_codes(ds))
         joined([render_among(d, codes, sources) for d in ds], "\n\n")
     }
@@ -303,7 +303,7 @@ impl Program {
     /// registers.
     fn kind_rows() -> List<DiagCode> {
         let spoken = self.spoken_codes(flatten([a.diagnostics for a in self.files]).concat(self.voices))
-        distinct_codes(spoken.concat(flatten([self.kind_rows_of(fi.id) for fi in self.ws.decls.files])))
+        distinct_codes(spoken.concat(flatten([self.kind_rows_of(fi.id) for fi in self.ws.decls.files.get()])))
     }
 
     fn kind_rows_of(f: FileId) -> List<DiagCode> {
