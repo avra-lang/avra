@@ -1,0 +1,36 @@
+// The author's FORM is the author's. A braced body written on one line
+// comes back on one line; one written across lines comes back across
+// lines. The PRINTER decides this at each body from the source text, so
+// these are its decisions asserted on generated probes — no regex
+// guessing at what the printer knew, and no dependence on strings
+// embedded in a larger file.
+use @std.avrac.compiler.{parse_source}
+use @std.avrac.compiler.format.{render_source_of}
+
+/// The source formatted with its own text in hand — what `avra fmt`
+/// does — equal to itself when the form was already canonical.
+fn kept(source: string) -> bool {
+    let p = parse_source(source)
+    if !p.voices.list.is_empty() { return false }
+    render_source_of(p.store, p.stmts, source) == source
+}
+
+spec "one-line bodies" {
+    given "a body written on one line" {
+        then "a fn body keeps its braces on the line" { kept("fn f() -> int { 1 }") }
+        then "an if keeps both branches on the line" { kept("fn f() -> int { if true { 1 } else { 2 } }") }
+        then "a while keeps its body" { kept("fn f() -> void { while false { 0 } }") }
+        then "a for keeps its body" { kept("fn f(xs: List<int>) -> void { for x in xs { x } }") }
+        then "a trait keeps its member" { kept("trait T { fn m(self) -> int }") }
+        then "an impl keeps its members" { kept("type S = {}\nimpl S { fn m(self) -> int { 1 } }") }
+        then "a struct keeps its fields" { kept("type S = { a: int, b: int }") }
+        then "an enum keeps its variants" { kept("enum E { A B }") }
+        then "a spec keeps its given and then" { kept("spec \"g\" { given \"a\" { then \"c\" { true } } }") }
+    }
+
+    given "a body written across lines" {
+        then "a fn body stays expanded" { kept("fn f() -> int {\n    1\n}") }
+        then "a struct stays expanded" { kept("type S = {\n    a: int,\n}") }
+        then "an if with one branch across lines stays expanded" { kept("fn f() -> int {\n    if true { 1 } else { 2 }\n}") }
+    }
+}
