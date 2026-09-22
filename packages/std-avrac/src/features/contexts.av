@@ -13,9 +13,9 @@ impl Decls {
         match self.types.shape_of(ty) {
             .Struct(decl, _) -> (self.sig(decl))?.record_sig(),
             .App(decl, _, args) -> subbed_fields(self.types, (self.sig(decl))?.record_sig(), decl, args),
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Enum(_, _) or .Res(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or
-            .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Enum(_, _) or .Res(_, _)
+                or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList
+                or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
     }
 
@@ -34,9 +34,9 @@ impl Decls {
             .Enum(decl, _) -> (self.sig(decl))?.enum_sig(),
             .Res(ok, err) -> res_enum_sig(ok, err),
             .App(decl, _, args) -> subbed_variants(self.types, (self.sig(decl))?.enum_sig(), decl, args),
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Struct(_, _) or
-            .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or
-            .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Struct(_, _)
+                or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList
+                or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
     }
 
@@ -108,8 +108,8 @@ export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
     let b? = names.binding(e) else { return null }
     match b {
         .Decl(d) -> d,
-        .Def(_) -> null,
-        .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+        .Def(_)
+            or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
     }
 }
 
@@ -176,11 +176,10 @@ export fn dyn_contract(sh: Type) -> string? {
 /// (impls' `Callee.Declared`): inherent impls land per instantiation.
 export fn declared_decl(sh: Type) -> DeclId? {
     match sh {
-        .Struct(d, _) -> d,
-        .Enum(d, _) -> d,
-        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Opt(_) or .Null or
-        .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or
-        .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+        .Struct(d, _) or .Enum(d, _) -> d,
+        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Opt(_) or .Null
+            or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _)
+            or .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
     }
 }
 
@@ -370,6 +369,11 @@ impl LowerCx {
     fn interned(t: TypeLit) -> TypeId { self.view.types.interned(t) }
     fn type_at(e: ExprId) -> TypeId { self.viewed(self.facts.type_at(e)) }
     fn shape_at(e: ExprId) -> Type { self.view.types.shape_of(self.type_at(e)) }
+    /// The type an arm's j-th bind wears, as typing spoke it.
+    fn bind_type(v: ExprId, j: int) -> TypeId? {
+        let ty? = self.facts.pattern_type(v, j) else { return null }
+        self.viewed(ty)
+    }
     /// The READ's two doors — typing's `seen_at`/`seen` twins: a
     /// named type is its shape at every read, and identical at
     /// runtime, so the lowering that fits the shape fits the name.

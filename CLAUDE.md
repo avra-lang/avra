@@ -1414,9 +1414,7 @@ Syntax the grammar lacks:
 - `|` between or-pattern alternatives: "expected `}` to close the
   `match`" — the spelling is `or`, IN A PATTERN ONLY. As a BOOLEAN it
   does not parse: `true or false` is F0100 at the `or`, and `and`/`not`
-  fail alike. The boolean operators are `&&`, `||`, `!`. A BINDING across alternatives
-  (`.A(n) or .B(n) -> n`): F2039 "an `or` arm binds nothing — its
-  alternatives take wildcards only".
+  fail alike. The boolean operators are `&&`, `||`, `!`.
 - Destructuring `enumerate()` in a comprehension (`[i for (i, m)
   in xs.enumerate()]`): F2005 "`enumerate` pairs only under a paired
   `for` head — pairs as values arrive with tuples". The head IS the
