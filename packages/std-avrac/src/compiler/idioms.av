@@ -189,24 +189,24 @@ fn raw_scope_ins(cx: Code) -> Fix {
 /// inner shape a rewrite cannot re-spell without re-deriving it
 /// (`intern(Type.Str)` vs `Type.Str` vs an already-bound `TypeId`
 /// all reach the same inner type by different routes), so they Say.
+/// core/types.av's own `interned`/`substituted` is the fold that
+/// GIVES a type literal its meaning, recursing through `intern(...)`
+/// by construction — the family's one exempt file, on every rule
+/// below: rewriting its OWN base case into `.type(T)` would call
+/// back into the fold this rule's rewrite exists to shortcut.
 // LICENSED I40: the example's own text names the shape it detects
 @fixes("types.intern(Type.Int)", "types.type(int)")
 export rule interned_int {
     // LICENSED I40: the pattern's own text names the shape it detects
-    quote { ${r}.intern(Type.Int) } -> quote { ${r}.type(int) }
+    quote { ${r}.intern(Type.Int) } if !e.of.view.source.file.ends_with("core/types.av") -> quote { ${r}.type(int) }
 }
 
 // LICENSED I40: the example's own text names the shape it detects
 @fixes("types.intern(Type.Str)", "types.type(string)")
 export rule interned_str {
     // LICENSED I40: the pattern's own text names the shape it detects
-    quote { ${r}.intern(Type.Str) } -> quote { ${r}.type(string) }
+    quote { ${r}.intern(Type.Str) } if !e.of.view.source.file.ends_with("core/types.av") -> quote { ${r}.type(string) }
 }
-
-/// core/types.av's own `interned`/`substituted` is the fold that
-/// GIVES a type literal its meaning, recursing through `intern(...)`
-/// by construction — the family's one exempt file, mirrored on each
-/// aggregate rule below.
 // LICENSED I40: a DIFFERENT constructor than this rule's own — still the family's shape
 @keeps("types.type(string?)")
 export rule interned_opt {

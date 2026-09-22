@@ -22,8 +22,20 @@ idiomatic form, or annotate it with a reason.
 A FOURTH law keeps the rules from rotting: every I-code in
 DOGFOODING.md must have a matcher here or an entry in UNRATCHETED
 with its reason. The registry can never again outrun the ratchet.
+
+FIFTH: an idiom the LANGUAGE can now state is a `rule` declaration
+(the formatter, docs/2026_09_21_FORMATTER_DESIGN.md), never a regex
+racing it — `avra check` finds it, this tool reads the finding, not
+the source (`native_findings()`). Its code is ported and its I-number
+moves to UNRATCHETED, saying so. What stays HERE is what the language
+cannot yet say on its own: whole-file/cross-declaration reasoning
+(Bucket C — I11, I12, I13, I20, I21, I23, I24, I26, I38), and rules
+still needing a language gap (Bucket B — avra-8sb5.25.16's own
+catalog). The same baseline ratchets both kinds of finding; a native
+one carries no `// LICENSED` window, since the rule reads no comment
+of its own — accepted debt for it lives in the baseline only.
 """
-import bisect, collections, os, re, sys, glob
+import bisect, collections, os, re, subprocess, sys, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # EVERY PACKAGE'S SOURCE, never a list: a listed root forgets the next
@@ -38,32 +50,17 @@ SKIP = ("spec_test",)
 # lines — the old single-line greps caught the rare shape and
 # reported success. ──
 
-# I40: a shape a TYPE LITERAL spells — a word, or Opt/List/Map/Res
-# over words and plain names — interned by hand. The fold that gives
-# the literal its meaning (core/types.av's `interned`) is the one
-# place that spells the shapes; everywhere else is the smell.
-SPELLED_PART = r"(?:\w+|Type\.(?:Int|Float|Bool|Str|Ptr|Void))"
-SPELLED_SHAPE = re.compile(
-    r"\.intern\(Type\.(?:Int|Float|Bool|Str|Ptr|Void)\)"
-    r"|\.intern\(Type\.(?:Opt|List)\(" + SPELLED_PART + r"\)\)"
-    r"|\.intern\(Type\.(?:Map|Res)\(" + SPELLED_PART + r", " + SPELLED_PART + r"\)\)")
-
-def spelled_shape(lines):
-    """A structural shape interned by hand where `.type(T)` spells it (I40)."""
-    if CURRENT["path"].endswith("core/types.av"):
-        return
-    for i, l in enumerate(lines):
-        if SPELLED_SHAPE.search(l):
-            yield i, l.strip()
-
-# I43: a fact column sized from an arena's count, or an id read
-# through a hand offset — the two halves of a hand-kept side table.
-HAND_SIZED = re.compile(r"filled[<(][^;]*\.count\(\)|\.index - ")
+# I43: a fact column sized from an arena's count — a hand-kept side
+# table's half of the smell that is not yet a `rule`: the sibling
+# half (an id read through a hand offset, `${e}.index - ${k}`) is
+# `hand_sized_index` now, native (compiler/idioms.av) — its own regex
+# would double-report a site this tool has already ceded.
+HAND_SIZED = re.compile(r"filled[<(][^;]*\.count\(\)")
 
 def hand_sized_column(lines):
-    """A column sized by an arena's count, or an id minus a window's
-    base (I43). A COMMENT IS NOT A SITE: the loops suite quotes the
-    old spelling to say what once trapped."""
+    """A column sized by an arena's count (I43, the half still
+    needing a type-seat hole — .25.10). A COMMENT IS NOT A SITE: the
+    loops suite quotes the old spelling to say what once trapped."""
     for i, l in enumerate(lines):
         s = l.strip()
         if s.startswith("//"):
@@ -175,12 +172,6 @@ def uncounted_refusal(lines):
         block = "\n".join(lines[i + 1:i + 10]).split('        then ')[0]
         if ".report().contains(" in block and not COUNTED.search(block):
             yield i, l.strip()
-
-# The `>= 1` spelling of a refusal count, in every costume the tree
-# has worn it: `refusals(src) >= 1`, `a.diagnostics.length >= 1`,
-# `p.diagnostics >= 1`, `p.voices.list.length >= 1`.
-AT_LEAST_ONE = re.compile(
-    r"(refusals\(.*\)|diagnostics(\.length)?|voices\.list\.length) >= 1\b")
 
 def unmutated_mut(lines):
     """`mut` that nothing ever mutates — the reader is told to expect
@@ -403,15 +394,6 @@ def match_arms_oneline(l):
         arms.append((pat.strip(), body.strip().rstrip(",").strip()))
     return arms
 
-# A NULL TEST THAT PICKS THE VALUE OR A DEFAULT — `if x == null { d }
-# else { x! }` and `if x != null { x! } else { d }` — is `x ?? d`.
-# Restricted to ONE PHYSICAL LINE: a statement cannot span a `;`, so a
-# single line's braces hold exactly one expression each, which is
-# what keeps the DEFAULT from ever being a block of statements. A
-# subject that is a call is never captured (the name class excludes
-# `(`), so a side-effecting call written twice is never a site.
-IF_NULL_TERNARY = re.compile(r"\bif ([A-Za-z_][\w.\[\]]*) (==|!=) null \{")
-
 def closing_brace(text, at):
     """Index of the `}` that closes the `{` at `text[at]`, quoted text
     skipped, or None when the line does not close it."""
@@ -434,24 +416,6 @@ def closing_brace(text, at):
                 return k
         k += 1
     return None
-
-def in_string_at(line, idx):
-    """Whether `line[idx]` sits inside a quoted string — a fixture
-    quoting Avra SOURCE as text (a compiler test's own subject) is
-    not a site, however it reads."""
-    in_str, k = False, 0
-    while k < idx:
-        c = line[k]
-        if in_str:
-            if c == "\\":
-                k += 2
-                continue
-            if c == '"':
-                in_str = False
-        elif c == '"':
-            in_str = True
-        k += 1
-    return in_str
 
 # A LITERAL THAT COPIES EVERY OTHER FIELD FROM ONE VALUE IS `with`.
 # Restricted to ONE LINE (so the literal's whole field list is in
@@ -703,34 +667,6 @@ def when_ladder(lines):
         li = bisect.bisect_right(starts, if_pos) - 1
         yield li, lines[li].strip()
 
-def if_null_ternary(lines):
-    """A null test picking the value or a default — `x ?? d` (I52)."""
-    for i, l in enumerate(lines):
-        if l.strip().startswith("//"):
-            continue
-        for m in IF_NULL_TERNARY.finditer(l):
-            if in_string_at(l, m.start()):
-                continue
-            name, op = m.group(1), m.group(2)
-            brace1 = m.end() - 1
-            close1 = closing_brace(l, brace1)
-            if close1 is None:
-                continue
-            em = re.match(r"\s*else\s*\{", l[close1 + 1:])
-            if not em:
-                continue
-            brace2 = close1 + 1 + em.end() - 1
-            close2 = closing_brace(l, brace2)
-            if close2 is None:
-                continue
-            branch1 = l[brace1 + 1:close1].strip()
-            branch2 = l[brace2 + 1:close2].strip()
-            bare = name + "!"
-            present, default = (branch2, branch1) if op == "==" else (branch1, branch2)
-            if present == bare and default != bare:
-                yield i, l.strip()
-                break
-
 def bool_variant_match(lines):
     """A `match` that only answers `is`'s question (I51)."""
     for i, l in enumerate(lines):
@@ -886,20 +822,6 @@ def repeated_unwrap(lines):
 STRING_LEN_LOOP = re.compile(
     r"while [^{]*\b(s|src|a|b|text|name|source)\.length\b")
 
-REGION_EMIT = re.compile(r"cx\.emit\(Ins\.(IfStart|ArmEnd|RegionEnd|LoopStart|LoopCond|LoopEnd)\b")
-
-def raw_region(lines):
-    """A region or loop instruction emitted raw by a feature. The
-    emission vocabulary (features/emit.av) speaks it: `open_region`,
-    `arm_end`, `close_region`/`close_region_as`; `loop_start`,
-    `loop_cond`, `loop_end` and the walk — one instruction stream for
-    both engines by construction. The vocabulary's own body is exempt."""
-    if CURRENT["path"].endswith("features/emit.av"):
-        return
-    for i, l in enumerate(lines):
-        if REGION_EMIT.search(l):
-            yield i, l.strip()
-
 COMMA_LIST = re.compile(r'\(\s*","[^()]*\)\*')
 
 def comma_list_open(lines):
@@ -967,18 +889,13 @@ PRODUCT_ONLY = {
     "I11": "a repeated fixture in a test is not a message that can drift",
     "I12": "a fixture built twice in a test is the test being explicit",
 }
-TESTS_ONLY = {"I20": "it is a law about how a REFUSAL is asserted",
-              "I30": "it is a law about how a REFUSAL is asserted"}
+TESTS_ONLY = {"I20": "it is a law about how a REFUSAL is asserted"}
 
 RULES = {
     "I3":  (push_loop,
             "a for-loop whose body is one push — that is a comprehension (or concat)"),
     "I4":  (line_rx(r"mut [a-z_]+: *[A-Za-z][A-Za-z<>, ]*\? *= *null"),
             "a nullable flag local — is this scan a find/index_of?"),
-    "I7":  (line_rx(r"\[[a-z_][\w.]*\.length - 1\]"),
-            "last-element index arithmetic — `xs.last()!`"),
-    "I9":  (line_rx(r"\.index != |\.index == "),
-            "a hand-rolled type-id comparison — the agreement law is `types_disagree`"),
     "I11": (duplicated(r'"[a-z][^"]{20,}"'),
             "a long string duplicated in one file — shared messages are fns"),
     "I13": (line_rx(r"([a-z_]+\.[a-z_]+\(([a-z_]+)\)).*\1"),
@@ -990,9 +907,6 @@ RULES = {
             "emit-then-intern(Error) — that pair is `spoken(cx, d)`"),
     "I15": (bracket_ritual,
             "a push/…/pop ritual — that is a bracket fn taking a thunk"),
-    "I18": (line_rx(r"[a-z_]+_of\(.*\) *\?\?"),
-            "a payload the dispatch GUARANTEES, papered over with a default — "
-            "absence here is a DEFECT: `lower_defect(cx, e, ...)`"),
     "I12": (duplicated(r"[A-Z][a-zA-Z]+ \{ [a-z_]+: [^{}]* \}"),
             "an identical struct literal written twice — name its constructor"),
     "I24": (unused_import,
@@ -1009,37 +923,18 @@ RULES = {
             "an index walk over a list — `for (j, x) in xs.enumerate()` hands over both"),
     "I20": (uncounted_refusal,
             "a refusal test with no diagnostics COUNT — a cascade can hide behind it"),
-    "I30": (line_rx(AT_LEAST_ONE.pattern),
-            "a refusal asserted as `>= 1` — a cascade of five passes it; pin the "
-            "count (`refused_with`, `refused_n`, or `== n`)"),
     "I21": (unmutated_mut,
             "a `mut` nothing mutates — say `let`"),
     "I38": (comma_list_open,
             "a grammar comma list with no trailing-comma option — `( \",\" x )*` ends `\",\"?`"),
-    "I33": (raw_region,
-            "a region instruction emitted raw in a feature — speak emit.av's verb "
-            "(open_region / arm_end / close_region)"),
-    "I28": (line_rx(r"pointed\(error_at\("),
-            "a refusal assembled by hand — the one shape is "
-            "`refusal(kind, at, message, label, help)`"),
     "I26": (repeated_unwrap,
             "one nullable local forced open 3+ times — guard once, bind once, "
             "and read the name"),
     "I16": (seen_accumulator,
             "a seen-accumulator — a dup is `xs.index_of(x) < j` over enumerate"),
-    "I35": (line_rx(r"cx\.emit\(Ins\.Scope(Enter|Exit)\(|\.out\.give\(Ins\.Scope(Enter|Exit)\("),
-            "a raw scope bracket through a lowering context — the frame verbs "
-            "(`scope_enter`/`scope_exit`, `seats_enter`/`seats_exit`, `arm_stmts`) "
-            "are the spelling; a raw bracket is invisible to the `defer` frames"),
-    "I36": (line_rx(r"^\s*(\w+) = \1 \+ (\"|\(|\w+\.substring\()"),
-            "text grown by `s = s + piece` — quadratic; a `@std/text` builder "
-            "(`builder()`, `push`, `built`) or `repeat`/`pad_*` says it in linear time"),
     "I39": (state_verb,
             "a vocabulary verb as a free fn taking a pass state first — the state's "
             "impl is its vocabulary: write `mut fn verb(…)` there and call `cx.verb(…)`"),
-    "I40": (spelled_shape,
-            "a structural type interned by hand — `intern(Type.Opt(intern(Type.Str)))` — "
-            "where a type literal spells it: `cx.type(string?)`, `types.type(List<elem>)`"),
     "I55": (let_else_guard,
             "`let x = E` guarded by an immediate `if x == null { return/fail … }` — "
             "that is `let x? = E else { … }`, and every later `x!` in the block "
@@ -1054,9 +949,6 @@ RULES = {
             "a struct literal copying every other field from one value — that is "
             "`with`. Accused only when `v`'s declared type is confirmed to match "
             "the literal's; an unconfirmed or a different type is never accused"),
-    "I52": (if_null_ternary,
-            "a null test that picks the value or a default — `if x == null { d } "
-            "else { x! }` (or the arms swapped on `!=`) is `x ?? d`"),
     "I51": (bool_variant_match,
             "a match answering only true/false, one arm a bare variant and the "
             "other the wildcard — that is `is`: `x is .Ready`, or `!(x is .Ready)` "
@@ -1067,12 +959,39 @@ RULES = {
             "`xs.any(it.ready)`, `rows.find(it.word == w)`. A parameter handed on to "
             "ANOTHER method call must stay a lambda, and this never accuses one"),
     "I43": (hand_sized_column,
-            "a fact column sized by hand, or an id read through an offset — "
-            "`SideTable<V>` states the window, the growth and the out-of-window "
-            "defect once: `side_table(name, lo, hi, seed)`, `get(id)`, `grow_to(n)`"),
+            "a fact column sized from an arena's count — `SideTable<V>` states "
+            "the window, the growth and the out-of-window defect once: "
+            "`side_table(name, lo, hi, seed)`, `get(id)`, `grow_to(n)`"),
 }
 
 UNRATCHETED = {
+    "I7":  "PORTED NATIVELY (avra-8sb5.25.16): `lists.last_index`, a `rule`\n"
+           "           in features/lists/idioms.av — `avra check`/`avra fix` enforce it,\n"
+           "           ratcheted here by the native-findings phase below, not by a regex",
+    "I9":  "PORTED NATIVELY: `structs.index_compared` (features/structs/idioms.av)\n"
+           "           — a `rule`, ratcheted by the native-findings phase below",
+    "I18": "PORTED NATIVELY: all six protocol projections as siblings\n"
+           "           (`bool_of_defaulted` … `pairs_of_defaulted`, compiler/idioms.av) —\n"
+           "           ratcheted by the native-findings phase below",
+    "I28": "PORTED NATIVELY: `refusal_assembled` (compiler/idioms.av) — ratcheted\n"
+           "           by the native-findings phase below",
+    "I30": "PORTED NATIVELY: all four receiver shapes as siblings\n"
+           "           (`uncounted_refusal` … `voices_uncounted`, compiler/idioms.av) —\n"
+           "           ratcheted by the native-findings phase below",
+    "I33": "PORTED NATIVELY: all six `Ins` variants as siblings (`if_start_raw`\n"
+           "           … `loop_end_raw`, compiler/idioms.av) — ratcheted by the\n"
+           "           native-findings phase below",
+    "I35": "PORTED NATIVELY: both scope brackets as siblings (`scope_enter_raw`,\n"
+           "           `scope_exit_raw`, compiler/idioms.av) — ratcheted by the\n"
+           "           native-findings phase below",
+    "I36": "PORTED NATIVELY: `str_grown_quadratically` (compiler/idioms.av) —\n"
+           "           ratcheted by the native-findings phase below",
+    "I40": "PORTED NATIVELY: all six type-constructor shapes as siblings\n"
+           "           (`interned_int` … `interned_res`, compiler/idioms.av) —\n"
+           "           ratcheted by the native-findings phase below",
+    "I52": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
+           "           (features/nullable/idioms.av) — ratcheted by the native-findings\n"
+           "           phase below",
     "I56": "telling \"this branch answers what a DIFFERENT arm already\n"
            "           answers\" needs reading every other arm's own answer and judging\n"
            "           whether they are the same computation — and, when the target is a\n"
@@ -1230,12 +1149,6 @@ CLEAN = {
             ["    Widget {",
              "        name: held.name, tier: held.tier, extra: 8,",
              "    }"]],
-    "I52": [["    if x == null { 0 } else { x!.text() }"],
-            ["    if x != null { f(x!) } else { 0 }"],
-            ["    if x == null {", "        do_a()", "        do_b()", "    } else {", "        x!", "    }"],
-            ["    if f() == null { 0 } else { f()! }"],
-            ["    if x == null { x! } else { x! }"],
-            ['    shown("fn f(v: int?) -> int { if v != null { v! } else { 0 } }") == "1"']],
     "I51": [["    match v { .Bind(_) -> true, _ -> false }"],
             ["    match s { .A -> true, .B -> false, .C -> false }"],
             ["    match k { .Wide -> true, .Narrow or .Ptr or .Void -> false }"],
@@ -1258,10 +1171,6 @@ SPECIMENS = {
     "I4":  [["    mut best: Thing? = null"],
             ["    mut hit: List<int>? = null"],
             ["    mut seen: Map<string, int>? = null"]],
-    "I7":  [["    let v = xs[xs.length - 1]"],
-            ["    let v = a.b[a.b.length - 1]"],
-            ["    let v = self.items[self.items.length - 1]"]],
-    "I9":  [["    if a.index != b.index { }"], ["    if a.index == b.index { }"]],
     "I11": [['    let a = "a message long enough to be shared"',
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
@@ -1294,10 +1203,6 @@ SPECIMENS = {
             ["    let maybe: Widget? = find()",
              "    let held = maybe!",
              "    Widget { name: held.name, tier: held.tier, extra: 4 }"]],
-    "I52": [["    let id = if known == null { Default { x: 1 } } else { known! }"],
-            ["    let one = if held != null { held! } else { defaulted_reg(cx) }"],
-            ["    if x == null { 0 } else { x! }"],
-            ["    if y != null { y! } else { \"-\" }"]],
     "I51": [["    match x { .Ready -> true, _ -> false }"],
             ["    match self {", "        .Other -> false,", "        _ -> true,", "    }"],
             ["    match k { .A -> true, rest -> false }"],
@@ -1312,8 +1217,6 @@ SPECIMENS = {
     "I14": [["    cx.emit(d)", "    cx.intern(Type.Error)"]],
     "I15": [["    v.push(name)", "    let f = go()", "    let _ = v.pop()"]],
     "I16": [["    mut seen: List<string> = []", "    if seen.contains(x) { }", "    seen.push(x)"]],
-    "I18": [["    cx.emit(Ins.ConstBool(dst, truth_of(cx.store.expr(e)) ?? false))"],
-            ['    let v = text_of(node) ?? ""']],
     "I19": [["    for j in 0..args.length {", "        let a = args[j]", "    }"]],
     "I20": [['        then "it refuses" {', '            let a = analyze_source("x")',
              '            a.report().contains("nope")', "        }"],
@@ -1332,27 +1235,15 @@ SPECIMENS = {
     "I24": [["use core.{Span}"]],
     "I38": [['            stmt = "fn" n:NAME "(" ( ps:NAME ( "," ps:NAME )* )? ")" END -> fn_decl(n, ps)'],
              ['            primary = "[" ( a:expression ( "," a:expression )* )? "]" -> lit(a)']],
-    "I33": [["    cx.emit(Ins.IfStart(c))"], ["        cx.emit(Ins.ArmEnd(v))"], ["    cx.emit(Ins.RegionEnd(dst, last))"], ["    cx.emit(Ins.LoopStart)"], ["    cx.emit(Ins.LoopCond(more))"], ["    cx.emit(Ins.LoopEnd)"]],
-    "I28": [['    cx.emit(pointed(error_at("k", at, "m"), "l"))']],
     "I26": [["fn f(x: int?) -> int {", "    if x == null { return 0 }",
              "    x! + x! + x!", "}"],
             ["    mut fn m(x: int?) -> int {", "        if x == null { return 0 }",
              "        x! + x! + x!", "    }"]],
-    "I35": [["    cx.emit(Ins.ScopeEnter(Level.Application))"],
-            ["    cx.emit(Ins.ScopeExit(null))"],
-            ["    lo.out.give(Ins.ScopeExit(r))"]],
-    "I36": [['        out = out + " "'],
-            ["            text = text + src.substring(j, j + 1)"],
-            ["            out = out + (unescaped(text.char_code(j + 1)) ?? text.substring(j, j + 2))"]],
     "I39": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
             ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
             ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
     "I43": [["    mut walked: List<bool> = filled(view.store.exprs.count(), false)"],
-            ["        of_expr: filled<TypeId>(store.exprs.count(), hole),"],
-            ["    fn type_at(e: ExprId) -> TypeId { self.of_expr[e.index - self.lo] }"]],
-    "I40": [["    let str = cx.view.types.intern(Type.Str)"],
-            ["    cx.view.types.intern(Type.Opt(held))"],
-            ["    self.types.intern(Type.Map(cx.view.types.intern(Type.Str), want))"]],
+            ["        of_expr: filled<TypeId>(store.exprs.count(), hole),"]],
 }
 
 def next_free_code():
@@ -1422,9 +1313,15 @@ def selftest():
     while this tool reported success. A collapsed dict cannot see its
     own duplicates, so the check reads the SOURCE."""
     dead = duplicate_numbers()
-    for spelling in COUNTS:
-        if not COUNTED.search(spelling):
-            dead.append(f"I20 does not accept the count `{spelling}`")
+    # WARN_RE's own reach: a real header (matched) and a fixture that
+    # merely QUOTES the same words inside a string, never at column 0
+    # (not matched — the adversarial test's own trap, restated here).
+    real = 'warning[style.x]: a thing\n   ╭─[/a/b.av:12:3]\n'
+    quoted = '            p.report().starts_with("warning[style.x]: a thing")\n'
+    if not WARN_RE.search(real):
+        dead.append("WARN_RE misses a real diagnostic header")
+    if WARN_RE.search(quoted):
+        dead.append("WARN_RE fires inside a fixture's own quoted string")
     for code, (matcher, _) in RULES.items():
         specimens = SPECIMENS.get(code)
         if specimens is None:
@@ -1460,6 +1357,66 @@ def licensed(lines, i, code):
             return True
     return False
 
+# A rule finding's rendered header, at the true start of its line —
+# never inside a fixture's own quoted string, which reads the same
+# text without starting a line (avra-8sb5.25.16's own attack: an
+# adversarial test's report() assertion QUOTES this exact shape).
+WARN_RE = re.compile(r"^warning\[([^\]]+)\]:[^\n]*\n\s*╭─\[([^:]+):(\d+):\d+\]", re.M)
+
+def native_findings():
+    """Every finding `avra check` reports on its own — a Bucket-A idiom
+    ported as a `rule` (avra-8sb5.25.16) is enforced HERE, never by a
+    second regex racing the compiler's own vocabulary. An F-code is
+    the compiler's ordinary gate, never the idiom ratchet's; a rule's
+    kind is always dotted (`style.x`, `type.x`, `rule.module.name`),
+    which is the whole filter.
+
+    Fingerprinted the same way a matcher's finding is: by the site's
+    own TEXT, never a line number, so an edit above a site does not
+    churn the debt list. THERE IS NO LICENSE WINDOW HERE — a rule
+    fires wherever it structurally matches, reading no comment of its
+    own; the baseline is the only record of accepted debt for a
+    native site (avra-8sb5.25.16's own finding: a `// LICENSED I<n>`
+    comment written for the old regex tool is invisible to `avra
+    check`, so a site once licensed there is ACCEPTED DEBT here, on
+    the same baseline, not re-licensed)."""
+    binary = os.path.join(ROOT, "build", "avra")
+    if not os.path.exists(binary):
+        return {}, 0
+    pkgs = sorted(set(os.path.dirname(p) for p in SRC))
+    env = dict(os.environ, AVRA_WATCH_HELD="1")
+    sites, checked = set(), 0
+    for pkg in pkgs:
+        try:
+            out = subprocess.run([binary, "check", pkg], cwd=ROOT, env=env,
+                                  capture_output=True, text=True, timeout=300).stdout
+        except Exception:
+            continue
+        checked += 1
+        for kind, path, line in WARN_RE.findall(out):
+            if re.match(r"^F\d+$", kind):
+                continue
+            path = path if os.path.isabs(path) else os.path.join(ROOT, path)
+            rel = os.path.relpath(path, ROOT)
+            if any(s in rel for s in SKIP) or is_program(path):
+                continue
+            sites.add((kind, rel, int(line)))
+
+    found = {}
+    for kind, rel, line in sorted(sites):
+        code = "native:" + kind
+        src_lines = open(os.path.join(ROOT, rel)).read().split("\n")
+        text = src_lines[line - 1].strip() if 0 < line <= len(src_lines) else ""
+        n = 0
+        key = f"{code}\t{rel}\t{text}#{n}"
+        while key in found:
+            n += 1
+            key = f"{code}\t{rel}\t{text}#{n}"
+        found[key] = (os.path.join(ROOT, rel), line, code)
+    return found, checked
+
+NATIVE = {"packages": 0}
+
 def scan():
     """Every unlicensed site, as stable fingerprints."""
     # Module bodies, built once: every sibling's non-import lines.
@@ -1492,6 +1449,10 @@ def scan():
                 n = seen.get(text, 0)
                 seen[text] = n + 1
                 found[f"{code}\t{rel}\t{text}#{n}"] = (path, i + 1, code)
+
+    native, checked = native_findings()
+    NATIVE["packages"] = checked
+    found.update(native)
     return found
 
 def load():
@@ -1503,9 +1464,18 @@ def load():
 def save(fps):
     with open(BASELINE, "w") as f:
         f.write("# KNOWN idiom debt, one site per line. This file only ever\n")
-        f.write("# SHRINKS: no tool path adds to it. A new violation is fixed\n")
+        f.write("# SHRINKS: no tool path adds to it. A regex finding is fixed\n")
         f.write("# in the code or annotated `// LICENSED I<n>: reason` at the\n")
-        f.write("# site. `make idioms-accept` prunes what is gone. Burn it down.\n")
+        f.write("# site. A `native:` finding carries no such comment (the rule\n")
+        f.write("# reads none of its own) — it is fixed, or stays here, reviewed\n")
+        f.write("# at adoption (avra-8sb5.25.16) and every time after. Most of\n")
+        f.write("# the `native:` debt is STRUCTURAL, not owed: a rule's own\n")
+        f.write("# quote pattern spells the shape it detects, so it fires on\n")
+        f.write("# itself (compiler/idioms.av's own sites) or on the type's\n")
+        f.write("# canonical identity comparison (core/nodes.av's `same_*`,\n")
+        f.write("# already `// LICENSED I9` for the retired regex) — an\n")
+        f.write("# irreducible base case, not a copy waiting to be centralized.\n")
+        f.write("# `make idioms-accept` prunes what is gone. Burn it down.\n")
         for fp in sorted(fps):
             f.write(fp + "\n")
 
@@ -1568,8 +1538,13 @@ def main():
         print(f"idioms: {len(new)} NEW violation(s) — the baseline never grows:")
         for fp in new:
             path, line, code = found[fp]
-            print(f"  {os.path.relpath(path, ROOT)}:{line}  [{code}] {RULES[code][1]}")
-            print(f"      write the idiomatic form, or annotate: // LICENSED {code}: <reason>")
+            if code.startswith("native:"):
+                kind = code[len("native:"):]
+                print(f"  {os.path.relpath(path, ROOT)}:{line}  [{kind}] a native rule finding")
+                print(f"      `avra check` names the law in full; fix it, or accept it into the baseline")
+            else:
+                print(f"  {os.path.relpath(path, ROOT)}:{line}  [{code}] {RULES[code][1]}")
+                print(f"      write the idiomatic form, or annotate: // LICENSED {code}: <reason>")
         return 1
 
     by_code = {}
@@ -1582,7 +1557,8 @@ def main():
     # reader can tell the two apart is the number.
     files = list(sources())
     print(f"idioms: no new violations. debt {len(base) - len(gone)} ({tally}){note}"
-          f" — {len(files)} file(s) in {len(SRC)} package(s), next free I{next_free_code()}")
+          f" — {len(files)} file(s) in {len(SRC)} package(s) scanned, "
+          f"{NATIVE['packages']} native-checked, next free I{next_free_code()}")
     return 0
 
 sys.exit(main())
