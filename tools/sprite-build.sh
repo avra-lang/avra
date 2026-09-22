@@ -48,7 +48,7 @@ trap 'rm -f "$tarfile"' EXIT
     cd "$worktree"
     find Makefile avra avra.toml CLAUDE.md DOGFOODING.md ROADMAP.md docs \
          backend runtime packages tools bootstrap corpus \
-        -type f ! -path '*/build/*' ! -path '*/.claude/*' 2>/dev/null \
+        -type f ! -path '*/build/*' ! -path '*/.claude/*' ! -path '*/.avra-cache/*' 2>/dev/null \
         | LC_ALL=C sort \
         | COPYFILE_DISABLE=1 tar --no-mac-metadata -cf "$tarfile" -T -
 )
