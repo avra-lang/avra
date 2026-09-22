@@ -72,7 +72,7 @@ fn whole_test(cx: LowerCx, a: Arm) -> string? {
     if a.guard != null || a.pats.length != 1 { return null }
     match cx.view.store.pat(a.pats[0]) {
         .Variant(name, args) if all_irrefutable(cx.view.store, args) -> name.of,
-        .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) -> null,
+        .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) -> null,
     }
 }
 
@@ -148,6 +148,10 @@ export fn bind_regs(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg>
             cx.defect("a format pattern reached the enum lowering's binds")
             []
         },
+        .Quote(_) -> {
+            cx.defect("a quote pattern reached the enum lowering's binds")
+            []
+        },
         .Wild or .Rest or .Lit(_) -> [],
     }
 }
@@ -158,7 +162,7 @@ export fn bind_regs(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> List<Reg>
 /// a SHORTER variant read past its end.
 fn looks_inside(cx: LowerCx, p: PatId) -> bool {
     match cx.view.store.pat(p) {
-        .Bind(_) or .Variant(_, _) or .Format(_, _) -> true,
+        .Bind(_) or .Variant(_, _) or .Format(_, _) or .Quote(_) -> true,
         .Wild or .Rest or .Lit(_) -> false,
     }
 }
@@ -213,6 +217,10 @@ export fn pat_reg(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId) -> Reg {
         .Variant(name, args) -> variant_reg(cx, name.of, args, v, vty),
         .Format(_, _) -> {
             cx.defect("a format pattern reached the enum lowering's test")
+            cx.const_bool(false)
+        },
+        .Quote(_) -> {
+            cx.defect("a quote pattern reached the enum lowering's test")
             cx.const_bool(false)
         },
     }

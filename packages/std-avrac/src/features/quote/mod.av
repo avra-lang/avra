@@ -12,19 +12,26 @@ use diagnostics.{DiagCode}
 
 export fn quote_lit() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name    | build
-        "quote" | build_quote
+        name          | build
+        "quote"       | build_quote
+        "quote_pat"   | build_quote_pat
     }
     let codes = table<DiagCode> {
-        kind               | id      | summary
-        "type.quote_hole"  | "F2075" | "a hole takes what its seat takes"
-        "type.quote_meta"  | "F2076" | "a `quote` answers a `@std.meta` value, which this program does not load"
+        kind                    | id      | summary
+        "type.quote_hole"       | "F2075" | "a hole takes what its seat takes"
+        "type.quote_meta"       | "F2076" | "a `quote` answers a `@std.meta` value, which this program does not load"
+        "type.quote_pat_shape"  | "F2087" | "a `quote` pattern matches one node — one statement, no arms"
+        "type.quote_pat_subj"   | "F2093" | "a `quote` pattern reads code — a `Code`, not this subject's type"
+        "type.quote_pat_hole"   | "F2094" | "a `quote` pattern's hole names a fresh variable, not a written expression"
+        "type.quote_pat_type"   | "F2095" | "a `quote` pattern takes no hole in type position yet"
+        "type.quote_pat_seat"   | "F2096" | "a `quote` pattern binds no hole in name or binder position yet"
     }
     component LanguageFeature f {
         name = "quote"
-        docs = "`quote { … }` — a template parsed here: statements, declarations or arms; \${e} is a hole typed by its seat."
+        docs = "`quote { … }` — a template parsed here: statements, declarations or arms; \${e} is a hole typed by its seat. In PATTERN position it matches code structurally and binds its holes."
         gram = grammar {
             primary = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:expression )? he:HOLE_END )* -> quote(o, a, s, c, hb, h, he)
+            pattern = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:expression )? he:HOLE_END )* -> quote_pat(o, a, s, c, hb, h, he)
         }
         builders = rows
         diags = codes

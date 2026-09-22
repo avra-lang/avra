@@ -1,0 +1,150 @@
+// `quote { … }` in PATTERN position: it matches code STRUCTURALLY,
+// never splices, and binds each hole to the `Code` at its seat —
+// layout- and paren-blind, a name written twice demanding the same
+// code by fingerprint. The subject is `Code` (features/code.av),
+// this compiler's own handle — never `@std.meta.Code`, a splicing
+// value a different door mints.
+use @std.avrac.compiler.{analyze_source, parse_source, Analysis, Parsed}
+use @std.avrac.features.{Code}
+use @std.avrac.core.{At, ExprId, PatId}
+
+/// The one statement's expression — every subject here is one line.
+fn root_expr(a: Analysis) -> ExprId {
+    a.view.store.answer_of(a.view.stmts[0])!
+}
+
+/// The subject `Code`, wrapping the whole analysed line.
+fn code_of(a: Analysis) -> Code {
+    Code { view: a.view, at: At.Expr(root_expr(a)) }
+}
+
+/// A bound `Code`'s own bare name, when its `at` is one.
+fn ident_of(c: Code) -> string? {
+    match c.at {
+        .Expr(id) -> c.view.store.ident_name(id),
+        _ -> null,
+    }
+}
+
+fn is_ident(c: Code) -> bool {
+    ident_of(c) != null
+}
+
+/// Whether `src` refuses with `code` among its diagnostics — no
+/// `@std/avrac` dependency needed: every refusal this file drives at
+/// is judged on the PATTERN's own shape, before the subject's type
+/// is even asked (features/quote/check.av).
+fn refused_with(src: string, code: string) -> bool {
+    let a = analyze_source(src)
+    !a.clean() && a.report().contains(code)
+}
+
+/// The first arm's first pattern of the one statement's `match`.
+fn first_pat(parsed: Parsed) -> PatId {
+    match parsed.store.expr(parsed.store.answer_of(parsed.stmts[0])!) {
+        .Match(_, arms) -> arms[0].pats[0],
+        rest -> PatId { index: 0 - 1 },
+    }
+}
+
+spec "features/quote — a quote in pattern position" {
+    given "a hole" {
+        then "binds the node at its seat: over `n + 1` x.at names `n`; over `n + 2` the `_` arm answers" {
+            let hit = match code_of(analyze_source("n + 1")) {
+                quote { ${x} + 1 } -> ident_of(x) == "n",
+                _ -> false,
+            }
+            let miss = match code_of(analyze_source("n + 2")) {
+                quote { ${x} + 1 } -> false,
+                _ -> true,
+            }
+            hit && miss
+        }
+    }
+
+    given "the same name twice" {
+        then "must match the same code, by fingerprint — `a == a` matches, `a == b` does not" {
+            let same = match code_of(analyze_source("a == a")) { quote { ${x} == ${x} } -> true, _ -> false }
+            let diff = match code_of(analyze_source("a == b")) { quote { ${x} == ${x} } -> false, _ -> true }
+            same && diff
+        }
+    }
+
+    given "layout and parentheses" {
+        then "never matter — the match is over nodes, not spans" {
+            match code_of(analyze_source("(a) + 1")) { quote { ${x} + 1 } -> true, _ -> false }
+        }
+    }
+
+    given "a guard" {
+        then "reads a bind: `if is_ident(x)` sees the same `x` the pattern bound" {
+            let hit = match code_of(analyze_source("q ?? 9")) { quote { ${x} ?? ${d} } if is_ident(x) -> true, _ -> false }
+            // LICENSED I18: the matcher's regex reads the "?? " inside this line's SOURCE-TEXT STRING LITERAL as the operator it looks for — no default is masking a guaranteed payload here
+            let miss = match code_of(analyze_source("(1 + 2) ?? 9")) { quote { ${x} ?? ${d} } if is_ident(x) -> false, _ -> true }
+            hit && miss
+        }
+    }
+
+    given "an arm-kind pattern" {
+        then "a body that is a whole arm refuses — an arm is not a single node the matcher can root at" {
+            refused_with("match 1 { quote { .A -> 1 } -> true, _ -> false }", "F2087")
+        }
+    }
+
+    given "a statement pattern naming a fresh binding" {
+        then "`let \${x} = \${e}` refuses — the let's declared name is a Name seat, folded into the LET's own identity, and 2a's matcher has no seat to hold it open (recorded, epic avra-8sb5.25)" {
+            refused_with("match 1 { quote { let \${x} = \${e} } -> true, _ -> false }", "F2096")
+        }
+    }
+
+    given "refusals, judged on the pattern's own shape first" {
+        then "the subject is not `Code`" {
+            refused_with("match 1 { quote { 1 } -> true, _ -> false }", "F2093")
+        }
+        then "a hole that is not a bare name" {
+            refused_with("match 1 { quote { \${1 + 1} } -> true, _ -> false }", "F2094")
+        }
+        then "a two-statement body" {
+            refused_with("match 1 { quote { 1\n2 } -> true, _ -> false }", "F2087")
+        }
+        then "a type-seat hole" {
+            refused_with("match 1 { quote { let x: \${T} = 1 } -> true, _ -> false }", "F2095")
+        }
+        then "a run hole `\${..xs}` does not lex as one at all — refused at parse, not at typing" {
+            !analyze_source("match 1 { quote { \${..xs} } -> true, _ -> false }").clean()
+        }
+    }
+
+    given "fingerprint_pat" {
+        then "distinct for two different quote patterns, and from the wrapped body's own expression fingerprint" {
+            let a1 = parse_source("match c { quote { \${x} + 1 } -> x, _ -> 0 }")
+            let a2 = parse_source("match c { quote { \${x} + 2 } -> x, _ -> 0 }")
+            let pat1 = first_pat(a1)
+            let pat2 = first_pat(a2)
+            let distinct_patterns = a1.store.pat_fingerprint(pat1) != a2.store.pat_fingerprint(pat2)
+            let body1 = match a1.store.pat(pat1) { .Quote(b) -> b, rest -> ExprId { index: 0 - 1 } }
+            let distinct_from_body = a1.store.pat_fingerprint(pat1) != a1.store.expr_fingerprint(body1)
+            distinct_patterns && distinct_from_body
+        }
+    }
+
+    given "the printer" {
+        then "round-trips a quote pattern, holes and all" {
+            let src = "match c {\n    quote { \${x} + 1 } -> x\n    _ -> 0\n}"
+            canonical(src) == src
+        }
+        then "a quote pattern nested inside an outer template's body prints and reparses whole — its own hole is never the outer template's" {
+            let src = "quote { match c { quote { \${x} + 1 } -> x, _ -> 0 } }"
+            canonical(src) == src
+        }
+    }
+
+    given "the kitchen copier" {
+        then "a quote pattern nested inside an outer template's body is walked as ITS OWN quote — the outer's hole count stays zero, so a copier filling the outer's holes never touches the inner pattern's" {
+            let p = parse_source("quote { match c { quote { \${x} + 1 } -> x, _ -> 0 } }")
+            let outer = p.store.answer_of(p.stmts[0])!
+            let q = (p.store.expr(outer)).body_of()!
+            p.voices.list.is_empty() && q.holes.is_empty()
+        }
+    }
+}

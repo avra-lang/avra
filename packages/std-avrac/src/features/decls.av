@@ -389,19 +389,58 @@ impl Decls {
         self.package_decl("@std.meta", name)
     }
 
+    /// A declaration of THIS COMPILER'S OWN library by name — the
+    /// door to `Code`, the handle a rule holds; null when the program
+    /// does not load `@std/avrac`.
+    fn avrac_named(name: string) -> DeclId? {
+        self.package_decl("@std.avrac", name)
+    }
+
     /// A declaration a PACKAGE exports, by name — the door to a
     /// vocabulary the compiler shares with the programs it compiles;
     /// null when the program does not load the package.
+    ///
+    /// EVERY MODULE OF THE PACKAGE IS SEARCHED, not its first: a
+    /// package a `use` reaches through ONE submodule (`@std/avrac`'s
+    /// `core`, say) admits every OTHER submodule too, so a name in a
+    /// DIFFERENT one (`features`'s `Code`) is still the package's —
+    /// reading only `ms[0]`'s files answered null for it whenever
+    /// that module happened to load first, which depends on `use`
+    /// order and so is not a property of the name at all.
+    ///
+    /// AND THE PACKAGE NAME IS `package_named`'S, never the raw
+    /// `package_of_module`: the ROOT package's own modules carry NO
+    /// prefix (that is what makes them the root's), so a door asked
+    /// for THE PACKAGE BEING COMPILED — `@std/avrac` checking its
+    /// own `Code` while typing ITS OWN test suite — answered null
+    /// for every one of its modules, `avrac_named` most of all: the
+    /// compiler is the one program that always loads its own library.
+    ///
+    /// AND ONLY AN EXPORTED DECLARATION ANSWERS: searching every
+    /// module (above) reaches a package's PRIVATE names too, and a
+    /// door built to find the shared vocabulary is not asking about
+    /// those — `compiler/record.av`'s own, unexported `enum Shape`
+    /// answered for `avrac_named("Shape")` before this line, a
+    /// different enum entirely from `core/shape.av`'s exported one,
+    /// wrong variants and all, chosen only because ITS module was
+    /// searched first.
     fn package_decl(pkg: string, name: string) -> DeclId? {
         let key = "${pkg}.${name}"
         let known: DeclId? = self.meta_ids.get(key)
         if known != null { return known }
-        let ms = [ModuleId { index: j } for j, m in self.modules if package_of_module(m) == pkg]
-        if ms.is_empty() { return null }
-        let ds: List<DeclId> = flatten([self.file_decls[f.index].get() for f in self.module_files[ms[0].index].get()])
-        let found: DeclId? = ds.find((d: DeclId) -> self.decl(d).name == name)
+        let ms = [ModuleId { index: j } for j, m in self.modules if self.package_named(m) == pkg]
+        let ds: List<DeclId> = flatten([self.module_decls(m) for m in ms])
+        let found: DeclId? = ds.find((d: DeclId) -> {
+            let found_decl = self.decl(d)
+            found_decl.exported && found_decl.name == name
+        })
         if found != null { self.meta_ids.set(key, found!) }
         found
+    }
+
+    /// One module's own declarations, across its files.
+    fn module_decls(m: ModuleId) -> List<DeclId> {
+        flatten([self.file_decls[f.index].get() for f in self.module_files[m.index].get()])
     }
 
     /// Whether a type is one declaration exported by `@std/meta`.

@@ -125,9 +125,13 @@ export fn pat_types_of(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeI
 export fn bind_types(mut cx: TypeCx, p: PatId, expected: TypeId) -> List<TypeId> {
     match cx.view.store.pat(p) {
         .Wild or .Rest -> [],
-        // the seam routes a format to its own owner; one arriving here is a defect
+        // the seam routes a format or a quote to its own owner; one arriving here is a defect
         .Format(_, _) -> {
             cx.emit(defect_at(cx.pat_loc(p), "a format pattern reached the enum typing's binds"))
+            []
+        },
+        .Quote(_) -> {
+            cx.emit(defect_at(cx.pat_loc(p), "a quote pattern reached the enum typing's binds"))
             []
         },
         .Bind(_) -> [expected],
@@ -250,7 +254,7 @@ fn tests_first(cx: TypeCx, rows: List<Row>, name: string) -> bool {
 fn names_variant(cx: TypeCx, p: PatId, name: string) -> bool {
     match cx.view.store.pat(p) {
         .Variant(n, _) -> n.of == name,
-        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) -> false,
+        .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) -> false,
     }
 }
 
@@ -288,7 +292,7 @@ fn held(p: PatId) -> PatId? {
 fn variant_args(cx: TypeCx, p: PatId, name: string, arity: int) -> List<PatId?>? {
     match cx.view.store.pat(p) {
         .Variant(n, args) if n.of == name -> padded(args, arity),
-        .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) -> null,
+        .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) -> null,
     }
 }
 
@@ -348,7 +352,7 @@ fn hole_binds(cx: TypeCx, hole: PatId) -> bool {
 fn whole_variant(cx: TypeCx, p: PatId) -> string? {
     match cx.view.store.pat(p) {
         .Variant(name, args) if all_irrefutable(cx.view.store, args) -> name.of,
-        .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) -> null,
+        .Variant(_, _) or .Wild or .Rest or .Bind(_) or .Lit(_) or .Format(_, _) or .Quote(_) -> null,
     }
 }
 
