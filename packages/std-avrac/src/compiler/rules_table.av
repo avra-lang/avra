@@ -2,34 +2,14 @@
 //! `rule` declares `DeclKind.Rule` (core/parts.av's `rule_parts`),
 //! exactly as a `then` declares `DeclKind.Case` — but a rule's
 //! `run` is a typed `fn(Code) -> Fix?` VALUE the pass calls
-//! in-process, and Avra has no reflection from a declaration's
-//! SYMBOL to a value of that type: nothing turns a name found by
-//! walking `Decls` into something callable. So this table is the
-//! VOCABULARY SEAM RULE's DATA shape (CLAUDE.md) — one row per rule,
-//! like `rt_sigs()` — never a dispatch, and the row is HAND-WRITTEN
-//! here for that reason alone.
-//!
-//! WHAT STAYS DISCOVERY, NOT HAND-KEEPING: `avra test
-//! packages/std-avrac` — the one build where `self.decls` names
-//! EVERY rule this compiler declares, because that IS the program
-//! under test — walks them BY KIND (`rule_decls`, whole.av) and
-//! REFUSES the suite when this table's name/module/root drift from
-//! what is actually declared (rule_examples.av's `rules_checked`).
-//! A row landed here without its declaration, or a declaration
-//! landed without its row, fails loud, not silently.
+//! in-process. `rules_table()`'s DECLARATION lives here, with no
+//! rows: its BODY is SYNTHESISED at lowering, the same place and
+//! manner `compiler/suite.av`'s entry is — one `RuleEntry` per
+//! `DeclKind.Rule` the workspace admits, `run` a fn value of the
+//! rule's own symbol (compiler/lower/lower.av's `lower_rules_table`,
+//! keyed on this one declaration). A rule written in any feature
+//! dir is found with no edit anywhere else — the keyword precedent.
 use features.{Code, Fix}
-use features.nullable.{if_null_ternary}
-use features.lists.{last_index}
-use features.structs.{index_compared}
-// refusal_assembled, str_grown_quadratically, bool_of_defaulted,
-// text_of_defaulted, int_of_defaulted, bits_of_defaulted,
-// elems_of_defaulted, pairs_of_defaulted, uncounted_refusal,
-// diagnostics_uncounted, diagnostics_length_uncounted,
-// voices_uncounted, if_start_raw, loop_start_raw, arm_end_raw,
-// region_end_raw, loop_cond_raw, loop_end_raw, scope_enter_raw,
-// scope_exit_raw, interned_int, interned_str, interned_opt,
-// interned_list, interned_map, interned_res, hand_sized_index are
-// compiler/idioms.av's own — same module, no `use` needed
 
 /// A root-kind index with no root at all: "any node", tried
 /// everywhere — a struct field cannot hold `int?` (the subset
@@ -39,54 +19,20 @@ export const any_root: int = -1
 /// One rule: its identity (`<module>.<name>`, split), the fn the
 /// pass calls, the ROOT-KIND INDEX (`core.root_kind_of`) its first
 /// arm's pattern folds to — `any_root` for a rule the index cannot
-/// narrow — and its own `///` SENTENCE. `doc` is a PROJECTION of the
-/// declaration's real doc comment, hand-kept for the same reason
-/// `root` is: a target program's own workspace never sees a native
-/// rule's declaration (it lives in THIS compiler's source, not the
-/// program being fixed), so there is nothing to reflect off of at
-/// `avra fix --json` time — the row carries the sentence instead.
+/// narrow — and its own `///` SENTENCE, its first paragraph.
 export type RuleEntry = { name: string, module: string, run: fn(Code) -> Fix?, root: int, doc: string }
 
 /// `<module>.<name>` — the identity a finding's kind and `--only`
 /// both read.
 export fn rule_id(r: RuleEntry) -> string { "${r.module}.${r.name}" }
 
-/// EVERY RULE, NATIVE. Adding one is a row here — `avra test
-/// packages/std-avrac` refuses the suite the day it is not (or the
-/// day a row here names a rule that moved or was deleted).
+/// EVERY RULE. The signature is this declaration's to keep; the body
+/// is never read — `compiler/lower/lower.av`'s `lower_rules_table`
+/// replaces it at lowering, walking every `rule` the workspace
+/// admits. `[]` here is the empty case the typer checks this
+/// declaration's own signature against, never what runs.
 export fn rules_table() -> List<RuleEntry> {
-    [
-        RuleEntry { name: "if_null_ternary", module: "nullable", run: if_null_ternary, root: 890321331, doc: "A null test that picks the value or a default is `??`." },
-        RuleEntry { name: "last_index", module: "lists", run: last_index, root: 330565557, doc: "Last-element index arithmetic is `xs.last()!` — the same trap on an empty list, spelled once." },
-        RuleEntry { name: "index_compared", module: "structs", run: index_compared, root: 872388086, doc: "A hand-rolled identity comparison — every typed id compares by `==`." },
-        RuleEntry { name: "refusal_assembled", module: "compiler", run: refusal_assembled, root: 972367906, doc: "A refusal assembled from `pointed`/`error_at` by hand — the one shape is `refusal(kind, at, message, label, help)`." },
-        RuleEntry { name: "str_grown_quadratically", module: "compiler", run: str_grown_quadratically, root: 170253566, doc: "Text grown by `s = s + piece` is quadratic — a @std/text builder or repeat/pad_* says it in linear time." },
-        RuleEntry { name: "bool_of_defaulted", module: "compiler", run: bool_of_defaulted, root: 330754328, doc: "A payload the value-protocol dispatch guarantees, papered over with a `??` default — absence here is a defect the caller should speak." },
-        RuleEntry { name: "text_of_defaulted", module: "compiler", run: text_of_defaulted, root: 330754328, doc: "A payload the value-protocol dispatch guarantees, papered over with a `??` default — absence here is a defect the caller should speak." },
-        RuleEntry { name: "int_of_defaulted", module: "compiler", run: int_of_defaulted, root: 330754328, doc: "A payload the value-protocol dispatch guarantees, papered over with a `??` default — absence here is a defect the caller should speak." },
-        RuleEntry { name: "bits_of_defaulted", module: "compiler", run: bits_of_defaulted, root: 330754328, doc: "A payload the value-protocol dispatch guarantees, papered over with a `??` default — absence here is a defect the caller should speak." },
-        RuleEntry { name: "elems_of_defaulted", module: "compiler", run: elems_of_defaulted, root: 330754328, doc: "A payload the value-protocol dispatch guarantees, papered over with a `??` default — absence here is a defect the caller should speak." },
-        RuleEntry { name: "pairs_of_defaulted", module: "compiler", run: pairs_of_defaulted, root: 330754328, doc: "A payload the value-protocol dispatch guarantees, papered over with a `??` default — absence here is a defect the caller should speak." },
-        RuleEntry { name: "uncounted_refusal", module: "compiler", run: uncounted_refusal, root: 872525374, doc: "A refusal asserted as `>= 1` — pin the count instead (`refused_with`, `refused_n`, or `== n`)." },
-        RuleEntry { name: "diagnostics_uncounted", module: "compiler", run: diagnostics_uncounted, root: 872525374, doc: "A refusal asserted as `>= 1` — pin the count instead (`refused_with`, `refused_n`, or `== n`)." },
-        RuleEntry { name: "diagnostics_length_uncounted", module: "compiler", run: diagnostics_length_uncounted, root: 872525374, doc: "A refusal asserted as `>= 1` — pin the count instead (`refused_with`, `refused_n`, or `== n`)." },
-        RuleEntry { name: "voices_uncounted", module: "compiler", run: voices_uncounted, root: 872525374, doc: "A refusal asserted as `>= 1` — pin the count instead (`refused_with`, `refused_n`, or `== n`)." },
-        RuleEntry { name: "if_start_raw", module: "compiler", run: if_start_raw, root: 931529143, doc: "A region/loop instruction emitted raw — speak features/emit.av's verb instead." },
-        RuleEntry { name: "loop_start_raw", module: "compiler", run: loop_start_raw, root: 931529143, doc: "A region/loop instruction emitted raw — speak features/emit.av's verb instead." },
-        RuleEntry { name: "arm_end_raw", module: "compiler", run: arm_end_raw, root: 931529143, doc: "A region/loop instruction emitted raw — speak features/emit.av's verb instead." },
-        RuleEntry { name: "region_end_raw", module: "compiler", run: region_end_raw, root: 931529143, doc: "A region/loop instruction emitted raw — speak features/emit.av's verb instead." },
-        RuleEntry { name: "loop_cond_raw", module: "compiler", run: loop_cond_raw, root: 931529143, doc: "A region/loop instruction emitted raw — speak features/emit.av's verb instead." },
-        RuleEntry { name: "loop_end_raw", module: "compiler", run: loop_end_raw, root: 931529143, doc: "A region/loop instruction emitted raw — speak features/emit.av's verb instead." },
-        RuleEntry { name: "scope_enter_raw", module: "compiler", run: scope_enter_raw, root: 931529143, doc: "A raw scope bracket through a lowering context — the frame verbs are the spelling." },
-        RuleEntry { name: "scope_exit_raw", module: "compiler", run: scope_exit_raw, root: 931529143, doc: "A raw scope bracket through a lowering context — the frame verbs are the spelling." },
-        RuleEntry { name: "interned_int", module: "compiler", run: interned_int, root: 255576078, doc: "A structural type interned by hand where a type literal spells it." },
-        RuleEntry { name: "interned_str", module: "compiler", run: interned_str, root: 255576078, doc: "A structural type interned by hand where a type literal spells it." },
-        RuleEntry { name: "interned_opt", module: "compiler", run: interned_opt, root: 255576078, doc: "A structural type interned by hand where a type literal spells it." },
-        RuleEntry { name: "interned_list", module: "compiler", run: interned_list, root: 255576078, doc: "A structural type interned by hand where a type literal spells it." },
-        RuleEntry { name: "interned_map", module: "compiler", run: interned_map, root: 255576078, doc: "A structural type interned by hand where a type literal spells it." },
-        RuleEntry { name: "interned_res", module: "compiler", run: interned_res, root: 255576078, doc: "A structural type interned by hand where a type literal spells it." },
-        RuleEntry { name: "hand_sized_index", module: "compiler", run: hand_sized_index, root: 872370925, doc: "A fact column sized by hand, or an id read through an offset — SideTable<V> states the window once." },
-    ]
+    []
 }
 
 /// The rules whose root-kind index admits `kind` — the ones indexed
