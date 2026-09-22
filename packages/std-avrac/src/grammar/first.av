@@ -24,7 +24,7 @@ use core.{is_name_start, is_digit, distinct}
 
 /// One terminal a branch can begin with, and the rule whose body
 /// directly holds it — the name a failure there reports.
-type TermStart = { prim: Prim, rule: string }
+type TermStart = { prim: Prim, rname: string }
 
 /// What a branch can begin with, and whether it can begin with
 /// nothing at all. `lits`/`terms` are a SET for shadowing checks;
@@ -62,7 +62,7 @@ impl FirstCx {
         f
     }
 
-    fn alt_first(rule: string, a: Alt) -> FirstSet {
+    fn alt_first(rname: string, a: Alt) -> FirstSet {
         mut lits: List<string> = []
         mut terms: List<string> = []
         mut nullable = false
@@ -72,7 +72,7 @@ impl FirstCx {
         // never sees their expectations.
         mut stopped = false
         for s in a.branches {
-            let f = self.seq_first(rule, s)
+            let f = self.seq_first(rname, s)
             lits = first_lits(lits, f.lits)
             terms = first_lits(terms, f.terms)
             nullable = nullable || f.nullable
@@ -87,10 +87,10 @@ impl FirstCx {
     /// Walk items left to right: a skippable item's tokens join the
     /// set and the walk continues; the first required item ends it.
     /// All items skippable means the branch can match nothing.
-    fn seq_first(rule: string, s: Seq) -> FirstSet {
+    fn seq_first(rname: string, s: Seq) -> FirstSet {
         mut out = no_first
         for m in s.items {
-            let f = self.prim_first(rule, m.prim)
+            let f = self.prim_first(rname, m.prim)
             out = FirstSet {
                 lits: first_lits(out.lits, f.lits),
                 terms: first_lits(out.terms, f.terms),
@@ -103,22 +103,22 @@ impl FirstCx {
         out with { nullable: true }
     }
 
-    fn prim_first(rule: string, p: Prim) -> FirstSet {
+    fn prim_first(rname: string, p: Prim) -> FirstSet {
         match p {
-            .Lit(text) -> FirstSet { lits: [text], terms: [], nullable: false, ordered: [term_start(p, rule)] },
-            .Named(term) -> FirstSet { lits: [], terms: [term], nullable: false, ordered: [term_start(p, rule)] },
+            .Lit(text) -> FirstSet { lits: [text], terms: [], nullable: false, ordered: [term_start(p, rname)] },
+            .Named(term) -> FirstSet { lits: [], terms: [term], nullable: false, ordered: [term_start(p, rname)] },
             .Ref(target) -> self.rule_first(target),
-            .Group(inner) -> self.alt_first(rule, inner),
+            .Group(inner) -> self.alt_first(rname, inner),
         }
     }
 
     /// True when the branch's head alone decides it: after its first
     /// required item, every item is skippable — nothing left can
     /// refuse, so the executor never backtracks out.
-    fn commits(rule: string, s: Seq) -> bool {
+    fn commits(rname: string, s: Seq) -> bool {
         mut seen_head = false
         for m in s.items {
-            let f = self.prim_first(rule, m.prim)
+            let f = self.prim_first(rname, m.prim)
             let skippable = m.rep == Rep.Opt || m.rep == Rep.Star || f.nullable
             if seen_head && !skippable { return false }
             if !skippable { seen_head = true }
@@ -157,38 +157,38 @@ impl FirstCx {
         g with { rules: [r with { body: self.started_alt(r.name, r.body) } for r in g.rules] }
     }
 
-    fn started_alt(rule: string, a: Alt) -> Alt {
-        a with { branches: [self.started_seq(rule, s) for s in a.branches] }
+    fn started_alt(rname: string, a: Alt) -> Alt {
+        a with { branches: [self.started_seq(rname, s) for s in a.branches] }
     }
 
-    fn started_seq(rule: string, s: Seq) -> Seq {
-        let f = self.seq_first(rule, s)
+    fn started_seq(rname: string, s: Seq) -> Seq {
+        let f = self.seq_first(rname, s)
         s with {
-            items: [self.started_item(rule, m) for m in s.items],
+            items: [self.started_item(rname, m) for m in s.items],
             start: BranchStart {
                 terminals: [t.prim for t in f.ordered],
                 words: distinct([start_word(t.prim) for t in f.ordered]),
                 nullable: f.nullable,
-                in_rule: f.ordered.first()?.rule ?? rule,
+                in_rule: f.ordered.first()?.rname ?? rname,
             },
         }
     }
 
-    fn started_item(rule: string, m: Item) -> Item {
-        m with { prim: self.started_prim(rule, m.prim) }
+    fn started_item(rname: string, m: Item) -> Item {
+        m with { prim: self.started_prim(rname, m.prim) }
     }
 
-    fn started_prim(rule: string, p: Prim) -> Prim {
+    fn started_prim(rname: string, p: Prim) -> Prim {
         match p {
-            .Group(inner) -> Prim.Group(self.started_alt(rule, inner)),
+            .Group(inner) -> Prim.Group(self.started_alt(rname, inner)),
             .Ref(_) or .Lit(_) or .Named(_) -> p,
         }
     }
 }
 
 /// How a terminal and the rule that holds it are minted together.
-fn term_start(p: Prim, rule: string) -> TermStart {
-    TermStart { prim: p, rule: rule }
+fn term_start(p: Prim, rname: string) -> TermStart {
+    TermStart { prim: p, rname: rname }
 }
 
 /// How a first terminal reads in an "expected ..." message — the same

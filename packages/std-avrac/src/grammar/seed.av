@@ -2,7 +2,7 @@
 //! data. `parse_grammar` is the executor running this seed — no
 //! hand-written parser for the DSL exists anywhere.
 //!
-//! The construction vocabulary below (`rule`, `seq`, `seq_to`, `item`,
+//! The construction vocabulary below (`rule_def`, `seq`, `seq_to`, `item`,
 //! `cap`, `expecting`, `rule_ref`, `lit`, `named`, `group`) is how a
 //! grammar is written as data; rare modifiers ride `with`
 //! (`... with { rep: Rep.Star }`).
@@ -42,7 +42,7 @@ export fn alt(branches: List<Seq>) -> Alt {
 }
 
 /// A rule from its branches.
-export fn rule(name: string, branches: List<Seq>) -> Rule {
+export fn rule_def(name: string, branches: List<Seq>) -> Rule {
     Rule { name: name, body: alt(branches) }
 }
 
@@ -66,13 +66,13 @@ export const grammar_of_grammars: Grammar =
         start: "grammar",
         rules: [
             // grammar = rule+
-            rule("grammar", [seq_to(
+            rule_def("grammar", [seq_to(
                 [cap("rules", rule_ref("rule")) with { rep: Rep.Plus }],
                 Build.Call("build_grammar", ["rules"]),
             )]),
 
             // rule = NAME "=" alt BREAK
-            rule("rule", [seq_to(
+            rule_def("rule", [seq_to(
                 [
                     cap("name", named("NAME")), item(lit("=")),
                     cap("body", rule_ref("alt")), item(named("BREAK")),
@@ -81,7 +81,7 @@ export const grammar_of_grammars: Grammar =
             )]),
 
             // alt = seq ( "|" seq )*
-            rule("alt", [seq_to(
+            rule_def("alt", [seq_to(
                 [
                     cap("branches", rule_ref("seq")),
                     item(group([seq([item(lit("|")), cap("branches", rule_ref("seq"))])]))
@@ -93,7 +93,7 @@ export const grammar_of_grammars: Grammar =
             // seq = labeled+ annot* ( "->" build )? annot*
             // Annotations are legal before and after the build; the
             // repeated label accumulates both in source order.
-            rule("seq", [seq_to(
+            rule_def("seq", [seq_to(
                 [
                     cap("items", rule_ref("labeled")) with { rep: Rep.Plus },
                     cap("annots", rule_ref("annot")) with { rep: Rep.Star },
@@ -105,7 +105,7 @@ export const grammar_of_grammars: Grammar =
             )]),
 
             // labeled = ( NAME ":" )? postfix
-            rule("labeled", [seq_to(
+            rule_def("labeled", [seq_to(
                 [
                     item(group([seq([cap("label", named("NAME")), item(lit(":"))])]))
                         with { rep: Rep.Opt },
@@ -115,7 +115,7 @@ export const grammar_of_grammars: Grammar =
             )]),
 
             // postfix = primary ( "*" | "+" | "?" )?
-            rule("postfix", [seq_to(
+            rule_def("postfix", [seq_to(
                 [
                     cap("inner", rule_ref("primary")),
                     cap("rep", group([
@@ -128,7 +128,7 @@ export const grammar_of_grammars: Grammar =
             )]),
 
             // primary = NAME | STRING | "(" alt ")"
-            rule("primary", [
+            rule_def("primary", [
                 seq_to([cap("name", named("NAME"))], Build.Call("build_prim_name", ["name"])),
                 seq_to([cap("text", named("STRING"))], Build.Call("build_lit", ["text"])),
                 seq_to(
@@ -148,7 +148,7 @@ export const grammar_of_grammars: Grammar =
             // (`-> Expr.StrLit`): its captures reach their payloads by
             // LABEL, and its arguments may only FIX payloads the rule
             // states rather than captures.
-            rule("build", [seq_to(
+            rule_def("build", [seq_to(
                 [
                     cap("name", named("NAME")),
                     item(group([seq([item(lit(".")), cap("variant", named("NAME"))])]))
@@ -170,7 +170,7 @@ export const grammar_of_grammars: Grammar =
             // build_arg = NAME ( "=" ( NAME | NUMBER | STRING ) )?
             // A bare name is a capture's label; a name given a value
             // is a payload the rule STATES.
-            rule("build_arg", [seq_to(
+            rule_def("build_arg", [seq_to(
                 [
                     cap("name", named("NAME")),
                     item(group([seq([
@@ -188,7 +188,7 @@ export const grammar_of_grammars: Grammar =
             // annot = "@expect" "(" STRING "," STRING ")"
             //       | "@recover" "(" "sync_to" ":" STRING ")"
             //       | "@head" "(" NAME ")" | "@trailer" "(" NAME ")"
-            rule("annot", [
+            rule_def("annot", [
                 seq_to(
                     [
                         item(lit("@expect")), item(lit("(")),
