@@ -211,7 +211,9 @@ impl Decls {
     /// declared body lowers instead, so each speaks its refusals; a
     /// test run asks for `every` declared body under its entry, whose
     /// laws (a module file runs nothing) still hold. A unit is asked
-    /// once per symbol; the guard is the polymorphic-recursion refusal.
+    /// once per symbol — a memoization identity, never a NAME a
+    /// declaration could also wear. The entry asks under
+    /// `program_symbol`, which no `module_symbol` can ever spell.
     fn union(files: List<Analysis>, entry: int?, every: bool, programs: bool, held_asks: List<Wanted>, unit_of: fn(Wanted) -> Unit, is_held: fn(FileId) -> bool) -> Lowered {
         mut fns: List<Body> = []
         mut spoken: List<Diag> = []
@@ -222,7 +224,7 @@ impl Decls {
         // call in turn — every program in one binary
         mut wants: List<Wanted> = if programs { bodies.concat([program_main(a) for a in files]) } else { bodies }
         spoken = spoken.concat(self.outside_entry(files, entry))
-        let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: "main", sub: null, seats: [], root: null }) }
+        let main_unit: Unit? = if entry == null { null } else { unit_of(Wanted { file: files[at].view.file, decl: null, name: program_symbol(self.file(files[at].view.file).path), sub: null, seats: [], root: null }) }
         mut entry_body: Body = empty_main(self.types).body
         mut statics: List<Static> = []
         if main_unit != null {
