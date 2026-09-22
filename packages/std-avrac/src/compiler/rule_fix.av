@@ -60,3 +60,21 @@ fn holds_remark(store: NodeStore, loc: Loc) -> bool {
 export fn fix_applied(text: string, apps: List<Application>) -> string? {
     spliced(text, [ap.edit for ap in apps if ap.proved])
 }
+
+/// The first two PROVED applications whose edits overlap, named —
+/// two rules that fight over the same code (or one rule firing twice
+/// on it) is a defect worth SAYING, not just a silent "nothing
+/// applied". Absence when no two proved edits touch.
+export fn fighting_pair(apps: List<Application>) -> string? {
+    let proved = [ap for ap in apps if ap.proved]
+    for i, a in proved {
+        for j, b in proved {
+            if i < j && overlaps(a.edit.loc, b.edit.loc) { return "${a.rule_kind} and ${b.rule_kind}" }
+        }
+    }
+    null
+}
+
+fn overlaps(a: Loc, b: Loc) -> bool {
+    a.lo < b.hi && b.lo < a.hi
+}

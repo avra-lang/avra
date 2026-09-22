@@ -7,8 +7,9 @@
 // rewrite, as program TEXT handed to the compiler under test — that
 // text is the thing being checked, not this file's own code, the
 // same shape as features/lists/idioms.av's own I7 license.
-use @std.avrac.compiler.{avra, new_workspace, fix_applied, analysed, Application, Program, Workspace}
+use @std.avrac.compiler.{avra, new_workspace, fix_applied, fighting_pair, analysed, Application, Program, Workspace}
 use @std.avrac.compiler.host.{memory_host}
+use @std.errors.{Edit, Loc}
 
 fn fix_ws_of(main: string) -> Workspace {
     new_workspace(memory_host({ "/w/src/main.av": main }, ["/w/src/main.av"]), "/w", avra())
@@ -60,4 +61,35 @@ spec "avra fix" {
             fix_apps_of(text, null).is_empty()
         }
     }
+    given "two PROVED applications whose edits overlap — a self-fight pair" {
+        then "fighting_pair names both rules" {
+            fighting_pair(overlapping_apps()) == "a.b and c.d"
+        }
+        then "fix_applied refuses the whole splice" {
+            fix_applied("0123456789", overlapping_apps()) == null
+        }
+    }
+    given "two PROVED applications whose edits do not overlap" {
+        then "fighting_pair answers absence" {
+            fighting_pair(disjoint_apps()) == null
+        }
+    }
+}
+
+fn overlapping_apps() -> List<Application> {
+    [
+        Application { rule_kind: "a.b", edit: edit_at(0, 3, "x"), proved: true },
+        Application { rule_kind: "c.d", edit: edit_at(2, 5, "y"), proved: true },
+    ]
+}
+
+fn disjoint_apps() -> List<Application> {
+    [
+        Application { rule_kind: "a.b", edit: edit_at(0, 2, "x"), proved: true },
+        Application { rule_kind: "c.d", edit: edit_at(2, 4, "y"), proved: true },
+    ]
+}
+
+fn edit_at(lo: int, hi: int, text: string) -> Edit {
+    Edit { loc: Loc { file: "app.av", lo: lo, hi: hi }, replacement: text }
 }
