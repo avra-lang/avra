@@ -232,7 +232,7 @@ impl Workspace {
         self.attach_store(store)
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
-        for path in homes.concat(at.parse) { self.hold.homes.set(path, true) }
+        for path in homes.concat(at.parse) { self.hold.homes.put(path, true) }
         if at.hold {
             for m in held_modules(self, store) { load_interface(self, store, m, at.entry, at.want) }
             // a home whose text moved moves what lowers from it: the homes are read from the start
@@ -292,7 +292,7 @@ impl Workspace {
     /// home owes are named, never lowered — and a derivation that owes none is
     /// marked clean.
     fn stood(at: Attempt, store: Store, p: Program, lo: Lowered, said: List<Said>, spans: List<Phase>) -> Derived {
-        let roots = self.hold.held_wants.concat([k.want for k in lo.asks])
+        let roots = self.hold.held_wants.get().concat([k.want for k in lo.asks])
         let asked = self.asked_print(store, self.known_as(at), roots)
         let unlowered = [w for w in roots if self.is_held(w.file)]
         if unlowered.is_empty() { let _ = store.keep_once(Stored.Unit, clean_key(asked), "", []) }
@@ -301,7 +301,7 @@ impl Workspace {
             warnings: spoken([p.warned(p.voices)].concat([s.warnings for s in said])),
             unlowered: unlowered, asked: asked,
             held: held_paths(self).length, files: self.decls.files.get().length, turns: at.moved,
-            spans: spans, read: self.hold.read_files,
+            spans: spans, read: self.hold.read_files.get(),
         }
     }
 
@@ -325,7 +325,7 @@ impl Workspace {
     /// two ways — and only the sources whole can say which.
     fn layouts_moved(store: Store, p: Program) -> bool {
         if held_paths(self).is_empty() { return false }
-        if self.hold.held_flat.any((t) -> !self.decls.types.is_flat(t)) { return true }
+        if self.hold.held_flat.get().any((t) -> !self.decls.types.is_flat(t)) { return true }
         p.files.any((a: Analysis) -> self.kept_boxed(store, a.view.file).any((d: DeclId) -> !self.decls.types.boxed_flat(self.decls.record_type(d))))
     }
 
@@ -369,18 +369,18 @@ impl Workspace {
     /// compile-time runs read — and what THAT file's runs read, since it runs too.
     mut fn settle_holds(store: Store) {
         // LICENSED I16: a WORKLIST — the list grows while it is walked
-        mut reads: List<string> = distinct(self.hold.read_with)
+        mut reads: List<string> = distinct(self.hold.read_with.get())
         mut at = 0
         while at < reads.length {
             for path in kept_runs(record_places(self, store, module_path(self.module_of(reads[at]).split("."))).get(reads[at])) {
                 if !reads.contains(path) {
                     reads.push(path)
-                    if self.hold.hold_asked.contains(path) { self.hold.read_files.push(ReadFile { path: path, why: Reads.RunBy(relative_path(self.root, reads[at])) }) }
+                    if self.hold.hold_asked.get().contains(path) { self.hold.read_files.push(ReadFile { path: path, why: Reads.RunBy(relative_path(self.root, reads[at])) }) }
                 }
             }
             at = at + 1
         }
-        for path in self.hold.hold_asked { if !reads.contains(path) { self.hold_only(path) } }
+        for path in self.hold.hold_asked.get() { if !reads.contains(path) { self.hold_only(path) } }
     }
 
     /// WHAT THE PROGRAM'S INSTANTIATIONS ARE A FUNCTION OF: its root asks, and the
