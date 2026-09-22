@@ -1,15 +1,25 @@
 //! The node store: append-only arenas in one table, side tables keyed
 //! by id, and the mint/access seam. The node MODEL lives in nodes.av.
 
+/// A STATEMENT'S MARKS: `export`, `mut fn`, `once fn`, `static fn` — the
+/// fn-shaped keywords a declaration wears, one bitset instead of four
+/// parallel `List<bool>` keyed alike. `grammars` does NOT fold in here
+/// despite sharing the same StmtId key: it carries a PAYLOAD (the format a
+/// `grammar` declaration read), so it stays its own side table — a
+/// payload wearing a nullable field inside this struct would read as
+/// "grammar-ness is a mark" when it is a kept value.
+export type StmtMarks = { is_exported: bool, is_mutating: bool, is_once: bool, is_static: bool }
+
+fn no_stmt_marks() -> StmtMarks {
+    StmtMarks { is_exported: false, is_mutating: false, is_once: false, is_static: false }
+}
+
 export type NodeStore = {
     exprs: Arena<Expr>,
     expr_fingerprints: List<int>,
     stmts: Arena<Stmt>,
     stmt_fingerprints: List<int>,
-    exported: List<bool>,
-    // `mut fn` — a method declaring that it writes its receiver
-    mutating: List<bool>,
-    onces: List<bool>,
+    marks: List<StmtMarks>,
     // the format a `grammar` declaration read, by its statement
     grammars: List<GrammarSpec?>,
     // `@name(args)` marks per statement, in written order
@@ -22,8 +32,6 @@ export type NodeStore = {
     doc_ats: List<int>,
     // plain `//` lines, by source offset — printing only
     remarks: List<Remark>,
-    // `static fn` — a fn under an impl declaring it has NO receiver
-    statics: List<bool>,
     pats: List<Pat>,
     pat_spans: List<Span?>,
     pat_fingerprints: List<int>,
@@ -48,7 +56,7 @@ export type NodeStore = {
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], grammars: [], statics: [], annotations: [], docs: [], doc_ats: [], remarks: [],
+        stmts: new_arena(), stmt_fingerprints: [], marks: [], grammars: [], annotations: [], docs: [], doc_ats: [], remarks: [],
         pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [], quotes_at: {}, sublangs: [], body_starts: {}, block_voices: [], foreign: [],
     }
 }
@@ -343,11 +351,8 @@ impl NodeStore {
     /// The one statement-allocation seam.
     fn alloc_stmt(s: Stmt, span: Span?) -> StmtId {
         self.stmt_fingerprints.push(self.fingerprint_stmt(s))
-        self.exported.push(false)
-        self.mutating.push(false)
-        self.onces.push(false)
+        self.marks.push(no_stmt_marks())
         self.grammars.push(null)
-        self.statics.push(false)
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
@@ -416,37 +421,44 @@ impl NodeStore {
         self.annotations[s.index]
     }
 
+    /// A statement's marks, replaced by what `upd` computes from what it
+    /// already wears — the one seam every `mark_*` verb writes through,
+    /// so a bit lands beside its siblings rather than overwriting them.
+    fn update_marks(s: StmtId, upd: fn(StmtMarks) -> StmtMarks) {
+        self.marks.set(s.index, upd(self.marks[s.index]))
+    }
+
     /// `mut fn` crossed this declaration — it says its receiver is
     /// written; a trait sig's word is the contract.
     fn mark_mutating(s: StmtId) {
-        self.mutating.set(s.index, true)
+        self.update_marks(s, (m) -> m with { is_mutating: true })
         self.restamp(s, 103)
     }
 
     fn is_mutating(s: StmtId) -> bool {
-        self.mutating[s.index]
+        self.marks[s.index].is_mutating
     }
 
     /// `once fn` crossed this declaration — its answer settles for
     /// the process.
     fn mark_once(s: StmtId) {
-        self.onces.set(s.index, true)
+        self.update_marks(s, (m) -> m with { is_once: true })
         self.restamp(s, 104)
     }
 
     fn is_once(s: StmtId) -> bool {
-        self.onces[s.index]
+        self.marks[s.index].is_once
     }
 
     /// `static fn` crossed this declaration — it lives under an impl
     /// and takes NO receiver, which is the third value of the same
     /// word `fn` and `mut fn` are the first two of.
     fn mark_static(s: StmtId) {
-        self.statics.set(s.index, true)
+        self.update_marks(s, (m) -> m with { is_static: true })
         self.restamp(s, 110)
     }
 
-    fn is_static(s: StmtId) -> bool { if s.index < self.statics.length { self.statics[s.index] } else { true } }
+    fn is_static(s: StmtId) -> bool { if s.index < self.marks.length { self.marks[s.index].is_static } else { true } }
 
     /// `grammar Name = "…"` declared this record — the format it
     /// reads, which the record's fields cannot spell. The mark's code
@@ -479,12 +491,12 @@ impl NodeStore {
     /// carries it, so it is part of the statement like every other
     /// mark.
     fn mark_exported(s: StmtId) {
-        self.exported.set(s.index, true)
+        self.update_marks(s, (m) -> m with { is_exported: true })
         self.restamp(s, 127)
     }
 
     fn is_exported(s: StmtId) -> bool {
-        self.exported[s.index]
+        self.marks[s.index].is_exported
     }
 
     /// A `use` statement's parts, when the statement is one.
