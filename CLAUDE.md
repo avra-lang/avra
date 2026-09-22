@@ -1837,6 +1837,13 @@ Runtime facts, ours to ratify:
   small programs: its log is bounded but a guarded compiler run
   over a package is still a machine's worth. Scratch probes
   (`./avra check` of one file) are sub-second and need no lock.
+  AND A PROBE LIVES OUTSIDE THE TREE: `./avra check build/scratch/x.av`
+  under any directory with an `avra.toml` above it answers exit 0
+  and NOTHING for a file full of syntax errors — the file is not a
+  program of that workspace, so nothing is examined and nothing is
+  said (a check that examined nothing, in the CLI's own clothes;
+  filed the day it was found). Probe from the session scratchpad or
+  `/tmp`, where a refusal actually prints.
 - A PATCH SCRIPT that inserts before an anchor, or replaces `old`
   with `new` where `new` CONTAINS `old` (an `export` prefix, a doc
   comment), applies TWICE when re-run after a partial failure: the
