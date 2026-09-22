@@ -934,8 +934,7 @@ impl Machine {
     /// The registry's host column, hosted — exhaustive over RtHost, so
     /// a row with a new host demands its arm here.
     fn rt_dispatch(callee: string, vals: List<Val>) -> Val {
-        let sig: RtSig? = self.rt.get(callee)
-        if sig == null {
+        let row? = self.rt.get(callee) else {
             // THE ROW IS THE WITNESS, so the seam must keep it: asking
             // `any` threw away the very declaration the frame needs.
             let host: RtSig? = self.l.externs.find(it.name == callee)
@@ -948,9 +947,8 @@ impl Machine {
         // native binary traps — the engines disagreeing about which
         // strings may cross, which is the one thing this check exists
         // to prevent.
-        self.crossings(sig!, vals)
-        let host = sig!.host
-        match host {
+        self.crossings(row, vals)
+        match row.host {
             .Puts -> self.puts_val(vals),
             .Streq -> self.streq_val(vals),
             .ArrayNew -> self.array_new_val(),
@@ -1018,7 +1016,10 @@ impl Machine {
             .ExecSelf -> self.exec_self_val(vals),
             .SpawnStatus -> self.spawn_status_val(vals),
             .SpawnIn -> self.spawn_in_val(vals),
-            .Unhosted -> self.defect_val("a runtime callee the interpreter does not host: `${callee}`"),
+            // no arm of its own: the row's C body, called by name through
+            // the uniform frame, the row its witness — the host holds
+            // every row (runtime/avra_rt.h), so the symbol is there
+            .Unhosted -> self.hosted_extern(row, callee, vals),
         }
     }
 

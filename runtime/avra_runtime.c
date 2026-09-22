@@ -41,6 +41,7 @@
 #include <mach-o/dyld.h>
 #endif
 #include "avra_box.h"
+#include "avra_runtime.h"
 
 // ── The box header ──────────────────────────────────────────────
 // The layouts are avra_box.h's — shared with the backend, which lays
@@ -589,6 +590,10 @@ static const char* g_case = NULL;
 
 void avra_case_begin(const char* label) {
     g_case = label;
+}
+
+const char* avra_case_now(void) {
+    return g_case;
 }
 
 // A TRAP IS A WRECK, not a verdict: status 2 keeps it distinct from
@@ -2519,8 +2524,10 @@ const char* avra_capture_end(void) {
     return out;
 }
 
-// THE ROWS CLAIM THIS FILE. `runtime/avra_rt.h` is generated from
-// `rt_sigs()` and asserts, in the C compiler, that every body above
-// answers the width its row names and takes the seats it names.
-// Included LAST, so those bodies are already declared.
+// THE ROWS CLAIM THE RUNTIME. `runtime/avra_rt.h` is generated from
+// `rt_sigs()` and asserts, in the C compiler, that every body answers
+// the width its row names and takes the seats it names — the bodies
+// above, and the other objects' through their headers, which their
+// own definitions must match. Included LAST, so all are declared.
+#include "avra_fiber.h"
 #include "avra_rt.h"

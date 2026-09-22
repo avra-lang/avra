@@ -249,6 +249,12 @@ LLVMValueRef avra_llvm_add_function(LLVMModuleRef m, const char* name, LLVMTypeR
     }
     LLVMValueRef fn = LLVMAddFunction(m, sym ? sym : name, fn_type);
     free(sym);
+    // A FRAME NEVER SKIPS A GUARD. A frame wider than a page is probed a
+    // page at a time, so a task's overflow lands on its guard page
+    // (runtime/avra_fiber.c) and never in a neighbour's stack. Frames
+    // under a page are unchanged.
+    LLVMAttributeRef probe = LLVMCreateStringAttribute(LLVMGetModuleContext(m), "probe-stack", 11, "inline-asm", 10);
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, probe);
     return fn;
 }
 

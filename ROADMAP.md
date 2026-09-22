@@ -3004,8 +3004,11 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         synchronous, so the API is fiber-shaped from day one; until the
         scheduler exists the server is an EVENT LOOP in Avra over the net
         rows, and a handler that blocks (a sqlite call) blocks the loop.
-        Nobody owns Axis 18 (lane A, 2026-09-06); a runtime scheduler is
-        in no lane's plan. Recorded here as the first consumer's ask.
+        OWNED (2026-09-22): the fibers campaign, lane/fibers, task
+        avra-8sb5.10.1. Design docs/2026_09_22_FIBERS_DESIGN.md (every
+        block a scope, cancellation at pause points, a deterministic test
+        scheduler, no scheduler unless used); worked programs
+        docs/2026_09_22_FIBERS_TOUR.md.
   - [ ] TYPED STRING CAPTURES / NAMED FORMATS. `"/ideas/{id: int}"` as a
         pattern binding `id` (F3000 today), and `route P = "…"` as a
         value that parses AND prints (`docs/2026_09_06_STD_HTTP_TYPED_ROUTES.md`).
@@ -3415,8 +3418,11 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         synchronous, so the API is fiber-shaped from day one; until the
         scheduler exists the server is an EVENT LOOP in Avra over the net
         rows, and a handler that blocks (a sqlite call) blocks the loop.
-        Nobody owns Axis 18 (lane A, 2026-09-06); a runtime scheduler is
-        in no lane's plan. Recorded here as the first consumer's ask.
+        OWNED (2026-09-22): the fibers campaign, lane/fibers, task
+        avra-8sb5.10.1. Design docs/2026_09_22_FIBERS_DESIGN.md (every
+        block a scope, cancellation at pause points, a deterministic test
+        scheduler, no scheduler unless used); worked programs
+        docs/2026_09_22_FIBERS_TOUR.md.
   - [ ] TYPED STRING CAPTURES / NAMED FORMATS. `"/ideas/{id: int}"` as a
         pattern binding `id` (F3000 today), and `route P = "…"` as a
         value that parses AND prints (`docs/2026_09_06_STD_HTTP_TYPED_ROUTES.md`).

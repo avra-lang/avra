@@ -662,6 +662,22 @@ engine's spec, written by dogfooding.
   OR BY PACKAGE — grep the tree for the ASSERTION and for the
   distinctive example that carries it (`ab\0cd`, `"\0x"` here), not
   for the files you remember writing.
+- THE RUNTIME IS A LIBRARY AND THE HOST HOLDS EVERY ROW. A program
+  links `build/libavra_runtime.a`, one object per `runtime/*.c`, and
+  carries only what it reaches — so a program that never spawns carries
+  no scheduler. The COMPILER must carry all of it, because its
+  evaluator binds package C to the runtime inside its own process:
+  `avra_rt.h`'s host table, generated from `rt_sigs()` and included by
+  the extern host, names every row. A row with no evaluator arm is
+  called by name through the uniform frame (`RtSig.armed`), so the
+  frame's seat law holds for it — a closure cannot reach C that way.
+- A FRAME NEVER SKIPS A GUARD. A task's stack has one guard page, and a
+  frame wider than a page could step over it into a neighbour's stack.
+  Every fn Avra emits carries `probe-stack`, and C built here probes
+  too (Apple's clang by default, `-fstack-clash-protection`
+  elsewhere). CHECK AN ATTACK BUILDS WHAT IT CLAIMS: the first
+  wide-frame attack was a `volatile` array the compiler shrank to 16
+  bytes, and it "passed".
 - A COLD PATH IN A HOT LEAF COSTS EVERY CALL A FRAME. A lazy
   `getenv`, a `char msg[80]` for a trap's words, a grow branch, a
   `__builtin_return_address` read — each is free when it runs and
@@ -2051,8 +2067,8 @@ Runtime facts, ours to ratify:
   from another worktree with `LLVM_PREFIX` exported — the Makefile
   exports it, a bare shell does not, and the `[link]` row's
   `-L${LLVM_PREFIX}/lib` then names `/lib` ("clang failed linking")
-  — and after `make build/avra_runtime.o`, since a bare binary links
-  the OBJECT on disk, which a merge may have left behind the source
+  — and after `make build/libavra_runtime.a`, since a bare binary links
+  the LIBRARY on disk, which a merge may have left behind the source
   (a missing `avra_array_sized` was that: the link failed, not the
   compile).
   And the watchdog's poll is not a wall: a fast leak reached 16 GB

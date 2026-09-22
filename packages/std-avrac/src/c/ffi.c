@@ -3,7 +3,7 @@
    for a program that binds C.
 
    THIS IS THE COMPILER'S C AND NEVER A USER PROGRAM'S. Every binary
-   the compiler emits links build/avra_runtime.o, so a symbol
+   the compiler emits links the runtime library, so a symbol
    resolver placed there would ride inside every program anyone
    ships. This object is named only by @std.avrac's [link], and only
    packages/cli depends on that — so the reach lives in build/avra
@@ -30,6 +30,10 @@
 #include <dlfcn.h>
 #include <signal.h>
 #include <unistd.h>
+
+/* The compiler holds every runtime row (runtime/avra_rt.h says why). */
+#define AVRA_RT_HOST
+#include "avra_rt.h"
 
 enum { AVRA_FFI_MAX_I = 10, AVRA_FFI_MAX_F = 8 };
 

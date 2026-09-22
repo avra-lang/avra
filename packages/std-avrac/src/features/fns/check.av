@@ -45,13 +45,16 @@ fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>
 /// answered by a non-row extern checked CLEAN, and then the evaluator
 /// said `defect:` while the native binary SEGFAULTED.
 ///
-/// A ROW IS THE EXEMPTION, and it is not a special case: a row has a
-/// hand-written arm on both sides that MATERIALISES the aggregate,
-/// which is exactly what the uniform frame cannot do. `avra_str_join`
-/// has taken a `List<string>` that way since before this law, and
-/// `avra_fd_taken` has answered `Bytes` that way.
+/// A ROW WITH AN ARM IS THE EXEMPTION, and it is not a special case:
+/// the arm, on both sides, MATERIALISES the aggregate, which is
+/// exactly what the uniform frame cannot do. `avra_str_join` has taken
+/// a `List<string>` that way since before this law, and `avra_fd_taken`
+/// has answered `Bytes` that way. A row with NO evaluator arm is
+/// called through the uniform frame like any extern, so the frame's
+/// law holds for it: a closure handed to `avra_task_spawn` would reach
+/// C as a handle the evaluator made up.
 fn crossing_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
-    if rt_sigs().any(it.name == hname) { return nothing() }
+    if rt_sigs().any(it.name == hname && it.armed()) { return nothing() }
     let sig? = cx.stmt_sig(s) else { return nothing() }
     for j, p in sig.params {
         if !hparams[j].promises.mutable && !crossable(cx.view.types, p) { seat_cannot_cross(cx, s, hname, j, p) }
