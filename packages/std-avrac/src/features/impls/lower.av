@@ -53,12 +53,23 @@ fn fielded_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, slot: int, fty:
 /// The impl table's dispatch: a direct Call to the method's
 /// qualified symbol, the subject riding the self seat.
 fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, name: string, args: List<ExprId>) -> Reg {
-    let recv = cx.reg_of(subject)
-    let regs = [cx.reg_of(a) for a in args]
     let m? = cx.view.decls.method(decl, name) else { return cx.lower_defect(e, "a method with no symbol survived typing") }
+    let recv = writing_recv(cx, subject, m)
+    let regs = [cx.reg_of(a) for a in args]
     let dst = cx.result(e)
     cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(subject)), [recv].concat(regs)))
     dst
+}
+
+/// A writing method's receiver opens its PLACE unique first — the same
+/// copy-on-write a field write or a vocabulary mutation already gets
+/// (places.av): a `mut` local initialized from a shared box is not
+/// written through by the call that follows. A receiver naming no
+/// place (a computed value) reads as it always has — nothing shared
+/// roots there to copy.
+fn writing_recv(mut cx: LowerCx, subject: ExprId, m: DeclId) -> Reg {
+    if cx.view.store.place_step(subject) != null && cx.view.decls.writes_receiver(m) { return cx.unique_box(subject) }
+    cx.reg_of(subject)
 }
 
 /// A STATIC's dispatch: a direct Call to the method's qualified
