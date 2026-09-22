@@ -17,6 +17,7 @@ impl Runnable for ExplainCmd {
     fn run(args: CliResult) -> int {
         let q = args.arg("code")
         if q == "process" { return explained_process(args.arg("at")) }
+        if q == "repr" { return explained_repr(args.arg("at")) }
         if q.contains(":") { return explained_kind(q) }
         if q.starts_with("@") { return explained_annotation(q.substring(1, q.length)) }
         let hit: DiagCode? = avra().rows.codes.find(it.id == q || it.kind == q)
@@ -79,6 +80,26 @@ fn explained_annotation(name: string) -> int {
     0
 }
 
+/// `avra explain repr <type>` — the runtime REPRESENTATION the
+/// compiler chose for a type expression (features/values.av's
+/// `repr_word`): flat, boxed, niche, or a one-slot box. A declared
+/// name (`Id?`) resolves against the package the command stands in,
+/// as `explain @name` reads it.
+fn explained_repr(type_text: string) -> int {
+    mut p = root_program(here())
+    if !p.clean() {
+        eprintln(p.report())
+        return 1
+    }
+    let word = p.explain_repr(type_text)
+    if word == null {
+        eprintln("avra: `${type_text}` is not a type this package resolves — a scalar, `List<…>`, `Map<…>` or a declared struct, each under an optional `?`")
+        return 1
+    }
+    println(word!)
+    0
+}
+
 /// The package's declared tools, minted as the library mints them, and
 /// what a child inherits — the set of doors, before any opens. `at` is
 /// the package's directory; the front door stands at the root.
@@ -138,6 +159,6 @@ fn terminator_text(t: string?) -> string {
 
 export fn explain_command() -> Subcommand {
     let body: ExplainCmd = ExplainCmd { }
-    let args = [ArgDef { name: "code", description: "an F-code, a kind, a package kind (`@scope/name:E1`), or `process`", required: true, variadic: false }, ArgDef { name: "at", description: "for `process`: the package directory (the root when absent)", required: false, variadic: false }]
-    Subcommand { meta: arg_command("explain", "What a diagnostic code means; `process` — what this package may run", args), body: body }
+    let args = [ArgDef { name: "code", description: "an F-code, a kind, a package kind (`@scope/name:E1`), `process`, or `repr`", required: true, variadic: false }, ArgDef { name: "at", description: "for `process`: the package directory (the root when absent); for `repr`: a type expression (`int?`, `Id?`)", required: false, variadic: false }]
+    Subcommand { meta: arg_command("explain", "What a diagnostic code means; `process` — what this package may run; `repr <type>` — its representation", args), body: body }
 }

@@ -11,7 +11,7 @@
 //! `repr_of`, and every consumer asks the verbs below instead of
 //! knowing. A new value CATEGORY joins here, beside the readers
 //! that make its layout nobody else's business.
-use core.{Reg, Ins, BinOp, Type, TypeId, ExprId, Expr, NodeStore, filled, BodyParts, Slot, StaticBox}
+use core.{Reg, Ins, BinOp, Type, TypeId, TypeRegistry, ExprId, Expr, NodeStore, filled, BodyParts, Slot, StaticBox}
 use features.{MetaVal, MetaHeap, TypeFacts, Decls, meta_of_template}
 use @std.meta.{Node}
 
@@ -366,11 +366,7 @@ impl LowerCx {
     /// sees through an `Opt` to what it carries where `ptr_shape` cannot,
     /// and the machine type asks the same question (`opt_rides_pointer`).
     /// The two answers must never disagree — they are the same layout.
-    fn inner_repr(inner: TypeId) -> Repr {
-        if self.view.types.rides_pointer(inner) { return Repr.Niche }
-        if self.view.types.is_flat(inner) { return Repr.Boxed }
-        Repr.Pair
-    }
+    fn inner_repr(inner: TypeId) -> Repr { inner_repr_of(self.view.types, inner) }
 
     /// What a nullable type carries — the `Opt`'s inner, with the
     /// catch-all pinned to the asker's own type on the error path.
@@ -598,3 +594,35 @@ enum Repr {
     Boxed
 }
 
+/// A nullable's inner LAYOUT, decided from the type registry alone —
+/// no lowering context needed. `LowerCx.inner_repr` (inside a
+/// lowering pass) and `repr_word` below (outside one, for `avra
+/// explain repr`) are its two callers; both ask the SAME question.
+fn inner_repr_of(types: TypeRegistry, inner: TypeId) -> Repr {
+    if types.rides_pointer(inner) { return Repr.Niche }
+    if types.is_flat(inner) { return Repr.Boxed }
+    Repr.Pair
+}
+
+/// A `Repr`'s own word — the answer's LAST mile, once the layout is decided.
+fn nullable_word(r: Repr) -> string {
+    match r {
+        .Niche -> "niche",
+        .Boxed -> "one-slot box",
+        .Pair -> "pair",
+    }
+}
+
+/// A declared type's runtime REPRESENTATION, in this file's own
+/// words — `avra explain repr`'s one door in, reachable with no
+/// lowering context (P7: a representation the compiler chose is
+/// inspectable wherever a tool exists to ask). A nullable answers by
+/// what it carries (niche, a one-slot box, or a register pair beside
+/// a presence flag); anything else answers by whether it rides a
+/// pointer at all (flat, or boxed).
+export fn repr_word(types: TypeRegistry, ty: TypeId) -> string {
+    match types.seen_shape(ty) {
+        .Opt(inner) -> nullable_word(inner_repr_of(types, inner)),
+        _ -> if types.rides_pointer(ty) { "boxed" } else { "flat" },
+    }
+}
