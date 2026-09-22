@@ -925,6 +925,17 @@ fn paced(s: Stage, waited: bool) -> Stage {
     ticked(s, if waited { 0 } else { turn_ms })
 }
 
+/// A paced turn, GRACED the instant it stops on its own: a collector
+/// that reads `stopped` as "the capture is whole" would else miss a
+/// grandchild still holding the pipe — the law `pumped` already pays
+/// for a single command, owed here to every collector that declares a
+/// stage done. A stage stopped by a bound break is not graced: its
+/// caller kills the tree and the capture is already truncated.
+fn graced(s: Stage, waited: bool, grace_ms: int) -> Stage {
+    let t = paced(s, waited)
+    if t.stopped && !overdue(t) && !capped(t) { grace(t, grace_ms) } else { t }
+}
+
 /// One turn: what is ready, drained and fed, then a reap. The turn's
 /// LENGTH is not a correctness question — `pumped` and the drain
 /// below hold the order.
@@ -1159,7 +1170,7 @@ impl Pipeline {
                 if s.stopped {
                     grown.push(s)
                 } else {
-                    let t = paced(s, waited)
+                    let t = graced(s, waited, self.stages[i].drain_grace.ms)
                     waited = waited || !t.timed
                     if overdue(t) || capped(t) {
                         let _ = avra_proc_signal(s.h, sigkill, 1)
@@ -1212,7 +1223,7 @@ export fn parallel(cs: List<Command>, limit: int) -> Result<List<Outcome>, Proce
         mut still_owners: List<int> = []
         mut waited = false
         for i, s in live {
-            let t = paced(s, waited)
+            let t = graced(s, waited, cs[owners[i]].drain_grace.ms)
             waited = waited || !t.timed
             if overdue(t) || capped(t) {
                 let why = broken(cs[owners[i]], t)
@@ -1268,7 +1279,7 @@ export fn race(cs: List<Command>, stagger: Duration) -> Result<Outcome, ProcessE
         mut grown: List<Stage> = []
         mut waited = false
         for i, s in live {
-            let t = paced(s, waited)
+            let t = graced(s, waited, cs[owners[i]].drain_grace.ms)
             waited = waited || !t.timed
             if overdue(t) || capped(t) {
                 let why = broken(cs[owners[i]], t)

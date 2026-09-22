@@ -199,6 +199,18 @@ fn a_failing_finisher_wins_too() -> Result<string, ProcessError> {
     exit_text(w.exit)
 }
 
+/// A GRANDCHILD HOLDING A STAGE'S PIPE, MID-PIPELINE: a stage's own
+/// child exits at once, and a sibling it left behind still holds that
+/// stage's stderr, writing into it a beat later, inside the drain
+/// grace. A collector that reads a stage's own reap as "the capture
+/// is whole" misses a word still arriving after it.
+fn pipeline_grandchild_word() -> Result<string, ProcessError> {
+    let s = p_sh()?
+    let head = (cmd(s, ["-c", "echo out; echo p1 >&2; (sleep 0.1; echo said >&2) &"]) with { drain_grace: ms(500) })
+    let po = head.pipe(cmd(s, ["-c", "cat"])).outcome()?
+    po.stages[0].out.stderr.replace("\n", "/").trim()
+}
+
 spec "std/process pipelines" {
     given "many at once" {
         then "outcomes come back in the list's order, judged by nobody" {
@@ -241,6 +253,9 @@ spec "std/process pipelines" {
         }
         then "a stage's stdin comes from the first command's wiring" {
             p_shown(fed_pipeline()) == "ABC"
+        }
+        then "a grandchild holding a stage's pipe pays the grace — its word is not lost" {
+            p_shown(pipeline_grandchild_word()) == "p1/said/"
         }
     }
     given "verdicts per stage" {
