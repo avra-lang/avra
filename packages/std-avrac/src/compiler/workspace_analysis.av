@@ -24,7 +24,7 @@ impl Workspace {
         let previous: MethodDiagIndex? = self.method_diags.first()
         if previous != null {
             let held = previous!
-            if held.revision == self.db.revision() && held.decl_count == self.decls.decls.length && f.index < held.by_file.length {
+            if held.revision == self.db.revision() && held.decl_count == self.decls.decls.get().length && f.index < held.by_file.length {
                 return held.by_file[f.index]
             }
         }
@@ -32,8 +32,8 @@ impl Workspace {
         mut at = 0
         // Signing an impl may admit another declaration, so walk the
         // growing table until every type has had its method query.
-        while at < self.decls.decls.length {
-            let x = self.decls.decls[at]
+        while at < self.decls.decls.get().length {
+            let x = self.decls.decls.get()[at]
             at = at + 1
             if is_type_decl(x) {
                 touch(self.methods(x.id))
@@ -46,8 +46,8 @@ impl Workspace {
                 }
             }
         }
-        while by_file.length < self.decls.files.length { by_file.push([]) }
-        let current = MethodDiagIndex { revision: self.db.revision(), decl_count: self.decls.decls.length, by_file: by_file }
+        while by_file.length < self.decls.files.get().length { by_file.push([]) }
+        let current = MethodDiagIndex { revision: self.db.revision(), decl_count: self.decls.decls.get().length, by_file: by_file }
         if self.method_diags.is_empty() { self.method_diags.push(current) } else { self.method_diags.set(0, current) }
         by_file[f.index]
     }
@@ -93,7 +93,7 @@ impl Workspace {
     /// declaration table — which grows as `use` lines admit packages, and a
     /// compile-time run may lower a unit before the last has been.
     fn extern_symbols() -> List<string> {
-        let known = self.decls.decls.length
+        let known = self.decls.decls.get().length
         let held: ExternNames? = self.externs.get().at(0)
         if held != null && held!.decls == known { return held!.names }
         let names = self.decls.extern_names()

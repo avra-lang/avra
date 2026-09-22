@@ -756,7 +756,7 @@ impl Workspace {
         let resolved = resolve(self.lang.dispatch, self.lang.keywords, file_view(self.lang, p, self.decls, f), self.visible(f), elsewhere, generated)
         // What the expansions REFUSED speaks with the file's names:
         // generated source that did not parse, homed at its template.
-        let out = resolved with { voices: Voices { list: resolved.voices.list.concat(self.decls.expansion_voices[f.index].get()) } }
+        let out = resolved with { voices: Voices { list: resolved.voices.list.concat(self.decls.expansion_voices.get()[f.index].get()) } }
         self.name_facts.finish(f.index, out, self.db.revision())
     }
 
@@ -796,16 +796,16 @@ impl Workspace {
     fn sig(d: DeclId) -> DeclSig? {
         let k = key(Family.Sig, d.index)
         let x = self.decls.decl(d)
-        if self.is_held(x.file) { return self.decls.sigs[d.index] }
+        if self.is_held(x.file) { return self.decls.sigs.get()[d.index] }
         // the language's own declarations were signed at admission
         if !(self.db.ask(k) is .Compute) || x.kind is .Builtin {
-            return self.decls.sigs[d.index]
+            return self.decls.sigs.get()[d.index]
         }
         self.db.begin(k)
         mut t = self.sign_cx_for(x)
         t.declare_one(x)
         self.sig_voices.keep(d.index, t.facts.voices)
-        let out: DeclSig? = self.decls.sigs[d.index]
+        let out: DeclSig? = self.decls.sigs.get()[d.index]
         self.db.settle(k, sig_hash(out))
         out
     }
@@ -877,7 +877,7 @@ impl Workspace {
         let of? = self.decls.facts_of(block)?.of else { return null }
         if of == "" { return null }
         self.named_minted(of)
-        let named = [d.id for d in self.decls.decls if d.kind is .Trait && d.name == of]
+        let named = [d.id for d in self.decls.decls.get() if d.kind is .Trait && d.name == of]
         if named.length == 1 { named.first() } else { null }
     }
 
