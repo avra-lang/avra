@@ -1739,8 +1739,8 @@ stamps survive (`.PRECIOUS` holds), a header touch rebuilds through
 the `.d` files, and a stamp deleted by hand is restored. Every claim
 the Makefile makes about them holds.
 
-**WHAT IS STILL OPEN.** An `extern fn` used as a VALUE is an internal
-defect shown to the user:
+**CLOSED (avra-3cvq, std/bugs2).** An `extern fn` used as a VALUE was
+an internal defect shown to the user:
 
     extern fn avra_host_is_dir(path: string) -> int
     let f = avra_host_is_dir
@@ -1748,14 +1748,24 @@ defect shown to the user:
 
   error[F0900]: defect: a unit without a body was asked for — `avra_host_is_dir`
 
-Three shapes reach it — a `let`, a list element, and a fn-typed
+Three shapes reached it — a `let`, a list element, and a fn-typed
 argument seat — in `check`, `run` and `build` alike. A plain `fn` in
-the same position is fine, so it is the extern's. `fn_value_reg` mints
-a wrapper whose target is the symbol and asks `union` for that
-declaration's unit; an extern has no body. Fixing the want is not
-enough: `wrapped_body` emits `Ins.Call`, and an extern is a `CallRt`.
-The refusal wants to be a check-time law — an extern is a C symbol,
-not a value — and it is held because the node it fires on (`.Ident`)
-belongs to `expr_spine` while the law belongs to `fns`, and which
-feature owns "a name that resolves to an extern in a value position"
-is a decision, not a detail.
+the same position was fine, so it was the extern's. `fn_value_reg`
+minted a wrapper whose target was the symbol and asked `union` for
+that declaration's unit; an extern has no body — and fixing the want
+alone would not have been enough, since `wrapped_body` emits
+`Ins.Call`, and an extern is a `CallRt`.
+
+The decision this section left open — which feature owns "a name that
+resolves to an extern in a value position" when the node it fires on
+(`.Ident`) belongs to `expr_spine` — resolved to NEITHER: the law
+lives beside its existing sibling, `decl_type_of`'s "a generic fn is
+not a value" check (`features/contexts.av`), the ONE shared place
+every declaration is typed as a value regardless of which feature
+declared it. `is_extern` was already shared `Decls` infrastructure,
+not `fns`-private, so no feature came to import another's file. The
+new code is registered in `fns/mod.av` (`"type.extern_value" |
+"F2093"`), since the LAW is fns' even though the shared reader is
+where it is asked. The check-time refusal fires before lowering is
+ever reached, so `check`, `run` and `build` now agree by construction
+rather than by each independently reproducing the defect.

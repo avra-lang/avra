@@ -5,7 +5,7 @@
 //! context forwards from here to the one definition.
 use core.{Expr, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, same_stmt, same_expr, same_decl, TypeRef}
 use diagnostics.{Diag, Voices, refusal}
-use @std.errors.{Loc}
+use @std.errors.{Loc, Frame}
 
 impl Decls {
     /// A record's fields, the declaration's or the instantiation's.
@@ -74,14 +74,21 @@ impl Decls {
     }
 
     /// A declaration read as a value: a type's name, or a fn worn as a
-    /// value (a generic fn wears no single signature).
-    fn decl_type_of(voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
+    /// value (a generic fn wears no single signature, and an extern
+    /// names a C symbol rather than a callable Avra fn). `read_at` is
+    /// the READING expression's own location when one is in hand — the
+    /// mistake lives at the read, not at the declaration.
+    fn decl_type_of(voices: Voices, error_type: TypeId, read_at: Loc?, d: DeclId) -> TypeId {
         let x = self.decl(d)
         if x.kind is .Const { return self.declared_const_type(voices, error_type, d) }
         let tname: string? = self.type_name(d)
         if tname != null { return self.types.intern(Type.TypeName(d, tname!)) }
         if !self.tparams(d).is_empty() {
             voices.speak(self.not_a_value(d))
+            return error_type
+        }
+        if self.is_extern(d) {
+            voices.speak(self.extern_not_a_value(read_at, d))
             return error_type
         }
         let sig? = (self.sig(d))?.fn_sig() else { return error_type }
@@ -439,6 +446,22 @@ impl Decls {
 
     fn not_a_value(d: DeclId) -> Diag {
         refusal("type.lambda", self.loc(d), "a generic fn is not a value — no single signature to wear", "declared here", "wrap it — `(x: T0) -> ${self.fn_name(d) ?? "f"}(x)` with the types pinned")
+    }
+
+    /// An extern names a C SYMBOL, called across the host seam — it
+    /// wears no address a value can carry, so a `let`, a list element
+    /// or a fn-typed seat reading it by name reads a callee that does
+    /// not exist on this side. The mistake is AT THE READ, so that is
+    /// where the primary mark goes, with the declaration as a second
+    /// frame — a caller with no read site in hand (a capture's source
+    /// binding, which never resolves to an extern in practice) still
+    /// gets a sound answer, pointed at the declaration alone.
+    fn extern_not_a_value(read_at: Loc?, d: DeclId) -> Diag {
+        let declared = self.loc(d)
+        let primary = read_at ?? declared
+        let label = if read_at != null { "read as a value here" } else { "declared here" }
+        let secondary = if read_at != null { [Frame { label: "declared here", loc: declared }] } else { [] }
+        refusal("type.extern_value", primary, "an extern fn is not a value — it names a C symbol, not a callable Avra fn", label, "wrap it — `(x) -> ${self.fn_name(d) ?? "f"}(x)`") with { secondary: secondary }
     }
 
     /// A declared type's INSTANCE type — what its impl's receiver wears:

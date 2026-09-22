@@ -189,6 +189,21 @@ spec "features/fns" {
         then "a foreign pointer answers by its niche alone" {
             shown("extern fn avra_ptr_at(a: int) -> ptr?\nif avra_ptr_at(0) == null { \"null\" } else { \"some\" }") == "null"
         }
+        then "an extern is a C symbol, not a value — a `let` reads it bare" {
+            refused_with("extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")", "an extern fn is not a value")
+        }
+        then "the same law reaches a list element" {
+            refused_with("extern fn avra_host_is_dir(path: string) -> int\nlet xs = [avra_host_is_dir]\n1", "an extern fn is not a value")
+        }
+        then "and a fn-typed argument seat" {
+            refused_with("extern fn avra_host_is_dir(path: string) -> int\nfn apply(f: fn(string) -> int, x: string) -> int { f(x) }\napply(avra_host_is_dir, \"corpus\")", "an extern fn is not a value")
+        }
+        then "the wrapper the help names is the honest escape" {
+            shown("extern fn avra_host_is_dir(path: string) -> int\nlet f = (x: string) -> avra_host_is_dir(x)\nf(\"corpus\") >= 0") == "true"
+        }
+        then "the refusal renders whole — at the READ, the declaration second" {
+            analyze_source("extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")").report().starts_with("error[F2093]: an extern fn is not a value — it names a C symbol, not a callable Avra fn\n  ╭─[<source>:2:9]\n2 │ let f = avra_host_is_dir\n  ·         ┬\n  ·         ╰── read as a value here\n──╯\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_is_dir(path: string) -> int\n  · ┬\n  · ╰── declared here\n──╯\nhelp: wrap it — `(x) -> avra_host_is_dir(x)`")
+        }
     }
     given "`return` — the enclosing fn answers now" {
         then "an early return exits a loop mid-search" {

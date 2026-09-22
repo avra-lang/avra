@@ -20,6 +20,7 @@ extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
 extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
 extern fn avra_errno_text(err: int) -> string
+extern fn avra_now_ns() -> int
 
 fn neg(n: int) -> string {
     if n < 0 { "err:${avra_errno_text(n)}" } else { "ok:${n}" }
@@ -56,8 +57,15 @@ let s = avra_proc_spawn(avra_proc_stage(), "/bin/cat", "", 1 + 2 + 4 + 1024, 0 -
 let wrote = avra_fd_write(avra_proc_fd(s, 0), "abc".bytes(), 0)
 let closed = avra_proc_shut(s, 0)
 mut said: List<Bytes> = []
-mut turns = 0
-while turns < 400 && avra_proc_reap(s) == 0 {
+// A reap retry budget is a DEADLINE, never a turn count: `avra_proc_ready`
+// reports a closed, unused stream's HUP as ready and stops waiting out
+// its own timeout once that fires, so a turn's cost is not bounded below
+// — a counted budget can burn its whole intended window before the reap
+// it exists to give time to ever runs. The wall clock is what a turn
+// cannot lie about.
+let budget_ns = 10 * 1000 * 1000 * 1000
+let deadline = avra_now_ns() + budget_ns
+while avra_now_ns() < deadline && avra_proc_reap(s) == 0 {
     let ready = avra_proc_ready(s, 25)
     if ready & 1 == 1 {
         mut token = avra_fd_read(avra_proc_fd(s, 1), 65536)
@@ -66,7 +74,6 @@ while turns < 400 && avra_proc_reap(s) == 0 {
             token = avra_fd_read(avra_proc_fd(s, 1), 65536)
         }
     }
-    turns = turns + 1
 }
 mut last = avra_fd_read(avra_proc_fd(s, 1), 65536)
 while last > 0 {

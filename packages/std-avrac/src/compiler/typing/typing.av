@@ -343,7 +343,7 @@ impl TypeCx {
             // captures never narrow — the box holds the wide value
             .Capture(l, j) -> self.capture_ty(l, j),
             .Index(_) -> self.type(int),
-            .Decl(d) -> self.decl_type(d),
+            .Decl(d) -> self.decl_type_read(e, d),
         }
     }
 
@@ -416,9 +416,17 @@ impl TypeCx {
     }
 
     /// A foreign name read as a value: a type's name, or a fn worn
-    /// as a value — the answers a local declaration gives.
+    /// as a value — the answers a local declaration gives. No read
+    /// site is in hand here (a capture's source binding), so a
+    /// refusal this reaches falls back to the declaration's own loc.
     fn decl_type(d: DeclId) -> TypeId {
-        self.view.decls.decl_type_of(self.facts.voices, self.error_type, d)
+        self.view.decls.decl_type_of(self.facts.voices, self.error_type, null, d)
+    }
+
+    /// The same answer, AT THE EXPRESSION READING IT — any refusal
+    /// points at the read, which is where the mistake is.
+    fn decl_type_read(e: ExprId, d: DeclId) -> TypeId {
+        self.view.decls.decl_type_of(self.facts.voices, self.error_type, self.loc_of(e), d)
     }
 
     /// A declaring statement's identity in the shared table.
