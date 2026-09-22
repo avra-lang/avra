@@ -1,0 +1,95 @@
+// THE IR PROOF: an alpha-renamed comparison of the enclosing
+// declaration's own lowering, before and after — PROVED for a
+// rewrite that changes nothing about what the program does (a
+// negated condition with its arms swapped, `core.canon_not_if`'s own
+// case), REFUSED for a text that merely LOOKS like the same shape
+// but changes an operator's meaning.
+use @std.avrac.compiler.{avra, new_workspace, Program, Workspace, Analysis}
+use @std.avrac.compiler.host.{memory_host}
+use @std.avrac.core.{At, Ins, Reg, UnOp, BinOp, alpha_fps, same_fps}
+use @std.avrac.features.{Analysed}
+
+fn proof_ws_of(main: string) -> Workspace {
+    new_workspace(memory_host({ "/w/src/main.av": main }, ["/w/src/main.av"]), "/w", avra())
+}
+
+fn analysed_of(a: Analysis) -> Analysed {
+    Analysed { view: a.view, names: a.names, facts: a.facts }
+}
+
+fn root_at(a: Analysis) -> At {
+    At.Stmt(a.view.stmts.first()!)
+}
+
+spec "the IR proof" {
+    given "a rewrite that changes ONLY which side of a boolean test it reads" {
+        then "the enclosing declaration is PROVED — the coalesce desugar" {
+            mut ws = proof_ws_of("fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n")
+            mut p: Program = ws.program("/w/src/main.av")
+            let a = p.entry_file()!
+            p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn pick(x: int?) -> int {\n    x ?? 0\n}\n0\n")
+        }
+    }
+    given "a rewrite that changes an operator's own meaning" {
+        then "the enclosing declaration is REFUSED, not proved" {
+            mut ws = proof_ws_of("fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n")
+            mut p: Program = ws.program("/w/src/main.av")
+            let a = p.entry_file()!
+            !p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn add(a: int, b: int) -> int {\n    a - b\n}\n0\n")
+        }
+    }
+    given "a rewrite naming a symbol the after-text answers under a different name" {
+        then "the enclosing declaration is REFUSED — a symbol the after-state does not carry proves nothing" {
+            mut ws = proof_ws_of("fn add(a: int, b: int) -> int {\n    a + b\n}\n0\n")
+            mut p: Program = ws.program("/w/src/main.av")
+            let a = p.entry_file()!
+            !p.ir_proved("/w/src/main.av", analysed_of(a), root_at(a), "fn added(a: int, b: int) -> int {\n    a + b\n}\n0\n")
+        }
+    }
+}
+
+spec "canon_not_if" {
+    given "two instruction lists differing only by a negated condition with swapped arms" {
+        then "their alpha-renamed fingerprints AGREE" {
+            same_fps(alpha_fps(not_if_ins(), 1), alpha_fps(plain_if_ins(), 1))
+        }
+    }
+    given "two instruction lists differing by an operator" {
+        then "their alpha-renamed fingerprints DISAGREE" {
+            !same_fps(alpha_fps(add_ins(), 0), alpha_fps(sub_ins(), 0))
+        }
+    }
+}
+
+// register 0 is the one param; registers from there on are minted in
+// the order written
+fn not_if_ins() -> List<Ins> {
+    [
+        Ins.Un(Reg { index: 1 }, UnOp.Not, Reg { index: 0 }),
+        Ins.IfStart(Reg { index: 1 }),
+        Ins.ConstInt(Reg { index: 2 }, 0),
+        Ins.ArmEnd(Reg { index: 2 }),
+        Ins.ConstInt(Reg { index: 3 }, 1),
+        Ins.RegionEnd(Reg { index: 4 }, Reg { index: 3 }),
+        Ins.RetVal(Reg { index: 4 }),
+    ]
+}
+
+fn plain_if_ins() -> List<Ins> {
+    [
+        Ins.IfStart(Reg { index: 0 }),
+        Ins.ConstInt(Reg { index: 1 }, 1),
+        Ins.ArmEnd(Reg { index: 1 }),
+        Ins.ConstInt(Reg { index: 2 }, 0),
+        Ins.RegionEnd(Reg { index: 3 }, Reg { index: 2 }),
+        Ins.RetVal(Reg { index: 3 }),
+    ]
+}
+
+fn add_ins() -> List<Ins> {
+    [Ins.Bin(Reg { index: 2 }, BinOp.Add, Reg { index: 0 }, Reg { index: 1 }), Ins.RetVal(Reg { index: 2 })]
+}
+
+fn sub_ins() -> List<Ins> {
+    [Ins.Bin(Reg { index: 2 }, BinOp.Sub, Reg { index: 0 }, Reg { index: 1 }), Ins.RetVal(Reg { index: 2 })]
+}

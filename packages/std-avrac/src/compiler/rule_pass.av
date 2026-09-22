@@ -1,0 +1,82 @@
+//! THE RULES PASS: every node a file's own declarations hold, the
+//! table's rules tried where their root-kind index admits (or
+//! carries `any_root`). `rule_candidates` is the ONE walk — `avra
+//! check`'s findings (`rule_findings`) and `avra fix`'s proof both
+//! read it, so a rewrite `check` shows is the exact one `fix` proves
+//! or refuses, never a second derivation that could disagree.
+use core.{At, StmtId, NodeStore, flatten}
+use features.{Code, Fix, Analysed}
+use diagnostics.{Diag, warning}
+use @std.errors.{Suggestion, Edit, Confidence, Loc}
+use compiler.backend.{trimmed}
+
+/// One rule's hit at one node, before any Diag is built.
+export type Candidate = { at: At, owner: RuleEntry, fix: Fix }
+
+/// Every rule hit under these statements — each walked from its own
+/// root, expressions and nested statements alike (`every_at`), the
+/// table's rules tried at every node whose root-kind index admits
+/// it.
+export fn rule_candidates(a: Analysed, stmts: List<StmtId>) -> List<Candidate> {
+    let entries = rules_table()
+    flatten([stmt_candidates(a, entries, s) for s in stmts])
+}
+
+fn stmt_candidates(a: Analysed, entries: List<RuleEntry>, s: StmtId) -> List<Candidate> {
+    flatten([node_candidates(a, entries, at) for at in every_at(a.view.store, At.Stmt(s))])
+}
+
+/// Every node under (and including) `root`, children before owner —
+/// `core.every_expr`'s shape, generalized to every `At` kind, so a
+/// rule rooted at a statement reaches it too.
+fn every_at(store: NodeStore, root: At) -> List<At> {
+    flatten([every_at(store, k) for k in store.kids_at(root)]).concat([root])
+}
+
+fn node_candidates(a: Analysed, entries: List<RuleEntry>, at: At) -> List<Candidate> {
+    let shallow = a.view.store.shallow_at(at)
+    flatten([one_candidate(a, at, r) for r in rules_at(entries, shallow)])
+}
+
+fn one_candidate(a: Analysed, at: At, r: RuleEntry) -> List<Candidate> {
+    let f? = r.run(code_at(a, at)) else { return [] }
+    [Candidate { at: at, owner: r, fix: f }]
+}
+
+/// The one construction seam: a rule's own subject, one node in one
+/// analysis.
+export fn code_at(a: Analysed, at: At) -> Code {
+    Code { of: a, at: at }
+}
+
+/// Every candidate as a `Diag` — `avra check`'s findings. A `Fix.Say`
+/// carries the rule's own voice unchanged; a `Fix.Rewrite` wraps in a
+/// `Suggestion` over one `Edit` at the matched node's own span.
+export fn rule_findings(a: Analysed, stmts: List<StmtId>) -> List<Diag> {
+    flatten([candidate_diags(a, c) for c in rule_candidates(a, stmts)])
+}
+
+fn candidate_diags(a: Analysed, c: Candidate) -> List<Diag> {
+    match c.fix {
+        .Say(voice) -> [voice],
+        .Rewrite(_) -> rewrite_diags(a, c.at, c.owner, c.fix),
+    }
+}
+
+fn rewrite_diags(a: Analysed, at: At, r: RuleEntry, f: Fix) -> List<Diag> {
+    let d? = rewrite_diag(a, at, r, f) else { return [] }
+    [d]
+}
+
+/// A REWRITE'S DIAG CARRIES THE PROOF, NOT A CLAIM ABOUT IT: the
+/// suggestion's one edit IS the rewrite, at the matched node's own
+/// span — a node with no span (synthesized, never real source) has
+/// nowhere to point an edit and answers no finding at all.
+fn rewrite_diag(a: Analysed, at: At, r: RuleEntry, f: Fix) -> Diag? {
+    let raw? = f.rendered() else { return null }
+    let text = trimmed(raw)
+    let loc? = (code_at(a, at)).loc() else { return null }
+    let edit = Edit { loc: loc, replacement: text }
+    let sg = Suggestion { confidence: Confidence.High, description: rule_id(r), edits: [edit] }
+    warning("rule.${rule_id(r)}", loc, "${rule_id(r)} — this is provably `${text}`", "this code", null) with { suggestions: [sg] }
+}

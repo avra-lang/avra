@@ -1,0 +1,55 @@
+//! THE RULE TABLE — every rule the compiler carries, NATIVE: a
+//! `rule` declares `DeclKind.Rule` (core/parts.av's `rule_parts`),
+//! exactly as a `then` declares `DeclKind.Case` — but a rule's
+//! `run` is a typed `fn(Code) -> Fix?` VALUE the pass calls
+//! in-process, and Avra has no reflection from a declaration's
+//! SYMBOL to a value of that type: nothing turns a name found by
+//! walking `Decls` into something callable. So this table is the
+//! VOCABULARY SEAM RULE's DATA shape (CLAUDE.md) — one row per rule,
+//! like `rt_sigs()` — never a dispatch, and the row is HAND-WRITTEN
+//! here for that reason alone.
+//!
+//! WHAT STAYS DISCOVERY, NOT HAND-KEEPING: `avra test
+//! packages/std-avrac` — the one build where `self.decls` names
+//! EVERY rule this compiler declares, because that IS the program
+//! under test — walks them BY KIND (`rule_decls`, whole.av) and
+//! REFUSES the suite when this table's name/module/root drift from
+//! what is actually declared (rule_examples.av's `rules_checked`).
+//! A row landed here without its declaration, or a declaration
+//! landed without its row, fails loud, not silently.
+use features.{Code, Fix}
+use features.nullable.{if_null_ternary}
+use features.lists.{last_index}
+use features.structs.{index_compared}
+
+/// A root-kind index with no root at all: "any node", tried
+/// everywhere — a struct field cannot hold `int?` (the subset
+/// today), so this is the seed `root_kind_of` never answers.
+export const any_root: int = -1
+
+/// One rule: its identity (`<module>.<name>`, split), the fn the
+/// pass calls, and the ROOT-KIND INDEX (`core.root_kind_of`) its
+/// first arm's pattern folds to — `any_root` for a rule the index
+/// cannot narrow.
+export type RuleEntry = { name: string, module: string, run: fn(Code) -> Fix?, root: int }
+
+/// `<module>.<name>` — the identity a finding's kind and `--only`
+/// both read.
+export fn rule_id(r: RuleEntry) -> string { "${r.module}.${r.name}" }
+
+/// EVERY RULE, NATIVE. Adding one is a row here — `avra test
+/// packages/std-avrac` refuses the suite the day it is not (or the
+/// day a row here names a rule that moved or was deleted).
+export fn rules_table() -> List<RuleEntry> {
+    [
+        RuleEntry { name: "if_null_ternary", module: "nullable", run: if_null_ternary, root: 890321331 },
+        RuleEntry { name: "last_index", module: "lists", run: last_index, root: 330565557 },
+        RuleEntry { name: "index_compared", module: "structs", run: index_compared, root: 872388086 },
+    ]
+}
+
+/// The rules whose root-kind index admits `kind` — the ones indexed
+/// at it, plus every `any_root` rule, tried everywhere.
+export fn rules_at(entries: List<RuleEntry>, kind: int) -> List<RuleEntry> {
+    [r for r in entries if r.root == any_root || r.root == kind]
+}

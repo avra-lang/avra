@@ -7,7 +7,7 @@
 //! store. The sources are the hold's oracle — a derivation that fails under a
 //! hold is answered again from the sources alone.
 use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
-use features.{SettleRoot, Wanted}
+use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
@@ -90,6 +90,13 @@ impl Derived {
         let rest = if self.read.length > READ_NAMED { ["  … and ${self.read.length - READ_NAMED} more"] } else { [] }
         joined([spent, "read:"].concat(named).concat(rest), "\n")
     }
+}
+
+/// An `Analysis`'s three facts tables, as a rule reads them — the
+/// same value under a narrower name (features/code.av's `Analysed`),
+/// since a rule takes no `lang`/`diagnostics`/`program` of its own.
+export fn analysed(a: Analysis) -> Analysed {
+    Analysed { view: a.view, names: a.names, facts: a.facts }
 }
 
 /// What was said, the silent dropped.
@@ -402,9 +409,12 @@ impl Workspace {
         [s! for s in said]
     }
 
-    /// What a parsed file says now.
+    /// What a parsed file says now — its own diagnostics AND its
+    /// rule findings (`rule_findings`), so a HELD file's `Said` row
+    /// carries both and a later hold answers them alike.
     fn says(p: Program, a: Analysis) -> Said {
-        Said { path: a.view.source.file, warnings: p.warned(a.diagnostics), cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)] }
+        let ds = a.diagnostics.concat(rule_findings(analysed(a), a.view.stmts))
+        Said { path: a.view.source.file, warnings: p.warned(ds), cases: [CaseCall { symbol: c.symbol, label: case_words(c) } for c in self.file_cases(a.view.file)] }
     }
 
     /// One file's `Said`: kept under its key when it parsed, read from there

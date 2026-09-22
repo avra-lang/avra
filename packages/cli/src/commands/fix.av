@@ -1,0 +1,86 @@
+//! `avra fix <file>` — apply every PROVED rule rewrite, splicing it
+//! into the source; every rewrite the IR proof cannot confirm is
+//! only SHOWN (`avra check` already reported it) and left untouched.
+//! `--dry` prints what would change and writes nothing; `--only
+//! <rule>` limits to one rule's `<module>.<name>`.
+use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, ArgDef, FlagDef, OptionDef}
+use @std.io.{write_text}
+use @std.avrac.compiler.{Program, Application, fix_applied, analysed}
+
+type FixCmd = { }
+
+impl Runnable for FixCmd {
+    fn run(args: CliResult) -> int {
+        let held? = program_at(args) else { return 2 }
+        mut p = held
+        match fixed(p, args) {
+            .Ok(code) -> code,
+            .Err(report) -> {
+                println(report)
+                1
+            },
+        }
+    }
+}
+
+fn fixed(mut p: Program, args: CliResult) -> Result<int, string> {
+    if !p.clean() { fail p.report() }
+    let a? = p.entry_file() else { fail "the program is empty" }
+    let named = args.option("only")
+    let only = if named == "" { null } else { named }
+    let apps = p.fix_applications(a.view.source.file, analysed(a), only)
+    if apps.is_empty() {
+        println("avra fix: nothing to fix")
+        return 0
+    }
+    let text = a.view.source.text
+    let after? = fix_applied(text, apps) else { fail "avra fix: proved rewrites overlap — nothing applied" }
+    for line in application_lines(apps) { println(line) }
+    if args.has_flag("dry") {
+        println(diff_of(text, after))
+        return 0
+    }
+    if after == text {
+        println("avra fix: nothing here is PROVED — every finding stays shown, not applied")
+        return 0
+    }
+    match write_text(a.view.source.file, after) {
+        .Ok(_) -> 0,
+        .Err(e) -> host_refused(e.describe().message),
+    }
+}
+
+/// One line per application: proved ones the write acts on, shown
+/// ones named as what `avra check` already reported.
+fn application_lines(apps: List<Application>) -> List<string> {
+    [application_line(ap) for ap in apps]
+}
+
+fn application_line(ap: Application) -> string {
+    let tier = if ap.proved { "proved" } else { "shown, not applied" }
+    "${ap.rule_kind} (${tier}): ${ap.edit.replacement}"
+}
+
+/// A whole-file before/after, printed plainly — enough to review a
+/// small change without pulling in a diff algorithm this command
+/// does not otherwise need.
+fn diff_of(before: string, after: string) -> string {
+    "--- before\n${before}\n+++ after\n${after}"
+}
+
+export fn fix_command() -> Subcommand {
+    Subcommand {
+        meta: CommandSpec {
+            name: "fix",
+            description: "Apply every proved rule rewrite, splicing it into the source",
+            hidden: false,
+            flags: [
+                FlagDef { name: "--time", short: "", description: "print phase timings and memo hits", aliases: [] },
+                FlagDef { name: "--dry", short: "", description: "print what would change, write nothing", aliases: [] },
+            ],
+            args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
+            options: [OptionDef { name: "--only", short: "", description: "apply only this rule (<module>.<name>)", default_val: "" }],
+        },
+        body: FixCmd { },
+    }
+}

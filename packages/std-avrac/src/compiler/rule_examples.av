@@ -6,9 +6,9 @@
 //! fingerprint (span-blind; text equality is too strict), a keep
 //! answered by absence alone. `avra test` (`suite.av`) runs one of
 //! these per example, for every rule the package under test declares.
-use core.{root_of}
-use features.{Code, Fix}
-use features.rules.{nearest_fix}
+use core.{root_of, root_kind_of, flatten}
+use features.{Code, Fix, Decl}
+use features.rules.{nearest_fix, examples_of, Example}
 use compiler.{analyze_source, Analysis}
 
 /// The example's own root: an expression statement stands as its
@@ -61,4 +61,51 @@ fn same_fingerprint(rendered: string, after: string) -> bool {
     let r? = example_root(analyzed_example(rendered)) else { return false }
     let a? = example_root(analyzed_example(after)) else { return false }
     r.of.view.store.subtree_fp(r.at) == a.of.view.store.subtree_fp(a.at)
+}
+
+// ── THE TABLE'S OWN PROOF ──
+// `avra test packages/std-avrac` is the one build where every rule
+// this compiler declares stands in `ws.decls` — that IS the program
+// under test — so this is where `rules_table()` is held to what is
+// actually declared, BY KIND (`ws.rule_decls`, whole.av), never by a
+// restated list. An example's text is read live off its declaration
+// (`examples_of`), so it has one home; a root-kind index is
+// recomputed from the same declaration and held to the table's row.
+
+/// One example, checked — a line iff it failed.
+export type ExampleCheck = { label: string, ok: bool }
+
+fn checked(label: string, ok: bool) -> ExampleCheck { ExampleCheck { label: label, ok: ok } }
+
+impl Workspace {
+    /// Every rule the table names, proven against what is actually
+    /// declared: a table row with no live declaration, a declaration
+    /// with no table row, a drifted root-kind index, and every
+    /// `@fixes`/`@keeps` the declaration itself carries — read once
+    /// here, never duplicated at the row.
+    fn rules_checked() -> List<ExampleCheck> {
+        let entries = rules_table()
+        let found = self.rule_decls()
+        let missing = [checked("rules_table: ${rule_id(r)} has no live `rule` declaration", false) for r in entries if !found.any(named(r, it))]
+        let extra = [checked("rules_table: `${d.name}` is declared but not in rules_table()", false) for d in found if !entries.any(named(it, d))]
+        missing.concat(extra).concat(flatten([self.entry_checked(r, found) for r in entries]))
+    }
+
+    fn entry_checked(r: RuleEntry, found: List<Decl>) -> List<ExampleCheck> {
+        let d? = found.find(named(r, it)) else { return [] }
+        let store = self.decls.store_of(d.file)
+        let parts? = store.rule_parts(d.stmt) else { return [checked("rules_table: ${rule_id(r)}'s declaration carries no rule body", false)] }
+        // LICENSED I18: any_root is root_kind_of's documented absence case, not a papered-over default
+        let root_check = checked("rules_table: ${rule_id(r)}'s root-kind index matches its declaration", (root_kind_of(store, parts.arms) ?? any_root) == r.root)
+        [root_check].concat([example_checked(rule_id(r), r.run, e) for e in examples_of(store, d.stmt)])
+    }
+}
+
+fn named(r: RuleEntry, d: Decl) -> bool { r.name == d.name }
+
+fn example_checked(id: string, applied: fn(Code) -> Fix?, e: Example) -> ExampleCheck {
+    match e {
+        .Fixes(before, after) -> checked("${id} @fixes", checks_fixes(applied, before, after)),
+        .Keeps(before) -> checked("${id} @keeps", checks_keeps(applied, before)),
+    }
 }

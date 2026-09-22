@@ -1,0 +1,52 @@
+//! THE PROOF: a rewrite is SAFE when the declaration it lands inside
+//! lowers to the SAME IR before and after, register renumbering
+//! aside (`core.alpha_fps`) — never by trusting the rewrite's own
+//! claim. `avra fix` applies only what this proves; everything else
+//! is SHOWN, never written (design §3).
+use core.{At, alpha_fps, same_fps}
+use features.{Analysed, enclosing_decl}
+use compiler.lower.{Body}
+use @std.path.{normalized}
+
+impl Program {
+    /// Whether the declaration ENCLOSING `at` lowers to the SAME IR
+    /// before and after `path`'s own text becomes `after_text` —
+    /// `false` for a candidate this cannot even test (a synthesized
+    /// node with no enclosing declaration, a declaration that fails
+    /// to lower before OR after, a symbol the after-state answers
+    /// under a different name). Absence of proof is exactly the
+    /// SHOWN tier: it never reads as a refusal of the code, only of
+    /// the rewrite.
+    mut fn ir_proved(path: string, a: Analysed, at: At, after_text: string) -> bool {
+        let d? = enclosing_decl(a.view, at) else { return false }
+        let symbol = self.ws.decls.symbol(d)
+        let before_lo = match self.every_body_checked() {
+            .Ok(l) -> l,
+            .Err(_) -> { return false },
+        }
+        let before_body? = before_lo.fns.find(it.name == symbol) else { return false }
+        mut after_p = self.after_program(path, after_text)
+        if !after_p.clean() { return false }
+        let after_lo = match after_p.every_body_checked() {
+            .Ok(l) -> l,
+            .Err(_) -> { return false },
+        }
+        let after_body? = after_lo.fns.find(it.name == symbol) else { return false }
+        same_ir(before_body, after_body)
+    }
+
+    /// A FRESH program over the same workspace, `path`'s own text
+    /// overridden to `text` — every other file read exactly as the
+    /// original's host reads it. Never written to disk: the proof is
+    /// asked before `avra fix` decides whether to write at all.
+    fn after_program(path: string, text: string) -> Program {
+        let host2 = self.ws.host with { read: (p: string) -> if normalized(p) == normalized(path) { text } else { self.ws.host.read(p) } }
+        mut ws2 = timed_workspace(host2, self.ws.root, self.ws.lang, self.ws.clock)
+        ws2.program(null)
+    }
+}
+
+// LICENSED I39: compares two independent Body VALUES, neither one's own state
+fn same_ir(a: Body, b: Body) -> bool {
+    same_fps(alpha_fps(a.ins, a.params.length), alpha_fps(b.ins, b.params.length))
+}

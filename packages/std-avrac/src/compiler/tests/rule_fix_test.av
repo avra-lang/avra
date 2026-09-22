@@ -1,0 +1,63 @@
+// `avra fix`'s own machinery: a rewrite the IR proof confirms is
+// PROVED and gets an edit; one it cannot confirm is SHOWN and gets
+// no write; a `Fix.Say` (no rewrite at all) never produces an
+// Application; a span holding a comment is refused outright.
+//
+// Several fixtures below WRITE the idioms `avra fix` exists to
+// rewrite, as program TEXT handed to the compiler under test — that
+// text is the thing being checked, not this file's own code, the
+// same shape as features/lists/idioms.av's own I7 license.
+use @std.avrac.compiler.{avra, new_workspace, fix_applied, analysed, Application, Program, Workspace}
+use @std.avrac.compiler.host.{memory_host}
+
+fn fix_ws_of(main: string) -> Workspace {
+    new_workspace(memory_host({ "/w/src/main.av": main }, ["/w/src/main.av"]), "/w", avra())
+}
+
+// LICENSED I26: `x!` inside these fixture strings is idiom text under
+// test, not a forced-open local of this file's own
+fn fix_apps_of(main: string, only: string?) -> List<Application> {
+    mut ws = fix_ws_of(main)
+    mut p: Program = ws.program("/w/src/main.av")
+    let a = p.entry_file()!
+    p.fix_applications("/w/src/main.av", analysed(a), only)
+}
+
+spec "avra fix" {
+    given "a null-check idiom the IR proof confirms" {
+        then "one Application, PROVED" {
+            let apps = fix_apps_of("fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n", null)
+            apps.length == 1 && apps[0].proved && apps[0].rule_kind == "nullable.if_null_ternary"
+        }
+        then "fix_applied splices the file to the rewritten form" {
+            let text = "fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n"
+            let apps = fix_apps_of(text, null)
+            fix_applied(text, apps) == "fn pick(x: int?) -> int {\n    x ?? 0\n}\n0\n"
+        }
+    }
+    given "the same idiom filtered by --only naming a DIFFERENT rule" {
+        then "no Application at all" {
+            fix_apps_of("fn pick(x: int?) -> int {\n    if x == null { 0 } else { x! }\n}\n0\n", "lists.last_index").is_empty()
+        }
+    }
+    given "a last-index idiom whose lowering the IR proof does not confirm" {
+        then "one Application, SHOWN but not proved — fix_applied writes nothing" {
+            // LICENSED I7: the fixture text names the idiom under test, held as a string
+            let text = "fn last(xs: List<int>) -> int {\n    xs[xs.length - 1]\n}\n0\n"
+            let apps = fix_apps_of(text, null)
+            apps.length == 1 && !apps[0].proved && fix_applied(text, apps) == text
+        }
+    }
+    given "a rule that only SAYS (no rewrite at all)" {
+        // LICENSED I9: the fixture text names the idiom under test, held as a string
+        then "no Application — fix never touches a Fix.Say" {
+            fix_apps_of("type Id = { index: int }\nfn same(a: Id, b: Id) -> bool {\n    a.index == b.index\n}\n0\n", null).is_empty()
+        }
+    }
+    given "a null-check idiom with a comment inside the matched span" {
+        then "no Application — a remark inside a rewrite refuses it outright" {
+            let text = "fn pick(x: int?) -> int {\n    if x == null {\n        // held\n        0\n    } else { x! }\n}\n0\n"
+            fix_apps_of(text, null).is_empty()
+        }
+    }
+}

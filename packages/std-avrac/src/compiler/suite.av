@@ -10,7 +10,6 @@ use compiler.backend.{run_program}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.host.{Host}
 use compiler.lower.{Lowered, program_symbol}
-use compiler.{rule_examples_checked}
 
 impl Workspace {
     /// EVERY SUITE THE PACKAGE CARRIES: its own, and one per package nested under
@@ -42,9 +41,11 @@ impl Workspace {
         // no evaluator, no generated case: std-avrac testing ITSELF
         // means its own rules are already part of the standing
         // binary. Gated to std-avrac's own suite alone, so testing an
-        // unrelated package never runs a stranger's rules.
+        // unrelated package never runs a stranger's rules — and this
+        // is also the one build where `rules_table()` can be held to
+        // what `self.decls` actually declares (`rules_checked`).
         if self.manifest(0).name == "@std/avrac" {
-            let results = rule_examples_checked()
+            let results = self.rules_checked()
             let missed = [c.label for c in results if !c.ok]
             if !missed.is_empty() { fail joined([rule_example_missed(l) for l in missed], "\n") }
             println("${counted(results.length, "example")} proved, as cases")

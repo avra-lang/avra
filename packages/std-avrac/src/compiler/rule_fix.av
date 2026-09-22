@@ -1,0 +1,62 @@
+//! `avra fix`'s OWN LOGIC: every candidate the rules pass finds,
+//! turned into an APPLICATION — proved (IR-equal) or merely shown —
+//! then the proved ones spliced at once. The CLI command's whole job
+//! is arguments in, this out; nothing here touches a filesystem.
+use core.{NodeStore, flatten}
+use features.{Analysed}
+use diagnostics.{spliced}
+use @std.errors.{Edit, Loc}
+use compiler.backend.{trimmed}
+
+/// One candidate's outcome: the rule that answered, the EDIT it
+/// proposes, and whether it is PROVED — the tier `avra fix` writes.
+/// A `Fix.Say` and a rewrite with nowhere to point an edit never
+/// reach here at all (`fix_applications`).
+export type Application = { rule_kind: string, edit: Edit, proved: bool }
+
+impl Program {
+    /// Every rewrite candidate this file's declarations turn up, each
+    /// checked against the SAME text every other one is checked
+    /// against — a later PROVED edit's proof is asked of the file as
+    /// it stood before ANY edit, never of another edit's result,
+    /// since `avra fix` applies a whole file's edits in ONE splice.
+    mut fn fix_applications(path: string, a: Analysed, only: string?) -> List<Application> {
+        let text = a.view.source.text
+        let cs = [c for c in rule_candidates(a, a.view.stmts) if only == null || rule_id(c.owner) == only]
+        flatten([self.application_of(path, a, text, c) for c in cs])
+    }
+
+    mut fn application_of(path: string, a: Analysed, text: string, c: Candidate) -> List<Application> {
+        match c.fix {
+            .Say(_) -> [],
+            .Rewrite(_) -> self.rewrite_application(path, a, text, c),
+        }
+    }
+
+    mut fn rewrite_application(path: string, a: Analysed, text: string, c: Candidate) -> List<Application> {
+        let raw? = c.fix.rendered() else { return [] }
+        let loc? = (code_at(a, c.at)).loc() else { return [] }
+        if holds_remark(a.view.store, loc) { return [] }
+        let edit = Edit { loc: loc, replacement: trimmed(raw) }
+        let after? = spliced(text, [edit]) else { return [] }
+        let proved = self.ir_proved(path, a, c.at, after)
+        [Application { rule_kind: rule_id(c.owner), edit: edit, proved: proved }]
+    }
+}
+
+/// A rewrite whose span holds a REMARK carries a comment nobody
+/// asked it to eat — refused here, never applied: `avra fix`'s
+/// receipt is what a splice guarantees for the bytes OUTSIDE an
+/// edit, and a remark inside one is the one byte range no rewrite's
+/// text speaks for.
+fn holds_remark(store: NodeStore, loc: Loc) -> bool {
+    store.remarks.any(it.at >= loc.lo && it.at < loc.hi)
+}
+
+/// The PROVED applications, spliced into `text` at once — absence
+/// when two of them overlap (two rules landing on the same code) or
+/// either reaches outside the text; every unproved application is
+/// left exactly as `check` already showed it.
+export fn fix_applied(text: string, apps: List<Application>) -> string? {
+    spliced(text, [ap.edit for ap in apps if ap.proved])
+}
