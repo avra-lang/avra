@@ -1,0 +1,95 @@
+//! A quote used as a PATTERN: its `${...}` holes are BINDERS, not
+//! fills — matching real code structurally, never splicing. The
+//! seat law is NARROWER than the expression form's: only an
+//! EXPRESSION or a STATEMENT seat has its own tree position this
+//! matcher can wildcard (`shape.av`'s `Shape.Hole` recurses into a
+//! CHILD position, never into a scalar field its parent folds into
+//! its own identity) — a Name seat's written text (a `let`'s
+//! declared name) is exactly such a scalar, and a Type or an Arm
+//! seat has no `At` at all. All three wait on a wider matcher; the
+//! ask is recorded (ROADMAP, epic avra-8sb5.25).
+
+/// One `${...}` occurrence in a quote pattern's body, in written
+/// order: the bare name its content reads, when it is one — a
+/// compound expression (`${f(x)}`) reads null — and the seat it
+/// stands in.
+export type QuoteHole = { name: string?, kind: HoleKind }
+
+/// Every hole a quote pattern's body carries, raw, one per
+/// occurrence — never deduped: a name written twice is two
+/// occurrences of ONE binder, and the caller decides what that means.
+export fn quote_pat_holes(store: NodeStore, body: ExprId) -> List<QuoteHole> {
+    let q? = (store.expr(body)).body_of() else { return [] }
+    let kinds = hole_kinds(store, body)
+    [QuoteHole { name: store.ident_name(h), kind: kinds[k] } for k, h in q.holes]
+}
+
+/// Whether this occurrence names a binder the matcher can hold — an
+/// Expression or a Statement seat, read as a bare name.
+export fn quote_hole_ok(h: QuoteHole) -> bool {
+    h.name != null && (h.kind is .Expression || h.kind is .Statement)
+}
+
+/// The DISTINCT binder names these holes read, first-occurrence
+/// order — an occurrence `quote_hole_ok` refuses binds nothing.
+export fn quote_pat_names(holes: List<QuoteHole>) -> List<string> {
+    let named = [h.name! for h in holes if quote_hole_ok(h)]
+    [n for i, n in named if named.index_of(n) == i]
+}
+
+/// The single node a quote pattern's body names — the root its Shape
+/// is built from — or absence when the body is not exactly one
+/// statement with no arms (a run arrives with `${..}` holes, a
+/// later slice).
+export fn quote_pat_root(store: NodeStore, body: ExprId) -> At? {
+    let q? = (store.expr(body)).body_of() else { return null }
+    match q.view {
+        .Verbatim(stmts, arms) if arms.is_empty() && stmts.length == 1 -> root_of(store, stmts[0]),
+        .Verbatim(_, _) or .None or .Expanded(_) -> null,
+    }
+}
+
+/// An expression statement stands as ITS expression — the same node
+/// the primary quote already answers for a tail — every other
+/// statement stands as itself.
+fn root_of(store: NodeStore, s: StmtId) -> At {
+    match store.stmt(s) {
+        .ExprStmt(v) -> At.Expr(v),
+        rest -> At.Stmt(s),
+    }
+}
+
+/// The quote pattern's own Shape: like `shape_at`, but a hole is
+/// identified by the NAME its placeholder decodes to, not by arena
+/// identity — two `${x}` occurrences anywhere under `at` share ONE
+/// binder because they read the same name. `names` is the pattern's
+/// own deduped binder list (`quote_pat_names`), so a binder's index
+/// here is its position there. Total once every hole is
+/// `quote_hole_ok` — the caller's typing already refused otherwise.
+export fn quote_pat_shape(store: NodeStore, at: At, holes: List<QuoteHole>, names: List<string>) -> Shape {
+    let k? = quote_hole_at(store, at) else {
+        return Shape.Node(store.shallow_at(at), [quote_pat_shape(store, kid, holes, names) for kid in store.kids_at(at)])
+    }
+    Shape.Hole(names.index_of(holes[k].name!))
+}
+
+/// The occurrence index `at`'s own position IS, when it stands as a
+/// lone hole placeholder filling a whole expression or statement;
+/// null for every other seat, a Pat included — the matcher has no
+/// binder for one yet.
+fn quote_hole_at(store: NodeStore, at: At) -> int? {
+    match at {
+        .Expr(e) -> lone_hole_of(store.ident_name(e)),
+        .Stmt(s) -> store.hole_stmt(s),
+        .Pat(_) -> null,
+    }
+}
+
+/// The index a LONE hole's own text names, or absence — `${k}`
+/// alone, never `l${k}_x`: this matcher wildcards only a whole seat.
+fn lone_hole_of(text: string?) -> int? {
+    let t? = text else { return null }
+    let h? = hole_name(t) else { return null }
+    if !h.lone() { return null }
+    h.holes[0]
+}
