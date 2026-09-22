@@ -53,12 +53,26 @@ fn fielded_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, slot: int, fty:
 /// The impl table's dispatch: a direct Call to the method's
 /// qualified symbol, the subject riding the self seat.
 fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, name: string, args: List<ExprId>) -> Reg {
-    let recv = cx.reg_of(subject)
-    let regs = [cx.reg_of(a) for a in args]
     let m? = cx.view.decls.method(decl, name) else { return cx.lower_defect(e, "a method with no symbol survived typing") }
+    let recv = writing_recv(cx, subject, m)
+    let regs = [cx.reg_of(a) for a in args]
     let dst = cx.result(e)
     cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(subject)), [recv].concat(regs)))
     dst
+}
+
+/// A writing method's receiver opens its CELL unique first, exactly as
+/// a vocabulary mutation opens one (places.av's `avra_cell_unique`): a
+/// `mut` local initialized from a shared box is not written through by
+/// the call that follows. Narrower than a full place walk on purpose —
+/// `self`, a parameter, and a field or index step are ALREADY shared
+/// by design at every other write in the tree (places.av's `unique_box`
+/// says so for `self`, and a nested field/index write reaches through
+/// its subject the same way a `mut fn` receiver always has); only a
+/// BARE `mut` LOCAL is the new copy this fixes.
+fn writing_recv(mut cx: LowerCx, subject: ExprId, m: DeclId) -> Reg {
+    if cx.cell_of(subject) != null && cx.view.decls.writes_receiver(m) { return cx.unique_box(subject) }
+    cx.reg_of(subject)
 }
 
 /// A STATIC's dispatch: a direct Call to the method's qualified
