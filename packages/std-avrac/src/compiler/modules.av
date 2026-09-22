@@ -1,7 +1,7 @@
 //! Where source lives: module paths, their files, imports, and the
 //! package boundaries they cross. Moved out of the workspace god-object.
 use core.{ModulePath, module_path, key_spelled, DeclId, FileId, UseParts, joined, flatten, sorted_texts}
-use @std.path.{dir_of, under_dir, joined_path}
+use @std.path.{dir_of, under_dir, joined_path, normalized}
 use features.{Decl, Import, nothing}
 use diagnostics.{Diag, loc_at}
 use @std.testing.{words}
@@ -130,12 +130,28 @@ impl Workspace {
     /// package of one: every name it was given is a file of it,
     /// whatever the name.
     fn all_files(dir: string) -> List<string> {
+        self.all_files_under(dir, [])
+    }
+
+    /// `all_files`'s walk, refusing a directory already on its own way
+    /// down. A DIRECTORY'S IDENTITY IS ITS NORMALIZED PATH, and a walk
+    /// can only be trusted to advance when it is asked in that currency:
+    /// a name still carrying `..` widens with every step a host answers
+    /// by string prefix (a lone file's in-memory one) rather than
+    /// shrinking, so nothing ever runs out of directories to descend
+    /// into. `seen` is the walk's own path down, never the whole tree —
+    /// two ordinary sibling directories share no ancestor and never
+    /// collide here.
+    fn all_files_under(dir: string, seen: List<string>) -> List<string> {
+        let here = normalized(dir)
+        if seen.contains(here) { return [] }
+        let below = seen.concat([here])
         mut out: List<string> = []
         for f in self.host.list(dir) {
             let full = joined_path(dir, f)
             if self.host.is_dir(full) {
                 // a directory of programs holds only its own files
-                if !self.per_file && !self.is_package_dir(full) && !self.excluded(full) { out = out.concat(self.all_files(full)) }
+                if !self.per_file && !self.is_package_dir(full) && !self.excluded(full) { out = out.concat(self.all_files_under(full, below)) }
             } else if self.listed_source(dir, f) {
                 out.push(full)
             }
