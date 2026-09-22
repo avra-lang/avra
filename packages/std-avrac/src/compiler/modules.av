@@ -20,12 +20,7 @@ impl Workspace {
     fn module_of(path: string) -> string {
         // the answer is a walk over every package, and packages are admitted as
         // `use` lines reach them: it is remembered for ONE size of that table
-        let slot = "${self.packages.length}\t${path}"
-        let known: string? = self.module_names_of.get(slot)
-        if known != null { return known! }
-        let made = self.module_named(path)
-        self.module_names_of.set(slot, made)
-        made
+        memoized<string>(self.module_names_of, "${self.packages.length}\t${path}", () -> self.module_named(path))
     }
 
     fn module_named(path: string) -> string {
@@ -48,12 +43,7 @@ impl Workspace {
         // a listing is the host's to give, and a `use` line asks it of the same
         // module a hundred times: remembered for ONE size of the package table,
         // since a package admitted later answers for modules it holds
-        let slot = "${self.packages.length}\t${m.text()}"
-        let known: List<string>? = self.files_of.get(slot)
-        if known != null { return known! }
-        let made = self.listed_files(m)
-        self.files_of.set(slot, made)
-        made
+        memoized<List<string>>(self.files_of, "${self.packages.length}\t${m.text()}", () -> self.listed_files(m))
     }
 
     fn listed_files(m: ModulePath) -> List<string> {

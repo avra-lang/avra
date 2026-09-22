@@ -295,6 +295,21 @@ fn build_entry(ws: Workspace, path: string) -> string? {
     if is_dir(path) { ws.entry_of() } else { path }
 }
 
+/// A build-cache command's argued path and the workspace it builds through.
+export type Opened = { ws: Workspace, path: string }
+
+/// EVERY BUILD-CACHE COMMAND'S PROLOGUE — `build`, `check`, `test`: the
+/// argued path, checked to exist (`no_such_file` spoken and exit 2
+/// otherwise), and the workspace it opens.
+export fn opened(args: CliResult) -> Opened? {
+    let path = path_arg(args)
+    if !exists(path) {
+        no_such_file(path)
+        return null
+    }
+    Opened { ws: build_workspace(path), path: path }
+}
+
 fn hit_line(reused: bool) -> string {
     if reused { "time: lower+emit · cache hit" } else { "time: lower+emit · built" }
 }
@@ -303,13 +318,9 @@ fn hit_line(reused: bool) -> string {
 /// else analyzed, lowered and emitted. The cache is the library's; the link is the
 /// command's.
 fn cached_build(args: CliResult) -> int {
-    let path = path_arg(args)
-    if !exists(path) {
-        no_such_file(path)
-        return 2
-    }
-    mut ws = build_workspace(path)
-    let entry = build_entry(ws, path)
+    let o? = opened(args) else { return 2 }
+    mut ws = o.ws
+    let entry = build_entry(ws, o.path)
     if entry == null {
         eprintln("avra: ${ws.root} declares no entry point")
         return 1

@@ -3,19 +3,14 @@
 //! file the store stands in for is not read and still speaks its warnings.
 use @std.cli.{Subcommand, CliResult, Runnable}
 use @std.avrac.compiler.{Checked}
-use @std.io.{exists}
 
 type CheckCmd = { }
 
 impl Runnable for CheckCmd {
     fn run(args: CliResult) -> int {
-        let path = path_arg(args)
-        if !exists(path) {
-            no_such_file(path)
-            return 2
-        }
-        mut ws = build_workspace(path)
-        match ws.checked(build_entry(ws, path)) {
+        let o? = opened(args) else { return 2 }
+        mut ws = o.ws
+        match ws.checked(build_entry(ws, o.path)) {
             .Ok(c) -> said(args, c),
             .Err(report) -> {
                 println(report)
