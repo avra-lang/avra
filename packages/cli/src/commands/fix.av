@@ -5,7 +5,8 @@
 //! <rule>` limits to one rule's `<module>.<name>`.
 use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, ArgDef, FlagDef, OptionDef}
 use @std.io.{write_text}
-use @std.avrac.compiler.{Program, Application, fix_applied, fighting_pair, analysed}
+use @std.avrac.compiler.{Program, Application, fix_applied, fighting_pair, analysed, rule_doc}
+use @std.json.{Json, field, to_text}
 
 type FixCmd = { }
 
@@ -28,25 +29,56 @@ fn fixed(mut p: Program, args: CliResult) -> Result<int, string> {
     let a? = p.entry_file() else { fail "the program is empty" }
     let named = args.option("only")
     let only = if named == "" { null } else { named }
+    let json = args.has_flag("json")
     let apps = p.fix_applications(a.view.source.file, analysed(a), only)
-    if apps.is_empty() {
-        println("avra fix: nothing to fix")
-        return 0
-    }
     let text = a.view.source.text
+    report(text, apps, json)
+    if apps.is_empty() { return 0 }
     let after? = fix_applied(text, apps) else { fail fight_report(apps) }
-    for line in application_lines(apps) { println(line) }
     if args.has_flag("dry") {
-        println(diff_of(text, after))
+        if !json { println(diff_of(text, after)) }
         return 0
     }
     if after == text {
-        println("avra fix: nothing here is PROVED — every finding stays shown, not applied")
+        if !json { println("avra fix: nothing here is PROVED — every finding stays shown, not applied") }
         return 0
     }
     match write_text(a.view.source.file, after) {
         .Ok(_) -> 0,
         .Err(e) -> host_refused(e.describe().message),
+    }
+}
+
+/// The findings, printed either as prose lines or as one JSON array
+/// (--json: rule, before/after text, the rule's own /// sentence,
+/// and the explain link) — the empty case is `[]`, never omitted.
+fn report(text: string, apps: List<Application>, json: bool) {
+    if json {
+        println(to_text(Json.Arr([application_json(text, ap) for ap in apps])))
+        return
+    }
+    if apps.is_empty() {
+        println("avra fix: nothing to fix")
+        return
+    }
+    for line in application_lines(apps) { println(line) }
+}
+
+fn application_json(text: string, ap: Application) -> Json {
+    Json.Obj([
+        field("rule", Json.Str(ap.rule_kind)),
+        field("proved", Json.Bool(ap.proved)),
+        field("before", Json.Str(text.substring(ap.edit.loc.lo, ap.edit.loc.hi))),
+        field("after", Json.Str(ap.edit.replacement)),
+        field("doc", doc_field(rule_doc(ap.rule_kind))),
+        field("explain", Json.Str("avra explain ${ap.rule_kind}")),
+    ])
+}
+
+fn doc_field(doc: string?) -> Json {
+    match doc {
+        null -> Json.Null
+        s? -> Json.Str(s)
     }
 }
 
@@ -84,6 +116,7 @@ export fn fix_command() -> Subcommand {
             flags: [
                 FlagDef { name: "--time", short: "", description: "print phase timings and memo hits", aliases: [] },
                 FlagDef { name: "--dry", short: "", description: "print what would change, write nothing", aliases: [] },
+                FlagDef { name: "--json", short: "", description: "print findings as one JSON array (rule, before, after, doc, explain)", aliases: [] },
             ],
             args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
             options: [OptionDef { name: "--only", short: "", description: "apply only this rule (<module>.<name>)", default_val: "" }],
