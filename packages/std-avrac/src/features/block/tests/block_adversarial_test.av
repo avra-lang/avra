@@ -52,6 +52,28 @@ spec "features/block adversarial — an explicit block value" {
         }
     }
 
+    given "the branch_value twin — an if-chain reaching the same tail law" {
+        then "a bare if-statement tail is the mechanism, not if_expr" {
+            // a branch that neither leaves nor answers refuses the
+            // whole chain as a value — proves this goes through
+            // chain_value/branch_value, not the if_expr feature (whose
+            // own refusal reads differently, "branches disagree")
+            let a = analyze_source("fn f() -> int {\n    if true { let x = 1 } else { 8 }\n}\nf()")
+            a.diagnostics.length == 1 && a.report().contains("the body answers `void`")
+        }
+        then "explicit single-statement block branches keep their braces" {
+            shown("fn f(c: bool) -> int {\n    if c { { 7 } } else { { 8 } }\n}\nf(true)") == "7"
+        }
+        then "a value branch's diagnostic blames the value, never the brace" {
+            let a = analyze_source("fn f() -> string { if true { 7 } else { \"a\" } }\nf()")
+            let loc? = a.diagnostics[0].primary.loc else { return false }
+            // "fn f() -> string { if true { 7 } else { "a" } }" — the
+            // quoted "a" starts at byte 40; tail_scoped is shared with
+            // block_of now, so this cannot drift from that law again.
+            loc.lo == 40
+        }
+    }
+
     given "a managed value through the scope, repeated" {
         then "a string built inside stays correct across many calls" {
             shown("fn f(s: string) -> string {\n    let x = { s + \"!\" }\n    x\n}\nmut n = 0\nfor i in 0..500 { n = n + f(\"hi\").length }\nn") == "1500"

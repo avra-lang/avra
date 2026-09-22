@@ -224,22 +224,37 @@ impl NodeStore {
         self.alloc_expr(Expr.If(c, tv!, ev!), self.stmt_span(s))
     }
 
+    /// THE TAIL LAW: a scope's tail STATEMENT already answered a
+    /// non-null VALUE (the caller found one); this is what wrapping it
+    /// back into the scope means, and both `block_of` (an explicit `{
+    /// }`) and `branch_value` (an if-chain's branch) call it so the
+    /// law can only be spelled once. AN ANNOTATED TAIL STAYS A
+    /// STATEMENT: kept in `stmts`, where `type_annotations` reads it,
+    /// and still answers as the value — one node walked both ways,
+    /// safe because no seat's receiver ever fits a non-declaration, so
+    /// an annotated tail always refuses and the doubled node never
+    /// reaches lowering. A LONE VALUE WEARS ITS OWN SPAN: the scope's
+    /// braces are the author's form, so a diagnostic about the answer
+    /// points at the answer, never at them. `span` wraps every other
+    /// case — a Builder's matched branch, or the tail statement's own.
+    fn tail_scoped(stmts: List<StmtId>, tail: StmtId, value: ExprId, span: Span?) -> ExprId {
+        if !self.annotations_of(tail).is_empty() { return self.alloc_expr(Expr.Block(stmts, value), span) }
+        if stmts.length == 1 { return self.alloc_expr(Expr.Block([], value), self.expr_span(value)) }
+        self.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value), span)
+    }
+
     /// A branch's statements as its answer: the one expression when
     /// that is all the branch holds, else a block answering with its
-    /// tail. AN ANNOTATED TAIL STAYS A STATEMENT here too, `block_of`'s
-    /// law: kept AND still the value, safe because a seat's receiver
-    /// never fits a non-declaration, so lowering never sees it twice.
+    /// tail — `null` when the branch neither leaves nor answers, which
+    /// refuses the whole chain as a value (`chain_value`).
     fn branch_value(stmts: List<StmtId>) -> ExprId? {
         let held? = stmts.last() else { return null }
         let last = held
         // a branch that LEAVES answers the fn's promise — a block
         // whose value is absent, as the block law reads it
         if self.diverges(last) { return self.alloc_expr(Expr.Block(stmts, null), self.stmt_span(last)) }
-        let value: ExprId? = self.answer_of(last)
-        if value == null { return null }
-        if !self.annotations_of(last).is_empty() { return self.alloc_expr(Expr.Block(stmts, value!), self.stmt_span(last)) }
-        if stmts.length == 1 { return value }
-        self.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value!), self.stmt_span(last))
+        let value? = self.answer_of(last) else { return null }
+        self.tail_scoped(stmts, last, value, self.stmt_span(last))
     }
 
     /// The statements with a trailing if-chain that answers turned
