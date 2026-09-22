@@ -1168,6 +1168,14 @@ impl Workspace {
         self.decls.hush_expansion(f)
         let p = self.parsed(f)
         let vis = self.visible(f)
+        // A DERIVE'S CROSSING READS A DECLARATION'S SHAPE — its sig — so
+        // the written declarations' sigs are SETTLED HERE first. Forced
+        // from inside the crossing instead, a sig lands in its own
+        // computation and is not there yet, so the crossing bakes an
+        // empty shape for a declaration the parse named. Forcing it here
+        // runs the SAME computation the crossing would; the crossing
+        // then reads a held sig.
+        for d in self.decls.decls_of_file(f) { let _ = self.sig(d) }
         mut made: List<DeclId> = []
         for d in self.decls.decls_of_file(f) {
             for w in self.declared_work(f, d, p, vis) {
