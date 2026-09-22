@@ -179,6 +179,12 @@ impl Builder {
         let tail = stmts.last()!
         let value? = self.store.answer_of(tail) else { return self.expr_node(Expr.Block(stmts, null)) }
         if !self.store.annotations_of(tail).is_empty() { return self.expr_node(Expr.Block(stmts, value)) }
+        if stmts.length == 1 {
+            // a scope holding only its value wears the VALUE's span: the
+            // block node is the author's FORM, so a diagnostic about the
+            // answer still points at the answer, never at the brace
+            return self.store.alloc_expr(Expr.Block([], value), self.store.expr_span(value))
+        }
         self.expr_node(Expr.Block(stmts.slice(0, stmts.length - 1), value))
     }
 
