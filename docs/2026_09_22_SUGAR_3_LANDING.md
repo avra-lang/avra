@@ -176,12 +176,16 @@ compiler machinery and ZERO keeper beyond the drift check:
 - **Row name**: a misspelled `cx.str_of_byte(...)` is F2030 "`LowerCx`
   has no method `str_of_byte`" — the SAME refusal every other missing
   method on any receiver draws.
-- **Seat count**: a wrong-arity `cx.streq(a)` (one argument to a
-  two-seat row) is F2000 "`streq` takes 3 arguments, found 2" (the
-  `sh` seat counts too) — the ORDINARY fn-arity check, because each
-  row's method carries the row's OWN arity in its signature. Probed
-  above, both refusals witnessed at `./avra check` before this was
-  built into the tree.
+- **Seat count**: a wrong-arity `cx.array_push(box)` (one argument to
+  a two-seat row) is F2030 "`LowerCx.array_push` takes 2 arguments
+  beside `self`, found 1" — the SAME code the name check draws,
+  because a method call's arity mismatch and its missing-method
+  refusal are one family (F2030), not the ordinary fn-arity F2000 —
+  the probe above drew F2000 because it called a FN VALUE held in a
+  struct field, a different call form from the landed one. Re-verified
+  directly against the landed mechanism (red-team, 2026-09-22): a
+  misspelled name and a wrong seat count both fire as F2030 on a real
+  generated method, at typing, on the compiler's own source.
 - **Seat kind**: every seat is `Reg` regardless of `RtKind` — a
   register is a uniform IR handle; the KIND a seat takes is the
   backend's question (`ll_rt_kind`/`rt_arg`), never this projection's,
