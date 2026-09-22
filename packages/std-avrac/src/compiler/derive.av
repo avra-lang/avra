@@ -333,7 +333,8 @@ impl Workspace {
     /// are declared now — by name, since an edit moves ordinals.
     fn kept_boxed(store: Store, f: FileId) -> List<DeclId> {
         let path = self.decls.file(f).path
-        let names = [parts[5] for parts in record_fields(self, store, module_path(self.module_of(path).split("."))) if parts.length > 5 && parts[0] == "boxed" && parts[1] == path]
+        let found = [boxed_name(parts, path) for parts in record_fields(self, store, module_path(self.module_of(path).split(".")))]
+        let names = [n! for n in found if n != null]
         [d for d in self.decls.decls_of_file(f) if self.names_record(d, names)]
     }
 
@@ -417,6 +418,12 @@ impl Workspace {
         let _ = store.keep_once(Stored.Warn, key, said_wire(fresh!), [])
         fresh
     }
+}
+
+/// A `boxed` row's name, when it names `path` — null for every other row.
+fn boxed_name(parts: List<string>, path: string) -> string? {
+    let row? = read_row(parts) else { return null }
+    if row.shape is .Boxed && row.path == path { row.name } else { null }
 }
 
 // ── The voices ──

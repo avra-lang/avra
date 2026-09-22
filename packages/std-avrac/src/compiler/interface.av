@@ -45,67 +45,77 @@ fn const_unit_key(store: Store, m: ModulePath, path: string, name: string) -> st
     node_key(Stored.Unit, ["const", obj_key_cached(self, store, m, path), name])
 }
 
-fn fill_shape(store: Store, m: ModulePath, id: DeclId, parts: List<string>) {
-    let f = self.decls.decl(id).file
-    let stmt = self.decls.decl(id).stmt
-    let path = parts[1]
-    // A SHAPE NAMES OTHER TYPES, and `by_name` can only answer for types that EXIST — a
-    // spelling it does not know is a DEFECT in the record, not a name to guess at. The
-    // fallback is `error`, the ABSORBING type, so a broken record produces a type that
-    // refuses rather than one that is silently wrong.
-    // AN `extern fn`'s record word is `extern`; its payload is a fn's, so the shape
-    // branch below is the fn branch.
-    let word = if parts[0] == "extern" { "fn" } else { parts[0] }
-    if word == "const" {
-        let ty = self.interface_type(parts[13].split(";").first() ?? "")
-        self.decls.record_const_type(f, stmt, ty)
-        // a held const has no initializer to settle again: its kept value is the
-        // only one, and a row that does not give it back is a defect said
-        let value: Settled? = settled_from_wire(store.get(Stored.Unit, self.const_unit_key(store, m, path, parts[5])) ?? "")
-        if value == null { return self.defect("a held const's value did not decode — `${parts[5]}` in ${path}") }
-        self.decls.remember_held_value(id, value!)
-    }
-    if word == "aims" {
-        let aimed = self.decl_from_ref(parts[13])
-        if aimed != null { self.decls.record_target(id, aimed!) }
-    }
-    if word == "named" {
-        let of = self.interface_type(parts[13])
-        self.decls.declare(id, .Named(NamedSig { of: of }))
-        let named = self.decls.types.intern(Type.Struct(id, parts[5]))
-        self.decls.types.mark_named(named, of)
-        self.decls.types.mark_flat(named, [of])
-    }
-    if word == "struct" || word == "boxed" {
-        // a seal is sticky, so the layout the record kept lands before the declaration
-        if word == "boxed" { self.decls.types.unflatten(self.decls.record_type(id)) }
-        let fields = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
-        self.decls.declare(id, .Record(StructSig {
-            names: [field_name(f) for f in fields],
-            types: [self.interface_type(name_of_field(f)) for f in fields],
-            defaults: [self.decls.default_named(id, field_name(f)) for f in fields],
-        }))
-        let made = self.decls.record_type(id)
-        if self.decls.types.is_flat(made) { self.held_flat.push(made) }
-    }
-    if word == "enum" {
-        let arms = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
-        self.decls.declare(id, .Enum(EnumSig { names: [field_name(a) for a in arms], payloads: [payload_of(self, a) for a in arms] }))
-    }
-    if word == "fn" {
-        let seats = if parts.length > 13 && !parts[13].is_empty() { parts[13].split(";") } else { [] }
-        let marks: List<SeatMark> = if parts.length > 15 && !parts[15].is_empty() { [mark_of_word(w) for w in parts[15].split(";")] } else { [] }
-        self.decls.record_seats(id, marks)
-        self.decls.declare(id, .Fn(FnSig {
-            params: [self.interface_type(s) for s in seats],
-            ret: self.interface_type(parts[14]),
-        }))
-        if parts.length > 16 {
-            let bits = parts[16]
-            for j in 0..bits.length { if bits.char_code(j) == 49 { self.decls.record_seat_written(id, j) } }
-        }
+// A SHAPE NAMES OTHER TYPES, and `by_name` can only answer for types that EXIST — a
+// spelling it does not know is a DEFECT in the record, not a name to guess at. The
+// fallback is `error`, the ABSORBING type, so a broken record produces a type that
+// refuses rather than one that is silently wrong.
+fn fill_shape(store: Store, m: ModulePath, id: DeclId, row: Row) {
+    let d = self.decls.decl(id)
+    match row.shape {
+        .Const -> self.fill_const(store, m, row, d.file, d.stmt, id),
+        .Aims -> self.fill_aims(row, id),
+        .Named -> self.fill_named(row, id),
+        .Struct -> self.fill_record(row, id, false),
+        .Boxed -> self.fill_record(row, id, true),
+        .Enum -> self.fill_enum(row, id),
+        .Fn -> self.fill_fn(row, id),
+        .Extern -> self.fill_fn(row, id),
+        .Opaque -> self.fill_opaque(row, id),
     }
 }
+
+fn fill_const(store: Store, m: ModulePath, row: Row, f: FileId, stmt: StmtId, id: DeclId) {
+    let ty = self.interface_type(row.of_wire())
+    self.decls.record_const_type(f, stmt, ty)
+    // a held const has no initializer to settle again: its kept value is the
+    // only one, and a row that does not give it back is a defect said
+    let value: Settled? = settled_from_wire(store.get(Stored.Unit, self.const_unit_key(store, m, row.path, row.name)) ?? "")
+    if value == null { return self.defect("a held const's value did not decode — `${row.name}` in ${row.path}") }
+    self.decls.remember_held_value(id, value!)
+}
+
+fn fill_aims(row: Row, id: DeclId) {
+    let aimed = self.decl_from_ref(row.field(0))
+    if aimed != null { self.decls.record_target(id, aimed!) }
+}
+
+fn fill_named(row: Row, id: DeclId) {
+    let of = self.interface_type(row.of_wire())
+    self.decls.declare(id, .Named(NamedSig { of: of }))
+    let named = self.decls.types.intern(Type.Struct(id, row.name))
+    self.decls.types.mark_named(named, of)
+    self.decls.types.mark_flat(named, [of])
+}
+
+fn fill_record(row: Row, id: DeclId, boxed: bool) {
+    // a seal is sticky, so the layout the record kept lands before the declaration
+    if boxed { self.decls.types.unflatten(self.decls.record_type(id)) }
+    let fields = row.items()
+    self.decls.declare(id, .Record(StructSig {
+        names: [field_name(f) for f in fields],
+        types: [self.interface_type(name_of_field(f)) for f in fields],
+        defaults: [self.decls.default_named(id, field_name(f)) for f in fields],
+    }))
+    let made = self.decls.record_type(id)
+    if self.decls.types.is_flat(made) { self.held_flat.push(made) }
+}
+
+fn fill_enum(row: Row, id: DeclId) {
+    let arms = row.items()
+    self.decls.declare(id, .Enum(EnumSig { names: [field_name(a) for a in arms], payloads: [payload_of(self, a) for a in arms] }))
+}
+
+fn fill_fn(row: Row, id: DeclId) {
+    let seats = row.items()
+    self.decls.record_seats(id, row.marks())
+    self.decls.declare(id, .Fn(FnSig { params: [self.interface_type(s) for s in seats], ret: self.interface_type(row.ret_wire()) }))
+    let bits = row.writes()
+    for j in 0..bits.length { if bits.char_code(j) == 49 { self.decls.record_seat_written(id, j) } }
+}
+
+/// A `trait`/`syntax`/`default`/`main`/`case`/`builtin` declaration has no
+/// signature to fill — `sig(d.id)` answered null when its line was written.
+fn fill_opaque(_row: Row, _id: DeclId) { }
 
 fn interface_decls(m: ModulePath) -> List<Decl> {
     mut ids: List<DeclId> = []
@@ -128,20 +138,24 @@ fn interface_type(name: string) -> TypeId {
 /// lines: the file and its declarations are found ONCE, never per line.
 fn link_file(path: string, rows: List<List<string>>) {
     let ids = self.decls.decls_so_far(self.file_id(path))
-    for parts in rows {
-        let id: DeclId? = row_of(ids, parts)
-        let parent_at = if parts.length > 8 { wire_number(parts[8]) ?? (0 - 1) } else { 0 - 1 }
-        if id != null && parent_at >= 0 && parent_at < ids.length { self.decls.adopt(id!, ids[parent_at]) }
-    }
+    for parts in rows { self.link_row(ids, parts) }
+}
+
+fn link_row(ids: List<DeclId>, parts: List<string>) {
+    let row? = read_row(parts) else { return }
+    if row.ordinal < 0 || row.ordinal >= ids.length { return }
+    if row.parent_at >= 0 && row.parent_at < ids.length { self.decls.adopt(ids[row.ordinal], ids[row.parent_at]) }
 }
 
 /// A held file's shapes filled, the same way.
 fn fill_file(store: Store, m: ModulePath, path: string, rows: List<List<string>>) {
     let ids = self.decls.decls_so_far(self.file_id(path))
-    for parts in rows {
-        let id: DeclId? = row_of(ids, parts)
-        if id != null { self.fill_shape(store, m, id!, parts) }
-    }
+    for parts in rows { self.fill_row(store, m, ids, parts) }
+}
+
+fn fill_row(store: Store, m: ModulePath, ids: List<DeclId>, parts: List<string>) {
+    let row? = read_row(parts) else { return }
+    if row.ordinal >= 0 && row.ordinal < ids.length { self.fill_shape(store, m, ids[row.ordinal], row) }
 }
 
 /// ONE HELD MODULE, MINTED: every held file's declarations from its record lines,
@@ -168,7 +182,7 @@ fn mint_file(path: string, rows: List<List<string>>) {
     mut by_stmt = self.decls.decl_ids[f.index].get()
     for parts in rows {
         let id: DeclId? = self.minted(f, path, parts)
-        let stmt_index = wire_number(parts[3]) ?? 0
+        let stmt_index = read_row(parts)?.stmt ?? 0
         by_stmt.grow_to(stmt_index + 1)
         if id != null && by_stmt.get(stmt_index) == null { by_stmt.set(stmt_index, id!) }
     }
@@ -179,21 +193,18 @@ fn mint_file(path: string, rows: List<List<string>>) {
 /// that does not decode is a DEFECT spoken: the hold's attempt fails, and the
 /// sources answer.
 fn minted(f: FileId, path: string, parts: List<string>) -> DeclId? {
-    if parts.length < 13 || nameless(parts) { return null }
-    let stmt_index = wire_number(parts[3])
-    let root_at = wire_number(parts[10])
-    let ordinal = wire_number(parts[2])
-    let kind = declared_kind(parts[0], parts[6])
-    let facts = facts_unblocked(parts[12])
-    if stmt_index == null || root_at == null || ordinal == null || kind == null || facts == null {
+    let row? = read_row(parts) else { return null }
+    let kind = declared_kind(row.shape, row.kind)
+    let facts = facts_unblocked(row.facts)
+    if kind == null || facts == null {
         self.defect("a record line did not decode — ${path}")
         return null
     }
-    let root: ExprId? = if root_at! < 0 { null } else { ExprId { index: root_at! } }
+    let root: ExprId? = if row.root < 0 { null } else { ExprId { index: row.root } }
     // the ordinal is the record's identity within a held file: a name/kind key
     // collapses generated members and same-named methods
-    let id = self.decls.mint("${f.index}#held#${ordinal!}", f, StmtId { index: stmt_index! }, parts[5], kind!, parts[4] == "1", parts[7], null, parts[9] == "1", root)
-    self.decls.held_joins(f, id, ordinal!, kind! is .Main, parts[11] == "1")
+    let id = self.decls.mint("${f.index}#held#${row.ordinal}", f, StmtId { index: row.stmt }, row.name, kind!, row.exported, row.owner, null, row.nested, root)
+    self.decls.held_joins(f, id, row.ordinal, kind! is .Main, row.item)
     self.decls.adopt_facts(id, facts!)
     id
 }
@@ -307,14 +318,6 @@ fn ran_directly(store: Store, path: string) -> List<string> {
     kept_runs(record_places(self, store, module_path(self.module_of(path).split("."))).get(path))
 }
 
-}
-
-/// The declaration a record line speaks for, among its file's: by ordinal.
-fn row_of(ids: List<DeclId>, parts: List<string>) -> DeclId? {
-    if parts.length < 13 { return null }
-    let ordinal? = wire_number(parts[2]) else { return null }
-    if ordinal < 0 || ordinal >= ids.length { return null }
-    ids[ordinal]
 }
 
 impl Workspace {

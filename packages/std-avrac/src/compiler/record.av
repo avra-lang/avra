@@ -118,6 +118,71 @@ fn read_fields(line: string) -> List<string> {
     [if j == 5 || j == 7 { text_of_field(x) } else { x } for j, x in line.split("\t")]
 }
 
+/// THE SHAPE WORD — a declaration line's first column. A header line
+/// ("file"/"import"/"iface"/"bytes") is not a declaration and has none.
+enum Shape { Struct, Boxed, Enum, Named, Const, Aims, Opaque, Fn, Extern }
+
+fn shape_of(word: string) -> Shape? {
+    match word {
+        "struct" -> .Struct, "boxed" -> .Boxed, "enum" -> .Enum, "named" -> .Named,
+        "const" -> .Const, "aims" -> .Aims, "opaque" -> .Opaque, "fn" -> .Fn, "extern" -> .Extern,
+        _ -> null,
+    }
+}
+
+/// ONE DECLARATION LINE, DECODED — named fields over `record_line`'s columns
+/// (interface.av, the one writer). `payload` is what is left past the facts
+/// block: one field for most shapes, four for `Fn`/`Extern` (seats, return,
+/// marks, written bits), read through `Row`'s own verbs below.
+type Row = { shape: Shape, path: string, ordinal: int, stmt: int, exported: bool, name: string, kind: string, owner: string, parent_at: int, nested: bool, root: int, item: bool, facts: string, payload: List<string> }
+
+/// A declaration row, decoded from its already-split fields — null for a
+/// header line, or one that does not decode: the same checks `decodable`
+/// runs over a whole record, over the one row a caller already has in hand.
+fn read_row(parts: List<string>) -> Row? {
+    if parts.length < 13 || nameless(parts) { return null }
+    let shape? = shape_of(parts[0]) else { return null }
+    let ordinal? = wire_number(parts[2]) else { return null }
+    let stmt? = wire_number(parts[3]) else { return null }
+    let parent_at? = wire_number(parts[8]) else { return null }
+    let root? = wire_number(parts[10]) else { return null }
+    Row {
+        shape: shape, path: parts[1], ordinal: ordinal, stmt: stmt, exported: parts[4] == "1",
+        name: parts[5], kind: parts[6], owner: parts[7], parent_at: parent_at, nested: parts[9] == "1",
+        root: root, item: parts[11] == "1", facts: parts[12], payload: parts.slice(13, parts.length),
+    }
+}
+
+impl Row {
+    /// Payload field `j`, or "" past its end — every shape but `Fn`/`Extern`
+    /// writes one field, and one with nothing to say writes it empty.
+    fn field(j: int) -> string { if self.payload.length > j { self.payload[j] } else { "" } }
+
+    /// The `;`-joined list at payload field `j` — empty for an empty or absent one.
+    fn list_at(j: int) -> List<string> {
+        let raw = self.field(j)
+        if raw.is_empty() { [] } else { raw.split(";") }
+    }
+
+    /// `Struct`/`Boxed`'s fields, `Enum`'s arms, `Fn`/`Extern`'s seats — the
+    /// shapes whose payload opens with a `;`-joined list.
+    fn items() -> List<string> { self.list_at(0) }
+
+    /// `Named`'s underlying type, `Const`'s type — the shapes whose payload
+    /// opens with one wire (a `Const`'s carries its settled value's
+    /// fingerprint after a `;`, dropped here).
+    fn of_wire() -> string { self.field(0).split(";").first() ?? "" }
+
+    /// `Fn`/`Extern`'s return type wire.
+    fn ret_wire() -> string { self.field(1) }
+
+    /// `Fn`/`Extern`'s seat marks, one per seat.
+    fn marks() -> List<SeatMark> { [mark_of_word(w) for w in self.list_at(2)] }
+
+    /// `Fn`/`Extern`'s written-seat bits, a `1`/`0` per seat.
+    fn writes() -> string { self.field(3) }
+}
+
 /// A record as this build now knows it: its words, its lines and their fields.
 // LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn record_known(mut ws: Workspace, m: ModulePath, text: string) {
@@ -461,10 +526,8 @@ fn nameless(parts: List<string>) -> bool { parts[5].is_empty() && parts[6] != "c
 /// WHETHER ONE RECORD LINE DECODES — the guard half of the decoder, so a line the
 /// mint would silently skip is caught here and the whole record is refused.
 fn decodable(parts: List<string>) -> bool {
-    if parts.length < 13 || nameless(parts) { return false }
-    if wire_number(parts[2]) == null || wire_number(parts[3]) == null { return false }
-    if wire_number(parts[8]) == null || wire_number(parts[10]) == null { return false }
-    declared_kind(parts[0], parts[6]) != null
+    let row? = read_row(parts) else { return false }
+    declared_kind(row.shape, row.kind) != null
 }
 
 /// WHETHER A FILE MAY BE HELD — a grammar record's spec and an extern fn's raw seat
@@ -532,12 +595,27 @@ fn payload_of(mut ws: Workspace, arm: string) -> List<TypeId> {
     [ws.interface_type(t) for t in name_of_field(arm).split("|") if t != ""]
 }
 
-/// THE DECLARATION KIND a record's word names. A record line says which SHAPE it carries,
-/// and the kind is that shape's own — so `struct` is a `Record` and `enum` an `Enum`,
-/// never a generic "type" the tree does not have.
-fn declared_kind(shape: string, word: string) -> DeclKind? {
-    if shape == "struct" || shape == "boxed" { return .Record }
-    if shape == "named" { return .Named }
+/// THE DECLARATION KIND a record's shape and kind column name. `Struct`/`Boxed`
+/// are always a `Record` and `Named` always `Named` — their kind column reads
+/// "type" either way, so the SHAPE alone tells them apart; every other shape
+/// reads its kind from the kind column, which is theirs to spell.
+fn declared_kind(shape: Shape, word: string) -> DeclKind? {
+    match shape {
+        .Struct -> .Record,
+        .Boxed -> .Record,
+        .Enum -> .Enum,
+        .Named -> .Named,
+        .Const -> .Const,
+        .Aims -> .Impl,
+        .Fn -> kind_of_word(word),
+        .Extern -> kind_of_word(word),
+        .Opaque -> kind_of_word(word),
+    }
+}
+
+/// THE KIND WORD a record's kind column spells — the shapes that need it:
+/// `Fn`/`Extern`'s Fn-vs-Method, `Opaque`'s trait/syntax/default/main/case/builtin.
+fn kind_of_word(word: string) -> DeclKind? {
     match word {
         "fn" -> .Fn,
         "enum" -> .Enum,
