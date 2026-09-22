@@ -9,7 +9,7 @@
 //! -> … } else { cx -> … }`), so a site cannot open a bracket it
 //! does not close; the open/arm/close verbs remain for the folds and
 //! switches whose arms are not two.
-use core.{Reg, Ins, Type, TypeId, ExprId, BinOp}
+use core.{Reg, Ins, Type, TypeId, ExprId, BinOp, RtSig}
 use features.{MethodCall}
 
 // ── Constants ───────────────────────────────────────────────────
@@ -31,6 +31,32 @@ impl LowerCx {
         let r = self.mint_shape(Type.Str)
         self.emit(Ins.ConstStr(r, text))
         r
+    }
+
+    // ── Runtime calls ───────────────────────────────────────────
+    // The one door a row is called through — `rt()`'s generated
+    // wrapper fns are the only callers; a feature spells a runtime
+    // call as `rt().<name>(cx, ...)`, never `Ins.CallRt` directly.
+
+    /// A row answering a value: minted at `sh`, the row's C symbol
+    /// named by `row.name` alone — never a feature's own string.
+    mut fn call(sh: Type, row: RtSig, args: List<Reg>) -> Reg {
+        let dst = self.mint_shape(sh)
+        self.emit(Ins.CallRt(dst, row.name, args))
+        dst
+    }
+
+    /// The same, minted at an expression's own answer type — the
+    /// call-site already knows it through typing.
+    mut fn call_at(e: ExprId, row: RtSig, args: List<Reg>) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.CallRt(dst, row.name, args))
+        dst
+    }
+
+    /// A row answering nothing.
+    mut fn call_void(row: RtSig, args: List<Reg>) {
+        self.emit(Ins.CallRtVoid(row.name, args))
     }
 
     /// The node's ANSWER register set to integer zero — a void word's

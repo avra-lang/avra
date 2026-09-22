@@ -135,7 +135,7 @@ build/%.o: %.c build/%.sha
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: census traps cache-attacks test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header witnesses libs libscope \
+.PHONY: census traps cache-attacks test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -440,6 +440,22 @@ rt-header:
 	  diff runtime/avra_rt.h build/avra_rt.h.gen 2>/dev/null | head -20; exit 1; }
 	@echo "rt-header: $$(grep -c '^_Static_assert' runtime/avra_rt.h) row(s) claim a C body, checked by the C compiler that builds the runtime"
 
+# THE ROWS' CLAIM ON AVRA ITSELF. features/rt.av is generated from
+# `rt_sigs()` — one `LowerCx` method per row, so a feature spells a
+# typed call (`cx.str_of_bytes(sh, octets)`) instead of
+# `Ins.CallRt(dst, "avra_str_of_bytes", [octets])`. A misspelled row
+# is then the ordinary "no method" refusal at typing, and a wrong
+# seat count the ordinary fn-arity refusal — each row's OWN method IS
+# the check, so this keeper only guards the projection: a stale
+# namespace asserts the OLD rows and says nothing about the new ones.
+rt-ns:
+	@./avra runtime-namespace > build/rt.av.gen
+	@cmp -s build/rt.av.gen packages/std-avrac/src/features/rt.av || { \
+	  echo "rt-ns: packages/std-avrac/src/features/rt.av is not what the rows say — it is generated, never edited:"; \
+	  echo "rt-ns:   ./avra runtime-namespace > packages/std-avrac/src/features/rt.av"; \
+	  diff packages/std-avrac/src/features/rt.av build/rt.av.gen 2>/dev/null | head -20; exit 1; }
+	@echo "rt-ns: $$(grep -c '^    mut fn ' packages/std-avrac/src/features/rt.av) row(s) reach a typed LowerCx method, checked by the compiler that builds itself"
+
 # EVERY REGISTERED CODE'S GOLDEN IS THE COMPILER OVER ITS WITNESS.
 # docs/DIAGNOSTICS.md is made by `avra diagnostics` — each entry is a
 # source that triggers the code and the compiler's own words over it —
@@ -540,7 +556,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here exactly as sprite-build.sh's call does.
-gate: seed-check stems vocab fingerprints rt-header witnesses externs idioms cited attack tested traps witness cache-attacks
+gate: seed-check stems vocab fingerprints rt-header rt-ns witnesses externs idioms cited attack tested traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
 	@sh tools/gate_receipt.sh write || true
