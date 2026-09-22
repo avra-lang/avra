@@ -143,6 +143,7 @@ int64_t avra_proc_executable(const char* path) {
 
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
@@ -189,6 +190,7 @@ typedef struct {
     int group;
     int group_gone;         /* the group has been observed EMPTY once */
     int in_fd, out_fd, err_fd;
+    int in_gone, out_gone, err_gone; /* observed HUP/ERR with nothing left to drain */
     int64_t status;         /* the tagged word; 0 while running */
 } Proc;
 
@@ -431,22 +433,53 @@ int64_t avra_proc_cpu_ms(void) {
     return ms;
 }
 
+/* A READ END REPORTING HUP WITH NOTHING LEFT TO READ IS DONE FOREVER —
+   POLLHUP is sticky, so leaving it in the poll set makes every later
+   call answer at once regardless of its timeout, the SAME spin the
+   grace law below already names for an empty set. A read end still
+   carrying data is not done: the caller has not drained it yet, and
+   excluding it here would lose that data's readiness.
+   WHETHER DATA REMAINS IS NOT POLLIN'S TO ANSWER: Linux sets POLLHUP
+   alone once a pipe is truly empty, but Darwin sets POLLIN alongside
+   POLLHUP the whole time the peer is gone, empty or not — measured
+   here, both engines, the same source. `FIONREAD` asks the byte count
+   directly, without consuming it, and agrees with itself on both. A
+   write end has no such middle case — POLLERR or POLLHUP on it means
+   the reader is gone and no later write will ever succeed, so it
+   retires the moment either appears. */
+static int gone_out(int fd, short revents) {
+    if (!(revents & POLLHUP)) return 0;
+    int avail = 0;
+    if (ioctl(fd, FIONREAD, &avail) != 0) return 1;
+    return avail == 0;
+}
+static int gone_in(short revents) { return (revents & (POLLERR | POLLHUP)) != 0; }
+
 int64_t avra_proc_ready(int64_t h, int64_t timeout_ms) {
     Proc* p = proc_at(h);
     if (!p) return -EBADF;
     struct pollfd fds[3];
     int n = 0, slot_out = -1, slot_err = -1, slot_in = -1;
-    if (p->out_fd >= 0) { fds[n].fd = p->out_fd; fds[n].events = POLLIN; slot_out = n++; }
-    if (p->err_fd >= 0) { fds[n].fd = p->err_fd; fds[n].events = POLLIN; slot_err = n++; }
-    if (p->in_fd >= 0) { fds[n].fd = p->in_fd; fds[n].events = POLLOUT; slot_in = n++; }
+    if (p->out_fd >= 0 && !p->out_gone) { fds[n].fd = p->out_fd; fds[n].events = POLLIN; slot_out = n++; }
+    if (p->err_fd >= 0 && !p->err_gone) { fds[n].fd = p->err_fd; fds[n].events = POLLIN; slot_err = n++; }
+    if (p->in_fd >= 0 && !p->in_gone) { fds[n].fd = p->in_fd; fds[n].events = POLLOUT; slot_in = n++; }
     int64_t ev = 0;
     if (n > 0) {
         int r = poll(fds, (nfds_t)n, timeout_ms < 0 ? -1 : (int)timeout_ms);
         if (r < 0 && errno != EINTR) return -errno;
         if (r > 0) {
-            if (slot_out >= 0 && fds[slot_out].revents) ev |= READY_OUT;
-            if (slot_err >= 0 && fds[slot_err].revents) ev |= READY_ERR;
-            if (slot_in >= 0 && (fds[slot_in].revents & (POLLOUT | POLLERR | POLLHUP))) ev |= READY_IN;
+            if (slot_out >= 0 && fds[slot_out].revents) {
+                ev |= READY_OUT;
+                if (gone_out(p->out_fd, fds[slot_out].revents)) p->out_gone = 1;
+            }
+            if (slot_err >= 0 && fds[slot_err].revents) {
+                ev |= READY_ERR;
+                if (gone_out(p->err_fd, fds[slot_err].revents)) p->err_gone = 1;
+            }
+            if (slot_in >= 0 && (fds[slot_in].revents & (POLLOUT | POLLERR | POLLHUP))) {
+                ev |= READY_IN;
+                if (gone_in(fds[slot_in].revents)) p->in_gone = 1;
+            }
         }
     } else if (timeout_ms > 0) {
         /* NOTHING TO WATCH IS STILL A WAIT. A caller that asks for
@@ -456,7 +489,9 @@ int64_t avra_proc_ready(int64_t h, int64_t timeout_ms) {
            both pipes are closed) turned this row into a spin — a core
            burned for the whole grace, two seconds per command by
            default. The row answers "nothing became ready", after the
-           wait it was asked for. */
+           wait it was asked for. A stream retired above for being
+           permanently done reaches this same branch once every
+           watched descriptor is exhausted, without a second mechanism. */
         struct timespec ts = { timeout_ms / 1000, (timeout_ms % 1000) * 1000000L };
         nanosleep(&ts, NULL);
     }
