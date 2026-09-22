@@ -1224,10 +1224,18 @@ engine's spec, written by dogfooding.
   carries), `void_region`/`void_branches` — the brackets spoken once
   inside the verb, so no site can mismatch them; the open/arm/close
   verbs remain for folds and switches. The block takes the context
-  as a `mut` seat heard from the slot, never as a capture. Two
+  as a `mut` seat heard from the slot, never as a capture. RUNTIME
+  CALLS route through ONE door too: `call`/`call_at`/`call_void`
+  mint-and-emit `Ins.CallRt(Void)?`, and every row's OWN generated
+  method (`cx.<name>(sh, args)`, `features/rt.av`, from
+  `core/rt_namespace.av`'s projection of `rt_sigs()`) calls through
+  one of the three — a bare `Ins.CallRt(dst, "avra_x", args)` outside
+  them is I56's own refusal, and a misspelled or wrong-arity call
+  through the generated method is the ordinary "no method"/method-
+  arity refusal (F2030) at typing, for free. Two
   engines read one instruction stream by construction; I33 ratchets
-  the raw brackets, I39 the free verbs, and the vocabulary grows
-  with the next shared shape.
+  the raw brackets, I39 the free verbs, I56 the raw runtime-call
+  string, and the vocabulary grows with the next shared shape.
 - A DERIVE'S FILE IS TYPED WHILE THE ANNOTATED FILE IS STILL
   REGISTERING, so it must name nothing that file declares. Running
   `@derive(X)` over a declaration in file A types the file that
