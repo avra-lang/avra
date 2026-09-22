@@ -7,6 +7,7 @@
 use @std.avrac.compiler.{analyze_source, Analysis, checks_fixes, checks_keeps}
 use @std.avrac.features.{Code, Fix}
 use @std.avrac.features.rules.{nearest_fix}
+use @std.avrac.features.lists.{last_index}
 use @std.avrac.diagnostics.{warning}
 
 @fixes("wrap(a + b)", "(a + b) * 2")
@@ -55,6 +56,21 @@ fn fires(applied: fn(Code) -> Fix?, a: Analysis) -> bool {
     }
 }
 
+/// The fix `applied` finds anywhere in `a`'s first statement.
+fn fix_at(applied: fn(Code) -> Fix?, a: Analysis) -> Fix? {
+    match a.view.stmts.first() {
+        s? -> nearest_fix(applied, a.code_at(.Stmt(s)))
+        null -> null
+    }
+}
+
+/// A hole bound inside a postfix chain reports its OWN text — never
+/// the whole chain its match sits inside (avra-8sb5.25.22).
+@keeps("z")
+export rule chain_span_probe {
+    quote { ${xs}[${xs}.length - 1] } -> Fix.Say(warning("test.chain_span_probe", xs.loc(), xs.text(), "bound span", null))
+}
+
 spec "features/rules (mechanics)" {
     given "a fill that is not atomic" {
         then "the rendered text parenthesises it" {
@@ -83,6 +99,21 @@ spec "features/rules (mechanics)" {
         }
         then "an impure branch keeps" {
             checks_keeps(stmt_if_null_ternary, "if next() == null { 0 } else { next()! }")
+        }
+    }
+    given "a hole bound inside a postfix chain (avra-8sb5.25.22)" {
+        then "its own text is the receiver alone, not the chain around it" {
+            // LICENSED I7: the example text names the idiom it proves — the
+            // site the scanner is built to find, held as a string, not written
+            match fix_at(chain_span_probe, analyze_source("fn f() -> int { a.b[a.b.length - 1].c(1) }")) {
+                null -> false
+                f? -> match f { .Say(voice) -> voice.message == "a.b", _ -> false }
+            }
+        }
+        then "a rewrite inside the chain renders only the matched node's own text" {
+            // LICENSED I7: the example text names the idiom it proves — the
+            // site the scanner is built to find, held as a string, not written
+            checks_fixes(last_index, "a.b[a.b.length - 1].c(1)", "a.b.last()!")
         }
     }
 }

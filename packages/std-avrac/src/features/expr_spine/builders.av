@@ -1,5 +1,5 @@
 //! Parse-time lowering: captures -> expression nodes.
-use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, TypeRef, pronoun_param, Plain, Scoped}
+use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, TypeRef, pronoun_param, Plain, Scoped, span_of}
 use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, within, chained_binder, marked_seats}
 use grammar.{Token}
 
@@ -172,7 +172,9 @@ fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
     let spellings = b.type_refs(11)?
     let chained = b.type_refs(12)?
     if links.length != names.length { return .Err(zip_defect) }
-    let ends? = b.span_end() else { return .Err("defect: a postfix chain without a span — the arena and the grammar disagree") }
+    let whole? = b.span else { return .Err("defect: a postfix chain without a span — the arena and the grammar disagree") }
+    let starts = whole.lo
+    let ends = whole.hi
     // the five families' cursors — each turn folds the link whose
     // anchor comes first in the source
     mut jn = 0
@@ -215,26 +217,28 @@ fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
             blocked = false
             spelled = false
             if fp < np && fp < ip && fp < cp {
-                acc = b.store.alloc_expr(force_link(forces[jf].text, acc), b.span)
+                acc = b.store.alloc_expr(force_link(forces[jf].text, acc), span_of(starts, forces[jf].span.hi))
                 jf = jf + 1
             } else if np <= ip && np <= cp {
                 let upto = next_anchor(b, names, indexes, calls, jn + 1, ji, jc, ends)
                 let called = opens.any(within(it.span.lo, np, upto))
                 if called {
                     let margs_here = [b.store.pronouned(a) for a in args_between(b, margs, np, upto)]
-                    acc = if links[jn].text == "?." { chained_call(b, acc, names[jn].text, margs_here) } else { b.store.alloc_expr(Expr.MethodCall(acc, Plain(names[jn].text), margs_here), b.span) }
+                    acc = if links[jn].text == "?." { chained_call(b, acc, names[jn].text, margs_here) } else { b.store.alloc_expr(Expr.MethodCall(acc, Plain(names[jn].text), margs_here), span_of(starts, call_hi(b, names[jn], margs_here))) }
                 } else {
-                    acc = b.store.alloc_expr(prop_link(links[jn].text, acc, names[jn].text), b.span)
+                    acc = b.store.alloc_expr(prop_link(links[jn].text, acc, names[jn].text), span_of(starts, names[jn].span.hi))
                 }
                 jn = jn + 1
             } else {
                 if ip <= cp {
-                    acc = b.store.alloc_expr(Expr.Index(acc, indexes[ji]), b.span)
+                    let hi = span_hi(b, indexes[ji]) ?? ends
+                    acc = b.store.alloc_expr(Expr.Index(acc, indexes[ji]), span_of(starts, hi))
                     ji = ji + 1
                 } else {
                     let upto = next_anchor(b, names, indexes, calls, jn, ji, jc + 1, ends)
+                    let args_here = args_between(b, cargs, cp, upto)
                     acc = b.store.alloc_expr(
-                        Expr.CallValue(acc, args_between(b, cargs, cp, upto)), b.span)
+                        Expr.CallValue(acc, args_here), span_of(starts, call_hi(b, calls[jc], args_here)))
                     jc = jc + 1
                 }
             }
@@ -280,6 +284,21 @@ fn args_between(b: Builder, margs: List<ExprId>, after: int, before: int) -> Lis
 fn span_lo(b: Builder, e: ExprId) -> int? {
     let sp? = b.store.expr_span(e) else { return null }
     sp.lo
+}
+
+fn span_hi(b: Builder, e: ExprId) -> int? {
+    let sp? = b.store.expr_span(e) else { return null }
+    sp.hi
+}
+
+/// A call's own end. Its closing delimiter is a literal, never
+/// captured — the last argument's true end is the tightest bound on
+/// hand, and an empty argument list falls back to the anchor token
+/// (the name, or the bare-call's open paren), narrower than the
+/// truth rather than reaching past it into whatever follows.
+fn call_hi(b: Builder, anchor: Token, args: List<ExprId>) -> int {
+    let last? = args.last() else { return anchor.span.hi }
+    span_hi(b, last) ?? anchor.span.hi
 }
 
 /// The node a link token names — the chain when absence rides it.
