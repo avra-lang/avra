@@ -153,7 +153,8 @@ fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, seats: List<SeatValue>,
 /// A lone file's program, lowered without a memo — the tests' seam.
 export fn lower(a: Analysis) -> Lowered {
     let externs = a.view.decls.extern_names()
-    a.view.decls.union([a], 0, false, false, [], (w: Wanted) -> lower_unit(a, externs, w, no_settle), (_f: FileId) -> false)
+    mut decls = a.view.decls
+    decls.union([a], 0, false, false, [], (w: Wanted) -> lower_unit(a, externs, w, no_settle), (_f: FileId) -> false)
 }
 
 /// One unit LOWERED: its body with the lambdas it lifted and the
@@ -407,8 +408,9 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValu
     let root: ExprId = x.root!
     let sig: FnSig? = (a.view.decls.sig(x.id))?.fn_sig()
     let raw: List<TypeId> = sig?.params ?? []
-    let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
-    let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
+    mut types = a.view.decls.types
+    let rt: TypeId = viewed(types, sub, sig?.ret ?? types.intern(Type.Error))
+    let ptypes = [viewed(types, sub, pt) for pt in raw]
     let seat_marks: List<SeatMark> = a.view.decls.marks_of(x.id, raw.length)
     mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle))
     // the params ARE registers 0..N-1, minted in order
@@ -429,10 +431,11 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValu
 /// callee per the ABI), registers 1..N its params; the body reads
 /// captures through slot 1+j of the env.
 fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
-    let lam_ty = viewed(a.view.decls.types, lj.sub, a.facts.type_at(lj.lam))
-    let held: Arrow? = a.view.decls.types.arrow_parts(lam_ty)
+    mut types = a.view.decls.types
+    let lam_ty = viewed(types, lj.sub, a.facts.type_at(lj.lam))
+    let held: Arrow? = types.arrow_parts(lam_ty)
     let seats: List<TypeId> = held?.seats ?? []
-    let rt: TypeId = held?.answer ?? a.view.decls.types.intern(Type.Error)
+    let rt: TypeId = held?.answer ?? types.intern(Type.Error)
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
     mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle))
     // register 0 is the env box, 1..N the seats
@@ -455,7 +458,8 @@ fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId,
 /// The wrapper, built directly in IR — no AST exists for it: env
 /// ignored at seat 0, the target called with the forwarded seats.
 fn wrapped_body(a: Analysis, w: Wrap) -> Body {
-    let fnty = a.view.decls.types.intern(Type.Fn(w.seats, no_marks(w.seats.length), w.ret))
+    mut types = a.view.decls.types
+    let fnty = types.intern(Type.Fn(w.seats, no_marks(w.seats.length), w.ret))
     mut tys: List<TypeId> = [fnty]
     mut args: List<Reg> = []
     for j, st in w.seats {
@@ -507,6 +511,7 @@ fn no_settle(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Sett
 }
 
 fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
+    mut types = a.view.decls.types
     mut lo = new_lower_cx(a, null, null, [], [], new_jobs(externs, settle))
     lo.scope_enter()
     lo.lower_stmts(a.view.stmts)
@@ -517,7 +522,7 @@ fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileI
     lo.out.give(Ins.Ret(0))
     LoweredBody {
         body: Body {
-            name: name, params: [], ret: a.view.decls.types.type(int),
+            name: name, params: [], ret: types.type(int),
             gives: null, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file,
         },
         voices: lo.out.voices, jobs: lo.jobs,
@@ -534,7 +539,7 @@ fn program_answer(a: Analysis) -> ExprId? {
 }
 
 /// The entry of a program that is only checked: nothing runs.
-fn empty_main(types: TypeRegistry) -> LoweredBody {
+fn empty_main(mut types: TypeRegistry) -> LoweredBody {
     let ins: List<Ins> = [Ins.ScopeEnter(Level.Application), Ins.ScopeExit(null), Ins.Ret(0)]
     LoweredBody {
         body: Body { name: "main", params: [], ret: types.type(int), gives: null, ins: ins, reg_types: [] },

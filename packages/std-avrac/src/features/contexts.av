@@ -75,7 +75,7 @@ impl Decls {
 
     /// A declaration read as a value: a type's name, or a fn worn as a
     /// value (a generic fn wears no single signature).
-    fn decl_type_of(voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
+    fn decl_type_of(mut voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
         let x = self.decl(d)
         if x.kind is .Const { return self.declared_const_type(voices, error_type, d) }
         let tname: string? = self.type_name(d)
@@ -228,7 +228,7 @@ impl Decls {
 
 /// A literal const's type can be read without asking the workspace.
 /// Computed and nominal types fall through to the ConstTyped family.
-fn settled_type(store: NodeStore, types: TypeRegistry, s: StmtId) -> TypeId? {
+fn settled_type(store: NodeStore, mut types: TypeRegistry, s: StmtId) -> TypeId? {
     let v? = store.const_value(s) else { return null }
     let word? = literal_shape(store.expr(v)) else { return spelled_type(types, store.binding_ty(s)) }
     let held = types.intern(word)
@@ -240,7 +240,7 @@ fn settled_type(store: NodeStore, types: TypeRegistry, s: StmtId) -> TypeId? {
 /// `Map<string, …>`, each under `?` — resolved from the registry
 /// alone. A declared type's NAME needs the namespace, which no store
 /// read has; it answers null here.
-export fn spelled_type(types: TypeRegistry, ann: TypeRef?) -> TypeId? {
+export fn spelled_type(mut types: TypeRegistry, ann: TypeRef?) -> TypeId? {
     if ann == null { return null }
     let a = ann!
     let held? = spelled_plain(types, a) else { return null }
@@ -251,7 +251,7 @@ export fn spelled_type(types: TypeRegistry, ann: TypeRef?) -> TypeId? {
     types.type(held?)
 }
 
-fn spelled_plain(types: TypeRegistry, a: TypeRef) -> TypeId? {
+fn spelled_plain(mut types: TypeRegistry, a: TypeRef) -> TypeId? {
     if a.args.is_empty() {
         let word: Type? = scalar_named(a.name)
         return if word == null { null } else { types.intern(word!) }
@@ -290,7 +290,7 @@ export fn scalar_named(name: string) -> Type? {
 }
 
 /// A type under a body's instantiation — IDENTITY for a plain body.
-export fn viewed(types: TypeRegistry, sub: Sub?, ty: TypeId) -> TypeId {
+export fn viewed(mut types: TypeRegistry, sub: Sub?, ty: TypeId) -> TypeId {
     if sub == null { return ty }
     types.substituted(ty, sub!.target, sub!.args)
 }
@@ -421,7 +421,7 @@ impl Decls {
     /// A declared const read as a value: its type — read off a
     /// literal, else the program's answer — and the one refusal only
     /// the READ can speak: a value that asks for its own type.
-    fn declared_const_type(voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
+    fn declared_const_type(mut voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
         let x = self.decl(d)
         match self.const_answer(x.file, x.stmt) {
             .Known(t) -> t,
