@@ -74,7 +74,8 @@ impl Decls {
     }
 
     /// A declaration read as a value: a type's name, or a fn worn as a
-    /// value (a generic fn wears no single signature).
+    /// value (a generic fn wears no single signature, and an extern
+    /// names a C symbol rather than a callable Avra fn).
     fn decl_type_of(voices: Voices, error_type: TypeId, d: DeclId) -> TypeId {
         let x = self.decl(d)
         if x.kind is .Const { return self.declared_const_type(voices, error_type, d) }
@@ -82,6 +83,10 @@ impl Decls {
         if tname != null { return self.types.intern(Type.TypeName(d, tname!)) }
         if !self.tparams(d).is_empty() {
             voices.speak(self.not_a_value(d))
+            return error_type
+        }
+        if self.is_extern(d) {
+            voices.speak(self.extern_not_a_value(d))
             return error_type
         }
         let sig? = (self.sig(d))?.fn_sig() else { return error_type }
@@ -439,6 +444,14 @@ impl Decls {
 
     fn not_a_value(d: DeclId) -> Diag {
         refusal("type.lambda", self.loc(d), "a generic fn is not a value — no single signature to wear", "declared here", "wrap it — `(x: T0) -> ${self.fn_name(d) ?? "f"}(x)` with the types pinned")
+    }
+
+    /// An extern names a C SYMBOL, called across the host seam — it
+    /// wears no address a value can carry, so a `let`, a list element
+    /// or a fn-typed seat reading it by name reads a callee that does
+    /// not exist on this side.
+    fn extern_not_a_value(d: DeclId) -> Diag {
+        refusal("type.extern_value", self.loc(d), "an extern fn is not a value — it names a C symbol, not a callable Avra fn", "declared here", "wrap it — `(x) -> ${self.fn_name(d) ?? "f"}(x)`")
     }
 
     /// A declared type's INSTANCE type — what its impl's receiver wears:
