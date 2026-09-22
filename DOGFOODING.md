@@ -962,6 +962,18 @@ reintroducing I3's blind spot names the two spellings it lost.
       substitution) — neither reads a row through `LowerCx`.
       Ratcheted (`raw_rt_call`).
 
+- I57 (ratcheted) TWO ADJACENT ARMS ANSWERING ONE BODY —
+      `.Struct(d, _) -> d` then `.Enum(d, _) -> d` — are one arm:
+      `.Struct(d, _) or .Enum(d, _) -> d`. An `or` arm BINDS when every
+      alternative binds the same names at the same types, by name, in
+      any position (`.A(x, y) or .B(y, x) -> …`); F2039 refuses the
+      rest, naming which alternative binds what. It could not bind until
+      the fibers campaign's evaluator rewrite wanted `.RetVal(r) or
+      .FnExit(r)`, and the tree held ~50 split pairs spelled around the
+      gap. LICENSED at the site when the names bind at DIFFERENT types
+      (`.F(v)` a float beside `.B(v)` a bool). Single-line arms only —
+      a block body is its own sentence. Ratcheted (`one_body_arms`).
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is
