@@ -1,0 +1,128 @@
+//! The formatter's idioms for the COMPILER's own conventions —
+//! `rule`s over shapes no single feature owns (Ins construction,
+//! refusal assembly, type interning), found by directory like every
+//! other feature's. tools/idioms.py's registry named these I28,
+//! I30, I33, I35, I36, I40, I43 — ported here as the language grows
+//! able to say them; a sibling shape not yet landed is noted at its
+//! rule, not silently dropped (avra-8sb5.25.16).
+use features.{Code, Fix}
+use diagnostics.{warning}
+
+/// A refusal assembled from `pointed`/`error_at` by hand — the one
+/// shape is `refusal(kind, at, message, label, help)`.
+@keeps("refusal(\"k\", at, \"m\", \"l\", null)")
+// LICENSED I28: the pattern's own text names the shape it detects
+export rule refusal_assembled {
+    quote { pointed(error_at(${kind}, ${at}, ${msg}), ${label}) } -> hand_assembled_refusal(kind, at, msg, label)
+}
+
+fn hand_assembled_refusal(kind: Code, at: Code, msg: Code, label: Code) -> Fix {
+    Fix.Say(warning("style.refusal_assembled", at.loc(), "a refusal assembled by hand (kind `${kind.text()}`, label `${label.text()}`, message `${msg.text()}`) — the one shape is `refusal(kind, at, message, label, help)`", "this call", null))
+}
+
+/// Text grown by `s = s + piece` — quadratic, since a string's own
+/// length is read fresh every turn: a `@std/text` builder
+/// (`builder()`, `push`, `built`) or `repeat`/`pad_*` says it in
+/// linear time.
+@keeps("out = out2 + piece")
+export rule str_grown_quadratically {
+    quote { ${s} = ${s} + ${piece} } -> quadratic_growth(s, piece)
+}
+
+fn quadratic_growth(s: Code, piece: Code) -> Fix {
+    Fix.Say(warning("style.quadratic_growth", s.loc(), "text grown by `${s.text()} = ${s.text()} + ${piece.text()}` is quadratic — a @std/text builder (builder(), push, built) or repeat/pad_* says it in linear time", "this assignment", null))
+}
+
+/// A payload the value-protocol dispatch GUARANTEES, papered over
+/// with a `??` default — absence here is a DEFECT the caller should
+/// speak (`cx.lower_defect(e, ...)`), never a plausible fallback.
+/// Two of the protocol's projections (`bool_of`, `text_of`); the
+/// others (`int_of`, `pairs_of`, `elems_of`, `bits_of`) are the same
+/// shape, not yet ported (avra-8sb5.25.16).
+@keeps("(raw).bool_of() ?? held")
+export rule bool_of_defaulted {
+    quote { (${e}).bool_of() ?? ${d} } -> protocol_default_papered(e, d, "bool_of")
+}
+
+@keeps("(raw).text_of() ?? held")
+export rule text_of_defaulted {
+    quote { (${e}).text_of() ?? ${d} } -> protocol_default_papered(e, d, "text_of")
+}
+
+fn protocol_default_papered(e: Code, d: Code, verb: string) -> Fix {
+    Fix.Say(warning("style.protocol_defaulted", e.loc(), "`${e.text()}.${verb}()` is guaranteed by its dispatch — defaulting it with `?? ${d.text()}` papers over a DEFECT this call should speak instead (`cx.lower_defect(e, …)`)", "this projection", null))
+}
+
+/// A refusal asserted as `>= 1` — a cascade of five passes it just
+/// as easily as one; pin the count (`refused_with`, `refused_n`, or
+/// `== n`). The `refusals(...)` receiver only; `a.diagnostics.length
+/// >= 1` and `p.voices.list.length >= 1` are the same shape, not yet
+/// ported (avra-8sb5.25.16).
+@keeps("refusals(src) == 1")
+export rule uncounted_refusal {
+    quote { refusals(${src}) >= 1 } -> uncounted(src)
+}
+
+fn uncounted(src: Code) -> Fix {
+    Fix.Say(warning("style.uncounted_refusal", src.loc(), "a refusal asserted as `>= 1` — a cascade of five passes it; pin the count (`refused_with`, `refused_n`, or `== n`)", "this assertion", null))
+}
+
+/// A region instruction emitted raw in a feature — the emission
+/// vocabulary (features/emit.av) speaks it: `open_region`, `arm_end`,
+/// `close_region`/`close_region_as`. The vocabulary's own file is
+/// exempt. `IfStart`/`LoopStart` here; `ArmEnd`, `RegionEnd`,
+/// `LoopCond`, `LoopEnd` are the same shape, not yet ported.
+@keeps("emit.av's own open_region calls cx.emit(Ins.IfStart(c)) — licensed at the vocabulary's own site, never flagged elsewhere")
+export rule if_start_raw {
+    quote { ${cx}.emit(Ins.IfStart(${c})) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "IfStart")
+}
+
+@keeps("features/emit.av's own loop_start calls cx.emit(Ins.LoopStart) — licensed at the vocabulary's own site")
+export rule loop_start_raw {
+    quote { ${cx}.emit(Ins.LoopStart) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_region_ins(cx, "LoopStart")
+}
+
+fn raw_region_ins(cx: Code, name: string) -> Fix {
+    Fix.Say(warning("style.raw_region", cx.loc(), "a region/loop instruction (${name}) emitted raw — speak features/emit.av's verb (open_region / arm_end / close_region / loop_start / loop_cond / loop_end) instead", "this call", null))
+}
+
+/// A raw scope bracket through a lowering context — the frame verbs
+/// (`scope_enter`/`scope_exit`, `seats_enter`/`seats_exit`,
+/// `arm_stmts`) are the spelling; a raw bracket is invisible to the
+/// `defer` frames. `ScopeEnter` here; `ScopeExit` is the same shape,
+/// not yet ported.
+@keeps("features/emit.av's own scope_enter calls cx.emit(Ins.ScopeEnter(tier)) — licensed at the vocabulary's own site")
+export rule scope_enter_raw {
+    quote { ${cx}.emit(Ins.ScopeEnter(${tier})) } if !e.of.view.source.file.ends_with("features/emit.av") -> raw_scope_ins(cx)
+}
+
+fn raw_scope_ins(cx: Code) -> Fix {
+    Fix.Say(warning("style.raw_scope", cx.loc(), "a raw ScopeEnter through a lowering context — the frame verbs (scope_enter/scope_exit, seats_enter/seats_exit, arm_stmts) are the spelling; a raw bracket is invisible to the defer frames", "this call", null))
+}
+
+/// A structural type interned by hand where a type literal spells
+/// it: `cx.type(int)`, never `.intern(Type.Int)`. `Int`/`Str` here;
+/// `Float`/`Bool`/`Ptr`/`Void`/`Opt`/`List`/`Map`/`Res` are the same
+/// shape, not yet ported.
+@fixes("types.intern(Type.Int)", "types.type(int)")
+export rule interned_int {
+    quote { ${r}.intern(Type.Int) } -> quote { ${r}.type(int) }
+}
+
+@fixes("types.intern(Type.Str)", "types.type(string)")
+export rule interned_str {
+    quote { ${r}.intern(Type.Str) } -> quote { ${r}.type(string) }
+}
+
+/// A fact column sized by hand, or an id read through an offset —
+/// `SideTable<V>` states the window, the growth and the
+/// out-of-window defect once: `side_table(name, lo, hi, seed)`,
+/// `get(id)`, `grow_to(n)`.
+@keeps("k.index - base_id.index")
+export rule hand_sized_index {
+    quote { ${e}.index - ${k} } -> hand_sized(e, k)
+}
+
+fn hand_sized(e: Code, k: Code) -> Fix {
+    Fix.Say(warning("style.hand_sized_column", e.loc(), "`${e.text()}.index - ${k.text()}` is a fact column sized by hand, or an id read through an offset — SideTable<V> states the window, the growth and the out-of-window defect once", "this arithmetic", null))
+}
