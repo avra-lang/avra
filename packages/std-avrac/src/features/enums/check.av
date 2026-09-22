@@ -93,8 +93,11 @@ fn arm_checks(mut cx: TypeCx, subject_ty: TypeId, a: Arm) {
     let names = bound_names(cx, a.pats[0])
     for k, p in a.pats {
         let own = bound_names(cx, p)
-        for j, n in own {
-            if own.index_of(n) < j { binds_twice(cx, p, n) }
+        let binders = cx.view.store.pattern_binds(p)
+        for b in binders {
+            // one pattern node naming a name twice is that node's own law
+            // (a format's `{a}z{a}`); across two nodes it is this one's
+            if binders.any((c) -> c.name == b.name && c.pat.index < b.pat.index) { binds_twice(cx, p, b.name) }
         }
         // an alternative that refused answers no types — it has spoken
         if k > 0 && typed[k].length == own.length { alternative_law(cx, a.value, names, first, k, own, typed[k]) }
