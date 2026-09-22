@@ -66,15 +66,21 @@ the body exists, answer:
 
 DOGFOODING.md is the full rulebook; `make idioms` FAILS the gate on
 any NEW violation — the baseline lists sites, never counts, and no
-tool path can add to it. Two honest exits: write the idiomatic
-form, or annotate `// LICENSED I<n>: reason` AT the site. Debt is
-zero; keep it there. A new idiom lands in DOGFOODING's registry AT
-DISCOVERY **with its matcher** (or an UNRATCHETED reason — the tool
-refuses a registry entry that has neither), under the NEXT FREE
-NUMBER: two lanes numbered a new idiom the same day, both landed
-I33, and the duplicate key silently dropped the earlier rule while
-`make idioms` kept reporting success. The tool now reads its own
-source and refuses a repeated number.
+tool path can add to it. An idiom the LANGUAGE can now state is a
+`rule` declaration (the formatter), found by `avra check` itself;
+tools/idioms.py reads that finding rather than racing it with a
+second regex, and ratchets it on the SAME baseline. Two honest exits
+for a REGEX finding: write the idiomatic form, or annotate `//
+LICENSED I<n>: reason` AT the site — that debt is zero, keep it
+there. A NATIVE finding has no license window (a rule reads no
+comment of its own); accepted debt for one lives in the baseline
+only, reviewed at adoption and every time after. A new idiom lands
+in DOGFOODING's registry AT DISCOVERY **with its matcher** (or an
+UNRATCHETED reason — the tool refuses a registry entry that has
+neither), under the NEXT FREE NUMBER: two lanes numbered a new idiom
+the same day, both landed I33, and the duplicate key silently
+dropped the earlier rule while `make idioms` kept reporting success.
+The tool now reads its own source and refuses a repeated number.
 
 ## Style
 
