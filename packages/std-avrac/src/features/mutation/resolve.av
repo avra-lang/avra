@@ -60,11 +60,12 @@ fn not_a_place(mut cx: ResolveCx, at: Loc?) {
     cx.emit(refusal("resolve.place", at, "a mutation lands on a place — a name, a field, or an index", assigned_here, "`x = …`, `x.field = …`, `xs[i] = …` — rooted in a `mut` binding"))
 }
 
-/// RECORDED TRIGGER: a `mut` seat assigned WHOLE lands with the
-/// inout ABI, where the seat is the caller's cell (ROADMAP: the
-/// inout receiver, S2); until then a seat is written along a path.
+/// A `mut` seat is a place the CALLEE writes through, never a place
+/// it replaces: the caller keeps the binding, so a seat is written
+/// ALONG A PATH into it, never assigned whole. `Cell<T>` is the
+/// door for a value a callee needs to REPLACE outright.
 fn seat_whole(mut cx: ResolveCx, n: string, at: Loc?) {
-    cx.emit(refusal("resolve.immutable", at, "`${n}` is a `mut` seat — assigning it whole arrives with the inout ABI", assigned_here, "write a path under it (`${n}.field = …`), or answer the new value"))
+    cx.emit(refusal("resolve.immutable", at, "`${n}` is a `mut` seat — a seat is written along a path, never replaced whole", assigned_here, "wrap the value in a `Cell<T>` and `.set(…)` it, write a path under it (`${n}.field = …`), or answer the new value"))
 }
 
 fn immutable_receiver(mut cx: ResolveCx, at: Loc?) {

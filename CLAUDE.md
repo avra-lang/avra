@@ -1548,12 +1548,13 @@ Syntax the grammar lacks:
   hold this yet" (help: "nullable slots arrive with ownership's next
   slice"). A writing verb answers what it wrote instead —
   `@std/io`'s `write_text`/`make_dirs`/`remove` answer the path.
-- A `mut` SEAT CANNOT BE ASSIGNED WHOLE: `a = a + 1` on a `mut a:
-  int` parameter is F3005 "`a` is a `mut` seat — assigning it whole
-  arrives with the inout ABI", help "write a path under it (`a.field
-  = …`), or answer the new value". A `mut` seat is a place the
-  CALLER owns; writing a path under it reaches the caller's value,
-  replacing it whole does not.
+- A `mut` SEAT CANNOT BE ASSIGNED WHOLE, BY DESIGN, NOT PENDING
+  MACHINERY: `a = a + 1` on a `mut a: int` parameter is F3005 "`a`
+  is a `mut` seat — a seat is written along a path, never replaced
+  whole", help "wrap the value in a `Cell<T>` and `.set(…)` it,
+  write a path under it (`a.field = …`), or answer the new value".
+  `Cell<T>` is the door for whole reassignment from inside a callee
+  (docs/2026_09_22_S2C_CELL_SEAT_DESIGN.md).
 - A TOP-LEVEL `const` IS A DECLARATION, like a fn: module-wide,
   order-free, exported only when it says `export`. Two in one module
   clash (F3003 in one file, F3017 across files); a `let` of the same

@@ -14745,6 +14745,15 @@ THE SLICES, in order, each red-teamed then reviewed, each a gate
   pair; the borrow deleted. DONE WHEN `mut d = c; d.set(5)` leaves
   `c` unchanged natively and in eval, `let d = c; d.set(5)`
   refuses, and the gate is green.
+  RETIRED 2026-09-22, owner ruling: the ABI (a receiver/param
+  address-passing calling convention) is OUT OF SCOPE FOR GOOD —
+  `Cell<T>` is the permanent answer, S2a/S2b already deliver what
+  this bullet asked for by a different mechanism (deleted local
+  aliasing, explicit `Cell<T>` sharing; a self-writing or `mut`-seat
+  record already seals itself boxed, so "flat receivers unboxed"
+  cannot arise). Design record: docs/2026_09_22_S2C_CELL_SEAT_DESIGN.md;
+  the sugar alternative (whole reassignment as sugar over an implicit
+  `Cell<T>`, not a real ABI) is avra-70jh.1.
 - S3 LIVENESS, measured on the probe and on the compiler checking
   itself (before/after user CPU recorded here).
 - S4 THE CONVERSION: the contexts refactor and the state fns —
