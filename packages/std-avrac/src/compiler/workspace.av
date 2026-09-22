@@ -55,6 +55,46 @@ fn new_keys() -> Keys {
     Keys { bytes_keys: {}, view_keys: {}, object_keys: {}, text_digests: {}, stamped: {}, stamps_at: Cell.new(0), store_root: Cell.new("") }
 }
 
+/// WHAT IS HELD THIS BUILD: the files a build must parse (`homes` — a home
+/// an instantiation lowers from, or a file whose stored asks could not be
+/// read); the instantiations held files' bodies demand (`held_wants`); the
+/// held files whose bodies this build asked for — a compile-time run reads
+/// a body, and a held file has none (`body_asks`, a Cell: the ask comes
+/// from inside a query); what each file's compile-time runs read
+/// (`runs`); the files whose runs are being lowered, innermost last
+/// (`settling`); the files a hold was asked for, and the files a file
+/// that WILL be read ran bodies of the last time it was (`hold_asked`,
+/// `read_with`); the files a record knows that are read all the same,
+/// each with why (`read_files`); the held modules minted so far, by name
+/// (`minted`); the files whose declarations stand, read or minted
+/// (`file_ready`); whether the holds are settled, before which no file's
+/// standing is known (`holds_settled`); where every impl and trait of a
+/// name lives, since a method table wants them all (`named_in`); and the
+/// records a held file's line declared FLAT (`held_flat`).
+type Hold = {
+    homes: Map<string, bool>,
+    held_wants: List<Wanted>,
+    body_asks: Cell<List<string>>,
+    runs: Map<string, List<string>>,
+    settling: Cell<List<string>>,
+    hold_asked: List<string>,
+    read_with: List<string>,
+    read_files: List<ReadFile>,
+    minted: Map<string, bool>,
+    file_ready: Table<bool>,
+    holds_settled: Cell<bool>,
+    named_in: Map<string, List<string>>,
+    held_flat: List<TypeId>,
+}
+
+fn new_hold() -> Hold {
+    Hold {
+        homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), runs: {}, settling: Cell.new(no_paths()),
+        hold_asked: [], read_with: [], read_files: [], minted: {}, file_ready: new_table(), holds_settled: Cell.new(false),
+        named_in: {}, held_flat: [],
+    }
+}
+
 /// The families' value tables, sparse by their keys and grown as
 /// values are placed; `sigs` and `methods` live in the declaration
 /// table itself.
@@ -124,37 +164,8 @@ export type Workspace = {
     files_of: Map<string, List<string>>,
     surfaces: Map<string, Map<string, DeclId>>,
     import_lists: Map<string, List<string>>,
-    /// THE FILES A BUILD MUST PARSE, by path: a home an instantiation lowers from, and a
-    /// file whose stored asks could not be read.
-    homes: Map<string, bool>,
-    /// The instantiations the held files' bodies demand, read from the store.
-    held_wants: List<Wanted>,
-    /// THE HELD FILES WHOSE BODIES THIS BUILD ASKED FOR — a compile-time run reads a
-    /// body, and a held file has none. A Cell: the ask comes from inside a query.
-    body_asks: Cell<List<string>>,
-    /// WHAT EACH FILE'S COMPILE-TIME RUNS READ, by path: the file of every body a
-    /// settled const or a lifted annotation ran, and of every const it read. An
-    /// object that bakes a run's answer in reads those TEXTS, never interfaces alone.
-    runs: Map<string, List<string>>,
-    /// The files whose runs are being lowered, innermost last.
-    settling: Cell<List<string>>,
-    /// The files a hold was asked for, and the files a file that WILL be read ran
-    /// bodies of the last time it was: read with it, so its runs find them.
-    hold_asked: List<string>,
-    read_with: List<string>,
-    /// The files a record knows that are read all the same, each with why.
-    read_files: List<ReadFile>,
-    /// THE HELD MODULES MINTED SO FAR, by name — a held module's declarations are
-    /// minted when something reads them, never all of them every build; the files
-    /// whose declarations stand (read, or minted); whether the holds are settled,
-    /// before which no file's standing is known; and where every impl and trait of
-    /// a name lives, since a method table wants them all.
-    minted: Map<string, bool>,
-    file_ready: Table<bool>,
-    holds_settled: Cell<bool>,
-    named_in: Map<string, List<string>>,
-    /// The records a held file's line declared FLAT.
-    held_flat: List<TypeId>,
+    /// WHAT IS HELD THIS BUILD.
+    hold: Hold,
     /// THE MODULES A HELD LOAD TOUCHED, in order — phase one mints and INTERNS every name;
     /// phase two FILLS every shape. A mutual import (language <-> features <-> core) is a
     /// cycle, and one module's shapes cannot be filled until every other module's NAMES are
@@ -370,7 +381,7 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), specs: {}, asks: [],
         lift_specs: {}, lift_asks: [], lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_lines: {}, record_fields: {}, record_places: {}, keys: new_keys(), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), minted: {}, file_ready: new_table(), holds_settled: Cell.new(false), named_in: {}, held_flat: [], hold_asked: [], read_with: [], read_files: [], runs: {}, settling: Cell.new(no_paths()), defects: [],
+        settle_specs: {}, settle_asks: [], settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), loaded_records: {}, record_texts: {}, record_lines: {}, record_fields: {}, record_places: {}, keys: new_keys(), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, hold: new_hold(), defects: [],
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }
@@ -414,15 +425,15 @@ impl Workspace {
     /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
     /// parse, a held file's minted with its module the first time anything asks.
     fn file_ensured(f: FileId) {
-        if self.file_ready.at(f.index) != null || !self.holds_settled.get() { return }
-        self.file_ready.keep(f.index, true)
+        if self.hold.file_ready.at(f.index) != null || !self.hold.holds_settled.get() { return }
+        self.hold.file_ready.keep(f.index, true)
         if self.is_held(f) && self.store != null { self.mint_module(self.store!, module_path(segments_of(self.module_of(self.decls.file(f).path)))) }
     }
 
     /// Every held module that declares an impl or a trait of this name, minted.
     fn named_minted(name: string) {
         if self.store == null { return }
-        for m in self.named_in.get(name) ?? [] { self.mint_module(self.store!, module_path(segments_of(m))) }
+        for m in self.hold.named_in.get(name) ?? [] { self.mint_module(self.store!, module_path(segments_of(m))) }
     }
 
     /// A held declaration may need syntax-only facts that were not part of

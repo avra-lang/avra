@@ -97,7 +97,7 @@ fn fill_record(row: Row, id: DeclId, boxed: bool) {
         defaults: [self.decls.default_named(id, field_name(f)) for f in fields],
     }))
     let made = self.decls.record_type(id)
-    if self.decls.types.is_flat(made) { self.held_flat.push(made) }
+    if self.decls.types.is_flat(made) { self.hold.held_flat.push(made) }
 }
 
 fn fill_enum(row: Row, id: DeclId) {
@@ -164,8 +164,8 @@ fn fill_row(store: Store, m: ModulePath, ids: List<DeclId>, parts: List<string>)
 /// mints that module on the way (`Decls.decls_of_file` asks), and the flag stands
 /// before the work does, so two modules that name each other meet once.
 fn mint_module(store: Store, m: ModulePath) {
-    if self.minted.get(m.text()) != null { return }
-    self.minted.set(m.text(), true)
+    if self.hold.minted.get(m.text()) != null { return }
+    self.hold.minted.set(m.text(), true)
     let fields = record_fields(self, store, m)
     let places = record_places(self, store, m)
     let held = [path for path in self.module_files(m) if self.decls.held.get(path) != null]
@@ -314,7 +314,7 @@ fn ran_by(store: Store, path: string) -> List<string> {
 /// What one file's runs read: as this build met them, or, for a held file, as
 /// its module's last record kept them.
 fn ran_directly(store: Store, path: string) -> List<string> {
-    if !self.is_held(self.file_id(path)) { return self.runs.get(path) ?? [] }
+    if !self.is_held(self.file_id(path)) { return self.hold.runs.get(path) ?? [] }
     kept_runs(record_places(self, store, module_path(self.module_of(path).split("."))).get(path))
 }
 

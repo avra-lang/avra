@@ -436,7 +436,7 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
     // a method table wants EVERY impl of a name, and a held impl names its trait by
     // name: where those live is known before any module is minted
     for parts in fields {
-        if parts.length > 6 && (parts[6] == "impl" || parts[6] == "trait") { ws.named_in.set(parts[5], distinct((ws.named_in.get(parts[5]) ?? []).concat([m.text()]))) }
+        if parts.length > 6 && (parts[6] == "impl" || parts[6] == "trait") { ws.hold.named_in.set(parts[5], distinct((ws.hold.named_in.get(parts[5]) ?? []).concat([m.text()]))) }
     }
     for f in ws.module_files(m) {
         // EVERY FILE OF THE MODULE IS REGISTERED HERE, held or not: a file the workspace
@@ -449,10 +449,10 @@ export fn load_interface(mut ws: Workspace, store: Store, m: ModulePath, entry: 
         let is_entry = entry != null && f == entry!
         let why: Reads? = read_why(ws, store, m, f, at, is_entry, want)
         if why == null {
-            ws.hold_asked.push(f)
+            ws.hold.hold_asked.push(f)
         } else {
-            ws.read_files.push(ReadFile { path: f, why: why! })
-            ws.read_with = ws.read_with.concat(kept_runs(at))
+            ws.hold.read_files.push(ReadFile { path: f, why: why! })
+            ws.hold.read_with = ws.hold.read_with.concat(kept_runs(at))
         }
     }
     // THE DECLARATIONS COME FROM `admit_all`, which parses and mints every file — so this
@@ -491,7 +491,7 @@ impl Reads {
 // LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn read_why(mut ws: Workspace, store: Store, m: ModulePath, f: string, at: Placed?, is_entry: bool, want: Want) -> Reads? {
     if is_entry { return Reads.Entry }
-    if ws.homes.get(f) != null { return Reads.Home }
+    if ws.hold.homes.get(f) != null { return Reads.Home }
     if !written_from(at, ws.text_digest(f)) { return Reads.Moved }
     if !ws.stands_in(store, obj_key_cached(ws, store, m, f), want) { return Reads.Unkept }
     let rows = file_rows(record_fields(ws, store, m), at)

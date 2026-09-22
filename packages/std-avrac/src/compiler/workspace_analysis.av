@@ -119,7 +119,7 @@ impl Workspace {
         mut unread: List<string> = []
         for path in held_paths(self) {
             let wants = self.wanted_list_from_wire(s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
-            if wants == null { unread.push(path) } else { self.held_wants = self.held_wants.concat(wants!) }
+            if wants == null { unread.push(path) } else { self.hold.held_wants = self.hold.held_wants.concat(wants!) }
         }
         unread
     }
@@ -134,7 +134,7 @@ impl Workspace {
     /// file, and the build starts again with that file parsed.
     fn lower_requested(w: Wanted) -> Unit {
         if self.is_held(w.file) {
-            self.body_asks.set(self.body_asks.get().concat([self.decls.file(w.file).path]))
+            self.hold.body_asks.set(self.hold.body_asks.get().concat([self.decls.file(w.file).path]))
             return Unit { bodies: [], wants: [], voices: no_voices(), statics: [] }
         }
         let ws = self
@@ -158,14 +158,14 @@ impl Workspace {
     /// value asks for itself is refused as the cycle it is.
     fn settled(f: FileId, root: SettleRoot, seats: List<SeatValue>) -> Result<Settled, Unsettled> {
         // a run that reads this const reads its file
-        let reader: string? = self.settling.get().last()
+        let reader: string? = self.hold.settling.get().last()
         if reader != null { self.read_by(reader!, [self.decls.file(f).path]) }
         self.settled_at(self.settle_id(f, root, seats))
     }
 
     /// `paths` joined to what `reader`'s compile-time runs read.
     fn read_by(reader: string, paths: List<string>) {
-        self.runs.set(reader, distinct((self.runs.get(reader) ?? []).concat(paths)))
+        self.hold.runs.set(reader, distinct((self.hold.runs.get(reader) ?? []).concat(paths)))
     }
 
     /// A RUN'S PROGRAM, lowered for `f`: every body it reaches remains a shared
@@ -174,10 +174,10 @@ impl Workspace {
     fn run_lowered_for(f: FileId, root: Wanted) -> Lowered {
         let ws = self
         let reader = self.decls.file(f).path
-        self.settling.set(self.settling.get().concat([reader]))
+        self.hold.settling.set(self.hold.settling.get().concat([reader]))
         let l = memory(self.decls.settlement(root, (w: Wanted) -> ws.lowered_for_eval(ws.spec_id(w))))
-        let open = self.settling.get()
-        self.settling.set(open.slice(0, open.length - 1))
+        let open = self.hold.settling.get()
+        self.hold.settling.set(open.slice(0, open.length - 1))
         self.read_by(reader, [self.decls.file(bd.file!).path for bd in l.fns if bd.file != null])
         l
     }
