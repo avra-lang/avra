@@ -1073,6 +1073,12 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "I56": "telling \"this branch answers what a DIFFERENT arm already\n"
+           "           answers\" needs reading every other arm's own answer and judging\n"
+           "           whether they are the same computation — and, when the target is a\n"
+           "           payload-blind or-run, whether widening it to the guarded variant's\n"
+           "           own pattern is honest at that site. No grep links two arms as\n"
+           "           answering the same thing",
     "I47": "no grep tells a COMPLETE anchor list from a partial one — the anchors\n"
            "           are whatever the grammar can put in the range, so a helper taking\n"
            "           `List<Token>` of names reads identically whether or not the span\n"

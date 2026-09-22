@@ -510,7 +510,7 @@ fn managed_dst(types: TypeRegistry, reg_types: List<TypeId>, i: Ins) -> Reg? {
     // (bool_text) never earns a release. The one variant-specific
     // fact, so the rest delegates to the role the declaration holds.
     match i {
-        .CallRt(_, callee, _) -> if rt_owns(callee) { dst } else { null },
+        .CallRt(_, callee, _) if !rt_owns(callee) -> null,
         rest -> dst,
     }
 }
@@ -529,7 +529,7 @@ fn owned_form(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, at: 
             let twin: string? = rt_owned_twin(callee)
             if twin != null && pushes_managed(types, reg_types, args) { Ins.CallRtVoid(twin!, args) } else { i }
         }
-        .CallRt(dst, callee, args) -> if takes_twin(types, reg_types, ins, at, i) { Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args) } else { i },
+        .CallRt(dst, callee, args) if takes_twin(types, reg_types, ins, at, i) -> Ins.CallRt(dst, rt_owned_twin(callee) ?? callee, args),
         rest -> i,
     }
 }

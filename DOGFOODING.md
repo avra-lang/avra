@@ -793,6 +793,37 @@ reintroducing I3's blind spot names the two spellings it lost.
       `let`/`mut` of the same name) — a text scan cannot then tell
       which binding a later `x!` names. Ratcheted (`let_else_guard`).
 
+- I56 (unratcheted) A MATCH ARM'S VALUE THAT IS `if c { x } else { y }`,
+      WHERE ONE BRANCH ANSWERS WHAT ANOTHER ARM OF THE SAME MATCH
+      ALREADY ANSWERS, IS A GUARD — the branch that duplicates becomes
+      the fall-through, and the arm keeps only the branch that does
+      not: `.Struct(_, _) -> if meta_type(ret, "Derived") { Derives }
+      else { null }` beside a trailing `rest -> null` becomes
+      `.Struct(_, _) if meta_type(ret, "Derived") -> Derives` (rest
+      already answers `null` for everything else, Struct included);
+      `.Variant(n, args) -> if n.of == name { padded(args, arity) }
+      else { null }` beside `.Wild or .Rest or .Bind(_) or .Lit(_) or
+      .Format(_, _) -> null` becomes the guarded arm plus `.Variant(_,
+      _) or .Wild or …` — the payload-blind or-run widened to include
+      the tested variant, since here nothing else already caught it.
+      THE ONE SHAPE THAT STAYS: an arm whose EITHER branch answers a
+      value no other arm shares (`.B(b) -> if b { "true" } else {
+      "false" }` with no sibling saying either word) — nothing to fall
+      to, so the `if`/`else` is the honest spelling; and a wide
+      REGISTRY dispatch where every arm computes its own distinct
+      answer (the interpreter's instruction stepper: `pc + 1` against
+      `b.past_else(pc)`, `b.past_loop(pc)` — CLAUDE.md's own "wide
+      REGISTRY, every arm distinct" case). UNRATCHETED: telling "this
+      branch is what a DIFFERENT arm already answers" apart from two
+      branches that merely LOOK similar needs reading every other
+      arm's own answer and judging whether they are the same
+      computation — the payload-blind or-run growing to include the
+      guarded variant's own pattern is itself a per-site call a grep
+      cannot make safely. Found sweeping the 52 `-> if` arm lines
+      landed before arm guards existed (avra-8sb5.25.1): 23 converted,
+      29 stayed — most of the survivors are the wide-registry shape,
+      the rest genuinely answer two unrelated values.
+
 - I49 (unratcheted) A PACK AND ITS UNPACK READ ONE TABLE — two
       conversions that are inverses name their categories ONCE, as a
       registry enum, and each direction is an exhaustive match over

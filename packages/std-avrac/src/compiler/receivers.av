@@ -210,7 +210,7 @@ impl Survey {
             return
         }
         match self.callee_of(ty!, mp.name) {
-            .Row(writes) -> if writes { self.mark(seat) } else { nothing() },
+            .Row(writes) if writes -> self.mark(seat),
             .Method(d) -> {
                 self.flow(seat, d, 0)
                 self.feed(d, mp.args, 1)
@@ -221,7 +221,7 @@ impl Survey {
                 if self.decls.declares_writing(d) { self.mark(seat) }
                 self.feed(d, mp.args, 1)
             }
-            .None -> nothing(),
+            .Row(_) or .None -> nothing(),
         }
     }
 
@@ -364,9 +364,9 @@ impl Survey {
         let b? = self.names.binding(e) else { return null }
         match b {
             .Receiver -> self.receiver,
-            .Param(i) -> if i < self.seats.length { self.seats[i] } else { null },
+            .Param(i) if i < self.seats.length -> self.seats[i],
             .Def(s) -> self.bound_type(s),
-            .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
+            .Param(_) or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) or .Decl(_) -> null,
         }
     }
 

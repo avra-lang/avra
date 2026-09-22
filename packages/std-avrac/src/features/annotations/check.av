@@ -126,7 +126,7 @@ fn effect_of(cx: TypeCx, ret: TypeId) -> Effect? {
     match cx.view.types.shape_of(ret) {
         .Void -> Effect.Records,
         .List(e) -> when { cx.view.decls.meta_type(e, "Diagnostic") -> Effect.Validates, cx.view.decls.meta_type(e, "Directive") -> Effect.Declares, _ -> null },
-        .Struct(_, _) -> if cx.view.decls.meta_type(ret, "Derived") { Effect.Derives } else { null },
+        .Struct(_, _) if cx.view.decls.meta_type(ret, "Derived") -> Effect.Derives,
         rest -> null,
     }
 }
@@ -319,9 +319,7 @@ fn derived_same_file(mut cx: TypeCx, a: Annotation) {
 
 fn wrong_answer(mut cx: TypeCx, a: Annotation, ret: TypeId) {
     let shown = match cx.view.types.shape_of(ret) {
-        .List(e) -> if cx.view.types.name_of(e) == "Diagnostic" {
-            "`List<Diagnostic>` from another module, not `List<@std.meta.Diagnostic>`"
-        } else { "`${cx.view.types.name_of(ret)}`" },
+        .List(e) if cx.view.types.name_of(e) == "Diagnostic" -> "`List<Diagnostic>` from another module, not `List<@std.meta.Diagnostic>`",
         rest -> "`${cx.view.types.name_of(ret)}`",
     }
     let _ = cx.spoken(refusal("annotation.answer", at_annotation(cx, a),
