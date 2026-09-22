@@ -8,26 +8,29 @@ spec "docs — the declaration-leading `///` surface" {
         then "an ordinary comment between a doc group and its declaration is kept in order, and does not detach it" {
             projected("/// kept\n// note\nfn a() -> int { 1 }") == "/// kept\n// note\nfn a() -> int {\n    1\n}"
         }
-        then "a blank line detaches a doc group and survives as the author's blank" {
-            projected("/// lost\n\nfn a() -> int { 1 }") == "\nfn a() -> int {\n    1\n}"
+        then "a blank line detaches a doc group; it survives as a remark, the blank survives beside it" {
+            projected("/// lost\n\nfn a() -> int { 1 }") == "/// lost\n\nfn a() -> int {\n    1\n}"
         }
-        then "an orphan before a closing brace cannot drift to the next declaration" {
-            !projected("fn a() -> int {\n    /// lost\n    1\n}\n\nfn b() -> int { 2 }").contains("lost")
+        then "an orphan before a closing brace becomes a remark there, and cannot drift to the next declaration" {
+            projected("fn a() -> int {\n    /// lost\n    1\n}\n\nfn b() -> int { 2 }") ==
+                "fn a() -> int {\n    /// lost\n    1\n}\n\nfn b() -> int {\n    2\n}"
         }
-        then "a trailing doc cannot attach" {
-            !projected("let x = 1 /// lost\nlet y = 2\nx + y").contains("lost")
+        then "a trailing `///` is a same-line remark, not a doc" {
+            projected("let x = 1 /// lost\nlet y = 2\nx + y") == "let x = 1 /// lost\nlet y = 2\nx + y"
         }
     }
 
     given "docs that no table holds" {
-        // A variant's or a field's `///` has no table — it is not a
-        // declaration-leading doc, and the printer walks statements.
-        // A module's `//!` is a plain remark, so it survives through
-        // the trivia cursor. ROADMAP records the missing tables.
-        then "a module's `//!` survives as a remark, and a variant's or field's `///` is still dropped" {
+        // A variant's or a field's `///` has no table of its own — it
+        // is not a declaration-leading doc, so it is not documentation
+        // of the thing it precedes. Orphaned like any other `///` that
+        // never reaches a declaration, it becomes an ordinary remark
+        // and the printer replays it in place, same as a module's
+        // `//!` always has. ROADMAP records the missing doc tables.
+        then "a module's `//!`, a variant's and a field's `///` all survive as remarks" {
             projected("//! module doc\nfn a() -> int { 1 }") == "//! module doc\nfn a() -> int {\n    1\n}" &&
-                !projected("type S = {\n    /// lost\n    v: int,\n}").contains("lost") &&
-                !projected("enum E {\n    /// lost\n    A,\n}").contains("lost")
+                projected("type S = {\n    /// lost\n    v: int,\n}") == "type S = {\n    /// lost\n    v: int,\n}" &&
+                projected("enum E {\n    /// lost\n    A,\n}") == "enum E {\n    /// lost\n    A\n}"
         }
     }
 
