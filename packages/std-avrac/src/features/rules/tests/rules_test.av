@@ -26,6 +26,22 @@ export rule seen_typed {
     quote { ${x} } if x.declared() != null -> Fix.Say(warning("test.seen_typed", x.loc(), "a bound name", "here", null))
 }
 
+/// avra-8sb5.25.18's own repro: a pattern rooted at `Stmt.IfStmt`
+/// (unparenthesised — the statement form) whose example is a bare
+/// if/else, both branches non-empty and each answering a value. The
+/// example text is exactly what once made `checks_fixes` answer
+/// false: `example_root` used to root it at a SYNTHESISED `Expr.If`
+/// (the language's own tail-if-chain law, `answer_of`), while the
+/// pattern's own root stays `Stmt.IfStmt` — a kind mismatch no walk
+/// could ever cross. `@derive(Matchable)`'s `kids_stmt` was never at
+/// fault; `avra expand` showing it twice is a rendering artifact
+/// (every `@derive(Matchable)` method is shown twice, byte-identical).
+@fixes("if x == null { 0 } else { x! }", "x ?? 0")
+@keeps("if next() == null { 0 } else { next()! }")
+export rule stmt_if_null_ternary {
+    quote { if ${x} == null { ${d} } else { ${x}! } } if x.pure() -> quote { ${x} ?? ${d} }
+}
+
 /// Whether `applied` fires anywhere in `a`'s first statement.
 fn fires(applied: fn(Code) -> Fix?, a: Analysis) -> bool {
     match a.view.stmts.first() {
