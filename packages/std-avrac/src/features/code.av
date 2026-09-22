@@ -8,9 +8,8 @@
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
 use core.{At, ExprId, DeclId, TypeId, TypeRegistry, NodeStore, Binding, Type, Span}
-use features.{FileView, NameFacts, TypeFacts, Decls, FnSig, def_type_of, method_row}
+use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row}
 use features.enums.{answering_arms}
-use diagnostics.{no_voices}
 
 /// What every bound hole shares: the file a rule reads, and the two
 /// pass tables a fact comes from — one per analysis, never copied or
@@ -109,7 +108,10 @@ impl Code {
     /// arms) — false for a projection and for anything that is not
     /// a `match` at all.
     fn is_registry() -> bool {
-        (self.answering() ?? 0) >= 2
+        match self.answering() {
+            null -> false
+            n? -> n >= 2
+        }
     }
 }
 
@@ -142,14 +144,16 @@ impl Ty {
 
 // ── declared(): a registry over Binding, every variant its own door ──
 
-fn declared_ty(mut of: Analysed, at: At, b: Binding) -> Ty? {
+fn declared_ty(of: Analysed, at: At, b: Binding) -> Ty? {
     match b {
-        .Def(s) -> Ty { types: of.view.types, id: def_type_of(of.facts, of.view, error_type(of.view), s) },
+        .Def(s) -> opt_ty(of, known_def_type_of(of.facts, of.view, s)),
         .Pattern(v, j) -> opt_ty(of, of.facts.pattern_type(v, j)),
         .LambdaParam(l, i) -> opt_ty(of, seat_of(of.facts.lambda_seats(l), i)),
         .Capture(l, j) -> opt_ty(of, of.facts.capture_type(l, j)),
-        .Index(_) -> Ty { types: of.view.types, id: of.view.types.type(int) },
-        .Decl(d) -> Ty { types: of.view.types, id: of.view.decls.decl_type_of(no_voices(), error_type(of.view), d) },
+        // an Index binding types int by LANGUAGE DEFINITION — its
+        // `for` loop was typed to exist, which already interned it
+        .Index(_) -> opt_ty(of, of.view.types.known(Type.Int))!,
+        .Decl(d) -> opt_ty(of, of.view.decls.known_decl_type_of(d)),
         .Param(i) -> seat_declared(of, at, i),
         .Receiver -> seat_declared(of, at, 0),
     }
@@ -182,8 +186,6 @@ fn enclosing_decl(view: FileView, at: At) -> DeclId? {
     let sp? = view.store.span_at(at) else { return null }
     view.decls.innermost(view.decls.owner_spans(view.file), sp)
 }
-
-fn error_type(mut view: FileView) -> TypeId { view.types.intern(Type.Error) }
 
 // ── pure(): a registry over Expr, folded through kids_at ──
 

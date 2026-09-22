@@ -94,6 +94,22 @@ impl Decls {
         let held = sig
         self.types.intern(Type.Fn(held.params, self.marks_of(d, held.params.length), held.ret))
     }
+
+    /// `decl_type_of`'s read door for a rule: the same answer,
+    /// without interning or speaking. On an already-typed program
+    /// every shape `decl_type_of` could mint here is already in the
+    /// registry; a generic fn's refusal is `decl_type_of`'s alone to
+    /// voice, so a rule reading this name as a value sees absence
+    /// instead, same as any other seat it cannot answer.
+    fn known_decl_type_of(d: DeclId) -> TypeId? {
+        let x = self.decl(d)
+        if x.kind is .Const { return self.type_of_const(x.file, x.stmt) }
+        let tname: string? = self.type_name(d)
+        if tname != null { return self.types.known(Type.TypeName(d, tname!)) }
+        if !self.tparams(d).is_empty() { return null }
+        let sig? = (self.sig(d))?.fn_sig() else { return null }
+        self.types.known(Type.Fn(sig.params, self.marks_of(d, sig.params.length), sig.ret))
+    }
 }
 
 /// The declaration a call's name stands for, when it is one.
@@ -187,21 +203,37 @@ export fn type_name_decl(sh: Type) -> DeclId? {
     }
 }
 
-/// What a `let`/`mut` binding holds: its declared type, its value's
-/// type, or — for a loop's counter — int.
-export fn def_type_of(facts: TypeFacts, mut view: FileView, error_type: TypeId, s: StmtId) -> TypeId {
+/// `def_type_of`'s READ half: every branch it can answer without
+/// interning anything — a rule reads a binding's already-settled
+/// type, and on an already-typed program every shape it could name
+/// is already in the registry. The one branch that COULD mint (a
+/// `for` loop's own `int` counter) asks the registry's lookup door
+/// instead; a miss there is the honest absence, not a reason to grow
+/// the registry from a read.
+export fn known_def_type_of(facts: TypeFacts, view: FileView, s: StmtId) -> TypeId? {
     // A CONST FIRST, AND ONLY: it is read from OTHER bodies, and a
     // body's facts hold only its own range — so a const's type is
     // the program's answer or the HOLE. Falling through would index
     // the asker's table with another body's expression (-1).
-    if view.store.const_value(s) != null {
-        return view.decls.type_of_const(view.file, s) ?? error_type
-    }
+    if view.store.const_value(s) != null { return view.decls.type_of_const(view.file, s) }
     let declared: TypeId? = facts.declared_binding(s)
-    if declared != null { return declared! }
-    if view.store.stmt(s) is .For { return view.types.type(int) }
-    let v? = view.store.stmt_value(s) else { return error_type }
+    if declared != null { return declared }
+    if view.store.stmt(s) is .For { return view.types.known(Type.Int) }
+    let v? = view.store.stmt_value(s) else { return null }
     facts.type_at(v)
+}
+
+/// What a `let`/`mut` binding holds: its declared type, its value's
+/// type, or — for a loop's counter — int. Total: `known_def_type_of`
+/// answers every case but the one that can still need a mint (a
+/// `for` loop's counter, the first time it is asked), which this
+/// alone is trusted to grow the registry for.
+export fn def_type_of(facts: TypeFacts, mut view: FileView, error_type: TypeId, s: StmtId) -> TypeId {
+    let known? = known_def_type_of(facts, view, s) else {
+        if view.store.stmt(s) is .For { return view.types.type(int) }
+        return error_type
+    }
+    known
 }
 
 impl Decls {
