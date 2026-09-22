@@ -1519,8 +1519,10 @@ Syntax the grammar lacks:
   Each arm on its own line is the ordinary spelling and parses.
 - A PRESENT-BIND arm after a COMMA-ended arm (`null -> a,` then `v?
   -> b`): "expected `}` to close the `match`" — the comma continues
-  the line and `v?` is read into it. Separate such arms by line, as
-  the program tests do; variant and literal arms take the comma.
+  the line and `v?` is read into it. AND A PRESENT-BIND ARM ENDING IN
+  A COMMA (`v? -> v,` then `null -> 0`) refuses the same way, at the
+  first arm. Separate such arms by line, as the program tests do;
+  variant and literal arms take the comma.
 - A match arm whose body is an EMPTY BLOCK (`1 -> {}` in statement
   position): `{}` is an empty map — F2013 "a `match`'s arms
   disagree: `void` vs the first arm's `{}`".
