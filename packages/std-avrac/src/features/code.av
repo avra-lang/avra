@@ -1,10 +1,227 @@
-//! THE HANDLE a rule holds: an analysed file's view, plus one node
-//! in it — the code in hand (P10), never a bare id, so a rule reads
-//! it with no context parameter of its own. It never meets
-//! `@std.meta.Code` in one file — that is a SPLICING value, built
-//! at compile time from a template; this is a COMPILER-SIDE value, a
-//! subject a `quote` PATTERN matches against. Slice 3 grows its
-//! facts as properties here (`x.pure`, `x.type`, …).
-use core.{At}
+//! THE HANDLE a rule holds: an analysed file's view, its resolved
+//! names and its folded types, plus one node in it — the code in
+//! hand (P10), never a bare id, so a rule reads it with no context
+//! parameter of its own. It never meets `@std.meta.Code` in one
+//! file — that is a SPLICING value, built at compile time from a
+//! template; this is a COMPILER-SIDE value, a subject a `quote`
+//! PATTERN matches against and a rule reads FACTS off, as methods.
+//! Every answer reads `Analysed`'s three tables alone — never a
+//! global, never another file's.
+use core.{At, ExprId, DeclId, TypeId, TypeRegistry, NodeStore, Binding, Type, Span}
+use features.{FileView, NameFacts, TypeFacts, Decls, FnSig, def_type_of, method_row}
+use features.enums.{answering_arms}
+use diagnostics.{no_voices}
 
-export type Code = { view: FileView, at: At }
+/// What every bound hole shares: the file a rule reads, and the two
+/// pass tables a fact comes from — one per analysis, never copied or
+/// recomputed per bind.
+export type Analysed = { view: FileView, names: NameFacts, facts: TypeFacts }
+
+/// One bound hole: the code a rule holds. `of` carries what the
+/// compiler knows about the file it stands in; `at` says which node.
+export type Code = { of: Analysed, at: At }
+
+impl Code {
+    /// The node's own source, verbatim — "" for one no span names
+    /// (a generated node).
+    fn text() -> string {
+        let sp? = self.of.view.store.span_at(self.at) else { return "" }
+        self.of.view.source.text.substring(sp.lo, sp.hi)
+    }
+
+    /// This node's children, each still carrying this Code's facts —
+    /// `kids_at`'s walk, wrapped.
+    fn kids() -> List<Code> {
+        [Code { of: self.of, at: k } for k in self.of.view.store.kids_at(self.at)]
+    }
+
+    /// An ident's own text — null for every other seat.
+    fn name() -> string? {
+        match self.at {
+            .Expr(id) -> self.of.view.store.ident_name(id),
+            .Stmt(_) or .Pat(_) -> null,
+        }
+    }
+
+    /// What a name USE resolves to — null for a Stmt/Pat seat and
+    /// for an expression that names nothing.
+    fn binding() -> Binding? {
+        match self.at {
+            .Expr(id) -> self.of.names.binding(id),
+            .Stmt(_) or .Pat(_) -> null,
+        }
+    }
+
+    /// The type this expression was typed at — null for a Stmt/Pat
+    /// seat, since only an expression answers one.
+    fn type() -> Ty? {
+        match self.at {
+            .Expr(id) -> Ty { types: self.of.view.types, id: self.of.facts.type_at(id) },
+            .Stmt(_) or .Pat(_) -> null,
+        }
+    }
+
+    /// The bound name's DECLARED type — the annotation or signature
+    /// that named it, never a later narrow.
+    fn declared() -> Ty? {
+        let b? = self.binding() else { return null }
+        declared_ty(self.of, self.at, b)
+    }
+
+    /// PURITY: evaluating this code has no effect and answers the
+    /// same value every time within one expression. A registry over
+    /// `Expr`, judged at each node and folded through its own kids
+    /// (`kids_at`) — so a leaf is pure outright and an aggregate is
+    /// pure exactly when every kid is: a literal, a name (of ANY
+    /// binding — a `mut` one included, since nothing else runs
+    /// between two reads inside one expression), a field read, an
+    /// index, `!`/value`!`/`?.`/`??`/`is`, a variant/list/map/struct/
+    /// `with` literal, and a method call whose ROW's effect is Read
+    /// (the built-in List/Map/Cell/Bytes/Str vocabulary — a
+    /// user-declared method carries no purity fact yet). Everything
+    /// else answers false: a named or valued call, a lambda, a
+    /// block, a branching form with arms (`if`/`when`/`match`/an
+    /// optional ask/`catch`), a comprehension, a quote or a `${..}`
+    /// body, `value?` (it can exit the enclosing fn), and a parse
+    /// hole. Conservative by construction — no fn purity exists yet,
+    /// so a call is refused rather than trusted.
+    fn pure() -> bool {
+        match self.at {
+            .Expr(id) -> pure_at(self.of, id),
+            .Stmt(_) or .Pat(_) -> false,
+        }
+    }
+
+    /// A `match`'s ANSWERING-ARM count — the same count F2040 reads
+    /// to tell a PROJECTION (one) from a REGISTRY (two or more);
+    /// null for anything that is not a `match`.
+    fn answering() -> int? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) {
+                .Match(_, arms) -> answering_arms(self.of.view.store, arms),
+                _ -> null,
+            },
+            .Stmt(_) or .Pat(_) -> null,
+        }
+    }
+
+    /// Whether this `match` is a REGISTRY (two or more answering
+    /// arms) — false for a projection and for anything that is not
+    /// a `match` at all.
+    fn is_registry() -> bool {
+        (self.answering() ?? 0) >= 2
+    }
+}
+
+/// A TYPE in hand: the registry it was interned into, and the id —
+/// every projection reads the registry alone.
+export type Ty = { types: TypeRegistry, id: TypeId }
+
+impl Ty {
+    fn nullable() -> bool { self.types.shape_of(self.id) is .Opt }
+
+    /// What a nullable carries — absence for every other shape.
+    fn carried() -> Ty? {
+        match self.types.shape_of(self.id) {
+            .Opt(inner) -> Ty { types: self.types, id: inner },
+            _ -> null,
+        }
+    }
+
+    fn name() -> string { self.types.name_of(self.id) }
+
+    fn is_enum() -> bool { self.types.shape_of(self.id) is .Enum }
+
+    /// The same interned type as `other` — comparable across two
+    /// Codes from the same analysis.
+    fn same(other: Ty) -> bool {
+        // LICENSED I9: interned identity, the agreement law's own currency
+        self.id.index == other.id.index
+    }
+}
+
+// ── declared(): a registry over Binding, every variant its own door ──
+
+fn declared_ty(mut of: Analysed, at: At, b: Binding) -> Ty? {
+    match b {
+        .Def(s) -> Ty { types: of.view.types, id: def_type_of(of.facts, of.view, error_type(of.view), s) },
+        .Pattern(v, j) -> opt_ty(of, of.facts.pattern_type(v, j)),
+        .LambdaParam(l, i) -> opt_ty(of, seat_of(of.facts.lambda_seats(l), i)),
+        .Capture(l, j) -> opt_ty(of, of.facts.capture_type(l, j)),
+        .Index(_) -> Ty { types: of.view.types, id: of.view.types.type(int) },
+        .Decl(d) -> Ty { types: of.view.types, id: of.view.decls.decl_type_of(no_voices(), error_type(of.view), d) },
+        .Param(i) -> seat_declared(of, at, i),
+        .Receiver -> seat_declared(of, at, 0),
+    }
+}
+
+fn opt_ty(of: Analysed, id: TypeId?) -> Ty? {
+    let i? = id else { return null }
+    Ty { types: of.view.types, id: i }
+}
+
+fn seat_of(seats: List<TypeId>?, i: int) -> TypeId? {
+    let ss? = seats else { return null }
+    if i >= ss.length { return null }
+    ss[i]
+}
+
+/// A `Param`/`Receiver` binding's own seat, read off the DECLARATION
+/// that encloses this position — its signature is the one table a
+/// folded, file-wide TypeFacts does not carry (a method's `params[0]`
+/// is its receiver's type, which is how `Receiver` shares this door).
+fn seat_declared(of: Analysed, at: At, i: int) -> Ty? {
+    let d? = enclosing_decl(of.view, at) else { return null }
+    let sig? = (of.view.decls.sig(d))?.fn_sig() else { return null }
+    opt_ty(of, seat_of(sig.params, i))
+}
+
+/// The declaration whose body's range holds `at` — the smallest
+/// range-owning declaration whose span covers it.
+fn enclosing_decl(view: FileView, at: At) -> DeclId? {
+    let sp? = view.store.span_at(at) else { return null }
+    view.decls.innermost(view.decls.owner_spans(view.file), sp)
+}
+
+fn error_type(mut view: FileView) -> TypeId { view.types.intern(Type.Error) }
+
+// ── pure(): a registry over Expr, folded through kids_at ──
+
+fn pure_at(of: Analysed, id: ExprId) -> bool {
+    if !could_be_pure(of, id) { return false }
+    of.view.store.kids_at(At.Expr(id)).all(pure_of(of, it))
+}
+
+fn pure_of(of: Analysed, at: At) -> bool {
+    match at {
+        .Expr(id) -> pure_at(of, id),
+        .Stmt(_) or .Pat(_) -> false,
+    }
+}
+
+/// Whether this node's OWN kind ever admits purity — the kid fold in
+/// `pure_at` still has the final word for every arm answering true.
+fn could_be_pure(of: Analysed, id: ExprId) -> bool {
+    match of.view.store.expr(id) {
+        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or
+        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Force(_) or
+        .ListLit(_) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or
+        .StructLit(_, _, _) or .With(_, _, _) or .Coalesce(_, _) or .Chain(_, _) or
+        .Is(_, _) or .VariantLit(_, _) -> true,
+        .MethodCall(_, _, _) -> method_could_be_pure(of, id),
+        .Comp(_, _, _, _, _, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or
+        .Block(_, _) or .Call(_, _, _) or .Match(_, _) or .MatchOpt(_, _, _, _) or
+        .Lambda(_, _) or .CallValue(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Error -> false,
+    }
+}
+
+/// A method call is pure only through a Read-effect ROW — the
+/// built-in vocabulary (List/Map/Cell/Bytes/Str); a user-declared
+/// method carries no purity fact yet, so it stays impure like any
+/// other call.
+fn method_could_be_pure(of: Analysed, id: ExprId) -> bool {
+    let mp? = of.view.store.method_parts(id) else { return false }
+    let sh = of.view.types.seen_shape(of.facts.type_at(mp.subject))
+    let row? = method_row(of.view.lang.methods, mp.name, sh) else { return false }
+    row.effect is .Read
+}

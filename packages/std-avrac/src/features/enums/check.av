@@ -4,7 +4,7 @@
 //! type. Coverage is the point: adding a variant breaks every match
 //! that spelled them, and a hole under two or more ANSWERING arms
 //! is warned — under one it is a projection, and `rest` is quiet.
-use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, joined, filled, flatten}
+use core.{ExprId, StmtId, Type, TypeId, Arm, PatId, Variant, NodeStore, joined, filled, flatten}
 use features.{TypeCx, EnumSig, this_is, nothing, duplicate_names, variants_are, pat_semantics_of}
 use features.enums.{all_irrefutable, hole_of}
 use diagnostics.{refusal, warning, defect_at}
@@ -75,7 +75,7 @@ fn matched_type(mut cx: TypeCx, e: ExprId, subject: ExprId, arms: List<Arm>) -> 
     let sh: Type = cx.shape_at(subject)
     if sh is .Error { return cx.error_type }
     let subject_ty = cx.type_at(subject)
-    if cx.variants_of(subject_ty) == null && arms.any(tests_variant(cx, it)) { return not_matchable(cx, subject) }
+    if cx.variants_of(subject_ty) == null && arms.any(tests_variant(cx.view.store, it)) { return not_matchable(cx, subject) }
     for a in arms { arm_checks(cx, subject_ty, a) }
     // The arms are hidden from the walk, so type them HERE — their
     // binds are spoken above, in time for the names inside; a guard
@@ -180,7 +180,6 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
     let sname = cx.name_at(subject)
     mut covered: List<string> = []
     mut before: List<PatId> = []
-    mut answering = 0
     for a in arms {
         for n in covers(cx, a) {
             if covered.contains(n) { repeated_arm(cx, a.value, n) } else { covered.push(n) }
@@ -191,13 +190,10 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
         if hole != null && a.guard == null {
             if declared != null {
                 let sig = declared!
-                hidden_checks(cx, hole!, answering, uncovered(cx, before, sig))
+                hidden_checks(cx, hole!, answering_arms(cx.view.store, arms), uncovered(cx, before, sig))
             }
             return
         }
-        // AFTER the hole test, so an arm that both answers and holes
-        // does not count itself
-        if tests_variant(cx, a) { answering = answering + 1 }
         // A guarded arm never enters `before` — it covers nothing,
         // so a later hole must not read it as already handled.
         if a.guard == null { before = before.concat(a.pats) }
@@ -317,12 +313,29 @@ fn rest_of(r: Row) -> Row {
     Row { pats: r.pats.slice(1, r.pats.length) }
 }
 
-/// Whether any of the arm's alternatives is a variant test.
-fn tests_variant(cx: TypeCx, a: Arm) -> bool {
+/// Whether any of the arm's alternatives is a variant test —
+/// structural, no type asked.
+fn tests_variant(store: NodeStore, a: Arm) -> bool {
     for p in a.pats {
-        if cx.view.store.pat(p) is .Variant { return true }
+        if store.pat(p) is .Variant { return true }
     }
     false
+}
+
+/// How many of a `match`'s arms test one variant each, up to (not
+/// including) the first UNCONDITIONED hole — the count a hidden-arm
+/// warning reads, and F2040's own: ONE answering arm is a
+/// PROJECTION, TWO OR MORE a REGISTRY. `Code.answering()`
+/// (features/code.av) reads the same count outside a `match`'s own
+/// typing.
+export fn answering_arms(store: NodeStore, arms: List<Arm>) -> int {
+    mut n = 0
+    for a in arms {
+        let hole: PatId? = hole_of(store, a.pats)
+        if hole != null && a.guard == null { return n }
+        if tests_variant(store, a) { n = n + 1 }
+    }
+    n
 }
 
 /// The variants an arm accepts WHOLE: each alternative that tests a

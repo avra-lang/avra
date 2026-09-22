@@ -115,8 +115,10 @@ export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty
     let at_ty = avrac_self(cx, "At")
     let shape_ty = avrac_self(cx, "Shape")
     let store_ty = avrac_self(cx, "NodeStore")
+    let of_ty = avrac_self(cx, "Analysed")
     let view_ty = avrac_self(cx, "FileView")
-    let view = cx.field_named(v, vty, "view", view_ty)
+    let of = cx.field_named(v, vty, "of", of_ty)
+    let view = cx.field_named(of, of_ty, "view", view_ty)
     let subj_store = cx.field_named(view, view_ty, "store", store_ty)
     let subj_at = cx.field_named(v, vty, "at", at_ty)
     let s = shape_reg(cx, shape_ty, cx.type(List<shape_ty>), shape)
@@ -127,7 +129,7 @@ export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty
 }
 
 /// One `Code` per binder, in first-occurrence order — the subject's
-/// `view` (read again — cheap, a slot read) paired with the `At`
+/// `of` (read again — cheap, a slot read) paired with the `At`
 /// `matched` bound there.
 export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: TypeId) -> List<Reg> {
     let regs = cx.test_regs_of(p)
@@ -136,13 +138,13 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
     let names = quote_pat_names(quote_pat_holes(cx.view.store, body))
     let at_ty = avrac_self(cx, "At")
     let code_ty = avrac_self(cx, "Code")
-    let view = cx.field_named(v, vty, "view", avrac_self(cx, "FileView"))
+    let of = cx.field_named(v, vty, "of", avrac_self(cx, "Analysed"))
     let carried = cx.carried_of(answer, cx.type(List<at_ty>?))
     mut out: List<Reg> = []
     // LICENSED I3: each binder's Code is packed in binder order, its own mint
     for j, n in names {
         let at_j = cx.slot_read(carried, j, at_ty)
-        out.push(cx.packed_struct(code_ty, [view, at_j]))
+        out.push(cx.packed_struct(code_ty, [of, at_j]))
     }
     out
 }
