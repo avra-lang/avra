@@ -1824,6 +1824,31 @@ Runtime facts, ours to ratify:
   …` samples. Trust the census over the sample — and read
   `sample`'s output with its tree characters (`+ ! : |`) in mind,
   since parsing it as plain indentation reports the wrong fn.
+- A GEN-N VS GEN-N+1 DIVERGENCE IS FOUND BY TRACING, NEVER GUESSED.
+  `AVRA_QTRACE=1` prints one stderr line per query-kernel event —
+  every `Memo.ask` (family, arg, reuse/compute/cycle) and
+  `Memo.settle` (family, arg, fingerprint) in query/memo.av, every
+  `Binder.declare` (name, file) in features/namespace.av, every
+  failed `named_type` lookup in compiler/typing/declare.av — behind
+  `avra_qtrace` (runtime/avra_runtime.c), inert without the flag.
+  Run both binaries on the SAME input with `AVRA_QTRACE=1`, confirm
+  each is deterministic against itself (diff two runs of the same
+  binary — must be empty), then diff the two traces: the FIRST
+  differing line names the query whose answer diverged first. Add a
+  probe at the divergent query's own site the same way — one
+  `qtrace(...)` call, removed once the cause is found.
+- A `check` HIT ON `.avra-cache` EXAMINES NOTHING, AND A SECOND
+  BINARY ON UNCHANGED SOURCE CAN SILENTLY HIT THE FIRST'S ENTRY.
+  `Workspace.checked`/`build_program` key their store by the
+  COMPILER'S OWN BYTES digest (`compiler_print`, compiler/build.av)
+  beside a `.avra-cache` directory, so building or checking with a
+  SECOND binary over the SAME source can read the FIRST binary's
+  kept warnings or kept binary outright — a differential build
+  (`AVRA_ALIAS_EMIT=0` vs `=1` over one source, or any two-binary
+  comparison) silently compares one binary's real run against the
+  other's cache hit, byte-identical checksums included. `rm -rf
+  .avra-cache` before every run whose ANSWER is being compared, not
+  only before the first.
 - ONE HEAVY PROCESS AT A TIME, in the FOREGROUND, under the
   watchdog: `sh tools/watch.sh 4000 make gate`. The machine is
   shared with a loaded desktop and has panicked twice under this

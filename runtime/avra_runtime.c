@@ -2252,6 +2252,13 @@ void avra_debug(const char* s) {
     if (s && getenv("AVRA_DEBUG")) fputs(s, stderr);
 }
 
+// A QUERY-KERNEL TRACE LINE, only under AVRA_QTRACE — its own flag,
+// separate from AVRA_DEBUG, for a gen-N vs gen-N+1 differential
+// (CLAUDE.md, Working discipline). A no-op otherwise.
+void avra_qtrace(const char* s) {
+    if (s && getenv("AVRA_QTRACE")) fputs(s, stderr);
+}
+
 /* `embed` is answered by the compiler, at compile time, under the
    const's own directory; a program that reaches this body called it
    outside a const. */
