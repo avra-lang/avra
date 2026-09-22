@@ -1,0 +1,24 @@
+//! Parse-time lowering: the written arms -> the Rule statement, its
+//! synthesized subject and a `_ -> null` tail arm folded into one
+//! `Match` node — the compiler's own body, so typing and lowering
+//! read an ordinary match and never learn a rule's shape twice.
+use core.{Expr, Stmt, Pat, Arm, Scoped, Param, plain_mark}
+use features.{LangNode, Builder, arms_at}
+
+fn build_rule_decl(mut b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let arms = arms_at(b.args, 1)
+    let subject = b.store.alloc_expr(Expr.Ident(Scoped("e")), null)
+    let wild = b.store.alloc_pat(Pat.Wild, null)
+    let miss = b.store.alloc_expr(Expr.NullLit, null)
+    let tail = Arm { pats: [wild], guard: null, value: miss }
+    let body = b.store.alloc_expr(Expr.Match(subject, arms.concat([tail])), null)
+    b.make_stmt(Stmt.Rule(Scoped(n.text), arms, body))
+}
+
+/// The rule's own implicit seat — always `e`, always one — read by
+/// both resolve (binding names inside the synthesized body) and
+/// typing (the seats `walk_under` opens).
+export fn rule_seat() -> List<Param> {
+    [Param { name: Scoped("e"), ty: null, default: null, promises: plain_mark, span: null }]
+}
