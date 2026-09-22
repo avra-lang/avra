@@ -1,0 +1,63 @@
+// An explicit `{ }` used as a VALUE — the single-statement scope that
+// used to lose its own braces at the parse (block_of), and whose
+// diagnostics used to point at the brace once it gained a node
+// (fixed by wearing the value's own span). Kept apart from
+// block_test.av so this set can grow without drowning the feature's
+// vertical story.
+use @std.avrac.compiler.{analyze_source}
+use @std.avrac.testing.{shown}
+
+spec "features/block adversarial — an explicit block value" {
+    given "degenerate shapes" {
+        then "a nested single-statement block still answers its value" {
+            shown("let x = { { 7 } }\nx") == "7"
+        }
+        then "an empty fn body is unaffected — still void, no braces lost" {
+            let a = analyze_source("fn f() -> int {}\nf()")
+            a.diagnostics.length == 1 && a.report().contains("void")
+        }
+        then "a block whose only statement diverges still leaves" {
+            shown("fn f() -> int {\n    let x = { return 1 }\n    x\n}\nf()") == "1"
+        }
+    }
+
+    given "the diagnostic points at the value, never the brace" {
+        then "a type mismatch inside `{ v }` blames `v`'s own span" {
+            let a = analyze_source("let x: string = { 7 }\nx")
+            let loc? = a.diagnostics[0].primary.loc else { return false }
+            // "let x: string = { 7 }" — `7` starts at byte 18, the
+            // brace two characters earlier; this is the caret 2169022
+            // moved back onto the value.
+            loc.lo == 18 && loc.hi == 19
+        }
+        then "the same mismatch without braces blames the same span shape" {
+            let a = analyze_source("let x: string = 7\nx")
+            let loc? = a.diagnostics[0].primary.loc else { return false }
+            loc.hi - loc.lo == 1
+        }
+    }
+
+    given "composed with other features" {
+        then "as a comprehension element" {
+            shown("let xs = [{ i * 2 } for i in 0..3]\nxs[2]") == "4"
+        }
+        then "as a struct field's value" {
+            shown("type P = { a: int }\nlet p = P { a: { 5 } }\np.a") == "5"
+        }
+        then "inside an interpolation hole" {
+            shown("\"${ { 9 } }\"") == "9"
+        }
+        then "as a match arm's body" {
+            shown("match 1 { 1 -> { \"one\" }, _ -> { \"many\" } }") == "one"
+        }
+    }
+
+    given "a managed value through the scope, repeated" {
+        then "a string built inside stays correct across many calls" {
+            shown("fn f(s: string) -> string {\n    let x = { s + \"!\" }\n    x\n}\nmut n = 0\nfor i in 0..500 { n = n + f(\"hi\").length }\nn") == "1500"
+        }
+        then "a list built inside stays correct across many calls" {
+            shown("fn f() -> List<int> {\n    let x = { [1, 2, 3].concat([4]) }\n    x\n}\nmut n = 0\nfor i in 0..500 { n = n + f().length }\nn") == "2000"
+        }
+    }
+}
