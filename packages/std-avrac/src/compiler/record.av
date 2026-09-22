@@ -217,10 +217,10 @@ fn memoized<T>(mut cache: Map<string, T>, key: string, make: fn() -> T) -> T {
 /// A MODULE'S INTERFACE DIGEST, memoized for the build.
 // LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn bytes_key_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
-    let known: string? = ws.keys.bytes_keys.get(m.text())
+    let known: string? = ws.keys.bytes_keys.get().get(m.text())
     if known != null { return known! }
     let made = bytes_key(ws, store, m)
-    ws.keys.bytes_keys.set(m.text(), made)
+    ws.keys.bytes_keys.put(m.text(), made)
     made
 }
 
@@ -229,10 +229,10 @@ fn bytes_key_cached(mut ws: Workspace, store: Store, m: ModulePath) -> string {
 // LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn obj_key_cached(mut ws: Workspace, store: Store, m: ModulePath, path: string) -> string {
     let key = "${m.text()}\t${path}"
-    let known: string? = ws.keys.object_keys.get(key)
+    let known: string? = ws.keys.object_keys.get().get(key)
     if known != null { return known! }
     let made = obj_key_of(ws, store, m, path)
-    ws.keys.object_keys.set(key, made)
+    ws.keys.object_keys.put(key, made)
     made
 }
 
@@ -385,10 +385,13 @@ export fn keep_interfaces(mut ws: Workspace, store: Store, modules: List<ModuleP
     }
     // A BODY EDIT MOVES A RECORD'S `file` LINES, and with them no key but its own
     // files'. Only a moved interface or import list moves what other modules see.
-    ws.keys.object_keys = {}
+    let no_object: Map<string, string> = {}
+    ws.keys.object_keys.set(no_object)
     if seen_moved {
-        ws.keys.bytes_keys = {}
-        ws.keys.view_keys = {}
+        let no_bytes: Map<string, string> = {}
+        let no_view: Map<string, string> = {}
+        ws.keys.bytes_keys.set(no_bytes)
+        ws.keys.view_keys.set(no_view)
         ws.import_lists = {}
     }
 }
@@ -697,10 +700,10 @@ fn kept_runs(at: Placed?) -> List<string> {
 /// every file of a module sees the same ones.
 // LICENSED I39: see `record_cached` — a Workspace method trips the F2010 defect.
 fn view_key(mut ws: Workspace, store: Store, m: ModulePath) -> string {
-    let known: string? = ws.keys.view_keys.get(m.text())
+    let known: string? = ws.keys.view_keys.get().get(m.text())
     if known != null { return known! }
     let made = digest_of(joined([bytes_key_cached(ws, store, module_path(dep.split("."))) for dep in seen_modules(ws, store, m)], "\n"))
-    ws.keys.view_keys.set(m.text(), made)
+    ws.keys.view_keys.put(m.text(), made)
     made
 }
 
