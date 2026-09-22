@@ -1,0 +1,48 @@
+// The red team's record for parse_int: the boundary read one digit
+// either side, a run long enough to wrap an unguarded fold twice
+// over, and the NUL that a header-reading guard must refuse rather
+// than stop at.
+use @std.text.{parse_int, repeat, from_codepoint}
+
+spec "std/text — parse_int, adversarial" {
+    given "the boundary, one digit at a time" {
+        then "the last digit of the largest int is still accepted" { parse_int("9223372036854775807") != null }
+        then "bumping only the last digit past it is refused" { parse_int("9223372036854775817") == null }
+        then "the last digit of the smallest int is still accepted" { parse_int("-9223372036854775808") != null }
+        then "bumping only the last digit past the smallest int is refused" { parse_int("-9223372036854775818") == null }
+        then "a nineteen-digit run under the ceiling is fine unsigned" { parse_int("1000000000000000000") == 1000000000000000000 }
+        then "a twenty-digit run is always past it" { parse_int("10000000000000000000") == null }
+    }
+    given "a run long enough to wrap an unguarded fold more than once" {
+        // An unguarded `v = v*10 + d` wraps every ~19 digits, so a
+        // naive re-probe of the SAME wrapped value at 38 or 57 digits
+        // would falsely read as "back to a small number". The bound
+        // check must refuse on the FIRST digit that would overflow —
+        // never let the loop run to the end and wrap twice.
+        then "38 nines is absent" { parse_int(repeat("9", 38)) == null }
+        then "57 nines is absent" { parse_int(repeat("9", 57)) == null }
+        then "a thirty-digit run is absent" { parse_int(repeat("3", 30)) == null }
+        then "a megabyte of digits is absent, and answers before reading it all in vain" {
+            parse_int(repeat("7", 1000000)) == null
+        }
+        then "a megabyte of zeros is exactly zero" { parse_int(repeat("0", 1000000)) == 0 }
+    }
+    given "the empty and the near-empty" {
+        then "an empty text is absent, not zero" { parse_int("") == null }
+        then "a single digit" { parse_int("5") == 5 }
+        then "a single sign" { parse_int("-") == null }
+        then "a single sign then a NUL" { parse_int("-" + from_codepoint(0)) == null }
+    }
+    given "a NUL at every position" {
+        then "leading" { parse_int(from_codepoint(0) + "12") == null }
+        then "inside the sign and the digits" { parse_int("-" + from_codepoint(0) + "12") == null }
+        then "trailing, after digits that would otherwise parse" {
+            parse_int("9223372036854775807" + from_codepoint(0)) == null
+        }
+    }
+    given "well past the ceiling, unsigned" {
+        then "nowhere near fitting, and not silently truncated to something plausible" {
+            parse_int("170141183460469231731687303715884105728") == null
+        }
+    }
+}

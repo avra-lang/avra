@@ -1,0 +1,56 @@
+// text -> int, the row every hand-rolled fold used to skip: the
+// ceiling on both sides, a single optional leading `-`, and nothing
+// else — no space, no `+`, no fraction. Absence is the answer for
+// anything that is not exactly that.
+use @std.text.{parse_int, from_codepoint}
+
+/// The most negative int — no literal spells it, so the wraparound
+/// this tree already relies on (consts_adversarial_test.av) does.
+fn int_min() -> int { 9223372036854775807 + 1 }
+
+spec "std/text — parse_int" {
+    given "ordinary integers" {
+        then "zero" { parse_int("0") == 0 }
+        then "negative zero is zero" { parse_int("-0") == 0 }
+        then "a positive number" { parse_int("42") == 42 }
+        then "a negative number" { parse_int("-42") == 0 - 42 }
+        then "leading zeros are digits, not a refusal" { parse_int("007") == 7 }
+    }
+    given "the ceiling, on both sides" {
+        then "the largest int" { parse_int("9223372036854775807") == 9223372036854775807 }
+        then "one past the largest int is absent" { parse_int("9223372036854775808") == null }
+        then "the smallest int — the lexer's own token grammar refuses this literal" {
+            parse_int("-9223372036854775808") == int_min()
+        }
+        then "one past the smallest int is absent" { parse_int("-9223372036854775809") == null }
+        then "wildly past the ceiling is absent, not wrapped" {
+            parse_int("99999999999999999999999999999999") == null
+        }
+    }
+    given "the empty case, written first" {
+        then "empty text is absent" { parse_int("") == null }
+        then "a lone sign is absent" { parse_int("-") == null }
+    }
+    given "malformed text" {
+        then "a fraction is absent" { parse_int("1.5") == null }
+        then "an exponent is absent" { parse_int("1e3") == null }
+        then "a leading `+` is absent — the caller writes what it means" { parse_int("+42") == null }
+        then "surrounding space is absent — the caller trims" {
+            parse_int(" 42") == null && parse_int("42 ") == null && parse_int(" 42 ") == null
+        }
+        then "a digit separator is absent" { parse_int("4_2") == null }
+        then "letters are absent" { parse_int("abc") == null }
+        then "digits then letters are absent, whole" { parse_int("12abc") == null }
+        then "letters then digits are absent, whole" { parse_int("abc12") == null }
+        then "a double sign is absent" { parse_int("--42") == null }
+        then "a sign in the middle is absent" { parse_int("4-2") == null }
+    }
+    given "a NUL is an ordinary byte the guard refuses on sight" {
+        then "a NUL inside the digits is absent" {
+            parse_int("1" + from_codepoint(0) + "2") == null
+        }
+        then "a NUL after otherwise-valid digits is absent" {
+            parse_int("12" + from_codepoint(0)) == null
+        }
+    }
+}

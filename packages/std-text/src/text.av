@@ -12,8 +12,12 @@
 //! header rather than stopping at it, so a NUL is an ordinary
 //! character: text carrying one is longer than its prefix and unequal
 //! to it. `nul_at` and `has_nul` guard the C seats, where it is not.
+//! `parse_int` reads the other way: `-`? digits, the ceiling on both
+//! sides, absence for anything else.
 
 extern fn avra_str_from_codepoint(code: int) -> string
+extern fn avra_str_parses_int(s: string) -> bool
+extern fn avra_str_parsed_int(s: string) -> int
 
 // ── The builder ─────────────────────────────────────────────────
 
@@ -32,6 +36,18 @@ impl Text {
     fn built() -> string {
         self.parts.join("")
     }
+}
+
+// ── Parsing ──────────────────────────────────────────────────────
+
+/// The text as an int: `-`? digits, the ceiling on both sides,
+/// nothing else — no leading `+`, no surrounding space, no fraction.
+/// Absent for anything that is not exactly that; the caller trims
+/// and strips a `+` first, since a parser that accepts two spellings
+/// of one number is the two-hats hazard.
+export fn parse_int(s: string) -> int? {
+    if !avra_str_parses_int(s) { return null }
+    avra_str_parsed_int(s)
 }
 
 // ── Shaping ─────────────────────────────────────────────────────
