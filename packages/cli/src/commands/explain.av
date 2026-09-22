@@ -18,6 +18,7 @@ impl Runnable for ExplainCmd {
         let q = args.arg("code")
         if q == "process" { return explained_process(args.arg("at")) }
         if q == "repr" { return explained_repr(args.arg("at")) }
+        if q == "writes" { return explained_writes(args.arg("at")) }
         if q.contains(":") { return explained_kind(q) }
         if q.starts_with("@") { return explained_annotation(q.substring(1, q.length)) }
         let hit: DiagCode? = avra().rows.codes.find(it.id == q || it.kind == q)
@@ -100,6 +101,27 @@ fn explained_repr(type_text: string) -> int {
     0
 }
 
+/// `avra explain writes <fn>` — the WRITE-FLOW CHAIN the seats pass
+/// (compiler/receivers.av) found for `fn`'s seat 0 (a method's
+/// receiver, a free fn's first parameter): the fn names, in call
+/// order, from `fn` to the one whose declaration or body writes it
+/// directly — the same evidence F2047 warns from, turned into a few
+/// seconds instead of reading every callee by hand.
+fn explained_writes(fn_name: string) -> int {
+    mut p = root_program(here())
+    if !p.clean() {
+        eprintln(p.report())
+        return 1
+    }
+    let chain = p.explain_writes(fn_name)
+    if chain == null {
+        eprintln("avra: no fn `${fn_name}` is declared in this package with a written seat 0")
+        return 1
+    }
+    println(chain!)
+    0
+}
+
 /// The package's declared tools, minted as the library mints them, and
 /// what a child inherits — the set of doors, before any opens. `at` is
 /// the package's directory; the front door stands at the root.
@@ -159,6 +181,6 @@ fn terminator_text(t: string?) -> string {
 
 export fn explain_command() -> Subcommand {
     let body: ExplainCmd = ExplainCmd { }
-    let args = [ArgDef { name: "code", description: "an F-code, a kind, a package kind (`@scope/name:E1`), `process`, or `repr`", required: true, variadic: false }, ArgDef { name: "at", description: "for `process`: the package directory (the root when absent); for `repr`: a type expression (`int?`, `Id?`)", required: false, variadic: false }]
-    Subcommand { meta: arg_command("explain", "What a diagnostic code means; `process` — what this package may run; `repr <type>` — its representation", args), body: body }
+    let args = [ArgDef { name: "code", description: "an F-code, a kind, a package kind (`@scope/name:E1`), `process`, `repr`, or `writes`", required: true, variadic: false }, ArgDef { name: "at", description: "for `process`: the package directory (the root when absent); for `repr`: a type expression (`int?`, `Id?`); for `writes`: a fn name", required: false, variadic: false }]
+    Subcommand { meta: arg_command("explain", "What a diagnostic code means; `process` — what this package may run; `repr <type>` — its representation; `writes <fn>` — its seat-0 write-flow chain", args), body: body }
 }
