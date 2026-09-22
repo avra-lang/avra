@@ -180,6 +180,33 @@ fn is_blank(c: int) -> bool {
     c == 32 || c == 9 || c == 10 || c == 13
 }
 
+/// TEXT -> INT, mirroring `avra_int_parse_walk` in avra_runtime.c so
+/// eval == native by construction: `-`? digits, the ceiling on both
+/// sides, nothing else. The magnitude accumulates NEGATIVE regardless
+/// of sign — a positive walk bounded by the largest int can never
+/// reach the smallest one without wrapping first, which is the same
+/// wall the lexer's own token grammar hits.
+fn text_int(s: string) -> int? {
+    let n = s.length
+    let negative = n > 0 && s.char_code(0) == 45
+    mut i = if negative { 1 } else { 0 }
+    if i == n { return null }
+    let limit = if negative { 0 - 9223372036854775807 - 1 } else { 0 - 9223372036854775807 }
+    let limit_div10 = limit / 10
+    let limit_last = 0 - (limit - limit_div10 * 10)
+    mut v = 0
+    while i < n {
+        let c = s.char_code(i)
+        if c < 48 || c > 57 { return null }
+        let d = c - 48
+        if v < limit_div10 || (v == limit_div10 && d > limit_last) { return null }
+        v = v * 10 - d
+        i = i + 1
+    }
+    if negative { return v }
+    0 - v
+}
+
 /// A map's keys and values in written order — the spec's map,
 /// found by a scan.
 type MapVal = { keys: List<string>, vals: List<Val> }
