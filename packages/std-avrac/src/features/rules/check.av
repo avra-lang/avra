@@ -18,24 +18,15 @@ export fn check_rule(mut cx: TypeCx, s: StmtId) {
 fn checked_rule(mut cx: TypeCx, s: StmtId, rname: string, arms: List<Arm>, body: ExprId) {
     if arms.is_empty() { cx.emit(no_arms(cx.stmt_loc(s), rname)) }
     checked_examples(cx, s, rname)
+    let want: TypeId = cx.stmt_sig(s)?.ret ?? cx.error_type
+    // The declared `Fix?` plants the want before the arms walk — a
+    // rule's synthesized `Match` is otherwise an ordinary one, and an
+    // ordinary fn body takes the same channel (fns/check.av's
+    // `checked_fn`): each arm is judged, and may WIDEN — a bare
+    // `quote` into `.Rewrite` — against the want directly, instead of
+    // joining the arms bottom-up and reconciling after.
+    cx.plant_want(body, want)
     cx.walk_under(s, body)
-    let opt_want: TypeId = cx.stmt_sig(s)?.ret ?? cx.error_type
-    let want: TypeId = cx.view.types.carried(opt_want) ?? opt_want
-    for a in arms {
-        if !arm_answers(cx, a, want) { cx.emit(bad_answer(cx.loc_of(a.value), rname, cx.name_at(a.value))) }
-    }
-    // THE MATCH'S OWN TYPE, RIGHT NOW: `walk_under` ran the ordinary
-    // match law, which joins BOTTOM-UP from the arms' own types (a
-    // `Code` beside a `null` joins to `Code?`) — it never reads the
-    // want a boundary plants. That join is wrong for a rule, whose
-    // arms answer `Fix` only once `accepts` above has widened them,
-    // so the tail's `null` — already widened once, against the
-    // WRONG bottom-up type — is re-widened here against the rule's
-    // real declared answer, and the match's own recorded type is
-    // corrected to match: lowering mints its merge register FROM
-    // THIS, at every arm chain and jump table alike.
-    rewiden_miss(cx, body, opt_want)
-    cx.facts.set_type(body, opt_want)
 }
 
 /// A rule proves itself against at least one `@fixes`/`@keeps`, each

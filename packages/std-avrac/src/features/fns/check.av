@@ -214,8 +214,13 @@ fn inout_able(t: TypeRef?) -> bool {
 
 fn checked_fn(mut cx: TypeCx, s: StmtId, fname: string, fret: TypeRef, body: ExprId) {
     let sig: FnSig? = cx.stmt_sig(s)
-    cx.walk_under(s, body)
     let want: TypeId = sig?.ret ?? cx.error_type
+    // the declared answer plants the want before the body walks, so a
+    // `match`/`when` tail judges (and may WIDEN) each arm against it
+    // directly rather than joining the arms bottom-up and reconciling
+    // after — the same channel a default's or a case's own want takes
+    cx.plant_want(body, want)
+    cx.walk_under(s, body)
     let got: TypeId = cx.type_at(body)
     // a body that did not parse has spoken already; its answer is
     // whatever the hole left, not a second mistake

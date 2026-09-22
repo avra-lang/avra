@@ -146,11 +146,24 @@ impl TypeCx {
         // place — absence has no layout of its own, and lowering's
         // adoption edge mints each form from this record.
         let absent: bool = self.view.types.shape_of(got) is .Null
+        if absent {
+            self.widen(e, want)
+            return true
+        }
         // a LITERAL fills a named type through the absence too:
         // `let rows: Rows? = [1]` writes the shape and means the name
-        if !absent && self.types_disagree(got, inner) && !self.named_accepts(e, inner) { return false }
-        self.widen(e, want)
-        true
+        if !self.types_disagree(got, inner) || self.named_accepts(e, inner) {
+            self.widen(e, want)
+            return true
+        }
+        // A present value that fits neither still gets the SAME
+        // custom-widen doors a bare (non-nullable) want reaches above
+        // — a nullable want is a want like any other, so a `Code`
+        // into `Fix?` widens exactly as it would into `Fix`, and
+        // records THAT lift (`other_accepts` widens its own way): the
+        // slot's nullable wrapper is the CALLER's business, never the
+        // widened value's own recorded shape.
+        self.other_accepts(e, got, inner)
     }
 
     /// A success LIFTS into its Result at the boundary — the auto-Ok
@@ -393,12 +406,18 @@ impl TypeCx {
     /// disagreeing arm speaks for itself; the answer is the anchor's
     /// type, or Error when any disagreed. `subject` names the construct
     /// and `anchor_name` says where the anchor came from, so each site
-    /// keeps its own words.
+    /// keeps its own words. `e` is the construct's own expression: a
+    /// boundary that planted a want on it (`plant_want`, before the
+    /// arms were walked) is heard FIRST, so each arm is judged — and
+    /// may WIDEN — against the declared answer directly, the same as
+    /// any other seat; with no want planted the arms judge each other,
+    /// exactly as before.
     mut fn arms_agree(kind: string, subject: string, anchor_name: string,
-                         anchor: ExprId, values: List<ExprId>) -> TypeId {
+                         e: ExprId, anchor: ExprId, values: List<ExprId>) -> TypeId {
         // an arm that LEAVES answers nothing and joins with anything
         let answering = [v for v in values if self.stays(v)]
-        let want = self.arms_answer(anchor, answering)
+        let planted: TypeId? = self.want_at(e)
+        let want = planted ?? self.arms_answer(anchor, answering)
         mut agreed = true
         for v in answering {
             if !self.accepts(v, want) {
@@ -406,10 +425,20 @@ impl TypeCx {
                 agreed = false
             }
         }
-        if !agreed { return self.error_type }
         // The anchor lands in the answer too — it may be the side that
-        // lifts when another arm is an absence.
-        let _ = self.accepts(anchor, want)
+        // lifts when another arm is an absence. Discarding its own
+        // acceptance was sound only while `want` was ALWAYS DERIVED
+        // FROM the anchor (`arms_answer`'s join starts there, so
+        // accepting it back is guaranteed); a want a boundary PLANTED
+        // instead carries no such guarantee, so it is judged too, the
+        // same as any other arm, once there is one to disagree with.
+        if self.stays(anchor) && planted != null && !self.accepts(anchor, want) {
+            self.arms_disagree(kind, subject, anchor_name, anchor, want)
+            agreed = false
+        } else {
+            let _ = self.accepts(anchor, want)
+        }
+        if !agreed { return self.error_type }
         want
     }
 
