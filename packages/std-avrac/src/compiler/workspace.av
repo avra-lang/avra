@@ -130,6 +130,17 @@ fn new_records() -> Records {
     Records { loaded_records: Cell.new(no_loaded), record_texts: Cell.new(no_texts), record_lines: Cell.new(no_lines), record_fields: Cell.new(no_fields), record_places: Cell.new(no_places) }
 }
 
+/// `v` filed under `i` in the table a cell holds, in place — the
+/// dense-table twin of `Cell<Map<K,V>>.put`: `Table` has no growth
+/// verb of its own, so this takes the cell's held table, grows the
+/// local copy and writes it straight back, never held across a call
+/// that could re-enter the same cell.
+fn keep_in<T>(cell: Cell<Table<T>>, i: int, v: T) {
+    mut t = cell.get()
+    t.keep(i, v)
+    cell.set(t)
+}
+
 /// The families' value tables, sparse by their keys and grown as
 /// values are placed; `sigs` and `methods` live in the declaration
 /// table itself.
@@ -455,9 +466,7 @@ impl Workspace {
     /// parse, a held file's minted with its module the first time anything asks.
     fn file_ensured(f: FileId) {
         if self.hold.file_ready.get().at(f.index) != null || !self.hold.holds_settled.get() { return }
-        mut ready = self.hold.file_ready.get()
-        ready.keep(f.index, true)
-        self.hold.file_ready.set(ready)
+        keep_in(self.hold.file_ready, f.index, true)
         if self.is_held(f) && self.store != null { self.mint_module(self.store!, module_path(segments_of(self.module_of(self.decls.file(f).path)))) }
     }
 
@@ -829,9 +838,7 @@ impl Workspace {
         self.db.begin(k)
         mut t = self.sign_cx_for(x)
         t.declare_one(x)
-        mut voices_t = self.sig_voices.get()
-        voices_t.keep(d.index, t.facts.voices)
-        self.sig_voices.set(voices_t)
+        keep_in(self.sig_voices, d.index, t.facts.voices)
         let out: DeclSig? = self.decls.sigs.get()[d.index]
         self.db.settle(k, sig_hash(out))
         out
@@ -867,9 +874,7 @@ impl Workspace {
             if self.is_held(self.decls.decl(b).file) { self.held_methods(target, b) } else { touch(self.sig(b)) }
         }
         let out = self.decls.methods_of(target)
-        mut clashes_t = self.method_clashes.get()
-        clashes_t.keep(target.index, self.decls.method_clashes(target))
-        self.method_clashes.set(clashes_t)
+        keep_in(self.method_clashes, target.index, self.decls.method_clashes(target))
         self.db.settle(k, fp_str(joined([self.decls.decl(m).name for m in out], ",")))
         out
     }
