@@ -146,15 +146,25 @@ export fn file_workspace(path: string) -> Workspace {
     let src = joined_path(root, "src")
     if !exists(src) {
         if dir_of(path) != root { return lone(path) }
-        return programs_workspace(disk_host(), root, avra(), () -> now_ns())
+        return root_workspace(root)
     }
     if !under_dir(path, src) { return lone(path) }
-    timed_workspace(disk_host(), root, avra(), () -> now_ns())
+    root_workspace(root)
 }
 
 /// A file outside any package: a package of one holding just it.
 fn lone(path: string) -> Workspace {
     lone_workspace(path, read_or_die(path), avra())
+}
+
+/// A package ROOT'S workspace, the one choice every caller who already
+/// knows where the root stands makes: `src/` when it has one, else its own
+/// direct files as a directory of programs. `file_workspace` reaches here
+/// once it has settled a file's ancestor root; a directory argument IS its
+/// own root already, so `build_workspace` reaches here directly.
+export fn root_workspace(root: string) -> Workspace {
+    if exists(joined_path(root, "src")) { timed_workspace(disk_host(), root, avra(), () -> now_ns()) }
+    else { programs_workspace(disk_host(), root, avra(), () -> now_ns()) }
 }
 
 /// The package the command stands in: the CALLER's directory, which
@@ -298,7 +308,7 @@ export fn run_binary(binary: string) -> Result<Exit, ProcessError> {
 /// The workspace a build stands in — a directory is a package root, a file is a lone
 /// program — built WITHOUT analysis, so the key is taken before a line is typed.
 fn build_workspace(path: string) -> Workspace {
-    if is_dir(path) { timed_workspace(disk_host(), path, avra(), () -> now_ns()) } else { file_workspace(path) }
+    if is_dir(path) { root_workspace(path) } else { file_workspace(path) }
 }
 
 /// The entry a build of this workspace runs: a package's `[bin]`, or the file itself.

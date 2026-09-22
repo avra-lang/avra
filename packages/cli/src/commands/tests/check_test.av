@@ -1,0 +1,79 @@
+//! `avra check <dir>` — a root's own SHAPE must speak. `build_workspace`'s
+//! directory branch used to route every directory through `timed_workspace`
+//! regardless of whether `src/` existed, so a src-less root's `root_files()`
+//! walked a `src/` that was never there, answered `[]`, and `check` reported
+//! clean having examined nothing — silence the law forbids. `root_workspace`
+//! is the fix: the same choice `file_workspace` already makes, for a
+//! directory taken as the root itself rather than a file under it.
+use @std.io.{make_dirs, write_text}
+use commands.{root_workspace}
+
+/// A package root of one bare manifest, no `src/` — the shape this repo's
+/// own root carries, and the shape that read clean before this fix.
+fn rootless_root(name: string) -> string {
+    let root = "/tmp/avra-check-nothing-test/${name}"
+    let _ = make_dirs(root)
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    root
+}
+
+/// A file directly in the root — the one shape `programs_workspace` reaches.
+fn direct_program(root: string, name: string, text: string) {
+    let _ = write_text("${root}/${name}.av", text)
+}
+
+/// `check <root>`, routed and reported exactly as the CLI does it:
+/// `root_workspace` picks the workspace, `entry_of` picks the entry — the
+/// refusal, or what merely warned ("" reads as clean).
+fn report_of(root: string) -> string {
+    mut ws = root_workspace(root)
+    let entry = ws.entry_of()
+    match ws.checked(entry) {
+        .Err(report) -> report,
+        .Ok(c) -> c.warnings,
+    }
+}
+
+/// F4019's exact words — the golden this fix owes.
+fn no_source_message(root: string) -> string {
+    "error[F4019]: nothing to check under `${root}`: no `src/` and no program files\nhelp: add a `src/` directory, or a `.av` file directly under this root"
+}
+
+spec "commands/check root_workspace" {
+    given "a src-less root with no program files directly in it" {
+        then "check refuses with F4019's exact words, never silence" {
+            let root = rootless_root("empty")
+            report_of(root) == no_source_message(root)
+        }
+    }
+    given "a src-less root with a direct .av file — a directory of programs" {
+        then "a clean one is examined and answers clean" {
+            let root = rootless_root("clean")
+            direct_program(root, "a", "let a = 1\na + 1\n")
+            report_of(root) == ""
+        }
+        then "a broken one is examined and refused, never silently clean" {
+            let root = rootless_root("broken")
+            direct_program(root, "a", "garbage ((((\n")
+            report_of(root).contains("F0100")
+        }
+    }
+    given "a src-less root with no program files AND a broken manifest" {
+        then "the manifest's own refusal speaks — never shadowed by the more generic F4019" {
+            let root = "/tmp/avra-check-nothing-test/broken-manifest"
+            let _ = make_dirs(root)
+            let _ = write_text("${root}/avra.toml", "this is not toml [[[\n")
+            let report = report_of(root)
+            report.contains("F4020") && !report.contains("F4019")
+        }
+    }
+    given "a root with a real src/ — the sibling branch this fix does not touch" {
+        then "the ordinary package path runs, untouched" {
+            let root = "/tmp/avra-check-nothing-test/has-src"
+            let _ = make_dirs("${root}/src")
+            let _ = write_text("${root}/avra.toml", "[package]\nname = \"has-src\"\nversion = \"0.0.1\"\n\n[lib]\nname = \"has-src\"\npath = \"src/main.av\"\n")
+            let _ = write_text("${root}/src/main.av", "export fn f() -> int { 1 }\n")
+            report_of(root) == ""
+        }
+    }
+}

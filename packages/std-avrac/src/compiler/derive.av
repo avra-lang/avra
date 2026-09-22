@@ -9,8 +9,10 @@
 use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
 use features.{SettleRoot, Wanted}
 use @std.path.{relative_path}
+use diagnostics.{Diag, render_among}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
+use compiler.host.{no_source}
 
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
@@ -143,6 +145,7 @@ impl Workspace {
     /// kept under the program's key, so an unchanged program costs a hash. A
     /// refusal is never kept.
     mut fn checked(entry: string?) -> Result<Checked, string> {
+        if self.nothing_to_check() { fail self.rendered_shape([no_source(self.root)]) }
         let store = store_at(build_cache_root(self))
         let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
         let kept: string? = store.get(Stored.Warn, self.program_key(under.named, under.beside))
@@ -151,6 +154,28 @@ impl Workspace {
         let key = d.program.ws.kept_key(under)
         let _ = store.keep(Stored.Warn, key, d.warnings, [key])
         Checked { warnings: d.warnings, reused: false, timed: d.timed([]) }
+    }
+
+    /// NOTHING FOR `check` TO EXAMINE: a directory of programs (no `src/` —
+    /// `per_file` is how the workspace itself remembers that, so this asks
+    /// the workspace rather than the disk again) with no `.av` file
+    /// directly in the root either. `root_files` already reads
+    /// `packages[0].src` as the workspace was built — a directory of
+    /// programs lists direct files alone, which is what makes an empty
+    /// answer here mean none exist, not merely unwalked.
+    ///
+    /// A MANIFEST THAT ALREADY SPOKE IS LEFT TO SPEAK: a malformed
+    /// `avra.toml` earns `manifest.syntax` naming the broken line, not
+    /// "nothing to check" naming a symptom of it — the more specific
+    /// voice wins, so this asks only once the manifest is silent.
+    fn nothing_to_check() -> bool {
+        self.per_file && self.packages_voiced().is_empty() && self.root_files().is_empty()
+    }
+
+    /// A refusal about the workspace's own SHAPE — no line anywhere to
+    /// point at, so no source window is ever asked for.
+    fn rendered_shape(ds: List<Diag>) -> string {
+        joined([render_among(d, self.lang.rows.codes, []) for d in ds], "\n\n")
     }
 
     /// The program at `entry`, derived — under the hold, and from the sources
