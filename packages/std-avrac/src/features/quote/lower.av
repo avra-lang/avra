@@ -63,14 +63,12 @@ fn list_row(k: MetaKind) -> string {
 
 /// A template value's node — its one field.
 fn node_of(mut cx: LowerCx, v: Reg, ty: TypeId, node_ty: TypeId) -> Reg {
-    let slot: int? = (cx.view.decls.fields_of_type(ty))?.slot_of("node")
-    cx.field_read(v, ty, slot ?? 0, node_ty)
+    cx.field_named(v, ty, "node", node_ty)
 }
 
 /// A named meta value's `name`.
 fn named(mut cx: LowerCx, h: ExprId, ty: TypeId) -> Reg {
-    let slot: int? = (cx.view.decls.fields_of_type(ty))?.slot_of("name")
-    cx.field_read(cx.reg_of(h), ty, slot ?? 0, cx.type(string))
+    cx.field_named(cx.reg_of(h), ty, "name", cx.type(string))
 }
 
 /// A list of registers as a box of `ty`.
@@ -97,11 +95,12 @@ fn meta_call(mut cx: LowerCx, e: ExprId, verb: string, args: List<Reg>, ret: Typ
 
 // ── the quote AS A PATTERN — matches, never splices ──
 //
-// The Shape is built at COMPILE TIME, once per site, from the
-// PATTERN's own store — never the subject's — and REBUILT at every
-// match attempt: this feature cannot yet mint static data for a
-// value it computes rather than one the source spells as a `const`
-// (ROADMAP, epic avra-8sb5.25, "quote-pattern Shape as static data").
+// The Shape is COMPUTED at compile time, from the PATTERN's own
+// store — never the subject's — but EMITTED fresh at every match
+// attempt: no source-spelled `const` stands behind it, only a value
+// this feature's own lowering computed, and there is nowhere yet to
+// lay such a value out as static data — so the same construction
+// sequence runs again on every attempt, a real cost, never hidden.
 // `matched` is called by symbol through the same one-door lookup
 // `meta_call` uses, over `@std/avrac` instead of `@std/meta`.
 
@@ -117,9 +116,9 @@ export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty
     let shape_ty = avrac_self(cx, "Shape")
     let store_ty = avrac_self(cx, "NodeStore")
     let view_ty = avrac_self(cx, "FileView")
-    let view = field_of(cx, v, vty, "view", view_ty)
-    let subj_store = field_of(cx, view, view_ty, "store", store_ty)
-    let subj_at = field_of(cx, v, vty, "at", at_ty)
+    let view = cx.field_named(v, vty, "view", view_ty)
+    let subj_store = cx.field_named(view, view_ty, "store", store_ty)
+    let subj_at = cx.field_named(v, vty, "at", at_ty)
     let s = shape_reg(cx, shape_ty, cx.type(List<shape_ty>), shape)
     let answer_ty = cx.type(List<at_ty>?)
     let answer = avrac_call(cx, "matched", [subj_store, subj_at, s], answer_ty)
@@ -137,13 +136,13 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
     let names = quote_pat_names(quote_pat_holes(cx.view.store, body))
     let at_ty = avrac_self(cx, "At")
     let code_ty = avrac_self(cx, "Code")
-    let view = field_of(cx, v, vty, "view", avrac_self(cx, "FileView"))
+    let view = cx.field_named(v, vty, "view", avrac_self(cx, "FileView"))
     let carried = cx.carried_of(answer, cx.type(List<at_ty>?))
     mut out: List<Reg> = []
     // LICENSED I3: each binder's Code is packed in binder order, its own mint
     for j, n in names {
         let at_j = cx.slot_read(carried, j, at_ty)
-        out.push(packed_ty(cx, code_ty, [view, at_j]))
+        out.push(cx.packed_struct(code_ty, [view, at_j]))
     }
     out
 }
@@ -185,37 +184,14 @@ fn tagged(mut cx: LowerCx, ty: TypeId, tag: int, payload: List<Reg>) -> Reg {
     dst
 }
 
-/// A struct packed fresh, given its fields in slot order — a FLAT
-/// (one-field) record is one `Ins.Pack`, exactly `cx.packed`'s own
-/// rule; any other struct is a slot array, one push per field, as
-/// an ordinary struct literal's own lowering builds it
-/// (features/structs/lower.av). `Code` is two fields, always the
-/// second case, but the check costs nothing and stays honest if
-/// that ever changes.
-fn packed_ty(mut cx: LowerCx, ty: TypeId, parts: List<Reg>) -> Reg {
-    if cx.view.types.is_flat(ty) { return flat_packed(cx, ty, parts) }
-    let size = cx.box_size(parts.length)
-    let dst = cx.mint_ty(ty)
-    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
-    for r in parts { cx.push_slot(dst, r) }
-    dst
-}
-
-fn flat_packed(mut cx: LowerCx, ty: TypeId, parts: List<Reg>) -> Reg {
-    let dst = cx.mint_ty(ty)
-    cx.emit(Ins.Pack(dst, parts))
-    dst
-}
-
-/// One field, by name — the slot asked once, never assumed.
-fn field_of(mut cx: LowerCx, v: Reg, vty: TypeId, name: string, field_ty: TypeId) -> Reg {
-    let slot: int? = (cx.view.decls.fields_of_type(vty))?.slot_of(name)
-    cx.field_read(v, vty, slot ?? 0, field_ty)
-}
-
 fn avrac_self(mut cx: LowerCx, name: string) -> TypeId {
-    let d? = cx.view.decls.avrac_named(name) else { return cx.type(string) }
+    let d? = cx.view.decls.avrac_named(name) else { return avrac_type_missing(cx, name) }
     cx.view.decls.self_type_of(d)
+}
+
+fn avrac_type_missing(mut cx: LowerCx, name: string) -> TypeId {
+    cx.defect("`@std.avrac.${name}` is not declared")
+    cx.type(string)
 }
 
 /// A `@std/avrac` row called by the compiler, answering `ret` —

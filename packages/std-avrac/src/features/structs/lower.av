@@ -1,8 +1,12 @@
 //! The lowering rule — the ONE meaning: a struct value IS a fixed
-//! slot array. The literal is one array_new plus a push per field
-//! in DECLARATION order; values evaluate in WRITTEN order first.
-//! Reads are the spine's property ladder (a slot read at the
-//! field's compile-time index) — zero new instructions anywhere.
+//! slot array (or, for a FLAT one-field record, its field's own
+//! register — `cx.packed_struct`, features/values.av, the ONE
+//! construction every struct here and elsewhere shares). Values
+//! evaluate in WRITTEN order first, then every slot is resolved —
+//! written, read back from a `with` subject, or defaulted — before
+//! the pack itself runs. Reads are the spine's property ladder (a
+//! slot read at the field's compile-time index) — zero new
+//! instructions anywhere.
 use core.{ExprId, Reg, Ins, TypeId, filled}
 use features.{LowerCx, StructSig}
 
@@ -15,9 +19,9 @@ fn structs_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     }
 }
 
-/// The copy: values evaluate in written order, then one push per
-/// declaration slot — the written register, or the subject's own
-/// field read back. The subject is untouched.
+/// The copy: values evaluate in written order, then one slot per
+/// declaration — the written register, or the subject's own field
+/// read back. The subject is untouched.
 fn with_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
     let src = cx.reg_of(subject)
     let regs = [cx.reg_of(v) for v in values]
@@ -28,18 +32,14 @@ fn with_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, fields: List<string>, v
     }
     let sig = held!
     let subject_ty = cx.type_at(subject)
-    mut by_slot: List<Reg?> = []
+    mut parts: List<Reg> = []
+    // LICENSED I3: a field read from the subject EMITS through the context, which a comprehension element does not
     for slot, n in sig.names {
         let j = fields.index_of(n)
-        if j >= 0 { by_slot.push(regs[j]) }
-        else { by_slot.push(cx.field_read(src, subject_ty, slot, sig.types[slot])) }
+        if j >= 0 { parts.push(regs[j]) }
+        else { parts.push(cx.field_read(src, subject_ty, slot, sig.types[slot])) }
     }
-    if cx.flat_at(e) { return packed_lit(cx, e, sig, by_slot) }
-    let size = cx.box_size(by_slot.length)
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
-    for r in by_slot { cx.push_slot(dst, r!) }
-    dst
+    cx.packed_struct(cx.type_at(e), parts)
 }
 
 fn lit_reg(mut cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId>) -> Reg {
@@ -53,28 +53,12 @@ fn lit_reg(mut cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId
             by_slot.set(slot!, r)
         }
     }
-    if cx.flat_at(e) { return packed_lit(cx, e, sig, by_slot) }
-    let size = cx.box_size(by_slot.length)
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
+    mut parts: List<Reg> = []
+    // LICENSED I3: a missing slot's default EMITS through the context, which a comprehension element does not
     for slot, r in by_slot {
-        if r != null { cx.push_slot(dst, r!) } else { cx.push_slot(dst, defaulted_reg(cx, e, sig, slot)) }
+        parts.push(r ?? defaulted_reg(cx, e, sig, slot))
     }
-    dst
-}
-
-/// A FLAT record's literal: ONE Pack over its one field, which each
-/// engine renders as identity. The instruction earns its place by
-/// giving the register the RECORD's type — a reader that asks a
-/// register what it holds must not be told the field.
-fn packed_lit(mut cx: LowerCx, e: ExprId, sig: StructSig, by_slot: List<Reg?>) -> Reg {
-    let held: Reg? = by_slot[0]
-    let one = held ?? defaulted_reg(cx, e, sig, 0)
-    // THE MINT LAW, and the record's own TYPE: the Pack says "this
-    // value IS its fields", and each engine renders it — for a flat
-    // record, identity. The register must still wear the RECORD, or
-    // every reader that asks a register its type sees the field.
-    cx.packed(e, [one])
+    cx.packed_struct(cx.type_at(e), parts)
 }
 
 /// The default an omitted slot lowers to — typing guaranteed one:

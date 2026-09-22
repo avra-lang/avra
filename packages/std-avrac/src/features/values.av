@@ -293,6 +293,21 @@ impl LowerCx {
         dst
     }
 
+    /// A RECORD's field, by NAME — the slot asked once, never
+    /// assumed. The declaration already promised this field, so
+    /// absence here is a DEFECT the compiler's own type moved under
+    /// this lowering, never a plausible default: it speaks and
+    /// answers a fresh register of the field's own type.
+    mut fn field_named(v: Reg, vty: TypeId, name: string, field_ty: TypeId) -> Reg {
+        let slot? = (self.view.decls.fields_of_type(vty))?.slot_of(name) else { return self.field_missing(vty, name, field_ty) }
+        self.field_read(v, vty, slot, field_ty)
+    }
+
+    mut fn field_missing(vty: TypeId, name: string, field_ty: TypeId) -> Reg {
+        self.defect("`${self.view.types.name_of(vty)}` has no field `${name}` — the compiler's own struct moved under this lowering")
+        self.hollow_of(field_ty)
+    }
+
     /// One slot read: the index is a constant, so it is minted and
     /// emitted BEFORE the read that uses it — registers are numbered in
     /// emission order. An absent type reads as an int.
@@ -402,12 +417,28 @@ impl LowerCx {
         }
     }
 
-    /// A value PACKED into the expression's own register. A FLAT
-    /// record IS its one field, so each engine renders a one-part
-    /// pack as identity — which is how a NAMED TYPE costs nothing.
+    /// A value PACKED into the expression's own register.
     mut fn packed(e: ExprId, parts: List<Reg>) -> Reg {
-        let dst = self.result(e)
-        self.emit(Ins.Pack(dst, parts))
+        self.packed_struct(self.type_at(e), parts)
+    }
+
+    /// A struct's fields, already resolved in slot order, packed
+    /// into ITS OWN representation: a FLAT (one-field) record is one
+    /// `Ins.Pack`, which each engine renders as identity — which is
+    /// how a NAMED TYPE costs nothing; any other struct is a slot
+    /// array, one push per field. The ONE construction every struct
+    /// literal, `with`, and a feature packing a struct of its own
+    /// (quote/lower.av's `Code`) shares.
+    mut fn packed_struct(ty: TypeId, parts: List<Reg>) -> Reg {
+        if self.view.types.is_flat(ty) {
+            let dst = self.mint_ty(ty)
+            self.emit(Ins.Pack(dst, parts))
+            return dst
+        }
+        let size = self.box_size(parts.length)
+        let dst = self.mint_ty(ty)
+        self.emit(Ins.CallRt(dst, "avra_array_sized", [size]))
+        for r in parts { self.push_slot(dst, r) }
         dst
     }
 
