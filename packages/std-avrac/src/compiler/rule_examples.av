@@ -12,9 +12,11 @@ use compiler.{analyze_source, Analysis}
 
 /// The example's own root: an expression statement stands as its
 /// expression (the same reduction a rule's own pattern root takes),
-/// every other statement as itself.
-fn example_root(a: Analysis) -> Code {
-    let s = a.view.stmts[0]
+/// every other statement as itself; absent for text that parsed to
+/// no statement at all (an @fixes/@keeps whose text does not parse
+/// is the honest miss it looks like, never a crash).
+fn example_root(a: Analysis) -> Code? {
+    let s? = a.view.stmts.first() else { return null }
     let e? = a.view.store.answer_of(s) else { return a.code_at(.Stmt(s)) }
     a.code_at(.Expr(e))
 }
@@ -22,18 +24,20 @@ fn example_root(a: Analysis) -> Code {
 /// Whether `rule`, applied to `before`, answers a rewrite whose
 /// rendered text — re-parsed — is span-blind equal to `after`.
 export fn checks_fixes(applied: fn(Code) -> Fix?, before: string, after: string) -> bool {
-    let hit? = nearest_fix(applied, example_root(analyze_source(before))) else { return false }
+    let root? = example_root(analyze_source(before)) else { return false }
+    let hit? = nearest_fix(applied, root) else { return false }
     let text? = hit.rendered() else { return false }
     same_fingerprint(text, after)
 }
 
 /// Whether the rule answers nothing anywhere in `before`.
 export fn checks_keeps(applied: fn(Code) -> Fix?, before: string) -> bool {
-    nearest_fix(applied, example_root(analyze_source(before))) == null
+    let root? = example_root(analyze_source(before)) else { return true }
+    nearest_fix(applied, root) == null
 }
 
 fn same_fingerprint(rendered: string, after: string) -> bool {
-    let r = example_root(analyze_source(rendered))
-    let a = example_root(analyze_source(after))
+    let r? = example_root(analyze_source(rendered)) else { return false }
+    let a? = example_root(analyze_source(after)) else { return false }
     r.of.view.store.subtree_fp(r.at) == a.of.view.store.subtree_fp(a.at)
 }
