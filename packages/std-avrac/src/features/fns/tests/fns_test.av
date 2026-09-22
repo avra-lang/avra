@@ -202,7 +202,22 @@ spec "features/fns" {
             shown("extern fn avra_host_is_dir(path: string) -> int\nlet f = (x: string) -> avra_host_is_dir(x)\nf(\"corpus\") >= 0") == "true"
         }
         then "the refusal renders whole — at the READ, the declaration second" {
-            analyze_source("extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")").report().starts_with("error[F2093]: an extern fn is not a value — it names a C symbol, not a callable Avra fn\n  ╭─[<source>:2:9]\n2 │ let f = avra_host_is_dir\n  ·         ┬\n  ·         ╰── read as a value here\n──╯\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_is_dir(path: string) -> int\n  · ┬\n  · ╰── declared here\n──╯\nhelp: wrap it — `(x) -> avra_host_is_dir(x)`")
+            analyze_source("extern fn avra_host_is_dir(path: string) -> int\nlet f = avra_host_is_dir\nf(\"corpus\")").report().starts_with("error[F2093]: an extern fn is not a value — it names a C symbol, not a callable Avra fn\n  ╭─[<source>:2:9]\n2 │ let f = avra_host_is_dir\n  ·         ┬\n  ·         ╰── read as a value here\n──╯\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_is_dir(path: string) -> int\n  · ┬\n  · ╰── declared here\n──╯\nhelp: wrap it — `(x0: string) -> avra_host_is_dir(x0)`")
+        }
+        then "the help's own wrapper compiles as written — a bare lambda needs a type, and the suggestion gives it one" {
+            shown("extern fn avra_now_ns() -> int\nlet f = () -> avra_now_ns()\nf() >= 0") == "true"
+        }
+        then "and it carries every seat's type and count, not a fixed one" {
+            let a = analyze_source("extern fn avra_proc_ready(h: int, timeout_ms: int) -> int\nlet f = avra_proc_ready\n1")
+            a.diagnostics.length == 1 && a.report().contains("help: wrap it — `(x0: int, x1: int) -> avra_proc_ready(x0, x1)`")
+        }
+        then "a zero-arg extern's wrapper takes no seats at all" {
+            let a = analyze_source("extern fn avra_now_ns() -> int\nlet f = avra_now_ns\n1")
+            a.diagnostics.length == 1 && a.report().contains("help: wrap it — `() -> avra_now_ns()`")
+        }
+        then "a `mut` seat's wrapper carries the mark — the contract travels with the type" {
+            let a = analyze_source("extern fn avra_selfhost_argc(mut out: i64) -> int\nlet f = avra_selfhost_argc\n1")
+            a.diagnostics.length == 1 && a.report().contains("help: wrap it — `(mut x0: int) -> avra_selfhost_argc(x0)`")
         }
     }
     given "`return` — the enclosing fn answers now" {

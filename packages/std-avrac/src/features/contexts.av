@@ -3,7 +3,7 @@
 //! asks the namespace) — and the CONTEXTS' vocabularies: every
 //! method a feature's rule calls on a TypeCx, LowerCx or statement
 //! context forwards from here to the one definition.
-use core.{Expr, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, same_stmt, same_expr, same_decl, TypeRef}
+use core.{Expr, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, same_stmt, same_expr, same_decl, TypeRef, joined}
 use diagnostics.{Diag, Voices, refusal}
 use @std.errors.{Loc, Frame}
 
@@ -461,7 +461,23 @@ impl Decls {
         let primary = read_at ?? declared
         let label = if read_at != null { "read as a value here" } else { "declared here" }
         let secondary = if read_at != null { [Frame { label: "declared here", loc: declared }] } else { [] }
-        refusal("type.extern_value", primary, "an extern fn is not a value — it names a C symbol, not a callable Avra fn", label, "wrap it — `(x) -> ${self.fn_name(d) ?? "f"}(x)`") with { secondary: secondary }
+        refusal("type.extern_value", primary, "an extern fn is not a value — it names a C symbol, not a callable Avra fn", label, "wrap it — `${self.wrapper_hint(d)}`") with { secondary: secondary }
+    }
+
+    /// The wrapper the help offers, over the extern's OWN arity and
+    /// seat types. A one-argument, UNTYPED shape suggested for any
+    /// other extern reads as a fix and is not one: a bare `let`'s
+    /// lambda has no seat to infer from, so applying an arity-wrong OR
+    /// an untyped suggestion literally trades this refusal for an
+    /// unrelated "needs a type" one. A signature this door cannot find
+    /// (a malformed declaration) falls back to a bare `()`.
+    fn wrapper_hint(d: DeclId) -> string {
+        let name = self.fn_name(d) ?? "f"
+        let params: List<TypeId> = (self.sig(d))?.fn_sig()?.params ?? []
+        let marks = self.marks_of(d, params.length)
+        let typed = joined([wrapper_typed_seat(i, self.types.name_of(p), marks[i].mutable) for i, p in params], ", ")
+        let names = joined([wrapper_seat(i) for i, _p in params], ", ")
+        "(${typed}) -> ${name}(${names})"
     }
 
     /// A declared type's INSTANCE type — what its impl's receiver wears:
@@ -481,6 +497,20 @@ impl Decls {
     fn instance_vars(d: DeclId) -> List<TypeId> {
         [self.types.intern(Type.Var(d, j, n)) for j, n in self.tparams(d)]
     }
+}
+
+/// One wrapper seat's name, by position.
+fn wrapper_seat(i: int) -> string {
+    "x${i}"
+}
+
+/// One wrapper seat's name, annotated with its type — `mut` first
+/// where the extern's own seat writes through it, so the wrapper's
+/// seat carries the same contract and a `mut` extern's suggestion
+/// stands on its own too.
+fn wrapper_typed_seat(i: int, ty: string, mutable: bool) -> string {
+    let prefix = if mutable { "mut " } else { "" }
+    "${prefix}${wrapper_seat(i)}: ${ty}"
 }
 
 /// Two bindings name the same thing — the identity every seat law
