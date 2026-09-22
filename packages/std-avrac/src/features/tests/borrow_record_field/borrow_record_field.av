@@ -1,0 +1,19 @@
+// MEASURED, not asserted as right: spec 11.5 wants a `mut` local over
+// a struct FIELD that holds a boxed record to be a COPY, so a writing
+// method through the local leaves the field, and its owner,
+// unchanged. The declared-method receiver still ALIASES today (F2095
+// warns at the `mut q = o.r` line); this case flips to "0" the day
+// that receiver copies.
+type Inner = { n: int }
+type Outer = { r: Inner }
+impl Inner {
+    mut fn bump() { self.n = self.n + 1 }
+}
+fn shadow(o: Outer) {
+    mut q = o.r
+    q.bump()
+}
+let o = Outer { r: Inner { n: 0 } }
+shadow(o)
+shadow(o)
+"${o.r.n}"

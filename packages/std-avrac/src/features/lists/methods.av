@@ -149,13 +149,15 @@ fn elem_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
 
 /// The mutation prelude: the receiver is a mut place.
 fn opened_place(mut cx: TypeCx, mc: MethodCall, name: string) -> bool {
-    let root: ExprId? = cx.view.store.place_root(mc.subject)
-    if root == null {
+    let root? = cx.view.store.place_root(mc.subject) else {
         let _ = cx.not_a_place_call(mc.e, name)
         return false
     }
-    if cx.is_mut(root!) { return true }
-    let _ = cx.not_mut_call(mc.e, name, cx.view.store.ident_name(root!) ?? "this name")
+    if cx.is_mut(root) {
+        cx.alias_copy_law(mc.e, root)
+        return true
+    }
+    let _ = cx.not_mut_call(mc.e, name, cx.view.store.ident_name(root) ?? "this name")
     false
 }
 

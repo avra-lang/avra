@@ -407,7 +407,11 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     let no_surfaces: Map<string, Map<string, DeclId>> = {}
     let no_import_lists: Map<string, List<string>> = {}
     let no_defects: List<Diag> = []
-    mut ws = Workspace {
+    // NOT `mut`: the hook closures armed below (`ws.decls.arm(...)`,
+    // the family loop) capture this same workspace box, so every
+    // later writing call here — `load_packages` included — must
+    // write through it, never into a private copy the hooks cannot see.
+    let ws = Workspace {
         host: host, root: root, lang: lang, db: db, decls: language_decls(lang), store: null,
         sources: new_memo<SourceFile>(db, ordinal(Family.Source)), manifests: new_memo<Manifest>(db, ordinal(Family.Manifest)), externs: Cell.new(new_table<ExternNames>()),
         programs: new_memo<Parsed>(db, ordinal(Family.Parsed)),
