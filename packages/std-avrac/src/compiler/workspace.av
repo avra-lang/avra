@@ -77,27 +77,34 @@ fn new_keys() -> Keys {
 /// name lives, since a method table wants them all (`named_in`); and the
 /// records a held file's line declared FLAT (`held_flat`).
 type Hold = {
-    homes: Map<string, bool>,
-    held_wants: List<Wanted>,
+    homes: Cell<Map<string, bool>>,
+    held_wants: Cell<List<Wanted>>,
     body_asks: Cell<List<string>>,
     runs: Cell<Map<string, List<string>>>,
     settling: Cell<List<string>>,
-    hold_asked: List<string>,
-    read_with: List<string>,
-    read_files: List<ReadFile>,
-    minted: Map<string, bool>,
-    file_ready: Table<bool>,
+    hold_asked: Cell<List<string>>,
+    read_with: Cell<List<string>>,
+    read_files: Cell<List<ReadFile>>,
+    minted: Cell<Map<string, bool>>,
+    file_ready: Cell<Table<bool>>,
     holds_settled: Cell<bool>,
-    named_in: Map<string, List<string>>,
-    held_flat: List<TypeId>,
+    named_in: Cell<Map<string, List<string>>>,
+    held_flat: Cell<List<TypeId>>,
 }
 
 fn new_hold() -> Hold {
+    let no_homes: Map<string, bool> = {}
+    let no_wants: List<Wanted> = []
     let no_runs: Map<string, List<string>> = {}
+    let no_reads: List<string> = []
+    let no_read_files: List<ReadFile> = []
+    let no_minted: Map<string, bool> = {}
+    let no_named_in: Map<string, List<string>> = {}
+    let no_flat: List<TypeId> = []
     Hold {
-        homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), runs: Cell.new(no_runs), settling: Cell.new(no_paths()),
-        hold_asked: [], read_with: [], read_files: [], minted: {}, file_ready: new_table(), holds_settled: Cell.new(false),
-        named_in: {}, held_flat: [],
+        homes: Cell.new(no_homes), held_wants: Cell.new(no_wants), body_asks: Cell.new(no_paths()), runs: Cell.new(no_runs), settling: Cell.new(no_paths()),
+        hold_asked: Cell.new(no_paths()), read_with: Cell.new(no_reads), read_files: Cell.new(no_read_files), minted: Cell.new(no_minted), file_ready: Cell.new(new_table<bool>()), holds_settled: Cell.new(false),
+        named_in: Cell.new(no_named_in), held_flat: Cell.new(no_flat),
     }
 }
 
@@ -107,15 +114,20 @@ fn new_hold() -> Hold {
 /// into declarations yet, its raw text, split into lines, tab-split into
 /// fields, and each file's place within it (record.av's `Placed`).
 type Records = {
-    loaded_records: Map<string, bool>,
-    record_texts: Map<string, string>,
-    record_lines: Map<string, List<string>>,
-    record_fields: Map<string, List<List<string>>>,
-    record_places: Map<string, Map<string, Placed>>,
+    loaded_records: Cell<Map<string, bool>>,
+    record_texts: Cell<Map<string, string>>,
+    record_lines: Cell<Map<string, List<string>>>,
+    record_fields: Cell<Map<string, List<List<string>>>>,
+    record_places: Cell<Map<string, Map<string, Placed>>>,
 }
 
 fn new_records() -> Records {
-    Records { loaded_records: {}, record_texts: {}, record_lines: {}, record_fields: {}, record_places: {} }
+    let no_loaded: Map<string, bool> = {}
+    let no_texts: Map<string, string> = {}
+    let no_lines: Map<string, List<string>> = {}
+    let no_fields: Map<string, List<List<string>>> = {}
+    let no_places: Map<string, Map<string, Placed>> = {}
+    Records { loaded_records: Cell.new(no_loaded), record_texts: Cell.new(no_texts), record_lines: Cell.new(no_lines), record_fields: Cell.new(no_fields), record_places: Cell.new(no_places) }
 }
 
 /// The families' value tables, sparse by their keys and grown as
@@ -146,11 +158,11 @@ export type Workspace = {
     module_names: Memo<ModuleNames>,
     visibles: Memo<Namespace>,
     name_facts: Memo<NameFacts>,
-    sig_voices: Table<Voices>,
+    sig_voices: Cell<Table<Voices>>,
     decl_facts: Memo<TypeFacts>,
     const_type_facts: Memo<TypeId>,
-    method_clashes: Table<List<Clash>>,
-    method_diags: List<MethodDiagIndex>,
+    method_clashes: Cell<Table<List<Clash>>>,
+    method_diags: Cell<List<MethodDiagIndex>>,
     folds: Memo<TypeFacts>,
     analyses: Memo<Analysis>,
     asks: Cell<List<Wanted>>,
@@ -166,18 +178,18 @@ export type Workspace = {
     /// store stands.
     keys: Keys,
     /// A path's module, asked once: the answer walks every package.
-    module_names_of: Map<string, string>,
+    module_names_of: Cell<Map<string, string>>,
     /// A module's files and its exported names, each remembered for one size of
     /// the package table — what every `use` line of the program asks again.
-    files_of: Map<string, List<string>>,
-    surfaces: Map<string, Map<string, DeclId>>,
-    import_lists: Map<string, List<string>>,
+    files_of: Cell<Map<string, List<string>>>,
+    surfaces: Cell<Map<string, Map<string, DeclId>>>,
+    import_lists: Cell<Map<string, List<string>>>,
     /// WHAT IS HELD THIS BUILD.
     hold: Hold,
     /// THE MODULES A HELD LOAD TOUCHED, in order — phase one mints and INTERNS every name;
     /// phase two FILLS every shape. A mutual import (language <-> features <-> core) is a
     /// cycle, and one module's shapes cannot be filled until every other module's NAMES are
-    defects: List<Diag>,
+    defects: Cell<List<Diag>>,
     packages: List<Package>,
     package_voices: List<Diag>,
     lone: bool,
@@ -378,6 +390,12 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     let no_asks: List<Wanted> = []
     let no_lifts: List<LiftAsk> = []
     let no_settles: List<SettleAsk> = []
+    let no_method_diags: List<MethodDiagIndex> = []
+    let no_module_names_of: Map<string, string> = {}
+    let no_files_of: Map<string, List<string>> = {}
+    let no_surfaces: Map<string, Map<string, DeclId>> = {}
+    let no_import_lists: Map<string, List<string>> = {}
+    let no_defects: List<Diag> = []
     mut ws = Workspace {
         host: host, root: root, lang: lang, db: db, decls: language_decls(lang), store: null,
         sources: new_memo<SourceFile>(db, ordinal(Family.Source)), manifests: new_memo<Manifest>(db, ordinal(Family.Manifest)), externs: Cell.new(new_table<ExternNames>()),
@@ -386,13 +404,13 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         file_items: new_memo<List<DeclId>>(db, ordinal(Family.Items)),
         module_names: new_memo<ModuleNames>(db, ordinal(Family.Namespace)),
         visibles: new_memo<Namespace>(db, ordinal(Family.Visible)),
-        name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)), sig_voices: new_table(),
-        decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), const_type_facts: new_memo<TypeId>(db, ordinal(Family.ConstTyped)), method_clashes: new_table(), method_diags: [],
+        name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)), sig_voices: Cell.new(new_table<Voices>()),
+        decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), const_type_facts: new_memo<TypeId>(db, ordinal(Family.ConstTyped)), method_clashes: Cell.new(new_table<List<Clash>>()), method_diags: Cell.new(no_method_diags),
         folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
         analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), asks: Cell.new(no_asks),
         lift_asks: Cell.new(no_lifts), lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_asks: Cell.new(no_settles), settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), records: new_records(), keys: new_keys(), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, hold: new_hold(), defects: [],
+        settle_asks: Cell.new(no_settles), settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), records: new_records(), keys: new_keys(), module_names_of: Cell.new(no_module_names_of), files_of: Cell.new(no_files_of), surfaces: Cell.new(no_surfaces), import_lists: Cell.new(no_import_lists), hold: new_hold(), defects: Cell.new(no_defects),
         packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
         clock: clock, phases: [],
     }
@@ -436,15 +454,17 @@ impl Workspace {
     /// A FILE'S DECLARATIONS STAND before they are read: a read file's by its
     /// parse, a held file's minted with its module the first time anything asks.
     fn file_ensured(f: FileId) {
-        if self.hold.file_ready.at(f.index) != null || !self.hold.holds_settled.get() { return }
-        self.hold.file_ready.keep(f.index, true)
+        if self.hold.file_ready.get().at(f.index) != null || !self.hold.holds_settled.get() { return }
+        mut ready = self.hold.file_ready.get()
+        ready.keep(f.index, true)
+        self.hold.file_ready.set(ready)
         if self.is_held(f) && self.store != null { self.mint_module(self.store!, module_path(segments_of(self.module_of(self.decls.file(f).path)))) }
     }
 
     /// Every held module that declares an impl or a trait of this name, minted.
     fn named_minted(name: string) {
         if self.store == null { return }
-        for m in self.hold.named_in.get(name) ?? [] { self.mint_module(self.store!, module_path(segments_of(m))) }
+        for m in self.hold.named_in.get().get(name) ?? [] { self.mint_module(self.store!, module_path(segments_of(m))) }
     }
 
     /// A held declaration may need syntax-only facts that were not part of
@@ -809,7 +829,9 @@ impl Workspace {
         self.db.begin(k)
         mut t = self.sign_cx_for(x)
         t.declare_one(x)
-        self.sig_voices.keep(d.index, t.facts.voices)
+        mut voices_t = self.sig_voices.get()
+        voices_t.keep(d.index, t.facts.voices)
+        self.sig_voices.set(voices_t)
         let out: DeclSig? = self.decls.sigs.get()[d.index]
         self.db.settle(k, sig_hash(out))
         out
@@ -845,7 +867,9 @@ impl Workspace {
             if self.is_held(self.decls.decl(b).file) { self.held_methods(target, b) } else { touch(self.sig(b)) }
         }
         let out = self.decls.methods_of(target)
-        self.method_clashes.keep(target.index, self.decls.method_clashes(target))
+        mut clashes_t = self.method_clashes.get()
+        clashes_t.keep(target.index, self.decls.method_clashes(target))
+        self.method_clashes.set(clashes_t)
         self.db.settle(k, fp_str(joined([self.decls.decl(m).name for m in out], ",")))
         out
     }
@@ -964,7 +988,7 @@ impl Workspace {
             for d in own {
                 if self.decls.sig_rank(self.decls.decl(d)) == rank {
                     touch(self.sig(d))
-                    let v: Voices? = self.sig_voices.at(d.index)
+                    let v: Voices? = self.sig_voices.get().at(d.index)
                     if v != null { out = out.concat(v!.list) }
                 }
             }
