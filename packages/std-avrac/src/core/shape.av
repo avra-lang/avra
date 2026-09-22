@@ -125,9 +125,21 @@ fn hole_index(holes: List<At>, at: At) -> int? {
 /// swallowed by an earlier, enclosing hole — so every listed hole is
 /// under the root, or there is no pattern: a raw index a walk could
 /// never produce is not a defect to discover later at a match.
+///
+/// `holes` is DEDUPED first, same_at, first occurrence winning — the
+/// SEED a binder index is computed the same way as its every later
+/// read (CLAUDE.md): a placeholder listed twice must share ONE
+/// index, or the index after it sits at a position `matched` can
+/// never fill, and its answer would carry a gap disguised as a bind.
 export fn shape_at(store: NodeStore, at: At, holes: List<At>) -> Shape? {
-    let built = built_shape(store, at, holes)
-    if reaches_every_hole(built, holes) { built } else { null }
+    let deduped = deduped_ats(holes)
+    let built = built_shape(store, at, deduped)
+    if reaches_every_hole(built, deduped) { built } else { null }
+}
+
+/// `holes` with every repeat dropped, first occurrence order.
+fn deduped_ats(holes: List<At>) -> List<At> {
+    [h for i, h in holes if hole_index(holes, h) == i]
 }
 
 fn built_shape(store: NodeStore, at: At, holes: List<At>) -> Shape {
@@ -213,10 +225,9 @@ fn match_kids(store: NodeStore, subjects: List<At>, shapes: List<Shape>, acc: Li
 
 /// Match `subject` against `shape`: null on a miss, one bound `At`
 /// per binder in binder order on a hit. TOTAL BY CONSTRUCTION: `shape`
-/// only ever came from `shape_at`, which already refused any listed
-/// hole a walk could not reach, so the one gap left in a raw index
-/// run — a placeholder listed twice never produces its own later
-/// index — names no binder and is filtered, never forced. A kind
+/// only ever came from `shape_at`, whose holes are DEDUPED and every
+/// listed one reachable, so a hit's binds are DENSE — no seat a walk
+/// could leave unfilled, and no forced unwrap either. A kind
 /// mismatch (an Expr subject against a Stmt-rooted shape) is a miss
 /// like any other — the type's NAME rides the shallow fold's first
 /// part, so the two spaces never collide. Parentheses mint no node
@@ -224,5 +235,5 @@ fn match_kids(store: NodeStore, subjects: List<At>, shapes: List<Shape>, acc: Li
 export fn matched(store: NodeStore, subject: At, shape: Shape) -> List<At>? {
     let seed: List<At?> = [null for i in 0..(max_hole(shape) + 1)]
     let acc? = match_shape(store, subject, shape, seed) else { return null }
-    [b! for b in acc if b != null]
+    [b! for b in acc]
 }

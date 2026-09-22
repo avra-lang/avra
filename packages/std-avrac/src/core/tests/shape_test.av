@@ -88,6 +88,20 @@ spec "core/shape" {
 
             r != null && r!.length == 2 && kid_is_expr(r![0], x) && kid_is_expr(r![1], d)
         }
+        then "listed twice, the SAME index: holes [x, x, y] over `x + y` binds exactly [x's node, y's node] — no gap, no filter" {
+            mut s = new_node_store()
+            let xh = s.alloc_expr(Expr.Ident("X"), null)
+            let yh = s.alloc_expr(Expr.Ident("Y"), null)
+            let pat_src = s.alloc_expr(Expr.Binary(BinOp.Add, xh, yh), null)
+            let pat = shape_at(s, At.Expr(pat_src), [At.Expr(xh), At.Expr(xh), At.Expr(yh)])!
+
+            let x = s.alloc_expr(Expr.Ident("x"), null)
+            let y = s.alloc_expr(Expr.Ident("y"), null)
+            let subj = s.alloc_expr(Expr.Binary(BinOp.Add, x, y), null)
+            let r = matched(s, At.Expr(subj), pat)
+
+            r != null && r!.length == 2 && kid_is_expr(r![0], x) && kid_is_expr(r![1], y)
+        }
     }
     given "layout" {
         then "two subjects differing only in spans match alike" {
