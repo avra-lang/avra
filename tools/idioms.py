@@ -1073,6 +1073,13 @@ RULES = {
 }
 
 UNRATCHETED = {
+    "I56": "no grep tells a representation-bearing named-type check from an\n"
+           "           ordinary string comparison — the shape is identical either way,\n"
+           "           and only the DOMAIN (a closed, named set of the tree's own free\n"
+           "           wrappers) tells them apart. The keeper is the doc comment beside\n"
+           "           `flat_named` and this entry: the next named type the check must\n"
+           "           widen for is the trigger to give `Kind` a representation bit,\n"
+           "           not to grow the list",
     "I47": "no grep tells a COMPLETE anchor list from a partial one — the anchors\n"
            "           are whatever the grammar can put in the range, so a helper taking\n"
            "           `List<Token>` of names reads identically whether or not the span\n"
