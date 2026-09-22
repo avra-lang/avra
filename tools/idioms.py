@@ -900,6 +900,31 @@ def raw_region(lines):
         if REGION_EMIT.search(l):
             yield i, l.strip()
 
+RAW_RT_CALL = re.compile(r'Ins\.CallRt(?:Void)?\(.*"avra_')
+
+def raw_rt_call(lines):
+    """A runtime row named by a bare string — `Ins.CallRt(dst,
+    "avra_x", args)` — instead of through its generated method
+    (`cx.x(sh, args)`, features/rt.av, from core/rt_namespace.av). A
+    row's method carries the row's own arity in its signature, so a
+    misspelled row is the ordinary "no method" refusal at typing and
+    a wrong seat count the ordinary fn-arity refusal; a bare string
+    reopens both holes a typo can hide behind. `features/emit.av`
+    speaks the one door (`call`/`call_at`/`call_void`) every
+    generated method calls through, and two sites still spell the
+    string by design: `compiler/suite_entry.av` builds the TEST
+    BINARY's entry from its own separate row table (not `rt_sigs()`,
+    a different builder), and `compiler/memory/memory.av` rewrites an
+    ALREADY-LOWERED instruction's string field (the owned-twin
+    substitution) — neither reads a row through `LowerCx` (I56)."""
+    if CURRENT["path"].endswith((
+        "features/emit.av", "compiler/suite_entry.av", "compiler/memory/memory.av",
+    )):
+        return
+    for i, l in enumerate(lines):
+        if RAW_RT_CALL.search(l):
+            yield i, l.strip()
+
 COMMA_LIST = re.compile(r'\(\s*","[^()]*\)\*')
 
 def comma_list_open(lines):
@@ -1019,6 +1044,11 @@ RULES = {
     "I33": (raw_region,
             "a region instruction emitted raw in a feature — speak emit.av's verb "
             "(open_region / arm_end / close_region)"),
+    "I56": (raw_rt_call,
+            "a runtime row named by a bare string — `Ins.CallRt(dst, \"avra_x\", args)` — "
+            "where a generated method carries the row (`cx.x(sh, args)`, features/rt.av); "
+            "a misspelled row or a wrong seat count then refuses at typing instead of "
+            "waiting for a typo nothing catches"),
     "I28": (line_rx(r"pointed\(error_at\("),
             "a refusal assembled by hand — the one shape is "
             "`refusal(kind, at, message, label, help)`"),
@@ -1243,6 +1273,9 @@ CLEAN = {
     "I48": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
+    "I56": [['    cx.array_sized(sh, size)'],
+            ['    self.array_push(box, v)'],
+            ['        cx.map_get(sh, m, k)']],
 }
 
 SPECIMENS = {
@@ -1341,6 +1374,9 @@ SPECIMENS = {
     "I39": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
             ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
             ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
+    "I56": [['    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))'],
+            ['    self.emit(Ins.CallRtVoid("avra_array_push", [box, v]))'],
+            ['        cx.emit(Ins.CallRt(got, "avra_map_get", [m, k]))']],
     "I43": [["    mut walked: List<bool> = filled(view.store.exprs.count(), false)"],
             ["        of_expr: filled<TypeId>(store.exprs.count(), hole),"],
             ["    fn type_at(e: ExprId) -> TypeId { self.of_expr[e.index - self.lo] }"]],

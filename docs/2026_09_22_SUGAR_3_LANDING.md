@@ -366,3 +366,44 @@ byte-for-byte, over every test file under `features/lists/tests`,
 lines, exercising `avra_bytes_run`/`eq_at`/`ieq_at`/`of_str` and list
 comprehension) — zero diffs. `make gate`: green, no new warnings in
 any swept file. `make seed`: regenerated.
+
+**Rung 2** — the idiom ratchet, gate green:
+
+`tools/idioms.py`'s `raw_rt_call` (I56) refuses a NEW
+`Ins.CallRt(Void)?(..., "avra_...", ...)` site outside the three
+named exceptions (`features/emit.av`'s own primitives,
+`compiler/suite_entry.av`'s separate row table, `compiler/memory/
+memory.av`'s owned-twin substitution). Registered in `DOGFOODING.md`
+(next free number at this worktree's base — collision handled by the
+tool's own duplicate-number check per the standing law, not by hand
+coordination).
+
+Running it against the swept tree found 3 real hits, none from the
+sweep itself:
+- `core/rt_namespace.av`'s own module doc quoted the OLD raw form as
+  a worked example — reworded to prose, since a doc comment
+  reproducing the very shape a ratchet refuses is a false positive
+  the ratchet correctly caught.
+- `compiler/tests/settle_test.av`, two sites: this test constructs
+  SYNTHETIC `Ins.CallRtVoid` instructions BY HAND to probe the const-
+  settlement REACH LAW directly — the row's NAME is the test's own
+  subject (one case tests `"avra_io_write"` reaching the World, a
+  third — unflagged, since it does not start with `avra_` — tests
+  `"sqlite3_open"`, a row `rt_sigs()` does not know at all, so no
+  generated method could exist for it regardless). Licensed at both
+  sites (`// LICENSED I56: …`) rather than exempting the whole file:
+  a test file CAN still accidentally spell a feature-shaped raw call,
+  and a blanket file exemption would stop the ratchet from ever
+  seeing that.
+
+`python3 tools/idioms.py --self-test`: green (the new matcher's
+SPECIMENS fire, its CLEAN fixtures — the generated method form —
+do not). `python3 tools/idioms.py`: "no new violations. debt 0 ()
+— 538 file(s) in 19 package(s), next free I57". `make gate`: green
+(one `std-http` adversarial network test failed once, reproduced as
+FLAKY — 434/434 clean on an isolated re-run of `packages/std-http`
+alone, and the full gate re-run came back clean; the test is
+timing-sensitive by its own name and untouched by this sugar).
+`make seed`: `bootstrap/seed.ll` unchanged byte-for-byte (nothing in
+`packages/cli`'s own compiled output moved); `bootstrap/seed.sources`
+updated for the changed source hashes.
