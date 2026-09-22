@@ -23,10 +23,12 @@ fn hand_assembled_refusal(kind: Code, at: Code, msg: Code, label: Code) -> Fix {
 /// Text grown by `s = s + piece` — quadratic, since a string's own
 /// length is read fresh every turn: a `@std/text` builder
 /// (`builder()`, `push`, `built`) or `repeat`/`pad_*` says it in
-/// linear time.
+/// linear time. Guarded to STRINGS ONLY — `n = n + 1` is an ordinary
+/// int accumulator, never this smell.
 @keeps("out = out2 + piece")
+@keeps("n = n + 1")
 export rule str_grown_quadratically {
-    quote { ${s} = ${s} + ${piece} } -> quadratic_growth(s, piece)
+    quote { ${s} = ${s} + ${piece} } if s.type()?.name() == "string" -> quadratic_growth(s, piece)
 }
 
 fn quadratic_growth(s: Code, piece: Code) -> Fix {
