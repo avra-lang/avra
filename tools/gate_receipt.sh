@@ -16,6 +16,12 @@
 # a tree the gate never read — the lie this whole mechanism must not
 # tell. A dirty gate writes no receipt and says so.
 #
+# A RECEIPT NAMES ITS TREE OR REFUSES TO BE ONE. Refusal is a REAL
+# failure — stderr carries the reason, the exit code carries the
+# refusal — never the "declined, and that is fine" contract a dirty
+# tree gets. A caller that must not let a decline read as a gate
+# failure (`make gate`) discards the status at its own call site.
+#
 # EVERY VERB IS A FUNCTION AND THE FIXTURES CALL THE FUNCTIONS. The
 # first draft had `write` run the fixtures first — "an instrument
 # proves itself before it certifies anything" — and the fixtures
@@ -29,18 +35,24 @@
 set -e
 
 # The receipt for a worktree's own tree, written only when the working
-# tree is the committed one. Answers 0 either way: a gate does not go
-# red because a receipt was declined.
+# tree is the committed one. A DIRTY tree declines and answers 0. A
+# tree naming no git commit at all cannot decline this way — there is
+# no tree to name — so it fails instead: stderr says why, exit 1.
 receipt_write() {
     root="$1"
     receipt="$root/build/.gate-green"
+    if ! tree="$(git -C "$root" rev-parse --verify -q HEAD^{tree} 2>/dev/null)" || [ -z "$tree" ]; then
+        rm -f "$receipt"
+        echo "gate: $root names no git tree (no .git here, or no commit yet) — no receipt written, an integration gates this tree itself" >&2
+        return 1
+    fi
     if [ -n "$(git -C "$root" status --porcelain)" ]; then
         rm -f "$receipt"
         echo "gate: green over a DIRTY tree — no receipt written (the integrator will gate its own)"
         return 0
     fi
     mkdir -p "$root/build"
-    printf '%s %s %s\n' "$(git -C "$root" rev-parse HEAD^{tree})" "$(git -C "$root" rev-parse HEAD)" \
+    printf '%s %s %s\n' "$tree" "$(git -C "$root" rev-parse HEAD)" \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$receipt"
     echo "gate: receipt for tree $(cut -c1-12 "$receipt") — an integration taking this exact tree may trust it"
 }
@@ -100,6 +112,25 @@ self_test() {
     if receipt_trusts "$lane" "$changed" > /dev/null 2>&1; then
         echo "gate_receipt: a MISSING receipt was trusted"; return 1
     fi
+    # A TREE WITH NO GIT AT ALL (the Sprite's synced copy) and its
+    # sibling WITH git but NO COMMIT YET both name no tree to write a
+    # receipt for — `write` must refuse loudly, never print one with
+    # a blank field.
+    gitless="$tmp/gitless"
+    mkdir -p "$gitless"
+    if receipt_write "$gitless" > /dev/null 2>"$tmp/gitless.err"; then
+        echo "gate_receipt: a GITLESS tree's write did not refuse"; return 1
+    fi
+    [ ! -f "$gitless/build/.gate-green" ] || { echo "gate_receipt: a GITLESS tree wrote a receipt"; return 1; }
+    [ -s "$tmp/gitless.err" ] || { echo "gate_receipt: a gitless refusal said nothing on stderr"; return 1; }
+    nocommit="$tmp/nocommit"
+    mkdir -p "$nocommit"
+    git init -q "$nocommit"
+    if receipt_write "$nocommit" > /dev/null 2>"$tmp/nocommit.err"; then
+        echo "gate_receipt: a NO-COMMIT tree's write did not refuse"; return 1
+    fi
+    [ ! -f "$nocommit/build/.gate-green" ] || { echo "gate_receipt: a NO-COMMIT tree wrote a receipt"; return 1; }
+    [ -s "$tmp/nocommit.err" ] || { echo "gate_receipt: a no-commit refusal said nothing on stderr"; return 1; }
     # THE CALLING CONVENTION IS PART OF THE CONTRACT, and the fixtures
     # above test only the status — which is how a caller reading
     # STDOUT shipped a skip that fired on "no receipt". A caller that
@@ -112,7 +143,7 @@ self_test() {
     receipt_write "$lane" > /dev/null
     said="$(receipt_trusts "$lane" "$(git -C "$lane" rev-parse HEAD^{tree})" 2>/dev/null || true)"
     [ -n "$said" ] || { echo "gate_receipt: consent said nothing on stdout"; return 1; }
-    echo "gate_receipt: self-test passed — 6 fixtures"
+    echo "gate_receipt: self-test passed — 8 fixtures"
 }
 
 case "$1" in
