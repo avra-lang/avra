@@ -56,7 +56,9 @@ static double seconds(void) {
 }
 
 // A child run with a deadline: its status, its stderr, and whether it
-// had to be killed.
+// had to be killed. The deadline catches a HANG, never a slow machine:
+// a loaded box makes a deep recursion slow, and that is not a finding.
+#define HANG_S 60
 typedef struct { int status; int hung; char words[512]; } Outcome;
 
 static Outcome in_child(void (*body)(void), int deadline_s) {
@@ -72,8 +74,10 @@ static Outcome in_child(void (*body)(void), int deadline_s) {
         _exit(0);
     }
     close(out[1]);
-    ssize_t n = read(out[0], o.words, sizeof o.words - 1);
-    (void)n;
+    // TO END OF FILE: a trap writes its words in more than one write,
+    // and a pipe closed after the first kills the child with SIGPIPE
+    size_t got = 0;
+    for (ssize_t n; got < sizeof o.words - 1 && (n = read(out[0], o.words + got, sizeof o.words - 1 - got)) > 0;) got += (size_t)n;
     close(out[0]);
     waitpid(pid, &o.status, 0);
     o.hung = WIFSIGNALED(o.status) && WTERMSIG(o.status) == SIGALRM;
@@ -154,16 +158,30 @@ static void* write_later(void* self) {
     return answer(w);
 }
 
-// Each sleeper notes the deadline it asked for, read the way the
-// scheduler reads it, in the order the sleepers wake.
-static double g_order[5000];
-static int g_order_len = 0;
-static void* sleep_then_note(void* self) {
+static double now_ms(void) {
     struct timespec t;
     clock_gettime(CLOCK_MONOTONIC, &t);
-    double deadline = (double)t.tv_sec * 1e3 + (double)t.tv_nsec / 1e6 + (double)cap(self, 0);
-    avra_fiber_sleep(cap(self, 0));
-    g_order[g_order_len++] = deadline;
+    return (double)t.tv_sec * 1e3 + (double)t.tv_nsec / 1e6;
+}
+
+// ORDER, NEVER A MEASURED TIME. Every sleeper aims at ONE base plus its
+// own offset, so its intended deadline is the offset alone; it sleeps
+// what remains, and notes the offset when it wakes. The scheduler's own
+// clock read lands a hair after the sleeper's, and a busy machine may
+// stretch that hair: the offsets are spaced far wider than any stretch,
+// so the order checked is the one the scheduler promises.
+// A sleeper that first runs after its own deadline was never timed by
+// the scheduler — it only yields — so it is noted LATE and left out.
+static double g_base_ms = 0;
+static int64_t g_order[5000];
+static int g_order_len = 0;
+static int g_late = 0;
+static void* sleep_then_note(void* self) {
+    int64_t offset = cap(self, 0);
+    double left = g_base_ms + (double)offset - now_ms();
+    if (left < 1) { g_late++; return NULL; }
+    avra_fiber_sleep((int64_t)left);
+    g_order[g_order_len++] = offset;
     return NULL;
 }
 
@@ -225,7 +243,9 @@ static void* read_pipe_k(void* self) {
     char c;
     for (;;) {
         if (read(fd, &c, 1) == 1) return answer(c);
-        if (!avra_fiber_park_fd(fd, 0, cap(self, 1))) return answer(-2);
+        // a timeout DRAINS before it declares: a byte that arrived as
+        // the deadline passed is still this reader's
+        if (!avra_fiber_park_fd(fd, 0, cap(self, 1))) return answer(read(fd, &c, 1) == 1 ? c : -2);
     }
 }
 
@@ -238,41 +258,41 @@ int main(void) {
     // yet settled, so a child's own AVRA_FIBER_STACK is the one read.
     // ── traps and faults, each in a child ───────────────────────
     Outcome o;
-    o = in_child(cycle_with_io_pending, 5);
+    o = in_child(cycle_with_io_pending, HANG_S);
     said("cycle_with_io_pending", o);
     CHECK(!o.hung, "a join cycle beside pending io does not hang");
     CHECK(exited(o, 2) && strstr(o.words, "tasks join each other in a ring — deadlock"), "a join cycle beside pending io is a deadlock, said as a ring");
 
-    o = in_child(wide_overflow, 5);
+    o = in_child(wide_overflow, HANG_S);
     said("wide_overflow", o);
     CHECK(exited(o, 2) && strstr(o.words, "a task's stack overflowed"), "one frame wider than the stack is an overflow");
-    o = in_child(deep_overflow, 5);
+    o = in_child(deep_overflow, HANG_S);
     said("deep_overflow", o);
     CHECK(exited(o, 2) && strstr(o.words, "a task's stack overflowed"), "deep recursion is an overflow");
 
-    o = in_child(overflow_in_case, 5);
+    o = in_child(overflow_in_case, HANG_S);
     said("overflow_in_case", o);
     CHECK(exited(o, 2) && strstr(o.words, "avra: while running fibers / a named case\navra: a task's stack overflowed"), "an overflow names the case in flight, as every trap does");
-    o = in_child(null_in_task, 5);
+    o = in_child(null_in_task, HANG_S);
     said("null_in_task", o);
     CHECK(killed_by(o, SIGSEGV) || killed_by(o, SIGBUS), "a null write in a task is still a crash, not an overflow");
     CHECK(!strstr(o.words, "overflow"), "a null write is never called an overflow");
-    o = in_child(null_in_main_after_spawn, 5);
+    o = in_child(null_in_main_after_spawn, HANG_S);
     said("null_in_main_after_spawn", o);
     CHECK(killed_by(o, SIGSEGV) || killed_by(o, SIGBUS), "a null write in main is still a crash");
-    o = in_child(main_recurses, 10);
+    o = in_child(main_recurses, HANG_S);
     said("main_recurses", o);
     CHECK((killed_by(o, SIGSEGV) || killed_by(o, SIGBUS)) && !strstr(o.words, "task"), "main's own overflow is main's crash, never a task's");
 
-    o = in_child(trap_in_task, 5);
+    o = in_child(trap_in_task, HANG_S);
     said("trap_in_task", o);
     CHECK(exited(o, 2) && strstr(o.words, "a task's own trap"), "a trap inside a task is the program's trap");
 
-    o = in_child(huge_stack, 5);
+    o = in_child(huge_stack, HANG_S);
     said("huge_stack", o);
     CHECK(exited(o, 2) && strstr(o.words, "stack"), "an impossible stack size is refused in words");
 
-    o = in_child(park_bad_fd, 5);
+    o = in_child(park_bad_fd, HANG_S);
     said("park_bad_fd", o);
     CHECK(!o.hung && exited(o, 0) && strstr(o.words, "answered 1"), "a park on a closed descriptor answers ready, so the read reports its own error");
 
@@ -322,16 +342,19 @@ int main(void) {
         enum { SLEEPERS = 5000 };
         static void* ts[SLEEPERS];
         g_order_len = 0;
+        g_late = 0;
         uint32_t lcg = 12345;
         for (int i = 0; i < SLEEPERS; i++) {
             lcg = lcg * 1103515245u + 12345u;
-            ts[i] = spawn1(sleep_then_note, 4 * (1 + (lcg >> 16) % 8));
+            ts[i] = spawn1(sleep_then_note, 20 * (1 + (lcg >> 16) % 8));
         }
+        // no task has run yet: the base stands well past their first turns
+        g_base_ms = now_ms() + 500;
         for (int i = 0; i < SLEEPERS; i++) join_value(ts[i]);
-        int sorted = g_order_len == SLEEPERS;
-        // a clock read apart from the scheduler's by at most a few microseconds
-        for (int i = 1; i < g_order_len; i++) sorted &= g_order[i - 1] <= g_order[i] + 0.05;
-        CHECK(sorted, "5000 shuffled sleepers wake in deadline order");
+        int sorted = g_order_len + g_late == SLEEPERS;
+        for (int i = 1; i < g_order_len; i++) sorted &= g_order[i - 1] <= g_order[i];
+        CHECK(g_order_len > 0, "the timer heap check timed at least one sleeper");
+        CHECK(sorted, "every sleeper the scheduler timed wakes in the order of its deadline");
     }
 
     // ── the world: descriptors ──────────────────────────────────
@@ -404,7 +427,8 @@ int main(void) {
         void* never = spawn1(sleeps, INT64_MAX / 2);
         void* soon = spawn1(sleeps, 5);
         CHECK(join_value(soon) == 1, "a short sleep beside an endless one wakes");
-        CHECK(seconds() - t0 < 1.0, "an endless sleep is not read as already due");
+        // generous: the claim is 2^62 ms against 5 ms, never a speed
+        CHECK(seconds() - t0 < 10.0, "an endless sleep is not read as already due");
         CHECK(!avra_task_done(never), "the endless sleeper still sleeps");
         avra_rc_release(never);
     }

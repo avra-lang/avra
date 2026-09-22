@@ -73,7 +73,20 @@ static void* ping(void* self) {
 
 static void* yield_once(void* self) { avra_fiber_yield(); return answer(cap(self, 0)); }
 
-static void* sleeper(void* self) { avra_fiber_sleep(cap(self, 0)); note(cap(self, 0)); return answer(0); }
+// A sleeper aims at one shared base plus its offset — order, never a
+// measured time (fiber_adversarial_test.c says why).
+static double g_base_ms = 0;
+static double now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (double)t.tv_sec * 1e3 + (double)t.tv_nsec / 1e6;
+}
+static void* sleeper(void* self) {
+    double left = g_base_ms + (double)cap(self, 0) - now_ms();
+    avra_fiber_sleep(left > 0 ? (int64_t)left : 0);
+    note(cap(self, 0));
+    return answer(0);
+}
 
 static int g_pipe[2];
 static void* reader(void* self) {
@@ -115,8 +128,10 @@ static void trapped(const char* what, void (*body)(void), const char* words) {
     }
     close(out[1]);
     char buf[256] = {0};
-    ssize_t n = read(out[0], buf, sizeof buf - 1);
-    (void)n;
+    // TO END OF FILE: a trap writes its words in more than one write,
+    // and a pipe closed after the first kills the child with SIGPIPE
+    size_t got = 0;
+    for (ssize_t n; got < sizeof buf - 1 && (n = read(out[0], buf + got, sizeof buf - 1 - got)) > 0;) got += (size_t)n;
     close(out[0]);
     int status = 0;
     waitpid(pid, &status, 0);
@@ -176,9 +191,10 @@ int main(void) {
 
     // sleeps wake by deadline, not by spawn order
     log_reset();
-    void* s[3] = { spawn1(sleeper, 30), spawn1(sleeper, 10), spawn1(sleeper, 20) };
+    g_base_ms = now_ms() + 20;
+    void* s[3] = { spawn1(sleeper, 60), spawn1(sleeper, 20), spawn1(sleeper, 40) };
     for (int i = 0; i < 3; i++) join_value(s[i]);
-    int64_t woke[] = {10, 20, 30};
+    int64_t woke[] = {20, 40, 60};
     CHECK(g_log_len == 3 && memcmp(g_log, woke, sizeof woke) == 0, "sleepers wake in deadline order");
 
     // a parked reader wakes on a write
