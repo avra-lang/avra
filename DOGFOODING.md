@@ -1026,6 +1026,12 @@ reintroducing I3's blind spot names the two spellings it lost.
       gap. LICENSED at the site when the names bind at DIFFERENT types
       (`.F(v)` a float beside `.B(v)` a bool). Single-line arms only —
       a block body is its own sentence. Ratcheted (`one_body_arms`).
+- I62 (ratcheted) A WALK OVER A STORE'S STATEMENTS HANDS THE IDS —
+      `for s in store.stmt_ids()`, never `for i in 0..store.stmts.count()`
+      and a `StmtId { index: i }` built inside. Four sites spelled the
+      index walk (a `while` among them); the ids are what every one read.
+      LICENSED at the site when the index keys something else too (the
+      mint loop's side table). Ratcheted (`for i in 0..…stmts.count()`).
 - I61 (unratcheted) A MUTABLE SLOT IS A `Cell`, NEVER A ONE-ELEMENT
       LIST. `ensure: List<fn(DeclId)>` written `self.ensure.set(0, f)`
       and read `self.ensure[0]` is a Cell spelled as a list: its writes

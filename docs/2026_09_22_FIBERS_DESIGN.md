@@ -339,7 +339,9 @@ PROOF the compiler demands before work may go there.
   earlier deadline; the block restores the outer one however it exits.
   A park past it fails its verb (`NetError.timed_out()`); `sleep` is
   unaffected until F4 brings cancellation at every pause point. The head
-  is a `Duration` (F2110). One mechanism for the concept: @std/process's
+  is a `Duration`: `within` is `@std/time`'s component, and its template's
+  typed `limit` says so ("`limit` declares `Duration`, this is `int`").
+  One mechanism for the concept: @std/process's
   `within:` parameters were renamed `limit:`, and moving them onto the
   scope is recorded.
 - `Tasks` IS THE OWNER A LOOP THAT NEVER ENDS NEEDS. `Tasks.new()`,

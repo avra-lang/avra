@@ -47,13 +47,28 @@ export component command {
     fn expand() -> Decls { quote { … } }         // optional: the effect
 }
 
-export component within(limit: Duration) {       // a VALUE head
-    body: Stmts                                  // the block IS the slot
-    fn expand() -> Code { quote { … ${self.limit} … ${self.body} } }
+export component within(limit: Code) {           // a VALUE head
+    body: Code                                   // the block IS the field
+    fn expand() -> Code {
+        quote {
+            {
+                let limit: Duration = ${self.limit}   // the head's law, named
+                let outer = avra_fiber_within(limit.ms)
+                defer avra_fiber_within_end(outer)
+                ${self.body}
+            }
+        }
+    }
 }
 ```
 
-- `config { }` — today's feature, unchanged: fields with defaults.
+- A FIELD'S TYPE IS ITS MEANING. `Code` (or `Stmts`) holds the user's
+  code, spliced where the template writes it; any other type is a value
+  (S3). So `within`'s head is `Code`, and a typed `let` in the template
+  states the law the user meets: "`limit` declares `Duration`, this is
+  `int`", at the user's head.
+- fields are bare lines (`name: T = default`); `config { }` still parses
+  and retires with S3's `key:` ladder.
 - `children { }` — typed slots; a nested block of that component lands
   in its slot in order (V2's auto-push). A block no slot takes refuses at
   the user's line, naming the slots.
@@ -73,7 +88,14 @@ export component within(limit: Duration) {       // a VALUE head
 
 - `<word>` is an imported component name — a block word, exactly as a
   sublanguage's word is (the `use` pre-scan and lexer word set exist).
-  `component cli avra { … }` keeps working with the keyword.
+  `component cli avra { … }` keeps working with the keyword. The lexer
+  tags it `COMPONENT`, and `NAME` still accepts it — a `use` line imports
+  it and a property wears it; F2081 refuses a binder that does.
+- every exported component is a block word; one its instance cannot stand
+  in for (no block field, an `expand` that computes) refuses AT THE
+  INSTANCE in the library's words. An instance inside the component's own
+  module is no instance (the pre-scan reads other modules' parses only,
+  so a held sibling is never parsed) — pinned, one refusal.
 - config is `key: value` — the struct literal's and named argument's
   spelling. Today's `key = value` goes (40 sites, the syntax ladder).
 - inner words (`command`, `flag`, `description`) are CONTEXTUAL: they mean
@@ -103,6 +125,11 @@ export component within(limit: Duration) {       // a VALUE head
   origin-keyed (`resolve.av`'s `keyed`). `within`'s `outer` never meets a
   user's `outer`, and its extern resolves in `@std/time`.
 - A slot's user code keeps the user's origin.
+- WRITTEN TYPES TOO: a template's `let limit: Duration` resolves in the
+  library — a user's own `Duration` never reaches it — while a type that
+  came through a HOLE (`TypeRef.spliced`, a derive's `${t}`) resolves
+  where it lands. A copied template keeps its own file's spans, so its
+  errors point home, and range ownership reads it as the instance's.
 - No injected names: a code slot reads the instance through `self` — the
   expander makes the record type (`flag release` → `release: bool`) and
   the slot becomes its method. To verify in S3: the user's `self` binds to
@@ -110,38 +137,62 @@ export component within(limit: Duration) {       // a VALUE head
 
 ## 6. Refusals
 
-- shape (a wrong child, a missing `{`) — the generic grammar's words at
-  the user's line, plus "`fleg` is not a child of `command` — it takes
-  `flag`, `arg`".
-- meaning — `expand() -> Result<Decls, Diagnostic>` fails with
-  `refuse_as_at("E1", …)`: `error[@std/cli: E1]`, golden in the library.
-- types — the expansion is typed as ordinary code, so a value head goes
-  through a seat that names the law: `within 5 { }` says "`within`'s
-  `limit` is `Duration`, this is `int`", never "no field `ms`".
-- compiler codes (next free F-numbers, re-checked at landing): a child no
-  slot takes · a computing component off the top level · a substituting
-  `expand` whose hole reads more than `self` · an expander that failed.
+As built in S2 (goldens: features/components/tests):
+- at the LIBRARY — F2112 "`expand` answers the code an instance becomes"
+  · F2113 "the template of `made` reads `self.body` twice" (code runs
+  where the template writes it, once; bind it with `let` to reuse it).
+- at the INSTANCE — "`lim` writes its head value before its block" ·
+  "an instance of `lim` writes its block after its head" · "`made`
+  declares no field for an instance's block" · "the `expand` of `made`
+  is not one `quote` over its own fields" · "`two` declares 2 head
+  fields, and its instance writes one value".
+- NAMES — F2081 "`lim` is a block word here, and nothing else in this
+  file may wear it" (one voice for sublanguages and components).
+- TYPES — the expansion is typed as ordinary code; the template states a
+  head's law with a typed binding. A template's own operators can still
+  surface (`+` needs `int`), at the user's block — the author's cue to
+  type what the block must answer.
+
+Still to design (S3+): a child no slot takes · `expand() -> Result<Decls,
+Diagnostic>` with `refuse_as_at` for a library's own meaning laws.
 
 ## 7. Visible (P7), escapable (P8), fast (P4, P14)
 
-- `avra expand <file>` prints every instance as what it became, under
-  `// from component within (@std/time time.av:12)`.
-- `avra explain within` prints the declaration and its `expand`.
-- THE PRINTED EXPANSION COMPILES: a witness per component round-trips
-  `expand` → build → same output. The hand-written form is one command away.
-- the expansion is ordinary code: no runtime layer. `within`'s `defer` is
-  exactly `Deferral.Deadline` today (`lower/walk.av:351`); receipt: `avra
-  ir` identical modulo registers. `server`: `tools/bench` on a Sprite.
+- `avra expand <file>` notes every instance's expansion under its
+  statement: "// `within` (from @std.time) expands to:" and the code.
+- A NOTE, NOT PASTEABLE SOURCE — corrected from this doc's first draft,
+  which promised the printed expansion compiles. A template's names are
+  the provider's (`within` calls `@std/time`'s own extern) and a user's
+  file cannot spell them: Avra has no qualified expression paths. RECORDED
+  TRIGGER: when they land (ROADMAP sugar backlog, "A PRELUDE, or QUALIFIED
+  EXPRESSION PATHS"), print qualified names and round-trip it.
+- `avra explain within` (a block word) — S3, with the reference card.
+- the expansion is ordinary code, no runtime layer. RECEIPT (`avra ir`,
+  S2): `within`'s step is `call avra_fiber_within`, the body, `call
+  avra_fiber_within_end` — the core form's instructions exactly. Getting
+  there took one general change: a `defer` of ONE call answering nothing,
+  every argument a scalar literal or capture, is a direct call at each
+  exit (`Deferral.Direct`) — no closure box, so every such `defer` in any
+  program got cheaper, and the core's `Deferral.Deadline` was its one
+  special case. `server`: `tools/bench` on a Sprite (S5).
 
 ## 8. The slices
 
-**S2 — `within` leaves the core.** Exercises: a value head, a code slot,
-an imported block word, substitution at the parse.
-1. The evaluator's door for runtime rows. PROBED at 0e8a63c: `extern fn
-   avra_fiber_within` + `avra run` traps "this image does not carry it" —
-   `build/avra` exports `avra_fiber_park_fd`, not `avra_fiber_within`. An
-   extern naming an `rt_sigs` row with an evaluator arm dispatches to the
-   arm. (CORES owns the fiber rows — coordinate.)
+**S2 — `within` leaves the core.** DONE 2026-09-23. Exercises: a value
+head, a code slot, an imported block word, substitution at the parse.
+AS BUILT, beyond the plan: origin runs cover statements and patterns
+(a template's `let` binders are its own — they were not); written types
+resolve where written; the pre-scan reads every `use` the parse BUILT,
+so a line only the word can parse no longer hides its own import; the
+direct `defer`. Red team: ~95 programs over the eight classes; one wrong
+answer (a template reading its block twice ran it once — now F2113), six
+poor refusals, one cascade, all tested.
+1. ~~The evaluator's door for runtime rows~~ — RETRACTED. The trap
+   ("`avra_fiber_within` is extern and this image does not carry it")
+   came from main's `build/avra`, a binary OLDER than the F5 rows; the
+   lane's own compiler at 5a59a44 runs the same probe clean (`6 5 0`)
+   — `rt_dispatch` already routes a row to its arm. A probe names the
+   binary that answered it.
 2. `component` declarations grow params, code slots, methods, `export`.
 3. The block word for components; the value-head instance rule.
 4. Substitution at the parse.

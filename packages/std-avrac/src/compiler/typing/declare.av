@@ -3,7 +3,7 @@
 //! annotations, and the laws of the types annotations WRITE — a
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
-use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, widthless, width_named, width_words, qtrace}
+use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, widthless, width_named, width_words, qtrace, FileId}
 use diagnostics.{refusal}
 use features.{TypeCx, FnSig, StructSig, EnumSig, NamedSig, DeclSig, duplicate_names, slot_worthy, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats, declared_decl}
 use @std.errors.{Loc}
@@ -319,9 +319,20 @@ impl TypeCx {
     /// An annotation's TypeId: what its NAME stands for, wrapped
     /// once when `?` was written. An absent annotation cannot reach
     /// here from any grammar the language assembles.
-    fn annotated(s: StmtId, ann: TypeRef?) -> TypeId {
+    /// A statement's written type.
+    mut fn annotated(s: StmtId, ann: TypeRef?) -> TypeId {
         if ann == null { return self.error_type }
-        self.full_type(self.stmt_loc(s), ann!)
+        self.written_by(self.view.origin_of_stmt(s), self.stmt_loc(s), ann!)
+    }
+
+    /// A written type, read in the namespace of the file that WROTE it
+    /// — a template's types are its own, as its names are.
+    mut fn written_by(origin: FileId?, at: Loc?, t: TypeRef) -> TypeId {
+        let was = self.writer
+        self.writer = if origin == null { null } else { self.written_in(origin!) }
+        let ty = self.full_type(at, t)
+        self.writer = was
+        ty
     }
 
     /// A written type in full — its arguments and its `?` both. The
@@ -338,7 +349,8 @@ impl TypeCx {
 
     /// What a written type stands for, arguments included: a bare
     /// name, or an application like `List<int>`.
-    fn written_type(at: Loc?, t: TypeRef) -> TypeId {
+    mut fn written_type(at: Loc?, t: TypeRef) -> TypeId {
+        if t.spliced && self.writer != null { return self.written_by(null, at, t with { spliced: false }) }
         if t.arrow { return self.fn_written(at, t) }
         if t.dynamic { return self.dyn_type(at, t.name) }
         if t.args.is_empty() { return self.bare_row(t.name) ?? self.named_type(at, t.name) }
@@ -446,7 +458,12 @@ impl TypeCx {
     }
 
     /// The declaration a type name stands for, in this file's scope.
-    fn type_decl_named(name: string) -> DeclId? { type_named(self.names, name) }
+    /// A declared type by name — in the namespace of the file that wrote
+    /// the type being read.
+    fn type_decl_named(name: string) -> DeclId? {
+        let writer? = self.writer else { return type_named(self.names, name) }
+        writer.type_decl(name)
+    }
 
     /// Every declared slot of the instantiation, substituted and
     /// judged — a `Pair<string, int>` refuses like the field law.

@@ -16,7 +16,8 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, list_cell, NodeStore, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, Annotation}
 use @std.path.{dir_of, joined_path}
-use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockGrammar}
+use features.components.{word_of}
+use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockWords}
 use @std.meta.{Diagnostic}
 use core.{StmtId}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, error_at, render_among, refusal, by_position, has_errors, is_error}
@@ -696,7 +697,7 @@ impl Workspace {
         if rd != null { return rd }
         let before = self.parsed(f)
         if has_errors(before.voices.list) { return "the source has parse errors" }
-        let reparsed = parse_program(self.lang, new_source_file(self.decls.file(f).path, after), [])
+        let reparsed = parse_program(self.lang, new_source_file(self.decls.file(f).path, after))
         if has_errors(reparsed.voices.list) { return "the rewrite does not reparse" }
         if before.stmts.length != reparsed.stmts.length { return "the statement count moved: ${before.stmts.length} -> ${reparsed.stmts.length}" }
         for i, s in before.stmts {
@@ -736,60 +737,94 @@ impl Workspace {
 
     fn parsed_under_blocks(f: FileId) -> Parsed {
         let first = self.plain_parsed(f)
-        let blocks = self.block_grammars(f, first)
-        if blocks.is_empty() { return first }
-        let p = parse_program(self.lang, self.source(f), blocks)
+        let words = self.block_words(f, first)
+        if words.is_empty() { return self.with_import_remedies(first) }
+        let p = self.with_import_remedies(parse_program(self.lang, self.source(f), words))
         for r in p.store.foreign.get() {
             let origin = self.file_id(r.path)
-            if !same_file(origin, f) { self.decls.note_origins(f, [ExprId { index: i } for i in r.lo..r.hi], [], [], origin) }
+            if !same_file(origin, f) { self.decls.note_runs(f, r.runs, origin) }
         }
         p
     }
 
-    /// The sublanguages a file's `use` lines bring in: each item that a
-    /// provider module declares as a named grammar, readied, under its
-    /// alias. A module's own grammars are not block words in its own
-    /// files.
-    fn block_grammars(f: FileId, p: Parsed) -> List<BlockGrammar> {
-        if self.lone { return [] }
+    /// A parse that stops on a component nobody imported says where it
+    /// lives: the name the failure stands on, or the one just before
+    /// it, that a package in reach exports as a component.
+    fn with_import_remedies(p: Parsed) -> Parsed {
+        if p.voices.list.is_empty() { return p }
+        p with { voices: Voices { list: [self.import_remedy(p, d) for d in p.voices.list] } }
+    }
+
+    fn import_remedy(p: Parsed, d: Diag) -> Diag {
+        let at? = d.primary.loc else { return d }
+        if d.help != null { return d }
+        let near = names_near(p.source.text, at.lo)
+        let own = self.module_at(p.source.file)
+        let homes = flatten([some_list(self.component_home(w, own)) for w in near if !w.is_empty()])
+        let home? = homes.first() else { return d }
+        d with { help: import_it(home) }
+    }
+
+    /// Another module, in a package in reach, that exports a component
+    /// by this name — as `use` spells it with the word.
+    fn component_home(word: string, own: string) -> string? {
+        let paths = flatten([self.all_files(pkg.src) for pkg in self.packages()])
+        let path? = paths.find((path: string) -> self.module_at(path) != own && self.plain_words(path).components.any(it.word == word)) else { return null }
+        "${self.module_at(path)}.{${word}}"
+    }
+
+    /// The module a source path belongs to, by name.
+    fn module_at(path: string) -> string { self.decls.module_name(self.decls.file(self.file_id(path)).module_id) }
+
+    /// The block words a file's `use` lines bring in: each item a
+    /// provider module declares as a named grammar (readied) or as a
+    /// template component, under its alias. A module's own words are
+    /// not block words in its own files.
+    fn block_words(f: FileId, p: Parsed) -> BlockWords {
+        if self.lone { return BlockWords {} }
         let from = self.packages()[self.holder_of_path(p.source.file)]
         let own = self.decls.module_name(self.decls.file(f).module_id)
-        flatten([self.line_grammars(from, own, u) for u in use_lines(p)])
+        let lines = [self.line_words(from, own, u) for u in p.store.built_uses()]
+        BlockWords { grammars: flatten([l.grammars for l in lines]), components: flatten([l.components for l in lines]) }
     }
 
-    /// One `use` line's sublanguages — none from a module that is not
+    /// One `use` line's block words — none from a module that is not
     /// reachable, ambiguous, absent, or the file's own. A provider is
-    /// read through its PLAIN parse: an exported named grammar whose
-    /// name the line imports.
-    fn line_grammars(from: Package, own: string, u: UseParts) -> List<BlockGrammar> {
+    /// read through its PLAIN parse: an exported named grammar or
+    /// component whose name the line imports.
+    fn line_words(from: Package, own: string, u: UseParts) -> BlockWords {
         let m = qualified(module_path(u.path), from)
-        if m.malformed() || m.text() == own { return [] }
-        if m.package() != null && !self.reaches(from, m.package()!) { return [] }
-        if self.ambiguous_module(m) || self.module_files(m).is_empty() { return [] }
-        // THE RECORD ANSWERS FIRST. A block word is a top-level `syntax` declaration
-        // (`readied_grammar`), and the interface already names every declaration's kind —
-        // so when the provider's record names no syntax the line takes, no provider file
-        // has to be read at all. Without this every `use` line parsed every file of its
-        // provider module to look for grammars, which is seconds of parse for a program
-        // that declares none. A record that is absent (a cold tree) answers `true`, and
-        // the parse below is the fallback.
-        if !module_names_syntax(self, m, u.items) { return [] }
-        let declared = flatten([self.plain_grammars(path) for path in self.module_files(m)])
-        mut blocks: List<BlockGrammar> = []
-        for j, item in u.items {
-            let alias = if j < u.aliases.length { u.aliases[j] } else { "" }
-            let found: BlockGrammar? = declared.find(it.word == item)
-            if found != null { blocks.push(found! with { word: if alias.is_empty() { item } else { alias } }) }
+        if m.malformed() || m.text() == own { return BlockWords {} }
+        if m.package() != null && !self.reaches(from, m.package()!) { return BlockWords {} }
+        if self.ambiguous_module(m) || self.module_files(m).is_empty() { return BlockWords {} }
+        // THE RECORD ANSWERS FIRST. A block word is a top-level declaration the
+        // interface marks (a `syntax`, or a record that is a component) — so when
+        // the provider's record names none the line takes, no provider file has to
+        // be read at all. Without this every `use` line parsed every file of its
+        // provider module, which is seconds of parse for a program that declares
+        // none. A record that is absent (a cold tree) answers `true`, and the parse
+        // below is the fallback.
+        if !module_names_block_word(self, m, u.items) { return BlockWords {} }
+        let declared = [self.plain_words(path) for path in self.module_files(m)]
+        let grammars = flatten([d.grammars for d in declared])
+        let components = flatten([d.components for d in declared])
+        BlockWords {
+            grammars: flatten([[g with { word: u.bound_as(j) } for g in grammars if g.word == item] for j, item in u.items]),
+            components: flatten([[c with { word: u.bound_as(j) } for c in components if c.word == item] for j, item in u.items]),
         }
-        blocks
     }
 
-    /// The exported named grammars a provider file declares, readied,
-    /// each under its own name; one whose notation does not parse is
-    /// left out (the library speaks).
-    fn plain_grammars(path: string) -> List<BlockGrammar> {
+    /// The exported block words a provider file declares, each under
+    /// its own name: its named grammars readied (one whose notation
+    /// does not parse is left out — the library speaks) and its
+    /// template components.
+    fn plain_words(path: string) -> BlockWords {
         let p = self.plain_parsed(self.file_id(path))
-        flatten([some_list(readied_grammar(p, s, path)) for s in p.stmts if p.store.is_exported(s)])
+        let exported = [s for s in p.stmts if p.store.is_exported(s)]
+        BlockWords {
+            grammars: flatten([some_list(readied_grammar(p, s, path)) for s in exported]),
+            components: flatten([some_list(word_of(p.store, s, path)) for s in exported]),
+        }
     }
 
     /// The declarations a file MINTS into the one table; the answer's
@@ -1034,7 +1069,7 @@ impl Workspace {
     fn cx_over(x: Decl, names: NameFacts) -> TypeCx {
         let p = self.parsed(x.file)
         mut view = file_view(self.lang, p, self.decls, x.file)
-        new_type_cx(self.lang.dispatch, self.lang.keywords, view, names, x.lo, x.hi)
+        new_type_cx(self.lang.dispatch, self.lang.keywords, view, names, (origin: FileId) -> self.visible(origin), x.lo, x.hi)
     }
 
     /// One declaration's body typed — a table over its own expression
