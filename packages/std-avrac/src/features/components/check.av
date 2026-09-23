@@ -3,7 +3,7 @@
 //! methods walk as an impl's. Its own laws are its template's: `expand`
 //! answers the code an instance becomes, and a template reads each of
 //! its instance's fields once.
-use core.{StmtId, ComponentParts}
+use core.{StmtId, TypeId, ComponentParts}
 use features.{ResolveCx, TypeCx}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
@@ -20,6 +20,22 @@ fn resolve_component(mut cx: ResolveCx, s: StmtId) {
 
 fn check_component(mut cx: TypeCx, s: StmtId) {
     let c? = cx.view.store.component_parts(s) else { return }
+    check_law(cx, c)
+    expand_law(cx, c)
+}
+
+/// A `check` takes nothing and answers `List<Diagnostic>` — what the
+/// compiler speaks at each instance.
+fn check_law(mut cx: TypeCx, c: ComponentParts) {
+    let m? = c.fns.find((f: StmtId) -> cx.view.store.fn_parts(f)?.name == "check") else { return }
+    let d? = cx.view.decls.decl_of(cx.view.file, m) else { return }
+    let sig? = cx.view.decls.sig(d)?.fn_sig() else { return }
+    let elem: TypeId? = cx.view.types.element(sig.ret)
+    if sig.params.length <= 1 && elem != null && cx.view.decls.meta_type(elem!, "Diagnostic") { return }
+    cx.emit(no_diagnostics(cx.stmt_loc(m), cx.view.types.name_of(sig.ret)))
+}
+
+fn expand_law(mut cx: TypeCx, c: ComponentParts) {
     let expand? = c.fns.find((m: StmtId) -> cx.view.store.fn_parts(m)?.name == "expand") else { return }
     let d? = cx.view.decls.decl_of(cx.view.file, expand) else { return }
     let answer? = cx.view.decls.sig(d)?.fn_sig()?.ret else { return }
@@ -33,6 +49,10 @@ fn check_component(mut cx: TypeCx, s: StmtId) {
 }
 
 // ── voices ──
+
+fn no_diagnostics(at: Loc?, found: string) -> Diag {
+    refusal("type.component_check", at, "a component's `check` answers `List<Diagnostic>` and takes nothing — this answers `${found}`", "this `check`", "`fn check() -> List<Diagnostic> { … }`, with `Diagnostic` from `@std.meta`")
+}
 
 fn no_code(at: Loc?, found: string) -> Diag {
     refusal("type.component_expand", at, "`expand` answers the code an instance becomes — `Code`, or `Decls` for declarations — and this answers `${found}`", "this `expand`", "answer a template: `fn expand() -> Code { quote { … } }`")

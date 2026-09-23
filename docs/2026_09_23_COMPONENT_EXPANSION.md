@@ -202,11 +202,94 @@ poor refusals, one cascade, all tested.
 7. Green: FIBERS §12 probes, std-net `parked_eof`, std-http suites,
    `http_slow_route`, eval == native; `avra ir` identical.
 
-**S3 — data components.** `key: value` (the 40-site ladder), typed
+**S3 — data components.** THE BODY, settled here: one rule for every
+data instance — `key: value` settings, then any statement. The
+settings become the record's fields; EVERYTHING ELSE stays as written
+and becomes `collect { … }`, the one children slot's value:
+- `collect { … }` is CORE (lists feature): a list of every value its
+  statements would discard, in the order they ran. `for`, `while`,
+  `if`, `match` and `let` inside it are the ordinary statements,
+  lowered as always — the one hook is the expression statement (a
+  kept value joins the open `collect`), typed by the list literal's
+  own law and lowered by the comprehension's growth. A lambda's
+  statements are its own.
+- Why core and not a component: "does this statement leave a value?"
+  is a TYPING fact, and a component expands at parse. A library
+  component cannot tell `o.id` from `println(…)`.
+- A component with more than one children slot places them by name
+  (`slot_name { … }`, each its own `collect`); one slot takes the body.
+- The instance desugars to its record literal, so every type law is
+  the record's and the list's, and nothing new runs downstream.
+Heads: a component with head fields takes a VALUE (`text "hi"`); one
+without takes a NAME (`cli avra { … }`), which BINDS at statement
+position and fills a declared `name` field; as a member of another
+instance it is a child and binds nothing. A block is optional
+(`secret stripe_key`). `c from base { key: v }` is `base with { … }`:
+settings only — a child there refuses, its children are its base's.
+DEFERRED to APPS, with the reason: `on click { }` — a contextual word
+the grammar DSL cannot spell without reserving `on`; a data component
+needs no events.
+S3a AS BUILT: a component with no `expand` is `Instancing.Record`; its
+instance is an `Expr.Component` whose view is the record literal (so
+the printer keeps the written form and `avra expand` shows the
+literal). Head by position; settings by name; the body's other
+statements `collect`ed into the one `List` field no setting names; a
+headless record named at a statement binds (`grid report { … }` is a
+marked `let`) and fills a `name` field when it declares one. Every
+field law is the record literal's own (unknown, twice, missing, wrong
+type). Two general fixes rode along: a list literal (`[…]`, a
+comprehension, `collect`) RE-HEARS its seat — one typed before its
+seat's type was known is typed again under it, so a stranger is
+refused where it stands and a `dyn` slot boxes each element; and
+`dyn` acceptance asks the trait DECLARATION, so a user need not
+import a provider's trait to fill its `List<dyn T>` field.
+S3b AS BUILT: a kept LIST spreads inside `collect` (a comprehension
+child is its rows), unless the collect holds lists; a NAMED instance
+(`secret api`) is kept as a child at any depth and binds for its
+siblings; a record with two `List` fields takes each by name as a
+setting — `left: collect { … }` — no slot sugar, since `name { … }`
+collides with a struct literal. `from` NEEDS NO SYNTAX: `production
+with { region: "eu" }` is exactly its meaning (settings only, children
+the base's), and reserving `from` would break ~166 names in the tree.
+S3c AS BUILT: `fn check() -> List<Diagnostic>` (F2114 holds the
+shape) runs at compile time over each instance that reads only what
+the compiler knows — literals, declarations, `const`s and what the
+instance binds itself; one built from a local, a parameter or `self`
+is a run's value and is not checked. It is a hidden `instance.check()`
+the builder mints and typing walks; lowering SETTLES it as a `const`
+expression, decodes the answer with the annotation crossing's
+`Diagnostic` reader, and speaks each at the instance (F2115); a check
+that traps says it did not run. The hole it found: a component's own
+fns were signed and never REGISTERED as methods — callable nowhere,
+though the feature's doc said they were — fixed for parsed and held
+files alike.
+S3d AS BUILT: every `component LanguageFeature f { k = v }` in the
+compiler is `LanguageFeature lists { k: v }` now — the binding names
+the feature and fills its `name` field (an explicit `name:` setting
+wins, as `quote_lit` needs, `quote` being a keyword). The legacy
+instance statement, its builder and printer arm, and the `config { }`
+block are gone; `config` is a name again. Inside the component's own
+module an instance is its record literal (`Cfg { name: "one" }`), as
+`features/mod.av`'s `feature()` and the tests now write it.
+S3e MOVED to the docs campaign (owner, 2026-09-23): a component's
+reference card is one declaration kind's docs, and belongs with how
+every declaration's docs are generated, not ahead of them.
+Sub-slices: S3a heads, settings, bodiless, the named binding (DONE) · S3b
+children (typed, dynamic, calls, named placement) · S3c `check()`,
+`from` · S3d the `key: value` ladder over the 40 legacy sites, `config
+{ }` retired · S3e `avra explain <component>` (the reference card).
+The rest of the plan, unchanged: `key: value` (the 40-site ladder), typed
 children, dynamic children, calls as children, named slot placement,
 `check()`, `from`, bodiless instances, instances as declarations, the
 reference card. No compile-time evaluation — the cheapest way to make
 the face real.
+
+**Later — typed expansion.** An `expand` that SEES its body's types
+(Zig comptime, Scala 3 macros): typing pauses, library code rewrites
+the typed body, the answer is typed again. It would let `collect` move
+out of core. RECORDED TRIGGER: the first component whose meaning
+depends on an expression's type that `collect` and a record literal
+cannot express.
 
 **S4 — `cli avra { command build { … } }` over `@std/cli`.** Exercises:
 the expand stage, `self.flags`, `run { }` slots, ancestor-owned relations.
@@ -235,7 +318,7 @@ the vision's `GET "/x" -> …`) is designed after S3.
 | calls as children | any expression whose TYPE a slot takes (`order_row(o)`); the type is the guard, so `println(…)` still refuses |
 | named slot placement | a slot's name opens a block for it (`header { … }`) when slots share a type |
 | `check()` | a component method answering `List<Diagnostic>`, run at compile time over settled settings |
-| `from` | `deploy staging from production { … }` — an instance built on another (`with` underneath) |
+| `from` | REVISED: `production with { … }` — the existing `with`, no new word (a keyword would reserve `from` everywhere) |
 | growth | an exported component's new setting must carry a default; a required one added later refuses |
 | folded in | canonical layout (one line with commas, or one per line without); `avra explain <component>` prints a reference card; `expands_to` golden helper for library authors |
 | units | later, their own design (`5 seconds` stays `secs(5)` for now) |

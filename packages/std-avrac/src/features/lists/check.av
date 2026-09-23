@@ -2,7 +2,7 @@
 //! ride a slot (the SAME law every aggregate slot obeys — R0's
 //! widening reached lists at G3); the empty literal is the
 //! absence-of-elements value, adopted by whatever list claims it.
-use core.{ExprId, Type, TypeId}
+use core.{ExprId, Type, TypeId, flatten, some_list}
 use features.{TypeCx, this_is, slot_worthy}
 use diagnostics.{refusal}
 
@@ -18,7 +18,7 @@ fn list_type(mut cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
     if !slot_worthy(cx.shape_at(head)) { return cx.unslottable(head, "a list element") }
     let elem = cx.joined(elems, cx.type_at(head))
     for k in elems {
-        if !cx.accepts(k, elem) { return disagreeing_element(cx, k, elem) }
+        if !cx.accepts(k, elem) { return disagreeing(cx, e, k, elem) }
     }
     cx.type(List<elem>)
 }
@@ -40,11 +40,94 @@ fn heard_list(mut cx: TypeCx, e: ExprId, elems: List<ExprId>, want: TypeId) -> T
     cx.type(List<want>)
 }
 
+/// A `collect` wears the list its kept values make — judged by the
+/// literal's own law, as though each were written as an element. A
+/// kept LIST spreads, its elements joining one by one — unless the
+/// collect holds lists, where a list is one element.
+fn collect_type(mut cx: TypeCx, e: ExprId, body: ExprId) -> TypeId {
+    let values = collection(cx, e, body)
+    for v in values { cx.facts.spread(v, spreads(cx, e, v)) }
+    let lists = [v for v in values if cx.facts.spreads_at(v)]
+    if lists.is_empty() { return list_type(cx, e, values) }
+    spread_type(cx, e, [v for v in values if !cx.facts.spreads_at(v)], lists)
+}
+
+/// A kept value spreads when it is a list and the collect's element is not.
+fn spreads(cx: TypeCx, e: ExprId, v: ExprId) -> bool {
+    if !is_list(cx, cx.type_at(v)) { return false }
+    let held: TypeId? = wanted_elem(cx, e)
+    held == null || !is_list(cx, held!)
+}
+
+fn is_list(cx: TypeCx, t: TypeId) -> bool {
+    match cx.view.types.seen_shape(t) {
+        .List(_) or .EmptyList -> true,
+        _ -> false,
+    }
+}
+
+/// A collect with lists spread in: the element is the want's, else the
+/// first single value's, else the first list's own; each single answers
+/// to it and each list to the list of it.
+fn spread_type(mut cx: TypeCx, e: ExprId, singles: List<ExprId>, lists: List<ExprId>) -> TypeId {
+    let elem? = spread_elem(cx, e, singles, lists) else { return cx.view.types.intern(Type.EmptyList) }
+    let listed = cx.type(List<elem>)
+    for v in lists {
+        if !cx.accepts(v, listed) { return disagreeing(cx, e, v, listed) }
+    }
+    for k in singles {
+        if !cx.accepts(k, elem) { return disagreeing(cx, e, k, elem) }
+    }
+    listed
+}
+
+/// Absent only when every kept value is an empty list and no want names
+/// the element.
+fn spread_elem(cx: TypeCx, e: ExprId, singles: List<ExprId>, lists: List<ExprId>) -> TypeId? {
+    let held: TypeId? = wanted_elem(cx, e)
+    if held != null { return held }
+    let single: ExprId? = singles.first()
+    if single != null { return cx.type_at(single!) }
+    flatten([some_list(cx.view.types.element(cx.type_at(v))) for v in lists]).first()
+}
+
+/// A `collect`'s kept values: its body walked once, and remembered —
+/// a collect re-typed under a want it waited for judges the same
+/// values again.
+fn collection(mut cx: TypeCx, e: ExprId, body: ExprId) -> List<ExprId> {
+    let kept: List<ExprId>? = cx.facts.collection(e)
+    if kept != null { return kept! }
+    let values = cx.gathered(body)
+    cx.facts.collected(e, values)
+    values
+}
+
+/// Elements that disagree wait for a want that may hold them all — a
+/// field's `List<dyn T>` — and speak only when none arrives.
+fn disagreeing(mut cx: TypeCx, e: ExprId, k: ExprId, elem: TypeId) -> TypeId {
+    if !cx.starving { return cx.hungry(e) }
+    disagreeing_element(cx, k, elem)
+}
+
 // ── The voices ──
 
 fn disagreeing_element(mut cx: TypeCx, k: ExprId, elem: TypeId) -> TypeId {
     let n = cx.name_at(k)
-    cx.spoken(refusal("type.list_element", cx.loc_of(k), "a list's elements share one type — the first is `${cx.view.types.name_of(elem)}`, this is `${n}`", this_is(n), null))
+    let shared = if boxable(cx, elem) && boxable(cx, cx.type_at(k)) { share_a_trait() } else { null }
+    cx.spoken(refusal("type.list_element", cx.loc_of(k), "a list's elements share one type — the first is `${cx.view.types.name_of(elem)}`, this is `${n}`", this_is(n), shared))
+}
+
+/// A declared type — the only kind a trait impl serves, so the only
+/// kind a `dyn` list can hold.
+fn boxable(cx: TypeCx, t: TypeId) -> bool {
+    match cx.view.types.shape_of(t) {
+        .Struct(_, _) or .Enum(_, _) -> true,
+        _ -> false,
+    }
+}
+
+fn share_a_trait() -> string {
+    "to hold both, declare the list over a trait they share — `let xs: List<dyn Trait> = …`"
 }
 
 fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {

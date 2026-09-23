@@ -130,22 +130,53 @@ impl LowerCx {
     /// A row answering a value: minted at `sh`, the row's C symbol
     /// named by `row.name` alone — never a feature's own string.
     mut fn call(sh: Type, row: RtSig, args: List<Reg>) -> Reg {
-        let dst = self.mint_shape(sh)
-        self.emit(Ins.CallRt(dst, row.name, args))
-        dst
+        self.answered(self.view.types.intern(sh), row, args)
     }
 
     /// The same, minted at an expression's own answer type — the
     /// call-site already knows it through typing.
     mut fn call_at(e: ExprId, row: RtSig, args: List<Reg>) -> Reg {
-        let dst = self.result(e)
-        self.emit(Ins.CallRt(dst, row.name, args))
-        dst
+        self.answered(self.type_at(e), row, args)
     }
 
     /// A row answering nothing.
     mut fn call_void(row: RtSig, args: List<Reg>) {
-        self.emit(Ins.CallRtVoid(row.name, args))
+        let seats = [self.crossing(a) for a in args]
+        self.emit(Ins.CallRtVoid(row.name, seats))
+    }
+
+    /// A row's answer at `ty`. A VALUE RECORD crosses every row BOXED:
+    /// a row's seat and answer are one word, so the record goes in as a
+    /// box of its fields and comes out read from one.
+    mut fn answered(ty: TypeId, row: RtSig, args: List<Reg>) -> Reg {
+        let seats = [self.crossing(a) for a in args]
+        if !self.view.types.travels_wide(ty) {
+            let dst = self.mint_ty(ty)
+            self.emit(Ins.CallRt(dst, row.name, seats))
+            return dst
+        }
+        let held = self.mint_ty(self.type(List<int>))
+        self.emit(Ins.CallRt(held, row.name, seats))
+        self.unboxed(held, ty)
+    }
+
+    /// A seat's word: the register itself, or a value record's fields
+    /// in a fresh box — a name over one opened to it first.
+    mut fn crossing(a: Reg) -> Reg {
+        let ty = self.out.type_of_reg(a)
+        if !self.view.types.travels_wide(ty) { return a }
+        if !self.view.types.is_wide(ty) { return self.crossing(self.extracted(a, 0, self.mint_ty(self.view.types.flat_fields(ty)[0]))) }
+        let fields = self.view.types.flat_fields(ty)
+        let dst = self.array_sized(self.view.types.shape_of(self.type(List<int>)), self.box_size(fields.length))
+        for j, f in fields { self.push_slot(dst, self.extracted(a, j, self.mint_ty(f))) }
+        dst
+    }
+
+    /// A value record read back out of the box that carried it — worn
+    /// by every name over it.
+    mut fn unboxed(held: Reg, ty: TypeId) -> Reg {
+        if !self.view.types.is_wide(ty) { return self.pack(ty, [self.unboxed(held, self.view.types.flat_fields(ty)[0])]) }
+        self.pack(ty, [self.slot_read(held, j, f) for j, f in self.view.types.flat_fields(ty)])
     }
 
     /// The node's ANSWER register set to integer zero — a void word's

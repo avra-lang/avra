@@ -4,36 +4,43 @@
 //! and the fns are its methods. A component whose `expand` is ONE
 //! `quote` reading only `self` is a TEMPLATE: an importing file's
 //! `within ms(5) { … }` is that quote, copied where the instance
-//! stands, the head and block in its holes
-//! (docs/2026_09_23_COMPONENT_EXPANSION.md). `component Name inst {
-//! field = value … }` binds `inst` to a literal of the record.
+//! stands. One with no `expand` is a RECORD its instance builds:
+//! `grid report { title: "x" … }` — settings by name, the other
+//! statements its children (docs/2026_09_23_COMPONENT_EXPANSION.md).
 use features.{LanguageFeature, BuilderRow}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
 use diagnostics.{DiagCode}
 
 export fn components() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name                  | build
-        "component_decl"      | build_component_decl
-        "component_inst"      | build_component_inst
-        "component_value"     | build_component_value
-        "component_headless"  | build_component_headless
-        "component_blockless" | build_component_blockless
+        name                   | build
+        "component_decl"       | build_component_decl
+        "component_value"      | build_component_value
+        "component_headless"   | build_component_headless
+        "component_blockless"  | build_component_blockless
+        "component_named"      | build_component_named
+        "component_named_bare" | build_component_named_bare
+        "setting"              | build_setting
+        "instance_body"        | build_instance_body
     }
     let codes = table<DiagCode> {
-        kind                    | id      | summary
-        "type.component_expand" | "F2112" | "a component's `expand` answers the code an instance becomes"
-        "type.component_twice"  | "F2113" | "a template reads each of its instance's fields once"
+        kind                      | id      | summary
+        "type.component_expand"   | "F2112" | "a component's `expand` answers the code an instance becomes"
+        "type.component_twice"    | "F2113" | "a template reads each of its instance's fields once"
+        "type.component_check"    | "F2114" | "a component's `check` answers `List<Diagnostic>`"
+        "lower.component_checked" | "F2115" | "a component's `check` judged this instance"
     }
-    component LanguageFeature f {
-        name = "components"
-        docs = "`component Name(h: T) { f: T = d … fn expand() -> Code { quote { … } } }` declares a component; an importing file writes `Name value { … }`, and a template's `expand` stands in its place. `component Name inst { f = v … }` instantiates the record."
-        gram = grammar {
-            stmt = "component" n:NAME i:NAME "{" BREAK ( k:NAME "=" v:expression BREAK )* "}" END -> component_inst(n, i, k, v) | "component" n:NAME ( "(" ( hs:NAME ":" ht:type ( "," hs:NAME ":" ht:type )* ","? )? ")" )? "{" ( "config" "{" BREAK? fs:NAME ":" ft:type ( "=" fd:expression )? ( "," BREAK? fs:NAME ":" ft:type ( "=" fd:expression )? )* ","? BREAK? "}" | fs:NAME ":" ft:type ( "=" fd:expression )? | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, hs, ht, fs, ft, fd, m)
-            primary = w:COMPONENT b:block -> component_headless(w, b) | w:COMPONENT h:expression b:block -> component_value(w, h, b) @head(h) | w:COMPONENT h:expression -> component_blockless(w, h) @head(h)
+    LanguageFeature components {
+        docs: "`component Name(h: T) { f: T = d … fn expand() -> Code { quote { … } } }` declares a component; an importing file writes `Name value { … }`, and a template's `expand` stands in its place; a component with no `expand` is a record its instance builds — `Name inst { f: v … }`."
+        gram: grammar {
+            stmt = "component" n:NAME ( "(" ( hs:NAME ":" ht:type ( "," hs:NAME ":" ht:type )* ","? )? ")" )? "{" ( fs:NAME ":" ft:type ( "=" fd:expression )? | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, hs, ht, fs, ft, fd, m)
+            stmt = w:COMPONENT n:NAME b:instance_body END -> component_named(w, n, b) | w:COMPONENT n:NAME END -> component_named_bare(w, n)
+            setting = k:NAME ":" v:expression END -> setting(k, v)
+            instance_body = "{" ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(s)
+            primary = w:COMPONENT b:instance_body -> component_headless(w, b) | w:COMPONENT h:expression b:instance_body -> component_value(w, h, b) @head(h) | w:COMPONENT h:expression -> component_blockless(w, h) @head(h)
         }
-        builders = rows
-        diags = codes
+        builders: rows
+        diags: codes
     }
-    f
+    components
 }

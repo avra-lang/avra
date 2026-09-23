@@ -9,7 +9,8 @@ export type ListSemantics = {}
 impl NodeSemantics for ListSemantics {
     /// A literal's elements are kids; a comprehension's SOURCE and
     /// range bound are — they resolve outside the binders — while
-    /// its element and filter are heirs, walked under them.
+    /// its element and filter are heirs, walked under them. A
+    /// `collect` owns its body's walk, as a block owns its own.
     fn kids(e: Expr) -> List<ExprId> {
         // a feature cannot enumerate OTHER features' variants
         match e {
@@ -31,7 +32,8 @@ impl NodeSemantics for ListSemantics {
         // a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
             .Comp(elem, index, name, _, _, cond) -> resolve_comp(cx, e, elem, index?.of, name.of, cond),
-            _ -> nothing(),
+            .Collect(body) -> cx.walk(body),
+            rest -> nothing(),
         }
     }
 
@@ -39,7 +41,8 @@ impl NodeSemantics for ListSemantics {
         // a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
             .Comp(elem, index, _, source, hi, cond) -> comp_type(cx, e, elem, index?.of, source, hi, cond),
-            _ -> literal_type(cx, e),
+            .Collect(body) -> collect_type(cx, e, body),
+            rest -> literal_type(cx, e),
         }
     }
 
@@ -47,7 +50,8 @@ impl NodeSemantics for ListSemantics {
         // a feature cannot enumerate OTHER features' variants
         match cx.view.store.expr(e) {
             .Comp(elem, index, _, source, hi, cond) -> comp_reg(cx, e, elem, index?.of, source, hi, cond),
-            _ -> literal_reg(cx, e),
+            .Collect(body) -> collect_reg(cx, e, body),
+            rest -> literal_reg(cx, e),
         }
     }
 

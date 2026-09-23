@@ -51,12 +51,13 @@ impl StaticBuild {
         self.array_slot(slots, heap, filled<TypeId>(slots.length, inner))
     }
 
-    /// A record: a flat one IS its field; a boxed one is its fields in
-    /// declaration order.
+    /// A record: a flat one of one field IS its field; any other is its
+    /// fields in declaration order — a value record's box is the one it
+    /// crosses every row in.
     mut fn record_slot(v: MetaVal, heap: MetaHeap, ty: TypeId) -> Slot? {
         // a FLAT record IS its field, whether a record declared it or
         // a NAME stands over it — the registry answers for both
-        if self.decls.types.is_flat(ty) { return self.slot_of(v, heap, self.decls.types.flat_fields(ty)[0]) }
+        if self.decls.types.is_flat(ty) && !self.decls.types.is_wide(ty) { return self.slot_of(v, heap, self.decls.types.flat_fields(ty)[0]) }
         let sig? = self.decls.fields_of_type(ty) else { return null }
         self.array_slot(heap.slots(v), heap, sig.types)
     }

@@ -1,9 +1,7 @@
 // Template components under attack: degenerate declarations, the
 // malformed instance, names wearing the word, and the library's own
 // laws — each refusal once, where its mistake is.
-use @std.avrac.testing.{refused_in, vendored_meta, vendored_meta_paths}
-use @std.avrac.compiler.{avra, new_workspace, Program}
-use compiler.host.{memory_host}
+use @std.avrac.testing.{refused_in, provided, answered}
 
 /// The standard template: a `Span` head, an `int` block.
 fn lim() -> string {
@@ -16,32 +14,12 @@ fn made(head: string, fields: string, template: string) -> string {
     "export component made(${head}) {\n${fields}    fn expand() -> Code { quote { ${template} } }\n}\n"
 }
 
-/// A program with `@std/meta` and a provider package `@x/c` holding
-/// `prov`.
-fn provided(main: string, prov: string) -> Program {
-    let files = vendored_meta({
-        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"vendor/meta\" }\n\"@x/c\" = { path = \"vendor/c\" }\n",
-        "/w/src/main.av": main,
-        "/w/vendor/c/avra.toml": "[package]\nname = \"@x/c\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@std/meta\" = { path = \"../meta\" }\n",
-        "/w/vendor/c/src/c.av": "use @std.meta.{Code}\n" + prov,
-    })
-    let ws = new_workspace(memory_host(files, ["/w/avra.toml", "/w/src/main.av", "/w/vendor/c/avra.toml", "/w/vendor/c/src/c.av"].concat(vendored_meta_paths())), "/w", avra())
-    ws.program("/w/src/main.av")
-}
-
-fn answer(p: Program) -> string {
-    match p.run() {
-        .Ok(v) -> v,
-        .Err(why) -> why,
-    }
-}
-
 fn use_lim() -> string { "use @x.c.{lim, span}\n" }
 
 spec "features/components/template — adversarial" {
     given "degenerate shapes" {
         then "an empty block and an instance standing as a statement run" {
-            answer(provided("use @x.c.{made}\nmade 1 { }\n0", made("h: Code", "    body: Code\n", "{\n    let ignored = \${self.h}\n    \${self.body}\n}"))) == "0" && answer(provided(use_lim() + "lim span(1) { 2 }\n5", lim())) == "5"
+            answered(provided("use @x.c.{made}\nmade 1 { }\n0", made("h: Code", "    body: Code\n", "{\n    let ignored = \${self.h}\n    \${self.body}\n}"))) == "0" && answered(provided(use_lim() + "lim span(1) { 2 }\n5", lim())) == "5"
         }
         then "a template reading its block twice refuses at the library — code runs where it is written, once" {
             refused_in(provided("use @x.c.{made}\n0", made("h: Code", "    body: Code\n", "\${self.body} + \${self.body}")), "the template of `made` reads `self.body` twice")
@@ -64,7 +42,7 @@ spec "features/components/template — adversarial" {
             refused_in(provided(use_lim() + "let v = lim span(1)\nv", lim()), "an instance of `lim` writes its block after its head")
         }
         then "a component word nobody imported names the `use` that brings it" {
-            answer(provided("use @x.c.{span}\nlim span(1) { 1 }", lim())).contains("`use @x.c.{lim}`")
+            answered(provided("use @x.c.{span}\nlim span(1) { 1 }", lim())).contains("`use @x.c.{lim}`")
         }
         then "a head of the wrong type is the template's typed binding, at the user's head" {
             refused_in(provided(use_lim() + "let v = lim 5 { 1 }\nv", lim()), "`limit` declares `Span`, this is `int`")
@@ -76,10 +54,10 @@ spec "features/components/template — adversarial" {
             refused_in(provided(use_lim() + "fn lim() -> int {\n    1\n}\n0", lim()), at) && refused_in(provided(use_lim() + "let lim = 1\n0", lim()), at) && refused_in(provided(use_lim() + "fn f(lim: int) -> int {\n    lim\n}\n0", lim()), at)
         }
         then "a user type named like the template's never reaches the template" {
-            answer(provided(use_lim() + "type Span = { n: int, extra: int }\nlim span(2) { 1 }", lim())) == "3"
+            answered(provided(use_lim() + "type Span = { n: int, extra: int }\nlim span(2) { 1 }", lim())) == "3"
         }
         then "a property may wear the word — a field another module declares, written and read here" {
-            answer(provided("use @x.c.{lim, Holder}\nHolder { lim: 3 }.lim", lim() + "export type Holder = { lim: int }\n")) == "3"
+            answered(provided("use @x.c.{lim, Holder}\nHolder { lim: 3 }.lim", lim() + "export type Holder = { lim: int }\n")) == "3"
         }
     }
     given "the library's laws" {

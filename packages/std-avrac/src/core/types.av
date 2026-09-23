@@ -272,6 +272,21 @@ impl TypeRegistry {
 
     fn is_flat(id: TypeId) -> bool { !self.reps.get()[id.index].fields.is_empty() }
 
+    /// A VALUE RECORD: flat over more than one field, so it rides
+    /// REGISTERS as an aggregate — and a one-word seat holds it boxed.
+    fn is_wide(id: TypeId) -> bool { self.reps.get()[id.index].fields.length > 1 }
+
+    /// THE TYPE A VALUE TRAVELS AS: a flat record of one field is that
+    /// field, all the way down, so a name over a value record travels
+    /// as the value record.
+    fn machine_type(id: TypeId) -> TypeId {
+        if self.is_flat(id) && !self.is_wide(id) { return self.machine_type(self.flat_fields(id)[0]) }
+        id
+    }
+
+    /// Whether a value TRAVELS as a value record, seen through names.
+    fn travels_wide(id: TypeId) -> bool { self.is_wide(self.machine_type(id)) }
+
     /// THE SHAPE A NAME STANDS FOR — `type Rows = List<int>` answers
     /// `List<int>`; every other type answers absence. A NAME IS
     /// OPAQUE AT A SEAT AND TRANSPARENT AT A READ, and this is the
@@ -313,7 +328,7 @@ impl TypeRegistry {
     /// by shape — a word into an i64 slot, a bool's zext, a double's
     /// bitcast, an LLVM type — asks here and never `shape_of`.
     fn machine_shape(id: TypeId) -> Type {
-        if self.is_flat(id) { return self.machine_shape(self.flat_fields(id)[0]) }
+        if self.is_flat(id) && !self.is_wide(id) { return self.machine_shape(self.flat_fields(id)[0]) }
         self.shape_of(id)
     }
 
@@ -386,6 +401,12 @@ impl TypeRegistry {
             .Opt(inner) -> inner,
             _ -> null,
         }
+    }
+
+    /// Whether a value of this type is one — `void` is the absence of
+    /// any, so a statement answering it has nothing to keep.
+    fn holds_value(id: TypeId) -> bool {
+        !(self.shape_of(id) is .Void)
     }
 
     /// A list's element, or absent when the id is not one — the
@@ -496,6 +517,7 @@ impl TypeRegistry {
         // rides — a name over `int` is a word, a name over a list is
         // that list's pointer. Its NULLABLE is the question
         // `opt_rides_pointer` asks.
+        if self.travels_wide(id) { return false }
         let m: Type = self.machine_shape(id)
         match m {
             // a nullable answers as ITS OWN machine form: a flat

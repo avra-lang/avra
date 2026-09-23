@@ -64,9 +64,16 @@ impl TypeCx {
         match parent.kind {
             .Trait -> self.declare_trait_sig(x.stmt),
             .Impl -> self.declare_under_impl(parent.stmt, x.stmt),
-            .Record -> self.declare_under(x.parent!, x.stmt),
+            .Record -> self.declare_record_method(x),
             .Fn or .Named or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Builtin or .Const or .Rule -> self.declare_wreckage(x.stmt),
         }
+    }
+
+    /// A record's own method — a component's — signed under it and
+    /// REGISTERED in its table, as an impl block's are.
+    fn declare_record_method(x: Decl) {
+        self.declare_under(x.parent!, x.stmt)
+        if self.registrable(x.stmt) { self.view.decls.declare_method(x.parent!, x.id) }
     }
 
     fn declare_under_impl(block: StmtId, f: StmtId) {

@@ -2,8 +2,8 @@
 //! `quote` its `expand` answers and the field each hole reads. An
 //! importing file's parse copies it where an instance stands, so the
 //! reading needs nothing but the provider's text — never its typing.
-use core.{NodeStore, StmtId, ExprId, BodyView, BodyParts, ComponentParts, FnParts, flatten, some_list, body_behavior}
-use features.{ComponentWord, Instancing, Template}
+use core.{NodeStore, StmtId, ExprId, BodyView, BodyParts, ComponentParts, FnParts, Param, flatten, some_list, body_behavior}
+use features.{ComponentWord, Instancing, Template, Record}
 
 /// An exported component as an importing file's block word.
 export fn word_of(store: NodeStore, s: StmtId, origin: string) -> ComponentWord? {
@@ -14,9 +14,9 @@ export fn word_of(store: NodeStore, s: StmtId, origin: string) -> ComponentWord?
 /// How an instance of the component stands in place: its template,
 /// or the library's reason it cannot.
 fn instancing(store: NodeStore, c: ComponentParts) -> Instancing {
+    let expand? = expand_of(store, c) else { return Instancing.Record(record_of(store, c)) }
     if c.fields.is_empty() { return Instancing.Refused(no_block_field(c.name)) }
     if c.fields.length > 1 { return Instancing.Refused(many_fields(c.name, c.fields.length)) }
-    let expand? = expand_of(store, c) else { return Instancing.Refused(no_expand(c.name)) }
     let head = [p.name.of for p in c.head]
     let block = c.fields[0].name.of
     let body? = template_body(store, expand) else { return Instancing.Refused(computes(c.name)) }
@@ -25,9 +25,24 @@ fn instancing(store: NodeStore, c: ComponentParts) -> Instancing {
     Instancing.Template(Template { head: head, block: block, reads: reads, stmts: verbatim(body.view) })
 }
 
+/// A component read as a record: its head in order, and the `List`
+/// fields its instance's statements may fill.
+fn record_of(store: NodeStore, c: ComponentParts) -> Record {
+    Record { head: [p.name.of for p in c.head], slots: [p.name.of for p in c.fields if lists(p)], named: c.fields.any(it.name.of == "name"), checks: member(store, c, "check") != null }
+}
+
+fn lists(p: Param) -> bool {
+    p.ty?.name == "List"
+}
+
 /// A component's `expand`, when it declares one.
 export fn expand_of(store: NodeStore, c: ComponentParts) -> FnParts? {
-    flatten([some_list(store.fn_parts(m)) for m in c.fns]).find(it.name == "expand")
+    member(store, c, "expand")
+}
+
+/// A component's method of this name, when it declares one.
+export fn member(store: NodeStore, c: ComponentParts, name: string) -> FnParts? {
+    flatten([some_list(store.fn_parts(m)) for m in c.fns]).find(it.name == name)
 }
 
 /// The `quote` an `expand` answers, when its body is that one quote.
@@ -77,10 +92,6 @@ fn no_block_field(name: string) -> string {
 
 fn many_fields(name: string, n: int) -> string {
     "`${name}` declares ${n} fields beside its head, and an instance's block fills one"
-}
-
-fn no_expand(name: string) -> string {
-    "`${name}` has no `expand` — it is a record, built as one: `${name} { … }`"
 }
 
 fn computes(name: string) -> string {

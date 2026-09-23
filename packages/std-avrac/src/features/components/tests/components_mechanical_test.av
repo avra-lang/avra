@@ -25,152 +25,192 @@ fn tolerates(src: string) -> bool {
 
 spec "features/components adversarial — mechanical" {
     given "degenerate shapes — a valid surface, and must stay valid" {
-        then "component x x { \n } \n" { parses("component x x { \n } \n") == parses("component x x { \n x = x \n } \n") }
-        then "component x x { \n x = x \n x = x \n } \n" { parses("component x x { \n x = x \n x = x \n } \n") == parses("component x x { \n x = x \n } \n") }
-        then "component x { \n config { \n x : x = x , \n } \n } \n" { parses("component x { \n config { \n x : x = x , \n } \n } \n") == parses("component x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n x : x = x , \n } \n } \n" { parses("component x { \n config { \n x : x = x , \n x : x = x , \n x : x = x , \n } \n } \n") == parses("component x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
+        then "component x ( x : x , ) { x : x = x } \n" { parses("component x ( x : x , ) { x : x = x } \n") == parses("component x ( x : x , x : x , ) { x : x = x } \n") }
+        then "component x ( x : x , x : x , x : x , ) { x : x = x } \n" { parses("component x ( x : x , x : x , x : x , ) { x : x = x } \n") == parses("component x ( x : x , x : x , ) { x : x = x } \n") }
+        then "component x ( x : x , x : x , ) { } \n" { parses("component x ( x : x , x : x , ) { } \n") == parses("component x ( x : x , x : x , ) { x : x = x } \n") }
+        then "{ }" { parses("{ }") == parses("{ x : x \n }") }
     }
     given "malformed surface (delete, duplicate, swap) — must be diagnosed" {
-        then "x x { \n x = x \n } \n" { tolerates("x x { \n x = x \n } \n") }
-        then "component x { \n x = x \n } \n" { tolerates("component x { \n x = x \n } \n") }
-        then "component x x \n x = x \n } \n" { tolerates("component x x \n x = x \n } \n") }
-        then "component x x { x = x \n } \n" { tolerates("component x x { x = x \n } \n") }
-        then "component x x { \n = x \n } \n" { tolerates("component x x { \n = x \n } \n") }
-        then "component x x { \n x x \n } \n" { tolerates("component x x { \n x x \n } \n") }
-        then "component x x { \n x = \n } \n" { tolerates("component x x { \n x = \n } \n") }
-        then "component x x { \n x = x } \n" { tolerates("component x x { \n x = x } \n") }
-        then "component x x { \n x = x \n \n" { tolerates("component x x { \n x = x \n \n") }
-        then "component x x { \n x = x \n }" { tolerates("component x x { \n x = x \n }") }
-        then "component component x x { \n x = x \n } \n" { tolerates("component component x x { \n x = x \n } \n") }
-        then "component x x x { \n x = x \n } \n" { tolerates("component x x x { \n x = x \n } \n") }
-        then "component x x { { \n x = x \n } \n" { tolerates("component x x { { \n x = x \n } \n") }
-        then "component x x { \n \n x = x \n } \n" { tolerates("component x x { \n \n x = x \n } \n") }
-        then "component x x { \n x x = x \n } \n" { tolerates("component x x { \n x x = x \n } \n") }
-        then "component x x { \n x = = x \n } \n" { tolerates("component x x { \n x = = x \n } \n") }
-        then "component x x { \n x = x x \n } \n" { tolerates("component x x { \n x = x x \n } \n") }
-        then "component x x { \n x = x \n \n } \n" { tolerates("component x x { \n x = x \n \n } \n") }
-        then "component x x { \n x = x \n } } \n" { tolerates("component x x { \n x = x \n } } \n") }
-        then "component x x { \n x = x \n } \n \n" { tolerates("component x x { \n x = x \n } \n \n") }
-        then "x component x { \n x = x \n } \n" { tolerates("x component x { \n x = x \n } \n") }
-        then "component x { x \n x = x \n } \n" { tolerates("component x { x \n x = x \n } \n") }
-        then "component x x \n { x = x \n } \n" { tolerates("component x x \n { x = x \n } \n") }
-        then "component x x { x \n = x \n } \n" { tolerates("component x x { x \n = x \n } \n") }
-        then "component x x { \n = x x \n } \n" { tolerates("component x x { \n = x x \n } \n") }
-        then "component x x { \n x x = \n } \n" { tolerates("component x x { \n x x = \n } \n") }
-        then "component x x { \n x = \n x } \n" { tolerates("component x x { \n x = \n x } \n") }
-        then "component x x { \n x = x } \n \n" { tolerates("component x x { \n x = x } \n \n") }
-        then "component x x { \n x = x \n \n }" { tolerates("component x x { \n x = x \n \n }") }
-        then "x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component { \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component { \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } \n \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } \n \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } \n }" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } \n }") }
-        then "component component x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component component x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { { \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { { \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } \n \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } \n \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } \n } } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } \n } } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n \n") }
-        then "x component { \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("x component { \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component { x \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component { x \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x \n { config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x \n { config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { config \n { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { config \n { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n { config \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n { config \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config \n { x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config \n { x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { x \n : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { x \n : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n : x x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n : x x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x x : = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x x : = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : = x x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : = x x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x x = , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x x = , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = , x \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = , x \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x \n , x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x \n , x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , x \n : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , x \n : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n : x x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n : x x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x x : = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x x : = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : = x x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : = x x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x x = , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x x = , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = , x \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = , x \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x \n , } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x \n , } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , } \n \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , } \n \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n \n } } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n \n } } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } } \n \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } } \n \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } \n \n }" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } \n \n }") }
+        then "x ( x : x , x : x , ) { x : x = x } \n" { tolerates("x ( x : x , x : x , ) { x : x = x } \n") }
+        then "component ( x : x , x : x , ) { x : x = x } \n" { tolerates("component ( x : x , x : x , ) { x : x = x } \n") }
+        then "component x x : x , x : x , ) { x : x = x } \n" { tolerates("component x x : x , x : x , ) { x : x = x } \n") }
+        then "component x ( : x , x : x , ) { x : x = x } \n" { tolerates("component x ( : x , x : x , ) { x : x = x } \n") }
+        then "component x ( x x , x : x , ) { x : x = x } \n" { tolerates("component x ( x x , x : x , ) { x : x = x } \n") }
+        then "component x ( x : , x : x , ) { x : x = x } \n" { tolerates("component x ( x : , x : x , ) { x : x = x } \n") }
+        then "component x ( x : x x : x , ) { x : x = x } \n" { tolerates("component x ( x : x x : x , ) { x : x = x } \n") }
+        then "component x ( x : x , : x , ) { x : x = x } \n" { tolerates("component x ( x : x , : x , ) { x : x = x } \n") }
+        then "component x ( x : x , x x , ) { x : x = x } \n" { tolerates("component x ( x : x , x x , ) { x : x = x } \n") }
+        then "component x ( x : x , x : , ) { x : x = x } \n" { tolerates("component x ( x : x , x : , ) { x : x = x } \n") }
+        then "component x ( x : x , x : x ) { x : x = x } \n" { tolerates("component x ( x : x , x : x ) { x : x = x } \n") }
+        then "component x ( x : x , x : x , { x : x = x } \n" { tolerates("component x ( x : x , x : x , { x : x = x } \n") }
+        then "component x ( x : x , x : x , ) x : x = x } \n" { tolerates("component x ( x : x , x : x , ) x : x = x } \n") }
+        then "component x ( x : x , x : x , ) { : x = x } \n" { tolerates("component x ( x : x , x : x , ) { : x = x } \n") }
+        then "component x ( x : x , x : x , ) { x x = x } \n" { tolerates("component x ( x : x , x : x , ) { x x = x } \n") }
+        then "component x ( x : x , x : x , ) { x : = x } \n" { tolerates("component x ( x : x , x : x , ) { x : = x } \n") }
+        then "component x ( x : x , x : x , ) { x : x x } \n" { tolerates("component x ( x : x , x : x , ) { x : x x } \n") }
+        then "component x ( x : x , x : x , ) { x : x = } \n" { tolerates("component x ( x : x , x : x , ) { x : x = } \n") }
+        then "component x ( x : x , x : x , ) { x : x = x \n" { tolerates("component x ( x : x , x : x , ) { x : x = x \n") }
+        then "component x ( x : x , x : x , ) { x : x = x }" { tolerates("component x ( x : x , x : x , ) { x : x = x }") }
+        then "component component x ( x : x , x : x , ) { x : x = x } \n" { tolerates("component component x ( x : x , x : x , ) { x : x = x } \n") }
+        then "component x x ( x : x , x : x , ) { x : x = x } \n" { tolerates("component x x ( x : x , x : x , ) { x : x = x } \n") }
+        then "component x ( ( x : x , x : x , ) { x : x = x } \n" { tolerates("component x ( ( x : x , x : x , ) { x : x = x } \n") }
+        then "component x ( x x : x , x : x , ) { x : x = x } \n" { tolerates("component x ( x x : x , x : x , ) { x : x = x } \n") }
+        then "component x ( x : : x , x : x , ) { x : x = x } \n" { tolerates("component x ( x : : x , x : x , ) { x : x = x } \n") }
+        then "component x ( x : x x , x : x , ) { x : x = x } \n" { tolerates("component x ( x : x x , x : x , ) { x : x = x } \n") }
+        then "component x ( x : x , , x : x , ) { x : x = x } \n" { tolerates("component x ( x : x , , x : x , ) { x : x = x } \n") }
+        then "component x ( x : x , x x : x , ) { x : x = x } \n" { tolerates("component x ( x : x , x x : x , ) { x : x = x } \n") }
+        then "component x ( x : x , x : : x , ) { x : x = x } \n" { tolerates("component x ( x : x , x : : x , ) { x : x = x } \n") }
+        then "component x ( x : x , x : x x , ) { x : x = x } \n" { tolerates("component x ( x : x , x : x x , ) { x : x = x } \n") }
+        then "component x ( x : x , x : x , , ) { x : x = x } \n" { tolerates("component x ( x : x , x : x , , ) { x : x = x } \n") }
+        then "component x ( x : x , x : x , ) ) { x : x = x } \n" { tolerates("component x ( x : x , x : x , ) ) { x : x = x } \n") }
+        then "component x ( x : x , x : x , ) { { x : x = x } \n" { tolerates("component x ( x : x , x : x , ) { { x : x = x } \n") }
+        then "component x ( x : x , x : x , ) { x x : x = x } \n" { tolerates("component x ( x : x , x : x , ) { x x : x = x } \n") }
+        then "component x ( x : x , x : x , ) { x : : x = x } \n" { tolerates("component x ( x : x , x : x , ) { x : : x = x } \n") }
+        then "component x ( x : x , x : x , ) { x : x x = x } \n" { tolerates("component x ( x : x , x : x , ) { x : x x = x } \n") }
+        then "component x ( x : x , x : x , ) { x : x = = x } \n" { tolerates("component x ( x : x , x : x , ) { x : x = = x } \n") }
+        then "component x ( x : x , x : x , ) { x : x = x x } \n" { tolerates("component x ( x : x , x : x , ) { x : x = x x } \n") }
+        then "component x ( x : x , x : x , ) { x : x = x } } \n" { tolerates("component x ( x : x , x : x , ) { x : x = x } } \n") }
+        then "component x ( x : x , x : x , ) { x : x = x } \n \n" { tolerates("component x ( x : x , x : x , ) { x : x = x } \n \n") }
+        then "x component ( x : x , x : x , ) { x : x = x } \n" { tolerates("x component ( x : x , x : x , ) { x : x = x } \n") }
+        then "component ( x x : x , x : x , ) { x : x = x } \n" { tolerates("component ( x x : x , x : x , ) { x : x = x } \n") }
+        then "component x x ( : x , x : x , ) { x : x = x } \n" { tolerates("component x x ( : x , x : x , ) { x : x = x } \n") }
+        then "component x ( : x x , x : x , ) { x : x = x } \n" { tolerates("component x ( : x x , x : x , ) { x : x = x } \n") }
+        then "component x ( x x : , x : x , ) { x : x = x } \n" { tolerates("component x ( x x : , x : x , ) { x : x = x } \n") }
+        then "component x ( x : , x x : x , ) { x : x = x } \n" { tolerates("component x ( x : , x x : x , ) { x : x = x } \n") }
+        then "component x ( x : x x , : x , ) { x : x = x } \n" { tolerates("component x ( x : x x , : x , ) { x : x = x } \n") }
+        then "component x ( x : x , : x x , ) { x : x = x } \n" { tolerates("component x ( x : x , : x x , ) { x : x = x } \n") }
+        then "component x ( x : x , x x : , ) { x : x = x } \n" { tolerates("component x ( x : x , x x : , ) { x : x = x } \n") }
+        then "component x ( x : x , x : , x ) { x : x = x } \n" { tolerates("component x ( x : x , x : , x ) { x : x = x } \n") }
+        then "component x ( x : x , x : x ) , { x : x = x } \n" { tolerates("component x ( x : x , x : x ) , { x : x = x } \n") }
+        then "component x ( x : x , x : x , { ) x : x = x } \n" { tolerates("component x ( x : x , x : x , { ) x : x = x } \n") }
+        then "component x ( x : x , x : x , ) x { : x = x } \n" { tolerates("component x ( x : x , x : x , ) x { : x = x } \n") }
+        then "component x ( x : x , x : x , ) { : x x = x } \n" { tolerates("component x ( x : x , x : x , ) { : x x = x } \n") }
+        then "component x ( x : x , x : x , ) { x x : = x } \n" { tolerates("component x ( x : x , x : x , ) { x x : = x } \n") }
+        then "component x ( x : x , x : x , ) { x : = x x } \n" { tolerates("component x ( x : x , x : x , ) { x : = x x } \n") }
+        then "component x ( x : x , x : x , ) { x : x x = } \n" { tolerates("component x ( x : x , x : x , ) { x : x x = } \n") }
+        then "component x ( x : x , x : x , ) { x : x = } x \n" { tolerates("component x ( x : x , x : x , ) { x : x = } x \n") }
+        then "component x ( x : x , x : x , ) { x : x = x \n }" { tolerates("component x ( x : x , x : x , ) { x : x = x \n }") }
+        then "{ x : x \n } \n" { tolerates("{ x : x \n } \n") }
+        then "x x : x \n } \n" { tolerates("x x : x \n } \n") }
+        then "x { : x \n } \n" { tolerates("x { : x \n } \n") }
+        then "x { x x \n } \n" { tolerates("x { x x \n } \n") }
+        then "x { x : \n } \n" { tolerates("x { x : \n } \n") }
+        then "x { x : x } \n" { tolerates("x { x : x } \n") }
+        then "x { x : x \n \n" { tolerates("x { x : x \n \n") }
+        then "x { x : x \n }" { tolerates("x { x : x \n }") }
+        then "x x { x : x \n } \n" { tolerates("x x { x : x \n } \n") }
+        then "x { { x : x \n } \n" { tolerates("x { { x : x \n } \n") }
+        then "x { x x : x \n } \n" { tolerates("x { x x : x \n } \n") }
+        then "x { x : : x \n } \n" { tolerates("x { x : : x \n } \n") }
+        then "x { x : x x \n } \n" { tolerates("x { x : x x \n } \n") }
+        then "x { x : x \n \n } \n" { tolerates("x { x : x \n \n } \n") }
+        then "x { x : x \n } } \n" { tolerates("x { x : x \n } } \n") }
+        then "x { x : x \n } \n \n" { tolerates("x { x : x \n } \n \n") }
+        then "{ x x : x \n } \n" { tolerates("{ x x : x \n } \n") }
+        then "x x { : x \n } \n" { tolerates("x x { : x \n } \n") }
+        then "x { : x x \n } \n" { tolerates("x { : x x \n } \n") }
+        then "x { x x : \n } \n" { tolerates("x { x x : \n } \n") }
+        then "x { x : \n x } \n" { tolerates("x { x : \n x } \n") }
+        then "x { x : x } \n \n" { tolerates("x { x : x } \n \n") }
+        then "x { x : x \n \n }" { tolerates("x { x : x \n \n }") }
+        then "\n" { tolerates("\n") }
+        then "x" { tolerates("x") }
+        then "x x \n" { tolerates("x x \n") }
+        then "x \n \n" { tolerates("x \n \n") }
+        then "\n x" { tolerates("\n x") }
+        then ": x \n" { tolerates(": x \n") }
+        then "x : \n" { tolerates("x : \n") }
+        then "x : x" { tolerates("x : x") }
+        then "x x : x \n" { tolerates("x x : x \n") }
+        then "x : : x \n" { tolerates("x : : x \n") }
+        then "x : x x \n" { tolerates("x : x x \n") }
+        then "x : x \n \n" { tolerates("x : x \n \n") }
+        then ": x x \n" { tolerates(": x x \n") }
+        then "x x : \n" { tolerates("x x : \n") }
+        then "x : \n x" { tolerates("x : \n x") }
+        then "x : x \n }" { tolerates("x : x \n }") }
+        then "{ : x \n }" { tolerates("{ : x \n }") }
+        then "{ x x \n }" { tolerates("{ x x \n }") }
+        then "{ x : \n }" { tolerates("{ x : \n }") }
+        then "{ x : x }" { tolerates("{ x : x }") }
+        then "{ x : x \n" { tolerates("{ x : x \n") }
+        then "{ { x : x \n }" { tolerates("{ { x : x \n }") }
+        then "{ x x : x \n }" { tolerates("{ x x : x \n }") }
+        then "{ x : : x \n }" { tolerates("{ x : : x \n }") }
+        then "{ x : x x \n }" { tolerates("{ x : x x \n }") }
+        then "{ x : x \n \n }" { tolerates("{ x : x \n \n }") }
+        then "{ x : x \n } }" { tolerates("{ x : x \n } }") }
+        then "x { : x \n }" { tolerates("x { : x \n }") }
+        then "{ : x x \n }" { tolerates("{ : x x \n }") }
+        then "{ x x : \n }" { tolerates("{ x x : \n }") }
+        then "{ x : \n x }" { tolerates("{ x : \n x }") }
+        then "{ x : x } \n" { tolerates("{ x : x } \n") }
+        then "{ x : x \n }" { tolerates("{ x : x \n }") }
+        then "x x : x \n }" { tolerates("x x : x \n }") }
+        then "x { x x \n }" { tolerates("x { x x \n }") }
+        then "x { x : \n }" { tolerates("x { x : \n }") }
+        then "x { x : x }" { tolerates("x { x : x }") }
+        then "x { x : x \n" { tolerates("x { x : x \n") }
+        then "x x { x : x \n }" { tolerates("x x { x : x \n }") }
+        then "x { { x : x \n }" { tolerates("x { { x : x \n }") }
+        then "x { x x : x \n }" { tolerates("x { x x : x \n }") }
+        then "x { x : : x \n }" { tolerates("x { x : : x \n }") }
+        then "x { x : x x \n }" { tolerates("x { x : x x \n }") }
+        then "x { x : x \n } }" { tolerates("x { x : x \n } }") }
+        then "x x { : x \n }" { tolerates("x x { : x \n }") }
+        then "x { : x x \n }" { tolerates("x { : x x \n }") }
+        then "x { x x : \n }" { tolerates("x { x x : \n }") }
+        then "x { x : \n x }" { tolerates("x { x : \n x }") }
+        then "x x" { tolerates("x x") }
     }
     given "keyword-replace — must be diagnosed or a valid program" {
-        then "config x x { \n x = x \n } \n" { tolerates("config x x { \n x = x \n } \n") }
-        then "component component x { \n x = x \n } \n" { tolerates("component component x { \n x = x \n } \n") }
-        then "component x component { \n x = x \n } \n" { tolerates("component x component { \n x = x \n } \n") }
-        then "component x x component \n x = x \n } \n" { tolerates("component x x component \n x = x \n } \n") }
-        then "component x x { component x = x \n } \n" { tolerates("component x x { component x = x \n } \n") }
-        then "component x x { \n component = x \n } \n" { tolerates("component x x { \n component = x \n } \n") }
-        then "component x x { \n x component x \n } \n" { tolerates("component x x { \n x component x \n } \n") }
-        then "component x x { \n x = component \n } \n" { tolerates("component x x { \n x = component \n } \n") }
-        then "component x x { \n x = x component } \n" { tolerates("component x x { \n x = x component } \n") }
-        then "component x x { \n x = x \n component \n" { tolerates("component x x { \n x = x \n component \n") }
-        then "component x x { \n x = x \n } component" { tolerates("component x x { \n x = x \n } component") }
-        then "config x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("config x { \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component component { \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component component { \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x component \n config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x component \n config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { component config { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { component config { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n component { \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n component { \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config component \n x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config component \n x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { component x : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { component x : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n component : x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n component : x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x component x = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x component x = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : component = x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : component = x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x component x , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x component x , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = component , \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = component , \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x component \n x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x component \n x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , component x : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , component x : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n component : x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n component : x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x component x = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x component x = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : component = x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : component = x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x component x , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x component x , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = component , \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = component , \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x component \n } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x component \n } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , component } \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , component } \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n component \n } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n component \n } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } component } \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } component } \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } \n component \n" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } \n component \n") }
-        then "component x { \n config { \n x : x = x , \n x : x = x , \n } \n } component" { tolerates("component x { \n config { \n x : x = x , \n x : x = x , \n } \n } component") }
+        then "component x ( x : x , x : x , ) { x : x = x } \n" { tolerates("component x ( x : x , x : x , ) { x : x = x } \n") }
+        then "component component ( x : x , x : x , ) { x : x = x } \n" { tolerates("component component ( x : x , x : x , ) { x : x = x } \n") }
+        then "component x component x : x , x : x , ) { x : x = x } \n" { tolerates("component x component x : x , x : x , ) { x : x = x } \n") }
+        then "component x ( component : x , x : x , ) { x : x = x } \n" { tolerates("component x ( component : x , x : x , ) { x : x = x } \n") }
+        then "component x ( x component x , x : x , ) { x : x = x } \n" { tolerates("component x ( x component x , x : x , ) { x : x = x } \n") }
+        then "component x ( x : component , x : x , ) { x : x = x } \n" { tolerates("component x ( x : component , x : x , ) { x : x = x } \n") }
+        then "component x ( x : x component x : x , ) { x : x = x } \n" { tolerates("component x ( x : x component x : x , ) { x : x = x } \n") }
+        then "component x ( x : x , component : x , ) { x : x = x } \n" { tolerates("component x ( x : x , component : x , ) { x : x = x } \n") }
+        then "component x ( x : x , x component x , ) { x : x = x } \n" { tolerates("component x ( x : x , x component x , ) { x : x = x } \n") }
+        then "component x ( x : x , x : component , ) { x : x = x } \n" { tolerates("component x ( x : x , x : component , ) { x : x = x } \n") }
+        then "component x ( x : x , x : x component ) { x : x = x } \n" { tolerates("component x ( x : x , x : x component ) { x : x = x } \n") }
+        then "component x ( x : x , x : x , component { x : x = x } \n" { tolerates("component x ( x : x , x : x , component { x : x = x } \n") }
+        then "component x ( x : x , x : x , ) component x : x = x } \n" { tolerates("component x ( x : x , x : x , ) component x : x = x } \n") }
+        then "component x ( x : x , x : x , ) { component : x = x } \n" { tolerates("component x ( x : x , x : x , ) { component : x = x } \n") }
+        then "component x ( x : x , x : x , ) { x component x = x } \n" { tolerates("component x ( x : x , x : x , ) { x component x = x } \n") }
+        then "component x ( x : x , x : x , ) { x : component = x } \n" { tolerates("component x ( x : x , x : x , ) { x : component = x } \n") }
+        then "component x ( x : x , x : x , ) { x : x component x } \n" { tolerates("component x ( x : x , x : x , ) { x : x component x } \n") }
+        then "component x ( x : x , x : x , ) { x : x = component } \n" { tolerates("component x ( x : x , x : x , ) { x : x = component } \n") }
+        then "component x ( x : x , x : x , ) { x : x = x component \n" { tolerates("component x ( x : x , x : x , ) { x : x = x component \n") }
+        then "component x ( x : x , x : x , ) { x : x = x } component" { tolerates("component x ( x : x , x : x , ) { x : x = x } component") }
+        then "component { x : x \n } \n" { tolerates("component { x : x \n } \n") }
+        then "x component x : x \n } \n" { tolerates("x component x : x \n } \n") }
+        then "x { component : x \n } \n" { tolerates("x { component : x \n } \n") }
+        then "x { x component x \n } \n" { tolerates("x { x component x \n } \n") }
+        then "x { x : component \n } \n" { tolerates("x { x : component \n } \n") }
+        then "x { x : x component } \n" { tolerates("x { x : x component } \n") }
+        then "x { x : x \n component \n" { tolerates("x { x : x \n component \n") }
+        then "x { x : x \n } component" { tolerates("x { x : x \n } component") }
+        then "component \n" { tolerates("component \n") }
+        then "x component" { tolerates("x component") }
+        then "component : x \n" { tolerates("component : x \n") }
+        then "x component x \n" { tolerates("x component x \n") }
+        then "x : component \n" { tolerates("x : component \n") }
+        then "x : x component" { tolerates("x : x component") }
+        then "component x : x \n }" { tolerates("component x : x \n }") }
+        then "{ component : x \n }" { tolerates("{ component : x \n }") }
+        then "{ x component x \n }" { tolerates("{ x component x \n }") }
+        then "{ x : component \n }" { tolerates("{ x : component \n }") }
+        then "{ x : x component }" { tolerates("{ x : x component }") }
+        then "{ x : x \n component" { tolerates("{ x : x \n component") }
+        then "component { x : x \n }" { tolerates("component { x : x \n }") }
+        then "x component x : x \n }" { tolerates("x component x : x \n }") }
+        then "x { component : x \n }" { tolerates("x { component : x \n }") }
+        then "x { x component x \n }" { tolerates("x { x component x \n }") }
+        then "x { x : component \n }" { tolerates("x { x : component \n }") }
+        then "x { x : x component }" { tolerates("x { x : x component }") }
+        then "x { x : x \n component" { tolerates("x { x : x \n component") }
+        then "component" { tolerates("component") }
     }
 }

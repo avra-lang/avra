@@ -99,7 +99,7 @@ impl LowerCx {
                 return r
             }
             let addr = self.out.mint_ty(self.view.decls.types.type(int))
-            self.out.give(Ins.FnAddr(addr, self.method_symbol(m!, null, self.out.reg_types[r.index])))
+            self.out.give(Ins.FnAddr(addr, self.dyn_entry(m!, self.out.reg_types[r.index])))
             self.push_slot(dst, addr)
         }
         dst
@@ -120,7 +120,7 @@ impl LowerCx {
     /// evaluator's table.
     mut fn once_body(symbol: string, root: ExprId, answer: TypeId) -> Reg {
         let key = self.const_str(symbol)
-        if self.view.types.carried(answer) != null { return self.once_boxed(key, root, answer) }
+        if self.view.types.carried(answer) != null || self.view.types.travels_wide(answer) { return self.once_boxed(key, root, answer) }
         // the cache answers `T?` — under the niche the nullable IS
         // the pointer, so the guard is the presence protocol and the
         // present arm's carry is identity
@@ -134,7 +134,8 @@ impl LowerCx {
     }
 
     /// A NULLABLE answer's null is an answer, so the cache holds it in a
-    /// one-cell list and the cache's own null means only "not yet".
+    /// one-cell list and the cache's own null means only "not yet". A
+    /// VALUE RECORD rides the same cell, boxed where the cell holds it.
     mut fn once_boxed(key: Reg, root: ExprId, answer: TypeId) -> Reg {
         let maybe = self.view.decls.types.type(List<answer>?)
         let held = self.once_get(self.view.decls.types.shape_of(maybe), key)
@@ -154,6 +155,35 @@ impl LowerCx {
             if r != null && self.body.slot_of(s) == null { self.body.set_slot(s, r!) }
             self.owns_tasks(s, r)
         }
+    }
+
+    /// A `collect`'s body lowered into `into`, the list its kept
+    /// values join.
+    mut fn gathering(into: Reg, body: ExprId) {
+        // LICENSED I15: this IS the bracket
+        self.gathers.push(into)
+        let _ = self.reg_of(body)
+        let _ = self.gathers.pop()
+    }
+
+    /// A statement's value, joining the open `collect`'s list when
+    /// typing kept it.
+    mut fn gather(s: StmtId) {
+        let v? = self.view.store.stmt_value(s) else { return }
+        if !self.facts.keeps(v) { return }
+        let into? = self.gathers.last() else { return self.defect("a kept value outside its `collect`") }
+        if self.facts.spreads_at(v) { return self.spread(into, v) }
+        self.push_slot(into, self.reg_of(v))
+    }
+
+    /// A kept list's elements, each joining the `collect`'s list — the
+    /// comprehension's own walk. An empty list's joins nothing.
+    mut fn spread(into: Reg, v: ExprId) {
+        let elem? = self.view.types.element(self.type_at(v)) else { return }
+        let w = self.opened(v, elem)
+        self.turn_open(w)
+        self.push_slot(into, self.turn_elem(w, self.turn_index(w)))
+        self.turn_close(w)
     }
 
     /// A TASK IS JOINED WHERE ITS LAST OWNER ENDS: a statement holding a
