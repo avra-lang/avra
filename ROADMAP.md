@@ -2762,6 +2762,30 @@ lost message and a duplicated backlog entry.
   stopping it — write `cd X || exit 1` before it. Changing a shared
   layout is an ANNOUNCEMENT, not a cleanup.
 
+## THE C LEVEL (opened 2026-09-23) — @std/http per request at a hand-written C server's cost
+
+Epic avra-8sb5.34; design and numbers: docs/2026_09_23_REUSE_IN_PLACE.md.
+On the Linux Sprite the kernel floor (tools/bench/floor — no parsing) is
+0.88 µs CPU per request pipelined; a C server doing @std/http's work is
+~1.0 µs (estimate); Avra is ~6 µs. The gap is PER-REQUEST cost: tasks,
+fibers and cores raise throughput and never lower it.
+
+Landed: R1 reuse in place (a dying value lends its box), R2 records as
+one block (box and cells in one allocation).
+
+The ladder:
+1. **Value records** (R4, avra-8sb5.34.6): records of scalars — `Span`,
+   `Field`, `Line` — live in registers, with no box and no count. The
+   biggest single lever.
+2. **Count elision** (R5, avra-8sb5.34.7): no retain or release on a
+   value that never escapes the fn that made it. Consuming params (R3,
+   avra-8sb5.34.4) fold in here.
+3. **Zero-alloc std-http** (R6, avra-8sb5.34.8): header spans in one
+   flat int buffer, once-tables as static addresses, the response
+   written straight into the connection's output buffer.
+4. **Multi-core** (R7, avra-8sb5.34.9): one share-nothing server per
+   core on SO_REUSEPORT — throughput times cores, on top.
+
 ## THE HTTP CAMPAIGN (opened 2026-09-06) — `@std.http`, and the foundations it forces
 
 Lane `lane/http` (worktree `../avra-lane-http`), taken over 2026-09-06 by
