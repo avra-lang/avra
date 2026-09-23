@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, list_cell, NodeStore, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, Annotation}
+use core.{Table, new_table, list_cell, NodeStore, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, distinct, TypeId, Type, some_list, same_file, touch, Annotation}
 use @std.path.{dir_of, joined_path}
 use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockGrammar}
 use @std.meta.{Diagnostic}
@@ -128,6 +128,11 @@ type Records = {
     record_lines: Cell<Map<string, List<string>>>,
     record_fields: Cell<Map<string, List<List<string>>>>,
     record_places: Cell<Map<string, Map<string, Placed>>>,
+    /// A FILE'S OWN ANSWER, keyed by path: whether it lexes to a
+    /// `grammar` token at all — `module_names_syntax`'s cold-path
+    /// pre-filter, asked once per file per build no matter how many
+    /// `use` lines reach for the module it stands in.
+    grammar_scanned: Cell<Map<string, bool>>,
 }
 
 fn new_records() -> Records {
@@ -136,7 +141,8 @@ fn new_records() -> Records {
     let no_lines: Map<string, List<string>> = {}
     let no_fields: Map<string, List<List<string>>> = {}
     let no_places: Map<string, Map<string, Placed>> = {}
-    Records { loaded_records: Cell.new(no_loaded), record_texts: Cell.new(no_texts), record_lines: Cell.new(no_lines), record_fields: Cell.new(no_fields), record_places: Cell.new(no_places) }
+    let no_scanned: Map<string, bool> = {}
+    Records { loaded_records: Cell.new(no_loaded), record_texts: Cell.new(no_texts), record_lines: Cell.new(no_lines), record_fields: Cell.new(no_fields), record_places: Cell.new(no_places), grammar_scanned: Cell.new(no_scanned) }
 }
 
 /// The families' value tables, sparse by their keys and grown as
@@ -282,6 +288,21 @@ impl Marks {
         self.spans.push(Phase { name: name, ns: at - self.last })
         self.last = at
     }
+}
+
+/// EVERY NAME ONCE, SUMMED — the one grouping every `--time` report
+/// wants: a coarse phase pushed once reads unchanged, a per-file span
+/// pushed hundreds of times folds to its total instead of flooding
+/// the line with one entry per file.
+export fn grouped_phases(phases: List<Phase>) -> List<Phase> {
+    [Phase { name: n, ns: phase_total(phases, n) } for n in distinct([p.name for p in phases])]
+}
+
+export fn phase_total(phases: List<Phase>, name: string) -> int {
+    // LICENSED I4: a sum fold, not a scan
+    mut total = 0
+    for p in phases { if p.name == name { total = total + p.ns } }
+    total
 }
 
 /// THE FAMILIES — the compiler's query vocabulary, in pipeline
@@ -652,8 +673,15 @@ impl Workspace {
     /// check yet.
     fn formatted_source(f: FileId) -> Result<string, string> {
         let parsed = self.parsed(f)
-        if !has_errors(parsed.voices.list) { return .Ok(render_source_of(parsed.store, parsed.stmts, self.source(f).text)) }
+        if !has_errors(parsed.voices.list) { return .Ok(self.clocked_print(parsed, f)) }
         .Err(joined([render_among(d, self.lang.rows.codes, [self.source(f)]) for d in parsed.voices.list], "\n\n"))
+    }
+
+    fn clocked_print(parsed: Parsed, f: FileId) -> string {
+        let t0 = self.clock()
+        let text = render_source_of(parsed.store, parsed.stmts, self.source(f).text)
+        self.timed("print", self.clock() - t0)
+        text
     }
 
     /// `formatted_source`, gated for `--write`: the LOSSLESS RECEIPT
@@ -730,15 +758,35 @@ impl Workspace {
     /// block pre-scan reads a provider through this, so a file's parse
     /// never depends on a provider's parse depending back on it (two
     /// files importing each other were a memo cycle otherwise).
+    ///
+    /// TIMED UNDER "ast" (lex plus build — there is no seam between
+    /// them to split), wherever it is called from: a provider file's
+    /// plain parse, triggered from the sublang lookup's own fallback,
+    /// counts here too, so "sublang" is left holding only the
+    /// lookup's own overhead. NEVER "parse" — `analyze_all` already
+    /// owns that name for its own coarser span, over the SAME work;
+    /// sharing the name would sum a span and its own subset into one
+    /// double-counted total.
     fn plain_parsed(f: FileId) -> Parsed {
-        self.plain.demand(f.index, () -> parse_program(self.lang, self.source(f)), (p: Parsed) -> program_hash(p))
+        self.plain.demand(f.index, () -> self.clocked_parse(f), (p: Parsed) -> program_hash(p))
+    }
+
+    fn clocked_parse(f: FileId) -> Parsed {
+        let t0 = self.clock()
+        let p = parse_program(self.lang, self.source(f))
+        self.timed("ast", self.clock() - t0)
+        p
     }
 
     fn parsed_under_blocks(f: FileId) -> Parsed {
         let first = self.plain_parsed(f)
+        let t0 = self.clock()
         let blocks = self.block_grammars(f, first)
+        self.timed("sublang", self.clock() - t0)
         if blocks.is_empty() { return first }
+        let t1 = self.clock()
         let p = parse_program(self.lang, self.source(f), blocks)
+        self.timed("ast", self.clock() - t1)
         for r in p.store.foreign.get() {
             let origin = self.file_id(r.path)
             if !same_file(origin, f) { self.decls.note_origins(f, [ExprId { index: i } for i in r.lo..r.hi], [], [], origin) }
@@ -765,16 +813,19 @@ impl Workspace {
         let m = qualified(module_path(u.path), from)
         if m.malformed() || m.text() == own { return [] }
         if m.package() != null && !self.reaches(from, m.package()!) { return [] }
-        if self.ambiguous_module(m) || self.module_files(m).is_empty() { return [] }
+        if self.ambiguous_module(m) { return [] }
+        let files = self.module_files(m)
+        if files.is_empty() { return [] }
         // THE RECORD ANSWERS FIRST. A block word is a top-level `syntax` declaration
         // (`readied_grammar`), and the interface already names every declaration's kind —
         // so when the provider's record names no syntax the line takes, no provider file
         // has to be read at all. Without this every `use` line parsed every file of its
         // provider module to look for grammars, which is seconds of parse for a program
-        // that declares none. A record that is absent (a cold tree) answers `true`, and
-        // the parse below is the fallback.
-        if !module_names_syntax(self, m, u.items) { return [] }
-        let declared = flatten([self.plain_grammars(path) for path in self.module_files(m)])
+        // that declares none. A record that is absent (a cold tree) is lexed instead of
+        // parsed (`maybe_declares_grammar`), and only a file that survives THAT reaches
+        // the parse below.
+        if !module_names_syntax(self, m, files, u.items) { return [] }
+        let declared = flatten([self.plain_grammars(path) for path in files])
         mut blocks: List<BlockGrammar> = []
         for j, item in u.items {
             let alias = if j < u.aliases.length { u.aliases[j] } else { "" }

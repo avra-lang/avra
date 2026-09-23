@@ -26,10 +26,11 @@
 //! moved, or one this compiler has never seen, pays for either.
 use @std.cli.{Subcommand, CliResult, Runnable, FlagDef, CommandSpec, ArgDef}
 use @std.io.{exists, write_text, is_dir, list_dir}
-use @std.avrac.compiler.{Workspace, build_cache_root}
+use @std.avrac.compiler.{Workspace, Phase, build_cache_root, phase_total}
 use @std.avrac.compiler.store.{Store, Stored, store_at}
-use @std.avrac.core.{FileId, digest_of}
+use @std.avrac.core.{FileId, digest_of, joined, distinct}
 use @std.path.{dir_of, joined_path}
+use @std.time.{now_ns}
 
 type FmtCmd = {}
 
@@ -48,7 +49,7 @@ impl Runnable for FmtCmd {
         mut ws = file_workspace(path)
         let f = ws.file_id(path)
         if args.has_flag("write") { return written(ws, f, path) }
-        match ws.formatted_source(f) {
+        let outcome = match ws.formatted_source(f) {
             .Ok(text) -> {
                 println(text)
                 0
@@ -58,6 +59,8 @@ impl Runnable for FmtCmd {
                 1
             },
         }
+        if timed(args) { eprintln(time_report(ws.phases.get())) }
+        outcome
     }
 }
 
@@ -88,14 +91,34 @@ fn no_edges() -> List<string> { [] }
 /// never mtime, which a checkout without one would falsely trust.
 fn canon_key(text: string) -> string { digest_of("fmt.canonical\n${text}") }
 
-/// examined, differing, refused, and which paths differed — folded
-/// across every group `--check` walks.
-type Tally = { examined: int, differing: int, refused: int, diffs: List<string> }
+/// examined, differing, refused, which paths differed, and every
+/// phase either side of the run timed — folded across every group
+/// `--check` walks.
+type Tally = { examined: int, differing: int, refused: int, diffs: List<string>, phases: List<Phase> }
 
-fn empty_tally() -> Tally { Tally { examined: 0, differing: 0, refused: 0, diffs: [] } }
+fn empty_tally() -> Tally { Tally { examined: 0, differing: 0, refused: 0, diffs: [], phases: [] } }
 
 fn combined(a: Tally, b: Tally) -> Tally {
-    Tally { examined: a.examined + b.examined, differing: a.differing + b.differing, refused: a.refused + b.refused, diffs: a.diffs.concat(b.diffs) }
+    Tally {
+        examined: a.examined + b.examined,
+        differing: a.differing + b.differing,
+        refused: a.refused + b.refused,
+        diffs: a.diffs.concat(b.diffs),
+        phases: a.phases.concat(b.phases),
+    }
+}
+
+/// EVERY NAMED SPAN, SUMMED — `--time`'s report. `store` is
+/// `build_cache_root`'s cost (the compiler's own binary digest, paid
+/// once per package); `source` and `digest` are the per-file read and
+/// the canonical-cache's own lookup/write; `ast` folds the lexer in
+/// (there is no seam here to time it apart); `sublang` is the
+/// block-grammar lookup ALONE — a provider file it falls back to
+/// parsing counts under `ast`, so this phase holds only the lookup's
+/// own overhead; `print` and `compare` are the render and the byte
+/// check.
+fn time_report(phases: List<Phase>) -> string {
+    "time: ${joined(["${n} ${ms(phase_total(phases, n))}" for n in distinct([p.name for p in phases])], ", ")}"
 }
 
 /// A root's workspace, checking either its WHOLE package (`explicit`
@@ -108,6 +131,7 @@ fn checked(args: CliResult) -> int {
     let t = fold_groups(expanded_groups(asked))
     for p in t.diffs { println(p) }
     println("fmt --check: ${t.examined} examined, ${t.differing} differing, ${t.refused} refused")
+    if timed(args) { eprintln(time_report(t.phases)) }
     if t.differing > 0 { 1 } else { 0 }
 }
 
@@ -155,9 +179,17 @@ fn fold_groups(groups: List<Group>) -> Tally {
     if groups.is_empty() { return empty_tally() }
     let g = groups[0]
     mut ws = workspace_for(g.root)
+    let t0 = now_ns()
     let store = store_at(build_cache_root(ws))
+    let store_ns = now_ns() - t0
     let files = g.explicit ?? ws.all_files(joined_path(g.root, "src"))
-    combined(check_files(store, ws, files), fold_groups(groups.slice(1, groups.length)))
+    let group = check_files(store, ws, files)
+    // THE GROUP'S WORKSPACE PHASES ARE READ ONCE, after its files are
+    // all checked — `ws.phases` accumulates for the whole workspace,
+    // so reading it per file would fold the same early spans in again
+    // with every later one.
+    let all = group with { phases: group.phases.concat([Phase { name: "store", ns: store_ns }]).concat(ws.phases.get()) }
+    combined(all, fold_groups(groups.slice(1, groups.length)))
 }
 
 fn workspace_for(root: string) -> Workspace {
@@ -166,15 +198,18 @@ fn workspace_for(root: string) -> Workspace {
 
 enum Outcome { Canonical, Differs, Refused }
 
+type Checked1 = { outcome: Outcome, phases: List<Phase> }
+
 fn check_files(store: Store, ws: Workspace, files: List<string>) -> Tally {
     mut t = empty_tally()
     for path in files {
-        let outcome = checked_one(store, ws, path)
+        let c = checked_one(store, ws, path)
         t = Tally {
             examined: t.examined + 1,
-            differing: t.differing + if outcome == Outcome.Differs { 1 } else { 0 },
-            refused: t.refused + if outcome == Outcome.Refused { 1 } else { 0 },
-            diffs: if outcome == Outcome.Differs { t.diffs.concat([path]) } else { t.diffs },
+            differing: t.differing + if c.outcome == Outcome.Differs { 1 } else { 0 },
+            refused: t.refused + if c.outcome == Outcome.Refused { 1 } else { 0 },
+            diffs: if c.outcome == Outcome.Differs { t.diffs.concat([path]) } else { t.diffs },
+            phases: t.phases.concat(c.phases),
         }
     }
     t
@@ -182,20 +217,33 @@ fn check_files(store: Store, ws: Workspace, files: List<string>) -> Tally {
 
 /// A cache hit answers without a parse or a print; a miss pays for
 /// both and, when the file turns out canonical, remembers so the
-/// next `--check` need not ask again.
-fn checked_one(store: Store, ws: Workspace, path: string) -> Outcome {
+/// next `--check` need not ask again. `source` and `digest` are timed
+/// here directly — `ast`, `sublang` and `print` ride the workspace's
+/// own clock (`ws.phases`, folded in once per group by the caller).
+fn checked_one(store: Store, ws: Workspace, path: string) -> Checked1 {
+    let t0 = now_ns()
     let f = ws.file_id(path)
     let src = ws.source(f)
+    let source_ns = now_ns() - t0
+    let t1 = now_ns()
     let key = canon_key(src.text)
-    if store.get(Stored.Unit, key) != null { return Outcome.Canonical }
+    let hit = store.get(Stored.Unit, key) != null
+    let base = [Phase { name: "source", ns: source_ns }, Phase { name: "digest", ns: now_ns() - t1 }]
+    if hit { return Checked1 { outcome: Outcome.Canonical, phases: base } }
     match ws.formatted_source(f) {
-        .Ok(text) -> if "${text}\n" == src.text {
-            let _ = store.keep(Stored.Unit, key, "1", no_edges())
-            Outcome.Canonical
-        } else {
-            Outcome.Differs
+        .Ok(text) -> {
+            let t2 = now_ns()
+            let matches = "${text}\n" == src.text
+            let compare = Phase { name: "compare", ns: now_ns() - t2 }
+            if matches {
+                let t3 = now_ns()
+                let _ = store.keep(Stored.Unit, key, "1", no_edges())
+                Checked1 { outcome: Outcome.Canonical, phases: base.concat([compare, Phase { name: "digest", ns: now_ns() - t3 }]) }
+            } else {
+                Checked1 { outcome: Outcome.Differs, phases: base.concat([compare]) }
+            }
         },
-        .Err(_) -> Outcome.Refused,
+        .Err(_) -> Checked1 { outcome: Outcome.Refused, phases: base },
     }
 }
 
