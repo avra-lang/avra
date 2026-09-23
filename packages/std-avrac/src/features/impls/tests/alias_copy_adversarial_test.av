@@ -113,6 +113,41 @@ spec "features/impls (alias copy, adversarial)" {
             shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(rs: List<R>) -> int {\n    mut q = rs.first() ?? R { xs: [7] }\n    q.add(1)\n    q.xs.length\n}\nlet none: List<R> = []\n\"\${shadow(none)} \${shadow(none)}\"") == "2 2"
         }
     }
+    given "a copy read through every other feature" {
+        then "a branch whose arms read held values" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(rs: List<R>, b: bool) -> int {\n    mut q = if b { rs.first() ?? R { xs: [] } } else { rs.last() ?? R { xs: [] } }\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }]\n\"\${a(rs, true)} \${a(rs, false)} \${rs[0].xs.length}\"") == "1 1 0"
+        }
+        then "a `match` over places" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(rs: List<R>, k: int) -> int {\n    mut q = match k {\n        0 -> rs[0],\n        _ -> rs[1],\n    }\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }, R { xs: [] }]\n\"\${a(rs, 0)} \${a(rs, 1)} \${rs[0].xs.length} \${rs[1].xs.length}\"") == "1 1 0 0"
+        }
+        then "a `when` over places" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(rs: List<R>, k: int) -> int {\n    mut q = when { k == 0 -> rs[0], _ -> rs[1] }\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }, R { xs: [] }]\n\"\${a(rs, 0)} \${a(rs, 1)} \${rs[0].xs.length} \${rs[1].xs.length}\"") == "1 1 0 0"
+        }
+        then "a block's value" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn a(c: Cell<R>) -> int {\n    mut q = {\n        let t = c\n        t.get()\n    }\n    grow(q)\n    q.xs.length\n}\nlet c = Cell.new(R { xs: [] })\n\"\${a(c)} \${a(c)} \${c.get().xs.length}\"") == "1 1 0"
+        }
+        then "a field of a lent value" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\ntype O = { rs: List<R> }\nfn a(c: Cell<Map<string, O>>) -> int {\n    mut q = (c.get().get(\"k\") ?? O { rs: [] }).rs.first() ?? R { xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet none: Map<string, O> = {}\nlet c = Cell.new(none)\nc.put(\"k\", O { rs: [R { xs: [] }] })\n\"\${a(c)} \${a(c)} \${((c.get().get(\"k\") ?? O { rs: [] }).rs.first() ?? R { xs: [9] }).xs.length}\"") == "1 1 0"
+        }
+        then "a `?.` field read" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\ntype O = { r: R }\nfn a(o: O?) -> int {\n    mut q = o?.r ?? R { xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet o: O? = O { r: R { xs: [] } }\n\"\${a(o)} \${a(o)} \${(o?.r ?? R { xs: [9] }).xs.length}\"") == "1 1 0"
+        }
+        then "a const's element" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nconst SEED = [R { xs: [] }]\nfn a() -> int {\n    mut q = SEED.first() ?? R { xs: [] }\n    q.add(1)\n    grow(q)\n    q.xs.length\n}\n\"\${a()} \${a()} \${SEED[0].xs.length}\"") == "2 2 0"
+        }
+        then "`self`'s holders" {
+            shown("type W = { c: Cell<R>, rs: List<R> }\ntype R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nimpl W {\n    fn tried() -> int {\n        mut q = self.c.get()\n        q.add(1)\n        mut f = self.rs.first() ?? R { xs: [] }\n        grow(f)\n        q.xs.length + f.xs.length\n    }\n}\nlet w = W { c: Cell.new(R { xs: [] }), rs: [R { xs: [] }] }\n\"\${w.tried()} \${w.tried()} \${w.c.get().xs.length} \${w.rs[0].xs.length}\"") == "2 2 0 0"
+        }
+        then "a `dyn` value a cell holds" {
+            shown("trait Grow { mut fn grow()\n    fn size() -> int }\ntype R = { xs: List<int> }\nimpl Grow for R {\n    mut fn grow() { self.xs.push(1) }\n    fn size() -> int { self.xs.length }\n}\nfn a(c: Cell<dyn Grow>) -> int {\n    mut q = c.get()\n    q.grow()\n    q.size()\n}\nlet d: dyn Grow = R { xs: [] }\nlet c = Cell.new(d)\n\"\${a(c)} \${a(c)} \${c.get().size()}\"") == "1 1 0"
+        }
+        then "a cell a cell holds still shares" {
+            shown("type R = { n: int, s: string }\nfn a(cc: Cell<Cell<R>>) -> int {\n    mut q = cc.get()\n    q.set(R { n: 7, s: \"x\" })\n    q.get().n\n}\nlet cc = Cell.new(Cell.new(R { n: 1, s: \"\" }))\n\"\${a(cc)} \${cc.get().get().n}\"") == "7 7"
+        }
+        then "a cell inside the copy still shares" {
+            shown("type R = { hits: Cell<int>, n: int }\nimpl R { mut fn hit() {\n    self.n = self.n + 1\n    self.hits.set(self.hits.get() + 1)\n} }\nfn a(c: Cell<R>) -> int {\n    mut q = c.get()\n    q.hit()\n    q.n\n}\nlet c = Cell.new(R { hits: Cell.new(0), n: 0 })\n\"\${a(c)} \${a(c)} \${c.get().n} \${c.get().hits.get()}\"") == "1 1 0 2"
+        }
+    }
     given "a copy of a `dyn` value" {
         then "the wrapped value is copied with its box" {
             shown("trait Grow { mut fn grow() }\ntype R = { xs: List<int> }\nimpl Grow for R { mut fn grow() { self.xs.push(1) } }\nfn shadow(p: R) -> int {\n    let d: dyn Grow = p\n    mut q = d\n    q.grow()\n    q.grow()\n    p.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"") == "0 0"
@@ -142,6 +177,16 @@ spec "features/impls (alias copy, adversarial)" {
         }
         then "a seat handed on from a seat still reaches the first caller" {
             shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn outer(mut r: R) { grow(r) }\nmut r = R { xs: [] }\nouter(r)\nouter(r)\n\"\${r.xs.length}\"") == "2"
+        }
+    }
+    given "what the copy does not reach yet" {
+        // MEASURED, not asserted as right: spec 11.5 wants this "1 1 0". A
+        // FRESH container holding a shared element is written through a
+        // writing method on the element's path — the path is not opened
+        // unique, since its root is no copy. It flips when a path receiver
+        // opens its intermediates the way a vocabulary write does.
+        then "a pushed element written through its fresh list" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn a(r: R) -> int {\n    mut out: List<R> = []\n    out.push(r)\n    out[0].add(1)\n    out[0].xs.length\n}\nlet r = R { xs: [] }\n\"\${a(r)} \${a(r)} \${r.xs.length}\"") == "1 2 2"
         }
     }
 }

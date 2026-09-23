@@ -3,13 +3,21 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, StmtId, TypeId, Type, Expr, ResSides, Arrow, filled, DeclId, Binding, SeatMark, mut_mark, settled_mark, is_literal, literal_form, some_list}
+use core.{ExprId, StmtId, TypeId, Type, Expr, PlaceStep, ResSides, Arrow, filled, DeclId, Binding, SeatMark, mut_mark, settled_mark, is_literal, literal_form, some_list}
 use diagnostics.{Diag, refusal, warning}
 use @std.errors.{Confidence, Edit, Suggestion}
 
 /// The binding a copy is read from, and the place that HOLDS what was
 /// read, when the copy is not of the place itself.
 type Copied = { root: ExprId, holder: ExprId? }
+
+/// The subject a field or an index reads from; null for a bare name.
+fn place_subject(step: PlaceStep) -> ExprId? {
+    match step {
+        .Root(_) -> null,
+        .Field(subject, _) or .At(subject, _) -> subject,
+    }
+}
 
 impl TypeCx {
     /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -823,20 +831,39 @@ impl TypeCx {
     }
 
     /// Where a seed is READ from, when it is not fresh: a place's own
-    /// root; through an unwrap or a `??`, the first side that reads
-    /// one; through a vocabulary read that LENDS what its receiver
-    /// holds (`c.get()`, `xs.first()`), that receiver's, lent by it. A
-    /// construction and a fn's answer are fresh.
+    /// root; through a side whose value IS the seed's (`value_sides`),
+    /// that side's; read OUT of a holder (`lender`), the holder's, lent.
+    /// A construction and a fn's answer are fresh.
     fn copied_from(v: ExprId) -> Copied? {
         let root: ExprId? = self.place_binding_root(v)
         if root != null { return Copied { root: root!, holder: null } }
-        let sides = some_list(self.view.store.forced(v)).concat(self.view.store.coalesced(v))
-        let side: ExprId? = sides.find((x) -> self.copied_from(x) != null)
+        let side: ExprId? = self.value_sides(v).find((x) -> self.copied_from(x) != null)
         if side != null { return self.copied_from(side!) }
+        let holder? = self.lender(v) else { return null }
+        let held? = self.copied_from(holder) else { return null }
+        Copied { root: held.root, holder: held.holder ?? holder }
+    }
+
+    /// The sub-expressions whose value IS this one's: an unwrap's
+    /// subject, a `??`'s sides, and every branch heir wearing the
+    /// value's own type — a comprehension's element is no heir of that.
+    fn value_sides(v: ExprId) -> List<ExprId> {
+        let node = self.view.store.expr(v)
+        let heirs = [h for h in semantics_of(self.dispatch, node).heirs(node) if !self.types_disagree(self.type_at(h), self.type_at(v))]
+        some_list(self.view.store.forced(v)).concat(self.view.store.coalesced(v)).concat(heirs)
+    }
+
+    /// What a value is read OUT of: a field's or an index's subject (a
+    /// `?.` read's too), a lending read's receiver (`c.get()`,
+    /// `xs.first()`).
+    fn lender(v: ExprId) -> ExprId? {
+        let step: PlaceStep? = self.view.store.place_step(v)
+        if step != null { return place_subject(step!) }
+        let chained: ExprId? = self.view.store.chained(v)
+        if chained != null { return chained }
         let mp? = self.view.store.method_parts(v) else { return null }
         if !row_lends(self.view.lang.methods, mp.name, self.seen_at(mp.subject)) { return null }
-        let held? = self.copied_from(mp.subject) else { return null }
-        Copied { root: held.root, holder: held.holder ?? mp.subject }
+        mp.subject
     }
 
     /// A place's path as a reader names it, an index shown as `[…]`;

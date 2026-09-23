@@ -341,6 +341,15 @@ engine's spec, written by dogfooding.
   THE SWEEP THAT ACQUITTED THE TREE READ ONE PACKAGE: five lanes paid
   "the 15 sites" of `check packages/std-avrac`, and the two that broke
   were in `packages/cli`, warned about the whole time.
+- A READ-MODIFY-WRITE THROUGH `get` IS A COPY, AND THE COPY IS WHOLE.
+  `mut t = c.get()`, a write through `t`, `c.set(t)` is correct under
+  spec 11.5 and COPIES what the cell holds on every turn — `get`
+  answers a copy (the owner's Q2(a)), and F2096 names the local. When
+  the loop is hot the copy is quadratic: the memo's settle did it per
+  query until `Table` became ONE SHARED SLOT (a `Cell` of rows, an
+  in-place `keep`). Write in place through the holder's own verbs —
+  `put`, `push`, `set_at` on the cell, or a type that owns its cell —
+  and keep `get`-then-`set` for values nobody writes often.
 - A PARAMETER IS BORROWED, AND WHAT A CALLEE KEEPS TAKES ITS OWN
   REFERENCE. The caller keeps every managed argument STANDING for
   the call — a param, a register a scope owns, a cell's load and the
@@ -1379,6 +1388,14 @@ engine's spec, written by dogfooding.
   tables, since a borrow that becomes a copy pushes into the copy —
   and that same aliasing is H3's silent channel: a write through a
   borrowed local still reports nothing at all.
+  RETRACTED BY MEASUREMENT (2026-09-22, both engines, at bf39cfb's
+  base): `mut xs = a.b.list` then `xs.push(v)` does NOT reach `a.b` —
+  a bare `mut` local read from a place is a COPY (spec 11.5,
+  avra-2y5c.5) and F2096 says so at the write. What survives is the
+  entry's other half: a writing METHOD on a nested PATH whose root is
+  no copy writes through a shared intermediate (a pushed element
+  written through its fresh list — pinned MEASURED in
+  features/impls/tests/alias_copy_adversarial_test.av).
 - THE CONDITION RUNS EVERY TURN: the memory pass settles what a
   `while` condition mints at each `LoopCond`, inside the loop. A
   release placed after the loop settles one turn's debts for all of
