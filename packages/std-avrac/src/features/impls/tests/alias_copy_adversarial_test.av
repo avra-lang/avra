@@ -179,14 +179,39 @@ spec "features/impls (alias copy, adversarial)" {
             shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn outer(mut r: R) { grow(r) }\nmut r = R { xs: [] }\nouter(r)\nouter(r)\n\"\${r.xs.length}\"") == "2"
         }
     }
-    given "what the copy does not reach yet" {
-        // MEASURED, not asserted as right: spec 11.5 wants this "1 1 0". A
-        // FRESH container holding a shared element is written through a
-        // writing method on the element's path — the path is not opened
-        // unique, since its root is no copy. It flips when a path receiver
-        // opens its intermediates the way a vocabulary write does.
+    given "the root decides: a path through a local copies" {
         then "a pushed element written through its fresh list" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn a(r: R) -> int {\n    mut out: List<R> = []\n    out.push(r)\n    out[0].add(1)\n    out[0].xs.length\n}\nlet r = R { xs: [] }\n\"\${a(r)} \${a(r)} \${r.xs.length}\"") == "1 2 2"
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn a(r: R) -> int {\n    mut out: List<R> = []\n    out.push(r)\n    out[0].add(1)\n    out[0].xs.length\n}\nlet r = R { xs: [] }\n\"\${a(r)} \${a(r)} \${r.xs.length}\"") == "1 1 0"
+        }
+        then "a local list another name also holds, written through an element" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn f() -> string {\n    mut out = [R { xs: [] }]\n    let keep = out\n    out[0].add(1)\n    \"\${out[0].xs.length}\${keep[0].xs.length}\"\n}\nf()") == "10"
+        }
+        then "the warning names the local and the path, once per local" {
+            let a = analyze_source("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn f(r: R) {\n    mut out = [r]\n    out[0].add(1)\n    out[0].add(2)\n}\n1")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`out` is a local — a write through `out[…]` stays in `out`, and every other holder of what it reaches keeps its own") && a.report().contains("write through `self` or a `mut` parameter if the write should reach the caller, or `Cell<T>` what must stay shared")
+        }
+        then "a path rooted at `self` or a seat says nothing" {
+            let a = analyze_source("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nimpl H { mut fn bump() { self.r.add(1) } }\nfn grow(mut h: H) { h.r.add(1) }\n1")
+            a.clean() && a.diagnostics.is_empty()
+        }
+        then "a path rooted at `self` still writes through to the caller" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nimpl H { mut fn bump() { self.r.add(1) } }\nmut h = H { r: R { xs: [] } }\nh.bump()\nh.bump()\n\"\${h.r.xs.length}\"") == "2"
+        }
+        then "a path rooted at a `mut` parameter still writes through to the caller" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\nfn grow(mut h: H) { h.r.add(1) }\nmut h = H { r: R { xs: [] } }\ngrow(h)\ngrow(h)\n\"\${h.r.xs.length}\"") == "2"
+        }
+        then "a vocabulary write through `self` opens a shared element" {
+            shown("type R = { xs: List<int> }\ntype H = { r: R }\nimpl H { mut fn push_one() { self.r.xs.push(1) } }\nlet r = R { xs: [] }\nmut h = H { r: r }\nh.push_one()\n\"\${h.r.xs.length}\${r.xs.length}\"") == "10"
+        }
+    }
+    given "what the root does not reach yet" {
+        // MEASURED, not asserted as right: spec 11.5 wants "1 1 0". A
+        // path rooted at `self` or a `mut` seat writes through, so an
+        // element inside it that another value also holds sees the
+        // write — the root decides the path, never the element's other
+        // holders.
+        then "a shared element written through `self` and through a seat" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\ntype B = { h: H }\nimpl B { mut fn bump() { self.h.r.add(1) } }\nfn grow(mut h: H) { h.r.add(1) }\nlet r = R { xs: [] }\nmut b = B { h: H { r: r } }\nb.bump()\nmut h = H { r: r }\ngrow(h)\n\"\${b.h.r.xs.length} \${h.r.xs.length} \${r.xs.length}\"") == "2 2 2"
         }
     }
 }

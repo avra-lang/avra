@@ -1366,36 +1366,22 @@ engine's spec, written by dogfooding.
   (commands/phase.av): the act is a NAMED fn answering
   `Result<int, string>` — its exit code, or the report `phased`
   prints as exit 1 — and says only what its phase does.
-- A BORROW ALIASES, A PATH WRITE THROUGH A SHARED INTERMEDIATE
-  COPIES. `mut xs = a.b.list` then `xs.push(v)` writes through every
-  holder of `a.b`; `a.b.list.push(v)` opens `a.b` unique and COPIES
-  it when another reference holds it, so the push lands in a copy
-  the other holder never sees (the lowering's worklist lost every
-  lift so, `toml$l1040` undeclared). A receiver's direct field and a
-  method call on a nested path write through; only a VOCABULARY
-  write (`push`, `set`, `pop`) on a nested struct copies. Converting
-  a borrow to a path write is a change of meaning exactly where the
-  intermediate is shared: make it unique (a value built in place and
-  handed back — the worklist per body) or keep the borrow and name
-  the sharing. Probed 2026-09-05, both engines agree.
-  THE PERFORMANCE RATIONALE IS GONE as of S3b: liveness reaches the
-  OWNED TWIN choice too, so a path write no longer finds its own
-  read's +1 and no longer clones — sweeping 34 borrow sites to direct
-  writes measured FREE (6.87s against 6.90s, inside the noise) and
-  all 17 I34 licenses retired. SO A BORROW IS WRITTEN FOR ITS
-  ALIASING AND NEVER FOR SPEED. The mechanism survives because nine
-  sites still need the aliasing — deleting it emptied the declaration
-  tables, since a borrow that becomes a copy pushes into the copy —
-  and that same aliasing is H3's silent channel: a write through a
-  borrowed local still reports nothing at all.
-  RETRACTED BY MEASUREMENT (2026-09-22, both engines, at bf39cfb's
-  base): `mut xs = a.b.list` then `xs.push(v)` does NOT reach `a.b` —
-  a bare `mut` local read from a place is a COPY (spec 11.5,
-  avra-2y5c.5) and F2106 says so at the write. What survives is the
-  entry's other half: a writing METHOD on a nested PATH whose root is
-  no copy writes through a shared intermediate (a pushed element
-  written through its fresh list — pinned MEASURED in
-  features/impls/tests/alias_copy_adversarial_test.av).
+- THE ROOT OF A PATH DECIDES WHERE A WRITE LANDS: "changes through
+  `self` or a `mut` parameter reach the caller; changes to a local stay
+  local." A writing call on a path rooted at `self` or a `mut` seat
+  writes through (the seat law — Swift's `mutating`/`inout`, Rust's
+  `&mut`); rooted at a `mut` LOCAL, the path's boxes open unique first
+  (`path_copy_law`, the alias-copy fact `reg_of` already reads), and
+  F2106 says so once per local. A local READ FROM a place is a copy
+  already (spec 11.5). An IDENTITY held in a local (a workspace inside
+  a `Derived`) would fork, so its write goes through a verb rooted at
+  `self` (`Derived.linked`). THE GAP, pinned MEASURED in
+  features/impls/tests/alias_copy_adversarial_test.av: a writing METHOD
+  or seat through `self` does not open the path, so an element inside
+  it that another value also holds sees the write — while a
+  vocabulary write (`push`, `set`) through `self` opens every box
+  below the root and does not. Witness: features/tests/borrow_root_path,
+  eval == native.
 - THE CONDITION RUNS EVERY TURN: the memory pass settles what a
   `while` condition mints at each `LoopCond`, inside the loop. A
   release placed after the loop settles one turn's debts for all of

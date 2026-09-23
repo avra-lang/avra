@@ -778,7 +778,7 @@ impl TypeCx {
     /// S4).
     mut fn receiver_law(e: ExprId, subject: ExprId, name: string, writes: bool) {
         if !writes { return }
-        if self.mut_place(subject) { return self.alias_copy_law(e, subject, self.place_binding_root(subject)!) }
+        if self.mut_place(subject) { return self.copy_laws(e, subject, self.place_binding_root(subject)!) }
         let root: ExprId? = self.place_binding_root(subject)
         if root == null { return self.emit(warning("type.receiver", self.loc_of(e), "`${name}` writes its receiver, and this is a value", "a value", "bind it `mut` first — the receiver becomes the caller's own place")) }
         let n = self.root_word(root!)
@@ -830,6 +830,35 @@ impl TypeCx {
         self.place_copy(e, q, self.root_word(from.root))
     }
 
+    /// A write through `place` (rooted at the `mut` `root`) judged by
+    /// both copy laws: the local that is a copy, then the path.
+    mut fn copy_laws(e: ExprId, place: ExprId, root: ExprId) {
+        self.alias_copy_law(e, place, root)
+        self.path_copy_law(e, place, root)
+    }
+
+    /// THE ROOT DECIDES: a write through a PATH rooted at a `mut` LOCAL
+    /// opens the path's boxes unique, so the write stays in the local;
+    /// rooted at `self` or a `mut` seat it reaches the caller.
+    mut fn path_copy_law(e: ExprId, place: ExprId, root: ExprId) {
+        let s? = self.bare_mut_stmt(root) else { return }
+        if self.facts.wants_alias_copy(place) || !self.through_path(place) { return }
+        if !self.view.types.rides_pointer(self.type_at(place)) { return }
+        self.facts.mark_alias_copy(place)
+        if self.aliased_warned.contains(s.index) { return }
+        self.aliased_warned.push(s.index)
+        self.local_path(e, self.root_word(root), self.place_words(place) ?? "…")
+    }
+
+    /// Whether a place is reached through a field or an index.
+    fn through_path(e: ExprId) -> bool {
+        let step? = self.view.store.place_step(e) else { return false }
+        match step {
+            .Root(_) -> false,
+            .Field(_, _) or .At(_, _) -> true,
+        }
+    }
+
     /// Where a seed is READ from, when it is not fresh: a place's own
     /// root; through a side whose value IS the seed's (`value_sides`),
     /// that side's; read OUT of a holder (`lender`), the holder's, lent.
@@ -879,6 +908,10 @@ impl TypeCx {
 
     mut fn place_copy(e: ExprId, q: string, p: string) {
         self.emit(warning("type.alias_copy", self.loc_of(e), "`${q}` is a copy of `${p}` — a write through it will not reach `${p}`", "a copy", "write through `${p}` directly if the write should reach it, or `Cell<T>` it if the copy must still share"))
+    }
+
+    mut fn local_path(e: ExprId, q: string, p: string) {
+        self.emit(warning("type.alias_copy", self.loc_of(e), "`${q}` is a local — a write through `${p}` stays in `${q}`, and every other holder of what it reaches keeps its own", "stays local", "write through `self` or a `mut` parameter if the write should reach the caller, or `Cell<T>` what must stay shared"))
     }
 
     mut fn lent_copy(e: ExprId, q: string, p: string) {
@@ -1039,7 +1072,7 @@ impl TypeCx {
             return roots
         }
         if roots.any((x) -> self.same_root(x, r)) { self.shared_root(e, callee, n) }
-        self.alias_copy_law(a, a, r)
+        self.copy_laws(a, a, r)
         roots.concat([r])
     }
 
