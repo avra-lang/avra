@@ -50,7 +50,21 @@ fn collect_type(mut cx: TypeCx, e: ExprId, body: ExprId) -> TypeId {
 
 fn disagreeing_element(mut cx: TypeCx, k: ExprId, elem: TypeId) -> TypeId {
     let n = cx.name_at(k)
-    cx.spoken(refusal("type.list_element", cx.loc_of(k), "a list's elements share one type — the first is `${cx.view.types.name_of(elem)}`, this is `${n}`", this_is(n), null))
+    let shared = if boxable(cx, elem) && boxable(cx, cx.type_at(k)) { share_a_trait() } else { null }
+    cx.spoken(refusal("type.list_element", cx.loc_of(k), "a list's elements share one type — the first is `${cx.view.types.name_of(elem)}`, this is `${n}`", this_is(n), shared))
+}
+
+/// A declared type — the only kind a trait impl serves, so the only
+/// kind a `dyn` list can hold.
+fn boxable(cx: TypeCx, t: TypeId) -> bool {
+    match cx.view.types.shape_of(t) {
+        .Struct(_, _) or .Enum(_, _) -> true,
+        _ -> false,
+    }
+}
+
+fn share_a_trait() -> string {
+    "to hold both, declare the list over a trait they share — `let xs: List<dyn Trait> = …`"
 }
 
 fn unwanted_element(mut cx: TypeCx, k: ExprId, want: TypeId) -> TypeId {

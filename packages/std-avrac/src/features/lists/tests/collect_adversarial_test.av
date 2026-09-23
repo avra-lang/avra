@@ -28,6 +28,12 @@ spec "features/lists/collect — adversarial" {
         then "a non-list seat refuses the list" {
             refused_with("let n: int = collect {\n    1\n}\nn", "`n` declares `int`, this is `List<int>`")
         }
+        then "two declared types hear the shared trait that would hold both" {
+            refused_with("type A = { a: int }\ntype B = { b: int }\nlet xs = collect {\n    A { a: 1 }\n    B { b: 2 }\n}\nxs.length", "declare the list over a trait they share — `let xs: List<dyn Trait> = …`")
+        }
+        then "two scalars hear no trait — a scalar wears none" {
+            !refused_with("let xs = collect {\n    1\n    \"two\"\n}\nxs.length", "a trait they share") && refused_with("let xs = collect {\n    1\n    \"two\"\n}\nxs.length", "this is `string`")
+        }
         then "one mistake is one refusal" {
             refusals("let xs = collect {\n    1\n    \"two\"\n    3\n}\nxs.length") == 1
         }
