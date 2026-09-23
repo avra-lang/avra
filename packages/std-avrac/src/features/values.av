@@ -103,6 +103,8 @@ fn literal_variant(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, 
     let tag: int = sig.names.index_of(name)
     if tag < 0 { return null }
     let payloads? = spelled_all(store, decls, facts, args, heap) else { return null }
+    // an enum whose variants carry nothing crosses as its tag, a word
+    if decls.types.is_flat(facts.type_at(e)) { return MetaVal.Int(tag) }
     heap.node([MetaVal.Int(tag)].concat(payloads))
 }
 
@@ -333,6 +335,9 @@ impl LowerCx {
     /// THE TAGGED VALUE: an enum's variant is a slot array holding its
     /// TAG at slot 0 and its payloads, in order, at slots 1...
     mut fn tagged_value(sh: Type, size: Reg, tag: int, payloads: List<Reg>) -> Reg {
+        // an enum whose variants carry nothing IS its tag
+        let ty = self.view.types.intern(sh)
+        if self.view.types.is_flat(ty) { return self.pack(ty, [self.const_int(tag)]) }
         let dst = self.array_sized(sh, size)
         let slot = self.const_int(tag)
         self.push_slot(dst, slot)
@@ -343,6 +348,7 @@ impl LowerCx {
     /// The TAG a tagged value carries. Slot 0, always an int — asking
     /// here is how a consumer avoids knowing the number.
     mut fn tag_of(v: Reg) -> Reg {
+        if self.view.types.is_flat(self.out.type_of_reg(v)) { return self.extracted(v, 0, self.mint_shape(Type.Int)) }
         self.slot_read(v, 0, null)
     }
 

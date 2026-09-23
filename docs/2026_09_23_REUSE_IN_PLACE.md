@@ -295,3 +295,36 @@ The 14 left: `Head`, its two `Span`s (R4b), `Body`/`Framed`/`Method`/
 `TargetForm` enums (R8 takes the payload-free ones), the handler's
 `Response`, header list and `Header`, `Framing`, the fields list, and
 the bench's own `Request`.
+
+## §10 As built — R8, an enum that carries nothing is its tag
+
+**D18. A non-generic enum whose variants carry nothing is FLAT over
+one `int`** (`Decls.flatten_enum`): its value is its tag, a word, as C
+spells an enum. `.Get`, `.None`, `.Origin` build nothing and count
+nothing. The two enum verbs carry it: `tagged_value` packs the tag
+(identity) and `tag_of` extracts it (identity), so every match, `is`
+and `==` reads the word. `is_managed` asks flatness for an `Enum`.
+
+**D19. It crosses as its tag.** A literal variant of one settles as
+`MetaVal.Int(tag)` and lays out as `Slot.Int` — one word in a const
+list, a record field, a table row — the shape a flat record already
+crosses in. A `once` answer that is no pointer (a word enum, a value
+record) rides the one-cell cache; the law's own help always listed
+"an enum" as keepable.
+
+**Ladder lesson.** Refreshing `avra.pre` from a gen-1 binary that
+lacked a crossing fix let that binary compile the compiler, and every
+const holding an enum trapped while settling (`width_words`,
+`program_rows`). The standing binary for a gen-1 build is one that
+predates the whole change; when none is at hand, `make bootstrap`
+from the committed seed is.
+
+**Attacks:** features/enums/tests/word_enums — match, `is`, `==`, a
+list, a map, a record field, a payload beside a word variant, a
+nullable (`let … else`, `??`), a const, a const list, `once`, `dyn`
+with a method, a generic, a capture, a Cell — eval == native == the
+pre-R8 answer, under AVRA_RC_GUARD=1.
+
+**Numbers.** Request boxes 14 -> 11 (`Method`, `TargetForm` twice).
+`check packages/cli` user 7.83 s -> 7.24 s (−7.5%, three interleaved
+pairs); resident set overlapping.
