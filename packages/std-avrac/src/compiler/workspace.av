@@ -36,7 +36,6 @@ fn no_paths() -> List<string> { [] }
 /// The host's environment — what a `${NAME}` hole in a link row fills from.
 extern fn avra_host_env(name: string) -> string
 
-
 /// Method clashes grouped in one pass, then read by the losing file.
 /// A new revision or declaration invalidates the grouping.
 type MethodDiagIndex = { revision: int, decl_count: int, by_file: List<List<Diag>> }
@@ -90,9 +89,19 @@ type Hold = {
 fn new_hold() -> Hold {
     let no_runs: Map<string, List<string>> = {}
     Hold {
-        homes: {}, held_wants: [], body_asks: Cell.new(no_paths()), runs: Cell.new(no_runs), settling: Cell.new(no_paths()),
-        hold_asked: [], read_with: [], read_files: [], minted: {}, file_ready: new_table(), holds_settled: Cell.new(false),
-        named_in: {}, held_flat: [],
+        homes: {},
+        held_wants: [],
+        body_asks: Cell.new(no_paths()),
+        runs: Cell.new(no_runs),
+        settling: Cell.new(no_paths()),
+        hold_asked: [],
+        read_with: [],
+        read_files: [],
+        minted: {},
+        file_ready: new_table(),
+        holds_settled: Cell.new(false),
+        named_in: {},
+        held_flat: [],
     }
 }
 
@@ -318,9 +327,27 @@ fn ordinal(f: Family) -> int {
 
 /// The families in ordinal order — the kernel registers them so.
 fn families() -> List<Family> {
-    let all: List<Family> = [Family.Source, Family.Parsed, Family.Items, Family.Namespace, Family.Visible, Family.Resolved,
-                             Family.Sig, Family.Methods, Family.Typed, Family.ConstTyped, Family.Folded, Family.Analysis, Family.Settled, Family.Lowered, Family.Lifted, Family.Manifest,
-                             Family.Receivers, Family.Expanded, Family.Plain]
+    let all: List<Family> = [
+        Family.Source,
+        Family.Parsed,
+        Family.Items,
+        Family.Namespace,
+        Family.Visible,
+        Family.Resolved,
+        Family.Sig,
+        Family.Methods,
+        Family.Typed,
+        Family.ConstTyped,
+        Family.Folded,
+        Family.Analysis,
+        Family.Settled,
+        Family.Lowered,
+        Family.Lifted,
+        Family.Manifest,
+        Family.Receivers,
+        Family.Expanded,
+        Family.Plain,
+    ]
     all
 }
 
@@ -374,22 +401,50 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     let no_lifts: List<LiftAsk> = []
     let no_settles: List<SettleAsk> = []
     mut ws = Workspace {
-        host: host, root: root, lang: lang, db: db, decls: language_decls(lang), store: null,
-        sources: new_memo<SourceFile>(db, ordinal(Family.Source)), manifests: new_memo<Manifest>(db, ordinal(Family.Manifest)), externs: Cell.new(new_table<ExternNames>()),
+        host: host,
+        root: root,
+        lang: lang,
+        db: db,
+        decls: language_decls(lang),
+        store: null,
+        sources: new_memo<SourceFile>(db, ordinal(Family.Source)),
+        manifests: new_memo<Manifest>(db, ordinal(Family.Manifest)),
+        externs: Cell.new(new_table<ExternNames>()),
         programs: new_memo<Parsed>(db, ordinal(Family.Parsed)),
         plain: new_memo<Parsed>(db, ordinal(Family.Plain)),
         file_items: new_memo<List<DeclId>>(db, ordinal(Family.Items)),
         module_names: new_memo<ModuleNames>(db, ordinal(Family.Namespace)),
         visibles: new_memo<Namespace>(db, ordinal(Family.Visible)),
-        name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)), sig_voices: new_table(),
-        decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)), const_type_facts: new_memo<TypeId>(db, ordinal(Family.ConstTyped)), method_clashes: new_table(), method_diags: [],
+        name_facts: new_memo<NameFacts>(db, ordinal(Family.Resolved)),
+        sig_voices: new_table(),
+        decl_facts: new_memo<TypeFacts>(db, ordinal(Family.Typed)),
+        const_type_facts: new_memo<TypeId>(db, ordinal(Family.ConstTyped)),
+        method_clashes: new_table(),
+        method_diags: [],
         folds: new_memo<TypeFacts>(db, ordinal(Family.Folded)),
-        analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)), units: new_memo<Unit>(db, ordinal(Family.Lowered)), asks: Cell.new(no_asks),
-        lift_asks: Cell.new(no_lifts), lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
+        analyses: new_memo<Analysis>(db, ordinal(Family.Analysis)),
+        units: new_memo<Unit>(db, ordinal(Family.Lowered)),
+        asks: Cell.new(no_asks),
+        lift_asks: Cell.new(no_lifts),
+        lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
-        settle_asks: Cell.new(no_settles), settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), records: new_records(), keys: new_keys(), module_names_of: {}, files_of: {}, surfaces: {}, import_lists: {}, hold: new_hold(), defects: [],
-        packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
-        clock: clock, phases: [],
+        settle_asks: Cell.new(no_settles),
+        settlements: new_memo<Settlement>(db, ordinal(Family.Settled)),
+        records: new_records(),
+        keys: new_keys(),
+        module_names_of: {},
+        files_of: {},
+        surfaces: {},
+        import_lists: {},
+        hold: new_hold(),
+        defects: [],
+        packages: [],
+        package_voices: [],
+        lone: lone,
+        per_file: per_file,
+        closed: false,
+        clock: clock,
+        phases: [],
     }
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
@@ -491,7 +546,7 @@ impl Workspace {
     fn annotation_warnings(x: Decl, p: Parsed, vis: Namespace, a: Annotation) -> List<Diagnostic> {
         let found? = self.named_arg(p, vis, a.callee) else { return [] }
         let callee = found
-        let s? = (self.decls.sig(callee))?.fn_sig() else { return [] }
+        let s? = self.decls.sig(callee)?.fn_sig() else { return [] }
         if s.params.is_empty() { return [] }
         let elem? = elem_of(self.decls.types, s.ret) else { return [] }
         if !self.decls.meta_type(elem, "Diagnostic") { return [] }
@@ -586,8 +641,16 @@ impl Workspace {
     /// itself, it only answers the safe text.
     fn write_checked_source(f: FileId) -> Result<string, string> {
         let text = self.formatted_source(f)?
-        let bad? = lossless_defect(self.source(f).text, text) else { return .Ok(text) }
-        let canon? = self.canon_defect(f, text) else { return .Ok(text) }
+        // THE RECEIPT COMPARES WHAT REACHES DISK, not `render_source_of`'s
+        // own return value: the CLI's write path (and `println`'s SAID
+        // path alike) appends the file's own trailing newline AFTER this
+        // fn answers, so a text ending in a Blank remark (a trailing
+        // blank line before EOF) needs that same newline here too, or
+        // the comparison lexes one fewer break than the disk file will
+        // ever have and reads the blank line as lost.
+        let disk = "${text}\n"
+        let bad? = lossless_defect(self.source(f).text, disk) else { return .Ok(text) }
+        let canon? = self.canon_defect(f, disk) else { return .Ok(text) }
         .Err("avra fmt: refusing to write — ${bad} (canon: ${canon})")
     }
 
@@ -633,9 +696,7 @@ impl Workspace {
     /// re-parses; the nodes a block's actions minted wear the
     /// library's origin.
     fn parsed(f: FileId) -> Parsed {
-        self.programs.demand(f.index,
-            () -> self.parsed_under_blocks(f),
-            (p: Parsed) -> fp(121, [program_hash(p), fp_str(joined(sorted_texts(p.store.sublang_words()), ","))]))
+        self.programs.demand(f.index, () -> self.parsed_under_blocks(f), (p: Parsed) -> fp(121, [program_hash(p), fp_str(joined(sorted_texts(p.store.sublang_words()), ","))]))
     }
 
     /// A file parsed under NO block words — its own words alone. The
@@ -643,9 +704,7 @@ impl Workspace {
     /// never depends on a provider's parse depending back on it (two
     /// files importing each other were a memo cycle otherwise).
     fn plain_parsed(f: FileId) -> Parsed {
-        self.plain.demand(f.index,
-            () -> parse_program(self.lang, self.source(f), []),
-            (p: Parsed) -> program_hash(p))
+        self.plain.demand(f.index, () -> parse_program(self.lang, self.source(f), []), (p: Parsed) -> program_hash(p))
     }
 
     fn parsed_under_blocks(f: FileId) -> Parsed {
@@ -1048,9 +1107,7 @@ fn unclean(a: Analysis) -> bool {
     !a.clean()
 }
 
-
 fn is_warning(d: Diag) -> bool {
     !is_error(d)
 }
-
 
