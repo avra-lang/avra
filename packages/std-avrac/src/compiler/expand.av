@@ -87,13 +87,20 @@ impl Workspace {
                     // annotations (std-meta's `traced`), whose sig lives
                     // in another, computable file.
                     if !same_file(self.decls.decl(ann_decl).file, f) {
-                        let asig: FnSig? = (self.decls.sig(ann_decl))?.fn_sig()
+                        let asig: FnSig? = self.decls.sig(ann_decl)?.fn_sig()
                         if asig != null {
                             let sig = asig!
                             if self.is_declares(sig.ret) || self.is_derived(sig.ret) {
                                 out.push(DeclareWork {
-                                    ann: ann_decl, stmt: x.stmt, callee: a.callee, args: a.args,
-                                    ret: sig.ret, tparams: tparams, params: params, answer: answer, original: x.name,
+                                    ann: ann_decl,
+                                    stmt: x.stmt,
+                                    callee: a.callee,
+                                    args: a.args,
+                                    ret: sig.ret,
+                                    tparams: tparams,
+                                    params: params,
+                                    answer: answer,
+                                    original: x.name,
                                     at: a.span ?? p.store.stmt_span(x.stmt),
                                 })
                             }
@@ -175,7 +182,7 @@ impl Workspace {
         if tr == null { return null }
         let m? = self.decls.trait_marks(tr!) else { return claims_nothing() }
         if same_file(self.decls.decl(m).file, f) { return null }
-        if (self.decls.sig(m))?.fn_sig() == null { return null }
+        if self.decls.sig(m)?.fn_sig() == null { return null }
         match self.lifted(m, f, w.stmt, w.callee, []) {
             .Ok(crossed) -> crossed.claims(),
             .Err(_) -> null,
@@ -311,7 +318,7 @@ impl Workspace {
         let origin? = self.decls.paths.get(file) else { return nothing_copied() }
         let src = self.decls.store_of(origin)
         let q? = src.quote_at(at) else { return nothing_copied() }
-        let body? = (src.expr(q)).body_of() else { return nothing_copied() }
+        let body? = src.expr(q).body_of() else { return nothing_copied() }
         if quote_kind(src, q) is .Holes { return self.holes_copied(f, fills, seat) }
         let ws = self
         let thunks = [(kind: HoleKind) -> ws.spliced(f, fill, kind) for fill in fills]
@@ -376,7 +383,7 @@ impl Workspace {
         // The provider guard: a same-file derive would need this file's
         // names while they are still being made. `check_annotation` speaks.
         if same_file(self.decls.decl(m).file, f) { return [] }
-        if (self.decls.sig(m))?.fn_sig() == null { return [] }
+        if self.decls.sig(m)?.fn_sig() == null { return [] }
         self.lifted_directives(m, f, w.stmt, w.callee, [], w.at)
     }
 
@@ -439,15 +446,19 @@ impl Workspace {
     }
 
     fn crossed_variant(v: FileView, va: Variant, kinds: List<Kind>) -> MetaVariant {
-        MetaVariant { name: va.name.of, payload: [written_spelling(p.ty) for p in va.payloads], at: placed(v, va.span),
-                      fields: [crossed_field(v, p, kind_at(kinds, j)) for j, p in va.payloads],
-                      marks: crossed_marks(v, va.marks) }
+        MetaVariant {
+            name: va.name.of,
+            payload: [written_spelling(p.ty) for p in va.payloads],
+            at: placed(v, va.span),
+            fields: [crossed_field(v, p, kind_at(kinds, j)) for j, p in va.payloads],
+            marks: crossed_marks(v, va.marks),
+        }
     }
 
     /// A variant's payload shapes, variant by variant — the enum's
     /// own signature, positionally.
     fn payload_kinds(d: DeclId) -> List<List<Kind>> {
-        let sig? = (self.decls.sig(d))?.enum_sig() else { return [] }
+        let sig? = self.decls.sig(d)?.enum_sig() else { return [] }
         [[kind_of(self.decls.types, t) for t in ps] for ps in sig.payloads]
     }
 
@@ -460,17 +471,17 @@ impl Workspace {
     /// resolved, positionally; a declaration whose signature is not
     /// earned yet leaves every shape unspelled rather than guessing.
     fn seat_kinds(d: DeclId) -> List<Kind> {
-        let sig? = (self.decls.sig(d))?.fn_sig() else { return [] }
+        let sig? = self.decls.sig(d)?.fn_sig() else { return [] }
         [kind_of(self.decls.types, t) for t in sig.params]
     }
 
     fn answer_kind(d: DeclId) -> Kind {
-        let sig? = (self.decls.sig(d))?.fn_sig() else { return no_kind() }
+        let sig? = self.decls.sig(d)?.fn_sig() else { return no_kind() }
         kind_of(self.decls.types, sig.ret)
     }
 
     fn field_kinds(d: DeclId) -> List<Kind> {
-        let sig? = (self.decls.sig(d))?.record_sig() else { return [] }
+        let sig? = self.decls.sig(d)?.record_sig() else { return [] }
         [kind_of(self.decls.types, t) for t in sig.types]
     }
 }

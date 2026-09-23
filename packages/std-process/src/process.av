@@ -545,7 +545,7 @@ fn timeout_ms(d: Duration?) -> int {
 }
 
 fn has_bit(word: int, bit: int) -> bool {
-    (word / bit) % 2 == 1
+    word / bit % 2 == 1
 }
 
 /// The status word decoded once: the tag above (1 exited, 2 signalled),
@@ -553,7 +553,7 @@ fn has_bit(word: int, bit: int) -> bool {
 fn exit_of(word: int) -> Exit {
     let tag = word / tag_base
     let payload = word - tag * tag_base
-    if tag == 2 { return Exit.Signal(payload % 256, (payload / 256) % 2 == 1) }
+    if tag == 2 { return Exit.Signal(payload % 256, payload / 256 % 2 == 1) }
     if payload == 0 { return Exit.Clean }
     Exit.Code(payload)
 }
@@ -632,9 +632,11 @@ impl Child {
     fn ended_with(began: int) -> Outcome {
         let word = avra_proc_reap(self.stage.h)
         let _ = avra_proc_close(self.stage.h)
-        let o = Outcome { exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
-                          out: Output { stdout: self.out, stderr: self.err, truncated: self.stage.truncated },
-                          took_ms: now_ms() - began }
+        let o = Outcome {
+            exit: if word <= 0 { Exit.Signal(sigkill, false) } else { exit_of(word) },
+            out: Output { stdout: self.out, stderr: self.err, truncated: self.stage.truncated },
+            took_ms: now_ms() - began,
+        }
         self.out = ""
         self.err = ""
         self.ended = o
@@ -652,7 +654,7 @@ impl Child {
             let gone = self.pump(100)
             if self.satisfied(ready) { return now_ms() - began }
             waited = now_ms() - began
-            if (gone && !(ready is .Exit)) || now_ms() >= deadline {
+            if gone && !(ready is .Exit) || now_ms() >= deadline {
                 let partial = Output { stdout: self.out, stderr: self.err, truncated: false }
                 self.stop()
                 fail ProcessError.NotReady(waited, partial)
@@ -1312,7 +1314,7 @@ export fn run_through(r: dyn Runner, c: Command) -> Result<Output, ProcessError>
     judged(c, r.outcome(c)?)
 }
 
-type HostRunner = { }
+type HostRunner = {}
 
 impl Runner for HostRunner {
     fn outcome(c: Command) -> Result<Outcome, ProcessError> {
@@ -1322,7 +1324,7 @@ impl Runner for HostRunner {
 
 /// The host: children really run.
 export fn host() -> dyn Runner {
-    let r: dyn Runner = HostRunner { }
+    let r: dyn Runner = HostRunner {}
     r
 }
 
@@ -1351,7 +1353,7 @@ export fn scripted(rows: List<Script>) -> dyn Runner {
     r
 }
 
-type PlanRunner = { }
+type PlanRunner = {}
 
 impl Runner for PlanRunner {
     fn outcome(c: Command) -> Result<Outcome, ProcessError> {
@@ -1362,7 +1364,7 @@ impl Runner for PlanRunner {
 
 /// The dry run: every command is printed and answered clean.
 export fn plan() -> dyn Runner {
-    let r: dyn Runner = PlanRunner { }
+    let r: dyn Runner = PlanRunner {}
     r
 }
 

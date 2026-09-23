@@ -89,17 +89,13 @@ spec "std.http frame" {
     }
     given "the request line (rows 8 to 19)" {
         then "two spaces, a tab, or a trailing space refuse the line" {
-            refuses("GET  / HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.RequestLine) &&
-                refuses("GET /\tHTTP/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.RequestLine) &&
-                refuses("GET / HTTP/1.1 \r\nHost: a\r\n\r\n".bytes(), Refusal.Version)
+            refuses("GET  / HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.RequestLine) && refuses("GET /\tHTTP/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.RequestLine) && refuses("GET / HTTP/1.1 \r\nHost: a\r\n\r\n".bytes(), Refusal.Version)
         }
         then "a lowercase method is a token, framed as Other" {
             head_of("get / HTTP/1.1\r\nHost: a\r\n\r\n".bytes())!.method == Method.Other
         }
         then "a version that is not HTTP/d.d refuses" {
-            refuses("GET / http/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.Version) &&
-                refuses("GET / HTTP/1.10\r\nHost: a\r\n\r\n".bytes(), Refusal.Version) &&
-                refuses("GET / HTTP/1\r\nHost: a\r\n\r\n".bytes(), Refusal.Version)
+            refuses("GET / http/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.Version) && refuses("GET / HTTP/1.10\r\nHost: a\r\n\r\n".bytes(), Refusal.Version) && refuses("GET / HTTP/1\r\nHost: a\r\n\r\n".bytes(), Refusal.Version)
         }
         then "another major version is 505 and a higher minor is framed as its own" {
             status("GET / HTTP/2.0\r\nHost: a\r\n\r\n".bytes()) == 505 && head_of("GET / HTTP/1.2\r\nHost: a\r\n\r\n".bytes())!.minor == 2
@@ -111,10 +107,7 @@ spec "std.http frame" {
             status("GET /a b HTTP/1.1\r\nHost: a\r\n\r\n".bytes()) == 400
         }
         then "authority-form is CONNECT's and the asterisk is OPTIONS'" {
-            refuses("GET example.com:80 HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.Target) &&
-                refuses("GET * HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.Target) &&
-                head_of("OPTIONS * HTTP/1.1\r\nHost: a\r\n\r\n".bytes()) != null &&
-                head_of("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n".bytes())!.method == Method.Connect
+            refuses("GET example.com:80 HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.Target) && refuses("GET * HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), Refusal.Target) && head_of("OPTIONS * HTTP/1.1\r\nHost: a\r\n\r\n".bytes()) != null && head_of("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n".bytes())!.method == Method.Connect
         }
         then "absolute-form is accepted" {
             head_of("GET http://h/p?q HTTP/1.1\r\nHost: other\r\n\r\n".bytes()) != null
@@ -129,26 +122,20 @@ spec "std.http frame" {
     }
     given "host and field lines (rows 20 to 24)" {
         then "1.1 needs exactly one valid Host; 1.0 needs none" {
-            refuses("GET / HTTP/1.1\r\n\r\n".bytes(), Refusal.Host) &&
-                refuses(req("Host: b\r\n"), Refusal.Host) &&
-                refuses("GET / HTTP/1.1\r\nHost: a b\r\n\r\n".bytes(), Refusal.Host) &&
-                head_of("GET / HTTP/1.0\r\n\r\n".bytes())!.keep_alive == false
+            refuses("GET / HTTP/1.1\r\n\r\n".bytes(), Refusal.Host) && refuses(req("Host: b\r\n"), Refusal.Host) && refuses("GET / HTTP/1.1\r\nHost: a b\r\n\r\n".bytes(), Refusal.Host) && head_of("GET / HTTP/1.0\r\n\r\n".bytes())!.keep_alive == false
         }
         then "a thousand spaces of OWS are one scan — the value is still the value" {
             let pad = ["  " for i in 0..500].join("")
             value_of(req("Name:${pad}v${pad}\r\n"), 1) == "v"
         }
         then "space before the colon or an empty name refuses; OWS around a value is not the value" {
-            refuses(req("Name : v\r\n"), Refusal.FieldName) && refuses(req(": v\r\n"), Refusal.FieldName) &&
-                value_of(req("Name:v\r\n"), 1) == "v" && value_of(req("Name:  v  \r\n"), 1) == "v"
+            refuses(req("Name : v\r\n"), Refusal.FieldName) && refuses(req(": v\r\n"), Refusal.FieldName) && value_of(req("Name:v\r\n"), 1) == "v" && value_of(req("Name:  v  \r\n"), 1) == "v"
         }
         then "obs-fold and a whitespace-led first line refuse" {
             refuses(req("X: a\r\n b\r\n"), Refusal.FieldName) && refuses("GET / HTTP/1.1\r\n X: a\r\nHost: a\r\n\r\n".bytes(), Refusal.FieldName)
         }
         then "a control byte in a value refuses, a high byte too" {
-            refuses("GET / HTTP/1.1\r\nHost: a\r\nX: a".bytes().concat([127].bytes()!).concat("b\r\n\r\n".bytes()), Refusal.FieldValue) &&
-                refuses("GET / HTTP/1.1\r\nHost: a\r\nX: a".bytes().concat([1].bytes()!).concat("b\r\n\r\n".bytes()), Refusal.FieldValue) &&
-                refuses("GET / HTTP/1.1\r\nHost: a\r\nX: a".bytes().concat([128].bytes()!).concat("b\r\n\r\n".bytes()), Refusal.FieldValue)
+            refuses("GET / HTTP/1.1\r\nHost: a\r\nX: a".bytes().concat([127].bytes()!).concat("b\r\n\r\n".bytes()), Refusal.FieldValue) && refuses("GET / HTTP/1.1\r\nHost: a\r\nX: a".bytes().concat([1].bytes()!).concat("b\r\n\r\n".bytes()), Refusal.FieldValue) && refuses("GET / HTTP/1.1\r\nHost: a\r\nX: a".bytes().concat([128].bytes()!).concat("b\r\n\r\n".bytes()), Refusal.FieldValue)
         }
         then "too many fields, a field past its bound, a head past its bound are 431" {
             let many = ["X${i}: v\r\n" for i in 0..100].join("")
@@ -158,9 +145,7 @@ spec "std.http frame" {
     }
     given "content-length (rows 25 to 28)" {
         then "a list, a duplicate, or a disagreement refuses" {
-            refuses(req("Content-Length: 5, 5\r\n"), Refusal.ContentLength) &&
-                refuses(req("Content-Length: 5\r\nContent-Length: 5\r\n"), Refusal.ContentLength) &&
-                refuses(req("Content-Length: 5\r\nContent-Length: 6\r\n"), Refusal.ContentLength)
+            refuses(req("Content-Length: 5, 5\r\n"), Refusal.ContentLength) && refuses(req("Content-Length: 5\r\nContent-Length: 5\r\n"), Refusal.ContentLength) && refuses(req("Content-Length: 5\r\nContent-Length: 6\r\n"), Refusal.ContentLength)
         }
         then "anything but 1*DIGIT refuses, and so does a 20-digit number" {
             ["-1", "+5", "0x5", "", "5abc", "5 5", "18446744073709551616"].all(refuses(req("Content-Length: ${it}\r\n"), Refusal.ContentLength))
@@ -177,10 +162,7 @@ spec "std.http frame" {
             refuses(req("Content-Length: 5\r\nTransfer-Encoding: chunked\r\n"), Refusal.TransferEncoding)
         }
         then "chunked that is not final refuses; unknown codings before a final chunked are 501" {
-            refuses(req("Transfer-Encoding: chunked, gzip\r\n"), Refusal.TransferEncoding) &&
-                refuses(req("Transfer-Encoding: chunked, chunked\r\n"), Refusal.TransferEncoding) &&
-                status(req("Transfer-Encoding: gzip, chunked\r\n")) == 501 &&
-                status(req("Transfer-Encoding: xchunked\r\n")) == 501
+            refuses(req("Transfer-Encoding: chunked, gzip\r\n"), Refusal.TransferEncoding) && refuses(req("Transfer-Encoding: chunked, chunked\r\n"), Refusal.TransferEncoding) && status(req("Transfer-Encoding: gzip, chunked\r\n")) == 501 && status(req("Transfer-Encoding: xchunked\r\n")) == 501
         }
         then "HTAB is OWS and the coding's case does not matter" {
             length_of(head_of(req("Transfer-Encoding:\tchunked\r\n"))!) == -2 && length_of(head_of(req("Transfer-Encoding: CHUNKED\r\n"))!) == -2
@@ -194,13 +176,10 @@ spec "std.http frame" {
     }
     given "expect and persistence (rows 46 to 49)" {
         then "100-continue is noted in any case; another expectation is 417; 1.0 ignores it" {
-            head_of(req("Expect: 100-continue\r\n"))!.expects_continue && head_of(req("Expect: 100-Continue\r\n"))!.expects_continue &&
-                status(req("Expect: foo\r\n")) == 417 && head_of("GET / HTTP/1.0\r\nExpect: 100-continue\r\n\r\n".bytes())!.expects_continue == false
+            head_of(req("Expect: 100-continue\r\n"))!.expects_continue && head_of(req("Expect: 100-Continue\r\n"))!.expects_continue && status(req("Expect: foo\r\n")) == 417 && head_of("GET / HTTP/1.0\r\nExpect: 100-continue\r\n\r\n".bytes())!.expects_continue == false
         }
         then "persistence follows the version and the connection field" {
-            head_of(req(""))!.keep_alive && head_of(req("Connection: close\r\n"))!.keep_alive == false &&
-                head_of("GET / HTTP/1.0\r\n\r\n".bytes())!.keep_alive == false && head_of("GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n".bytes())!.keep_alive &&
-                head_of(req("Connection: keep-alive, Upgrade, close\r\n"))!.keep_alive == false
+            head_of(req(""))!.keep_alive && head_of(req("Connection: close\r\n"))!.keep_alive == false && head_of("GET / HTTP/1.0\r\n\r\n".bytes())!.keep_alive == false && head_of("GET / HTTP/1.0\r\nConnection: keep-alive\r\n\r\n".bytes())!.keep_alive && head_of(req("Connection: keep-alive, Upgrade, close\r\n"))!.keep_alive == false
         }
     }
 }
@@ -244,9 +223,7 @@ fn end_of_fed(c: Chunker, whole: string) -> int {
 spec "std.http chunked" {
     given "the chunked body (rows 35 to 45)" {
         then "sizes in either case, with leading zeros, and the empty body all decode" {
-            body_of("5\r\nhello\r\n0\r\n\r\n") == "hello" && body_of("A\r\n0123456789\r\n0\r\n\r\n") == "0123456789" &&
-                body_of("a\r\n0123456789\r\n0\r\n\r\n") == "0123456789" && body_of("000005\r\nhello\r\n0\r\n\r\n") == "hello" &&
-                body_of("00\r\n\r\n") == "" && end_of("5\r\nhello\r\n0\r\n\r\n") == 15
+            body_of("5\r\nhello\r\n0\r\n\r\n") == "hello" && body_of("A\r\n0123456789\r\n0\r\n\r\n") == "0123456789" && body_of("a\r\n0123456789\r\n0\r\n\r\n") == "0123456789" && body_of("000005\r\nhello\r\n0\r\n\r\n") == "hello" && body_of("00\r\n\r\n") == "" && end_of("5\r\nhello\r\n0\r\n\r\n") == 15
         }
         then "extensions are ignored" {
             body_of("5;ext=1\r\nhello\r\n0;last\r\n\r\n") == "hello"

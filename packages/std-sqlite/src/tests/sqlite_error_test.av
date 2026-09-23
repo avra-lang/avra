@@ -115,14 +115,14 @@ fn a_failure() -> SqlError {
 }
 
 spec "std/sqlite error" {
-
     given "every extended code the vendored header declares" {
+
         then "the header's table is not empty" { codes().length == 82 }
         then "every one of them lands in the arm it should" { wrong().length == 0 }
         then "and none of them falls through to `.Other`" { [c.name for c in codes() if c.kind != "sqlite.other" && kind_of(c.ext) == "sqlite.other"].length == 0 }
     }
-
     given "the primary code is the low eight bits" {
+
         // An enum matched on the EXTENDED value without the mask never
         // matches its own primary arm.
         then "SQLITE_CONSTRAINT_UNIQUE's primary is SQLITE_CONSTRAINT" { primary(2067) == 19 }
@@ -131,8 +131,8 @@ spec "std/sqlite error" {
         then "an extended one keeps its detail" { kind_of(2067) == "sqlite.constraint.unique" }
         then "a foreign key is a different sentence from a unique" { kind_of(787) != kind_of(2067) }
     }
-
     given "the retry decision, which is the only thing `Waiting` is for" {
+
         then "a plain busy may clear" { retryable(5) }
         then "a busy recovery may clear" { retryable(261) }
         then "a busy timeout may clear" { retryable(773) }
@@ -148,14 +148,14 @@ spec "std/sqlite error" {
         then "nor is a corruption" { !retryable(11) }
         then "nor is the driver's own defect" { !retryable(21) }
     }
-
     given "the codes that mean the DRIVER is wrong, not the caller" {
+
         then "SQLITE_MISUSE is a defect" { kind_of(21) == "sqlite.defect" }
         then "SQLITE_RANGE is a defect" { kind_of(25) == "sqlite.defect" }
         then "a defect is never retryable" { !retryable(25) }
     }
-
     given "the arms that carry no SQLite code at all" {
+
         // The driver's own refusals of a caller's argument, riding the
         // same enum so ONE match covers every way a call can fail.
         then "an empty path names itself" { Cause.EmptyPath.kind() == "sqlite.empty_path" }
@@ -168,14 +168,14 @@ spec "std/sqlite error" {
         then "a class mismatch is one of those too" { Cause.Mismatch(0, Storage.Int, Storage.Text).kind() == "sqlite.mismatch" }
         then "so is a column that is not there" { Cause.NoColumn("nope").kind() == "sqlite.no_column" }
     }
-
     given "the failure value itself" {
+
         then "it carries the extended code exactly" { a_failure().extended == 2067 }
         then "and the primary beside it" { a_failure().code == 19 }
         then "its cause is the one the code names" { a_failure().cause.kind() == "sqlite.constraint.unique" }
         then "it describes itself by kind and message" { a_failure().describe().kind == "sqlite.constraint.unique" }
         then "the message is the one it was built with" { a_failure().describe().message == "UNIQUE constraint failed" }
-        then "the SQL rides along when there was one" { (a_failure().sql ?? "") == "insert into t values (1)" }
+        then "the SQL rides along when there was one" { a_failure().sql ?? "" == "insert into t values (1)" }
         then "and the span is absent until an offset says otherwise" { a_failure().at == null }
     }
 }

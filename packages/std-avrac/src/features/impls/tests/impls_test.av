@@ -209,31 +209,25 @@ spec "features/impls" {
     }
     given "the refusals, each in its own words" {
         then "an unknown method names the impl spelling" {
-            refused_with("${boxy()}P { x: 1, y: 1 }.volume()",
-                         "`P` has no method `volume`")
+            refused_with("${boxy()}P { x: 1, y: 1 }.volume()", "`P` has no method `volume`")
         }
         then "a method on a scalar says methods live on declared types" {
-            refused_with("let n = 5\nn.area()",
-                         "`.area(…)` calls a method, and `int` has none")
+            refused_with("let n = 5\nn.area()", "`.area(…)` calls a method, and `int` has none")
         }
         then "arity counts beside self" {
-            refused_with("${boxy()}P { x: 1, y: 1 }.scaled(2, 3)",
-                         "`P.scaled` takes 1 arguments beside `self`, found 2")
+            refused_with("${boxy()}P { x: 1, y: 1 }.scaled(2, 3)", "`P.scaled` takes 1 arguments beside `self`, found 2")
         }
         then "an impl on nothing refuses" {
-            refused_with("impl Ghost {\n    fn boo() -> int {\n        1\n    }\n}\n2",
-                         "`impl Ghost` serves no declared type")
+            refused_with("impl Ghost {\n    fn boo() -> int {\n        1\n    }\n}\n2", "`impl Ghost` serves no declared type")
         }
         then "a method with no receiver in its list still rides the receiver" {
             shown("type P = { x: int }\nimpl P {\n    fn plus(k: int) -> int {\n        self.x + k\n    }\n}\nP { x: 40 }.plus(2)") == "42"
         }
         then "`self` written in the list refuses ONCE, with the receiver's own remedy" {
-            refused_with("type P = { x: int }\nimpl P {\n    fn get(self) -> int {\n        self.x\n    }\n}\nP { x: 1 }.get()",
-                         "`self` is implicit in a method — drop it from the parameter list")
+            refused_with("type P = { x: int }\nimpl P {\n    fn get(self) -> int {\n        self.x\n    }\n}\nP { x: 1 }.get()", "`self` is implicit in a method — drop it from the parameter list")
         }
         then "`self` outside a method names no receiver" {
-            refused_with("fn f() -> int {\n    self.x\n}\n2",
-                         "`self` names a method's receiver — this is not a method")
+            refused_with("fn f() -> int {\n    self.x\n}\n2", "`self` names a method's receiver — this is not a method")
         }
     }
     given "traits — the behavior contracts (T2)" {
@@ -241,32 +235,25 @@ spec "features/impls" {
             shown("${showed()}fn twice<T: Show>(v: T) -> int {\n    v.show() * 2\n}\ntwice(P { x: 21 })") == "42"
         }
         then "an unbounded T names the spec's remedy" {
-            refused_with("fn f<T>(x: T) -> int {\n    x.show()\n}\nf(1)",
-                         "`T` has no known methods")
+            refused_with("fn f<T>(x: T) -> int {\n    x.show()\n}\nf(1)", "`T` has no known methods")
         }
         then "a fn's unbounded T is told to write the bound" {
-            refused_with("fn f<T>(x: T) -> int {\n    x.show()\n}\nf(1)",
-                         "add a bound — `<T: SomeTrait>`")
+            refused_with("fn f<T>(x: T) -> int {\n    x.show()\n}\nf(1)", "add a bound — `<T: SomeTrait>`")
         }
         then "a type's parameter is told a bound is not spellable there" {
-            refused_with("type B<K> = { held: K }\nimpl B<K> {\n    fn read() -> int { self.held.show() }\n}\n2",
-                         "a type's and an impl's parameters take no bound yet")
+            refused_with("type B<K> = { held: K }\nimpl B<K> {\n    fn read() -> int { self.held.show() }\n}\n2", "a type's and an impl's parameters take no bound yet")
         }
         then "a binding without the impl refuses at the call" {
-            refused_with("${showed()}type Q = { y: int }\nfn f<T: Show>(v: T) -> int {\n    v.show()\n}\nf(Q { y: 1 })",
-                         "`Q` does not implement `Show`")
+            refused_with("${showed()}type Q = { y: int }\nfn f<T: Show>(v: T) -> int {\n    v.show()\n}\nf(Q { y: 1 })", "`Q` does not implement `Show`")
         }
         then "an impl-for answers every method — a missing one names itself" {
-            refused_with("${showp()}impl Show for P {\n}\n2",
-                         "`impl Show for P` must answer `show`")
+            refused_with("${showp()}impl Show for P {\n}\n2", "`impl Show for P` must answer `show`")
         }
         then "an impl-for holds ONLY the trait's methods" {
-            refused_with("${showp()}impl Show for P {\n    fn show() -> int {\n        self.x\n    }\n    fn extra() -> int {\n        1\n    }\n}\n2",
-                         "`extra` is not part of `Show`")
+            refused_with("${showp()}impl Show for P {\n    fn show() -> int {\n        self.x\n    }\n    fn extra() -> int {\n        1\n    }\n}\n2", "`extra` is not part of `Show`")
         }
         then "a wrong signature refuses naming both sides" {
-            refused_with("${showp()}impl Show for P {\n    fn show() -> bool {\n        true\n    }\n}\n2",
-                         "`P.show` does not wear `Show.show`'s signature")
+            refused_with("${showp()}impl Show for P {\n    fn show() -> bool {\n        true\n    }\n}\n2", "`P.show` does not wear `Show.show`'s signature")
         }
     }
     given "dyn — the contract as a value (T3)" {
@@ -277,23 +264,19 @@ spec "features/impls" {
             shown("${showed()}enum G {\n    hot\n}\nimpl Show for G {\n    fn show() -> int {\n        100\n    }\n}\nmut d: dyn Show = P { x: 7 }\nlet a = d.show()\nd = G.hot\na + d.show()") == "107"
         }
         then "a non-signatory refuses at the binding" {
-            refused_with("${showp()}type Q = { y: int }\nlet d: dyn Show = Q { y: 1 }\n2",
-                         "`d` declares `dyn Show`, this is `Q`")
+            refused_with("${showp()}type Q = { y: int }\nlet d: dyn Show = Q { y: 1 }\n2", "`d` declares `dyn Show`, this is `Q`")
         }
         then "a dyn call reaches only the contract's methods" {
-            refused_with("${showed()}let d: dyn Show = P { x: 1 }\nd.volume()",
-                         "`Show` has no method `volume`")
+            refused_with("${showed()}let d: dyn Show = P { x: 1 }\nd.volume()", "`Show` has no method `volume`")
         }
         then "`dyn` of a non-trait names the remedy" {
-            refused_with("type P = { x: int }\nlet d: dyn P = P { x: 1 }\n2",
-                         "`dyn P` names no trait")
+            refused_with("type P = { x: int }\nlet d: dyn P = P { x: 1 }\n2", "`dyn P` names no trait")
         }
         then "a bounded T boxes into a dyn slot — the bound is the proof" {
             shown("${showed()}fn speak(v: dyn Show) -> int {\n    v.show()\n}\nfn relay<T: Show>(v: T) -> int {\n    speak(v)\n}\nlet pre: dyn Show = P { x: 20 }\nrelay(P { x: 13 }) + relay(pre)") == "33"
         }
         then "a second declaration of one method name refuses" {
-            refused_with("${showed()}impl P {\n    fn show() -> int {\n        999\n    }\n}\n2",
-                         "`P.show` is declared twice")
+            refused_with("${showed()}impl P {\n    fn show() -> int {\n        999\n    }\n}\n2", "`P.show` is declared twice")
         }
     }
     given "a trailing comma in every comma list" {
@@ -330,8 +313,7 @@ spec "features/impls" {
             shown("trait Scale {\n    fn base() -> int\n    fn by(k: int) -> int {\n        self.base() * k\n    }\n}\ntype P = { x: int }\nimpl Scale for P {\n    fn base() -> int {\n        self.x\n    }\n}\nP { x: 3 }.by(4)") == "12"
         }
         then "the abstract member is still owed when a default stands beside it" {
-            refused_with("${showp()}impl Show for P {\n}\n1".replace("trait Show {\n    fn show() -> int\n}", "trait Show {\n    fn show() -> int\n    fn twice() -> int {\n        self.show() * 2\n    }\n}"),
-                         "`impl Show for P` must answer `show`")
+            refused_with("${showp()}impl Show for P {\n}\n1".replace("trait Show {\n    fn show() -> int\n}", "trait Show {\n    fn show() -> int\n    fn twice() -> int {\n        self.show() * 2\n    }\n}"), "`impl Show for P` must answer `show`")
         }
     }
 }

@@ -22,8 +22,7 @@ impl Emit {
         avra_llvm_type_array_free(ptys)
         let vargs = avra_llvm_value_array_new(args.length)
         for j, a in args {
-            avra_llvm_value_array_set(vargs, j,
-                avra_llvm_cast_to_type(self.b, self.vals[a.index], ll_type_of(self.lc, self.types, self.tys[a.index])))
+            avra_llvm_value_array_set(vargs, j, avra_llvm_cast_to_type(self.b, self.vals[a.index], ll_type_of(self.lc, self.types, self.tys[a.index])))
         }
         let fp = avra_llvm_cast_to_type(self.b, self.vals[f.index], avra_llvm_pointer_type(self.lc))
         avra_llvm_build_call(self.b, fty, fp, vargs, args.length, "")
@@ -49,8 +48,7 @@ impl Emit {
             .Pack(dst, elems) -> self.define(self.pack_value(dst, elems)),
             .Extract(_, src, at) -> self.define(self.extract_value(src, at)),
             .Call(_, callee, args) -> self.define(self.call(mangled(callee), [self.vals[a.index] for a in args])),
-            .FnAddr(_, sym) -> self.define(avra_llvm_cast_to_type(self.b,
-                avra_llvm_get_named_function(self.m, mangled(sym)), avra_llvm_int64_type(self.lc))),
+            .FnAddr(_, sym) -> self.define(avra_llvm_cast_to_type(self.b, avra_llvm_get_named_function(self.m, mangled(sym)), avra_llvm_int64_type(self.lc))),
             .StaticAddr(_, sym) -> self.define(avra_llvm_global_payload(self.m, mangled(sym))),
             .CallPtr(d, f, args) -> self.define(self.call_ptr_value(d, f, args)),
             .Release(r) -> self.released(r),
@@ -152,8 +150,7 @@ impl Emit {
             .Ge -> avra_llvm_build_fcmp(self.b, 3, a, b, "fcmp"),
             .Lt -> avra_llvm_build_fcmp(self.b, 4, a, b, "fcmp"),
             .Le -> avra_llvm_build_fcmp(self.b, 5, a, b, "fcmp"),
-            .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr ->
-                self.wrecked(int_only_on_floats, a),
+            .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> self.wrecked(int_only_on_floats, a),
             .And or .Or -> self.wrecked(lazy_in_eager, a),
         }
     }
@@ -303,10 +300,12 @@ impl Emit {
         if signed == null { return }
         let wide = avra_llvm_int64_type(self.lc)
         let cell = self.vals[slot.index]
-        let low = avra_llvm_build_trunc(self.b, avra_llvm_build_load(self.b, wide, cell, "cell"),
-                                        avra_llvm_int32_type(self.lc), "low")
-        let full = if signed! { avra_llvm_build_sext(self.b, low, wide, "signed") }
-                   else { avra_llvm_build_zext(self.b, low, wide, "unsigned") }
+        let low = avra_llvm_build_trunc(self.b, avra_llvm_build_load(self.b, wide, cell, "cell"), avra_llvm_int32_type(self.lc), "low")
+        let full = if signed! {
+            avra_llvm_build_sext(self.b, low, wide, "signed")
+        } else {
+            avra_llvm_build_zext(self.b, low, wide, "unsigned")
+        }
         let _ = avra_llvm_build_store(self.b, full, cell)
     }
 
@@ -386,10 +385,7 @@ impl Emit {
         match self.types.shape_of(self.tys[r.index]) {
             .Str -> true,
             .Bytes -> self.rt.get(callee) != null,
-            .Int or .Float or .Bool or .Ptr or .Struct(_, _) or .Enum(_, _) or
-            .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or
-            .Fn(_, _, _) or .Void or .Opt(_) or .Null or .EmptyList or .EmptyMap or
-            .TypeName(_, _) or .Var(_, _, _) or .Error -> false,
+            .Int or .Float or .Bool or .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Error -> false,
         }
     }
 
@@ -430,9 +426,7 @@ impl Emit {
             // a nullable is two machine forms: the niche IS the box's
             // pointer, a scalar pair is a register pair no slot holds
             .Opt(inner) if !self.types.opt_rides_pointer(inner) -> SlotForm.Word,
-            .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or
-            .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or
-            .Opt(_) or .Map(_, _) or .EmptyMap -> SlotForm.Address,
+            .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Opt(_) or .Map(_, _) or .EmptyMap -> SlotForm.Address,
         }
     }
 
@@ -535,9 +529,7 @@ impl Emit {
         let here = avra_llvm_get_insert_block(self.b)
         let _ = avra_llvm_build_br(self.b, f.merge_bb)
         avra_llvm_position_at_end(self.b, f.arms[f.next])
-        let advanced = f with {
-            ended: f.ended.concat([here]), gives: f.gives.concat([gives]), next: f.next + 1,
-        }
+        let advanced = f with { ended: f.ended.concat([here]), gives: f.gives.concat([gives]), next: f.next + 1 }
         // LICENSED I15: a region STACK across fns, not a bracket body
         self.frames.push(advanced)
     }
@@ -556,7 +548,3 @@ impl Emit {
     }
 }
 
-/// `&&`/`||` are LAZY REGIONS — lowering diverts them before any
-/// `Bin` is emitted, so one reaching an eager table is the
-/// compiler's own defect. ONE definition for the whole `language`
-/// module, so the two engines cannot word it differently.

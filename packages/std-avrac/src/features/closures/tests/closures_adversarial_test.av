@@ -54,8 +54,7 @@ spec "features/closures/adversarial" {
             refusals("[[1]].map(it[it])\n2") == 1
         }
         then "the pronoun at a plain int seat names its element's absence" {
-            refused_with("${scaled()}P { x: 3 }.scaled(it)\n2",
-                         "`it` has no element here — this seat takes `int`, not a fn")
+            refused_with("${scaled()}P { x: 3 }.scaled(it)\n2", "`it` has no element here — this seat takes `int`, not a fn")
         }
         then "a walk on an int subject refuses once" {
             refusals("let n = 5\nn.map(it)\n2") == 1
@@ -152,8 +151,7 @@ spec "features/closures/adversarial" {
             refused_with("fn g(v: int?) -> int {\n    [v].length\n}\ng(1)", "a list element cannot hold this yet")
         }
         then "`?` behind the lambda barrier names the lambda, not the top level" {
-            refused_with("type U = { n: int }\nfn g(u: U) -> U? {\n    u\n}\nfn f(us: List<U>) -> U? {\n    us.map(g(it)?)[0]\n}\nf([U { n: 1 }])",
-                         "a lambda promises none")
+            refused_with("type U = { n: int }\nfn g(u: U) -> U? {\n    u\n}\nfn f(us: List<U>) -> U? {\n    us.map(g(it)?)[0]\n}\nf([U { n: 1 }])", "a lambda promises none")
         }
     }
     given "the pronoun through the shared child walk" {
@@ -242,15 +240,14 @@ spec "features/closures/adversarial" {
             refused_with("let f = (x) -> x + 1\n2", "needs a type")
         }
         then "a heterogeneous literal under a dyn want boxes; a non-implementor is named" {
-            refused_with("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nlet xs: List<dyn Show> = [P { x: 1 }, 5]\n2",
-                         "this list holds `dyn Show`, this is `int`")
+            refused_with("trait Show {\n    fn show() -> int\n}\ntype P = { x: int }\nimpl Show for P {\n    fn show() -> int {\n        self.x\n    }\n}\nlet xs: List<dyn Show> = [P { x: 1 }, 5]\n2", "this list holds `dyn Show`, this is `int`")
         }
         then "a nested literal's want reaches the lambda inside — fed, not starved" {
             refusals("let m: List<List<fn(int) -> int>> = [[(x) -> x + 1]]\n2") == 0
         }
     }
-
     given "the captured world under attack (the refcount header's round)" {
+
         // Every value category captured, every construct crossed,
         // every arity, ownership churned — and the four latent
         // crashes the round surfaced, each a refusal now. The
@@ -325,8 +322,8 @@ spec "features/closures/adversarial" {
             refused_with("fn f() -> int {\n    1\n}\nf = () -> 2\nf()", "`f` is a fn — it is not assigned")
         }
     }
-
     given "a lambda that calls a CAPTURED lambda" {
+
         // The env lane holding a fn box was read with the CALL's
         // type — a call's type is its ANSWER, never its callee's —
         // so the box came back typed `int` and LLVM refused the
@@ -349,28 +346,22 @@ spec "features/closures/adversarial" {
     }
     given "the fn seat's contract under attack" {
         then "a writing fn refuses a seat that promised not to write" {
-            refused_with("type Rows = { grow: fn(List<int>, int) -> int }\nfn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet r = Rows { grow: writes }\n1",
-                         "field `grow` is `fn(List<int>, int) -> int`, this is `fn(mut List<int>, int) -> int`")
+            refused_with("type Rows = { grow: fn(List<int>, int) -> int }\nfn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet r = Rows { grow: writes }\n1", "field `grow` is `fn(List<int>, int) -> int`, this is `fn(mut List<int>, int) -> int`")
         }
         then "a `let` refuses it in the same words" {
-            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(List<int>, int) -> int = writes\n1",
-                         "`g` declares `fn(List<int>, int) -> int`, this is `fn(mut List<int>, int) -> int`")
+            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(List<int>, int) -> int = writes\n1", "`g` declares `fn(List<int>, int) -> int`, this is `fn(mut List<int>, int) -> int`")
         }
         then "a call THROUGH the value needs a `mut` place, like a direct one" {
-            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nlet ys = [1]\ng(ys, 2)",
-                         "`ys` is not `mut` — seat 1 of `g` writes through it")
+            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nlet ys = [1]\ng(ys, 2)", "`ys` is not `mut` — seat 1 of `g` writes through it")
         }
         then "two marked seats cannot share one root" {
-            refused_with("fn both(mut a: List<int>, mut b: List<int>) -> int {\n    a.push(1)\n    b.push(2)\n    a.length\n}\nlet g: fn(mut List<int>, mut List<int>) -> int = both\nmut x = [0]\ng(x, x)",
-                         "`x` is handed `mut` twice in one call to `g`")
+            refused_with("fn both(mut a: List<int>, mut b: List<int>) -> int {\n    a.push(1)\n    b.push(2)\n    a.length\n}\nlet g: fn(mut List<int>, mut List<int>) -> int = both\nmut x = [0]\ng(x, x)", "`x` is handed `mut` twice in one call to `g`")
         }
         then "a captured place is a copy here too" {
-            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nmut ys = [1]\nlet f = () -> g(ys, 2)\nf()",
-                         "is captured by value")
+            refused_with("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(mut List<int>, int) -> int = writes\nmut ys = [1]\nlet f = () -> g(ys, 2)\nf()", "is captured by value")
         }
         then "a fn built into a `mut` seat must be a place, not a value" {
-            refused_with("type Cx = { n: int }\nfn writes(mut cx: Cx) -> int {\n    cx.n = cx.n + 1\n    cx.n\n}\nlet g: fn(mut Cx) -> int = writes\ng(Cx { n: 1 })",
-                         "seat 1 of `g` is `mut`, and this is a value")
+            refused_with("type Cx = { n: int }\nfn writes(mut cx: Cx) -> int {\n    cx.n = cx.n + 1\n    cx.n\n}\nlet g: fn(mut Cx) -> int = writes\ng(Cx { n: 1 })", "seat 1 of `g` is `mut`, and this is a value")
         }
         then "each refusal speaks once" {
             refusals("fn writes(mut xs: List<int>, v: int) -> int {\n    xs.push(v)\n    xs.length\n}\nlet g: fn(List<int>, int) -> int = writes\n1") == 1

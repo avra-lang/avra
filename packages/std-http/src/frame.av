@@ -90,8 +90,7 @@ export fn status_of(why: Refusal) -> int {
         .BodyLength -> 413,
         .Coding -> 501,
         .Expectation -> 417,
-        .LineEnd or .RequestLine or .Version or .Target or .FieldName or .FieldValue or .Host or
-        .ContentLength or .TransferEncoding or .OldChunked or .Chunk -> 400,
+        .LineEnd or .RequestLine or .Version or .Target or .FieldName or .FieldValue or .Host or .ContentLength or .TransferEncoding or .OldChunked or .Chunk -> 400,
     }
 }
 
@@ -106,7 +105,7 @@ fn byte(s: string) -> int { s.char_code(0) }
 /// is.
 export fn admits(pred: fn(int) -> bool) -> Bytes { [if pred(i) { 1 } else { 0 } for i in 0..256].bytes()! }
 fn is_digit(c: int) -> bool { c >= byte("0") && c <= byte("9") }
-fn is_alpha(c: int) -> bool { (c >= byte("A") && c <= byte("Z")) || (c >= byte("a") && c <= byte("z")) }
+fn is_alpha(c: int) -> bool { c >= byte("A") && c <= byte("Z") || c >= byte("a") && c <= byte("z") }
 fn is_mark(c: int) -> bool { marks().index_of([c].bytes()!, 0) >= 0 }
 /// What octet a TOKEN may carry (RFC 9110 §5.6.2) — a method, a field
 /// name. Exported for the reason `is_target` is: a WRITER that must
@@ -115,14 +114,14 @@ fn is_mark(c: int) -> bool { marks().index_of([c].bytes()!, 0) >= 0 }
 export fn is_tchar(c: int) -> bool { is_digit(c) || is_alpha(c) || is_mark(c) }
 /// What octet a FIELD VALUE may carry — visible ASCII and HTAB, and
 /// so neither a CR, an LF, nor a NUL.
-export fn is_vchar(c: int) -> bool { c == byte("\t") || (c >= byte(" ") && c <= byte("~")) }
+export fn is_vchar(c: int) -> bool { c == byte("\t") || c >= byte(" ") && c <= byte("~") }
 /// What octet a request target may carry (RFC 9112 §3.2): visible
 /// ASCII, plus `obs-text`. The law lives here so a consumer that
 /// narrows it — the path, which is a target minus `?` — composes
 /// rather than copies.
-export fn is_target(c: int) -> bool { (c >= byte("!") && c <= byte("~")) || c >= 128 }
+export fn is_target(c: int) -> bool { c >= byte("!") && c <= byte("~") || c >= 128 }
 
-once fn marks() -> Bytes { "!#$%&'*+-.^_`|~".bytes() }
+once fn marks() -> Bytes { "!#\$%&'*+-.^_`|~".bytes() }
 once fn tchar() -> Bytes { admits(is_tchar) }
 once fn vchar() -> Bytes { admits(is_vchar) }
 once fn target_char() -> Bytes { admits(is_target) }
@@ -410,11 +409,15 @@ fn persists(fr: Framing, minor: int) -> bool {
 fn settled(buf: Bytes, line: Line, fields: List<Field>, end: int, limits: Limits) -> Framed {
     let fr = framing_of(buf, fields)
     if fr.why != null { return .Refused(fr.why!) }
-    if fr.hosts > 1 || (line.minor == 1 && fr.hosts == 0) { return .Refused(.Host) }
+    if fr.hosts > 1 || line.minor == 1 && fr.hosts == 0 { return .Refused(.Host) }
     if fr.chunked && line.minor == 0 { return .Refused(.OldChunked) }
     let broken: Refusal? = body_refusal(fr, limits)
     if broken != null { return .Refused(broken!) }
-    let body: Body = when { fr.chunked -> .Chunked, fr.lengths > 0 -> .Length(fr.length), _ -> .None }
+    let body: Body = when {
+        fr.chunked -> .Chunked
+        fr.lengths > 0 -> .Length(fr.length)
+        _ -> .None
+    }
     .Complete(Head {
         method: line.method,
         verb: line.verb,
@@ -470,10 +473,7 @@ fn with_host(buf: Bytes, v: Span, fr: Framing) -> Framing {
 
 fn with_connection(buf: Bytes, v: Span, fr: Framing) -> Framing {
     let ts = tokens(buf, v)
-    fr with {
-        close: fr.close || ts.any((t) -> buf.ieq_at(t.lo, t.hi, close())),
-        keep: fr.keep || ts.any((t) -> buf.ieq_at(t.lo, t.hi, keep_alive())),
-    }
+    fr with { close: fr.close || ts.any((t) -> buf.ieq_at(t.lo, t.hi, close())), keep: fr.keep || ts.any((t) -> buf.ieq_at(t.lo, t.hi, keep_alive())) }
 }
 
 fn with_expectation(buf: Bytes, v: Span, fr: Framing) -> Framing {
@@ -544,7 +544,7 @@ fn reply_unfinished(buf: Bytes, from: int, limits: Limits) -> FramedReply {
 fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) -> FramedReply {
     let eol = buf.index_of(crlf(), from)
     if eol - from > limits.line { return .Refused(.LineLength) }
-    if eol - from < 12 || buf.at(from + 8) != byte(" ") || (buf.at(from + 12) != byte(" ") && eol != from + 12) { return .Refused(.RequestLine) }
+    if eol - from < 12 || buf.at(from + 8) != byte(" ") || buf.at(from + 12) != byte(" ") && eol != from + 12 { return .Refused(.RequestLine) }
     if !versioned(buf, from, from + 8) { return .Refused(.Version) }
     if buf.at(from + 5) != byte("1") { return .Refused(.Major) }
     if buf.run(from + 9, digit()) != from + 12 { return .Refused(.RequestLine) }

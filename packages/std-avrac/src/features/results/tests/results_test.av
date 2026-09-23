@@ -6,8 +6,7 @@ use @std.avrac.testing.{shown, refused_with, halver}
 
 /// The standard fallible fixture: an error enum and a checked fn.
 fn checked() -> string {
-    "enum E {\n    boom\n    small(int)\n}\n" +
-    "fn checked(n: int) -> Result<int, E> {\n    if n == 0 {\n        fail E.boom\n    }\n    if n < 10 {\n        fail E.small(n)\n    }\n    n\n}\n"
+    "enum E {\n    boom\n    small(int)\n}\n" + "fn checked(n: int) -> Result<int, E> {\n    if n == 0 {\n        fail E.boom\n    }\n    if n < 10 {\n        fail E.small(n)\n    }\n    n\n}\n"
 }
 
 /// `Result.Ok` / `Result.Err`, constructed by name.
@@ -98,32 +97,25 @@ spec "features/results" {
     }
     given "the refusals — one verb, its own words" {
         then "`fail` at the top level has no channel" {
-            refused_with("enum E {\n    boom\n}\nfail E.boom",
-                         "a `fail` raises to a caller, and there is none enclosing")
+            refused_with("enum E {\n    boom\n}\nfail E.boom", "a `fail` raises to a caller, and there is none enclosing")
         }
         then "`fail` in a plain fn names the promise" {
-            refused_with("enum E {\n    boom\n}\nfn f() -> int {\n    fail E.boom\n}\n2",
-                         "`fail` raises on a `Result`'s failure channel, and this fn promises a `int`")
+            refused_with("enum E {\n    boom\n}\nfn f() -> int {\n    fail E.boom\n}\n2", "`fail` raises on a `Result`'s failure channel, and this fn promises a `int`")
         }
         then "`fail` with the ok-side value refuses" {
-            refused_with("enum E {\n    boom\n}\nfn f() -> Result<int, E> {\n    fail 5\n}\n2",
-                         "`fail` raises a `E`, this is `int`")
+            refused_with("enum E {\n    boom\n}\nfn f() -> Result<int, E> {\n    fail 5\n}\n2", "`fail` raises a `E`, this is `int`")
         }
         then "`?` on a Result inside a plain fn refuses" {
-            refused_with("enum E {\n    boom\n}\nfn a() -> Result<int, E> {\n    1\n}\nfn b() -> int {\n    a()?\n}\n2",
-                         "`?` makes this fn answer the failure, but it promises a `int`")
+            refused_with("enum E {\n    boom\n}\nfn a() -> Result<int, E> {\n    1\n}\nfn b() -> int {\n    a()?\n}\n2", "`?` makes this fn answer the failure, but it promises a `int`")
         }
         then "two error types cannot share a channel yet — unions are recorded" {
-            refused_with("enum E {\n    boom\n}\nenum F {\n    pow\n}\nfn a() -> Result<int, E> {\n    1\n}\nfn b() -> Result<int, F> {\n    a()?\n}\n2",
-                         "the failures disagree: this raises `E`, the fn promises `F`")
+            refused_with("enum E {\n    boom\n}\nenum F {\n    pow\n}\nfn a() -> Result<int, E> {\n    1\n}\nfn b() -> Result<int, F> {\n    a()?\n}\n2", "the failures disagree: this raises `E`, the fn promises `F`")
         }
         then "a match must handle `.Err` — exhaustiveness came free" {
-            refused_with("enum E {\n    boom\n}\nfn f() -> Result<int, E> {\n    1\n}\nmatch f() {\n    .Ok(v) -> v\n}",
-                         "`match` on `Result<int, E>` must handle `.Err`")
+            refused_with("enum E {\n    boom\n}\nfn f() -> Result<int, E> {\n    1\n}\nmatch f() {\n    .Ok(v) -> v\n}", "`match` on `Result<int, E>` must handle `.Err`")
         }
         then "`Result` demands both sides" {
-            refused_with("fn f() -> Result<int> {\n    1\n}\n2",
-                         "`Result` is applied to 1 types; it takes 2")
+            refused_with("fn f() -> Result<int> {\n    1\n}\n2", "`Result` is applied to 1 types; it takes 2")
         }
     }
     given "`catch` — recovery at four granularities" {
@@ -152,20 +144,16 @@ spec "features/results" {
             refused_with("5 catch 0", "`catch` recovers a `Result`, this is `int`")
         }
         then "a selective catch without a channel refuses" {
-            refused_with("${checked()}checked(0) catch .small(m) -> m",
-                         "a selective `catch` lets the other failures pass, and this fn cannot carry them")
+            refused_with("${checked()}checked(0) catch .small(m) -> m", "a selective `catch` lets the other failures pass, and this fn cannot carry them")
         }
         then "an empty recovery refuses — at least one arm" {
-            refused_with("${checked()}checked(0) catch {\n}",
-                         "a `catch` needs at least one arm")
+            refused_with("${checked()}checked(0) catch {\n}", "a `catch` needs at least one arm")
         }
         then "a bind on a unit variant has nothing to hold" {
-            refused_with("${checked()}checked(0) catch {\n    .boom(x) -> x\n    .small(m) -> m\n}",
-                         "`.boom` carries nothing, so `x` has nothing to hold")
+            refused_with("${checked()}checked(0) catch {\n    .boom(x) -> x\n    .small(m) -> m\n}", "`.boom` carries nothing, so `x` has nothing to hold")
         }
         then "a `Result` side obeys the slot law — nullable sides wait" {
-            refused_with("enum E {\n    boom\n}\nfn f() -> Result<int?, E> {\n    fail E.boom\n}\n2",
-                         "a `Result` slot cannot hold this yet")
+            refused_with("enum E {\n    boom\n}\nfn f() -> Result<int?, E> {\n    fail E.boom\n}\n2", "a `Result` slot cannot hold this yet")
         }
     }
     given "divergence-aware blocks — a block that LEAVES" {
@@ -173,12 +161,10 @@ spec "features/results" {
             shown("${halver}fn f(id: int) -> int {\n    let got = if let v? = half(id) {\n        v\n    } else {\n        return 0 - 1\n    }\n    got * 10\n}\nf(8) + f(3)") == "39"
         }
         then "a leaving arm whose promise type does NOT fit refuses at the join" {
-            refused_with("enum E {\n    boom\n}\nfn f(b: bool) -> Result<int, E> {\n    let s = if b {\n        \"word\"\n    } else {\n        fail E.boom\n    }\n    s.length\n}\n2",
-                         "branches disagree: `string` vs `Result<int, E>`")
+            refused_with("enum E {\n    boom\n}\nfn f(b: bool) -> Result<int, E> {\n    let s = if b {\n        \"word\"\n    } else {\n        fail E.boom\n    }\n    s.length\n}\n2", "branches disagree: `string` vs `Result<int, E>`")
         }
         then "a block with no value is void when nothing leaves — the declared return refuses it" {
-            refused_with("fn f() -> int {\n    let x = 1\n}\nf()",
-                         "the body answers `void` but `f` declares `int`")
+            refused_with("fn f() -> int {\n    let x = 1\n}\nf()", "the body answers `void` but `f` declares `int`")
         }
     }
 }

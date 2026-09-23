@@ -47,10 +47,35 @@ fn every() -> List<Route> { [r_idea(), r_new(), r_tenant(), r_major(), r_slash_x
 /// The targets the sweep asks about — degenerate, deeper, shallower,
 /// empty-captured, percent-encoded, and off the end of the trie.
 fn targets() -> List<string> {
-    ["/ideas/7", "/ideas/new", "/ideas/", "/ideas", "/ideas/7/extra", "/acme/ideas",
-     "/v2/x", "/vv/x", "/v/x", "//x", "/x", "/a/b/c", "/a/b/d", "/a/b/c/d",
-     "/", "//", "/////", "/ideas/new/", "/A/ideas", "/ideas/new/x", "//ideas",
-     "/a//c", "/ideas/a%2Fb", "/v/x/", "/*", "/a/b", "/new/ideas"]
+    [
+        "/ideas/7",
+        "/ideas/new",
+        "/ideas/",
+        "/ideas",
+        "/ideas/7/extra",
+        "/acme/ideas",
+        "/v2/x",
+        "/vv/x",
+        "/v/x",
+        "//x",
+        "/x",
+        "/a/b/c",
+        "/a/b/d",
+        "/a/b/c/d",
+        "/",
+        "//",
+        "/////",
+        "/ideas/new/",
+        "/A/ideas",
+        "/ideas/new/x",
+        "//ideas",
+        "/a//c",
+        "/ideas/a%2Fb",
+        "/v/x/",
+        "/*",
+        "/a/b",
+        "/new/ideas",
+    ]
 }
 
 /// A target carrying one octet chosen by number — obs-text the framer
@@ -121,11 +146,32 @@ fn resting() -> List<Route> {
 /// Targets that outrun the trie, end at a tail's own width, fall
 /// short of it, carry a query, or run forty segments deep.
 fn deep_targets() -> List<string> {
-    ["/static/app.css", "/static/css/a/b.css", "/static/logo.svg", "/static", "/static/",
-     "/img/a/b/logo.png", "/img/logo.png", "/img/logo.jpg", "/ideas/7", "/ideas/7/extra",
-     "/acme/files/x/y/z", "/acme/files", "/acme/files/", "/one", "/", "//", "/////",
-     "/a/b", "/a/b/c/d/e/f/g/h/i/j", "/static/app.css?v=2", "/ideas/7?a=b/c",
-     "/img/a.png?x=1", "/x?redirect=/static/y", "/deep/" + ["s" for i in 0..40].join("/")]
+    [
+        "/static/app.css",
+        "/static/css/a/b.css",
+        "/static/logo.svg",
+        "/static",
+        "/static/",
+        "/img/a/b/logo.png",
+        "/img/logo.png",
+        "/img/logo.jpg",
+        "/ideas/7",
+        "/ideas/7/extra",
+        "/acme/files/x/y/z",
+        "/acme/files",
+        "/acme/files/",
+        "/one",
+        "/",
+        "//",
+        "/////",
+        "/a/b",
+        "/a/b/c/d/e/f/g/h/i/j",
+        "/static/app.css?v=2",
+        "/ideas/7?a=b/c",
+        "/img/a.png?x=1",
+        "/x?redirect=/static/y",
+        "/deep/" + ["s" for i in 0..40].join("/"),
+    ]
 }
 
 /// The deep targets on which the table and the scan disagree.
@@ -146,8 +192,8 @@ spec "@std.http route adversarial" {
             [g for g in targets() if asked_get(g) == null].is_empty()
         }
     }
-
     given "degenerate shapes" {
+
         then "a table of no routes answers 404 rather than falling over" {
             hit([], "/ideas/7") == "404"
         }
@@ -173,8 +219,8 @@ spec "@std.http route adversarial" {
             compiled([fixed(Method.Get, ["seg" for i in 0..300].join("/"), word)]).nodes.length == 301
         }
     }
-
     given "a hole is one segment" {
+
         then "a hole does not swallow a separator" {
             hit([r_idea()], "/ideas/7/extra") == "404"
         }
@@ -185,8 +231,8 @@ spec "@std.http route adversarial" {
             hit([r_idea()], "/ideas/a%2Fb") == "200Ia%2Fb"
         }
     }
-
     given "octets that are not text" {
+
         then "an obs-text target the framer admits is unrouted, not a wreck" {
             hit_raw([r_idea()], with_octet(233)) == "404"
         }
@@ -197,8 +243,8 @@ spec "@std.http route adversarial" {
             hit_raw([r_idea()], with_octet(127)) == "unframed"
         }
     }
-
     given "an earlier route that already answers" {
+
         then "a static route under a hole of the same width is named" {
             named([r_idea(), r_new()]) == "`/ideas/new` is unreachable — `/ideas/{id}` is declared above it and matches every target it does"
         }
@@ -224,8 +270,8 @@ spec "@std.http route adversarial" {
             named([r_idea(), r_trio()]) == ""
         }
     }
-
     given "declaration order decides, and the table keeps it" {
+
         then "the earlier of two routes that both match answers" {
             hit([r_idea(), r_new()], "/ideas/new") == "200Inew"
         }
@@ -236,8 +282,8 @@ spec "@std.http route adversarial" {
             hit([r_trio(), r_idea()], "/ideas/7") == "200I7"
         }
     }
-
     given "malformed patterns" {
+
         then "a static path holding braces matches itself and nothing else" {
             hit([fixed(Method.Get, "/a/{}", word)], "/a/{}") == "200W"
         }
@@ -260,8 +306,8 @@ spec "@std.http route adversarial" {
             hit([routed<AdvIdea>(Method.Get, "/zzz/{id}", (t: Bytes) -> AdvIdea.parse(t), adv_idea)], "/ideas/7") == "404"
         }
     }
-
     given "a route that takes the rest, against the algorithm it replaced" {
+
         then "the table and a scan agree on every one of 24 deep targets" {
             deep_disagreements().is_empty()
         }
@@ -284,8 +330,8 @@ spec "@std.http route adversarial" {
             hit(resting(), "/one") == "200Rone"
         }
     }
-
     given "a catch-all hoisted to the top" {
+
         then "IT SHADOWS EVERY ROUTE BELOW IT, and each is named" {
             faults([r_root()].concat(resting().slice(0, 5))).length == 5
         }
@@ -293,8 +339,8 @@ spec "@std.http route adversarial" {
             faults([r_root()].concat(resting().slice(0, 5)))[0] == "`/ideas/{id}` is unreachable — `/{path...}` is declared above it and matches every target it does"
         }
     }
-
     given "a door and a pattern that disagree about the rest" {
+
         then "the fault names it" {
             named([tailed<AdvRest>(Method.Get, "/static/files", (t: Bytes) -> AdvRest.parse(t), adv_rest)]) == "`/static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
         }

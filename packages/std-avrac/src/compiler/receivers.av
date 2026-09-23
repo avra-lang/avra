@@ -98,7 +98,7 @@ impl Workspace {
         let n = self.decls.seat_count(d)
         if x.root == null { return Summary { own: filled(n, false), edges: [] } }
         let receiver: TypeId? = self.receiver_type(x)
-        let seats: List<TypeId> = (self.decls.sig(d))?.fn_sig()?.params ?? []
+        let seats: List<TypeId> = self.decls.sig(d)?.fn_sig()?.params ?? []
         mut cx = Survey { ws: self, decls: self.decls, store: self.decls.store(d), names: self.resolved(x.file), receiver: receiver, seats: seats, lo: x.lo, hi: x.hi, own: filled(n, false), edges: [] }
         cx.assigns()
         for i in x.lo..x.hi { cx.site_evidence(ExprId { index: i }) }
@@ -214,13 +214,13 @@ impl Survey {
             .Method(d) -> {
                 self.flow(seat, d, 0)
                 self.feed(d, mp.args, 1)
-            }
+            },
             .Static(d) -> self.feed(d, mp.args, 0),
             .FnSeats(held) -> self.feed_marks(held.marks, mp.args),
             .Contract(d) -> {
                 if self.decls.declares_writing(d) { self.mark(seat) }
                 self.feed(d, mp.args, 1)
-            }
+            },
             .Row(_) or .None -> nothing(),
         }
     }
@@ -233,9 +233,7 @@ impl Survey {
         let ty? = self.place_type(a) else { return true }
         match self.decls.types.shape_of(ty) {
             .Int or .Float or .Bytes or .Bool or .Str or .Null or .Void or .Ptr -> false,
-            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Map(_, _) or
-            .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .EmptyList or .EmptyMap or .TypeName(_, _) or
-            .Var(_, _, _) or .Error -> true,
+            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Error -> true,
         }
     }
 
@@ -247,7 +245,7 @@ impl Survey {
             .Field(subject, name) -> {
                 let holder: TypeId? = self.place_type(subject)
                 holder != null && property_row(self.ws.lang.rows.properties, name.of, self.decls.types.shape_of(holder!)) != null
-            }
+            },
             .Root(_) or .At(_, _) -> false,
         }
     }
@@ -296,8 +294,7 @@ impl Survey {
             .Var(d, j, _) -> self.bounded_member(d, j, name),
             .Dyn(d, _) -> self.contract_member(d, name),
             .TypeName(d, _) -> self.static_member(d, name),
-            .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or
-            .EmptyList or .Error or .Void or .EmptyMap -> Callee.None,
+            .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> Callee.None,
         }
     }
 
@@ -376,14 +373,14 @@ impl Survey {
         let placed: TypeId? = self.place_type(value)
         if placed != null { return placed }
         let callee: DeclId? = bound_decl_of(self.names, value)
-        if callee != null { return (self.decls.sig(callee!))?.fn_sig()?.ret }
+        if callee != null { return self.decls.sig(callee!)?.fn_sig()?.ret }
         let m? = self.store.method_parts(value) else { return self.constructed_type(value) }
         let subject? = self.place_type(m.subject) else { return null }
         match self.callee_of(subject, m.name) {
-            .Method(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
-            .Static(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
+            .Method(d) -> self.decls.sig(d)?.fn_sig()?.ret,
+            .Static(d) -> self.decls.sig(d)?.fn_sig()?.ret,
             .FnSeats(held) -> held.answer,
-            .Contract(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
+            .Contract(d) -> self.decls.sig(d)?.fn_sig()?.ret,
             .Row(_) or .None -> null,
         }
     }

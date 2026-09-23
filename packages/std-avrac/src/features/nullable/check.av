@@ -43,8 +43,7 @@ fn coalesce_type(mut cx: TypeCx, l: ExprId, r: ExprId) -> TypeId {
     if cx.errored(l) { return cx.error_type }
     let held: TypeId? = cx.view.types.carried(cx.type_at(l))
     if cx.shape_at(l) is .Null {
-        return not_absent_able(cx, l, "type.coalesce", "`??` answers",
-            "`??` always answers with the right side", "write the right side alone")
+        return not_absent_able(cx, l, "type.coalesce", "`??` answers", "`??` always answers with the right side", "write the right side alone")
     }
     if held == null { return never_absent(cx, l) }
     let carried = held!
@@ -67,16 +66,14 @@ fn never_absent(mut cx: TypeCx, v: ExprId) -> TypeId {
 /// nullable, the bind carries what it holds, and the two arms JOIN
 /// like any other pair of branches. Refusals name the BIND, so
 /// both surfaces read their own words.
-fn match_opt_type(mut cx: TypeCx, subject: ExprId, bind: string,
-                  present: ExprId, absent: ExprId) -> TypeId {
+fn match_opt_type(mut cx: TypeCx, subject: ExprId, bind: string, present: ExprId, absent: ExprId) -> TypeId {
     if cx.errored(subject) { return cx.error_type }
     let held: TypeId? = cx.view.types.carried(cx.type_at(subject))
     if held == null {
         if bind == chained_binder {
             return not_absent_able(cx, subject, "type.chain", "`?.` reaches into", "`?.` reaches into what is never absent", "write `.` — the value is a guarantee")
         }
-        return not_absent_able(cx, subject, "type.match_opt", "`${bind}?` asks",
-            "`${bind}?` can never bind", "write the absent arm's answer alone")
+        return not_absent_able(cx, subject, "type.match_opt", "`${bind}?` asks", "`${bind}?` can never bind", "write the absent arm's answer alone")
     }
     // the bind holds what the nullable carries, spoken BEFORE the
     // arm walks, exactly as an enum arm's payload bind is
@@ -97,8 +94,7 @@ fn forced_type(mut cx: TypeCx, v: ExprId) -> TypeId {
     let held: TypeId? = cx.view.types.carried(cx.type_at(v))
     if held != null { return held! }
     if cx.narrowed_at(v) != null { return cx.type_at(v) }
-    not_absent_able(cx, v, "type.force", "`!` insists on",
-        "`!` always fails", "there is nothing here to insist on")
+    not_absent_able(cx, v, "type.force", "`!` insists on", "`!` always fails", "there is nothing here to insist on")
 }
 
 /// `let v? = e else { ... }` — the bind-fresh form that KEEPS
@@ -110,9 +106,8 @@ fn check_let_else(mut cx: TypeCx, s: StmtId) {
     let v? = cx.view.store.stmt_value(s) else { return }
     let bind = cx.view.store.let_name(s) ?? "this binding"
     let held: TypeId? = cx.view.types.carried(cx.type_at(v))
-    if held == null && !(cx.errored(v)) {
-        let _ = not_absent_able(cx, v, "type.let_else", "`${bind}?` asks",
-            "`${bind}?` can never bind", "the else always runs — write its statements alone")
+    if held == null && !cx.errored(v) {
+        let _ = not_absent_able(cx, v, "type.let_else", "`${bind}?` asks", "`${bind}?` can never bind", "the else always runs — write its statements alone")
     }
     cx.record_binding(s, held ?? cx.error_type)
     let stmts = else_stmts_of(cx.view.store.stmt(s))
@@ -131,8 +126,7 @@ fn propagate_type(mut cx: TypeCx, v: ExprId) -> TypeId {
     if sides != null { return propagate_res_type(cx, v, sides!) }
     let held: TypeId? = cx.view.types.carried(cx.type_at(v))
     if held == null {
-        return not_absent_able(cx, v, "type.propagate", "`?` propagates",
-            "`?` always propagates", "write `return null`")
+        return not_absent_able(cx, v, "type.propagate", "`?` propagates", "`?` always propagates", "write `return null`")
     }
     let ret: TypeId? = cx.enclosing_ret()
     if ret == null {
@@ -174,8 +168,7 @@ fn coalesce_never_fires(cx: TypeCx, v: ExprId) -> Diag {
     warning("type.coalesce_never", cx.loc_of(v), "`??` never fires — a `${n}` is never absent", this_is(n), "drop the `??` and its right side")
 }
 
-fn not_absent_able(mut cx: TypeCx, v: ExprId, kind: string, asks: string,
-                   so: string, remedy: string) -> TypeId {
+fn not_absent_able(mut cx: TypeCx, v: ExprId, kind: string, asks: string, so: string, remedy: string) -> TypeId {
     if cx.shape_at(v) is .Null {
         return cx.spoken(refusal(kind, cx.loc_of(v), "this is always absent, so ${so}", "always absent", remedy))
     }

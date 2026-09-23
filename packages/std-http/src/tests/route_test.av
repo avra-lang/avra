@@ -29,8 +29,10 @@ fn under(rows: List<Route>, line: string) -> string {
 }
 
 fn routes() -> List<Route> {
-    [routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-     routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search)]
+    [
+        routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+        routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search),
+    ]
 }
 
 /// The status and body a target earns, or "unframed" when the framer
@@ -61,38 +63,45 @@ spec "@std.http route" {
             answered("POST /ideas/7 HTTP/1.1") == "404 "
         }
     }
-
     given "a handler's own 404" {
+
         then "a handler answering 410 is its answer, not a miss" {
             dispatch(compiled([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone)]), asked("GET /ideas/7 HTTP/1.1")!).status == 410
         }
         then "a route that does not match still falls through to the next" {
-            dispatch(compiled([routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search),
-                               routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea)]),
-                     asked("GET /ideas/7 HTTP/1.1")!).status == 200
+            dispatch(compiled([
+                routed<Search>(Method.Get, "/search/{term}/{page}", (t: Bytes) -> Search.parse(t), serve_search),
+                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+            ]), asked("GET /ideas/7 HTTP/1.1")!).status == 200
         }
     }
-
     given "the law over a table" {
+
         then "two routes of one shape are named, later first" {
-            faults([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-                       routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone)]).length == 1
+            faults([
+                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone),
+            ]).length == 1
         }
         then "the refusal names both patterns and says which is unreachable" {
-            let found = faults([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-                                   routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone)])
+            let found = faults([
+                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                routed<Idea>(Method.Get, "/ideas/{slug}", (t: Bytes) -> Idea.parse(t), serve_gone),
+            ])
             found[0] == "`/ideas/{slug}` is unreachable — `/ideas/{id}` is declared above it and matches every target it does"
         }
         then "routes of different shapes do not conflict" {
             faults(routes()).is_empty()
         }
         then "one shape under two methods is two routes, not a conflict" {
-            faults([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
-                       routed<Idea>(Method.Post, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone)]).is_empty()
+            faults([
+                routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_idea),
+                routed<Idea>(Method.Post, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve_gone),
+            ]).is_empty()
         }
     }
-
     given "a route matches the path, and the query rides beside it" {
+
         then "a query does not join the capture" {
             answered("GET /ideas/7?q=x HTTP/1.1") == "200 idea 7"
         }
@@ -109,8 +118,8 @@ spec "@std.http route" {
             answered("GET /nowhere?q=/ideas/7 HTTP/1.1") == "404 "
         }
     }
-
     given "a route that takes the rest" {
+
         then "it matches at its own width, binding one segment" {
             under([r_static()], "GET /static/app.css HTTP/1.1") == "200 static app.css"
         }
@@ -145,8 +154,8 @@ spec "@std.http route" {
             under([fixed(Method.Get, "/static/logo.svg", serve_word), r_static()], "GET /static/logo.svg HTTP/1.1") == "200 word"
         }
     }
-
     given "what the law says about a rest-taker" {
+
         then "A DOOR THAT TAKES THE REST NEEDS A PATTERN THAT SAYS SO" {
             faults([tailed<Static>(Method.Get, "/static/files", (t: Bytes) -> Static.parse(t), serve_static)])[0] == "`/static/files` is declared to take the rest and its last hole does not say so — write `{name...}`, which is what its grammar spells too"
         }

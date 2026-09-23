@@ -73,32 +73,26 @@ spec "features/enums" {
         }
         then "a unit variant refuses an argument" {
             let a = analyze_source("enum S {\n    a(int)\n    b\n}\nlet x = S.b(1)\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`S.b` carries nothing")
+            a.diagnostics.length == 1 && a.report().contains("`S.b` carries nothing")
         }
         then "a carrying variant refuses being named bare" {
             let a = analyze_source("enum S {\n    a(int)\n    b\n}\nlet x = S.a\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`S.a` carries `int`") &&
-                a.report().contains("write `S.a(<value>)`")
+            a.diagnostics.length == 1 && a.report().contains("`S.a` carries `int`") && a.report().contains("write `S.a(<value>)`")
         }
         then "a wrong-typed argument refuses" {
             let a = analyze_source("enum S {\n    a(int)\n    b\n}\nlet x = S.a(true)\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`S.a` carries `int`, found `bool`")
+            a.diagnostics.length == 1 && a.report().contains("`S.a` carries `int`, found `bool`")
         }
         then "a carrying variant refuses being built empty" {
             let a = analyze_source("enum S {\n    a(int)\n    b\n}\nlet x = S.a()\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`S.a` carries `int`, given nothing")
+            a.diagnostics.length == 1 && a.report().contains("`S.a` carries `int`, given nothing")
         }
         then "a managed payload rides the slot — ownership landed" {
             analyze_source("enum S {\n    s(string)\n    n\n}\n1").diagnostics.is_empty()
         }
         then "an unknown carrying variant names the real ones" {
             let a = analyze_source("enum S {\n    a(int)\n    b\n}\nlet x = S.zz(1)\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`S` has no variant `zz`")
+            a.diagnostics.length == 1 && a.report().contains("`S` has no variant `zz`")
         }
     }
     given "pattern binds" {
@@ -123,68 +117,54 @@ spec "features/enums" {
         }
         then "a unit variant has nothing to bind" {
             let a = analyze_source("${pair()}match E.a(1) {\n    .a(n) -> n\n    .b(x) -> 0\n}")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`E.b` carries nothing to bind")
+            a.diagnostics.length == 1 && a.report().contains("`E.b` carries nothing to bind")
         }
     }
-
     given "wrong shapes" {
+
         then "a missing variant refuses, naming it" {
             let a = analyze_source("${colors()}match C.red {\n    .red -> 1\n    .green -> 2\n}")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`match` on `C` must handle `.blue`")
+            a.diagnostics.length == 1 && a.report().contains("`match` on `C` must handle `.blue`")
         }
         then "a repeated arm refuses" {
             let a = analyze_source("${colors()}match C.red {\n    .red -> 1\n    .red -> 2\n    .green -> 3\n    .blue -> 4\n}")
-            a.diagnostics.length == 1 &&
-                a.report().contains("variant `red` is matched more than once")
+            a.diagnostics.length == 1 && a.report().contains("variant `red` is matched more than once")
         }
         then "an unknown arm names the real variants" {
             let a = analyze_source("${colors()}match C.red {\n    .red -> 1\n    .green -> 2\n    .blue -> 3\n    .mauve -> 4\n}")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`C` has no variant `mauve`") &&
-                a.report().contains("the variants are `red`, `green`, `blue`")
+            a.diagnostics.length == 1 && a.report().contains("`C` has no variant `mauve`") && a.report().contains("the variants are `red`, `green`, `blue`")
         }
         then "arms must agree on one type" {
             let a = analyze_source("${colors()}match C.red {\n    .red -> 1\n    .green -> true\n    .blue -> 3\n}")
-            a.diagnostics.length == 1 &&
-                a.report().contains("a `match`'s arms disagree")
+            a.diagnostics.length == 1 && a.report().contains("a `match`'s arms disagree")
         }
         then "a non-enum subject refuses" {
             let a = analyze_source("let n = 3\nmatch n {\n    .a -> 1\n}")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`match` chooses over an enum, found `int`")
+            a.diagnostics.length == 1 && a.report().contains("`match` chooses over an enum, found `int`")
         }
         then "an unknown variant construction refuses" {
             let a = analyze_source("${colors()}C.mauve")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`C` has no variant `mauve`")
+            a.diagnostics.length == 1 && a.report().contains("`C` has no variant `mauve`")
         }
         then "an empty enum refuses" {
             let a = analyze_source("enum E { }\n1")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`E` declares no variants")
+            a.diagnostics.length == 1 && a.report().contains("`E` declares no variants")
         }
         then "a repeated variant declaration refuses" {
             let a = analyze_source("enum E {\n    a\n    a\n}\n1")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`E` declares `a` more than once")
+            a.diagnostics.length == 1 && a.report().contains("`E` declares `a` more than once")
         }
         then "a duplicate type name refuses across kinds" {
             let a = analyze_source("type P = { x: int }\nenum P {\n    a\n}\n1")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`P` is declared more than once")
+            a.diagnostics.length == 1 && a.report().contains("`P` is declared more than once")
         }
         then "a record used as an enum refuses" {
             let a = analyze_source("type P = { x: int }\nP.a")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`P` is a record, not an enum")
+            a.diagnostics.length == 1 && a.report().contains("`P` is a record, not an enum")
         }
         then "a bare type name is not a value" {
             let a = analyze_source("${colors()}let c = C\n1")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`C` is a type, not a value") &&
-                a.report().contains("name a variant")
+            a.diagnostics.length == 1 && a.report().contains("`C` is a type, not a value") && a.report().contains("name a variant")
         }
         then "a single-variant match reads no tag — nothing chooses" {
             shown("enum One {\n    only\n}\nmatch One.only {\n    .only -> 7\n}") == "7"
@@ -201,12 +181,10 @@ spec "features/enums" {
             shown("enum Tree<T> {\n    leaf(T)\n    wrap(Tree<T>)\n}\nfn depth<T>(t: Tree<T>) -> int {\n    match t {\n        .leaf(v) -> 0\n        .wrap(inner) -> 1 + depth(inner)\n    }\n}\ndepth(Tree.wrap(Tree.leaf(false)))") == "1"
         }
         then "a bare unit variant with no want cannot pin — nothing carries the type" {
-            refused_with("enum Opt2<T> {\n    some(T)\n    nope\n}\nmatch Opt2.nope {\n    .some(x) -> x\n    .nope -> 0\n}",
-                         "`Opt2.nope` cannot pin `T` — nothing carries it")
+            refused_with("enum Opt2<T> {\n    some(T)\n    nope\n}\nmatch Opt2.nope {\n    .some(x) -> x\n    .nope -> 0\n}", "`Opt2.nope` cannot pin `T` — nothing carries it")
         }
         then "a type parameter cannot take the language's names — types too" {
-            refused_with("enum Bad<int> {\n    a(int)\n}\n1",
-                         "a type parameter cannot take `int`'s name")
+            refused_with("enum Bad<int> {\n    a(int)\n}\n1", "a type parameter cannot take `int`'s name")
         }
     }
     given "a trailing comma in every comma list" {
@@ -217,26 +195,22 @@ spec "features/enums" {
     given "guards" {
         then "a non-bool guard refuses, naming the law" {
             let a = analyze_source("${pair()}match E.a(1) {\n    .a(n) if n -> 1\n    .a(_) -> 2\n    .b -> 0\n}")
-            a.diagnostics.length == 1 &&
-                a.report().contains("a match guard is a `bool`, found `int`")
+            a.diagnostics.length == 1 && a.report().contains("a match guard is a `bool`, found `int`")
         }
         then "a guarded variant alone leaves it unhandled — the guard proves nothing" {
             let a = analyze_source("${pair()}match E.a(1) {\n    .a(n) if n > 0 -> 1\n    .b -> 0\n}")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`match` on `E` must handle `.a`")
+            a.diagnostics.length == 1 && a.report().contains("`match` on `E` must handle `.a`")
         }
         then "a guarded `_` is not a catch-all — coverage still asks for the rest" {
             let a = analyze_source("${pair()}match E.a(1) {\n    .a(n) -> n\n    _ if true -> 0\n}")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`match` on `E` must handle `.b`")
+            a.diagnostics.length == 1 && a.report().contains("`match` on `E` must handle `.b`")
         }
         then "a guarded arm and an unguarded arm over the same variant never repeat" {
             analyze_source("${pair()}match E.a(1) {\n    .a(n) if n > 0 -> 1\n    .a(_) -> 2\n    .b -> 0\n}").diagnostics.is_empty()
         }
         then "a guarded hole never feeds the registry-hole warning — the real gap still refuses, plainly" {
             let a = analyze_source("enum K {\n    a\n    b\n    c\n}\nmatch K.a {\n    .a -> 1\n    .b -> 2\n    _ if true -> 3\n}")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`match` on `K` must handle `.c`")
+            a.diagnostics.length == 1 && a.report().contains("`match` on `K` must handle `.c`")
         }
         then "a false guard tries the next arm — over the same variant, and a different one" {
             shown("${pair()}fn f(e: E) -> int {\n    match e {\n        .a(n) if n > 10 -> 100\n        .b -> 9\n        .a(_) -> 1\n    }\n}\n\"\${f(E.a(3))} \${f(E.a(20))} \${f(E.b)}\"") == "1 100 9"
@@ -247,8 +221,7 @@ spec "features/enums" {
             shown("enum K {\n    A\n    B(x: int)\n    C\n}\nlet k = K.B(4)\n\"\${K.A.ordinal} \${k.ordinal} \${K.C.ordinal}\"") == "0 1 2"
         }
         then "a non-enum has none — the property lookup speaks for a scalar, the row for a generic record" {
-            refused_with("let n = 3\nn.ordinal", "no property `ordinal` on `int`") &&
-                refused_with("type Box<T> = { v: T }\nBox { v: 1 }.ordinal", "no field `ordinal` on `Box<int>`")
+            refused_with("let n = 3\nn.ordinal", "no property `ordinal` on `int`") && refused_with("type Box<T> = { v: T }\nBox { v: 1 }.ordinal", "no field `ordinal` on `Box<int>`")
         }
     }
 }

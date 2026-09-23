@@ -118,15 +118,7 @@ fn pair_read() -> string {
 /// Deliberately aggregate-free: a struct literal's box is a STRUCT
 /// cost, and this law speaks only for the nullable's own lowering.
 fn every_consumer() -> string {
-    "fn g(b: bool) -> string? { if b { \"hi\" } else { null } }\n" +
-    halver +
-    "fn fwd(v: int?) -> int? { v? + 1 }\n" +
-    "let a = half(4) ?? 0\n" +
-    "let b = half(4)!\n" +
-    "let c = match half(3) {\n    v? -> v\n    null -> 0\n}\n" +
-    "let d = g(true)?.length ?? 0\n" +
-    "let e = fwd(half(4)) ?? 0\n" +
-    "a + b + c + d + e"
+    "fn g(b: bool) -> string? { if b { \"hi\" } else { null } }\n" + halver + "fn fwd(v: int?) -> int? { v? + 1 }\n" + "let a = half(4) ?? 0\n" + "let b = half(4)!\n" + "let c = match half(3) {\n    v? -> v\n    null -> 0\n}\n" + "let d = g(true)?.length ?? 0\n" + "let e = fwd(half(4)) ?? 0\n" + "a + b + c + d + e"
 }
 
 /// The identity fn whose tail WIDENS into a nullable…
@@ -155,11 +147,7 @@ spec "compiler/lower" {
     given "arithmetic" {
         then "one scope, constants, one Bin, the answer's puts, exit 0" {
             let l = ir_of("1 + 2")
-            l.diagnostics.is_empty() &&
-                l.entry.ins[0] is .ScopeEnter && l.entry.ins.last()! is .Ret &&
-                l.entry.ins.filter(it is .Bin).length == 1 &&
-                l.entry.ins.filter(it is .ConstInt).length == 2 &&
-                l.entry.ins.filter(it is .CallRtVoid).length == 1
+            l.diagnostics.is_empty() && l.entry.ins[0] is .ScopeEnter && l.entry.ins.last()! is .Ret && l.entry.ins.filter(it is .Bin).length == 1 && l.entry.ins.filter(it is .ConstInt).length == 2 && l.entry.ins.filter(it is .CallRtVoid).length == 1
         }
         then "an ident adds NO instruction — SSA by construction" {
             let direct = ir_of("1 + 2")
@@ -308,13 +296,13 @@ ret 0"""
         then "a lambda lifts once, named for its file and its node" {
             let l = ir_of("let f = (x: int) -> x + 1\nf(2)")
             let names = [b.name for b in l.fns]
-            addr_syms(l).length == 1 && names.any(it.ends_with("$l3"))
+            addr_syms(l).length == 1 && names.any(it.ends_with("\$l3"))
         }
         then "a named fn boxes behind its wrapper" {
             let l = ir_of("fn double(x: int) -> int {\n    x * 2\n}\nfn apply(f: fn(int) -> int, v: int) -> int {\n    f(v)\n}\napply(double, 4)")
             let names = [b.name for b in l.fns]
             let syms = addr_syms(l)
-            syms.length == 1 && syms[0] == "double$w" && names.contains("double$w")
+            syms.length == 1 && syms[0] == "double\$w" && names.contains("double\$w")
         }
     }
     given "the program is the entry's closure" {
@@ -498,7 +486,7 @@ fn marker_index(ins: List<Ins>, marker: Ins) -> int {
 }
 
 fn same_marker(i: Ins, marker: Ins) -> bool {
-    (i is .LoopStart && marker is .LoopStart) || (i is .LoopEnd && marker is .LoopEnd)
+    i is .LoopStart && marker is .LoopStart || i is .LoopEnd && marker is .LoopEnd
 }
 
 /// A fn's IR by name, from the rendered module.

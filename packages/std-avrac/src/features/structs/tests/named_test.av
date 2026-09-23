@@ -86,8 +86,7 @@ spec "features/structs (named types)" {
             shown("${uid()}let id: UserId = 5\nwhen {\n    id == UserId(5) -> \"five\"\n    _ -> \"other\"\n}") == "five"
         }
         then "a literal pattern of the WRONG shape still refuses, naming the subject" {
-            refused_with("${uid()}let id: UserId = 5\nmatch id {\n    \"no\" -> 1,\n    _ -> 0,\n}",
-                         "a `string` never matches `UserId`")
+            refused_with("${uid()}let id: UserId = 5\nmatch id {\n    \"no\" -> 1,\n    _ -> 0,\n}", "a `string` never matches `UserId`")
         }
         then "the name's OWN impl answers before the shape" {
             shown("${uid()}impl UserId { fn doubled() -> int { 2 } }\nlet u: UserId = 3\nu.doubled()") == "2"
@@ -128,31 +127,25 @@ spec "features/structs (named types)" {
             shown("${uid()}let a: UserId = 2\na == UserId(2)") == "true"
         }
         then "a name and its bare shape never mix" {
-            refused_with("${uid()}let a: UserId = 2\nlet n = 1\na + n",
-                         "an operand of `UserId` meets `int` — a named type never mixes with its shape")
+            refused_with("${uid()}let a: UserId = 2\nlet n = 1\na + n", "an operand of `UserId` meets `int` — a named type never mixes with its shape")
         }
         then "the mixing refusal offers the conversion" {
             let a = analyze_source("${uid()}let a: UserId = 2\nlet n = 1\na + n")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`UserId` is its own type — write `UserId(n)`")
+            a.diagnostics.length == 1 && a.report().contains("`UserId` is its own type — write `UserId(n)`")
         }
     }
     given "the seats staying opaque" {
         then "a bare scalar refuses at a named seat" {
-            refused_with("${uid()}fn take(id: UserId) -> int { 1 }\nlet n = 5\ntake(n)",
-                         "argument 1 of `take` wants `UserId`, found `int`")
+            refused_with("${uid()}fn take(id: UserId) -> int { 1 }\nlet n = 5\ntake(n)", "argument 1 of `take` wants `UserId`, found `int`")
         }
         then "one name refuses at another's seat" {
-            refused_with("${uid()}type OrderId = int\nfn take(id: UserId) -> int { 1 }\nlet o: OrderId = 5\ntake(o)",
-                         "argument 1 of `take` wants `UserId`, found `OrderId`")
+            refused_with("${uid()}type OrderId = int\nfn take(id: UserId) -> int { 1 }\nlet o: OrderId = 5\ntake(o)", "argument 1 of `take` wants `UserId`, found `OrderId`")
         }
         then "a bare list refuses at a named binding" {
-            refused_with("${rows()}let xs: List<int> = [1]\nlet r: Rows = xs",
-                         "`r` declares `Rows`, this is `List<int>`")
+            refused_with("${rows()}let xs: List<int> = [1]\nlet r: Rows = xs", "`r` declares `Rows`, this is `List<int>`")
         }
         then "a named field refuses a bare value" {
-            refused_with("${uid()}type P = { id: UserId }\nlet n = 1\nlet p = P { id: n }\n2",
-                         "field `id` is `UserId`, this is `int`")
+            refused_with("${uid()}type P = { id: UserId }\nlet n = 1\nlet p = P { id: n }\n2", "field `id` is `UserId`, this is `int`")
         }
     }
     given "the name's own laws" {
@@ -163,8 +156,7 @@ spec "features/structs (named types)" {
             refused_with("type A = B\ntype B = A\n1", "stands over itself")
         }
         then "type parameters are recorded, not landed" {
-            refused_with("type Box<T> = List<T>\n1",
-                         "`Box` is a named type with type parameters, which is recorded, not landed")
+            refused_with("type Box<T> = List<T>\n1", "`Box` is a named type with type parameters, which is recorded, not landed")
         }
         then "a shape no slot can hold refuses" {
             refused_with("type V = void\n1", "a named type cannot stand over this yet")

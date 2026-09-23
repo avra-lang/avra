@@ -160,9 +160,7 @@ export fn new_type_registry() -> TypeRegistry {
 /// truth the machine projections ask.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or
-        .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or
-        .Map(_, _) or .EmptyMap -> true,
+        .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_) or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> true,
         .Int or .Float or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
     }
 }
@@ -254,7 +252,6 @@ impl TypeRegistry {
 
     fn shape_of(id: TypeId) -> Type { self.shapes[id.index] }
 
-
     /// A FLAT record's fields, in slot order — a value that IS its
     /// fields, with no box of its own: a record of scalars, which
     /// rides REGISTERS, or a NAME over any shape, which rides
@@ -336,7 +333,7 @@ impl TypeRegistry {
                 for j, p in params {
                     if mut_mark(marks, j) { self.unflatten(p) }
                 }
-            }
+            },
             _ -> nothing_sealed(),
         }
     }
@@ -457,21 +454,15 @@ impl TypeRegistry {
     fn substituted(ty: TypeId, target: DeclId, args: List<TypeId>) -> TypeId {
         match self.shape_of(ty) {
             // LICENSED I9: DECLARATION identity, not type agreement — whose Var this is
-            .Var(decl, j, _) ->
-                if decl.index == target.index { args[j] } else { ty },
+            .Var(decl, j, _) -> if decl.index == target.index { args[j] } else { ty },
             .List(elem) -> self.intern(Type.List(self.substituted(elem, target, args))),
             .Cell(inner) -> self.intern(Type.Cell(self.substituted(inner, target, args))),
             .Map(k, v) -> self.intern(Type.Map(self.substituted(k, target, args), self.substituted(v, target, args))),
             .Opt(inner) -> self.intern(Type.Opt(self.substituted(inner, target, args))),
-            .Res(ok, err) -> self.intern(Type.Res(self.substituted(ok, target, args),
-                                                  self.substituted(err, target, args))),
-            .App(decl, name, aa) ->
-                self.intern(Type.App(decl, name, [self.substituted(a, target, args) for a in aa])),
-            .Fn(ps, marks, ret) ->
-                self.intern(Type.Fn([self.substituted(a, target, args) for a in ps], marks,
-                                    self.substituted(ret, target, args))),
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or
-            .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> ty,
+            .Res(ok, err) -> self.intern(Type.Res(self.substituted(ok, target, args), self.substituted(err, target, args))),
+            .App(decl, name, aa) -> self.intern(Type.App(decl, name, [self.substituted(a, target, args) for a in aa])),
+            .Fn(ps, marks, ret) -> self.intern(Type.Fn([self.substituted(a, target, args) for a in ps], marks, self.substituted(ret, target, args))),
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> ty,
         }
     }
 
@@ -541,8 +532,7 @@ impl TypeRegistry {
             .Cell(t) -> [t],
             .Map(k, v) -> [k, v],
             .Opt(t) -> [t],
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or
-            .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> [],
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> [],
         }
     }
 
@@ -624,9 +614,15 @@ fn mark_words(marks: List<SeatMark>) -> string {
 }
 
 fn mark_word(m: SeatMark) -> string {
-    if m.mutable { if m.settled { "b" } else { "m" } }
-    else if m.settled { "c" }
-    else { "p" }
+    if m.mutable {
+        if m.settled { "b" } else { "m" }
+    } else {
+        if m.settled {
+            "c"
+        } else {
+            "p"
+        }
+    }
 }
 
 /// A fn type with its trailing PLAIN marks dropped — the ONE normal
@@ -663,5 +659,4 @@ export fn no_marks(n: int) -> List<SeatMark> {
 }
 
 /// A shape with no seats to seal.
-fn nothing_sealed() {
-}
+fn nothing_sealed() {}

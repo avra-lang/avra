@@ -26,8 +26,7 @@ impl TypeCx {
     fn declare_named(s: StmtId) {
         let parts? = self.view.store.named_parts(s) else { return }
         if !parts.tparams.is_empty() { return self.named_is_generic(s, parts.name) }
-        let of = self.slot_law(s, "type.named", "a named type cannot stand over this yet",
-                               "`${parts.name}` stands over `${spelled(parts.of)}`", parts.of)
+        let of = self.slot_law(s, "type.named", "a named type cannot stand over this yet", "`${parts.name}` stands over `${spelled(parts.of)}`", parts.of)
         // interned DIRECTLY, never through `declared_type`: that door
         // forces a named declaration, and this IS that declaration
         let named = self.view.types.intern(Type.Struct(self.decl_of(s), parts.name))
@@ -70,8 +69,7 @@ impl TypeCx {
     /// written without one.
     fn carried_type(s: StmtId, p: Param) -> TypeId? {
         if p.ty == null { return null }
-        self.slot_law(s, "type.enum_payload", "an enum payload cannot hold this yet",
-                         "`${p.name}` carries `${spelled(p.ty!)}`", p.ty!)
+        self.slot_law(s, "type.enum_payload", "an enum payload cannot hold this yet", "`${p.name}` carries `${spelled(p.ty!)}`", p.ty!)
     }
 
     /// One declaration's table lands in the ONE dense record.
@@ -95,7 +93,7 @@ impl TypeCx {
     /// answering the field's declared type — every literal that
     /// omits the field calls it.
     fn declare_default(x: Decl) {
-        let rs: StructSig? = (self.view.decls.sig(x.parent!))?.record_sig()
+        let rs: StructSig? = self.view.decls.sig(x.parent!)?.record_sig()
         let slot: int? = rs?.slot_of(x.name)
         let ret: TypeId = if slot == null { self.error_type } else { rs!.types[slot!] }
         self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [], ret: ret }))
@@ -127,8 +125,7 @@ impl TypeCx {
     /// grammar always writes one, so absence is unreachable.
     fn field_type(s: StmtId, f: Param) -> TypeId {
         if f.ty == null { return self.error_type }
-        self.slot_law(s, "type.struct_scalar", "a struct field cannot hold this yet",
-                         "field `${f.name}` is `${spelled(f.ty!)}`", f.ty!)
+        self.slot_law(s, "type.struct_scalar", "a struct field cannot hold this yet", "field `${f.name}` is `${spelled(f.ty!)}`", f.ty!)
     }
 
     /// THE declared-slot law: a slot inside an aggregate holds ONE
@@ -138,8 +135,7 @@ impl TypeCx {
     /// an enum's payload are one law. An UNKNOWN name is not this law's business:
     /// the NAME law speaks first, and a second refusal for one
     /// mistake is a cascade.
-    fn slot_law(s: StmtId, kind: string, message: string,
-                label: string, ty: TypeRef) -> TypeId {
+    fn slot_law(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
         let named = self.full_type(self.stmt_loc(s), ty)
         let sh: Type = self.view.types.shape_of(named)
         if sh is .Error { return named }
@@ -432,9 +428,9 @@ impl TypeCx {
 
     /// A declaration's slot types, whichever kind declares.
     fn declared_slots(decl: DeclId) -> List<TypeId> {
-        let rs: StructSig? = (self.view.decls.sig(decl))?.record_sig()
+        let rs: StructSig? = self.view.decls.sig(decl)?.record_sig()
         if rs != null { return rs!.types }
-        let vs? = (self.view.decls.sig(decl))?.enum_sig() else { return [] }
+        let vs? = self.view.decls.sig(decl)?.enum_sig() else { return [] }
         flatten(vs.payloads)
     }
 

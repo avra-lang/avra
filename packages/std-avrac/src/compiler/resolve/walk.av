@@ -99,15 +99,10 @@ impl ResolveCx {
             // A loc-less frame renders no window — absence stays quiet.
             let defined = [Frame { label: "defined here", loc: self.stmt_loc(later!) }]
             // LICENSED I28: the one voice with a SECOND frame — the definition's
-            self.emit(pointed(
-                error_at("resolve.use_before_def", at, "`${name}` is used before its definition"),
-                "used here")
-                with { secondary: defined, help: "move the definition above this use" })
+            self.emit(pointed(error_at("resolve.use_before_def", at, "`${name}` is used before its definition"), "used here") with { secondary: defined, help: "move the definition above this use" })
             return
         }
-        self.emit(self.suggested(
-            refusal("resolve.unresolved", at, "`${name}` is not defined", "not defined anywhere in this program", null),
-            e, name, self.def_names))
+        self.emit(self.suggested(refusal("resolve.unresolved", at, "`${name}` is not defined", "not defined anywhere in this program", null), e, name, self.def_names))
     }
 
     /// THE ONE SCOPE RITUAL: a fresh overlay opens, binds made inside
@@ -208,9 +203,7 @@ impl ResolveCx {
             return
         }
         if names.fn_decl(name) != null { return self.emit(refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared — `${name}` is a fn, and a name before `{ }` reads as a record literal", "used here", "a call taking an empty block writes its parentheses: `${name}() { }`")) }
-        self.emit(self.suggested(
-            refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared", "used here", null),
-            e, name, names.type_suggestions()))
+        self.emit(self.suggested(refusal("resolve.unresolved", self.loc_of(e), "no `type ${name}` is declared", "used here", null), e, name, names.type_suggestions()))
     }
 
     /// A callee resolves in the fn namespace alone.
@@ -252,9 +245,7 @@ impl ResolveCx {
             return
         }
         if self.hidden_def(keyed(name, origin)) { return self.runtime_binding(name, self.loc_of(e)) }
-        self.emit(self.suggested(
-            refusal("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined", "called here", null),
-            e, name, names.fn_suggestions()))
+        self.emit(self.suggested(refusal("resolve.unresolved", self.loc_of(e), "no `fn ${name}` is defined", "called here", null), e, name, names.fn_suggestions()))
     }
 
     /// The namespace a node's names resolve in: this file's, or the
@@ -324,8 +315,7 @@ impl ResolveCx {
         }
         if fhit != null {
             let f = self.lframes[fhit!]
-            return self.chained(fhit! + 1, name,
-                Binding.LambdaParam(f.lam, found_at(f.params, name)!))
+            return self.chained(fhit! + 1, name, Binding.LambdaParam(f.lam, found_at(f.params, name)!))
         }
         let idx: int? = found_at(self.scope, name)
         if idx != null { return self.chained(0, name, Binding.Param(idx! + self.seat_base())) }
@@ -427,7 +417,7 @@ impl ResolveCx {
     fn bind_index(s: StmtId) {
         let name? = self.view.store.loop_index(s) else { return }
         if self.refused_binder(name, self.stmt_loc(s)) { return }
-        if name == (self.view.store.let_name(s) ?? "") { return self.paired_alike(s, name) }
+        if name == self.view.store.let_name(s) ?? "" { return self.paired_alike(s, name) }
         self.bind(keyed(name, self.view.origin_of_stmt(s)), Binding.Index(s))
     }
 
@@ -480,5 +470,3 @@ impl ResolveCx {
     }
 }
 
-/// The capture table's key for the receiver — a word no NAME can
-/// spell, `self` being a keyword, so it collides with nothing.
