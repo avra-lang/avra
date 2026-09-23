@@ -5,7 +5,7 @@ use features.{Unsettled, Settlement, MetaVal, MetaHeap, nothing, FileView, spell
 use features.{no_kind}
 use @std.meta.{Node, Field as MetaField, Mark as MetaMark, Kind}
 use core.{StmtId, Arm, HoleKind, Unplaced}
-use grammar.{parse_grammar, ready}
+use grammar.{parse_grammar, ready, lex_source, Token, TokenKind}
 use diagnostics.{defect_at}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
@@ -278,15 +278,55 @@ fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
 /// persisted interface alone, never a parse. The tree's own on-disk store answers this,
 /// not `ws.store` (armed only inside a build's hold): a query that only reads never
 /// waits for a write it may never see, and a cache built by an earlier `check` still
-/// answers a later `fmt`'s question. `true` when the record is absent, so the
-/// caller falls back to reading the provider.
+/// answers a later `fmt`'s question. WITH NO RECORD YET (a tree no `check` has ever
+/// touched), the caller does not fall back to reading the provider outright — `files`
+/// is lexed first (`maybe_declares_grammar`), so a module none of whose files ever
+/// spell the word cannot cost a parse it has no chance of needing.
 // LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
-fn module_names_syntax(ws: Workspace, m: ModulePath, items: List<string>) -> bool {
-    let rec? = store_at(build_cache_root(ws)).get(Stored.Sig, record_key(ws, m)) else { return true }
+fn module_names_syntax(ws: Workspace, m: ModulePath, files: List<string>, items: List<string>) -> bool {
+    let rec? = store_at(build_cache_root(ws)).get(Stored.Sig, record_key(ws, m)) else { return maybe_declares_grammar(ws, files) }
     for line in rec.split("\n") {
         let row = read_row(read_fields(line))
         if row != null && row!.kind == "syntax" && items.any(it == row!.name) { return true }
     }
     false
+}
+
+/// A LEX-LEVEL PRE-FILTER, never a parse: the compiler's OWN source
+/// says `grammar` as an ordinary field, type and parameter name in
+/// hundreds of files that declare none, so a bare word match barely
+/// cuts anything here — the two forms either grammar-declaring rule
+/// spells are `grammar { …` (an expression) and `grammar NAME { …`
+/// (a statement), and nothing else opens either way. A file that
+/// does not OPEN one this way is never read past its own text.
+// LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
+fn maybe_declares_grammar(ws: Workspace, files: List<string>) -> bool {
+    files.any(file_lexes_grammar(ws, it))
+}
+
+// LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
+fn file_lexes_grammar(ws: Workspace, path: string) -> bool {
+    let known = ws.records.grammar_scanned.get().get(path)
+    if known != null { return known! }
+    let text = ws.host.read(path)
+    // THE CHEAPEST GATE FIRST: no `grammar` substring anywhere, no
+    // token stream worth building.
+    let found = text.contains("grammar") && opens_grammar(lex_source(text).tokens)
+    ws.records.grammar_scanned.put(path, found)
+    found
+}
+
+/// Whether the stream opens a named-grammar form anywhere: a
+/// `grammar` token immediately followed by `{`, or by a NAME then
+/// `{`. A `grammar` used as a plain identifier — a field, a type,
+/// a parameter — is followed by neither.
+fn opens_grammar(tokens: List<Token>) -> bool {
+    [i for i in 0..tokens.length].any(tokens[it].lit_matches("grammar") && grammar_opens_at(tokens, it))
+}
+
+fn grammar_opens_at(tokens: List<Token>, i: int) -> bool {
+    if i + 1 >= tokens.length { return false }
+    if tokens[i + 1].lit_matches("{") { return true }
+    tokens[i + 1].kind == TokenKind.Name && i + 2 < tokens.length && tokens[i + 2].lit_matches("{")
 }
 
