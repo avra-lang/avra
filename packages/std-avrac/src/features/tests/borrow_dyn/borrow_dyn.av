@@ -1,0 +1,37 @@
+// proves: spec 11.5 — a `mut` copy of a `dyn` value is a copy of the
+// value it wraps, not only of the box: a writing method called through
+// the copy leaves the original, and the value the box was made from,
+// as they were. A flat value rides the box as a word, and opens as one.
+trait Grow {
+    mut fn grow()
+    fn size() -> int
+}
+type R = { xs: List<int> }
+impl Grow for R {
+    mut fn grow() { self.xs.push(1) }
+    fn size() -> int { self.xs.length }
+}
+type N = { n: int }
+impl Grow for N {
+    mut fn grow() { self.n = self.n + 1 }
+    fn size() -> int { self.n }
+}
+fn copied(d: dyn Grow) -> int {
+    mut q = d
+    q.grow()
+    q.grow()
+    q.size()
+}
+fn boxed(p: R) -> int {
+    let d: dyn Grow = p
+    mut q = d
+    q.grow()
+    d.size() * 10 + q.size()
+}
+let r = R { xs: [] }
+let dr: dyn Grow = r
+let dn: dyn Grow = N { n: 5 }
+let a = copied(dr)
+let b = copied(dn)
+let c = boxed(r)
+"${a} ${dr.size()} ${b} ${dn.size()} ${c} ${r.xs.length}"

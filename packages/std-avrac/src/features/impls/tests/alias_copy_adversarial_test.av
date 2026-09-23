@@ -113,14 +113,21 @@ spec "features/impls (alias copy, adversarial)" {
             shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(rs: List<R>) -> int {\n    mut q = rs.first() ?? R { xs: [7] }\n    q.add(1)\n    q.xs.length\n}\nlet none: List<R> = []\n\"\${shadow(none)} \${shadow(none)}\"") == "2 2"
         }
     }
-    given "what the copy does not reach yet" {
-        // MEASURED, not asserted as right: spec 11.5 wants each of these a
-        // copy. A `dyn` copy clones the box and shares the value inside it;
-        // a `mut` SEAT of a free fn writes through the copied local to its
-        // source. Each flips when its copy lands.
-        then "a `dyn` copy written through" {
-            shown("trait Grow { mut fn grow() }\ntype R = { xs: List<int> }\nimpl Grow for R { mut fn grow() { self.xs.push(1) } }\nfn shadow(p: R) -> int {\n    let d: dyn Grow = p\n    mut q = d\n    q.grow()\n    q.grow()\n    p.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"") == "2 2"
+    given "a copy of a `dyn` value" {
+        then "the wrapped value is copied with its box" {
+            shown("trait Grow { mut fn grow() }\ntype R = { xs: List<int> }\nimpl Grow for R { mut fn grow() { self.xs.push(1) } }\nfn shadow(p: R) -> int {\n    let d: dyn Grow = p\n    mut q = d\n    q.grow()\n    q.grow()\n    p.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"") == "0 0"
         }
+        then "a flat value in the box, copied as a word" {
+            shown("trait Grow { mut fn grow()\n    fn size() -> int }\ntype N = { n: int }\nimpl Grow for N {\n    mut fn grow() { self.n = self.n + 1 }\n    fn size() -> int { self.n }\n}\nfn shadow(d: dyn Grow) -> int {\n    mut q = d\n    q.grow()\n    q.size()\n}\nlet d: dyn Grow = N { n: 5 }\n\"\${shadow(d)} \${shadow(d)} \${d.size()}\"") == "6 6 5"
+        }
+        then "a `dyn` bound `mut` straight from its value" {
+            shown("trait Grow { mut fn grow()\n    fn size() -> int }\ntype R = { xs: List<int> }\nimpl Grow for R {\n    mut fn grow() { self.xs.push(1) }\n    fn size() -> int { self.xs.length }\n}\nfn shadow(p: R) -> int {\n    mut d: dyn Grow = p\n    d.grow()\n    d.size()\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.xs.length}\"") == "1 1 0"
+        }
+    }
+    given "what the copy does not reach yet" {
+        // MEASURED, not asserted as right: spec 11.5 wants this a copy. A
+        // `mut` SEAT of a free fn writes through the copied local to its
+        // source. It flips when its copy lands.
         then "a copy handed to a `mut` seat" {
             shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(p: R) -> int {\n    mut q = p\n    grow(q)\n    q.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"") == "1 1"
         }
