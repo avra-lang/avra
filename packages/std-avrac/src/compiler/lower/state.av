@@ -248,7 +248,7 @@ impl LowerCx {
             .Def(s) -> self.defined_reg(e, s, ty),
             .Pattern(v, j) -> self.body.pattern_reg(v, j),
             // valid only inside the LIFTED body: env rides seat 0
-            .LambdaParam(_, i) -> Reg { index: i + 1 },
+            .LambdaParam(lam, i) -> if self.facts.takes_by_name(lam) { self.offered_reg(lam, i, ty) } else { Reg { index: i + 1 } },
             .Capture(_, j) -> self.env_read(j, ty),
             .Index(s) -> self.body.index_reg(s),
             .Decl(d) -> when {
@@ -257,6 +257,14 @@ impl LowerCx {
                 _ -> null
             },
         }
+    }
+
+    /// A parameter a lambda took BY NAME: a field of the one record
+    /// its seat hands it, read by that name.
+    fn offered_reg(lam: ExprId, i: int, ty: TypeId) -> Reg {
+        let record = self.view.types.arrow_parts(self.concrete(self.facts.type_at(lam)))!.seats[0]
+        let name = self.view.store.lambda_parts(lam)!.params[i].name.of
+        self.field_named(Reg { index: 1 }, record, name, ty)
     }
 
     /// A DEFINITION read: a const IS its value, so the READ emits

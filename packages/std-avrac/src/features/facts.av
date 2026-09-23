@@ -136,6 +136,9 @@ export type TypeFacts = {
     gathered: SideTable<bool>,
     // each `collect`'s kept values, so a re-typed one never re-walks its body
     collections: SideTable<List<ExprId>?>,
+    // a lambda that takes its seat's record by FIELD NAME — checking's
+    // one answer, lowering's one read
+    offers: SideTable<bool>,
     // a kept LIST a `collect` spreads, element by element
     spreads: SideTable<bool>,
     voices: Voices,
@@ -162,6 +165,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         alias_copies: side_table("alias_copies", lo, hi, false),
         gathered: side_table("gathered", lo, hi, false),
         collections: side_table<List<ExprId>?>("collections", lo, hi, null),
+        offers: side_table("offers", lo, hi, false),
         spreads: side_table("spreads", lo, hi, false),
         starved: side_table<TypeId?>("starved", lo, hi, null),
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
@@ -290,6 +294,13 @@ impl TypeFacts {
         self.spreads.set(e.index, spreads)
     }
 
+    /// Whether a lambda takes its seat's record by field name.
+    fn takes_by_name(lam: ExprId) -> bool { self.offers.get(lam.index) }
+
+    fn offer(lam: ExprId) {
+        self.offers.set(lam.index, true)
+    }
+
     /// What a `collect` kept, once its body has been walked.
     fn collection(e: ExprId) -> List<ExprId>? { self.collections.get(e.index) }
 
@@ -306,7 +317,7 @@ impl TypeFacts {
         // EACH COLUMN THROUGH ITS FIELD: a fn handed the table could
         // only fill a copy, and the fold runs once per body. The
         // OFFSET is the tables' own — each window knows where it sits.
-        // LICENSED I3: fifteen named columns, one lay each
+        // LICENSED I3: sixteen named columns, one lay each
         self.of_expr.lay(other.of_expr)
         self.widens.lay(other.widens)
         self.narrows.lay(other.narrows)
@@ -320,6 +331,7 @@ impl TypeFacts {
         self.alias_copies.lay(other.alias_copies)
         self.gathered.lay(other.gathered)
         self.collections.lay(other.collections)
+        self.offers.lay(other.offers)
         self.spreads.lay(other.spreads)
         self.binding_types.lay_named(other.binding_types, is_typed)
     }

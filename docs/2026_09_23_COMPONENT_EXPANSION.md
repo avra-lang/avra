@@ -317,7 +317,20 @@ user of S6's declaring blocks.
 
 **S6 — `model` and declaring blocks** (§10 item 1), after S5.
 
-**S5 — `server` / `api` over `@std/http`.** Routes as child blocks,
+**S5 — `server` / `api` over `@std/http`.** DECIDED WITH THE OWNER
+(2026-09-23): the user writes `get "/robots/{id: RobotId}" { req ->
+state_of(req.params.id) }` — a route's handler names only what it
+wants. PATH PARAMETERS LIVE ON THE REQUEST (`req.params.id`, typed by
+the route's pattern), never as bare names in the body. The MECHANISM
+is general and landed first — THE OFFER: a lambda filling a seat of
+ONE record takes the record's fields by NAME, any subset and order
+(`{ db, req -> … }`); a lone parameter no field wears is the record
+whole; no parameters takes nothing; a name not offered is F2117,
+naming what is. A component author declares ONE handler slot
+(`handle: fn(Offer) -> dyn Respond`) and every form a user writes fits
+it. Matching on the body's form (`quote` patterns in a computing
+`expand`) stays S6's escape hatch, never the default.
+Routes as child blocks,
 typed formats as their paths, a typed handler slot per route, a
 generated client. Its spelling (`server 8080 { get "/x" { … } }` vs
 the vision's `GET "/x" -> …`) is designed after S3.
