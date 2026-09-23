@@ -24,7 +24,7 @@ use @std.meta.{Node}
 /// The value the source alone spells at `e`, as the crossing tree
 /// every compile-time value already travels as. Null the moment a
 /// part needs the evaluator — an omitted default, a call, a name.
-export fn literal_meta(store: NodeStore, mut decls: Decls, facts: TypeFacts, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
+export fn literal_meta(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
     let raw: Expr = store.expr(e)
     let n: int? = (raw).int_of()
     if n != null { return MetaVal.Int(n!) }
@@ -48,7 +48,7 @@ export fn literal_meta(store: NodeStore, mut decls: Decls, facts: TypeFacts, e: 
 }
 
 /// Every element spelled, in order — null when any one is not.
-fn spelled_all(store: NodeStore, mut decls: Decls, facts: TypeFacts, es: List<ExprId>, mut heap: MetaHeap) -> List<MetaVal>? {
+fn spelled_all(store: NodeStore, decls: Decls, facts: TypeFacts, es: List<ExprId>, mut heap: MetaHeap) -> List<MetaVal>? {
     mut out: List<MetaVal> = []
     for e in es {
         let v? = literal_meta(store, decls, facts, e, heap) else { return null }
@@ -58,7 +58,7 @@ fn spelled_all(store: NodeStore, mut decls: Decls, facts: TypeFacts, es: List<Ex
 }
 
 /// A map literal's ordered key/value rows — keys are text, always.
-fn literal_map(store: NodeStore, mut decls: Decls, facts: TypeFacts, keys: List<ExprId>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+fn literal_map(store: NodeStore, decls: Decls, facts: TypeFacts, keys: List<ExprId>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
     mut ks: List<string> = []
     mut vs: List<MetaVal> = []
     for j, k in keys {
@@ -74,7 +74,7 @@ fn literal_map(store: NodeStore, mut decls: Decls, facts: TypeFacts, keys: List<
 /// A record literal, slots in DECLARATION order. Every field must be
 /// written: an omitted one carries a default, and a default is a body
 /// the evaluator runs — not something the source alone spells.
-fn literal_record(store: NodeStore, mut decls: Decls, facts: TypeFacts, e: ExprId, fields: List<string>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+fn literal_record(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, fields: List<string>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
     let ty = facts.type_at(e)
     let s? = decls.fields_of_type(ty) else { return null }
     if fields.length != s.names.length { return null }
@@ -97,7 +97,7 @@ fn literal_record(store: NodeStore, mut decls: Decls, facts: TypeFacts, e: ExprI
 
 /// A variant literal: the tag first, the payloads after — the tagged
 /// slot array both engines already read.
-fn literal_variant(store: NodeStore, mut decls: Decls, facts: TypeFacts, e: ExprId, name: string, args: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+fn literal_variant(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, name: string, args: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
     let sig? = decls.variants_of_type(facts.type_at(e)) else { return null }
     let tag: int = sig.names.index_of(name)
     if tag < 0 { return null }

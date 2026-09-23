@@ -234,7 +234,7 @@ export fn known_def_type_of(facts: TypeFacts, view: FileView, s: StmtId) -> Type
 /// answers every case but the one that can still need a mint (a
 /// `for` loop's counter, the first time it is asked), which this
 /// alone is trusted to grow the registry for.
-export fn def_type_of(facts: TypeFacts, mut view: FileView, error_type: TypeId, s: StmtId) -> TypeId {
+export fn def_type_of(facts: TypeFacts, view: FileView, error_type: TypeId, s: StmtId) -> TypeId {
     let known? = known_def_type_of(facts, view, s) else {
         if view.store.stmt(s) is .For { return view.types.type(int) }
         return error_type
@@ -266,7 +266,7 @@ impl Decls {
 
 /// A literal const's type can be read without asking the workspace.
 /// Computed and nominal types fall through to the ConstTyped family.
-fn settled_type(store: NodeStore, mut types: TypeRegistry, s: StmtId) -> TypeId? {
+fn settled_type(store: NodeStore, types: TypeRegistry, s: StmtId) -> TypeId? {
     let v? = store.const_value(s) else { return null }
     let word? = literal_shape(store.expr(v)) else { return spelled_type(types, store.binding_ty(s)) }
     let held = types.intern(word)
@@ -278,7 +278,7 @@ fn settled_type(store: NodeStore, mut types: TypeRegistry, s: StmtId) -> TypeId?
 /// `Map<string, …>`, each under `?` — resolved from the registry
 /// alone. A declared type's NAME needs the namespace, which no store
 /// read has; it answers null here.
-export fn spelled_type(mut types: TypeRegistry, ann: TypeRef?) -> TypeId? {
+export fn spelled_type(types: TypeRegistry, ann: TypeRef?) -> TypeId? {
     if ann == null { return null }
     let a = ann!
     let held? = spelled_plain(types, a) else { return null }
@@ -289,7 +289,7 @@ export fn spelled_type(mut types: TypeRegistry, ann: TypeRef?) -> TypeId? {
     types.type(held?)
 }
 
-fn spelled_plain(mut types: TypeRegistry, a: TypeRef) -> TypeId? {
+fn spelled_plain(types: TypeRegistry, a: TypeRef) -> TypeId? {
     if a.args.is_empty() {
         let word: Type? = scalar_named(a.name)
         return if word == null { null } else { types.intern(word!) }
