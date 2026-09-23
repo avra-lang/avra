@@ -291,8 +291,29 @@ out of core. RECORDED TRIGGER: the first component whose meaning
 depends on an expression's type that `collect` and a record literal
 cannot express.
 
-**S4 — `cli avra { command build { … } }` over `@std/cli`.** Exercises:
-the expand stage, `self.flags`, `run { }` slots, ancestor-owned relations.
+**S4 — `cli avra { command build { … } }` over `@std/cli`.** AS BUILT
+(owner chose data components over the expand stage, 2026-09-23):
+`@std/cli`'s data model IS five components — `flag`, `option`, `arg`,
+`command` (whose `run: dyn Runnable` is its behaviour) and `cli`. Three
+general pieces carried it, none CLI-specific:
+- ROUTING: a child INSTANCE lands in the `List` field its component is
+  the element of (`flag …` in `flags`, `arg …` in `args`), read off the
+  provider's declared field types; any other child needs the one open
+  field. A setting of a field lists first, its routed children after.
+- DECLARED INSTANCES: an EXPORTED top-level instance is a declaration
+  — a `const` built once per run at its first read (`lower_root`'s
+  `once` body), so it may hold behaviour. `export command check { … }`
+  in commands/check.av, `use commands.{check}` and `cli avra { check
+  … }` in main.av: the `_command()` wrappers are gone. A plain
+  top-level instance stays a statement (a script's instance may read
+  its `let`s).
+- A `const` holding a fn or `dyn` ANYWHERE inside is refused (F2063)
+  with the way to build it — it reached a lowering defect before.
+A reserved word or keyword (`level`, `grammar`) cannot bind, so such an
+instance is named by its `name:` setting (`command language { name:
+"grammar" … }`). DEFERRED, with the trigger: `run() { … }` code slots
+and a typed `self.target` per command need the EXPAND stage — the first
+user of S6's declaring blocks.
 
 **S6 — `model` and declaring blocks** (§10 item 1), after S5.
 
