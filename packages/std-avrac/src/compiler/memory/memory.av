@@ -10,7 +10,7 @@
 //! count at all. The caller owns the call's result. Systems ownership
 //! lands here later as a strategy, touching neither lowering nor the
 //! backend.
-use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, owned_dst, viewed_dst, dst_of, lent_args, reads_of, same_reg, rt_owns, rt_lends, rt_owned_twin, rt_reusing_twin, reversed}
+use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, owned_dst, viewed_dst, dst_of, lent_args, reads_of, same_reg, rt_owns, rt_lends, rt_owned_twin, rt_reusing_twin, rt_moving_twin, reversed}
 use compiler.lower.{Lowered}
 
 /// Managed registers bound in one open scope, its tier remembered.
@@ -273,7 +273,18 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
                 }
                 manages(types, reg_types, open_scopes, i)
             },
-            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .CallRtVoid(_, _) or .Release(_) or .Extract(_, _, _) or .LoopEnd or .Retain(_) or .RetVal(_) or .Ret(_) -> {
+            // A STORE MOVES what dies there: the scope's reference goes
+            // into the slot, and the scope never releases it
+            .CallRtVoid(_, args) -> {
+                let moving: string? = life.moved_into(open_scopes, at)
+                if moving == null {
+                    out.push(i)
+                } else {
+                    disowns(open_scopes, args.last()!)
+                    out.push(Ins.CallRtVoid(moving!, args))
+                }
+            },
+            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .Release(_) or .Extract(_, _, _) or .LoopEnd or .Retain(_) or .RetVal(_) or .Ret(_) -> {
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
             },
@@ -635,6 +646,15 @@ impl Lives {
         Handover.Emptied(slot)
     }
 
+    /// The MOVING twin a slot write at `at` takes: its row has one, its
+    /// value is managed, dies there, and the innermost scope owns it.
+    fn moved_into(open_scopes: Stack<Scope>, at: int) -> string? {
+        let callee? = moving_callee(self.ins[at]) else { return null }
+        let v? = stored_value(self.ins[at]) else { return null }
+        if !is_managed(self.types, self.reg_types[v.index]) || !self.moves(open_scopes, v, at) { return null }
+        rt_moving_twin(callee)
+    }
+
     /// Whether a store's value MOVES into the cell: it dies at the store,
     /// and the innermost scope owns it.
     fn moves(open_scopes: Stack<Scope>, r: Reg, at: int) -> bool {
@@ -734,6 +754,22 @@ impl Lives {
 fn handed_seat(i: Ins) -> Reg? {
     match i {
         .CallRt(_, callee, args) -> if rt_reusing_twin(callee) != null { args.first() } else { null },
+        _ -> null,
+    }
+}
+
+/// A slot write whose row has a moving twin.
+fn moving_callee(i: Ins) -> string? {
+    match i {
+        .CallRtVoid(callee, _) -> if rt_moving_twin(callee) != null { callee } else { null },
+        _ -> null,
+    }
+}
+
+/// The value a slot write stores — its last seat.
+fn stored_value(i: Ins) -> Reg? {
+    match i {
+        .CallRtVoid(_, args) -> args.last(),
         _ -> null,
     }
 }
