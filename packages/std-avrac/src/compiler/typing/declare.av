@@ -3,7 +3,7 @@
 //! annotations, and the laws of the types annotations WRITE — a
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
-use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, widthless, width_named, width_words, qtrace, FileId}
+use core.{Variant, counted, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, widthless, width_named, width_words, qtrace, FileId}
 use diagnostics.{refusal}
 use features.{TypeCx, FnSig, StructSig, EnumSig, NamedSig, DeclSig, duplicate_names, slot_worthy, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats, declared_decl}
 use @std.errors.{Loc}
@@ -496,7 +496,7 @@ impl TypeCx {
         let sh: Type? = shape_named(name)
         if sh != null { return self.view.types.intern(sh!) }
         let decl: DeclId? = self.type_decl_named(name)
-        if decl != null { return self.declared_type(decl!, name) }
+        if decl != null { return self.declared_type(at, decl!, name) }
         if width_named(name) != null { return self.width_off_a_seat(at, name) }
         qtrace("Q\tnamed_type_fail\t${name}\t${self.view.decls.file(self.view.file).path}\n")
         self.emit(refusal("type.unknown", at, "`${name}` names no type", "in this signature", "the types today are `int`, `string`, `bool`, and your declared types"))
@@ -513,10 +513,10 @@ impl TypeCx {
 
     /// A declared name's type: an enum's value shape or a record's —
     /// and a GENERIC declaration needs its arguments.
-    fn declared_type(d: DeclId, name: string) -> TypeId {
+    fn declared_type(at: Loc?, d: DeclId, name: string) -> TypeId {
         let arity = self.view.decls.tparams(d).length
         if arity > 0 {
-            self.emit(refusal("type.applied", self.view.decls.loc(d), "`${name}` is generic — it takes ${arity} type arguments", "written bare", "write `${name}<...>`"))
+            self.emit(refusal("type.applied", at, "`${name}` is generic — it takes ${counted(arity, "type argument")}", "written bare", "write `${name}<...>`"))
             return self.error_type
         }
         if self.view.decls.is_enum(d) { return self.view.types.intern(Type.Enum(d, name)) }

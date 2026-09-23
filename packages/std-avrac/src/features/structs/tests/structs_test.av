@@ -2,7 +2,7 @@
 // field reads, fn boundaries, and every law refusing in its own
 // words.
 use @std.avrac.compiler.{analyze_source, avra}
-use @std.avrac.testing.{shown, refused_with, refused_at_run}
+use @std.avrac.testing.{shown, refused_with, refused_at_run, provided, refused_n}
 use @std.avrac.diagnostics.{new_source_file}
 
 spec "features/structs" {
@@ -115,7 +115,11 @@ spec "features/structs" {
             refused_with("type Box<T> = { v: T }\nfn f(b: Box<int>) -> int {\n    b.v\n}\nf(Box { v: true })", "argument 1 of `f` wants `Box<int>`, found `Box<bool>`")
         }
         then "a bare generic name refuses and names the arity" {
-            refused_with("type Box<T> = { v: T }\nfn f(b: Box) -> int {\n    1\n}\nf(Box { v: 1 })", "`Box` is generic — it takes 1 type arguments")
+            refused_with("type Box<T> = { v: T }\nfn f(b: Box) -> int {\n    1\n}\nf(Box { v: 1 })", "`Box` is generic — it takes 1 type argument")
+        }
+        then "a bare generic is refused where it is written, not where it is declared" {
+            let p = provided("use @x.c.{Box}\nfn f(b: Box) -> int {\n    1\n}\n", "export type Box<T> = { v: T }\n")
+            refused_n(p, "`Box` is generic — it takes 1 type argument", 1) && p.report().contains("main.av:2")
         }
         then "a managed binding rides the slot per instantiation — ownership landed" {
             let a = analyze_source("type Box<T> = { v: T }\nBox { v: \"held\" }\n2")
