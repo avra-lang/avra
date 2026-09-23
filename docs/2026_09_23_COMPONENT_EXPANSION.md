@@ -271,6 +271,9 @@ instance statement, its builder and printer arm, and the `config { }`
 block are gone; `config` is a name again. Inside the component's own
 module an instance is its record literal (`Cfg { name: "one" }`), as
 `features/mod.av`'s `feature()` and the tests now write it.
+S3e MOVED to the docs campaign (owner, 2026-09-23): a component's
+reference card is one declaration kind's docs, and belongs with how
+every declaration's docs are generated, not ahead of them.
 Sub-slices: S3a heads, settings, bodiless, the named binding (DONE) · S3b
 children (typed, dynamic, calls, named placement) · S3c `check()`,
 `from` · S3d the `key: value` ladder over the 40 legacy sites, `config
