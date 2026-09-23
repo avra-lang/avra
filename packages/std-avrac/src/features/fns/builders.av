@@ -5,7 +5,7 @@ use core.{Expr, Stmt, Param, TypeRef, plain_mark, Scoped}
 use grammar.{Token}
 use features.{LangNode, Builder, aligned_binds, aligned_param_types, expr_id_at, seats, marked_seats}
 
-fn build_fn(mut b: Builder) -> Result<LangNode, string> {
+fn build_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let tp = b.tokens(1)?
     let consts = b.tokens(3)?
@@ -26,7 +26,7 @@ fn build_fn(mut b: Builder) -> Result<LangNode, string> {
 /// `once fn` — a fn plus the mark. Its laws (no arguments, an
 /// answer the runtime can keep) are the declare phase's; its
 /// guarded body is lowering's.
-fn build_once_fn(mut b: Builder) -> Result<LangNode, string> {
+fn build_once_fn(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     // a mark parses so the LAW may speak: a `once` fn takes no
     // parameters at all, marked or plain, and F2055 says which
@@ -45,7 +45,7 @@ fn bound_ref(bound: string, at: Token) -> TypeRef? {
     TypeRef { name: bound, args: [], optional: false, dynamic: false, arrow: false, span: at.span }
 }
 
-fn build_call(mut b: Builder) -> Result<LangNode, string> {
+fn build_call(b: Builder) -> Result<LangNode, string> {
     let c = b.token(0)?
     let args = b.exprs(1)?
     b.make_expr(Expr.Call(Scoped(c.text), [], args))
@@ -54,14 +54,14 @@ fn build_call(mut b: Builder) -> Result<LangNode, string> {
 /// `f<int>(x)` — the explicit pins. The no-chain comparison law is
 /// what makes this branch safe to claim: `a<b>(c)` has no legal
 /// comparison reading to steal.
-fn build_pinned_call(mut b: Builder) -> Result<LangNode, string> {
+fn build_pinned_call(b: Builder) -> Result<LangNode, string> {
     let c = b.token(0)?
     let pins = b.type_refs(1)?
     let args = b.exprs(2)?
     b.make_expr(Expr.Call(Scoped(c.text), pins, args))
 }
 
-fn build_return(mut b: Builder) -> Result<LangNode, string> {
+fn build_return(b: Builder) -> Result<LangNode, string> {
     b.make_stmt(Stmt.Return(expr_id_at(b.args, 0)))
 }
 
@@ -69,7 +69,7 @@ fn build_return(mut b: Builder) -> Result<LangNode, string> {
 /// grammar, so the names and types pair by index. A `mut` seat is an
 /// INOUT: the C prototype takes the address of the caller's cell,
 /// which is the only way a callee with no box can write back.
-fn build_extern(mut b: Builder) -> Result<LangNode, string> {
+fn build_extern(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let consts = b.tokens(1)?
     let muts = b.tokens(2)?

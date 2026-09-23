@@ -3,7 +3,7 @@ use core.{Expr, ExprId, BinOp, want, op_symbol, all_binops, TypeRef, pronoun_par
 use features.{LangNode, Builder, token_at, zip_defect, aligned_binds, between, chained_binder, marked_seats}
 use grammar.{Token}
 
-fn build_int_lit(mut b: Builder) -> Result<LangNode, string> {
+fn build_int_lit(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     // A FRACTION is a different literal wearing the same token: the
     // scanner joined the point, so the value is bits and not digits.
@@ -14,19 +14,19 @@ fn build_int_lit(mut b: Builder) -> Result<LangNode, string> {
 }
 
 /// `name: value` in an argument list.
-fn build_named_arg(mut b: Builder) -> Result<LangNode, string> {
+fn build_named_arg(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     b.make_expr(Expr.Named(Plain(n.text), b.expr(1)?))
 }
 
-fn build_ident(mut b: Builder) -> Result<LangNode, string> {
+fn build_ident(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     b.make_expr(Expr.Ident(Scoped(t.text)))
 }
 
 /// `l (op r)*` folds left: each pair wraps the accumulator, so
 /// `1 + 2 - x` is `(1 + 2) - x`.
-fn build_fold_binary(mut b: Builder) -> Result<LangNode, string> {
+fn build_fold_binary(b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
     let ops = b.tokens(1)?
     let rights = b.exprs(2)?
@@ -50,7 +50,7 @@ fn build_fold_binary(mut b: Builder) -> Result<LangNode, string> {
 /// rather than wrong. What C gets wrong is `a & b == c`, and the
 /// band's PLACE in the ladder — tighter than comparison — fixes that
 /// without any law at all.
-fn build_fold_bitwise(mut b: Builder) -> Result<LangNode, string> {
+fn build_fold_bitwise(b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
     let ops = b.tokens(1)?
     let rights = b.exprs(2)?
@@ -83,7 +83,7 @@ fn mixed_bitwise(first: string, second: string) -> string {
 /// complement makes the two exact, and an `Expr` variant would tax
 /// every exhaustive match in the tree for a form that is already
 /// spellable.
-fn build_bitnot(mut b: Builder) -> Result<LangNode, string> {
+fn build_bitnot(b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
     let ones = b.store.alloc_expr(Expr.IntLit(0 - 1), b.span)
     let xor = want(binop_of("^"), "the xor operator")?
@@ -92,7 +92,7 @@ fn build_bitnot(mut b: Builder) -> Result<LangNode, string> {
 
 /// `l (op r)?` — at most one comparison, never a chain; or `l is
 /// .variant`, the tag test, which enums give meaning.
-fn build_fold_cmp(mut b: Builder) -> Result<LangNode, string> {
+fn build_fold_cmp(b: Builder) -> Result<LangNode, string> {
     let l = b.expr(0)?
     let asked: Token? = token_at(b.args, 3)
     if asked != null { return b.make_expr(Expr.Is(l, Plain(asked!.text))) }
@@ -102,7 +102,7 @@ fn build_fold_cmp(mut b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Binary(op, l, r))
 }
 
-fn build_not(mut b: Builder) -> Result<LangNode, string> {
+fn build_not(b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
     b.make_expr(Expr.Not(v))
 }
@@ -112,7 +112,7 @@ fn build_not(mut b: Builder) -> Result<LangNode, string> {
 /// takes them and every reader that asks the value protocol gets
 /// one. Only the literal: `-A` needs a general folder, which is a
 /// core event because consts cannot match another feature's node.
-fn build_neg(mut b: Builder) -> Result<LangNode, string> {
+fn build_neg(b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
     let held: int? = (b.store.expr(v)).int_of()
     if held != null { return b.make_expr(Expr.IntLit(0 - held!)) }
@@ -125,7 +125,7 @@ fn build_neg(mut b: Builder) -> Result<LangNode, string> {
 
 /// `v (with { f: e, ... })?` — the absent tail is v itself. The
 /// ladder owns the PARSE; the node's meaning lives with structs.
-fn build_fold_with(mut b: Builder) -> Result<LangNode, string> {
+fn build_fold_with(b: Builder) -> Result<LangNode, string> {
     let subject = b.expr(0)?
     let wn = b.tokens(1)?
     if wn.is_empty() { return b.wrap_expr(subject) }
@@ -147,7 +147,7 @@ fn force_link(link: string, value: ExprId) -> Expr {
 
 /// `l ( ?? r )*` folds left: `a ?? b ?? c` is `(a ?? b) ?? c`. The
 /// LADDER owns this parse; the node's meaning lives in `nullable`.
-fn build_fold_coalesce(mut b: Builder) -> Result<LangNode, string> {
+fn build_fold_coalesce(b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
     let rights = b.exprs(1)?
     for r in rights {
@@ -165,7 +165,7 @@ fn build_fold_coalesce(mut b: Builder) -> Result<LangNode, string> {
 /// the call built so far by the call protocol, its `else` beside it.
 /// The ladder owns the parse; each node's meaning lives with its
 /// feature.
-fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
+fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
     mut acc = b.expr(0)?
     let links = b.tokens(1)?
     let names = b.tokens(2)?
@@ -261,7 +261,7 @@ fn build_fold_postfix(mut b: Builder) -> Result<LangNode, string> {
 /// `a?.m(args)` IS `match a { null -> null, v? -> v.m(args) }`: the
 /// present arm calls the method on what the nullable carries, the
 /// absent arm answers absence, and the match's own typing joins them.
-fn chained_call(mut b: Builder, subject: ExprId, name: string, args: List<ExprId>) -> ExprId {
+fn chained_call(b: Builder, subject: ExprId, name: string, args: List<ExprId>) -> ExprId {
     let carried = b.store.alloc_expr(Expr.Ident(Scoped(chained_binder)), b.span)
     let call = b.store.alloc_expr(Expr.MethodCall(carried, Plain(name), args), b.span)
     let absent = b.store.alloc_expr(Expr.NullLit, b.span)
@@ -340,7 +340,7 @@ fn binop_of(text: string) -> BinOp? {
 /// `{ ( mut? x, … -> )? statements }` — a lambda whose body is a
 /// block: the written seats, or the pronoun's one seat when no seat
 /// is written and the body reads `it`, or none.
-fn build_trailing(mut b: Builder) -> Result<LangNode, string> {
+fn build_trailing(b: Builder) -> Result<LangNode, string> {
     let consts = b.tokens(0)?
     let muts = b.tokens(1)?
     let ps = b.tokens(2)?
@@ -356,7 +356,7 @@ fn build_trailing(mut b: Builder) -> Result<LangNode, string> {
 /// read off which captures arrived: braces arms (cv/cb/ca), one
 /// selective arm (sv/sb/sa), a catch-all bind (eb/ea), or a value
 /// (rv). No captures at all means no `catch` was written.
-fn build_catch(mut b: Builder) -> Result<LangNode, string> {
+fn build_catch(b: Builder) -> Result<LangNode, string> {
     let l = b.expr(0)?
     let rv = b.exprs(10)?
     if !rv.is_empty() { return b.make_expr(Expr.Catch(l, [Plain("")], [Scoped("")], [rv[0]])) }
