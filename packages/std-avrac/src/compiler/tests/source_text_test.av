@@ -1,7 +1,7 @@
 // The AST source projection: its output parses, reaches a fixed point
 // after one projection, and keeps the structure readers depend on.
 use @std.avrac.compiler.{parse_source}
-use @std.avrac.compiler.format.{render_statement, render_expression}
+use @std.avrac.compiler.format.{render_statement, render_expression, render_source_of}
 use @std.avrac.core.{Expr, Stmt, new_node_store}
 use @std.avrac.testing.{projected}
 
@@ -249,6 +249,20 @@ let one_when = when { _ -> 1 }
     given "a folded negative literal under a postfix" {
         then "its group survives projection" {
             stable("let field = (-3).magnitude")
+        }
+    }
+
+    given "a format pattern with escaped braces" {
+        then "a doubled brace keeps matching its own literal text, not a hole" {
+            stable("fn seen(line: string) -> string {\n    match line {\n        \"a{{b}}c\" -> \"escaped\",\n        _ -> \"other\",\n    }\n}")
+        }
+    }
+
+    given "a trailing blank line before EOF" {
+        then "the blank line survives the printer, not just the statements" {
+            let source = "let x = 1\n\n"
+            let p = parse_source(source)
+            p.voices.list.is_empty() && "${render_source_of(p.store, p.stmts, source)}\n" == source
         }
     }
 }

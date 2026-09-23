@@ -61,8 +61,14 @@ fn render_with(mut out: SourceText, stmts: List<StmtId>) -> string {
     // NO BLANK LINE OF THE PRINTER'S OWN. A blank between declarations
     // is the AUTHOR's paragraphing and arrives as trivia.
     let body = joined([joined(out.statement(s, 0), "\n") for s in stmts], "\n")
-    let tail = joined(out.trivia_rest(0), "\n")
-    if tail.is_empty() { return body }
+    // A TRAILING BLANK LINE IS A REAL LINE, NOT AN EMPTY TAIL: the
+    // tail's JOINED STRING and its LIST both read "" for a lone
+    // trailing `Blank` remark, so testing the string cannot tell "no
+    // trivia left" from "one blank line left" — the empty value spent
+    // twice. Ask the LIST.
+    let tail_lines = out.trivia_rest(0)
+    if tail_lines.is_empty() { return body }
+    let tail = joined(tail_lines, "\n")
     if body.is_empty() { return tail }
     "${body}\n${tail}"
 }
@@ -770,9 +776,26 @@ impl SourceText {
             .Rest -> "rest",
             .Bind(name) -> source_name(name.of),
             .Variant(name, args) -> ".${source_name(name.of)}${if args.is_empty() { "" } else { "(${joined([self.pattern(p, depth) for p in args], ", ")})" }}",
-            .Lit(value) -> self.expression(value, loosest_tier, depth),
+            .Lit(value) -> self.pattern_lit(value, depth),
             .Format(head, parts) -> format_source(head, parts),
             .Quote(body) -> self.expression(body, loosest_tier, depth),
+        }
+    }
+
+    /// A literal pattern's own text. A STRING is re-read by the format
+    /// reader the moment it stands in pattern position (features/
+    /// formats/builders.av's `build_format_pat`), which reads an
+    /// unescaped `{`/`}` as a HOLE — so a literal that HELD one (a
+    /// format with no holes collapses to this very node, its braces
+    /// already unescaped into ordinary characters) must have them
+    /// doubled back on the way out, or the pattern it reads back is a
+    /// different one: `"a{{b}}c"` matches its own text; `"a{b}c"`
+    /// binds `b` to whatever falls between `a` and `c`. A non-string
+    /// literal carries no such hazard.
+    mut fn pattern_lit(value: ExprId, depth: int) -> string {
+        match self.store.expr(value) {
+            .StrLit(text) -> quoted_text(braced(text)),
+            rest -> self.expression(value, loosest_tier, depth),
         }
     }
 
