@@ -10,7 +10,7 @@
 //! count at all. The caller owns the call's result. Systems ownership
 //! lands here later as a strategy, touching neither lowering nor the
 //! backend.
-use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, owned_dst, viewed_dst, lent_args, reads_of, same_reg, rt_owns, rt_lends, rt_owned_twin, reversed}
+use core.{Ins, Reg, Level, TypeId, TypeRegistry, Stack, new_stack, owned_dst, viewed_dst, dst_of, lent_args, reads_of, same_reg, rt_owns, rt_lends, rt_owned_twin, rt_reusing_twin, reversed}
 use compiler.lower.{Lowered}
 
 /// Managed registers bound in one open scope, its tier remembered.
@@ -112,6 +112,7 @@ fn retains_immortal(i: Ins, immortal: List<bool>) -> bool {
 fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, standing: List<bool>) -> List<Ins> {
     mut out: List<Ins> = []
     mut open_scopes: Stack<Scope> = new_stack()
+    let life = Lives { types: types, reg_types: reg_types, ins: ins, last: last_reads(reg_types.length, ins), defs: def_sites(reg_types.length, ins) }
     for at, raw in ins {
         let i = owned_form(types, reg_types, ins, at, raw)
         match i {
@@ -188,10 +189,11 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
                 out.push(i)
             },
             // THE MUT-CELL PROTOCOL: the cell owns ONE reference.
-            // A store RETAINS the incoming value FIRST (a self-store
-            // must not free what it is keeping), then releases what
-            // the cell held. The cell's own reference settles when
-            // its scope does.
+            // A store takes the incoming value's reference FIRST — a
+            // retain, or the scope's own when the value dies there —
+            // then releases what the cell held (a self-store must not
+            // free what it is keeping). The cell's own reference
+            // settles when its scope does.
             .Alloca(dst) -> {
                 if is_managed(types, reg_types[dst.index]) && !open_scopes.is_empty() {
                     holds_cell(open_scopes, dst)
@@ -202,7 +204,10 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
             // `x = null` into a managed cell releases what x held.
             .Store(slot, src) -> {
                 if is_managed(types, reg_types[slot.index]) {
-                    if is_managed(types, reg_types[src.index]) { out.push(Ins.Retain(src)) }
+                    // a value that dies here MOVES in: the scope's reference becomes the cell's
+                    if is_managed(types, reg_types[src.index]) {
+                        if life.moves(open_scopes, src, at) { disowns(open_scopes, src) } else { out.push(Ins.Retain(src)) }
+                    }
                     // EVERY store settles what the cell held: a fresh
                     // cell holds nothing (the alloca nulls it), and a
                     // store inside a loop runs many times where the
@@ -250,7 +255,23 @@ fn memory_ins(types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, stan
                 if is_managed(types, reg_types[dst.index]) { out.push(Ins.Retain(dst)) }
                 manages(types, reg_types, open_scopes, i)
             },
-            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .CallRt(_, _, _) or .CallRtVoid(_, _) or .Release(_) or .Extract(_, _, _) or .LoopEnd or .Retain(_) or .RetVal(_) or .Ret(_) -> {
+            // REUSE IN PLACE: a first seat that dies here is HANDED to the
+            // row's reusing twin, which writes a box it holds alone
+            .CallRt(dst, callee, args) -> {
+                match life.handover(open_scopes, at) {
+                    .Kept -> out.push(i),
+                    .Owned -> {
+                        disowns(open_scopes, args[0])
+                        out.push(Ins.CallRt(dst, rt_reusing_twin(callee) ?? callee, args))
+                    },
+                    .Emptied(slot) -> {
+                        out.push(cell_forget(slot))
+                        out.push(Ins.CallRt(dst, rt_reusing_twin(callee) ?? callee, args))
+                    },
+                }
+                manages(types, reg_types, open_scopes, i)
+            },
+            .ConstInt(_, _) or .ConstFloat(_, _) or .ConstStr(_, _) or .ConstBool(_, _) or .Bin(_, _, _, _) or .Un(_, _, _) or .FnAddr(_, _) or .StaticAddr(_, _) or .CallRtVoid(_, _) or .Release(_) or .Extract(_, _, _) or .LoopEnd or .Retain(_) or .RetVal(_) or .Ret(_) -> {
                 manages(types, reg_types, open_scopes, i)
                 out.push(i)
             },
@@ -558,6 +579,12 @@ fn cell_settle(slot: Reg) -> Ins {
     Ins.CallRtVoid("avra_cell_release", [slot])
 }
 
+/// The cell's reference MOVED OUT to the value loaded from it: the
+/// cell empties without a release.
+fn cell_forget(slot: Reg) -> Ins {
+    Ins.CallRtVoid("avra_cell_forget", [slot])
+}
+
 /// Every open scope's cells at an early exit, innermost first.
 fn exit_cells(open_scopes: Stack<Scope>) -> List<Reg> {
     mut out: List<Reg> = []
@@ -582,4 +609,176 @@ impl Scope {
 /// Whether an open scope owns the register — its box stands until that scope closes.
 fn owned_open(open_scopes: Stack<Scope>, r: Reg) -> bool {
     [open_scopes.at(j) for j in 0..open_scopes.depth()].any((s: Scope) -> s.managed.any(same_reg(it, r)))
+}
+
+/// HOW A CALL HANDS ITS FIRST SEAT to a reusing twin: not at all, as
+/// the reference its scope owns, or as the reference the cell it was
+/// loaded from held — that cell refilled before anything reads it.
+enum Handover {
+    Kept
+    Owned
+    Emptied(Reg)
+}
+
+/// ONE BODY'S LIVES: where each register is defined and last read.
+type Lives = { types: TypeRegistry, reg_types: List<TypeId>, ins: List<Ins>, last: List<int>, defs: List<int> }
+
+impl Lives {
+    /// Whether the call at `at` hands its first seat over, and how.
+    fn handover(open_scopes: Stack<Scope>, at: int) -> Handover {
+        let r? = handed_seat(self.ins[at]) else { return Handover.Kept }
+        if !is_managed(self.types, self.reg_types[r.index]) || !self.dies_at(r, at) { return Handover.Kept }
+        if owned_top(open_scopes, r) { return Handover.Owned }
+        let slot? = self.refilled_cell(r, at) else { return Handover.Kept }
+        Handover.Emptied(slot)
+    }
+
+    /// Whether a store's value MOVES into the cell: it dies at the store,
+    /// and the innermost scope owns it.
+    fn moves(open_scopes: Stack<Scope>, r: Reg, at: int) -> bool {
+        owned_top(open_scopes, r) && self.dies_at(r, at)
+    }
+
+    /// WHETHER `r` DIES AT `at`: read there once and never after, and
+    /// no view taken from it read there or after.
+    fn dies_at(r: Reg, at: int) -> bool {
+        self.last[r.index] == at && [x for x in reads_of(self.ins[at]) if same_reg(x, r)].length == 1 && self.views(r, at).all(self.last[it.index] < at)
+    }
+
+    /// The views taken from `r` before `at`, and the views of those —
+    /// every register that rides `r`'s reference. A read that takes its
+    /// owned twin holds a reference of its own and rides nobody's.
+    fn views(r: Reg, at: int) -> List<Reg> {
+        mut family: List<Reg> = [r]
+        mut j = self.defs[r.index] + 1
+        while j < at {
+            let i = self.ins[j]
+            let d: Reg? = view_of(i)
+            if d != null && reads_of(i).any(held_by(family, it)) && is_managed(self.types, self.reg_types[d!.index]) && !takes_twin(self.types, self.reg_types, self.ins, j, i) { family.push(d!) }
+            j = j + 1
+        }
+        [v for v in family if !same_reg(v, r)]
+    }
+
+    /// THE CELL `r` WAS BORROWED FROM, when handing its reference over is
+    /// sound: `r` rides the cell's reference, the call runs once per load
+    /// (every bracket opened since the load has closed), a store refills
+    /// the cell in a straight line after it, nothing else touches the cell
+    /// between, and no other borrow of the cell is read from here on.
+    fn refilled_cell(r: Reg, at: int) -> Reg? {
+        let d = self.defs[r.index]
+        if d < 0 { return null }
+        let slot? = loaded_slot(self.ins[d]) else { return null }
+        if borrow_outlives(self.types, self.reg_types, self.ins, d, r, slot) { return null }
+        if !self.level_with(slot, d, at) || !self.refilled(slot, at) || self.borrowed_past(slot, r, at) { return null }
+        slot
+    }
+
+    /// Whether the stretch from the load at `d` up to `at` leaves the cell
+    /// alone and returns to the load's own nesting — so `at` runs once for
+    /// each run of the load, on its path.
+    fn level_with(slot: Reg, d: int, at: int) -> bool {
+        mut depth = 0
+        mut k = d + 1
+        while k < at {
+            let i = self.ins[k]
+            if reads_of(i).any(same_reg(it, slot)) { return false }
+            if opens(i) {
+                depth = depth + 1
+            } else if closes(i) {
+                if depth == 0 { return false }
+                depth = depth - 1
+            } else if depth == 0 && turns(i) {
+                return false
+            }
+            k = k + 1
+        }
+        depth == 0
+    }
+
+    /// Whether, after `at`, the cell is next touched by a store into it,
+    /// with no bracket or exit between.
+    fn refilled(slot: Reg, at: int) -> bool {
+        mut k = at + 1
+        while k < self.ins.length {
+            let i = self.ins[k]
+            if opens(i) || closes(i) || turns(i) || i is .FnExit { return false }
+            if reads_of(i).any(same_reg(it, slot)) { return stores_into(i, slot) }
+            k = k + 1
+        }
+        false
+    }
+
+    /// Whether another load of the cell before `at` is read at or after it.
+    fn borrowed_past(slot: Reg, r: Reg, at: int) -> bool {
+        mut j = 0
+        while j < at {
+            if self.borrow_read_past(j, slot, r, at) { return true }
+            j = j + 1
+        }
+        false
+    }
+
+    /// Whether the instruction at `j` loads ANOTHER borrow of the cell,
+    /// read — it or a view of it — at or after `at`.
+    fn borrow_read_past(j: int, slot: Reg, r: Reg, at: int) -> bool {
+        let s? = loaded_slot(self.ins[j]) else { return false }
+        let d? = dst_of(self.ins[j]) else { return false }
+        same_reg(s, slot) && !same_reg(d, r) && (self.last[d.index] >= at || self.views(d, at).any(self.last[it.index] >= at))
+    }
+}
+
+/// The first seat of a call whose row has a reusing twin.
+fn handed_seat(i: Ins) -> Reg? {
+    match i {
+        .CallRt(_, callee, args) -> if rt_reusing_twin(callee) != null { args.first() } else { null },
+        _ -> null,
+    }
+}
+
+/// The cell a load reads.
+fn loaded_slot(i: Ins) -> Reg? {
+    match i {
+        .Load(_, slot) -> slot,
+        _ -> null,
+    }
+}
+
+/// Whether `i` is a store into `slot`.
+fn stores_into(i: Ins, slot: Reg) -> bool {
+    match i {
+        .Store(s, _) -> same_reg(s, slot),
+        _ -> false,
+    }
+}
+
+/// THE LAST INSTRUCTION READING each register; -1 for one never read.
+fn last_reads(count: int, ins: List<Ins>) -> List<int> {
+    mut out = [-1 for j in 0..count]
+    for at, i in ins {
+        for r in reads_of(i) { out.set(r.index, at) }
+    }
+    out
+}
+
+/// THE INSTRUCTION DEFINING each register; -1 for a param.
+fn def_sites(count: int, ins: List<Ins>) -> List<int> {
+    mut out = [-1 for j in 0..count]
+    for at, i in ins {
+        let d: Reg? = dst_of(i)
+        if d != null { out.set(d!.index, at) }
+    }
+    out
+}
+
+/// Whether the innermost open scope owns `r`.
+fn owned_top(open_scopes: Stack<Scope>, r: Reg) -> bool {
+    let top? = open_scopes.top() else { return false }
+    top.managed.any(same_reg(it, r))
+}
+
+/// The innermost scope GIVES UP one reference to `r`: it moved on.
+fn disowns(mut open_scopes: Stack<Scope>, r: Reg) {
+    let top? = open_scopes.top() else { return }
+    open_scopes.rewrite_top(top with { managed: kept_out(top.managed, r) })
 }

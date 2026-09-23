@@ -39,6 +39,9 @@
 #include <errno.h>
 #ifdef __APPLE__
 #include <mach-o/dyld.h>
+#include <malloc/malloc.h>
+#else
+#include <malloc.h>
 #endif
 #include "avra_box.h"
 #include "avra_runtime.h"
@@ -146,6 +149,8 @@ static Site* site_of(void* site) { return site_in(g_sites, &g_site_slots, site);
 
 static int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets, g_list_pushes;
 static int64_t g_once_reads, g_once_steps;
+static int64_t g_boxes_made, g_bufs_made;
+static int64_t g_made_by_kind[8];
 
 // The per-caller tables (AVRA_CENSUS_SITES=1). A list write is the
 // compiler's commonest single act, so writes are charged to the
@@ -239,6 +244,11 @@ static void acc_report(void) {
             (long long)g_list_gets, (long long)g_list_pushes);
     fprintf(stderr, "once: %lld reads, %lld pointer compares\n",
             (long long)g_once_reads, (long long)g_once_steps);
+    fprintf(stderr, "alloc: %lld boxes, %lld list buffers\n",
+            (long long)g_boxes_made, (long long)g_bufs_made);
+    for (int k = 0; k < ACC_KINDS; k++) {
+        if (g_made_by_kind[k]) fprintf(stderr, "alloc:   %-13s %lld\n", g_acc_name[k], (long long)g_made_by_kind[k]);
+    }
 #endif
 
     fprintf(stderr, "mem: peak %lld MB in all\n", (long long)(g_acc_total_peak >> 20));
@@ -353,6 +363,8 @@ static size_t class_of(size_t bytes) {
 static void* box_alloc(size_t size, int32_t kind) {
     size_t bytes = size > 0 ? size : 1;
     size_t cls = class_of(bytes);
+    CENSUS(g_boxes_made++);
+    CENSUS(g_made_by_kind[acc_kind_of(kind)]++);
     Header* h = cls ? g_free[cls] : NULL;
     if (h) {
         g_free[cls] = *(Header**)(h + 1);
@@ -433,6 +445,10 @@ static const char* str_static(const char* s) {
     memcpy(buf, s, n + 1);
     return buf;
 }
+
+// An immutable value answered as ITSELF: one more reference, owned
+// by the caller, to the same box.
+static const char* shared(const char* p);
 
 // The guard's event log: every retain and release of every box,
 // with the caller's address, so a double release can show its own
@@ -579,6 +595,98 @@ void avra_rc_release(void* p) {
     // line and tail-called: a release that does not free keeps no
     // frame, and most releases do not free.
     release_dead(p, h->kind);
+}
+
+// ── Reuse in place ──────────────────────────────────────────────
+// A `_reusing` twin CONSUMES its first seat: the compiler hands it a
+// reference it owns and never reads again. A box that reference holds
+// ALONE is written in place and answered; a shared or immortal one is
+// left to its other holders, a fresh answer is made, and the handed
+// reference is released. The compiler decides when a value may be
+// handed over; the count decides whether the box may be written.
+
+static const char* shared(const char* p) {
+    avra_rc_retain((void*)p);
+    return p;
+}
+
+// A text or octet box the handed reference holds alone.
+static inline int sole_sized(const char* p) {
+    Header* h = hdr((void*)p);
+    return h && (h->kind == KIND_STR || h->kind == KIND_BYTES) && h->rc == 1;
+}
+
+static size_t block_size(Header* h) {
+#ifdef __APPLE__
+    return malloc_size(h);
+#else
+    return malloc_usable_size(h);
+#endif
+}
+
+// The content bytes a sized box can hold, its NUL's byte spared. A
+// classed box holds its class; a bigger one what its block holds. The
+// class is read from the LENGTH, so a box shrunk in place answers the
+// smaller class — under its block, never over it.
+static size_t sized_capacity(Header* h) {
+    size_t cls = class_of((size_t)h->len + 1);
+    if (cls) return cls * CLASS_BYTES - 1;
+    return block_size(h) - sizeof(Header) - 1;
+}
+
+// A sized box's length moved to `n`, its terminator written.
+// Accounting follows the LENGTH, as `box_free` does.
+static void sized_resized(Header* h, size_t n) {
+    acc_add(acc_kind_of(h->kind), (int64_t)n - (int64_t)h->len);
+    h->len = (uint32_t)n;
+    ((char*)(h + 1))[n] = '\0';
+}
+
+// A sole sized box grown to hold `need` content bytes: in place when
+// its block has room, else moved to one with room to double into.
+// Answers where the content lives now; the first `len` bytes carry.
+__attribute__((noinline))
+static char* sized_moved(char* p, size_t need) {
+    Header* h = (Header*)p - 1;
+    size_t n = h->len;
+    size_t room = need < 2 * n ? 2 * n : need;
+    if (room + 1 <= CLASS_MAX || class_of(n + 1) != 0 || rc_guarded()) {
+        // a classed box moves to a fresh one; under the guard every move
+        // is fresh, and the old box is kept, marked dead and poisoned, so
+        // a stale reader finds garbage rather than the text it expected
+        char* out = (char*)box_alloc(room + 1, h->kind);
+        Header* oh = (Header*)out - 1;
+        acc_add(acc_kind_of(oh->kind), -(int64_t)(room - n));
+        oh->len = (uint32_t)n;
+        memcpy(out, p, n);
+        if (rc_guarded()) {
+            memset(p, 0xDD, n);
+            h->kind = KIND_DEAD;
+            h->rc = 0;
+        } else {
+            box_free(p);
+        }
+        return out;
+    }
+    Header* moved = (Header*)realloc(h, sizeof(Header) + room + 1);
+    if (moved == NULL) avra_trap("out of memory growing a value in place");
+    return (char*)(moved + 1);
+}
+
+static char* sized_grown(char* p, size_t need) {
+    if (need >= UINT32_MAX) avra_trap("a value is longer than its header can carry");
+    Header* h = (Header*)p - 1;
+    char* out = need <= sized_capacity(h) ? p : sized_moved(p, need);
+    sized_resized((Header*)out - 1, need);
+    return out;
+}
+
+// `a` with `b` appended, `a` consumed.
+static const char* appended(const char* a, const char* b, size_t m) {
+    size_t n = ((Header*)a - 1)->len;
+    char* out = sized_grown((char*)a, n + m);
+    memcpy(out + n, b, m);
+    return out;
 }
 
 // ── The trap contract ───────────────────────────────────────────
@@ -790,6 +898,7 @@ static int64_t* buf_alloc(int64_t cap) {
     acc_add(ACC_BUF, (int64_t)buf_bytes(cap));
     if (g_acc_on > 0) acc_buf(cap, (int64_t)buf_bytes(cap), 1);
     int cls = buf_class(cap);
+    CENSUS(g_bufs_made++);
     if (cls >= 0 && g_buf_free[cls]) {
         int64_t* buf = (int64_t*)g_buf_free[cls];
         g_buf_free[cls] = *(void**)buf;
@@ -1248,6 +1357,13 @@ static void alias_log_clone(void* site, void* box) {
     fprintf(stderr, "ALIAS_CLONE site=%p kind=%d n=%lld\n", (void*)((char*)site - slide), h ? (int)KIND_SHAPE(h->kind) : -999, (long long)n);
 }
 
+// Empties a cell WITHOUT releasing what it held: the cell's reference
+// moves to the value loaded from it, which a reusing twin consumes
+// before the store that refills the cell.
+void avra_cell_forget(void* slot) {
+    *(void**)slot = NULL;
+}
+
 // Opens a mut cell's box for writing: itself when nothing else
 // holds it, else a clone stored into the cell (the old reference
 // released). The answer is BORROWED from the cell.
@@ -1614,7 +1730,8 @@ static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
 // A fresh list: `a`'s slots, then `b`'s. Owned.
 void* avra_array_concat(void* a, void* b) {
     CENSUS(note_copy(__builtin_return_address(0)));
-    g_clone_site = __builtin_return_address(0);
+    void* site = g_clone_site ? g_clone_site : __builtin_return_address(0);
+    g_clone_site = site;
     void* out = avra_array_new();
     g_clone_site = NULL;
     array_append(out, (AvraArray*)a, 0, ((AvraArray*)a)->len);
@@ -1625,14 +1742,60 @@ void* avra_array_concat(void* a, void* b) {
 // A fresh list of the slots from lo up to hi, clamped to the list;
 // nothing when lo is not below hi. Owned.
 void* avra_array_slice(void* arr, int64_t lo, int64_t hi) {
-    g_clone_site = __builtin_return_address(0);
     AvraArray* a = (AvraArray*)arr;
     if (lo < 0) lo = 0;
     if (hi > a->len) hi = a->len;
-    void* out = avra_array_new();
-    g_clone_site = NULL;
+    void* out = array_made(lo < hi ? hi - lo : 0, g_clone_site ? g_clone_site : __builtin_return_address(0));
     if (lo < hi) array_append(out, a, lo, hi);
     return out;
+}
+
+// A list box the handed reference holds alone — never an immortal one.
+static inline int sole_array(void* p) {
+    Header* h = hdr(p);
+    return h && h->kind == KIND_ARRAY && h->rc == 1;
+}
+
+// `arr` cut to the slots from lo up to hi, in place when it is held
+// alone: the slots cut away released, the kept ones moved down.
+void* avra_array_slice_reusing(void* arr, int64_t lo, int64_t hi) {
+    if (!sole_array(arr)) {
+        g_clone_site = __builtin_return_address(0);
+        void* out = avra_array_slice(arr, lo, hi);
+        g_clone_site = NULL;
+        avra_rc_release(arr);
+        return out;
+    }
+    AvraArray* a = (AvraArray*)arr;
+    if (lo < 0) lo = 0;
+    if (hi > a->len) hi = a->len;
+    if (hi < lo) hi = lo;
+    for (int64_t i = 0; i < a->len; i++) {
+        if ((i < lo || i >= hi) && (a->marks[i] & MARK_OWNED)) avra_rc_release((void*)(uintptr_t)a->data[i]);
+    }
+    int64_t n = hi - lo;
+    if (lo > 0) {
+        memmove(a->data, a->data + lo, (size_t)n * sizeof(int64_t));
+        memmove(a->marks, a->marks + lo, (size_t)n);
+    }
+    memset(a->marks + n, 0, (size_t)(a->len - n));
+    a->len = n;
+    return arr;
+}
+
+// `a`'s slots then `b`'s, onto `a` when it is held alone.
+void* avra_array_concat_reusing(void* a, void* b) {
+    if (a == b || !sole_array(a)) {
+        g_clone_site = __builtin_return_address(0);
+        void* out = avra_array_concat(a, b);
+        g_clone_site = NULL;
+        avra_rc_release(a);
+        return out;
+    }
+    AvraArray* src = (AvraArray*)b;
+    avra_array_reserve(a, src->len);
+    array_append(a, src, 0, src->len);
+    return a;
 }
 
 // ── The string vocabulary ───────────────────────────────────────
@@ -1772,18 +1935,48 @@ int64_t avra_bytes_at(const char* b, int64_t i) {
 
 // The octets from lo up to hi, owned. Bounds are a precondition: a
 // slice traps and never clamps, because a short answer parses.
+// A WHOLE slice is the value itself: octets never change, so sharing
+// the box answers the same bytes a copy would.
 const char* avra_bytes_slice(const char* b, int64_t lo, int64_t hi) {
     int64_t n = (int64_t)bytes_len(b);
     if (__builtin_expect(lo < 0 || hi < lo || hi > n, 0)) trap_slice(lo, hi, n);
+    if (lo == 0 && hi == n) return shared(b);
     return bytes_owned(b + lo, (size_t)(hi - lo));
 }
 
+// An EMPTY side answers the other, shared.
 const char* avra_bytes_concat(const char* a, const char* b) {
     size_t n = bytes_len(a), m = bytes_len(b);
+    if (m == 0) return shared(a);
+    if (n == 0) return shared(b);
     char* out = bytes_box(n + m);
     memcpy(out, a, n);
     memcpy(out + n, b, m);
     return out;
+}
+
+const char* avra_bytes_concat_reusing(const char* a, const char* b) {
+    size_t m = bytes_len(b);
+    if (m == 0) return a;
+    if (a == b || !sole_sized(a)) {
+        const char* out = avra_bytes_concat(a, b);
+        avra_rc_release((void*)a);
+        return out;
+    }
+    return appended(a, b, m);
+}
+
+const char* avra_bytes_slice_reusing(const char* b, int64_t lo, int64_t hi) {
+    int64_t n = (int64_t)bytes_len(b);
+    if (__builtin_expect(lo < 0 || hi < lo || hi > n, 0)) trap_slice(lo, hi, n);
+    if (!sole_sized(b)) {
+        const char* out = avra_bytes_slice(b, lo, hi);
+        avra_rc_release((void*)b);
+        return out;
+    }
+    if (lo > 0) memmove((char*)b, b + lo, (size_t)(hi - lo));
+    sized_resized((Header*)b - 1, (size_t)(hi - lo));
+    return b;
 }
 
 // Where `needle` first begins at or after `from`, or -1. `from` may
@@ -1799,8 +1992,17 @@ int64_t avra_bytes_index_of(const char* b, const char* needle, int64_t from) {
     return -1;
 }
 
-// Text to octets: total.
-const char* avra_bytes_of_str(const char* s) { return bytes_owned(s, str_len(s)); }
+// Text to octets: total, and FREE — text and octets are one layout
+// (length in the header, a spare NUL after), so the answer is the
+// same box. A pointer that is not a box is copied in.
+const char* avra_bytes_of_str(const char* s) {
+    return hdr((void*)s) ? shared(s) : bytes_owned(s, strlen(s));
+}
+
+const char* avra_bytes_of_str_reusing(const char* s) {
+    if (hdr((void*)s)) return s;
+    return bytes_owned(s, strlen(s));
+}
 
 // Ints to octets: null when one of them is not a byte.
 const char* avra_bytes_of_list(void* arr) {
@@ -1865,9 +2067,15 @@ static int64_t utf8_bad_at(const char* p, size_t n) {
 
 // Octets to text: null when they are not UTF-8, and the row below
 // says where. A NUL is text.
+// The same box when they are: one layout, as above.
 const char* avra_str_of_bytes(const char* b) {
-    size_t n = bytes_len(b);
-    return utf8_bad_at(b, n) < 0 ? str_owned(b, n) : NULL;
+    return utf8_bad_at(b, bytes_len(b)) < 0 ? shared(b) : NULL;
+}
+
+const char* avra_str_of_bytes_reusing(const char* b) {
+    if (utf8_bad_at(b, bytes_len(b)) < 0) return b;
+    avra_rc_release((void*)b);
+    return NULL;
 }
 
 int64_t avra_utf8_bad_at(const char* b) { return utf8_bad_at(b, bytes_len(b)); }
@@ -2214,14 +2422,28 @@ void* avra_str_split(const char* s, const char* sep) {
     }
 }
 
-// `a + b` on text — one fresh string. Owned.
+// `a + b` on text — one fresh string, or an empty side's other
+// side, shared. Owned.
 const char* avra_str_concat(const char* a, const char* b) {
     size_t n = str_len(a);
     size_t m = str_len(b);
+    if (m == 0 && hdr((void*)a)) return shared(a);
+    if (n == 0 && hdr((void*)b)) return shared(b);
     char* buf = sized_box(n + m, KIND_STR);
     memcpy(buf, a, n);
     memcpy(buf + n, b, m + 1);
     return buf;
+}
+
+const char* avra_str_concat_reusing(const char* a, const char* b) {
+    size_t m = str_len(b);
+    if (m == 0 && hdr((void*)a)) return a;
+    if (a == b || !sole_sized(a)) {
+        const char* out = avra_str_concat(a, b);
+        avra_rc_release((void*)a);
+        return out;
+    }
+    return appended(a, b, m);
 }
 
 // ── The host: what a program declares `extern` and the CLI leans on ──

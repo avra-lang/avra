@@ -20,19 +20,20 @@ fn hand_assembled_refusal(kind: Code, at: Code, msg: Code, label: Code) -> Fix {
     Fix.Say(warning("style.refusal_assembled", at.loc(), "a refusal assembled by hand (kind `${kind.text()}`, label `${label.text()}`, message `${msg.text()}`) — the one shape is `refusal(kind, at, message, label, help)`", "this call", null))
 }
 
-/// Text grown by `s = s + piece` — quadratic, since a string's own
-/// length is read fresh every turn: a `@std/text` builder
-/// (`builder()`, `push`, `built`) or `repeat`/`pad_*` says it in
-/// linear time. Guarded to STRINGS ONLY — `n = n + 1` is an ordinary
-/// int accumulator, never this smell.
+/// Text grown THROUGH A PLACE by `p = p + piece` — quadratic: a field
+/// is read out beside the value that holds it, so the text is never
+/// held alone and every turn copies it. A LOCAL `mut` grows in place
+/// (the memory pass hands the cell's text to the append), so a bare
+/// name is not this smell. Guarded to STRINGS ONLY — `n = n + 1` is an
+/// ordinary int accumulator.
 @keeps("out = out2 + piece")
 @keeps("n = n + 1")
 export rule str_grown_quadratically {
-    quote { ${s} = ${s} + ${piece} } if s.type()?.name() == "string" -> quadratic_growth(s, piece),
+    quote { ${s} = ${s} + ${piece} } if s.type()?.name() == "string" && s.name() == null -> quadratic_growth(s, piece),
 }
 
 fn quadratic_growth(s: Code, piece: Code) -> Fix {
-    Fix.Say(warning("style.quadratic_growth", s.loc(), "text grown by `${s.text()} = ${s.text()} + ${piece.text()}` is quadratic — a @std/text builder (builder(), push, built) or repeat/pad_* says it in linear time", "this assignment", null))
+    Fix.Say(warning("style.quadratic_growth", s.loc(), "text grown through a place by `${s.text()} = ${s.text()} + ${piece.text()}` is quadratic — a place is copied every turn; grow a local `mut` and store it once, or use a @std/text builder (builder(), push, built)", "this assignment", null))
 }
 
 /// A payload the value-protocol dispatch GUARANTEES, papered over
