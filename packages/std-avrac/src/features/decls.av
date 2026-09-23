@@ -84,7 +84,7 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
         span: if x.kind is .Default || x.kind is .Case { if x.root == null { null } else { store.expr_span(x.root!) } } else { store.stmt_span(x.stmt) },
         tparams: if readable { store.decl_tparams(x.stmt) } else { [] },
         bounds: if readable { [p.ty?.name ?? "" for p in store.decl_tbounds(x.stmt)] } else { [] },
-        seats: if readable { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },
+        seats: if readable && !(x.kind is .Default) { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },
         host: if readable { extern_host(store, x.stmt) } else { [] },
         annotated: readable && !store.annotations_of(x.stmt).is_empty(),
         of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
@@ -887,6 +887,23 @@ impl Decls {
             if self.decl(c).name == field { return c }
         }
         null
+    }
+
+    /// Each written seat's default body, in seat order — null where
+    /// the seat has none.
+    fn seat_defaults(d: DeclId) -> List<DeclId?> {
+        [self.default_named(d, n) for n in self.facts_of(d)?.seats ?? []]
+    }
+
+    /// Whether a fn's body is lowered once for every caller: no type
+    /// parameters of its own, nor of the type its impl serves.
+    fn lowered_once(d: DeclId) -> bool {
+        if !self.tparams(d).is_empty() { return false }
+        let block? = self.decl(d).parent else { return true }
+        // the DECLARATION first: a member's sig records its impl's target
+        let _ = self.sig(d)
+        let target? = self.target_of(block) else { return true }
+        self.tparams(target).is_empty()
     }
 
     /// Where a declaration is — a generated one homed at the template

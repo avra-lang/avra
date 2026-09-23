@@ -89,14 +89,29 @@ impl TypeCx {
         self.declare(s, DeclSig.Record(sig))
     }
 
-    /// A field default's signature: a body of no parameters
-    /// answering the field's declared type — every literal that
-    /// omits the field calls it.
+    /// A default's signature: a body of no parameters answering its
+    /// field's or seat's declared type — every literal or call that
+    /// leaves it unwritten calls it.
     fn declare_default(x: Decl) {
-        let rs: StructSig? = self.view.decls.sig(x.parent!)?.record_sig()
-        let slot: int? = rs?.slot_of(x.name)
-        let ret: TypeId = if slot == null { self.error_type } else { rs!.types[slot!] }
+        let ret: TypeId = self.defaulted_type(x.parent!, x.name) ?? self.error_type
         self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [], ret: ret }))
+    }
+
+    /// The type a default answers: its field's, or its seat's — a
+    /// method's receiver leads its seats and is never written.
+    fn defaulted_type(owner: DeclId, name: string) -> TypeId? {
+        let sig? = self.view.decls.sig(owner) else { return null }
+        let rs: StructSig? = sig.record_sig()
+        if rs != null {
+            let slot? = rs!.slot_of(name) else { return null }
+            return rs!.types[slot]
+        }
+        let fs? = sig.fn_sig() else { return null }
+        let seats: List<string> = self.view.decls.facts_of(owner)?.seats ?? []
+        let j = seats.index_of(name)
+        let at = fs.params.length - seats.length + j
+        if j < 0 || at < 0 { return null }
+        fs.params[at]
     }
 
     /// A test case's signature: no parameters, a bool answer.

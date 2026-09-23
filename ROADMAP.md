@@ -3589,6 +3589,8 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 Collected from FEEDBACK.md. Sorted by how often each appears across phases. See FEEDBACK.md for full context and phase origins.
 
 - [ ] A BOUND METHOD AS A VALUE (filed 2026-09-09, the sugar 1 sweep).
+- [ ] NAMED ARGUMENTS, THE REST OF SUGAR 5 (filed 2026-09-22, the named-arguments slice). Landed: `f(1, n: 2)` on declared fns, methods and statics. Owed: the idiom rule the design promised — refuse a positional call where two adjacent seats share a type — and the block form (`other: { … }` retiring sugar 1's bare `else`), whose design section is still a draft outside main.
+- [ ] A DEFAULT ON EVERY SEAT KIND, AND IN A GENERIC FN (filed 2026-09-22, the fn-defaults slice). Plain `fn`/`mut fn`/`static fn` seats landed; an extern's, a trait member's and a lambda's seat do not parse one, and a generic fn's or a generic type's method's default is F2104 — a default is one body, lowered once.
 - [ ] A BOUND ON A GENERIC TYPE'S OR AN IMPL'S PARAMETER — `type T<K: Tr, V> = { … }` (not parseable today).
 - [ ] A FIELD ANNOTATION — `@excluded` (or any mark) above a record's field.
 - [ ] A GENERIC NAMED TYPE (`type Box<T> = List<T>`): F2083 "`Box` is a generic type — a trait impl over a generic type is recorded, not landed".

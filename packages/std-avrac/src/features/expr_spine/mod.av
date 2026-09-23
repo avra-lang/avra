@@ -21,6 +21,7 @@ export fn expr_spine() -> LanguageFeature {
         "fold_coalesce" | build_fold_coalesce
         "catch_any"     | build_catch
         "trailing"      | build_trailing
+        "named_arg"     | build_named_arg
     }
     let codes = table<DiagCode> {
         kind                | id      | summary
@@ -33,6 +34,7 @@ export fn expr_spine() -> LanguageFeature {
         docs = "Expressions: literals, identifiers, the operator ladder — `|| && == != < <= > >= + - * / % !` — postfix access (`xs[i]`, `xs.length`, `u?.age`, `v!`, `v?`), the loosest layer, `catch`, and the TRAILING BLOCK, a postfix like the rest: `f(a) { x -> body }` is `f(a, (x) -> body)`, `else { … }` after it fills the next fn seat, `{ … }` with no arrow takes no seat (or `it`, when the body reads it), and a name or a field read takes one as a call with no parentheses (`run { … }`, `db.tx { … }`). A HEAD — what `if`, `while`, `for`, `match` and `let … else` open their brace after — takes none: parenthesise the call there. And the TYPE LITERAL, a postfix too: `v.type(List<string?>)` is `v.interned(.List(.Opt(.Str)))` — the type in its own spelling, folded once by the receiver; a name that spells no shape is a hole, the id it names."
         gram = grammar {
             expression = l:disjunction ( ck:"catch" ( "{" BREAK ( "." cv:NAME ( "(" cb:NAME ")" )? "->" ca:expression BREAK )* "}" | "." sv:NAME ( "(" sb:NAME ")" )? "->" sa:expression | eb:NAME "->" ea:expression | rv:expression ) )? -> catch_any(l, ck, cv, cb, ca, sv, sb, sa, eb, ea, rv)
+            argument = n:NAME ":" v:expression -> named_arg(n, v) | expression
             trailing = "{" ( ( tc:"const" )? ( tm:"mut" )? tp:NAME ( "," ( tc:"const" )? ( tm:"mut" )? tp:NAME )* ","? "->" )? ( ts:stmt | BREAK )* "}" @expect("}", "expected `}` to close the trailing block") -> trailing(tc, tm, tp, ts)
             disjunction = l:conjunction ( op:"||" r:conjunction )* -> fold_binary(l, op, r)
             conjunction = l:comparison ( op:"&&" r:comparison )* -> fold_binary(l, op, r)
@@ -43,7 +45,7 @@ export fn expr_spine() -> LanguageFeature {
             multiplicative = l:unary ( op:( "*" | "/" | "%" ) r:unary )* -> fold_binary(l, op, r)
             unary = "!" v:unary -> not_expr(v) | "-" v:unary -> neg_expr(v) | "~" v:unary -> bitnot_expr(v) | withed
             withed = v:postfix ( "with" "{" BREAK? wn:NAME ":" wv:expression ( "," BREAK? wn:NAME ":" wv:expression )* ","? BREAK? "}" )? -> fold_with(v, wn, wv)
-            postfix = v:primary ( "." "type" "(" tt:type ")" @expect(")", "expected `)` to close the type literal") | "?." "type" "(" tq:type ")" @expect(")", "expected `)` to close the chained type literal") | q:( "?." | "." ) p:NAME ( mo:"(" ( ma:expression ( "," ma:expression )* ","? )? ")" )? | "[" i:expression "]" @expect("]", "expected `]` to close the index") | co:"(" ( ca:expression ( "," ca:expression )* ","? )? ")" | f:( "!" | "?" ) | tb:trailing ( "else" te:trailing )? @trailer(tb) )* -> fold_postfix(v, q, p, mo, ma, i, co, ca, f, tb, te, tt, tq)
+            postfix = v:primary ( "." "type" "(" tt:type ")" @expect(")", "expected `)` to close the type literal") | "?." "type" "(" tq:type ")" @expect(")", "expected `)` to close the chained type literal") | q:( "?." | "." ) p:NAME ( mo:"(" ( ma:argument ( "," ma:argument )* ","? )? ")" )? | "[" i:expression "]" @expect("]", "expected `]` to close the index") | co:"(" ( ca:argument ( "," ca:argument )* ","? )? ")" | f:( "!" | "?" ) | tb:trailing ( "else" te:trailing )? @trailer(tb) )* -> fold_postfix(v, q, p, mo, ma, i, co, ca, f, tb, te, tt, tq)
             primary = v:NUMBER -> int_lit(v) | n:NAME -> ident(n) | "(" e:expression ")" @expect(")", "expected `)` to close the group") -> e
         }
         builders = rows

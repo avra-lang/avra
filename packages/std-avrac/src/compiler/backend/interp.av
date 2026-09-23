@@ -151,7 +151,7 @@ type Ran = { m: Machine, answer: Val? }
 
 fn ran(l: Lowered, target: Body) -> Result<Ran, string> {
     mut m = fresh_machine(l)
-    let answer: Val? = m.run_body(target, [])
+    let answer: Val? = m.run_body(target)
     if !m.failures.is_empty() { return .Err(m.failures.first()!) }
     .Ok(Ran { m: m, answer: answer })
 }
@@ -231,7 +231,7 @@ export fn run_settle(l: Lowered, budgets: Budgets, base: string) -> Result<Settl
     if world != null { return .Err(Unsettled.Reach(world!)) }
     mut m = budgeted_machine(l, budgets)
     m.base = base
-    let answer: Val? = m.run_body(l.entry, [])
+    let answer: Val? = m.run_body(l.entry)
     m.spent(l.entry.name, budgets)
     if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
@@ -275,7 +275,7 @@ export fn run_crossed(l: Lowered, budgets: Budgets, base: string) -> Result<Lift
     if world != null { return .Err(Unsettled.Reach(world!)) }
     mut m = budgeted_machine(l, budgets)
     m.base = base
-    let answer: Val? = m.run_body(l.entry, [])
+    let answer: Val? = m.run_body(l.entry)
     m.spent(l.entry.name, budgets)
     if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
@@ -371,7 +371,6 @@ fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
     }
 }
 
-
 /// The deepest call the machine runs before it refuses: the machine
 /// recurses on the host's stack, and a runaway recursion must answer
 /// as a trap naming its case, never as a crash of the run. The bound
@@ -400,37 +399,40 @@ impl Machine {
 
     /// One body under its argument values; params ARE registers 0..N-1.
     /// The answer is RetVal's register, when one fires.
-    fn run_body(b: Body, args: List<Val>) -> Val? {
+    fn run_body(b: Body, args: List<Val> = []) -> Val? {
         if self.frames.length >= call_limit {
             self.trapped("recursion too deep — ${call_limit} nested calls")
             return null
         }
         self.frames.push(filled<Val?>(b.reg_types.length, null))
-        for (j, a) in args.enumerate() { self.put(Reg { index: j }, a) }
+        for j, a in args.enumerate() { self.put(Reg { index: j }, a) }
         // LICENSED I4: the run loop's answer, not a scan
         mut answer: Val? = null
         mut pc = 0
         while pc < b.ins.length && self.failures.is_empty() {
             self.budget = self.budget - 1
             if self.budget % memory_stride == 0 { self.held_within() }
-            if self.budget < 0 { self.spent_out(over_budget(self.asked)) }
-            // everything else DELEGATES to `step`, which is exhaustive
-            else { match b.ins[pc] {
-                .RetVal(r) -> {
-                    answer = self.at(r)
-                    pc = b.ins.length
+            if self.budget < 0 {
+                self.spent_out(over_budget(self.asked))
+            } else {
+                // everything else DELEGATES to `step`, which is exhaustive
+                match b.ins[pc] {
+                    .RetVal(r) -> {
+                        answer = self.at(r)
+                        pc = b.ins.length
+                    },
+                    .FnExit(r) -> {
+                        answer = self.at(r)
+                        pc = b.ins.length
+                    },
+                    .Ret(_) -> {
+                        pc = b.ins.length
+                    },
+                    rest -> {
+                        pc = self.step(b, pc)
+                    },
                 }
-                .FnExit(r) -> {
-                    answer = self.at(r)
-                    pc = b.ins.length
-                }
-                .Ret(_) -> {
-                    pc = b.ins.length
-                }
-                rest -> {
-                    pc = self.step(b, pc)
-                }
-            } }
+            }
         }
         let _ = self.frames.pop()
         answer
@@ -462,8 +464,7 @@ impl Machine {
             .Alloca(d) -> self.put_at(d, self.fresh_cell(), pc),
             .Load(d, slot) -> self.put_at(d, self.cell_read(slot), pc),
             .Store(slot, src) -> self.store_step(slot, src, pc),
-            .ScopeEnter(_) or .ScopeExit(_) or .Retain(_) or .Release(_) or
-            .RetVal(_) or .FnExit(_) or .Ret(_) -> pc + 1,
+            .ScopeEnter(_) or .ScopeExit(_) or .Retain(_) or .Release(_) or .RetVal(_) or .FnExit(_) or .Ret(_) -> pc + 1,
         }
     }
 
@@ -524,9 +525,7 @@ impl Machine {
             .Text(s) -> Val.S(s),
             .Bool(b) -> Val.B(b),
             .Absent -> Val.N,
-            .Node(id) -> {
-                self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]])
-            },
+            .Node(id) -> { self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]]) },
             .Map(id) -> {
                 let row = heap.maps[id]
                 self.maps.push(MapVal { keys: row.keys, vals: [self.val_of(heap, x) for x in row.values] })
@@ -546,9 +545,7 @@ impl Machine {
             .S(s) -> MetaVal.Text(s),
             .Y(data) -> MetaVal.Text(self.decoded(data)),
             .N -> MetaVal.Absent,
-            .A(id) -> {
-                heap.node([self.meta_of(x, heap) for x in self.arrays[id]])
-            },
+            .A(id) -> { heap.node([self.meta_of(x, heap) for x in self.arrays[id]]) },
             .M(id) -> {
                 let row = self.maps[id]
                 heap.map(row.keys, [self.meta_of(x, heap) for x in row.vals])
@@ -593,14 +590,13 @@ impl Machine {
             _ -> {
                 self.defect("a non-bool decided a branch")
                 false
-            }
+            },
         }
     }
 
     fn int_val(r: Reg) -> int {
         self.whole(self.value(r))
     }
-
 
     /// TEXT AT A ROW'S SEAT, FROM EITHER BOX. A row's seat kind is
     /// `Ptr`, which a string and a `Bytes` both fill — natively one
@@ -615,7 +611,7 @@ impl Machine {
             .I(_) or .F(_) or .B(_) or .A(_) or .M(_) or .C(_) or .N -> {
                 self.defect("a non-string reached text")
                 ""
-            }
+            },
         }
     }
 
@@ -660,7 +656,6 @@ impl Machine {
         ""
     }
 
-
     /// A register's float BITS — the evaluator's float currency.
     fn bits_val(r: Reg) -> int {
         match self.value(r) {
@@ -668,7 +663,7 @@ impl Machine {
             rest -> {
                 self.defect("a non-float reached float arithmetic")
                 0
-            }
+            },
         }
     }
 
@@ -686,8 +681,7 @@ impl Machine {
             .Le -> Val.B(avra_float_le(l, r) != 0),
             .Gt -> Val.B(avra_float_gt(l, r) != 0),
             .Ge -> Val.B(avra_float_ge(l, r) != 0),
-            .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr ->
-                self.defect_val(int_only_on_floats),
+            .Mod or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> self.defect_val(int_only_on_floats),
             .And or .Or -> self.defect_val(lazy_in_eager),
         }
     }
@@ -738,9 +732,7 @@ impl Machine {
         match op {
             .Eq -> Val.B(same),
             .Ne -> Val.B(!same),
-            .Add or .Sub or .Mul or .Div or .Mod or .Lt or .Le or .Gt or
-            .Ge or .And or .Or or .BitAnd or .BitOr or .BitXor or .Shl or .Shr ->
-                self.defect_val("a non-equality op reached an absence"),
+            .Add or .Sub or .Mul or .Div or .Mod or .Lt or .Le or .Gt or .Ge or .And or .Or or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> self.defect_val("a non-equality op reached an absence"),
         }
     }
 
@@ -751,9 +743,7 @@ impl Machine {
         match op {
             .Eq -> Val.B(l == r),
             .Ne -> Val.B(l != r),
-            .Add or .Sub or .Mul or .Div or .Mod or .Lt or .Le or .Gt or
-            .Ge or .And or .Or or .BitAnd or .BitOr or .BitXor or .Shl or .Shr ->
-                self.defect_val("a non-equality op reached bool operands"),
+            .Add or .Sub or .Mul or .Div or .Mod or .Lt or .Le or .Gt or .Ge or .And or .Or or .BitAnd or .BitOr or .BitXor or .Shl or .Shr -> self.defect_val("a non-equality op reached bool operands"),
         }
     }
 
@@ -878,9 +868,7 @@ impl Machine {
     fn store_step(slot: Reg, src: Reg, pc: int) -> int {
         let v = self.value(src)
         match self.value(slot) {
-            .C(id) -> {
-                self.cells.set(id, v)
-            }
+            .C(id) -> { self.cells.set(id, v) },
             _ -> self.defect("a store through a non-cell"),
         }
         pc + 1
@@ -924,7 +912,7 @@ impl Machine {
         // narrows. The read is a cast and never a second call.
         if shape is .Str {
             return match raw {
-                .I(a) -> if a == 0 { Val.S("") } else { Val.S(avra_ffi_text_at(a)) }
+                .I(a) -> if a == 0 { Val.S("") } else { Val.S(avra_ffi_text_at(a)) },
                 _ -> raw,
             }
         }
@@ -1021,7 +1009,6 @@ impl Machine {
             .Unhosted -> self.defect_val("a runtime callee the interpreter does not host: `${callee}`"),
         }
     }
-
 
     /// Every text seat of a non-inert row checked before it crosses.
     fn crossings(sig: RtSig, vals: List<Val>) {
@@ -1201,7 +1188,7 @@ impl Machine {
             .Void -> {
                 let _ = avra_ffi_call(sym)
                 Val.I(0)
-            }
+            },
             .F64 -> Val.F(avra_ffi_call_f64(sym)),
             .Ptr -> pointer_val(avra_ffi_call(sym)),
             .I64 -> Val.I(avra_ffi_call(sym)),
@@ -1298,10 +1285,8 @@ impl Machine {
     /// Whether the declaration asks for more seats than one frame
     /// carries, in either register file.
     fn past_the_frame(sig: RtSig) -> bool {
-        [1 for k in sig.params if !rides_fp(k)].length > avra_ffi_max_int() ||
-            [1 for k in sig.params if rides_fp(k)].length > avra_ffi_max_f64()
+        [1 for k in sig.params if !rides_fp(k)].length > avra_ffi_max_int() || [1 for k in sig.params if rides_fp(k)].length > avra_ffi_max_f64()
     }
-
 
     fn array_new_val() -> Val {
         self.fresh_array([])
@@ -1320,7 +1305,7 @@ impl Machine {
             _ -> {
                 self.defect("a non-int reached a runtime seat")
                 0
-            }
+            },
         }
     }
 
@@ -1366,7 +1351,6 @@ impl Machine {
         Val.S(if lo < hi { s.substring(lo, hi) } else { "" })
     }
 
-
     /// The byte at `i` as a code; past the box, the runtime's trap.
     fn str_char_code_val(vals: List<Val>) -> Val {
         let i = self.whole(vals[1])
@@ -1398,11 +1382,11 @@ impl Machine {
             .A(id) -> {
                 self.arrays.push([x for x in self.arrays[id]])
                 Val.A(self.arrays.length - 1)
-            }
+            },
             .M(id) -> {
                 self.maps.push(MapVal { keys: [k for k in self.maps[id].keys], vals: [x for x in self.maps[id].vals] })
                 Val.M(self.maps.length - 1)
-            }
+            },
             .I(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N -> v,
         }
     }
@@ -1445,8 +1429,11 @@ impl Machine {
     fn map_write(id: int, key: string, v: Val) -> Val {
         let s = self.map_slot(id, key)
         let entry = self.maps[id]
-        let written = if s >= 0 { entry with { vals: copied(entry.vals, [v], s) } }
-                      else { entry with { keys: entry.keys.concat([key]), vals: entry.vals.concat([v]) } }
+        let written = if s >= 0 {
+            entry with { vals: copied(entry.vals, [v], s) }
+        } else {
+            entry with { keys: entry.keys.concat([key]), vals: entry.vals.concat([v]) }
+        }
         self.maps.set(id, written)
         Val.I(0)
 
@@ -1458,10 +1445,9 @@ impl Machine {
                 let fresh = self.cloned_val(self.cells[id])
                 self.cells.set(id, fresh)
                 fresh
-            }
+            },
             _ -> self.defect_val("a place opened through a non-cell"),
         }
-
     }
 
     fn slot_unique_val(vals: List<Val>) -> Val {
@@ -1571,7 +1557,6 @@ impl Machine {
         }
     }
 
-
     /// THE NAME A ROW THAT ACTS WILL RESOLVE, or absence once reading
     /// it refused. A LAW REFUSES BEFORE THE WORK — the law the extern
     /// host's staging already pays, owed by these rows too. A seat
@@ -1624,7 +1609,6 @@ impl Machine {
         if !self.failures.is_empty() { return Val.I(0) }
         Val.I(avra_spawn_status(prog, words))
     }
-
 
     /// THE ADOPTION, EVALUATED THROUGH THE SAME DOOR THE COMPILED
     /// PROGRAM CALLS. The frame answers every pointer as its ADDRESS,

@@ -29,17 +29,19 @@ export fn fns() -> LanguageFeature {
         "type.row_shape"       | "F2084" | "an extern that names a runtime row wears the row's shape — its seat count, and the box each pointer seat reads"
         "type.host_absence"    | "F2088" | "a runtime row's seat takes no absence — core's C reads every pointer it is handed"
         "type.extern_value"    | "F2103" | "an extern fn is a C symbol, not a value — wrap it to hand it around"
+        "type.named_arg"       | "F2105" | "a named argument writes a seat its callee declares, once — only a declared fn's, method's or static's seats have names"
+        "type.param_default"   | "F2104" | "a default fills a plain seat of a plain fn, after every seat without one, and its seat accepts it"
     }
     component LanguageFeature f {
         name = "fns"
-        docs = "`fn name(params) -> type { expression }` — generic with `fn name<T>(…)`, one abstract check, one lowering per instantiation; a `mut` parameter is a seat the fn writes through, filled by a `mut` place — on an `extern fn` it is the INOUT: C is handed the address of the caller's cell; calls `name(args)`, `name<int>(args)` pinning what arguments cannot; `return` answers early."
+        docs = "`fn name(params) -> type { expression }` — generic with `fn name<T>(…)`, one abstract check, one lowering per instantiation; a `mut` parameter is a seat the fn writes through, filled by a `mut` place — on an `extern fn` it is the INOUT: C is handed the address of the caller's cell; calls `name(args)`, `name<int>(args)` pinning what arguments cannot; a seat may carry a default (`n: int = 1`), a body of its own that a call leaving the seat unwritten runs; a call may name its seats (`f(1, n: 2)`) — a named argument fills the seat of its name, a positional one the seat at its own position, and arguments run in written order; `return` answers early."
         gram = grammar {
             stmt = "extern" "fn" n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ":" pt:type )* ","? )? ")" ( "->" r:type )? END @recover(sync_to: "END") -> extern_fn(n, ck, mk, ps, pt, r)
-            stmt = "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ","? ">" )? "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> fn_decl(n, tp, tb, ck, mk, ps, pt, r, b)
+            stmt = "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ","? ">" )? "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> fn_decl(n, tp, tb, ck, mk, ps, pt, pd, r, b)
             stmt = "once" "fn" n:NAME "(" ( ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? ( "," ( ck:"const" )? ( mk:"mut" )? ps:NAME ( ":" pt:type )? )* ","? )? ")" ( "->" r:type )? b:block END @recover(sync_to: "END") -> once_fn(n, ck, mk, ps, pt, r, b)
             stmt = "return" ( v:expression )? END @recover(sync_to: "END") -> return_stmt(v)
-            primary = c:NAME "<" pin:type ( "," pin:type )* ","? ">" "(" ( as:expression ( "," as:expression )* ","? )? ")" -> pinned_call(c, pin, as)
-            primary = c:NAME "(" ( as:expression ( "," as:expression )* ","? )? ")" @expect(")", "expected `)` to close the arguments") -> call(c, as)
+            primary = c:NAME "<" pin:type ( "," pin:type )* ","? ">" "(" ( as:argument ( "," as:argument )* ","? )? ")" -> pinned_call(c, pin, as)
+            primary = c:NAME "(" ( as:argument ( "," as:argument )* ","? )? ")" @expect(")", "expected `)` to close the arguments") -> call(c, as)
         }
         builders = rows
         diags = codes

@@ -16,7 +16,7 @@ use core.{StmtId, ExprId, FileId, Param, flatten, Binding, found_at, NodeStore, 
 use core.{side_table, Binder}
 use diagnostics.{refusal, Voices}
 use features.modules.{module_laws}
-use features.{ResolveCx, Def, LFrame, Dispatch, Namespace, NameFacts, new_name_facts, FileView, written_seats, semantics_of, stmt_semantics_of, post_order, Elsewhere, Bound}
+use features.{ResolveCx, SelfSeat, Def, LFrame, Dispatch, Namespace, NameFacts, new_name_facts, FileView, written_seats, semantics_of, stmt_semantics_of, post_order, Elsewhere, Bound}
 use features.rules.{example_marks}
 
 /// Words the spec reserves for future levels, memory, and
@@ -124,14 +124,14 @@ impl ResolveCx {
     /// One match arm's scope: its binds (in pattern order) hold for
     /// the arm's guard AND value, and die with both — the first scope
     /// in the language opened by an EXPRESSION rather than a
-    /// statement. `guard` is null for an unguarded arm.
-    mut fn arm_scope(binds: List<Bound>, guard: ExprId?, value: ExprId) {
+    /// statement. An unguarded arm writes no guard.
+    mut fn arm_scope(binds: List<Bound>, value: ExprId, guard: ExprId? = null) {
         self.open_overlay()
-        self.arm_body(binds, guard, value)
+        self.arm_body(binds, value, guard)
         self.close_overlay()
     }
 
-    mut fn arm_body(binds: List<Bound>, guard: ExprId?, value: ExprId) {
+    mut fn arm_body(binds: List<Bound>, value: ExprId, guard: ExprId?) {
         for j, b in binds {
             if !self.refused_binder(b.name, self.loc_of(value)) { self.bind(keyed(b.name, b.origin), Binding.Pattern(value, j)) }
         }
@@ -187,14 +187,14 @@ impl ResolveCx {
     /// One member. A `static fn` resolves with NO receiver, so
     /// `self` inside it refuses and its seats start at 0.
     mut fn impl_member(s: StmtId) {
-        self.receivers.push(!self.view.store.is_static(s))
+        self.receivers.push(if self.view.store.is_static(s) { SelfSeat.Static } else { SelfSeat.Receiver })
         self.resolve_stmts(false, [s])
         let _ = self.receivers.pop()
     }
 
     /// Is the innermost enclosing fn a method — one WITH a receiver?
     fn in_a_method() -> bool {
-        self.receivers.last() ?? false
+        self.receivers.last() ?? SelfSeat.Static is .Receiver
     }
 
     /// A fn's body walks behind a FLOOR: the overlay depth at entry.
@@ -203,6 +203,14 @@ impl ResolveCx {
     /// bindings. The seats' names and `mut` marks are in scope for
     /// exactly the walk, so a read of a `mut` seat is recorded as
     /// one.
+    /// A seat's default: a body of its own — no seats, and no
+    /// receiver though its owner is a method.
+    mut fn walk_default(body: ExprId) {
+        self.receivers.push(SelfSeat.Default)
+        self.walk_under([], body)
+        let _ = self.receivers.pop()
+    }
+
     mut fn walk_under(ps: List<Param>, body: ExprId) {
         let seats = written_seats(self.keywords, ps)
         let outer = self.scope

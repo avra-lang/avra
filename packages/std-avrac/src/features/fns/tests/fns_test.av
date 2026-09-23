@@ -333,6 +333,70 @@ ret r1"""
             shown("once fn tag() -> string {\n    \"x\"\n}\nfn twice() -> string {\n    \"\${tag()}\${tag()}\"\n}\ntwice()") == "xx"
         }
     }
+    given "a seat's default — a body of its own, run by every call that leaves the seat unwritten" {
+        then "a call leaving the seat unwritten runs the default; one writing it does not" {
+            shown("fn add(a: int, b: int = 5) -> int { a + b }\nadd(1) * 100 + add(1, 2)") == "603"
+        }
+        then "a default sees declarations, and runs fresh per call" {
+            shown("fn seed() -> int { 40 }\nfn f(n: int = seed() + 2) -> int { n }\nf() + f()") == "84"
+        }
+        then "a method's and a static's defaults fill the same way" {
+            shown("type C = { n: int }\nimpl C {\n    fn plus(k: int = 1) -> int { self.n + k }\n    static fn make(n: int = 7) -> C { C { n: n } }\n}\nC.make().plus() * 10 + C.make(2).plus(3)") == "85"
+        }
+        then "the refusal renders whole — a count outside the range names both ends" {
+            analyze_source("fn ok(a: int, b: int = 2) -> int { a + b }\nok()").report().starts_with("error[F2000]: `ok` takes 1 to 2 arguments, found 0\n  ╭─[<source>:2:1]\n2 │ ok()\n  · ┬\n  · ╰── this call\n──╯\nhelp: the last seat has a default, and a call may leave it unwritten")
+        }
+        then "two defaulted seats are counted in the plural" {
+            refused_with("fn ok(a: int, b: int = 2, c: int = 3) -> int { a }\nok(1, 2, 3, 4)", "the last 2 seats have defaults, and a call may leave them unwritten")
+        }
+        then "the default law renders whole — a seat without a default after one with" {
+            analyze_source("fn o(a: int = 1, b: int) -> int { b }\n0").report().starts_with("error[F2104]: `b` has no default and follows `a`, which has one — a call writes its seats in order, so `a` could never be left to its default\n  ╭─[<source>:1:15]\n1 │ fn o(a: int = 1, b: int) -> int { b }\n  ·               ┬\n  ·               ╰── the first default\n──╯\nhelp: move the defaulted seats last, or give `b` a default too")
+        }
+        then "a generic fn's seats take no default" {
+            refused_with("fn g<T>(x: T, n: int = 1) -> int { n }\n0", "`n` carries a default, and `g` is generic")
+        }
+        then "a generic type's methods take no default" {
+            refused_with("type B<T> = { v: T }\nimpl B<T> {\n    fn f(n: int = 1) -> int { n }\n}\n0", "`n` carries a default, and `f` is generic")
+        }
+        then "a `mut` seat takes no default — a default body is no place" {
+            refused_with("fn m(mut xs: List<int> = []) {\n    xs.push(1)\n}\n0", "`xs` is a `mut` seat of `m`, and a default body is neither a place nor a settled value")
+        }
+        then "a `const` seat takes no default" {
+            refused_with("fn c(const n: int = 1) -> int { n }\n0", "`n` is a `const` seat of `c`")
+        }
+        then "the seat judges its default" {
+            refused_with("fn w(a: string = 5) -> int { 0 }\n0", "parameter `a` defaults to `int`, and it is `string`")
+        }
+        then "a default reads no param beside it" {
+            refused_with("fn f(a: int, b: int = a) -> int { b }\nf(1)", "`a` is not defined")
+        }
+        then "a fn value's seats have no defaults — every seat is written" {
+            refused_with("fn add(a: int, b: int = 5) -> int { a + b }\nlet f = add\nf(1)", "takes 2 arguments, found 1")
+        }
+    }
+    given "a named argument — the seat of its name" {
+        then "names fill seats in any order, beside positional ones" {
+            shown("fn sub(a: int, b: int) -> int { a - b }\nsub(b: 1, a: 5) * 10 + sub(5, b: 1)") == "44"
+        }
+        then "a name skips a defaulted seat between written ones" {
+            shown("fn f(a: int, b: int = 2, c: int = 3) -> int { a * 100 + b * 10 + c }\nf(1, c: 9)") == "129"
+        }
+        then "arguments run in written order, whatever seats they fill" {
+            shown("type Log = { xs: List<string> }\nfn note(mut l: Log, s: string) -> int {\n    l.xs.push(s)\n    l.xs.length\n}\nfn pair(a: int, b: int) -> int { a * 10 + b }\nmut log = Log { xs: [] }\nlet r = pair(b: note(log, \"b\"), a: note(log, \"a\"))\n\"\${r} \${log.xs.join(\",\")}\"") == "21 b,a"
+        }
+        then "a method's and a static's seats take names" {
+            shown("type C = { n: int }\nimpl C {\n    fn m(a: int, b: int = 0) -> int { self.n + a * 10 + b }\n    static fn make(n: int = 1, scale: int = 1) -> C { C { n: n * scale } }\n}\nC { n: 1 }.m(b: 3, a: 2) * 10 + C.make(scale: 5).n") == "245"
+        }
+        then "the refusal renders whole — a name that is no seat lists the seats" {
+            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nsub(a: 1, c: 2)").report().starts_with("error[F2105]: `sub` has no seat named `c`\n  ╭─[<source>:2:11]\n2 │ sub(a: 1, c: 2)\n  ·           ┬\n  ·           ╰── named here\n──╯\nhelp: its seats are `a`, `b`")
+        }
+        then "the refusal renders whole — a seat no argument writes" {
+            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nsub(b: 2)").report().starts_with("error[F2105]: seat `a` of `sub` is written by no argument, and has no default\n  ╭─[<source>:2:1]\n2 │ sub(b: 2)\n  · ┬\n  · ╰── this call\n──╯\nhelp: write it — `a: …`")
+        }
+        then "the refusal renders whole — a fn value's seats have no names" {
+            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nlet f = sub\nf(a: 1, b: 2)").report().starts_with("error[F2105]: `a:` names a seat, and `f`'s seats have no names\n  ╭─[<source>:3:3]\n3 │ f(a: 1, b: 2)\n  ·   ┬\n  ·   ╰── named here\n──╯\nhelp: drop the name — a fn value, a runtime method, a contract's member and an extern are called by position")
+        }
+    }
     given "a `const` seat — settled at compile time" {
         then "a plain seat refuses a settled callee — the two fn types differ" {
             refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(int) -> int = takes\n0", "`bad` declares `fn(int) -> int`, this is `fn(const int) -> int`")

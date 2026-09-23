@@ -10,7 +10,6 @@
 use @std.meta.{derive, Field, Mark as MetaMark}
 use @std.errors.{Loc}
 
-
 /// Typed index into the expression arena. A single-field struct, not
 /// an int newtype — see the subset note on newtypes in generic flows.
 export type ExprId = { index: int }
@@ -177,10 +176,26 @@ export fn op_symbol(op: BinOp) -> string {
 }
 
 /// Every binary operator — the roster symbol->op derivations scan.
-export const all_binops: List<BinOp> = [BinOp.Add, BinOp.Sub, BinOp.Mul, BinOp.Div, BinOp.Mod,
-     BinOp.Eq, BinOp.Ne, BinOp.Lt, BinOp.Le, BinOp.Gt, BinOp.Ge,
-     BinOp.And, BinOp.Or,
-     BinOp.BitAnd, BinOp.BitOr, BinOp.BitXor, BinOp.Shl, BinOp.Shr]
+export const all_binops: List<BinOp> = [
+    BinOp.Add,
+    BinOp.Sub,
+    BinOp.Mul,
+    BinOp.Div,
+    BinOp.Mod,
+    BinOp.Eq,
+    BinOp.Ne,
+    BinOp.Lt,
+    BinOp.Le,
+    BinOp.Gt,
+    BinOp.Ge,
+    BinOp.And,
+    BinOp.Or,
+    BinOp.BitAnd,
+    BinOp.BitOr,
+    BinOp.BitXor,
+    BinOp.Shl,
+    BinOp.Shr,
+]
 
 // THE THREE KINDS OF NAME A NODE CARRIES. Every name in the tree is
 // text; what differs is WHAT IT KEYS, and that fact used to live only
@@ -211,9 +226,7 @@ export type Nominal = string
 /// module can call what it made — so the union is written beside the
 /// enums it unions.
 export fn node_payload_rows() -> List<PayloadRow> {
-    grammar_payloads_Expr()
-        .concat(grammar_payloads_Pat())
-        .concat(grammar_payloads_Stmt())
+    grammar_payloads_Expr().concat(grammar_payloads_Pat()).concat(grammar_payloads_Stmt())
 }
 
 @derive(ValueProtocol)
@@ -271,6 +284,9 @@ export enum Expr {
     /// A direct call by name; fn values arrive later. `pins` are
     /// explicit type arguments (`f<int>(x)`) — empty when inferred.
     Call(callee: Scoped, pins: List<TypeRef>, args: List<ExprId>)
+    /// `name: value` in an argument list — the seat it fills, by the
+    /// callee's name for it.
+    Named(name: Plain, value: ExprId)
     /// `Name { field: value, ... }` — fields in WRITTEN order
     /// (evaluation order); lowering reorders to declaration slots.
     StructLit(name: Nominal, fields: List<Plain>, values: List<ExprId>)
@@ -338,7 +354,7 @@ export enum Expr {
 /// bool or string literal. A computed expression is not a literal:
 /// reading it needs typed answers that do not exist before analysis.
 export fn is_literal(e: Expr) -> bool {
-    (e).int_of() != null || (e).bits_of() != null || (e).bool_of() != null || (e).text_of() != null
+    e.int_of() != null || e.bits_of() != null || e.bool_of() != null || e.text_of() != null
 }
 
 /// A FORM THE SOURCE SPELLS AS A VALUE — a scalar, text, a list, a
@@ -354,15 +370,8 @@ export fn is_literal(e: Expr) -> bool {
 export fn literal_form(e: Expr) -> bool {
     match e {
         .Body(word, _, _, _) -> body_literal(word),
-        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or
-        .ListLit(_) or .Comp(_, _, _, _, _, _) or .MapLit(_, _) or .NullLit or
-        .VariantLit(_, _) or .StructLit(_, _, _) -> true,
-        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or
-        .If(_, _, _) or .When(_, _, _) or
-        .Block(_, _) or .Call(_, _, _) or .With(_, _, _) or .Match(_, _) or
-        .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or
-        .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or
-        .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
+        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _, _, _, _, _) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) -> true,
+        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
     }
 }
 
@@ -469,7 +478,11 @@ export fn plain(t: TypeRef) -> TypeRef {
 
 /// A written type, spelled back — what a diagnostic quotes.
 export fn spelled(t: TypeRef) -> string {
-    let base = when { t.arrow -> spelled_arrow(t), t.args.is_empty() -> "${if t.dynamic { "dyn " } else { "" }}${t.name}", _ -> "${t.name}<${joined([spelled(a) for a in t.args], ", ")}>" }
+    let base = when {
+        t.arrow -> spelled_arrow(t)
+        t.args.is_empty() -> "${if t.dynamic { "dyn " } else { "" }}${t.name}"
+        _ -> "${t.name}<${joined([spelled(a) for a in t.args], ", ")}>"
+    }
     if t.optional { return "${base}?" }
     base
 }
@@ -659,9 +672,6 @@ export enum Stmt {
     ExprStmt(value: ExprId)
     /// `let _ = v` — the value run for its effect, never an answer.
     Discard(value: ExprId)
-    /// `tparams` are the declared type parameters, in order — the
-    /// ordinal IS the Var identity; a tparam's `ty` names its
-    /// BOUND (`<T: Show>`), absent when unconstrained.
     @declares FnDecl(name: Scoped, tparams: List<Param>, params: List<Param>, ret: TypeRef, body: ExprId)
     /// `extern fn name(params) -> ret` — a fn the host provides: a
     /// signature with no body, called by its bare symbol.
@@ -681,15 +691,7 @@ export enum Stmt {
     /// `fail value` — raise: the enclosing fn answers the failure
     /// channel of its Result right here. Diverges, like `return`.
     Fail(value: ExprId)
-    /// `impl Target { fns… }` — methods for a declared type: each
-    /// fn is a method: `self` types as the target, and the
-    /// fn lowers under a QUALIFIED name (`Target.method`). `of`
-    /// names the TRAIT being implemented — null for an inherent impl
-    /// — and an impl-for must answer every trait method.
     @declares ImplDecl(of: Nominal?, target: Nominal, fns: List<StmtId>)
-    /// `trait Name { fn sigs… }` — a nominal behavior contract.
-    /// The sigs ride as BODYLESS fn declarations (body = a hole no
-    /// pass walks), so declare and totality reuse fn machinery.
     @declares TraitDecl(name: Scoped, fns: List<StmtId>)
     /// `let name? = subject else { stmts }` — the bind-fresh form
     /// that KEEPS GOING: a present subject binds its carried value
@@ -732,12 +734,6 @@ export enum Stmt {
     /// failure channel. The body is a lambda of no seats: captures
     /// are copied at the statement, the call happens at the exit.
     Defer(body: ExprId, on_error: bool)
-    /// `rule name { arms }` — a rule declares a fn of one synthetic
-    /// seat, `e: Code`, answering `Fix?`. `arms` is what was WRITTEN,
-    /// the printer's and the identity's currency; `body` is the
-    /// compiler's own `Match(Ident(e), arms ++ [_ -> null])`, minted
-    /// by the builder so typing and lowering see an ordinary fn body
-    /// and nothing about a `match` needs re-learning for a rule.
     @declares Rule(name: Scoped, arms: List<Arm>, body: ExprId)
     Error
 }
@@ -834,10 +830,13 @@ fn mark_fp(m: SeatMark) -> int {
 fn type_fp(t: TypeRef?) -> int {
     if t == null { return 0 }
     let written = t!
-    fp(if written.optional { 101 } else { 100 },
-       [fp_str(written.name), flagged(written.dynamic), flagged(written.arrow),
+    fp(if written.optional { 101 } else { 100 }, [
+        fp_str(written.name),
+        flagged(written.dynamic),
+        flagged(written.arrow),
         fp_list([mark_fp(m) for m in written.marks]),
-        fp_list([type_fp(a) for a in written.args])])
+        fp_list([type_fp(a) for a in written.args]),
+    ])
 }
 
 fn fp_binop(op: BinOp) -> int {
@@ -862,5 +861,4 @@ fn fp_binop(op: BinOp) -> int {
         .Shr -> 18,
     }
 }
-
 

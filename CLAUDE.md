@@ -1477,6 +1477,16 @@ Syntax the grammar lacks:
   to a match — the block goes in the parentheses), and `(f(a)) { … }`
   widens `f(a)` (a paren group mints no node) where `f(a)() { … }`
   applies the answer.
+- A SEAT DEFAULT (`fn f(a: int, n: int = 1)`) lands on a `fn`, `mut
+  fn` and `static fn` seat and NOWHERE ELSE: `extern fn g(a: int = 1)`
+  and a trait's `fn m(a: int = 1)` are F0100 at the `=` ("expected
+  `)`" / "expected `}`"), a lambda's `(a: int = 1) -> a` is "expected
+  `)` to close the group", and none of them says a default is what
+  it refused. A NAMED argument skips any defaulted seat (`f(1, c:
+  9)`), and a default reads no param beside it — `b: int =
+  a` is F3000 "`a` is not defined". A fn VALUE of a defaulted fn
+  wears every seat, so `let f = add` then `f(1)` is the ordinary
+  arity refusal — its seats carry no names either (F2105).
 - A GENERIC FN AS A VALUE: the PINNED spelling (`let f: fn(int) -> int
   = ident<int>`) is F0100 "expected BREAK while parsing `stmt`" — a
   pinned call is a CALL, so it wants arguments. The BARE spelling

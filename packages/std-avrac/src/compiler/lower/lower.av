@@ -523,10 +523,7 @@ fn lower_rules_table(a: Analysis, x: Decl, fname: string, externs: List<string>,
 /// into `RuleEntry`'s own slots.
 fn rules_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId) -> Reg {
     let entry_ty: TypeId = lo.view.types.element(rt) ?? rt
-    let found = ordered_rule_decls(a)
-    mut regs: List<Reg> = []
-    // LICENSED I3: each entry EMITS through the context, which a comprehension element does not
-    for d in found { regs.push(rule_entry_reg(lo, a, entry_ty, d)) }
+    let regs = [rule_entry_reg(lo, a, entry_ty, d) for d in ordered_rule_decls(a)]
     let size = lo.box_size(regs.length)
     let dst = lo.mint_ty(rt)
     lo.grown_box(dst, size, regs)
@@ -565,7 +562,7 @@ fn rule_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, d: Decl) -> Re
 /// twin (compiler/lower/state.av) with no `ExprId`: a rule fn is never
 /// CALLED by name here, only ever referenced, as `RuleEntry.run`.
 fn rule_run_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
-    let symbol = lo.wanted(d, null, [])
+    let symbol = lo.wanted(d)
     let wname = "${symbol}\$w"
     if lo.unseen(wname) {
         let held: Arrow? = lo.view.decls.types.arrow_parts(fnty)

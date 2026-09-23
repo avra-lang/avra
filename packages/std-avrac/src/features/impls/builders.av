@@ -28,10 +28,10 @@ fn marked_fn(mut b: Builder) -> Result<StmtId, string> {
     let consts = b.tokens(2)?
     let muts = b.tokens(3)?
     let ps = b.tokens(4)?
-    let r = b.answer(6)
-    let body = b.expr(7)?
+    let r = b.answer(7)
+    let body = b.expr(8)?
     let ends? = b.span_end() else { return .Err("defect: a fn declaration without a span — the arena and the grammar disagree") }
-    let params = marked_seats(ps, aligned_param_types(ps, b.type_refs(5)?, ends), muts, consts, n.span.lo)
+    let params = b.defaulted(ps, marked_seats(ps, aligned_param_types(ps, b.type_refs(5)?, ends), muts, consts, n.span.lo), b.exprs(6)?)
     .Ok(b.store.alloc_stmt(Stmt.FnDecl(Scoped(n.text), tparams, params, r, body), b.span))
 }
 
@@ -117,7 +117,7 @@ fn member_stmt(mut b: Builder, name: Token, params: List<Param>, ret: TypeRef, b
 /// A bodyless fn: the body is a HOLE no pass walks. The sig wears
 /// its name's span, so a refusal at it lands on the line.
 fn sig_stmt(mut b: Builder, name: Token, params: List<Param>, ret: TypeRef) -> StmtId {
-    let hollow = b.store.alloc_expr(Expr.Error, null)
+    let hollow = b.store.alloc_expr(Expr.Error)
     b.store.alloc_stmt(Stmt.FnDecl(Scoped(name.text), [], params, ret, hollow), name.span)
 }
 

@@ -88,9 +88,8 @@ impl Decls {
                     made.push(md)
                 }
                 let fields: List<Param> = store.struct_parts(s)?.fields ?? []
-                for fd in fields {
-                    if fd.default != null { made.push(self.mint_default(key, f, s, fd, name, d)) }
-                }
+                let seats: List<Param> = store.fn_parts(s)?.params ?? []
+                made = made.concat(self.mint_defaults(key, f, s, fields.concat(seats), name, d))
             }
             // a top-level `const` is a declaration like a fn: module-wide,
             // order-free, exported only when it says so.
@@ -125,6 +124,9 @@ impl Decls {
                     let md = self.mint_method(key, f, store, m, block.target, block_decl, store.fn_parts(m)?.body)
                     by_stmt.set(m.index, md)
                     made.push(md)
+                    let seats: List<Param> = store.fn_parts(m)?.params ?? []
+                    let mname = self.decl(md).name
+                    made = made.concat(self.mint_defaults("${key}#${mname}", f, m, seats, "${block.target}.${mname}", md))
                 }
             }
         }
@@ -291,10 +293,11 @@ impl Decls {
         self.mint("${owner_key}#${name}", f, m, name, DeclKind.Method, false, owner, parent, false, root)
     }
 
-    /// A field's default: a body under the record, named by the
-    /// field, its statement the record's.
-    fn mint_default(owner_key: string, f: FileId, s: StmtId, field: Param, owner: string, parent: DeclId) -> DeclId {
-        self.mint("${owner_key}#${field.name}", f, s, field.name.of, DeclKind.Default, false, owner, parent, false, field.default)
+    /// Each default a record's fields or a fn's seats carry: a body
+    /// under its owner, named by the field or seat, its statement the
+    /// owner's.
+    mut fn mint_defaults(owner_key: string, f: FileId, s: StmtId, members: List<Param>, owner: string, parent: DeclId) -> List<DeclId> {
+        [self.mint("${owner_key}#${p.name}", f, s, p.name.of, DeclKind.Default, false, owner, parent, false, p.default) for p in members if p.default != null]
     }
 
     /// A parent admitted again lists its members afresh.

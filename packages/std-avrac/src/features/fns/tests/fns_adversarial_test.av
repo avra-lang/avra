@@ -5,6 +5,135 @@ use @std.avrac.compiler.{analyze_source}
 use @std.avrac.testing.{refused_with, refused_at_run, shown, refusals, ir_of, halver}
 
 spec "features/fns (adversarial)" {
+    given "a seat's default — degenerate shapes" {
+        then "every seat defaulted, and none written" {
+            shown("fn f(a: int = 1, b: int = 2, c: int = 3) -> int { a * 100 + b * 10 + c }\nf() + f(9)") == "1046"
+        }
+        then "a default that answers nothing refuses at its seat" {
+            refused_with("fn v() {\n}\nfn f(a: int = v()) -> int { a }\nf()", "parameter `a` defaults to `void`, and it is `int`")
+        }
+        then "an empty aggregate fills its seat's want" {
+            shown("fn f(xs: List<string> = [], m: Map<string, int> = {}) -> int { xs.length + m.length }\nf()") == "0"
+        }
+    }
+    given "a seat's default — every kind of value it may be" {
+        then "absence, a bare variant, a lambda and a boxed contract" {
+            shown("enum K { A, B }\nfn f(k: K = .B, n: int? = null, g: fn(int) -> int = (x: int) -> x + 1) -> int { match k { .A -> 0, .B -> g(n ?? 1) } }\nf()") == "2"
+        }
+        then "`null` at a seat that holds no absence refuses" {
+            refused_with("fn f(a: int = null) -> int { a }\nf()", "parameter `a` defaults to `null`, and it is `int`")
+        }
+    }
+    given "a seat's default — the positions that take none" {
+        then "an extern's seat" {
+            refusals("extern fn g(a: int = 1) -> int\n0") == 1
+        }
+        then "a trait's seat" {
+            refusals("trait T { fn m(a: int = 1) -> int }\n0") == 1
+        }
+        then "a lambda's seat" {
+            refusals("let h = (a: int = 1) -> a\n0") == 2
+        }
+    }
+    given "a seat's default — names against names" {
+        then "two types' methods of one name keep their own defaults" {
+            shown("type P = { x: int }\ntype Q = { x: int }\nimpl P { fn m(k: int = 1) -> int { self.x + k } }\nimpl Q { fn m(k: int = 100) -> int { self.x + k } }\nP { x: 0 }.m() + Q { x: 0 }.m()") == "101"
+        }
+        then "a free fn and a method of one name keep their own defaults" {
+            shown("fn m(k: int = 5) -> int { k }\ntype P = { x: int }\nimpl P { fn m(k: int = 1) -> int { self.x + k } }\nm() * 10 + P { x: 0 }.m()") == "51"
+        }
+        then "a default names a fn declared after it" {
+            shown("fn f(a: int = later()) -> int { a }\nfn later() -> int { 11 }\nf()") == "11"
+        }
+        then "a method's default has no receiver — it is a body of its own" {
+            refused_with("type P = { x: int }\nimpl P { fn m(k: int = self.x) -> int { k } }\nP { x: 3 }.m()", "`self` names a method's receiver — a default is a body of its own, and has none")
+        }
+        then "and the remedy it names compiles as written" {
+            shown("type P = { x: int }\nimpl P { fn m(k: int? = null) -> int { k ?? self.x } }\nP { x: 3 }.m() * 10 + P { x: 3 }.m(5)") == "35"
+        }
+        then "a `static fn` keeps its own words for the same read" {
+            refused_with("type P = { x: int }\nimpl P { static fn s() -> int { self.x } }\n0", "a `static fn` has none")
+        }
+    }
+    given "a seat's default — crossed with other features" {
+        then "a recursive call leaves its accumulator to the default" {
+            shown("fn f(n: int, acc: int = 0) -> int { if n == 0 { acc } else { f(n - 1, acc + n) } }\nf(10)") == "55"
+        }
+        then "a default beside a `mut` seat and a `const` seat" {
+            shown("fn f(const k: int, mut xs: List<int>, n: int = 7) { xs.push(k + n) }\nmut ys: List<int> = []\nf(1, ys)\nf(1, ys, 2)\nys[0] * 10 + ys[1]") == "83"
+        }
+        then "a trailing block fills its fn seat, and the seat after it defaults" {
+            shown("fn f(x: int, g: fn(int) -> int, k: int = 100) -> int { g(x) + k }\nf(1) { it + 1 }") == "102"
+        }
+        then "a trailing block never fills a defaulted non-fn seat" {
+            refused_with("fn f(a: int, n: int = 1) -> int { a + n }\nf(1) { 2 }", "the trailing block fills seat 2 of `f`, which takes `int`")
+        }
+        then "a call through `?` leaves a seat to its default" {
+            shown("fn f(a: int = 1) -> Result<int, string> { .Ok(a) }\nfn g() -> Result<int, string> {\n    let x = f()?\n    .Ok(x + 1)\n}\ng() catch e -> 0") == "2"
+        }
+    }
+    given "a seat's default — arity at every call shape" {
+        then "a method handed too many" {
+            refused_with("type C = { n: int }\nimpl C { fn plus(k: int = 1) -> int { self.n + k } }\nC { n: 1 }.plus(1, 2)", "`C.plus` takes 0 to 1 arguments, found 2")
+        }
+        then "a static handed too many" {
+            refused_with("type C = { n: int }\nimpl C { static fn make(n: int = 7) -> C { C { n: n } } }\nC.make(1, 2).n", "`C.make` takes 0 to 1 arguments, found 2")
+        }
+    }
+    given "a named argument — every way to write a seat twice or not at all" {
+        then "a name and the positional argument at its place" {
+            refused_with("fn sub(a: int, b: int) -> int { a - b }\nsub(1, a: 2)", "seat `a` of `sub` is written twice")
+        }
+        then "one name written twice" {
+            refused_with("fn sub(a: int, b: int) -> int { a - b }\nsub(a: 1, a: 2)", "seat `a` of `sub` is written twice")
+        }
+        then "a positional argument after a name, landing on the named seat" {
+            refused_with("fn sub(a: int, b: int) -> int { a - b }\nsub(b: 1, 5)", "seat `b` of `sub` is written twice")
+        }
+        then "a positional argument past every seat, beside a name" {
+            refused_with("fn sub(a: int, b: int) -> int { a - b }\nsub(a: 1, b: 2, 3)", "`sub` takes 2 arguments, found 3")
+        }
+        then "a named value its seat does not accept" {
+            refused_with("fn sub(a: int, b: int) -> int { a - b }\nsub(a: \"x\", b: 2)", "argument 1 of `sub` wants `int`, found `string`")
+        }
+    }
+    given "a named argument — callees whose seats have no names" {
+        then "a runtime method" {
+            refused_with("let xs = [1]\nxs.push(v: 2)\n0", "`v:` names a seat, and `push`'s seats have no names")
+        }
+        then "an applied value" {
+            refused_with("let f = (x: int) -> x\nf(x: 1)", "`x:` names a seat, and `f`'s seats have no names")
+        }
+        then "an extern" {
+            refused_with("extern fn strlen(s: string) -> int\nstrlen(s: \"a\")", "`s:` names a seat, and `strlen`'s seats have no names")
+        }
+        then "an extern handed too few arguments refuses — it names no seat, so none defaults" {
+            refused_with("extern fn strlen(s: string) -> int\nstrlen()", "`strlen` takes 1 arguments, found 0")
+        }
+    }
+    given "a named argument — crossed with other features" {
+        then "a `mut` seat written by name writes through" {
+            shown("fn put(mut xs: List<int>, n: int) { xs.push(n) }\nmut ys: List<int> = []\nput(n: 4, xs: ys)\nput(ys, n: 5)\nys[0] * 10 + ys[1]") == "45"
+        }
+        then "a `const` seat written by name settles" {
+            shown("fn k(const n: int, m: int) -> int { n * m }\nk(m: 3, n: 4)") == "12"
+        }
+        then "a generic fn's seats take names" {
+            shown("fn g<T>(x: T, n: int) -> T { x }\ng(n: 2, x: 7)") == "7"
+        }
+        then "a trailing block fills its seat beside named ones" {
+            shown("fn ap(x: int, f: fn(int) -> int, k: int = 100) -> int { f(x) + k }\nap(x: 1) { it + 1 }") == "102"
+        }
+        then "a named call through `?`" {
+            shown("fn f(a: int = 1) -> Result<int, string> { .Ok(a) }\nfn g() -> Result<int, string> {\n    let x = f(a: 5)?\n    .Ok(x)\n}\ng() catch e -> 0") == "5"
+        }
+        then "the pronoun rides a named argument and keeps its name" {
+            shown("type C = { n: int }\nimpl C { fn ap(x: int, f: fn(int) -> int) -> int { f(x) + self.n } }\nC { n: 1 }.ap(f: it * 2, x: 3)") == "7"
+        }
+        then "a method handing its field to a `mut` seat by name writes its receiver" {
+            refusals("type B = { xs: List<int> }\nfn put(n: int, mut xs: List<int>) { xs.push(n) }\nimpl B {\n    mut fn add(n: int) { put(xs: self.xs, n: n) }\n}\n0") == 0
+        }
+    }
     given "`return` under attack — depths, tails, boundaries" {
         then "TWO loop depths unwind at once" {
             shown("fn f(n: int) -> int {\n    mut i = 0\n    while i < n {\n        mut j = 0\n        while j < n {\n            if i * j == 6 {\n                return i * 10 + j\n            }\n            j = j + 1\n        }\n        i = i + 1\n    }\n    0 - 1\n}\nf(5) + f(2)") == "22"
