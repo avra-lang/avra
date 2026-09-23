@@ -4,6 +4,7 @@
 // ORDER cases were found by attacking it — a value receiver ran after
 // its arguments, and a copied receiver's index operand after the
 // argument it precedes.
+use @std.avrac.compiler.{analyze_source}
 use @std.avrac.testing.{shown}
 
 spec "features/impls (alias copy, adversarial)" {
@@ -87,20 +88,41 @@ spec "features/impls (alias copy, adversarial)" {
             shown("type R = { n: int }\nimpl R { mut fn set(v: int) { self.n = v } }\nfn at(log: Cell<List<string>>, w: string, i: int) -> int {\n    log.set(log.get().concat([w]))\n    i\n}\nfn shadow(xs: List<List<R>>, log: Cell<List<string>>) -> int {\n    mut q = xs\n    q[at(log, \"a\", 1)][at(log, \"b\", 0)].set(at(log, \"v\", 7))\n    q[1][0].n\n}\nlet none: List<string> = []\nlet log = Cell.new(none)\nlet rs = [[R { n: 0 }], [R { n: 0 }]]\nlet a = shadow(rs, log)\n\"\${a} \${rs[1][0].n} \${log.get().join(\" \")}\"") == "7 0 a b v"
         }
     }
+    given "a copy of what a place holds" {
+        then "a `Cell`'s content" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(c: Cell<R>) -> int {\n    mut q = c.get()\n    q.add(1)\n    q.xs.length\n}\nlet c = Cell.new(R { xs: [] })\n\"\${shadow(c)} \${shadow(c)} \${c.get().xs.length}\"") == "1 1 0"
+        }
+        then "a map's value, nested in a cell" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype W = { c: Cell<Map<string, R>> }\nfn shadow(w: W) -> int {\n    mut q = w.c.get().get(\"k\") ?? R { xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet none: Map<string, R> = {}\nlet w = W { c: Cell.new(none) }\nw.c.put(\"k\", R { xs: [] })\n\"\${shadow(w)} \${shadow(w)} \${(w.c.get().get(\"k\") ?? R { xs: [9] }).xs.length}\"") == "1 1 0"
+        }
+        then "a list's last, through `!`" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(rs: List<R>) -> int {\n    mut q = rs.last()!\n    q.add(1)\n    q.xs.length\n}\nlet rs = [R { xs: [] }, R { xs: [] }]\n\"\${shadow(rs)} \${shadow(rs)} \${rs[1].xs.length}\"") == "1 1 0"
+        }
+        then "a `find` over a field" {
+            shown("type R = { n: int, xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype O = { rs: List<R> }\nfn shadow(o: O) -> int {\n    mut q = o.rs.find(it.n == 2) ?? R { n: 0, xs: [] }\n    q.add(1)\n    q.xs.length\n}\nlet o = O { rs: [R { n: 1, xs: [] }, R { n: 2, xs: [] }] }\n\"\${shadow(o)} \${shadow(o)} \${o.rs[1].xs.length}\"") == "1 1 0"
+        }
+        then "the warning names the place that holds what was read" {
+            let a = analyze_source("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype W = { c: Cell<Map<string, R>> }\nfn shadow(w: W) {\n    mut q = w.c.get().get(\"k\") ?? R { xs: [] }\n    q.add(1)\n}\n1")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`q` is a copy of what `w.c` holds — a write through it will not reach `w.c`") && a.report().contains("store the copy back into `w.c` if the write should reach it")
+        }
+        then "a fresh seed is no copy, and says nothing" {
+            let a = analyze_source("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn made() -> R { R { xs: [] } }\nfn shadow() -> int {\n    mut q = made()\n    q.add(1)\n    mut s = R { xs: [] }\n    s.add(2)\n    q.xs.length + s.xs.length\n}\nshadow()")
+            a.diagnostics.is_empty() && a.ran() == "2"
+        }
+        then "the fresh side of a `??` is the copy's own" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(rs: List<R>) -> int {\n    mut q = rs.first() ?? R { xs: [7] }\n    q.add(1)\n    q.xs.length\n}\nlet none: List<R> = []\n\"\${shadow(none)} \${shadow(none)}\"") == "2 2"
+        }
+    }
     given "what the copy does not reach yet" {
         // MEASURED, not asserted as right: spec 11.5 wants each of these a
         // copy. A `dyn` copy clones the box and shares the value inside it;
         // a `mut` SEAT of a free fn writes through the copied local to its
-        // source; a local bound from a call's answer is never opened, so a
-        // `Cell`'s content is reached. Each flips when its copy lands.
+        // source. Each flips when its copy lands.
         then "a `dyn` copy written through" {
             shown("trait Grow { mut fn grow() }\ntype R = { xs: List<int> }\nimpl Grow for R { mut fn grow() { self.xs.push(1) } }\nfn shadow(p: R) -> int {\n    let d: dyn Grow = p\n    mut q = d\n    q.grow()\n    q.grow()\n    p.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"") == "2 2"
         }
         then "a copy handed to a `mut` seat" {
             shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(p: R) -> int {\n    mut q = p\n    grow(q)\n    q.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"") == "1 1"
-        }
-        then "a copy of a `Cell`'s content" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn shadow(c: Cell<R>) -> int {\n    mut q = c.get()\n    q.add(1)\n    q.xs.length\n}\nlet c = Cell.new(R { xs: [] })\n\"\${shadow(c)} \${shadow(c)} \${c.get().xs.length}\"") == "1 2 2"
         }
     }
 }

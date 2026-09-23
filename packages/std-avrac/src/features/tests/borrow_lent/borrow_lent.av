@@ -1,0 +1,37 @@
+// proves: spec 11.5 — a `mut` local seeded with what a place HOLDS (a
+// cell's content, a list's element, a map's value, an unwrap) is a
+// COPY, so a writing method called through it leaves the holder as it
+// was.
+type R = { xs: List<int> }
+impl R { mut fn add(v: int) { self.xs.push(v) } }
+fn from_cell(c: Cell<R>) -> int {
+    mut q = c.get()
+    q.add(1)
+    q.xs.length
+}
+fn from_first(rs: List<R>) -> int {
+    mut q = rs.first() ?? R { xs: [] }
+    q.add(1)
+    q.xs.length
+}
+fn from_map(m: Map<string, R>) -> int {
+    mut q = m.get("k") ?? R { xs: [] }
+    q.add(1)
+    q.xs.length
+}
+fn from_force(p: R?) -> int {
+    mut q = p!
+    q.add(1)
+    q.xs.length
+}
+let c = Cell.new(R { xs: [] })
+let rs = [R { xs: [] }]
+mut m: Map<string, R> = {}
+m.set("k", R { xs: [] })
+let p: R? = R { xs: [] }
+let a = from_cell(c) + from_cell(c)
+let b = from_first(rs) + from_first(rs)
+let d = from_map(m) + from_map(m)
+let f = from_force(p) + from_force(p)
+let held = (m.get("k") ?? R { xs: [9] }).xs.length
+"${a} ${c.get().xs.length} ${b} ${rs[0].xs.length} ${d} ${held} ${f} ${(p ?? R { xs: [9] }).xs.length}"
