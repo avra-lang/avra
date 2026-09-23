@@ -5,7 +5,7 @@
 //! printed answer.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, Deferred, Deferral, semantics_of, stmt_semantics_of}
+use features.{LowerCx, Deferred, Deferral, DirectCall, semantics_of, stmt_semantics_of}
 
 impl LowerCx {
     /// One subtree's register, lowered at first request and
@@ -309,10 +309,10 @@ impl LowerCx {
         self.deferred.push(Deferred { work: Deferral.Call(box), depth: self.depth, on_error: on_error })
     }
 
-    /// The task's deadline restored to `outer` when the scope ends,
-    /// however it ends.
-    mut fn deadline_until_exit(outer: Reg) {
-        self.deferred.push(Deferred { work: Deferral.Deadline(outer), depth: self.depth, on_error: false })
+    /// A call to make when the scope ends, its arguments already in
+    /// hand — or, `on_error`, only when the fn fails.
+    mut fn call_at_exit(call: DirectCall, on_error: bool) {
+        self.deferred.push(Deferred { work: Deferral.Direct(call), depth: self.depth, on_error: on_error })
     }
 
     /// An early exit that ANSWERS `answer`: every open frame's
@@ -345,7 +345,7 @@ impl LowerCx {
         match d.work {
             .Call(box) -> self.run_deferred_call(box),
             .Settle(owner, cell) -> self.settle_owner(owner, cell),
-            .Deadline(outer) -> self.fiber_within_end(outer),
+            .Direct(call) -> self.run_direct(call),
         }
     }
 
@@ -355,6 +355,13 @@ impl LowerCx {
         let ty = self.out.reg_types[owner.index]
         let held = if cell { self.loaded_as(ty, owner) } else { owner }
         if self.view.types.owns_one_task(ty) { self.task_settle(held) } else { self.task_settle_all(held) }
+    }
+
+    /// A deferred call made: the host row, or the declared fn by its
+    /// symbol — nothing to answer.
+    mut fn run_direct(call: DirectCall) {
+        if call.host { return self.emit(Ins.CallRtVoid(call.callee, call.args)) }
+        let _ = self.call_decl(self.type(void), call.callee, call.args)
     }
 
     mut fn run_deferred_call(box: Reg) {

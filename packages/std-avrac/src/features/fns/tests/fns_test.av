@@ -360,11 +360,17 @@ ret r1"""
         then "the default law renders whole — a seat without a default after one with" {
             analyze_source("fn o(a: int = 1, b: int) -> int { b }\n0").report().starts_with("error[F2104]: `b` has no default and follows `a`, which has one — a call writes its seats in order, so `a` could never be left to its default\n  ╭─[<source>:1:15]\n1 │ fn o(a: int = 1, b: int) -> int { b }\n  ·               ┬\n  ·               ╰── the first default\n──╯\nhelp: move the defaulted seats last, or give `b` a default too")
         }
-        then "a generic fn's seats take no default" {
-            refused_with("fn g<T>(x: T, n: int = 1) -> int { n }\n0", "`n` carries a default, and `g` is generic")
+        then "a generic fn's seat whose type names no parameter takes a default" {
+            shown("fn g<T>(xs: List<T>, n: int = 1) -> int { xs.length + n }\ng([7, 8]) * 10 + g([\"a\"], n: 5)") == "36"
         }
-        then "a generic type's methods take no default" {
-            refused_with("type B<T> = { v: T }\nimpl B<T> {\n    fn f(n: int = 1) -> int { n }\n}\n0", "`n` carries a default, and `f` is generic")
+        then "a generic type's method takes a default on a seat naming no parameter" {
+            shown("type B<T> = { v: T }\nimpl B<T> {\n    fn f(n: int = 1) -> int { n }\n}\nB { v: \"x\" }.f() + B { v: 2 }.f(4)") == "5"
+        }
+        then "a seat whose type names a type parameter takes no default" {
+            refused_with("fn g<T>(x: T, ys: List<T> = []) -> int { ys.length }\n0", "`ys` carries a default, and its type names a type parameter of `g`")
+        }
+        then "a generic type's parameter is a type parameter of its methods' seats" {
+            refused_with("type B<T> = { v: T }\nimpl B<T> {\n    fn f(w: T? = null) -> int { 0 }\n}\n0", "`w` carries a default, and its type names a type parameter of `f`")
         }
         then "a `mut` seat takes no default — a default body is no place" {
             refused_with("fn m(mut xs: List<int> = []) {\n    xs.push(1)\n}\n0", "`xs` is a `mut` seat of `m`, and a default body is neither a place nor a settled value")
@@ -380,6 +386,41 @@ ret r1"""
         }
         then "a fn value's seats have no defaults — every seat is written" {
             refused_with("fn add(a: int, b: int = 5) -> int { a + b }\nlet f = add\nf(1)", "takes 2 arguments, found 1")
+        }
+    }
+    given "an `isolated` seat — a fn that shares nothing with its caller" {
+        then "a lambda capturing plain data fills it, and runs" {
+            shown("fn run(isolated make: fn() -> string) -> string { make() }\nlet name = \"a\"\nrun(() -> name + \"b\")") == "ab"
+        }
+        then "a lambda making its own cell fills it" {
+            shown("fn run(isolated make: fn() -> Cell<int>) -> int { make().get() }\nrun(() -> Cell.new(3))") == "3"
+        }
+        then "a declared fn fills it" {
+            shown("fn seven() -> int { 7 }\nfn run(isolated make: fn() -> int) -> int { make() }\nrun(seven)") == "7"
+        }
+        then "an isolated parameter passes on to another isolated seat" {
+            shown("fn run(isolated make: fn() -> int) -> int { make() }\nfn relay(isolated make: fn() -> int) -> int { run(make) + 1 }\nrelay(() -> 4)") == "5"
+        }
+        then "the refusal renders whole — a captured cell" {
+            analyze_source("fn run(isolated make: fn() -> int) -> int { make() }\nlet c = Cell.new(1)\nrun(() -> c.get())").report().starts_with("error[F2111]: `make` of `run` is `isolated`, and this fn captures `c`, which is `Cell<int>` — an isolated fn shares nothing with its caller\n  ╭─[<source>:3:5]\n3 │ run(() -> c.get())\n  ·     ┬\n  ·     ╰── captured here\n──╯\nhelp: make it inside the fn, so each place it runs makes its own")
+        }
+        then "a record holding a cell is refused, naming what it holds" {
+            refused_with("type App = { hits: Cell<int> }\nfn run(isolated make: fn() -> App) -> int { make().hits.get() }\nlet app = App { hits: Cell.new(0) }\nrun(() -> app)", "captures `app`, which holds `Cell<int>`")
+        }
+        then "a captured fn value is refused — it may hold anything" {
+            refused_with("fn run(isolated make: fn() -> int) -> int { make() }\nfn f() -> int { 1 }\nlet g = f\nrun(() -> g())", "captures `g`, which is `fn() -> int`")
+        }
+        then "a recursive record of plain data fills it" {
+            shown("type Node = { v: int, next: Node? }\nfn run(isolated make: fn() -> int) -> int { make() }\nlet n = Node { v: 2, next: Node { v: 3, next: null } }\nrun(() -> n.v + (n.next?.v ?? 0))") == "5"
+        }
+        then "an enum carrying a cell in one variant is refused" {
+            refused_with("enum Slot {\n    Empty\n    Held(c: Cell<int>)\n}\nfn run(isolated make: fn() -> int) -> int { make() }\nlet s = Slot.Empty\nrun(() -> if s is .Empty { 0 } else { 1 })", "captures `s`, which holds `Cell<int>`")
+        }
+        then "a plain parameter is no promise" {
+            refused_with("fn run(isolated make: fn() -> int) -> int { make() }\nfn leaky(make: fn() -> int) -> int { run(make) }\n0", "this fn value may hold anything its maker captured")
+        }
+        then "a fn taking an isolated seat is not a fn value promising none" {
+            refused_with("fn run(isolated make: fn() -> int) -> int { make() }\nlet r: fn(fn() -> int) -> int = run\n0", "this is `fn(isolated fn() -> int) -> int`")
         }
     }
     given "a named argument — the seat of its name" {

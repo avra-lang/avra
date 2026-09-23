@@ -2,7 +2,7 @@
 //! loopback writes a request and reads the response, each side parked
 //! while the other runs. Every exchange is exact bytes.
 use @std.net.{Conn, NetError, listen, connect}
-use @std.time.{Duration, ms, secs, sleep}
+use @std.time.{Duration, ms, secs, sleep, within}
 use @std.http.frame.{limits, Limits, Method}
 use @std.http.http.{Request, Response, text}
 use @std.http.route.{Table, routed, compiled, dispatch}
@@ -51,7 +51,7 @@ type Bed = { s: Server<App>, c: Conn }
 fn bed_with(handle: fn(mut App, Request) -> Response, lim: Limits, t: Timing) -> Result<Bed, NetError> {
     let l = listen("127.0.0.1", 0)?
     let c = connect("127.0.0.1", l.port, secs(2))?
-    .Ok(Bed { s: served(l, App { hits: Cell.new(0) }, lim, t, handle), c: c })
+    .Ok(Bed { s: served(l, () -> App { hits: Cell.new(0) }, lim, t, handle), c: c })
 }
 
 fn bed(t: Timing) -> Result<Bed, NetError> { bed_with(echo, limits(), t) }
@@ -124,7 +124,7 @@ fn settles_to(s: Server<App>, n: int) -> bool {
 
 fn get_root() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let r = reply(b.c, "GET /x HTTP/1.1\r\nHost: a\r\n\r\n")?
     .Ok(r == "HTTP/1.1 200 OK\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: 10\r\n\r\ntrue /x  1")
@@ -132,7 +132,7 @@ fn get_root() -> Result<bool, NetError> {
 
 fn keep_alive_twice() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let first = reply(b.c, "GET /a HTTP/1.1\r\nHost: a\r\n\r\n")?
     let second = reply(b.c, "GET /b HTTP/1.1\r\nHost: a\r\n\r\n")?
@@ -141,7 +141,7 @@ fn keep_alive_twice() -> Result<bool, NetError> {
 
 fn pipelined() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let both = exchanged(b.c, "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n", 200)?
     let t = both.text() ?? ""
@@ -150,7 +150,7 @@ fn pipelined() -> Result<bool, NetError> {
 
 fn posted() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let r = reply(b.c, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello")?
     .Ok(r.ends_with("false /p hello 1"))
@@ -158,7 +158,7 @@ fn posted() -> Result<bool, NetError> {
 
 fn body_in_two_reads() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let silent = unanswered(b.c, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhel".bytes())?
     let rest = reply(b.c, "lo")?
@@ -167,7 +167,7 @@ fn body_in_two_reads() -> Result<bool, NetError> {
 
 fn chunked_body() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let r = reply(b.c, "POST /c HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nhel\r\n2\r\nlo\r\n0\r\n\r\n")?
     .Ok(r.ends_with("false /c hello 1"))
@@ -175,7 +175,7 @@ fn chunked_body() -> Result<bool, NetError> {
 
 fn refused_then_closed() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let got = exchanged(b.c, "GET  /x HTTP/1.1\r\nHost: a\r\n\r\n", 1000)?
     let t = got.text() ?? ""
@@ -184,7 +184,7 @@ fn refused_then_closed() -> Result<bool, NetError> {
 
 fn head_carries_no_body() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let r = reply(b.c, "HEAD /h HTTP/1.1\r\nHost: a\r\n\r\n")?
     .Ok(r.ends_with("content-length: 11\r\n\r\n"))
@@ -192,7 +192,7 @@ fn head_carries_no_body() -> Result<bool, NetError> {
 
 fn expect_continue() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let first = reply(b.c, "POST /e HTTP/1.1\r\nHost: a\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\n")?
     let second = reply(b.c, "ok")?
@@ -201,7 +201,7 @@ fn expect_continue() -> Result<bool, NetError> {
 
 fn closes_when_asked() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let got = exchanged(b.c, "GET /x HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n", 1000)?
     let t = got.text() ?? ""
@@ -210,7 +210,7 @@ fn closes_when_asked() -> Result<bool, NetError> {
 
 fn idle_is_dropped() -> Result<bool, NetError> {
     let b = bed(Timing { idle: ms(20) })?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let _ = reply(b.c, "GET /x HTTP/1.1\r\nHost: a\r\n\r\n")?
     let before = b.s.connections()
@@ -220,7 +220,7 @@ fn idle_is_dropped() -> Result<bool, NetError> {
 
 fn peer_ends_first() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let _ = b.c.write("GET /x HTTP/1.1\r\nHost: a\r\n\r\n".bytes())?
     let _ = b.c.shutdown_write()?
@@ -230,7 +230,7 @@ fn peer_ends_first() -> Result<bool, NetError> {
 
 fn old_client_keeps_alive() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let r = reply(b.c, "GET /k HTTP/1.0\r\nHost: a\r\nConnection: keep-alive\r\n\r\n")?
     .Ok(r.contains("connection: keep-alive\r\n") && b.s.connections() == 1)
@@ -238,7 +238,7 @@ fn old_client_keeps_alive() -> Result<bool, NetError> {
 
 fn old_client_is_closed() -> Result<bool, NetError> {
     let b = bed(timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let got = exchanged(b.c, "GET /c HTTP/1.0\r\nHost: a\r\n\r\n", 1000)?
     .Ok((got.text() ?? "").contains("connection: close\r\n") && settles_to(b.s, 0))
@@ -248,7 +248,7 @@ fn old_client_is_closed() -> Result<bool, NetError> {
 /// still finds its route, and the query is read beside the path.
 fn routed_through_the_loop() -> Result<bool, NetError> {
     let b = bed_with(routed_app, limits(), timing())?
-    spawn b.s.run()
+    spawn b.s.run(cores: 1)
     defer b.done()
     let found = reply(b.c, "GET /notes/7?redirect=/home HTTP/1.1\r\nHost: a\r\n\r\n")?
     let missing = reply(b.c, "GET /nope HTTP/1.1\r\nHost: a\r\n\r\n")?

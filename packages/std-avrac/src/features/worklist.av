@@ -4,7 +4,7 @@
 //! worklist (a fresh value in its context, handed back with the
 //! body), so an enqueue is a write in place, never through a shared
 //! box; `seen` keys by mangled name, once per body.
-use core.{ExprId, TypeId, DeclId, FileId, StmtId, TypeRef, Param, Span, joined, filled, Static}
+use core.{ExprId, TypeId, DeclId, FileId, StmtId, TypeRef, Param, Span, joined, filled, Static, ArenaRuns}
 use @std.errors.{Loc}
 
 /// A settled (`const`) seat's VALUE carried into the unit it selects:
@@ -223,24 +223,10 @@ impl Origins {
 
 }
 
-/// A half-open run of arena indexes.
-export type IndexRange = { lo: int, hi: int }
-
-/// The arenas' counts at one moment — where a generation's nodes
-/// begin, and where they end.
-export type ArenaMarks = { exprs: int, stmts: int, pats: int }
-
-impl ArenaMarks {
-    /// The ranges between this moment and a later one.
-    fn until(after: ArenaMarks) -> List<IndexRange> {
-        [IndexRange { lo: self.exprs, hi: after.exprs }, IndexRange { lo: self.stmts, hi: after.stmts }, IndexRange { lo: self.pats, hi: after.pats }]
-    }
-}
-
 /// One admitted GENERATION of a file: the arena ranges its nodes
 /// occupy and the annotation that asked for it. Where each node was
 /// WRITTEN is the node's own fact (`Decls.origin_of`).
-export type Generation = { exprs: IndexRange, stmts: IndexRange, pats: IndexRange, at: Span? }
+export type Generation = { runs: ArenaRuns, at: Span? }
 
 /// Where a generated declaration came from — the annotation fn that
 /// asked for it, the declaration it wraps, the annotation's site, and

@@ -1023,6 +1023,9 @@ RULES = {
             "where a generated method carries the row (`cx.x(sh, args)`, features/rt.av); "
             "a misspelled row or a wrong seat count then refuses at typing instead of "
             "waiting for a typo nothing catches"),
+    "I62": (line_rx(r"for i in 0\.\.[\w.]*stmts\.count\(\)"),
+            "an index walk over a store's statements — `for s in store.stmt_ids()` "
+            "hands the ids themselves"),
     "I60": (raw_mint_emit,
             "a register minted, then defined by a raw `emit(Ins...)` — that is a vocabulary "
             "verb (`cx.bin(sh, op, a, b)`, `cx.call_decl_at(e, callee, args)`, …, "
@@ -1295,6 +1298,8 @@ CLEAN = {
     "I58": [['    cx.array_sized(sh, size)'],
             ['    self.array_push(box, v)'],
             ['        cx.map_get(sh, m, k)']],
+    "I62": [['    for s in store.stmt_ids() {'],
+            ['    flatten([some_list(self.use_parts(s)) for s in self.stmt_ids()])']],
     "I60": [['    cx.bin(Type.Bool, BinOp.Eq, a, b)'],
             ['    self.un(present)'],
             ['        cx.pack(ty, [present, value])']],
@@ -1385,6 +1390,8 @@ SPECIMENS = {
     "I58": [['    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))'],
             ['    self.emit(Ins.CallRtVoid("avra_array_push", [box, v]))'],
             ['        cx.emit(Ins.CallRt(got, "avra_map_get", [m, k]))']],
+    "I62": [["    for i in 0..store.stmts.count() {"],
+            ["        for i in 0..self.stmts.count() {"]],
     "I60": [["    let dst = cx.mint_shape(Type.Bool)",
              "    cx.emit(Ins.Bin(dst, BinOp.Eq, a, b))"],
             ["    let dst = self.mint_shape(Type.Bool)",

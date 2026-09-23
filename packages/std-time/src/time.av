@@ -2,9 +2,13 @@
 //! that wants one cannot be handed a number that meant something
 //! else; the clock is monotonic milliseconds, what a deadline is
 //! made of. Two readings differ by the time between them and mean
-//! nothing alone.
+//! nothing alone. `within d { … }` gives a block a deadline.
+use @std.meta.{Code}
+
 extern fn avra_now_ns() -> int
 extern fn avra_fiber_sleep(ms: int)
+extern fn avra_fiber_within(ms: int) -> int
+extern fn avra_fiber_within_end(outer: int)
 
 /// A span of time, in whole milliseconds.
 export type Duration = { ms: int }
@@ -38,6 +42,24 @@ export fn now_ns() -> int {
 /// ready task run once, then goes on.
 export fn sleep(d: Duration) {
     avra_fiber_sleep(d.ms)
+}
+
+/// `within limit { … }` — the block answers as written, and every
+/// park inside it (in this task, or one it spawns) ends by `limit`
+/// from now. The task's outer deadline comes back however the block
+/// ends.
+export component within(limit: Code) {
+    body: Code
+    fn expand() -> Code {
+        quote {
+            {
+                let limit: Duration = ${self.limit}
+                let outer = avra_fiber_within(limit.ms)
+                defer avra_fiber_within_end(outer)
+                ${self.body}
+            }
+        }
+    }
 }
 
 impl Duration {

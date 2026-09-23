@@ -81,8 +81,7 @@ impl Decls {
                 out.push(d)
                 made.push(d)
                 self.orphan(d)
-                let fns: List<StmtId> = store.trait_parts(s)?.fns ?? []
-                for m in fns {
+                for m in store.member_fns(s) {
                     let md = self.mint_method(key, f, store, m, name, d, declared_body(store, m))
                     by_stmt.set(m.index, md)
                     made.push(md)
@@ -136,6 +135,7 @@ impl Decls {
         // A declaration NESTED in a body is refused by its feature, but
         // typing still walks it: it gets an identity under a key no
         // module-level name can take, and joins no namespace.
+        // LICENSED I62: the index keys `by_stmt` and the nested key as well
         for i in 0..store.stmts.count() {
             let s = StmtId { index: i }
             let nested: DeclKind? = store.declared_kind(s)
@@ -170,9 +170,15 @@ impl Decls {
         // window, and `type_at` trapped instead of answering. A fn
         // hid it, because its body is a block expression allocated
         // after them and its span carries the range over.
+        // A NODE SPANNED IN ANOTHER FILE counts as span-less here: its
+        // span is in that file's offsets (so its errors point home), and
+        // read as this file's it lands in whatever declaration sits at
+        // those offsets. A template is copied where its instance stands,
+        // so it belongs to whoever owned the node before it.
         mut owner = main
         for i in 0..store.exprs.count() {
-            let sp: Span? = store.expr_span(ExprId { index: i })
+            let e = ExprId { index: i }
+            let sp: Span? = if store.spanned_elsewhere(e) { null } else { store.expr_span(e) }
             if sp != null { owner = self.innermost(owners, sp!) ?? main }
             if lo[owner.index] < 0 { lo.set(owner.index, i) }
             hi.set(owner.index, i + 1)

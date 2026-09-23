@@ -1,0 +1,115 @@
+//! The server on many cores, attacked: one process per core, sharing
+//! nothing but the listener. Each attack is a way the group could lie —
+//! a connection nobody answers, a count that forgets a core, a stop
+//! that reaches one core, a descriptor that crosses a fork, a failure
+//! one core keeps to itself.
+use @std.net.{Conn, NetError, Listener, listen, connect}
+use @std.time.{secs, within}
+use @std.http.frame.{limits}
+use @std.http.server.{served, timing, every_core}
+
+/// One GET on `c`, answered `200`.
+fn served_ok(c: Conn) -> Result<bool, NetError> {
+    let r = reply(c, "GET /c HTTP/1.1\r\nHost: a\r\n\r\n")?
+    .Ok(r.starts_with("HTTP/1.1 200 OK"))
+}
+
+/// Every one of `n` clients answered, each on a connection of its own.
+fn all_answered(port: int, n: int) -> Result<bool, NetError> {
+    let cs = [connect("127.0.0.1", port, secs(2))? for i in 0..n]
+    defer { for c in cs { let _ = c.close() } }
+    let got = [served_ok(c)? for c in cs]
+    .Ok(got.all(it))
+}
+
+/// Every core this process may run on answers, and the open
+/// connections are counted across all of them.
+fn every_core_answers() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    spawn b.s.run()
+    defer b.done()
+    let cs = [connect("127.0.0.1", b.s.listener.port, secs(2))? for i in 0..6]
+    defer { for c in cs { let _ = c.close() } }
+    let got = [served_ok(c)? for c in cs]
+    .Ok(every_core() >= 1 && got.all(it) && settles_to(b.s, 7))
+}
+
+/// A stop reaches every core, and `run` answers what they accepted
+/// between them.
+fn run_answers_for_every_core() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    let t = spawn b.s.run(cores: 3)
+    let answered = all_answered(b.s.listener.port, 4) catch e -> false
+    b.done()
+    let accepted = t.await?
+    .Ok(answered && accepted == 5)
+}
+
+/// Fewer than one core is no placement.
+fn no_cores_refused() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    defer b.done()
+    .Ok(refused_invalid(b.s.run(cores: 0), 0) && refused_invalid(b.s.run(cores: -2), -2))
+}
+
+fn refused_invalid(r: Result<int, NetError>, n: int) -> bool {
+    match r {
+        .Ok(_) -> false,
+        .Err(e) -> e.describe().message.starts_with("run on ${n} cores: "),
+    }
+}
+
+/// A server stopped before it runs answers none accepted.
+fn stopped_before_run() -> Result<bool, NetError> {
+    let b = bed(timing())?
+    b.done()
+    let n = b.s.run(cores: 4)?
+    .Ok(n == 0)
+}
+
+/// A connection the program holds when the cores fork is not held by
+/// them: closing it here ends it for its peer.
+fn nothing_crosses_a_fork() -> Result<bool, NetError> {
+    let other = listen("127.0.0.1", 0)?
+    let x = connect("127.0.0.1", other.port, secs(2))?
+    let y = other.accept()?
+    let b = bed(timing())?
+    spawn b.s.run(cores: 2)
+    defer b.done()
+    let served = served_ok(b.c)?
+    let _ = x.close()
+    let ended = match within patience() { y.read(16) } {
+        .Ok(got) -> got == null,
+        .Err(_) -> false,
+    }
+    let _ = y.close()
+    let _ = other.close()
+    .Ok(served && ended)
+}
+
+/// A core whose accept fails ends the server with that failure — a
+/// descriptor that is no listener refuses every accept.
+fn a_failing_core_fails_the_server() -> Result<bool, NetError> {
+    let other = listen("127.0.0.1", 0)?
+    let x = connect("127.0.0.1", other.port, secs(2))?
+    let s = served(Listener { fd: x.fd, port: 0 }, () -> App { hits: Cell.new(0) }, limits(), timing(), echo)
+    let failed = match s.run(cores: 2) {
+        .Ok(_) -> false,
+        .Err(e) -> e.verb == "accept",
+    }
+    let _ = other.close()
+    .Ok(failed)
+}
+
+spec "std.http server on many cores" {
+    given "a group of cores" {
+        then "every core this process may run on answers, counted across them" { passes(every_core_answers()) }
+        then "a stop reaches every core, and run answers what they accepted" { passes(run_answers_for_every_core()) }
+        then "fewer than one core is refused" { passes(no_cores_refused()) }
+        then "a server stopped before it runs answers none accepted" { passes(stopped_before_run()) }
+    }
+    given "sharing nothing" {
+        then "a connection held when the cores fork ends when it closes here" { passes(nothing_crosses_a_fork()) }
+        then "a core whose accept fails ends the server with that failure" { passes(a_failing_core_fails_the_server()) }
+    }
+}

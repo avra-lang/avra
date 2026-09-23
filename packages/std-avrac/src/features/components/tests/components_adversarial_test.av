@@ -13,6 +13,9 @@ spec "features/components/adversarial" {
         then "all defaults — the empty literal, the empty instantiation" {
             shown("type P = { x: int = 1, y: int = 2 }\nlet p = P { }\n\"" + "\${p.x} " + "\${p.y}\"") == "1 2" && shown("component Empty {\n    config {\n        k: int = 1,\n    }\n}\ncomponent Empty e {\n}\ne.k") == "1"
         }
+        then "fields stand bare, and a `config` block may take one line" {
+            shown("component Cfg {\n    name: string = \"bare\"\n}\nCfg { }.name") == "bare" && shown("component Cfg { config { a: int = 4 } }\nCfg { }.a") == "4"
+        }
         then "the empty raw string, a raw string holding a quote" {
             shown("let r = \"\"\"\"\"\"\nr.length") == "0" && shown("let r = \"\"\"a \"b\" c\"\"\"\nr.length") == "7"
         }
@@ -29,8 +32,8 @@ spec "features/components/adversarial" {
         }
     }
     given "the malformed surface — a diagnostic every time, the cascade pinned" {
-        then "no config, one line, a missing default, a missing `=`, three names" {
-            refusals("component Cfg {\n    name: string\n}\n2") == 2 && refusals("component Cfg { config { a: int } }\n2") == 1 && refusals("type P = { x: int = }\n2") == 1 && refusals("${cfg()}component Cfg c {\n    name \"x\"\n}\n2") == 3 && refusals("${cfg()}component Cfg c d {\n    name = \"x\"\n}\n2") == 2
+        then "a missing default, a missing `=`, three names" {
+            refusals("type P = { x: int = }\n2") == 1 && refusals("${cfg()}component Cfg c {\n    name \"x\"\n}\n2") == 3 && refusals("${cfg()}component Cfg c d {\n    name = \"x\"\n}\n2") == 2
         }
     }
     given "defaults across every feature" {

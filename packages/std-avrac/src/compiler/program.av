@@ -9,11 +9,12 @@ use features.{Decl, Decls, NameFacts, Wanted, FnSig, repr_word, spelled_type}
 use grammar.{Captured, RunOutcome, DocComment, run_grammar, run_untold, run_from, lex_source, lex_blocks, lex_diagnostic, TokenKind, Diagnostic, Cause}
 // LICENSED I24: a `dyn` field boxes its value only where the TRAIT is in scope, spelled or not
 use features.{NodeSemantics, StmtSemantics}
-use features.{LangNode, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at, BlockGrammar}
+use features.{LangNode, PatSemantics, Dispatch, build_named, list_at, stmt_id_at, type_ref_at, BlockWords}
 use features.expr_spine.{SpineSemantics}
 use features.str_lit.{StrSemantics}
 use features.quote.{QuoteSemantics, QuotePatSemantics}
 use features.sublang.{SublangSemantics, SyntaxSemantics}
+use features.components.{ComponentSemantics, ComponentDeclSemantics}
 use features.bool_lit.{BoolSemantics}
 use features.if_expr.{IfSemantics, IfStmtSemantics}
 use features.when_expr.{WhenSemantics}
@@ -44,7 +45,7 @@ use compiler.backend.{run_lowered, run_live, Ended}
 use compiler.lower.{Lowered}
 use compiler.memory.{memory}
 use compiler.host.{no_target}
-use compiler.format.{render_statement}
+use compiler.format.{render_statement, render_expression}
 
 /// One parsed source: the tree (holes included), the SourceFile it
 /// came from, and every diagnostic from lexing and parsing, in
@@ -75,6 +76,8 @@ export fn new_dispatch() -> Dispatch {
         catches: CatchSemantics {},
         quotes: QuoteSemantics {},
         sublangs: SublangSemantics {},
+        components: ComponentSemantics {},
+        componentdecls: ComponentDeclSemantics {},
         syntaxes: SyntaxSemantics {},
         lets: LetStmtSemantics {},
         exprs: ExprStmtSemantics {},
@@ -109,40 +112,42 @@ export fn new_dispatch() -> Dispatch {
 }
 
 /// Parse a source into a FRESH store — the whole-file entry — under
-/// the sublanguage words the file imports (none for a file that
-/// imports none).
+/// the block words the file imports (none for a file that imports
+/// none).
 ///
 /// THE UNTOLD RUN FIRST: a file that parses clean is parsed once, with no miss
 /// keeping its story. Anything spoken is spoken again by the telling run, over a
 /// store of its own — the builders wrote into the first.
-export fn parse_program(lang: Language, src: SourceFile, blocks: List<BlockGrammar> = []) -> Parsed {
-    let quiet = parsed_fresh(lang, src, blocks, false)
-    if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, blocks, true) }
+export fn parse_program(lang: Language, src: SourceFile, words: BlockWords = BlockWords {}) -> Parsed {
+    let quiet = parsed_fresh(lang, src, words, false)
+    if quiet.voices.list.is_empty() { quiet } else { parsed_fresh(lang, src, words, true) }
 }
 
-fn parsed_fresh(lang: Language, src: SourceFile, blocks: List<BlockGrammar>, telling: bool) -> Parsed {
+fn parsed_fresh(lang: Language, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
     mut store = new_node_store()
-    parsed_as(lang, store, src, blocks, telling)
+    parsed_as(lang, store, src, words, telling)
 }
 
 /// Parse into a store ALREADY standing — the target file's, when a
 /// generated declaration's source is admitted beside the one that
 /// asked for it. The returned statements are the newly minted ones.
-export fn parse_into(lang: Language, store: NodeStore, src: SourceFile, blocks: List<BlockGrammar>) -> Parsed {
-    parsed_as(lang, store, src, blocks, true)
+export fn parse_into(lang: Language, store: NodeStore, src: SourceFile, words: BlockWords) -> Parsed {
+    parsed_as(lang, store, src, words, true)
 }
 
-fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, blocks: List<BlockGrammar>, telling: bool) -> Parsed {
+fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, words: BlockWords, telling: bool) -> Parsed {
     if lang.syntax == null {
         return Parsed { store: store, stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
     }
-    let lexed = lex_blocks(src.text, [b.word for b in blocks])
-    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, src.text, blocks)
+    let lexed = lex_blocks(src.text, [g.word for g in words.grammars], [c.word for c in words.components])
+    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, src.text, words)
     let o = if telling { run_grammar<LangNode>(lang.syntax!, lexed.tokens, build) } else { run_untold<LangNode>(lang.syntax!, lexed.tokens, build) }
-    attach_docs(store, lexed.docs)
     // a remark means nothing to any pass; it rides the store so the
-    // printer can put it back where it was written
+    // printer can put it back where it was written. Set before
+    // attach_docs: an orphaned doc group extends this list, and
+    // needs it already standing to merge into.
     store.keep_remarks(lexed.remarks)
+    attach_docs(store, lexed.docs)
     // what a block's grammar refused speaks with the parse, at the block
     let blocked = [block_diagnostic(v) for v in store.block_voices.get()]
     let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics).concat(blocked)
@@ -168,7 +173,7 @@ export fn parse_type_ref(lang: Language, text: string) -> TypeRef? {
     mut store = new_node_store()
     let lexed = lex_source(text)
     if !lexed.errors.is_empty() { return null }
-    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, text, [])
+    let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, text, BlockWords {})
     let o = run_from<LangNode>(lang.syntax!, "type", [t for t in lexed.tokens if t.kind != TokenKind.Break], build)
     if o.result == null || !o.diagnostics.is_empty() { return null }
     type_ref_at([o.result!], 0)
@@ -185,15 +190,39 @@ impl Decls {
     }
 }
 
-/// Attach each source-ordered doc group to the nearest statement
-/// beginning after its declaration-prefix anchor. This includes
-/// nested methods; annotations and `export` precede the declaration
-/// node's own span, so token equality is deliberately not required.
+/// Attach each source-ordered doc group to the declaration its
+/// prefix run opens — the nearest statement beginning after the
+/// group's anchor, but only where nothing besides that run (an
+/// `export`/marker keyword, or the annotations that wrap the
+/// statement) stands in between. This includes nested methods;
+/// annotations and `export` precede the declaration node's own
+/// span, so token equality is deliberately not required there. A
+/// group whose claim fails — its anchor was a MARK's `@word`, not
+/// an ANNOTATION's, and nothing else stands between it and the
+/// next real statement to redeem it — is not forced onto whatever
+/// statement happens to follow; it survives as a remark instead.
 fn attach_docs(store: NodeStore, docs: List<DocComment>) {
     for doc in docs {
-        let target = store.statement_after(doc.before)
-        if target != null { store.document(target!, doc.lines, doc.at) }
+        let target = doc_target(store, doc)
+        if target == null {
+            store.orphan_doc(doc.lines, doc.line_ats)
+        } else {
+            store.document(target!, doc.lines, doc.at)
+        }
     }
+}
+
+/// The statement `doc` opens, or null when its anchor cannot be
+/// claimed. A keyword anchor (`fn`, `export`, …) always opens a
+/// real declaration, however far `export` or an annotation run sits
+/// ahead of the statement's own span — those are the only things a
+/// keyword can precede. A `@word` anchor is ambiguous at the lexer,
+/// so it claims a statement only when the parse recorded an
+/// ANNOTATION starting at that exact offset; a MARK never does.
+fn doc_target(store: NodeStore, doc: DocComment) -> StmtId? {
+    let target? = store.statement_after(doc.before) else { return null }
+    if !doc.pkg { return target }
+    if store.annotations_of(target).any(it.span != null && it.span!.lo == doc.before) { target } else { null }
 }
 
 /// The program's statements in order. A recovery hole becomes an
@@ -276,9 +305,10 @@ impl Program {
         [self.decl_line(d) for d in self.ws.expanded(f)]
     }
 
-    /// A file as compiled: written nodes in source order, with every
-    /// generated declaration immediately after the declaration its
-    /// annotation wrapped.
+    /// A file as compiled: written nodes in source order, each
+    /// component instance's expansion noted under its statement, and
+    /// every generated declaration immediately after the declaration
+    /// its annotation wrapped.
     fn expanded_source(f: FileId) -> string {
         let made = self.ws.expanded(f)
         let parsed = self.ws.parsed(f)
@@ -286,6 +316,7 @@ impl Program {
         mut attached: List<DeclId> = []
         for s in parsed.stmts {
             chunks.push(render_statement(parsed.store, s))
+            chunks = chunks.concat([self.expansion_note(parsed.store, e) for e in parsed.store.instances_in(s)])
             let written: DeclId? = self.ws.decls.decl_of(f, s)
             if written != null {
                 let name = self.ws.decls.decl(written!).name
@@ -305,6 +336,18 @@ impl Program {
             if !attached.any(same_decl(it, d)) { chunks.push(self.decl_block(d)) }
         }
         joined(chunks, "\n\n")
+    }
+
+    /// What an instance became — its expansion as source, under the
+    /// module its names resolve in. A comment, since those names are
+    /// the provider's: a template may call what this file cannot name.
+    fn expansion_note(store: NodeStore, e: ExprId) -> string {
+        let x? = store.expansion_of(e) else { return "" }
+        let word? = store.instance_word(e) else { return "" }
+        let home: string? = store.foreign_of(x)?.path
+        let module = if home == null { "" } else { " (from ${self.ws.decls.module_name(self.ws.decls.file(self.ws.file_id(home!)).module_id)})" }
+        let lines = ["// `${word}`${module} expands to:"].concat(["//     ${l}" for l in render_expression(store, x).split("\n")])
+        joined(lines, "\n")
     }
 
     /// One generated declaration as source with provenance appended.

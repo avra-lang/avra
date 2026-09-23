@@ -1,16 +1,16 @@
 //! Workspace diagnostics and the small shared projections they read.
 //! Moved out of the workspace god-object.
 use core.{StmtId, Span, Param, Mark, TypeRegistry, NodeStore, ModulePath, FileId, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, same_file, TypeRef, spelled}
-use features.{Unsettled, Settlement, MetaVal, MetaHeap, nothing, FileView, spelled_type, ArenaMarks, BlockGrammar}
+use features.{Unsettled, Settlement, MetaVal, MetaHeap, nothing, FileView, spelled_type, BlockGrammar}
 use features.{no_kind}
 use @std.meta.{Node, Field as MetaField, Mark as MetaMark, Kind}
-use core.{StmtId, Arm, HoleKind, Unplaced}
-use grammar.{parse_grammar, ready}
+use core.{StmtId, Arm, HoleKind, Unplaced, is_name_cont}
+use grammar.{parse_grammar, ready, lex_source, Token, TokenKind}
 use diagnostics.{defect_at}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 use @std.testing.{words}
-use compiler.store.{Store, Stored}
+use compiler.store.{Store, Stored, store_at}
 
 // ── voices ──
 
@@ -179,7 +179,7 @@ impl Workspace {
     /// A copied node whose source a sublanguage minted wears that
     /// sublanguage's library.
     fn note_foreign_origin(f: FileId, src: NodeStore, from: ExprId, id: ExprId) {
-        let range? = src.foreign.get().find(it.lo <= from.index && from.index < it.hi) else { return }
+        let range? = src.foreign_of(from) else { return }
         let origin = self.file_id(range.path)
         if !same_file(origin, f) { self.decls.note_origins(f, [id], [], [], origin) }
     }
@@ -231,10 +231,6 @@ fn many_in_expression() -> string {
     "a list of templates has no expression position — splice it where a run belongs (statements, arms, binders), or fold the list into one template before the hole"
 }
 
-fn arena_marks(store: NodeStore) -> ArenaMarks {
-    ArenaMarks { exprs: store.exprs.count(), stmts: store.stmts.count(), pats: store.pat_count() }
-}
-
 /// A generated declaration's name is already the file's — the
 /// annotation is asked to choose another.
 /// An annotation that could not run — the DECLARING path's voice,
@@ -274,17 +270,81 @@ fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
 /// REGISTER A UNIT under its name. THE SEAT IS MUT so the write lands in the workspace's
 /// own table — a plain seat would copy the map, and a copy-on-write that runs once per
 /// minted unit turns the walk quadratic.
-/// WHETHER A MODULE'S RECORD NAMES A NAMED GRAMMAR THE `use` LINE TAKES — read from the
-/// persisted interface alone, never a parse. `true` when the record is absent, so the
-/// caller falls back to reading the provider.
+/// WHETHER A MODULE'S RECORD NAMES A BLOCK WORD THE `use` LINE TAKES — read from the
+/// persisted interface alone, never a parse. The tree's own on-disk store answers this,
+/// not `ws.store` (armed only inside a build's hold): a query that only reads never
+/// waits for a write it may never see, and a cache built by an earlier `check` still
+/// answers a later `fmt`'s question. WITH NO RECORD YET (a tree no `check` has ever
+/// touched), the caller does not fall back to reading the provider outright — `files`
+/// is lexed first (`maybe_declares_grammar`), so a module none of whose files ever
+/// spell the word cannot cost a parse it has no chance of needing.
 // LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
-fn module_names_syntax(ws: Workspace, m: ModulePath, items: List<string>) -> bool {
-    let s? = ws.store.get() else { return true }
-    let rec? = s.get(Stored.Sig, record_key(ws, m)) else { return true }
+fn module_names_block_word(ws: Workspace, m: ModulePath, files: List<string>, items: List<string>) -> bool {
+    let rec? = store_at(build_cache_root(ws)).get(Stored.Sig, record_key(ws, m)) else { return maybe_declares_block(ws, files) }
     for line in rec.split("\n") {
         let row = read_row(read_fields(line))
-        if row != null && row!.kind == "syntax" && items.any(it == row!.name) { return true }
+        if row != null && names_block_word(row!) && items.any(it == row!.name) { return true }
     }
     false
 }
 
+/// A LEX-LEVEL PRE-FILTER, never a parse: the compiler's OWN source
+/// says `grammar` as an ordinary field, type and parameter name in
+/// hundreds of files that declare none, so a bare word match barely
+/// cuts anything here — the two forms either grammar-declaring rule
+/// spells (and a `component`, which opens its own word) are `grammar { …` (an expression) and `grammar NAME { …`
+/// (a statement), and nothing else opens either way. A file that
+/// does not OPEN one this way is never read past its own text.
+// LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
+fn maybe_declares_block(ws: Workspace, files: List<string>) -> bool {
+    files.any(file_lexes_block(ws, it))
+}
+
+// LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
+fn file_lexes_block(ws: Workspace, path: string) -> bool {
+    let known = ws.records.grammar_scanned.get().get(path)
+    if known != null { return known! }
+    let text = ws.host.read(path)
+    // THE CHEAPEST GATE FIRST: no `grammar` substring anywhere, no
+    // token stream worth building.
+    let found = (text.contains("grammar") || text.contains("component")) && opens_block(lex_source(text).tokens)
+    ws.records.grammar_scanned.put(path, found)
+    found
+}
+
+/// Whether the stream may declare a block word: a `grammar` token
+/// followed by `{` or by a NAME then `{`, or any `component` keyword
+/// (a component's word opens a block where it is imported). A
+/// `grammar` used as a plain identifier is followed by neither.
+fn opens_block(tokens: List<Token>) -> bool {
+    [i for i in 0..tokens.length].any(tokens[it].lit_matches("component") || tokens[it].lit_matches("grammar") && grammar_opens_at(tokens, it))
+}
+
+fn grammar_opens_at(tokens: List<Token>, i: int) -> bool {
+    if i + 1 >= tokens.length { return false }
+    if tokens[i + 1].lit_matches("{") { return true }
+    tokens[i + 1].kind == TokenKind.Name && i + 2 < tokens.length && tokens[i + 2].lit_matches("{")
+}
+
+/// A row whose name opens a block where it is imported — a named
+/// grammar's, or a component's.
+fn names_block_word(row: Row) -> bool {
+    row.kind == "syntax" || facts_unblocked(row.facts)?.is_component ?? false
+}
+
+/// The name a parse failure stands on, and the one just before it.
+fn names_near(text: string, at: int) -> List<string> {
+    // LICENSED I4: two scans outward from one offset — no reverse find over text
+    mut back = at
+    while back > 0 && text.char_code(back - 1) == 32 { back = back - 1 }
+    mut start = back
+    while start > 0 && is_name_cont(text.char_code(start - 1)) { start = start - 1 }
+    mut end = at
+    while end < text.length && is_name_cont(text.char_code(end)) { end = end + 1 }
+    [text.substring(at, end), text.substring(start, back)]
+}
+
+/// A component word nobody imported, and the `use` that brings it.
+fn import_it(spelled: string) -> string {
+    "a component's word opens its block only where it is imported — `use ${spelled}`"
+}

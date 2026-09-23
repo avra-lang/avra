@@ -276,6 +276,13 @@ engine's spec, written by dogfooding.
   a guard right beside it. There is one reader now (`seat_type`),
   and the refusal was already spoken before the body ran, which is
   what makes Error the honest answer rather than a defect voice.
+- A COPIED TEMPLATE'S SPANS ARE ITS ORIGIN FILE'S OFFSETS — so its
+  errors point home — and any pass that reads a span as THIS file's
+  offset must ask `store.spanned_elsewhere(e)` first. `range_bodies`
+  did not, and `within`'s copied nodes landed in whatever `client.av`
+  declared at `time.av`'s offsets (a write through `self` blamed on
+  `describe`). A sublanguage's nodes are foreign too but spanned HERE
+  (shifted into the block); `ForeignRange.spanned_home` tells them apart.
 - A READ WEARS THE TYPE OF WHAT IS READ, never the type of the node
   doing the reading. This bit THREE times in one slice: a captured
   callee took the CALL's type (a call's type is its answer, never its
