@@ -15,8 +15,9 @@ export once fn rt_sigs() -> List<RtSig> {
         RtSig { name: "avra_rc_retain", ret: RtKind.Void, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.Unhosted, inert: true },
         RtSig { name: "avra_array_new", ret: RtKind.Ptr, params: [], answer: Box.List, owns_result: true, has_owned_twin: false, host: RtHost.ArrayNew, inert: true },
         RtSig { name: "avra_array_sized", ret: RtKind.Ptr, params: [RtKind.I64], answer: Box.List, owns_result: true, has_owned_twin: false, host: RtHost.ArrayNew, inert: true },
-        RtSig { name: "avra_array_push", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.ArrayPush, inert: true, boxes: [Box.List] },
+        RtSig { name: "avra_array_push", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.ArrayPush, inert: true, boxes: [Box.List], has_moving_twin: true },
         RtSig { name: "avra_array_push_owned", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.ArrayPush, keeps: [false, true], inert: true, boxes: [Box.List] },
+        RtSig { name: "avra_array_push_moved", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.ArrayPush, keeps: [false, true], inert: true, boxes: [Box.List] },
         RtSig { name: "avra_array_get", ret: RtKind.I64, params: [RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.ArrayGet, lends: true, inert: true, boxes: [Box.List] },
         RtSig { name: "avra_array_get_owned", ret: RtKind.Ptr, params: [RtKind.Ptr, RtKind.I64], owns_result: true, has_owned_twin: false, host: RtHost.ArrayGet, inert: true, boxes: [Box.List] },
         RtSig { name: "avra_cell_release", ret: RtKind.Void, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.CellRelease, inert: true },
@@ -35,8 +36,9 @@ export once fn rt_sigs() -> List<RtSig> {
         RtSig { name: "avra_slot_unique", ret: RtKind.Ptr, params: [RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.SlotUnique, inert: true },
         // a slot whose word may be a scalar (a `dyn` box's value): opened only when the slot owns a box
         RtSig { name: "avra_owned_slot_unique", ret: RtKind.Ptr, params: [RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.SlotUnique, inert: true },
-        RtSig { name: "avra_slot_set", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.SlotSet, inert: true },
+        RtSig { name: "avra_slot_set", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.SlotSet, inert: true, has_moving_twin: true },
         RtSig { name: "avra_slot_set_owned", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.SlotSet, keeps: [false, false, true], inert: true },
+        RtSig { name: "avra_slot_set_moved", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.SlotSet, keeps: [false, false, true], inert: true },
         // A NULLABLE SCALAR IN A SLOT: its word, and its absence in the
         // cell's mark — written with presence, asked for presence
         RtSig { name: "avra_array_push_maybe", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.ArrayPushMaybe, inert: true, boxes: [Box.List] },
@@ -312,6 +314,15 @@ export fn rt_owned_twin(name: string) -> string? {
     let sig: RtSig? = rt_sig_of(name)
     if sig == null || !sig!.has_owned_twin { return null }
     "${name}_owned"
+}
+
+/// The callee's MOVING twin — `<name>_moved` — when the row says one
+/// exists: the owned twin's store, the caller's own reference handed
+/// over instead of a retain.
+export fn rt_moving_twin(name: string) -> string? {
+    let sig: RtSig? = rt_sig_of(name)
+    if sig == null || !sig!.has_moving_twin { return null }
+    "${name}_moved"
 }
 
 /// The callee's REUSING twin — `<name>_reusing` — when the row says one

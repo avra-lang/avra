@@ -328,3 +328,13 @@ pre-R8 answer, under AVRA_RC_GUARD=1.
 **Numbers.** Request boxes 14 -> 11 (`Method`, `TargetForm` twice).
 `check packages/cli` user 7.83 s -> 7.24 s (−7.5%, three interleaved
 pairs); resident set overlapping.
+
+**The pass's own cost is measured in INSTRUCTIONS RETIRED** (`time -l`),
+since wall and user time at load 35 are noise. The first cut cost
++1.6% instructions on `check packages/cli`: `views` walked the body
+for every candidate store. A precompute that also asked `takes_twin`
+cost +9.6% — `takes_twin` scans forward for a lending row, so asking
+it per instruction is quadratic. `viewed_regs` is a SUPERSET (any
+register a managed view reads) and `views` keeps the exact filter;
+the pass is then at parity (158.1B vs 158.3B instructions). Request
+census: retains 20 -> 14, releases 36 -> 30 per request.

@@ -1083,6 +1083,16 @@ void avra_array_push_owned(void* arr, void* v) {
     avra_rc_retain(v);
 }
 
+// The push twin of `avra_slot_set_moved`: the caller's reference moves
+// into the new slot.
+void avra_array_push_moved(void* arr, void* v) {
+    CENSUS(g_list_pushes++);
+    CENSUS(note_push(__builtin_return_address(0)));
+    avra_array_push(arr, (int64_t)(uintptr_t)v);
+    AvraArray* a = (AvraArray*)arr;
+    a->marks[a->len - 1] = MARK_OWNED;
+}
+
 int64_t avra_array_len(void* arr) {
     return ((AvraArray*)arr)->len;
 }
@@ -1437,6 +1447,14 @@ void avra_slot_set(void* arr, int64_t i, int64_t v) {
 // content goes.
 void avra_slot_set_owned(void* arr, int64_t i, void* v) {
     avra_rc_retain(v);
+    avra_slot_set(arr, i, (int64_t)(uintptr_t)v);
+    ((AvraArray*)arr)->marks[i] = MARK_OWNED;
+}
+
+// A MOVE into a slot: the caller hands over the reference it owns, so
+// the slot keeps it without a retain — the pack of a value that dies
+// there, which the caller then never releases.
+void avra_slot_set_moved(void* arr, int64_t i, void* v) {
     avra_slot_set(arr, i, (int64_t)(uintptr_t)v);
     ((AvraArray*)arr)->marks[i] = MARK_OWNED;
 }
