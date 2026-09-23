@@ -25,8 +25,7 @@ fn first_defect(ds: List<Diagnostic>) -> string {
 
 fn grammar_expr(b: Builder, g: Grammar, sp: Span?) -> ExprId {
     let rules = [rule_expr(b, r, sp) for r in g.rules]
-    lit_struct(b, "Grammar", ["name", "start", "rules"],
-               [text_expr(b, g.name, sp), text_expr(b, g.start, sp), list_expr(b, rules, sp)], sp)
+    lit_struct(b, "Grammar", ["name", "start", "rules"], [text_expr(b, g.name, sp), text_expr(b, g.start, sp), list_expr(b, rules, sp)], sp)
 }
 
 fn rule_expr(b: Builder, r: Rule, sp: Span?) -> ExprId {
@@ -40,18 +39,21 @@ fn alt_expr(b: Builder, a: Alt, sp: Span?) -> ExprId {
 
 fn seq_expr(b: Builder, s: Seq, sp: Span?) -> ExprId {
     let items = [item_expr(b, i, sp) for i in s.items]
-    lit_struct(b, "Seq", ["items", "build", "recover"],
-               [list_expr(b, items, sp), build_expr(b, s.build, sp), recover_expr(b, s.recover, sp)], sp)
+    lit_struct(b, "Seq", ["items", "build", "recover"], [list_expr(b, items, sp), build_expr(b, s.build, sp), recover_expr(b, s.recover, sp)], sp)
 }
 
 /// EVERY FIELD IS SPELLED: a field the literal leaves out takes its
 /// default, and a mark the notation set then reaches no product —
 /// the head marks vanished so, for one generation.
 fn item_expr(b: Builder, i: Item, sp: Span?) -> ExprId {
-    lit_struct(b, "Item", ["label", "prim", "rep", "expect", "head", "trailer"],
-               [text_opt(b, i.label, sp), prim_expr(b, i.prim, sp),
-                rep_expr(b, i.rep, sp), expect_expr(b, i.expect, sp),
-                bool_expr(b, i.head, sp), bool_expr(b, i.trailer, sp)], sp)
+    lit_struct(b, "Item", ["label", "prim", "rep", "expect", "head", "trailer"], [
+        text_opt(b, i.label, sp),
+        prim_expr(b, i.prim, sp),
+        rep_expr(b, i.rep, sp),
+        expect_expr(b, i.expect, sp),
+        bool_expr(b, i.head, sp),
+        bool_expr(b, i.trailer, sp),
+    ], sp)
 }
 
 fn prim_expr(b: Builder, p: Prim, sp: Span?) -> ExprId {
@@ -76,14 +78,15 @@ fn build_expr(b: Builder, held: Build?, sp: Span?) -> ExprId {
     if held == null { return b.store.alloc_expr(Expr.NullLit, sp) }
     match held! {
         .Var(name) -> variant(b, "Build", "Var", [text_expr(b, name, sp)], sp),
-        .Call(name, args) -> variant(b, "Build", "Call",
-            [text_expr(b, name, sp), list_expr(b, [text_expr(b, a, sp) for a in args], sp)], sp),
+        .Call(name, args) -> variant(b, "Build", "Call", [text_expr(b, name, sp), list_expr(b, [text_expr(b, a, sp) for a in args], sp)], sp),
         // SLOTS ARE NOT WRITTEN: binding fills them where the node
         // model lives, and a grammar value carries them unbound.
-        .Node(owner, vname, fixed, _) -> variant(b, "Build", "Node",
-            [text_expr(b, owner, sp), text_expr(b, vname, sp),
-             list_expr(b, [fixed_expr(b, f, sp) for f in fixed], sp),
-             b.store.alloc_expr(Expr.NullLit, sp)], sp),
+        .Node(owner, vname, fixed, _) -> variant(b, "Build", "Node", [
+            text_expr(b, owner, sp),
+            text_expr(b, vname, sp),
+            list_expr(b, [fixed_expr(b, f, sp) for f in fixed], sp),
+            b.store.alloc_expr(Expr.NullLit, sp),
+        ], sp),
     }
 }
 

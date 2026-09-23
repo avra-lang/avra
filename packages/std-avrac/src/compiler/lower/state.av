@@ -44,7 +44,7 @@ impl LowerCx {
 
     mut fn default_reg(e: ExprId, body: DeclId?) -> Reg {
         let d? = body else { return self.lower_defect(e, "a call leaving a seat without a default survived typing") }
-        let ret? = (self.view.decls.sig(d))?.fn_sig()?.ret else { return self.lower_defect(e, "a default with no signature survived typing") }
+        let ret? = self.view.decls.sig(d)?.fn_sig()?.ret else { return self.lower_defect(e, "a default with no signature survived typing") }
         self.call_decl(ret, self.wanted(d), [])
     }
 
@@ -89,7 +89,7 @@ impl LowerCx {
     /// program lowers exactly what it reaches.
     fn wanted(d: DeclId, sub: Sub? = null, seats: List<SeatValue> = []) -> string {
         let sym = self.view.decls.symbol(d)
-        let name = if sub == null { sym } else { self.view.decls.mangle( sym, sub!) }
+        let name = if sub == null { sym } else { self.view.decls.mangle(sym, sub!) }
         if self.unseen(name) {
             self.jobs.pending.push(Wanted { file: self.view.decls.decl(d).file, decl: d, name: name, sub: sub, seats: seats, root: null })
         }
@@ -251,7 +251,11 @@ impl LowerCx {
             .LambdaParam(_, i) -> Reg { index: i + 1 },
             .Capture(_, j) -> self.env_read(j, ty),
             .Index(s) -> self.body.index_reg(s),
-            .Decl(d) -> when { self.view.decls.fn_name(d) != null -> self.fn_value_reg(e, self.wanted(d)), self.view.decls.decl(d).kind is .Const -> self.const_decl_reg(e, d, ty), _ -> null },
+            .Decl(d) -> when {
+                self.view.decls.fn_name(d) != null -> self.fn_value_reg(e, self.wanted(d))
+                self.view.decls.decl(d).kind is .Const -> self.const_decl_reg(e, d, ty)
+                _ -> null
+            },
         }
     }
 
@@ -314,13 +318,13 @@ impl LowerCx {
     /// template body; in a real unit its value must be carried.
     fn runtime_read(root: ExprId) -> string? {
         for node in self.view.store.every_expr(root) {
-            let b: Binding? = self.names.binding(node)
+            let b: Binding? = self.names.binding(node) // LICENSED I9: a seat's ordinal, not a type identity
             if b != null {
                 match b! {
                     .Param(i) -> {
                         if !settled_mark(self.seat_marks, i) { return "parameter ${i + 1}" }
-                        if self.sub != null && !self.seats.any(it.index == i) { return "parameter ${i + 1}" } // LICENSED I9: a seat's ordinal, not a type identity
-                    }
+                        if self.sub != null && !self.seats.any(it.index == i) { return "parameter ${i + 1}" }
+                    },
                     rest -> nothing(),
                 }
             }
@@ -337,7 +341,7 @@ impl LowerCx {
                 match b! {
                     .Param(i) -> {
                         if settled_mark(self.seat_marks, i) { return true }
-                    }
+                    },
                     rest -> nothing(),
                 }
             }
@@ -355,12 +359,12 @@ impl LowerCx {
             let ty = self.seat_ty(j)
             let r: Reg = match self.seat_at(j) {
                 // a gap: nothing settled this seat, and no const may read it
+                sv? -> self.materialized(sv.value, sv.heap, ty, seat_symbol(ty, sv.fp))
                 null -> {
                     let dst = self.out.mint_ty(ty)
                     self.out.give(Ins.ConstInt(dst, 0))
                     dst
                 }
-                sv? -> self.materialized(sv.value, sv.heap, ty, seat_symbol(ty, sv.fp))
             }
             self.seat_regs.push(r)
         }
@@ -394,25 +398,25 @@ impl LowerCx {
 
     /// A literal's register, minted at the literal's OWN shape.
     fn constant_reg(value: Expr) -> Reg? {
-        let n: int? = (value).int_of()
+        let n: int? = value.int_of()
         if n != null {
             let dst = self.shaped(Type.Int)
             self.out.give(Ins.ConstInt(dst, n!))
             return dst
         }
-        let t: string? = (value).text_of()
+        let t: string? = value.text_of()
         if t != null {
             let dst = self.shaped(Type.Str)
             self.out.give(Ins.ConstStr(dst, t!))
             return dst
         }
-        let b: bool? = (value).bool_of()
+        let b: bool? = value.bool_of()
         if b != null {
             let dst = self.shaped(Type.Bool)
             self.out.give(Ins.ConstBool(dst, b!))
             return dst
         }
-        let bits? = (value).bits_of() else { return null }
+        let bits? = value.bits_of() else { return null }
         let dst = self.shaped(Type.Float)
         self.out.give(Ins.ConstFloat(dst, bits))
         dst
@@ -441,7 +445,7 @@ impl LowerCx {
     /// address — the wrapper wears the uniform (env, args…)
     /// convention, so one call path serves lambdas and fns alike.
     fn fn_value_reg(e: ExprId, symbol: string) -> Reg? {
-        let wname = "${symbol}$w"
+        let wname = "${symbol}\$w"
         if self.unseen(wname) {
             let fnty = self.concrete(self.facts.type_at(e))
             let held: Arrow? = self.view.decls.types.arrow_parts(fnty)
@@ -490,8 +494,8 @@ impl LowerCx {
 
     fn lifted_as(e: ExprId, kind: LiftKind) -> string {
         let base = self.view.decls.lifted_symbol(self.view.file, e)
-        let sym = if kind is .Task { "${base}$task" } else { base }
-        let name = if self.sub == null { sym } else { self.view.decls.mangle( sym, self.sub!) }
+        let sym = if kind is .Task { "${base}\$task" } else { base }
+        let name = if self.sub == null { sym } else { self.view.decls.mangle(sym, self.sub!) }
         if self.unseen(name) {
             self.jobs.lifts.push(Lift { lam: e, name: name, sub: self.sub, kind: kind })
         }
@@ -522,8 +526,7 @@ impl LowerCx {
         let b? = self.names.binding(e) else { return null }
         let direct: bool = match b {
             .Decl(d) -> self.view.decls.fn_name(d) != null,
-            .Def(_)
-                or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+            .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
         }
         if direct { return null }
         self.callee_binding(e, b)

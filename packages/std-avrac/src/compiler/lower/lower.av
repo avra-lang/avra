@@ -102,16 +102,13 @@ impl Decls {
     /// width: a width is a property of a SEAT, and the store is where
     /// the seats are.
     fn extern_row_of(d: Decl) -> RtSig {
-        let sig: FnSig? = (self.sig(d.id))?.fn_sig()
+        let sig: FnSig? = self.sig(d.id)?.fn_sig()
         // THE WIDTHS ARE A DECLARATION FACT, not a store read: a held extern has no
         // store, and a width is a property of a SEAT — the one parse fact the row
         // cannot derive from the signature alone (`int` crosses, but at what width).
         let host: List<string> = self.facts_or(d.id).host
         let params: List<TypeId> = sig?.params ?? []
-        inout_row(self.symbol(d.id),
-                  extern_kind_name(self.types, host_name(host, host.length - 1), sig?.ret ?? self.type(void)),
-                  [self.host_seat_kind(d.id, host, j, p) for j, p in params],
-                  [self.host_cell_kind(d.id, host, j, p) for j, p in params])
+        inout_row(self.symbol(d.id), extern_kind_name(self.types, host_name(host, host.length - 1), sig?.ret ?? self.type(void)), [self.host_seat_kind(d.id, host, j, p) for j, p in params], [self.host_cell_kind(d.id, host, j, p) for j, p in params])
     }
 
     /// A host seat's ABI kind. A `mut` seat is an INOUT — it carries the
@@ -143,10 +140,20 @@ fn host_name(host: List<string>, j: int) -> string {
 /// stacks.
 fn new_lower_cx(a: Analysis, fn_ret: TypeId?, sub: Sub?, seats: List<SeatValue>, seat_marks: List<SeatMark>, jobs: Jobs) -> LowerCx {
     LowerCx {
-        view: a.view, names: a.names, facts: a.facts, dispatch: a.lang.dispatch,
+        view: a.view,
+        names: a.names,
+        facts: a.facts,
+        dispatch: a.lang.dispatch,
         out: new_emitter(jobs.externs),
         body: new_body_regs(a.view.store.exprs.count(), a.view.store.stmts.count(), a.view.store.pat_count()),
-        sub: sub, seats: seats, seat_regs: [], seat_marks: seat_marks, fn_ret: fn_ret, jobs: jobs, deferred: [], depth: 0,
+        sub: sub,
+        seats: seats,
+        seat_regs: [],
+        seat_marks: seat_marks,
+        fn_ret: fn_ret,
+        jobs: jobs,
+        deferred: [],
+        depth: 0,
     }
 }
 
@@ -176,10 +183,10 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(F
         return Unit { bodies: [], wants: [], voices: out.voices, statics: [] }
     }
     let first = when {
-        w.root != null -> lower_root(a, w.root!, w.name, w.seats, externs, settle),
-        w.decl == null -> lower_main(a, w.name, externs, settle),
-        is_rules_table(a, w.decl!) -> lower_rules_table(a, a.view.decls.decl(w.decl!), w.name, externs, settle),
-        _ -> lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle),
+        w.root != null -> lower_root(a, w.root!, w.name, w.seats, externs, settle)
+        w.decl == null -> lower_main(a, w.name, externs, settle)
+        is_rules_table(a, w.decl!) -> lower_rules_table(a, a.view.decls.decl(w.decl!), w.name, externs, settle)
+        _ -> lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle)
     }
     mut bodies: List<Body> = [first.body]
     mut spoken: List<Diag> = first.voices.list
@@ -251,7 +258,7 @@ impl Decls {
     /// its signature under its type arguments — what `lower_fn` would give it.
     fn unlowered_stub(w: Wanted) -> Body? {
         let d? = w.decl else { return null }
-        let sig? = (self.sig(d))?.fn_sig() else { return null }
+        let sig? = self.sig(d)?.fn_sig() else { return null }
         Body { name: w.name, params: [viewed(self.types, w.sub, pt) for pt in sig.params], ret: viewed(self.types, w.sub, sig.ret), gives: null, ins: [], reg_types: [], weak: true }
     }
 
@@ -410,7 +417,7 @@ type LoweredBody = { body: Body, voices: Voices, jobs: Jobs }
 /// the scope settles.
 fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
     let root: ExprId = x.root!
-    let sig: FnSig? = (a.view.decls.sig(x.id))?.fn_sig()
+    let sig: FnSig? = a.view.decls.sig(x.id)?.fn_sig()
     let raw: List<TypeId> = sig?.params ?? []
     let rt: TypeId = viewed(a.view.decls.types, sub, sig?.ret ?? a.view.decls.types.intern(Type.Error))
     let ptypes = [viewed(a.view.decls.types, sub, pt) for pt in raw]
@@ -425,7 +432,8 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValu
     lo.emit(Ins.RetVal(r))
     LoweredBody {
         body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: sub != null },
-        voices: lo.out.voices, jobs: lo.jobs,
+        voices: lo.out.voices,
+        jobs: lo.jobs,
     }
 }
 
@@ -455,7 +463,8 @@ fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId,
     lo.emit(Ins.RetVal(r))
     LoweredBody {
         body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: answers, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true },
-        voices: lo.out.voices, jobs: lo.jobs,
+        voices: lo.out.voices,
+        jobs: lo.jobs,
     }
 }
 
@@ -495,7 +504,7 @@ fn is_rules_table(a: Analysis, d: DeclId) -> bool {
 /// `a.view.decls` — shared across every file's `Analysis` — already
 /// carries every one of them here.
 fn lower_rules_table(a: Analysis, x: Decl, fname: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
-    let sig: FnSig? = (a.view.decls.sig(x.id))?.fn_sig()
+    let sig: FnSig? = a.view.decls.sig(x.id)?.fn_sig()
     let rt: TypeId = sig?.ret ?? a.view.decls.types.intern(Type.Error)
     mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle))
     lo.out.seeded()
@@ -505,7 +514,8 @@ fn lower_rules_table(a: Analysis, x: Decl, fname: string, externs: List<string>,
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
         body: Body { name: fname, params: [], ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: false },
-        voices: lo.out.voices, jobs: lo.jobs,
+        voices: lo.out.voices,
+        jobs: lo.jobs,
     }
 }
 
@@ -553,7 +563,7 @@ fn rule_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, d: Decl) -> Re
 /// CALLED by name here, only ever referenced, as `RuleEntry.run`.
 fn rule_run_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
     let symbol = lo.wanted(d)
-    let wname = "${symbol}$w"
+    let wname = "${symbol}\$w"
     if lo.unseen(wname) {
         let held: Arrow? = lo.view.decls.types.arrow_parts(fnty)
         lo.jobs.wraps.push(Wrap { target: symbol, seats: held?.seats ?? [], ret: held?.answer ?? lo.view.decls.types.intern(Type.Error), name: wname })
@@ -601,7 +611,8 @@ fn lower_root(a: Analysis, root: ExprId, name: string, seats: List<SeatValue>, e
     lo.emit(Ins.RetVal(r))
     LoweredBody {
         body: Body { name: name, params: [], ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types },
-        voices: lo.out.voices, jobs: lo.jobs,
+        voices: lo.out.voices,
+        jobs: lo.jobs,
     }
 }
 
@@ -622,10 +633,16 @@ fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileI
     lo.emit(Ins.Ret(0))
     LoweredBody {
         body: Body {
-            name: name, params: [], ret: a.view.decls.types.type(int),
-            gives: null, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file,
+            name: name,
+            params: [],
+            ret: a.view.decls.types.type(int),
+            gives: null,
+            ins: lo.out.ins,
+            reg_types: lo.out.reg_types,
+            file: a.view.file,
         },
-        voices: lo.out.voices, jobs: lo.jobs,
+        voices: lo.out.voices,
+        jobs: lo.jobs,
     }
 }
 
@@ -643,10 +660,10 @@ fn empty_main(types: TypeRegistry) -> LoweredBody {
     let ins: List<Ins> = [Ins.ScopeEnter(Level.Application), Ins.ScopeExit(null), Ins.Ret(0)]
     LoweredBody {
         body: Body { name: "main", params: [], ret: types.type(int), gives: null, ins: ins, reg_types: [] },
-        voices: no_voices(), jobs: new_jobs([], no_settle),
+        voices: no_voices(),
+        jobs: new_jobs([], no_settle),
     }
 }
-
 
 // ── voices ──
 
@@ -664,9 +681,9 @@ fn claim_seen(mut seen: Map<string, bool>, name: string) -> bool {
 
 impl Decls {
 
-fn mangle(name: string, sub: Sub) -> string {
-    let ids = joined([self.type_wire( a) for a in sub.args], "_")
-    if sub.consts.is_empty() { return "${name}$${ids}" }
-    "${name}$${ids}@${joined(sub.consts, "_")}"
-}
+    fn mangle(name: string, sub: Sub) -> string {
+        let ids = joined([self.type_wire(a) for a in sub.args], "_")
+        if sub.consts.is_empty() { return "${name}\$${ids}" }
+        "${name}\$${ids}@${joined(sub.consts, "_")}"
+    }
 }

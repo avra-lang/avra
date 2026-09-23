@@ -114,9 +114,9 @@ fn build_not(b: Builder) -> Result<LangNode, string> {
 /// core event because consts cannot match another feature's node.
 fn build_neg(b: Builder) -> Result<LangNode, string> {
     let v = b.expr(0)?
-    let held: int? = (b.store.expr(v)).int_of()
+    let held: int? = b.store.expr(v).int_of()
     if held != null { return b.make_expr(Expr.IntLit(0 - held!)) }
-    let bits: int? = (b.store.expr(v)).bits_of()
+    let bits: int? = b.store.expr(v).bits_of()
     if bits != null { return b.make_expr(Expr.FloatLit(bits! ^ (1 << 63))) }
     let zero = b.store.alloc_expr(Expr.IntLit(0), b.span)
     let minus = want(binop_of("-"), "the minus operator")?
@@ -240,18 +240,16 @@ fn build_fold_postfix(b: Builder) -> Result<LangNode, string> {
                 } else {
                     acc = b.store.alloc_expr(prop_link(link, acc, name.text), span_of(starts, name.span.hi))
                 }
+            } else if ip <= cp {
+                ji = ji + 1
+                let hi = if more_links(jn, ji, jc, jf, jb, jt, jq, names, indexes, calls, forces, blocks, spellings, chained) { span_hi(b, indexes[ji - 1]) ?? ends } else { ends }
+                acc = b.store.alloc_expr(Expr.Index(acc, indexes[ji - 1]), span_of(starts, hi))
             } else {
-                if ip <= cp {
-                    ji = ji + 1
-                    let hi = if more_links(jn, ji, jc, jf, jb, jt, jq, names, indexes, calls, forces, blocks, spellings, chained) { span_hi(b, indexes[ji - 1]) ?? ends } else { ends }
-                    acc = b.store.alloc_expr(Expr.Index(acc, indexes[ji - 1]), span_of(starts, hi))
-                } else {
-                    let upto = next_anchor(b, names, indexes, calls, jn, ji, jc + 1, ends)
-                    let args_here = args_between(b, cargs, cp, upto)
-                    jc = jc + 1
-                    let hi = if more_links(jn, ji, jc, jf, jb, jt, jq, names, indexes, calls, forces, blocks, spellings, chained) { call_hi(b, calls[jc - 1], args_here) } else { ends }
-                    acc = b.store.alloc_expr(Expr.CallValue(acc, args_here), span_of(starts, hi))
-                }
+                let upto = next_anchor(b, names, indexes, calls, jn, ji, jc + 1, ends)
+                let args_here = args_between(b, cargs, cp, upto)
+                jc = jc + 1
+                let hi = if more_links(jn, ji, jc, jf, jb, jt, jq, names, indexes, calls, forces, blocks, spellings, chained) { call_hi(b, calls[jc - 1], args_here) } else { ends }
+                acc = b.store.alloc_expr(Expr.CallValue(acc, args_here), span_of(starts, hi))
             }
         }
     }
@@ -270,8 +268,7 @@ fn chained_call(b: Builder, subject: ExprId, name: string, args: List<ExprId>) -
 
 /// The nearest UNCONSUMED anchor past the cursors — the window's
 /// end for the link being folded.
-fn next_anchor(b: Builder, names: List<Token>, indexes: List<ExprId>, calls: List<Token>,
-               jn: int, ji: int, jc: int, ends: int) -> int {
+fn next_anchor(b: Builder, names: List<Token>, indexes: List<ExprId>, calls: List<Token>, jn: int, ji: int, jc: int, ends: int) -> int {
     mut best = ends
     if jn < names.length && names[jn].span.lo < best { best = names[jn].span.lo }
     if ji < indexes.length {
@@ -318,11 +315,8 @@ fn call_hi(b: Builder, anchor: Token, args: List<ExprId>) -> int {
 /// end from being short of: `ends`, the whole match's real close, is
 /// exactly right there, and only an interior link needs the
 /// narrower, closing-delimiter-blind estimate.
-fn more_links(jn: int, ji: int, jc: int, jf: int, jb: int, jt: int, jq: int,
-              names: List<Token>, indexes: List<ExprId>, calls: List<Token>, forces: List<Token>,
-              blocks: List<ExprId>, spellings: List<TypeRef>, chained: List<TypeRef>) -> bool {
-    jn < names.length || ji < indexes.length || jc < calls.length || jf < forces.length ||
-        jb < blocks.length || jt < spellings.length || jq < chained.length
+fn more_links(jn: int, ji: int, jc: int, jf: int, jb: int, jt: int, jq: int, names: List<Token>, indexes: List<ExprId>, calls: List<Token>, forces: List<Token>, blocks: List<ExprId>, spellings: List<TypeRef>, chained: List<TypeRef>) -> bool {
+    jn < names.length || ji < indexes.length || jc < calls.length || jf < forces.length || jb < blocks.length || jt < spellings.length || jq < chained.length
 }
 
 /// The node a link token names — the chain when absence rides it.

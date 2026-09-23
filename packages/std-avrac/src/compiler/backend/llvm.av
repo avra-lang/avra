@@ -219,15 +219,15 @@ fn emit_static(lc: ptr, m: ptr, st: Static) {
 }
 
 fn box_name(st: Static, j: int) -> string {
-    if j == st.boxes.length - 1 { mangled(st.name) } else { "${mangled(st.name)}$${j}" }
+    if j == st.boxes.length - 1 { mangled(st.name) } else { "${mangled(st.name)}\$${j}" }
 }
 
 fn emit_box(lc: ptr, m: ptr, name: string, st: Static, b: StaticBox) {
     match b {
         .Slots(cells) -> { let _ = static_array(lc, m, name, st, cells) },
         .Table(keys, values) -> {
-            let k = static_array(lc, m, "${name}$k", st, [Slot.Text(key) for key in keys])
-            let v = static_array(lc, m, "${name}$v", st, values)
+            let k = static_array(lc, m, "${name}\$k", st, [Slot.Text(key) for key in keys])
+            let v = static_array(lc, m, "${name}\$v", st, values)
             let _ = avra_llvm_static_map(m, name, k, v)
         },
     }
@@ -295,8 +295,7 @@ export fn program_closed(l: Lowered) -> string? {
 /// entry answered. The argument pair crosses the seam exactly here
 /// — a program reads it through the host from then on.
 fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> string? {
-    declare(m, "avra_args_init", avra_llvm_void_type(lc),
-            [avra_llvm_int64_type(lc), avra_llvm_pointer_type(lc)], false)
+    declare(m, "avra_args_init", avra_llvm_void_type(lc), [avra_llvm_int64_type(lc), avra_llvm_pointer_type(lc)], false)
     declare(m, "av_entry", avra_llvm_int32_type(lc), [], false)
     let entry = avra_llvm_get_named_function(m, "av_entry")
     let failure: string? = emit_body(lc, m, b, l.types, l.externs, rt, l.entry, entry)
@@ -307,8 +306,7 @@ fn emit_entry(lc: ptr, m: ptr, b: ptr, l: Lowered, rt: Map<string, RtSig>) -> st
 /// `int main(int argc, char** argv)`: the arguments handed over,
 /// then the entry.
 fn open_main(lc: ptr, m: ptr, b: ptr, entry: ptr) -> string? {
-    declare(m, "main", avra_llvm_int32_type(lc),
-            [avra_llvm_int32_type(lc), avra_llvm_pointer_type(lc)], false)
+    declare(m, "main", avra_llvm_int32_type(lc), [avra_llvm_int32_type(lc), avra_llvm_pointer_type(lc)], false)
     let f = avra_llvm_get_named_function(m, "main")
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     let init = avra_llvm_get_named_function(m, "avra_args_init")
@@ -334,8 +332,17 @@ fn emit_body(lc: ptr, m: ptr, b: ptr, types: TypeRegistry, externs: List<RtSig>,
     // LICENSED I3: a RANGE walk — comprehensions iterate lists only
     for j in 0..bd.params.length { vals.push(avra_llvm_get_param(f, j)) }
     mut em = Emit {
-        lc: lc, m: m, b: b, fn_val: f, types: types,
-        tys: bd.reg_types, vals: vals, frames: [], loops: [], externs: externs, rt: rt,
+        lc: lc,
+        m: m,
+        b: b,
+        fn_val: f,
+        types: types,
+        tys: bd.reg_types,
+        vals: vals,
+        frames: [],
+        loops: [],
+        externs: externs,
+        rt: rt,
     }
     avra_llvm_position_at_end(b, avra_llvm_append_basic_block(lc, f, "entry"))
     for i in bd.ins { em.emit_ins(i) }
@@ -396,8 +403,7 @@ fn ll_rt_kind(lc: ptr, k: RtKind) -> ptr {
 
 /// One user fn's declaration, typed from its signature's shapes.
 fn declare_user(lc: ptr, m: ptr, types: TypeRegistry, bd: Body) {
-    declare(m, mangled(bd.name), ll_type_of(lc, types, bd.ret),
-            [ll_type_of(lc, types, pt) for pt in bd.params], false)
+    declare(m, mangled(bd.name), ll_type_of(lc, types, bd.ret), [ll_type_of(lc, types, pt) for pt in bd.params], false)
 }
 
 fn declare(m: ptr, name: string, ret: ptr, params: List<ptr>, variadic: bool) {
@@ -428,8 +434,7 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
         .Opt(inner) -> opt_ll_type(lc, types, inner),
-        .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _)
-            or .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> avra_llvm_pointer_type(lc),
+        .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> avra_llvm_pointer_type(lc),
     }
 }
 

@@ -124,8 +124,15 @@ enum Shape { Struct, Boxed, Enum, Named, Const, Aims, Opaque, Fn, Extern }
 
 fn shape_of(word: string) -> Shape? {
     match word {
-        "struct" -> .Struct, "boxed" -> .Boxed, "enum" -> .Enum, "named" -> .Named,
-        "const" -> .Const, "aims" -> .Aims, "opaque" -> .Opaque, "fn" -> .Fn, "extern" -> .Extern,
+        "struct" -> .Struct,
+        "boxed" -> .Boxed,
+        "enum" -> .Enum,
+        "named" -> .Named,
+        "const" -> .Const,
+        "aims" -> .Aims,
+        "opaque" -> .Opaque,
+        "fn" -> .Fn,
+        "extern" -> .Extern,
         _ -> null,
     }
 }
@@ -147,9 +154,20 @@ fn read_row(parts: List<string>) -> Row? {
     let parent_at? = wire_number(parts[8]) else { return null }
     let root? = wire_number(parts[10]) else { return null }
     Row {
-        shape: shape, path: parts[1], ordinal: ordinal, stmt: stmt, exported: parts[4] == "1",
-        name: parts[5], kind: parts[6], owner: parts[7], parent_at: parent_at, nested: parts[9] == "1",
-        root: root, item: parts[11] == "1", facts: parts[12], payload: parts.slice(13, parts.length),
+        shape: shape,
+        path: parts[1],
+        ordinal: ordinal,
+        stmt: stmt,
+        exported: parts[4] == "1",
+        name: parts[5],
+        kind: parts[6],
+        owner: parts[7],
+        parent_at: parent_at,
+        nested: parts[9] == "1",
+        root: root,
+        item: parts[11] == "1",
+        facts: parts[12],
+        payload: parts.slice(13, parts.length),
     }
 }
 
@@ -247,28 +265,23 @@ fn obj_key_cached(ws: Workspace, store: Store, m: ModulePath, path: string) -> s
 // LICENSED I39: a pure PROJECTION — a registry and a declaration's signature in, its line out.
 fn shape_line(ws: Workspace, s: DeclSig, layout: string) -> string {
     match s {
-        .Record(r) -> "${layout}\t${joined([r.names[i] + ":" + ws.decls.type_wire( r.types[i]) for i in 0..r.names.length], ";")}",
-        .Enum(e) -> "enum\t${joined([e.names[i] + ":" + joined([ws.decls.type_wire( t) for t in e.payloads[i]], "|") for i in 0..e.names.length], ";")}",
-        .Named(n) -> "named\t${ws.decls.type_wire( n.of)}",
-        .Fn(f) -> "fn\t${joined([ws.decls.type_wire( t) for t in f.params], ";")}\t${ws.decls.type_wire( f.ret)}",
+        .Record(r) -> "${layout}\t${joined([r.names[i] + ":" + ws.decls.type_wire(r.types[i]) for i in 0..r.names.length], ";")}",
+        .Enum(e) -> "enum\t${joined([e.names[i] + ":" + joined([ws.decls.type_wire(t) for t in e.payloads[i]], "|") for i in 0..e.names.length], ";")}",
+        .Named(n) -> "named\t${ws.decls.type_wire(n.of)}",
+        .Fn(f) -> "fn\t${joined([ws.decls.type_wire(t) for t in f.params], ";")}\t${ws.decls.type_wire(f.ret)}",
     }
 }
 
-
-
 type WireType = { id: TypeId, next: int }
-
-
 
 /// EVERY NAME A MODULE EXPORTS — its imports first, so a reader can walk the closure in
 /// the order that makes each shape internable.
-// LICENSED I39: a pure PROJECTION — the workspace, a store and a module in, its record out.
 /// A seat with neither promise written.
+// LICENSED I39: a pure PROJECTION — the workspace, a store and a module in, its record out.
 const no_seat_mark: SeatMark = SeatMark { mutable: false, settled: false }
 
 /// Whether a declaration stands among a file's top-level items.
 fn on_top(top: List<DeclId>, d: DeclId) -> bool { top.any(same_decl(it, d)) }
-
 
 /// A MODULE'S INTERFACE, AS ONE DIGEST — the identity a dependent keys on. It covers what
 /// a caller can SEE (names, kinds, visibility, type parameters, bounds, seat names, and
@@ -310,15 +323,13 @@ fn named_file(line: string) -> string {
     parts[1]
 }
 
-
-
 /// A DECLARATION'S FACTS, as the record's block — the encoder of `facts_unblocked`, and
 /// the pair is ONE unit. `split` DROPS a trailing empty field, so a list is encoded as
 /// `<count>~<items…>`: an empty list is `0`, never an empty field that would shift its
 /// neighbour. Neither `;` nor `~` is in a type spelling or an identifier.
 fn facts_block(f: DeclFacts) -> string {
-    let slo = f.span?.lo ?? (0 - 1)
-    let shi = f.span?.hi ?? (0 - 1)
+    let slo = f.span?.lo ?? 0 - 1
+    let shi = f.span?.hi ?? 0 - 1
     "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.of};${f.fingerprint()}"
 }
 
@@ -428,7 +439,7 @@ export fn load_interface(ws: Workspace, store: Store, m: ModulePath, entry: stri
     for parts in fields {
         if parts[0] == "import" {
             // the ROOT module's name is empty, and `split` drops a trailing empty field
-            let imp = module_path((if parts.length > 1 { parts[1] } else { "" }).split("."))
+            let imp = module_path(if parts.length > 1 { parts[1] } else { "" }.split("."))
             let key = imp.package()
             if key != null { ws.ensure_package(key!) }
             load_interface(ws, store, imp, entry, want)
@@ -563,24 +574,24 @@ fn holdable(rows: List<List<string>>) -> bool {
     true
 }
 
-
-
-
-
-
 /// A SEAT'S PROMISE as one character — the record's spelling of `SeatMark`.
 fn mark_word(m: SeatMark) -> string {
-    when { m.mutable -> "m", m.settled -> "s", _ -> "-" }
+    when {
+        m.mutable -> "m"
+        m.settled -> "s"
+        _ -> "-"
+    }
 }
 
 /// The inverse — an unknown word is the plain unwritten seat, the shape of every
 /// seat that promises nothing.
 fn mark_of_word(w: string) -> SeatMark {
-    when { w == "m" -> SeatMark { mutable: true, settled: false }, w == "s" -> SeatMark { mutable: false, settled: true }, _ -> no_seat_mark }
+    when {
+        w == "m" -> SeatMark { mutable: true, settled: false }
+        w == "s" -> SeatMark { mutable: false, settled: true }
+        _ -> no_seat_mark
+    }
 }
-
-
-
 
 /// A NOMINAL type's declaration — the one place the registry knows which types a program
 /// declared. `rest -> null` is the licensed remainder: a structural or scalar shape names
@@ -641,8 +652,6 @@ fn kind_of_word(word: string) -> DeclKind? {
         _ -> null,
     }
 }
-
-
 
 // ── THE OBJECT'S KEY, FROM INPUTS ───────────────────────────────────
 
@@ -762,7 +771,7 @@ export fn held_paths(ws: Workspace) -> List<string> {
 export fn held_stubs(ws: Workspace) -> List<Body> {
     mut out: List<Body> = []
     for d in ws.decls.decls.get() {
-        let stub = if ws.is_held(d.file) { ws.stub_of( d) } else { null }
+        let stub = if ws.is_held(d.file) { ws.stub_of(d) } else { null }
         if stub != null { out.push(stub!) }
     }
     // a held file's top level is a body of its object too
