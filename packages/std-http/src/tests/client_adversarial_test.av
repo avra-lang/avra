@@ -1,14 +1,14 @@
 //! The client under attack by a peer that speaks raw bytes: a reply
 //! torn across reads, one the framer refuses, one cut short, one
 //! read to the close, one chunked, one that never comes.
-use @std.net.{Listener, Conn, Poller, listen, poller}
+use @std.net.{Listener, Conn, listen}
 use @std.time.{ms, secs}
 use @std.http.frame.{framed, limits, Limits}
 use @std.http.http.{Header}
 use @std.http.client.{Client, Answer, ClientError, connected, request}
 
 /// A client and the raw peer it is talking to.
-type Wire = { c: Client, peer: Conn, l: Listener, p: Poller }
+type Wire = { c: Client, peer: Conn, l: Listener }
 
 /// A client with its request WRITTEN and the peer accepted, under
 /// `lim` — the scaffolding every attack here shares. The request is
@@ -17,37 +17,38 @@ fn wiring(lim: Limits) -> Result<Wire, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     mut c = connected("127.0.0.1", l.port, secs(2), lim)?
     c.sent(.Get, request("GET", "/", "a", [], "".bytes())!)?
-    let p = lifted(poller())?
-    lifted(p.watch(l.fd, .Read))?
-    lifted(p.wait(ms(500)))?
-    let peer: Conn? = lifted(l.try_accept())?
-    if peer == null { return .Err(.Closed) }
-    .Ok(Wire { c: c, peer: peer!, l: l, p: p })
+    let peer = lifted(within ms(500) { l.accept() })?
+    .Ok(Wire { c: c, peer: peer, l: l })
 }
 
 /// The same, with the request READ, so a later close is a FIN and
 /// never a reset.
 fn wired() -> Result<Wire, ClientError> {
     let w = wiring(limits())?
-    lifted(w.p.watch(w.peer.fd, .Read))?
-    lifted(w.p.wait(ms(500)))?
-    let _ = lifted(w.peer.try_read(4096))?
+    let _ = lifted(within ms(500) { w.peer.read(4096) })?
     .Ok(w)
 }
 
-/// The peer's bytes written, then the client polled until it answers
-/// or errs; null when it is still waiting after `turns` polls.
+/// The peer's bytes written, then the client read until it answers or
+/// errs; null when it is still waiting after `turns` × 20 ms.
 fn spoken(mut w: Wire, said: string, turns: int) -> Result<Answer?, ClientError> {
-    let out = said.bytes()
-    mut from = 0
-    while from < out.length { from = from + lifted(w.peer.try_write(out, from))? }
-    mut n = 0
-    while n < turns {
-        let a: Answer? = w.c.polled(ms(20))?
-        if a != null { return .Ok(a) }
-        n = n + 1
+    let _ = lifted(w.peer.write(said.bytes()))?
+    waiting_is_null(within ms(20 * turns) { awaited(w) })
+}
+
+fn awaited(mut w: Wire) -> Result<Answer?, ClientError> {
+    mut a: Answer? = null
+    while a == null { a = w.c.received()? }
+    .Ok(a)
+}
+
+/// A read the deadline cut short is a client still waiting.
+fn waiting_is_null(r: Result<Answer?, ClientError>) -> Result<Answer?, ClientError> {
+    match r {
+        .Err(.Net(e)) if e.timed_out() -> .Ok(null),
+        .Err(e) -> .Err(e),
+        .Ok(a) -> .Ok(a),
     }
-    .Ok(null)
 }
 
 fn outcome(r: Result<Answer?, ClientError>) -> string {

@@ -58,6 +58,9 @@ export enum Type {
     /// A running task's handle: its answer, once it has one (`.await`).
     /// Joined when its last owner's scope ends; never outlives it.
     Task(answer: TypeId)
+    /// An owner of tasks whose answers nobody reads: each finished one
+    /// leaves it unseen, and the rest are joined where it ends.
+    Tasks
     /// A string-keyed, insertion-ordered map — order is BY DESIGN,
     /// so iterating one never needs a rule. Other key types are
     /// recorded.
@@ -163,7 +166,7 @@ export fn new_type_registry() -> TypeRegistry {
 /// truth the machine projections ask.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_)
+        .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Opt(_)
             or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList
             or .Map(_, _) or .EmptyMap -> true,
         .Int or .Float or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
@@ -185,6 +188,7 @@ impl TypeRegistry {
             .List(elem) -> "4:${elem.index}",
             .Cell(inner) -> "19:${inner.index}",
             .Task(answer) -> "22:${answer.index}",
+            .Tasks -> "23",
             .Struct(decl, _) -> "5:${decl.index}",
             .Enum(decl, _) -> "6:${decl.index}",
             .TypeName(decl, _) -> "7:${decl.index}",
@@ -413,15 +417,16 @@ impl TypeRegistry {
     /// what the escape laws ask of a seat a task may never reach.
     fn holds_tasks(id: TypeId) -> bool {
         match self.shape_of(self.seen_through(id)) {
-            .Task(_) -> true,
+            .Task(_) or .Tasks -> true,
             rest -> self.args_of(id).any((a) -> self.holds_tasks(a)),
         }
     }
 
     /// Whether a value of this type OWNS tasks it can join where it
-    /// ends: one task (or its nullable), or a list of them. Every other
-    /// shape holding one is refused where it is written.
+    /// ends: one task (or its nullable), a list of them, or `Tasks`.
+    /// Every other shape holding one is refused where it is written.
     fn owns_tasks(id: TypeId) -> bool {
+        if self.shape_of(self.seen_through(id)) is .Tasks { return true }
         let elem? = self.element(id) else { return self.owns_one_task(id) }
         self.shape_of(self.seen_through(elem)) is .Task
     }
@@ -522,7 +527,7 @@ impl TypeRegistry {
                 self.intern(Type.Fn([self.substituted(a, target, args) for a in ps], marks,
                                     self.substituted(ret, target, args))),
             .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _)
-                or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> ty,
+                or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks -> ty,
         }
     }
 
@@ -538,6 +543,7 @@ impl TypeRegistry {
             .List(elem) -> "List<${self.name_of(elem)}>",
             .Cell(inner) -> "Cell<${self.name_of(inner)}>",
             .Task(answer) -> "Task<${self.name_of(answer)}>",
+            .Tasks -> "Tasks",
             .Struct(_, name) -> name,
             .Dyn(_, name) -> "dyn ${name}",
             .Fn(params, marks, ret) -> "fn(${joined(self.seat_words(params, marks), ", ")})${self.answer_word(ret)}",
@@ -593,7 +599,7 @@ impl TypeRegistry {
             .Map(k, v) -> [k, v],
             .Opt(t) -> [t],
             .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _)
-                or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> [],
+                or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks -> [],
         }
     }
 

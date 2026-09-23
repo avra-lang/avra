@@ -149,12 +149,16 @@ extern const char avra_rt_held_avra_bytes_gathered __asm__(AVRA_RT_LABEL(avra_by
 extern const char avra_rt_held_avra_bytes_adopted __asm__(AVRA_RT_LABEL(avra_bytes_adopted));
 extern const char avra_rt_held_avra_task_spawn __asm__(AVRA_RT_LABEL(avra_task_spawn));
 extern const char avra_rt_held_avra_task_settle __asm__(AVRA_RT_LABEL(avra_task_settle));
+extern const char avra_rt_held_avra_tasks_push __asm__(AVRA_RT_LABEL(avra_tasks_push));
 extern const char avra_rt_held_avra_task_settle_all __asm__(AVRA_RT_LABEL(avra_task_settle_all));
 extern const char avra_rt_held_avra_task_join __asm__(AVRA_RT_LABEL(avra_task_join));
 extern const char avra_rt_held_avra_task_done __asm__(AVRA_RT_LABEL(avra_task_done));
 extern const char avra_rt_held_avra_fiber_yield __asm__(AVRA_RT_LABEL(avra_fiber_yield));
 extern const char avra_rt_held_avra_fiber_sleep __asm__(AVRA_RT_LABEL(avra_fiber_sleep));
 extern const char avra_rt_held_avra_fiber_park_fd __asm__(AVRA_RT_LABEL(avra_fiber_park_fd));
+extern const char avra_rt_held_avra_fiber_fd_ready __asm__(AVRA_RT_LABEL(avra_fiber_fd_ready));
+extern const char avra_rt_held_avra_fiber_within __asm__(AVRA_RT_LABEL(avra_fiber_within));
+extern const char avra_rt_held_avra_fiber_within_end __asm__(AVRA_RT_LABEL(avra_fiber_within_end));
 extern const char avra_rt_held_avra_fd_read __asm__(AVRA_RT_LABEL(avra_fd_read));
 extern const char avra_rt_held_avra_fd_taken __asm__(AVRA_RT_LABEL(avra_fd_taken));
 extern const char avra_rt_held_avra_fd_write __asm__(AVRA_RT_LABEL(avra_fd_write));
@@ -258,12 +262,16 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_bytes_adopted,
     &avra_rt_held_avra_task_spawn,
     &avra_rt_held_avra_task_settle,
+    &avra_rt_held_avra_tasks_push,
     &avra_rt_held_avra_task_settle_all,
     &avra_rt_held_avra_task_join,
     &avra_rt_held_avra_task_done,
     &avra_rt_held_avra_fiber_yield,
     &avra_rt_held_avra_fiber_sleep,
     &avra_rt_held_avra_fiber_park_fd,
+    &avra_rt_held_avra_fiber_fd_ready,
+    &avra_rt_held_avra_fiber_within,
+    &avra_rt_held_avra_fiber_within_end,
     &avra_rt_held_avra_fd_read,
     &avra_rt_held_avra_fd_taken,
     &avra_rt_held_avra_fd_write,
@@ -455,6 +463,8 @@ _Static_assert(__builtin_classify_type(avra_task_spawn(AVRA_RT_PTR)) == AVRA_RT_
     "avra_task_spawn: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_settle(AVRA_RT_PTR)), void),
     "avra_task_settle: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_tasks_push(AVRA_RT_PTR, AVRA_RT_PTR)), void),
+    "avra_tasks_push: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_task_settle_all(AVRA_RT_PTR)), void),
     "avra_task_settle_all: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_task_join(AVRA_RT_PTR)) == AVRA_RT_POINTER,
@@ -467,6 +477,12 @@ _Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_sleep(AVRA_RT_
     "avra_fiber_sleep: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_park_fd(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), int64_t),
     "avra_fiber_park_fd: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_fd_ready(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
+    "avra_fiber_fd_ready: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_within(AVRA_RT_I64)), int64_t),
+    "avra_fiber_within: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_fiber_within_end(AVRA_RT_I64)), void),
+    "avra_fiber_within_end: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_fd_read(AVRA_RT_I64, AVRA_RT_I64)), int64_t),
     "avra_fd_read: its row answers i64, so its C body answers int64_t");
 _Static_assert(__builtin_classify_type(avra_fd_taken(AVRA_RT_I64)) == AVRA_RT_POINTER,

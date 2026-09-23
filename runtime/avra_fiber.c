@@ -132,6 +132,7 @@ struct Fiber {
     int parked_fd;       // the descriptor a park waits on, else -1
     int parked_write;
     int timed_out;       // whether the last park ended by its deadline
+    int64_t deadline;    // the innermost `within`'s end, in ns; 0 when none
     size_t timer;        // 1 + its index in the timer heap, 0 when none
     int virtual;         // the evaluator's: filed here, switched by the evaluator
 };
@@ -182,6 +183,20 @@ static int64_t deadline_after(int64_t ms) {
     if (ms > (INT64_MAX - now) / 1000000) return INT64_MAX;
     return now + ms * 1000000;
 }
+
+// THE DEADLINE IS THE TASK'S: a `within` narrows it for its scope and
+// every park inside reads it; a nested `within` never widens it.
+// Answers the outer one, which the scope's end restores.
+static int64_t within_opened(Fiber* f, int64_t ms) {
+    int64_t outer = f->deadline;
+    int64_t at = deadline_after(ms < 0 ? 0 : ms);
+    f->deadline = outer != 0 && outer < at ? outer : at;
+    return outer;
+}
+
+// Whether the task's deadline has already passed — a park then times
+// out at once, before it waits at all.
+static int expired(Fiber* f) { return f->deadline != 0 && now_ns() >= f->deadline; }
 
 // A min-heap of deadlines, one entry at most per fiber — a fiber waits
 // on one thing at a time — and each fiber knows its entry, so a wake
@@ -238,6 +253,14 @@ static void timer_set(Fiber* f, int64_t at) {
     timer_up(i);
 }
 
+// A park's timer: its own timeout (below zero: none), or the task's
+// deadline, whichever comes first.
+static void timer_set_within(Fiber* f, int64_t timeout_ms) {
+    int64_t at = timeout_ms >= 0 ? deadline_after(timeout_ms) : 0;
+    if (f->deadline != 0 && (at == 0 || f->deadline < at)) at = f->deadline;
+    if (at != 0) timer_set(f, at);
+}
+
 static void timer_cancel(Fiber* f) {
     size_t i = f->timer - 1;
     f->timer = 0;
@@ -258,9 +281,13 @@ static void timer_cancel(Fiber* f) {
 // remain, so a byte left over after one reader wakes the next and no
 // wakeup is lost.
 
-typedef struct { Fiber* readers; Fiber* writers; int armed; } FdWaits;
+// A descriptor's waiters, the directions registered with the poller,
+// and the directions that MAY be ready: set by an edge, cleared when a
+// read finds the socket drained or a task parks after finding nothing.
+typedef struct { Fiber* readers; Fiber* writers; int armed; int ready; } FdWaits;
 
 static int g_poller = -1;
+static void fd_drained(int64_t fd);
 static int64_t g_parked_fds = 0;
 static FdWaits* g_fds = NULL;
 static size_t g_fds_cap = 0;
@@ -273,6 +300,7 @@ static void poller_open(void) {
     g_poller = epoll_create1(EPOLL_CLOEXEC);
 #endif
     if (g_poller < 0) avra_trap("the scheduler could not open its poller");
+    avra_fd_drained_hook = fd_drained;
 }
 
 static FdWaits* fd_waits(int fd) {
@@ -289,27 +317,39 @@ static FdWaits* fd_waits(int fd) {
 
 enum { ARMED_READ = 1, ARMED_WRITE = 2 };
 
-// The poller's watch on `fd` made to match its waiters. 0 when the
-// descriptor cannot be watched — closed, or not a descriptor at all.
+// A peer's end is STICKY readiness: a short read drains the bytes, not
+// the close behind them, so a socket whose peer has finished stays
+// ready to read until its read says so.
+enum { READ_CLOSED = 4 };
+
+// THE WATCH IS REGISTERED ONCE, EDGE-TRIGGERED: a direction is added
+// the first time a task waits on it and stays until the descriptor
+// closes, so a park costs no syscall. An edge nobody waits for is
+// dropped — a task parks only after its read or write found nothing,
+// so the next edge is still to come. 0 when the descriptor cannot be
+// watched — closed, or not a descriptor at all.
+//
+// It holds while EVERY CLOSE of a descriptor a task may park on goes
+// through `avra_fiber_fd_closing`, which forgets the registration: the
+// kernel drops the watch at the close, and a number reused after a
+// close nobody reported would be taken for registered and never woken.
 static int fd_arm(int fd) {
     FdWaits* w = fd_waits(fd);
     int want = (w->readers ? ARMED_READ : 0) | (w->writers ? ARMED_WRITE : 0);
+    int missing = want & ~w->armed;
+    if (!missing) return 1;
 #if AVRA_KQUEUE
     struct kevent evs[2];
     int n = 0;
-    if (want & ARMED_READ) { EV_SET(&evs[n], fd, EVFILT_READ, EV_ADD | EV_ONESHOT, 0, 0, NULL); n++; }
-    else if (w->armed & ARMED_READ) { EV_SET(&evs[n], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL); n++; }
-    if (want & ARMED_WRITE) { EV_SET(&evs[n], fd, EVFILT_WRITE, EV_ADD | EV_ONESHOT, 0, 0, NULL); n++; }
-    else if (w->armed & ARMED_WRITE) { EV_SET(&evs[n], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL); n++; }
-    int ok = n == 0 || kevent(g_poller, evs, n, NULL, 0, NULL) == 0 || errno == ENOENT;
+    if (missing & ARMED_READ) { EV_SET(&evs[n], fd, EVFILT_READ, EV_ADD | EV_CLEAR, 0, 0, NULL); n++; }
+    if (missing & ARMED_WRITE) { EV_SET(&evs[n], fd, EVFILT_WRITE, EV_ADD | EV_CLEAR, 0, 0, NULL); n++; }
+    int ok = kevent(g_poller, evs, n, NULL, 0, NULL) == 0;
+    if (ok) { w->armed |= missing; w->ready |= missing; }
 #else
-    struct epoll_event ev = { .events = EPOLLONESHOT | ((want & ARMED_READ) ? EPOLLIN : 0) | ((want & ARMED_WRITE) ? EPOLLOUT : 0), .data.fd = fd };
-    int ok;
-    if (want == 0) ok = !w->armed || epoll_ctl(g_poller, EPOLL_CTL_DEL, fd, NULL) == 0;
-    else if (w->armed) ok = epoll_ctl(g_poller, EPOLL_CTL_MOD, fd, &ev) == 0;
-    else ok = epoll_ctl(g_poller, EPOLL_CTL_ADD, fd, &ev) == 0;
+    struct epoll_event ev = { .events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, .data.fd = fd };
+    int ok = w->armed != 0 || epoll_ctl(g_poller, EPOLL_CTL_ADD, fd, &ev) == 0;
+    if (ok && !w->armed) { w->armed = ARMED_READ | ARMED_WRITE; w->ready = ARMED_READ | ARMED_WRITE; }
 #endif
-    w->armed = ok ? want : 0;
     return ok;
 }
 
@@ -345,15 +385,41 @@ static void unpark(Fiber* f, int timed_out) {
     ready_push(f);
 }
 
-// A direction of `fd` is ready (or the descriptor failed): its first
-// waiter wakes, and the watch re-arms for the rest.
+// A direction of `fd` is ready (or the descriptor failed): EVERY
+// waiter in that direction wakes, since an edge comes once — a waiter
+// left parked could wait for one that never comes. Each retries, and
+// one that finds nothing parks again at no cost.
 static void fd_ready(int fd, int writing) {
-    if ((size_t)fd >= g_fds_cap) return;
-    FdWaits* w = &g_fds[fd];
-    w->armed &= ~(writing ? ARMED_WRITE : ARMED_READ);
-    Fiber* first = *waiters_of(w, writing);
-    if (first) unpark(first, 0);
-    else fd_arm(fd);
+    if (fd < 0 || (size_t)fd >= g_fds_cap) return;
+    g_fds[fd].ready |= writing ? ARMED_WRITE : ARMED_READ;
+    Fiber** list = waiters_of(&g_fds[fd], writing);
+    while (*list) unpark(*list, 0);
+}
+
+// A read found `fd` drained: no data waits until the next edge — unless
+// the peer has finished, whose end a read still has to find.
+static void fd_drained(int64_t fd) {
+    if (fd < 0 || (size_t)fd >= g_fds_cap || (g_fds[fd].ready & READ_CLOSED)) return;
+    g_fds[fd].ready &= ~ARMED_READ;
+}
+
+// A task parks on `fd` having found nothing that way: that direction is
+// not ready until the next edge — a finished peer's read excepted.
+static void parked_unready(int fd, int64_t writable) {
+    FdWaits* w = fd_waits(fd);
+    if (writable) w->ready &= ~ARMED_WRITE;
+    else if (!(w->ready & READ_CLOSED)) w->ready &= ~ARMED_READ;
+}
+
+// The peer has finished writing: a read of `fd` is ready from now on.
+static void fd_closed(int fd) {
+    if (fd >= 0 && (size_t)fd < g_fds_cap) g_fds[fd].ready |= READ_CLOSED | ARMED_READ;
+}
+
+int64_t avra_fiber_fd_ready(int64_t fd, int64_t writing) {
+    int bit = writing ? ARMED_WRITE : ARMED_READ;
+    if (fd < 0 || (size_t)fd >= g_fds_cap || !(g_fds[fd].armed & bit)) return 1;
+    return (g_fds[fd].ready & bit) != 0;
 }
 
 // Waits for the poller up to `timeout_ns` (below zero: forever) and
@@ -365,7 +431,10 @@ static void poller_wait(int64_t timeout_ns) {
     struct kevent evs[BATCH];
     struct timespec ts = { (time_t)(timeout_ns / 1000000000), (long)(timeout_ns % 1000000000) };
     int n = kevent(g_poller, NULL, 0, evs, BATCH, timeout_ns < 0 ? NULL : &ts);
-    for (int i = 0; i < n; i++) fd_ready((int)evs[i].ident, evs[i].filter == EVFILT_WRITE);
+    for (int i = 0; i < n; i++) {
+        if (evs[i].filter == EVFILT_READ && (evs[i].flags & EV_EOF)) fd_closed((int)evs[i].ident);
+        fd_ready((int)evs[i].ident, evs[i].filter == EVFILT_WRITE);
+    }
 #else
     struct epoll_event evs[BATCH];
     int ms = timeout_ns < 0 ? -1 : (int)((timeout_ns + 999999) / 1000000);
@@ -374,10 +443,9 @@ static void poller_wait(int64_t timeout_ns) {
         int fd = evs[i].data.fd;
         uint32_t e = evs[i].events;
         int failed = (e & (EPOLLERR | EPOLLHUP)) != 0;
-        if (fd >= 0 && (size_t)fd < g_fds_cap) g_fds[fd].armed = 0;   // one-shot: the whole watch is spent
-        if ((e & EPOLLIN) || failed) fd_ready(fd, 0);
+        if ((e & EPOLLRDHUP) || failed) fd_closed(fd);
+        if ((e & (EPOLLIN | EPOLLRDHUP)) || failed) fd_ready(fd, 0);
         if ((e & EPOLLOUT) || failed) fd_ready(fd, 1);
-        fd_arm(fd);
     }
 #endif
     if (n < 0 && errno != EINTR) avra_trap("the scheduler's poller failed");
@@ -637,6 +705,7 @@ void* avra_task_spawn(void* body) {
     stacks_settle();
     void* task = avra_array_sized(TASK_CELLS);
     Fiber* f = fiber_made(task);
+    f->deadline = g_current->deadline;          // a task inherits its spawner's `within`
     avra_array_push(task, (int64_t)(uintptr_t)f);
     avra_array_push_owned(task, body);
     avra_array_push_owned(task, NULL);
@@ -688,6 +757,33 @@ void avra_task_settle(void* task) {
     avra_rc_release(answer);
 }
 
+// A FULL OWNER SHEDS ITS FINISHED TASKS before it grows: each is
+// joined (its answer released) and dropped, the live ones keep their
+// order, and the owner is left at least half empty — so a push costs
+// O(1) amortized however long the owner lives.
+static void tasks_shed(AvraArray* a) {
+    int64_t kept = 0;
+    for (int64_t i = 0; i < a->len; i++) {
+        void* t = (void*)(uintptr_t)a->data[i];
+        if (task_cells(t)[TASK_DONE]) {
+            avra_task_settle(t);
+            avra_rc_release(t);
+            continue;
+        }
+        a->data[kept] = a->data[i];
+        a->marks[kept] = a->marks[i];
+        kept++;
+    }
+    a->len = kept;
+    avra_array_reserve(a, kept < 4 ? 4 : kept);
+}
+
+void avra_tasks_push(void* owner, void* task) {
+    AvraArray* a = (AvraArray*)owner;
+    if (a->len == a->cap) tasks_shed(a);
+    avra_array_push_owned(owner, task);
+}
+
 void avra_task_settle_all(void* list) {
     AvraArray* a = (AvraArray*)list;
     for (int64_t i = 0; i < a->len; i++) avra_task_settle((void*)(uintptr_t)a->data[i]);
@@ -716,15 +812,19 @@ void avra_fiber_fd_closing(int64_t fd) {
     FdWaits* w = &g_fds[fd];
     while (w->readers) unpark(w->readers, 0);
     while (w->writers) unpark(w->writers, 0);
+    w->armed = 0;
+    w->ready = 0;
 }
 
 int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms) {
     if (fd < 0 || fd > INT32_MAX) return 1;
-    poller_open();
     Fiber* self = g_current;
+    if (expired(self)) return 0;
+    poller_open();
     self->parked_fd = (int)fd;
     self->parked_write = writable != 0;
     waiter_add(self);
+    parked_unready((int)fd, writable);
     // A descriptor the poller refuses is ready now: the read or write
     // the caller retries reports its own error.
     if (!fd_arm((int)fd)) {
@@ -733,10 +833,14 @@ int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms) {
         return 1;
     }
     self->state = FIBER_PARKED;
-    if (timeout_ms >= 0) timer_set(self, deadline_after(timeout_ms));
+    timer_set_within(self, timeout_ms);
     run_next();
     return self->timed_out ? 0 : 1;
 }
+
+int64_t avra_fiber_within(int64_t ms) { return within_opened(g_current, ms); }
+
+void avra_fiber_within_end(int64_t outer) { g_current->deadline = outer; }
 
 // ── The evaluator's tasks ───────────────────────────────────────
 //
@@ -789,10 +893,12 @@ void avra_vtask_sleep(int64_t t, int64_t ms) {
 int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t timeout_ms) {
     Fiber* f = virtual_at(t);
     if (fd < 0 || fd > INT32_MAX) { f->timed_out = 0; ready_push(f); return 0; }
+    if (expired(f)) { f->timed_out = 1; return 0; }
     poller_open();
     f->parked_fd = (int)fd;
     f->parked_write = writable != 0;
     waiter_add(f);
+    parked_unready((int)fd, writable);
     if (!fd_arm((int)fd)) {
         waiter_remove(f);
         f->parked_fd = -1;
@@ -801,11 +907,17 @@ int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t time
         return 0;
     }
     f->state = FIBER_PARKED;
-    if (timeout_ms >= 0) timer_set(f, deadline_after(timeout_ms));
+    timer_set_within(f, timeout_ms);
     return 1;
 }
 
 int64_t avra_vtask_timed_out(int64_t t) { return virtual_at(t)->timed_out; }
+
+int64_t avra_vtask_within(int64_t t, int64_t ms) { return within_opened(virtual_at(t), ms); }
+
+void avra_vtask_within_end(int64_t t, int64_t outer) { virtual_at(t)->deadline = outer; }
+
+int64_t avra_vtask_deadline(int64_t t) { return virtual_at(t)->deadline; }
 
 int64_t avra_vtask_next(void) {
     Fiber* next = next_ready();

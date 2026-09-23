@@ -926,6 +926,14 @@ static void push_grown(AvraArray* a, int64_t v) {
     a->len++;
 }
 
+void avra_array_reserve(void* arr, int64_t spare) {
+    AvraArray* a = (AvraArray*)arr;
+    while (a->cap - a->len < spare) {
+        if (a->cap >= CELL_CEILING || a->cap < 0) avra_trap("a list grew past any possible size — a corrupted box");
+        array_grow(a);
+    }
+}
+
 void avra_array_push(void* arr, int64_t v) {
     CENSUS(g_list_pushes++);
     CENSUS(note_push(__builtin_return_address(0)));
@@ -1959,15 +1967,23 @@ static int64_t fd_landed(int64_t n) {
 // bytes and presents its token like any other, so the empty answer is
 // an empty box and 0 still means EOF alone. A NEGATIVE ask is a bound,
 // not a question, and answers -EINVAL rather than reading anything.
+void (*avra_fd_drained_hook)(int64_t fd) = NULL;
+
 int64_t avra_fd_read(int64_t fd, int64_t max) {
     if (__builtin_expect(max < 0, 0)) return -EINVAL;
     if (max == 0) return fd_landed(0);
     size_t n = max > FD_SCRATCH ? FD_SCRATCH : (size_t)max;
     for (;;) {
         ssize_t got = read((int)fd, g_fd_buf, n);
-        if (got > 0) return fd_landed(got);
+        if (got > 0) {
+            if ((size_t)got < n && avra_fd_drained_hook) avra_fd_drained_hook(fd);
+            return fd_landed(got);
+        }
         if (got == 0) return 0;
-        if (errno == EAGAIN || errno == EWOULDBLOCK) return -EAGAIN;
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (avra_fd_drained_hook) avra_fd_drained_hook(fd);
+            return -EAGAIN;
+        }
         if (errno != EINTR) return -errno;
     }
 }
