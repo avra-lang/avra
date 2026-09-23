@@ -7,6 +7,10 @@ use core.{ExprId, StmtId, TypeId, Type, Expr, ResSides, Arrow, filled, DeclId, B
 use diagnostics.{Diag, refusal, warning}
 use @std.errors.{Confidence, Edit, Suggestion}
 
+/// The binding a copy is read from, and the place that HOLDS what was
+/// read, when the copy is not of the place itself.
+type Copied = { root: ExprId, holder: ExprId? }
+
 impl TypeCx {
     /// Speak and ABSORB: the diagnostic lands and the answer is the
     /// interned Error — the standard refusal tail of a typing law.
@@ -662,11 +666,12 @@ impl TypeCx {
     /// `receiver_law`, a list or map mutation's `is_mut` prelude) — but
     /// a BARE `mut` LOCAL among those places may itself be a COPY, not
     /// a window: initialized FROM a place (a name, a field path, an
-    /// index) rather than a fresh value, it holds what that place held
-    /// the moment it was bound, and a write through it — at any depth
-    /// under it — never reaches back. `self`, a parameter, and every
-    /// place rooted in either are excluded by construction:
-    /// `bare_mut_stmt` answers only a plain `mut q = …` local.
+    /// index), or from what a place holds (`copied_from`), rather than
+    /// a fresh value, it holds what it read the moment it was bound,
+    /// and a write through it — at any depth under it — never reaches
+    /// back. `self`, a parameter, and every place rooted in either are
+    /// excluded by construction: `bare_mut_stmt` answers only a plain
+    /// `mut q = …` local.
     ///
     /// ONE PREDICATE, TWO CHANNELS: every qualifying call is marked
     /// (`facts.wants_alias_copy` — lowering opens its receiver unique
@@ -676,13 +681,49 @@ impl TypeCx {
     mut fn alias_copy_law(e: ExprId, root: ExprId) {
         let s? = self.bare_mut_stmt(root) else { return }
         let v? = self.view.store.stmt_value(s) else { return }
-        let from? = self.place_binding_root(v) else { return }
+        let from? = self.copied_from(v) else { return }
         self.facts.mark_alias_copy_call(e)
         if self.aliased_warned.contains(s.index) { return }
         self.aliased_warned.push(s.index)
         let q = self.root_word(root)
-        let p = self.root_word(from)
+        if from.holder != null { return self.lent_copy(e, q, self.place_words(from.holder!) ?? self.root_word(from.root)) }
+        self.place_copy(e, q, self.root_word(from.root))
+    }
+
+    /// Where a seed is READ from, when it is not fresh: a place's own
+    /// root; through an unwrap or a `??`, the first side that reads
+    /// one; through a vocabulary read that LENDS what its receiver
+    /// holds (`c.get()`, `xs.first()`), that receiver's, lent by it. A
+    /// construction and a fn's answer are fresh.
+    fn copied_from(v: ExprId) -> Copied? {
+        let root: ExprId? = self.place_binding_root(v)
+        if root != null { return Copied { root: root!, holder: null } }
+        let sides = some_list(self.view.store.forced(v)).concat(self.view.store.coalesced(v))
+        let side: ExprId? = sides.find((x) -> self.copied_from(x) != null)
+        if side != null { return self.copied_from(side!) }
+        let mp? = self.view.store.method_parts(v) else { return null }
+        if !row_lends(self.view.lang.methods, mp.name, self.seen_at(mp.subject)) { return null }
+        let held? = self.copied_from(mp.subject) else { return null }
+        Copied { root: held.root, holder: held.holder ?? mp.subject }
+    }
+
+    /// A place's path as a reader names it, an index shown as `[…]`;
+    /// null for a value.
+    fn place_words(e: ExprId) -> string? {
+        let step? = self.view.store.place_step(e) else { return null }
+        match step {
+            .Root(_) -> self.root_word(e),
+            .Field(subject, name) -> "${self.place_words(subject) ?? "…"}.${name.of}",
+            .At(subject, _) -> "${self.place_words(subject) ?? "…"}[…]",
+        }
+    }
+
+    mut fn place_copy(e: ExprId, q: string, p: string) {
         self.emit(warning("type.alias_copy", self.loc_of(e), "`${q}` is a copy of `${p}` — a write through it will not reach `${p}`", "a copy", "write through `${p}` directly if the write should reach it, or `Cell<T>` it if the copy must still share"))
+    }
+
+    mut fn lent_copy(e: ExprId, q: string, p: string) {
+        self.emit(warning("type.alias_copy", self.loc_of(e), "`${q}` is a copy of what `${p}` holds — a write through it will not reach `${p}`", "a copy", "store the copy back into `${p}` if the write should reach it"))
     }
 
     /// A bare `mut` local's own declaring statement — null for `self`,
