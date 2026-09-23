@@ -249,6 +249,7 @@ impl SourceText {
             .ImplDecl(of, target, fns) -> [self.impl_decl(exported, of?.of, target.of, fns, self.stmt_end(s), self.stmt_flat(s), depth)],
             .TraitDecl(name, fns) -> [self.trait_decl(exported, name.of, fns, self.stmt_end(s), self.stmt_flat(s), depth)],
             .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name.of)} {${text}}")],
+            .Setting(name, value) -> [source_line(depth, "${source_name(name.of)}: ${self.expression(value, loosest_tier, depth)}")],
             .ComponentDecl(name, head, fields, fns) -> [self.component_decl(exported, name.of, head, fields, fns, self.stmt_end(s), depth)],
             .LetElse(name, subject, stmts) -> [self.statement_block("let ${source_name(name.of)}? = ${self.let_else_subject(subject, depth)} else", stmts, self.stmt_end(s), self.stmt_flat(s), depth)],
             .For(name, from, to, _, _, stmts) -> [self.statement_block("for ${source_name(name.of)} in ${self.expression(from, loosest_tier, depth)}..${self.expression(to, loosest_tier, depth)}", stmts, self.stmt_end(s), self.stmt_flat(s), depth)],
@@ -506,24 +507,20 @@ impl SourceText {
     }
 
     /// `let inst = ...` UNLESS `store.mark_component_inst` marked
-    /// this `let` — then it is `component Name inst { field = value
-    /// … }`, the sugar `build_component_inst` desugared it from.
+    /// this `let` — then it is the named instance it was written as:
+    /// `table orders { … }`.
     mut fn let_or_component_inst(s: StmtId, name: string, ty: TypeRef?, value: ExprId, depth: int) -> string {
         if self.store.is_component_inst(s) { return self.component_inst(value, name, depth) }
         source_line(depth, "let ${source_name(name)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}")
     }
 
-    /// The struct literal a component instantiation binds, re-spelled
-    /// as `component Name inst { field = value … }` — a plain
-    /// literal never wears the mark, so a non-`StructLit` here would
-    /// be a builder defect, not a program's; the fallback still
-    /// answers something parseable rather than trapping the printer.
+    /// A named instance, re-spelled `word name { … }` — a marked `let`
+    /// always binds an instance, so any other value here would be a
+    /// builder defect; the fallback still answers something parseable
+    /// rather than trapping the printer.
     mut fn component_inst(value: ExprId, inst: string, depth: int) -> string {
         match self.store.expr(value) {
-            .StructLit(name, fields, values) -> {
-                let body = joined([source_line(depth + 1, "${source_name(f.of)} = ${self.expression(values[j], loosest_tier, depth + 1)}") for j, f in fields], "\n")
-                "${source_line(depth, "component ${source_name(name.of)} ${source_name(inst)} {")}\n${body}\n${source_line(depth, "}")}"
-            },
+            .Component(word, _, block, _, _) -> source_line(depth, joined([source_name(word), source_name(inst)].concat([self.expression(b, loosest_tier, depth) for b in some_list(block)]), " ")),
             rest -> source_line(depth, "let ${source_name(inst)} = ${self.expression(value, loosest_tier, depth)}"),
         }
     }
@@ -623,10 +620,11 @@ impl SourceText {
             .Index(subject, index) -> grouped("${self.expression(subject, postfix_tier, depth)}[${self.expression(index, loosest_tier, depth)}]", postfix_tier, parent),
             .Prop(subject, name) -> grouped("${self.chain_subject(subject, depth)}.${source_name(name.of)}", postfix_tier, parent),
             .Body(word, parts, holes, _) -> grouped(self.body_text(word, parts, holes, depth), atom_tier, parent),
-            .Component(word, heads, block, _) -> grouped(self.instance(word, heads, block, depth), atom_tier, parent),
+            .Component(word, heads, block, _, _) -> grouped(self.instance(word, heads, block, depth), atom_tier, parent),
             .If(cond, yes, no) -> grouped(self.if_group(cond, yes, no, id, depth), atom_tier, parent),
             .When(conds, values, fallback) -> grouped(self.when_expr(conds, values, fallback, end_of(self.store.expr_span(id)), depth), atom_tier, parent),
             .Block(stmts, value) -> grouped(self.block_expr(stmts, value, id, depth), atom_tier, parent),
+            .Collect(body) -> grouped(self.instance("collect", [body], null, depth), atom_tier, parent),
             .Call(callee, pins, args) -> grouped("${source_name(callee.of)}${self.pins(pins)}${self.call_tail(args, depth)}", atom_tier, parent),
             .Named(name, value) -> grouped("${source_name(name.of)}: ${self.expression(value, loosest_tier, depth)}", loosest_tier, parent),
             .StructLit(name, fields, values) -> grouped(self.struct_lit_text(id, name.of, fields, values, depth), atom_tier, parent),

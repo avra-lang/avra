@@ -48,10 +48,9 @@ export fn enums() -> LanguageFeature {
         name      | takes   | check         | lower
         "ordinal" | on_enum | check_ordinal | lower_ordinal
     }
-    component LanguageFeature f {
-        name = "enums"
-        docs = "`enum Suit { clubs hearts }` declares a closed set; `Suit.clubs` constructs; `v.ordinal` is the variant's place in the declaration; `match` chooses by patterns — `.V(p, q)` nests, `a or b` alternates, a name binds, a literal equals, `_` is the hole, `rest` the deliberate remainder — and must cover the subject; a guard (`pattern if cond -> value`) is tried only once its pattern accepts and covers nothing on its own."
-        gram = grammar {
+    LanguageFeature enums {
+        docs: "`enum Suit { clubs hearts }` declares a closed set; `Suit.clubs` constructs; `v.ordinal` is the variant's place in the declaration; `match` chooses by patterns — `.V(p, q)` nests, `a or b` alternates, a name binds, a literal equals, `_` is the hole, `rest` the deliberate remainder — and must cover the subject; a guard (`pattern if cond -> value`) is tried only once its pattern accepts and covers nothing on its own."
+        gram: grammar {
             stmt = "enum" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "{" ( BREAK | "," | ( vm:mark )* vs:NAME ( po:"(" ( pm:mark )* ( pn:NAME ":" )? pt:type ( "," ( pm:mark )* ( pn:NAME ":" )? pt:type )* ","? ")" )? )* "}" END @recover(sync_to: "END") -> enum_decl(n, tp, vs, po, pn, pt, vm, pm)
             primary = "." vn:NAME ( "(" ( a:expression ( "," a:expression )* ","? )? ")" )? -> variant_lit(vn, a)
             primary = "match" subj:expression "{" ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the `match`") -> match_expr(subj, a) @head(subj)
@@ -59,11 +58,11 @@ export fn enums() -> LanguageFeature {
             hole_arm = h:HOLE -> hole_arm(h)
             pattern = "." vn:NAME ( "(" sub:pattern ( "," sub:pattern )* ")" )? -> variant_pat(vn, sub) | "_" -> wild_pat() | "true" -> true_pat() | "false" -> false_pat() | v:NUMBER -> num_pat(v) | n:NAME -> bind_pat(n)
         }
-        builders = rows
-        diags = codes
-        properties = properties
+        builders: rows
+        diags: codes
+        properties: properties
     }
-    f
+    enums
 }
 
 /// The property row's receiver: an enum value, plain or instantiated.

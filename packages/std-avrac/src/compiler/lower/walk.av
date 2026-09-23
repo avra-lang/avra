@@ -157,6 +157,35 @@ impl LowerCx {
         }
     }
 
+    /// A `collect`'s body lowered into `into`, the list its kept
+    /// values join.
+    mut fn gathering(into: Reg, body: ExprId) {
+        // LICENSED I15: this IS the bracket
+        self.gathers.push(into)
+        let _ = self.reg_of(body)
+        let _ = self.gathers.pop()
+    }
+
+    /// A statement's value, joining the open `collect`'s list when
+    /// typing kept it.
+    mut fn gather(s: StmtId) {
+        let v? = self.view.store.stmt_value(s) else { return }
+        if !self.facts.keeps(v) { return }
+        let into? = self.gathers.last() else { return self.defect("a kept value outside its `collect`") }
+        if self.facts.spreads_at(v) { return self.spread(into, v) }
+        self.push_slot(into, self.reg_of(v))
+    }
+
+    /// A kept list's elements, each joining the `collect`'s list — the
+    /// comprehension's own walk. An empty list's joins nothing.
+    mut fn spread(into: Reg, v: ExprId) {
+        let elem? = self.view.types.element(self.type_at(v)) else { return }
+        let w = self.opened(v, elem)
+        self.turn_open(w)
+        self.push_slot(into, self.turn_elem(w, self.turn_index(w)))
+        self.turn_close(w)
+    }
+
     /// A TASK IS JOINED WHERE ITS LAST OWNER ENDS: a statement holding a
     /// task, or a list of them, joins them as its frame closes — a
     /// binding through its slot, a dropped value through its register.

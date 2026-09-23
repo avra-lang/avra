@@ -1083,6 +1083,16 @@ engine's spec, written by dogfooding.
   minted. One mechanism, one loud door and one mute one, and the
   mute one is the door every `@derive` takes. All three doors read
   one `unsettled_label` now.
+- A NODE VARIANT IS APPENDED, NEVER INSERTED. A `rule`'s pattern is
+  baked into the compiler as constants by the compiler that BUILDS it,
+  and its `shallow` fold names each node kind by its POSITION in
+  `Expr`/`Stmt`/`Pat` (`@derive(Matchable)`). Insert a variant mid-enum
+  and every later one moves: the product's baked shapes carry the old
+  positions while it computes the new ones, `match_node` trusts two
+  equal shallows to share an arity, and the product traps checking its
+  own tree ("index 0 is out of bounds (length 0)" in `match_kids`,
+  under `rule_candidates`) — the generation law with a derive as the
+  carrier. `Collect` hit it and moved to the end.
 - Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `grammar {`
   and a block word's `{` hand their body over whole, so the lexer emits
   the `}` that ends it too, and the rule consumes it (`"grammar" "{"
@@ -1785,12 +1795,6 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   answering `1 0 0`. Worth stating because the sentence above sends a
   reader at a defensive two-arm match for a shape that needs none —
   which is the trap-fear the probe discipline exists to shrink.
-- A struct-literal FIELD seat does not plant a want on its value
-  (the value is walked before the field's want exists): a
-  comprehension there types on its own, so `Pins { slots: [b ??
-  args[j] for j, b in xs] }` under `slots: List<TypeId?>` is F2010
-  "field `slots` is `List<TypeId?>`, this is `List<TypeId>`" — a
-  typed let plants it.
 
 Runtime facts, ours to ratify:
 - `Bytes` IS NOT A LIST AND `bytes()` HAS TWO ANSWERS. `b[0]` is

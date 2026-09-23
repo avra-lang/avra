@@ -1,0 +1,72 @@
+//! An instance's compile-time `check`: the record's own method, run
+//! over the instance as the compiler settles it, its diagnostics
+//! spoken at the instance. An instance only a run can build — one
+//! that reads a parameter or the world — is not checked.
+use core.{ExprId, Span}
+use features.{LowerCx, SettleRoot, Unsettled, nothing}
+use @std.meta.{Diagnostic}
+use diagnostics.{Diag, refusal, warning}
+
+fn checked(mut cx: LowerCx, e: ExprId, check: ExprId) {
+    if !settleable(cx, e, check) { return }
+    match cx.jobs.settle(cx.view.file, SettleRoot.Expr(check), cx.seats) {
+        .Ok(x) -> { for d in x.saids() { cx.out.voices.speak(said(cx, e, d)) } },
+        .Err(why) -> unchecked(cx, e, why),
+    }
+}
+
+/// Whether the instance reads only what the compiler knows: literals,
+/// declarations, `const`s, and what the instance binds itself. A value
+/// from outside it — a local, a parameter, `self`, a capture — exists
+/// only in a run.
+fn settleable(cx: LowerCx, e: ExprId, check: ExprId) -> bool {
+    let at? = cx.view.store.expr_span(e) else { return false }
+    cx.view.store.every_expr(check).all(known(cx, at, it))
+}
+
+fn known(cx: LowerCx, at: Span, x: ExprId) -> bool {
+    let b? = cx.names.binding(x) else { return true }
+    match b {
+        .Decl(_) -> true,
+        .Def(s) or .Index(s) -> cx.view.store.const_value(s) != null || held_in(at, cx.view.store.stmt_span(s)),
+        // a pattern's binder stands BEFORE its arm, so an arm that IS the
+        // instance was bound outside it
+        .Pattern(arm, _) or .LambdaParam(arm, _) -> held_within(at, cx.view.store.expr_span(arm)),
+        .Param(_) or .Receiver or .Capture(_, _) -> false,
+    }
+}
+
+fn held_in(at: Span, inner: Span?) -> bool {
+    let sp? = inner else { return false }
+    sp.lo >= at.lo && sp.hi <= at.hi
+}
+
+/// Held in the instance and smaller than it.
+fn held_within(at: Span, inner: Span?) -> bool {
+    let sp? = inner else { return false }
+    held_in(at, sp) && (sp.lo != at.lo || sp.hi != at.hi)
+}
+
+/// A check that could not run: it trapped or ran past its budget —
+/// the library's check failed, and says so. One that reads what only
+/// a run knows is no failure.
+fn unchecked(mut cx: LowerCx, e: ExprId, why: Unsettled) {
+    match why {
+        .Trap(words) or .Budget(words) -> cx.out.voices.speak(check_failed(cx, e, words)),
+        .Reach(_) or .Param(_) or .Spoken or .Recursive -> nothing(),
+    }
+}
+
+// ── voices ──
+
+fn checked_kind() -> string { "lower.component_checked" }
+
+fn said(cx: LowerCx, e: ExprId, d: Diagnostic) -> Diag {
+    let at = d.at ?? cx.view.loc_of(e)
+    if d.warning { return warning(checked_kind(), at, d.message, "`check` says so of this instance", d.help) }
+    refusal(checked_kind(), at, d.message, "`check` refused this instance", d.help)
+}
+
+fn check_failed(cx: LowerCx, e: ExprId, words: string) -> Diag {
+    refusal(checked_kind(), cx.view.loc_of(e), "this instance's `check` did not run: ${words}", "checked here", "a `check` runs at compile time over the settings — what fails there is the component's to fix")
+}

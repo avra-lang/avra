@@ -200,15 +200,34 @@ export fn type_named(names: NameFacts, name: string) -> DeclId? {
     names.names.type_decl(name)
 }
 
-/// Whether a type registered an impl for the trait — and a `dyn` of
-/// the very trait implements it BY CONSTRUCTION.
+/// Whether a type registered an impl for the trait this file names —
+/// and a `dyn` of the very trait implements it BY CONSTRUCTION.
 export fn implements_of(types: TypeRegistry, decls: Decls, names: NameFacts, ty: TypeId, tname: string) -> bool {
     let worn: string? = dyn_contract(types.shape_of(ty))
     if worn != null { return worn! == tname }
-    let d: DeclId? = declared_decl(types.shape_of(ty))
-    let tr: DeclId? = decls.trait_named(names, tname)
-    if d == null || tr == null { return false }
-    decls.implements(d!, tr!)
+    let tr? = decls.trait_named(names, tname) else { return false }
+    implements_trait(types, decls, ty, tr)
+}
+
+/// Whether a type registered an impl for the trait DECLARATION — asked
+/// of the trait itself, so the answer never depends on what the asking
+/// file imports.
+export fn implements_trait(types: TypeRegistry, decls: Decls, ty: TypeId, tr: DeclId) -> bool {
+    let sh = types.shape_of(ty)
+    let worn: DynContract? = dyn_decl(sh)
+    if worn != null { return same_decl(worn!.decl, tr) }
+    let d? = declared_decl(sh) else { return false }
+    decls.implements(d, tr)
+}
+
+/// A `dyn`'s trait: its declaration, and the name it is spelled by.
+export type DynContract = { decl: DeclId, name: string }
+
+export fn dyn_decl(sh: Type) -> DynContract? {
+    match sh {
+        .Dyn(d, n) -> DynContract { decl: d, name: n },
+        _ -> null,
+    }
 }
 
 export fn dyn_contract(sh: Type) -> string? {
@@ -398,6 +417,7 @@ impl TypeCx {
     fn method_sig(target: DeclId, mname: string) -> FnSig? { self.view.decls.method_sig_of(target, mname) }
     fn trait_sig(tname: string, mname: string) -> FnSig? { self.view.decls.trait_sig_of(self.names, tname, mname) }
     fn implements(ty: TypeId, tname: string) -> bool { implements_of(self.view.types, self.view.decls, self.names, ty, tname) }
+    fn implements_decl(ty: TypeId, tr: DeclId) -> bool { implements_trait(self.view.types, self.view.decls, ty, tr) }
     /// A `mut` binding: a `mut` local, a receiver, a `mut` seat — or
     /// a lambda's seat that HEARD its mark from the slot, which only
     /// typing knows.
