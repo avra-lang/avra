@@ -29,11 +29,11 @@ fn fetched(port: int, target: string, order: Cell<List<string>>) -> Result<strin
 fn shown() -> Result<string, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
     let order: Cell<List<string>> = Cell.new([])
-    let s = served(l, App { name: "witness" }, limits(), timing()) { app, q ->
+    let s = served(l, () -> App { name: "witness" }, limits(), timing()) { app, q ->
         if q.target() == "/slow" { sleep(ms(100)) }
         text(200, "${q.target() ?? "?"} done")
     }
-    spawn s.run()
+    spawn s.run(cores: 1)
     defer s.stop()
     let slow = spawn fetched(l.port, "/slow", order)
     sleep(ms(10))

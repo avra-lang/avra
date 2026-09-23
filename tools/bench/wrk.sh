@@ -1,12 +1,15 @@
 #!/bin/sh
 # The server under load, measured apart from its load: tools/bench/serve
-# pinned to ONE core, wrk driving it from the others, keep-alive and
-# pipelined. Prints requests a second and the server's CPU per request
+# pinned to CORES cores (default 1), wrk driving it from the others,
+# keep-alive and pipelined. Prints requests a second and the server's CPU per request
 # — the number that does not move when the generator is the bottleneck.
 #
 #   sh tools/bench/wrk.sh            (on Linux: a Sprite, via sprite-build.sh)
 #   FLOOR=1 sh tools/bench/wrk.sh    the same load against tools/bench/floor,
 #                                    the kernel's floor in C
+#   CORES=4 sh tools/bench/wrk.sh    the server on cores 0-3, wrk on the rest
+#                                    (LISTEN=reuseport: the floor's per-process
+#                                    sockets)
 set -eu
 ulimit -n 65536 2>/dev/null || ulimit -n "$(ulimit -Hn)"
 command -v wrk >/dev/null || sudo apt-get install -y wrk >/dev/null 2>&1
@@ -19,11 +22,13 @@ else
     build/avra build tools/bench/serve/src/main.av >/dev/null
 fi
 cores=$(nproc)
-taskset -c 0 "$server" >/dev/null 2>&1 &
+serving=${CORES:-1}
+CORES=$serving taskset -c 0-$((serving - 1)) "$server" >/dev/null 2>&1 &
 pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
+trap 'pkill -P $pid 2>/dev/null || true; kill $pid 2>/dev/null || true' EXIT
 sleep 1
-cpu() { awk '{print $14 + $15}' "/proc/$pid/stat"; }
+# The server's CPU is its whole process tree's: one process per core.
+cpu() { for p in $pid $(pgrep -P $pid); do cat "/proc/$p/stat"; done 2>/dev/null | awk '{s += $14 + $15} END {print s}'; }
 tick=$(getconf CLK_TCK)
 pipeline=$(mktemp)
 cat > "$pipeline" <<'EOF'
@@ -37,7 +42,7 @@ EOF
 run() {
     label=$1; shift
     before=$(cpu)
-    out=$(taskset -c 1-$((cores - 1)) wrk -t$((cores - 1)) -d5s "$@" http://127.0.0.1:18080/)
+    out=$(taskset -c $serving-$((cores - 1)) wrk -t$((cores - serving)) -d5s "$@" http://127.0.0.1:18080/)
     after=$(cpu)
     rps=$(echo "$out" | awk '/Requests\/sec/ {print $2}')
     p99=$(echo "$out" | awk '/Latency/ {print $2}')

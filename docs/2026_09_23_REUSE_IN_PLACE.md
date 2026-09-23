@@ -185,3 +185,18 @@ they are small scalar records (`Span`, `Field`) and enum payloads.
   params; a seat that consumes would let the caller hand over.
 - Interpolation builds a parts list then joins it; a sized builder
   row would skip the list.
+
+## §7 As built — R2, records as one block
+
+A box asked for a SIZE (`avra_array_sized`: records, literals, slices,
+clones) is one allocation — its cells and marks laid right after the
+AvraArray, the layout static data already had. `laid_out` now means
+"cells inside the box", static or not, and the grow and reclaim paths
+it already guarded serve both: a grow moves the cells out and leaves
+the laid-out ones in the box; a reclaim frees only a buffer that is not
+laid out. A builder (`avra_array_new`) keeps its own buffer, since it
+grows. Nothing else in the runtime owns a list buffer.
+
+Mac, four interleaved pairs over the R1 runtime: request 2.27 µs ->
+2.08 µs (−8.5%). `check packages/cli`, five interleaved pairs: user
+8.00 s -> 7.98 s — no regression.

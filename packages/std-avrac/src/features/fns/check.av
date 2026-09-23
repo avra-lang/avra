@@ -7,7 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, mut_mark, rt_sigs, RtSig, RtKind, Box, TypeRegistry, extern_kind, width_named}
-use features.{no_pins, Pins, TypeCx, FnSig, nothing, this_is, tparams_refused, unpinned_of, type_name_decl}
+use features.{no_pins, Pins, Placed, TypeCx, FnSig, nothing, this_is, tparams_refused, unpinned_of, type_name_decl}
 use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
@@ -234,18 +234,30 @@ fn checked_fn(mut cx: TypeCx, s: StmtId, fname: string, fret: TypeRef, body: Exp
 }
 
 /// THE DEFAULT LAWS at the declaration. A default is ONE body, lowered
-/// once, so its fn is lowered once too; a `mut` seat is a place and a
-/// `const` seat a settled value, which a default body is neither; and
-/// a call writes its seats in order, so a seat without a default after
-/// one with a default could never be left to it.
+/// once, so a seat whose type names a type parameter defaults only in
+/// a fn lowered once; a `mut` seat is a place and a `const` seat a
+/// settled value, which a default body is neither; and a call writes
+/// its seats in order, so a seat without a default after one with a
+/// default could never be left to it.
 fn defaults_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
     let first? = [j for j, p in params if p.default != null].first() else { return }
-    if !cx.view.decls.lowered_once(cx.decl_of(s)) { return generic_default(cx, params[first], fname) }
+    if !cx.view.decls.lowered_once(cx.decl_of(s)) {
+        let open = [p for p in params if default_opens(cx, s, p)]
+        if !open.is_empty() { return generic_default(cx, open[0], fname) }
+    }
     for p in params {
         if p.default != null && (p.promises.mutable || p.promises.settled) { marked_default(cx, p, fname) }
     }
     let unfilled? = params.slice(first, params.length).find(it.default == null) else { return }
     required_after_default(cx, unfilled, params[first])
+}
+
+/// Whether a seat's default answers a type naming a type parameter.
+fn default_opens(cx: TypeCx, s: StmtId, p: Param) -> bool {
+    if p.default == null { return false }
+    let d? = cx.view.decls.default_named(cx.decl_of(s), p.name.of) else { return false }
+    let ret? = cx.view.decls.sig(d)?.fn_sig()?.ret else { return false }
+    cx.view.types.open(ret)
 }
 
 /// THE DEFAULT LAW, at the body: a seat's default (walked under the
@@ -319,15 +331,17 @@ fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef
         if !pins.is_empty() { takes_no_pins(cx, e, callee) }
         return cx.seats_judged(e, callee, placed.wants, [], s.ret, placed.args)
     }
-    generic_call(cx, e, callee, pins, placed.args, s, d, tp)
+    generic_call(cx, e, callee, pins, placed, s, d, tp)
 }
 
-/// The instantiation: pins pre-fill by position, arguments unify
-/// the rest, every Var must land, and the answer is the return with
-/// the bindings applied. Recorded for mono.
-fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, args: List<ExprId>, s: FnSig, decl: DeclId, tp: List<string>) -> TypeId {
+/// The instantiation: pins pre-fill by position, the written
+/// arguments unify the rest against their seats, every Var must land,
+/// and the answer is the return with the bindings applied. Recorded
+/// for mono.
+fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, placed: Placed, s: FnSig, decl: DeclId, tp: List<string>) -> TypeId {
     if tparams_refused(tp) { return cx.error_type }
-    if args.length != s.params.length {
+    let args = placed.args
+    if args.length != placed.wants.length {
         cx.wrong_arity(e, callee, s.params.length, args.length)
         return cx.error_type
     }
@@ -338,7 +352,7 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, 
     }
     mut spoke = false
     for j, a in args {
-        if !generic_argument(cx, callee, j, s.params[j], a, decl, bound) { spoke = true }
+        if !generic_argument(cx, callee, j, placed.wants[j], a, decl, bound) { spoke = true }
     }
     if spoke { return cx.error_type }
     if unpinned_of(tp, bound) != null { pinned_by_answer(cx, e, s.ret, decl, bound) }
@@ -468,7 +482,7 @@ fn cellless_place(cx: TypeCx, a: ExprId) -> bool {
 // ── The voices ──
 
 fn generic_default(mut cx: TypeCx, p: Param, fname: string) {
-    cx.emit(refusal("type.param_default", cx.loc_of(p.default!), "`${p.name.of}` carries a default, and `${fname}` is generic — a default is one body, and a generic fn is lowered once per type", "defaulted here", "drop the default, or give `${fname}` a plain twin that fills the seat"))
+    cx.emit(refusal("type.param_default", cx.loc_of(p.default!), "`${p.name.of}` carries a default, and its type names a type parameter of `${fname}` — a default is one body, lowered once, and that type differs per call", "defaulted here", "drop the default, or give `${fname}` a plain twin that fills the seat"))
 }
 
 fn marked_default(mut cx: TypeCx, p: Param, fname: string) {

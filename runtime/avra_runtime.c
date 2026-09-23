@@ -932,18 +932,38 @@ static void array_marks(AvraArray* a) {
 // with no size asked, so the shape is written once and the site is
 // handed in — a return address read inside would name this fn, not
 // the caller the accounting wants.
+static int laid_out(AvraArray* a);
+
+// The bytes a list holds: its box, and its buffer when the cells are
+// not laid inside the box.
+static int64_t array_bytes(AvraArray* a) {
+    int64_t box = (int64_t)(sizeof(Header) + ((Header*)a - 1)->len);
+    return laid_out(a) ? box : box + (int64_t)buf_bytes(a->cap);
+}
+
 __attribute__((noinline, cold))
 static void sized_noted(AvraArray* a, void* ra) {
     a->site = g_clone_site ? g_clone_site : ra;
     g_sample_next = a;
-    acc_site(a->site, (int64_t)(sizeof(Header) + sizeof(AvraArray) + buf_bytes(a->cap)), 1);
+    acc_site(a->site, array_bytes(a), 1);
 }
 
+// A box asked for a SIZE is one block — its cells and marks laid right
+// after the AvraArray, as static data is — so a record costs one
+// allocation. A builder (no size asked) keeps a buffer of its own,
+// since it grows.
 static AvraArray* array_made(int64_t cap, void* ra) {
-    AvraArray* a = (AvraArray*)box_alloc(sizeof(AvraArray), KIND_ARRAY);
-    a->cap = cap > 0 ? cap : ARRAY_FIRST;
+    AvraArray* a;
+    if (cap > 0) {
+        a = (AvraArray*)box_alloc(sizeof(AvraArray) + buf_bytes(cap), KIND_ARRAY);
+        a->cap = cap;
+        a->data = (int64_t*)(a + 1);
+    } else {
+        a = (AvraArray*)box_alloc(sizeof(AvraArray), KIND_ARRAY);
+        a->cap = ARRAY_FIRST;
+        a->data = buf_alloc(a->cap);
+    }
     a->len = 0;
-    a->data = buf_alloc(a->cap);
     array_marks(a);
     memset(a->marks, 0, (size_t)a->cap);
     a->site = NULL;
@@ -977,8 +997,8 @@ static void array_reclaim(void* p) {
     for (int64_t i = 0; i < a->len; i++) {
         if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
     }
-    if (a->site) acc_site(a->site, -(int64_t)(sizeof(Header) + sizeof(AvraArray) + buf_bytes(a->cap)), -1);
-    buf_free(a->data, a->cap);
+    if (a->site) acc_site(a->site, -array_bytes(a), -1);
+    if (!laid_out(a)) buf_free(a->data, a->cap);
     box_free(a);
 }
 
@@ -990,13 +1010,11 @@ static void array_reclaim(void* p) {
 // Doubles the capacity: a classed buffer moves to the next class, a
 // big one grows in place; the marks follow the cells to their new
 // place, the new marks zero.
-// STATIC DATA'S CELLS LIE INSIDE ITS OWN BOX (the backend lays the
-// buffer right after the AvraArray), so its buffer is the binary's
-// and never the allocator's: a grow moves the cells out and leaves
-// the laid-out ones where they are. Nothing in the language writes a
-// const, but a `mut` seat handed a copy of one still writes through
-// the shared box (ROADMAP: H3), and that write must not hand a
-// static buffer to `free`.
+// A LAID-OUT BOX'S CELLS LIE INSIDE THE BOX ITSELF — static data (the
+// backend lays the buffer right after the AvraArray) and every sized
+// box — so that buffer is never the allocator's to free or realloc: a
+// grow moves the cells out and leaves the laid-out ones where they
+// are, and the box frees them with itself.
 static int laid_out(AvraArray* a) {
     return a->data == (int64_t*)(a + 1);
 }
@@ -1006,6 +1024,7 @@ static void array_grow(AvraArray* a) {
     int64_t cap = old_cap < ARRAY_FIRST ? ARRAY_FIRST : old_cap * 2;
     int64_t* buf;
     int fixed = laid_out(a);
+    int64_t before = a->site ? array_bytes(a) : 0;
     if (fixed || buf_class(old_cap) >= 0) {
         buf = buf_alloc(cap);
         memcpy(buf, a->data, (size_t)old_cap * sizeof(int64_t));
@@ -1021,7 +1040,7 @@ static void array_grow(AvraArray* a) {
     a->cap = cap;
     array_marks(a);
     memset(a->marks + a->len, 0, (size_t)(cap - a->len));
-    if (a->site) acc_site(a->site, (int64_t)(buf_bytes(cap) - buf_bytes(old_cap)), 0);
+    if (a->site) acc_site(a->site, array_bytes(a) - before, 0);
 }
 
 // A FULL LIST'S WRITE, whole and out of line, so the common write
@@ -2904,4 +2923,5 @@ const char* avra_capture_end(void) {
 // above, and the other objects' through their headers, which their
 // own definitions must match. Included LAST, so all are declared.
 #include "avra_fiber.h"
+#include "avra_cores.h"
 #include "avra_rt.h"

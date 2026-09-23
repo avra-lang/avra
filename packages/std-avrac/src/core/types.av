@@ -524,6 +524,19 @@ impl TypeRegistry {
         }
     }
 
+    /// Whether `ty` names a type parameter anywhere inside it.
+    fn open(ty: TypeId) -> bool {
+        match self.shape_of(ty) {
+            .Var(_, _, _) -> true,
+            .List(t) or .Cell(t) or .Task(t) or .Opt(t) -> self.open(t),
+            .Map(k, v) or .Res(k, v) -> self.open(k) || self.open(v),
+            .App(_, _, aa) -> [a for a in aa if self.open(a)].length > 0,
+            .Fn(ps, _, ret) -> self.open(ret) || [p for p in ps if self.open(p)].length > 0,
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _)
+                or .TypeName(_, _) or .Dyn(_, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap or .Tasks -> false,
+        }
+    }
+
     /// The printing projection — the ONLY place a type becomes text.
     fn name_of(id: TypeId) -> string {
         match self.shape_of(id) {
@@ -620,11 +633,12 @@ export type Arrow = { seats: List<TypeId>, marks: List<SeatMark>, answer: TypeId
 
 /// A fn seat's contract, ONE value per seat. `mutable` lets the
 /// callee write through the seat; `settled` demands the caller
-/// settle the seat's value at compile time. Both ride the fn type's
-/// identity, so a writing or const-demanding callee cannot sit in a
-/// seat that promised neither — and a new promise is a field here,
-/// never a parallel list at every mark site.
-export type SeatMark = { mutable: bool, settled: bool }
+/// settle the seat's value at compile time; `isolated` demands a fn
+/// that shares nothing with its caller — it may run on another core.
+/// All ride the fn type's identity, so a callee demanding one cannot
+/// sit in a seat that promised none — and a new promise is a field
+/// here, never a parallel list at every mark site.
+export type SeatMark = { mutable: bool, settled: bool, unshared: bool = false }
 
 /// The unmarked seat — a lambda's, a wrapper's, a trailing seat's.
 export const plain_mark: SeatMark = SeatMark { mutable: false, settled: false }
@@ -658,11 +672,18 @@ export fn settled_mark(marks: List<SeatMark>, j: int) -> bool {
     mark_at(marks, j).settled
 }
 
-/// A seat's written prefix — `const`, `mut`, or both.
+/// Whether seat `j` demands a fn that shares nothing with its caller.
+export fn isolated_mark(marks: List<SeatMark>, j: int) -> bool {
+    mark_at(marks, j).unshared
+}
+
+/// A seat's written prefix — `const`, `mut` and `isolated`, in the
+/// order the grammar takes them.
 export fn mark_prefixed(m: SeatMark, word: string) -> string {
-    if m.settled { return if m.mutable { "const mut ${word}" } else { "const ${word}" } }
-    if m.mutable { return "mut ${word}" }
-    word
+    let inner = if m.unshared { "isolated ${word}" } else { word }
+    if m.settled { return if m.mutable { "const mut ${inner}" } else { "const ${inner}" } }
+    if m.mutable { return "mut ${inner}" }
+    inner
 }
 
 /// The canonical word for a mark set — ONE spelling in the
@@ -673,6 +694,13 @@ fn mark_words(marks: List<SeatMark>) -> string {
 }
 
 fn mark_word(m: SeatMark) -> string {
+    if m.unshared {
+        return if m.mutable {
+            if m.settled { "B" } else { "M" }
+        } else {
+            if m.settled { "C" } else { "P" }
+        }
+    }
     if m.mutable {
         if m.settled { "b" } else { "m" }
     } else {
@@ -695,7 +723,7 @@ fn trimmed_marks(t: Type) -> Type {
 }
 
 fn is_plain(m: SeatMark) -> bool {
-    !m.mutable && !m.settled
+    !m.mutable && !m.settled && !m.unshared
 }
 
 fn trimmed(marks: List<SeatMark>) -> List<SeatMark> {
