@@ -213,6 +213,41 @@ fn bind_label<N>(bindings: List<Binding<N>>, label: string, v: Captured<N>, acc:
     out
 }
 
+/// `bind_label`'s REPETITION-SHAPED twin: an outer `label:item*`'s
+/// whole capture, bound ONCE instead of once per element. Calling
+/// `bind_label(…, acc: true)` inside the loop it replaces folds
+/// `accumulate`'s own copy over every element — the O(N²) `match_repetition`
+/// exists to spend a `List.concat` avoiding: `collected` already
+/// holds the same values in order, so `accumulate` folded over them
+/// from whatever the label already held is exactly `accumulated_all`,
+/// computed with one copy instead of N.
+fn bind_label_all<N>(bindings: List<Binding<N>>, label: string, vs: List<Captured<N>>) -> List<Binding<N>> {
+    if !bindings.any(it.label == label) {
+        mut out = [b for b in bindings]
+        out.push(Binding { label: label, value: captured_many<N>(vs) })
+        return out
+    }
+    mut out: List<Binding<N>> = []
+    for b in bindings {
+        if b.label == label {
+            out.push(b with { value: accumulated_all<N>(b.value, vs) })
+        } else {
+            out.push(b)
+        }
+    }
+    out
+}
+
+/// `accumulate`, folded over a whole run at once.
+fn accumulated_all<N>(prev: Captured<N>, vs: List<Captured<N>>) -> Captured<N> {
+    match prev {
+        .Many(items) -> Captured.Many(items.concat(vs)),
+        .Terminal(t) -> Captured.Many([captured_terminal<N>(t)].concat(vs)),
+        .Node(n) -> Captured.Many([Captured.Node(n)].concat(vs)),
+        .Absent -> Captured.Many(vs),
+    }
+}
+
 fn binding_for<N>(bindings: List<Binding<N>>, label: string) -> Captured<N>? {
     bindings.find(it.label == label)?.value
 }
@@ -555,7 +590,7 @@ fn match_repetition<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
         // (committed included) ends the loop; its story lives in `farthest`.
         if r.status == MatchStatus.Fatal {
             diagnostics = diagnostics.concat(r.diagnostics)
-            return fatal_defect<N>(cx, cursor, bindings, diagnostics, farthest)
+            return fatal_defect<N>(cx, cursor, labeled_bindings<N>(bindings, member, collected), diagnostics, farthest)
         }
         if r.status != MatchStatus.Hit {
             going = false
@@ -565,13 +600,25 @@ fn match_repetition<N>(mut cx: MatchContext<N>, rule_name: string, member: Item,
         } else {
             diagnostics = diagnostics.concat(r.diagnostics)
             collected.push(r.value)
-            bindings = if member.label != null { bind_label<N>(r.bindings, member.label!, r.value, true) } else { r.bindings }
+            bindings = r.bindings
             cursor = r.cursor
             count = count + 1
         }
     }
     if count < min { return missed<N>(cx, entry, entry_bindings, diagnostics, farthest) }
-    matched<N>(cursor, bindings, captured_many<N>(collected), diagnostics, farthest)
+    matched<N>(cursor, labeled_bindings<N>(bindings, member, collected), captured_many<N>(collected), diagnostics, farthest)
+}
+
+/// A repeated item's own label, bound to everything collected so
+/// far — `bindings` unchanged when it carries none, AND unchanged
+/// when nothing was collected: a star that never turned binds
+/// nothing, the way zero iterations of the old per-element
+/// `bind_label` calls never called it either. Binding an EMPTY
+/// `Many` here instead would read as present-but-empty where the
+/// grammar's own tests read absent.
+fn labeled_bindings<N>(bindings: List<Binding<N>>, member: Item, collected: List<Captured<N>>) -> List<Binding<N>> {
+    if member.label == null || collected.is_empty() { return bindings }
+    bind_label_all<N>(bindings, member.label!, collected)
 }
 
 fn match_prim<N>(mut cx: MatchContext<N>, rule_name: string, member: Item, cursor: int, bindings: List<Binding<N>>, acc: bool, capped: bool) -> MatchResult<N> {
