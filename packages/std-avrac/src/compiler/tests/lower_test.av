@@ -269,7 +269,7 @@ spec "compiler/lower" {
         // TWO fields on purpose: a record of ONE scalar is FLAT — it
         // rides a register and costs no box at all, so it cannot
         // show the managed cell's protocol.
-        then "seed retains; overwrite retains FIRST, releases old, stores; the scope settles the cell" {
+        then "a dying value MOVES into the cell — no retain at the store, no release at the scope; the store releases old first, and the scope settles the cell" {
             let expected = """scope application {
   r0 = int 1
   r1 = int 0
@@ -278,7 +278,6 @@ spec "compiler/lower" {
   call avra_array_push(r3, r0)
   call avra_array_push(r3, r1)
   r4 = slot
-  retain r3
   call avra_cell_release(r4)
   store r4 <- r3
   r5 = int 2
@@ -287,7 +286,6 @@ spec "compiler/lower" {
   r8 = call avra_array_sized(r7)
   call avra_array_push(r8, r5)
   call avra_array_push(r8, r6)
-  retain r8
   call avra_cell_release(r4)
   store r4 <- r8
   r9 = load r4
@@ -297,8 +295,6 @@ spec "compiler/lower" {
   call avra_puts(r12)
   call avra_cell_release(r4)
   release r12
-  release r8
-  release r3
 }
 ret 0"""
             render_ir(ir_of("type P = { x: int, y: int }\nmut a = P { x: 1, y: 0 }\na = P { x: 2, y: 0 }\na.x")) == expected

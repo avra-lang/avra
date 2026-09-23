@@ -140,16 +140,18 @@ gate — there is no amnesty left to hide in.
       validate's and coherence's `seen` folds are duplicate
       DETECTION (they emit on the dup), a different concept, left.
 - I6  head-plus-tail list builds — `concat`/`flatten` today, spread
-      literals when the sugar lands (backlog). AND `concat` COSTS THE
-      WHOLE LIST, so this entry must never be read as "append one
-      element with it": building n items by appending one at a time
-      copies a growing list n times, which is quadratic. MEASURED
-      (2026-09-17), 20,000 appends: through a LOCAL `mut` binding
-      0.002s (the push is in place); through a RECORD FIELD of a
-      shared value, or through a `Cell`'s `get`→`push`→`set`, 0.45s
-      — the whole list copied per element. So `concat` JOINS TWO
-      LISTS, and a loop that appends builds through a local `mut`
-      binding or is a comprehension. The two worst sites in the tree
+      literals when the sugar lands (backlog). WHERE THE LIST LIVES
+      DECIDES WHAT AN APPEND COSTS. Through a LOCAL `mut` binding,
+      `out = out.concat(x)` and `s = s + x` append IN PLACE — the
+      memory pass hands the cell's box to the reusing twin
+      (docs/2026_09_23_REUSE_IN_PLACE.md). MEASURED (2026-09-23),
+      100,000 appends: list 13.7s -> 0.001s, text 0.385s -> 0.004s.
+      Through a RECORD FIELD of a shared value, or a `Cell`'s
+      `get`→`push`→`set`, the whole value is still copied per append
+      (measured 2026-09-17: 20,000 appends, 0.45s) — that growth is
+      quadratic, and `style.quadratic_growth` names the text case.
+      So a loop that appends builds through a local `mut` binding or
+      is a comprehension. The two worst sites in the tree
       were both this shape: `Db.record_dep` (97% of the `bodies`
       phase) and `Decls.note_origins` (97% of `resolve`). AND THE
       COST IS NOT THE COPY-ON-WRITE — a push on a local that shares
