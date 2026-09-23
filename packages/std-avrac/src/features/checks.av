@@ -837,14 +837,16 @@ impl TypeCx {
         self.path_copy_law(e, place, root)
     }
 
-    /// THE ROOT DECIDES: a write through a PATH rooted at a `mut` LOCAL
-    /// opens the path's boxes unique, so the write stays in the local;
-    /// rooted at `self` or a `mut` seat it reaches the caller.
+    /// THE ROOT DECIDES: a write through a PATH opens the path's boxes
+    /// below the root unique, so no other holder of what the path
+    /// reaches sees it. The root alone is written through when it is
+    /// `self` or a `mut` seat — the write reaches the caller — and
+    /// opened with the rest when it is a `mut` LOCAL, which F2106 says.
     mut fn path_copy_law(e: ExprId, place: ExprId, root: ExprId) {
-        let s? = self.bare_mut_stmt(root) else { return }
         if self.facts.wants_alias_copy(place) || !self.through_path(place) { return }
         if !self.view.types.rides_pointer(self.type_at(place)) { return }
         self.facts.mark_alias_copy(place)
+        let s? = self.bare_mut_stmt(root) else { return }
         if self.aliased_warned.contains(s.index) { return }
         self.aliased_warned.push(s.index)
         self.local_path(e, self.root_word(root), self.place_words(place) ?? "…")

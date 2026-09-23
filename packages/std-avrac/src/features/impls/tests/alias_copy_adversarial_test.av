@@ -239,14 +239,12 @@ spec "features/impls (alias copy, adversarial)" {
             shown("type R = { x: int }\ntype H = { r: R? }\nfn f() -> int {\n    mut h = H { r: R { x: 1 } }\n    let before = h\n    h.r!.x = 5\n    h.r!.x * 10 + before.r!.x\n}\nf()") == "51"
         }
     }
-    given "what the root does not reach yet" {
-        // MEASURED, not asserted as right: spec 11.5 wants "1 1 0". A
-        // path rooted at `self` or a `mut` seat writes through, so an
-        // element inside it that another value also holds sees the
-        // write — the root decides the path, never the element's other
-        // holders.
-        then "a shared element written through `self` and through a seat" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\ntype B = { h: H }\nimpl B { mut fn bump() { self.h.r.add(1) } }\nfn grow(mut h: H) { h.r.add(1) }\nlet r = R { xs: [] }\nmut b = B { h: H { r: r } }\nb.bump()\nmut h = H { r: r }\ngrow(h)\n\"\${b.h.r.xs.length} \${h.r.xs.length} \${r.xs.length}\"") == "2 2 2"
+    given "the root is written through, the path below it opens" {
+        then "a writing method through `self` and through a seat leaves a shared element's other holder alone" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\ntype B = { h: H }\nimpl B { mut fn bump() { self.h.r.add(1) } }\nfn grow(mut h: H) { h.r.add(1) }\nlet r = R { xs: [] }\nmut b = B { h: H { r: r } }\nb.bump()\nmut h = H { r: r }\ngrow(h)\n\"\${b.h.r.xs.length} \${h.r.xs.length} \${r.xs.length}\"") == "1 1 0"
+        }
+        then "an identity behind a Cell on the path stays one — every holder sees the write" {
+            shown("type T = { rows: Cell<List<int>> }\nimpl T { fn add(v: int) { self.rows.push(v) } }\ntype H = { t: T }\ntype B = { h: H }\nimpl B { mut fn bump() { self.h.t.add(1) } }\nlet seed: List<int> = []\nlet t = T { rows: Cell.new(seed) }\nmut b = B { h: H { t: t } }\nb.bump()\n\"\${b.h.t.rows.get().length} \${t.rows.get().length}\"") == "1 1"
         }
     }
 }
