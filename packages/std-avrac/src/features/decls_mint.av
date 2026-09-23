@@ -50,11 +50,11 @@ impl Decls {
     fn file(f: FileId) -> FileInfo { self.files.get()[f.index] }
 
     fn store_of(f: FileId) -> NodeStore {
-        if self.stores.get()[f.index] == null { (self.ensure_store[0])(f) }
+        if self.stores.get()[f.index] == null { (self.ensure_store.get())(f) }
         self.stores.get()[f.index]!
     }
 
-    fn arm_store(ensure: fn(FileId) -> void) { self.ensure_store.set(0, ensure) }
+    fn arm_store(ensure: fn(FileId) -> void) { self.ensure_store.set(ensure) }
 
     fn remember_store(f: FileId, store: NodeStore) { self.stores.set_at(f.index, store) }
 
@@ -187,25 +187,25 @@ impl Decls {
     /// each top-level one with its members, then Main, then the
     /// nested ones.
     fn decls_of_file(f: FileId) -> List<DeclId> {
-        (self.ensure_file[0])(f)
+        (self.ensure_file.get())(f)
         self.file_decls.get()[f.index].get()
     }
 
     /// The same, as the table stands — the minter's own read.
     fn decls_so_far(f: FileId) -> List<DeclId> { self.file_decls.get()[f.index].get() }
 
-    fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(0, ensure) }
+    fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
 
     fn held_items_of_file(f: FileId) -> List<DeclId> {
-        (self.ensure_file[0])(f)
-        self.held_items.get(self.file(f).path) ?? []
+        (self.ensure_file.get())(f)
+        self.held_items.get().get(self.file(f).path) ?? []
     }
 
     /// A held declaration joins its file: the list once, the main's seat, the
     /// items. `file_decls`/`mains` are Cells now — a write to THEM lands in
     /// the one shared slot; `held_items` (below) is not one of this slice's
     /// fields and still needs the receiver mut.
-    mut fn held_joins(f: FileId, d: DeclId, ordinal: int, main: bool, item: bool) {
+    fn held_joins(f: FileId, d: DeclId, ordinal: int, main: bool, item: bool) {
         let mine = self.decls_so_far(f)
         if mine.length == ordinal || !mine.any(same_decl(it, d)) { self.file_decls.get()[f.index].push(d) }
         if main { self.mains.set_at(f.index, d) }
@@ -218,9 +218,9 @@ impl Decls {
     fn remember_held_item(f: FileId, d: DeclId) {
         let path = self.file(f).path
         // IN PLACE: `concat([d])` rebuilt the list per item, quadratic in a file's items.
-        mut xs = self.held_items.get(path) ?? []
+        mut xs = self.held_items.get().get(path) ?? []
         xs.push(d)
-        self.held_items.set(path, xs)
+        self.held_items.put(path, xs)
     }
 
     /// A declaration whose body owns its expressions: not Main (it
