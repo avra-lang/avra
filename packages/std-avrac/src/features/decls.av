@@ -65,6 +65,10 @@ export type DeclFacts = {
     /// parse alone, and a held block that cannot say it implements nothing: a `dyn` box
     /// over its type is refused in a file that merely parsed beside it.
     of: string,
+    /// A `const` THAT IS A DECLARED INSTANCE — built once per run by its own unit, owned
+    /// by its file's object. A reader in another file must know it without a parse the
+    /// hold skips.
+    instance: bool = false,
 }
 
 /// An extern's raw seat widths: one name per parameter, then the answer's.
@@ -93,6 +97,7 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
         host: if readable { extern_host(store, x.stmt) } else { [] },
         annotated: readable && !store.annotations_of(x.stmt).is_empty(),
         of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
+        instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
     }
 }
 
