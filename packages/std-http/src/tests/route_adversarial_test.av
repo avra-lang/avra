@@ -8,7 +8,7 @@
 // its own copy of the trie would test the copy; a test that carries
 // the algorithm the trie has to agree with tests the trie.
 use @std.http.frame.{Method}
-use @std.http.http.{Request, Response, text}
+use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Route, routed, fixed, tailed, compiled, dispatch, segments, faults}
 
 grammar AdvIdea = "/ideas/{id}"
@@ -20,15 +20,15 @@ grammar AdvSuffix = "/img/{path...}.png"
 grammar AdvHoled = "/{tenant}/files/{path...}"
 grammar AdvRoot = "/{path...}"
 
-fn adv_idea(_q: Request, r: AdvIdea) -> Response { text(200, "I" + r.id) }
-fn adv_tenant(_q: Request, r: AdvTenant) -> Response { text(200, "T" + r.tenant) }
-fn adv_major(_q: Request, r: AdvMajor) -> Response { text(200, "M" + r.major) }
-fn adv_trio(_q: Request, r: AdvTrio) -> Response { text(200, "R" + r.b + r.c) }
-fn word(_q: Request) -> Response { text(200, "W") }
-fn adv_rest(_q: Request, r: AdvRest) -> Response { text(200, "S" + r.path) }
-fn adv_suffix(_q: Request, r: AdvSuffix) -> Response { text(200, "P" + r.path) }
-fn adv_holed(_q: Request, r: AdvHoled) -> Response { text(200, "H" + r.tenant + "|" + r.path) }
-fn adv_root(_q: Request, r: AdvRoot) -> Response { text(200, "R" + r.path) }
+fn adv_idea(q: Request<AdvIdea>) -> Response { text(200, "I" + q.params.id) }
+fn adv_tenant(q: Request<AdvTenant>) -> Response { text(200, "T" + q.params.tenant) }
+fn adv_major(q: Request<AdvMajor>) -> Response { text(200, "M" + q.params.major) }
+fn adv_trio(q: Request<AdvTrio>) -> Response { text(200, "R" + q.params.b + q.params.c) }
+fn word(_q: Request<Unrouted>) -> Response { text(200, "W") }
+fn adv_rest(q: Request<AdvRest>) -> Response { text(200, "S" + q.params.path) }
+fn adv_suffix(q: Request<AdvSuffix>) -> Response { text(200, "P" + q.params.path) }
+fn adv_holed(q: Request<AdvHoled>) -> Response { text(200, "H" + q.params.tenant + "|" + q.params.path) }
+fn adv_root(q: Request<AdvRoot>) -> Response { text(200, "R" + q.params.path) }
 
 // ── Fixtures ────────────────────────────────────────────────────
 
@@ -101,7 +101,7 @@ fn hit_raw(rows: List<Route>, raw: Bytes) -> string {
 /// THE ORACLE — the algorithm the table replaced, judging each
 /// route's width by the reach it was declared with. The trie settles
 /// all of this at build time; this asks it per request.
-fn scanned(rows: List<Route>, q: Request) -> Response {
+fn scanned(rows: List<Route>, q: Request<Unrouted>) -> Response {
     let held: Bytes? = q.path()
     if held == null { return Response { status: 404 } }
     let target = held!

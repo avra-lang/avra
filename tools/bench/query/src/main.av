@@ -8,14 +8,14 @@
 //! TARGET UNDER TWO HEAD SIZES: a buffer-bounded split gets slower
 //! with the head, a target-bounded one does not.
 use @std.http.frame.{framed, limits, Method}
-use @std.http.http.{Request, Response, text}
+use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.query.{Query, Asked, decoded}
 use @std.http.route.{Route, Table, routed, compiled, dispatch}
 use @std.time.{now_ns}
 
 grammar Idea = "/ideas/{id}"
 
-fn serve(q: Request, r: Idea) -> Response { text(200, r.id) }
+fn serve(q: Request<Idea>) -> Response { text(200, q.params.id) }
 
 fn rows() -> Table {
     compiled([routed<Idea>(Method.Get, "/ideas/{id}", (t: Bytes) -> Idea.parse(t), serve)])
@@ -27,15 +27,15 @@ fn padded(target: string, n: int) -> Bytes {
     ("GET " + target + " HTTP/1.1\r\nHost: h\r\n" + filler + "\r\n").bytes()
 }
 
-fn asked(raw: Bytes) -> Request {
+fn asked(raw: Bytes) -> Request<Unrouted> {
     match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "b" },
+        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "b", params: Unrouted {} },
         .Partial -> asked(raw),
         .Refused(_) -> asked(raw),
     }
 }
 
-fn dispatched(t: Table, q: Request, runs: int) -> int {
+fn dispatched(t: Table, q: Request<Unrouted>, runs: int) -> int {
     mut ok = 0
     // LICENSED I3: a timed loop counts, it does not build a list
     for i in 0..runs {
@@ -55,7 +55,7 @@ fn dispatch_cost(raw: Bytes, runs: int) -> int {
     spent / runs
 }
 
-fn built(q: Request, runs: int) -> int {
+fn built(q: Request<Unrouted>, runs: int) -> int {
     mut n = 0
     // LICENSED I3: a timed loop counts, it does not build a list
     for i in 0..runs {
@@ -102,7 +102,7 @@ fn ask_cost(target: string, runs: int) -> int {
     spent / runs
 }
 
-fn splits(q: Request, runs: int) -> int {
+fn splits(q: Request<Unrouted>, runs: int) -> int {
     mut n = 0
     // LICENSED I3: a timed loop counts, it does not build a list
     for i in 0..runs {
