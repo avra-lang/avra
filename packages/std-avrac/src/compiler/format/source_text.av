@@ -608,7 +608,7 @@ impl SourceText {
             .Not(value) -> grouped("!${self.expression(value, unary_tier, depth)}", unary_tier, parent),
             .ListLit(elems) -> grouped(self.list_lit_text(id, elems, depth), atom_tier, parent),
             .Comp(elem, index, name, source, hi, cond) -> self.comprehension(elem, index?.of, name.of, source, hi, cond, parent, depth),
-            .MapLit(keys, values) -> grouped("{${joined(["${self.expression(k, loosest_tier, depth)}: ${self.expression(values[j], loosest_tier, depth)}" for j, k in keys], ", ")}}", atom_tier, parent),
+            .MapLit(keys, values) -> grouped(self.map_lit_text(id, keys, values, depth), atom_tier, parent),
             .Index(subject, index) -> grouped("${self.expression(subject, postfix_tier, depth)}[${self.expression(index, loosest_tier, depth)}]", postfix_tier, parent),
             .Prop(subject, name) -> grouped("${self.chain_subject(subject, depth)}.${source_name(name.of)}", postfix_tier, parent),
             .Body(word, parts, holes, _) -> grouped(self.body_text(word, parts, holes, depth), atom_tier, parent),
@@ -646,10 +646,30 @@ impl SourceText {
     /// A list's text: the header and rows `table<Row> { … }`
     /// desugared into (`store.table_of` — a row type and header the
     /// rows' own fields cannot answer once the table is empty), or
-    /// the ordinary bracketed list.
+    /// the ordinary bracketed list, ONE LINE OR MANY as it was
+    /// written — the written-layout rule `struct_decl`/`enum_decl`
+    /// already use for a declaration's own fields and variants,
+    /// generalized here: each element drains the trivia before its
+    /// own span first, exactly as a declaration's does, so a comment
+    /// between two elements stays between them instead of sliding to
+    /// the literal's end.
     mut fn list_lit_text(id: ExprId, elems: List<ExprId>, depth: int) -> string {
-        let tbl? = self.store.table_of(id) else { return "[${joined([self.expression(e, loosest_tier, depth) for e in elems], ", ")}]" }
+        let tbl? = self.store.table_of(id) else {
+            if elems.is_empty() { return "[]" }
+            if self.span_flat(self.store.expr_span(id)) { return "[${joined([self.expression(e, loosest_tier, depth) for e in elems], ", ")}]" }
+            let body = flatten([self.trivia_before(start_of(self.store.expr_span(e)), depth + 1).concat([source_line(depth + 1, "${self.expression(e, loosest_tier, depth + 1)},")]) for e in elems]).concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
+            return "[\n${joined(body, "\n")}\n${source_line(depth, "]")}"
+        }
         self.table_text(tbl.row_type, tbl.header, elems, depth)
+    }
+
+    /// A map's text, one line or many as it was written — an entry
+    /// drains the trivia before its KEY's span, the entry's own start.
+    mut fn map_lit_text(id: ExprId, keys: List<ExprId>, values: List<ExprId>, depth: int) -> string {
+        if keys.is_empty() { return "{}" }
+        if self.span_flat(self.store.expr_span(id)) { return "{${joined(["${self.expression(k, loosest_tier, depth)}: ${self.expression(values[j], loosest_tier, depth)}" for j, k in keys], ", ")}}" }
+        let body = flatten([self.trivia_before(start_of(self.store.expr_span(k)), depth + 1).concat([source_line(depth + 1, "${self.expression(k, loosest_tier, depth + 1)}: ${self.expression(values[j], loosest_tier, depth + 1)},")]) for j, k in keys]).concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
+        "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
     /// The table's lines, each column padded to its own widest cell
@@ -681,10 +701,20 @@ impl SourceText {
     /// words, never rebuilt from the expansion), the ordinary
     /// field-list form otherwise.
     mut fn struct_lit_text(id: ExprId, name: string, fields: List<Plain>, values: List<ExprId>, depth: int) -> string {
-        let text? = self.store.grammar_lit_of(id) else {
-            return "${source_name(name)} ${if fields.is_empty() { "{}" } else { "{ ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }" }}"
-        }
+        let text? = self.store.grammar_lit_of(id) else { return "${source_name(name)} ${self.struct_fields_text(id, fields, values, depth)}" }
         "grammar {${text}}"
+    }
+
+    /// A struct literal's braced fields, one line or many as written
+    /// — a field name carries no span of its own (`Plain` is a bare
+    /// name), so an entry drains the trivia before its VALUE's span;
+    /// the value always starts later than the field's own name, so a
+    /// comment before the name is still before that offset too.
+    mut fn struct_fields_text(id: ExprId, fields: List<Plain>, values: List<ExprId>, depth: int) -> string {
+        if fields.is_empty() { return "{}" }
+        if self.span_flat(self.store.expr_span(id)) { return "{ ${joined(["${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth)}" for j, f in fields], ", ")} }" }
+        let body = flatten([self.trivia_before(start_of(self.store.expr_span(values[j])), depth + 1).concat([source_line(depth + 1, "${source_name(f.of)}: ${self.expression(values[j], loosest_tier, depth + 1)},")]) for j, f in fields]).concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
+        "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
     /// A string literal's text: `"""raw"""` for the node the lexer's
