@@ -1120,7 +1120,7 @@ UNRATCHETED = {
            "           COUNT over a member carrying a declaration of its own: a record\n"
            "           field with a DEFAULT is minted on its owner's statement, so a\n"
            "           per-decl walk asks its owner's question a second time",
-    "I60": "no grep tells a one-element list used as a slot from a list whose\n"
+    "I61": "no grep tells a one-element list used as a slot from a list whose\n"
            "           first element is written; the keeper is the review round",
     "I45": "no grep tells \"declares a derive and nothing else\" from an ordinary\n"
            "           file with a trait in it — the shape that breaks it is whatever\n"
