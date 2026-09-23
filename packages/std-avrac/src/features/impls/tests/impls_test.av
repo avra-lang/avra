@@ -173,6 +173,18 @@ spec "features/impls" {
             let a = analyze_source("trait Sink {\n    fn take(mut xs: List<int>)\n}\nfn hand(mut ys: List<int>, s: dyn Sink) { s.take(ys) }\ntype S = { k: int }\nimpl Sink for S {\n    fn take(mut xs: List<int>) { xs.push(self.k) }\n}\nlet s: dyn Sink = S { k: 7 }\nmut v = [1]\nhand(v, s)\nv.length")
             a.diagnostics.is_empty() && a.ran() == "2"
         }
+        then "a named list's seat written by the name's own writing method is written" {
+            let a = analyze_source("type Rows = List<int>\nimpl Rows { mut fn add(v: int) { self.push(v) } }\nfn grow(mut r: Rows) { r.add(7) }\nmut r: Rows = [1]\ngrow(r)\nr.length")
+            a.diagnostics.is_empty() && a.ran() == "2"
+        }
+        then "a named list's seat written by its shape's row is written" {
+            let a = analyze_source("type Rows = List<int>\nfn grow(mut r: Rows) { r.push(7) }\nmut r: Rows = [1]\ngrow(r)\nr.length")
+            a.diagnostics.is_empty() && a.ran() == "2"
+        }
+        then "a named list's seat only read by the name's own method is warned" {
+            let a = analyze_source("type Rows = List<int>\nimpl Rows { fn size() -> int { self.length } }\nfn peek(mut r: Rows) -> int { r.size() }\nmut r: Rows = [1]\npeek(r)")
+            a.clean() && a.diagnostics.length == 1 && a.report().contains("`r` is a `mut` seat — `peek` never writes through it")
+        }
         then "a scalar seat only read" {
             let a = analyze_source("fn show(mut n: int) -> int { n }\nmut k = 5\nshow(k)")
             a.clean() && a.diagnostics.length == 1 && a.report().contains("`n` is a `mut` seat — `show` never writes through it")
