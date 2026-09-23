@@ -17,6 +17,11 @@ static int g_checks = 0;
 static int g_fails = 0;
 #define CHECK(cond, what) do { g_checks++; if (!(cond)) { g_fails++; fprintf(stderr, "vtask_test: FAILED %s (%s:%d)\n", what, __FILE__, __LINE__); } } while (0)
 
+// A descriptor closed through the scheduler's door, as every closer must:
+// its waiters woken and its registration forgotten, so the number's next
+// tenant inherits none.
+static void closed(int fd) { avra_fiber_fd_closing(fd); close(fd); }
+
 static char g_log[128];
 static int g_log_len = 0;
 static void note(char c) { if (g_log_len < 127) g_log[g_log_len++] = c; g_log[g_log_len] = 0; }
@@ -97,7 +102,7 @@ int main(void) {
     CHECK(avra_vtask_park_fd(r, 987654, 0, -1) == 0, "a descriptor nobody holds is ready at once");
     CHECK(avra_vtask_next() == r, "and the task runs, for its read to say why");
     avra_vtask_free(r); avra_vtask_free(s);
-    close(p[0]); close(p[1]);
+    closed(p[0]); closed(p[1]);
 
     // a task freed while filed anywhere leaves nothing behind
     if (pipe(p) != 0) return 1;
@@ -111,7 +116,7 @@ int main(void) {
     avra_vtask_sleep(last, 3);
     CHECK(avra_vtask_next() == last, "the freed tasks are nowhere — the next is the one still filed");
     avra_vtask_free(last);
-    close(p[0]); close(p[1]);
+    closed(p[0]); closed(p[1]);
 
     // nothing ready and nothing to wait on: the policy's deadlock, in a child
     int out[2];
