@@ -208,10 +208,10 @@ impl Rebuilder {
             self.classify(k!, HoleKind.Type)
             if !self.copying { return t }
             let f = self.fill_type(k!)
-            if t.args.is_empty() { return f with { optional: f.optional || t.optional, span: t.span } }
-            return t with { name: f.name, args: self.trefs(t.args) }
+            if t.args.is_empty() { return f with { optional: f.optional || t.optional, span: t.span, spliced: true } }
+            return t with { name: f.name, args: self.trefs(t.args), spliced: true }
         }
-        t with { name: self.rewritten(t.name), args: self.trefs(t.args) }
+        t with { name: self.rewritten(t.name), args: self.trefs(t.args), spliced: t.spliced || hole_name(t.name) != null }
     }
 
     mut fn trefs(ts: List<TypeRef>) -> List<TypeRef> { [self.tref(t) for t in ts] }
@@ -356,7 +356,6 @@ impl Rebuilder {
         if self.src.is_static(s) { self.dst.mark_static(id) }
         let g: GrammarSpec? = self.src.grammar_of(s)
         if g != null { self.dst.mark_grammar(id, g!) }
-        if self.src.is_component_decl(s) { self.dst.mark_component_decl(id) }
         if self.src.is_component_inst(s) { self.dst.mark_component_inst(id) }
         let docs: List<string>? = self.src.doc_comment(s)
         if docs != null { self.dst.document(id, docs!, self.src.doc_at(s)) }

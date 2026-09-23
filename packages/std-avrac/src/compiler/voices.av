@@ -1,7 +1,7 @@
 //! Workspace diagnostics and the small shared projections they read.
 //! Moved out of the workspace god-object.
 use core.{StmtId, Span, Param, Mark, TypeRegistry, NodeStore, ModulePath, FileId, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, same_file, TypeRef, spelled}
-use features.{Unsettled, Settlement, MetaVal, MetaHeap, nothing, FileView, spelled_type, ArenaMarks, BlockGrammar}
+use features.{Unsettled, Settlement, MetaVal, MetaHeap, nothing, FileView, spelled_type, BlockGrammar}
 use features.{no_kind}
 use @std.meta.{Node, Field as MetaField, Mark as MetaMark, Kind}
 use core.{StmtId, Arm, HoleKind, Unplaced}
@@ -179,7 +179,7 @@ impl Workspace {
     /// A copied node whose source a sublanguage minted wears that
     /// sublanguage's library.
     fn note_foreign_origin(f: FileId, src: NodeStore, from: ExprId, id: ExprId) {
-        let range? = src.foreign.get().find(it.lo <= from.index && from.index < it.hi) else { return }
+        let range? = src.foreign.get().find(it.runs.exprs.holds(from.index)) else { return }
         let origin = self.file_id(range.path)
         if !same_file(origin, f) { self.decls.note_origins(f, [id], [], [], origin) }
     }
@@ -231,9 +231,6 @@ fn many_in_expression() -> string {
     "a list of templates has no expression position — splice it where a run belongs (statements, arms, binders), or fold the list into one template before the hole"
 }
 
-fn arena_marks(store: NodeStore) -> ArenaMarks {
-    ArenaMarks { exprs: store.exprs.count(), stmts: store.stmts.count(), pats: store.pat_count() }
-}
 
 /// A generated declaration's name is already the file's — the
 /// annotation is asked to choose another.
@@ -274,17 +271,23 @@ fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
 /// REGISTER A UNIT under its name. THE SEAT IS MUT so the write lands in the workspace's
 /// own table — a plain seat would copy the map, and a copy-on-write that runs once per
 /// minted unit turns the walk quadratic.
-/// WHETHER A MODULE'S RECORD NAMES A NAMED GRAMMAR THE `use` LINE TAKES — read from the
+/// WHETHER A MODULE'S RECORD NAMES A BLOCK WORD THE `use` LINE TAKES — read from the
 /// persisted interface alone, never a parse. `true` when the record is absent, so the
 /// caller falls back to reading the provider.
 // LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
-fn module_names_syntax(ws: Workspace, m: ModulePath, items: List<string>) -> bool {
+fn module_names_block_word(ws: Workspace, m: ModulePath, items: List<string>) -> bool {
     let s? = ws.store.get() else { return true }
     let rec? = s.get(Stored.Sig, record_key(ws, m)) else { return true }
     for line in rec.split("\n") {
         let row = read_row(read_fields(line))
-        if row != null && row!.kind == "syntax" && items.any(it == row!.name) { return true }
+        if row != null && names_block_word(row!) && items.any(it == row!.name) { return true }
     }
     false
+}
+
+/// A row whose name opens a block where it is imported — a named
+/// grammar's, or a component's.
+fn names_block_word(row: Row) -> bool {
+    row.kind == "syntax" || (facts_unblocked(row.facts)?.is_component ?? false)
 }
 

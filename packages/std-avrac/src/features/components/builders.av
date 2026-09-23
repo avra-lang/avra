@@ -1,18 +1,26 @@
-//! Parse-time lowering: a component declaration is the StructDecl
-//! (structs give it meaning); an instantiation is a `let` of the
-//! struct literal built from its `field = value` lines.
-use core.{Expr, Stmt, Nominal, Plain, Scoped}
-use features.{LangNode, Builder, zip_defect}
+//! Parse-time lowering. A declaration is its own node — a record the
+//! structs semantics type, with methods. `component Name inst { … }`
+//! is a `let` of the struct literal built from its `field = value`
+//! lines. A value instance is its component's template COPIED where
+//! it stands, the head and block in its holes, every copied node
+//! wearing the provider's origin — so the expansion's nodes stand
+//! right before the instance's, as a parsed child does.
+use core.{Expr, Stmt, StmtId, ExprId, Nominal, Plain, Scoped, NodeStore, BodyView, HoleKind, Filled, copier}
+use features.{LangNode, Builder, ComponentWord, zip_defect}
 
 fn build_component_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
-    let fs = b.tokens(1)?
-    let ft = b.type_refs(2)?
-    let fds = b.exprs(3)?
-    let fields = b.fields_zipped(fs, ft, fds, [])?
-    let s = b.store.alloc_stmt(Stmt.StructDecl(Scoped(n.text), [], fields), b.span)
-    b.store.mark_component_decl(s)
-    b.wrap_stmt(s)
+    let head = b.fields_zipped(b.tokens(1)?, b.type_refs(2)?, [], [])?
+    let fields = b.fields_zipped(b.tokens(3)?, b.type_refs(4)?, b.exprs(5)?, [])?
+    let fns = b.stmts(6)?
+    if !fns.all(holds_a_member(b.store, it)) { return .Err("a component holds its fields and its `fn`s, and nothing else") }
+    b.make_stmt(Stmt.ComponentDecl(Scoped(n.text), head, fields, fns))
+}
+
+/// A member a component may hold besides its fields: a `fn`, or a
+/// recovery's hole.
+fn holds_a_member(store: NodeStore, s: StmtId) -> bool {
+    store.fn_parts(s) != null || store.hole_stmt(s) != null
 }
 
 fn build_component_inst(b: Builder) -> Result<LangNode, string> {
@@ -27,4 +35,55 @@ fn build_component_inst(b: Builder) -> Result<LangNode, string> {
     let s = b.store.alloc_stmt(Stmt.Let(Scoped(inst.text), null, lit), b.span)
     b.store.mark_component_inst(s)
     b.wrap_stmt(s)
+}
+
+/// `within ms(5) { … }` — the imported component's template, the head
+/// and the block spliced into it.
+fn build_component_value(mut b: Builder) -> Result<LangNode, string> {
+    let w = b.token(0)?
+    let head = b.expr(1)?
+    let block = b.expr(2)?
+    let word? = b.words.components.find(it.word == w.text) else { return .Err("the lexer opened an instance with `${w.text}`, which no import names as a component") }
+    if word.head.length != 1 { return .Err("`${w.text}` declares ${word.head.length} head fields, and its instance writes one value") }
+    let expansion = b.store.instantiated(word, [head], block)
+    b.make_expr(Expr.Component(w.text, [head], block, BodyView.Expanded(expansion)))
+}
+
+impl NodeStore {
+    /// A template copied in: each hole filled with the head value or
+    /// the block its field names, every node it minted marked as the
+    /// provider's.
+    fn instantiated(word: ComponentWord, heads: List<ExprId>, block: ExprId) -> ExprId {
+        let since = self.marks()
+        let fills = [self.field_value(word, read, heads, block) for read in word.reads]
+        mut rb = copier(word.store, self, [(kind: HoleKind) -> self.filled(kind, id) for id in fills])
+        let copied = rb.stmts(word.template)
+        let root = self.template_value(copied)
+        self.note_copied(since, word.origin)
+        root
+    }
+
+    /// What a copied template answers: its one expression, or its
+    /// statements as a block.
+    fn template_value(copied: List<StmtId>) -> ExprId {
+        let lone: ExprId? = if copied.length == 1 { self.answer_of(copied[0]) } else { null }
+        lone ?? self.branch_value(copied) ?? self.alloc_expr(Expr.Block(copied, null))
+    }
+
+    /// The user's node a template hole reads: a head value by its
+    /// field's position, or the block.
+    fn field_value(word: ComponentWord, read: string, heads: List<ExprId>, block: ExprId) -> ExprId {
+        let at = word.head.index_of(read)
+        if at < 0 { block } else { heads[at] }
+    }
+
+    /// A user's node in the seat a hole stands in — as the expression
+    /// it is, or as the one statement it makes.
+    fn filled(kind: HoleKind, id: ExprId) -> Filled {
+        match kind {
+            .Expression -> Filled.Expr(id),
+            .Statement -> Filled.Stmts([self.alloc_stmt(Stmt.ExprStmt(id), self.expr_span(id))]),
+            .Name or .Binder or .Type or .Arm -> Filled.Unplaceable("a component's field is code — it fills an expression or a statement"),
+        }
+    }
 }
