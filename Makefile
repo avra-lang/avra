@@ -447,8 +447,10 @@ idioms-accept:
 	@sh tools/idioms.sh --accept
 
 # The formatter's real receipt: `fmt(x) == x`, byte-exact, over every
-# `.av` file in the tree — never idempotence. Reports; does not fail
-# the gate (docs/2026_09_21_FORMATTER_DESIGN.md).
+# `.av` file in the tree — never idempotence
+# (docs/2026_09_21_FORMATTER_DESIGN.md). GATED: the tree reports 0
+# differing (avra-8sb5.25.37), so a NEW one is a regression, not a
+# known gap.
 fmt-lossless:
 	@sh tools/fmt_lossless.sh
 
@@ -597,7 +599,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here exactly as sprite-build.sh's call does.
-gate: seed-check stems vocab fingerprints rt-header rt-ns witnesses externs idioms cited attack tested runtime-tests traps witness cache-attacks
+gate: seed-check stems vocab fingerprints rt-header rt-ns witnesses externs idioms cited fmt-lossless attack tested runtime-tests traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
 	@sh tools/gate_receipt.sh write || true
