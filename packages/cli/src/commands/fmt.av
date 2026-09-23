@@ -8,22 +8,34 @@
 //! AND IDEMPOTENCE DOES NOT PROVE LOSSLESSNESS — measured, not
 //! argued. `fmt(fmt(x)) == fmt(x)` was GREEN while every plain
 //! comment was being deleted, because the second pass had no
-//! comments left to lose. `tools/fmt_lossless.sh`
-//! (`make fmt-lossless`) is the tree-wide receipt: `fmt(x) == x` for
-//! an already-canonical file, byte-exact.
+//! comments left to lose. `--check` is the tree-wide receipt:
+//! `fmt(x) == x` for an already-canonical file, byte-exact.
 //!
 //! IT PARSES AND DOES NOT ANALYZE. Formatting moves no token that
 //! typing decides, and the analyzed path cost 2.5 MINUTES for one file
 //! because asking for the entry forces the whole package to type.
-use @std.cli.{Subcommand, CliResult, Runnable, FlagDef}
-use @std.io.{exists, write_text}
-use @std.avrac.compiler.{Workspace}
-use @std.avrac.core.{FileId}
+//!
+//! `--check <dir|files…>` IS ONE PROCESS: every `.av` file under a
+//! given directory (package boundaries found by `avra.toml`, never
+//! crossed into a nested package's OWN root a second time), or the
+//! files named, in ONE run — so the per-file `avra` start-up
+//! `tools/fmt_lossless.sh` once paid (~730 times, ~30s of nothing but
+//! process launches) is paid ONCE. A canonical file's own bytes are
+//! remembered under this compiler's print in the tree's store, so a
+//! warm re-run skips its parse and its print both — only a file that
+//! moved, or one this compiler has never seen, pays for either.
+use @std.cli.{Subcommand, CliResult, Runnable, FlagDef, CommandSpec, ArgDef}
+use @std.io.{exists, write_text, is_dir, list_dir}
+use @std.avrac.compiler.{Workspace, build_cache_root}
+use @std.avrac.compiler.store.{Store, Stored, store_at}
+use @std.avrac.core.{FileId, digest_of}
+use @std.path.{dir_of, joined_path}
 
 type FmtCmd = {}
 
 impl Runnable for FmtCmd {
     fn run(args: CliResult) -> int {
+        if args.has_flag("check") { return checked(args) }
         let path = path_arg(args)
         if !exists(path) {
             no_such_file(path)
@@ -65,12 +77,142 @@ fn written(ws: Workspace, f: FileId, path: string) -> int {
     }
 }
 
+// ── --check: one process over a tree ──
+
+/// A canonical file's marker: no derivation reads it, so no edges —
+/// the row exists or it does not.
+fn no_edges() -> List<string> { [] }
+
+/// This compiler's answer, remembered against the file's OWN bytes —
+/// never the path, which a rename would falsely invalidate, and
+/// never mtime, which a checkout without one would falsely trust.
+fn canon_key(text: string) -> string { digest_of("fmt.canonical\n${text}") }
+
+/// examined, differing, refused, and which paths differed — folded
+/// across every group `--check` walks.
+type Tally = { examined: int, differing: int, refused: int, diffs: List<string> }
+
+fn empty_tally() -> Tally { Tally { examined: 0, differing: 0, refused: 0, diffs: [] } }
+
+fn combined(a: Tally, b: Tally) -> Tally {
+    Tally { examined: a.examined + b.examined, differing: a.differing + b.differing, refused: a.refused + b.refused, diffs: a.diffs.concat(b.diffs) }
+}
+
+/// A root's workspace, checking either its WHOLE package (`explicit`
+/// absent) or only the files named — the files a directory argument
+/// walked to, or a bare file argument gave outright.
+type Group = { root: string, explicit: List<string>? }
+
+fn checked(args: CliResult) -> int {
+    let asked = [rooted(p) for p in args.args_of("file")]
+    let t = fold_groups(expanded_groups(asked))
+    for p in t.diffs { println(p) }
+    println("fmt --check: ${t.examined} examined, ${t.differing} differing, ${t.refused} refused")
+    if t.differing > 0 { 1 } else { 0 }
+}
+
+fn expanded_groups(asked: List<string>) -> List<Group> {
+    dir_groups([p for p in asked if is_dir(p)]).concat(loose_groups([p for p in asked if !is_dir(p)]))
+}
+
+fn dir_groups(dirs: List<string>) -> List<Group> {
+    if dirs.is_empty() { return [] }
+    [Group { root: r, explicit: null } for r in package_roots_under(dirs[0])].concat(dir_groups(dirs.slice(1, dirs.length)))
+}
+
+/// Every `avra.toml`-rooted package under `dir` — `dir` itself when
+/// it stands at one, never descending past it into a package nested
+/// inside a package.
+fn package_roots_under(dir: string) -> List<string> {
+    if exists(joined_path(dir, "avra.toml")) { return [dir] }
+    match list_dir(dir) {
+        .Ok(names) -> roots_from(dir, names),
+        .Err(_) -> [],
+    }
+}
+
+fn roots_from(dir: string, names: List<string>) -> List<string> {
+    if names.is_empty() { return [] }
+    let path = joined_path(dir, names[0])
+    let heads = if is_dir(path) { package_roots_under(path) } else { [] }
+    heads.concat(roots_from(dir, names.slice(1, names.length)))
+}
+
+/// The loose files, grouped by the package root each stands in — one
+/// workspace per root, never one per file.
+fn loose_groups(files: List<string>) -> List<Group> {
+    mut roots: List<string> = []
+    mut by_root: Map<string, List<string>> = {}
+    for path in files {
+        let root = package_root(dir_of(path)) ?? path
+        if !roots.contains(root) { roots.push(root) }
+        by_root.set(root, (by_root.get(root) ?? []).concat([path]))
+    }
+    [Group { root: r, explicit: by_root.get(r) } for r in roots]
+}
+
+fn fold_groups(groups: List<Group>) -> Tally {
+    if groups.is_empty() { return empty_tally() }
+    let g = groups[0]
+    mut ws = workspace_for(g.root)
+    let store = store_at(build_cache_root(ws))
+    let files = g.explicit ?? ws.all_files(joined_path(g.root, "src"))
+    combined(check_files(store, ws, files), fold_groups(groups.slice(1, groups.length)))
+}
+
+fn workspace_for(root: string) -> Workspace {
+    if is_dir(root) { root_workspace(root) } else { lone(root) }
+}
+
+enum Outcome { Canonical, Differs, Refused }
+
+fn check_files(store: Store, ws: Workspace, files: List<string>) -> Tally {
+    mut t = empty_tally()
+    for path in files {
+        let outcome = checked_one(store, ws, path)
+        t = Tally {
+            examined: t.examined + 1,
+            differing: t.differing + if outcome == Outcome.Differs { 1 } else { 0 },
+            refused: t.refused + if outcome == Outcome.Refused { 1 } else { 0 },
+            diffs: if outcome == Outcome.Differs { t.diffs.concat([path]) } else { t.diffs },
+        }
+    }
+    t
+}
+
+/// A cache hit answers without a parse or a print; a miss pays for
+/// both and, when the file turns out canonical, remembers so the
+/// next `--check` need not ask again.
+fn checked_one(store: Store, ws: Workspace, path: string) -> Outcome {
+    let f = ws.file_id(path)
+    let src = ws.source(f)
+    let key = canon_key(src.text)
+    if store.get(Stored.Unit, key) != null { return Outcome.Canonical }
+    match ws.formatted_source(f) {
+        .Ok(text) -> if "${text}\n" == src.text {
+            let _ = store.keep(Stored.Unit, key, "1", no_edges())
+            Outcome.Canonical
+        } else {
+            Outcome.Differs
+        },
+        .Err(_) -> Outcome.Refused,
+    }
+}
+
 export fn fmt_command() -> Subcommand {
     Subcommand {
-        meta: file_command("fmt", "Print a file as canonical Avra") with { flags: [
-            FlagDef { name: "--time", short: "", description: "print phase timings and memo hits", aliases: [] },
-            FlagDef { name: "--write", short: "", description: "rewrite the file, refusing unless the receipt is lossless", aliases: [] },
-        ] },
+        meta: CommandSpec {
+            name: "fmt",
+            description: "Print a file as canonical Avra",
+            hidden: false,
+            flags: [
+                FlagDef { name: "--time", short: "", description: "print phase timings and memo hits", aliases: [] },
+                FlagDef { name: "--write", short: "", description: "rewrite the file, refusing unless the receipt is lossless", aliases: [] },
+                FlagDef { name: "--check", short: "", description: "one pass over every file under a directory, or the files given; reports what differs from canonical", aliases: [] },
+            ],
+            args: [ArgDef { name: "file", description: "the source file, or (--check) files/directories to examine", required: true, variadic: true }],
+            options: [],
+        },
         body: FmtCmd {},
     }
 }

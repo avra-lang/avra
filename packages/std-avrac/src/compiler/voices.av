@@ -10,7 +10,7 @@ use diagnostics.{defect_at}
 use diagnostics.{Diag, refusal}
 use @std.errors.{Loc}
 use @std.testing.{words}
-use compiler.store.{Store, Stored}
+use compiler.store.{Store, Stored, store_at}
 
 // ── voices ──
 
@@ -275,12 +275,14 @@ fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
 /// own table — a plain seat would copy the map, and a copy-on-write that runs once per
 /// minted unit turns the walk quadratic.
 /// WHETHER A MODULE'S RECORD NAMES A NAMED GRAMMAR THE `use` LINE TAKES — read from the
-/// persisted interface alone, never a parse. `true` when the record is absent, so the
+/// persisted interface alone, never a parse. The tree's own on-disk store answers this,
+/// not `ws.store` (armed only inside a build's hold): a query that only reads never
+/// waits for a write it may never see, and a cache built by an earlier `check` still
+/// answers a later `fmt`'s question. `true` when the record is absent, so the
 /// caller falls back to reading the provider.
 // LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
 fn module_names_syntax(ws: Workspace, m: ModulePath, items: List<string>) -> bool {
-    let s? = ws.store.get() else { return true }
-    let rec? = s.get(Stored.Sig, record_key(ws, m)) else { return true }
+    let rec? = store_at(build_cache_root(ws)).get(Stored.Sig, record_key(ws, m)) else { return true }
     for line in rec.split("\n") {
         let row = read_row(read_fields(line))
         if row != null && row!.kind == "syntax" && items.any(it == row!.name) { return true }
