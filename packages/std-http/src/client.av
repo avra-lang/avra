@@ -8,7 +8,7 @@
 use @std.errors.{Error, ErrorInfo, info}
 use @std.net.{Conn, NetError, connect}
 use @std.time.{Duration, within}
-use frame.{Method, Reply, Refusal, Chunker, Limits, framed_reply, chunker, fed, status_of, admits, is_target}
+use frame.{Method, Reply, Refusal, Chunker, Limits, Fields, framed_reply, chunker, fed, status_of, admits, is_target}
 use http.{Header, read_size, every_octet, fields_writable, token_char}
 
 /// What a fetch answers: the status, the fields as text, the body
@@ -198,13 +198,20 @@ impl Client {
         self.scanned = 0
         self.reply = null
         self.decoder = null
-        .Ok(Answer { status: r.status, headers: [Header { name: raw.slice(f.name.lo, f.name.hi).text() ?? "", value: raw.slice(f.value.lo, f.value.hi).text() ?? "" } for f in r.fields], body: body })
+        .Ok(Answer { status: r.status, headers: [header_at(raw, r.fields, i) for i in 0..r.fields.count()], body: body })
     }
 
     fn close() -> Result<int, NetError> { self.conn.close() }
 }
 
 /// A net failure that was the deadline passing reads as `.TimedOut`.
+/// Field `i` of a reply, as text — values are ASCII by framing.
+fn header_at(raw: Bytes, fields: Fields, i: int) -> Header {
+    let n = fields.name_at(i)
+    let v = fields.value_at(i)
+    Header { name: raw.slice(n.lo, n.hi).text() ?? "", value: raw.slice(v.lo, v.hi).text() ?? "" }
+}
+
 fn timed(r: Result<Answer, ClientError>) -> Result<Answer, ClientError> {
     match r {
         .Err(.Net(e)) if e.timed_out() -> .Err(.TimedOut),

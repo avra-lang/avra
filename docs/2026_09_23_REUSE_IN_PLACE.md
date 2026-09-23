@@ -252,3 +252,46 @@ list boxes 39 -> 40 per request, list reads 138 -> 111, retains 52 ->
 packages/cli`: user 7.71 s -> 7.10 s (−8%, three pairs): the
 compiler's own int records stay in registers. Inline embedding
 (R4b, avra-8sb5.34.10) is what reaches the stored ones.
+
+## §9 As built — R6, the request path
+
+**D14. A head's fields are OFFSETS, four ints each, in one list** —
+`frame.Fields`, a name over `List<int>` with `count`, `name_at`,
+`value_at`, `field` and `named`. A head costs one allocation however
+many fields it carries, where each field was four boxes (`FieldLine`,
+`Field`, two `Span`s). `field(i)` builds a `Field` only for a reader
+who asks; the framer and `Request.header` never do. `field_lines`
+writes into the caller's list and answers `Refusal?` — null on the
+happy path, so no result enum is built either.
+
+**D15. `Line` is gone; `Framing` is written in place.** The request
+line's parts go straight to `settled` (its `Span`s are value records,
+free in registers), and the framing fold writes through a `mut` seat
+(`noted`, `took_*`, `broke`) instead of copying the record per field.
+
+**D16. The response is ONE buffer grown in place** (`written`): a
+local accumulator that R1 appends to without copying.
+
+**D17. An interpolation lowers as its pieces**: empty literal parts
+drop, one piece is itself, two are one `str_concat`, only three or
+more build the parts list and join. `"${n}"` is `int_text(n)`.
+
+**Loops where a lambda would be a box per call** (`fields_writable`,
+`names_one_of`, `Fields.named`), licensed I4 at each site; R9 makes a
+capture-free lambda static data and retires two of the three.
+
+**Numbers** (Linux Sprite, the side tree = this lane plus the link
+stopgap, since main's bench does not link — avra-8sb5.34, COMPONENTS
+tracing):
+
+| | campaign start | after R1 | after R6 |
+|---|---|---|---|
+| tools/bench/request | 5.40 µs | 5.15 µs | **3.28 µs** |
+| wrk pipelined16 c=200 | 146k req/s, 6.85 µs CPU | 158k, 6.35 µs | **205k, 4.86 µs** |
+| wrk keep-alive c=50 | 44.3k req/s | 46.1k | **50.4k** |
+| list/record boxes per request | 40 | 39 | **14** |
+
+The 14 left: `Head`, its two `Span`s (R4b), `Body`/`Framed`/`Method`/
+`TargetForm` enums (R8 takes the payload-free ones), the handler's
+`Response`, header list and `Header`, `Framing`, the fields list, and
+the bench's own `Request`.
