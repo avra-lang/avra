@@ -1029,8 +1029,6 @@ RULES = {
     "I26": (repeated_unwrap,
             "one nullable local forced open 3+ times — guard once, bind once, "
             "and read the name"),
-    "I16": (seen_accumulator,
-            "a seen-accumulator — a dup is `xs.index_of(x) < j` over enumerate"),
     "I39": (state_verb,
             "a vocabulary verb as a free fn taking a pass state first — the state's "
             "impl is its vocabulary: write `mut fn verb(…)` there and call `cx.verb(…)`"),
@@ -1096,6 +1094,11 @@ UNRATCHETED = {
            "           own element binder open; ratcheted by the native-findings phase\n"
            "           below. A comprehension with its own `if` filter is not yet\n"
            "           reached (the subset today)",
+    "I16": "PORTED NATIVELY: `seen_accumulator` (compiler/idioms.av) — a RUN hole\n"
+           "           (avra-8sb5.25.10) holds the rest of the enclosing block open so the\n"
+           "           accumulator's own `.contains`/`.push` calls are found wherever they\n"
+           "           sit, not only in the first 14 lines; ratcheted by the native-\n"
+           "           findings phase below",
     "I52": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
            "           (features/nullable/idioms.av) — ratcheted by the native-findings\n"
            "           phase below",
@@ -1541,6 +1544,7 @@ NATIVE_PREDECESSOR = {
     "style.hand_sized_column": "I43",
     "style.push_loop": "I3",
     "style.bool_comprehension": "I48",
+    "style.seen_accumulator": "I16",
 }
 
 def native_findings():
