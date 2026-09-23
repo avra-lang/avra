@@ -138,10 +138,10 @@ impl Request {
     /// request carries none. Field values are ASCII by framing, so
     /// the text is total.
     fn header(name: string) -> string? {
-        let wanted = name.bytes()
-        let raw = self.raw
-        let f? = self.head.fields.find((f) -> raw.ieq_at(f.name.lo, f.name.hi, wanted)) else { return null }
-        raw.slice(f.value.lo, f.value.hi).text()
+        let i = self.head.fields.named(self.raw, name.bytes())
+        if i < 0 { return null }
+        let v = self.head.fields.value_at(i)
+        self.raw.slice(v.lo, v.hi).text()
     }
 }
 
@@ -203,14 +203,23 @@ export fn wire(r: Response, keep_alive: bool, minor: int) -> Bytes {
 /// carry and cut the head mid-field.
 export fn as_sent(r: Response) -> Response { if sendable(r) { r } else { status(500) } }
 
+/// ONE BUFFER, GROWN IN PLACE: every append consumes the text before
+/// it, so the head is written into a single box and the body joins it
+/// there.
 fn written(r: Response, keep_alive: bool, minor: int) -> Bytes {
-    let fields = ["${h.name}: ${h.value}\r\n" for h in r.headers].join("")
-    let fate = when {
+    mut out = "HTTP/1.1 " + "${r.status}" + " " + reason(r.status) + "\r\n"
+    for h in r.headers { out = out + h.name + ": " + h.value + "\r\n" }
+    out = out + "content-length: " + "${r.body.length}" + "\r\n" + fate(keep_alive, minor) + "\r\n"
+    out.bytes().concat(r.body)
+}
+
+/// The connection's fate, when the peer cannot assume it.
+fn fate(keep_alive: bool, minor: int) -> string {
+    when {
         !keep_alive -> "connection: close\r\n"
         minor == 0 -> "connection: keep-alive\r\n"
         _ -> ""
     }
-    "HTTP/1.1 ${r.status} ${reason(r.status)}\r\n${fields}content-length: ${r.body.length}\r\n${fate}\r\n".bytes().concat(r.body)
 }
 
 /// WHETHER THIS RESPONSE CAN GO ON A WIRE AT ALL: a status of three
@@ -228,7 +237,11 @@ export fn sendable(r: Response) -> bool {
 /// ONE, and a writer says only which fields it owns. The reply's
 /// writer and the request's each name their own list.
 export fn fields_writable(headers: List<Header>, written_by: List<Bytes>) -> bool {
-    headers.all(writable(it)) && !headers.any(names_one_of(it.name, written_by))
+    // LICENSED I4: a loop, not `all`/`any` — each lambda is a box per call on a per-request path
+    for h in headers {
+        if !writable(h) || names_one_of(h.name, written_by) { return false }
+    }
+    true
 }
 
 /// A FIELD LINE ON THE WIRE OBEYS THE FRAMER'S OWN LAW, or the two
@@ -252,7 +265,11 @@ export fn every_octet(s: string, class: Bytes) -> bool {
 /// Whether `name` is one of `written_by`, ASCII-folded.
 export fn names_one_of(name: string, written_by: List<Bytes>) -> bool {
     let b = name.bytes()
-    written_by.any((w) -> b.ieq_at(0, b.length, w))
+    // LICENSED I4: a loop, not `any` — a capturing lambda is a box per call on a per-request path
+    for w in written_by {
+        if b.ieq_at(0, b.length, w) { return true }
+    }
+    false
 }
 
 /// What octet a field NAME may carry, as a class table.

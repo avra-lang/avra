@@ -13,6 +13,31 @@ export type Span = { lo: int, hi: int }
 /// One field line as two spans; the name compares in place.
 export type Field = { name: Span, value: Span }
 
+/// A head's fields as four offsets each — name lo, name hi, value lo,
+/// value hi — in one list: a head costs one allocation however many
+/// fields it carries. `field` reads one back as spans.
+export type Fields = List<int>
+
+impl Fields {
+    /// How many fields.
+    fn count() -> int { self.of.length / 4 }
+
+    fn name_at(i: int) -> Span { Span { lo: self.of[4 * i], hi: self.of[4 * i + 1] } }
+
+    fn value_at(i: int) -> Span { Span { lo: self.of[4 * i + 2], hi: self.of[4 * i + 3] } }
+
+    fn field(i: int) -> Field { Field { name: self.name_at(i), value: self.value_at(i) } }
+
+    /// The first field named `wanted`, ASCII-folded, by index — or -1.
+    fn named(buf: Bytes, wanted: Bytes) -> int {
+        // LICENSED I4: a loop, not `find` — a capturing lambda is a box per call on a per-request path
+        for i in 0..self.count() {
+            if buf.ieq_at(self.of[4 * i], self.of[4 * i + 1], wanted) { return i }
+        }
+        -1
+    }
+}
+
 /// The nine methods RFC 9110 registers, and `Other` for a token this
 /// framer read and does not name — a method is extensible, so an
 /// unknown one is well formed and not a refusal.
@@ -36,7 +61,7 @@ export type Head = {
     verb: Span,
     target: Span,
     minor: int,
-    fields: List<Field>,
+    fields: Fields,
     body: Body,
     keep_alive: bool,
     expects_continue: bool,
@@ -202,10 +227,8 @@ fn past_one_empty_line(buf: Bytes, from: int) -> int {
     if from + 2 <= buf.length && buf.eq_at(from, from + 2, crlf()) { from + 2 } else { from }
 }
 
-/// The request line, read: the method, its target and the version's
-/// minor digit.
-type Line = { method: Method, verb: Span, target: Span, minor: int }
-
+/// The request line — the method, its target and the version's minor
+/// digit — then its fields, then the head settled.
 fn request_line(buf: Bytes, start: int, mark: int, limits: Limits) -> Framed {
     let verb_end = buf.run(start, tchar())
     if verb_end == start || buf.at(verb_end) != byte(" ") { return .Refused(.RequestLine) }
@@ -221,8 +244,10 @@ fn request_line(buf: Bytes, start: int, mark: int, limits: Limits) -> Framed {
     if buf.at(v_lo + 5) != byte("1") { return .Refused(.Major) }
     let method = method_of(buf, start, verb_end)
     if !target_form_fits(buf, method, t_lo, t_end) { return .Refused(.Target) }
-    let line = Line { method: method, verb: Span { lo: start, hi: verb_end }, target: Span { lo: t_lo, hi: t_end }, minor: buf.at(v_lo + 7) - byte("0") }
-    fields(buf, eol + 2, mark, line, limits)
+    mut fs: List<int> = []
+    let why: Refusal? = field_lines(buf, eol + 2, mark, limits, fs)
+    if why != null { return .Refused(why!) }
+    settled(buf, method, Span { lo: start, hi: verb_end }, Span { lo: t_lo, hi: t_end }, buf.at(v_lo + 7) - byte("0"), Fields(fs), mark + 4, limits)
 }
 
 /// `HTTP/` then one digit, a point, one digit, and nothing else before
@@ -305,50 +330,35 @@ fn method_of(buf: Bytes, lo: int, hi: int) -> Method {
     }
 }
 
-/// The request's fields walked, then its head settled.
-fn fields(buf: Bytes, from: int, mark: int, line: Line, limits: Limits) -> Framed {
-    match field_lines(buf, from, mark, limits) {
-        .Bad(why) -> .Refused(why),
-        .All(fs) -> settled(buf, line, fs, mark + 4, limits),
-    }
-}
-
-enum Fields {
-    All(fs: List<Field>)
-    Bad(why: Refusal)
-}
-
 /// Every field line from `from` up to the blank line at `mark`, each
-/// as two spans — the walk a request and a reply share.
-fn field_lines(buf: Bytes, from: int, mark: int, limits: Limits) -> Fields {
-    mut out: List<Field> = []
+/// as its four offsets onto `out` — the walk a request and a reply
+/// share — or the law a line broke.
+fn field_lines(buf: Bytes, from: int, mark: int, limits: Limits, mut out: List<int>) -> Refusal? {
     mut at = from
     while at < mark {
-        if out.length == limits.fields { return .Bad(.FieldCount) }
+        if out.length == 4 * limits.fields { return .FieldCount }
         let eol = buf.index_of(crlf(), at)
-        match field_line(buf, at, eol, limits) {
-            .Bad(why) -> { return .Bad(why) },
-            .Line(f) -> { out.push(f) },
-        }
+        let why: Refusal? = field_line(buf, at, eol, limits, out)
+        if why != null { return why }
         at = eol + 2
     }
-    .All(out)
-}
-
-enum FieldLine {
-    Line(f: Field)
-    Bad(why: Refusal)
+    null
 }
 
 /// One field line, `at` up to its CRLF at `eol`: a token, the colon
-/// against it, OWS, a value of visible ASCII, OWS.
-fn field_line(buf: Bytes, at: int, eol: int, limits: Limits) -> FieldLine {
+/// against it, OWS, a value of visible ASCII, OWS — its offsets onto
+/// `out`, or the law it broke.
+fn field_line(buf: Bytes, at: int, eol: int, limits: Limits, mut out: List<int>) -> Refusal? {
     let n_end = buf.run(at, tchar())
-    if n_end == at || buf.at(n_end) != byte(":") { return .Bad(.FieldName) }
+    if n_end == at || buf.at(n_end) != byte(":") { return .FieldName }
     let v_lo = past_ows(buf, n_end + 1)
-    if buf.run(v_lo, vchar()) != eol { return .Bad(.FieldValue) }
-    if eol - at > limits.field { return .Bad(.FieldLength) }
-    .Line(Field { name: Span { lo: at, hi: n_end }, value: Span { lo: v_lo, hi: before_ows(buf, v_lo, eol) } })
+    if buf.run(v_lo, vchar()) != eol { return .FieldValue }
+    if eol - at > limits.field { return .FieldLength }
+    out.push(at)
+    out.push(n_end)
+    out.push(v_lo)
+    out.push(before_ows(buf, v_lo, eol))
+    null
 }
 
 /// The first non-OWS position at or after `at` — one class-table
@@ -374,9 +384,9 @@ type Framing = { length: int = 0, lengths: int = 0, chunked: bool = false, codin
 
 /// EVERY FRAMING FIELD READ, folded one at a time — the walk a
 /// request and a reply share.
-fn framing_of(buf: Bytes, fields: List<Field>) -> Framing {
+fn framing_of(buf: Bytes, fields: Fields) -> Framing {
     mut fr = Framing {}
-    for f in fields { fr = noted(buf, f, fr) }
+    for i in 0..fields.count() { noted(buf, fields.name_at(i), fields.value_at(i), fr) }
     fr
 }
 
@@ -406,11 +416,11 @@ fn persists(fr: Framing, minor: int) -> bool {
 
 /// The head, once the framing fields have been read and their laws
 /// kept: the body's delimiting, persistence, and the expectation.
-fn settled(buf: Bytes, line: Line, fields: List<Field>, end: int, limits: Limits) -> Framed {
+fn settled(buf: Bytes, method: Method, verb: Span, target: Span, minor: int, fields: Fields, end: int, limits: Limits) -> Framed {
     let fr = framing_of(buf, fields)
     if fr.why != null { return .Refused(fr.why!) }
-    if fr.hosts > 1 || line.minor == 1 && fr.hosts == 0 { return .Refused(.Host) }
-    if fr.chunked && line.minor == 0 { return .Refused(.OldChunked) }
+    if fr.hosts > 1 || minor == 1 && fr.hosts == 0 { return .Refused(.Host) }
+    if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
     let broken: Refusal? = body_refusal(fr, limits)
     if broken != null { return .Refused(broken!) }
     let body: Body = when {
@@ -419,65 +429,72 @@ fn settled(buf: Bytes, line: Line, fields: List<Field>, end: int, limits: Limits
         _ -> .None
     }
     .Complete(Head {
-        method: line.method,
-        verb: line.verb,
-        target: line.target,
-        minor: line.minor,
+        method: method,
+        verb: verb,
+        target: target,
+        minor: minor,
         fields: fields,
         body: body,
-        keep_alive: persists(fr, line.minor),
-        expects_continue: fr.expects && line.minor == 1,
+        keep_alive: persists(fr, minor),
+        expects_continue: fr.expects && minor == 1,
         end: end,
     })
 }
 
-/// One field's contribution to the framing — a copy with the change.
-fn noted(buf: Bytes, f: Field, fr: Framing) -> Framing {
-    if fr.why != null { return fr }
-    let n = f.name
+/// One field's contribution to the framing, written into it.
+fn noted(buf: Bytes, n: Span, v: Span, mut fr: Framing) {
+    if fr.why != null { return }
     when {
-        buf.ieq_at(n.lo, n.hi, content_length()) -> with_length(buf, f.value, fr)
-        buf.ieq_at(n.lo, n.hi, transfer_encoding()) -> with_codings(buf, f.value, fr)
-        buf.ieq_at(n.lo, n.hi, host()) -> with_host(buf, f.value, fr)
-        buf.ieq_at(n.lo, n.hi, connection()) -> with_connection(buf, f.value, fr)
-        buf.ieq_at(n.lo, n.hi, expect()) -> with_expectation(buf, f.value, fr)
-        _ -> fr
+        buf.ieq_at(n.lo, n.hi, content_length()) -> took_length(buf, v, fr)
+        buf.ieq_at(n.lo, n.hi, transfer_encoding()) -> took_codings(buf, v, fr)
+        buf.ieq_at(n.lo, n.hi, host()) -> took_host(buf, v, fr)
+        buf.ieq_at(n.lo, n.hi, connection()) -> took_connection(buf, v, fr)
+        buf.ieq_at(n.lo, n.hi, expect()) -> took_expectation(buf, v, fr)
+        _ -> nothing_noted()
     }
 }
 
+fn nothing_noted() {}
+
+/// The framing refused by the law `why` names.
+fn broke(mut fr: Framing, why: Refusal) { fr.why = why }
+
 /// A second Content-Length is refused even when it agrees — the
 /// permission to merge equal values is a MAY, and this is a server.
-fn with_length(buf: Bytes, v: Span, fr: Framing) -> Framing {
-    let n: int? = decimal(buf, v)
-    if n == null || fr.lengths > 0 { return fr with { why: .ContentLength } }
-    fr with { length: n!, lengths: 1 }
+fn took_length(buf: Bytes, v: Span, mut fr: Framing) {
+    let n? = decimal(buf, v) else { return broke(fr, .ContentLength) }
+    if fr.lengths > 0 { return broke(fr, .ContentLength) }
+    fr.length = n
+    fr.lengths = 1
 }
 
 /// `chunked` alone frames; other codings before a final `chunked`
 /// are not implemented; `chunked` anywhere else is a smuggling shape.
-fn with_codings(buf: Bytes, v: Span, fr: Framing) -> Framing {
+fn took_codings(buf: Bytes, v: Span, mut fr: Framing) {
     let ts = tokens(buf, v)
-    if ts.is_empty() { return fr with { why: .TransferEncoding } }
+    if ts.is_empty() { return broke(fr, .TransferEncoding) }
     let last = ts.last()!
     let final_chunked = buf.ieq_at(last.lo, last.hi, chunked())
     let earlier_chunked = ts.slice(0, ts.length - 1).any((t) -> buf.ieq_at(t.lo, t.hi, chunked()))
-    if !final_chunked && !earlier_chunked { return fr with { why: .Coding } }
-    if !final_chunked || earlier_chunked { return fr with { why: .TransferEncoding } }
-    fr with { chunked: true, codings: ts.length > 1 }
+    if !final_chunked && !earlier_chunked { return broke(fr, .Coding) }
+    if !final_chunked || earlier_chunked { return broke(fr, .TransferEncoding) }
+    fr.chunked = true
+    fr.codings = ts.length > 1
 }
 
-fn with_host(buf: Bytes, v: Span, fr: Framing) -> Framing {
-    if v.hi == v.lo || buf.run(v.lo, target_char()) != v.hi { return fr with { why: .Host } }
-    fr with { hosts: fr.hosts + 1 }
+fn took_host(buf: Bytes, v: Span, mut fr: Framing) {
+    if v.hi == v.lo || buf.run(v.lo, target_char()) != v.hi { return broke(fr, .Host) }
+    fr.hosts = fr.hosts + 1
 }
 
-fn with_connection(buf: Bytes, v: Span, fr: Framing) -> Framing {
+fn took_connection(buf: Bytes, v: Span, mut fr: Framing) {
     let ts = tokens(buf, v)
-    fr with { close: fr.close || ts.any((t) -> buf.ieq_at(t.lo, t.hi, close())), keep: fr.keep || ts.any((t) -> buf.ieq_at(t.lo, t.hi, keep_alive())) }
+    fr.close = fr.close || ts.any((t) -> buf.ieq_at(t.lo, t.hi, close()))
+    fr.keep = fr.keep || ts.any((t) -> buf.ieq_at(t.lo, t.hi, keep_alive()))
 }
 
-fn with_expectation(buf: Bytes, v: Span, fr: Framing) -> Framing {
-    if buf.ieq_at(v.lo, v.hi, continue_100()) { fr with { expects: true } } else { fr with { why: .Expectation } }
+fn took_expectation(buf: Bytes, v: Span, mut fr: Framing) {
+    if buf.ieq_at(v.lo, v.hi, continue_100()) { fr.expects = true } else { fr.why = .Expectation }
 }
 
 /// `1*DIGIT`, at most eighteen of them, as a number — or null.
@@ -508,7 +525,7 @@ fn tokens(buf: Bytes, v: Span) -> List<Span> {
 
 /// A framed reply. Spans index the buffer it was framed from; `end`
 /// is the first byte past the blank line.
-export type Reply = { status: int, minor: int, fields: List<Field>, body: ReplyBody, keep_alive: bool, end: int }
+export type Reply = { status: int, minor: int, fields: Fields, body: ReplyBody, keep_alive: bool, end: int }
 
 /// How a reply's body is delimited: not at all, by a length, by
 /// chunks, or by the connection's close (RFC 9112 §6.3).
@@ -551,16 +568,16 @@ fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) 
     let reason_lo = if eol == from + 12 { eol } else { from + 13 }
     if buf.run(reason_lo, vchar()) != eol { return .Refused(.RequestLine) }
     let status = (buf.at(from + 9) - byte("0")) * 100 + (buf.at(from + 10) - byte("0")) * 10 + buf.at(from + 11) - byte("0")
-    match field_lines(buf, eol + 2, mark, limits) {
-        .Bad(why) -> .Refused(why),
-        .All(fs) -> settled_reply(buf, status, buf.at(from + 7) - byte("0"), fs, mark + 4, limits, asked),
-    }
+    mut fs: List<int> = []
+    let why: Refusal? = field_lines(buf, eol + 2, mark, limits, fs)
+    if why != null { return .Refused(why!) }
+    settled_reply(buf, status, buf.at(from + 7) - byte("0"), Fields(fs), mark + 4, limits, asked)
 }
 
 /// A reply's body is delimited by its status and the request's method
 /// before any field (RFC 9112 §6.3): none for a HEAD's answer, a 1xx,
 /// a 204 or a 304; then chunks; then a length; then the close.
-fn settled_reply(buf: Bytes, status: int, minor: int, fields: List<Field>, end: int, limits: Limits, asked: Method) -> FramedReply {
+fn settled_reply(buf: Bytes, status: int, minor: int, fields: Fields, end: int, limits: Limits, asked: Method) -> FramedReply {
     let fr = framing_of(buf, fields)
     if fr.why != null { return .Refused(fr.why!) }
     if fr.chunked && minor == 0 { return .Refused(.OldChunked) }
@@ -663,10 +680,11 @@ fn trailer_step(c: Chunker, buf: Bytes, limits: Limits) -> Step {
     let eol = buf.index_of(crlf(), c.at)
     if eol < 0 { return if crlf_only(buf, c.at, buf.length - 1) { .Wait(c) } else { .Refused(.LineEnd) } }
     if !crlf_only(buf, c.at, eol) { return .Refused(.LineEnd) }
-    match field_line(buf, c.at, eol, limits) {
-        .Bad(why) -> .Refused(why),
-        .Line(_) -> .Again(c with { at: eol + 2, trailers: c.trailers + 1 }),
-    }
+    // a trailer is judged by the field law and dropped
+    mut dropped: List<int> = []
+    let why: Refusal? = field_line(buf, c.at, eol, limits, dropped)
+    if why != null { return .Refused(why!) }
+    .Again(c with { at: eol + 2, trailers: c.trailers + 1 })
 }
 
 /// Where the size line's CRLF begins, past an extension: -1 when the

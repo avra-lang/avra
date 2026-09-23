@@ -49,7 +49,7 @@ fn split_agrees(b: Bytes, at: int, whole: Head?) -> bool {
     let first = b.slice(0, at)
     if !partial(first) { return false }
     match framed(b, 0, first.length, limits()) {
-        .Complete(h) -> whole != null && h.end == whole!.end && h.fields.length == whole!.fields.length,
+        .Complete(h) -> whole != null && h.end == whole!.end && h.fields.count() == whole!.fields.count(),
         .Partial or .Refused(_) -> false,
     }
 }
@@ -58,7 +58,7 @@ spec "std.http frame" {
     given "the head (rows 1 to 7)" {
         then "a minimal request frames complete at 27 bytes with no body, persistent" {
             let h = head_of(req(""))!
-            h.end == 27 && length_of(h) == -1 && h.keep_alive && h.method == Method.Get && h.minor == 1 && h.fields.length == 1
+            h.end == 27 && length_of(h) == -1 && h.keep_alive && h.method == Method.Get && h.minor == 1 && h.fields.count() == 1
         }
         then "every two-read split of a request agrees with the whole" {
             every_split_agrees(req("Accept: */*\r\nX-Y: z\r\n"))
@@ -70,7 +70,7 @@ spec "std.http frame" {
         then "the second of two requests in one read frames from the first's end" {
             let two = req("").concat(req("X: 1\r\n"))
             match framed(two, 27, 0, limits()) {
-                .Complete(h) -> h.end == two.length && h.fields.length == 2,
+                .Complete(h) -> h.end == two.length && h.fields.count() == 2,
                 .Partial or .Refused(_) -> false,
             }
         }
@@ -273,6 +273,6 @@ spec "std.http chunked" {
 
 /// Field `i`'s value as text.
 fn value_of(b: Bytes, i: int) -> string {
-    let f = head_of(b)!.fields[i]
+    let f = head_of(b)!.fields.field(i)
     b.slice(f.value.lo, f.value.hi).text() ?? "<not text>"
 }

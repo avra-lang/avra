@@ -1,16 +1,20 @@
-//! An interpolation lowers as the runtime aggregate: every piece
-//! (part or stringified hole) pushes into an array, and ONE
-//! str_join answers — zero new instructions, the escape hatch
-//! carrying the feature again.
+//! An interpolation lowers as its PIECES — each non-empty part and
+//! each stringified hole, in order: one piece is itself, two are one
+//! concat, and more push into an array that ONE str_join answers.
+//! Zero new instructions, the escape hatch carrying the feature again.
 use core.{ExprId, Reg}
 use features.{LowerCx, MethodCall}
 
 fn interp_reg(mut cx: LowerCx, e: ExprId, parts: List<string>, holes: List<ExprId>) -> Reg {
-    mut pieces = [cx.const_str(parts[0])]
+    mut pieces: List<Reg> = []
+    if parts[0] != "" { pieces.push(cx.const_str(parts[0])) }
     for j, h in holes {
         pieces.push(cx.texted(h))
-        pieces.push(cx.const_str(parts[j + 1]))
+        if parts[j + 1] != "" { pieces.push(cx.const_str(parts[j + 1])) }
     }
+    if pieces.is_empty() { return cx.const_str("") }
+    if pieces.length == 1 { return pieces[0] }
+    if pieces.length == 2 { return cx.str_concat(cx.shape_at(e), pieces[0], pieces[1]) }
     let size = cx.box_size(pieces.length)
     let arr = cx.grown_box(cx.view.types.shape_of(cx.type_at(e)), size, pieces)
     let sep = cx.const_str("")
