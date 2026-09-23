@@ -38,13 +38,14 @@ export type Ask = { by: FileId, want: Wanted }
 
 impl Decls {
     /// WHETHER A UNIT EXISTS BECAUSE A PROGRAM ASKED: a generic at its type
-    /// arguments, a fn at its settled seats, a root. A plain declaration's body
-    /// is its FILE's content; an instantiation is its PROGRAM's. THE DECLARATION
+    /// arguments, a fn at its settled seats, a root no declaration owns. A plain
+    /// declaration's body — a declared instance's included — is its FILE's
+    /// content; an instantiation is its PROGRAM's. THE DECLARATION
     /// ANSWERS, never the ask: a plain fn wanted from inside an instantiation
     /// arrives under its caller's substitution and is the same body all the same.
     fn instantiated(w: Wanted) -> bool {
-        if w.root != null || !w.seats.is_empty() { return true }
-        let d? = w.decl else { return false }
+        if !w.seats.is_empty() { return true }
+        let d? = w.decl else { return w.root != null }
         w.sub != null && self.generic(d)
     }
 
@@ -177,7 +178,7 @@ export type Unit = { bodies: List<Body>, wants: List<Wanted>, voices: Voices, st
 /// workspace: every body's emitter refuses a callee it does not
 /// know against it.
 export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> Unit {
-    if w.decl != null && !a.view.decls.has_body(w.decl!) {
+    if w.root == null && w.decl != null && !a.view.decls.has_body(w.decl!) {
         mut out = new_emitter(externs)
         out.defect("a unit without a body was asked for — `${w.name}`")
         return Unit { bodies: [], wants: [], voices: out.voices, statics: [] }
@@ -391,7 +392,9 @@ export fn program_symbol(path: string) -> string {
 }
 
 fn declared(a: Analysis) -> List<Wanted> {
-    [Wanted { file: a.view.file, decl: d, name: a.view.decls.symbol(d), sub: null, seats: [], root: null } for d in a.view.decls.decls_of_file(a.view.file) if lowers_plain(a, d)]
+    let own = a.view.decls.decls_of_file(a.view.file)
+    let bodies = [Wanted { file: a.view.file, decl: d, name: a.view.decls.symbol(d), sub: null, seats: [], root: null } for d in own if lowers_plain(a, d)]
+    bodies.concat([a.view.decls.instance_unit(d) for d in own if a.view.decls.is_instance(d)])
 }
 
 /// A body lowered without an instantiation: one that has no type
