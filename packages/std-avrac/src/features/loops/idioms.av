@@ -1,0 +1,16 @@
+//! The formatter's idioms for this feature — `rule`s, found by
+//! directory like everything else this feature owns.
+use features.{Code, Fix}
+use diagnostics.{warning}
+
+/// A `for` loop whose WHOLE body is one `push` is a MAP — a
+/// comprehension, or a `concat` when the pushed list already exists.
+@keeps("for x in xs { log(x) }")
+export rule push_loop {
+    // LICENSED I3: the pattern's own text names the shape it detects
+    quote { for ${x} in ${xs} { ${out}.push(${v}) } } -> pushed_in_loop(out),
+}
+
+fn pushed_in_loop(out: Code) -> Fix {
+    Fix.Say(warning("style.push_loop", out.loc(), "a `for` loop whose whole body is one `push` — that loop is a comprehension (or a `concat`)", "this loop", null))
+}

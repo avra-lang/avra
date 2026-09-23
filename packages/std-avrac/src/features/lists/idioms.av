@@ -1,5 +1,7 @@
 //! The formatter's idioms for this feature — `rule`s, found by
 //! directory like everything else this feature owns.
+use features.{Code, Fix}
+use diagnostics.{warning}
 
 /// Last-element index arithmetic is `xs.last()!` — the same trap on
 /// an empty list, spelled once.
@@ -9,4 +11,25 @@
 @keeps("xs[xs.length - 2]")
 export rule last_index {
     quote { ${xs}[${xs}.length - 1] } -> quote { ${xs}.last()! },
+}
+
+/// A comprehension over a LIST folded to a bool is a SCAN —
+/// `xs.all(pred)` stops at the first answer and builds nothing,
+/// where `[e for j in src].all(it)` mints the whole list first. Both
+/// the list-source and the range-source forms; a comprehension with
+/// its own `if` filter is not yet reached (the subset today).
+@keeps("[e for j in src]")
+export rule bool_comprehension_list {
+    // LICENSED I48: the pattern's own text names the shape it detects
+    quote { [${e} for ${j} in ${src}].all(it) } -> folded_comprehension(src),
+}
+
+@keeps("[e for j in lo..hi]")
+export rule bool_comprehension_range {
+    // LICENSED I48: the pattern's own text names the shape it detects
+    quote { [${e} for ${j} in ${lo}..${hi}].all(it) } -> folded_comprehension(lo),
+}
+
+fn folded_comprehension(src: Code) -> Fix {
+    Fix.Say(warning("style.bool_comprehension", src.loc(), "a comprehension over a list folded to a bool — that is a scan: `xs.all(pred)` stops at the first answer and builds nothing", "this comprehension", null))
 }

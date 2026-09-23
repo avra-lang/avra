@@ -2,7 +2,7 @@
 //! offset, its runs, and its fills — each fill coerced by its seat's
 //! kind through a `@std/meta` row — wrapped as the kind the body
 //! parsed as. No new instruction.
-use core.{ExprId, Reg, DeclId, PatId, TypeId, HoleKind, MetaKind, FillClass, At, Shape, QuoteHole, hole_kinds, quote_kind, holes_kind, holes_seat, quote_pat_holes, quote_pat_names, quote_pat_root, quote_pat_shape}
+use core.{ExprId, Reg, DeclId, PatId, TypeId, HoleKind, MetaKind, FillClass, At, Shape, QuoteHole, hole_kinds, quote_kind, holes_kind, holes_seat, quote_pat_holes, quote_pat_names, quote_pat_root, quote_pat_shape, quote_pat_is_text}
 use features.{LowerCx, EnumSig}
 
 fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -125,29 +125,50 @@ export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty
     cx.presence_of(answer, answer_ty)
 }
 
-/// One `Code` per binder, in first-occurrence order — the subject's
-/// `of` (read again — cheap, a slot read) paired with the `At`
-/// `matched` bound there.
+/// One binder per name, in first-occurrence order — a code seat
+/// packs the subject's `of` with the `At` `matched` bound there, as
+/// before; a NAME seat reads that same `At`'s own name text back
+/// instead (`own_name_at`) — present by construction, since
+/// `match_named_node` (shape.av) never binds one it could not read.
 export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: TypeId) -> List<Reg> {
     let regs = cx.test_regs_of(p)
     if regs.length != 1 { return untested(cx) }
     let answer = regs[0]
-    let names = quote_pat_names(quote_pat_holes(cx.view.store, body))
+    let holes = quote_pat_holes(cx.view.store, body)
+    let names = quote_pat_names(holes)
     let at_ty = avrac_self(cx, "At")
     let code_ty = avrac_self(cx, "Code")
-    let of = cx.field_named(v, vty, "of", avrac_self(cx, "Analysed"))
+    let of_ty = avrac_self(cx, "Analysed")
+    let of = cx.field_named(v, vty, "of", of_ty)
+    let subj_store = cx.field_named(cx.field_named(of, of_ty, "view", avrac_self(cx, "FileView")), avrac_self(cx, "FileView"), "store", avrac_self(cx, "NodeStore"))
     let carried = cx.carried_of(answer, cx.type(List<at_ty>?))
     mut out: List<Reg> = []
-    // LICENSED I3: each binder's Code is packed in binder order, its own mint
+    // LICENSED I3: each binder's bind is packed in binder order, its own mint
     for j, n in names {
         let at_j = cx.slot_read(carried, j, at_ty)
-        out.push(cx.packed_struct(code_ty, [of, at_j]))
+        out.push(bind_of(cx, body, of, code_ty, subj_store, at_j, quote_pat_is_text(holes, n)))
     }
     out
 }
 
+/// One binder's value: a code seat packs `Code { of, at }`; a name
+/// seat reads the `At`'s own name text.
+fn bind_of(mut cx: LowerCx, body: ExprId, of: Reg, code_ty: TypeId, store: Reg, at_j: Reg, text: bool) -> Reg {
+    if text { return text_bind(cx, body, store, at_j) }
+    cx.packed_struct(code_ty, [of, at_j])
+}
+
+/// The `At`'s own name, insisted on — present by construction (see
+/// `quote_pat_binds`'s own note).
+fn text_bind(mut cx: LowerCx, body: ExprId, store: Reg, at_j: Reg) -> Reg {
+    let opt_ty = cx.type(string?)
+    let text = avrac_call(cx, "own_name_at", [store, at_j], opt_ty)
+    cx.insisted(body, text, opt_ty)
+}
+
 /// The pattern's own Shape, rebuilt: a hole names its dense binder
-/// index, a node its shallow fold and its kids, in order.
+/// index, a node its shallow fold and its kids, in order — a
+/// `NamedNode`'s bare fold and its own name binder alongside.
 fn shape_reg(mut cx: LowerCx, shape_ty: TypeId, list_ty: TypeId, s: Shape) -> Reg {
     let sig? = cx.variants_of(shape_ty) else { return shape_untagged(cx, shape_ty) }
     match s {
@@ -155,6 +176,10 @@ fn shape_reg(mut cx: LowerCx, shape_ty: TypeId, list_ty: TypeId, s: Shape) -> Re
         .Node(shallow, kids) -> {
             let kid_regs = [shape_reg(cx, shape_ty, list_ty, k) for k in kids]
             tagged(cx, shape_ty, shape_tag(cx, sig, "Node"), [cx.const_int(shallow), boxed(cx, list_ty, kid_regs)])
+        },
+        .NamedNode(shallow, kids, index) -> {
+            let kid_regs = [shape_reg(cx, shape_ty, list_ty, k) for k in kids]
+            tagged(cx, shape_ty, shape_tag(cx, sig, "NamedNode"), [cx.const_int(shallow), boxed(cx, list_ty, kid_regs), cx.const_int(index)])
         },
     }
 }

@@ -18,6 +18,12 @@ fn code_of(a: Analysis) -> Code {
     a.code_at(At.Expr(root_expr(a)))
 }
 
+/// The subject `Code`, wrapping the one analysed STATEMENT itself —
+/// a `let`/`for` subject has no tail expression to root at.
+fn stmt_code_of(a: Analysis) -> Code {
+    a.code_at(At.Stmt(a.view.stmts[0]))
+}
+
 /// Whether `src` refuses with `code` among its diagnostics — no
 /// `@std/avrac` dependency needed: every refusal this file drives at
 /// is judged on the PATTERN's own shape, before the subject's type
@@ -84,10 +90,63 @@ spec "features/quote — a quote in pattern position" {
             refused_with("match 1 { quote { .A -> 1 } -> true, _ -> false }", "F2087")
         }
     }
-    given "a statement pattern naming a fresh binding" {
+    given "a NAME hole" {
 
-        then "`let \${x} = \${e}` refuses — the let's declared name is a Name seat, folded into the LET's own identity, and the matcher has no seat to hold it open" {
-            refused_with("match 1 { quote { let \${x} = \${e} } -> true, _ -> false }", "F2096")
+        then "a `let`'s declared name binds its own text, as a string" {
+            match stmt_code_of(analyze_source("let n = 1")) {
+                quote { let ${x} = 1 } -> x == "n",
+                _ -> false,
+            }
+        }
+        then "a `for` loop's binder binds its own text" {
+            match stmt_code_of(analyze_source("for n in xs { n }")) {
+                quote { for ${x} in ${xs} { ${b} } } -> x == "n",
+                _ -> false,
+            }
+        }
+        then "a call's callee binds its own text" {
+            match code_of(analyze_source("f(1)")) {
+                quote { ${f}(1) } -> f == "f",
+                _ -> false,
+            }
+        }
+        then "a method call's name binds its own text" {
+            match code_of(analyze_source("xs.push(1)")) {
+                quote { ${xs}.${m}(1) } -> m == "push",
+                _ -> false,
+            }
+        }
+        then "a field read's name binds its own text" {
+            match code_of(analyze_source("p.x")) {
+                quote { ${p}.${n} } -> n == "x",
+                _ -> false,
+            }
+        }
+        then "the SAME name used twice at a name seat demands the same text — `f(1) + f(2)` matches, `f(1) + g(2)` does not" {
+            let same = match code_of(analyze_source("f(1) + f(2)")) { quote { ${f}(1) + ${f}(2) } -> true, _ -> false }
+            let diff = match code_of(analyze_source("f(1) + g(2)")) { quote { ${f}(1) + ${f}(2) } -> false, _ -> true }
+            same && diff
+        }
+        then "a name hole's own text is readable through a guard, like any other bound value" {
+            match stmt_code_of(analyze_source("let n = 1")) {
+                quote { let ${x} = 1 } if x == "n" -> true,
+                _ -> false,
+            }
+        }
+        then "an EMBEDDED hole (`l\${x}_y` — not the whole field) still refuses — F2096" {
+            refused_with("match 1 { quote { let l\${x}_y = 1 } -> true, _ -> false }", "F2096")
+        }
+        then "one binder mixing a name seat (a callee) and a code seat (an argument) refuses" {
+            refused_with("match 1 { quote { \${x}(\${x}) } -> true, _ -> false }", "F2116")
+        }
+    }
+    given "a nested match's own arms hold `Pat.Bind`/`Pat.Variant` NAME holes too" {
+
+        then "a bind pattern's own name binds its text" {
+            match code_of(analyze_source("match c { n -> 1 }")) {
+                quote { match ${c} { ${x} -> 1 } } -> x == "n",
+                _ -> false,
+            }
         }
     }
     given "refusals, judged on the pattern's own shape first" {

@@ -1,14 +1,16 @@
 //! A quote used as a PATTERN: its `${...}` holes are BINDERS, not
-//! fills — matching real code structurally, never splicing. The
-//! seat law is NARROWER than the expression form's: only an
+//! fills — matching real code structurally, never splicing. An
 //! EXPRESSION or a STATEMENT seat has its own tree position this
 //! matcher can wildcard (`shape.av`'s `Shape.Hole` recurses into a
 //! CHILD position, never into a scalar field its parent folds into
-//! its own identity) — a Name seat's written text (a `let`'s
-//! declared name) is exactly such a scalar, folded into its owner's
-//! identity rather than held as a position of its own, and a Type
-//! or an Arm seat names no `At` at all. None of the three is a
-//! child position this matcher can hold open.
+//! its own identity); a NAME seat's written text (a `let`'s declared
+//! name, a call's callee, a field name — `own_name_at`'s catalog) is
+//! such a scalar TOO, but a LONE hole there is a position this
+//! matcher CAN hold open (`Shape.NamedNode`), reading the subject's
+//! own name text back as a `string` rather than recursing into it —
+//! an EMBEDDED hole (`l${x}_y`) still has none. A Type or an Arm seat
+//! names no `At` at all; neither is a child position this matcher
+//! can hold open yet.
 
 /// One `${...}` occurrence in a quote pattern's body, in written
 /// order: the bare name its content reads, when it is one — a
@@ -26,16 +28,39 @@ export fn quote_pat_holes(store: NodeStore, body: ExprId) -> List<QuoteHole> {
 }
 
 /// Whether this occurrence names a binder the matcher can hold — an
-/// Expression or a Statement seat, read as a bare name.
+/// Expression or a Statement seat, read as a bare name; a Name or a
+/// Binder seat too, when it is LONE at its own field (`quote_pat_reached`
+/// is the precise, position-aware gate typing refuses against — this
+/// is the loose, kind-only test `quote_pat_names` dedupes with).
 export fn quote_hole_ok(h: QuoteHole) -> bool {
-    h.name != null && (h.kind is .Expression || h.kind is .Statement)
+    h.name != null && (h.kind is .Expression || h.kind is .Statement || h.kind is .Name || h.kind is .Binder)
 }
 
+/// Whether a hole's kind binds TEXT (a name's own written text)
+/// rather than CODE (a store position).
+export fn quote_hole_is_text(k: HoleKind) -> bool { k is .Name || k is .Binder }
+
 /// The DISTINCT binder names these holes read, first-occurrence
-/// order — an occurrence `quote_hole_ok` refuses binds nothing.
+/// order — an occurrence `quote_hole_ok` refuses binds nothing. Read
+/// for SCOPE (every name a rule's body may resolve); `quote_pat_is_text`
+/// says what each one answers.
 export fn quote_pat_names(holes: List<QuoteHole>) -> List<string> {
     let named = [h.name! for h in holes if quote_hole_ok(h)]
     [n for i, n in named if named.index_of(n) == i]
+}
+
+/// Whether binder `n`'s occurrences are all a NAME or BINDER seat —
+/// its own text, not code.
+export fn quote_pat_is_text(holes: List<QuoteHole>, n: string) -> bool {
+    [h.kind for h in holes if h.name == n].any(quote_hole_is_text)
+}
+
+/// Whether binder `n` mixes a text seat with a code seat — one
+/// binder answers one type, so this is refused before a pattern is
+/// matched or lowered.
+export fn quote_pat_mixed(holes: List<QuoteHole>, n: string) -> bool {
+    let mine = [h.kind for h in holes if h.name == n]
+    mine.any(quote_hole_is_text) && !mine.all(quote_hole_is_text)
 }
 
 /// The single node a quote pattern's body names — the root its Shape
@@ -84,15 +109,36 @@ export fn root_of(store: NodeStore, s: StmtId) -> At {
 /// The quote pattern's own Shape: like `shape_at`, but a hole is
 /// identified by the NAME its placeholder decodes to, not by arena
 /// identity — two `${x}` occurrences anywhere under `at` share ONE
-/// binder because they read the same name. `names` is the pattern's
-/// own deduped binder list (`quote_pat_names`), so a binder's index
-/// here is its position there. Total once every hole is
-/// `quote_hole_ok` — the caller's typing already refused otherwise.
+/// binder because they read the same name, whether both sit at code
+/// seats, both at name seats, or (refused before this runs) a mix of
+/// the two. `names` is the pattern's own deduped binder list
+/// (`quote_pat_names`), so a binder's index here is its position
+/// there. Total once every hole is `quote_pat_reached` — the caller's
+/// typing already refused otherwise.
 export fn quote_pat_shape(store: NodeStore, at: At, holes: List<QuoteHole>, names: List<string>) -> Shape {
-    let k? = quote_hole_at(store, at) else {
-        return Shape.Node(store.shallow_at(at), [quote_pat_shape(store, kid, holes, names) for kid in store.kids_at(at)])
+    let w? = quote_hole_at(store, at) else {
+        let n? = name_hole_at(store, at) else {
+            return Shape.Node(store.shallow_at(at), [quote_pat_shape(store, kid, holes, names) for kid in store.kids_at(at)])
+        }
+        return Shape.NamedNode(store.shallow_bare_at(at), [quote_pat_shape(store, kid, holes, names) for kid in store.kids_at(at)], names.index_of(holes[n].name!))
     }
-    Shape.Hole(names.index_of(holes[k].name!))
+    Shape.Hole(names.index_of(holes[w].name!))
+}
+
+/// Every raw hole index this pattern's Shape can hold open — the
+/// SAME walk `quote_pat_shape` takes, answering positions instead of
+/// building. Typing refuses any hole whose index is absent here
+/// (`features/quote/check.av`'s `quote_pat_types`), which is what
+/// makes a non-lone Name occurrence (`l${x}_y`) a refusal rather than
+/// a silently-ignored one: `quote_hole_ok`'s kind-only test cannot
+/// tell the two apart, this walk can.
+export fn quote_pat_reached(store: NodeStore, at: At) -> List<int> {
+    let w? = quote_hole_at(store, at) else {
+        let kids = flatten([quote_pat_reached(store, kid) for kid in store.kids_at(at)])
+        let n? = name_hole_at(store, at) else { return kids }
+        return [n].concat(kids)
+    }
+    [w]
 }
 
 /// The occurrence index `at`'s own position IS, when it stands as a
@@ -105,6 +151,14 @@ fn quote_hole_at(store: NodeStore, at: At) -> int? {
         .Stmt(s) -> store.hole_stmt(s),
         .Pat(_) -> null,
     }
+}
+
+/// The occurrence index `at`'s own NAME field is, when that field is
+/// nothing but a hole — absence when the kind names no field
+/// (`own_name_at`'s catalog) or the field carries more than the hole.
+fn name_hole_at(store: NodeStore, at: At) -> int? {
+    let t? = own_name_at(store, at) else { return null }
+    lone_hole_of(t)
 }
 
 /// The index a LONE hole's own text names, or absence — `${k}`

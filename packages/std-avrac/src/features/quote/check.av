@@ -2,7 +2,7 @@
 //! (`core/holes.av`'s `fits`, the one registry), and the quote answers
 //! the meta kind its body parsed as — both judged HERE, in the file
 //! that wrote the template, with no user of it.
-use core.{ExprId, TypeId, PatId, DeclId, StmtId, Type, BodyParts, HoleKind, QuoteHole, MetaKind, FillClass, hole_kinds, quote_kind, fits, holes_kind, holes_seat, meta_name, quote_pat_holes, quote_pat_names, quote_hole_ok, quote_pat_root}
+use core.{ExprId, TypeId, PatId, DeclId, StmtId, Type, BodyParts, HoleKind, QuoteHole, MetaKind, FillClass, hole_kinds, quote_kind, fits, holes_kind, holes_seat, meta_name, quote_pat_holes, quote_pat_names, quote_pat_root, quote_pat_reached, quote_pat_is_text, quote_pat_mixed}
 use features.{TypeCx, Decls, this_is}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
@@ -121,30 +121,50 @@ fn takes_word(kind: HoleKind) -> string {
 // rather than a scalar folded into its owner's identity can be held
 // open (core/quote_pat.av). Judged here too, never re-derived. ──
 
-/// The body is one node, no arms; every hole is a bare name at an
-/// expression or a statement seat — the only seats a hole can
-/// wildcard yet — judged FIRST, since a malformed pattern is a
+/// The body is one node, no arms; every hole stands at a seat this
+/// matcher can hold open — an expression, a statement, or (2b) a
+/// LONE name seat — judged FIRST, since a malformed pattern is a
 /// defect whatever it is matched against. Then the subject: THIS
-/// COMPILER'S OWN `Code` handle. Every binder answers `Code`, in
-/// first-occurrence order.
+/// COMPILER'S OWN `Code` handle. Every binder answers `Code`, unless
+/// every one of its occurrences is a name seat, which answers its
+/// own written `string` instead — first-occurrence order, and one
+/// binder used at seats of both kinds is refused before either type
+/// is picked.
 export fn quote_pat_types(mut cx: TypeCx, p: PatId, body: ExprId, expected: TypeId) -> List<TypeId> {
-    if quote_pat_root(cx.view.store, body) == null { return bad_shape(cx, p) }
+    let root? = quote_pat_root(cx.view.store, body) else { return bad_shape(cx, p) }
     let holes = quote_pat_holes(cx.view.store, body)
-    let bad? = holes.find(!quote_hole_ok(it)) else { return subject_types(cx, p, expected, holes) }
-    hole_seat_refused(cx, p, bad)
+    let reached = quote_pat_reached(cx.view.store, root)
+    let bad? = [k for k, h in holes if !reached.contains(k)].first() else { return bare_checked(cx, p, expected, holes) }
+    hole_seat_refused(cx, p, holes[bad])
 }
 
-fn subject_types(mut cx: TypeCx, p: PatId, expected: TypeId, holes: List<QuoteHole>) -> List<TypeId> {
+/// Every hole stands at a position this matcher can hold open —
+/// reachability alone does not say the FILL there was a bare name
+/// (`\${1 + 1}` reaches the same expression seat `\${x}` does).
+fn bare_checked(mut cx: TypeCx, p: PatId, expected: TypeId, holes: List<QuoteHole>) -> List<TypeId> {
+    let unnamed? = holes.find(it.name == null) else { return checked_names(cx, p, expected, holes) }
+    not_bare(cx, p)
+}
+
+fn checked_names(mut cx: TypeCx, p: PatId, expected: TypeId, holes: List<QuoteHole>) -> List<TypeId> {
+    let names = quote_pat_names(holes)
+    let mixed? = names.find(quote_pat_mixed(holes, it)) else { return subject_types(cx, p, expected, holes, names) }
+    mixed_seat(cx, p, mixed)
+}
+
+fn subject_types(mut cx: TypeCx, p: PatId, expected: TypeId, holes: List<QuoteHole>, names: List<string>) -> List<TypeId> {
     let d? = cx.view.decls.avrac_named("Code") else { return no_avrac(cx, p) }
     let code_ty = cx.view.decls.self_type_of(d)
     if cx.types_disagree(expected, code_ty) { return wrong_subject(cx, p, cx.view.types.name_of(expected)) }
-    [code_ty for n in quote_pat_names(holes)]
+    let string_ty = cx.type(string)
+    [if quote_pat_is_text(holes, n) { string_ty } else { code_ty } for n in names]
 }
 
 fn hole_seat_refused(mut cx: TypeCx, p: PatId, bad: QuoteHole) -> List<TypeId> {
     match bad.kind {
         .Type -> type_seat(cx, p),
-        .Name or .Binder or .Arm -> unheld_seat(cx, p, bad.kind),
+        .Arm -> unheld_seat(cx, p, bad.kind),
+        .Name or .Binder -> unheld_name(cx, p),
         .Expression or .Statement -> not_bare(cx, p),
     }
 }
@@ -172,7 +192,17 @@ fn type_seat(mut cx: TypeCx, p: PatId) -> List<TypeId> {
 }
 
 fn unheld_seat(mut cx: TypeCx, p: PatId, kind: HoleKind) -> List<TypeId> {
-    cx.emit(refusal("type.quote_pat_seat", cx.pat_loc(p), "a hole in ${seat_word(kind)} position binds no code yet — only an expression or a statement seat is a position this matcher can hold open", "this pattern", "write it out whole — a hole cannot bind this position yet"))
+    cx.emit(refusal("type.quote_pat_seat", cx.pat_loc(p), "a hole in ${seat_word(kind)} position binds nothing yet — this matcher has no position for one", "this pattern", "write it out whole — a hole cannot bind this position yet"))
+    []
+}
+
+fn unheld_name(mut cx: TypeCx, p: PatId) -> List<TypeId> {
+    cx.emit(refusal("type.quote_pat_seat", cx.pat_loc(p), "a hole in name position binds only its WHOLE field — a lone `\${x}`, nothing around it — at a let/for/const binder, a bind pattern, a variant test, a call's callee, a method or a field name", "this pattern", "write `\${x}` alone at one of those seats, or write the name out"))
+    []
+}
+
+fn mixed_seat(mut cx: TypeCx, p: PatId, n: string) -> List<TypeId> {
+    cx.emit(refusal("type.quote_pat_mixed", cx.pat_loc(p), "`${n}` binds code once and a name once — one binder answers one type", "this pattern", "give it a code seat everywhere, or a name seat everywhere"))
     []
 }
 

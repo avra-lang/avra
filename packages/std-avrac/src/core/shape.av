@@ -19,11 +19,15 @@ export enum At {
 /// `Hole` accepts anything at that seat and binds the subject there,
 /// by binder INDEX — the same index appearing twice demands the same
 /// SUBTREE fingerprint, span-blind, not a repeated structural match.
-/// A NAME hole (2b) reads the bound subject's own shape back from
-/// `matched`'s answer; `Hole` itself stays uniform.
+/// `NamedNode` is `Node` with its own NAME field held open instead of
+/// folded: `shallow` is the BARE fold (the name excluded — `own_name_at`
+/// carries it separately), and a repeat occurrence of `index` demands
+/// the same NAME TEXT, not the same subtree — `own_name_at`'s catalog
+/// says which kinds carry a name this way.
 export enum Shape {
     Hole(index: int)
     Node(shallow: int, kids: List<Shape>)
+    NamedNode(shallow: int, kids: List<Shape>, index: int)
 }
 
 impl NodeStore {
@@ -65,6 +69,75 @@ impl NodeStore {
             .Stmt(id) -> self.stmt_span(id),
             .Pat(id) -> self.pat_span(id),
         }
+    }
+
+    /// `shallow_at`, with the node's own name field zeroed first —
+    /// what a `NamedNode`'s shallow fold compares, since its name is
+    /// held open rather than folded.
+    fn shallow_bare_at(at: At) -> int {
+        match at {
+            .Expr(id) -> self.shallow_expr(bare_expr(self.expr(id))),
+            .Stmt(id) -> self.shallow_stmt(bare_stmt(self.stmt(id))),
+            .Pat(id) -> self.shallow_pat(bare_pat(self.pat(id))),
+        }
+    }
+}
+
+/// The node's own name-bearing field — a let/for/const binder, a
+/// bind pattern, a variant test, a call's callee, a method or field
+/// name — for every kind a NAME hole can hold open. Absent for every
+/// other kind: nothing to hold, so `name_hole_at` never reaches it
+/// and its name stays folded into `shallow_at` as before.
+export fn own_name_at(store: NodeStore, at: At) -> string? {
+    match at {
+        .Stmt(id) -> match store.stmt(id) {
+            .Let(name, _, _) or .MutLet(name, _, _) or .ConstDecl(name, _, _) or .For(name, _, _, _, _, _) or .ForEach(_, name, _, _) -> name.of,
+            rest -> null,
+        },
+        .Pat(id) -> match store.pat(id) {
+            .Bind(name) -> name.of,
+            // LICENSED I59: `name` is `Scoped` here, `Plain` in `Bind` — an `or` arm cannot bind one name at two types
+            .Variant(name, _) -> name.of,
+            rest -> null,
+        },
+        .Expr(id) -> match store.expr(id) {
+            .Call(callee, _, _) -> callee.of,
+            .MethodCall(_, name, _) or .Prop(_, name) -> name.of,
+            // LICENSED I59: `name` is `Scoped` here, `Plain` above — an `or` arm cannot bind one name at two types
+            .Comp(_, _, name, _, _, _) -> name.of,
+            rest -> null,
+        },
+    }
+}
+
+/// `own_name_at`'s SAME catalog, the name blanked — the bare fold
+/// `shallow_bare_at` compares.
+fn bare_stmt(s: Stmt) -> Stmt {
+    match s {
+        .Let(_, ty, value) -> Stmt.Let(Scoped(""), ty, value),
+        .MutLet(_, ty, value) -> Stmt.MutLet(Scoped(""), ty, value),
+        .ConstDecl(_, ty, value) -> Stmt.ConstDecl(Scoped(""), ty, value),
+        .For(_, from, to, cond, step, stmts) -> Stmt.For(Scoped(""), from, to, cond, step, stmts),
+        .ForEach(index, _, subject, stmts) -> Stmt.ForEach(index, Scoped(""), subject, stmts),
+        rest -> s,
+    }
+}
+
+fn bare_pat(p: Pat) -> Pat {
+    match p {
+        .Bind(_) -> Pat.Bind(Scoped("")),
+        .Variant(_, args) -> Pat.Variant(Plain(""), args),
+        rest -> p,
+    }
+}
+
+fn bare_expr(e: Expr) -> Expr {
+    match e {
+        .Call(_, pins, args) -> Expr.Call(Scoped(""), pins, args),
+        .MethodCall(subject, _, args) -> Expr.MethodCall(subject, Plain(""), args),
+        .Prop(subject, _) -> Expr.Prop(subject, Plain("")),
+        .Comp(elem, index, _, source, hi, cond) -> Expr.Comp(elem, index, Scoped(""), source, hi, cond),
+        rest -> e,
     }
 }
 
@@ -171,6 +244,7 @@ fn hole_indices_in(shape: Shape) -> List<int> {
     match shape {
         .Hole(h) -> [h],
         .Node(_, kids) -> flatten([hole_indices_in(k) for k in kids]),
+        .NamedNode(_, kids, index) -> [index].concat(flatten([hole_indices_in(k) for k in kids])),
     }
 }
 
@@ -180,8 +254,11 @@ fn max_hole(shape: Shape) -> int {
     match shape {
         .Hole(h) -> h,
         .Node(_, kids) -> max_of_holes(kids),
+        .NamedNode(_, kids, index) -> higher(index, max_of_holes(kids)),
     }
 }
+
+fn higher(a: int, b: int) -> int { if a > b { a } else { b } }
 
 fn max_of_holes(kids: List<Shape>) -> int {
     // LICENSED I4: a max fold; the subset has no reduce/max_by
@@ -206,6 +283,20 @@ fn bound_hole(store: NodeStore, subject: At, hole: int, acc: List<At?>) -> List<
     if store.subtree_fp(seen!) == store.subtree_fp(subject) { acc } else { null }
 }
 
+/// A NAME binder seat: the FIRST occurrence records the subject; a
+/// REPEAT occurrence must carry the SAME NAME TEXT — `bound_hole`'s
+/// twin, comparing what `own_name_at` reads rather than the whole
+/// subtree.
+fn bound_name_hole(store: NodeStore, subject: At, hole: int, acc: List<At?>) -> List<At?>? {
+    let seen: At? = acc[hole]
+    if seen == null {
+        mut next = acc
+        next.set(hole, subject)
+        return next
+    }
+    if own_name_at(store, seen!) == own_name_at(store, subject) { acc } else { null }
+}
+
 /// One recursive step: `subject` against `shape`, given the binds
 /// collected so far — the updated binds on a hit, absence on a miss.
 /// Arity is never checked at a `Node`'s own kids count: it was
@@ -215,7 +306,21 @@ fn match_shape(store: NodeStore, subject: At, shape: Shape, acc: List<At?>) -> L
     match shape {
         .Hole(h) -> bound_hole(store, subject, h, acc),
         .Node(shallow, kids) -> match_node(store, subject, shallow, kids, acc),
+        .NamedNode(shallow, kids, index) -> match_named_node(store, subject, shallow, kids, index, acc),
     }
+}
+
+/// A `NamedNode`: the subject's BARE shallow fold agrees, its own
+/// name is readable at all (a kind `own_name_at` does not know is a
+/// miss, never a defect — the pattern's shallow fold already narrowed
+/// the subject to a kind that carries one), the name binds or repeats,
+/// then its ordinary children match as any `Node`'s do.
+fn match_named_node(store: NodeStore, subject: At, shallow: int, kids: List<Shape>, index: int, acc: List<At?>) -> List<At?>? {
+    if store.shallow_bare_at(subject) != shallow { return null }
+    if own_name_at(store, subject) == null { return null }
+    let next? = bound_name_hole(store, subject, index, acc) else { return null }
+    if kids.is_empty() { return next }
+    match_kids(store, store.kids_at(subject), kids, next)
 }
 
 fn match_node(store: NodeStore, subject: At, shallow: int, kids: List<Shape>, acc: List<At?>) -> List<At?>? {

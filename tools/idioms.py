@@ -980,17 +980,12 @@ PRODUCT_ONLY = {
 TESTS_ONLY = {"I20": "it is a law about how a REFUSAL is asserted"}
 
 RULES = {
-    "I3":  (push_loop,
-            "a for-loop whose body is one push — that is a comprehension (or concat)"),
     "I4":  (line_rx(r"mut [a-z_]+: *[A-Za-z][A-Za-z<>, ]*\? *= *null"),
             "a nullable flag local — is this scan a find/index_of?"),
     "I11": (duplicated(r'"[a-z][^"]{20,}"'),
             "a long string duplicated in one file — shared messages are fns"),
     "I13": (line_rx(r"([a-z_]+\.[a-z_]+\(([a-z_]+)\)).*\1"),
             "the same projection computed twice on one line — bind it"),
-    "I48": (bool_comprehension,
-            "a comprehension over a LIST folded to a bool — that is a scan: "
-            "`xs.all(pred)` stops at the first answer and builds nothing"),
     "I14": (emit_then_error,
             "emit-then-intern(Error) — that pair is `spoken(cx, d)`"),
     "I15": (bracket_ritual,
@@ -1093,6 +1088,14 @@ UNRATCHETED = {
     "I40": "PORTED NATIVELY: all six type-constructor shapes as siblings\n"
            "           (`interned_int` … `interned_res`, compiler/idioms.av) —\n"
            "           ratcheted by the native-findings phase below",
+    "I3":  "PORTED NATIVELY: `push_loop` (features/loops/idioms.av) — a NAME hole\n"
+           "           (avra-8sb5.25.6) holds the loop's own binder open; ratcheted\n"
+           "           by the native-findings phase below",
+    "I48": "PORTED NATIVELY: `bool_comprehension_list`/`_range`\n"
+           "           (features/lists/idioms.av) — a NAME hole holds the comprehension's\n"
+           "           own element binder open; ratcheted by the native-findings phase\n"
+           "           below. A comprehension with its own `if` filter is not yet\n"
+           "           reached (the subset today)",
     "I52": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
            "           (features/nullable/idioms.av) — ratcheted by the native-findings\n"
            "           phase below",
@@ -1536,6 +1539,8 @@ NATIVE_PREDECESSOR = {
     "rule.compiler.interned_int": "I40",
     "rule.compiler.interned_str": "I40",
     "style.hand_sized_column": "I43",
+    "style.push_loop": "I3",
+    "style.bool_comprehension": "I48",
 }
 
 def native_findings():
