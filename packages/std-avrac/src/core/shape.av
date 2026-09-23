@@ -103,6 +103,8 @@ export fn own_name_at(store: NodeStore, at: At) -> string? {
         .Expr(id) -> match store.expr(id) {
             .Call(callee, _, _) -> callee.of,
             .MethodCall(_, name, _) or .Prop(_, name) -> name.of,
+            // LICENSED I59: `name` is `Scoped` here, `Plain` above — an `or` arm cannot bind one name at two types
+            .Comp(_, _, name, _, _, _) -> name.of,
             rest -> null,
         },
     }
@@ -134,6 +136,7 @@ fn bare_expr(e: Expr) -> Expr {
         .Call(_, pins, args) -> Expr.Call(Scoped(""), pins, args),
         .MethodCall(subject, _, args) -> Expr.MethodCall(subject, Plain(""), args),
         .Prop(subject, _) -> Expr.Prop(subject, Plain("")),
+        .Comp(elem, index, _, source, hi, cond) -> Expr.Comp(elem, index, Scoped(""), source, hi, cond),
         rest -> e,
     }
 }

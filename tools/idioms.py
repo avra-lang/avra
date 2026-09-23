@@ -980,8 +980,6 @@ PRODUCT_ONLY = {
 TESTS_ONLY = {"I20": "it is a law about how a REFUSAL is asserted"}
 
 RULES = {
-    "I3":  (push_loop,
-            "a for-loop whose body is one push — that is a comprehension (or concat)"),
     "I4":  (line_rx(r"mut [a-z_]+: *[A-Za-z][A-Za-z<>, ]*\? *= *null"),
             "a nullable flag local — is this scan a find/index_of?"),
     "I11": (duplicated(r'"[a-z][^"]{20,}"'),
@@ -1093,6 +1091,9 @@ UNRATCHETED = {
     "I40": "PORTED NATIVELY: all six type-constructor shapes as siblings\n"
            "           (`interned_int` … `interned_res`, compiler/idioms.av) —\n"
            "           ratcheted by the native-findings phase below",
+    "I3":  "PORTED NATIVELY: `push_loop` (features/loops/idioms.av) — a NAME hole\n"
+           "           (avra-8sb5.25.6) holds the loop's own binder open; ratcheted\n"
+           "           by the native-findings phase below",
     "I52": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
            "           (features/nullable/idioms.av) — ratcheted by the native-findings\n"
            "           phase below",
@@ -1536,6 +1537,7 @@ NATIVE_PREDECESSOR = {
     "rule.compiler.interned_int": "I40",
     "rule.compiler.interned_str": "I40",
     "style.hand_sized_column": "I43",
+    "style.push_loop": "I3",
 }
 
 def native_findings():
