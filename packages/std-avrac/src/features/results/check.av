@@ -4,8 +4,8 @@
 //! recovers to the ok side; a SELECTIVE one stays the Result, and
 //! the unmatched keep propagating — which needs the same channel
 //! `?` needs.
-use core.{ExprId, Type, TypeId, ResSides}
-use features.{TypeCx, EnumSig, this_is, variants_are, TypeArgs, res_enum_sig}
+use core.{ExprId, Type, TypeId, ResSides, TypeRegistry}
+use features.{TypeCx, EnumSig, this_is, variants_are, TypeArgs, res_enum_sig, Refusal}
 use diagnostics.{refusal}
 
 fn catch_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -72,7 +72,7 @@ fn arm_answer(mut cx: TypeCx, t: TypeId, value: ExprId) {
 }
 
 /// TOTAL when a catch-all arm exists, or every variant is named.
-fn covers(cx: TypeCx, err: TypeId, variants: List<string>) -> bool {
+fn covers(mut cx: TypeCx, err: TypeId, variants: List<string>) -> bool {
     if variants.any(it == "") { return true }
     let sig? = cx.variants_of(err) else { return false }
     total(sig, variants)
@@ -85,6 +85,12 @@ fn named_in(variants: List<string>, name: string) -> bool {
 }
 
 /// `Result<T, E>` — the constructor row's shape.
+/// A `Result`'s sides hold values: a side of `void` — a verb that
+/// answers nothing but may fail — is recorded, not landed.
+export fn res_law(types: TypeRegistry, args: TypeArgs) -> List<Refusal> {
+    [side_holds_nothing(types, p) for p in args.parts if types.shape_of(p) is .Void]
+}
+
 export fn res_shape(args: TypeArgs) -> Type {
     Type.Res(args.parts[0], args.parts[1])
 }
@@ -121,4 +127,11 @@ fn nothing_to_hold(mut cx: TypeCx, e: ExprId, vn: string, bind: string) {
 fn arm_not_ok(mut cx: TypeCx, value: ExprId, t: TypeId) {
     let gn = cx.name_at(value)
     cx.emit(refusal("type.catch", cx.loc_of(value), "a `catch` arm answers the ok side: `${cx.view.types.name_of(t)}`, this is `${gn}`", this_is(gn), null))
+}
+
+fn side_holds_nothing(types: TypeRegistry, side: TypeId) -> Refusal {
+    Refusal {
+        message: "a `Result` side cannot hold `${types.name_of(side)}` yet",
+        help: "a verb that answers nothing but may fail is recorded — answer what it wrote",
+    }
 }

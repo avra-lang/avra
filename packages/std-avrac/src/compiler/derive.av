@@ -9,8 +9,10 @@
 use core.{distinct, joined, sorted_texts, digest_of, module_path, same_file, FileId, DeclId}
 use features.{SettleRoot, Wanted, Analysed}
 use @std.path.{relative_path}
+use diagnostics.{Diag, render_among}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.lower.{Lowered}
+use compiler.host.{no_source}
 
 /// What a command wants of a program. A file's warnings stand in for it
 /// always; its object and its asks too when the want LINKS.
@@ -150,14 +152,37 @@ impl Workspace {
     /// kept under the program's key, so an unchanged program costs a hash. A
     /// refusal is never kept.
     mut fn checked(entry: string?) -> Result<Checked, string> {
+        if self.nothing_to_check() { fail self.rendered_shape([no_source(self.root)]) }
         let store = store_at(build_cache_root(self))
         let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
         let kept: string? = store.get(Stored.Warn, self.program_key(under.named, under.beside))
         if kept != null { return Checked { warnings: kept!, reused: true, timed: "" } }
-        let d = self.derived(entry, Want.Diagnostics)?
+        mut d = self.derived(entry, Want.Diagnostics)?
         let key = d.program.ws.kept_key(under)
         let _ = store.keep(Stored.Warn, key, d.warnings, [key])
         Checked { warnings: d.warnings, reused: false, timed: d.timed([]) }
+    }
+
+    /// NOTHING FOR `check` TO EXAMINE: a directory of programs (no `src/` —
+    /// `per_file` is how the workspace itself remembers that, so this asks
+    /// the workspace rather than the disk again) with no `.av` file
+    /// directly in the root either. `root_files` already reads
+    /// `packages[0].src` as the workspace was built — a directory of
+    /// programs lists direct files alone, which is what makes an empty
+    /// answer here mean none exist, not merely unwalked.
+    ///
+    /// A MANIFEST THAT ALREADY SPOKE IS LEFT TO SPEAK: a malformed
+    /// `avra.toml` earns `manifest.syntax` naming the broken line, not
+    /// "nothing to check" naming a symptom of it — the more specific
+    /// voice wins, so this asks only once the manifest is silent.
+    fn nothing_to_check() -> bool {
+        self.per_file && self.packages_voiced().is_empty() && self.root_files().is_empty()
+    }
+
+    /// A refusal about the workspace's own SHAPE — no line anywhere to
+    /// point at, so no source window is ever asked for.
+    fn rendered_shape(ds: List<Diag>) -> string {
+        joined([render_among(d, self.lang.rows.codes, []) for d in ds], "\n\n")
     }
 
     /// The program at `entry`, derived — under the hold, and from the sources
@@ -199,7 +224,9 @@ impl Workspace {
 
     /// A fresh workspace's attempt — a restart never inherits a hold.
     fn again(at: Attempt) -> Result<Derived, string> {
-        mut fresh = self.anew()
+        // NOT `mut`: `anew`'s own hooks already capture this box
+        // (workspace.av's `anew` doc — an identity, never a value).
+        let fresh = self.anew()
         fresh.attempted(at)
     }
 
@@ -221,7 +248,7 @@ impl Workspace {
         clock.mark("load")
         self.admit_all()
         clock.mark("admit")
-        let p = self.analysed(at, store)?
+        mut p = self.analysed(at, store)?
         clock.mark("analyze")
         let lo = self.bodies_lowered(at, store, p)?
         clock.mark("lower")
@@ -239,7 +266,7 @@ impl Workspace {
         self.attach_store(store)
         // a home is read only when the instantiations are owed
         let homes = if at.homes { self.known_homes(store, at) } else { [] }
-        for path in homes.concat(at.parse) { self.hold.homes.set(path, true) }
+        for path in homes.concat(at.parse) { self.hold.homes.put(path, true) }
         if at.hold {
             for m in held_modules(self, store) { load_interface(self, store, m, at.entry, at.want) }
             // a home whose text moved moves what lowers from it: the homes are read from the start
@@ -254,7 +281,7 @@ impl Workspace {
     /// THE PROGRAM, ANALYSED AND CLEAN — with every file its compile-time runs and
     /// its held asks reach read beside it, or the attempt that reads them.
     mut fn analysed(at: Attempt, store: Store) -> Result<Program, Turn> {
-        let p = self.program(at.entry)
+        mut p = self.program(at.entry)
         at.having_read(self.bodies_asked())?
         if !p.clean() { fail Turn.Refused(p.report()) }
         if self.layouts_moved(store, p) { fail at.unheld("a sealed layout moved") }
@@ -266,7 +293,7 @@ impl Workspace {
     /// here, while a held body it runs can still send the attempt back. The homes
     /// lowered from are remembered; one that is held all the same is new, and the
     /// next attempt reads it.
-    mut fn bodies_lowered(at: Attempt, store: Store, p: Program) -> Result<Lowered, Turn> {
+    mut fn bodies_lowered(at: Attempt, store: Store, mut p: Program) -> Result<Lowered, Turn> {
         let lowered = p.files_checked()
         self.settle_consts(p)
         at.having_read(self.bodies_asked())?
@@ -299,7 +326,7 @@ impl Workspace {
     /// home owes are named, never lowered — and a derivation that owes none is
     /// marked clean.
     fn stood(at: Attempt, store: Store, p: Program, lo: Lowered, said: List<Said>, spans: List<Phase>) -> Derived {
-        let roots = self.hold.held_wants.concat([k.want for k in lo.asks])
+        let roots = self.hold.held_wants.get().concat([k.want for k in lo.asks])
         let asked = self.asked_print(store, self.known_as(at), roots)
         let unlowered = [w for w in roots if self.is_held(w.file)]
         if unlowered.is_empty() { let _ = store.keep_once(Stored.Unit, clean_key(asked), "") }
@@ -307,8 +334,8 @@ impl Workspace {
             entry: at.entry, want: at.want, program: p, lowered: lo, store: store, said: said,
             warnings: spoken([p.warned(p.voices)].concat([s.warnings for s in said])),
             unlowered: unlowered, asked: asked,
-            held: held_paths(self).length, files: self.decls.files.length, turns: at.moved,
-            spans: spans, read: self.hold.read_files,
+            held: held_paths(self).length, files: self.decls.files.get().length, turns: at.moved,
+            spans: spans, read: self.hold.read_files.get(),
         }
     }
 
@@ -322,7 +349,7 @@ impl Workspace {
     /// not hold — and, for all it can tell, EVERY file when it holds none.
     fn reads_ahead() -> int {
         let held = held_paths(self).length
-        if held == 0 { EVERY_FILE } else { self.decls.files.length - held }
+        if held == 0 { EVERY_FILE } else { self.decls.files.get().length - held }
     }
 
     /// WHETHER A SEALED LAYOUT MOVED UNDER THE HOLD. A seal boxes a flat record from
@@ -332,7 +359,7 @@ impl Workspace {
     /// two ways — and only the sources whole can say which.
     fn layouts_moved(store: Store, p: Program) -> bool {
         if held_paths(self).is_empty() { return false }
-        if self.hold.held_flat.any((t) -> !self.decls.types.is_flat(t)) { return true }
+        if self.hold.held_flat.get().any((t) -> !self.decls.types.is_flat(t)) { return true }
         p.files.any((a: Analysis) -> self.kept_boxed(store, a.view.file).any((d: DeclId) -> !self.decls.types.boxed_flat(self.decls.record_type(d))))
     }
 
@@ -376,18 +403,18 @@ impl Workspace {
     /// compile-time runs read — and what THAT file's runs read, since it runs too.
     mut fn settle_holds(store: Store) {
         // LICENSED I16: a WORKLIST — the list grows while it is walked
-        mut reads: List<string> = distinct(self.hold.read_with)
+        mut reads: List<string> = distinct(self.hold.read_with.get())
         mut at = 0
         while at < reads.length {
             for path in kept_runs(record_places(self, store, module_path(self.module_of(reads[at]).split("."))).get(reads[at])) {
                 if !reads.contains(path) {
                     reads.push(path)
-                    if self.hold.hold_asked.contains(path) { self.hold.read_files.push(ReadFile { path: path, why: Reads.RunBy(relative_path(self.root, reads[at])) }) }
+                    if self.hold.hold_asked.get().contains(path) { self.hold.read_files.push(ReadFile { path: path, why: Reads.RunBy(relative_path(self.root, reads[at])) }) }
                 }
             }
             at = at + 1
         }
-        for path in self.hold.hold_asked { if !reads.contains(path) { self.hold_only(path) } }
+        for path in self.hold.hold_asked.get() { if !reads.contains(path) { self.hold_only(path) } }
     }
 
     /// WHAT THE PROGRAM'S INSTANTIATIONS ARE A FUNCTION OF: its root asks, and the
@@ -404,7 +431,7 @@ impl Workspace {
     fn all_said(store: Store, p: Program) -> List<Said>? {
         mut fresh: Map<string, Said> = {}
         for a in p.files { fresh.set(a.view.source.file, self.says(p, a)) }
-        let said = [self.file_said(store, fi.path, fresh.get(fi.path)) for fi in self.decls.files if fresh.get(fi.path) != null || self.is_held(fi.id)]
+        let said = [self.file_said(store, fi.path, fresh.get(fi.path)) for fi in self.decls.files.get() if fresh.get(fi.path) != null || self.is_held(fi.id)]
         if said.any(it == null) { return null }
         [s! for s in said]
     }

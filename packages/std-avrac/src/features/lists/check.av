@@ -13,25 +13,14 @@ fn list_type(mut cx: TypeCx, e: ExprId, elems: List<ExprId>) -> TypeId {
     // assignment door — heterogeneity boxes, lambdas hear seats
     let want: TypeId? = wanted_elem(cx, e)
     if want != null { return heard_list(cx, e, elems, want!) }
-    let head = leading_element(cx, elems)
-    let elem = cx.type_at(head)
+    let head = cx.led_by(elems)
     if cx.errored(head) { return cx.error_type }
-    if !slot_worthy(cx.view.types, cx.shape_at(head)) { return cx.unslottable(head, "a list element") }
+    if !slot_worthy(cx.shape_at(head)) { return cx.unslottable(head, "a list element") }
+    let elem = cx.joined(elems, cx.type_at(head))
     for k in elems {
         if !cx.accepts(k, elem) { return disagreeing_element(cx, k, elem) }
     }
     cx.type(List<elem>)
-}
-
-/// The element that names the list's type: the first that is not
-/// an empty literal — `[]` is adopted by whatever its siblings are
-/// — nor a hungry one, which its siblings' type will feed.
-fn leading_element(cx: TypeCx, elems: List<ExprId>) -> ExprId {
-    for k in elems {
-        let sh: Type = cx.shape_at(k)
-        if !(sh is .EmptyList) && !(sh is .Error) { return k }
-    }
-    elems[0]
 }
 
 /// The element the planted want declares, when the slot is a list.
@@ -44,7 +33,7 @@ fn wanted_elem(cx: TypeCx, e: ExprId) -> TypeId? {
 /// widens record (dyn boxes, auto-Ok), and the refusals speak the
 /// slot's words, not the head's.
 fn heard_list(mut cx: TypeCx, e: ExprId, elems: List<ExprId>, want: TypeId) -> TypeId {
-    if !slot_worthy(cx.view.types, cx.view.types.shape_of(want)) { return cx.unslottable_want(e, want, "a list element") }
+    if !slot_worthy(cx.view.types.shape_of(want)) { return cx.unslottable_want(e, want, "a list element") }
     for k in elems {
         if !cx.accepts(k, want) { return unwanted_element(cx, k, want) }
     }
@@ -96,7 +85,7 @@ fn heard_elem(mut cx: TypeCx, elem: ExprId, ety: TypeId, w: TypeId) -> TypeId {
 /// The list an element of its own type makes — the element rides a
 /// slot.
 fn collected(mut cx: TypeCx, elem: ExprId, ety: TypeId) -> TypeId {
-    if !slot_worthy(cx.view.types, cx.shape_at(elem)) { return cx.unslottable(elem, "a list element") }
+    if !slot_worthy(cx.shape_at(elem)) { return cx.unslottable(elem, "a list element") }
     cx.type(List<ety>)
 }
 

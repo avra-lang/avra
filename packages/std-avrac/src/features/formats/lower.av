@@ -140,8 +140,7 @@ fn greedy_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, piece: string) -> R
     cx.emit(Ins.Store(w.spans[2 * i], from))
     let int_ty = cx.type(int)
     let needle = literal(cx, piece)
-    let first = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(first, "avra_bytes_index_of", [w.subject, needle, from]))
+    let first = cx.bytes_index_of(Type.Int, w.subject, needle, from)
     let probe = cx.seeded_cell(int_ty, first)
     let miss = cx.const_int(0 - 1)
     let best = cx.seeded_cell(int_ty, miss)
@@ -168,8 +167,7 @@ fn farthest(mut cx: LowerCx, w: Walked, best: Reg, probe: Reg, needle: Reg) {
     cx.emit(Ins.Store(best, here))
     let one = cx.const_int(1)
     let after = plus(cx, here, one)
-    let next = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(next, "avra_bytes_index_of", [w.subject, needle, after]))
+    let next = cx.bytes_index_of(Type.Int, w.subject, needle, after)
     cx.emit(Ins.Store(probe, next))
     cx.loop_end()
 }
@@ -181,8 +179,7 @@ fn next_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, piece: string) -> Reg
     let from = loaded_from(cx, cur)
     cx.emit(Ins.Store(w.spans[2 * i], from))
     let needle = literal(cx, piece)
-    let found = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(found, "avra_bytes_index_of", [w.subject, needle, from]))
+    let found = cx.bytes_index_of(Type.Int, w.subject, needle, from)
     cx.emit(Ins.Store(w.spans[2 * i + 1], found))
     let width = cx.const_int(byte_length(piece))
     cx.emit(Ins.Store(cur, plus(cx, found, width)))
@@ -211,14 +208,8 @@ fn last_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, stop: Reg) -> Reg {
 fn cut(mut cx: LowerCx, subject: Reg, lo_cell: Reg, hi_cell: Reg, v: Reg, vty: TypeId) -> Reg {
     let lo = loaded_from(cx, lo_cell)
     let hi = loaded_from(cx, hi_cell)
-    if cx.view.types.seen_shape(vty) is .Bytes {
-        let out = cx.mint_shape(Type.Bytes)
-        cx.emit(Ins.CallRt(out, "avra_bytes_slice", [subject, lo, hi]))
-        return out
-    }
-    let out = cx.mint_shape(Type.Str)
-    cx.emit(Ins.CallRt(out, "avra_str_substring", [v, lo, hi]))
-    out
+    if cx.view.types.seen_shape(vty) is .Bytes { return cx.bytes_slice(Type.Bytes, subject, lo, hi) }
+    cx.str_substring(Type.Str, v, lo, hi)
 }
 
 // ── The small verbs ─────────────────────────────────────────────
@@ -228,19 +219,17 @@ fn cut(mut cx: LowerCx, subject: Reg, lo_cell: Reg, hi_cell: Reg, v: Reg, vty: T
 /// C-string primitives are not.
 fn octets(mut cx: LowerCx, v: Reg, vty: TypeId) -> Reg {
     if cx.view.types.seen_shape(vty) is .Bytes { return v }
-    rt1(cx, Type.Bytes, "avra_bytes_of_str", v)
+    cx.bytes_of_str(Type.Bytes, v)
 }
 
 fn measured(mut cx: LowerCx, subject: Reg) -> Reg {
-    rt1(cx, Type.Int, "avra_bytes_len", subject)
+    cx.bytes_len(Type.Int, subject)
 }
 
 /// Whether `lo..hi` of the subject is this literal.
 fn at_span(mut cx: LowerCx, subject: Reg, lo: Reg, hi: Reg, text: string) -> Reg {
     let needle = literal(cx, text)
-    let same = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.CallRt(same, "avra_bytes_eq_at", [subject, lo, hi, needle]))
-    same
+    cx.bytes_eq_at(Type.Bool, subject, lo, hi, needle)
 }
 
 /// The last piece sits at the end: `len - |piece|` up to `len`.
@@ -251,7 +240,7 @@ fn tail_span(mut cx: LowerCx, subject: Reg, len: Reg, last: string) -> Reg {
 /// A literal as octets. The conversion runs per attempt: the IR
 /// carries no constant of this shape to hoist it into.
 fn literal(mut cx: LowerCx, text: string) -> Reg {
-    rt1(cx, Type.Bytes, "avra_bytes_of_str", text_const(cx, text))
+    cx.bytes_of_str(Type.Bytes, text_const(cx, text))
 }
 
 /// A literal's length in OCTETS, which is what the scan counts.
@@ -311,8 +300,7 @@ fn from_octets(mut cx: LowerCx, mc: MethodCall, read: GrammarSpec, want: TypeId)
 /// answer.
 fn crossed_into(mut cx: LowerCx, w: Walked, read: GrammarSpec, octets: Reg, want: TypeId) -> Reg {
     let str_opt = cx.type(string?)
-    let crossed = cx.mint_ty(str_opt)
-    cx.emit(Ins.CallRt(crossed, "avra_str_of_bytes", [octets]))
+    let crossed = cx.str_of_bytes(cx.view.types.shape_of(str_opt), octets)
     cx.open_presence(crossed, str_opt)
     let text = cx.carried_of(crossed, str_opt)
     cx.arm_end(cx.adopted(want, false, gathered(cx, w, read.parts, text, want)))
@@ -339,9 +327,7 @@ fn gathered(mut cx: LowerCx, w: Walked, parts: List<FormatPart>, text: Reg, want
         if binds(part.hole) { slots.push(cut(cx, w.subject, w.spans[2 * i], w.spans[2 * i + 1], text, cx.type(string))) }
     }
     let size = cx.box_size(slots.length)
-    let dst = cx.mint_ty(held)
-    cx.grown_box(dst, size, slots)
-    dst
+    cx.grown_box(cx.view.types.shape_of(held), size, slots)
 }
 
 /// A door's format lives on its DECLARATION, so a door reached
@@ -424,11 +410,10 @@ fn holds(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int) ->
 /// because it takes the LAST one.
 fn unpassed(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int) -> Reg {
     let after = trailing(cx, parts, fields, i)
-    let octets = rt1(cx, Type.Bytes, "avra_bytes_of_str", after)
+    let octets = cx.bytes_of_str(Type.Bytes, after)
     let needle = literal(cx, parts[i].piece)
     let one = cx.const_int(1)
-    let at = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(at, "avra_bytes_index_of", [octets, needle, one]))
+    let at = cx.bytes_index_of(Type.Int, octets, needle, one)
     let zero = cx.const_int(0)
     let alone = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(alone, BinOp.Lt, at, zero))
@@ -454,13 +439,12 @@ fn trailing(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int)
 /// the literal must first appear exactly where the value ends. Asked
 /// in OCTETS, because that is what the scan will ask.
 fn unmoved(mut cx: LowerCx, value: Reg, piece: string) -> Reg {
-    let joined = rt2(cx, Type.Str, "avra_str_concat", value, text_const(cx, piece))
-    let octets = rt1(cx, Type.Bytes, "avra_bytes_of_str", joined)
+    let joined = cx.str_concat(Type.Str, value, text_const(cx, piece))
+    let octets = cx.bytes_of_str(Type.Bytes, joined)
     let needle = literal(cx, piece)
     let zero = cx.const_int(0)
-    let at = cx.mint_shape(Type.Int)
-    cx.emit(Ins.CallRt(at, "avra_bytes_index_of", [octets, needle, zero]))
-    let width = rt1(cx, Type.Int, "avra_str_len", value)
+    let at = cx.bytes_index_of(Type.Int, octets, needle, zero)
+    let width = cx.str_len(Type.Int, value)
     let same = cx.mint_shape(Type.Bool)
     cx.emit(Ins.Bin(same, BinOp.Eq, at, width))
     same
@@ -481,28 +465,13 @@ fn woven(mut cx: LowerCx, read: GrammarSpec, fields: List<Reg>) -> Reg {
 /// Text registers joined into one, in the order they were minted.
 fn glued(mut cx: LowerCx, pieces: List<Reg>) -> Reg {
     let size = cx.box_size(pieces.length)
-    let arr = cx.mint_ty(cx.type(List<string>))
-    cx.grown_box(arr, size, pieces)
+    let arr = cx.grown_box(cx.view.types.shape_of(cx.type(List<string>)), size, pieces)
     let sep = text_const(cx, "")
-    let dst = cx.mint_shape(Type.Str)
-    cx.emit(Ins.CallRt(dst, "avra_str_join", [arr, sep]))
-    dst
+    cx.str_join(Type.Str, arr, sep)
 }
 
 fn text_const(mut cx: LowerCx, text: string) -> Reg {
     let r = cx.mint_shape(Type.Str)
     cx.emit(Ins.ConstStr(r, text))
-    r
-}
-
-fn rt1(mut cx: LowerCx, sh: Type, callee: string, a: Reg) -> Reg {
-    let r = cx.mint_shape(sh)
-    cx.emit(Ins.CallRt(r, callee, [a]))
-    r
-}
-
-fn rt2(mut cx: LowerCx, sh: Type, callee: string, a: Reg, b: Reg) -> Reg {
-    let r = cx.mint_shape(sh)
-    cx.emit(Ins.CallRt(r, callee, [a, b]))
     r
 }

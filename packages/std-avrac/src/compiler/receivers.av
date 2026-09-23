@@ -8,7 +8,7 @@
 //! has a declared type along its whole path, so no body is typed to
 //! learn it. Asked through the declaration table's hook, remembered
 //! by the kernel (ROADMAP: the inout receiver).
-use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, MethodParts, fp, fp_list, touch, filled, SeatMark, mut_mark}
+use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, MethodParts, fp, fp_list, touch, filled, SeatMark, mut_mark, same_decl}
 use features.{NameFacts, Decls, Decl, bound_decl_of, row_writes, nothing, property_row}
 
 /// One fn's own evidence: which of its seats the body writes
@@ -36,7 +36,7 @@ impl Workspace {
         // A HELD BODY IS NOT SURVEYED: its store is gone, and its settled bits were
         // carried in the interface (`record_line`), replayed at mint. The pass settles
         // the files that MOVED, and a call to a held fn reads its recorded bits.
-        let fns = [x.id for x in self.decls.decls if seated(x) && !self.is_held(x.file)]
+        let fns = [x.id for x in self.decls.decls.get() if seated(x) && !self.is_held(x.file)]
         for d in fns { touch(self.sig(d)) }
         self.decls.clear_written()
         let sums = [self.summary(d) for d in fns]
@@ -233,9 +233,9 @@ impl Survey {
         let ty? = self.place_type(a) else { return true }
         match self.decls.types.shape_of(ty) {
             .Int or .Float or .Bytes or .Bool or .Str or .Null or .Void or .Ptr -> false,
-            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Map(_, _) or
-            .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .EmptyList or .EmptyMap or .TypeName(_, _) or
-            .Var(_, _, _) or .Error -> true,
+            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Task(_) or .Map(_, _)
+                or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .EmptyList or .EmptyMap or .TypeName(_, _)
+                or .Var(_, _, _) or .Error -> true,
         }
     }
 
@@ -289,15 +289,15 @@ impl Survey {
         // does — a survey blind to that infers "never writes".
         let sh: Type = self.decls.types.seen_shape(ty)
         match sh {
-            .List(_) or .Cell(_) or .Map(_, _) or .Bytes or .Str -> Callee.Row(row_writes(self.ws.lang.rows.methods, name, sh)),
+            .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Bytes or .Str -> Callee.Row(row_writes(self.ws.lang.rows.methods, name, sh)),
             .Struct(d, _) -> self.field_or_method(ty, d, name),
             .Enum(d, _) -> self.declared_method(d, name),
             .App(d, _, _) -> self.field_or_method(ty, d, name),
             .Var(d, j, _) -> self.bounded_member(d, j, name),
             .Dyn(d, _) -> self.contract_member(d, name),
             .TypeName(d, _) -> self.static_member(d, name),
-            .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or
-            .EmptyList or .Error or .Void or .EmptyMap -> Callee.None,
+            .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null
+                or .EmptyList or .Error or .Void or .EmptyMap -> Callee.None,
         }
     }
 
@@ -380,8 +380,7 @@ impl Survey {
         let m? = self.store.method_parts(value) else { return self.constructed_type(value) }
         let subject? = self.place_type(m.subject) else { return null }
         match self.callee_of(subject, m.name) {
-            .Method(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
-            .Static(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
+            .Method(d) or .Static(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
             .FnSeats(held) -> held.answer,
             .Contract(d) -> (self.decls.sig(d))?.fn_sig()?.ret,
             .Row(_) or .None -> null,
@@ -433,5 +432,32 @@ impl Workspace {
         if x.parent == null { return null }
         let target? = self.decls.target_of(x.parent!) else { return null }
         self.decls.self_type_of(target)
+    }
+}
+
+impl Workspace {
+    /// A WITNESS for why seat `i` of `d` is written — one path through
+    /// the fixpoint's own edges, from the asked seat to the fn whose
+    /// declaration or body writes it directly. `settle_writers` proves
+    /// the boolean; this walks it back to its cause — `avra explain
+    /// writes` prints the same names, in the same order, as fn names
+    /// joined by their calls. `self.summary(d)` is recomputed here
+    /// rather than read from a stored table: the pass keeps only the
+    /// fixpoint's OUTCOME (`seat_written_so_far`), never the per-fn
+    /// edges it settled from, so a witness asks for the evidence
+    /// again — pure and cheap, one fn at a time, never the
+    /// whole-program pass. Null when the seat is not written, or no
+    /// ACYCLIC witness reaches a cause (a cycle where every fn in it
+    /// is written only through another member of it).
+    fn write_chain(d: DeclId, i: int, seen: List<DeclId>) -> List<string>? {
+        let decls = self.decls
+        if !decls.seat_writes_so_far(d, i) { return null }
+        let hop = decls.decl(d).name
+        let s = self.summary(d)
+        if (i == 0 && decls.declares_writing(d)) || s.own[i] { return [hop] }
+        if seen.any(same_decl(it, d)) { return null }
+        let edge? = s.edges.find((f: Flow) -> f.from == i && decls.seat_writes_so_far(f.callee, f.to)) else { return null }
+        let rest? = self.write_chain(edge.callee, edge.to, seen.concat([d])) else { return null }
+        [hop].concat(rest)
     }
 }

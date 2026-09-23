@@ -2,7 +2,7 @@
 //! (resolve spoke otherwise), and the written fields match it —
 //! each declared field exactly once, each value the field's type.
 use core.{ExprId, Type, TypeId, DeclId}
-use features.{no_pins, Pins, TypeCx, StructSig, this_is, fields_are, repeated_at, slot_worthy, tparams_refused, unpinned_of, slice_promise}
+use features.{no_pins, Pins, TypeCx, StructSig, this_is, fields_are, repeated_at, slot_worthy, tparams_refused, unpinned_of}
 use diagnostics.{refusal}
 
 fn structs_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -58,7 +58,7 @@ fn generic_lit(mut cx: TypeCx, e: ExprId, name: string, fields: List<string>,
     let concrete = cx.bound_closed(pinned)
     for ft in sig.types {
         let landed = cx.view.types.substituted(ft, decl, concrete)
-        if !slot_worthy(cx.view.types, cx.view.types.shape_of(landed)) { return unslottable_literal(cx, e, landed) }
+        if !slot_worthy(cx.view.types.shape_of(landed)) { return unslottable_literal(cx, e, landed) }
     }
     cx.record_subst(e, decl, concrete, [])
     cx.view.types.intern(Type.App(decl, name, concrete))
@@ -149,7 +149,7 @@ fn not_a_struct(mut cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {
 }
 
 fn unslottable_literal(mut cx: TypeCx, e: ExprId, landed: TypeId) -> TypeId {
-    cx.spoken(refusal("type.struct_fields", cx.loc_of(e), "this literal makes a slot `${cx.view.types.name_of(landed)}`, which a slot cannot hold yet", "in this literal", slice_promise("slots")))
+    cx.spoken(refusal("type.struct_fields", cx.loc_of(e), "this literal makes a slot `${cx.view.types.name_of(landed)}`, which is no value", "in this literal", null))
 }
 
 fn repeated_field(mut cx: TypeCx, v: ExprId, f: string) {

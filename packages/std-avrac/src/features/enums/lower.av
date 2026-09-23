@@ -120,11 +120,48 @@ fn chained_reg(mut cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, arms: List<Arm>,
 /// region, so an untaken arm's payloads are never read), then its
 /// value.
 fn arm_reg(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm, want: TypeId) -> Reg {
-    // an OR-RUN binds nothing (the law), and its patterns name
-    // variants of different shapes — only a lone pattern binds
-    let regs: List<Reg> = if a.pats.length == 1 { pat_binds_of(cx, a.pats[0], v, vty) } else { [] }
+    let regs: List<Reg> = if a.pats.length == 1 { pat_binds_of(cx, a.pats[0], v, vty) } else { or_binds_regs(cx, v, vty, a) }
     cx.bind_patterns(a.value, regs)
     cx.arm_yield(a.value, cx.reg_of(a.value), want)
+}
+
+/// An `or` arm's binds: a cell per name the first alternative binds,
+/// filled by whichever alternative took the value — each read under
+/// its own test, since each variant lays its payloads out its own way
+/// — then read out in the first alternative's order.
+fn or_binds_regs(mut cx: LowerCx, v: Reg, vty: TypeId, a: Arm) -> List<Reg> {
+    let names = [b.name for b in cx.view.store.pattern_binds(a.pats[0])]
+    if names.is_empty() { return [] }
+    let types? = spoken_types(cx, a.value, names.length) else {
+        cx.defect("an `or` arm's binds reached lowering without their types")
+        return []
+    }
+    let cells = [cx.seeded_cell(ty, cx.hollow_of(ty)) for ty in types]
+    or_filled(cx, v, vty, a.pats, 0, names, cells)
+    [cx.loaded_as(types[j], c) for j, c in cells]
+}
+
+/// The types typing spoke for an arm's `n` binds, or null when any is
+/// missing — which a clean program never is.
+fn spoken_types(cx: LowerCx, v: ExprId, n: int) -> List<TypeId>? {
+    let tys = [cx.bind_type(v, j) for j in 0..n]
+    if tys.any(it == null) { return null }
+    [ty! for ty in tys]
+}
+
+/// Alternative `k` onward: the first that accepts writes its binds.
+/// The last is taken unconditionally — the arm already accepted.
+fn or_filled(mut cx: LowerCx, v: Reg, vty: TypeId, pats: List<PatId>, k: int, names: List<string>, cells: List<Reg>) {
+    let took = pat_accepts_of(cx, pats[k], v, vty)
+    if k == pats.length - 1 { return stored_binds(cx, pats[k], v, vty, names, cells) }
+    cx.void_branches(took) { cx -> stored_binds(cx, pats[k], v, vty, names, cells) } else { cx -> or_filled(cx, v, vty, pats, k + 1, names, cells) }
+}
+
+/// One alternative's binds, each written into the cell of its name.
+fn stored_binds(mut cx: LowerCx, p: PatId, v: Reg, vty: TypeId, names: List<string>, cells: List<Reg>) {
+    let regs = pat_binds_of(cx, p, v, vty)
+    let own = [b.name for b in cx.view.store.pattern_binds(p)]
+    for j, n in names { cx.stored(cells[j], regs[own.index_of(n)]) }
 }
 
 /// The registers an arm's binds read, in pattern order — each
@@ -261,7 +298,5 @@ fn literal_reg(mut cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> 
     let which? = sig?.tag_of(name) else { return cx.lower_defect(e, "a variant literal without its enum survived typing") }
     let carried = [cx.reg_of(a) for a in args]
     let size = cx.box_size(1 + carried.length)
-    let dst = cx.result(e)
-    cx.tagged_value(dst, size, which, carried)
-    dst
+    cx.tagged_value(cx.shape_at(e), size, which, carried)
 }

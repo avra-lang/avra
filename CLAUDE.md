@@ -328,6 +328,19 @@ engine's spec, written by dogfooding.
   revision one, every sig it will ask for is held, and an Analysis
   asked after is remade over the memoized parts, never kept. The
   language's answer is in the sugar backlog: weak captures.
+- A VALUE ITS OWN HOOKS CAPTURE IS AN IDENTITY, AND A COPY FORKS IT.
+  `mut q = p` is a copy (spec 11.5), hooks included: the copy's writes
+  land in the copy while its hooks answer for the original. The
+  workspace is one (its families and its table's hooks capture it), so
+  `check`'s `mut ws = o.ws` — a workspace read out of a record — lost
+  every std package admitted after the copy, and a compiler built by a
+  compiler that copies read `@std.meta`'s own `Kind` as undefined (522
+  errors). MINT AN IDENTITY IN THE BINDING THAT WRITES IT (`mut ws =
+  build_workspace(path)`), and read F2106 as naming exactly this.
+  features/tests/borrow_identity is the one-generation witness. AND
+  THE SWEEP THAT ACQUITTED THE TREE READ ONE PACKAGE: five lanes paid
+  "the 15 sites" of `check packages/std-avrac`, and the two that broke
+  were in `packages/cli`, warned about the whole time.
 - A PARAMETER IS BORROWED, AND WHAT A CALLEE KEEPS TAKES ITS OWN
   REFERENCE. The caller keeps every managed argument STANDING for
   the call — a param, a register a scope owns, a cell's load and the
@@ -566,6 +579,16 @@ engine's spec, written by dogfooding.
   and never spliced. The tell is a `T?` whose absence has TWO causes;
   the fix is the enum that names them (`Generated.None` /
   `.Made` / `.Foreign`), never a flag beside the null.
+  AND A NULLABLE OVER A NULLABLE IS THAT TELL BY CONSTRUCTION. When
+  `T?` met `T = string?`, four layers each read one null as both
+  absences: the niche (a `string??` as one pointer — `[null].first()`
+  answered empty), the `once` cache (a cached `null` read as "not
+  yet", so a `once fn` answering null RAN EVERY CALL), the
+  evaluator's slot (`Val.N` for a present null and an absent mark
+  alike) and the const crossing (`MetaVal.Absent`). Each fix NAMES
+  the second absence: a pair, a one-cell box, `Val.Gone`,
+  `MetaVal.Gone`. A generic seat reaches this shape in any program,
+  so a layer that files absence is asked what it does under `T??`.
 - ITS SIBLING AT THE OTHER END: A FLAT CONCATENATION OF TWO
   SEQUENCES HAS A BOUNDARY THAT MOVES. Splice two variable-length
   runs into one list and the split between them is not recorded, so
@@ -668,6 +691,22 @@ engine's spec, written by dogfooding.
   OR BY PACKAGE — grep the tree for the ASSERTION and for the
   distinctive example that carries it (`ab\0cd`, `"\0x"` here), not
   for the files you remember writing.
+- THE RUNTIME IS A LIBRARY AND THE HOST HOLDS EVERY ROW. A program
+  links `build/libavra_runtime.a`, one object per `runtime/*.c`, and
+  carries only what it reaches — so a program that never spawns carries
+  no scheduler. The COMPILER must carry all of it, because its
+  evaluator binds package C to the runtime inside its own process:
+  `avra_rt.h`'s host table, generated from `rt_sigs()` and included by
+  the extern host, names every row. A row with no evaluator arm is
+  called by name through the uniform frame (`RtSig.armed`), so the
+  frame's seat law holds for it — a closure cannot reach C that way.
+- A FRAME NEVER SKIPS A GUARD. A task's stack has one guard page, and a
+  frame wider than a page could step over it into a neighbour's stack.
+  Every fn Avra emits carries `probe-stack`, and C built here probes
+  too (Apple's clang by default, `-fstack-clash-protection`
+  elsewhere). CHECK AN ATTACK BUILDS WHAT IT CLAIMS: the first
+  wide-frame attack was a `volatile` array the compiler shrank to 16
+  bytes, and it "passed".
 - A COLD PATH IN A HOT LEAF COSTS EVERY CALL A FRAME. A lazy
   `getenv`, a `char msg[80]` for a trap's words, a grow branch, a
   `__builtin_return_address` read — each is free when it runs and
@@ -1230,10 +1269,18 @@ engine's spec, written by dogfooding.
   carries), `void_region`/`void_branches` — the brackets spoken once
   inside the verb, so no site can mismatch them; the open/arm/close
   verbs remain for folds and switches. The block takes the context
-  as a `mut` seat heard from the slot, never as a capture. Two
+  as a `mut` seat heard from the slot, never as a capture. RUNTIME
+  CALLS route through ONE door too: `call`/`call_at`/`call_void`
+  mint-and-emit `Ins.CallRt(Void)?`, and every row's OWN generated
+  method (`cx.<name>(sh, args)`, `features/rt.av`, from
+  `core/rt_namespace.av`'s projection of `rt_sigs()`) calls through
+  one of the three — a bare `Ins.CallRt(dst, "avra_x", args)` outside
+  them is I58's own refusal, and a misspelled or wrong-arity call
+  through the generated method is the ordinary "no method"/method-
+  arity refusal (F2030) at typing, for free. Two
   engines read one instruction stream by construction; I33 ratchets
-  the raw brackets, I39 the free verbs, and the vocabulary grows
-  with the next shared shape.
+  the raw brackets, I39 the free verbs, I58 the raw runtime-call
+  string, and the vocabulary grows with the next shared shape.
 - A DERIVE'S FILE IS TYPED WHILE THE ANNOTATED FILE IS STILL
   REGISTERING, so it must name nothing that file declares. Running
   `@derive(X)` over a declaration in file A types the file that
@@ -1396,9 +1443,7 @@ Syntax the grammar lacks:
 - `|` between or-pattern alternatives: "expected `}` to close the
   `match`" — the spelling is `or`, IN A PATTERN ONLY. As a BOOLEAN it
   does not parse: `true or false` is F0100 at the `or`, and `and`/`not`
-  fail alike. The boolean operators are `&&`, `||`, `!`. A BINDING across alternatives
-  (`.A(n) or .B(n) -> n`): F2039 "an `or` arm binds nothing — its
-  alternatives take wildcards only".
+  fail alike. The boolean operators are `&&`, `||`, `!`.
 - Destructuring `enumerate()` in a comprehension (`[i for (i, m)
   in xs.enumerate()]`): F2005 "`enumerate` pairs only under a paired
   `for` head — pairs as values arrive with tuples". The head IS the
@@ -1417,6 +1462,10 @@ Syntax the grammar lacks:
   by position ("expected `)`" in a parameter seat, "expected `=`"
   under a `let`, "expected BREAK" under a `type` alias) — the type
   grammar takes one `?` per name, so it has no spelling anywhere.
+  It is REACHED through a generic all the same — `T?` over `T =
+  string?` is a `string??`, a pair that keeps a PRESENT null apart
+  from absence in every slot, and `??` unwraps one level
+  (features/nullable/tests/nested_slots).
 - A `table` literal without its row type: a bare `table { id: 1 }`
   reads as a STRUCT LITERAL of a type named `table` — F3000 "no `type
   table` is declared", with no hint that the row type is missing. The
@@ -1566,9 +1615,10 @@ Syntax the grammar lacks:
 - `is` with a PAYLOAD pattern (`p is .Bind(_)`): "expected BREAK
   while parsing `stmt`" — `is` takes a BARE variant. A one-arm
   match is the projection (`.Bind(_) -> true, _ -> false`).
-- `Result<void, E>` as a fn's answer: F2019 "a `Result` slot cannot
-  hold this yet" (help: "nullable slots arrive with ownership's next
-  slice"). A writing verb answers what it wrote instead —
+- `Result<void, E>` as a fn's answer: F2019 "a `Result` side cannot
+  hold `void` yet" (help: "a verb that answers nothing but may fail
+  is recorded — answer what it wrote"). A writing verb answers what
+  it wrote instead —
   `@std/io`'s `write_text`/`make_dirs`/`remove` answer the path.
 - A `mut` SEAT CANNOT BE ASSIGNED WHOLE, BY DESIGN, NOT PENDING
   MACHINERY: `a = a + 1` on a `mut a: int` parameter is F3005 "`a`
@@ -1597,17 +1647,11 @@ Syntax the grammar lacks:
   arm's block is not read as diverging. Write the statement `match`
   (`.Err(e) -> { … fail e }, .Ok(v) -> …`), as @std/process's three
   drivers do.
-- A NULLABLE LIST ELEMENT, and the boundary moved — the old entries
-  (a `null` literal under `List<T?>`, and `List<T>` refusing a
-  `List<T?>` want) are RETIRED, both now compile. What refuses today,
-  probed at `8519ae9`: a declared want for a MANAGED element type is
-  HONOURED (`let out: List<C?> = [null for c in cs]`, `C` a struct,
-  and `let tys: List<T?> = [t for t in refs]` — both exit 0); a
-  nullable SCALAR element is F2019 "a `List` slot cannot hold this
-  yet" (`let tys: List<int?> = [n for n in ns]`); and with NO want
-  declared it is still F2006 "a list element cannot hold this yet"
-  (`let xs = [null, null]`). The code neither retired entry quoted is
-  the one that fires.
+- A LITERAL OF `null` ALONE names no type: `let xs = [null, null]`
+  is F2006 "a list element takes its type from its value, and `null`
+  has none of its own" — `{"a": null}` and `Cell.new(null)` alike.
+  Any sibling with a type names it (`[null, 7]` is a `List<int?>`),
+  and a declared want fills it (`let c: Cell<int?> = Cell.new(null)`).
 
 Wants the typer does not carry yet:
 - A DECLARES ANNOTATION'S ARGUMENT IS A LITERAL. `@traced([1, 2])`
@@ -1617,14 +1661,6 @@ Wants the typer does not carry yet:
   only what the parse tree holds. A computed argument is the ask
   that arrives with quotes (S4); `Records`/`Validates` annotations
   take aggregates today, because they run after resolve.
-- A NULLABLE SCALAR FIELD (`type P = { x: int?, y: int }`): F2008 "a
-  struct field cannot hold this yet" — a scalar pair lives in
-  registers and no slot holds one, so a record cannot carry `int?`
-  (a pointer-riding `string?`, `List<int>?` or a flat record's `Id?`
-  is fine: those are a niche or a one-slot box). Two sites wanted it
-  the same day (a manifest's optional `[lifted]` rows, an attack
-  fixture); the manifest resolves the rows to their defaults at read
-  time instead. Probed at comptime/static, both engines.
 - A GENERIC struct literal's field seat UNIFIES instead of planting a
   want, so a no-argument generic call written there still needs its
   pin (`MatchContext { absent: captured_absent<N>(), … }` inside a
@@ -1689,7 +1725,8 @@ Wants the typer does not carry yet:
   first.
 - `==` between lists, `contains`/`index_of` over structs or enums:
   F2000 "`==` compares scalars for now"; F2005 "`contains` scans by
-  value — scalars and text for now, this list holds `K`" — spell
+  value — scalars and text for now, this list holds `K`" (a nullable
+  of either scans through presence) — spell
   the scan (`xs.any(same(it))`). ENUMS SPLIT ON THE PAYLOAD, which
   nobody had written down: a payload-FREE enum compares fine
   (`.Timeout == .Refused` answers false), and one CARRYING a payload
@@ -1700,8 +1737,6 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
 `List<int>` has none" — the others read alike — or the map's F2000):
 - `List.reverse()` / `sort()` — core's `reversed` is the helper
   (and a copy: nothing here mutates in place).
-- `List.find_index(pred)` — builders.av's `attach` is LICENSED I4
-  for it.
 - `m["k"]` on a map: F2000 "`[...]` indexes a `List`, found
   `Map<string, int>`" — `.get(k)`, which answers `T?`.
 - An EMPTY LITERAL does not adopt a NULLABLE aggregate want: `let
@@ -1723,9 +1758,7 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   comprehension there types on its own, so `Pins { slots: [b ??
   args[j] for j, b in xs] }` under `slots: List<TypeId?>` is F2010
   "field `slots` is `List<TypeId?>`, this is `List<TypeId>`" — a
-  typed let plants it. (The companion clause — `List<T>` refusing a
-  `List<T?>` want — is retired; see the nullable-list-element entry
-  above.)
+  typed let plants it.
 
 Runtime facts, ours to ratify:
 - `Bytes` IS NOT A LIST AND `bytes()` HAS TWO ANSWERS. `b[0]` is
@@ -1789,11 +1822,14 @@ Runtime facts, ours to ratify:
   carved out is gone with it — f57372a's own message says so, and
   the HTTP lane confirmed `Bytes` never rested on this premise.
   Probed both engines, minted and foreign alike, before and after.
-- `avra run` INTERPRETS, and recursion past 400 calls traps
-  ("recursion too deep — 400 nested calls", exit 1); `avra test`
-  and `avra build` are native and have no such floor (5000 deep
-  runs). The limit is what keeps a runaway a trap; measure, never
-  guess, when it moves.
+- `avra run` INTERPRETS ON ITS OWN STACK: a call saves the caller's
+  place on the machine's stack and never recurses on the host's, so a
+  50000-deep recursion runs (it trapped at 400 while the evaluator
+  recursed natively). A runaway traps at 100000 ("recursion too deep —
+  100000 nested calls"); a const settlement meets its memory budget
+  first (F2061). Measure, never guess, when either moves. AND IT ENDS
+  AS A NATIVE PROGRAM ENDS: lines stream as printed (`run_live`), a
+  trap says `avra: <words>` after them and exits 2.
 - `parse_int` TAKES EXACTLY `-`? DIGITS, NEVER MORE — no leading
   `+`, no surrounding space, no digit separator, no fraction or
   exponent, so `"+42"`, `" 42"` and `"4_2"` are all absent; the
@@ -1819,6 +1855,53 @@ Runtime facts, ours to ratify:
   …` samples. Trust the census over the sample — and read
   `sample`'s output with its tree characters (`+ ! : |`) in mind,
   since parsing it as plain indentation reports the wrong fn.
+- A GEN-N VS GEN-N+1 DIVERGENCE IS FOUND BY TRACING, NEVER GUESSED.
+  `AVRA_QTRACE=1` prints one stderr line per query-kernel event —
+  every `Memo.ask` (family, arg, reuse/compute/cycle) and
+  `Memo.settle` (family, arg, fingerprint) in query/memo.av, every
+  `Binder.declare` (name, file) in features/namespace.av, every
+  failed `named_type` lookup in compiler/typing/declare.av — behind
+  `avra_qtrace` (runtime/avra_runtime.c), inert without the flag.
+  Run both binaries on the SAME input with `AVRA_QTRACE=1`, confirm
+  each is deterministic against itself (diff two runs of the same
+  binary — must be empty), then diff the two traces: the FIRST
+  differing line names the query whose answer diverged first. Add a
+  probe at the divergent query's own site the same way — one
+  `qtrace(...)` call, removed once the cause is found.
+- WHICH COPY FORKED IS ANSWERED BY A CLONE LOG, NEVER BY READING THE
+  MECHANISM'S SOURCE. `AVRA_ALIAS_LOG=1` prints one stderr line per
+  ACTUAL `box_clone` (`avra_cell_unique`/`avra_slot_unique`,
+  runtime/avra_runtime.c's `alias_log_clone` — box_clone's only two
+  callers, so nothing clones outside this log) — the caller's
+  unslid return address (`atos -o <binary> <addr>` names it, no
+  `-l` needed) and the cloned box's ELEMENT COUNT. THAT COUNT IS
+  `a->len`, NEVER the header's `len`: every list, record and enum
+  payload is one `AvraArray` shape (`array_clone` treats them so),
+  and the header's `len` is that WRAPPER STRUCT's own fixed byte
+  size (40, `sizeof(AvraArray)`) — constant regardless of how many
+  fields or elements the box holds, so reading it answers "a box
+  was cloned" and never "how big". The first draft of this log
+  read the header and every clone in a 5.2M-line run showed length
+  40 or 32 — a tautology, not a finding.
+  AND DIFF THE LOGS BY SITE, NEVER BY PROFILE. avra-2y5c.5's gen-2
+  break was read from this log as an acquittal — "the same functions
+  at the same counts" in the good run and the broken one — while the
+  broken run held ONE line the good one did not: a 44-field clone at
+  `CheckCmd.run` (`mut ws = o.ws`, a workspace copied out of a record;
+  see A VALUE ITS OWN HOOKS CAPTURE, under Rules). Five million lines
+  that agree hide the one that forks.
+- A `check` HIT ON `.avra-cache` EXAMINES NOTHING, AND A SECOND
+  BINARY ON UNCHANGED SOURCE CAN SILENTLY HIT THE FIRST'S ENTRY.
+  `Workspace.checked`/`build_program` key their store by the
+  COMPILER'S OWN BYTES digest (`compiler_print`, compiler/build.av)
+  beside a `.avra-cache` directory, so building or checking with a
+  SECOND binary over the SAME source can read the FIRST binary's
+  kept warnings or kept binary outright — a differential build
+  (`AVRA_ALIAS_EMIT=0` vs `=1` over one source, or any two-binary
+  comparison) silently compares one binary's real run against the
+  other's cache hit, byte-identical checksums included. `rm -rf
+  .avra-cache` before every run whose ANSWER is being compared, not
+  only before the first.
 - ONE HEAVY PROCESS AT A TIME, in the FOREGROUND, under the
   watchdog: `sh tools/watch.sh 4000 make gate`. The machine is
   shared with a loaded desktop and has panicked twice under this
@@ -2063,8 +2146,8 @@ Runtime facts, ours to ratify:
   from another worktree with `LLVM_PREFIX` exported — the Makefile
   exports it, a bare shell does not, and the `[link]` row's
   `-L${LLVM_PREFIX}/lib` then names `/lib` ("clang failed linking")
-  — and after `make build/avra_runtime.o`, since a bare binary links
-  the OBJECT on disk, which a merge may have left behind the source
+  — and after `make build/libavra_runtime.a`, since a bare binary links
+  the LIBRARY on disk, which a merge may have left behind the source
   (a missing `avra_array_sized` was that: the link failed, not the
   compile).
   And the watchdog's poll is not a wall: a fast leak reached 16 GB

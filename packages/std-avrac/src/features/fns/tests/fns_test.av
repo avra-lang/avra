@@ -114,6 +114,14 @@ spec "features/fns" {
         then "the row's absence law renders whole" {
             analyze_source("extern fn avra_host_env(name: string?) -> string\n1").report().starts_with("error[F2088]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_env(name: string?) -> string\n  · ┬\n  · ╰── declared here\n──╯\nhelp: core's rows are the compiler's own C and every one of them READS the pointer it is handed")
         }
+        then "a row with no evaluator arm is called by its name, as any extern is" {
+            // `avra run` answered `defect: a runtime callee the
+            // interpreter does not host` for this clean program
+            shown("extern fn avra_int_and(a: int, b: int) -> int\navra_int_and(6, 3)") == "2"
+        }
+        then "and its seats obey the uniform frame's law — a fn value does not cross" {
+            refused_with("extern fn avra_rc_retain(p: fn() -> string)\navra_rc_retain(() -> \"hi\")\n1", "seat 1 of `avra_rc_retain`")
+        }
         then "a PACKAGE's C keeps the capability — a nullable seat it may test" {
             refusals("extern fn zz(name: string?, p: ptr?, n: int?) -> int\n1") == 0
         }

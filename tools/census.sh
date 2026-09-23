@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 saved=build/avra.census-saved
 stores=.avra-cache.census-saved
 restore() {
-    rm -f build/avra_runtime.o
+    rm -f build/avra_runtime.o build/libavra_runtime.a
     # the tree's stores come back as they stood: the census's own are its run's
     if [ -d "$stores" ]; then rm -rf .avra-cache; mv "$stores" .avra-cache; fi
     if [ -f "$saved" ]; then

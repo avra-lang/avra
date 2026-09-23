@@ -33,13 +33,13 @@ impl Workspace {
         // SUB-SECOND EDIT LIVES: one file read, 199 answered from what a previous build
         // wrote down.
         let t1 = self.clock()
-        for fi in self.decls.files { if !self.is_held(fi.id) { let _ = self.resolved(fi.id) } }
+        for fi in self.decls.files.get() { if !self.is_held(fi.id) { let _ = self.resolved(fi.id) } }
         self.timed("resolve", self.clock() - t1)
         let t2 = self.clock()
-        for fi in self.decls.files { if !self.is_held(fi.id) { let _ = self.sig_diagnostics(fi.id) } }
+        for fi in self.decls.files.get() { if !self.is_held(fi.id) { let _ = self.sig_diagnostics(fi.id) } }
         self.timed("sigs", self.clock() - t2)
         let t3 = self.clock()
-        let out = [self.analysis(fi.id) for fi in self.decls.files if !self.is_held(fi.id)]
+        let out = [self.analysis(fi.id) for fi in self.decls.files.get() if !self.is_held(fi.id)]
         self.timed("bodies", self.clock() - t3)
         out
     }
@@ -56,14 +56,14 @@ impl Workspace {
         let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
         let seat: Entry? = if at == null { null } else { Entry { at: at! } }
         Program {
-            ws: self, files: files, entry: seat, phases: self.phases, cache: self.db.stats(), defects: self.defects,
+            ws: self, files: files, entry: seat, phases: self.phases, cache: self.db.stats(), defects: self.defects.get(),
             voices: self.packages_voiced(), manifests: [self.manifest_source(pkg) for pkg in self.packages if self.has_manifest(pkg)],
         }
     }
 
     /// Every case of every file, in file and declaration order.
     fn cases() -> List<TestCase> {
-        flatten([self.file_cases(fi.id) for fi in self.decls.files])
+        flatten([self.file_cases(fi.id) for fi in self.decls.files.get()])
     }
 
     /// Every `rule` declaration this compiler carries: `@std/avrac`'s
@@ -102,9 +102,9 @@ impl Workspace {
     /// module's type, so every name must exist before any held shape is filled.
     mut fn admit_all() {
         mut i = 0
-        while i < self.decls.files.length {
+        while i < self.decls.files.get().length {
             // a held file's declarations are minted when something reads them
-            if !self.is_held(self.decls.files[i].id) { let _ = self.items(self.decls.files[i].id) }
+            if !self.is_held(self.decls.files.get()[i].id) { let _ = self.items(self.decls.files.get()[i].id) }
             i = i + 1
         }
     }

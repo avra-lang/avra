@@ -88,12 +88,12 @@ impl Decls {
     /// an unknown callee against. A whole-table walk: gathered once per
     /// lowering, never per body.
     fn extern_names() -> List<string> {
-        [self.symbol(d.id) for d in self.decls if self.is_extern(d.id)]
+        [self.symbol(d.id) for d in self.decls.get() if self.is_extern(d.id)]
     }
 
     /// The program's extern fns as registry rows.
     fn extern_rows() -> List<RtSig> {
-        [self.extern_row_of(d) for d in self.decls if self.is_extern(d.id)]
+        [self.extern_row_of(d) for d in self.decls.get() if self.is_extern(d.id)]
     }
 
     /// An extern's runtime row. The WIDTHS are read back from the
@@ -448,11 +448,13 @@ fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId,
     if body == null {
         lo.out.defect("a lift without a lambda survived typing")
     }
-    let r = lo.reg_of(body ?? lj.lam)
+    let value = lo.reg_of(body ?? lj.lam)
+    let r = if lj.kind is .Task { lo.one_cell(value, rt) } else { value }
+    let answers = lo.out.type_of_reg(r)
     lo.seats_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true },
+        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: answers, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true },
         voices: lo.out.voices, jobs: lo.jobs,
     }
 }
@@ -515,9 +517,7 @@ fn rules_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId) -> Reg {
     let entry_ty: TypeId = lo.view.types.element(rt) ?? rt
     let regs = [rule_entry_reg(lo, a, entry_ty, d) for d in ordered_rule_decls(a)]
     let size = lo.box_size(regs.length)
-    let dst = lo.mint_ty(rt)
-    lo.grown_box(dst, size, regs)
-    dst
+    lo.grown_box(lo.view.types.shape_of(rt), size, regs)
 }
 
 fn ordered_rule_decls(a: Analysis) -> List<Decl> {
@@ -559,9 +559,7 @@ fn rule_run_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
         lo.jobs.wraps.push(Wrap { target: symbol, seats: held?.seats ?? [], ret: held?.answer ?? lo.view.decls.types.intern(Type.Error), name: wname })
     }
     let size = lo.box_size(1)
-    let dst = lo.mint_ty(fnty)
-    lo.fn_box(dst, size, wname, [])
-    dst
+    lo.fn_box(lo.view.types.shape_of(fnty), size, wname, [])
 }
 
 /// The declaration's own doc comment, its first paragraph joined —

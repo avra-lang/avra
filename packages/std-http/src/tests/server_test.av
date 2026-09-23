@@ -59,7 +59,7 @@ fn pair(t: Timing) -> Result<Pair, NetError> { paired(echo, limits(), t) }
 fn exchanged_bytes(mut pr: Pair, sent: Bytes, expected: int) -> Result<Bytes, NetError> {
     mut from = 0
     while from < sent.length {
-        let n = pr.c.write(sent, from)?
+        let n = pr.c.try_write(sent, from)?
         if n == 0 { pr.s.turn(ms(20))? }
         from = from + n
     }
@@ -68,7 +68,7 @@ fn exchanged_bytes(mut pr: Pair, sent: Bytes, expected: int) -> Result<Bytes, Ne
     while got.length < expected && turns < 60 {
         pr.s.turn(ms(20))?
         pr.p.wait(ms(20))?
-        let chunk: Bytes? = match pr.c.read(65536)? {
+        let chunk: Bytes? = match pr.c.try_read(65536)? {
             .Data(b) -> b,
             .Eof -> { return .Ok(got) },
             .Pending -> null,
@@ -164,7 +164,7 @@ fn idle_is_dropped() -> Result<bool, NetError> {
 
 fn peer_ends_first() -> Result<bool, NetError> {
     mut pr = pair(timing())?
-    let _ = pr.c.write("GET /x HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)?
+    let _ = pr.c.try_write("GET /x HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)?
     let _ = pr.c.shutdown_write()?
     let got = exchanged(pr, "", 1000)?
     .Ok((got.text() ?? "").ends_with("true /x  1") && pr.s.connections() == 0)

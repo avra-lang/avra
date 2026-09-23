@@ -114,12 +114,12 @@ fn run() -> Result<int, NetError> {
     let p = poller()?
     p.watch(l.fd, .Read)?
     p.wait(secs(2))?
-    let s = l.accept()?
+    let s = l.try_accept()?
     p.watch(s!.fd, .Read)?
-    c.write("a".bytes(), 0)?
+    c.try_write("a".bytes(), 0)?
     p.wait(secs(2))?
     let first = avra_fd_read(s!.fd, 10)
-    c.write("b".bytes(), 0)?
+    c.try_write("b".bytes(), 0)?
     p.wait(secs(2))?
     let second = avra_fd_read(s!.fd, 10)
     .Ok(avra_fd_taken(first).length + second)
@@ -238,6 +238,21 @@ codes[9]'
 # that carried absence into it.
 trapped_run null_at_a_package_seat 'avra: a foreign body faulted inside `atoi` — seat 1 was handed `null`' 2 '' 'extern fn atoi(x: string?) -> int
 atoi(null)
+'
+
+# A TRAP UNDER `avra run` ENDS THE PROGRAM AS A NATIVE ONE ENDS: the lines
+# printed before it stand, its words carry `avra:`, and the status is 2.
+# The evaluator held every line until the program ended, so a trap took
+# them all with it — and a program that never ends was never heard.
+trapped_run printed_before_a_trap 'before
+avra: index 5 is out of bounds (length 2)' 2 '' 'println("before")
+let xs = [1, 2]
+println("${xs[5]}")
+'
+trapped printed_before_a_trap_native 'before
+avra: index 5 is out of bounds (length 2)' 2 '' 'println("before")
+let xs = [1, 2]
+println("${xs[5]}")
 '
 
 trapped shift_wide "avra: a shift count must be between 0 and 63" 2 '' 'let a = 1

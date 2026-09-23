@@ -1,0 +1,48 @@
+//! proves: a task per connection — a slow handler parks in its sleep
+//! while the fast one answers, so the fast client hears back first;
+//! every handler is joined, and every byte is accounted for
+use @std.net.{listen, connect, Listener, Conn, NetError}
+use @std.time.{secs, ms, sleep}
+
+fn handle(c: Conn) -> Result<int, NetError> {
+    let got = c.read(64)? ?? "".bytes()
+    if (got.text() ?? "") == "slow" { sleep(ms(80)) }
+    let n = c.write(got)?
+    let _ = c.close()?
+    .Ok(n)
+}
+
+fn serve(l: Listener, n: int) -> Result<int, NetError> {
+    mut handlers: List<Task<Result<int, NetError>>> = []
+    for i in 0..n {
+        let c = l.accept()?
+        handlers.push(spawn handle(c))
+    }
+    mut total = 0
+    for h in handlers { total = total + h.await? }
+    .Ok(total)
+}
+
+fn ask(port: int, word: string, heard: Cell<List<string>>) -> Result<string, NetError> {
+    let c = connect("127.0.0.1", port, secs(2))?
+    let _ = c.write(word.bytes())?
+    let back = (c.read(64)? ?? "".bytes()).text() ?? ""
+    heard.set(heard.get().concat([back]))
+    let _ = c.close()?
+    .Ok(back)
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let heard: Cell<List<string>> = Cell.new([])
+    let server = spawn serve(l, 2)
+    let slow = spawn ask(l.port, "slow", heard)
+    let fast = spawn ask(l.port, "fast", heard)
+    let s = slow.await?
+    let f = fast.await?
+    let total = server.await?
+    let _ = l.close()?
+    .Ok("${heard.get().join(",")} ${s} ${f} ${total}")
+}
+
+run() catch _ -> "failed"

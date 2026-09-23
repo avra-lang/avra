@@ -7,7 +7,7 @@
 //! fully-bound param falls back to the ordinary assignment law, and
 //! the representation laws re-judge every substituted slot.
 use core.{ExprId, StmtId, TypeId, Arrow, TypeRef, spelled, DeclId, Param, Binding, mut_mark, rt_sigs, RtSig, RtKind, Box, TypeRegistry, extern_kind, width_named}
-use features.{no_pins, Pins, TypeCx, FnSig, nothing, this_is, tparams_refused, unpinned_of, slice_promise, type_name_decl}
+use features.{no_pins, Pins, TypeCx, FnSig, nothing, this_is, tparams_refused, unpinned_of, type_name_decl}
 use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
@@ -48,13 +48,16 @@ fn checked_extern(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>
 /// answered by a non-row extern checked CLEAN, and then the evaluator
 /// said `defect:` while the native binary SEGFAULTED.
 ///
-/// A ROW IS THE EXEMPTION, and it is not a special case: a row has a
-/// hand-written arm on both sides that MATERIALISES the aggregate,
-/// which is exactly what the uniform frame cannot do. `avra_str_join`
-/// has taken a `List<string>` that way since before this law, and
-/// `avra_fd_taken` has answered `Bytes` that way.
+/// A ROW WITH AN ARM IS THE EXEMPTION, and it is not a special case:
+/// the arm, on both sides, MATERIALISES the aggregate, which is
+/// exactly what the uniform frame cannot do. `avra_str_join` has taken
+/// a `List<string>` that way since before this law, and `avra_fd_taken`
+/// has answered `Bytes` that way. A row with NO evaluator arm is
+/// called through the uniform frame like any extern, so the frame's
+/// law holds for it: a closure handed to `avra_task_spawn` would reach
+/// C as a handle the evaluator made up.
 fn crossing_law(mut cx: TypeCx, s: StmtId, hname: string, hparams: List<Param>) {
-    if rt_sigs().any(it.name == hname) { return nothing() }
+    if rt_sigs().any(it.name == hname && it.armed()) { return nothing() }
     let sig? = cx.stmt_sig(s) else { return nothing() }
     for j, p in sig.params {
         if !hparams[j].promises.mutable && !crossable(cx.view.types, p) { seat_cannot_cross(cx, s, hname, j, p) }
@@ -505,7 +508,7 @@ fn unpinned_by_arguments(mut cx: TypeCx, e: ExprId, callee: string, tparam: stri
 }
 
 fn side_unholdable(mut cx: TypeCx, e: ExprId, offender: TypeId) {
-    cx.emit(refusal("type.mismatch", cx.loc_of(e), "this call makes a `Result` side `${cx.view.types.name_of(offender)}`, which a side cannot hold yet", "in this call", slice_promise("sides")))
+    cx.emit(refusal("type.mismatch", cx.loc_of(e), "this call makes a `Result` side `${cx.view.types.name_of(offender)}`, which a side cannot hold yet", "in this call", "a `Result` side holding nothing is recorded — answer what the verb wrote"))
 }
 
 fn wrong_pin_count(mut cx: TypeCx, e: ExprId, callee: string, want: int, found: int) {

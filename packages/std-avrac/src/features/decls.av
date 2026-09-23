@@ -97,23 +97,29 @@ fn no_facts() -> DeclFacts { DeclFacts { external: false, stat: true, is_grammar
 
 export type Decls = {
     types: TypeRegistry,
-    files: List<FileInfo>,
-    paths: Map<string, FileId>,
-    modules: List<string>,
-    module_ids: Map<string, ModuleId>,
-    /// ONE SLOT, SHARED — see `children`: an append must not copy the table.
-    module_files: List<Cell<List<FileId>>>,
-    mains: List<DeclId?>,
-    stores: List<NodeStore?>,
+    /// OUTER-TABLE GROWTH, SHARED: `mint`/`file_id`/`module_id` run
+    /// behind captured hooks (`built()`'s registrations), so the
+    /// table itself — not only a per-slot Cell inside it — must be a
+    /// shared referent, or the append lands in a copy and is lost.
+    files: Cell<List<FileInfo>>,
+    paths: Cell<Map<string, FileId>>,
+    modules: Cell<List<string>>,
+    module_ids: Cell<Map<string, ModuleId>>,
+    /// TWO LAYERS SHARED: the per-module slot (see `children`) AND the
+    /// outer table itself (see `files` above) — appending a MODULE's
+    /// slot is outer-table growth exactly as appending a FILE's row is.
+    module_files: Cell<List<Cell<List<FileId>>>>,
+    mains: Cell<List<DeclId?>>,
+    stores: Cell<List<NodeStore?>>,
     ensure_store: List<fn(FileId)>,
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
     /// workspace arms, called before a file's declarations are read.
     ensure_file: List<fn(FileId)>,
-    /// ONE SLOT, SHARED — see `children`: a write must not copy the table.
-    decl_ids: List<Cell<SideTable<DeclId?>>>,
-    /// ONE SLOT, SHARED — see `children`: an append must not copy the table.
-    file_decls: List<Cell<List<DeclId>>>,
-    decls: List<Decl>,
+    /// TWO LAYERS SHARED — see `module_files`.
+    decl_ids: Cell<List<Cell<SideTable<DeclId?>>>>,
+    /// TWO LAYERS SHARED — see `module_files`.
+    file_decls: Cell<List<Cell<List<DeclId>>>>,
+    decls: Cell<List<Decl>>,
     /// THE FILES ANSWERED FROM A RECORD — never parsed, so their declarations were
     /// MINTED and their objects come from the store. Keyed by path.
     held: Map<string, bool>,
@@ -122,47 +128,51 @@ export type Decls = {
     /// when dozens of specializations ask for bodies from that file.
     /// THE DECLARATION'S PARSE FACTS, captured at admit and loaded for a held file — the
     /// ONE place a pass reads them, so no pass reaches into a store after admission.
-    faces: List<DeclFacts?>,
+    faces: Cell<List<DeclFacts?>>,
     /// Settlements restored for declarations whose files were never parsed.
     held_values: Map<string, Settled>,
-    keys: Map<string, DeclId>,
-    sigs: List<DeclSig?>,
+    keys: Cell<Map<string, DeclId>>,
+    sigs: Cell<List<DeclSig?>>,
 
     // a GENERATED declaration's origin — null for every written one
-    provenance: List<Provenance?>,
+    provenance: Cell<List<Provenance?>>,
     // a file's admitted GENERATIONS, in order — the arena ranges each
     // took and the annotation that asked; dense by FileId
-    generations: List<List<Generation>>,
+    generations: Cell<List<List<Generation>>>,
     // a generated node's ORIGIN — the file whose template wrote it;
     // `Here` for a written node and for one whose name came through a
     // hole; dense by FileId, then by arena index
-    origins: List<Origins>,
+    origins: Cell<List<Origins>>,
     // what a file's expansions REFUSED — generated source that did not
     // parse, spoken at the template that wrote it; dense by FileId
-    /// ONE SLOT, SHARED — see `children`: an append must not copy the table.
-    expansion_voices: List<Cell<List<Diag>>>,
+    /// TWO LAYERS SHARED — see `module_files`.
+    expansion_voices: Cell<List<Cell<List<Diag>>>>,
     // `@std/meta`'s declarations by name, found once each
     meta_ids: Map<string, DeclId>,
     // a declaration's WARNINGS: the words it keeps for its users,
     // computed on first ask through `ensure_marks` (null = unasked)
-    marks: List<List<Diagnostic>?>,
+    marks: Cell<List<List<Diagnostic>?>>,
     ensure_marks: List<fn(DeclId)>,
     // the ROOT package's manifest name — its modules carry no package
     // prefix, and a kind spoken there still wears the package
     root_name: List<string>,
     const_types: Map<string, TypeId>,
-    /// ONE SLOT, SHARED: members are appended through every copy of the table, so
-    /// an append cannot copy it. A plain `List<List<DeclId>>` cloned the whole
-    /// table per child.
-    children: List<Cell<List<DeclId>>>,
-    /// ONE SLOT, SHARED — see `children`: an append must not copy the table.
-    methods: List<Cell<List<DeclId>>>,
-    /// ONE SLOT, SHARED — see `children`: an append must not copy the table.
-    impls: List<Cell<List<DeclId>>>,
+    /// TWO LAYERS SHARED: members are appended through every copy of the
+    /// per-parent slot, so an append cannot copy it (a plain
+    /// `List<List<DeclId>>` cloned the whole table per child) — AND the
+    /// outer table (one slot per DeclId) is a Cell too, or a NEW
+    /// declaration's own slot never reaches a captured hook.
+    children: Cell<List<Cell<List<DeclId>>>>,
+    /// TWO LAYERS SHARED — see `children`.
+    methods: Cell<List<Cell<List<DeclId>>>>,
+    /// TWO LAYERS SHARED — see `children`.
+    impls: Cell<List<Cell<List<DeclId>>>>,
     // every impl block under the NAME it targets — filled at mint,
     // before any target resolves, so a method table finds its impls
     // without walking every declaration in the workspace
-    impls_by_name: Map<string, List<DeclId>>,
+    // OUTER-TABLE GROWTH, SHARED — see `files` above: `note_impl` runs
+    // inside `mint`, behind the same captured hooks.
+    impls_by_name: Cell<Map<string, List<DeclId>>>,
     ensure: List<fn(DeclId)>,
     // the workspace's const-type hook: types the const, and answers
     // whether this ask closed a cycle
@@ -177,15 +187,15 @@ export type Decls = {
     rows: List<TypeRow>,
     // an impl block's target type, once typing found it — dense by
     // DeclId; a method's instantiation is its target's
-    targets: List<DeclId?>,
+    targets: Cell<List<DeclId?>>,
     // THE INOUT SEATS, dense by DeclId: each seat's CONTRACT a fn
     // declared (`mut`, `const`), whether a method DECLARED `mut fn`,
     // and whether the receivers pass found it WRITING through `self`
     // — asked through the armed hook
-    seat_marks: List<List<SeatMark>>,
-    declared_writes: List<bool>,
-    /// ONE SLOT, SHARED — see `children`: an append must not copy the table.
-    written_seats: List<Cell<List<bool>>>,
+    seat_marks: Cell<List<List<SeatMark>>>,
+    declared_writes: Cell<List<bool>>,
+    /// TWO LAYERS SHARED — see `children`.
+    written_seats: Cell<List<Cell<List<bool>>>>,
     ensure_writes: List<fn(DeclId)>,
 }
 
@@ -218,11 +228,37 @@ export enum ConstType {
 fn const_type_key(f: FileId, s: StmtId) -> string { "${f.index}/${s.index}" }
 
 export fn new_decls() -> Decls {
+    let no_files: List<FileInfo> = []
+    let no_paths: Map<string, FileId> = {}
+    let no_modules: List<string> = []
+    let no_module_ids: Map<string, ModuleId> = {}
+    let no_mains: List<DeclId?> = []
+    let no_stores: List<NodeStore?> = []
+    let no_generations: List<List<Generation>> = []
+    let no_origins: List<Origins> = []
+    let no_decls: List<Decl> = []
+    let no_faces: List<DeclFacts?> = []
+    let no_keys: Map<string, DeclId> = {}
+    let no_sigs: List<DeclSig?> = []
+    let no_provenance: List<Provenance?> = []
+    let empty_marks: List<List<Diagnostic>?> = []
+    let no_targets: List<DeclId?> = []
+    let no_seat_marks: List<List<SeatMark>> = []
+    let no_declared_writes: List<bool> = []
+    let no_module_files: List<Cell<List<FileId>>> = []
+    let no_decl_ids: List<Cell<SideTable<DeclId?>>> = []
+    let no_file_decls: List<Cell<List<DeclId>>> = []
+    let no_expansion_voices: List<Cell<List<Diag>>> = []
+    let no_children: List<Cell<List<DeclId>>> = []
+    let no_methods: List<Cell<List<DeclId>>> = []
+    let no_impls: List<Cell<List<DeclId>>> = []
+    let no_written_seats: List<Cell<List<bool>>> = []
+    let no_impls_by_name: Map<string, List<DeclId>> = {}
     Decls {
-        types: new_type_registry(), files: [], paths: {}, modules: [], module_ids: {}, module_files: [], mains: [],
-        stores: [], ensure_store: [no_store], ensure_file: [no_store], decl_ids: [], file_decls: [], generations: [], origins: [], expansion_voices: [], meta_ids: {}, decls: [], held: {}, held_items: {}, faces: [], held_values: {}, keys: {}, sigs: [], provenance: [], marks: [], ensure_marks: [no_marks], root_name: [""], const_types: {}, children: [], methods: [], impls: [], impls_by_name: {},
-        ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: [],
-        seat_marks: [], declared_writes: [], written_seats: [], ensure_writes: [no_ensure],
+        types: new_type_registry(), files: Cell.new(no_files), paths: Cell.new(no_paths), modules: Cell.new(no_modules), module_ids: Cell.new(no_module_ids), module_files: Cell.new(no_module_files), mains: Cell.new(no_mains),
+        stores: Cell.new(no_stores), ensure_store: [no_store], ensure_file: [no_store], decl_ids: Cell.new(no_decl_ids), file_decls: Cell.new(no_file_decls), generations: Cell.new(no_generations), origins: Cell.new(no_origins), expansion_voices: Cell.new(no_expansion_voices), meta_ids: {}, decls: Cell.new(no_decls), held: {}, held_items: {}, faces: Cell.new(no_faces), held_values: {}, keys: Cell.new(no_keys), sigs: Cell.new(no_sigs), provenance: Cell.new(no_provenance), marks: Cell.new(empty_marks), ensure_marks: [no_marks], root_name: [""], const_types: {}, children: Cell.new(no_children), methods: Cell.new(no_methods), impls: Cell.new(no_impls), impls_by_name: Cell.new(no_impls_by_name),
+        ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: Cell.new(no_targets),
+        seat_marks: Cell.new(no_seat_marks), declared_writes: Cell.new(no_declared_writes), written_seats: Cell.new(no_written_seats), ensure_writes: [no_ensure],
         lifter: [no_lifter],
     }
 }
@@ -267,27 +303,27 @@ impl Decls {
     // ── files ──
 
     /// A path's identity — minted at first mention.
-    fn decl(d: DeclId) -> Decl { self.decls[d.index] }
+    fn decl(d: DeclId) -> Decl { self.decls.get()[d.index] }
 
     /// A generated declaration's origin, or null for a written one.
-    fn provenance_of(d: DeclId) -> Provenance? { self.provenance[d.index] }
+    fn provenance_of(d: DeclId) -> Provenance? { self.provenance.get()[d.index] }
 
     /// Record a generated declaration's origin: who asked, what it
     /// wraps or names, and where.
     fn note_provenance(d: DeclId, ann: string, original: string, at: Span?) {
-        self.provenance.set(d.index, Provenance { ann: ann, original: original, at: at })
+        self.provenance.set_at(d.index, Provenance { ann: ann, original: original, at: at })
     }
 
     /// The template a generated declaration was copied from — the
     /// quote's file and offset — beside who asked.
     fn note_template(d: DeclId, template: Loc?) {
-        let held? = self.provenance[d.index] else { return }
-        self.provenance.set(d.index, held with { template: template })
+        let held? = self.provenance.get()[d.index] else { return }
+        self.provenance.set_at(d.index, held with { template: template })
     }
 
     /// One more generation admitted to a file.
     fn note_generation(f: FileId, g: Generation) {
-        self.generations.set(f.index, self.generations[f.index].concat([g]))
+        self.generations.set_at(f.index, self.generations.get()[f.index].concat([g]))
     }
 
     /// Nodes copied from a template: each wears the file that wrote it.
@@ -295,7 +331,7 @@ impl Decls {
     /// this runs once per copied node, and each call used to copy the
     /// whole table.
     fn note_origins(f: FileId, exprs: List<ExprId>, stmts: List<StmtId>, pats: List<PatId>, origin: FileId) {
-        let known = self.origins[f.index]
+        let known = self.origins.get()[f.index]
         let wrote = Origin.Written(origin)
         for e in exprs {
             while known.exprs.get().length <= e.index { known.exprs.push(Origin.Here) }
@@ -313,9 +349,9 @@ impl Decls {
 
     /// The file a generated node was WRITTEN in, when it is another
     /// than the node's own.
-    fn origin_of_expr(f: FileId, e: ExprId) -> FileId? { self.origins[f.index].at(self.origins[f.index].exprs.get(), e.index) }
-    fn origin_of_stmt(f: FileId, s: StmtId) -> FileId? { self.origins[f.index].at(self.origins[f.index].stmts.get(), s.index) }
-    fn origin_of_pat(f: FileId, p: PatId) -> FileId? { self.origins[f.index].at(self.origins[f.index].pats.get(), p.index) }
+    fn origin_of_expr(f: FileId, e: ExprId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].exprs.get(), e.index) }
+    fn origin_of_stmt(f: FileId, s: StmtId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].stmts.get(), s.index) }
+    fn origin_of_pat(f: FileId, p: PatId) -> FileId? { self.origins.get()[f.index].at(self.origins.get()[f.index].pats.get(), p.index) }
 
     /// What a file's expansion refused, kept for its resolve to speak.
     /// IDEMPOTENT, BECAUSE THE EXPANSION RUNS TWICE BY DESIGN.
@@ -332,31 +368,31 @@ impl Decls {
     /// splice can raise.
     fn speak_expansion(f: FileId, ds: List<Diag>) {
         for d in ds {
-            if !self.expansion_voices[f.index].get().any(same_voice(it, d)) { self.expansion_voices[f.index].push(d) }
+            if !self.expansion_voices.get()[f.index].get().any(same_voice(it, d)) { self.expansion_voices.get()[f.index].push(d) }
         }
     }
 
     /// A file's expansion begins with nothing refused.
     fn hush_expansion(f: FileId) {
         let no_voices: List<Diag> = []
-        self.expansion_voices.set(f.index, Cell.new(no_voices))
+        self.expansion_voices.set_at(f.index, Cell.new(no_voices))
     }
 
     /// The generation a file's node came from — null for a written one.
     fn generation_of(f: FileId, e: ExprId) -> Generation? {
-        self.generations[f.index].find(it.exprs.lo <= e.index && e.index < it.exprs.hi)
+        self.generations.get()[f.index].find(it.exprs.lo <= e.index && e.index < it.exprs.hi)
     }
 
     fn generation_of_stmt(f: FileId, s: StmtId) -> Generation? {
-        self.generations[f.index].find(it.stmts.lo <= s.index && s.index < it.stmts.hi)
+        self.generations.get()[f.index].find(it.stmts.lo <= s.index && s.index < it.stmts.hi)
     }
 
     fn generation_of_pat(f: FileId, p: PatId) -> Generation? {
-        self.generations[f.index].find(it.pats.lo <= p.index && p.index < it.pats.hi)
+        self.generations.get()[f.index].find(it.pats.lo <= p.index && p.index < it.pats.hi)
     }
 
     /// The declaration a statement of a file makes, when it does.
-    fn decl_of(f: FileId, s: StmtId) -> DeclId? { self.decl_ids[f.index].get().get(s.index) }
+    fn decl_of(f: FileId, s: StmtId) -> DeclId? { self.decl_ids.get()[f.index].get().get(s.index) }
 
     fn store(d: DeclId) -> NodeStore { self.store_of(self.decl(d).file) }
 
@@ -387,7 +423,7 @@ impl Decls {
     /// law here too. Admission is the caller's: `Workspace.rule_decls`
     /// forces every one of `@std/avrac`'s own files in first.
     fn rule_decls() -> List<Decl> {
-        [d for d in self.decls if d.kind is .Rule && !self.file(d.file).path.contains("/tests/")]
+        [d for d in self.decls.get() if d.kind is .Rule && !self.file(d.file).path.contains("/tests/")]
     }
 
     /// The root package's manifest name, kept in the dotted spelling.
@@ -420,8 +456,7 @@ impl Decls {
     /// check `Code` (a struct) does.
     fn declared_as(ty: TypeId, pkg: string, name: string) -> bool {
         let d: DeclId? = match self.types.shape_of(ty) {
-            .Struct(d, _) -> d,
-            .Enum(d, _) -> d,
+            .Struct(d, _) or .Enum(d, _) -> d,
             rest -> null,
         }
         d != null && self.decl(d!).name == name && self.package_of(d!) == pkg
@@ -465,7 +500,7 @@ impl Decls {
         let key = "${pkg}.${name}"
         let known: DeclId? = self.meta_ids.get(key)
         if known != null { return known }
-        let ms = [ModuleId { index: j } for j, m in self.modules if self.package_named(m) == pkg]
+        let ms = [ModuleId { index: j } for j, m in self.modules.get() if self.package_named(m) == pkg]
         let ds: List<DeclId> = flatten([self.module_decls(m) for m in ms])
         let found: DeclId? = ds.find((d: DeclId) -> {
             let found_decl = self.decl(d)
@@ -477,7 +512,7 @@ impl Decls {
 
     /// One module's own declarations, across its files.
     fn module_decls(m: ModuleId) -> List<DeclId> {
-        flatten([self.file_decls[f.index].get() for f in self.module_files[m.index].get()])
+        flatten([self.file_decls.get()[f.index].get() for f in self.module_files.get()[m.index].get()])
     }
 
     /// Whether a type is one declaration exported by `@std/meta`.
@@ -499,7 +534,7 @@ impl Decls {
     fn sig(d: DeclId) -> DeclSig? {
         let ensure = self.ensure[0]
         ensure(d)
-        let held: DeclSig? = self.sigs[d.index]
+        let held: DeclSig? = self.sigs.get()[d.index]
         held
     }
 
@@ -559,12 +594,12 @@ impl Decls {
     fn marks(d: DeclId) -> List<Diagnostic> {
         let ensure = self.ensure_marks[0]
         ensure(d)
-        let held: List<Diagnostic>? = self.marks[d.index]
+        let held: List<Diagnostic>? = self.marks.get()[d.index]
         held ?? []
     }
 
     fn record_marks(d: DeclId, xs: List<Diagnostic>) {
-        self.marks.set(d.index, xs)
+        self.marks.set_at(d.index, xs)
     }
 
     /// An annotation fn `d` run over the declaration at `s` in file
@@ -586,7 +621,7 @@ impl Decls {
     /// signature typed from source and one read from an interface both
     /// land here, so a layout has one law.
     fn declare(d: DeclId, sig: DeclSig) {
-        self.sigs.set(d.index, sig)
+        self.sigs.set_at(d.index, sig)
         let r? = sig.record_sig() else { return }
         self.flatten(d, r.types)
     }
@@ -630,12 +665,12 @@ impl Decls {
     /// 0 is its receiver and is never declared here. The written bits
     /// take the same shape, all false until the pass runs.
     fn record_seats(d: DeclId, marks: List<SeatMark>) {
-        self.seat_marks.set(d.index, marks)
-        self.written_seats.set(d.index, Cell.new(filled(marks.length, false)))
+        self.seat_marks.set_at(d.index, marks)
+        self.written_seats.set_at(d.index, Cell.new(filled(marks.length, false)))
     }
 
     /// How many seats a declaration has — the receiver's included.
-    fn seat_count(d: DeclId) -> int { self.seat_marks[d.index].length }
+    fn seat_count(d: DeclId) -> int { self.seat_marks.get()[d.index].length }
 
     /// Asking IS the query: the sig hook declares `d` first, so a
     /// callee named before its own declaration answers truly.
@@ -654,36 +689,36 @@ impl Decls {
     fn seat_mark(d: DeclId, i: int) -> SeatMark {
         let ensure = self.ensure[0]
         ensure(d)
-        mark_at(self.seat_marks[d.index], i)
+        mark_at(self.seat_marks.get()[d.index], i)
     }
 
     /// `mut fn` — the method (or trait sig) declared its receiver
     /// written.
     fn record_declared_writing(d: DeclId) {
-        self.declared_writes.set(d.index, true)
+        self.declared_writes.set_at(d.index, true)
     }
 
     fn declares_writing(d: DeclId) -> bool {
         let ensure = self.ensure[0]
         ensure(d)
-        self.declared_writes[d.index]
+        self.declared_writes.get()[d.index]
     }
 
     /// The seats pass found the body writing through seat `i`.
     mut fn record_seat_written(d: DeclId, i: int) {
-        if i < self.written_seats[d.index].get().length { self.written_seats[d.index].set_at(i, true) }
+        if i < self.written_seats.get()[d.index].get().length { self.written_seats.get()[d.index].set_at(i, true) }
     }
 
     /// The pass's own reads — hook-free, as the table stands.
     fn seat_written_so_far(d: DeclId, i: int) -> bool {
-        let row = self.written_seats[d.index].get()
+        let row = self.written_seats.get()[d.index].get()
         i < row.length && row[i]
     }
 
     /// Whether seat `i` is written, declared or found: a method's
     /// receiver by its word, any seat by the pass.
     fn seat_writes_so_far(d: DeclId, i: int) -> bool {
-        (i == 0 && self.declared_writes[d.index]) || self.seat_written_so_far(d, i)
+        (i == 0 && self.declared_writes.get()[d.index]) || self.seat_written_so_far(d, i)
     }
 
     /// The receiver's inferred bit — seat 0 of a method.
@@ -697,8 +732,8 @@ impl Decls {
         // A HELD FILE'S SETTLED BITS ARE THE INTERFACE'S, not this pass's to clear:
         // the receivers pass never surveys a held body, so wiping them loses the
         // writer a caller's retain decision reads. The pass clears what it owns.
-        for j, x in self.decls {
-            if self.held.get(self.file(x.file).path) == null { self.written_seats.set(j, Cell.new(filled(self.written_seats[j].get().length, false))) }
+        for j, x in self.decls.get() {
+            if self.held.get(self.file(x.file).path) == null { self.written_seats.set_at(j, Cell.new(filled(self.written_seats.get()[j].get().length, false))) }
         }
     }
 
@@ -725,11 +760,11 @@ impl Decls {
     }
 
     fn record_target(impl_decl: DeclId, target: DeclId) {
-        self.targets.set(impl_decl.index, target)
+        self.targets.set_at(impl_decl.index, target)
     }
 
     fn target_of(impl_decl: DeclId) -> DeclId? {
-        let held: DeclId? = self.targets[impl_decl.index]
+        let held: DeclId? = self.targets.get()[impl_decl.index]
         held
     }
 
@@ -810,8 +845,7 @@ impl Decls {
     fn type_name(d: DeclId) -> string? {
         let x = self.decl(d)
         match x.kind {
-            .Record or .Named or .Enum -> x.name,
-            .Builtin -> x.name,
+            .Record or .Named or .Enum or .Builtin -> x.name,
             .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Rule -> null,
         }
     }
@@ -831,18 +865,18 @@ impl Decls {
 
     /// A declaration's members, in declaration order: a trait's or
     /// impl's methods, a record's defaults.
-    fn children_of(d: DeclId) -> List<DeclId> { self.children[d.index].get() }
+    fn children_of(d: DeclId) -> List<DeclId> { self.children.get()[d.index].get() }
 
     /// An impl block filed under the name it targets.
     fn note_impl(name: string, id: DeclId) {
-        mut under = self.impls_by_name.get(name) ?? []
+        mut under = self.impls_by_name.get().get(name) ?? []
         under.push(id)
-        self.impls_by_name.set(name, under)
+        self.impls_by_name.put(name, under)
     }
 
     /// Every impl block naming a type by this name, in mint order.
     fn impls_named(name: string) -> List<DeclId> {
-        self.impls_by_name.get(name) ?? []
+        self.impls_by_name.get().get(name) ?? []
     }
 
     /// A record field's default, when the field declares one.
@@ -961,7 +995,7 @@ impl Decls {
     /// implements, when that trait's member carries a body.
     fn defaulted(target: DeclId, name: string) -> DeclId? {
         // LICENSED I4: `it` binds to the NEAREST call, so a self-method predicate is F2033 — the scan is spelled
-        for tr in self.impls[target.index].get() {
+        for tr in self.impls.get()[target.index].get() {
             let m: DeclId? = self.default_member(tr, name)
             if m != null { return m }
         }
@@ -987,7 +1021,7 @@ impl Decls {
     }
 
     /// A type's registered methods, as they stand — the hook-free read.
-    fn methods_of(target: DeclId) -> List<DeclId> { self.methods[target.index].get() }
+    fn methods_of(target: DeclId) -> List<DeclId> { self.methods.get()[target.index].get() }
 
     /// The workspace arms the method-table hook once.
     fn arm_methods(ensure: fn(DeclId)) {
@@ -999,12 +1033,12 @@ impl Decls {
     mut fn declare_method(target: DeclId, m: DeclId) {
         let prior: DeclId? = self.held_method(target, self.decl(m).name)
         if prior != null && same_decl(prior!, m) { return }
-        self.methods[target.index].push(m)
+        self.methods.get()[target.index].push(m)
     }
 
     mut fn record_impl(ty: DeclId, tr: DeclId) {
         if self.holds_impl(ty, tr) { return }
-        self.impls[ty.index].push(tr)
+        self.impls.get()[ty.index].push(tr)
     }
 
     /// Whether a type implements a trait — asked through the hook,
@@ -1016,7 +1050,7 @@ impl Decls {
     }
 
     fn holds_impl(ty: DeclId, tr: DeclId) -> bool {
-        self.impls[ty.index].get().any(same_decl(it, tr))
+        self.impls.get()[ty.index].get().any(same_decl(it, tr))
     }
 }
 

@@ -13,13 +13,12 @@ impl NodeStore {
     /// variants; the trait carries behavior.
     fn let_name(s: StmtId) -> string? {
         match self.stmt(s) {
-            .Let(name, _, _) -> name.of,
-            .MutLet(name, _, _) -> name.of,
-            .ConstDecl(name, _, _) -> name.of,
-            .For(name, _, _, _, _, _) -> name.of,
-            .ForEach(_, name, _, _) -> name.of,
-            .LetElse(name, _, _) -> name.of,
-            .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> null,
+            .Let(name, _, _) or .MutLet(name, _, _) or .ConstDecl(name, _, _)
+                or .For(name, _, _, _, _, _) or .ForEach(_, name, _, _) or .LetElse(name, _, _) -> name.of,
+            .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _)
+                or .While(_, _) or .IfStmt(_, _, _) or .Return(_)
+                or .Fail(_) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _)
+                or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> null,
         }
     }
 
@@ -37,10 +36,12 @@ impl NodeStore {
     /// `mut` alike.
     fn binding_ty(s: StmtId) -> TypeRef? {
         match self.stmt(s) {
-            .Let(_, t, _) -> t,
-            .MutLet(_, t, _) -> t,
-            .ConstDecl(_, t, _) -> t,
-            .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> null,
+            .Let(_, t, _) or .MutLet(_, t, _) or .ConstDecl(_, t, _) -> t,
+            .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _)
+                or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _)
+                or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _)
+                or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _)
+                or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> null,
         }
     }
 
@@ -93,17 +94,27 @@ impl NodeStore {
     /// that runs later, under a frame, is NOT a value.
     fn stmt_value(s: StmtId) -> ExprId? {
         match self.stmt(s) {
-            .Let(_, _, v) -> v,
-            .MutLet(_, _, v) -> v,
-            .ConstDecl(_, _, v) -> v,
-            .Assign(_, v) -> v,
-            .ExprStmt(v) -> v,
-            .Discard(v) -> v,
+            .Let(_, _, v) or .MutLet(_, _, v) or .ConstDecl(_, _, v) or .Assign(_, v)
+                or .ExprStmt(v) or .Discard(v) or .Fail(v) or .LetElse(_, v, _) or .Defer(v, _) -> v,
+            // LICENSED I59: a `return`'s value is optional, the others' are not
             .Return(v) -> v,
-            .Fail(v) -> v,
-            .LetElse(_, v, _) -> v,
-            .Defer(v, _) -> v,
-            .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Use(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Rule(_, _, _) or .Error -> null,
+            .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _)
+                or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Use(_, _, _)
+                or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Rule(_, _, _) or .Error -> null,
+        }
+    }
+
+    /// The value a statement HOLDS for the rest of its scope: a binding's,
+    /// or a value computed and dropped — which its statement list then
+    /// holds until it ends. Null where the value leaves (`return`,
+    /// `fail`), replaces (`=`), or runs later (`defer`).
+    fn owned_value(s: StmtId) -> ExprId? {
+        match self.stmt(s) {
+            .Let(_, _, v) or .MutLet(_, _, v) or .ExprStmt(v) or .Discard(v) -> v,
+            .ConstDecl(_, _, _) or .Assign(_, _) or .Fail(_) or .LetElse(_, _, _) or .Defer(_, _) or .Return(_)
+                or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _)
+                or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Use(_, _, _)
+                or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Rule(_, _, _) or .Error -> null,
         }
     }
 
@@ -112,10 +123,11 @@ impl NodeStore {
     fn decl_tparams(s: StmtId) -> List<string> {
         match self.stmt(s) {
             .FnDecl(_, tparams, _, _, _) -> [t.name.of for t in tparams],
-            .StructDecl(_, tparams, _) -> [t.of for t in tparams],
-            .NamedType(_, tparams, _) -> [t.of for t in tparams],
-            .EnumDecl(_, tparams, _) -> [t.of for t in tparams],
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .ExternFn(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> [],
+            .StructDecl(_, tparams, _) or .NamedType(_, tparams, _) or .EnumDecl(_, tparams, _) -> [t.of for t in tparams],
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _)
+                or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _)
+                or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _)
+                or .ExternFn(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> [],
         }
     }
 
@@ -143,9 +155,11 @@ impl NodeStore {
     /// slip in as a silent `false`.
     fn diverges(s: StmtId) -> bool {
         match self.stmt(s) {
-            .Return(_) -> true,
-            .Fail(_) -> true,
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> false,
+            .Return(_) or .Fail(_) -> true,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _)
+                or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _)
+                or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .LetElse(_, _, _)
+                or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> false,
         }
     }
 
@@ -201,10 +215,11 @@ impl NodeStore {
     /// records and enums share the ONE type namespace.
     fn type_decl_name(s: StmtId) -> string? {
         match self.stmt(s) {
-            .StructDecl(name, _, _) -> name.of,
-            .NamedType(name, _, _) -> name.of,
-            .EnumDecl(name, _, _) -> name.of,
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> null,
+            .StructDecl(name, _, _) or .NamedType(name, _, _) or .EnumDecl(name, _, _) -> name.of,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _)
+                or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _)
+                or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_)
+                or .LetElse(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> null,
         }
     }
 

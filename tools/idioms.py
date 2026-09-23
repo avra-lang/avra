@@ -216,7 +216,8 @@ def registry_catchall(lines):
         arms, catch = 0, False
         for j in range(i + 1, min(len(lines), i + 40)):
             s = lines[j]
-            if s.strip() == "}" and len(s) - len(s.lstrip()) == depth:
+            # the match's own close, a let-else's `} else {` included
+            if s.strip().startswith("}") and len(s) - len(s.lstrip()) == depth:
                 break
             # Only THIS match's arms count: a nested `when`'s own
             # catch-all sits deeper and is not this match's business.
@@ -825,6 +826,51 @@ def repeated_unwrap(lines):
 STRING_LEN_LOOP = re.compile(
     r"while [^{]*\b(s|src|a|b|text|name|source)\.length\b")
 
+RAW_RT_CALL = re.compile(r'Ins\.CallRt(?:Void)?\(.*"avra_')
+
+def raw_rt_call(lines):
+    """A runtime row named by a bare string — `Ins.CallRt(dst,
+    "avra_x", args)` — instead of through its generated method
+    (`cx.x(sh, args)`, features/rt.av, from core/rt_namespace.av). A
+    row's method carries the row's own arity in its signature, so a
+    misspelled row is the ordinary "no method" refusal at typing and
+    a wrong seat count the ordinary fn-arity refusal; a bare string
+    reopens both holes a typo can hide behind. `features/emit.av`
+    speaks the one door (`call`/`call_at`/`call_void`) every
+    generated method calls through, and two sites still spell the
+    string by design: `compiler/suite_entry.av` builds the TEST
+    BINARY's entry from its own separate row table (not `rt_sigs()`,
+    a different builder), and `compiler/memory/memory.av` rewrites an
+    ALREADY-LOWERED instruction's string field (the owned-twin
+    substitution) — neither reads a row through `LowerCx` (I58)."""
+    if CURRENT["path"].endswith((
+        "features/emit.av", "compiler/suite_entry.av", "compiler/memory/memory.av",
+    )):
+        return
+    for i, l in enumerate(lines):
+        if RAW_RT_CALL.search(l):
+            yield i, l.strip()
+
+ARM_LINE = re.compile(r"^(\s*)(\.[A-Z]\w*.*?)\s->\s(.+?),?\s*$")
+
+def one_body_arms(lines):
+    """Two ADJACENT variant arms answering ONE body are one arm: an
+    `or` joins their patterns, and since the alternatives may bind
+    (every one binding the same names at the same types, F2039's law),
+    `.Struct(d, _) -> d` and `.Enum(d, _) -> d` are `.Struct(d, _) or
+    .Enum(d, _) -> d`. Single-line arms only — a block body is a
+    different sentence each time. A pair whose names bind at
+    DIFFERENT types (`.F(v)`, a float, beside `.B(v)`, a bool) cannot
+    join and is licensed at the site (I59)."""
+    for i in range(1, len(lines)):
+        a, b = ARM_LINE.match(lines[i - 1]), ARM_LINE.match(lines[i])
+        if not a or not b or a.group(1) != b.group(1):
+            continue
+        body = a.group(3)
+        if body.endswith("{") or body != b.group(3):
+            continue
+        yield i, lines[i].strip()
+
 COMMA_LIST = re.compile(r'\(\s*","[^()]*\)\*')
 
 def comma_list_open(lines):
@@ -930,6 +976,14 @@ RULES = {
             "a `mut` nothing mutates — say `let`"),
     "I38": (comma_list_open,
             "a grammar comma list with no trailing-comma option — `( \",\" x )*` ends `\",\"?`"),
+    "I59": (one_body_arms,
+            "two adjacent arms answer one body — join their patterns with `or`; the "
+            "alternatives may bind, each binding the same names at the same types"),
+    "I58": (raw_rt_call,
+            "a runtime row named by a bare string — `Ins.CallRt(dst, \"avra_x\", args)` — "
+            "where a generated method carries the row (`cx.x(sh, args)`, features/rt.av); "
+            "a misspelled row or a wrong seat count then refuses at typing instead of "
+            "waiting for a typo nothing catches"),
     "I26": (repeated_unwrap,
             "one nullable local forced open 3+ times — guard once, bind once, "
             "and read the name"),
@@ -1107,6 +1161,26 @@ UNRATCHETED = {
 # below now reads its own source for a table defined twice, as it
 # already does for a number claimed twice.
 CLEAN = {
+    "I59": [["        .Struct(d, _) or .Enum(d, _) -> d,",
+             "        .Var(_, _, n) -> n,"],
+            ["        .A(x) -> {",
+             "        .B(x) -> {"]],
+    # a let-else's match ends at `} else {`, and the scan must stop there
+    # rather than count the next fn's projection as this match's arms
+    "I22": [["    fn f() -> int? {",
+             "        let at? = match v {",
+             "            .I(j) -> j,",
+             "            rest -> null,",
+             "        } else { return null }",
+             "        at",
+             "    }",
+             "",
+             "    fn g(v: V) -> int {",
+             "        match v {",
+             "            .A(x) -> x,",
+             "            _ -> 0,",
+             "        }",
+             "    }"]],
     "I20": [
         ['        then "k" {', '            a.report().contains("x") && a.diagnostics.length == 1'],
         ['        then "k" {', '            a.report().contains("x") && a.voices.length == 1'],
@@ -1172,6 +1246,9 @@ CLEAN = {
     "I48": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
+    "I58": [['    cx.array_sized(sh, size)'],
+            ['    self.array_push(box, v)'],
+            ['        cx.map_get(sh, m, k)']],
 }
 
 SPECIMENS = {
@@ -1252,6 +1329,13 @@ SPECIMENS = {
     "I39": [["export fn open_region(mut cx: LowerCx, cond: Reg) {"],
             ["fn sig(ws: Workspace, d: DeclId) -> FnSig? {"],
             ["fn fields_zipped(b: Builder, fs: List<Token>) -> Result<List<Param>, string> {"]],
+    "I59": [["        .Struct(d, _) -> d,",
+             "        .Enum(d, _) -> d,"],
+            ["            .Ok(.Eof) -> false,",
+             "            .Ok(.Pending) -> false,"]],
+    "I58": [['    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))'],
+            ['    self.emit(Ins.CallRtVoid("avra_array_push", [box, v]))'],
+            ['        cx.emit(Ins.CallRt(got, "avra_map_get", [m, k]))']],
     "I43": [["    mut walked: List<bool> = filled(view.store.exprs.count(), false)"],
             ["        of_expr: filled<TypeId>(store.exprs.count(), hole),"]],
 }

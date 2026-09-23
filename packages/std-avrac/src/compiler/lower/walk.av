@@ -5,7 +5,7 @@
 //! printed answer.
 use core.{StmtId, ExprId, TypeId, Type, Reg, Ins, Level, DeclId, Arrow, reversed}
 use diagnostics.{Diag, refusal}
-use features.{LowerCx, Deferred, semantics_of, stmt_semantics_of}
+use features.{LowerCx, Deferred, Deferral, semantics_of, stmt_semantics_of}
 
 impl LowerCx {
     /// One subtree's register, lowered at first request and
@@ -58,9 +58,7 @@ impl LowerCx {
     /// `Shape` reads its tags through.
     mut fn fixed(into: TypeId, r: Reg) -> Reg {
         let size = self.box_size(2)
-        let dst = self.mint_ty(into)
-        self.tagged_value(dst, size, self.fix_rewrite_tag(into), [r])
-        dst
+        self.tagged_value(self.view.types.shape_of(into), size, self.fix_rewrite_tag(into), [r])
     }
 
     fn fix_rewrite_tag(into: TypeId) -> int {
@@ -91,8 +89,7 @@ impl LowerCx {
             self.defect("a dyn lift from an unnamed shape survived typing")
             return r
         }
-        let dst = self.out.mint_ty(into)
-        self.out.give(Ins.CallRt(dst, "avra_array_new", []))
+        let dst = self.array_new(self.view.decls.types.shape_of(into))
         self.push_slot(dst, r)
         for mn in self.view.decls.trait_method_names(tdecl!) {
             let m: DeclId? = self.view.decls.method(target!, mn)
@@ -110,9 +107,10 @@ impl LowerCx {
     /// The lifted value's declared name — whose impl the box carries.
     fn boxed_decl(r: Reg) -> DeclId? {
         match self.view.decls.types.shape_of(self.out.reg_types[r.index]) {
-            .Struct(d, _) -> d,
-            .Enum(d, _) -> d,
-            .Int or .Float or .Bytes or .Ptr or .Str or .Bool or .List(_) or .Cell(_) or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+            .Struct(d, _) or .Enum(d, _) -> d,
+            .Int or .Float or .Bytes or .Ptr or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Opt(_) or .Null
+                or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _)
+                or .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
     }
 
@@ -124,15 +122,27 @@ impl LowerCx {
     mut fn once_body(symbol: string, root: ExprId, answer: TypeId) -> Reg {
         let key = self.mint_shape(Type.Str)
         self.emit(Ins.ConstStr(key, symbol))
+        if self.view.types.carried(answer) != null { return self.once_boxed(key, root, answer) }
         // the cache answers `T?` — under the niche the nullable IS
         // the pointer, so the guard is the presence protocol and the
         // present arm's carry is identity
         let maybe = self.view.decls.types.type(answer?)
-        let held = self.mint_ty(maybe)
-        self.emit(Ins.CallRt(held, "avra_once_get", [key]))
+        let held = self.once_get(self.view.decls.types.shape_of(maybe), key)
         self.region_as(self.presence_of(held, maybe), answer) { cx -> cx.carried_of(held, maybe) } else { cx ->
             let made = cx.reg_of(root)
-            cx.emit(Ins.CallRtVoid("avra_once_set", [key, made]))
+            cx.once_set(key, made)
+            made
+        }
+    }
+
+    /// A NULLABLE answer's null is an answer, so the cache holds it in a
+    /// one-cell list and the cache's own null means only "not yet".
+    mut fn once_boxed(key: Reg, root: ExprId, answer: TypeId) -> Reg {
+        let maybe = self.view.decls.types.type(List<answer>?)
+        let held = self.once_get(self.view.decls.types.shape_of(maybe), key)
+        self.region_as(self.presence_of(held, maybe), answer) { cx -> cx.slot_read(cx.carried_of(held, maybe), 0, answer) } else { cx ->
+            let made = cx.reg_of(root)
+            cx.once_set(key, cx.one_cell(made, answer))
             made
         }
     }
@@ -144,7 +154,19 @@ impl LowerCx {
         for s in stmts {
             let r: Reg? = stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).lower_stmt(self, s)
             if r != null && self.body.slot_of(s) == null { self.body.set_slot(s, r!) }
+            self.owns_tasks(s, r)
         }
+    }
+
+    /// A TASK IS JOINED WHERE ITS LAST OWNER ENDS: a statement holding a
+    /// task, or a list of them, joins them as its frame closes — a
+    /// binding through its slot, a dropped value through its register.
+    mut fn owns_tasks(s: StmtId, r: Reg?) {
+        let v? = self.view.store.owned_value(s) else { return }
+        if !self.view.decls.types.owns_tasks(self.type_at(v)) { return }
+        let slot = self.body.slot_of(s)
+        let owner? = slot ?? r else { return }
+        self.deferred.push(Deferred { work: Deferral.Settle(owner, slot != null && self.body.is_boxed(s)), depth: self.depth, on_error: false })
     }
 
     /// The program's answer, shown — printing IS lowering: the text
@@ -157,28 +179,25 @@ impl LowerCx {
         // `UserId` prints as its number.
         let sh = self.view.decls.types.seen_shape(self.out.reg_types[last.index])
         let unprintable: string? = match sh {
-            .Struct(_, n) -> n,
-            .Enum(_, n) -> n,
-            .Res(_, _) -> self.view.decls.types.name_of(self.out.reg_types[last.index]),
-            .App(_, _, _) -> self.view.decls.types.name_of(self.out.reg_types[last.index]),
-            .TypeName(_, n) -> n,
-            .Var(_, _, n) -> n,
+            .Struct(_, n) or .Enum(_, n) -> n,
+            .Res(_, _) or .App(_, _, _) -> self.view.decls.types.name_of(self.out.reg_types[last.index]),
+            .TypeName(_, n) or .Var(_, _, n) -> n,
             .EmptyList -> "[]",
-            .Opt(_) or .Cell(_) or .Null or .Dyn(_, _) or .Fn(_, _, _) or .Ptr or .Bytes -> self.view.decls.types.name_of(self.out.reg_types[last.index]),
+            .Opt(_) or .Cell(_) or .Task(_) or .Null or .Dyn(_, _) or .Fn(_, _, _) or .Ptr or .Bytes -> self.view.decls.types.name_of(self.out.reg_types[last.index]),
             .Int or .Float or .Str or .Bool or .List(_) or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
         if unprintable != null { return self.no_projection(unprintable!) }
         let text: Reg? = match sh {
             .Str -> last,
-            .Int -> self.text_call("avra_int_text", last),
-            .Float -> self.text_call("avra_float_text", last),
-            .Bool -> self.text_call("avra_bool_text", last),
-            .List(elem) -> self.text_call(self.list_text_callee(elem), last),
-            .Ptr or .Bytes or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) -> null,
-            .Opt(_) or .Null or .EmptyList -> null,
-            .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+            .Int -> self.int_text(Type.Str, last),
+            .Float -> self.float_text(Type.Str, last),
+            .Bool -> self.bool_text(Type.Str, last),
+            .List(elem) -> self.list_texted(elem, last),
+            .Ptr or .Bytes or .Cell(_) or .Task(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _)
+                or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _)
+                or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
-        if text != null { self.out.give(Ins.CallRtVoid("avra_puts", [text!])) }
+        if text != null { self.puts(text!) }
         null
     }
 
@@ -188,17 +207,11 @@ impl LowerCx {
         refusal("lower.no_projection", self.answer_loc(), "the program's answer is a `${tname}`, which has no text projection yet", "this is the answer", "project a field instead — `p.x` prints")
     }
 
-    mut fn text_call(callee: string, v: Reg) -> Reg {
-        let t = self.out.mint_ty(self.view.decls.types.type(string))
-        self.out.give(Ins.CallRt(t, callee, [v]))
-        t
-    }
-
     /// The runtime printer for a list, by its element shape.
-    fn list_text_callee(elem: TypeId) -> string {
-        if self.view.decls.types.shape_of(elem) is .Bool { return "avra_bools_text" }
-        if self.view.decls.types.shape_of(elem) is .Str { return "avra_strs_text" }
-        "avra_ints_text"
+    mut fn list_texted(elem: TypeId, v: Reg) -> Reg {
+        if self.view.decls.types.shape_of(elem) is .Bool { return self.bools_text(Type.Str, v) }
+        if self.view.decls.types.shape_of(elem) is .Str { return self.strs_text(Type.Str, v) }
+        self.ints_text(Type.Str, v)
     }
 
     /// A block is a scope: statements lower in order into it, and
@@ -296,7 +309,7 @@ impl LowerCx {
     /// A fn box to run when the scope ends — or, `on_error`, only
     /// when the fn fails.
     mut fn at_exit(box: Reg, on_error: bool) {
-        self.deferred.push(Deferred { box: box, depth: self.depth, on_error: on_error })
+        self.deferred.push(Deferred { work: Deferral.Call(box), depth: self.depth, on_error: on_error })
     }
 
     /// An early exit that ANSWERS `answer`: every open frame's
@@ -326,13 +339,28 @@ impl LowerCx {
     /// One deferred box called — the code address at slot 0, the
     /// box itself as the env seat, the answer dropped.
     mut fn run_deferred(d: Deferred) {
-        let held: Arrow? = self.view.types.arrow_parts(self.out.reg_types[d.box.index])
+        match d.work {
+            .Call(box) -> self.run_deferred_call(box),
+            .Settle(owner, cell) -> self.settle_owner(owner, cell),
+        }
+    }
+
+    /// An owner's tasks joined: the task, or each in its list — read out
+    /// of its cell first when the owner is a `mut` binding.
+    mut fn settle_owner(owner: Reg, cell: bool) {
+        let ty = self.out.reg_types[owner.index]
+        let held = if cell { self.loaded_as(ty, owner) } else { owner }
+        if self.view.types.owns_one_task(ty) { self.task_settle(held) } else { self.task_settle_all(held) }
+    }
+
+    mut fn run_deferred_call(box: Reg) {
+        let held: Arrow? = self.view.types.arrow_parts(self.out.reg_types[box.index])
         if held == null {
             self.defect("a deferred box without a fn type survived typing")
             return
         }
-        let fp = self.slot_read(d.box, 0, null)
+        let fp = self.slot_read(box, 0, null)
         let dst = self.out.mint_ty(held!.answer)
-        self.out.give(Ins.CallPtr(dst, fp, [d.box]))
+        self.out.give(Ins.CallPtr(dst, fp, [box]))
     }
 }

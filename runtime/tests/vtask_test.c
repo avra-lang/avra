@@ -1,0 +1,131 @@
+// The evaluator's tasks: the SAME policy as a compiled program's,
+// driven the way the evaluator drives it — so one scenario, run as
+// fibers and as virtual tasks, interleaves alike.
+#include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/wait.h>
+#include <time.h>
+#include <unistd.h>
+
+#include "../avra_box.h"
+#include "../avra_fiber.h"
+#include "../avra_runtime.h"
+
+static int g_checks = 0;
+static int g_fails = 0;
+#define CHECK(cond, what) do { g_checks++; if (!(cond)) { g_fails++; fprintf(stderr, "vtask_test: FAILED %s (%s:%d)\n", what, __FILE__, __LINE__); } } while (0)
+
+static char g_log[128];
+static int g_log_len = 0;
+static void note(char c) { if (g_log_len < 127) g_log[g_log_len++] = c; g_log[g_log_len] = 0; }
+
+// ── one scenario: three tasks, each noting its name, yielding, noting
+// again; the second sleeps between. Written twice, once per engine. ──
+
+// as fibers
+typedef void* (*Code)(void*);
+static void* closure(Code code, int64_t cap) {
+    void* box = avra_array_sized(2);
+    avra_array_push(box, (int64_t)(uintptr_t)code);
+    avra_array_push(box, cap);
+    return box;
+}
+static void* fiber_body(void* self) {
+    char name = (char)((AvraArray*)self)->data[1];
+    note(name);
+    avra_fiber_yield();
+    if (name == 'b') avra_fiber_sleep(5);
+    note(name);
+    return NULL;
+}
+static void as_fibers(void) {
+    void* t[3];
+    for (int i = 0; i < 3; i++) { void* b = closure(fiber_body, 'a' + i); t[i] = avra_task_spawn(b); avra_rc_release(b); }
+    for (int i = 0; i < 3; i++) { void* r = avra_task_join(t[i]); avra_rc_release(r); avra_rc_release(t[i]); }
+}
+
+// as the evaluator: each task a step machine, resumed by the policy
+typedef struct { int64_t id; char name; int step; } VTask;
+static void as_virtual(void) {
+    VTask ts[3];
+    for (int i = 0; i < 3; i++) { ts[i] = (VTask){ avra_vtask_new(), (char)('a' + i), 0 }; avra_vtask_ready(ts[i].id); }
+    int done = 0;
+    while (done < 3) {
+        int64_t id = avra_vtask_next();
+        VTask* v = NULL;
+        for (int i = 0; i < 3; i++) if (ts[i].id == id) v = &ts[i];
+        if (v->step == 0) { note(v->name); v->step = 1; avra_vtask_ready(id); continue; }       // note, yield
+        if (v->step == 1 && v->name == 'b') { v->step = 2; avra_vtask_sleep(id, 5); continue; }  // sleep
+        note(v->name);
+        v->step = 3;
+        done++;
+    }
+    for (int i = 0; i < 3; i++) avra_vtask_free(ts[i].id);
+}
+
+static void deadlocked(void) {
+    int64_t t = avra_vtask_new();   // filed nowhere: nothing ready, nothing to wait on
+    (void)t;
+    avra_vtask_next();
+}
+
+int main(void) {
+    // one scenario, both engines, one interleaving
+    g_log_len = 0; as_fibers();
+    char fibers[128]; strcpy(fibers, g_log);
+    g_log_len = 0; as_virtual();
+    CHECK(strcmp(fibers, "abcacb") == 0, "the fibers interleave as the policy says");
+    CHECK(strcmp(fibers, g_log) == 0, "virtual tasks interleave exactly as fibers do");
+
+    // a virtual park on a pipe wakes on a write, and a silent one times out
+    int p[2];
+    if (pipe(p) != 0) return 1;
+    fcntl(p[0], F_SETFL, O_NONBLOCK);
+    int64_t r = avra_vtask_new(), s = avra_vtask_new();
+    CHECK(avra_vtask_park_fd(r, p[0], 0, -1) == 1, "a virtual task parks on a pipe");
+    avra_vtask_sleep(s, 2);
+    CHECK(avra_vtask_next() == s, "the sleeper wakes while the reader still waits");
+    CHECK(write(p[1], "x", 1) == 1, "a byte written");
+    CHECK(avra_vtask_next() == r && !avra_vtask_timed_out(r), "the reader wakes on the byte");
+    CHECK(avra_vtask_park_fd(r, p[0], 0, 5) == 1, "parked again, with a deadline, on a pipe with a byte");
+    CHECK(avra_vtask_next() == r, "a readable pipe answers at once");
+    char c; CHECK(read(p[0], &c, 1) == 1, "the byte is there");
+    CHECK(avra_vtask_park_fd(r, p[0], 0, 5) == 1, "parked on a silent pipe with a deadline");
+    CHECK(avra_vtask_next() == r && avra_vtask_timed_out(r), "the deadline wakes it, timed out");
+    CHECK(avra_vtask_park_fd(r, 987654, 0, -1) == 0, "a descriptor nobody holds is ready at once");
+    CHECK(avra_vtask_next() == r, "and the task runs, for its read to say why");
+    avra_vtask_free(r); avra_vtask_free(s);
+    close(p[0]); close(p[1]);
+
+    // a task freed while filed anywhere leaves nothing behind
+    if (pipe(p) != 0) return 1;
+    fcntl(p[0], F_SETFL, O_NONBLOCK);
+    int64_t parked = avra_vtask_new(), readied = avra_vtask_new(), timed = avra_vtask_new(), last = avra_vtask_new();
+    avra_vtask_park_fd(parked, p[0], 0, 1000);
+    avra_vtask_ready(readied);
+    avra_vtask_sleep(timed, 1000);
+    avra_vtask_free(parked); avra_vtask_free(readied); avra_vtask_free(timed);
+    CHECK(write(p[1], "y", 1) == 1, "a byte for a reader that is gone");
+    avra_vtask_sleep(last, 3);
+    CHECK(avra_vtask_next() == last, "the freed tasks are nowhere — the next is the one still filed");
+    avra_vtask_free(last);
+    close(p[0]); close(p[1]);
+
+    // nothing ready and nothing to wait on: the policy's deadlock, in a child
+    int out[2];
+    if (pipe(out) != 0) return 1;
+    pid_t pid = fork();
+    if (pid == 0) { dup2(out[1], 2); close(out[0]); alarm(60); deadlocked(); _exit(0); }
+    close(out[1]);
+    char buf[256] = {0};
+    size_t got = 0;
+    for (ssize_t n; got < sizeof buf - 1 && (n = read(out[0], buf + got, sizeof buf - 1 - got)) > 0;) got += (size_t)n;
+    int status = 0;
+    waitpid(pid, &status, 0);
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2 && strstr(buf, "every task is waiting — deadlock"), "a virtual deadlock is the policy's trap");
+
+    printf("vtasks: %d checks, %d failed\n", g_checks, g_fails);
+    return g_fails ? 1 : 0;
+}

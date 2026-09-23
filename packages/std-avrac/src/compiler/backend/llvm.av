@@ -236,10 +236,25 @@ fn emit_box(lc: ptr, m: ptr, name: string, st: Static, b: StaticBox) {
 /// A slot array laid out whole; answers its payload's address.
 fn static_array(lc: ptr, m: ptr, name: string, st: Static, cells: List<Slot>) -> ptr {
     let arr = avra_llvm_value_array_new(cells.length)
-    for j, c in cells { avra_llvm_value_array_set(arr, j, slot_value(lc, m, st, c)) }
-    let payload = avra_llvm_static_array(m, name, arr, cells.length)
+    let marks = avra_llvm_value_array_new(cells.length)
+    for j, c in cells {
+        avra_llvm_value_array_set(arr, j, slot_value(lc, m, st, c))
+        avra_llvm_value_array_set(marks, j, avra_llvm_const_int(avra_llvm_int8_type(lc), slot_mark(c), 0))
+    }
+    let payload = avra_llvm_static_array(m, name, arr, marks, cells.length)
     avra_llvm_value_array_free(arr)
+    avra_llvm_value_array_free(marks)
     payload
+}
+
+/// A cell's mark (runtime/avra_box.h): owned for a pointer the layout
+/// holds, absent for a nullable scalar that is not there.
+fn slot_mark(c: Slot) -> int {
+    match c {
+        .Text(_) or .Box(_) or .Null -> 1,
+        .Absent -> 2,
+        .Int(_) or .Float(_) or .Bool(_) -> 0,
+    }
 }
 
 /// A slot's constant: a word as the i64 a cell holds, a pointer as
@@ -252,6 +267,7 @@ fn slot_value(lc: ptr, m: ptr, st: Static, c: Slot) -> ptr {
         .Text(s) -> avra_llvm_global_text(m, s.bytes(), s.length, ".str"),
         .Box(at) -> avra_llvm_global_payload(m, box_name(st, at)),
         .Null -> avra_llvm_const_pointer_null(avra_llvm_pointer_type(lc)),
+        .Absent -> avra_llvm_const_int(avra_llvm_int64_type(lc), 0, 0),
     }
 }
 
@@ -412,8 +428,8 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         .Int or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> avra_llvm_int64_type(lc),
         .Bool -> avra_llvm_int1_type(lc),
         .Opt(inner) -> opt_ll_type(lc, types, inner),
-        .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _) or
-        .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> avra_llvm_pointer_type(lc),
+        .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _)
+            or .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> avra_llvm_pointer_type(lc),
     }
 }
 

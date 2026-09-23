@@ -5,9 +5,12 @@
 #   build/llvm_wrapper.o  OURS — backend/llvm_wrapper.c, the
 #                         compiler's LLVM binding; new builders are
 #                         added there, never hunted for upstream.
-#   build/avra_runtime.o  OURS — runtime/avra_runtime.c, the native
-#                         half of the LANGUAGE's semantics; the only
-#                         runtime avra-built programs link.
+#   build/libavra_runtime.a  OURS — runtime/*.c, the native half of
+#                         the LANGUAGE's semantics, one object per
+#                         file; the only runtime avra-built programs
+#                         link. A LIBRARY, so a program links only the
+#                         objects it reaches: one that never spawns
+#                         carries no scheduler.
 #   build/<stem>.o        A PACKAGE'S — its C under src/c/, or a
 #                         vendored unit under vendor/, named by its
 #                         manifest's [link].
@@ -22,7 +25,9 @@ export LLVM_PREFIX
 # carries, and the compiler's own foreign machinery (the LLVM wrapper,
 # the evaluator's extern trampoline), which no user program does. The
 # name says COMPILER because that is what it is — a user's binary
-# links build/avra_runtime.o and nothing else here.
+# links build/libavra_runtime.a and nothing else here. The compiler
+# links every runtime OBJECT whole, since the evaluator hosts every
+# row whether or not the compiler's own code calls it.
 #
 # ONE LIST, NOT TWO. The bootstrap's clang line spells its inputs, and
 # spelling them twice is a law waiting to disagree with itself: the
@@ -101,7 +106,12 @@ TREE_STEM_LAW = $(if $(TREE_CLASH),$(error A STEM NAMES ITS OBJECT, \
 # open a file cannot compile the tree it was built for — so a package
 # object in the compiler's own closure is BOTH a package object and a
 # compiler one, and belongs here the day its package lands.
-COMPILER_OBJS = $(TREE_STEM_LAW)build/avra_runtime.o build/llvm_wrapper.o \
+# The runtime's objects are GLOBBED, one per runtime/*.c, so a new
+# runtime file joins the library without a line here.
+RUNTIME_OBJS = $(patsubst runtime/%.c,build/%.o,$(wildcard runtime/*.c))
+RUNTIME_LIB = build/libavra_runtime.a
+
+COMPILER_OBJS = $(TREE_STEM_LAW)$(RUNTIME_OBJS) $(RUNTIME_LIB) build/llvm_wrapper.o \
                 build/ffi.o build/std_io.o build/std_process.o
 
 # PACKAGE_OBJS is every object a package's `[link]` row names — what a
@@ -115,6 +125,7 @@ PACKAGE_OBJS = $(TREE_STEM_LAW)$(sort $(foreach o,$(shell sed -n \
 # vendored amalgamation takes its author's whole flag set, which its
 # own suite asks the LIBRARY to confirm.
 CFLAGS_llvm_wrapper := -I$(LLVM_PREFIX)/include
+CFLAGS_ffi := -Iruntime
 CFLAGS_sqlite3 = $(SQLITE_FLAGS)
 CFLAGS_sqlite_sentinel := -Ipackages/std-sqlite/vendor
 
@@ -123,11 +134,22 @@ CFLAGS_sqlite_sentinel := -Ipackages/std-sqlite/vendor
 # includes it — without this a package that grows a header links a
 # stale object and the defect is attributed to the compiler. The
 # include is silent on a cold tree, where no .d exists yet.
+# A FRAME NEVER SKIPS A GUARD: code that may run on a task's stack
+# probes a frame wider than a page, a page at a time. Apple's clang
+# does so by default (___chkstk_darwin); elsewhere it is asked for.
+STACK_PROBES := $(if $(filter Darwin,$(shell uname -s)),,-fstack-clash-protection)
+
 build/%.o: %.c build/%.sha
 	@mkdir -p build
-	cc -c -O2 -fPIC -MMD -MP $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
+	cc -c -O2 -fPIC -MMD -MP $(STACK_PROBES) $(if $(findstring /vendor/,$<),,-Wall -Werror) $(CFLAGS_$*) -o $@ $<
 
--include $(patsubst %.o,%.d,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS)))
+-include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS))))
+
+# The library is REBUILT WHOLE from its objects, never updated in
+# place: a member dropped from runtime/ must not linger in it.
+$(RUNTIME_LIB): $(RUNTIME_OBJS)
+	@rm -f $@
+	@ar rcs $@ $^
 
 # Every package that carries tests, in dependency order — DERIVED from
 # the manifests (tools/suites.py), never listed: a hand-kept list is a
@@ -135,7 +157,7 @@ build/%.o: %.c build/%.sha
 # green over a suite it never ran. `suites` is the keeper that speaks.
 SUITES := $(shell python3 tools/suites.py 2>/dev/null)
 
-.PHONY: census traps cache-attacks test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header witnesses libs libscope \
+.PHONY: census traps runtime-tests cache-attacks test tested clean seed-check gate externs idioms cited idioms-accept bench fuzz scaffold-check vocab stems sweep seed recover bootstrap rt-header rt-ns witnesses libs libscope \
         check run ir emit build-native native-check avra suites install sprite sprite-check
 # THE COMPILER, BUILT BY ITSELF: the binary in build/ compiles the
 # tree into the next one. `./avra` prefers it and bootstraps a cold
@@ -213,7 +235,7 @@ PREFIX ?= /usr/local
 install: avra
 	@mkdir -p $(PREFIX)/bin $(PREFIX)/lib/avra/std
 	@cp build/avra $(PREFIX)/bin/avra
-	@cp build/avra_runtime.o $(PREFIX)/lib/avra/avra_runtime.o
+	@cp $(RUNTIME_LIB) $(PREFIX)/lib/avra/libavra_runtime.a
 	@for p in packages/std-*; do rm -rf $(PREFIX)/lib/avra/std/$$(basename $$p); cp -R $$p $(PREFIX)/lib/avra/std/; done
 	@echo "install: $(PREFIX)/bin/avra, $$(ls -d packages/std-* | wc -l | tr -d ' ') std packages under $(PREFIX)/lib/avra/std"
 
@@ -278,8 +300,10 @@ FORCE:
 # it; an object whose behaviour changes with a HEADER names that
 # header too, so a stash-and-rebuild inside one second still rebuilds
 # it instead of trusting a mtime.
-build/runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h
+build/avra_runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h
+build/avra_fiber.sha: SHA_SRC := runtime/avra_fiber.c runtime/avra_box.h runtime/avra_fiber.h runtime/avra_runtime.h
 build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c runtime/avra_box.h
+build/ffi.sha: SHA_SRC := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
 
 build/%.sha: %.c FORCE
 	@mkdir -p build
@@ -287,6 +311,17 @@ build/%.sha: %.c FORCE
 	@cmp -s $@.tmp $@ 2>/dev/null || mv $@.tmp $@
 	@rm -f $@.tmp
 
+
+# THE RUNTIME'S OWN TESTS: C programs under runtime/tests/, each linked
+# against the runtime's objects and run, for what no Avra program can
+# reach yet — a row the language does not spell. GLOBBED, so a new test
+# file runs without a line here.
+RUNTIME_TESTS = $(patsubst runtime/tests/%.c,build/runtime-tests/%,$(wildcard runtime/tests/*.c))
+build/runtime-tests/%: runtime/tests/%.c $(RUNTIME_OBJS)
+	@mkdir -p build/runtime-tests
+	@cc -O2 -Wall -Werror -o $@ $< $(RUNTIME_OBJS)
+runtime-tests: $(RUNTIME_TESTS)
+	@for t in $(RUNTIME_TESTS); do $$t || exit 1; done
 
 # The runtime's trap contract: the words and the verdict (exit 2).
 # No program test can hold it — a suite runs every program in
@@ -446,6 +481,22 @@ rt-header:
 	  diff runtime/avra_rt.h build/avra_rt.h.gen 2>/dev/null | head -20; exit 1; }
 	@echo "rt-header: $$(grep -c '^_Static_assert' runtime/avra_rt.h) row(s) claim a C body, checked by the C compiler that builds the runtime"
 
+# THE ROWS' CLAIM ON AVRA ITSELF. features/rt.av is generated from
+# `rt_sigs()` — one `LowerCx` method per row, so a feature spells a
+# typed call (`cx.str_of_bytes(sh, octets)`) instead of
+# `Ins.CallRt(dst, "avra_str_of_bytes", [octets])`. A misspelled row
+# is then the ordinary "no method" refusal at typing, and a wrong
+# seat count the ordinary fn-arity refusal — each row's OWN method IS
+# the check, so this keeper only guards the projection: a stale
+# namespace asserts the OLD rows and says nothing about the new ones.
+rt-ns:
+	@./avra runtime-namespace > build/rt.av.gen
+	@cmp -s build/rt.av.gen packages/std-avrac/src/features/rt.av || { \
+	  echo "rt-ns: packages/std-avrac/src/features/rt.av is not what the rows say — it is generated, never edited:"; \
+	  echo "rt-ns:   ./avra runtime-namespace > packages/std-avrac/src/features/rt.av"; \
+	  diff packages/std-avrac/src/features/rt.av build/rt.av.gen 2>/dev/null | head -20; exit 1; }
+	@echo "rt-ns: $$(grep -c '^    mut fn ' packages/std-avrac/src/features/rt.av) row(s) reach a typed LowerCx method, checked by the compiler that builds itself"
+
 # EVERY REGISTERED CODE'S GOLDEN IS THE COMPILER OVER ITS WITNESS.
 # docs/DIAGNOSTICS.md is made by `avra diagnostics` — each entry is a
 # source that triggers the code and the compiler's own words over it —
@@ -546,7 +597,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here exactly as sprite-build.sh's call does.
-gate: seed-check stems vocab fingerprints rt-header witnesses externs idioms cited attack tested traps witness cache-attacks
+gate: seed-check stems vocab fingerprints rt-header rt-ns witnesses externs idioms cited attack tested runtime-tests traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
 	@sh tools/gate_receipt.sh write || true

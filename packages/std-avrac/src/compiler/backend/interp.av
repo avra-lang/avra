@@ -9,7 +9,8 @@
 //! plus depth-matched skips (regions — two-arm ifs and N-arm
 //! switches alike — and loop back edges). Values
 //! are a tiny closed enum; arrays, mut cells, and register frames
-//! live in machine tables addressed by handle.
+//! live in machine tables addressed by handle, and calls run on the
+//! machine's own stack, never the host's.
 use core.{copied, Ins, Reg, BinOp, UnOp, RtSig, RtKind, Reach, opens_region, closes_region, filled, joined, reversed, rt_index, hosted_symbol, fp, fp_list, fp_str, StaticBox, Slot, debug}
 use @std.path.{joined_path}
 use features.{Unsettled, Settled, MetaVal, MetaHeap, new_meta_heap, Lifted, nothing, Budgets}
@@ -41,6 +42,10 @@ enum Val {
     M(id: int)
     /// The null pointer — a niche nullable's absence.
     N
+    /// A slot under the runtime's absent mark: a nullable scalar's (or
+    /// a nullable nullable's) absence, apart from a present null. Read
+    /// out of its slot it is the null pointer, as the runtime's word is.
+    Gone
 }
 
 /// The machine: the program, its heaps, the register frame stack
@@ -52,6 +57,15 @@ type Machine = {
     // evaluator asks per runtime call executed
     rt: Map<string, RtSig>,
     frames: List<List<Val?>>,
+    // THE MACHINE'S OWN CALL STACK: where each caller resumes, one
+    // entry per frame below the innermost. Calls never recurse on the
+    // host's stack, so depth is the machine's to bound.
+    callers: List<Resume>,
+    // every interpreted task, the program's own first once any spawns;
+    // the one running; and whether a row just parked it
+    tasks: List<Job>,
+    running: int,
+    parking: bool,
     arrays: List<List<Val>>,
     maps: List<MapVal>,
     cells: List<Val>,
@@ -60,6 +74,9 @@ type Machine = {
     // a static's value, built once per run under its name
     statics: Map<string, Val>,
     out: List<string>,
+    // LIVE: a printed line goes to stdout as it is printed, as a
+    // native program's does; otherwise it is captured in `out`
+    live: bool,
     failures: List<string>,
     // BOXES MINTED FOR A CROSSING, HELD UNTIL IT RETURNS. The frame
     // stashes a raw pointer; a box materialised only to be staged has
@@ -95,6 +112,25 @@ type Machine = {
     embeds: List<string>,
 }
 
+/// A place in the program: a body and the instruction in it.
+type Place = { body: Body, pc: int }
+
+/// Where a caller resumes: its place — the call it waits on — and the
+/// register that call's answer fills.
+type Resume = { place: Place, dst: Reg }
+
+/// The caller waiting at `pc` in `body` for a call answering into `dst`.
+fn resumed_at(body: Body, pc: int, dst: Reg) -> Resume {
+    Resume { place: Place { body: body, pc: pc }, dst: dst }
+}
+
+/// What one step of the run loop did: carried on, or ended the body
+/// with what it answered.
+enum Stepped {
+    On
+    Ended(gave: Val?)
+}
+
 /// One package's library as the machine holds it: the package that
 /// owns it, and the handle — 0 when it did not open. THE TWO TRAVEL
 /// TOGETHER because both readers need both halves: the lookup asks
@@ -120,12 +156,28 @@ fn opened(stem: string) -> int {
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], failures: [], budget: unbudgeted, asked: unbudgeted, bytes: unbudgeted, mem_base: avra_mem_live(), mem_peak: 0, exhausted: null, base: null, embeds: [], staged: [], libs: opened_libraries(l), symbols: {} }
+    Machine { l: l, rt: rt_index(), frames: [], callers: [], tasks: [], running: -1, parking: false, arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], live: false, failures: [], budget: unbudgeted, asked: unbudgeted, bytes: unbudgeted, mem_base: avra_mem_live(), mem_peak: 0, exhausted: null, base: null, embeds: [], staged: [], libs: opened_libraries(l), symbols: {} }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
 export fn run_lowered(l: Lowered) -> Result<string, string> {
     .Ok(printed(ran(l, l.entry)?))
+}
+
+/// How a live run ended: clean, or by a trap in its words.
+export enum Ended {
+    Clean
+    Trapped(words: string)
+}
+
+/// Run a lowered program LIVE — what `avra run` is: every line printed
+/// as it is printed, so a program that never ends (a server) is heard,
+/// and a trap does not take the lines before it along.
+export fn run_live(l: Lowered) -> Ended {
+    mut m = fresh_machine(l) with { live: true }
+    let _ = m.run_body(l.entry, [])
+    let words? = m.failures.first() else { return Ended.Clean }
+    Ended.Trapped(words)
 }
 
 /// One PROGRAM of a programs binary, run in the evaluator: its body by
@@ -214,6 +266,7 @@ fn slot_val(c: Slot, built: List<Val>) -> Val {
         .Text(s) -> Val.S(s),
         .Box(at) -> built[at],
         .Null -> Val.N,
+        .Absent -> Val.Gone,
     }
 }
 
@@ -372,13 +425,11 @@ fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
 }
 
 
-/// The deepest call the machine runs before it refuses: the machine
-/// recurses on the host's stack, and a runaway recursion must answer
-/// as a trap naming its case, never as a crash of the run. The bound
-/// is what a test worker's thread stack holds with margin (its
-/// ceiling measured between 600 and 700 nested calls); a machine
-/// with a frame stack of its own lifts it.
-const call_limit: int = 400
+/// The deepest call the machine runs before it refuses. Calls live on
+/// the machine's own stack, so the bound is a runaway's, never the
+/// host's: a recursion past it answers as a trap naming its case
+/// rather than spending the machine's memory.
+const call_limit: int = 100000
 
 impl Machine {
     /// A value's structural identity, independent of its run's heap
@@ -395,45 +446,114 @@ impl Machine {
             .C(id) -> fp(7, [self.value_hash(self.cells[id])]),
             .M(id) -> fp(8, [fp_list([fp_str(k) for k in self.maps[id].keys]), fp_list([self.value_hash(x) for x in self.maps[id].vals])]),
             .N -> fp(9, []),
+            .Gone -> fp(11, []),
         }
     }
 
     /// One body under its argument values; params ARE registers 0..N-1.
-    /// The answer is RetVal's register, when one fires.
+    /// The answer is RetVal's register, when one fires. A call inside
+    /// runs on the machine's own stack — the caller's place saved, the
+    /// callee begun, its answer landing in the call's register when it
+    /// returns — so nothing recurses on the host.
     fn run_body(b: Body, args: List<Val> = []) -> Val? {
-        if self.frames.length >= call_limit {
-            self.trapped("recursion too deep — ${call_limit} nested calls")
-            return null
-        }
-        self.frames.push(filled<Val?>(b.reg_types.length, null))
-        for (j, a) in args.enumerate() { self.put(Reg { index: j }, a) }
+        let floor = self.callers.length
+        self.frames.push(self.frame_for(b, args))
+        mut body = b
+        mut pc = 0
         // LICENSED I4: the run loop's answer, not a scan
         mut answer: Val? = null
-        mut pc = 0
-        while pc < b.ins.length && self.failures.is_empty() {
+        mut going = true
+        while going && self.failures.is_empty() {
+            // where this step began: a row that parks re-runs here
+            let at = pc
             self.budget = self.budget - 1
             if self.budget % memory_stride == 0 { self.held_within() }
+            mut stepped = Stepped.On
             if self.budget < 0 { self.spent_out(over_budget(self.asked)) }
+            else if pc >= body.ins.length { stepped = Stepped.Ended(null) }
             // everything else DELEGATES to `step`, which is exhaustive
-            else { match b.ins[pc] {
-                .RetVal(r) -> {
-                    answer = self.at(r)
-                    pc = b.ins.length
+            else { match body.ins[pc] {
+                .RetVal(r) or .FnExit(r) -> { stepped = Stepped.Ended(self.at(r)) }
+                .Ret(_) -> { stepped = Stepped.Ended(null) }
+                .Call(d, callee, args) -> {
+                    let next = self.call_into(body_named(self.l, callee), resumed_at(body, pc, d), args, "a call without a body survived lowering")
+                    body = next.body
+                    pc = next.pc
                 }
-                .FnExit(r) -> {
-                    answer = self.at(r)
-                    pc = b.ins.length
+                .CallPtr(d, f, args) -> {
+                    let next = self.call_into(self.addressed(f), resumed_at(body, pc, d), args, "an indirect call through a non-address")
+                    body = next.body
+                    pc = next.pc
                 }
-                .Ret(_) -> {
-                    pc = b.ins.length
-                }
-                rest -> {
-                    pc = self.step(b, pc)
-                }
+                rest -> { pc = self.step(body, pc) }
             } }
+            if self.parking {
+                self.parking = false
+                let next = self.switched(Place { body: body, pc: at })
+                body = next.body
+                pc = next.pc
+            }
+            match stepped {
+                .On -> nothing(),
+                .Ended(gave) -> {
+                    let _ = self.frames.pop()
+                    if self.callers.length == floor && self.running > 0 {
+                        // a spawned task answered: the machine runs the next
+                        let next = self.finished(gave)
+                        body = next.body
+                        pc = next.pc
+                    } else if self.callers.length == floor {
+                        answer = gave
+                        going = false
+                    } else {
+                        let back = self.callers.pop()
+                        body = back.place.body
+                        pc = self.put_at(back.dst, gave ?? self.defect_val("a fn body answered nothing"), back.place.pc)
+                    }
+                },
+            }
         }
-        let _ = self.frames.pop()
+        self.unwound(floor)
+        self.retired()
         answer
+    }
+
+    /// Where the loop goes on a call: into the callee, its frame pushed
+    /// and the caller saved — or, when there is no callee, past the call
+    /// with the defect in its register.
+    fn call_into(target: Body?, caller: Resume, args: List<Reg>, missing: string) -> Place {
+        let callee? = target else { return Place { body: caller.place.body, pc: self.put_at(caller.dst, self.defect_val(missing), caller.place.pc) } }
+        if !self.entered(callee, args, caller) { return caller.place }
+        Place { body: callee, pc: 0 }
+    }
+
+    /// A body's register frame, its parameters filled.
+    fn frame_for(b: Body, args: List<Val>) -> List<Val?> {
+        mut regs = filled<Val?>(b.reg_types.length, null)
+        for j, a in args { regs.set(j, a) }
+        regs
+    }
+
+    /// A call begun on the machine's stack: its arguments read in the
+    /// caller's frame, the caller's place saved, the callee's frame
+    /// pushed. False when the depth is past the bound, which traps.
+    fn entered(target: Body, args: List<Reg>, caller: Resume) -> bool {
+        if self.callers.length >= call_limit {
+            self.trapped("recursion too deep — ${call_limit} nested calls")
+            return false
+        }
+        let vals = [self.value(r) for r in args]
+        self.callers.push(caller)
+        self.frames.push(self.frame_for(target, vals))
+        true
+    }
+
+    /// A stack a trap left mid-call dropped back to where this run began.
+    fn unwound(floor: int) {
+        while self.callers.length > floor {
+            let _ = self.callers.pop()
+            let _ = self.frames.pop()
+        }
     }
 
     fn step(b: Body, pc: int) -> int {
@@ -448,10 +568,8 @@ impl Machine {
             .Pack(d, elems) -> self.put_at(d, self.pack_val(b, d, elems), pc),
             .Extract(d, src, at) -> self.put_at(d, self.extract_val(b, src, at), pc),
             .CallRtVoid(callee, args) -> self.rt_void(callee, args, pc),
-            .Call(d, callee, args) -> self.put_at(d, self.call_val(callee, args), pc),
             .FnAddr(d, sym) -> self.put_at(d, self.fn_addr_val(sym), pc),
             .StaticAddr(d, sym) -> self.put_at(d, self.static_val(sym), pc),
-            .CallPtr(d, f, args) -> self.put_at(d, self.call_ptr_val(f, args), pc),
             .IfStart(c) -> if self.truth(c) { pc + 1 } else { b.past_else(pc) },
             .SwitchStart(sel, cases) -> b.arm_start(pc, self.chosen_arm(sel, cases)),
             .ArmEnd(gives) -> self.merge_then(b, gives, pc),
@@ -462,8 +580,12 @@ impl Machine {
             .Alloca(d) -> self.put_at(d, self.fresh_cell(), pc),
             .Load(d, slot) -> self.put_at(d, self.cell_read(slot), pc),
             .Store(slot, src) -> self.store_step(slot, src, pc),
-            .ScopeEnter(_) or .ScopeExit(_) or .Retain(_) or .Release(_) or
-            .RetVal(_) or .FnExit(_) or .Ret(_) -> pc + 1,
+            .ScopeEnter(_) or .ScopeExit(_) or .Retain(_) or .Release(_) -> pc + 1,
+            // the run loop owns calls and returns
+            .RetVal(_) or .FnExit(_) or .Ret(_) or .Call(_, _, _) or .CallPtr(_, _, _) -> {
+                let _ = self.defect_val("a call or a return reached `step`, which the run loop owns")
+                pc + 1
+            },
         }
     }
 
@@ -524,6 +646,7 @@ impl Machine {
             .Text(s) -> Val.S(s),
             .Bool(b) -> Val.B(b),
             .Absent -> Val.N,
+            .Gone -> Val.Gone,
             .Node(id) -> {
                 self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]])
             },
@@ -546,6 +669,7 @@ impl Machine {
             .S(s) -> MetaVal.Text(s),
             .Y(data) -> MetaVal.Text(self.decoded(data)),
             .N -> MetaVal.Absent,
+            .Gone -> MetaVal.Gone,
             .A(id) -> {
                 heap.node([self.meta_of(x, heap) for x in self.arrays[id]])
             },
@@ -575,6 +699,11 @@ impl Machine {
 
     fn trapped(msg: string) {
         self.failures.push(msg)
+    }
+
+    fn trapped_val(msg: string) -> Val {
+        self.trapped(msg)
+        Val.N
     }
 
     /// A register's value, which a clean program guarantees present.
@@ -612,7 +741,7 @@ impl Machine {
         match v {
             .S(s) -> s,
             .Y(data) -> self.decoded(data),
-            .I(_) or .F(_) or .B(_) or .A(_) or .M(_) or .C(_) or .N -> {
+            .I(_) or .F(_) or .B(_) or .A(_) or .M(_) or .C(_) or .N or .Gone -> {
                 self.defect("a non-string reached text")
                 ""
             }
@@ -835,32 +964,17 @@ impl Machine {
         }
     }
 
-    fn call_ptr_val(f: Reg, args: List<Reg>) -> Val {
-        let held: Val = self.value(f)
-        let idx: int? = match held {
+    /// The body a fn value's address names, or null.
+    fn addressed(f: Reg) -> Body? { self.addressed_val(self.value(f)) }
+
+    /// The body a code address names.
+    fn addressed_val(v: Val) -> Body? {
+        let at? = match v {
             .I(j) -> j,
-            _ -> null,
-        }
-        if idx == null { return self.non_address() }
-        let at = idx!
-        if at < 0 || at >= self.l.fns.length { return self.non_address() }
-        self.run_call(self.l.fns[at], args)
-    }
-
-    fn non_address() -> Val {
-        self.defect_val("an indirect call through a non-address")
-    }
-
-    fn call_val(callee: string, args: List<Reg>) -> Val {
-        let target? = body_named(self.l, callee) else { return self.defect_val("a call without a body survived lowering") }
-        self.run_call(target, args)
-    }
-
-    /// Both call shapes land here: arguments read, the body run, an
-    /// answerless body a defect.
-    fn run_call(target: Body, args: List<Reg>) -> Val {
-        let answer: Val? = self.run_body(target, [self.value(r) for r in args])
-        answer ?? self.defect_val("a fn body answered nothing")
+            rest -> null,
+        } else { return null }
+        if at < 0 || at >= self.l.fns.length { return null }
+        self.l.fns[at]
     }
 
     fn fresh_cell() -> Val {
@@ -897,7 +1011,7 @@ impl Machine {
             .Y(_) -> "<Bytes>",
             .C(_) -> "<cell>",
             .M(_) -> "<map>",
-            .N -> "null",
+            .N or .Gone -> "null",
         }
     }
 
@@ -934,8 +1048,7 @@ impl Machine {
     /// The registry's host column, hosted — exhaustive over RtHost, so
     /// a row with a new host demands its arm here.
     fn rt_dispatch(callee: string, vals: List<Val>) -> Val {
-        let sig: RtSig? = self.rt.get(callee)
-        if sig == null {
+        let row? = self.rt.get(callee) else {
             // THE ROW IS THE WITNESS, so the seam must keep it: asking
             // `any` threw away the very declaration the frame needs.
             let host: RtSig? = self.l.externs.find(it.name == callee)
@@ -948,9 +1061,8 @@ impl Machine {
         // native binary traps — the engines disagreeing about which
         // strings may cross, which is the one thing this check exists
         // to prevent.
-        self.crossings(sig!, vals)
-        let host = sig!.host
-        match host {
+        self.crossings(row, vals)
+        match row.host {
             .Puts -> self.puts_val(vals),
             .Streq -> self.streq_val(vals),
             .ArrayNew -> self.array_new_val(),
@@ -1016,9 +1128,26 @@ impl Machine {
             .Embed -> self.embedded(self.text_val(vals[0])),
             .StrFromCodepoint -> Val.S(avra_str_from_codepoint(self.whole(vals[0]))),
             .ExecSelf -> self.exec_self_val(vals),
+            .ArrayPushMaybe -> self.push_maybe_val(vals),
+            .MapSetMaybe -> self.map_set_maybe_val(vals),
+            .MapValuePresent -> self.map_value_present_val(vals),
+            .SlotSetMaybe -> self.set_maybe_val(vals),
+            .SlotPresent -> self.present_val(vals),
+            .ArrayLastPresent -> self.last_present_val(vals),
+            .TaskSpawn -> self.task_spawn_val(vals),
+            .TaskJoin -> self.task_join_val(vals),
+            .TaskDone -> self.task_done_val(vals),
+            .TaskSettle -> self.task_settle_val(vals),
+            .TaskSettleAll -> self.task_settle_all_val(vals),
+            .FiberYield -> self.fiber_yield_val(),
+            .FiberSleep -> self.fiber_sleep_val(vals),
+            .FiberParkFd -> self.fiber_park_fd_val(vals),
             .SpawnStatus -> self.spawn_status_val(vals),
             .SpawnIn -> self.spawn_in_val(vals),
-            .Unhosted -> self.defect_val("a runtime callee the interpreter does not host: `${callee}`"),
+            // no arm of its own: the row's C body, called by name through
+            // the uniform frame, the row its witness — the host holds
+            // every row (runtime/avra_rt.h), so the symbol is there
+            .Unhosted -> self.hosted_extern(row, callee, vals),
         }
     }
 
@@ -1116,7 +1245,7 @@ impl Machine {
         match v {
             .S(t) -> self.staged_text(at, t),
             .Y(_) -> self.stage_bytes(at, v),
-            .N -> self.staged_at(at, 0),
+            .N or .Gone -> self.staged_at(at, 0),
             .I(a) -> self.staged_at(at, a),
             .F(_) or .B(_) or .A(_) or .M(_) or .C(_) -> false,
         }
@@ -1131,7 +1260,7 @@ impl Machine {
     fn staged_cell(at: int, v: Val) -> bool {
         match v {
             .C(id) -> self.seeded(at, id),
-            .S(_) or .Y(_) or .N or .I(_) or .F(_) or .B(_) or .A(_) or .M(_) -> false,
+            .S(_) or .Y(_) or .N or .Gone or .I(_) or .F(_) or .B(_) or .A(_) or .M(_) -> false,
         }
     }
 
@@ -1179,7 +1308,7 @@ impl Machine {
     fn word_of(v: Val) -> int {
         match v {
             .B(b) if b -> 1,
-            .B(_) or .N -> 0,
+            .B(_) or .N or .Gone -> 0,
             rest -> self.whole(v),
         }
     }
@@ -1334,7 +1463,7 @@ impl Machine {
             self.trapped("pop on an empty list")
             return Val.I(0)
         }
-        self.arrays[id].pop()
+        read_out(self.arrays[id].pop())
     }
 
     fn array_concat_val(vals: List<Val>) -> Val {
@@ -1403,7 +1532,7 @@ impl Machine {
                 self.maps.push(MapVal { keys: [k for k in self.maps[id].keys], vals: [x for x in self.maps[id].vals] })
                 Val.M(self.maps.length - 1)
             }
-            .I(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N -> v,
+            .I(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N or .Gone -> v,
         }
     }
 
@@ -1422,7 +1551,7 @@ impl Machine {
     }
 
     fn map_has_val(vals: List<Val>) -> Val {
-        let id? = map_id(vals[0]) else { return self.defect_val("a lookup in a non-map") }
+        let id? = map_id(vals[0]) else { return self.unlooked() }
         Val.B(self.map_slot(id, self.text_val(vals[1])) >= 0)
     }
 
@@ -1434,7 +1563,7 @@ impl Machine {
     fn map_read(id: int, key: string) -> Val {
         let s = self.map_slot(id, key)
         if s < 0 { return Val.N }
-        self.maps[id].vals[s]
+        read_out(self.maps[id].vals[s])
     }
 
     fn map_set_val(vals: List<Val>) -> Val {
@@ -1498,6 +1627,63 @@ impl Machine {
         Val.I(0)
     }
 
+    // A NULLABLE IN A SLOT is its value, or `Gone` where the runtime
+    // sets its absent mark — each row the plain row over that value.
+    fn push_maybe_val(vals: List<Val>) -> Val {
+        self.array_push_val([vals[0], self.maybe(vals[1], vals[2])])
+    }
+
+    fn set_maybe_val(vals: List<Val>) -> Val {
+        self.slot_set_val([vals[0], vals[1], self.maybe(vals[2], vals[3])])
+    }
+
+    fn present_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return self.unread_presence() }
+        let at = self.whole(vals[1])
+        let n = self.arrays[id].length
+        if at < 0 || at >= n { return self.out_of_bounds(at, n) }
+        Val.I(if self.arrays[id][at] is .Gone { 0 } else { 1 })
+    }
+
+    fn last_present_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return self.unread_presence() }
+        let last? = self.arrays[id].last() else {
+            self.trapped("pop on an empty list")
+            return Val.I(0)
+        }
+        Val.I(if last is .Gone { 0 } else { 1 })
+    }
+
+    fn map_set_maybe_val(vals: List<Val>) -> Val {
+        self.map_set_val([vals[0], vals[1], self.maybe(vals[2], vals[3])])
+    }
+
+    fn map_value_present_val(vals: List<Val>) -> Val {
+        let id? = map_id(vals[0]) else { return self.unlooked() }
+        let s = self.map_slot(id, self.text_val(vals[1]))
+        Val.I(if s >= 0 && !(self.maps[id].vals[s] is .Gone) { 1 } else { 0 })
+    }
+
+    fn unread_presence() -> Val { self.defect_val("a presence read of a non-array") }
+
+    fn unlooked() -> Val { self.defect_val("a lookup in a non-map") }
+
+    fn maybe(present: Val, v: Val) -> Val {
+        if self.flag_of(present) { v } else { Val.Gone }
+    }
+
+    /// A row's flag seat, filled by a bool or by the word a bool widens to.
+    fn flag_of(v: Val) -> bool {
+        match v {
+            .B(b) -> b,
+            .I(n) -> n != 0,
+            .F(_) or .S(_) or .Y(_) or .A(_) or .C(_) or .M(_) or .N or .Gone -> {
+                self.defect("a flag seat held neither a bool nor a word")
+                false
+            },
+        }
+    }
+
     fn absent_refused() -> Val {
         self.trapped("unwrapped an absent value")
         Val.I(0)
@@ -1540,7 +1726,7 @@ impl Machine {
     fn slot_read_val(id: int, at: int) -> Val {
         let arr = self.arrays[id]
         if at < 0 || at >= arr.length { return self.out_of_bounds(at, arr.length) }
-        arr[at]
+        read_out(arr[at])
     }
 
     fn array_len_val(vals: List<Val>) -> Val {
@@ -1553,10 +1739,10 @@ impl Machine {
         Val.S(joined([self.text_val(e) for e in self.arrays[id]], self.text_val(vals[1])))
     }
 
-    /// One printed line lands in the machine's output.
+    /// One printed line: to stdout when live, else into the capture.
     fn puts_val(vals: List<Val>) -> Val {
         let line = self.text_val(vals[0])
-        self.out.push(line)
+        if self.live { avra_puts(line) } else { self.out.push(line) }
         Val.I(0)
     }
 
@@ -1647,3 +1833,8 @@ impl Machine {
     }
 }
 
+/// A slot's value as a register holds it: the absent mark reads as the
+/// null pointer, the word the runtime's slot holds under it.
+fn read_out(v: Val) -> Val {
+    if v is .Gone { Val.N } else { v }
+}

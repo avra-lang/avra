@@ -1,0 +1,151 @@
+//! THE `..` HANG: an ABSOLUTE path argument carrying a `..` segment made
+//! `check`/`build` (and, sharing the same route, `run`/`test`) spin
+//! forever inside `all_files`'s walk — `rooted()` skipped `normalized`
+//! for an absolute argument, so the segment survived into a lone file's
+//! in-memory host, whose string-prefix `under_dir` never converges on
+//! it. Every shape below answers a verdict inside a bound now, never
+//! silence — real subprocesses, bounded by an external deadline, since
+//! a hang here must never hang the suite that proves it is gone.
+use @std.io.{env, make_dirs, write_text}
+use @std.path.{file_name}
+use @std.process.{tool, cmd, Exit, ProcessError}
+use @std.time.{ms}
+
+/// The tree this suite runs in — the `avra` shim's own `cd`, inherited
+/// down through the suite's re-exec.
+fn tree_root() -> string {
+    env("PWD") ?? "."
+}
+
+fn avra_bin() -> string {
+    "${tree_root()}/avra"
+}
+
+fn scratch_dir() -> string {
+    "${tree_root()}/build/scratch"
+}
+
+/// A fresh, well-formed program under the tree's own scratch directory —
+/// every shape below is a different SPELLING of this same file's path.
+fn fixture(name: string) -> string {
+    let _ = make_dirs(scratch_dir())
+    let path = "${scratch_dir()}/${name}.av"
+    let _ = write_text(path, "fn main() { println(\"hi\") }\n")
+    path
+}
+
+fn ran(sub: string, path: string) -> Result<Exit, ProcessError> {
+    let t = tool(avra_bin())?
+    ((cmd(t, [sub, path]) with { timeout: ms(8000) }).outcome()?).exit
+}
+
+/// Whether a run answered SOME verdict inside the bound — clean,
+/// refused, whatever — never silence.
+fn bounded(sub: string, path: string) -> bool {
+    match ran(sub, path) {
+        .Ok(_) -> true,
+        .Err(e) -> !(e is .TimedOut),
+    }
+}
+
+// ── Path shapes, each a different spelling of one fixture's path ──
+
+fn dotdot_start(name: string) -> string {
+    let _ = fixture(name)
+    "${tree_root()}/../${file_name(tree_root())}/build/scratch/${name}.av"
+}
+
+fn dotdot_mid(name: string) -> string {
+    let _ = fixture(name)
+    "${scratch_dir()}/../scratch/${name}.av"
+}
+
+fn dotdot_end(name: string) -> string {
+    let _ = fixture(name)
+    let _ = make_dirs("${scratch_dir()}/sub")
+    "${scratch_dir()}/sub/../${name}.av"
+}
+
+fn many_dotdot(name: string) -> string {
+    let _ = fixture(name)
+    "${scratch_dir()}/../scratch/../scratch/../scratch/${name}.av"
+}
+
+fn single_dot(name: string) -> string {
+    let _ = fixture(name)
+    "${tree_root()}/build/./scratch/./${name}.av"
+}
+
+fn doubled_slash(name: string) -> string {
+    let _ = fixture(name)
+    "${tree_root()}/build//scratch//${name}.av"
+}
+
+fn outside_tree(name: string) -> string {
+    let dir = "/tmp/avra-hang-outside"
+    let _ = make_dirs(dir)
+    let path = "${dir}/${name}.av"
+    let _ = write_text(path, "fn main() { println(\"hi\") }\n")
+    path
+}
+
+fn nonexistent(name: string) -> string {
+    "${scratch_dir()}/${name}_does_not_exist.av"
+}
+
+spec "commands/shared the `..` hang" {
+    given "a `..` segment at the middle of an absolute path argument" {
+        then "`check` answers a verdict inside the bound, never times out" {
+            bounded("check", dotdot_mid("hang_check_mid"))
+        }
+        then "`build` answers a verdict inside the bound, never times out" {
+            bounded("build", dotdot_mid("hang_build_mid"))
+        }
+        then "`run` answers a verdict inside the bound, never times out" {
+            bounded("run", dotdot_mid("hang_run_mid"))
+        }
+        then "`test` answers a verdict inside the bound, never times out" {
+            bounded("test", dotdot_mid("hang_test_mid"))
+        }
+    }
+    given "a `..` segment at the start of an absolute path argument" {
+        then "`check` answers a verdict inside the bound, never times out" {
+            bounded("check", dotdot_start("hang_check_start"))
+        }
+    }
+    given "a `..` segment at the end of an absolute path argument" {
+        then "`check` answers a verdict inside the bound, never times out" {
+            bounded("check", dotdot_end("hang_check_end"))
+        }
+    }
+    given "several `..` segments folding through the same directory twice" {
+        then "`check` answers a verdict inside the bound, never times out" {
+            bounded("check", many_dotdot("hang_check_many"))
+        }
+    }
+    given "a `.` segment in an absolute path argument" {
+        then "`check` answers a verdict inside the bound, never times out" {
+            bounded("check", single_dot("hang_check_dot"))
+        }
+    }
+    given "a doubled `/` in an absolute path argument" {
+        then "`check` answers a verdict inside the bound, never times out" {
+            bounded("check", doubled_slash("hang_check_dblslash"))
+        }
+    }
+    given "a path outside the tree entirely" {
+        then "`check` answers a verdict inside the bound, never times out" {
+            bounded("check", outside_tree("hang_check_outside"))
+        }
+    }
+    given "a nonexistent path" {
+        then "`check` answers a verdict inside the bound, never times out" {
+            bounded("check", nonexistent("hang_check_gone"))
+        }
+    }
+    given "the empty string — no `-d` test at the shim ever routes it heavy" {
+        then "`check` answers a verdict inside the bound, never times out" {
+            bounded("check", "")
+        }
+    }
+}

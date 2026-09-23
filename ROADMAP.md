@@ -3004,8 +3004,11 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         synchronous, so the API is fiber-shaped from day one; until the
         scheduler exists the server is an EVENT LOOP in Avra over the net
         rows, and a handler that blocks (a sqlite call) blocks the loop.
-        Nobody owns Axis 18 (lane A, 2026-09-06); a runtime scheduler is
-        in no lane's plan. Recorded here as the first consumer's ask.
+        OWNED (2026-09-22): the fibers campaign, lane/fibers, task
+        avra-8sb5.10.1. Design docs/2026_09_22_FIBERS_DESIGN.md (every
+        block a scope, cancellation at pause points, a deterministic test
+        scheduler, no scheduler unless used); worked programs
+        docs/2026_09_22_FIBERS_TOUR.md.
   - [ ] TYPED STRING CAPTURES / NAMED FORMATS. `"/ideas/{id: int}"` as a
         pattern binding `id` (F3000 today), and `route P = "…"` as a
         value that parses AND prints (`docs/2026_09_06_STD_HTTP_TYPED_ROUTES.md`).
@@ -3415,8 +3418,11 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
         synchronous, so the API is fiber-shaped from day one; until the
         scheduler exists the server is an EVENT LOOP in Avra over the net
         rows, and a handler that blocks (a sqlite call) blocks the loop.
-        Nobody owns Axis 18 (lane A, 2026-09-06); a runtime scheduler is
-        in no lane's plan. Recorded here as the first consumer's ask.
+        OWNED (2026-09-22): the fibers campaign, lane/fibers, task
+        avra-8sb5.10.1. Design docs/2026_09_22_FIBERS_DESIGN.md (every
+        block a scope, cancellation at pause points, a deterministic test
+        scheduler, no scheduler unless used); worked programs
+        docs/2026_09_22_FIBERS_TOUR.md.
   - [ ] TYPED STRING CAPTURES / NAMED FORMATS. `"/ideas/{id: int}"` as a
         pattern binding `id` (F3000 today), and `route P = "…"` as a
         value that parses AND prints (`docs/2026_09_06_STD_HTTP_TYPED_ROUTES.md`).
@@ -3588,6 +3594,7 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 Collected from FEEDBACK.md. Sorted by how often each appears across phases. See FEEDBACK.md for full context and phase origins.
 
+- [ ] `break` AND `continue` (asked by the owner). WANTING SITES: every read-until-EOF loop over @std/net's parking verbs (packages/std-net/src/tests/parked, parked_many, parked_close) spells a flag — `mut open = true`, `while open`, `null -> { open = false }` — where the thought is `null -> break`.
 - [ ] A BOUND METHOD AS A VALUE (filed 2026-09-09, the sugar 1 sweep).
 - [ ] A DEFAULT ON EVERY SEAT KIND, AND IN A GENERIC FN (filed 2026-09-22, the fn-defaults slice). Plain `fn`/`mut fn`/`static fn` seats landed; an extern's, a trait member's and a lambda's seat do not parse one, and a generic fn's or a generic type's method's default is F2104 — a default is one body, lowered once. WANTING SITE: `arm_scope` (compiler/resolve/resolve.av), blocked only on the seed.
 - [ ] A BOUND ON A GENERIC TYPE'S OR AN IMPL'S PARAMETER — `type T<K: Tr, V> = { … }` (not parseable today).

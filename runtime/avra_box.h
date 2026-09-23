@@ -29,6 +29,9 @@ enum { KIND_DEAD = -2, KIND_STATIC = -1, KIND_PLAIN = 0, KIND_ARRAY = 1, KIND_MA
 #define IS_IMMORTAL(k)   ((k) <= -4)
 #define KIND_SHAPE(k)    (IS_IMMORTAL(k) ? -(k) - 4 : (k))
 
+// A cell's mark bits (AvraArray.marks).
+enum { MARK_OWNED = 1, MARK_ABSENT = 2 };
+
 // "AVRA" — the bytes that say a header is this runtime's.
 #define AVRA_TAG 0x41565241u
 
@@ -42,13 +45,15 @@ typedef struct {
 } Header;
 
 // A slot array: `cap` cells at `data`, `len` of them written, and
-// one OWNED mark per cell after the cells — the marks say which
-// slots hold managed values the reclaim releases.
+// one MARK byte per cell after the cells: `MARK_OWNED` when the cell
+// holds a managed value the reclaim releases, `MARK_ABSENT` when it
+// holds a nullable scalar that is not there — so a nullable int lives
+// in one word and one bit, with no box.
 typedef struct {
     int64_t cap;
     int64_t len;
     int64_t* data;
-    uint8_t* owned;
+    uint8_t* marks;
     // where it was made — the accounting's return address, else NULL
     void* site;
 } AvraArray;

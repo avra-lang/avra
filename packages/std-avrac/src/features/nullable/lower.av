@@ -34,9 +34,21 @@ fn coalesce_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
     let held = cx.type_at(l)
     // a left side that is never absent IS the answer — typing said so
     if cx.view.types.carried(held) == null { return v }
-    // a nullable answer (the chain's middle) keeps the value whole
-    let whole = cx.view.types.carried(cx.type_at(e)) != null
-    cx.region(cx.presence_of(v, held), e) { cx -> if whole { v } else { cx.carried_of(v, held) } } else { cx -> cx.reg_of(r) }
+    cx.region(cx.presence_of(v, held), e) { cx -> present_as(cx, v, held, cx.type_at(e)) } else { cx -> cx.reg_of(r) }
+}
+
+/// The present side of `??`, as the answer's type: the held nullable
+/// whole when the answer IS it (a chain's middle), what it carries when
+/// the answer is that, and what it carries widened otherwise — an
+/// `int??` coalesced with `null` answers the `int?` inside, once.
+fn present_as(mut cx: LowerCx, v: Reg, held: TypeId, answer: TypeId) -> Reg {
+    // LICENSED I9: layout identity — which register shape answers — not type agreement
+    if answer.index == held.index { return v }
+    let inner = cx.carried_of(v, held)
+    let carried = cx.view.types.carried(held) ?? held
+    // LICENSED I9: layout identity — which register shape answers — not type agreement
+    if answer.index == carried.index { return inner }
+    cx.adopted(answer, false, inner)
 }
 
 /// `v!` — the carried value, insisted on; a read a narrowing made

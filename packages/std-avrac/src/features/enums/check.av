@@ -97,16 +97,39 @@ fn guard_checks(mut cx: TypeCx, a: Arm) {
     cx.require_bool(g, "a match guard", "this decides whether the arm is taken")
 }
 
-/// One arm: each alternative fits the subject; the binds come from
-/// the first pattern, and an `or` arm may bind nothing.
+/// One arm: each alternative fits the subject, and the binds are the
+/// first alternative's — which every other alternative binds too, by
+/// name and at the same types.
 fn arm_checks(mut cx: TypeCx, subject_ty: TypeId, a: Arm) {
     let typed = [pat_types_of(cx, p, subject_ty) for p in a.pats]
     let first: List<TypeId> = typed.first() ?? []
-    if a.pats.length > 1 && typed.any(!it.is_empty()) {
-        or_binds(cx, a.value)
-        return cx.bind_types(a.value, [])
+    let names = bound_names(cx, a.pats[0])
+    for k, p in a.pats {
+        let own = bound_names(cx, p)
+        let binders = cx.view.store.pattern_binds(p)
+        for b in binders {
+            // one pattern node naming a name twice is that node's own law
+            // (a format's `{a}z{a}`); across two nodes it is this one's
+            if binders.any(it.name == b.name && it.pat.index < b.pat.index) { binds_twice(cx, p, b.name) }
+        }
+        // an alternative that refused answers no types — it has spoken
+        if k > 0 && typed[k].length == own.length { alternative_law(cx, a.value, names, first, k, own, typed[k]) }
     }
     cx.bind_types(a.value, first)
+}
+
+fn bound_names(cx: TypeCx, p: PatId) -> List<string> {
+    [b.name for b in cx.view.store.pattern_binds(p)]
+}
+
+/// Alternative `k` of an `or` arm binds the first alternative's names,
+/// no more and no fewer, each at the first's type.
+fn alternative_law(mut cx: TypeCx, value: ExprId, names: List<string>, types: List<TypeId>, k: int, own: List<string>, own_types: List<TypeId>) {
+    if own.length != names.length || own.any((n) -> !names.contains(n)) { return or_names_differ(cx, value, names, k, own) }
+    for j, n in names {
+        let at = own.index_of(n)
+        if cx.types_disagree(own_types[at], types[j]) { or_types_differ(cx, value, n, types[j], k, own_types[at]) }
+    }
 }
 
 /// A pattern against the type it must accept, answering the types
@@ -216,7 +239,7 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
 }
 
 /// The variants these patterns, as one row each, leave uncovered.
-fn uncovered(cx: TypeCx, pats: List<PatId>, sig: EnumSig) -> List<string> {
+fn uncovered(mut cx: TypeCx, pats: List<PatId>, sig: EnumSig) -> List<string> {
     let rows = [[p] for p in pats]
     mut out: List<string> = []
     for k, n in sig.names {
@@ -236,7 +259,7 @@ type Row = { pats: List<PatId?> }
 /// row tests — and a column nothing tests at all — falls to the
 /// hole rows over the remaining columns. Each step consumes a
 /// written pattern, so a recursive enum terminates.
-fn covered(cx: TypeCx, rows: List<Row>, tys: List<TypeId>) -> bool {
+fn covered(mut cx: TypeCx, rows: List<Row>, tys: List<TypeId>) -> bool {
     if tys.is_empty() { return !rows.is_empty() }
     let rest = tys.slice(1, tys.length)
     let defaults = [rest_of(r) for r in rows if hole_first(cx, r)]
@@ -286,7 +309,7 @@ fn specialized(cx: TypeCx, rows: List<Row>, sig: EnumSig, k: int) -> List<Row> {
 
 /// Whether variant K is covered: the rows testing it, over its
 /// payloads alone.
-fn covered_variant(cx: TypeCx, rows: List<List<PatId>>, sig: EnumSig, k: int) -> bool {
+fn covered_variant(mut cx: TypeCx, rows: List<List<PatId>>, sig: EnumSig, k: int) -> bool {
     let shaped = [Row { pats: [held(p) for p in r] } for r in rows]
     covered(cx, specialized(cx, shaped, sig, k), sig.payloads[k])
 }
@@ -471,8 +494,21 @@ fn literal_mismatch(mut cx: TypeCx, p: PatId, got: TypeId, expected: TypeId) {
     cx.emit(refusal("type.pattern", cx.pat_loc(p), "a `${g}` never matches `${cx.view.types.name_of(expected)}`", this_is(g), null))
 }
 
-fn or_binds(mut cx: TypeCx, value: ExprId) {
-    cx.emit(refusal("type.or_binds", cx.loc_of(value), "an `or` arm binds nothing — its alternatives take wildcards only", "this arm", "split the arm, or write `_` where a name was"))
+fn or_names_differ(mut cx: TypeCx, value: ExprId, names: List<string>, k: int, own: List<string>) {
+    cx.emit(refusal("type.or_binds", cx.loc_of(value), "every alternative of an `or` arm binds the same names — the first binds ${names_said(names)}, alternative ${k + 1} binds ${names_said(own)}", "this arm", "bind the same names in every alternative, write `_` where one is not wanted, or split the arm"))
+}
+
+fn or_types_differ(mut cx: TypeCx, value: ExprId, name: string, first: TypeId, k: int, own: TypeId) {
+    cx.emit(refusal("type.or_binds", cx.loc_of(value), "`${name}` is `${cx.view.types.name_of(first)}` in the first alternative of this `or` arm and `${cx.view.types.name_of(own)}` in alternative ${k + 1} — a name binds at one type", "this arm", "split the arm, so each alternative binds its own name"))
+}
+
+fn binds_twice(mut cx: TypeCx, p: PatId, name: string) {
+    cx.emit(refusal("type.binds_twice", cx.pat_loc(p), "this pattern binds `${name}` twice — a name binds one value", "this pattern", "name the second one differently, or write `_` where its value is not wanted"))
+}
+
+fn names_said(names: List<string>) -> string {
+    if names.is_empty() { return "nothing" }
+    joined(["`${n}`" for n in names], ", ")
 }
 
 fn needs_catch_all(mut cx: TypeCx, e: ExprId, sname: string) {

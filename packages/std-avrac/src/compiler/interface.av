@@ -58,8 +58,7 @@ fn fill_shape(store: Store, m: ModulePath, id: DeclId, row: Row) {
         .Struct -> self.fill_record(row, id, false),
         .Boxed -> self.fill_record(row, id, true),
         .Enum -> self.fill_enum(row, id),
-        .Fn -> self.fill_fn(row, id),
-        .Extern -> self.fill_fn(row, id),
+        .Fn or .Extern -> self.fill_fn(row, id),
         .Opaque -> self.fill_opaque(row, id),
     }
 }
@@ -164,8 +163,8 @@ fn fill_row(store: Store, m: ModulePath, ids: List<DeclId>, parts: List<string>)
 /// mints that module on the way (`Decls.decls_of_file` asks), and the flag stands
 /// before the work does, so two modules that name each other meet once.
 fn mint_module(store: Store, m: ModulePath) {
-    if self.hold.minted.get(m.text()) != null { return }
-    self.hold.minted.set(m.text(), true)
+    if self.hold.minted.get().get(m.text()) != null { return }
+    self.hold.minted.put(m.text(), true)
     let fields = record_fields(self, store, m)
     let places = record_places(self, store, m)
     let held = [path for path in self.module_files(m) if self.decls.held.get(path) != null]
@@ -179,7 +178,7 @@ fn mint_module(store: Store, m: ModulePath) {
 /// is held twice while it is written, and every line copies it.
 fn mint_file(path: string, rows: List<List<string>>) {
     let f = self.file_id(path)
-    mut by_stmt = self.decls.decl_ids[f.index].get()
+    mut by_stmt = self.decls.decl_ids.get()[f.index].get()
     for parts in rows {
         let id: DeclId? = self.minted(f, path, parts)
         let stmt_index = read_row(parts)?.stmt ?? 0
@@ -440,6 +439,7 @@ fn wire_body(id: TypeId) -> string {
         .App(d, _, args) -> "A~${self.decl_wire( d)}~${args.length}~${joined([self.wire_body(a) for a in args], "~")}",
         .List(t) -> "L~${self.wire_body(t)}",
         .Cell(t) -> "C~${self.wire_body(t)}",
+        .Task(t) -> "K~${self.wire_body(t)}",
         .Opt(t) -> "O~${self.wire_body(t)}",
         .Map(k, v) -> "M~${self.wire_body(k)}~${self.wire_body(v)}",
         .Res(ok, err) -> "Q~${self.wire_body(ok)}~${self.wire_body(err)}",
@@ -450,7 +450,7 @@ fn wire_body(id: TypeId) -> string {
 fn wire_decl(words: List<string>, at: int) -> DeclId? {
     if at + 1 >= words.length { return null }
     let ordinal? = wire_number(words[at + 1]) else { return null }
-    let f: FileId? = self.paths.get(words[at])
+    let f: FileId? = self.paths.get().get(words[at])
     if f == null || ordinal < 0 { return null }
     let ids = self.decls_of_file(f!)
     if ordinal >= ids.length { return null }

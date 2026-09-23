@@ -17,6 +17,8 @@ impl Runnable for ExplainCmd {
     fn run(args: CliResult) -> int {
         let q = args.arg("code")
         if q == "process" { return explained_process(args.arg("at")) }
+        if q == "repr" { return explained_repr(args.arg("at")) }
+        if q == "writes" { return explained_writes(args.arg("at")) }
         if q.contains(":") { return explained_kind(q) }
         if q.starts_with("@") { return explained_annotation(q.substring(1, q.length)) }
         let hit: DiagCode? = avra().rows.codes.find(it.id == q || it.kind == q)
@@ -50,7 +52,7 @@ fn shown_witness(id: string) {
 fn explained_kind(q: string) -> int {
     // the package's own refusals are not in the way: the kind asked
     // about may be the one they wear
-    let p = root_program(here())
+    mut p = root_program(here())
     let hit: DiagCode? = p.kind_rows().find(it.kind == q || it.id == q)
     if hit == null {
         eprintln("avra: no annotation this package reaches registers `${q}` — a kind registers when `refuse_as` spells it as a literal, or when an annotation speaks it")
@@ -65,7 +67,7 @@ fn explained_kind(q: string) -> int {
 /// directory the command stands in, as `explain process` reads its
 /// manifest.
 fn explained_annotation(name: string) -> int {
-    let p = root_program(here())
+    mut p = root_program(here())
     if !p.clean() {
         eprintln(p.report())
         return 1
@@ -76,6 +78,47 @@ fn explained_annotation(name: string) -> int {
         return 1
     }
     println(sig!)
+    0
+}
+
+/// `avra explain repr <type>` — the runtime REPRESENTATION the
+/// compiler chose for a type expression (features/values.av's
+/// `repr_word`): flat, boxed, niche, or a one-slot box. A declared
+/// name (`Id?`) resolves against the package the command stands in,
+/// as `explain @name` reads it.
+fn explained_repr(type_text: string) -> int {
+    mut p = root_program(here())
+    if !p.clean() {
+        eprintln(p.report())
+        return 1
+    }
+    let word = p.explain_repr(type_text)
+    if word == null {
+        eprintln("avra: `${type_text}` is not a type this package resolves — a scalar, `List<…>`, `Map<…>` or a declared struct, each under an optional `?`")
+        return 1
+    }
+    println(word!)
+    0
+}
+
+/// `avra explain writes <fn>` — the WRITE-FLOW CHAIN the seats pass
+/// (compiler/receivers.av) found for `fn`'s seat 0 (a method's
+/// receiver, a free fn's first parameter): the fn names, in call
+/// order, from `fn` to the one whose declaration or body writes it
+/// directly — the same evidence F2047 warns from, turned into a few
+/// seconds instead of reading every callee by hand.
+fn explained_writes(fn_name: string) -> int {
+    mut p = root_program(here())
+    if !p.clean() {
+        eprintln(p.report())
+        return 1
+    }
+    let chain = p.explain_writes(fn_name)
+    if chain == null {
+        eprintln("avra: no fn `${fn_name}` is declared in this package with a written seat 0")
+        return 1
+    }
+    println(chain!)
     0
 }
 
@@ -137,7 +180,7 @@ fn terminator_text(t: string?) -> string {
 }
 
 export fn explain_command() -> Subcommand {
-    let body: ExplainCmd = ExplainCmd {}
-    let args = [ArgDef { name: "code", description: "an F-code, a kind, a package kind (`@scope/name:E1`), or `process`", required: true, variadic: false }, ArgDef { name: "at", description: "for `process`: the package directory (the root when absent)", required: false, variadic: false }]
-    Subcommand { meta: arg_command("explain", "What a diagnostic code means; `process` — what this package may run", args), body: body }
+    let body: ExplainCmd = ExplainCmd { }
+    let args = [ArgDef { name: "code", description: "an F-code, a kind, a package kind (`@scope/name:E1`), `process`, `repr`, or `writes`", required: true, variadic: false }, ArgDef { name: "at", description: "for `process`: the package directory (the root when absent); for `repr`: a type expression (`int?`, `Id?`); for `writes`: a fn name", required: false, variadic: false }]
+    Subcommand { meta: arg_command("explain", "What a diagnostic code means; `process` — what this package may run; `repr <type>` — its representation; `writes <fn>` — its seat-0 write-flow chain", args), body: body }
 }

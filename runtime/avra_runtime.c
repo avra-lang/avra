@@ -41,6 +41,7 @@
 #include <mach-o/dyld.h>
 #endif
 #include "avra_box.h"
+#include "avra_runtime.h"
 
 // ── The box header ──────────────────────────────────────────────
 // The layouts are avra_box.h's — shared with the backend, which lays
@@ -591,9 +592,17 @@ void avra_case_begin(const char* label) {
     g_case = label;
 }
 
+const char* avra_case_now(void) {
+    return g_case;
+}
+
 // A TRAP IS A WRECK, not a verdict: status 2 keeps it distinct from
 // the 1 a program leaves when it merely disagrees with its input.
+// The program's own lines come first: stdout is block-buffered into a
+// pipe, so without the flush a trap's words land AHEAD of lines printed
+// before it, in exactly the logs a reader reads after a wreck.
 void avra_trap(const char* msg) {
+    fflush(stdout);
     if (g_case) {
         fputs("avra: while running ", stderr);
         fputs(g_case, stderr);
@@ -681,9 +690,14 @@ int64_t avra_int_mod(int64_t a, int64_t b) {
     return a % b;
 }
 
+// Formatted first and boxed at its exact length: a box's header
+// length is what `box_free` files it by, so it must describe the
+// allocation — shrinking it afterwards misfiles the box.
 const char* avra_int_text(int64_t v) {
-    char* buf = sized_box(23, KIND_STR);
-    ((Header*)buf - 1)->len = (uint32_t)snprintf(buf, 24, "%lld", (long long)v);
+    char digits[24];
+    int n = snprintf(digits, sizeof digits, "%lld", (long long)v);
+    char* buf = sized_box((size_t)n, KIND_STR);
+    memcpy(buf, digits, (size_t)n + 1);
     return buf;
 }
 
@@ -800,7 +814,7 @@ static void buf_free(int64_t* buf, int64_t cap) {
 
 // The marks live after the cells; a fresh mark region is all zero.
 static void array_marks(AvraArray* a) {
-    a->owned = (uint8_t*)(a->data + a->cap);
+    a->marks = (uint8_t*)(a->data + a->cap);
 }
 
 // A box that will hold `n` slots — a record's, a literal's — takes
@@ -822,7 +836,7 @@ static AvraArray* array_made(int64_t cap, void* ra) {
     a->len = 0;
     a->data = buf_alloc(a->cap);
     array_marks(a);
-    memset(a->owned, 0, (size_t)a->cap);
+    memset(a->marks, 0, (size_t)a->cap);
     a->site = NULL;
     if (__builtin_expect(g_acc_on > 0, 0)) sized_noted(a, ra);
     return a;
@@ -838,7 +852,7 @@ void* avra_array_new(void) { return array_made(0, __builtin_return_address(0)); 
 static void array_poison(void* p) {
     AvraArray* a = (AvraArray*)p;
     for (int64_t i = 0; i < a->len; i++) {
-        if (a->owned[i]) avra_rc_release((void*)(uintptr_t)a->data[i]);
+        if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
     }
     memset(a->data, 0xDD, (size_t)a->len * sizeof(int64_t));
 }
@@ -852,7 +866,7 @@ static int64_t guard_len(void* p) {
 static void array_reclaim(void* p) {
     AvraArray* a = (AvraArray*)p;
     for (int64_t i = 0; i < a->len; i++) {
-        if (a->owned[i]) avra_rc_release((void*)(uintptr_t)a->data[i]);
+        if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
     }
     if (a->site) acc_site(a->site, -(int64_t)(sizeof(Header) + sizeof(AvraArray) + buf_bytes(a->cap)), -1);
     buf_free(a->data, a->cap);
@@ -886,7 +900,7 @@ static void array_grow(AvraArray* a) {
     if (fixed || buf_class(old_cap) >= 0) {
         buf = buf_alloc(cap);
         memcpy(buf, a->data, (size_t)old_cap * sizeof(int64_t));
-        memcpy((uint8_t*)(buf + cap), a->owned, (size_t)old_cap);
+        memcpy((uint8_t*)(buf + cap), a->marks, (size_t)old_cap);
         if (!fixed) buf_free(a->data, old_cap);
     } else {
         buf = (int64_t*)realloc(a->data, buf_bytes(cap));
@@ -897,7 +911,7 @@ static void array_grow(AvraArray* a) {
     a->data = buf;
     a->cap = cap;
     array_marks(a);
-    memset(a->owned + a->len, 0, (size_t)(cap - a->len));
+    memset(a->marks + a->len, 0, (size_t)(cap - a->len));
     if (a->site) acc_site(a->site, (int64_t)(buf_bytes(cap) - buf_bytes(old_cap)), 0);
 }
 
@@ -908,7 +922,7 @@ static void push_grown(AvraArray* a, int64_t v) {
     if (a->cap >= CELL_CEILING || a->cap <= 0) avra_trap("a list grew past any possible size — a corrupted box");
     array_grow(a);
     a->data[a->len] = v;
-    a->owned[a->len] = 0;
+    a->marks[a->len] = 0;
     a->len++;
 }
 
@@ -918,7 +932,7 @@ void avra_array_push(void* arr, int64_t v) {
     AvraArray* a = (AvraArray*)arr;
     if (__builtin_expect(a->len == a->cap, 0)) { push_grown(a, v); return; }
     a->data[a->len] = v;
-    a->owned[a->len] = 0;
+    a->marks[a->len] = 0;
     a->len++;
 }
 
@@ -929,7 +943,7 @@ void avra_array_push_owned(void* arr, void* v) {
     CENSUS(note_push(__builtin_return_address(0)));
     avra_array_push(arr, (int64_t)(uintptr_t)v);
     AvraArray* a = (AvraArray*)arr;
-    a->owned[a->len - 1] = 1;
+    a->marks[a->len - 1] = MARK_OWNED;
     avra_rc_retain(v);
 }
 
@@ -1167,8 +1181,8 @@ static void* array_clone(AvraArray* a) {
     AvraArray* c = (AvraArray*)avra_array_sized(a->len);
     for (int64_t i = 0; i < a->len; i++) {
         avra_array_push(c, a->data[i]);
-        if (a->owned[i]) {
-            c->owned[i] = 1;
+        c->marks[i] = a->marks[i];
+        if (a->marks[i] & MARK_OWNED) {
             avra_rc_retain((void*)(uintptr_t)a->data[i]);
         }
     }
@@ -1188,6 +1202,44 @@ static int is_shared(void* p) {
     return h->kind >= 0 && h->rc > 1;
 }
 
+// AVRA_ALIAS_LOG: one stderr line per ACTUAL uniquify clone (never
+// per call — is_shared already gates this branch to the rare case),
+// naming the caller's return address and the cloned box's ELEMENT
+// COUNT. A list, a record and an enum's payload are ALL the same
+// AvraArray shape (array_clone treats every non-map box so, box_clone
+// above), so `n` here is `a->len` — the field count for a record, the
+// element count for a list — never the header's `len`, which is the
+// WRAPPER struct's own fixed byte size (40, sizeof(AvraArray)) and
+// says nothing about what the box holds. The flag is read once, in a
+// constructor, so a shipping run pays no getenv; the log fn is its
+// own out-of-line, cold body so the two hot leaves below carry no
+// extra frame for it — only the clone branch they already pay for
+// gains one more call.
+static int g_alias_log = 0;
+
+__attribute__((constructor))
+static void alias_log_init(void) {
+    g_alias_log = getenv("AVRA_ALIAS_LOG") != NULL;
+}
+
+__attribute__((noinline, cold))
+static void alias_log_clone(void* site, void* box) {
+    if (!g_alias_log) return;
+    Header* h = hdr(box);
+    int64_t n = -1;
+    if (h) {
+        n = (KIND_SHAPE(h->kind) == KIND_MAP) ? ((AvraMap*)box)->keys->len : ((AvraArray*)box)->len;
+    }
+    // UNSLID: `atos -o <binary> <addr>` reads a file offset, not a
+    // live ASLR address — subtract the image's own slide so the
+    // printed address is directly symbolicatable after the fact.
+    intptr_t slide = 0;
+#ifdef __APPLE__
+    slide = _dyld_get_image_vmaddr_slide(0);
+#endif
+    fprintf(stderr, "ALIAS_CLONE site=%p kind=%d n=%lld\n", (void*)((char*)site - slide), h ? (int)KIND_SHAPE(h->kind) : -999, (long long)n);
+}
+
 // Opens a mut cell's box for writing: itself when nothing else
 // holds it, else a clone stored into the cell (the old reference
 // released). The answer is BORROWED from the cell.
@@ -1197,6 +1249,7 @@ void* avra_cell_unique(void* slot) {
     CENSUS(note_copy(__builtin_return_address(0)));
     g_clone_site = __builtin_return_address(0);
     void* c = box_clone(p);
+    alias_log_clone(g_clone_site, c);
     g_clone_site = NULL;
     *(void**)slot = c;
     avra_rc_release(p);
@@ -1210,9 +1263,10 @@ void* avra_slot_unique(void* arr, int64_t i) {
     AvraArray* a = (AvraArray*)arr;
     g_clone_site = __builtin_return_address(0);
     void* c = box_clone(p);
+    alias_log_clone(g_clone_site, c);
     g_clone_site = NULL;
     a->data[i] = (int64_t)(uintptr_t)c;
-    a->owned[i] = 1;
+    a->marks[i] = MARK_OWNED;
     avra_rc_release(p);
     return c;
 }
@@ -1221,9 +1275,9 @@ void* avra_slot_unique(void* arr, int64_t i) {
 void avra_slot_set(void* arr, int64_t i, int64_t v) {
     AvraArray* a = (AvraArray*)arr;
     avra_array_get(arr, i);
-    if (a->owned[i]) avra_rc_release((void*)(uintptr_t)a->data[i]);
+    if (a->marks[i] & MARK_OWNED) avra_rc_release((void*)(uintptr_t)a->data[i]);
     a->data[i] = v;
-    a->owned[i] = 0;
+    a->marks[i] = 0;
 }
 
 // RETAIN-AT-PACK for a slot write: the incoming value is retained
@@ -1232,7 +1286,48 @@ void avra_slot_set(void* arr, int64_t i, int64_t v) {
 void avra_slot_set_owned(void* arr, int64_t i, void* v) {
     avra_rc_retain(v);
     avra_slot_set(arr, i, (int64_t)(uintptr_t)v);
-    ((AvraArray*)arr)->owned[i] = 1;
+    ((AvraArray*)arr)->marks[i] = MARK_OWNED;
+}
+
+// A NULLABLE SCALAR IN A SLOT is its word and one mark bit: absent,
+// the word is zero and `MARK_ABSENT` set. No box — the mark byte is
+// already there, beside every cell.
+void avra_array_push_maybe(void* arr, int64_t present, int64_t v) {
+    avra_array_push(arr, present ? v : 0);
+    AvraArray* a = (AvraArray*)arr;
+    a->marks[a->len - 1] = present ? 0 : MARK_ABSENT;
+}
+
+void avra_slot_set_maybe(void* arr, int64_t i, int64_t present, int64_t v) {
+    avra_slot_set(arr, i, present ? v : 0);
+    ((AvraArray*)arr)->marks[i] = present ? 0 : MARK_ABSENT;
+}
+
+// The twins for a nullable over a MANAGED value: present, the slot
+// keeps its own reference (its word may be a null pointer); absent,
+// there is nothing to keep.
+void avra_array_push_maybe_owned(void* arr, int64_t present, void* v) {
+    if (present) avra_array_push_owned(arr, v);
+    else avra_array_push_maybe(arr, 0, 0);
+}
+
+void avra_slot_set_maybe_owned(void* arr, int64_t i, int64_t present, void* v) {
+    if (present) avra_slot_set_owned(arr, i, v);
+    else avra_slot_set_maybe(arr, i, 0, 0);
+}
+
+// Whether the slot a pop is about to hand over is present; an empty
+// list traps as the pop would.
+int64_t avra_array_last_present(void* arr) {
+    AvraArray* a = (AvraArray*)arr;
+    if (a->len == 0) avra_trap("pop on an empty list");
+    return !(a->marks[a->len - 1] & MARK_ABSENT);
+}
+
+int64_t avra_slot_present(void* arr, int64_t i) {
+    AvraArray* a = (AvraArray*)arr;
+    avra_array_get(arr, i);
+    return !(a->marks[i] & MARK_ABSENT);
 }
 
 // ── Maps: string-keyed, insertion-ordered ───────────────────────
@@ -1346,14 +1441,34 @@ void avra_map_set(void* map, const char* key, int64_t v) {
     m->index[i] = m->keys->len;
 }
 
+// A nullable scalar under a key: its word, its absence in the value
+// cell's mark — the slots' own law, one table over.
+void avra_map_set_maybe(void* map, const char* key, int64_t present, int64_t v) {
+    avra_map_set(map, key, present ? v : 0);
+    AvraMap* m = (AvraMap*)map;
+    m->vals->marks[map_find(m, key)] = present ? 0 : MARK_ABSENT;
+}
+
+// Whether the value under a key is there — 0 for a key that is not.
+int64_t avra_map_value_present(void* map, const char* key) {
+    AvraMap* m = (AvraMap*)map;
+    int64_t s = map_find(m, key);
+    return s >= 0 && !(m->vals->marks[s] & MARK_ABSENT);
+}
+
 void avra_map_set_owned(void* map, const char* key, void* v) {
     AvraMap* m = (AvraMap*)map;
     int64_t s = map_find(m, key);
     if (s >= 0) { avra_slot_set_owned(m->vals, s, v); return; }
     avra_map_set(map, key, (int64_t)(uintptr_t)v);
     s = map_find(m, key);
-    m->vals->owned[s] = 1;
+    m->vals->marks[s] = MARK_OWNED;
     avra_rc_retain(v);
+}
+
+void avra_map_set_maybe_owned(void* map, const char* key, int64_t present, void* v) {
+    if (present) avra_map_set_owned(map, key, v);
+    else avra_map_set_maybe(map, key, 0, 0);
 }
 
 // A map's shallow clone: both arrays cloned (their owned slots
@@ -1449,7 +1564,7 @@ int64_t avra_array_pop(void* arr) {
     AvraArray* a = (AvraArray*)arr;
     if (a->len == 0) avra_trap("pop on an empty list");
     a->len--;
-    if (a->owned[a->len]) avra_trap("a managed slot popped as a scalar");
+    if (a->marks[a->len] & MARK_OWNED) avra_trap("a managed slot popped as a scalar");
     return a->data[a->len];
 }
 
@@ -1458,8 +1573,8 @@ void* avra_array_pop_owned(void* arr) {
     if (a->len == 0) avra_trap("pop on an empty list");
     a->len--;
     void* v = (void*)(uintptr_t)a->data[a->len];
-    if (a->owned[a->len]) {
-        a->owned[a->len] = 0;
+    if (a->marks[a->len] & MARK_OWNED) {
+        a->marks[a->len] = 0;
     } else {
         avra_rc_retain(v);
     }
@@ -1470,10 +1585,11 @@ void* avra_array_pop_owned(void* arr) {
 // retained — a copy holds its own references.
 static void array_append(void* out, AvraArray* src, int64_t lo, int64_t hi) {
     for (int64_t i = lo; i < hi; i++) {
-        if (src->owned[i]) {
+        if (src->marks[i] & MARK_OWNED) {
             avra_array_push_owned(out, (void*)(uintptr_t)src->data[i]);
         } else {
             avra_array_push(out, src->data[i]);
+            ((AvraArray*)out)->marks[((AvraArray*)out)->len - 1] = src->marks[i];
         }
     }
 }
@@ -1863,6 +1979,9 @@ int64_t avra_errno_again(void) { return EAGAIN; }
 // The errno for an argument that names nothing — the platform's word.
 int64_t avra_errno_invalid(void) { return EINVAL; }
 
+// The errno for a wait whose budget ran out — the platform's word.
+int64_t avra_errno_timed_out(void) { return ETIMEDOUT; }
+
 // The bytes a token names, as a fresh box, once: a second take of the
 // same token answers the empty box, and a take of anything that is
 // not the current token traps.
@@ -1893,7 +2012,7 @@ int64_t avra_fd_write(int64_t fd, const char* bytes, int64_t from) {
 static void push_fresh_text(void* arr, const char* s, size_t n) {
     avra_array_push(arr, (int64_t)(uintptr_t)str_owned(s, n));
     AvraArray* a = (AvraArray*)arr;
-    a->owned[a->len - 1] = 1;
+    a->marks[a->len - 1] = MARK_OWNED;
 }
 
 const char* avra_str_substring(const char* s, int64_t lo, int64_t hi) {
@@ -2183,8 +2302,12 @@ static const char* read_whole(FILE* f) {
     char* buf = sized_box((size_t)size, KIND_STR);
     size_t got = fread(buf, 1, (size_t)size, f);
     buf[got] = '\0';
-    ((Header*)buf - 1)->len = (uint32_t)got;
-    return buf;
+    if (got == (size_t)size) return buf;
+    // the file shrank between its size and its read: the box is made
+    // again at the length it holds, never relabelled
+    const char* exact = str_owned(buf, got);
+    box_free(buf);
+    return exact;
 }
 
 // The whole file as text; "" when it cannot be read. Owned.
@@ -2229,7 +2352,9 @@ int64_t avra_selfhost_write_file(const char* path, const char* content) {
 // adoption row of docs/2026_09_06_FOREIGN_TEXT_ADOPTION.md, which is
 // the owner's to export — the day it lands this leaves too.
 
+// A line to stderr keeps the program's order against stdout's buffer.
 void avra_eputs(const char* s) {
+    fflush(stdout);
     if (s) fwrite(s, 1, str_len(s), stderr);
     fputc('\n', stderr);
 }
@@ -2239,6 +2364,13 @@ void avra_eputs(const char* s) {
 // the self-compile, whose environment has no such flag.
 void avra_debug(const char* s) {
     if (s && getenv("AVRA_DEBUG")) fputs(s, stderr);
+}
+
+// A QUERY-KERNEL TRACE LINE, only under AVRA_QTRACE — its own flag,
+// separate from AVRA_DEBUG, for a gen-N vs gen-N+1 differential
+// (CLAUDE.md, Working discipline). A no-op otherwise.
+void avra_qtrace(const char* s) {
+    if (s && getenv("AVRA_QTRACE")) fputs(s, stderr);
 }
 
 /* `embed` is answered by the compiler, at compile time, under the
@@ -2519,8 +2651,10 @@ const char* avra_capture_end(void) {
     return out;
 }
 
-// THE ROWS CLAIM THIS FILE. `runtime/avra_rt.h` is generated from
-// `rt_sigs()` and asserts, in the C compiler, that every body above
-// answers the width its row names and takes the seats it names.
-// Included LAST, so those bodies are already declared.
+// THE ROWS CLAIM THE RUNTIME. `runtime/avra_rt.h` is generated from
+// `rt_sigs()` and asserts, in the C compiler, that every body answers
+// the width its row names and takes the seats it names — the bodies
+// above, and the other objects' through their headers, which their
+// own definitions must match. Included LAST, so all are declared.
+#include "avra_fiber.h"
 #include "avra_rt.h"

@@ -8,10 +8,17 @@ impl Runnable for RunCmd {
     fn run(args: CliResult) -> int { phased(args, "lower+run", ran) }
 }
 
+/// A trap speaks as a native binary's does: `avra: <words>` on stderr,
+/// exit 2 — so the two engines end the same program the same way.
 fn ran(p: Program) -> Result<int, string> {
     warn(p)
-    println(p.run()?)
-    0
+    match p.run_live()? {
+        .Clean -> 0,
+        .Trapped(words) -> {
+            eprintln("avra: ${words}")
+            2
+        },
+    }
 }
 
 export fn run_command() -> Subcommand {

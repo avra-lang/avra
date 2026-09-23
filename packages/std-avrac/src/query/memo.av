@@ -1,7 +1,7 @@
 //! Typed values over the query kernel. A family owns one memo; copies
 //! share both its database and its value table, so higher-order query
 //! bodies may safely capture either handle.
-use core.{Table, new_table}
+use core.{Table, new_table, qtrace}
 
 export enum MemoAsk<T> {
     Reuse(T)
@@ -24,7 +24,7 @@ impl Memo {
     fn query_key(arg: int) -> Key { Key { family: self.family, arg: arg } }
 
     fn ask(arg: int) -> MemoAsk<T> {
-        match self.db.ask(self.query_key(arg)) {
+        let a = match self.db.ask(self.query_key(arg)) {
             .Reuse -> match self.values.get().entry(arg) {
                 .Present(value) -> MemoAsk.Reuse(value),
                 .Missing -> missing_value(self.family, arg),
@@ -32,6 +32,8 @@ impl Memo {
             .Compute -> MemoAsk.Compute,
             .Cycle -> MemoAsk.Cycle,
         }
+        qtrace("Q\task\t${self.family}\t${arg}\t${ask_tag(a)}\n")
+        a
     }
 
     /// Open an acyclic query unless its typed value is reusable. The
@@ -86,6 +88,7 @@ impl Memo {
         mut values = self.values.get()
         values.keep(arg, value)
         self.values.set(values)
+        qtrace("Q\tsettle\t${self.family}\t${arg}\t${fingerprint}\n")
         value
     }
 
@@ -145,6 +148,16 @@ impl Memo {
             .Present(value) -> value,
             .Missing -> missing_value(self.family, arg),
         }
+    }
+}
+
+/// A query event's outcome, by name alone — never the payload, which
+/// rides an opaque `T` the trace cannot stringify.
+fn ask_tag<T>(a: MemoAsk<T>) -> string {
+    match a {
+        .Reuse(_) -> "reuse",
+        .Compute -> "compute",
+        .Cycle -> "cycle",
     }
 }
 

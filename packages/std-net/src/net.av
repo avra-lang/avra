@@ -1,19 +1,23 @@
 //! @std.net — stream sockets and readiness, as values.
 //!
-//! A `Listener` is a bound port, a `Conn` a nonblocking stream, a
-//! `Poller` a readiness queue (kqueue on darwin, epoll on linux),
-//! and every verb answers a `Result` whose failure names the verb,
-//! its subject and the platform's errno. Nothing here blocks except
-//! `connect` for its own timeout and `wait` for its own; a read that
-//! finds nothing answers `.Pending`, a write that takes nothing
-//! answers 0, and the loop above decides.
+//! A `Listener` is a bound port, a `Conn` a stream, a `Poller` a
+//! readiness queue (kqueue on darwin, epoll on linux), and every verb
+//! answers a `Result` whose failure names the verb, its subject and
+//! the platform's errno. `accept`, `read`, `write` and `connect` PARK
+//! the calling task until the socket is ready — the other tasks run
+//! meanwhile, and a program with none simply waits. Their `try_`
+//! twins never wait: a read that finds nothing answers `.Pending`, a
+//! write that takes nothing answers 0, and a poller loop decides.
 use @std.errors.{Error, ErrorInfo, info}
-use @std.time.{Duration}
+use @std.time.{Duration, now_ms}
 
 extern fn avra_net_listen(host: string, port: int, backlog: int) -> int
 extern fn avra_net_listen_all(port: int, backlog: int) -> int
 extern fn avra_net_accept(lfd: int) -> int
-extern fn avra_net_connect(host: string, port: int, timeout_ms: int) -> int
+extern fn avra_net_addresses(host: string, port: int) -> int
+extern fn avra_net_dial(host: string, port: int, i: int) -> int
+extern fn avra_net_dialed(fd: int) -> int
+extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
 extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
@@ -31,6 +35,7 @@ extern fn avra_net_local_port(fd: int) -> int
 extern fn avra_errno_text(err: int) -> string
 extern fn avra_errno_again() -> int
 extern fn avra_errno_invalid() -> int
+extern fn avra_errno_timed_out() -> int
 
 /// A verb that failed: which, on what, and the platform's word.
 export type NetError = { verb: string, subject: string, errno: int }
@@ -96,19 +101,49 @@ fn bound(fd: int, subject: string) -> Result<Listener, NetError> {
 /// How many connections the kernel may queue before one is accepted.
 fn backlog() -> int { 511 }
 
-/// A connection to host:port made within `timeout`, which is a
-/// budget and never a sentinel: a negative one is refused rather than
-/// read as "forever", and a zero one looks once.
+/// A connection to host:port made within `timeout`, the calling task
+/// parked while it is made. The budget spans every address the host
+/// resolves to, tried in the resolver's order until one connects; it
+/// is never a sentinel — a negative one is refused rather than read as
+/// "forever", and a zero one looks once.
 export fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, NetError> {
     if !names_a_host(host) { return no_host("connect", host, port) }
-    if timeout.ms < 0 { return failed("connect", "${host}:${port} within ${timeout.ms} ms", 0 - avra_errno_invalid()) }
-    streamed(avra_net_connect(host, port, timeout.ms), "connect", "${host}:${port}")
+    if timeout.ms < 0 { return failed("connect", "${host}:${port} within ${timeout.ms} ms", -avra_errno_invalid()) }
+    let n = avra_net_addresses(host, port)
+    if n < 0 { return failed("connect", "${host}:${port}", n) }
+    streamed(dialed_from(host, port, 0, n, now_ms() + timeout.ms, -avra_errno_invalid()), "connect", "${host}:${port}")
+}
+
+/// The first of addresses `i..n` to connect by `deadline`, or the last
+/// refusal — a timeout ends the walk, since the budget is spent.
+fn dialed_from(host: string, port: int, i: int, n: int, deadline: int, last: int) -> int {
+    if i >= n { return last }
+    let r = dialed(host, port, i, deadline)
+    if r >= 0 || r == -avra_errno_timed_out() { return r }
+    dialed_from(host, port, i + 1, n, deadline, r)
+}
+
+/// Address `i` connected by `deadline` — the task parked until the
+/// socket is writable — as its descriptor, or -errno.
+fn dialed(host: string, port: int, i: int, deadline: int) -> int {
+    let fd = avra_net_dial(host, port, i)
+    if fd < 0 { return fd }
+    let left = deadline - now_ms()
+    let err = if avra_fiber_park_fd(fd, 1, if left < 0 { 0 } else { left }) == 0 { -avra_errno_timed_out() } else { avra_net_dialed(fd) }
+    if err == 0 { return fd }
+    let _ = avra_net_close(fd)
+    err
 }
 
 /// A connected descriptor as a stream, or the verb that failed on it.
 fn streamed(fd: int, verb: string, subject: string) -> Result<Conn, NetError> {
     if fd < 0 { return failed(verb, subject, fd) }
     .Ok(Conn { fd: fd })
+}
+
+/// The calling task parked until `fd` is readable, or writable.
+fn parked(fd: int, write: bool) {
+    let _ = avra_fiber_park_fd(fd, if write { 1 } else { 0 }, -1)
 }
 
 /// Whether text names a host at all: not empty, and holding no NUL —
@@ -140,8 +175,17 @@ export fn poller() -> Result<Poller, NetError> {
 }
 
 impl Listener {
+    /// The next connection, the calling task parked until one arrives.
+    fn accept() -> Result<Conn, NetError> {
+        let c? = self.try_accept()? else {
+            parked(self.fd, false)
+            return self.accept()
+        }
+        .Ok(c)
+    }
+
     /// The next pending connection, or null when none is waiting.
-    fn accept() -> Result<Conn?, NetError> {
+    fn try_accept() -> Result<Conn?, NetError> {
         let fd = avra_net_accept(self.fd)
         if would_block(fd) { return .Ok(null) }
         let c = streamed(fd, "accept", "port ${self.port}")?
@@ -157,11 +201,36 @@ impl Listener {
 }
 
 impl Conn {
+    /// Up to `max` bytes, the calling task parked until some arrive;
+    /// null once the peer has finished writing.
+    fn read(max: int) -> Result<Bytes?, NetError> {
+        match self.try_read(max)? {
+            .Data(b) -> .Ok(b),
+            .Eof -> .Ok(null),
+            .Pending -> {
+                parked(self.fd, false)
+                self.read(max)
+            },
+        }
+    }
+
+    /// All of `bytes`, the calling task parked whenever the socket is
+    /// full; answers how many were written, which is all of them.
+    fn write(bytes: Bytes) -> Result<int, NetError> {
+        mut at = 0
+        while at < bytes.length {
+            let n = self.try_write(bytes, at)?
+            if n == 0 { parked(self.fd, true) }
+            at = at + n
+        }
+        .Ok(bytes.length)
+    }
+
     /// Up to `max` bytes, as an owned value; `.Eof` once the peer has
     /// finished writing; `.Pending` when nothing has arrived yet. The
     /// read answers a token its take presents, so a read that lands
     /// between the two is a trap and never a stranger's bytes.
-    fn read(max: int) -> Result<Read, NetError> {
+    fn try_read(max: int) -> Result<Read, NetError> {
         let token = avra_fd_read(self.fd, max)
         if would_block(token) { return .Ok(.Pending) }
         if token < 0 { return failed("read", self.named(), token) }
@@ -172,7 +241,7 @@ impl Conn {
     /// `bytes` from `from` written as far as the socket takes them:
     /// the count, which is 0 when it would block — a short count is
     /// normal, and the caller keeps its cursor.
-    fn write(bytes: Bytes, from: int) -> Result<int, NetError> {
+    fn try_write(bytes: Bytes, from: int) -> Result<int, NetError> {
         let n = avra_fd_write(self.fd, bytes, from)
         if would_block(n) { return .Ok(0) }
         if n < 0 { return failed("write", self.named(), n) }

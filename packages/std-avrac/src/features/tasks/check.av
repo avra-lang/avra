@@ -1,0 +1,29 @@
+//! The typing rules: `spawn e` is a `Task` of what `e` answers, and
+//! `.await` answers it back; `.done` is a `bool`.
+use core.{ExprId, TypeId, Type}
+use features.{TypeCx}
+
+fn spawn_type(mut cx: TypeCx, e: ExprId) -> TypeId {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
+        .Spawn(body) -> spawned(cx, body),
+        rest -> cx.error_type,
+    }
+}
+
+/// The body is hidden from the walk — its lambda lowers only as the
+/// task's lift — so it is typed here, and its answer is the task's.
+fn spawned(mut cx: TypeCx, body: ExprId) -> TypeId {
+    cx.task_bodies.push(body)
+    let fty = cx.walk_type(body)
+    let _ = cx.task_bodies.pop()
+    if cx.errored_ty(fty) { return cx.error_type }
+    let arrow? = cx.view.types.arrow_parts(fty) else { return cx.error_type }
+    cx.view.types.intern(Type.Task(arrow.answer))
+}
+
+fn check_await(mut cx: TypeCx, _e: ExprId, ty: TypeId) -> TypeId {
+    cx.view.types.task_answer(ty) ?? cx.error_type
+}
+
+fn check_done(mut cx: TypeCx, _e: ExprId, _ty: TypeId) -> TypeId { cx.type(bool) }

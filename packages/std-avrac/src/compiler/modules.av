@@ -1,7 +1,7 @@
 //! Where source lives: module paths, their files, imports, and the
 //! package boundaries they cross. Moved out of the workspace god-object.
 use core.{ModulePath, module_path, key_spelled, DeclId, FileId, UseParts, joined, flatten, sorted_texts}
-use @std.path.{dir_of, under_dir, joined_path}
+use @std.path.{dir_of, under_dir, joined_path, normalized}
 use features.{Decl, Import, nothing}
 use diagnostics.{Diag, loc_at}
 use @std.testing.{words}
@@ -20,7 +20,12 @@ impl Workspace {
     fn module_of(path: string) -> string {
         // the answer is a walk over every package, and packages are admitted as
         // `use` lines reach them: it is remembered for ONE size of that table
-        memoized<string>(self.module_names_of, "${self.packages.length}\t${path}", () -> self.module_named(path))
+        let key = "${self.packages.length}\t${path}"
+        let known: string? = self.module_names_of.get().get(key)
+        if known != null { return known! }
+        let made = self.module_named(path)
+        self.module_names_of.put(key, made)
+        made
     }
 
     fn module_named(path: string) -> string {
@@ -43,7 +48,12 @@ impl Workspace {
         // a listing is the host's to give, and a `use` line asks it of the same
         // module a hundred times: remembered for ONE size of the package table,
         // since a package admitted later answers for modules it holds
-        memoized<List<string>>(self.files_of, "${self.packages.length}\t${m.text()}", () -> self.listed_files(m))
+        let key = "${self.packages.length}\t${m.text()}"
+        let known: List<string>? = self.files_of.get().get(key)
+        if known != null { return known! }
+        let made = self.listed_files(m)
+        self.files_of.put(key, made)
+        made
     }
 
     fn listed_files(m: ModulePath) -> List<string> {
@@ -130,12 +140,28 @@ impl Workspace {
     /// package of one: every name it was given is a file of it,
     /// whatever the name.
     fn all_files(dir: string) -> List<string> {
+        self.all_files_under(dir, [])
+    }
+
+    /// `all_files`'s walk, refusing a directory already on its own way
+    /// down. A DIRECTORY'S IDENTITY IS ITS NORMALIZED PATH, and a walk
+    /// can only be trusted to advance when it is asked in that currency:
+    /// a name still carrying `..` widens with every step a host answers
+    /// by string prefix (a lone file's in-memory one) rather than
+    /// shrinking, so nothing ever runs out of directories to descend
+    /// into. `seen` is the walk's own path down, never the whole tree —
+    /// two ordinary sibling directories share no ancestor and never
+    /// collide here.
+    fn all_files_under(dir: string, seen: List<string>) -> List<string> {
+        let here = normalized(dir)
+        if seen.contains(here) { return [] }
+        let below = seen.concat([here])
         mut out: List<string> = []
         for f in self.host.list(dir) {
             let full = joined_path(dir, f)
             if self.host.is_dir(full) {
                 // a directory of programs holds only its own files
-                if !self.per_file && !self.is_package_dir(full) && !self.excluded(full) { out = out.concat(self.all_files(full)) }
+                if !self.per_file && !self.is_package_dir(full) && !self.excluded(full) { out = out.concat(self.all_files_under(full, below)) }
             } else if self.listed_source(dir, f) {
                 out.push(full)
             }
@@ -209,11 +235,11 @@ impl Workspace {
     /// A module's exported names.
     fn surface(m: ModulePath) -> Map<string, DeclId> {
         let slot = "${self.packages.length}\t${m.text()}"
-        let known: Map<string, DeclId>? = self.surfaces.get(slot)
+        let known: Map<string, DeclId>? = self.surfaces.get().get(slot)
         if known != null { return known! }
         mut out: Map<string, DeclId> = {}
         for d in self.exported_decls(m) { out.set(d.name, d.id) }
-        self.surfaces.set(slot, out)
+        self.surfaces.put(slot, out)
         out
     }
 

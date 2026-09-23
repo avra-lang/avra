@@ -121,7 +121,7 @@ impl Client {
         self.decoder = null
         mut from = 0
         while from < req.length {
-            let n = netted(self.conn.write(req, from))?
+            let n = netted(self.conn.try_write(req, from))?
             if n == 0 {
                 netted(self.poll.watch(self.conn.fd, .Write))?
                 netted(self.poll.wait(ms(1000)))?
@@ -136,7 +136,7 @@ impl Client {
     /// reply is whole, null while it is not.
     mut fn polled(budget: Duration) -> Result<Answer?, ClientError> {
         netted(self.poll.wait(budget))?
-        match self.conn.read(read_size()) {
+        match self.conn.try_read(read_size()) {
             .Ok(.Data(b)) -> self.grown(b),
             .Ok(.Eof) -> self.ended(),
             .Ok(.Pending) -> .Ok(null),
