@@ -1835,6 +1835,43 @@ Runtime facts, ours to ratify:
   differing line names the query whose answer diverged first. Add a
   probe at the divergent query's own site the same way — one
   `qtrace(...)` call, removed once the cause is found.
+- WHICH COPY FORKED IS ANSWERED BY A CLONE LOG, NEVER BY READING THE
+  MECHANISM'S SOURCE. `AVRA_ALIAS_LOG=1` prints one stderr line per
+  ACTUAL `box_clone` (`avra_cell_unique`/`avra_slot_unique`,
+  runtime/avra_runtime.c's `alias_log_clone` — box_clone's only two
+  callers, so nothing clones outside this log) — the caller's
+  unslid return address (`atos -o <binary> <addr>` names it, no
+  `-l` needed) and the cloned box's ELEMENT COUNT. THAT COUNT IS
+  `a->len`, NEVER the header's `len`: every list, record and enum
+  payload is one `AvraArray` shape (`array_clone` treats them so),
+  and the header's `len` is that WRAPPER STRUCT's own fixed byte
+  size (40, `sizeof(AvraArray)`) — constant regardless of how many
+  fields or elements the box holds, so reading it answers "a box
+  was cloned" and never "how big". The first draft of this log
+  read the header and every clone in a 5.2M-line run showed length
+  40 or 32 — a tautology, not a finding.
+  RECORDED TRIGGER, avra-2y5c.5's gen-2 self-hosting break: three
+  prior sessions suspected a Workspace-sized struct (44 fields) was
+  being forked mid-compile (`Workspace.visible` reading
+  `packages.length` 1-2 against a live 9) and reached for this log
+  to catch it in the act. It never fires: over gen-1 (correct, 0
+  errors) and gen-2 (broken, 521 "Kind names no type") running the
+  identical `check packages/std-avrac`, the clone profiles are the
+  SAME functions at the SAME counts (`grammar.match_seq` 1.74M,
+  `grammar.bind_label` 1.5M, `query.Db.hit/miss/begin/settle`
+  tens of thousands, one genuine O(n²) growth in
+  `grammar/executor.av`'s `match_rule` climbing 104..694148 —
+  IDENTICAL in both generations, 551 events each) — no site ever
+  clones anything past ~54 elements, and nothing clones a constant
+  44-element box at all. A CLONE LOG THAT AGREES BETWEEN A CORRECT
+  RUN AND A BROKEN ONE IS A CLEAN ACQUITTAL: the fork is not a
+  `box_clone`, which rules out the receiver-copy mechanism's own
+  `unique_box` calls as the cause and leaves the query kernel's
+  re-entrant memoization (`Memo.start`'s `.Cycle` branch, traced by
+  `AVRA_QTRACE` into `namespace`/`module_files` over `@std.meta`) as
+  the standing suspect. Kept as a permanent tool, inert without the
+  flag; the next differential reaches for it BEFORE re-deriving
+  this acquittal by hand.
 - A `check` HIT ON `.avra-cache` EXAMINES NOTHING, AND A SECOND
   BINARY ON UNCHANGED SOURCE CAN SILENTLY HIT THE FIRST'S ENTRY.
   `Workspace.checked`/`build_program` key their store by the

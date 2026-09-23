@@ -1202,6 +1202,44 @@ static int is_shared(void* p) {
     return h->kind >= 0 && h->rc > 1;
 }
 
+// AVRA_ALIAS_LOG: one stderr line per ACTUAL uniquify clone (never
+// per call — is_shared already gates this branch to the rare case),
+// naming the caller's return address and the cloned box's ELEMENT
+// COUNT. A list, a record and an enum's payload are ALL the same
+// AvraArray shape (array_clone treats every non-map box so, box_clone
+// above), so `n` here is `a->len` — the field count for a record, the
+// element count for a list — never the header's `len`, which is the
+// WRAPPER struct's own fixed byte size (40, sizeof(AvraArray)) and
+// says nothing about what the box holds. The flag is read once, in a
+// constructor, so a shipping run pays no getenv; the log fn is its
+// own out-of-line, cold body so the two hot leaves below carry no
+// extra frame for it — only the clone branch they already pay for
+// gains one more call.
+static int g_alias_log = 0;
+
+__attribute__((constructor))
+static void alias_log_init(void) {
+    g_alias_log = getenv("AVRA_ALIAS_LOG") != NULL;
+}
+
+__attribute__((noinline, cold))
+static void alias_log_clone(void* site, void* box) {
+    if (!g_alias_log) return;
+    Header* h = hdr(box);
+    int64_t n = -1;
+    if (h) {
+        n = (KIND_SHAPE(h->kind) == KIND_MAP) ? ((AvraMap*)box)->keys->len : ((AvraArray*)box)->len;
+    }
+    // UNSLID: `atos -o <binary> <addr>` reads a file offset, not a
+    // live ASLR address — subtract the image's own slide so the
+    // printed address is directly symbolicatable after the fact.
+    intptr_t slide = 0;
+#ifdef __APPLE__
+    slide = _dyld_get_image_vmaddr_slide(0);
+#endif
+    fprintf(stderr, "ALIAS_CLONE site=%p kind=%d n=%lld\n", (void*)((char*)site - slide), h ? (int)KIND_SHAPE(h->kind) : -999, (long long)n);
+}
+
 // Opens a mut cell's box for writing: itself when nothing else
 // holds it, else a clone stored into the cell (the old reference
 // released). The answer is BORROWED from the cell.
@@ -1211,6 +1249,7 @@ void* avra_cell_unique(void* slot) {
     CENSUS(note_copy(__builtin_return_address(0)));
     g_clone_site = __builtin_return_address(0);
     void* c = box_clone(p);
+    alias_log_clone(g_clone_site, c);
     g_clone_site = NULL;
     *(void**)slot = c;
     avra_rc_release(p);
@@ -1224,6 +1263,7 @@ void* avra_slot_unique(void* arr, int64_t i) {
     AvraArray* a = (AvraArray*)arr;
     g_clone_site = __builtin_return_address(0);
     void* c = box_clone(p);
+    alias_log_clone(g_clone_site, c);
     g_clone_site = NULL;
     a->data[i] = (int64_t)(uintptr_t)c;
     a->marks[i] = MARK_OWNED;
