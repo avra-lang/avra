@@ -251,6 +251,18 @@ setting — `left: collect { … }` — no slot sugar, since `name { … }`
 collides with a struct literal. `from` NEEDS NO SYNTAX: `production
 with { region: "eu" }` is exactly its meaning (settings only, children
 the base's), and reserving `from` would break ~166 names in the tree.
+S3c AS BUILT: `fn check() -> List<Diagnostic>` (F2114 holds the
+shape) runs at compile time over each instance that reads only what
+the compiler knows — literals, declarations, `const`s and what the
+instance binds itself; one built from a local, a parameter or `self`
+is a run's value and is not checked. It is a hidden `instance.check()`
+the builder mints and typing walks; lowering SETTLES it as a `const`
+expression, decodes the answer with the annotation crossing's
+`Diagnostic` reader, and speaks each at the instance (F2115); a check
+that traps says it did not run. The hole it found: a component's own
+fns were signed and never REGISTERED as methods — callable nowhere,
+though the feature's doc said they were — fixed for parsed and held
+files alike.
 Sub-slices: S3a heads, settings, bodiless, the named binding (DONE) · S3b
 children (typed, dynamic, calls, named placement) · S3c `check()`,
 `from` · S3d the `key: value` ladder over the 40 legacy sites, `config

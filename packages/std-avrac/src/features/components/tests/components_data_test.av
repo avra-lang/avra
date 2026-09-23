@@ -7,7 +7,7 @@ use @std.avrac.compiler.{Program}
 /// The provider: a row with a head, a grid of rows named at its
 /// statement, a nameable secret, and a card of mixed views.
 fn ui() -> string {
-    "export component row(id: int) {\n    label: string = \"?\"\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component secret {\n    name: string\n}\n\nexport trait View {\n    fn text() -> string\n}\n\nexport component note(t: string) {}\n\nexport component badge(n: int) {}\n\nimpl View for note {\n    fn text() -> string { self.t }\n}\n\nimpl View for badge {\n    fn text() -> string { \"#\${self.n}\" }\n}\n\nexport component card {\n    items: List<dyn View> = []\n}\n\nexport component vault {\n    keys: List<secret> = []\n}\n\nexport component split {\n    left: List<row> = []\n    right: List<row> = []\n}\n"
+    "export component row(id: int) {\n    label: string = \"?\"\n    fn doubled() -> int { self.id * 2 }\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component secret {\n    name: string\n}\n\nexport trait View {\n    fn text() -> string\n}\n\nexport component note(t: string) {}\n\nexport component badge(n: int) {}\n\nimpl View for note {\n    fn text() -> string { self.t }\n}\n\nimpl View for badge {\n    fn text() -> string { \"#\${self.n}\" }\n}\n\nexport component card {\n    items: List<dyn View> = []\n}\n\nexport component vault {\n    keys: List<secret> = []\n}\n\nexport component split {\n    left: List<row> = []\n    right: List<row> = []\n}\n"
 }
 
 fn built(main: string) -> Program {
@@ -18,6 +18,9 @@ spec "features/components — a record's instance" {
     given "the instance" {
         then "a head value fills the head field, a setting its field" {
             answered(built("let r = row 7 {\n    label: \"seven\"\n}\n\"\${r.id} \${r.label}\"")) == "7 seven"
+        }
+        then "a component's own fn is a method of its record" {
+            answered(built("let r = row 4\nr.doubled()")) == "8"
         }
         then "a field left unset takes its default" {
             answered(built("let r = row 7 { }\nr.label")) == "?"

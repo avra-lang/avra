@@ -10,7 +10,8 @@ impl NodeSemantics for ComponentSemantics {
     fn kids(e: Expr) -> List<ExprId> {
         // a feature matching its own variant
         match e {
-            .Component(_, _, _, .Expanded(x)) -> [x],
+            // a check reads the literal, so walking it walks the expansion once
+            .Component(_, _, _, .Expanded(x), check) -> [check ?? x],
             rest -> [],
         }
     }
@@ -22,6 +23,8 @@ impl NodeSemantics for ComponentSemantics {
 
     fn lower(mut cx: LowerCx, e: ExprId) -> Reg {
         let x? = cx.view.store.expansion_of(e) else { return cx.lower_defect(e, "an instance that never expanded") }
+        let check: ExprId? = cx.view.store.instance_check(e)
+        if check != null { checked(cx, e, check!) }
         cx.reg_of(x)
     }
 }

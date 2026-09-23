@@ -130,7 +130,7 @@ impl Builder {
         if stmts.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word)) }
         let block = self.block_of(stmts)
         let expansion = self.store.instantiated(t, word, heads, block)
-        .Ok(self.store.alloc_expr(Expr.Component(word.word, heads, block, BodyView.Expanded(expansion)), self.span))
+        .Ok(self.store.alloc_expr(Expr.Component(word.word, heads, block, BodyView.Expanded(expansion), null), self.span))
     }
 
     /// A record's instance: the head by position, each setting by name,
@@ -145,7 +145,8 @@ impl Builder {
         let named = if name != null && r.named { [Field { name: "name", value: self.store.alloc_expr(Expr.StrLit(name!), self.span) }] } else { [] }
         let filled = [Field { name: f, value: heads[j] } for j, f in r.head].concat([Field { name: st.name, value: st.value } for st in settings]).concat(named).concat(some_list(self.collected(slot, children)))
         let literal = self.store.alloc_expr(Expr.StructLit(Nominal(word), [Plain(f.name) for f in filled], [f.value for f in filled]), self.span)
-        .Ok(self.store.alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal)), self.span))
+        let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }
+        .Ok(self.store.alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span))
     }
 
     /// The statements a written body holds — none when no block was
