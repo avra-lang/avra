@@ -2923,4 +2923,5 @@ const char* avra_capture_end(void) {
 // above, and the other objects' through their headers, which their
 // own definitions must match. Included LAST, so all are declared.
 #include "avra_fiber.h"
+#include "avra_cores.h"
 #include "avra_rt.h"

@@ -3,7 +3,7 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, StmtId, TypeId, Type, Expr, PlaceStep, ResSides, Arrow, filled, DeclId, Binding, SeatMark, mut_mark, settled_mark, is_literal, literal_form, some_list}
+use core.{ExprId, StmtId, TypeId, Type, Expr, PlaceStep, ResSides, Arrow, filled, DeclId, Binding, SeatMark, mut_mark, settled_mark, isolated_mark, is_literal, literal_form, some_list}
 use diagnostics.{Diag, refusal, warning}
 use @std.errors.{Confidence, Edit, Suggestion}
 
@@ -98,6 +98,7 @@ impl TypeCx {
             if ws.index != g.seats[j].index { fits = false }
             if mut_mark(g.marks, j) && !mut_mark(w.marks, j) { fits = false }
             if settled_mark(g.marks, j) && !settled_mark(w.marks, j) { fits = false }
+            if isolated_mark(g.marks, j) && !isolated_mark(w.marks, j) { fits = false }
         }
         fits
     }
@@ -655,6 +656,15 @@ impl TypeCx {
     }
 
     // ── The voices: every refusal worded HERE, once ──
+    mut fn isolated_capture(a: ExprId, callee: string, seat: string, name: string, ty: TypeId, held: TypeId) {
+        let holds = if self.view.decls.is_identity(ty) { "is" } else { "holds" }
+        self.emit(refusal("type.isolated", self.loc_of(a), "`${seat}` of `${callee}` is `isolated`, and this fn captures `${name}`, which ${holds} `${self.view.types.name_of(held)}` — an isolated fn shares nothing with its caller", "captured here", "make it inside the fn, so each place it runs makes its own"))
+    }
+
+    mut fn isolated_unknown(a: ExprId, callee: string, seat: string) {
+        self.emit(refusal("type.isolated", self.loc_of(a), "`${seat}` of `${callee}` is `isolated`, and this fn value may hold anything its maker captured — an isolated fn shares nothing with its caller", "passed here", "write the fn here as a lambda, name a declared fn, or pass a parameter your own fn declares `isolated`"))
+    }
+
     /// THE arity refusal — every call shape shares the words.
     mut fn wrong_arity(e: ExprId, callee: string, want: int, found: int) {
         self.emit(refusal("type.mismatch", self.loc_of(e), "`${callee}` takes ${want} arguments, found ${found}", "this call", null))
@@ -968,9 +978,52 @@ impl TypeCx {
     mut fn seat_contracts(e: ExprId, callee: string, d: DeclId, base: int, args: List<ExprId>, receiver: ExprId?) -> bool {
         let marks = self.declared_marks(d, base, args.length)
         self.mut_seats_law(e, callee, marks, args, receiver)
+        self.isolated_seats_law(callee, self.seat_names(d), marks, args)
         let fps? = self.const_seats(callee, self.seat_names(d), marks, args) else { return false }
         if !fps.is_empty() { self.record_subst(e, d, [], fps) }
         true
+    }
+
+    // ── THE `isolated` SEATS ──
+    /// THE ISOLATED SEAT: its fn may run where nothing of the caller's
+    /// is — another core — so whatever it captures is COPIED there, and
+    /// an identity (a `Cell`, a task, a pointer, a fn value holding
+    /// either) forks into two that each believe they are the one. A
+    /// lambda capturing no identity, a declared fn, or a seat the
+    /// enclosing fn itself declared isolated fills it.
+    mut fn isolated_seats_law(callee: string, names: List<string>, marks: List<SeatMark>, args: List<ExprId>) {
+        for j, a in args {
+            if isolated_mark(marks, j) { self.isolated_arg(a, callee, seat_word(names, j)) }
+        }
+    }
+
+    mut fn isolated_arg(a: ExprId, callee: string, seat: string) {
+        match self.view.store.expr(a) {
+            .Lambda(_, _) -> self.isolated_lambda(a, callee, seat),
+            rest -> { if !self.known_unshared(a) { self.isolated_unknown(a, callee, seat) } },
+        }
+    }
+
+    /// Each capture judged: the first holding an identity is refused.
+    mut fn isolated_lambda(a: ExprId, callee: string, seat: string) {
+        let seats = self.capture_seats(a)
+        let names: List<string> = self.names.capture(a)?.names ?? []
+        for j, ty in seats {
+            let held: TypeId? = self.view.decls.identity_in(ty, [])
+            if held != null { return self.isolated_capture(a, callee, seat, seat_word(names, j), ty, held!) }
+        }
+    }
+
+    /// A fn value known to share nothing: a declared fn, or a parameter
+    /// the enclosing fn declared isolated.
+    fn known_unshared(a: ExprId) -> bool {
+        let d: DeclId? = self.bound_decl(a)
+        if d != null && self.view.decls.decl(d!).kind is .Fn { return true }
+        let b? = self.names.binding(a) else { return false }
+        match b {
+            .Param(i) -> isolated_mark(self.scope_marks, i),
+            _ -> false,
+        }
     }
 
     // ── THE `const` SEATS ──

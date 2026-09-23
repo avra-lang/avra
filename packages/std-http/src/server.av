@@ -1,13 +1,22 @@
 //! server.av — the SERVER: a listener, a handler that answers a
 //! `Request` with a `Response`, and one task per connection.
 //!
-//! `run` accepts on the calling task and spawns each connection its own
-//! task, so a handler that waits — a sleep, a query, a call out —
-//! stalls only its own connection. The handler is written
-//! synchronously, and every connection holds its OWN COPY of the
-//! application: a plain field is that connection's state, and state
-//! shared across connections lives in a `Cell` the application
-//! declares (`hits: Cell<int>`).
+//! `run` serves on every core this process may run on — one process
+//! per core, sharing nothing but the listener — or on `run(cores: n)`.
+//! Each core MAKES its own application with the server's `make`, so a
+//! `Cell` the maker builds is that core's, and so is a database handle
+//! it opens. A core accepts on its calling task and spawns each
+//! connection its own task, so a handler that waits — a sleep, a
+//! query, a call out — stalls only its own connection. The handler is
+//! written synchronously, and every connection holds its OWN COPY of
+//! its core's application: a plain field is that connection's state,
+//! and state shared across a core's connections lives in a `Cell` the
+//! application declares (`hits: Cell<int>`).
+//!
+//! A CORE THAT CRASHES STOPS THE SERVER: the rest stop as `stop` stops
+//! them, and `run` traps naming the core. Placement never changes what
+//! a program means, so a crash on one core of many ends the server as
+//! it does on one.
 //!
 //! A connection's whole state is a `Link`: its socket, the bytes read
 //! and not yet consumed, how far the head scan reached, the head
@@ -29,6 +38,20 @@ use @std.net.{Listener, Conn, NetError}
 use @std.time.{Duration, ms, secs}
 use frame.{Head, Chunker, Limits, framed, chunker, fed, status_of, limits}
 use http.{Request, Response, wire, status, read_size, as_sent}
+
+extern fn avra_cores_online() -> int
+extern fn avra_cores_group(n: int) -> int
+extern fn avra_cores_fork(g: int, serving: int) -> int
+extern fn avra_cores_stop_fd(g: int) -> int
+extern fn avra_cores_stopped(g: int) -> int
+extern fn avra_cores_count(g: int, core: int, live: int)
+extern fn avra_cores_live(g: int) -> int
+extern fn avra_cores_leave(g: int, core: int, accepted: int, err: int) -> int
+extern fn avra_cores_end_fd(g: int, core: int) -> int
+extern fn avra_cores_heard(g: int, core: int) -> int
+extern fn avra_cores_stop(g: int)
+extern fn avra_cores_result(g: int) -> int
+extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
 
 /// The deadlines a server names: a head must complete within `head`
 /// of its last byte, a body must advance within `body` of its last
@@ -53,64 +76,153 @@ type Link = {
     served: int,
 }
 
-/// The server: its listener, the application each connection copies,
-/// the handler, and two counters every copy shares.
+/// The server: its listener, the maker each core builds its
+/// application with, the handler, and this process's own state — its
+/// open connections, whether it is stopping, and the group of cores it
+/// serves in (0 alone) with its place there (-1 for the supervisor).
 export type Server<A> = {
     listener: Listener,
-    app: A,
+    make: fn() -> A,
     handle: fn(mut A, Request) -> Response,
     limits: Limits,
     timing: Timing,
     live: Cell<int>,
     stopping: Cell<bool>,
+    group: Cell<int>,
+    core: Cell<int>,
 }
 
-/// A server on `l`, its handler given each connection's copy of `app`
-/// — the handler is the last seat, so a call writes it as a trailing
-/// block: `served(l, app, limits(), timing()) { mut app, q -> … }`.
-export fn served<A>(l: Listener, app: A, limits: Limits, timing: Timing, handle: fn(mut A, Request) -> Response) -> Server<A> {
-    Server { listener: l, app: app, handle: handle, limits: limits, timing: timing, live: Cell.new(0), stopping: Cell.new(false) }
+/// A server on `l`, each core's application made by `make` — isolated,
+/// so what it makes is that core's own — and each connection's copy
+/// of it handed to the handler — the last seat, so
+/// a call writes it as a trailing block:
+/// `served(l, () -> App { … }, limits(), timing()) { mut app, q -> … }`.
+export fn served<A>(l: Listener, isolated make: fn() -> A, limits: Limits, timing: Timing, handle: fn(mut A, Request) -> Response) -> Server<A> {
+    Server { listener: l, make: make, handle: handle, limits: limits, timing: timing, live: Cell.new(0), stopping: Cell.new(false), group: Cell.new(0), core: Cell.new(-1) }
 }
+
+/// Every core this process may run on: where `run` serves unless told.
+export fn every_core() -> int { avra_cores_online() }
 
 once fn continue_line() -> Bytes { "HTTP/1.1 100 Continue\r\n\r\n".bytes() }
 
 impl Server {
+    /// Accepts until `stop` on `cores` processes that share nothing
+    /// but the listener; answers how many connections they accepted.
+    /// A connection still open when it stops is served to its end
+    /// before this answers. One core serves on the calling task, with
+    /// no process of its own.
+    fn run(cores: int = every_core()) -> Result<int, NetError> {
+        // a stopped listener's number may be another descriptor's now
+        if self.stopping.get() { return .Ok(0) }
+        if cores == 1 { return self.accepting(self.make()) }
+        let g = avra_cores_group(cores)
+        if g < 0 { return .Err(NetError { verb: "run", subject: "on ${cores} cores", errno: 0 - g }) }
+        let core = avra_cores_fork(g, self.listener.fd)
+        if core < 0 { return .Err(NetError { verb: "run", subject: "on ${cores} cores", errno: 0 - core }) }
+        if core == cores { return self.supervised(g, cores) }
+        self.cored(g, core)
+    }
+
+    /// No more connections accepted: the listener closes, every core
+    /// is told to stop, and `run` answers once the open connections
+    /// end.
+    fn stop() {
+        self.stopping.set(true)
+        let _ = self.listener.close()
+        if self.group.get() != 0 { avra_cores_stop(self.group.get()) }
+    }
+
+    /// How many connections are open — across every core, asked where
+    /// `run` supervises them.
+    fn connections() -> int {
+        if self.group.get() != 0 && self.core.get() < 0 { return avra_cores_live(self.group.get()) }
+        self.live.get()
+    }
+
+    // ── Cores ───────────────────────────────────────────────────
+
     /// Accepts until `stop`, each connection served on a task of its
-    /// own; answers how many were accepted. A connection still open
-    /// when it stops is served to its end before this answers.
-    fn run() -> Result<int, NetError> {
+    /// own over its copy of `app`; answers how many were accepted,
+    /// once every one has ended.
+    fn accepting(app: A) -> Result<int, NetError> {
         let conns = Tasks.new()
         mut accepted = 0
         while true {
             let next = self.listener.accept()
             if self.stopping.get() { return .Ok(accepted) }
             let c = next?
-            conns.push(spawn self.connection(c))
+            conns.push(spawn self.connection(c, app))
             accepted = accepted + 1
         }
         .Ok(accepted)
     }
 
-    /// No more connections accepted: the listener closes, and `run`
-    /// answers once the open ones end.
-    fn stop() {
-        self.stopping.set(true)
-        let _ = self.listener.close()
+    /// This process is core `core` of group `g`: it makes its own
+    /// application, serves until the group stops, and leaves the
+    /// process — this never answers.
+    fn cored(g: int, core: int) -> Result<int, NetError> {
+        self.group.set(g)
+        self.core.set(core)
+        spawn self.stopped_with(g)
+        match self.accepting(self.make()) {
+            .Ok(n) -> .Ok(avra_cores_leave(g, core, n, 0)),
+            .Err(e) -> .Ok(avra_cores_leave(g, core, 0, e.errno)),
+        }
     }
 
-    /// How many connections are open.
-    fn connections() -> int { self.live.get() }
+    /// Parks until group `g` stops — or its supervisor is gone — then
+    /// stops this core.
+    fn stopped_with(g: int) {
+        while avra_cores_stopped(g) == 0 { let _ = avra_fiber_park_fd(avra_cores_stop_fd(g), 0, -1) }
+        self.stop()
+    }
+
+    /// This process supervises the `cores` of group `g`: every core
+    /// waited for, the first to end stopping the rest, then one answer
+    /// for them all. Cores that ended unasked leave the listener closed
+    /// here too, so no connection waits on a port nobody accepts.
+    fn supervised(g: int, cores: int) -> Result<int, NetError> {
+        self.group.set(g)
+        let _ = watched(g, cores)
+        if !self.stopping.get() { self.stop() }
+        self.group.set(0)
+        let r = avra_cores_result(g)
+        if r < 0 { return .Err(NetError { verb: "accept", subject: "on a core", errno: 0 - r }) }
+        .Ok(r)
+    }
 
     // ── A connection ────────────────────────────────────────────
 
     /// One connection, served on its own copy of the application.
-    fn connection(c: Conn) -> int {
-        self.live.set(self.live.get() + 1)
-        mut serving = Serving { app: self.app, handle: self.handle, limits: self.limits, timing: self.timing }
+    fn connection(c: Conn, app: A) -> int {
+        self.opened(1)
+        mut serving = Serving { app: app, handle: self.handle, limits: self.limits, timing: self.timing }
         let fd = serving.conversed(Link { conn: c, peer: c.peer(), buf: "".bytes(), scanned: 0, head: null, decoder: null, out: "".bytes(), closing: false, served: 0 })
-        self.live.set(self.live.get() - 1)
+        self.opened(-1)
         fd
     }
+
+    /// This process's open connections moved by `by`, and published to
+    /// the supervisor when the process is a core.
+    fn opened(by: int) {
+        self.live.set(self.live.get() + by)
+        if self.core.get() >= 0 { avra_cores_count(self.group.get(), self.core.get(), self.live.get()) }
+    }
+}
+
+/// Every one of group `g`'s `cores` waited for; the first to end
+/// stops the rest.
+fn watched(g: int, cores: int) -> int {
+    let ends = [spawn core_ended(g, core) for core in 0..cores]
+    ends.length
+}
+
+/// Parks until core `core` of group `g` ends, then stops the rest.
+fn core_ended(g: int, core: int) -> int {
+    while avra_cores_heard(g, core) != 0 { let _ = avra_fiber_park_fd(avra_cores_end_fd(g, core), 0, -1) }
+    avra_cores_stop(g)
+    core
 }
 
 /// The server as one connection sees it: that connection's own

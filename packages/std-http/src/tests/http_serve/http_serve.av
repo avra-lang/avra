@@ -26,7 +26,7 @@ fn exchanged(c: Conn, sent: string, expected: int) -> Result<string, NetError> {
 
 fn shown() -> Result<string, NetError> {
     let l = listen("127.0.0.1", 0)?
-    let s = served(l, App { hits: Cell.new(0) }, limits(), timing()) { app, q ->
+    let s = served(l, () -> App { hits: Cell.new(0) }, limits(), timing()) { app, q ->
         app.hits.set(app.hits.get() + 1)
         text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${app.hits.get()}")
     }
@@ -38,7 +38,8 @@ fn shown() -> Result<string, NetError> {
     let two = exchanged(c, "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n", 150)?
     let three = exchanged(c, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello", 1)?
     let four = exchanged(c, "HEAD /h HTTP/1.1\r\nHost: a\r\n\r\n", 1)?
-    .Ok("${one}\n${two}\n${three}\n${four}\n${s.connections()} ${s.app.hits.get()}")
+    let five = exchanged(c, "GET /n HTTP/1.1\r\nHost: a\r\n\r\n", 1)?
+    .Ok("${one}\n${two}\n${three}\n${four}\n${five}\n${s.connections()}")
 }
 
 match shown() {

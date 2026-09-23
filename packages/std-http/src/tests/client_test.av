@@ -21,7 +21,7 @@ fn lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
 /// connected to it. A test spawns `s.run()` and then defers `done()`.
 fn duo() -> Result<Duo, ClientError> {
     let l = lifted(listen("127.0.0.1", 0))?
-    let s = served(l, App { hits: Cell.new(0) }, limits(), timing()) { app, q ->
+    let s = served(l, () -> App { hits: Cell.new(0) }, limits(), timing()) { app, q ->
         text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${q.header("x-tag") ?? "-"}|${bumped(app)}")
     }
     let c = connected("127.0.0.1", l.port, secs(2), limits())?
@@ -43,7 +43,7 @@ fn answered_by(mut d: Duo, method: Method, req: Bytes) -> Result<Answer, ClientE
 
 fn get_answer() -> Result<bool, ClientError> {
     mut d = duo()?
-    spawn d.s.run()
+    spawn d.s.run(cores: 1)
     defer d.done()
     let a = answered_by(d, .Get, request("GET", "/g", "a", [Header { name: "x-tag", value: "t1" }], "".bytes())!)?
     .Ok(a.status == 200 && a.body.text() ?? "" == "/g||t1|1" && a.header("Content-Length") == "8" && a.header("nope") == null)
@@ -51,7 +51,7 @@ fn get_answer() -> Result<bool, ClientError> {
 
 fn post_answer() -> Result<bool, ClientError> {
     mut d = duo()?
-    spawn d.s.run()
+    spawn d.s.run(cores: 1)
     defer d.done()
     let a = answered_by(d, .Post, request("POST", "/p", "a", [], "hello".bytes())!)?
     .Ok(a.status == 200 && a.body.text() ?? "" == "/p|hello|-|1")
@@ -59,7 +59,7 @@ fn post_answer() -> Result<bool, ClientError> {
 
 fn two_on_one_connection() -> Result<bool, ClientError> {
     mut d = duo()?
-    spawn d.s.run()
+    spawn d.s.run(cores: 1)
     defer d.done()
     let one = answered_by(d, .Get, request("GET", "/1", "a", [], "".bytes())!)?
     let two = answered_by(d, .Get, request("GET", "/2", "a", [], "".bytes())!)?
@@ -68,7 +68,7 @@ fn two_on_one_connection() -> Result<bool, ClientError> {
 
 fn head_answer() -> Result<bool, ClientError> {
     mut d = duo()?
-    spawn d.s.run()
+    spawn d.s.run(cores: 1)
     defer d.done()
     let a = answered_by(d, .Head, request("HEAD", "/h", "a", [], "".bytes())!)?
     let after = answered_by(d, .Get, request("GET", "/g", "a", [], "".bytes())!)?
@@ -77,7 +77,7 @@ fn head_answer() -> Result<bool, ClientError> {
 
 fn bad_reply_is_refused() -> Result<bool, ClientError> {
     mut d = duo()?
-    spawn d.s.run()
+    spawn d.s.run(cores: 1)
     defer d.done()
     let a = answered_by(d, .Get, request("GET", "/x", "a", [], "".bytes())!)
     .Ok(passes_client(a))

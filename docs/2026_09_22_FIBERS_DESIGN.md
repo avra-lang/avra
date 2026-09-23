@@ -373,3 +373,78 @@ PROOF the compiler demands before work may go there.
   (`tools/bench/request`): immutable values copied instead of reused.
   That is the reuse-in-place campaign's, not HTTP's.
 
+
+## 13. As built (cores — @std/http on every core)
+
+- ONE PROCESS PER CORE, SHARING NOTHING (P6: the thread-vs-process
+  choice dissolves once nothing is shared — then a process IS the
+  thread-local runtime, with the kernel as the isolation proof). Every
+  global the runtime holds (`g_current`, the free lists, the poller, the
+  timer heap, the descriptor table) stays a plain global. Measured on
+  the Sprite (x86-64, the runtime's `-fPIC` archive): a free-list take
+  + give costs 3.1 ns as a global and 6.0 ns as `__thread` (every
+  access through the TLS resolver), and every allocation pays it; a
+  fork costs 2.5 ms with 64 MB touched, once at start. Threads return
+  with the fork campaign's atomic retains (§1), for work that SHARES.
+- ONE LISTENER, FORKED: the cores accept from one queue. SO_REUSEPORT
+  measured no better on the C floor (below, within noise at every N),
+  and it would weaken the listener's refusal of a second binder
+  (std-net's `net_bound`).
+- `runtime/avra_cores.c`: a GROUP is a private record, one shared page
+  of slots (a core's live count, what it accepted, its errno), and
+  pipes that carry no bytes. The supervisor holds the ONE stop pipe's
+  write end: closing it — or dying — is end-of-file in every core. Each
+  core holds the write end of its OWN pipe, closed by the kernel however
+  the core ends, so the supervisor parks on it and learns of a crash
+  without a signal handler. A core keeps the calling task alone
+  (`avra_fiber_forked`) and closes every descriptor but the standard
+  three, the listener and its two pipe ends; buffered output is flushed
+  before the fork, so nothing prints once per core.
+- A CELL IS PER CORE, AND THE TYPE SAYS SO (owner, 2026-09-23): the
+  server takes a MAKER, run once on each core — `served(l, () -> App {
+  hits: Cell.new(0) }, …)`. Its seat is `isolated`: a fn that shares
+  nothing with its caller. F2111 refuses a lambda there that captures an
+  identity (a `Cell`, a task, a pointer, a fn value, a `dyn`, a type
+  parameter — or a record or enum holding one), and a fn VALUE whose
+  captures are unknown; a declared fn and an `isolated` parameter pass
+  on. The promise is `SeatMark.unshared`, so it rides the fn type: a fn
+  with an `isolated` seat does not fit a fn type promising none.
+  Cross-core shared state (`Shared<T>`, atomics) is a later slice.
+- ONE SPELLING: `s.run()` serves on every core this process may run on
+  (its affinity mask); `s.run(cores: 1)` serves on the calling task with
+  no process of its own, as F5 did. The default needed F2104 narrowed:
+  a default whose seat names no type parameter is one body even in a
+  generic fn (and a generic call now unifies only the seats it writes).
+- A CORE THAT CRASHES STOPS THE SERVER (fail-fast): placement never
+  changes what a program means, so a trap on one core of four ends it as
+  it would on one. The rest are told to stop, drain their connections,
+  and `run` traps "core i of n ended with status s — the server
+  stopped" (or "was killed by signal k"). Restart is policy for a
+  process manager above, which sees the exit. A core whose accept FAILS
+  (not a crash) answers `run`'s `Err`. `stop` (or the supervisor dying)
+  reaches every core.
+- MEASURED on a Linux Sprite (8 × EPYC; the server on cores 0..N-1, wrk
+  on the rest; `CORES=N sh tools/bench/wrk.sh`, `FLOOR=1` for the C
+  floor, forked N ways the same way):
+
+  | req/s | N | keep-alive c=50 | c=200 | c=1000 | pipelined ×16 |
+  |---|---|---|---|---|---|
+  | Avra | 1 | 43.8k | 42.6k | 35.5k | 151k |
+  | Avra | 2 | 86.7k (1.98×) | 85.3k (2.00×) | 73.2k (2.06×) | 294k (1.95×) |
+  | Avra | 4 | 165k (3.77×) | 184k (4.31×) | 161k (4.55×) | 592k (3.92×) |
+  | C floor | 1 | 73.3k | 70.7k | 61.4k | 1.08M |
+  | C floor | 2 | 143k | 143k | 129k | 2.14M |
+  | C floor | 4 | 261k | 264k | 254k | 3.21M |
+
+  Within 10% of linear at 4 cores in every column. Server CPU per
+  request does not move with N (23 µs keep-alive, 6.7 µs pipelined), so
+  the scaling is the kernel's; the gap to the floor is the per-request
+  user space (reuse in place, §12). At 4 cores the floor's pipelined
+  column is wrk-bound (4 generator threads), not server-bound.
+- RECORDED, NOT BUILT: `isolated` is spelled on a declared fn's seats
+  (`fn`, `static fn`, `mut fn`) — a lambda's, a trait's and a fn TYPE's
+  cannot spell it yet; `@std/meta`'s `Param` does not carry it across
+  the derive crossing; a descriptor held as an `int` inside a captured
+  record is closed in each core, so its use fails loud (EBADF) rather
+  than sharing. The ELF link now puts the runtime archive LAST, so a
+  member only a package object reaches is not dropped.

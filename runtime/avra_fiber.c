@@ -842,6 +842,18 @@ int64_t avra_fiber_within(int64_t ms) { return within_opened(g_current, ms); }
 
 void avra_fiber_within_end(int64_t outer) { g_current->deadline = outer; }
 
+void avra_fiber_forked(void) {
+#if AVRA_EPOLL
+    if (g_poller >= 0) close(g_poller);
+#endif
+    g_poller = -1;
+    g_ready_head = g_ready_tail = NULL;
+    g_timers_len = 0;
+    g_parked_fds = 0;
+    g_turns_since_poll = 0;
+    if (g_fds) memset(g_fds, 0, g_fds_cap * sizeof(FdWaits));
+}
+
 // ── The evaluator's tasks ───────────────────────────────────────
 //
 // A VIRTUAL task has no stack: the evaluator runs every interpreted

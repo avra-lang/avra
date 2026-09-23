@@ -3,7 +3,7 @@
 //! asks the namespace) — and the CONTEXTS' vocabularies: every
 //! method a feature's rule calls on a TypeCx, LowerCx or statement
 //! context forwards from here to the one definition.
-use core.{Expr, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, same_stmt, same_expr, same_decl, TypeRef, joined}
+use core.{Expr, FileId, DeclId, StmtId, ExprId, TypeId, PatId, Type, TypeLit, NodeStore, TypeRegistry, Binding, Param, Reg, Ins, same_stmt, same_expr, same_decl, TypeRef, joined, flatten}
 use diagnostics.{Diag, Voices, refusal}
 use @std.errors.{Loc, Frame}
 
@@ -15,6 +15,44 @@ impl Decls {
             .App(decl, _, args) -> subbed_fields(self.types, self.sig(decl)?.record_sig(), decl, args),
             .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
+    }
+
+    /// The first IDENTITY inside a value of type `ty` — a `Cell`, a
+    /// task, a host pointer, or what may hold one unseen (a fn value,
+    /// a `dyn`, a type parameter) — or null when the value is plain
+    /// data a copy duplicates whole. `seen` guards a recursive type.
+    fn identity_in(ty: TypeId, seen: List<int>) -> TypeId? {
+        if seen.contains(ty.index) { return null }
+        if self.is_identity(ty) { return ty }
+        let walked = seen.concat([ty.index])
+        let parts: List<TypeId> = match self.types.shape_of(self.types.seen_through(ty)) {
+            .Cell(_) or .Task(_) or .Tasks or .Ptr or .Fn(_, _, _) or .Dyn(_, _) or .Var(_, _, _) or .Int or .Float or .Bool or .Str or .Bytes or .Null or .EmptyList or .EmptyMap or .Void or .Error or .TypeName(_, _) -> [],
+            .List(t) or .Opt(t) -> [t],
+            .Map(k, v) or .Res(k, v) -> [k, v],
+            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) -> self.parts_of(ty),
+        }
+        for p in parts {
+            let held: TypeId? = self.identity_in(p, walked)
+            if held != null { return held }
+        }
+        null
+    }
+
+    /// Whether a value of type `ty` IS an identity — one a copy forks —
+    /// or may be one unseen: a fn value, a `dyn`, a type parameter.
+    fn is_identity(ty: TypeId) -> bool {
+        match self.types.shape_of(self.types.seen_through(ty)) {
+            .Cell(_) or .Task(_) or .Tasks or .Ptr or .Fn(_, _, _) or .Dyn(_, _) or .Var(_, _, _) -> true,
+            .Int or .Float or .Bool or .Str or .Bytes or .Null or .EmptyList or .EmptyMap or .Void or .Error or .TypeName(_, _) or .List(_) or .Opt(_) or .Map(_, _) or .Res(_, _) or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) -> false,
+        }
+    }
+
+    /// A declared type's contents: its fields, or every variant's
+    /// payloads.
+    fn parts_of(ty: TypeId) -> List<TypeId> {
+        let fields: StructSig? = self.fields_of_type(ty)
+        if fields != null { return fields!.types }
+        flatten(self.variants_of_type(ty)?.payloads ?? [])
     }
 
     /// A record field's TYPE by name, or null — the one `slot_of` then
