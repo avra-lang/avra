@@ -2,8 +2,9 @@
 //! lowering — the MEANING — in lower.av. The declaration is a
 //! STATEMENT kind: names declare program-wide in the type
 //! namespace (the driver gathers them), so here it runs its field
-//! names through the naming law and walks each field default as a
-//! body of its own.
+//! names through the naming law, walks each field default as a
+//! body of its own, and walks the record's own methods — a
+//! component declares a record that holds them.
 use core.{Expr, ExprId, StmtId, TypeId, Reg, NodeStore}
 use features.{NodeSemantics, StmtSemantics, ResolveCx, TypeCx, LowerCx, nothing}
 
@@ -43,20 +44,19 @@ impl StmtSemantics for StructDeclSemantics {
     fn resolve_stmt(mut cx: ResolveCx, s: StmtId) {
         decl_resolve(cx, s)
         for d in default_exprs(cx.view.store, s) { cx.walk_under([], d) }
+        cx.impl_stmts(cx.view.store.member_fns(s))
     }
 
-    // a field's default is a declaration of its own, typed as one
-
+    // a field's default is a declaration of its own, typed as one; so
+    // is each of the record's methods
 }
 
 /// The declaration's field names run the naming law; the driver
 /// owns the namespace and the field table.
 fn decl_resolve(mut cx: ResolveCx, s: StmtId) {
     if cx.refuses_nested(s, "resolve.nested_type", "type declarations") { return }
-    match cx.view.store.stmt(s) {
-        .StructDecl(_, _, fields) -> cx.check_params(fields, s),
-        _ -> nothing(),
-    }
+    let record? = cx.view.store.struct_parts(s) else { return }
+    cx.check_params(record.fields, s)
 }
 
 /// The defaults a declaration's fields carry.

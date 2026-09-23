@@ -4,8 +4,8 @@
 //! so none outlives the block it was made in. A `Tasks` owner holds
 //! tasks whose answers nobody reads — `conns.push(spawn serve(c))` —
 //! shedding each as it finishes, so a loop that never ends owns only
-//! the tasks still running. `within d { … }` runs
-//! its block under a deadline: every park inside it ends by then.
+//! the tasks still running. A deadline is `@std/time`'s `within`
+//! component, over the scheduler's rows.
 use features.{LanguageFeature, BuilderRow, PropertyRow, MethodRow, ReceiverEffect, TypeRow, no_law, no_variants, TypeArgs}
 use core.{Type}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
@@ -13,9 +13,8 @@ use diagnostics.{DiagCode}
 
 export fn tasks() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name     | build
-        "spawn"  | build_spawn
-        "within" | build_within
+        name    | build
+        "spawn" | build_spawn
     }
     let properties = table<PropertyRow> {
         name    | takes   | check       | lower
@@ -25,7 +24,6 @@ export fn tasks() -> LanguageFeature {
     let codes = table<DiagCode> {
         kind               | id      | summary
         "type.task_escape" | "F2107" | "a task is joined by the block that spawned it"
-        "type.within"      | "F2110" | "`within` takes a `Duration` — how long its block may wait"
     }
     let methods = table<MethodRow> {
         name   | takes         | check      | lower      | effect
@@ -39,10 +37,9 @@ export fn tasks() -> LanguageFeature {
     }
     component LanguageFeature f {
         name = "tasks"
-        docs = "`spawn e` runs `e` as a task beside the spawner and answers its `Task<T>`; `t.await` parks until it answers; `t.done` asks without parking. A task is joined where the last binding or list holding it ends. `within d { … }` gives its block a deadline `d` from now that every park inside — in this task or one it spawns — obeys."
+        docs = "`spawn e` runs `e` as a task beside the spawner and answers its `Task<T>`; `t.await` parks until it answers; `t.done` asks without parking. A task is joined where the last binding or list holding it ends."
         gram = grammar {
             primary = "spawn" v:expression -> spawn(v)
-            primary = "within" d:expression b:block -> within(d, b) @head(d)
         }
         builders = rows
         properties = properties
