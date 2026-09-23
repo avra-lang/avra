@@ -2,6 +2,7 @@
 // not drift. Each row is an attack the red team ran against the
 // lexer's anchor and the source projection.
 use @std.avrac.testing.{projected}
+use @std.avrac.compiler.{parse_source}
 
 spec "docs — the declaration-leading `///` surface" {
     given "what detaches a group" {
@@ -41,6 +42,26 @@ spec "docs — the declaration-leading `///` surface" {
         then "a doc survives each declaration prefix the lexer accepts" {
             let out = projected("/// k\nconst K: int = 3\n\n/// e\nextern fn puts(s: string) -> int\n\n/// o\nonce fn seed() -> string { \"x\" }")
             out.contains("/// k\nconst K: int = 3") && out.contains("/// e\nextern fn puts(s: string) -> int") && out.contains("/// o\nonce fn seed() -> string")
+        }
+    }
+    given "a mark on a declared member" {
+
+        // `@m` before a variant is a MARK (features/annotations/mod.av:
+        // "a mark is data where an annotation is a call") — the lexer
+        // cannot tell it from an ANNOTATION wrapping a real declaration,
+        // since both are one `@word` token. A `///` group anchored on
+        // one is kept as a remark, exactly as an unmarked variant's is:
+        // the mark looking like a declaration prefix must not let its
+        // doc drift onto whatever statement happens to follow.
+        then "an annotated variant's `///` round-trips as a remark, not a dropped doc" {
+            projected("enum E {\n    /// doc a\n    A\n    /// doc b\n    @m B(x: int)\n    C\n}") == "enum E {\n    /// doc a\n    A\n    /// doc b\n    @m B(x: int)\n    C\n}"
+        }
+        then "an annotated variant's `///` does not fold into the next real declaration's identity" {
+            let with_enum = parse_source("enum E {\n    A\n    /// doc b\n    @m B(x: int)\n    C\n}\n\n/// real doc\nfn f() {}\n")
+            let alone = parse_source("/// real doc\nfn f() {}\n")
+            let f = with_enum.stmts.last()!
+            let g = alone.stmts.last()!
+            (with_enum.store.doc_comment(f) ?? []).join("\n") == "real doc" && with_enum.store.stmt_fingerprint(f) == alone.store.stmt_fingerprint(g)
         }
     }
 }

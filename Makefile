@@ -599,7 +599,7 @@ witness: $(COMPILER_OBJS) $(PACKAGE_OBJS)
 # one with no git tree to name (a Sprite's synced copy) — `write`
 # refuses in that case, which is honest and not a gate failure, so
 # its status is discarded here exactly as sprite-build.sh's call does.
-gate: seed-check stems vocab fingerprints rt-header rt-ns witnesses externs idioms cited attack tested runtime-tests traps witness cache-attacks
+gate: seed-check stems vocab fingerprints rt-header rt-ns witnesses externs idioms cited fmt-lossless attack tested runtime-tests traps witness cache-attacks
 	@sh tools/gate_receipt.sh --self-test
 	@sh tools/watch.sh --self-test
 	@sh tools/gate_receipt.sh write || true

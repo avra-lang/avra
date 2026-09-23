@@ -99,6 +99,35 @@ export fn new_node_store() -> NodeStore {
     }
 }
 
+/// One `///` line as written back: the conventional space restored,
+/// `///` alone for a line that carried none. The one spelling of this
+/// projection — a statement's own doc lines print through it, and so
+/// does an orphaned group falling back to remarks, so the two paths
+/// agree on what a doc line looks like.
+export fn doc_line_text(line: string) -> string {
+    if line.is_empty() { "///" } else { "/// ${line}" }
+}
+
+/// Two remark lists, each already in source order, folded into one.
+/// A doc group orphaned after the file's remarks were set is not
+/// appended — appending would leave the list unsorted and the
+/// printer's forward-only cursor would misplace or skip it.
+fn merged_remarks(a: List<Remark>, b: List<Remark>) -> List<Remark> {
+    mut out: List<Remark> = []
+    mut i = 0
+    mut j = 0
+    while i < a.length && j < b.length {
+        if a[i].at <= b[j].at {
+            out.push(a[i])
+            i = i + 1
+        } else {
+            out.push(b[j])
+            j = j + 1
+        }
+    }
+    out.concat(a.slice(i, a.length)).concat(b.slice(j, b.length))
+}
+
 impl NodeStore {
     /// The one expression-allocation seam.
     fn alloc_expr(e: Expr, span: Span? = null) -> ExprId {
@@ -513,6 +542,16 @@ impl NodeStore {
     /// Where a declaration's doc group began, or -1 when it has none.
     fn doc_at(s: StmtId) -> int {
         self.doc_ats.get()[s.index]
+    }
+
+    /// A `///` group whose anchor opened a MARK, not a declaration —
+    /// no statement claims it, so it survives as one remark per line,
+    /// in the author's place. Merged into the file's remark order by
+    /// offset: `keep_remarks` runs first, so this extends what it set
+    /// rather than racing it.
+    fn orphan_doc(lines: List<string>, line_ats: List<int>) {
+        let added = [Remark { trivia: Trivia.Comment(doc_line_text(line)), at: line_ats[i] } for i, line in lines]
+        self.remarks.set(merged_remarks(self.remarks.get(), added))
     }
 
     /// The statement whose span begins at or after `at`, earliest

@@ -142,10 +142,12 @@ fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, words: BlockWord
     let lexed = lex_blocks(src.text, [g.word for g in words.grammars], [c.word for c in words.components])
     let build = (name: string, args: List<Captured<LangNode>>, span: Span?) -> build_named(lang.builders, store, name, args, span, src.text, words)
     let o = if telling { run_grammar<LangNode>(lang.syntax!, lexed.tokens, build) } else { run_untold<LangNode>(lang.syntax!, lexed.tokens, build) }
-    attach_docs(store, lexed.docs)
     // a remark means nothing to any pass; it rides the store so the
-    // printer can put it back where it was written
+    // printer can put it back where it was written. Set before
+    // attach_docs: an orphaned doc group extends this list, and
+    // needs it already standing to merge into.
     store.keep_remarks(lexed.remarks)
+    attach_docs(store, lexed.docs)
     // what a block's grammar refused speaks with the parse, at the block
     let blocked = [block_diagnostic(v) for v in store.block_voices.get()]
     let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics).concat(blocked)
@@ -188,15 +190,39 @@ impl Decls {
     }
 }
 
-/// Attach each source-ordered doc group to the nearest statement
-/// beginning after its declaration-prefix anchor. This includes
-/// nested methods; annotations and `export` precede the declaration
-/// node's own span, so token equality is deliberately not required.
+/// Attach each source-ordered doc group to the declaration its
+/// prefix run opens — the nearest statement beginning after the
+/// group's anchor, but only where nothing besides that run (an
+/// `export`/marker keyword, or the annotations that wrap the
+/// statement) stands in between. This includes nested methods;
+/// annotations and `export` precede the declaration node's own
+/// span, so token equality is deliberately not required there. A
+/// group whose claim fails — its anchor was a MARK's `@word`, not
+/// an ANNOTATION's, and nothing else stands between it and the
+/// next real statement to redeem it — is not forced onto whatever
+/// statement happens to follow; it survives as a remark instead.
 fn attach_docs(store: NodeStore, docs: List<DocComment>) {
     for doc in docs {
-        let target = store.statement_after(doc.before)
-        if target != null { store.document(target!, doc.lines, doc.at) }
+        let target = doc_target(store, doc)
+        if target == null {
+            store.orphan_doc(doc.lines, doc.line_ats)
+        } else {
+            store.document(target!, doc.lines, doc.at)
+        }
     }
+}
+
+/// The statement `doc` opens, or null when its anchor cannot be
+/// claimed. A keyword anchor (`fn`, `export`, …) always opens a
+/// real declaration, however far `export` or an annotation run sits
+/// ahead of the statement's own span — those are the only things a
+/// keyword can precede. A `@word` anchor is ambiguous at the lexer,
+/// so it claims a statement only when the parse recorded an
+/// ANNOTATION starting at that exact offset; a MARK never does.
+fn doc_target(store: NodeStore, doc: DocComment) -> StmtId? {
+    let target? = store.statement_after(doc.before) else { return null }
+    if !doc.pkg { return target }
+    if store.annotations_of(target).any(it.span != null && it.span!.lo == doc.before) { target } else { null }
 }
 
 /// The program's statements in order. A recovery hole becomes an

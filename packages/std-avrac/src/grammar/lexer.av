@@ -92,8 +92,13 @@ export type LexError = { message: string, span: Span }
 /// A declaration-leading `///` group, one entry per line. `before`
 /// is the first token after the group; parsing uses that source-order
 /// anchor to attach the lines without making comments part of the
-/// grammar.
-export type DocComment = { lines: List<string>, before: int, at: int }
+/// grammar. `line_ats` is each line's own offset, kept so a group
+/// that turns out to open a MARK rather than a declaration can fall
+/// back to a remark per line, in place. `pkg` marks a `@`-anchored
+/// group: a `@word` opens either an ANNOTATION (a declaration's own
+/// prefix) or a MARK (a variant's, a field's) — the same token at
+/// the lexer, so only the parse that follows can tell them apart.
+export type DocComment = { lines: List<string>, before: int, at: int, line_ats: List<int>, pkg: bool }
 
 /// Every token, retained doc comment and problem from one pass.
 export type LexResult = { tokens: List<Token>, docs: List<DocComment>, remarks: List<Remark>, errors: List<LexError> }
@@ -1059,7 +1064,7 @@ impl Lexing {
         } else {
             if !self.pending.is_empty() {
                 if declaration_start(t) {
-                    self.docs.push(DocComment { lines: self.pending, before: t.span.lo, at: self.pending_at })
+                    self.docs.push(DocComment { lines: self.pending, before: t.span.lo, at: self.pending_at, line_ats: self.pending_ats, pkg: t.kind == TokenKind.Pkg })
                     self.pending = []
                     self.pending_ats = []
                 } else {
