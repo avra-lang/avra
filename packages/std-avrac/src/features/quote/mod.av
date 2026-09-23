@@ -15,6 +15,7 @@ export fn quote_lit() -> LanguageFeature {
         name        | build
         "quote"     | build_quote
         "quote_pat" | build_quote_pat
+        "run_hole"  | build_run_hole
     }
     let codes = table<DiagCode> {
         kind                   | id      | summary
@@ -26,13 +27,15 @@ export fn quote_lit() -> LanguageFeature {
         "type.quote_pat_type"  | "F2095" | "a `quote` pattern takes no hole in type position yet"
         "type.quote_pat_seat"  | "F2096" | "a `quote` pattern's hole cannot bind at this seat — an embedded name/binder hole, or an arm hole"
         "type.quote_pat_mixed" | "F2116" | "a `quote` pattern's binder is used at both a code seat and a name seat"
+        "type.quote_pat_run"   | "F2118" | "two run holes with nothing between them — no scan can split them"
     }
     LanguageFeature quote_lit {
         name: "quote"
-        docs: "`quote { … }` — a template parsed here: statements, declarations or arms; \${e} is a hole typed by its seat. In PATTERN position it matches code structurally and binds its holes."
+        docs: "`quote { … }` — a template parsed here: statements, declarations or arms; \${e} is a hole typed by its seat, and \${..xs} at an expression or statement seat is a RUN, binding a whole span of siblings. In PATTERN position it matches code structurally and binds its holes."
         gram: grammar {
-            primary = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:expression )? he:HOLE_END )* -> quote(o, a, s, c, hb, h, he)
-            pattern = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:expression )? he:HOLE_END )* -> quote_pat(o, a, s, c, hb, h, he)
+            primary = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:hole_content )? he:HOLE_END )* -> quote(o, a, s, c, hb, h, he)
+            pattern = "quote" o:"{" ( a:arm | s:stmt | BREAK )* c:"}" ( hb:HOLE_BEGIN ( h:hole_content )? he:HOLE_END )* -> quote_pat(o, a, s, c, hb, h, he)
+            hole_content = ".." n:NAME -> run_hole(n) | e:expression -> e
         }
         builders: rows
         diags: codes

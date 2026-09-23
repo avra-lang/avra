@@ -266,3 +266,40 @@ export rule hand_sized_index {
 fn hand_sized(e: Code, k: Code) -> Fix {
     Fix.Say(warning("style.hand_sized_column", e.loc(), "`${e.text()}.index - ${k.text()}` is a fact column sized by hand, or an id read through an offset — SideTable<V> states the window, the growth and the out-of-window defect once", "this arithmetic", null))
 }
+
+/// A `mut` list built to answer "have I seen this before" — a
+/// POSITION law once the whole list is already in hand: the first
+/// index a value occurs at is decided by `.index_of`, compared
+/// against the current one (`xs.index_of(x) < j`, over `enumerate`),
+/// which is what `duplicate_names` (features/contract.av) already
+/// reads instead of accumulating. `${..head}`/`${..body}` — a run
+/// hole (avra-8sb5.25.10) — is what lets this rule sit ANYWHERE in
+/// the enclosing block rather than only as its first statement.
+@keeps("{\n    mut seen: List<string> = []\n    log(x)\n}")
+export rule seen_accumulator {
+    quote {
+        {
+            ${..head}
+            mut ${seen}: List<string> = ${init}
+            ${..body}
+        }
+    } if calls(body, seen, "contains") && calls(body, seen, "push") -> seen_accumulator_found(seen, init),
+}
+
+/// Whether ANY of `body`'s statements calls `${seen}.${verb}(` — a
+/// plain fn (not a lambda) so `seen`, a NAME hole's bound `string`,
+/// is an ordinary parameter here rather than a closure's capture.
+fn calls(body: List<Code>, seen: string, verb: string) -> bool {
+    let want = seen + "." + verb + "("
+    mut i = 0
+    while i < body.length {
+        if body[i].text().contains(want) { return true }
+        i = i + 1
+    }
+    false
+}
+
+fn seen_accumulator_found(seen: string, init: Code) -> Fix {
+    let message = "`mut " + seen + "` accumulates what has been seen so a later turn can ask `" + seen + ".contains(...)` — once the whole list it is scanning is already in hand, that is a POSITION law: `xs.index_of(x) < j`, over `enumerate`"
+    Fix.Say(warning("style.seen_accumulator", init.loc(), message, "this accumulator", null))
+}

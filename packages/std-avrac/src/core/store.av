@@ -47,6 +47,10 @@ export type NodeStore = {
     // written inside one — a hole
     type_lits: Cell<List<bool>>,
     holes: Cell<List<bool>>,
+    // a `${..name}` hole — a RUN, binding a sibling span rather than
+    // one node; the mark rides the hole's own CONTENT expr, never the
+    // quote body's placeholder
+    run_holes: Cell<List<bool>>,
     // a string written `"""raw"""`, never `"escaped"` — the printer's
     // only way to tell them apart once both are one StrLit
     raw_strings: Cell<List<bool>>,
@@ -88,6 +92,7 @@ export fn new_node_store() -> NodeStore {
         trailing: list_cell(),
         type_lits: list_cell(),
         holes: list_cell(),
+        run_holes: list_cell(),
         raw_strings: list_cell(),
         grammar_lits: list_cell(),
         tables: list_cell(),
@@ -135,6 +140,7 @@ impl NodeStore {
         self.trailing.push(false)
         self.type_lits.push(false)
         self.holes.push(false)
+        self.run_holes.push(false)
         self.raw_strings.push(false)
         self.grammar_lits.push(null)
         self.tables.push(null)
@@ -240,6 +246,17 @@ impl NodeStore {
 
     fn is_hole(e: ExprId) -> bool {
         self.holes.get()[e.index]
+    }
+
+    /// A hole written `${..name}` — a RUN, standing for zero or more
+    /// sibling nodes rather than one.
+    fn mark_run_hole(e: ExprId) {
+        self.run_holes.set_at(e.index, true)
+        self.expr_fingerprints.set_at(e.index, fp(149, [self.expr_fingerprints.get()[e.index]]))
+    }
+
+    fn is_run_hole(e: ExprId) -> bool {
+        self.run_holes.get()[e.index]
     }
 
     /// Where a quote's runs of text start in the source, one per part.

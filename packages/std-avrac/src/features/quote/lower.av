@@ -2,7 +2,7 @@
 //! offset, its runs, and its fills — each fill coerced by its seat's
 //! kind through a `@std/meta` row — wrapped as the kind the body
 //! parsed as. No new instruction.
-use core.{ExprId, Reg, DeclId, PatId, TypeId, HoleKind, MetaKind, FillClass, At, Shape, QuoteHole, hole_kinds, quote_kind, holes_kind, holes_seat, quote_pat_holes, quote_pat_names, quote_pat_root, quote_pat_shape, quote_pat_is_text}
+use core.{ExprId, Reg, DeclId, PatId, TypeId, HoleKind, MetaKind, FillClass, At, Shape, QuoteHole, hole_kinds, quote_kind, holes_kind, holes_seat, quote_pat_holes, quote_pat_names, quote_pat_root, quote_pat_shape, quote_pat_is_text, quote_pat_is_run}
 use features.{LowerCx, EnumSig}
 
 fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -98,12 +98,15 @@ fn meta_call(mut cx: LowerCx, e: ExprId, verb: string, args: List<Reg>, ret: Typ
 // this feature's own lowering computed, and there is nowhere yet to
 // lay such a value out as static data — so the same construction
 // sequence runs again on every attempt, a real cost, never hidden.
-// `matched` is called by symbol through the same one-door lookup
+// `matched_runs` is called by symbol through the same one-door lookup
 // `meta_call` uses, over `@std/avrac` instead of `@std/meta`.
 
 /// `pat_accepts`: the subject's `view.store`/`at` read, the pattern's
-/// own Shape rebuilt, `core.matched` called — its answer stashed for
-/// the binds, `pat_accepts` itself the null test on it.
+/// own Shape rebuilt, `core.matched_runs` called — its answer stashed
+/// for the binds, `pat_accepts` itself the null test on it.
+/// `matched_runs` answers ONE SPAN per binder (`List<At>`, never a
+/// bare `At`) so a `Run` and an ordinary hole share the one carried
+/// shape — `quote_pat_binds` is where the two read apart again.
 export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: TypeId) -> Reg {
     let root? = quote_pat_root(cx.view.store, body) else { return no_root(cx) }
     let holes = quote_pat_holes(cx.view.store, body)
@@ -119,17 +122,19 @@ export fn quote_pat_accepts(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty
     let subj_store = cx.field_named(view, view_ty, "store", store_ty)
     let subj_at = cx.field_named(v, vty, "at", at_ty)
     let s = shape_reg(cx, shape_ty, cx.type(List<shape_ty>), shape)
-    let answer_ty = cx.type(List<at_ty>?)
-    let answer = avrac_call(cx, "matched", [subj_store, subj_at, s], answer_ty)
+    let answer_ty = cx.type(List<List<at_ty>>?)
+    let answer = avrac_call(cx, "matched_runs", [subj_store, subj_at, s], answer_ty)
     cx.bind_test(p, [answer])
     cx.presence_of(answer, answer_ty)
 }
 
-/// One binder per name, in first-occurrence order — a code seat
-/// packs the subject's `of` with the `At` `matched` bound there, as
+/// One binder per name, in first-occurrence order — an ordinary code
+/// seat packs the subject's `of` with the ONE `At` its span holds, as
 /// before; a NAME seat reads that same `At`'s own name text back
 /// instead (`own_name_at`) — present by construction, since
-/// `match_named_node` (shape.av) never binds one it could not read.
+/// `match_named_node` (shape.av) never binds one it could not read; a
+/// RUN seat wraps its WHOLE span (`run_coded`, features/code.av) as a
+/// `List<Code>` instead of unwrapping one element.
 export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: TypeId) -> List<Reg> {
     let regs = cx.test_regs_of(p)
     if regs.length != 1 { return untested(cx) }
@@ -141,19 +146,25 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
     let of_ty = avrac_self(cx, "Analysed")
     let of = cx.field_named(v, vty, "of", of_ty)
     let subj_store = cx.field_named(cx.field_named(of, of_ty, "view", avrac_self(cx, "FileView")), avrac_self(cx, "FileView"), "store", avrac_self(cx, "NodeStore"))
-    let carried = cx.carried_of(answer, cx.type(List<at_ty>?))
+    let carried = cx.carried_of(answer, cx.type(List<List<at_ty>>?))
+    let list_at_ty = cx.type(List<at_ty>)
     mut out: List<Reg> = []
     // LICENSED I3: each binder's bind is packed in binder order, its own mint
     for j, n in names {
-        let at_j = cx.slot_read(carried, j, at_ty)
-        out.push(bind_of(cx, body, of, code_ty, subj_store, at_j, quote_pat_is_text(holes, n)))
+        let span_j = cx.slot_read(carried, j, list_at_ty)
+        out.push(bind_of(cx, body, of, code_ty, subj_store, span_j, at_ty, quote_pat_is_text(holes, n), quote_pat_is_run(holes, n)))
     }
     out
 }
 
-/// One binder's value: a code seat packs `Code { of, at }`; a name
-/// seat reads the `At`'s own name text.
-fn bind_of(mut cx: LowerCx, body: ExprId, of: Reg, code_ty: TypeId, store: Reg, at_j: Reg, text: bool) -> Reg {
+/// One binder's value: a RUN seat wraps its whole span; a code or
+/// name seat reads the span's ONE element (`bound_hole`/
+/// `bound_name_hole`, shape.av, never bind more) and proceeds as
+/// before — a code seat packs `Code { of, at }`, a name seat reads
+/// the `At`'s own name text.
+fn bind_of(mut cx: LowerCx, body: ExprId, of: Reg, code_ty: TypeId, store: Reg, span_j: Reg, at_ty: TypeId, text: bool, run: bool) -> Reg {
+    if run { return avrac_call(cx, "run_coded", [of, span_j], cx.type(List<code_ty>)) }
+    let at_j = cx.slot_read(span_j, 0, at_ty)
     if text { return text_bind(cx, body, store, at_j) }
     cx.packed_struct(code_ty, [of, at_j])
 }
@@ -173,6 +184,7 @@ fn shape_reg(mut cx: LowerCx, shape_ty: TypeId, list_ty: TypeId, s: Shape) -> Re
     let sig? = cx.variants_of(shape_ty) else { return shape_untagged(cx, shape_ty) }
     match s {
         .Hole(index) -> tagged(cx, shape_ty, shape_tag(cx, sig, "Hole"), [cx.const_int(index)]),
+        .Run(index) -> tagged(cx, shape_ty, shape_tag(cx, sig, "Run"), [cx.const_int(index)]),
         .Node(shallow, kids) -> {
             let kid_regs = [shape_reg(cx, shape_ty, list_ty, k) for k in kids]
             tagged(cx, shape_ty, shape_tag(cx, sig, "Node"), [cx.const_int(shallow), boxed(cx, list_ty, kid_regs)])

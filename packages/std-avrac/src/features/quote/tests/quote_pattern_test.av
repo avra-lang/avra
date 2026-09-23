@@ -140,6 +140,93 @@ spec "features/quote — a quote in pattern position" {
             refused_with("match 1 { quote { \${x}(\${x}) } -> true, _ -> false }", "F2116")
         }
     }
+    given "a run hole" {
+
+        then "a call's arguments — `\${..args}` binds every argument, in order" {
+            match code_of(analyze_source("f(1, 2, 3)")) {
+                quote { f(${..args}) } -> args.length == 3 && args[0].text() == "1" && args[2].text() == "3",
+                _ -> false,
+            }
+        }
+        then "an empty run — no arguments at all" {
+            match code_of(analyze_source("f()")) {
+                quote { f(${..args}) } -> args.length == 0,
+                _ -> false,
+            }
+        }
+        then "a run at the end, after a fixed argument" {
+            match code_of(analyze_source("f(1, 2, 3)")) {
+                quote { f(1, ${..rest}) } -> rest.length == 2 && rest[0].text() == "2" && rest[1].text() == "3",
+                _ -> false,
+            }
+        }
+        then "a run before a fixed argument, taking the minimal prefix" {
+            match code_of(analyze_source("f(1, 2, 3)")) {
+                quote { f(${..rest}, 3) } -> rest.length == 2 && rest[0].text() == "1" && rest[1].text() == "2",
+                _ -> false,
+            }
+        }
+        then "a list literal's elements" {
+            match code_of(analyze_source("[1, 2, 3]")) {
+                quote { [${..xs}] } -> xs.length == 3,
+                _ -> false,
+            }
+        }
+        then "a block's statements — the run BEFORE a fixed one, by count and content (a STATEMENT's own span rides to the next token, so its text is trimmed here — an EXPRESSION seat's span never carries that, as the trailing-tail case below shows bare)" {
+            match code_of(analyze_source("{\n    a\n    b\n    let z = 5\n    c\n}")) {
+                quote {
+                    {
+                        ${..before}
+                        let ${x} = ${e}
+                        ${..after}
+                    }
+                } -> before.length == 2 && before[0].text().trim() == "a" && before[1].text().trim() == "b",
+                _ -> false,
+            }
+        }
+        then "a block's statements — the fixed statement's own bind" {
+            match code_of(analyze_source("{\n    a\n    b\n    let z = 5\n    c\n}")) {
+                quote {
+                    {
+                        ${..before}
+                        let ${x} = ${e}
+                        ${..after}
+                    }
+                } -> x == "z",
+                _ -> false,
+            }
+        }
+        then "a block's statements — the run AFTER a fixed one, its trailing tail" {
+            match code_of(analyze_source("{\n    a\n    b\n    let z = 5\n    c\n}")) {
+                quote {
+                    {
+                        ${..before}
+                        let ${x} = ${e}
+                        ${..after}
+                    }
+                } -> after.length == 1 && after[0].text() == "c",
+                _ -> false,
+            }
+        }
+        then "a block's statements — an empty run on the near side" {
+            match code_of(analyze_source("{\n    let z = 5\n    c\n}")) {
+                quote {
+                    {
+                        ${..before}
+                        let ${x} = ${e}
+                        ${..after}
+                    }
+                } -> before.length == 0 && after.length == 1,
+                _ -> false,
+            }
+        }
+        then "two run holes with nothing between them refuse — F2117" {
+            refused_with("match 1 { quote { f(\${..a}, \${..b}) } -> true, _ -> false }", "F2118")
+        }
+        then "a run binder mixed with a bare occurrence of the same name refuses" {
+            refused_with("match 1 { quote { f(\${..xs}) + \${xs} } -> true, _ -> false }", "F2116")
+        }
+    }
     given "a nested match's own arms hold `Pat.Bind`/`Pat.Variant` NAME holes too" {
 
         then "a bind pattern's own name binds its text" {
@@ -163,8 +250,8 @@ spec "features/quote — a quote in pattern position" {
         then "a type-seat hole" {
             refused_with("match 1 { quote { let x: \${T} = 1 } -> true, _ -> false }", "F2095")
         }
-        then "a run hole `\${..xs}` does not lex as one at all — refused at parse, not at typing" {
-            !analyze_source("match 1 { quote { \${..xs} } -> true, _ -> false }").clean()
+        then "a run hole with no node around it — the whole pattern is `\${..xs}`" {
+            refused_with("match 1 { quote { \${..xs} } -> true, _ -> false }", "F2118")
         }
     }
     given "fingerprint_pat" {
