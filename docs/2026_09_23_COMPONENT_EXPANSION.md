@@ -243,6 +243,14 @@ seat's type was known is typed again under it, so a stranger is
 refused where it stands and a `dyn` slot boxes each element; and
 `dyn` acceptance asks the trait DECLARATION, so a user need not
 import a provider's trait to fill its `List<dyn T>` field.
+S3b AS BUILT: a kept LIST spreads inside `collect` (a comprehension
+child is its rows), unless the collect holds lists; a NAMED instance
+(`secret api`) is kept as a child at any depth and binds for its
+siblings; a record with two `List` fields takes each by name as a
+setting — `left: collect { … }` — no slot sugar, since `name { … }`
+collides with a struct literal. `from` NEEDS NO SYNTAX: `production
+with { region: "eu" }` is exactly its meaning (settings only, children
+the base's), and reserving `from` would break ~166 names in the tree.
 Sub-slices: S3a heads, settings, bodiless, the named binding (DONE) · S3b
 children (typed, dynamic, calls, named placement) · S3c `check()`,
 `from` · S3d the `key: value` ladder over the 40 legacy sites, `config
@@ -287,7 +295,7 @@ the vision's `GET "/x" -> …`) is designed after S3.
 | calls as children | any expression whose TYPE a slot takes (`order_row(o)`); the type is the guard, so `println(…)` still refuses |
 | named slot placement | a slot's name opens a block for it (`header { … }`) when slots share a type |
 | `check()` | a component method answering `List<Diagnostic>`, run at compile time over settled settings |
-| `from` | `deploy staging from production { … }` — an instance built on another (`with` underneath) |
+| `from` | REVISED: `production with { … }` — the existing `with`, no new word (a keyword would reserve `from` everywhere) |
 | growth | an exported component's new setting must carry a default; a required one added later refuses |
 | folded in | canonical layout (one line with commas, or one per line without); `avra explain <component>` prints a reference card; `expands_to` golden helper for library authors |
 | units | later, their own design (`5 seconds` stays `secs(5)` for now) |

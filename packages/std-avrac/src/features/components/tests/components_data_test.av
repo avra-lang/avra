@@ -7,11 +7,11 @@ use @std.avrac.compiler.{Program}
 /// The provider: a row with a head, a grid of rows named at its
 /// statement, a nameable secret, and a card of mixed views.
 fn ui() -> string {
-    "export component row(id: int) {\n    label: string = \"?\"\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component secret {\n    name: string\n}\n\nexport trait View {\n    fn text() -> string\n}\n\nexport component note(t: string) {}\n\nexport component badge(n: int) {}\n\nimpl View for note {\n    fn text() -> string { self.t }\n}\n\nimpl View for badge {\n    fn text() -> string { \"#\${self.n}\" }\n}\n\nexport component card {\n    items: List<dyn View> = []\n}\n"
+    "export component row(id: int) {\n    label: string = \"?\"\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component secret {\n    name: string\n}\n\nexport trait View {\n    fn text() -> string\n}\n\nexport component note(t: string) {}\n\nexport component badge(n: int) {}\n\nimpl View for note {\n    fn text() -> string { self.t }\n}\n\nimpl View for badge {\n    fn text() -> string { \"#\${self.n}\" }\n}\n\nexport component card {\n    items: List<dyn View> = []\n}\n\nexport component vault {\n    keys: List<secret> = []\n}\n\nexport component split {\n    left: List<row> = []\n    right: List<row> = []\n}\n"
 }
 
 fn built(main: string) -> Program {
-    provided("use @x.c.{row, grid, secret, note, badge, card}\n" + main, ui())
+    provided("use @x.c.{row, grid, secret, note, badge, card, vault, split}\n" + main, ui())
 }
 
 spec "features/components — a record's instance" {
@@ -48,6 +48,14 @@ spec "features/components — a record's instance" {
         }
         then "a comprehension of views boxes each into a `dyn` slot" {
             answered(built("let c = card {\n    [badge i for i in 0..3]\n    note \"x\"\n}\n[v.text() for v in c.items].join(\" \")")) == "#0 #1 #2 x"
+        }
+    }
+    given "named children and named slots" {
+        then "a named child binds for its siblings and is a child at any depth" {
+            answered(built("let v = vault {\n    secret api\n    for i in 0..1 {\n        secret db\n    }\n    api\n}\n[k.name for k in v.keys].join(\",\")")) == "api,db,api"
+        }
+        then "two slots each take a `collect` by name" {
+            answered(built("let s = split {\n    left: collect {\n        row 1\n        row 2\n    }\n    right: collect {\n        for i in 0..3 { row i }\n    }\n}\n\"\${s.left.length} \${s.right.length}\"")) == "2 3"
         }
     }
     given "visible magic" {
