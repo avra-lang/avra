@@ -34,11 +34,19 @@ fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, tdecl: DeclId, name
     let ordinal = cx.view.decls.trait_method_names(tdecl).index_of(name)
     if ordinal < 0 { return cx.lower_defect(e, "a dyn method outside its trait survived typing") }
     let s = seated(cx, e, subject, args)
-    let data = cx.slot_read(s.recv, 0, cx.type_at(subject))
+    let data = boxed_value(cx, e, subject, s.recv)
     let fp = cx.slot_read(s.recv, 1 + ordinal, null)
     let dst = cx.result(e)
     cx.emit(Ins.CallPtr(dst, fp, [data].concat(s.args)))
     dst
+}
+
+/// A contract box's value, the method's `self`. A copied receiver's box
+/// was opened unique, and its value is opened with it — the box alone
+/// would still share the value it wraps.
+fn boxed_value(mut cx: LowerCx, e: ExprId, subject: ExprId, box: Reg) -> Reg {
+    if !cx.facts.wants_alias_copy(e) { return cx.slot_read(box, 0, cx.type_at(subject)) }
+    cx.owned_slot_unique(cx.shape_at(subject), box, cx.const_int(0))
 }
 
 /// A call's receiver register and its argument registers.
