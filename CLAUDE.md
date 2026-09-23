@@ -344,7 +344,7 @@ engine's spec, written by dogfooding.
 - A READ-MODIFY-WRITE THROUGH `get` IS A COPY, AND THE COPY IS WHOLE.
   `mut t = c.get()`, a write through `t`, `c.set(t)` is correct under
   spec 11.5 and COPIES what the cell holds on every turn — `get`
-  answers a copy (the owner's Q2(a)), and F2096 names the local. When
+  answers a copy (the owner's Q2(a)), and F2106 names the local. When
   the loop is hot the copy is quadratic: the memo's settle did it per
   query until `Table` became ONE SHARED SLOT (a `Cell` of rows, an
   in-place `keep`). Write in place through the holder's own verbs —
@@ -1391,7 +1391,7 @@ engine's spec, written by dogfooding.
   RETRACTED BY MEASUREMENT (2026-09-22, both engines, at bf39cfb's
   base): `mut xs = a.b.list` then `xs.push(v)` does NOT reach `a.b` —
   a bare `mut` local read from a place is a COPY (spec 11.5,
-  avra-2y5c.5) and F2096 says so at the write. What survives is the
+  avra-2y5c.5) and F2106 says so at the write. What survives is the
   entry's other half: a writing METHOD on a nested PATH whose root is
   no copy writes through a shared intermediate (a pushed element
   written through its fresh list — pinned MEASURED in
