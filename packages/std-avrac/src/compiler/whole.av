@@ -33,14 +33,37 @@ impl Workspace {
         // SUB-SECOND EDIT LIVES: one file read, 199 answered from what a previous build
         // wrote down.
         let t1 = self.clock()
-        for fi in self.decls.files.get() { if !self.is_held(fi.id) { let _ = self.resolved(fi.id) } }
+        let _ = self.each_open_file((f: FileId) -> { let _ = self.resolved(f) })
         self.timed("resolve", self.clock() - t1)
         let t2 = self.clock()
-        for fi in self.decls.files.get() { if !self.is_held(fi.id) { let _ = self.sig_diagnostics(fi.id) } }
+        let _ = self.each_open_file((f: FileId) -> { let _ = self.sig_diagnostics(f) })
         self.timed("sigs", self.clock() - t2)
         let t3 = self.clock()
-        let out = [self.analysis(fi.id) for fi in self.decls.files.get() if !self.is_held(fi.id)]
+        let ids = self.each_open_file((f: FileId) -> { let _ = self.analysis(f) })
+        let out = [self.analysis(f) for f in ids]
         self.timed("bodies", self.clock() - t3)
+        out
+    }
+
+    /// EVERY OPEN (non-held) FILE, WALKED AS THE TABLE ITSELF GROWS. A
+    /// file's own resolve or its own body can admit a file none of this
+    /// phase's earlier turns had ever seen — an expression reaches
+    /// further than a signature does — so the walk re-reads the table's
+    /// length each turn (`admit_all`'s own shape) instead of a fixed
+    /// snapshot, which would silently skip whatever its own action
+    /// discovers. Answers every id acted on, in walk order, for a
+    /// caller that wants the converged set back.
+    fn each_open_file(act: fn(FileId) -> void) -> List<FileId> {
+        mut out: List<FileId> = []
+        mut i = 0
+        while i < self.decls.files.get().length {
+            let fi = self.decls.files.get()[i]
+            if !self.is_held(fi.id) {
+                act(fi.id)
+                out.push(fi.id)
+            }
+            i = i + 1
+        }
         out
     }
 

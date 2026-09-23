@@ -1,17 +1,17 @@
 // A data component — no `expand` — is a record its instance builds:
 // the head by position, `key: value` settings by name, and the body's
 // other statements `collect`ed into its one `List` field.
-use @std.avrac.testing.{provided, answered}
+use @std.avrac.testing.{provided, answered, Module, refused_with}
 use @std.avrac.compiler.{Program}
 
 /// The provider: a row with a head, a grid of rows named at its
 /// statement, a nameable secret, and a card of mixed views.
 fn ui() -> string {
-    "export component row(id: int) {\n    label: string = \"?\"\n    fn doubled() -> int { self.id * 2 }\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component secret {\n    name: string\n}\n\nexport trait View {\n    fn text() -> string\n}\n\nexport component note(t: string) {}\n\nexport component badge(n: int) {}\n\nimpl View for note {\n    fn text() -> string { self.t }\n}\n\nimpl View for badge {\n    fn text() -> string { \"#\${self.n}\" }\n}\n\nexport component card {\n    items: List<dyn View> = []\n}\n\nexport component vault {\n    keys: List<secret> = []\n}\n\nexport component split {\n    left: List<row> = []\n    right: List<row> = []\n}\n"
+    "export component row(id: int) {\n    label: string = \"?\"\n    fn doubled() -> int { self.id * 2 }\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component secret {\n    name: string\n}\n\nexport trait View {\n    fn text() -> string\n}\n\nexport component note(t: string) {}\n\nexport component badge(n: int) {}\n\nimpl View for note {\n    fn text() -> string { self.t }\n}\n\nimpl View for badge {\n    fn text() -> string { \"#\${self.n}\" }\n}\n\nexport component card {\n    items: List<dyn View> = []\n}\n\nexport component vault {\n    keys: List<secret> = []\n}\n\nexport component split {\n    left: List<row> = []\n    right: List<row> = []\n}\n\nexport component field(label: string) {}\n\nexport component button(label: string) {}\n\nexport component form {\n    fields: List<field> = []\n    buttons: List<button> = []\n}\n"
 }
 
 fn built(main: string) -> Program {
-    provided("use @x.c.{row, grid, secret, note, badge, card, vault, split}\n" + main, ui())
+    provided("use @x.c.{row, grid, secret, note, badge, card, vault, split, field, button, form}\n" + main, ui())
 }
 
 spec "features/components — a record's instance" {
@@ -62,6 +62,26 @@ spec "features/components — a record's instance" {
         }
         then "two slots each take a `collect` by name" {
             answered(built("let s = split {\n    left: collect {\n        row 1\n        row 2\n    }\n    right: collect {\n        for i in 0..3 { row i }\n    }\n}\n\"\${s.left.length} \${s.right.length}\"")) == "2 3"
+        }
+    }
+    given "children routed by their component" {
+        then "each child instance lands in the list its component is the element of, in order" {
+            answered(built("let f = form {\n    field \"name\"\n    button \"save\"\n    field \"email\"\n    button \"cancel\"\n}\n\"\${[x.label for x in f.fields].join(\",\")} \${[b.label for b in f.buttons].join(\",\")}\"")) == "name,email save,cancel"
+        }
+        then "a setting's list comes first, then the children routed to it" {
+            answered(built("let base = [field \"id\"]\nlet f = form {\n    fields: base\n    field \"name\"\n}\n[x.label for x in f.fields].join(\",\")")) == "id,name"
+        }
+    }
+    given "an exported instance is a declaration" {
+        then "another module imports it by name, built once and holding behaviour" {
+            let decks = Module { name: "decks", text: "use @x.c.{card, note, badge, grid, row}\n\n/// The showcase.\nexport card showcase {\n    note \"hi\"\n    for i in 0..2 { badge i }\n}\n\nexport grid report {\n    title: \"Orders\"\n    row 1\n}\n" }
+            answered(provided("use decks.{showcase, report}\nfn texts() -> string {\n    [v.text() for v in showcase.items].join(\" \")\n}\n\"\${texts()} \${report.name} \${report.rows.length}\"", ui(), [decks])) == "hi #0 #1 report 1"
+        }
+        then "one not exported stays the statement it was written as" {
+            answered(built("let base = 5\ngrid report {\n    row base\n}\nreport.rows[0].id")) == "5"
+        }
+        then "a const holding behaviour is refused with the way to build it" {
+            refused_with("trait T {\n    fn f() -> int\n}\ntype P = { n: int }\nimpl T for P {\n    fn f() -> int { 1 }\n}\ntype Box = { t: dyn T }\nconst b = Box { t: P { n: 1 } }\n0", "export it as a component instance")
         }
     }
     given "visible magic" {

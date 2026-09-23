@@ -120,7 +120,7 @@ impl LowerCx {
     /// evaluator's table.
     mut fn once_body(symbol: string, root: ExprId, answer: TypeId) -> Reg {
         let key = self.const_str(symbol)
-        if self.view.types.carried(answer) != null || self.view.types.travels_wide(answer) { return self.once_boxed(key, root, answer) }
+        if self.view.types.carried(answer) != null || !self.view.types.rides_pointer(answer) { return self.once_boxed(key, root, answer) }
         // the cache answers `T?` — under the niche the nullable IS
         // the pointer, so the guard is the presence protocol and the
         // present arm's carry is identity
@@ -134,8 +134,9 @@ impl LowerCx {
     }
 
     /// A NULLABLE answer's null is an answer, so the cache holds it in a
-    /// one-cell list and the cache's own null means only "not yet". A
-    /// VALUE RECORD rides the same cell, boxed where the cell holds it.
+    /// one-cell list and the cache's own null means only "not yet". An
+    /// answer that is no pointer — a value record, an enum that is its
+    /// tag — rides the same cell.
     mut fn once_boxed(key: Reg, root: ExprId, answer: TypeId) -> Reg {
         let maybe = self.view.decls.types.type(List<answer>?)
         let held = self.once_get(self.view.decls.types.shape_of(maybe), key)

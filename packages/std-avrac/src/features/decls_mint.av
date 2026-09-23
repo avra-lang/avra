@@ -246,6 +246,23 @@ impl Decls {
 
     /// THE ONE DOOR a pass reads a declaration's parse facts through. Absence is total:
     /// a declaration minted without a face (a synthetic one) reads as no facts.
+    /// Whether a `const` is a declared instance — asked of the table, so
+    /// a held file answers as a parsed one does.
+    fn is_instance(d: DeclId) -> bool {
+        self.facts_of(d)?.instance ?? false
+    }
+
+    /// A declared instance's unit: named by its DECLARATION's symbol —
+    /// stable across builds, so a held file's object answers the name a
+    /// reader asks for — its root the instance, absent where the file is
+    /// held, since its object holds the body already.
+    fn instance_unit(d: DeclId) -> Wanted {
+        let x = self.decl(d)
+        let store = self.store_of(x.file)
+        let root: ExprId? = if x.stmt.index < store.stmts.count() { store.stmt_value(x.stmt) } else { null }
+        Wanted { file: x.file, decl: d, name: self.symbol(d), sub: null, root: root }
+    }
+
     fn facts_of(d: DeclId) -> DeclFacts? {
         if d.index >= self.faces.get().length { return null }
         self.faces.get()[d.index]

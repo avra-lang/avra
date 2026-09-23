@@ -198,4 +198,47 @@ spec "compiler/packages" {
             answered(ws.program("/w/src/main.av")) == "1000"
         }
     }
+    given "every reached file is analysed, however deep the chain" {
+        then "a four-package dependency chain lands every link in the program's own files" {
+            let ws = new_workspace(memory_host(chain_files(), chain_names()), "/w", avra())
+            let paths = [a.view.source.file for a in ws.program("/w/src/main.av").files]
+            paths.length == 5 && paths.any(it == "/w/vendor/p3/src/p3.av") && paths.any(it == "/w/vendor/p4/src/p4.av")
+        }
+    }
+}
+
+/// A four-hop dependency chain (app -> p1 -> p2 -> p3 -> p4), each link
+/// calling the next only from its BODY, never its signature — deep
+/// enough that `analyze_all`'s three earlier phases (resolve, sigs) run
+/// out of turns before `p3`/`p4` are ever discovered, and only a phase
+/// that walks to a fixed point (not a snapshot taken at its own start)
+/// still reaches them in the final one.
+fn chain_files() -> Map<string, string> {
+    {
+        "/w/avra.toml": "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@a/p1\" = { path = \"vendor/p1\" }\n",
+        "/w/src/main.av": "use @a.p1.{f1}\nf1()\n",
+        "/w/vendor/p1/avra.toml": "[package]\nname = \"@a/p1\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@a/p2\" = { path = \"../p2\" }\n",
+        "/w/vendor/p1/src/p1.av": "use @a.p2.{f2}\nexport fn f1() -> int {\n    f2()\n}\n",
+        "/w/vendor/p2/avra.toml": "[package]\nname = \"@a/p2\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@a/p3\" = { path = \"../p3\" }\n",
+        "/w/vendor/p2/src/p2.av": "use @a.p3.{f3}\nexport fn f2() -> int {\n    f3()\n}\n",
+        "/w/vendor/p3/avra.toml": "[package]\nname = \"@a/p3\"\nversion = \"0.1.0\"\n\n[dependencies]\n\"@a/p4\" = { path = \"../p4\" }\n",
+        "/w/vendor/p3/src/p3.av": "use @a.p4.{f4}\nexport fn f3() -> int {\n    f4()\n}\n",
+        "/w/vendor/p4/avra.toml": "[package]\nname = \"@a/p4\"\nversion = \"0.1.0\"\n",
+        "/w/vendor/p4/src/p4.av": "export fn f4() -> int {\n    99\n}\n",
+    }
+}
+
+fn chain_names() -> List<string> {
+    [
+        "/w/avra.toml",
+        "/w/src/main.av",
+        "/w/vendor/p1/avra.toml",
+        "/w/vendor/p1/src/p1.av",
+        "/w/vendor/p2/avra.toml",
+        "/w/vendor/p2/src/p2.av",
+        "/w/vendor/p3/avra.toml",
+        "/w/vendor/p3/src/p3.av",
+        "/w/vendor/p4/avra.toml",
+        "/w/vendor/p4/src/p4.av",
+    ]
 }

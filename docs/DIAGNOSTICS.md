@@ -272,6 +272,12 @@ error[F2033]: this is not callable — it holds a `null`
 help: only fns and fn-typed values take arguments
 ```
 
+## F2117 — type.not_offered
+
+a lambda takes a record seat's fields by name, and only the fields it offers
+
+No witness yet.
+
 ## F2107 — type.task_escape
 
 a task is joined by the block that spawned it

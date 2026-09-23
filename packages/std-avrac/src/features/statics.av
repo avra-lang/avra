@@ -25,7 +25,8 @@ impl StaticBuild {
             .List(inner) -> self.list_slot(v, heap, inner),
             .Map(_, value) -> self.table_slot(v, heap, value),
             .Struct(_, _) -> self.record_slot(v, heap, ty),
-            .Enum(_, _) or .Res(_, _) -> self.variant_slot(v, heap, ty),
+            .Enum(_, _) -> if self.decls.types.is_flat(ty) { self.flat_variant_slot(v) } else { self.variant_slot(v, heap, ty) },
+            .Res(_, _) -> self.variant_slot(v, heap, ty),
             .App(_, _, _) -> if self.decls.fields_of_type(ty) != null { self.record_slot(v, heap, ty) } else { self.variant_slot(v, heap, ty) },
             .Ptr or .Bytes or .Cell(_) or .Task(_) or .Tasks or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> null,
         }
@@ -60,6 +61,12 @@ impl StaticBuild {
         if self.decls.types.is_flat(ty) && !self.decls.types.is_wide(ty) { return self.slot_of(v, heap, self.decls.types.flat_fields(ty)[0]) }
         let sig? = self.decls.fields_of_type(ty) else { return null }
         self.array_slot(heap.slots(v), heap, sig.types)
+    }
+
+    /// A variant of an enum whose variants carry nothing: its tag, a
+    /// word — the shape it crosses as.
+    fn flat_variant_slot(v: MetaVal) -> Slot? {
+        match v { .Int(n) -> Slot.Int(n), rest -> null }
     }
 
     /// A variant: its tag at slot 0, its payloads after — the tagged

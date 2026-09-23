@@ -65,6 +65,10 @@ export type DeclFacts = {
     /// parse alone, and a held block that cannot say it implements nothing: a `dyn` box
     /// over its type is refused in a file that merely parsed beside it.
     of: string,
+    /// A `const` THAT IS A DECLARED INSTANCE — built once per run by its own unit, owned
+    /// by its file's object. A reader in another file must know it without a parse the
+    /// hold skips.
+    instance: bool = false,
 }
 
 /// An extern's raw seat widths: one name per parameter, then the answer's.
@@ -93,6 +97,7 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
         host: if readable { extern_host(store, x.stmt) } else { [] },
         annotated: readable && !store.annotations_of(x.stmt).is_empty(),
         of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
+        instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
     }
 }
 
@@ -664,8 +669,17 @@ impl Decls {
     /// land here, so a layout has one law.
     fn declare(d: DeclId, sig: DeclSig) {
         self.sigs.set_at(d.index, sig)
+        let e: EnumSig? = enum_parts(sig)
+        if e != null { return self.flatten_enum(d, e!) }
         let r? = sig.record_sig() else { return }
         self.flatten(d, r.types)
+    }
+
+    /// AN ENUM WHOSE VARIANTS CARRY NOTHING IS ITS TAG — a word, as C
+    /// spells an enum: no box to build per variant, nothing to count.
+    fn flatten_enum(d: DeclId, e: EnumSig) {
+        if !self.tparams(d).is_empty() || e.payloads.any(!it.is_empty()) { return }
+        self.types.mark_flat(self.types.intern(Type.Enum(d, self.decl(d).name)), [self.types.type(int)])
     }
 
     /// THE FLAT LAW: a record of `int` fields and no type parameters IS
@@ -1124,3 +1138,10 @@ fn same_place(a: Loc?, b: Loc?) -> bool {
 
 fn placed(a: Loc, b: Loc) -> bool { a.file == b.file && a.lo == b.lo && a.hi == b.hi }
 
+/// An enum's signature, or absence for every other declaration.
+fn enum_parts(sig: DeclSig) -> EnumSig? {
+    match sig {
+        .Enum(e) -> e,
+        _ -> null,
+    }
+}

@@ -685,6 +685,23 @@ impl NodeStore {
         self.restamp(s, 146)
     }
 
+    /// An EXPORTED named instance at a file's top level is a
+    /// declaration — a `const` built once per run at its first read,
+    /// never a statement of `main` — carrying what was written over it.
+    /// One not exported stays the statement it was written as.
+    fn declared_instance(s: StmtId) -> StmtId {
+        if !self.is_component_inst(s) || !self.is_exported(s) { return s }
+        let name? = self.let_name(s) else { return s }
+        let value? = self.stmt_value(s) else { return s }
+        let d = self.alloc_stmt(Stmt.ConstDecl(Scoped(name), null, value), self.stmt_span(s))
+        self.mark_component_inst(d)
+        self.mark_exported(d)
+        let docs: List<string>? = self.doc_comment(s)
+        if docs != null { self.document(d, docs!, self.doc_at(s)) }
+        for a in self.annotations_of(s) { self.annotate(d, a) }
+        d
+    }
+
     fn is_component_inst(s: StmtId) -> bool {
         self.component_insts.get()[s.index]
     }
