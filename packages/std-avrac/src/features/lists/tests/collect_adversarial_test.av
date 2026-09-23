@@ -1,0 +1,55 @@
+// `collect` under attack: the degenerate bodies, a wrong value in
+// every seat it judges, the statements that keep nothing, and the
+// boundaries it must not reach through.
+use @std.avrac.testing.{shown, refused_with, refusals}
+
+spec "features/lists/collect — adversarial" {
+    given "degenerate shapes" {
+        then "an empty body is the empty list a declared type claims" {
+            shown("let xs: List<int> = collect { }\nxs.length") == "0"
+        }
+        then "one value is a list of one" {
+            shown("let xs = collect {\n    7\n}\nxs[0]") == "7"
+        }
+        then "a body of void statements keeps nothing" {
+            shown("mut n = 0\nlet xs: List<int> = collect {\n    n = 1\n}\nxs.length") == "0"
+        }
+        then "a missing block names the block" {
+            refused_with("let xs = collect 1\nxs", "`collect` gathers the values its block's statements leave")
+        }
+    }
+    given "a wrong value in every seat" {
+        then "two element types refuse at the second" {
+            refused_with("let xs = collect {\n    1\n    \"two\"\n}\nxs.length", "the first is `int`, this is `string`")
+        }
+        then "a declared element refuses a stranger in its own words" {
+            refused_with("let xs: List<string> = collect {\n    1\n}\nxs.length", "this list holds `string`, this is `int`")
+        }
+        then "a non-list seat refuses the list" {
+            refused_with("let n: int = collect {\n    1\n}\nn", "`n` declares `int`, this is `List<int>`")
+        }
+        then "one mistake is one refusal" {
+            refusals("let xs = collect {\n    1\n    \"two\"\n    3\n}\nxs.length") == 1
+        }
+    }
+    given "what keeps and what does not" {
+        then "a `let` keeps nothing, and its name reads onward" {
+            shown("let xs = collect {\n    let y = 5\n    y + 1\n}\nxs[0] + xs.length") == "7"
+        }
+        then "an `if` without `else` keeps its value only when taken" {
+            shown("let xs = collect {\n    if false { 1 }\n    if true { 2 }\n}\nxs[0] * 10 + xs.length") == "21"
+        }
+        then "a `match` keeps its one answer" {
+            shown("let k = 2\nlet xs = collect {\n    match k {\n        2 -> 7,\n        _ -> 8,\n    }\n}\nxs[0] + xs.length") == "8"
+        }
+        then "a lambda's statements are the lambda's — only its call's answer is kept" {
+            shown("let xs = collect {\n    let f = (x: int) -> {\n        x + 1\n        x + 2\n    }\n    f(10)\n}\nxs[0] * 10 + xs.length") == "121"
+        }
+        then "a nested `collect` is one value of the outer" {
+            shown("let xs = collect {\n    collect {\n        1\n        2\n    }.length\n}\nxs[0] + xs.length") == "3"
+        }
+        then "a `while` keeps each turn's value" {
+            shown("mut k = 0\nlet xs = collect {\n    while k < 3 {\n        k = k + 1\n        k\n    }\n}\nxs[2] * 10 + xs.length") == "33"
+        }
+    }
+}

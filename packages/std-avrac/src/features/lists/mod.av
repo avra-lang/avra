@@ -8,9 +8,11 @@ use diagnostics.{DiagCode}
 
 export fn lists() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name       | build
-        "list_lit" | build_list
-        "comp"     | build_comp
+        name                | build
+        "list_lit"          | build_list
+        "comp"              | build_comp
+        "collect"           | build_collect
+        "collect_blockless" | build_collect_blockless
     }
     let codes = table<DiagCode> {
         kind                | id      | summary
@@ -51,9 +53,9 @@ export fn lists() -> LanguageFeature {
     }
     component LanguageFeature f {
         name = "lists"
-        docs = "`[e for x in xs if p]` builds a list by walking another, `[e for i, x in xs]` naming the index too, `[e for i in lo..hi]` by counting — the head is the `for` statement's; `[first, second, third]` — a homogeneous aggregate; index with `xs[i]`, measure with `xs.length`."
+        docs = "`[e for x in xs if p]` builds a list by walking another, `[e for i, x in xs]` naming the index too, `[e for i in lo..hi]` by counting — the head is the `for` statement's; `[first, second, third]` — a homogeneous aggregate; `collect { for o in xs { if o.ok { o.id } } }` gathers every value its statements would discard; index with `xs[i]`, measure with `xs.length`."
         gram = grammar {
-            primary = "[" v:expression "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" src:expression ( ".." hi:expression )? ( "if" c:expression )? "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, ix, en, src, hi, c) | "[" BREAK? ( first:expression ( "," BREAK? rest:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> list_lit(first, rest)
+            primary = "[" v:expression "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" src:expression ( ".." hi:expression )? ( "if" c:expression )? "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, ix, en, src, hi, c) | "[" BREAK? ( first:expression ( "," BREAK? rest:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> list_lit(first, rest) | "collect" "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> collect(s) | "collect" v:expression -> collect_blockless(v)
         }
         builders = rows
         diags = codes

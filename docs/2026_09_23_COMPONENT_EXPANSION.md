@@ -202,11 +202,49 @@ poor refusals, one cascade, all tested.
 7. Green: FIBERS §12 probes, std-net `parked_eof`, std-http suites,
    `http_slow_route`, eval == native; `avra ir` identical.
 
-**S3 — data components.** `key: value` (the 40-site ladder), typed
+**S3 — data components.** THE BODY, settled here: one rule for every
+data instance — `key: value` settings, then any statement. The
+settings become the record's fields; EVERYTHING ELSE stays as written
+and becomes `collect { … }`, the one children slot's value:
+- `collect { … }` is CORE (lists feature): a list of every value its
+  statements would discard, in the order they ran. `for`, `while`,
+  `if`, `match` and `let` inside it are the ordinary statements,
+  lowered as always — the one hook is the expression statement (a
+  kept value joins the open `collect`), typed by the list literal's
+  own law and lowered by the comprehension's growth. A lambda's
+  statements are its own.
+- Why core and not a component: "does this statement leave a value?"
+  is a TYPING fact, and a component expands at parse. A library
+  component cannot tell `o.id` from `println(…)`.
+- A component with more than one children slot places them by name
+  (`slot_name { … }`, each its own `collect`); one slot takes the body.
+- The instance desugars to its record literal, so every type law is
+  the record's and the list's, and nothing new runs downstream.
+Heads: a component with head fields takes a VALUE (`text "hi"`); one
+without takes a NAME (`cli avra { … }`), which BINDS at statement
+position and fills a declared `name` field; as a member of another
+instance it is a child and binds nothing. A block is optional
+(`secret stripe_key`). `c from base { key: v }` is `base with { … }`:
+settings only — a child there refuses, its children are its base's.
+DEFERRED to APPS, with the reason: `on click { }` — a contextual word
+the grammar DSL cannot spell without reserving `on`; a data component
+needs no events.
+Sub-slices: S3a heads, settings, bodiless, the named binding · S3b
+children (typed, dynamic, calls, named placement) · S3c `check()`,
+`from` · S3d the `key: value` ladder over the 40 legacy sites, `config
+{ }` retired · S3e `avra explain <component>` (the reference card).
+The rest of the plan, unchanged: `key: value` (the 40-site ladder), typed
 children, dynamic children, calls as children, named slot placement,
 `check()`, `from`, bodiless instances, instances as declarations, the
 reference card. No compile-time evaluation — the cheapest way to make
 the face real.
+
+**Later — typed expansion.** An `expand` that SEES its body's types
+(Zig comptime, Scala 3 macros): typing pauses, library code rewrites
+the typed body, the answer is typed again. It would let `collect` move
+out of core. RECORDED TRIGGER: the first component whose meaning
+depends on an expression's type that `collect` and a record literal
+cannot express.
 
 **S4 — `cli avra { command build { … } }` over `@std/cli`.** Exercises:
 the expand stage, `self.flags`, `run { }` slots, ancestor-owned relations.

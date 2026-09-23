@@ -358,6 +358,9 @@ export enum Expr {
     MethodCall(subject: ExprId, name: Plain, args: List<ExprId>)
     /// A parse failure's placeholder — the tree survives bad input.
     Error
+    /// `collect { … }` — a list of every value its statements would
+    /// discard, in the order they ran; `body` is a block with no tail.
+    Collect(body: ExprId)
 }
 /// Whether the parse tree already HOLDS this value — an int, float,
 /// bool or string literal. A computed expression is not a literal:
@@ -379,7 +382,7 @@ export fn is_literal(e: Expr) -> bool {
 export fn literal_form(e: Expr) -> bool {
     match e {
         .Body(word, _, _, _) -> body_literal(word),
-        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _, _, _, _, _) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) -> true,
+        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _, _, _, _, _) or .Collect(_) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) -> true,
         .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or .Spawn(_) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
     }
 }
@@ -793,6 +796,10 @@ export enum Stmt {
     Defer(body: ExprId, on_error: bool)
     @declares Rule(name: Scoped, arms: List<Arm>, body: ExprId)
     Error
+    /// `name: value` inside a component instance's body — a setting of
+    /// the record the instance builds. Consumed where the instance is
+    /// built, so no pass meets one elsewhere.
+    Setting(name: Plain, value: ExprId)
 }
 
 /// The language AST's arenas plus their fingerprint side tables. A
