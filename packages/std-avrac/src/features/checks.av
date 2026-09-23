@@ -15,7 +15,7 @@ type Copied = { root: ExprId, holder: ExprId? }
 fn place_subject(step: PlaceStep) -> ExprId? {
     match step {
         .Root(_) -> null,
-        .Field(subject, _) or .At(subject, _) -> subject,
+        .Field(subject, _) or .At(subject, _) or .Unwrap(subject) -> subject,
     }
 }
 
@@ -607,7 +607,7 @@ impl TypeCx {
         match step {
             .Root(name) -> if self.shape_at(e) is .TypeName { self.type_not_place(e, name.of) } else { true },
             .Field(subject, name) -> self.place_lawful(subject) && self.field_slot_lawful(e, subject, name.of),
-            .At(subject, _) -> self.place_lawful(subject),
+            .At(subject, _) or .Unwrap(subject) -> self.place_lawful(subject),
         }
     }
 
@@ -856,6 +856,7 @@ impl TypeCx {
         match step {
             .Root(_) -> false,
             .Field(_, _) or .At(_, _) -> true,
+            .Unwrap(subject) -> self.through_path(subject),
         }
     }
 
@@ -903,6 +904,7 @@ impl TypeCx {
             .Root(_) -> self.root_word(e),
             .Field(subject, name) -> "${self.place_words(subject) ?? "…"}.${name.of}",
             .At(subject, _) -> "${self.place_words(subject) ?? "…"}[…]",
+            .Unwrap(subject) -> "${self.place_words(subject) ?? "…"}!",
         }
     }
 

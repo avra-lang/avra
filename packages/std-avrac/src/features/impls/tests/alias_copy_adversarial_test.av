@@ -228,17 +228,23 @@ spec "features/impls (alias copy, adversarial)" {
             shown("type R = { xs: List<int> }\ntype H = { r: R }\nimpl H { mut fn push_one() { self.r.xs.push(1) } }\nlet r = R { xs: [] }\nmut h = H { r: r }\nh.push_one()\n\"\${h.r.xs.length}\${r.xs.length}\"") == "10"
         }
     }
+    given "an unwrap is a step on a place" {
+        then "a write through `h.r!` on a local stays in the local" {
+            shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype H = { r: R? }\nfn f(r: R) -> int {\n    mut h = H { r: r }\n    h.r!.add(1)\n    r.xs.length * 10 + h.r!.xs.length\n}\nf(R { xs: [] })") == "1"
+        }
+        then "a push through `h.xs!` on a local stays in the local" {
+            shown("type H = { xs: List<int>? }\nfn f(xs: List<int>) -> int {\n    mut h = H { xs: xs }\n    h.xs!.push(4)\n    h.xs!.length * 10 + xs.length\n}\nf([1])") == "21"
+        }
+        then "a flat record's field under an unwrap is written in the local's copy" {
+            shown("type R = { x: int }\ntype H = { r: R? }\nfn f() -> int {\n    mut h = H { r: R { x: 1 } }\n    let before = h\n    h.r!.x = 5\n    h.r!.x * 10 + before.r!.x\n}\nf()") == "51"
+        }
+    }
     given "what the root does not reach yet" {
         // MEASURED, not asserted as right: spec 11.5 wants "1 1 0". A
         // path rooted at `self` or a `mut` seat writes through, so an
         // element inside it that another value also holds sees the
         // write — the root decides the path, never the element's other
         // holders.
-        // MEASURED: an unwrap is no place, so `h.r!` is a value whose
-        // write reaches every holder (F2047 says so) — the root never sees it.
-        then "a path through an unwrap still writes through" {
-            shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype H = { r: R? }\nfn f(r: R) -> int {\n    mut h = H { r: r }\n    h.r!.add(1)\n    r.xs.length\n}\nf(R { xs: [] })") == "1"
-        }
         then "a shared element written through `self` and through a seat" {
             shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\ntype H = { r: R }\ntype B = { h: H }\nimpl B { mut fn bump() { self.h.r.add(1) } }\nfn grow(mut h: H) { h.r.add(1) }\nlet r = R { xs: [] }\nmut b = B { h: H { r: r } }\nb.bump()\nmut h = H { r: r }\ngrow(h)\n\"\${b.h.r.xs.length} \${h.r.xs.length} \${r.xs.length}\"") == "2 2 2"
         }

@@ -583,7 +583,8 @@ impl NodeStore {
     }
 
     /// A PLACE's last step, when the expression is one: a bare name,
-    /// a field of a subject, or an index into one. The one
+    /// a field of a subject, an index into one, or an unwrap of one
+    /// (`h.r!` — a path runs through what the nullable carries). The one
     /// projection for the place category — every other shape is a
     /// value, not a place.
     fn place_step(e: ExprId) -> PlaceStep? {
@@ -592,11 +593,12 @@ impl NodeStore {
             .Receiver -> PlaceStep.Root("self"),
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
+            .Force(subject) -> PlaceStep.Unwrap(subject),
             .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _)
                 or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .Call(_, _, _)
                 or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _)
                 or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _)
-                or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _)
+                or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _)
                 or .Lambda(_, _) or .Spawn(_) or .Within(_, _) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
@@ -631,7 +633,7 @@ impl NodeStore {
         let step? = self.place_step(e) else { return null }
         match step {
             .Root(_) -> e,
-            .Field(subject, _) or .At(subject, _) -> self.place_root(subject),
+            .Field(subject, _) or .At(subject, _) or .Unwrap(subject) -> self.place_root(subject),
         }
     }
 
