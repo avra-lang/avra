@@ -185373,6 +185373,7 @@ postret5:                                         ; No predecessors!
 
 define i64 @"av_$40std$2Eavrac$2Efeatures$2Etasks$2ETasksSemantics$2Eresolve"(ptr %0, ptr %1, i64 %2) #0 {
 entry:
+  %slot = alloca i64, align 8
   %3 = call i64 @avra_array_get(ptr %1, i64 0)
   %boxed = inttoptr i64 %3 to ptr
   %4 = call i64 @avra_array_get(ptr %boxed, i64 1)
@@ -185381,29 +185382,53 @@ entry:
   %5 = call ptr @"av_$40std$2Eavrac$2Ecore$2ENodeStore$2Eexpr"(ptr %boxed1, i64 %2)
   call void @avra_rc_release(ptr %boxed1)
   %6 = call i64 @avra_array_get(ptr %5, i64 0)
-  switch i64 %6, label %arm3 [
-    i64 26, label %arm
-    i64 27, label %arm2
-  ]
+  %cmp = icmp eq i64 %6, 26
+  br i1 %cmp, label %then, label %else
 
-arm:                                              ; preds = %entry
-  %7 = call i64 @avra_array_get(ptr %5, i64 1)
-  %8 = call i64 @"av_$40std$2Eavrac$2Ecompiler$2Eresolve$2EResolveCx$2Ewalk"(ptr %1, i64 %7)
-  br label %endswitch
+then:                                             ; preds = %entry
+  br label %endif
 
-arm2:                                             ; preds = %entry
-  %9 = call i64 @avra_array_get(ptr %5, i64 2)
-  %10 = call i64 @"av_$40std$2Eavrac$2Ecompiler$2Eresolve$2EResolveCx$2Ewalk"(ptr %1, i64 %9)
-  br label %endswitch
+else:                                             ; preds = %entry
+  %7 = call i64 @avra_array_get(ptr %5, i64 0)
+  %cmp2 = icmp eq i64 %7, 27
+  br label %endif
 
-arm3:                                             ; preds = %entry
-  %11 = call i64 @"av_$40std$2Eavrac$2Efeatures$2Enothing"()
-  br label %endswitch
+endif:                                            ; preds = %else, %then
+  %regval = phi i1 [ true, %then ], [ %cmp2, %else ]
+  br i1 %regval, label %then3, label %else4
 
-endswitch:                                        ; preds = %arm3, %arm2, %arm
-  %regval = phi i64 [ %8, %arm ], [ %10, %arm2 ], [ %11, %arm3 ]
+then3:                                            ; preds = %endif
+  store i64 0, ptr %slot, align 8
+  %8 = call i64 @avra_array_get(ptr %5, i64 0)
+  %cmp6 = icmp eq i64 %8, 26
+  br i1 %cmp6, label %then7, label %else8
+
+else4:                                            ; preds = %endif
+  %9 = call i64 @"av_$40std$2Eavrac$2Efeatures$2Enothing"()
+  br label %endif5
+
+endif5:                                           ; preds = %else4, %endif9
+  %regval12 = phi i64 [ %13, %endif9 ], [ %9, %else4 ]
   call void @avra_rc_release(ptr %5)
-  ret i64 %regval
+  ret i64 %regval12
+
+then7:                                            ; preds = %then3
+  %10 = call i64 @avra_array_get(ptr %5, i64 1)
+  store i64 %10, ptr %slot, align 8
+  br label %endif9
+
+else8:                                            ; preds = %then3
+  %11 = call i64 @avra_array_get(ptr %5, i64 0)
+  %cmp10 = icmp eq i64 %11, 27
+  %12 = call i64 @avra_array_get(ptr %5, i64 2)
+  store i64 %12, ptr %slot, align 8
+  br label %endif9
+
+endif9:                                           ; preds = %else8, %then7
+  %regval11 = phi i64 [ 0, %then7 ], [ 0, %else8 ]
+  %ld = load i64, ptr %slot, align 8
+  %13 = call i64 @"av_$40std$2Eavrac$2Ecompiler$2Eresolve$2EResolveCx$2Ewalk"(ptr %1, i64 %ld)
+  br label %endif5
 }
 
 define ptr @"av_$40std$2Eavrac$2Efeatures$2Etasks$2ETasksSemantics$2Eheirs"(ptr %0, ptr %1) #0 {
