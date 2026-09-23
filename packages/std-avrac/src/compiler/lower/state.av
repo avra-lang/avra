@@ -31,11 +31,15 @@ impl LowerCx {
         self.wanted(d, Sub { target: sub.target, args: [self.concrete(t) for t in sub.args], consts: [sv.fp for sv in seats] }, seats)
     }
 
-    /// The registers for the seats a call left unwritten: each a call
-    /// to that seat's own default body — minted before the call's
-    /// answer. Typing held every one of them to a default.
-    mut fn defaulted_regs(e: ExprId, d: DeclId, written: int) -> List<Reg> {
-        [self.default_reg(e, body) for j, body in self.view.decls.seat_defaults(d) if j >= written]
+    /// A declared call's registers in SEAT order: each written
+    /// argument's — lowered by the caller in written order — and a
+    /// call to its own default body for each seat no argument writes.
+    /// Typing held every unwritten seat to a default.
+    mut fn seated_regs(e: ExprId, d: DeclId, args: List<ExprId>, regs: List<Reg>) -> List<Reg> {
+        let seats: List<string> = self.view.decls.facts_of(d)?.seats ?? []
+        if seats.length < regs.length { return regs }
+        let defaults = self.view.decls.seat_defaults(d)
+        [if i >= 0 { regs[i] } else { self.default_reg(e, defaults[j]) } for j, i in self.view.store.seat_plan(args, seats)]
     }
 
     mut fn default_reg(e: ExprId, body: DeclId?) -> Reg {
@@ -57,7 +61,7 @@ impl LowerCx {
 
     /// The call's `const` seats, by count.
     fn settled_count(d: DeclId, e: ExprId) -> int {
-        let args: List<ExprId> = self.call_args(e)
+        let args: List<ExprId> = self.call_args(d, e)
         let base: int = self.call_base(d, e)
         let marks: List<SeatMark> = self.view.decls.marks_of(d, base + args.length)
         let settled = [settled_mark(marks, base + j) for j in 0..args.length]
@@ -100,7 +104,7 @@ impl LowerCx {
     /// unit. A seat the source alone does not spell carries nothing
     /// (typing refused it).
     fn call_seats(d: DeclId, e: ExprId) -> List<SeatValue> {
-        let args: List<ExprId> = self.call_args(e)
+        let args: List<ExprId> = self.call_args(d, e)
         let base: int = self.call_base(d, e)
         let marks: List<SeatMark> = self.view.decls.marks_of(d, base + args.length)
         mut out: List<SeatValue> = []
@@ -192,11 +196,13 @@ impl LowerCx {
     }
 
     /// A call node's arguments.
-    fn call_args(e: ExprId) -> List<ExprId> {
-        match self.view.store.expr(e) {
+    /// A call node's arguments in the SEAT order of `d`.
+    fn call_args(d: DeclId, e: ExprId) -> List<ExprId> {
+        let written: List<ExprId> = match self.view.store.expr(e) {
             .Call(_, _, args) or .MethodCall(_, _, args) -> args,
             rest -> [],
         }
+        self.view.store.seated_args(written, self.view.decls.facts_of(d)?.seats ?? [])
     }
 
     /// A call node's first written seat — 0 for a free fn, 1 past a

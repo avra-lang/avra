@@ -82,6 +82,38 @@ impl NodeStore {
         self.trailing[e.index]
     }
 
+    /// The seat an argument names, when it is written `name: value`.
+    fn arg_label(a: ExprId) -> string? {
+        match self.expr(a) {
+            .Named(name, _) -> name.of,
+            _ -> null,
+        }
+    }
+
+    /// An argument's value, its name stripped.
+    fn unnamed(a: ExprId) -> ExprId {
+        match self.expr(a) {
+            .Named(_, value) -> value,
+            _ -> a,
+        }
+    }
+
+    /// A call's arguments in SEAT order, names stripped; a seat no
+    /// argument writes is skipped. A callee that names fewer seats
+    /// than it is handed keeps the written order.
+    fn seated_args(args: List<ExprId>, seats: List<string>) -> List<ExprId> {
+        if seats.length < args.length { return [self.unnamed(a) for a in args] }
+        [self.unnamed(args[i]) for i in self.seat_plan(args, seats) if i >= 0]
+    }
+
+    /// Which argument fills each seat: its index among `args`, or -1
+    /// for a seat no argument writes. A positional argument fills the
+    /// seat at its own position; a named one, the seat of its name.
+    fn seat_plan(args: List<ExprId>, seats: List<string>) -> List<int> {
+        let labels = [self.arg_label(a) ?? "" for a in args]
+        [filler(labels, seats[j], j) for j in 0..seats.length]
+    }
+
     /// A call written as a TYPE LITERAL — the mark is part of the
     /// node: a receiver that cannot answer refuses in the literal's words.
     fn mark_type_lit(e: ExprId) {
@@ -194,7 +226,7 @@ impl NodeStore {
                 or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _)
                 or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _)
                 or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_)
-                or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) -> null,
+                or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 
@@ -204,7 +236,9 @@ impl NodeStore {
     /// pronoun's WHOLE mechanism: nothing downstream knows it exists.
     fn pronouned(a: ExprId) -> ExprId {
         if !self.pronoun_rides(a) { return a }
-        self.alloc_expr(Expr.Lambda([pronoun_param], a), self.expr_span(a))
+        let label? = self.arg_label(a) else { return self.alloc_expr(Expr.Lambda([pronoun_param], a), self.expr_span(a)) }
+        // a named argument keeps its name: the wrap goes inside it
+        self.alloc_expr(Expr.Named(Plain(label), self.pronouned(self.unnamed(a))), self.expr_span(a))
     }
 
     /// The value a tail statement answers with: an expression
@@ -562,7 +596,7 @@ impl NodeStore {
                 or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _)
                 or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _)
                 or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .MethodCall(_, _, _)
-                or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) -> null,
+                or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 
@@ -702,3 +736,12 @@ impl NodeStore {
 /// arguments folded to one of their own. `@a(x)` and `@a @x` are
 /// different declarations, and a flat splice would give them one
 /// identity.
+
+/// The argument that fills seat `j`: the one named for it, else the
+/// positional one at its position, else -1.
+fn filler(labels: List<string>, seat: string, j: int) -> int {
+    let named = labels.index_of(seat)
+    if named >= 0 { return named }
+    if j < labels.length && labels[j] == "" { return j }
+    0 - 1
+}

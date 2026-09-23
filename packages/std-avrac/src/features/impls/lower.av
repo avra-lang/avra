@@ -100,7 +100,7 @@ fn fielded_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, slot: int, fty:
 fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, name: string, args: List<ExprId>) -> Reg {
     let s = seated(cx, e, subject, args)
     let m? = cx.view.decls.method(decl, name) else { return cx.lower_defect(e, "a method with no symbol survived typing") }
-    let seats = [s.recv].concat(s.args).concat(cx.defaulted_regs(e, m, s.args.length))
+    let seats = [s.recv].concat(cx.seated_regs(e, m, args, s.args))
     let dst = cx.result(e)
     cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(subject)), seats))
     dst
@@ -111,7 +111,7 @@ fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, 
 fn static_dispatch(mut cx: LowerCx, e: ExprId, m: DeclId, args: List<ExprId>) -> Reg {
     // THE MINT LAW: the operands' registers first, the answer last
     let regs = [cx.reg_of(a) for a in args]
-    let seated = regs.concat(cx.defaulted_regs(e, m, regs.length))
+    let seated = cx.seated_regs(e, m, args, regs)
     let dst = cx.result(e)
     cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(e)), seated))
     dst

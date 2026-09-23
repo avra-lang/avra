@@ -265,12 +265,13 @@ fn holds_error(cx: TypeCx, body: ExprId) -> bool {
 
 fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     match cx.view.store.expr(e) {
+        .Named(_, value) -> cx.type_at(value),
         .Call(callee, pins, args) -> {
             cx.warn_use(e)
             let sig? = cx.sig_of(e) else { return cx.settled_call(args, valued_call(cx, e, callee.of, pins, args)) }
             cx.settled_call(args, dispatched_call(cx, e, callee.of, pins, args, sig))
         }
-        _ -> cx.error_type,
+        rest -> cx.error_type,
     }
 }
 
@@ -278,6 +279,7 @@ fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
 /// fn-typed param: the value's own seats judge the arguments.
 fn valued_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, args: List<ExprId>) -> TypeId {
     if !pins.is_empty() { return value_takes_no_pins(cx, e, callee) }
+    if !cx.nameless(callee, args) { return cx.error_type }
     let bound = cx.target_type(e)
     let made: TypeId? = named_construction(cx, e, callee, args, bound)
     if made != null { return made! }
@@ -309,16 +311,16 @@ fn named_construction(mut cx: TypeCx, e: ExprId, callee: string, args: List<Expr
 /// resolver already found.
 fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
                    args: List<ExprId>, s: FnSig) -> TypeId {
-    let d? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, s.params, [], s.ret, args) }
-    if !cx.seat_contracts(e, callee, d, 0, args, null) { return cx.error_type }
-    if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, d, args) }
+    let placed? = cx.placed(e, callee, cx.bound_decl(e), args, s.params) else { return cx.error_type }
+    let d? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, placed.wants, [], s.ret, placed.args) }
+    if !cx.seat_contracts(e, callee, d, 0, placed.args, null) { return cx.error_type }
+    if cx.view.decls.is_extern(d) { inout_args_law(cx, callee, d, placed.args) }
     let tp: List<string> = cx.tparams(d)
     if tp.is_empty() {
         if !pins.is_empty() { takes_no_pins(cx, e, callee) }
-        let wants? = cx.seats_filled(e, callee, d, args.length, s.params) else { return cx.error_type }
-        return cx.seats_judged(e, callee, wants, [], s.ret, args)
+        return cx.seats_judged(e, callee, placed.wants, [], s.ret, placed.args)
     }
-    generic_call(cx, e, callee, pins, args, s, d, tp)
+    generic_call(cx, e, callee, pins, placed.args, s, d, tp)
 }
 
 /// The instantiation: pins pre-fill by position, arguments unify

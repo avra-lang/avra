@@ -22,7 +22,9 @@ fn methoded(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List
 /// and every kind judges the call in its own law.
 fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args: List<ExprId>) -> TypeId {
     if cx.errored(subject) { return cx.error_type }
-    match callee_of(cx.view, cx.type_at(subject), name) {
+    let callee = callee_of(cx.view, cx.type_at(subject), name)
+    if !seats_named(callee) && !cx.nameless(name, args) { return cx.error_type }
+    match callee {
         .Variant(decl, tname) -> if cx.view.store.is_type_lit(e) { no_interned(cx, e, tname) } else { cx.construct_variant(e, decl, tname, name, args) },
         .Static(m, tname) -> static_call(cx, e, m, tname, name, args),
         .Bounded(decl, j, tname) -> bounded_call(cx, e, subject, decl, tname, cx.bound_name(decl, j), name, args),
@@ -34,20 +36,30 @@ fn method_answer(mut cx: TypeCx, e: ExprId, subject: ExprId, name: string, args:
     }
 }
 
+/// Whether a dot-call's callee names its seats: a declared method's
+/// and a static's do; a variant's payload, a contract's member, a fn
+/// field and a runtime row take arguments by position.
+fn seats_named(c: Callee) -> bool {
+    match c {
+        .Static(_, _) or .Declared(_, _) -> true,
+        .Variant(_, _) or .Bounded(_, _, _) or .Contract(_, _) or .FnField(_, _) or .Row(_) or .Nameless -> false,
+    }
+}
+
 /// The impl table's judgment: the found sig, instantiated for the
 /// receiver, judges arity and every seat; the inout laws follow.
 fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, target: string, name: string, args: List<ExprId>) -> TypeId {
     let found? = cx.method_sig(decl, name) else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
     let m: DeclId? = cx.view.decls.method(decl, name)
     let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found))
-    let wants? = cx.seats_filled(e, "${target}.${name}", m, args.length, seats_of(sig).params) else { return cx.error_type }
-    if args.length != wants.length {
-        return wrong_method_arity(cx, e, target, name, wants.length, args.length)
+    let placed? = cx.placed(e, "${target}.${name}", m, args, seats_of(sig).params) else { return cx.error_type }
+    if placed.args.length != placed.wants.length {
+        return wrong_method_arity(cx, e, target, name, placed.wants.length, placed.args.length)
     }
-    for j, a in args {
-        if !cx.accepts(a, wants[j]) { wrong_method_argument(cx, target, name, j, wants[j], a) }
+    for j, a in placed.args {
+        if !cx.accepts(a, placed.wants[j]) { wrong_method_argument(cx, target, name, j, placed.wants[j], a) }
     }
-    if m != null && !seat_laws(cx, e, subject, "${target}.${name}", name, m!, args, 1) { return cx.error_type }
+    if m != null && !seat_laws(cx, e, subject, "${target}.${name}", name, m!, placed.args, 1) { return cx.error_type }
     sig.ret
 }
 
@@ -56,12 +68,12 @@ fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, targe
 /// exactly as written and the seats are numbered from zero.
 fn static_call(mut cx: TypeCx, e: ExprId, m: DeclId, target: string, name: string, args: List<ExprId>) -> TypeId {
     let found? = (cx.view.decls.sig(m))?.fn_sig() else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
-    let wants? = cx.seats_filled(e, "${target}.${name}", m, args.length, found.params) else { return cx.error_type }
-    if args.length != wants.length { return wrong_static_arity(cx, e, target, name, wants.length, args.length) }
-    for j, a in args {
-        if !cx.accepts(a, wants[j]) { wrong_method_argument(cx, target, name, j, wants[j], a) }
+    let placed? = cx.placed(e, "${target}.${name}", m, args, found.params) else { return cx.error_type }
+    if placed.args.length != placed.wants.length { return wrong_static_arity(cx, e, target, name, placed.wants.length, placed.args.length) }
+    for j, a in placed.args {
+        if !cx.accepts(a, placed.wants[j]) { wrong_method_argument(cx, target, name, j, placed.wants[j], a) }
     }
-    if !cx.seat_contracts(e, "${target}.${name}", m, 0, args, null) { return cx.error_type }
+    if !cx.seat_contracts(e, "${target}.${name}", m, 0, placed.args, null) { return cx.error_type }
     found.ret
 }
 

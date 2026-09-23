@@ -505,19 +505,68 @@ impl TypeCx {
         ret
     }
 
-    /// The seats a DECLARED callee's arguments fill: every written
-    /// one, or — when each seat past the arguments has a default —
-    /// the arguments' own. Null, with the refusal spoken, when a
-    /// callee with defaults is handed a count that fits neither;
-    /// without defaults, or without a declaration, the seat law
-    /// speaks its own words.
-    mut fn seats_filled(e: ExprId, callee: string, d: DeclId?, count: int, wants: List<TypeId>) -> List<TypeId>? {
-        let declared? = d else { return wants }
-        let least = self.view.decls.required_seats(declared)
-        if least >= wants.length { return wants }
-        if count >= least && count <= wants.length { return wants.slice(0, count) }
-        self.wrong_defaulted_arity(e, callee, least, wants.length, count)
+    /// A DECLARED callee's arguments in SEAT order, names stripped,
+    /// beside the seats they fill: a positional argument fills the
+    /// seat at its own position, a named one the seat of its name, and
+    /// a seat no argument writes runs its default. Null, the refusal
+    /// spoken, when a name is no seat's, a seat is written twice, or a
+    /// seat without a default is left unwritten. A count the callee
+    /// cannot take passes through for the seat law's own words.
+    mut fn placed(e: ExprId, callee: string, d: DeclId?, args: List<ExprId>, wants: List<TypeId>) -> Placed? {
+        let declared? = d else { return self.unplaced(callee, args, wants) }
+        let seats: List<string> = self.view.decls.facts_of(declared)?.seats ?? []
+        let defaults = self.view.decls.seat_defaults(declared)
+        if args.all((a) -> self.view.store.arg_label(a) == null) { return self.by_position(e, callee, defaults, args, wants) }
+        if seats.length != wants.length { return self.unplaced(callee, args, wants) }
+        if !self.labels_lawful(e, callee, args, seats) { return null }
+        let plan = self.view.store.seat_plan(args, seats)
+        let unwritten: string? = [seats[j] for j, i in plan if i < 0 && defaults[j] == null].first()
+        if unwritten != null { return self.seat_unwritten(e, callee, unwritten!) }
+        Placed { args: self.view.store.seated_args(args, seats), wants: [wants[j] for j, i in plan if i >= 0] }
+    }
+
+    /// Positional arguments: every seat, or — when each seat past them
+    /// has a default — their own.
+    mut fn by_position(e: ExprId, callee: string, defaults: List<DeclId?>, args: List<ExprId>, wants: List<TypeId>) -> Placed? {
+        let least = [j + 1 for j, body in defaults if body == null].last() ?? 0
+        if defaults.length != wants.length || least >= wants.length { return as_written(args, wants) }
+        if args.length >= least && args.length <= wants.length { return Placed { args: args, wants: wants.slice(0, args.length) } }
+        self.wrong_defaulted_arity(e, callee, least, wants.length, args.length)
         null
+    }
+
+    /// A callee whose seats have no names — a fn value, a runtime
+    /// method, a contract's member, an extern — takes positional
+    /// arguments alone.
+    mut fn unplaced(callee: string, args: List<ExprId>, wants: List<TypeId>) -> Placed? {
+        let named? = args.find((a) -> self.view.store.arg_label(a) != null) else { return as_written(args, wants) }
+        self.seats_unnamed(named, callee)
+    }
+
+    /// THE NAMELESS LAW over a call shape that judges its own seats:
+    /// true when no argument is named, the refusal spoken otherwise.
+    mut fn nameless(callee: string, args: List<ExprId>) -> bool {
+        self.unplaced(callee, args, []) != null
+    }
+
+    /// Every name is a seat's, and no seat is written twice — by two
+    /// names, or by a name and the positional argument at its place.
+    /// Too many positional arguments speak the arity law.
+    mut fn labels_lawful(e: ExprId, callee: string, args: List<ExprId>, seats: List<string>) -> bool {
+        let labels = [self.view.store.arg_label(a) ?? "" for a in args]
+        let stray: int? = [j for j, l in labels if l == "" && j >= seats.length].first()
+        if stray != null {
+            self.wrong_arity(e, callee, seats.length, args.length)
+            return false
+        }
+        let unknown: int? = [j for j, l in labels if l != "" && !seats.contains(l)].first()
+        if unknown != null {
+            self.seat_unknown(args[unknown!], callee, labels[unknown!], seats)
+            return false
+        }
+        let twice? = [j for j, l in labels if l != "" && written_before(labels, seats, l, j)].first() else { return true }
+        self.seat_twice(args[twice], callee, labels[twice])
+        false
     }
 
     /// THE SEAT LAW every call shape shares: exactly `wants.length`
@@ -597,6 +646,24 @@ impl TypeCx {
     /// THE arity refusal — every call shape shares the words.
     mut fn wrong_arity(e: ExprId, callee: string, want: int, found: int) {
         self.emit(refusal("type.mismatch", self.loc_of(e), "`${callee}` takes ${want} arguments, found ${found}", "this call", null))
+    }
+
+    mut fn seats_unnamed(a: ExprId, callee: string) -> Placed? {
+        self.emit(refusal("type.named_arg", self.loc_of(a), "`${self.view.store.arg_label(a) ?? ""}:` names a seat, and `${callee}`'s seats have no names", "named here", "drop the name — a fn value, a runtime method, a contract's member and an extern are called by position"))
+        null
+    }
+
+    mut fn seat_unknown(a: ExprId, callee: string, name: string, seats: List<string>) {
+        self.emit(refusal("type.named_arg", self.loc_of(a), "`${callee}` has no seat named `${name}`", "named here", "its seats are ${named_list(seats)}"))
+    }
+
+    mut fn seat_twice(a: ExprId, callee: string, name: string) {
+        self.emit(refusal("type.named_arg", self.loc_of(a), "seat `${name}` of `${callee}` is written twice", "written again here", "a positional argument fills the seat at its own position — drop one, or name the other's seat"))
+    }
+
+    mut fn seat_unwritten(e: ExprId, callee: string, name: string) -> Placed? {
+        self.emit(refusal("type.named_arg", self.loc_of(e), "seat `${name}` of `${callee}` is written by no argument, and has no default", "this call", "write it — `${name}: …`"))
+        null
     }
 
     /// The arity refusal for a callee whose last seats have defaults.
@@ -993,4 +1060,17 @@ fn defaulted_seats(n: int) -> string {
 /// One block, or two: how the arity voice counts them.
 fn block_word(n: int) -> string {
     if n == 1 { "it" } else { "the ${n} blocks" }
+}
+
+/// A call's arguments in seat order, and the seats they fill.
+export type Placed = { args: List<ExprId>, wants: List<TypeId> }
+
+/// Arguments that fill their seats as written.
+fn as_written(args: List<ExprId>, wants: List<TypeId>) -> Placed { Placed { args: args, wants: wants } }
+
+/// Whether seat `name` is written before argument `j` — by an earlier
+/// name, or by the positional argument standing at its place.
+fn written_before(labels: List<string>, seats: List<string>, name: string, j: int) -> bool {
+    let at = seats.index_of(name)
+    labels.slice(0, j).contains(name) || (at < labels.length && labels[at] == "")
 }

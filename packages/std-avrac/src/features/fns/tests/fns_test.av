@@ -391,6 +391,29 @@ ret r1"""
             refused_with("fn add(a: int, b: int = 5) -> int { a + b }\nlet f = add\nf(1)", "takes 2 arguments, found 1")
         }
     }
+    given "a named argument — the seat of its name" {
+        then "names fill seats in any order, beside positional ones" {
+            shown("fn sub(a: int, b: int) -> int { a - b }\nsub(b: 1, a: 5) * 10 + sub(5, b: 1)") == "44"
+        }
+        then "a name skips a defaulted seat between written ones" {
+            shown("fn f(a: int, b: int = 2, c: int = 3) -> int { a * 100 + b * 10 + c }\nf(1, c: 9)") == "129"
+        }
+        then "arguments run in written order, whatever seats they fill" {
+            shown("type Log = { xs: List<string> }\nfn note(mut l: Log, s: string) -> int {\n    l.xs.push(s)\n    l.xs.length\n}\nfn pair(a: int, b: int) -> int { a * 10 + b }\nmut log = Log { xs: [] }\nlet r = pair(b: note(log, \"b\"), a: note(log, \"a\"))\n\"\${r} \${log.xs.join(\",\")}\"") == "21 b,a"
+        }
+        then "a method's and a static's seats take names" {
+            shown("type C = { n: int }\nimpl C {\n    fn m(a: int, b: int = 0) -> int { self.n + a * 10 + b }\n    static fn make(n: int = 1, scale: int = 1) -> C { C { n: n * scale } }\n}\nC { n: 1 }.m(b: 3, a: 2) * 10 + C.make(scale: 5).n") == "245"
+        }
+        then "the refusal renders whole — a name that is no seat lists the seats" {
+            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nsub(a: 1, c: 2)").report().starts_with("error[F2105]: `sub` has no seat named `c`\n  ╭─[<source>:2:11]\n2 │ sub(a: 1, c: 2)\n  ·           ┬\n  ·           ╰── named here\n──╯\nhelp: its seats are `a`, `b`")
+        }
+        then "the refusal renders whole — a seat no argument writes" {
+            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nsub(b: 2)").report().starts_with("error[F2105]: seat `a` of `sub` is written by no argument, and has no default\n  ╭─[<source>:2:1]\n2 │ sub(b: 2)\n  · ┬\n  · ╰── this call\n──╯\nhelp: write it — `a: …`")
+        }
+        then "the refusal renders whole — a fn value's seats have no names" {
+            analyze_source("fn sub(a: int, b: int) -> int { a - b }\nlet f = sub\nf(a: 1, b: 2)").report().starts_with("error[F2105]: `a:` names a seat, and `f`'s seats have no names\n  ╭─[<source>:3:3]\n3 │ f(a: 1, b: 2)\n  ·   ┬\n  ·   ╰── named here\n──╯\nhelp: drop the name — a fn value, a runtime method, a contract's member and an extern are called by position")
+        }
+    }
     given "a `const` seat — settled at compile time" {
         then "a plain seat refuses a settled callee — the two fn types differ" {
             refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(int) -> int = takes\n0",
