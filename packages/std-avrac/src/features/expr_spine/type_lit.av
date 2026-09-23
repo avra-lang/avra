@@ -59,25 +59,16 @@ fn spelling(mut b: Builder, t: TypeRef) -> Result<ExprId, string> {
     }
     let applied = found!
     if t.args.length != applied.arity { return .Err("`${t.name}` is applied to ${t.args.length} types; it takes ${applied.arity}") }
-    mut parts: List<ExprId> = []
-    // LICENSED I3: the body allocates through `b.store`, which a comprehension element does not
-    for a in t.args { parts.push(spelling(b, a)?) }
-    variant(b, t, applied.variant, parts)
+    variant(b, t, applied.variant, [spelling(b, a)? for a in t.args])
 }
 
 /// `fn(a, mut b) -> r` — the seats, their marks, the answer: the
 /// LAST written type is the answer, the fn-type builder's contract.
 fn fn_spelling(mut b: Builder, t: TypeRef) -> Result<ExprId, string> {
     let seats = t.args.length - 1
-    mut params: List<ExprId> = []
-    mut muts: List<ExprId> = []
-    mut consts: List<ExprId> = []
-    // LICENSED I3: the body allocates through `b.store`, which a comprehension element does not
-    for j in 0..seats {
-        params.push(spelling(b, t.args[j])?)
-        muts.push(b.store.alloc_expr(Expr.BoolLit(mut_mark(t.marks, j)), t.span))
-        consts.push(b.store.alloc_expr(Expr.BoolLit(settled_mark(t.marks, j)), t.span))
-    }
+    let params = [spelling(b, t.args[j])? for j in 0..seats]
+    let muts = [b.store.alloc_expr(Expr.BoolLit(mut_mark(t.marks, j)), t.span) for j in 0..seats]
+    let consts = [b.store.alloc_expr(Expr.BoolLit(settled_mark(t.marks, j)), t.span) for j in 0..seats]
     let ret = spelling(b, t.args[seats])?
     variant(b, t, "Fn", [b.store.alloc_expr(Expr.ListLit(params), t.span), b.store.alloc_expr(Expr.ListLit(muts), t.span), b.store.alloc_expr(Expr.ListLit(consts), t.span), ret])
 }

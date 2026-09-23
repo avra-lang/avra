@@ -40,12 +40,12 @@ fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, targe
     let found? = cx.method_sig(decl, name) else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
     let m: DeclId? = cx.view.decls.method(decl, name)
     let sig = selfed_sig(cx, subject, m, instantiated_sig(cx, e, subject, decl, found))
-    let wants = sig.params.length - 1
-    if args.length != wants {
-        return wrong_method_arity(cx, e, target, name, wants, args.length)
+    let wants? = cx.seats_filled(e, "${target}.${name}", m, args.length, seats_of(sig).params) else { return cx.error_type }
+    if args.length != wants.length {
+        return wrong_method_arity(cx, e, target, name, wants.length, args.length)
     }
     for j, a in args {
-        if !cx.accepts(a, sig.params[j + 1]) { wrong_method_argument(cx, target, name, j, sig.params[j + 1], a) }
+        if !cx.accepts(a, wants[j]) { wrong_method_argument(cx, target, name, j, wants[j], a) }
     }
     if m != null && !seat_laws(cx, e, subject, "${target}.${name}", name, m!, args, 1) { return cx.error_type }
     sig.ret
@@ -56,13 +56,13 @@ fn declared_call(mut cx: TypeCx, e: ExprId, subject: ExprId, decl: DeclId, targe
 /// exactly as written and the seats are numbered from zero.
 fn static_call(mut cx: TypeCx, e: ExprId, m: DeclId, target: string, name: string, args: List<ExprId>) -> TypeId {
     let found? = (cx.view.decls.sig(m))?.fn_sig() else { return form_refusal(cx, e, target, name) ?? no_such_method(cx, e, target, name) }
-    let sig = found
-    if args.length != sig.params.length { return wrong_static_arity(cx, e, target, name, sig.params.length, args.length) }
+    let wants? = cx.seats_filled(e, "${target}.${name}", m, args.length, found.params) else { return cx.error_type }
+    if args.length != wants.length { return wrong_static_arity(cx, e, target, name, wants.length, args.length) }
     for j, a in args {
-        if !cx.accepts(a, sig.params[j]) { wrong_method_argument(cx, target, name, j, sig.params[j], a) }
+        if !cx.accepts(a, wants[j]) { wrong_method_argument(cx, target, name, j, wants[j], a) }
     }
     if !cx.seat_contracts(e, "${target}.${name}", m, 0, args, null) { return cx.error_type }
-    sig.ret
+    found.ret
 }
 
 /// A trait member's sig on THIS receiver: the trait's `Self` is the

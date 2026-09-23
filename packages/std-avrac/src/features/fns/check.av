@@ -12,7 +12,10 @@ use diagnostics.{refusal}
 
 export fn check_fn(mut cx: TypeCx, s: StmtId) {
     match cx.view.store.stmt(s) {
-        .FnDecl(fname, _, _, fret, body) -> checked_fn(cx, s, fname.of, fret, body),
+        .FnDecl(fname, _, fparams, fret, body) -> {
+            defaults_law(cx, s, fname.of, fparams)
+            checked_fn(cx, s, fname.of, fret, body)
+        }
         .ExternFn(hname, hparams, hret) -> checked_extern(cx, s, hname.of, hparams, hret),
         rest -> nothing(),
     }
@@ -227,6 +230,30 @@ fn checked_fn(mut cx: TypeCx, s: StmtId, fname: string, fret: TypeRef, body: Exp
     if !cx.accepts(body, want) && !holds_error(cx, body) { body_disagrees(cx, body, fname, fret, got) }
 }
 
+/// THE DEFAULT LAWS at the declaration. A default is ONE body, lowered
+/// once, so its fn is lowered once too; a `mut` seat is a place and a
+/// `const` seat a settled value, which a default body is neither; and
+/// a call writes its seats in order, so a seat without a default after
+/// one with a default could never be left to it.
+fn defaults_law(mut cx: TypeCx, s: StmtId, fname: string, params: List<Param>) {
+    let first? = [j for j, p in params if p.default != null].first() else { return }
+    if !cx.view.decls.lowered_once(cx.decl_of(s)) { return generic_default(cx, params[first], fname) }
+    for p in params {
+        if p.default != null && (p.promises.mutable || p.promises.settled) { marked_default(cx, p, fname) }
+    }
+    let unfilled? = params.slice(first, params.length).find(it.default == null) else { return }
+    required_after_default(cx, unfilled, params[first])
+}
+
+/// THE DEFAULT LAW, at the body: a seat's default (walked under the
+/// seat's want) is accepted by the seat — every call that leaves the
+/// seat unwritten then runs it without judging it again.
+export fn fits_seat_default(mut cx: TypeCx, d: ExprId, name: string, want: TypeId) {
+    if cx.accepts(d, want) { return }
+    let n = cx.name_at(d)
+    cx.emit(refusal("type.param_default", cx.loc_of(d), "parameter `${name}` defaults to `${n}`, and it is `${cx.view.types.name_of(want)}`", this_is(n), null))
+}
+
 /// Whether a body's statements hold a parse recovery.
 fn holds_error(cx: TypeCx, body: ExprId) -> bool {
     let stmts: List<StmtId> = match cx.view.store.expr(body) { .Block(ss, _) -> ss, _ -> [] }
@@ -285,7 +312,8 @@ fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef
     let tp: List<string> = cx.tparams(d)
     if tp.is_empty() {
         if !pins.is_empty() { takes_no_pins(cx, e, callee) }
-        return cx.seats_judged(e, callee, s.params, [], s.ret, args)
+        let wants? = cx.seats_filled(e, callee, d, args.length, s.params) else { return cx.error_type }
+        return cx.seats_judged(e, callee, wants, [], s.ret, args)
     }
     generic_call(cx, e, callee, pins, args, s, d, tp)
 }
@@ -437,6 +465,23 @@ fn cellless_place(cx: TypeCx, a: ExprId) -> bool {
 }
 
 // ── The voices ──
+
+fn generic_default(mut cx: TypeCx, p: Param, fname: string) {
+    cx.emit(refusal("type.param_default", cx.loc_of(p.default!), "`${p.name.of}` carries a default, and `${fname}` is generic — a default is one body, and a generic fn is lowered once per type", "defaulted here", "drop the default, or give `${fname}` a plain twin that fills the seat"))
+}
+
+fn marked_default(mut cx: TypeCx, p: Param, fname: string) {
+    cx.emit(refusal("type.param_default", cx.loc_of(p.default!), "`${p.name.of}` is a ${seat_kind(p)} seat of `${fname}`, and a default body is neither a place nor a settled value", "defaulted here", "drop the default — every call writes this seat"))
+}
+
+fn required_after_default(mut cx: TypeCx, unfilled: Param, first: Param) {
+    cx.emit(refusal("type.param_default", cx.loc_of(first.default!), "`${unfilled.name.of}` has no default and follows `${first.name.of}`, which has one — a call writes its seats in order, so `${first.name.of}` could never be left to its default", "the first default", "move the defaulted seats last, or give `${unfilled.name.of}` a default too"))
+}
+
+/// The word for a seat's contract, as the default law names it.
+fn seat_kind(p: Param) -> string {
+    if p.promises.mutable { "`mut`" } else { "`const`" }
+}
 
 fn body_disagrees(mut cx: TypeCx, body: ExprId, fname: string, fret: TypeRef, got: TypeId) {
     let gn = cx.view.types.name_of(got)

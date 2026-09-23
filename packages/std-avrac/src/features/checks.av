@@ -474,6 +474,21 @@ impl TypeCx {
         ret
     }
 
+    /// The seats a DECLARED callee's arguments fill: every written
+    /// one, or — when each seat past the arguments has a default —
+    /// the arguments' own. Null, with the refusal spoken, when a
+    /// callee with defaults is handed a count that fits neither;
+    /// without defaults, or without a declaration, the seat law
+    /// speaks its own words.
+    mut fn seats_filled(e: ExprId, callee: string, d: DeclId?, count: int, wants: List<TypeId>) -> List<TypeId>? {
+        let declared? = d else { return wants }
+        let least = self.view.decls.required_seats(declared)
+        if least >= wants.length { return wants }
+        if count >= least && count <= wants.length { return wants.slice(0, count) }
+        self.wrong_defaulted_arity(e, callee, least, wants.length, count)
+        null
+    }
+
     /// THE SEAT LAW every call shape shares: exactly `wants.length`
     /// arguments, each accepted by its seat — a wrong argument speaks
     /// and the caller still answers; a wrong count absorbs.
@@ -550,6 +565,11 @@ impl TypeCx {
     /// THE arity refusal — every call shape shares the words.
     mut fn wrong_arity(e: ExprId, callee: string, want: int, found: int) {
         self.emit(refusal("type.mismatch", self.loc_of(e), "`${callee}` takes ${want} arguments, found ${found}", "this call", null))
+    }
+
+    /// The arity refusal for a callee whose last seats have defaults.
+    mut fn wrong_defaulted_arity(e: ExprId, callee: string, least: int, most: int, found: int) {
+        self.emit(refusal("type.mismatch", self.loc_of(e), "`${callee}` takes ${least} to ${most} arguments, found ${found}", "this call", defaulted_seats(most - least)))
     }
 
     /// A trailing block with no seat left for it — the arity refusal in
@@ -893,6 +913,11 @@ export fn comparable(sh: Type) -> bool {
         .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or
         .Var(_, _, _) or .Error -> false,
     }
+}
+
+/// The trailing seats with defaults, as the arity voice counts them.
+fn defaulted_seats(n: int) -> string {
+    if n == 1 { "the last seat has a default, and a call may leave it unwritten" } else { "the last ${n} seats have defaults, and a call may leave them unwritten" }
 }
 
 /// One block, or two: how the arity voice counts them.

@@ -5,7 +5,7 @@ use @std.avrac.core.{Scoped, Plain, Span, new_node_store, Expr, Stmt, Pat, Arm, 
 fn at(lo: int, hi: int) -> Span? { Span { lo: lo, hi: hi } }
 
 /// A written type, as the parser would hand it over.
-fn ty(name: string, optional: bool) -> TypeRef {
+fn ty(name: string, optional: bool = false) -> TypeRef {
     named_ref(name) with { optional: optional }
 }
 
@@ -33,7 +33,7 @@ spec "core/nodes" {
         then "spans live in the side table; synthesized nodes have none" {
             mut s = new_node_store()
             let a = s.alloc_expr(Expr.IntLit(1), at(4, 5))
-            let ghost = s.alloc_expr(Expr.Error, null)
+            let ghost = s.alloc_expr(Expr.Error)
             s.expr_span(a)?.lo == 4 && s.expr_span(ghost) == null
         }
     }
@@ -47,55 +47,55 @@ spec "core/nodes" {
         }
         then "negative payloads fingerprint deterministically" {
             mut s = new_node_store()
-            let a = s.alloc_expr(Expr.IntLit(0 - 42), null)
-            let b = s.alloc_expr(Expr.IntLit(0 - 42), null)
-            let c = s.alloc_expr(Expr.IntLit(42), null)
+            let a = s.alloc_expr(Expr.IntLit(0 - 42))
+            let b = s.alloc_expr(Expr.IntLit(0 - 42))
+            let c = s.alloc_expr(Expr.IntLit(42))
             s.expr_fingerprint(a) == s.expr_fingerprint(b) &&
                 s.expr_fingerprint(a) != s.expr_fingerprint(c)
         }
         then "different content means different fingerprints" {
             mut s = new_node_store()
-            let a = s.alloc_expr(Expr.IntLit(1), null)
-            let b = s.alloc_expr(Expr.IntLit(2), null)
-            let c = s.alloc_expr(Expr.Ident("1"), null)
+            let a = s.alloc_expr(Expr.IntLit(1))
+            let b = s.alloc_expr(Expr.IntLit(2))
+            let c = s.alloc_expr(Expr.Ident("1"))
             s.expr_fingerprint(a) != s.expr_fingerprint(b) &&
                 s.expr_fingerprint(a) != s.expr_fingerprint(c)
         }
         then "a comprehension's ABSENT guard is not its element — two programs, two identities" {
             mut s = new_node_store()
-            let x = s.alloc_expr(Expr.Ident("x"), null)
-            let xs = s.alloc_expr(Expr.Ident("xs"), null)
-            let plain = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, null), null)
-            let guarded = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, x), null)
+            let x = s.alloc_expr(Expr.Ident("x"))
+            let xs = s.alloc_expr(Expr.Ident("xs"))
+            let plain = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, null))
+            let guarded = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, x))
             s.expr_fingerprint(plain) != s.expr_fingerprint(guarded)
         }
         then "an absent RANGE END is not its source either" {
             mut s = new_node_store()
-            let x = s.alloc_expr(Expr.Ident("x"), null)
-            let xs = s.alloc_expr(Expr.Ident("xs"), null)
-            let plain = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, null), null)
-            let ranged = s.alloc_expr(Expr.Comp(x, "", "x", xs, xs, null), null)
+            let x = s.alloc_expr(Expr.Ident("x"))
+            let xs = s.alloc_expr(Expr.Ident("xs"))
+            let plain = s.alloc_expr(Expr.Comp(x, "", "x", xs, null, null))
+            let ranged = s.alloc_expr(Expr.Comp(x, "", "x", xs, xs, null))
             s.expr_fingerprint(plain) != s.expr_fingerprint(ranged)
         }
         then "the LINK is part of identity: `a?.b` and `a.b` differ" {
             mut s = new_node_store()
-            let subject = s.alloc_expr(Expr.Ident("a"), null)
-            let read = s.alloc_expr(Expr.Prop(subject, "b"), null)
-            let chain = s.alloc_expr(Expr.Chain(subject, "b"), null)
+            let subject = s.alloc_expr(Expr.Ident("a"))
+            let read = s.alloc_expr(Expr.Prop(subject, "b"))
+            let chain = s.alloc_expr(Expr.Chain(subject, "b"))
             s.expr_fingerprint(read) != s.expr_fingerprint(chain)
         }
         then "the chain's MEMBER is part of identity" {
             mut s = new_node_store()
-            let subject = s.alloc_expr(Expr.Ident("a"), null)
-            let b = s.alloc_expr(Expr.Chain(subject, "b"), null)
-            let c = s.alloc_expr(Expr.Chain(subject, "c"), null)
+            let subject = s.alloc_expr(Expr.Ident("a"))
+            let b = s.alloc_expr(Expr.Chain(subject, "b"))
+            let c = s.alloc_expr(Expr.Chain(subject, "c"))
             s.expr_fingerprint(b) != s.expr_fingerprint(c)
         }
         then "a nullable match records MEANING — the written arm order never counts" {
             mut s = new_node_store()
-            let subject = s.alloc_expr(Expr.Ident("v"), null)
-            let present = s.alloc_expr(Expr.IntLit(1), null)
-            let absent = s.alloc_expr(Expr.IntLit(2), null)
+            let subject = s.alloc_expr(Expr.Ident("v"))
+            let present = s.alloc_expr(Expr.IntLit(1))
+            let absent = s.alloc_expr(Expr.IntLit(2))
             // both writings build the SAME node shape (the builder
             // hands captures by meaning), so identity follows
             let a = s.alloc_expr(Expr.MatchOpt(subject, "x", present, absent), at(0, 9))
@@ -104,127 +104,127 @@ spec "core/nodes" {
         }
         then "a WRITTEN TYPE is part of identity: `int` and `int?` differ" {
             mut s = new_node_store()
-            let body = s.alloc_expr(Expr.IntLit(1), null)
-            let plain = param("x", ty("int", false))
+            let body = s.alloc_expr(Expr.IntLit(1))
+            let plain = param("x", ty("int"))
             let opt = param("x", ty("int", true))
-            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [plain], ty("int", false), body), null)
-            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [opt], ty("int", false), body), null)
+            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [plain], ty("int"), body))
+            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [opt], ty("int"), body))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "a nullable RETURN differs from its guarantee" {
             mut s = new_node_store()
-            let body = s.alloc_expr(Expr.IntLit(1), null)
-            let p = param("x", ty("int", false))
-            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [p], ty("int", false), body), null)
-            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [p], ty("int", true), body), null)
+            let body = s.alloc_expr(Expr.IntLit(1))
+            let p = param("x", ty("int"))
+            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [p], ty("int"), body))
+            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [p], ty("int", true), body))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "an ABSENT type differs from every written one" {
             mut s = new_node_store()
-            let unit = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", null)]), null)
-            let carrying = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int", false))]), null)
-            let nullable = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int", true))]), null)
+            let unit = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", null)]))
+            let carrying = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int"))]))
+            let nullable = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int", true))]))
             s.stmt_fingerprint(unit) != s.stmt_fingerprint(carrying) &&
                 s.stmt_fingerprint(unit) != s.stmt_fingerprint(nullable) &&
                 s.stmt_fingerprint(carrying) != s.stmt_fingerprint(nullable)
         }
         then "a field's written type is part of the record's identity" {
             mut s = new_node_store()
-            let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int", false))]), null)
-            let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int", true))]), null)
-            let c = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("bool", false))]), null)
+            let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int"))]))
+            let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int", true))]))
+            let c = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("bool"))]))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b) &&
                 s.stmt_fingerprint(a) != s.stmt_fingerprint(c)
         }
         then "an APPLICATION is part of identity: `List<int>` vs `int`" {
             mut s = new_node_store()
-            let body = s.alloc_expr(Expr.IntLit(1), null)
-            let plain = param("x", ty("int", false))
-            let applied = named_ref("List") with { args: [ty("int", false)], optional: false }
-            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [plain], ty("int", false), body), null)
-            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", applied)], ty("int", false), body), null)
+            let body = s.alloc_expr(Expr.IntLit(1))
+            let plain = param("x", ty("int"))
+            let applied = named_ref("List") with { args: [ty("int")], optional: false }
+            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [plain], ty("int"), body))
+            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", applied)], ty("int"), body))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "the ELEMENT is part of identity: `List<int>` vs `List<bool>`" {
             mut s = new_node_store()
-            let body = s.alloc_expr(Expr.IntLit(1), null)
-            let li = named_ref("List") with { args: [ty("int", false)], optional: false }
-            let lb = named_ref("List") with { args: [ty("bool", false)], optional: false }
-            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", li)], ty("int", false), body), null)
-            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", lb)], ty("int", false), body), null)
+            let body = s.alloc_expr(Expr.IntLit(1))
+            let li = named_ref("List") with { args: [ty("int")], optional: false }
+            let lb = named_ref("List") with { args: [ty("bool")], optional: false }
+            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", li)], ty("int"), body))
+            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", lb)], ty("int"), body))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "NESTING is part of identity: `List<int>` vs `List<List<int>>`" {
             mut s = new_node_store()
-            let body = s.alloc_expr(Expr.IntLit(1), null)
-            let li = named_ref("List") with { args: [ty("int", false)], optional: false }
+            let body = s.alloc_expr(Expr.IntLit(1))
+            let li = named_ref("List") with { args: [ty("int")], optional: false }
             let ll = named_ref("List") with { args: [li], optional: false }
-            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", li)], ty("int", false), body), null)
-            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", ll)], ty("int", false), body), null)
+            let a = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", li)], ty("int"), body))
+            let b = s.alloc_stmt(Stmt.FnDecl("f", [], [param("x", ll)], ty("int"), body))
             s.stmt_fingerprint(a) != s.stmt_fingerprint(b)
         }
         then "two DIFFERENT match shapes never fingerprint alike — an arm is one hash, not a run of them" {
             mut s = new_node_store()
-            let rest_a = s.alloc_pat(Pat.Rest, null)
-            let rest_b = s.alloc_pat(Pat.Rest, null)
-            let rest_c = s.alloc_pat(Pat.Rest, null)
-            let subject = s.alloc_expr(Expr.IntLit(1), null)
-            let tail = s.alloc_expr(Expr.IntLit(9), null)
-            let recv = s.alloc_expr(Expr.Receiver, null)
+            let rest_a = s.alloc_pat(Pat.Rest)
+            let rest_b = s.alloc_pat(Pat.Rest)
+            let rest_c = s.alloc_pat(Pat.Rest)
+            let subject = s.alloc_expr(Expr.IntLit(1))
+            let tail = s.alloc_expr(Expr.IntLit(9))
+            let recv = s.alloc_expr(Expr.Receiver)
             // ONE arm taking three alternatives, answering `tail`
-            let wide = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest_a, rest_b, rest_c], value: tail }]), null)
+            let wide = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest_a, rest_b, rest_c], value: tail }]))
             // TWO arms: the first answers `self`, the second `tail`
-            let split = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest_a], value: recv }, Arm { pats: [rest_b], value: tail }]), null)
+            let split = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest_a], value: recv }, Arm { pats: [rest_b], value: tail }]))
             s.expr_fingerprint(wide) != s.expr_fingerprint(split)
         }
         then "a guard is part of an arm's identity — guarded, unguarded and two different guards all differ" {
             mut s = new_node_store()
-            let rest = s.alloc_pat(Pat.Rest, null)
-            let subject = s.alloc_expr(Expr.IntLit(1), null)
-            let tail = s.alloc_expr(Expr.IntLit(9), null)
-            let g1 = s.alloc_expr(Expr.BoolLit(true), null)
-            let g2 = s.alloc_expr(Expr.BoolLit(false), null)
-            let unguarded = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], value: tail }]), null)
-            let guarded1 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g1, value: tail }]), null)
-            let guarded2 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g2, value: tail }]), null)
+            let rest = s.alloc_pat(Pat.Rest)
+            let subject = s.alloc_expr(Expr.IntLit(1))
+            let tail = s.alloc_expr(Expr.IntLit(9))
+            let g1 = s.alloc_expr(Expr.BoolLit(true))
+            let g2 = s.alloc_expr(Expr.BoolLit(false))
+            let unguarded = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], value: tail }]))
+            let guarded1 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g1, value: tail }]))
+            let guarded2 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g2, value: tail }]))
             s.expr_fingerprint(unguarded) != s.expr_fingerprint(guarded1) &&
                 s.expr_fingerprint(guarded1) != s.expr_fingerprint(guarded2)
         }
         then "dropping a `?` KEEPS every other field — a fn type's seat marks survive it" {
-            let marked = TypeRef { name: "fn", args: [ty("int", false), ty("int", false)], optional: true, dynamic: false, arrow: true, span: null, marks: [SeatMark { mutable: true, settled: false }, plain_mark] }
+            let marked = TypeRef { name: "fn", args: [ty("int"), ty("int")], optional: true, dynamic: false, arrow: true, span: null, marks: [SeatMark { mutable: true, settled: false }, plain_mark] }
             let dropped = plain(marked)
             dropped.marks.length == 2 && dropped.marks[0].mutable && !dropped.marks[1].mutable && !dropped.optional && dropped.arrow && dropped.args.length == 2
         }
         then "written types spell every part of their source" {
             let dynamic = named_ref("Show") with { dynamic: true, optional: true }
-            let arrow = TypeRef { name: "fn", args: [ty("int", false), dynamic, ty("bool", false)], optional: false, dynamic: false, arrow: true, span: null, marks: [SeatMark { mutable: true, settled: false }, plain_mark] }
+            let arrow = TypeRef { name: "fn", args: [ty("int"), dynamic, ty("bool")], optional: false, dynamic: false, arrow: true, span: null, marks: [SeatMark { mutable: true, settled: false }, plain_mark] }
             spelled(arrow) == "fn(mut int, dyn Show?) -> bool"
         }
         then "two spellings of one type still agree — spans never count" {
             mut s = new_node_store()
             let here = named_ref("int") with { optional: true, span: at(0, 4) }
             let there = named_ref("int") with { optional: true, span: at(90, 94) }
-            let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", here)]), null)
-            let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", there)]), null)
+            let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", here)]))
+            let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", there)]))
             s.stmt_fingerprint(a) == s.stmt_fingerprint(b)
         }
         then "a parent's fingerprint sees its children's" {
             mut s = new_node_store()
-            let one = s.alloc_expr(Expr.IntLit(1), null)
-            let two = s.alloc_expr(Expr.IntLit(2), null)
-            let x = s.alloc_expr(Expr.Ident("x"), null)
-            let p = s.alloc_expr(Expr.Binary(BinOp.Add, one, two), null)
-            let q = s.alloc_expr(Expr.Binary(BinOp.Add, one, x), null)
-            let r = s.alloc_expr(Expr.Binary(BinOp.Sub, one, two), null)
+            let one = s.alloc_expr(Expr.IntLit(1))
+            let two = s.alloc_expr(Expr.IntLit(2))
+            let x = s.alloc_expr(Expr.Ident("x"))
+            let p = s.alloc_expr(Expr.Binary(BinOp.Add, one, two))
+            let q = s.alloc_expr(Expr.Binary(BinOp.Add, one, x))
+            let r = s.alloc_expr(Expr.Binary(BinOp.Sub, one, two))
             s.expr_fingerprint(p) != s.expr_fingerprint(q) &&
                 s.expr_fingerprint(p) != s.expr_fingerprint(r)
         }
         then "statements fingerprint through their expressions" {
             mut s = new_node_store()
-            let one = s.alloc_expr(Expr.IntLit(1), null)
+            let one = s.alloc_expr(Expr.IntLit(1))
             let a = s.alloc_stmt(Stmt.Let("x", null, one), at(0, 9))
-            let b = s.alloc_stmt(Stmt.Let("x", null, one), null)
-            let c = s.alloc_stmt(Stmt.Let("y", null, one), null)
+            let b = s.alloc_stmt(Stmt.Let("x", null, one))
+            let c = s.alloc_stmt(Stmt.Let("y", null, one))
             s.stmt_fingerprint(a) == s.stmt_fingerprint(b) &&
                 s.stmt_fingerprint(a) != s.stmt_fingerprint(c)
         }

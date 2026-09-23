@@ -122,10 +122,14 @@ gate — there is no amnesty left to hide in.
       ACCUMULATES across several branches (one `made` filled by six
       of them), a push through a FIELD ALIAS (a concat would rebind
       the local), an INDEX SCAN where the position is the answer, and
-      a fold whose pushes must be EMITTED in order. What is no longer
-      licensed: "the paired form does not parse" and "a comprehension
-      over a RANGE is our own sugar backlog" — both landed, and the
-      loops that cited them are comprehensions now.
+      an element that RETURNS from the fn (a comprehension element
+      cannot leave). What is no longer licensed: "the paired form
+      does not parse", "a comprehension over a RANGE is our own sugar
+      backlog", and "each element EMITS through the context, which a
+      comprehension element does not" — an element may call a
+      writing method or hand a `mut` seat on, and the writes land in
+      element order (probed 2026-09-22 on lane/fn-defaults, both
+      engines; eight loops that cited it are comprehensions now).
 - I4  hand-rolled scans that ARE `find`/`index_of`/`any` — SWEPT:
       the scan is `xs.index_of(x)` (returns -1 on a miss — wrap to
       `int?`), as `core/modules.av` reads a key's cut.

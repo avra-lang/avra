@@ -240,7 +240,7 @@ impl Workspace {
             .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> {
                 let e = self.spliced_expr(f, node)
                 mut store = self.decls.store_of(f)
-                [store.alloc_stmt(Stmt.ExprStmt(e), null)]
+                [store.alloc_stmt(Stmt.ExprStmt(e))]
             },
         }
     }
@@ -249,16 +249,16 @@ impl Workspace {
         mut store = self.decls.store_of(f)
         match node {
             .Template(file, at, _, fills) -> self.copied_expr(f, file, at, fills),
-            .Name(t) -> store.alloc_expr(Expr.Ident(Scoped(t)), null),
-            .Text(t) -> store.alloc_expr(Expr.StrLit(t), null),
-            .Int(v) -> store.alloc_expr(Expr.IntLit(v), null),
-            .Float(bits) -> store.alloc_expr(Expr.FloatLit(bits), null),
-            .Bool(b) -> store.alloc_expr(Expr.BoolLit(b), null),
+            .Name(t) -> store.alloc_expr(Expr.Ident(Scoped(t))),
+            .Text(t) -> store.alloc_expr(Expr.StrLit(t)),
+            .Int(v) -> store.alloc_expr(Expr.IntLit(v)),
+            .Float(bits) -> store.alloc_expr(Expr.FloatLit(bits)),
+            .Bool(b) -> store.alloc_expr(Expr.BoolLit(b)),
             .Interp(parts, holes) -> {
                 let hs = [self.spliced_expr(f, h) for h in holes]
-                store.alloc_expr(Expr.Body("text", parts, hs, BodyView.None), null)
+                store.alloc_expr(Expr.Body("text", parts, hs, BodyView.None))
             },
-            .Many(_) -> store.alloc_expr(Expr.Error, null),
+            .Many(_) -> store.alloc_expr(Expr.Error),
         }
     }
 
@@ -295,10 +295,10 @@ impl Workspace {
     fn copied_expr(f: FileId, file: string, at: int, fills: List<Node>) -> ExprId {
         let stmts = self.copied(f, file, at, fills, HoleKind.Expression).stmts
         mut store = self.decls.store_of(f)
-        let last? = stmts.last() else { return store.alloc_expr(Expr.Error, null) }
-        let value? = store.answer_of(last) else { return store.alloc_expr(Expr.Block(stmts, null), null) }
+        let last? = stmts.last() else { return store.alloc_expr(Expr.Error) }
+        let value? = store.answer_of(last) else { return store.alloc_expr(Expr.Block(stmts, null)) }
         if stmts.length == 1 { return value }
-        store.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value), null)
+        store.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value))
     }
 
     /// A template's body copied into file f's store, each hole filled

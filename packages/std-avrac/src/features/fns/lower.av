@@ -13,12 +13,20 @@ fn call_lower(mut cx: LowerCx, e: ExprId) -> Reg {
             if made != null { return made! }
             let through: Reg? = cx.indirect_callee(e)
             if through != null { return valued_call_reg(cx, e, through!, regs) }
+            // THE MINT LAW: the defaults' registers first, the answer last
+            let seated = regs.concat(defaults_left(cx, e, regs.length))
             let dst = cx.result(e)
-            cx.emit(Ins.Call(dst, cx.callee_of(e, callee.of), regs))
+            cx.emit(Ins.Call(dst, cx.callee_of(e, callee.of), seated))
             dst
         },
         _ -> cx.foreign_node(e),
     }
+}
+
+/// The seats a direct call left to their defaults, lowered.
+fn defaults_left(mut cx: LowerCx, e: ExprId, written: int) -> List<Reg> {
+    let d? = bound_decl_of(cx.names, e) else { return [] }
+    cx.defaulted_regs(e, d, written)
 }
 
 /// A NAMED TYPE'S CONSTRUCTION — `UserId(5)`: the name is free at

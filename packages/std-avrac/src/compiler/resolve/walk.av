@@ -3,7 +3,7 @@
 use core.{StmtId, ExprId, FileId, Param, closest, some_list, DeclId, Binding, found_at, same_file}
 use core.{SeatMark}
 use diagnostics.{Diag, error_at, pointed, refusal}
-use features.{ResolveCx, self_word, Cap, Namespace, remedy_for, nothing, Bound}
+use features.{ResolveCx, SelfSeat, self_word, Cap, Namespace, remedy_for, nothing, Bound}
 use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion}
 use compiler.typing.{builtin_type_name}
 
@@ -127,8 +127,11 @@ impl ResolveCx {
     mut fn use_receiver(e: ExprId) {
         if self.met(e) { return }
         if self.receivers.is_empty() { return self.no_receiver(self.loc_of(e)) }
-        if !self.in_a_method() { return self.static_has_none(self.loc_of(e)) }
-        self.bind_use(e, self.chained(0, receiver_key, Binding.Receiver))
+        match self.receivers.last() ?? SelfSeat.Receiver {
+            .Receiver -> self.bind_use(e, self.chained(0, receiver_key, Binding.Receiver)),
+            .Static -> self.static_has_none(self.loc_of(e)),
+            .Default -> self.default_has_none(self.loc_of(e)),
+        }
     }
 
     /// The seat the written parameters start at: after the
@@ -402,6 +405,10 @@ impl ResolveCx {
 
     fn no_receiver(at: Loc?) {
         self.emit(refusal("resolve.receiver", at, "`self` names a method's receiver — this is not a method", "no receiver here", "move this into `impl <Type> { … }`"))
+    }
+
+    fn default_has_none(at: Loc?) {
+        self.emit(refusal("resolve.receiver", at, "`self` names a method's receiver — a default is a body of its own, and has none", "no receiver here", "let the seat default to absence and fill it in the body — `k: int? = null`, then `k ?? self.x`"))
     }
 
     fn static_has_none(at: Loc?) {

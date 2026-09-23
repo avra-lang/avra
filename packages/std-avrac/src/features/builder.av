@@ -104,13 +104,7 @@ impl Builder {
     /// level — every body survives bad input visibly.
     fn stmts(i: int) -> Result<List<StmtId>, string> {
         let items = list_at(self.args, i)
-        mut out: List<StmtId> = []
-        // LICENSED I3: the body allocates through `self.store`, which a comprehension element does not
-        for j in 0..items.length {
-            let sid: StmtId? = stmt_id_at(items, j)
-            out.push(sid ?? self.store.alloc_stmt(Stmt.Error, null))
-        }
-        .Ok(out)
+        .Ok([stmt_id_at(items, j) ?? self.store.alloc_stmt(Stmt.Error) for j in 0..items.length])
     }
 
     /// A new pattern node, spanning the matched branch.
@@ -386,6 +380,12 @@ impl Builder {
         }
         let w = MarkWindows { anchors: [f.span.lo for f in fs], marks: marks, from: self.span?.lo ?? 0 }
         .Ok([Param { name: Scoped(f.text), ty: ft[j], default: self.default_before(fs, fds, j), promises: plain_mark, span: f.span, marks: w.at(f.span.lo) } for j, f in fs])
+    }
+
+    /// Seats with the defaults some carry — a default finds its seat
+    /// by POSITION, as a field's does.
+    fn defaulted(ps: List<Token>, seats: List<Param>, pds: List<ExprId>) -> List<Param> {
+        [p with { default: self.default_before(ps, pds, j) } for j, p in seats]
     }
 
     /// The default whose position falls between field `j`'s name and

@@ -151,7 +151,7 @@ type Ran = { m: Machine, answer: Val? }
 
 fn ran(l: Lowered, target: Body) -> Result<Ran, string> {
     mut m = fresh_machine(l)
-    let answer: Val? = m.run_body(target, [])
+    let answer: Val? = m.run_body(target)
     if !m.failures.is_empty() { return .Err(m.failures.first()!) }
     .Ok(Ran { m: m, answer: answer })
 }
@@ -231,7 +231,7 @@ export fn run_settle(l: Lowered, budgets: Budgets, base: string) -> Result<Settl
     if world != null { return .Err(Unsettled.Reach(world!)) }
     mut m = budgeted_machine(l, budgets)
     m.base = base
-    let answer: Val? = m.run_body(l.entry, [])
+    let answer: Val? = m.run_body(l.entry)
     m.spent(l.entry.name, budgets)
     if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
@@ -275,7 +275,7 @@ export fn run_crossed(l: Lowered, budgets: Budgets, base: string) -> Result<Lift
     if world != null { return .Err(Unsettled.Reach(world!)) }
     mut m = budgeted_machine(l, budgets)
     m.base = base
-    let answer: Val? = m.run_body(l.entry, [])
+    let answer: Val? = m.run_body(l.entry)
     m.spent(l.entry.name, budgets)
     if m.exhausted != null { return .Err(Unsettled.Budget(m.exhausted!)) }
     if !m.failures.is_empty() { return .Err(Unsettled.Trap(m.failures.first()!)) }
@@ -400,7 +400,7 @@ impl Machine {
 
     /// One body under its argument values; params ARE registers 0..N-1.
     /// The answer is RetVal's register, when one fires.
-    fn run_body(b: Body, args: List<Val>) -> Val? {
+    fn run_body(b: Body, args: List<Val> = []) -> Val? {
         if self.frames.length >= call_limit {
             self.trapped("recursion too deep — ${call_limit} nested calls")
             return null
