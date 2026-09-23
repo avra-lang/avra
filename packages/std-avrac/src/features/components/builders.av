@@ -127,9 +127,11 @@ impl Builder {
         let stmts = self.written(body)
         let settings = flatten([some_list(self.store.setting_parts(s)) for s in stmts])
         let children = [s for s in stmts if self.store.setting_parts(s) == null]
-        let slot = slot_for(word, r, settings, children)?
+        let places = self.placed(word, r, settings, children)?
         let named = if name != null && r.named && !settings.any(it.name == "name") { [Field { name: "name", value: self.store.alloc_expr(Expr.StrLit(name!), self.span) }] } else { [] }
-        let filled = [Field { name: f, value: heads[j] } for j, f in r.head].concat([Field { name: st.name, value: st.value } for st in settings]).concat(named).concat(some_list(self.collected(slot, children)))
+        let placed_in = [pl.slot for pl in places]
+        let set = [Field { name: st.name, value: st.value } for st in settings if !placed_in.contains(st.name)]
+        let filled = [Field { name: f, value: heads[j] } for j, f in r.head].concat(set).concat(named).concat([self.collected(pl, settings) for pl in places])
         let literal = self.store.alloc_expr(Expr.StructLit(Nominal(word), [Plain(f.name) for f in filled], [f.value for f in filled]), self.span)
         let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }
         .Ok(self.store.alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span))
@@ -142,26 +144,50 @@ impl Builder {
         self.store.block_stmts(b) ?? []
     }
 
-    /// The open slot filled by `collect { … }` over the children.
-    fn collected(slot: string?, children: List<StmtId>) -> Field? {
-        let s? = slot else { return null }
-        Field { name: s, value: self.store.alloc_expr(Expr.Collect(self.store.alloc_expr(Expr.Block(children, null), self.span)), self.span) }
+    /// A slot filled by `collect { … }` over the children placed in it —
+    /// after what a setting of the same name already lists.
+    fn collected(pl: Placed, settings: List<SettingParts>) -> Field {
+        let gathered = self.store.alloc_expr(Expr.Collect(self.store.alloc_expr(Expr.Block(pl.stmts, null), self.span)), self.span)
+        let first? = settings.find(it.name == pl.slot) else { return Field { name: pl.slot, value: gathered } }
+        Field { name: pl.slot, value: self.store.alloc_expr(Expr.MethodCall(first.value, Plain("concat"), [gathered]), self.span) }
+    }
+
+    /// Where the children go. A child INSTANCE lands in the slot its
+    /// component is the element of; any other child needs one slot to
+    /// take it — the one no setting names, or the record's only one. A
+    /// slot a setting also names holds the setting's list, then these.
+    /// An open slot no child fills is filled empty when it is the only
+    /// one.
+    fn placed(word: string, r: Record, settings: List<SettingParts>, children: List<StmtId>) -> Result<List<Placed>, string> {
+        let open = [s for s in r.slots if !settings.any(it.name == s.name)]
+        if children.is_empty() { return .Ok(if open.length == 1 { [Placed { slot: open[0].name, stmts: [] }] } else { [] }) }
+        if r.slots.is_empty() { return .Err(no_slot(word)) }
+        let routes = [self.routed(r, s) for s in children]
+        if routes.all(it != null) { return .Ok([Placed { slot: s.name, stmts: [c for j, c in children if routes[j] == s.name] } for s in r.slots if routes.any(it == s.name)]) }
+        let takers = if r.slots.length == 1 { r.slots } else { open }
+        if takers.is_empty() { return .Err(which_slot(word, [s.name for s in r.slots])) }
+        if takers.length > 1 { return .Err(which_slot(word, [s.name for s in takers])) }
+        .Ok([Placed { slot: takers[0].name, stmts: children }])
+    }
+
+    /// The slot a child instance lands in: the ONE whose elements are
+    /// its component — two such slots leave the child unrouted, and
+    /// the record's refusal names them.
+    fn routed(r: Record, s: StmtId) -> string? {
+        let v? = self.store.stmt_value(s) else { return null }
+        let w? = self.store.instance_word(v) else { return null }
+        let declared? = self.words.components.find(it.word == w)?.declared else { return null }
+        let fits = [slot.name for slot in r.slots if slot.of == declared]
+        if fits.length != 1 { return null }
+        fits[0]
     }
 }
 
+/// The children one slot's `collect` gathers, in written order.
+type Placed = { slot: string, stmts: List<StmtId> }
+
 /// One field of a record literal an instance builds.
 type Field = { name: string, value: ExprId }
-
-/// The `List` field an instance's statements fill: the one no setting
-/// names. Children with no such field, or with several, refuse.
-fn slot_for(word: string, r: Record, settings: List<SettingParts>, children: List<StmtId>) -> Result<string?, string> {
-    let open = [s for s in r.slots if !settings.any(it.name == s)]
-    if children.is_empty() { return .Ok(if open.length == 1 { open[0] } else { null }) }
-    if r.slots.is_empty() { return .Err(no_slot(word)) }
-    if open.is_empty() { return .Err(slot_set(r.slots[0])) }
-    if open.length > 1 { return .Err(which_slot(word, open)) }
-    .Ok(open[0])
-}
 
 impl NodeStore {
     /// A template copied in: each hole filled with the head value or
@@ -239,10 +265,6 @@ fn counted(n: int, noun: string) -> string {
 
 fn no_slot(word: string) -> string {
     "`${word}` declares no `List` field, so its block holds settings only — `key: value`"
-}
-
-fn slot_set(slot: string) -> string {
-    "`${slot}` is set by name, and the block's statements would fill it too — keep one"
 }
 
 fn which_slot(word: string, open: List<string>) -> string {

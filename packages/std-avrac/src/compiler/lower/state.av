@@ -266,6 +266,7 @@ impl LowerCx {
     fn defined_reg(e: ExprId, s: StmtId, ty: TypeId) -> Reg? {
         let value: ExprId? = self.view.store.const_value(s)
         if value == null { return self.slot_reg(s, ty) }
+        if self.view.store.is_component_inst(s) { return self.instance_value_reg(e, self.view.file, s) }
         let init = value!
         if self.sub == null && self.reads_settled_seat(init) {
             // a TEMPLATE body, not a unit: its `const` seats have no
@@ -283,10 +284,23 @@ impl LowerCx {
     /// A DECLARED const read: settled in the declaration's OWN file, on
     /// no seats — a declaration has none.
     fn const_decl_reg(e: ExprId, d: DeclId, ty: TypeId) -> Reg? {
+        let x = self.view.decls.decl(d)
+        if self.view.decls.store_of(x.file).is_component_inst(x.stmt) { return self.instance_value_reg(e, x.file, x.stmt) }
         let held = self.view.decls.held_value(d)
         if held != null { return self.materialized(held!.answer, held!.heap, ty, self.view.decls.symbol(d)) }
-        let x = self.view.decls.decl(d)
         self.const_reg(e, x.file, x.stmt, ty, [])
+    }
+
+    /// A DECLARED VALUE — a top-level instance — is built once per run:
+    /// its read calls the unit that builds it (`lower_root`'s `once`
+    /// body), never a settled constant, so it may hold what no static
+    /// can: behaviour.
+    fn instance_value_reg(e: ExprId, f: FileId, s: StmtId) -> Reg {
+        let name = const_symbol(f, s)
+        if self.unseen(name) {
+            self.jobs.pending.push(Wanted { file: f, decl: null, name: name, sub: null, root: self.view.decls.store_of(f).stmt_value(s) })
+        }
+        self.call_decl_at(e, name, [])
     }
 
     /// The const at `s` in file `f`, read here: a literal as written,

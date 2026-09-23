@@ -3,7 +3,7 @@
 //! only SHOWN (`avra check` already reported it) and left untouched.
 //! `--dry` prints what would change and writes nothing; `--only
 //! <rule>` limits to one rule's `<module>.<name>`.
-use @std.cli.{Subcommand, CliResult, Runnable, CommandSpec, ArgDef, FlagDef, OptionDef}
+use @std.cli.{CliResult, Runnable, command, flag, option}
 use @std.io.{write_text}
 use @std.avrac.compiler.{Program, Application, fix_applied, fighting_pair, analysed, rule_doc}
 use @std.json.{Json, field, to_text}
@@ -107,20 +107,12 @@ fn diff_of(before: string, after: string) -> string {
     "--- before\n${before}\n+++ after\n${after}"
 }
 
-export fn fix_command() -> Subcommand {
-    Subcommand {
-        meta: CommandSpec {
-            name: "fix",
-            description: "Apply every proved rule rewrite, splicing it into the source",
-            hidden: false,
-            flags: [
-                FlagDef { name: "--time", short: "", description: "print phase timings and memo hits", aliases: [] },
-                FlagDef { name: "--dry", short: "", description: "print what would change, write nothing", aliases: [] },
-                FlagDef { name: "--json", short: "", description: "print findings as one JSON array (rule, before, after, doc, explain)", aliases: [] },
-            ],
-            args: [ArgDef { name: "file", description: "the source file", required: true, variadic: false }],
-            options: [OptionDef { name: "--only", short: "", description: "apply only this rule (<module>.<name>)", default_val: "" }],
-        },
-        body: FixCmd {},
-    }
+export command fix {
+    description: "Apply every proved rule rewrite, splicing it into the source"
+    flags: [time]
+    flag dry { description: "print what would change, write nothing" }
+    flag json { description: "print findings as one JSON array (rule, before, after, doc, explain)" }
+    args: [file]
+    option only { description: "apply only this rule (<module>.<name>)" }
+    run: FixCmd {}
 }

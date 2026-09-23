@@ -6,11 +6,11 @@ use @std.avrac.compiler.{Program}
 /// The provider: a headed row, a named grid with one children slot,
 /// a record with no `List` field, one with two, and one with two heads.
 fn shapes() -> string {
-    "export component row(id: int) {\n    label: string = \"?\"\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component blank {}\n\nexport component two {\n    xs: List<int> = []\n    ys: List<int> = []\n}\n\nexport component pair(a: int, b: int) {}\n"
+    "export component row(id: int) {\n    label: string = \"?\"\n}\n\nexport component pairs {\n    left: List<row> = []\n    right: List<row> = []\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component blank {}\n\nexport component two {\n    xs: List<int> = []\n    ys: List<int> = []\n}\n\nexport component pair(a: int, b: int) {}\n"
 }
 
 fn attacked(main: string) -> Program {
-    provided("use @x.c.{row, grid, blank, two, pair}\n" + main, shapes())
+    provided("use @x.c.{row, grid, blank, two, pair, pairs}\n" + main, shapes())
 }
 
 spec "features/components — a record's instance, adversarial" {
@@ -44,8 +44,11 @@ spec "features/components — a record's instance, adversarial" {
         then "children with no `List` field to fill" {
             refused_in(attacked("let v = blank {\n    1\n}\n0"), "`blank` declares no `List` field, so its block holds settings only")
         }
-        then "children beside their slot set by name" {
-            refused_in(attacked("grid g {\n    rows: []\n    row 1\n}\n0"), "`rows` is set by name, and the block's statements would fill it too")
+        then "children beside their slot set by name join after the setting's list" {
+            answered(attacked("grid g {\n    rows: [row 1]\n    row 2\n    row 3\n}\n[\"\${r.id}\" for r in g.rows].join(\",\")")) == "1,2,3"
+        }
+        then "a child two same-typed fields could take is not guessed into either" {
+            refused_in(attacked("let p = pairs {\n    row 1\n}\n0"), "`pairs` has 2 `List` fields its statements could fill")
         }
         then "children with two slots open" {
             refused_in(attacked("let t = two {\n    1\n}\n0"), "`two` has 2 `List` fields its statements could fill — set each by name: `xs: collect { … }`")
