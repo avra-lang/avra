@@ -33,8 +33,11 @@ use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder}
 export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body }
 
 /// One DSL token. For Str and the IStr kinds, `text` is the
-/// unquoted, unescaped contents; the span covers the delimiters.
-export type Token = { kind: TokenKind, text: string, span: Span }
+/// unquoted, unescaped contents; the span covers the delimiters. A
+/// `Str` token spelled `"""..."""` carries `raw: true` — the same
+/// kind, since the grammar's `STRING` terminal takes both, and the
+/// one bit a printer needs to tell which delimiter to spell back.
+export type Token = { kind: TokenKind, text: string, span: Span, raw: bool = false }
 
 impl Token {
     /// True when a grammar Lit matches this token: text equality, and
@@ -284,12 +287,12 @@ fn scan_triple(src: string, n: int, i: int) -> ScanStep {
     mut j = i + 3
     while j + 2 < n {
         if src.char_code(j) == 34 && src.char_code(j + 1) == 34 && src.char_code(j + 2) == 34 {
-            return emit(token(TokenKind.Str, src.substring(i + 3, j), i, j + 3), j + 3)
+            return emit(token(TokenKind.Str, src.substring(i + 3, j), i, j + 3) with { raw: true }, j + 3)
         }
         j = j + 1
     }
     ScanStep {
-        token: token(TokenKind.Str, src.substring(i + 3, n), i, n), opens_hole: false,
+        token: token(TokenKind.Str, src.substring(i + 3, n), i, n) with { raw: true }, opens_hole: false,
         err: LexError { message: "unterminated string", span: span_of(i, n) },
         next: n,
     }

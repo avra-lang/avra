@@ -12,6 +12,11 @@ export type NodeStore = {
     onces: List<bool>,
     // the format a `grammar` declaration read, by its statement
     grammars: List<GrammarSpec?>,
+    // a `component` declaration or instantiation — the record it
+    // desugars to carries every field the sugar would print, so the
+    // mark alone is enough to read the spelling back
+    component_decls: List<bool>,
+    component_insts: List<bool>,
     // `@name(args)` marks per statement, in written order
     annotations: List<List<Annotation>>,
     // declaration-leading `///` lines; absent on synthesized nodes
@@ -33,6 +38,16 @@ export type NodeStore = {
     // written inside one — a hole
     type_lits: List<bool>,
     holes: List<bool>,
+    // a string written `"""raw"""`, never `"escaped"` — the printer's
+    // only way to tell them apart once both are one StrLit
+    raw_strings: List<bool>,
+    // the DSL text an expression-position `grammar { … }` literal
+    // read, by the `Grammar` struct literal it fully expanded into —
+    // the raw block's own words, never rebuilt from the expansion
+    grammar_lits: List<string?>,
+    // a `table<Row> { … }` literal's row type and header, by the
+    // list it desugared to
+    tables: List<TableSpec?>,
     // each quote by the offset it starts at — how a template VALUE
     // names its node
     quotes_at: Map<string, int>,
@@ -48,8 +63,8 @@ export type NodeStore = {
 export fn new_node_store() -> NodeStore {
     NodeStore {
         exprs: new_arena(), expr_fingerprints: [],
-        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], grammars: [], statics: [], annotations: [], docs: [], doc_ats: [], remarks: [],
-        pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [], quotes_at: {}, sublangs: [], body_starts: {}, block_voices: [], foreign: [],
+        stmts: new_arena(), stmt_fingerprints: [], exported: [], mutating: [], onces: [], grammars: [], component_decls: [], component_insts: [], statics: [], annotations: [], docs: [], doc_ats: [], remarks: [],
+        pats: [], pat_spans: [], pat_fingerprints: [], trailing: [], type_lits: [], holes: [], raw_strings: [], grammar_lits: [], tables: [], quotes_at: {}, sublangs: [], body_starts: {}, block_voices: [], foreign: [],
     }
 }
 
@@ -60,6 +75,9 @@ impl NodeStore {
         self.trailing.push(false)
         self.type_lits.push(false)
         self.holes.push(false)
+        self.raw_strings.push(false)
+        self.grammar_lits.push(null)
+        self.tables.push(null)
         ExprId { index: self.exprs.add(e, span) }
     }
 
@@ -83,6 +101,42 @@ impl NodeStore {
 
     fn is_type_lit(e: ExprId) -> bool {
         self.type_lits[e.index]
+    }
+
+    /// A string written `"""raw"""` — the mark is part of the node:
+    /// the printer spells its own delimiters back, never the escaped
+    /// form its twin reads identically.
+    fn mark_raw_string(e: ExprId) {
+        self.raw_strings.set(e.index, true)
+        self.expr_fingerprints.set(e.index, fp(144, [self.expr_fingerprints[e.index]]))
+    }
+
+    fn is_raw_string(e: ExprId) -> bool {
+        self.raw_strings[e.index]
+    }
+
+    /// An expression-position `grammar { … }` literal fully expanded
+    /// into this `Grammar` struct literal — its own DSL text, the
+    /// mark's code 147.
+    fn mark_grammar_lit(e: ExprId, text: string) {
+        self.grammar_lits.set(e.index, text)
+        self.expr_fingerprints.set(e.index, fp(147, [self.expr_fingerprints[e.index], fp_str(text)]))
+    }
+
+    fn grammar_lit_of(e: ExprId) -> string? {
+        self.grammar_lits[e.index]
+    }
+
+    /// A `table<Row> { … }` literal desugared into this list — the
+    /// row type and header the rows' own fields cannot answer once
+    /// the table is empty, the mark's code 148.
+    fn mark_table(e: ExprId, tbl: TableSpec) {
+        self.tables.set(e.index, tbl)
+        self.expr_fingerprints.set(e.index, fp(148, [self.expr_fingerprints[e.index], fp_str(tbl.row_type), fp_list(str_fps(tbl.header))]))
+    }
+
+    fn table_of(e: ExprId) -> TableSpec? {
+        self.tables[e.index]
     }
 
     /// A name written inside a type literal — a HOLE, the id it
@@ -349,6 +403,8 @@ impl NodeStore {
         self.mutating.push(false)
         self.onces.push(false)
         self.grammars.push(null)
+        self.component_decls.push(false)
+        self.component_insts.push(false)
         self.statics.push(false)
         self.annotations.push([])
         self.docs.push(null)
@@ -484,6 +540,28 @@ impl NodeStore {
 
     fn grammar_of(s: StmtId) -> GrammarSpec? {
         if s.index < self.grammars.length { self.grammars[s.index] } else { null }
+    }
+
+    /// `component Name { config { … } }` declared this record — the
+    /// mark's code is 145.
+    fn mark_component_decl(s: StmtId) {
+        self.component_decls.set(s.index, true)
+        self.restamp(s, 145)
+    }
+
+    fn is_component_decl(s: StmtId) -> bool {
+        self.component_decls[s.index]
+    }
+
+    /// `component Name inst { … }` bound this `let` — the mark's
+    /// code is 146.
+    fn mark_component_inst(s: StmtId) {
+        self.component_insts.set(s.index, true)
+        self.restamp(s, 146)
+    }
+
+    fn is_component_inst(s: StmtId) -> bool {
+        self.component_insts[s.index]
     }
 
     /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()`,

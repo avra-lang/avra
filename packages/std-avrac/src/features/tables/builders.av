@@ -1,7 +1,7 @@
 //! Parse-time lowering: a row's cells ride a list node until the
 //! table builder reads them back and rewrites every row as the row
 //! type's struct literal — the header supplying the field names.
-use core.{Expr, ExprId, Nominal, Plain}
+use core.{Expr, ExprId, Nominal, Plain, TableSpec}
 use features.{LangNode, Builder}
 
 fn build_row(mut b: Builder) -> Result<LangNode, string> {
@@ -22,5 +22,7 @@ fn build_table(mut b: Builder) -> Result<LangNode, string> {
         }
         lits.push(b.store.alloc_expr(Expr.StructLit(Nominal(row_type), [Plain(t) for t in header], cells), b.store.expr_span(r)))
     }
-    b.make_expr(Expr.ListLit(lits))
+    let e = b.expr_node(Expr.ListLit(lits))
+    b.store.mark_table(e, TableSpec { row_type: row_type, header: header })
+    b.wrap_expr(e)
 }
