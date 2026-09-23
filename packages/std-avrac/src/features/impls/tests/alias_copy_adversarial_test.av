@@ -221,6 +221,9 @@ spec "features/impls (alias copy, adversarial)" {
         then "text payloads written through a local path" {
             shown("type R = { xs: List<int> }\nimpl R {\n    mut fn add(v: int) { self.xs.push(v) }\n}\ntype S = { names: List<string> }\nimpl S {\n    mut fn add(n: string) { self.names.push(\"x\${n}\") }\n}\ntype H = { s: S }\nfn f(s: S, tag: string) -> string {\n    mut h = H { s: s }\n    h.s.add(tag)\n    h.s.add(\"\${tag}\${tag}\")\n    h.s.names[1]\n}\nlet s = S { names: [\"a\"] }\n\"\${f(s, \"q\")} \${f(s, \"r\")} \${s.names.length} \${s.names[0]}\"") == "xq xr 1 a"
         }
+        then "a `dyn` field written through a local path" {
+            shown("trait Grow {\n    mut fn grow()\n    fn size() -> int\n}\ntype G = { xs: List<int> }\nimpl Grow for G {\n    mut fn grow() { self.xs.push(1) }\n    fn size() -> int { self.xs.length }\n}\ntype H = { g: dyn Grow }\nfn f(g: dyn Grow) -> string {\n    mut h = H { g: g }\n    h.g.grow()\n    \"\${h.g.size()}\${g.size()}\"\n}\nlet g: dyn Grow = G { xs: [] }\n\"\${f(g)} \${f(g)}\"") == "10 10"
+        }
         then "a vocabulary write through `self` opens a shared element" {
             shown("type R = { xs: List<int> }\ntype H = { r: R }\nimpl H { mut fn push_one() { self.r.xs.push(1) } }\nlet r = R { xs: [] }\nmut h = H { r: r }\nh.push_one()\n\"\${h.r.xs.length}\${r.xs.length}\"") == "10"
         }
