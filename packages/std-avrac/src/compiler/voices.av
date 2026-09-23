@@ -90,7 +90,7 @@ fn unsettled_hash(why: Unsettled) -> int {
 
 /// A declared TypeRef as the crossing's text — parsed from the STORE
 /// alone, "" when the word names a type only the namespace knows.
-fn typed_text(mut types: TypeRegistry, ann: TypeRef?) -> string {
+fn typed_text(types: TypeRegistry, ann: TypeRef?) -> string {
     let held? = spelled_type(types, ann) else { return "" }
     types.name_of(held)
 }
@@ -179,7 +179,7 @@ impl Workspace {
     /// A copied node whose source a sublanguage minted wears that
     /// sublanguage's library.
     fn note_foreign_origin(f: FileId, src: NodeStore, from: ExprId, id: ExprId) {
-        let range? = src.foreign.find(it.lo <= from.index && from.index < it.hi) else { return }
+        let range? = src.foreign.get().find(it.lo <= from.index && from.index < it.hi) else { return }
         let origin = self.file_id(range.path)
         if !same_file(origin, f) { self.decls.note_origins(f, [id], [], [], origin) }
     }
@@ -232,7 +232,7 @@ fn many_in_expression() -> string {
 }
 
 fn arena_marks(store: NodeStore) -> ArenaMarks {
-    ArenaMarks { exprs: store.exprs.count(), stmts: store.stmts.count(), pats: store.pats.length }
+    ArenaMarks { exprs: store.exprs.count(), stmts: store.stmts.count(), pats: store.pat_count() }
 }
 
 /// A generated declaration's name is already the file's — the
@@ -279,7 +279,7 @@ fn generated_taken(ann: string, name: string, at: Loc?) -> Diag {
 /// caller falls back to reading the provider.
 // LICENSED I39: see interface.av's record helpers — a Workspace method trips F2010.
 fn module_names_syntax(ws: Workspace, m: ModulePath, items: List<string>) -> bool {
-    let s? = ws.store else { return true }
+    let s? = ws.store.get() else { return true }
     let rec? = s.get(Stored.Sig, record_key(ws, m)) else { return true }
     for line in rec.split("\n") {
         let row = read_row(read_fields(line))

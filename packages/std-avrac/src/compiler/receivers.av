@@ -233,7 +233,7 @@ impl Survey {
         let ty? = self.place_type(a) else { return true }
         match self.decls.types.shape_of(ty) {
             .Int or .Float or .Bytes or .Bool or .Str or .Null or .Void or .Ptr -> false,
-            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Error -> true,
+            .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Error -> true,
         }
     }
 
@@ -246,7 +246,7 @@ impl Survey {
                 let holder: TypeId? = self.place_type(subject)
                 holder != null && property_row(self.ws.lang.rows.properties, name.of, self.decls.types.shape_of(holder!)) != null
             },
-            .Root(_) or .At(_, _) -> false,
+            .Root(_) or .At(_, _) or .Unwrap(_) -> false,
         }
     }
 
@@ -286,7 +286,7 @@ impl Survey {
         if under != null { return self.named_callee(ty, under!, name) }
         let sh: Type = self.decls.types.shape_of(ty)
         match sh {
-            .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Bytes or .Str -> Callee.Row(row_writes(self.ws.lang.rows.methods, name, sh)),
+            .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Bytes or .Str -> Callee.Row(row_writes(self.ws.lang.rows.methods, name, sh)),
             .Struct(d, _) -> self.field_or_method(ty, d, name),
             .Enum(d, _) -> self.declared_method(d, name),
             .App(d, _, _) -> self.field_or_method(ty, d, name),
@@ -359,6 +359,7 @@ impl Survey {
             .Root(_) -> self.root_type(e),
             .Field(subject, name) -> self.field_type(self.place_type(subject), name.of),
             .At(subject, _) -> self.element_type(self.place_type(subject)),
+            .Unwrap(subject) -> self.carried_type(self.place_type(subject)),
         }
     }
 
@@ -404,6 +405,11 @@ impl Survey {
     fn field_type(holder: TypeId?, name: string) -> TypeId? {
         if holder == null { return null }
         self.decls.field_type_named(holder!, name)
+    }
+
+    fn carried_type(holder: TypeId?) -> TypeId? {
+        if holder == null { return null }
+        self.decls.types.carried(holder!)
     }
 
     fn element_type(holder: TypeId?) -> TypeId? {

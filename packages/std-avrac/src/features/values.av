@@ -11,7 +11,7 @@
 //! `repr_of`, and every consumer asks the verbs below instead of
 //! knowing. A new value CATEGORY joins here, beside the readers
 //! that make its layout nobody else's business.
-use core.{Reg, Ins, BinOp, UnOp, Type, TypeId, TypeRegistry, ExprId, Expr, NodeStore, filled, BodyParts, Slot, StaticBox}
+use core.{Reg, Ins, BinOp, Type, TypeId, TypeRegistry, ExprId, Expr, NodeStore, filled, BodyParts, Slot, StaticBox}
 use features.{MetaVal, MetaHeap, TypeFacts, Decls, meta_of_template}
 use @std.meta.{Node}
 
@@ -24,7 +24,7 @@ use @std.meta.{Node}
 /// The value the source alone spells at `e`, as the crossing tree
 /// every compile-time value already travels as. Null the moment a
 /// part needs the evaluator — an omitted default, a call, a name.
-export fn literal_meta(store: NodeStore, mut decls: Decls, facts: TypeFacts, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
+export fn literal_meta(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
     let raw: Expr = store.expr(e)
     let n: int? = raw.int_of()
     if n != null { return MetaVal.Int(n!) }
@@ -48,7 +48,7 @@ export fn literal_meta(store: NodeStore, mut decls: Decls, facts: TypeFacts, e: 
 }
 
 /// Every element spelled, in order — null when any one is not.
-fn spelled_all(store: NodeStore, mut decls: Decls, facts: TypeFacts, es: List<ExprId>, mut heap: MetaHeap) -> List<MetaVal>? {
+fn spelled_all(store: NodeStore, decls: Decls, facts: TypeFacts, es: List<ExprId>, mut heap: MetaHeap) -> List<MetaVal>? {
     mut out: List<MetaVal> = []
     for e in es {
         let v? = literal_meta(store, decls, facts, e, heap) else { return null }
@@ -58,7 +58,7 @@ fn spelled_all(store: NodeStore, mut decls: Decls, facts: TypeFacts, es: List<Ex
 }
 
 /// A map literal's ordered key/value rows — keys are text, always.
-fn literal_map(store: NodeStore, mut decls: Decls, facts: TypeFacts, keys: List<ExprId>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+fn literal_map(store: NodeStore, decls: Decls, facts: TypeFacts, keys: List<ExprId>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
     mut ks: List<string> = []
     mut vs: List<MetaVal> = []
     for j, k in keys {
@@ -74,7 +74,7 @@ fn literal_map(store: NodeStore, mut decls: Decls, facts: TypeFacts, keys: List<
 /// A record literal, slots in DECLARATION order. Every field must be
 /// written: an omitted one carries a default, and a default is a body
 /// the evaluator runs — not something the source alone spells.
-fn literal_record(store: NodeStore, mut decls: Decls, facts: TypeFacts, e: ExprId, fields: List<string>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+fn literal_record(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, fields: List<string>, values: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
     let ty = facts.type_at(e)
     let s? = decls.fields_of_type(ty) else { return null }
     if fields.length != s.names.length { return null }
@@ -97,7 +97,7 @@ fn literal_record(store: NodeStore, mut decls: Decls, facts: TypeFacts, e: ExprI
 
 /// A variant literal: the tag first, the payloads after — the tagged
 /// slot array both engines already read.
-fn literal_variant(store: NodeStore, mut decls: Decls, facts: TypeFacts, e: ExprId, name: string, args: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
+fn literal_variant(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, name: string, args: List<ExprId>, mut heap: MetaHeap) -> MetaVal? {
     let sig? = decls.variants_of_type(facts.type_at(e)) else { return null }
     let tag: int = sig.names.index_of(name)
     if tag < 0 { return null }
@@ -110,7 +110,7 @@ fn literal_variant(store: NodeStore, mut decls: Decls, facts: TypeFacts, e: Expr
 /// anything else, a quote with holes included: a hole is a body the
 /// evaluator runs, and null for a program that loads no `@std/meta`,
 /// where a template has no type to be.
-export fn quote_meta(store: NodeStore, mut decls: Decls, path: string, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
+export fn quote_meta(store: NodeStore, decls: Decls, path: string, e: ExprId, mut heap: MetaHeap) -> MetaVal? {
     let held: BodyParts? = store.expr(e).body_of()
     if held == null || !held!.holes.is_empty() { return null }
     if decls.meta_named("Node") == null { return null }
@@ -161,6 +161,7 @@ impl LowerCx {
 
     /// A slot as a register of `ty`: a word is its constant, a box the
     /// address of the static its boxes make.
+    // LICENSED I60: every arm answers the same minted register — six branches, one identity
     mut fn crossed_reg(c: Slot, ty: TypeId, name: string, boxes: List<StaticBox>) -> Reg {
         let r = self.mint_ty(ty)
         match c {
@@ -204,7 +205,7 @@ impl LowerCx {
             .Int -> self.int_text(Type.Str, v),
             .Float -> self.float_text(Type.Str, v),
             .Bool -> self.bool_text(Type.Str, v),
-            .Ptr or .Bytes or .List(_) or .Cell(_) or .Task(_) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> v,
+            .Ptr or .Bytes or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> v,
         }
     }
 
@@ -237,9 +238,7 @@ impl LowerCx {
         if !self.scalar_nullable(ty) { return self.array_pop(self.view.types.shape_of(ty), box) }
         let present = self.array_last_present(Type.Bool, box)
         let word = self.array_pop(self.view.types.shape_of(self.carried_type(ty)), box)
-        let dst = self.mint_ty(ty)
-        self.emit(Ins.Pack(dst, [present, word]))
-        dst
+        self.pack(ty, [present, word])
     }
 
     /// The value under a key that is there, read as a value of `ty`.
@@ -247,9 +246,7 @@ impl LowerCx {
         if !self.scalar_nullable(ty) { return self.map_get(self.view.types.shape_of(ty), m, k) }
         let present = self.map_value_present(Type.Bool, m, k)
         let value = self.map_get(self.view.types.shape_of(self.carried_type(ty)), m, k)
-        let dst = self.mint_ty(ty)
-        self.emit(Ins.Pack(dst, [present, value]))
-        dst
+        self.pack(ty, [present, value])
     }
 
     /// The slot at a computed index, read as a value of `ty`.
@@ -279,9 +276,7 @@ impl LowerCx {
     mut fn pair_read(v: Reg, at: Reg, ty: TypeId) -> Reg {
         let present = self.slot_present(Type.Bool, v, at)
         let value = self.array_get(self.view.types.shape_of(self.carried_type(ty)), v, at)
-        let dst = self.mint_ty(ty)
-        self.emit(Ins.Pack(dst, [present, value]))
-        dst
+        self.pack(ty, [present, value])
     }
 
     /// Equality of two values of one type as a bool register — an enum
@@ -293,11 +288,7 @@ impl LowerCx {
             .Str -> self.streq(Type.Bool, a, b),
             .Bytes -> self.bytes_eq(Type.Bool, a, b),
             .Opt(_) -> self.same_through(a, ty, b, ty),
-            .Int or .Float or .Bool or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Struct(_, _) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .EmptyMap or .Error or .Void -> {
-                let dst = self.mint_shape(Type.Bool)
-                self.emit(Ins.Bin(dst, BinOp.Eq, a, b))
-                dst
-            },
+            .Int or .Float or .Bool or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Struct(_, _) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .EmptyMap or .Error or .Void -> self.bin(Type.Bool, BinOp.Eq, a, b),
         }
     }
 
@@ -318,20 +309,13 @@ impl LowerCx {
     /// Absence against the other side: equal only to absence.
     mut fn absent_same(w: Reg, wt: TypeId) -> Reg {
         if self.view.types.carried(wt) == null { return self.const_bool(false) }
-        let present = self.presence_of(w, wt)
-        let dst = self.mint_shape(Type.Bool)
-        self.emit(Ins.Un(dst, UnOp.Not, present))
-        dst
+        self.un(self.presence_of(w, wt))
     }
 
     /// Two enum values of one type compare by TAG — what a unit enum's
     /// equality means.
     mut fn same_tag(a: Reg, b: Reg) -> Reg {
-        let ta = self.tag_of(a)
-        let tb = self.tag_of(b)
-        let dst = self.mint_shape(Type.Bool)
-        self.emit(Ins.Bin(dst, BinOp.Eq, ta, tb))
-        dst
+        self.bin(Type.Bool, BinOp.Eq, self.tag_of(a), self.tag_of(b))
     }
 
     /// THE TAGGED VALUE: an enum's variant is a slot array holding its
@@ -421,11 +405,7 @@ impl LowerCx {
 
     /// Is the result an ANSWER — its tag read against Ok's, as an i1.
     mut fn okness_of(v: Reg) -> Reg {
-        let tag = self.tag_of(v)
-        let zero = self.const_int(0)
-        let ok = self.mint_shape(Type.Bool)
-        self.emit(Ins.Bin(ok, BinOp.Eq, tag, zero))
-        ok
+        self.bin(Type.Bool, BinOp.Eq, self.tag_of(v), self.const_int(0))
     }
 
     // ── The fn value, behind its verbs ──────────────────────────────
@@ -448,10 +428,7 @@ impl LowerCx {
     /// 0, and the arguments follow. The answer register mints LAST —
     /// registers are numbered in emission order.
     mut fn called_through(e: ExprId, box: Reg, args: List<Reg>) -> Reg {
-        let fp = self.slot_read(box, 0, null)
-        let dst = self.result(e)
-        self.emit(Ins.CallPtr(dst, fp, [box].concat(args)))
-        dst
+        self.call_ptr_at(e, self.slot_read(box, 0, null), [box].concat(args))
     }
 
     /// The representation of a nullable TYPE — a projection, and the
@@ -507,11 +484,7 @@ impl LowerCx {
     /// literal, `with`, and a feature packing a struct of its own
     /// (quote/lower.av's `Code`) shares.
     mut fn packed_struct(ty: TypeId, parts: List<Reg>) -> Reg {
-        if self.view.types.is_flat(ty) {
-            let dst = self.mint_ty(ty)
-            self.emit(Ins.Pack(dst, parts))
-            return dst
-        }
+        if self.view.types.is_flat(ty) { return self.pack(ty, parts) }
         let dst = self.array_sized(self.view.types.shape_of(ty), self.box_size(parts.length))
         for r in parts { self.push_slot(dst, r) }
         dst
@@ -532,9 +505,7 @@ impl LowerCx {
 
     /// `a != z`, as an i1.
     mut fn nonzero(a: Reg, z: Reg) -> Reg {
-        let p = self.mint_shape(Type.Bool)
-        self.emit(Ins.Bin(p, BinOp.Ne, a, z))
-        p
+        self.bin(Type.Bool, BinOp.Ne, a, z)
     }
 
     /// What the nullable CARRIES, once presence is settled: a niche
@@ -619,10 +590,7 @@ impl LowerCx {
     /// A pair packed under its flag — the ONE builder the present and
     /// absent forms share.
     mut fn flagged_pair(opt: TypeId, present: bool, payload: Reg) -> Reg {
-        let flag = self.const_bool(present)
-        let dst = self.mint_ty(opt)
-        self.emit(Ins.Pack(dst, [flag, payload]))
-        dst
+        self.pack(opt, [self.const_bool(present), payload])
     }
 
     /// AN ARM'S YIELD: the register the arm built — or, when the arm
@@ -639,6 +607,7 @@ impl LowerCx {
     /// does the yield of an arm that already EXITED the fn.
     mut fn hollow_of(inner: TypeId) -> Reg {
         if self.view.types.seen_shape(inner) is .Bool {
+            // LICENSED I60: `inner` may be a NAMED bool type — neither the fixed-shape nor the node-tied verb fits
             let z = self.mint_ty(inner)
             self.emit(Ins.ConstBool(z, false))
             return z

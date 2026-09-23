@@ -1,47 +1,44 @@
-use @std.net.{Conn, Poller, NetError, listen, connect, poller}
+use @std.net.{Conn, NetError, listen, connect}
 use @std.time.{ms, secs}
 use @std.http.frame.{limits}
 use @std.http.http.{text}
 use @std.http.server.{Server, served, timing}
 
-type App = { hits: int }
+type App = { hits: Cell<int> }
 
-type Pair = { s: Server<App>, c: Conn, p: Poller }
-
-fn exchanged(mut pr: Pair, sent: string, expected: int) -> Result<string, NetError> {
-    let out = sent.bytes()
-    mut from = 0
-    while from < out.length { from = from + pr.c.try_write(out, from)? }
+/// `sent` written, then read until `expected` bytes have come or the
+/// server has been quiet for a moment.
+fn exchanged(c: Conn, sent: string, expected: int) -> Result<string, NetError> {
+    c.write(sent.bytes())?
     mut got = "".bytes()
-    mut turns = 0
-    while got.length < expected && turns < 40 {
-        pr.s.turn(ms(20))?
-        pr.p.wait(ms(20))?
-        let chunk: Bytes? = match pr.c.try_read(65536)? {
-            .Data(b) -> b,
-            .Eof or .Pending -> null,
+    mut open = true
+    while open && got.length < expected {
+        match within ms(300) { c.read(65536) } {
+            .Ok(b) -> {
+                open = b != null
+                got = got.concat(b ?? "".bytes())
+            },
+            .Err(_) -> { open = false },
         }
-        got = got.concat(chunk ?? "".bytes())
-        turns = turns + 1
     }
     .Ok((got.text() ?? "?").replace("\r\n", "/"))
 }
 
 fn shown() -> Result<string, NetError> {
     let l = listen("127.0.0.1", 0)?
-    let s = served(l, App { hits: 0 }, limits(), timing()) { mut app, q ->
-        app.hits = app.hits + 1
-        text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${app.hits}")
-    }?
+    let s = served(l, App { hits: Cell.new(0) }, limits(), timing()) { app, q ->
+        app.hits.set(app.hits.get() + 1)
+        text(200, "${q.target() ?? "?"}|${q.body.text() ?? "?"}|${app.hits.get()}")
+    }
+    spawn s.run()
+    defer s.stop()
     let c = connect("127.0.0.1", l.port, secs(2))?
-    let p = poller()?
-    p.watch(c.fd, .Read)?
-    mut pr = Pair { s: s, c: c, p: p }
-    let one = exchanged(pr, "GET /one HTTP/1.1\r\nHost: a\r\n\r\n", 1)?
-    let two = exchanged(pr, "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n", 150)?
-    let three = exchanged(pr, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello", 1)?
-    let four = exchanged(pr, "HEAD /h HTTP/1.1\r\nHost: a\r\n\r\n", 1)?
-    .Ok("${one}\n${two}\n${three}\n${four}\n${pr.s.connections()} ${pr.s.app.hits}")
+    defer { let _ = c.close() }
+    let one = exchanged(c, "GET /one HTTP/1.1\r\nHost: a\r\n\r\n", 1)?
+    let two = exchanged(c, "GET /a HTTP/1.1\r\nHost: a\r\n\r\nGET /b HTTP/1.1\r\nHost: a\r\n\r\n", 150)?
+    let three = exchanged(c, "POST /p HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\n\r\nhello", 1)?
+    let four = exchanged(c, "HEAD /h HTTP/1.1\r\nHost: a\r\n\r\n", 1)?
+    .Ok("${one}\n${two}\n${three}\n${four}\n${s.connections()} ${s.app.hits.get()}")
 }
 
 match shown() {

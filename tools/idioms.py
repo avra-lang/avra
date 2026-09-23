@@ -851,6 +851,45 @@ def raw_rt_call(lines):
         if RAW_RT_CALL.search(l):
             yield i, l.strip()
 
+MINT_LET = re.compile(r"let (\w+)\s*=\s*(?:self|cx)\.(?:mint_shape|mint_ty|mint_like|result)\(")
+RAW_EMIT = re.compile(r"(?:self|cx)\.emit\(Ins\.(\w+)\((\w+)")
+
+# The variants a vocabulary verb covers under SOME mint (a fixed
+# shape, an explicit TypeId, or a node's own answer type) — `CallRt`/
+# `CallRtVoid` are I58's concern, never this one's; `FnAddr`,
+# `ConstFloat` and a bare `Alloca` have no covering verb in ANY form,
+# so there is nothing here for the ratchet to measure yet.
+COVERED_VARIANTS = {"Bin", "Un", "Pack", "Call", "CallPtr", "ConstInt", "ConstBool", "ConstStr", "Load"}
+
+def raw_mint_emit(lines):
+    """A register minted, then defined by a raw `emit(Ins...)` a few
+    lines later, outside the emission vocabulary itself —
+    `let dst = cx.mint_shape(sh); cx.emit(Ins.Bin(dst, op, a, b))` —
+    where a vocabulary verb mints and emits in ONE call
+    (`cx.bin(sh, op, a, b)`, features/emit.av). THE MINT LAW ("a
+    register is defined in the order it was minted") holds by
+    CONSTRUCTION once the mint and the emit are one call; split
+    across two statements, a refactor can separate them and the
+    register defines out of order with nothing to catch it. A site
+    whose one minted register is read across several branches — a
+    match arm per literal kind, a defect arm answering the same
+    register the success arm defines, a mint at neither a fixed shape
+    nor the node's own type — cannot collapse to one call and is
+    licensed at the site (I60)."""
+    if CURRENT["path"].endswith("features/emit.av"):
+        return
+    for i, l in enumerate(lines):
+        m = MINT_LET.search(l)
+        if not m:
+            continue
+        name = m.group(1)
+        for j in range(i, min(i + 8, len(lines))):
+            m2 = RAW_EMIT.search(lines[j])
+            if m2 and m2.group(2) == name:
+                if m2.group(1) in COVERED_VARIANTS:
+                    yield i, l.strip()
+                break
+
 ARM_LINE = re.compile(r"^(\s*)(\.[A-Z]\w*.*?)\s->\s(.+?),?\s*$")
 
 def one_body_arms(lines):
@@ -984,6 +1023,11 @@ RULES = {
             "where a generated method carries the row (`cx.x(sh, args)`, features/rt.av); "
             "a misspelled row or a wrong seat count then refuses at typing instead of "
             "waiting for a typo nothing catches"),
+    "I60": (raw_mint_emit,
+            "a register minted, then defined by a raw `emit(Ins...)` — that is a vocabulary "
+            "verb (`cx.bin(sh, op, a, b)`, `cx.call_decl_at(e, callee, args)`, …, "
+            "features/emit.av), which mints and emits in ONE call so the mint law holds by "
+            "construction; a site whose one register answers several branches is licensed"),
     "I26": (repeated_unwrap,
             "one nullable local forced open 3+ times — guard once, bind once, "
             "and read the name"),
@@ -1076,6 +1120,8 @@ UNRATCHETED = {
            "           COUNT over a member carrying a declaration of its own: a record\n"
            "           field with a DEFAULT is minted on its owner's statement, so a\n"
            "           per-decl walk asks its owner's question a second time",
+    "I61": "no grep tells a one-element list used as a slot from a list whose\n"
+           "           first element is written; the keeper is the review round",
     "I45": "no grep tells \"declares a derive and nothing else\" from an ordinary\n"
            "           file with a trait in it — the shape that breaks it is whatever\n"
            "           ELSE the file holds. The keeper is the law in CLAUDE.md and the\n"
@@ -1249,6 +1295,9 @@ CLEAN = {
     "I58": [['    cx.array_sized(sh, size)'],
             ['    self.array_push(box, v)'],
             ['        cx.map_get(sh, m, k)']],
+    "I60": [['    cx.bin(Type.Bool, BinOp.Eq, a, b)'],
+            ['    self.un(present)'],
+            ['        cx.pack(ty, [present, value])']],
 }
 
 SPECIMENS = {
@@ -1336,6 +1385,12 @@ SPECIMENS = {
     "I58": [['    cx.emit(Ins.CallRt(dst, "avra_array_sized", [size]))'],
             ['    self.emit(Ins.CallRtVoid("avra_array_push", [box, v]))'],
             ['        cx.emit(Ins.CallRt(got, "avra_map_get", [m, k]))']],
+    "I60": [["    let dst = cx.mint_shape(Type.Bool)",
+             "    cx.emit(Ins.Bin(dst, BinOp.Eq, a, b))"],
+            ["    let dst = self.mint_shape(Type.Bool)",
+             "    self.emit(Ins.Un(dst, UnOp.Not, present))"],
+            ["        let dst = cx.mint_ty(ty)",
+             "        cx.emit(Ins.Pack(dst, [present, value]))"]],
     "I43": [["    mut walked: List<bool> = filled(view.store.exprs.count(), false)"],
             ["        of_expr: filled<TypeId>(store.exprs.count(), hole),"]],
 }

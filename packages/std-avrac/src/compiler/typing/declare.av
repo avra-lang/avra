@@ -341,8 +341,16 @@ impl TypeCx {
     fn written_type(at: Loc?, t: TypeRef) -> TypeId {
         if t.arrow { return self.fn_written(at, t) }
         if t.dynamic { return self.dyn_type(at, t.name) }
-        if t.args.is_empty() { return self.named_type(at, t.name) }
+        if t.args.is_empty() { return self.bare_row(t.name) ?? self.named_type(at, t.name) }
         self.applied(at, t)
+    }
+
+    /// A builtin that takes no type arguments — `Tasks` — is its row's
+    /// shape, written bare.
+    fn bare_row(name: string) -> TypeId? {
+        let row? = type_row(self.view.lang.types, name) else { return null }
+        if row.arity != 0 { return null }
+        self.view.types.intern(row.builds(TypeArgs { parts: [] }))
     }
 
     /// `fn(a, b) -> r` — the args carry the seats, the LAST is the

@@ -4,11 +4,11 @@
 //! is a hole no pass walks), so declare and totality reuse the fn
 //! machinery whole.
 use core.{Expr, Stmt, StmtId, Param, TypeRef, Span, ExprId, NodeStore, plain_mark, Nominal, Scoped}
-use features.{LangNode, Builder, window_end, aligned_param_types, void_ref, marked_seats, within, ref_within}
+use features.{LangNode, Builder, window_end, aligned_param_types, void_ref, marked_seats, between, ref_within}
 use grammar.{Token}
 
 /// `self` — the receiver, a keyword: no name rides the node.
-fn build_receiver(mut b: Builder) -> Result<LangNode, string> {
+fn build_receiver(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Receiver)
 }
 
@@ -22,7 +22,7 @@ fn build_receiver(mut b: Builder) -> Result<LangNode, string> {
 /// Type parameters parse so a generic one meets the generic-method
 /// law, not a parse hole; their bounds are dropped — the law refuses
 /// the method before a bound could matter.
-fn marked_fn(mut b: Builder) -> Result<StmtId, string> {
+fn marked_fn(b: Builder) -> Result<StmtId, string> {
     let n = b.token(0)?
     let tparams = [Param { name: Scoped(t.text), ty: null, default: null, promises: plain_mark, span: t.span } for t in b.tokens(1)?]
     let consts = b.tokens(2)?
@@ -36,7 +36,7 @@ fn marked_fn(mut b: Builder) -> Result<StmtId, string> {
 }
 
 /// `mut fn` — a method declaring that it writes its receiver.
-fn build_mut_fn(mut b: Builder) -> Result<LangNode, string> {
+fn build_mut_fn(b: Builder) -> Result<LangNode, string> {
     let s = marked_fn(b)?
     b.store.mark_mutating(s)
     .Ok(LangNode.NStmt(s))
@@ -44,7 +44,7 @@ fn build_mut_fn(mut b: Builder) -> Result<LangNode, string> {
 
 /// `static fn` — a method declaring it has NO receiver. The third
 /// value of the word `fn` and `mut fn` are the first two of.
-fn build_static_fn(mut b: Builder) -> Result<LangNode, string> {
+fn build_static_fn(b: Builder) -> Result<LangNode, string> {
     let s = marked_fn(b)?
     b.store.mark_static(s)
     .Ok(LangNode.NStmt(s))
@@ -53,7 +53,7 @@ fn build_static_fn(mut b: Builder) -> Result<LangNode, string> {
 /// The target's type parameters (`impl Arena<N>`, `impl Show for
 /// Box<T>`) parse and are dropped here: an impl spells them as the
 /// type declared them, and typing reads the type's own.
-fn build_impl(mut b: Builder) -> Result<LangNode, string> {
+fn build_impl(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     let ib = b.tokens(2)?
     let fns = b.stmts(4)?
@@ -72,7 +72,7 @@ fn is_fn(b: Builder, s: StmtId) -> bool {
 
 /// The trait's sig lines, each minted as a bodyless FnDecl — the
 /// method anchors window their own params, the rets zip.
-fn build_trait(mut b: Builder) -> Result<LangNode, string> {
+fn build_trait(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let statics = b.tokens(1)?
     let muts = b.tokens(2)?
@@ -90,8 +90,8 @@ fn build_trait(mut b: Builder) -> Result<LangNode, string> {
         let sig = member_stmt(b, m, params_between(ps, tys, seat_marks, consts, m.span.lo, upto), ret_between(rets, m.span.lo, upto), body_between(b.store, bodies, m.span.lo, upto))
         // a `mut` between the previous sig and this name is this sig's
         let since = if j == 0 { n.span.lo } else { mn[j - 1].span.lo }
-        if muts.any(within(it.span.lo, since, m.span.lo)) { b.store.mark_mutating(sig) }
-        if statics.any(within(it.span.lo, since, m.span.lo)) { b.store.mark_static(sig) }
+        if muts.any(between(it.span.lo, since, m.span.lo)) { b.store.mark_mutating(sig) }
+        if statics.any(between(it.span.lo, since, m.span.lo)) { b.store.mark_static(sig) }
         fns.push(sig)
     }
     b.make_stmt(Stmt.TraitDecl(Scoped(n.text), fns))
@@ -100,14 +100,14 @@ fn build_trait(mut b: Builder) -> Result<LangNode, string> {
 /// One sig's params — the names inside the window, each typed by
 /// its own inner window, marked `mut` by the marks inside it.
 fn params_between(ps: List<Token>, tys: List<TypeRef>, muts: List<Token>, consts: List<Token>, after: int, before: int) -> List<Param> {
-    let mine = [p for p in ps if within(p.span.lo, after, before)]
+    let mine = [p for p in ps if between(p.span.lo, after, before)]
     marked_seats(mine, aligned_param_types(mine, tys, before), muts, consts, after)
 }
 
 /// A trait's member: a sig with a HOLE body, or a DEFAULT with the
 /// block written under it — spanning name to body's end, so the
 /// body's expressions are the member's own range.
-fn member_stmt(mut b: Builder, name: Token, params: List<Param>, ret: TypeRef, body: ExprId?) -> StmtId {
+fn member_stmt(b: Builder, name: Token, params: List<Param>, ret: TypeRef, body: ExprId?) -> StmtId {
     if body == null { return sig_stmt(b, name, params, ret) }
     let bsp: Span? = b.store.expr_span(body!)
     let whole = Span { lo: name.span.lo, hi: bsp?.hi ?? name.span.hi }
@@ -116,7 +116,7 @@ fn member_stmt(mut b: Builder, name: Token, params: List<Param>, ret: TypeRef, b
 
 /// A bodyless fn: the body is a HOLE no pass walks. The sig wears
 /// its name's span, so a refusal at it lands on the line.
-fn sig_stmt(mut b: Builder, name: Token, params: List<Param>, ret: TypeRef) -> StmtId {
+fn sig_stmt(b: Builder, name: Token, params: List<Param>, ret: TypeRef) -> StmtId {
     let hollow = b.store.alloc_expr(Expr.Error)
     b.store.alloc_stmt(Stmt.FnDecl(Scoped(name.text), [], params, ret, hollow), name.span)
 }

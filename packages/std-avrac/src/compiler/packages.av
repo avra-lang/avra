@@ -19,7 +19,7 @@ impl Workspace {
     /// revision moves only when the text did. A root without a manifest
     /// reads as an empty one, quietly.
     fn manifest(i: int) -> Manifest {
-        let pkg = self.packages[i]
+        let pkg = self.packages()[i]
         let path = joined_path(pkg.root, "avra.toml")
         if !self.has_manifest(pkg) {
             return self.manifests.input(i, () -> empty_manifest(), (m: Manifest) -> 0)
@@ -49,13 +49,13 @@ impl Workspace {
     /// manifest: each admitted once by key, each judged — the directory
     /// holds a manifest, the manifest calls itself the keyed name, one
     /// key is one directory, and no cycle closes.
-    mut fn load_packages(src: string) {
+    fn load_packages(src: string) {
         let unnamed = Package { key: "", root: self.root, src: src, ordinal: 0, at: null, origin: Origin.Root }
-        self.packages.push(unnamed)
+        self.package_rows.push(unnamed)
         let m = self.manifest(0)
         self.decls.name_root(m.name)
         let named = unnamed with { key: m.name }
-        self.packages.set(0, named)
+        self.package_rows.set_at(0, named)
         self.admit_dependencies(0, m, true, [m.name])
     }
 
@@ -63,13 +63,13 @@ impl Workspace {
     /// the root, since they never travel.
     fn admit_dependencies(i: int, m: Manifest, root: bool, chain: List<string>) {
         for d in m.deps {
-            if !d.dev || root { self.admitted(d.key, normalized(joined_path(self.packages[i].root, d.path!)), d.at, dep_chain(d, chain)) }
+            if !d.dev || root { self.admitted(d.key, normalized(joined_path(self.packages()[i].root, d.path!)), d.at, dep_chain(d, chain)) }
         }
     }
 
-    mut fn admitted(key: string, dir: string, at: Loc?, chain: List<string>) {
+    fn admitted(key: string, dir: string, at: Loc?, chain: List<string>) {
         if chain.contains(key) { return self.speak_package(dependency_cycle(at, chain.concat([key]))) }
-        let known: Package? = self.packages.find(it.key == key)
+        let known: Package? = self.packages().find(it.key == key)
         if known != null {
             if self.host.absolute(known!.root) != self.host.absolute(dir) { self.speak_package(duplicate_package(at, key, known!.root, dir)) }
             return
@@ -87,7 +87,7 @@ impl Workspace {
     fn std_admitted(key: string) -> bool {
         let dir? = self.host.std_dir(key) else { return false }
         if !self.host.exists(joined_path(dir, "avra.toml")) { return false }
-        if self.packages.any(it.key == key) { return true }
+        if self.packages().any(it.key == key) { return true }
         self.entered(key, dir, null, Origin.Toolchain, [])
         true
     }
@@ -95,24 +95,27 @@ impl Workspace {
     /// One package entered under a key: listed, its manifest read and
     /// held to the key, its dependencies admitted. THE FLOOR: the
     /// prelude declares no dependency, so the layering has a bottom.
-    mut fn entered(key: string, dir: string, at: Loc?, origin: Origin, chain: List<string>) {
-        let i = self.packages.length
+    fn entered(key: string, dir: string, at: Loc?, origin: Origin, chain: List<string>) {
+        let i = self.packages().length
         let pkg = Package { key: key, root: dir, src: joined_path(dir, "src"), ordinal: i, at: at, origin: origin }
-        self.packages.push(pkg)
+        self.package_rows.push(pkg)
         let m = self.manifest(i)
         if m.name != key { self.speak_package(name_mismatch(at, key, m.name, dir)) }
         if key == prelude_key && !m.deps.is_empty() { return self.speak_package(prelude_depends(m.deps[0].at)) }
         self.admit_dependencies(i, m, false, chain.concat([key]))
     }
 
-    mut fn speak_package(d: Diag) {
+    fn speak_package(d: Diag) {
         self.package_voices.push(d)
     }
+
+    /// The admitted packages, root first.
+    fn packages() -> List<Package> { self.package_rows.get() }
 
     /// Everything the packages said: each manifest's own voices, then
     /// the graph's.
     fn packages_voiced() -> List<Diag> {
-        flatten([self.manifest(pkg.ordinal).voices for pkg in self.packages]).concat([borrowed_raw(pkg) for pkg in self.packages if self.raw_from_dependency(pkg)]).concat(self.package_voices)
+        flatten([self.manifest(pkg.ordinal).voices for pkg in self.packages()]).concat([borrowed_raw(pkg) for pkg in self.packages() if self.raw_from_dependency(pkg)]).concat(self.package_voices.get())
     }
 
     /// A dependency asking for raw linker options: `[link.raw]` is the
@@ -129,8 +132,8 @@ impl Workspace {
         // holds is the root's (a lone file)
         // LICENSED I4: a max-by fold (the deepest holder), not a scan
         mut best: int? = null
-        for pkg in self.packages {
-            if under_dir(path, pkg.src) && (best == null || pkg.src.length > self.packages[best!].src.length) { best = pkg.ordinal }
+        for pkg in self.packages() {
+            if under_dir(path, pkg.src) && (best == null || pkg.src.length > self.packages()[best!].src.length) { best = pkg.ordinal }
         }
         best ?? 0
     }
@@ -138,8 +141,8 @@ impl Workspace {
     /// The package a module path names: the root package for a local
     /// path, a dependency by key, absence when no package has the key.
     fn holder(m: ModulePath) -> Package? {
-        let k? = m.package() else { return self.packages[0] }
-        self.packages.find(it.key == k)
+        let k? = m.package() else { return self.packages()[0] }
+        self.packages().find(it.key == k)
     }
 
     /// A package reaches itself — its own files `use` it by name —
@@ -161,7 +164,7 @@ impl Workspace {
     /// another package's manifest): the path relative to the asking
     /// package's root after its last dependency.
     fn dependency_fix(from: Package, k: string) -> List<Suggestion> {
-        let known? = self.packages.find(it.key == k) else { return [] }
+        let known? = self.packages().find(it.key == k) else { return [] }
         let m = self.manifest(from.ordinal)
         let line = "\"${k}\" = { path = \"${relative_path(from.root, known.root)}\" }"
         let manifest_path = joined_path(from.root, "avra.toml")

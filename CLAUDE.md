@@ -985,7 +985,9 @@ engine's spec, written by dogfooding.
   lint's noise AND before trusting a quiet tree: a lint that counts
   the wrong thing and a law nobody has paid look identical from the
   warning count alone, and only the true-positive rate tells them
-  apart.
+  apart. PAYING IT WAS THE PROOF: turning the compiler's identities
+  into Cells took std-avrac from 165 sites to 4 and the cli from 60 to
+  1 (deduped by file:line), and nothing that fired was a false alarm.
 - Map iteration order never reaches output — iterate an ordered
   source. AND A MAP CANNOT BE ITERATED AT ALL: `for k in m` is F2000
   "`for … in` walks a `List`, this is `Map<K, V>`" and `.keys()` is
@@ -1286,10 +1288,29 @@ engine's spec, written by dogfooding.
   one of the three — a bare `Ins.CallRt(dst, "avra_x", args)` outside
   them is I58's own refusal, and a misspelled or wrong-arity call
   through the generated method is the ordinary "no method"/method-
-  arity refusal (F2030) at typing, for free. Two
+  arity refusal (F2030) at typing, for free. EVERY OTHER VALUE-
+  PRODUCING SHAPE mints and emits in ONE call too, the same
+  `verb(sh, …)`/`verb_at(e, …)` split as `call`/`call_at` — a fixed
+  shape (or an explicit `TypeId`) beside a node's own answer type:
+  `bin`/`bin_at`, `un`/`un_at`, `pack` (a `TypeId` always, no site
+  needs the node's), `call_decl`/`call_decl_at` (a declared fn's own
+  symbol — never a runtime row, that is `call`), `call_ptr_at` (a
+  call THROUGH a register holding code), and the literal twins
+  `const_int_at`/`const_bool_at`/`const_str_at` beside the fixed-shape
+  three — a source LITERAL's own node may carry a NAMED seat's type
+  (a literal fills a named seat directly), never the raw scalar the
+  fixed forms mint at, so a literal's defining register needs the
+  node-tied verb. A raw `let dst = cx.mint_shape(sh); cx.emit(Ins.…
+  (dst, …))` outside `emit.av` is I60's refusal; a shape with only
+  ONE call site (`FnAddr`, `ConstFloat`, a bare uninitialized
+  `Alloca`) has no covering verb and stays a two-statement pair, and
+  a site whose one register answers several branches — a mint shared
+  across match arms, a mint at neither a fixed shape nor a node's own
+  type — is licensed at the site. Two
   engines read one instruction stream by construction; I33 ratchets
   the raw brackets, I39 the free verbs, I58 the raw runtime-call
-  string, and the vocabulary grows with the next shared shape.
+  string, I60 the raw mint-then-emit split, and the vocabulary grows
+  with the next shared shape.
 - A DERIVE'S FILE IS TYPED WHILE THE ANNOTATED FILE IS STILL
   REGISTERING, so it must name nothing that file declares. Running
   `@derive(X)` over a declaration in file A types the file that
@@ -1368,19 +1389,24 @@ engine's spec, written by dogfooding.
   prints as exit 1 — and says only what its phase does.
 - THE ROOT OF A PATH DECIDES WHERE A WRITE LANDS: "changes through
   `self` or a `mut` parameter reach the caller; changes to a local stay
-  local." A writing call on a path rooted at `self` or a `mut` seat
-  writes through (the seat law — Swift's `mutating`/`inout`, Rust's
-  `&mut`); rooted at a `mut` LOCAL, the path's boxes open unique first
-  (`path_copy_law`, the alias-copy fact `reg_of` already reads), and
-  F2106 says so once per local. A local READ FROM a place is a copy
-  already (spec 11.5). An IDENTITY held in a local (a workspace inside
-  a `Derived`) would fork, so its write goes through a verb rooted at
-  `self` (`Derived.linked`). THE GAP, pinned MEASURED in
-  features/impls/tests/alias_copy_adversarial_test.av: a writing METHOD
-  or seat through `self` does not open the path, so an element inside
-  it that another value also holds sees the write — while a
-  vocabulary write (`push`, `set`) through `self` opens every box
-  below the root and does not. Witness: features/tests/borrow_root_path,
+  local." A writing call on a PATH opens every box BELOW the root
+  unique (`path_copy_law`, the alias-copy fact `reg_of` reads), so an
+  element another value also holds never sees the write, whatever the
+  root. The root decides only whether the ROOT itself is written
+  through: `self` and a `mut` seat are (the seat law — Swift's
+  `mutating`/`inout`, Rust's `&mut`); a `mut` LOCAL is opened with the
+  rest, and F2106 says so once per local. An unwrap is a step on the
+  path (`h.r!.add(1)`), never a target itself. A local READ FROM a
+  place is a copy already (spec 11.5). AN IDENTITY IS A `Cell`, NEVER A
+  PATH: the compiler's shared structures (TypeRegistry, NodeStore and
+  its arenas, Decls, Workspace) hold every table behind a Cell (core
+  names `Cell` like any file; `list_cell`/`map_cell` seed one), so
+  their writes are in-place Cell writes that no path opens — before
+  that, opening `self.store.alloc_stmt(…)`'s path forked the executor's
+  arena and the second generation trapped. A `mut fn` in a recursion
+  cycle is judged writing by its CONTRACT, so a stale `mut` keeps every
+  caller writing; F2050 names it. Witnesses: features/tests/
+  borrow_root_path and features/impls/tests/alias_copy_adversarial_test.av,
   eval == native.
 - THE CONDITION RUNS EVERY TURN: the memory pass settles what a
   `while` condition mints at each `LoopCond`, inside the loop. A

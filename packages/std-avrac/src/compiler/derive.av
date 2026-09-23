@@ -84,7 +84,7 @@ const READ_NAMED: int = 12
 impl Derived {
     /// THE BUILD, by the workspace this derivation was made in — an
     /// identity, so it is written through and never copied.
-    mut fn linked(m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<BuildOutcome, string> {
+    fn linked(m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<BuildOutcome, string> {
         self.program.ws.linked(self, m, under, binary, tools)
     }
 
@@ -157,7 +157,7 @@ impl Workspace {
     /// EVERYTHING WRONG WITH THE PROGRAM, as the refusal — or what merely warned,
     /// kept under the program's key, so an unchanged program costs a hash. A
     /// refusal is never kept.
-    mut fn checked(entry: string?) -> Result<Checked, string> {
+    fn checked(entry: string?) -> Result<Checked, string> {
         if self.nothing_to_check() { fail self.rendered_shape([no_source(self.root)]) }
         let store = store_at(build_cache_root(self))
         let under = Keyed { named: "check:${entry ?? ""}", beside: [] }
@@ -193,10 +193,10 @@ impl Workspace {
 
     /// The program at `entry`, derived — under the hold, and from the sources
     /// alone when the hold's attempt refused.
-    mut fn derived(entry: string?, want: Want) -> Result<Derived, string> { self.derived_reading(entry, want, []) }
+    fn derived(entry: string?, want: Want) -> Result<Derived, string> { self.derived_reading(entry, want, []) }
 
     /// `derived`, with files read whatever the store holds for them.
-    mut fn derived_reading(entry: string?, want: Want, parse: List<string>) -> Result<Derived, string> {
+    fn derived_reading(entry: string?, want: Want, parse: List<string>) -> Result<Derived, string> {
         let held = self.attempted(Attempt { entry: entry, want: want, parse: parse })
         if held is .Ok { return self.checked_whole(held?) }
         if held_paths(self).is_empty() { return held }
@@ -238,7 +238,7 @@ impl Workspace {
 
     /// AN ATTEMPT, TURNED UNTIL IT STANDS: one that finds its question was wrong
     /// names the attempt to make instead, and a fresh workspace makes it.
-    mut fn attempted(at: Attempt) -> Result<Derived, string> {
+    fn attempted(at: Attempt) -> Result<Derived, string> {
         match self.tried(at) {
             .Ok(d) -> d,
             .Err(.Again(next)) -> self.again(next),
@@ -248,7 +248,7 @@ impl Workspace {
 
     /// THE DERIVATION, straight through: hold what the store stands in for, read
     /// the rest, lower it, keep what was learned.
-    mut fn tried(at: Attempt) -> Result<Derived, Turn> {
+    fn tried(at: Attempt) -> Result<Derived, Turn> {
         mut clock = self.marking()
         let store = self.holding(at)?
         clock.mark("load")
@@ -267,7 +267,7 @@ impl Workspace {
     /// hold asked, and the host told how much is about to be read — a host that
     /// must not do heavy work where it stands leaves there, having done none.
     /// From here a held file's declarations are minted when something reads them.
-    mut fn holding(at: Attempt) -> Result<Store, Turn> {
+    fn holding(at: Attempt) -> Result<Store, Turn> {
         let store = store_at(build_cache_root(self))
         self.attach_store(store)
         // a home is read only when the instantiations are owed
@@ -286,7 +286,7 @@ impl Workspace {
 
     /// THE PROGRAM, ANALYSED AND CLEAN — with every file its compile-time runs and
     /// its held asks reach read beside it, or the attempt that reads them.
-    mut fn analysed(at: Attempt, store: Store) -> Result<Program, Turn> {
+    fn analysed(at: Attempt, store: Store) -> Result<Program, Turn> {
         mut p = self.program(at.entry)
         at.having_read(self.bodies_asked())?
         if !p.clean() { fail Turn.Refused(p.report()) }
@@ -299,7 +299,7 @@ impl Workspace {
     /// here, while a held body it runs can still send the attempt back. The homes
     /// lowered from are remembered; one that is held all the same is new, and the
     /// next attempt reads it.
-    mut fn bodies_lowered(at: Attempt, store: Store, mut p: Program) -> Result<Lowered, Turn> {
+    fn bodies_lowered(at: Attempt, store: Store, p: Program) -> Result<Lowered, Turn> {
         let lowered = p.files_checked()
         self.settle_consts(p)
         at.having_read(self.bodies_asked())?
@@ -311,7 +311,7 @@ impl Workspace {
 
     /// WHAT WAS LEARNED, KEPT: the records first — every key folds them — then what
     /// stands in for each read file, whole: what it said, and what its bodies ask.
-    mut fn kept(at: Attempt, store: Store, p: Program, lo: Lowered) -> Result<List<Said>, Turn> {
+    fn kept(at: Attempt, store: Store, p: Program, lo: Lowered) -> Result<List<Said>, Turn> {
         let moved = [module_path(name.split(".")) for name in distinct([self.module_of(a.view.source.file) for a in p.files])]
         keep_interfaces(self, store, moved)
         let _ = self.keep_const_units(store, moved)
@@ -416,7 +416,7 @@ impl Workspace {
 
     /// THE HOLDS, SETTLED: every hold asked for, but a file a read file's
     /// compile-time runs read — and what THAT file's runs read, since it runs too.
-    mut fn settle_holds(store: Store) {
+    fn settle_holds(store: Store) {
         // LICENSED I16: a WORKLIST — the list grows while it is walked
         mut reads: List<string> = distinct(self.hold.read_with.get())
         mut at = 0

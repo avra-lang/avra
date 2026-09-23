@@ -6,7 +6,7 @@ use core.{Expr, ExprId, Span, Nominal, Plain, Scoped}
 use features.{LangNode, Builder}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Fixed, Expect, Recover, Diagnostic, parse_grammar}
 
-fn build_grammar_lit(mut b: Builder) -> Result<LangNode, string> {
+fn build_grammar_lit(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
     let gp = parse_grammar(t.text)
     if gp.built == null {
@@ -25,21 +25,21 @@ fn first_defect(ds: List<Diagnostic>) -> string {
 
 // ── The Grammar, written as the literal that builds it ──
 
-fn grammar_expr(mut b: Builder, g: Grammar, sp: Span?) -> ExprId {
+fn grammar_expr(b: Builder, g: Grammar, sp: Span?) -> ExprId {
     let rules = [rule_expr(b, r, sp) for r in g.rules]
     lit_struct(b, "Grammar", ["name", "start", "rules"], [text_expr(b, g.name, sp), text_expr(b, g.start, sp), list_expr(b, rules, sp)], sp)
 }
 
-fn rule_expr(mut b: Builder, r: Rule, sp: Span?) -> ExprId {
+fn rule_expr(b: Builder, r: Rule, sp: Span?) -> ExprId {
     lit_struct(b, "Rule", ["name", "body"], [text_expr(b, r.name, sp), alt_expr(b, r.body, sp)], sp)
 }
 
-fn alt_expr(mut b: Builder, a: Alt, sp: Span?) -> ExprId {
+fn alt_expr(b: Builder, a: Alt, sp: Span?) -> ExprId {
     let branches = [seq_expr(b, s, sp) for s in a.branches]
     lit_struct(b, "Alt", ["branches"], [list_expr(b, branches, sp)], sp)
 }
 
-fn seq_expr(mut b: Builder, s: Seq, sp: Span?) -> ExprId {
+fn seq_expr(b: Builder, s: Seq, sp: Span?) -> ExprId {
     let items = [item_expr(b, i, sp) for i in s.items]
     lit_struct(b, "Seq", ["items", "build", "recover"], [list_expr(b, items, sp), build_expr(b, s.build, sp), recover_expr(b, s.recover, sp)], sp)
 }
@@ -47,7 +47,7 @@ fn seq_expr(mut b: Builder, s: Seq, sp: Span?) -> ExprId {
 /// EVERY FIELD IS SPELLED: a field the literal leaves out takes its
 /// default, and a mark the notation set then reaches no product —
 /// the head marks vanished so, for one generation.
-fn item_expr(mut b: Builder, i: Item, sp: Span?) -> ExprId {
+fn item_expr(b: Builder, i: Item, sp: Span?) -> ExprId {
     lit_struct(b, "Item", ["label", "prim", "rep", "expect", "head", "trailer"], [
         text_opt(b, i.label, sp),
         prim_expr(b, i.prim, sp),
@@ -58,7 +58,7 @@ fn item_expr(mut b: Builder, i: Item, sp: Span?) -> ExprId {
     ], sp)
 }
 
-fn prim_expr(mut b: Builder, p: Prim, sp: Span?) -> ExprId {
+fn prim_expr(b: Builder, p: Prim, sp: Span?) -> ExprId {
     match p {
         .Ref(name) -> variant(b, "Prim", "Ref", [text_expr(b, name, sp)], sp),
         .Lit(text) -> variant(b, "Prim", "Lit", [text_expr(b, text, sp)], sp),
@@ -67,7 +67,7 @@ fn prim_expr(mut b: Builder, p: Prim, sp: Span?) -> ExprId {
     }
 }
 
-fn rep_expr(mut b: Builder, r: Rep, sp: Span?) -> ExprId {
+fn rep_expr(b: Builder, r: Rep, sp: Span?) -> ExprId {
     match r {
         .One -> unit(b, "Rep", "One", sp),
         .Star -> unit(b, "Rep", "Star", sp),
@@ -76,7 +76,7 @@ fn rep_expr(mut b: Builder, r: Rep, sp: Span?) -> ExprId {
     }
 }
 
-fn build_expr(mut b: Builder, held: Build?, sp: Span?) -> ExprId {
+fn build_expr(b: Builder, held: Build?, sp: Span?) -> ExprId {
     if held == null { return b.store.alloc_expr(Expr.NullLit, sp) }
     match held! {
         .Var(name) -> variant(b, "Build", "Var", [text_expr(b, name, sp)], sp),
@@ -92,52 +92,52 @@ fn build_expr(mut b: Builder, held: Build?, sp: Span?) -> ExprId {
     }
 }
 
-fn fixed_expr(mut b: Builder, f: Fixed, sp: Span?) -> ExprId {
+fn fixed_expr(b: Builder, f: Fixed, sp: Span?) -> ExprId {
     lit_struct(b, "Fixed", ["name", "text"], [text_expr(b, f.name, sp), text_expr(b, f.text, sp)], sp)
 }
 
-fn expect_expr(mut b: Builder, held: Expect?, sp: Span?) -> ExprId {
+fn expect_expr(b: Builder, held: Expect?, sp: Span?) -> ExprId {
     if held == null { return b.store.alloc_expr(Expr.NullLit, sp) }
     lit_struct(b, "Expect", ["message"], [text_expr(b, held!.message, sp)], sp)
 }
 
-fn recover_expr(mut b: Builder, held: Recover?, sp: Span?) -> ExprId {
+fn recover_expr(b: Builder, held: Recover?, sp: Span?) -> ExprId {
     if held == null { return b.store.alloc_expr(Expr.NullLit, sp) }
     lit_struct(b, "Recover", ["sync_to"], [text_expr(b, held!.sync_to, sp)], sp)
 }
 
 // ── The four shapes every writer above spells ──
 
-fn lit_struct(mut b: Builder, name: string, fields: List<string>, values: List<ExprId>, sp: Span?) -> ExprId {
+fn lit_struct(b: Builder, name: string, fields: List<string>, values: List<ExprId>, sp: Span?) -> ExprId {
     b.store.alloc_expr(Expr.StructLit(Nominal(name), [Plain(t) for t in fields], values), sp)
 }
 
 /// A CARRYING variant, built on its own type — what `Prim.Lit` and
 /// `Build.Call` are written as.
-fn variant(mut b: Builder, ty: string, name: string, args: List<ExprId>, sp: Span?) -> ExprId {
+fn variant(b: Builder, ty: string, name: string, args: List<ExprId>, sp: Span?) -> ExprId {
     let subject = b.store.alloc_expr(Expr.Ident(Scoped(ty)), sp)
     b.store.alloc_expr(Expr.MethodCall(subject, Plain(name), args), sp)
 }
 
 /// A variant that CARRIES NOTHING — what `Rep.Star` is written as.
-fn unit(mut b: Builder, ty: string, name: string, sp: Span?) -> ExprId {
+fn unit(b: Builder, ty: string, name: string, sp: Span?) -> ExprId {
     let subject = b.store.alloc_expr(Expr.Ident(Scoped(ty)), sp)
     b.store.alloc_expr(Expr.Prop(subject, Plain(name)), sp)
 }
 
-fn bool_expr(mut b: Builder, v: bool, sp: Span?) -> ExprId {
+fn bool_expr(b: Builder, v: bool, sp: Span?) -> ExprId {
     b.store.alloc_expr(Expr.BoolLit(v), sp)
 }
 
-fn text_expr(mut b: Builder, s: string, sp: Span?) -> ExprId {
+fn text_expr(b: Builder, s: string, sp: Span?) -> ExprId {
     b.store.alloc_expr(Expr.StrLit(s), sp)
 }
 
-fn text_opt(mut b: Builder, held: string?, sp: Span?) -> ExprId {
+fn text_opt(b: Builder, held: string?, sp: Span?) -> ExprId {
     if held == null { return b.store.alloc_expr(Expr.NullLit, sp) }
     text_expr(b, held!, sp)
 }
 
-fn list_expr(mut b: Builder, items: List<ExprId>, sp: Span?) -> ExprId {
+fn list_expr(b: Builder, items: List<ExprId>, sp: Span?) -> ExprId {
     b.store.alloc_expr(Expr.ListLit(items), sp)
 }

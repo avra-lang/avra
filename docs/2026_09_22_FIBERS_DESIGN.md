@@ -326,5 +326,50 @@ PROOF the compiler demands before work may go there.
   task parked on a descriptor before it closes, and each retry reports
   the closed descriptor.
 - `@std/time.sleep(d)` parks the calling task on the scheduler's timer.
-- Per-call timeouts are not parameters: the `within d { }` scope (F4)
-  carries one deadline for every park inside it.
+- Per-call timeouts are not parameters: the `within d { }` scope
+  carries one deadline for every park inside it (§12).
+
+## 12. As built (F5 — @std/http, one task per connection)
+
+- DEADLINES ARE A SCOPE, NEVER A PARAMETER (P6). A timeout parameter is
+  explicit at one call and threads by hand through every layer; a callee
+  the caller does not own (a handler's query) cannot inherit it.
+  `within d { … }` is both: lexically visible, and every park inside —
+  in this task or one it spawns — ends by it. Nested scopes take the
+  earlier deadline; the block restores the outer one however it exits.
+  A park past it fails its verb (`NetError.timed_out()`); `sleep` is
+  unaffected until F4 brings cancellation at every pause point. The head
+  is a `Duration` (F2110). One mechanism for the concept: @std/process's
+  `within:` parameters were renamed `limit:`, and moving them onto the
+  scope is recorded.
+- `Tasks` IS THE OWNER A LOOP THAT NEVER ENDS NEEDS. `Tasks.new()`,
+  `owner.push(spawn e)`: answers are discarded, and a full owner sheds
+  its finished tasks before it grows (O(1) amortized — 2M tasks through
+  one owner peak at 25 MB). It is an owner under the task law: joined
+  where its binding ends, refused in a field, an answer or a capture.
+- THE SERVER: `run` accepts on the calling task and spawns each
+  connection; `stop` closes the listener. Each connection holds its OWN
+  COPY of the application: a plain field is that connection's state,
+  and shared state is a `Cell` the application declares. The framing
+  laws are the old loop's, unchanged. The client parks under `within`.
+- THE POLLER REGISTERS ONCE, EDGE-TRIGGERED, and caches readiness: an
+  edge sets a direction's bit, a short read or a park clears it, and a
+  read whose socket is known drained parks before reading. A peer's end
+  is STICKY readiness, or a FIN landing with the last bytes is never
+  seen (std-net's `parked_eof`, witnessed stalling without it). It holds
+  while every close of a parkable descriptor goes through
+  `avra_fiber_fd_closing`.
+- MEASURED on a Linux Sprite (8 × EPYC, server pinned to one core, wrk
+  on the rest; `tools/bench/wrk.sh`, `FLOOR=1` for the C floor):
+
+  | | keep-alive c=50 | c=200 | c=1000 | pipelined ×16 |
+  |---|---|---|---|---|
+  | old event loop | 39.4k | 35.6k | 33.8k | 167k |
+  | task per connection | 41.9k | 41.5k | 36.0k | 164k |
+  | C floor (epoll, read + write only) | 65.4k | 65.5k | 60.9k | 1.03M |
+
+  Syscalls per request match the floor (one read, one write). The gap is
+  user space — about 5 µs a request against the floor's 1 µs
+  (`tools/bench/request`): immutable values copied instead of reused.
+  That is the reuse-in-place campaign's, not HTTP's.
+

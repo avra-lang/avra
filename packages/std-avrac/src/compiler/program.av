@@ -128,11 +128,11 @@ fn parsed_fresh(lang: Language, src: SourceFile, blocks: List<BlockGrammar>, tel
 /// Parse into a store ALREADY standing — the target file's, when a
 /// generated declaration's source is admitted beside the one that
 /// asked for it. The returned statements are the newly minted ones.
-export fn parse_into(lang: Language, mut store: NodeStore, src: SourceFile, blocks: List<BlockGrammar>) -> Parsed {
+export fn parse_into(lang: Language, store: NodeStore, src: SourceFile, blocks: List<BlockGrammar>) -> Parsed {
     parsed_as(lang, store, src, blocks, true)
 }
 
-fn parsed_as(lang: Language, mut store: NodeStore, src: SourceFile, blocks: List<BlockGrammar>, telling: bool) -> Parsed {
+fn parsed_as(lang: Language, store: NodeStore, src: SourceFile, blocks: List<BlockGrammar>, telling: bool) -> Parsed {
     if lang.syntax == null {
         return Parsed { store: store, stmts: [], source: src, voices: Voices { list: lang.diagnostics } }
     }
@@ -144,7 +144,7 @@ fn parsed_as(lang: Language, mut store: NodeStore, src: SourceFile, blocks: List
     // printer can put it back where it was written
     store.keep_remarks(lexed.remarks)
     // what a block's grammar refused speaks with the parse, at the block
-    let blocked = [block_diagnostic(v) for v in store.block_voices]
+    let blocked = [block_diagnostic(v) for v in store.block_voices.get()]
     let engine = [lex_diagnostic(e) for e in lexed.errors].concat(o.diagnostics).concat(blocked)
     Parsed {
         store: store,
@@ -189,7 +189,7 @@ impl Decls {
 /// beginning after its declaration-prefix anchor. This includes
 /// nested methods; annotations and `export` precede the declaration
 /// node's own span, so token equality is deliberately not required.
-fn attach_docs(mut store: NodeStore, docs: List<DocComment>) {
+fn attach_docs(store: NodeStore, docs: List<DocComment>) {
     for doc in docs {
         let target = store.statement_after(doc.before)
         if target != null { store.document(target!, doc.lines, doc.at) }
@@ -198,7 +198,7 @@ fn attach_docs(mut store: NodeStore, docs: List<DocComment>) {
 
 /// The program's statements in order. A recovery hole becomes an
 /// explicit Stmt.Error node — the tree survives bad input visibly.
-fn program_stmts(mut store: NodeStore, o: RunOutcome<LangNode>) -> List<StmtId> {
+fn program_stmts(store: NodeStore, o: RunOutcome<LangNode>) -> List<StmtId> {
     mut out: List<StmtId> = []
     if o.result == null { return out }
     let items = list_at([o.result!], 0)

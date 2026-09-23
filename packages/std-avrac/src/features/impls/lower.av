@@ -2,7 +2,7 @@
 //! the QUALIFIED name, the subject riding the self seat. The name
 //! derives from the receiver's type both here and at the fn loop,
 //! so no fact table carries it.
-use core.{ExprId, Reg, Ins, DeclId, TypeId}
+use core.{ExprId, Reg, DeclId, TypeId}
 use features.{LowerCx, MethodCall}
 
 /// The receiver's value: seat 0 of the body, as its binding says.
@@ -36,9 +36,7 @@ fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, tdecl: DeclId, name
     let s = seated(cx, subject, args)
     let data = boxed_value(cx, subject, s.recv)
     let fp = cx.slot_read(s.recv, 1 + ordinal, null)
-    let dst = cx.result(e)
-    cx.emit(Ins.CallPtr(dst, fp, [data].concat(s.args)))
-    dst
+    cx.call_ptr_at(e, fp, [data].concat(s.args))
 }
 
 /// A contract box's value, the method's `self`. A copied receiver's box
@@ -72,7 +70,7 @@ fn path_indexes(cx: LowerCx, e: ExprId) -> List<ExprId> {
     let step? = cx.view.store.place_step(e) else { return [] }
     match step {
         .Root(_) -> [],
-        .Field(subject, _) -> path_indexes(cx, subject),
+        .Field(subject, _) or .Unwrap(subject) -> path_indexes(cx, subject),
         .At(subject, index) -> path_indexes(cx, subject).concat([index]),
     }
 }
@@ -97,9 +95,7 @@ fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, 
     let s = seated(cx, subject, args)
     let m? = cx.view.decls.method(decl, name) else { return cx.lower_defect(e, "a method with no symbol survived typing") }
     let seats = [s.recv].concat(cx.seated_regs(e, m, args, s.args))
-    let dst = cx.result(e)
-    cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(subject)), seats))
-    dst
+    cx.call_decl_at(e, cx.method_symbol(m, e, cx.type_at(subject)), seats)
 }
 
 /// A STATIC's dispatch: a direct Call to the method's qualified
@@ -108,9 +104,7 @@ fn static_dispatch(mut cx: LowerCx, e: ExprId, m: DeclId, args: List<ExprId>) ->
     // THE MINT LAW: the operands' registers first, the answer last
     let regs = [cx.reg_of(a) for a in args]
     let seated = cx.seated_regs(e, m, args, regs)
-    let dst = cx.result(e)
-    cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(e)), seated))
-    dst
+    cx.call_decl_at(e, cx.method_symbol(m, e, cx.type_at(e)), seated)
 }
 
 /// The type-receiver half lowered: the variant's tagged box — the

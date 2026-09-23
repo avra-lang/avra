@@ -56,7 +56,7 @@ impl Workspace {
     fn analysis(f: FileId) -> Analysis {
         // A closed one-shot workspace retains no Analysis because its
         // program closure points back here.
-        if self.closed { return self.analyzed(f) }
+        if self.closed.get() { return self.analyzed(f) }
         match self.analyses.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let out = self.analyzed(f)
         self.analyses.finish(f.index, out, self.db.revision())
@@ -112,7 +112,7 @@ impl Workspace {
     }
 
     /// The store, attached by a build; null outside one.
-    mut fn attach_store(s: Store) { self.store = s }
+    fn attach_store(s: Store) { self.store.set(s) }
 
     /// Where a file's asks live: beside its object, under the object's key.
     fn asks_key(okey: string) -> string { node_key(Stored.Unit, ["asks", okey]) }
@@ -121,7 +121,7 @@ impl Workspace {
     /// not — kept for the lowering — and the held files whose row could NOT be read.
     /// An unread row is a file that must parse: holding it would link a program
     /// missing whatever its bodies ask for.
-    mut fn read_held_asks(s: Store) -> List<string> {
+    fn read_held_asks(s: Store) -> List<string> {
         mut unread: List<string> = []
         for path in held_paths(self) {
             let wants = self.wanted_list_from_wire(s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")

@@ -9,7 +9,7 @@
 //! pushes, cell settlement — nothing here spells a retain).
 //! Early exit is the BREAK IDIOM: store the index past the length
 //! and the condition ends the loop.
-use core.{ExprId, Reg, Ins, Type, TypeId, BinOp, UnOp}
+use core.{ExprId, Reg, Ins, Type, TypeId, BinOp}
 use features.{LowerCx, MethodCall}
 
 // ── The rows' rules ──
@@ -233,9 +233,7 @@ fn edge(mut cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
     let cell = absent_cell(cx, opt)
     let len = cx.measure_of(mc.subject, cx.reg_of(mc.subject), cx.type_at(mc.subject))
     let zero = cx.const_int(0)
-    let some = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(some, BinOp.Lt, zero, len))
-    cx.void_region(some) { cx ->
+    cx.void_region(cx.bin(Type.Bool, BinOp.Lt, zero, len)) { cx ->
         let at = if last { decremented(cx, len) } else { zero }
         let raw = cx.elem_read(xs, at, cx.carried_type(opt))
         cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
@@ -252,6 +250,7 @@ fn boxed(mut cx: LowerCx, f: ExprId) -> Box {
 }
 
 /// The fn box asked about this element.
+// LICENSED I60: minted at the walk's own element type, not the node's — `call_ptr_at` does not fit
 fn turn_call(mut cx: LowerCx, f: Box, v: Reg, ret: TypeId) -> Reg {
     let r = cx.mint_ty(ret)
     cx.emit(Ins.CallPtr(r, f.fp, [f.f, v]))
@@ -262,9 +261,7 @@ fn turn_call(mut cx: LowerCx, f: Box, v: Reg, ret: TypeId) -> Reg {
 /// `any` fires ON the predicate; `all` fires on its failure.
 fn flipping(mut cx: LowerCx, p: Reg, all: bool) -> Reg {
     if !all { return p }
-    let np = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Un(np, UnOp.Not, p))
-    np
+    cx.un(p)
 }
 
 /// What `map` answers per element — the result list's own element,
@@ -274,17 +271,14 @@ fn mapped_to(cx: LowerCx, e: ExprId) -> TypeId {
     elem ?? cx.type_at(e)
 }
 
-fn bool_ty(mut cx: LowerCx) -> TypeId {
+fn bool_ty(cx: LowerCx) -> TypeId {
     cx.type(bool)
 }
 
 // ── The small mints ─────────────────────────────────────────────
 
 fn decremented(mut cx: LowerCx, n: Reg) -> Reg {
-    let one = cx.const_int(1)
-    let r = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Bin(r, BinOp.Sub, n, one))
-    r
+    cx.bin(Type.Int, BinOp.Sub, n, cx.const_int(1))
 }
 
 fn bool_cell(mut cx: LowerCx, seed: bool) -> Reg {

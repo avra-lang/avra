@@ -24,6 +24,22 @@ impl LowerCx {
             .Root(_) -> self.cell_place(e),
             .Field(subject, name) -> self.field_place(subject, name.of),
             .At(subject, index) -> Place.Slot(self.unique_box(subject), self.reg_of(index)),
+            .Unwrap(subject) -> self.unwrapped_place(e, subject),
+        }
+    }
+
+    /// What a nullable carries, as a place — reached only as a FLAT
+    /// record's field (`h.r!.x = …`), since an unwrap is never a
+    /// target itself. A boxed nullable holds the record in its one
+    /// slot; the box must be present.
+    mut fn unwrapped_place(e: ExprId, subject: ExprId) -> Place? {
+        let opt = self.type_at(subject)
+        match self.repr_of(opt) {
+            .Boxed -> Place.Slot(self.insist(self.view.types.shape_of(opt), self.unique_box(subject)), self.const_int(0)),
+            .Niche or .Pair -> {
+                let _ = self.lower_defect(e, "an unwrap written whole survived resolve")
+                null
+            },
         }
     }
 
@@ -57,6 +73,19 @@ impl LowerCx {
             },
             .Field(subject, name) -> self.slot_opened(s, self.unique_box(subject), self.field_slot(subject, name.of)),
             .At(subject, index) -> self.slot_opened(s, self.unique_box(subject), self.reg_of(index)),
+            .Unwrap(subject) -> self.unwrapped_box(s, subject),
+        }
+    }
+
+    /// The box a nullable carries, unique and insisted present. Only a
+    /// NICHE carries a box of its own: a boxed nullable carries a flat
+    /// record, which has no slots, and a pair a scalar.
+    mut fn unwrapped_box(s: ExprId, subject: ExprId) -> Reg {
+        let opt = self.type_at(subject)
+        if self.view.types.carried(opt) == null { return self.unique_box(subject) }
+        match self.repr_of(opt) {
+            .Niche -> self.insisted_niche(s, self.unique_box(subject)),
+            .Boxed or .Pair -> self.lower_defect(s, "a slot write under an unwrap of a flat value survived typing"),
         }
     }
 
@@ -68,6 +97,7 @@ impl LowerCx {
     mut fn field_slot(subject: ExprId, name: string) -> Reg {
         let sig: StructSig? = self.fields_at(subject)
         let slot: int? = sig?.slot_of(name)
+        // LICENSED I60: the defect arm answers idx unemitted — minted once, both arms share it
         let idx = self.mint_shape(Type.Int)
         if slot == null {
             let _ = self.lower_defect(subject, "a fieldless place survived typing")

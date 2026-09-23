@@ -5,7 +5,8 @@
 //! answers a `Result` whose failure names the verb, its subject and
 //! the platform's errno. `accept`, `read`, `write` and `connect` PARK
 //! the calling task until the socket is ready — the other tasks run
-//! meanwhile, and a program with none simply waits. Their `try_`
+//! meanwhile, and a program with none simply waits. Inside a `within`
+//! a park that outlasts it fails the verb, `timed_out()` true. Their `try_`
 //! twins never wait: a read that finds nothing answers `.Pending`, a
 //! write that takes nothing answers 0, and a poller loop decides.
 use @std.errors.{Error, ErrorInfo, info}
@@ -18,6 +19,7 @@ extern fn avra_net_addresses(host: string, port: int) -> int
 extern fn avra_net_dial(host: string, port: int, i: int) -> int
 extern fn avra_net_dialed(fd: int) -> int
 extern fn avra_fiber_park_fd(fd: int, writable: int, timeout_ms: int) -> int
+extern fn avra_fiber_fd_ready(fd: int, writing: int) -> int
 extern fn avra_fd_read(fd: int, max: int) -> int
 extern fn avra_fd_taken(token: int) -> Bytes
 extern fn avra_fd_write(fd: int, bytes: Bytes, from: int) -> int
@@ -39,6 +41,12 @@ extern fn avra_errno_timed_out() -> int
 
 /// A verb that failed: which, on what, and the platform's word.
 export type NetError = { verb: string, subject: string, errno: int }
+
+impl NetError {
+    /// Whether the verb failed because its deadline passed — a
+    /// `within` running out, or a connect's own budget.
+    fn timed_out() -> bool { self.errno == avra_errno_timed_out() }
+}
 
 impl Error for NetError {
     fn describe() -> ErrorInfo {
@@ -141,9 +149,14 @@ fn streamed(fd: int, verb: string, subject: string) -> Result<Conn, NetError> {
     .Ok(Conn { fd: fd })
 }
 
-/// The calling task parked until `fd` is readable, or writable.
-fn parked(fd: int, write: bool) {
-    let _ = avra_fiber_park_fd(fd, if write { 1 } else { 0 }, -1)
+/// The calling task parked until `fd` is readable, or writable —
+/// false when the task's `within` ran out first.
+fn parked(fd: int, write: bool) -> bool {
+    avra_fiber_park_fd(fd, if write { 1 } else { 0 }, -1) != 0
+}
+
+fn timed_out<T>(verb: string, subject: string) -> Result<T, NetError> {
+    failed(verb, subject, 0 - avra_errno_timed_out())
 }
 
 /// Whether text names a host at all: not empty, and holding no NUL —
@@ -178,7 +191,7 @@ impl Listener {
     /// The next connection, the calling task parked until one arrives.
     fn accept() -> Result<Conn, NetError> {
         let c? = self.try_accept()? else {
-            parked(self.fd, false)
+            if !parked(self.fd, false) { return timed_out("accept", "port ${self.port}") }
             return self.accept()
         }
         .Ok(c)
@@ -202,13 +215,16 @@ impl Listener {
 
 impl Conn {
     /// Up to `max` bytes, the calling task parked until some arrive;
-    /// null once the peer has finished writing.
+    /// null once the peer has finished writing. A socket the last read
+    /// drained is waited on before it is read, never read to find
+    /// nothing.
     fn read(max: int) -> Result<Bytes?, NetError> {
+        if avra_fiber_fd_ready(self.fd, 0) == 0 && !parked(self.fd, false) { return timed_out("read", self.named()) }
         match self.try_read(max)? {
             .Data(b) -> .Ok(b),
             .Eof -> .Ok(null),
             .Pending -> {
-                parked(self.fd, false)
+                if !parked(self.fd, false) { return timed_out("read", self.named()) }
                 self.read(max)
             },
         }
@@ -220,7 +236,7 @@ impl Conn {
         mut at = 0
         while at < bytes.length {
             let n = self.try_write(bytes, at)?
-            if n == 0 { parked(self.fd, true) }
+            if n == 0 && !parked(self.fd, true) { return timed_out("write", self.named()) }
             at = at + n
         }
         .Ok(bytes.length)

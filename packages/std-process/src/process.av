@@ -601,10 +601,10 @@ export type Child = { stage: Stage, command: Command, out: string = "", err: str
 impl Command {
     /// The child started and READY by the sign asked for — or stopped
     /// and refused with what it said so far. `Started` is the pid alone.
-    fn start(ready: Ready, within: Duration) -> Result<Child, ProcessError> {
+    fn start(ready: Ready, limit: Duration) -> Result<Child, ProcessError> {
         let s = launched(self, 0 - 1)?
         mut child = Child { stage: s, command: self }
-        child.until_ready(ready, within)?
+        child.until_ready(ready, limit)?
         child
     }
 }
@@ -645,10 +645,10 @@ impl Child {
 
     /// Ticks until the sign shows, the child dies first, or the window
     /// closes — the last two stop the child and refuse.
-    fn until_ready(ready: Ready, within: Duration) -> Result<int, ProcessError> {
+    fn until_ready(ready: Ready, limit: Duration) -> Result<int, ProcessError> {
         if ready is .Started { return 0 }
         let began = now_ms()
-        let deadline = began + within.ms
+        let deadline = began + limit.ms
         mut waited = 0
         while true {
             let gone = self.pump(100)
@@ -687,13 +687,13 @@ impl Child {
         let _ = avra_proc_shut(self.stage.h, 0)
     }
 
-    /// The next line the child says on stdout, waiting up to `within` —
+    /// The next line the child says on stdout, waiting up to `limit` —
     /// absent when the window closes with no complete line, or the child
     /// is done and said nothing more. A last line without its newline is
     /// answered once the child is gone.
-    fn read_line(within: Duration) -> string? {
+    fn read_line(limit: Duration) -> string? {
         if self.ended != null { return null }
-        let deadline = now_ms() + within.ms
+        let deadline = now_ms() + limit.ms
         while true {
             let cut = self.out.index_of("\n")
             if cut >= 0 {
@@ -714,10 +714,10 @@ impl Child {
 
     /// The child seen out: pumped to its end, or stopped at the deadline
     /// with what it said so far. The handle is released either way.
-    fn wait(within: Duration?) -> Result<Outcome, ProcessError> {
+    fn wait(limit: Duration?) -> Result<Outcome, ProcessError> {
         if self.ended != null { return self.ended! }
         let began = now_ms()
-        let deadline = timeout_ms(within)
+        let deadline = timeout_ms(limit)
         mut gone = self.pump(0)
         while !gone && (deadline < 0 || now_ms() - began < deadline) {
             gone = self.pump(100)
@@ -773,8 +773,8 @@ fn probe_clean(probe: Command) -> bool {
 
 /// The bracket: the child up and ready around `body`, and stopped when
 /// it returns — however it returns. What `body` answered is the answer.
-export fn serving<T>(c: Command, ready: Ready, within: Duration, body: fn() -> T) -> Result<T, ProcessError> {
-    mut child = c.start(ready, within)?
+export fn serving<T>(c: Command, ready: Ready, limit: Duration, body: fn() -> T) -> Result<T, ProcessError> {
+    mut child = c.start(ready, limit)?
     let answer = body()
     child.stop()
     answer
