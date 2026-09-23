@@ -33,13 +33,58 @@ fn method_call_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, tdecl: DeclId, name: string, args: List<ExprId>) -> Reg {
     let ordinal = cx.view.decls.trait_method_names(tdecl).index_of(name)
     if ordinal < 0 { return cx.lower_defect(e, "a dyn method outside its trait survived typing") }
-    let box = cx.reg_of(subject)
-    let regs = [cx.reg_of(a) for a in args]
-    let data = cx.slot_read(box, 0, cx.type_at(subject))
-    let fp = cx.slot_read(box, 1 + ordinal, null)
+    let s = seated(cx, e, subject, args)
+    let data = cx.slot_read(s.recv, 0, cx.type_at(subject))
+    let fp = cx.slot_read(s.recv, 1 + ordinal, null)
     let dst = cx.result(e)
-    cx.emit(Ins.CallPtr(dst, fp, [data].concat(regs)))
+    cx.emit(Ins.CallPtr(dst, fp, [data].concat(s.args)))
     dst
+}
+
+/// A call's receiver register and its argument registers.
+type Seated = { recv: Reg, args: List<Reg> }
+
+/// Evaluation is left to right, but a receiver rooted in a `mut` CELL is
+/// READ after its arguments: an argument writing through the same cell
+/// may re-point it (a copy opened unique), and a receiver read first
+/// would be the box left behind. Its path's index operands still run
+/// first, in order.
+fn seated(mut cx: LowerCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> Seated {
+    if !in_cell(cx, subject) {
+        let recv = cx.reg_of(subject)
+        return Seated { recv: recv, args: [cx.reg_of(a) for a in args] }
+    }
+    for i in path_indexes(cx, subject) { let _ = cx.reg_of(i) }
+    let regs = [cx.reg_of(a) for a in args]
+    Seated { recv: receiver_reg_of(cx, e, subject), args: regs }
+}
+
+/// The index operands on a place's path, in written order.
+fn path_indexes(cx: LowerCx, e: ExprId) -> List<ExprId> {
+    let step? = cx.view.store.place_step(e) else { return [] }
+    match step {
+        .Root(_) -> [],
+        .Field(subject, _) -> path_indexes(cx, subject),
+        .At(subject, index) -> path_indexes(cx, subject).concat([index]),
+    }
+}
+
+/// Whether a receiver is a place rooted in a `mut` binding's cell.
+fn in_cell(cx: LowerCx, subject: ExprId) -> bool {
+    let root? = cx.view.store.place_root(subject) else { return false }
+    cx.cell_of(root) != null
+}
+
+/// A writing call's receiver register: the alias-copy law's predicate
+/// (features/checks.av's `alias_copy_law`), recorded as a fact at
+/// checking and read here — a bare `mut` local copied from a place opens
+/// its cell unique before the call, so the write lands in the copy; every
+/// other receiver (self, a parameter, a fresh value, a call's answer)
+/// stays shared, by design. Copy-on-write: a cell already unique is
+/// returned as-is.
+fn receiver_reg_of(mut cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
+    if cx.facts.wants_alias_copy(e) { return cx.unique_box(subject) }
+    cx.reg_of(subject)
 }
 
 /// The fn-FIELD call's lowering: read the field's box, then the
@@ -52,19 +97,11 @@ fn fielded_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, slot: int, fty:
 
 /// The impl table's dispatch: a direct Call to the method's
 /// qualified symbol, the subject riding the self seat.
-///
-/// A bare `mut` local's own box is left shared here, on purpose: the
-/// copy this receiver wants (F2096's law, features/checks.av) breaks
-/// self-hosting through a re-entrant memoization hazard unrelated to
-/// any write this tree's own source relies on reaching its root — the
-/// law's sweep found none. ROADMAP: the copy lands once that hazard
-/// is found.
 fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, name: string, args: List<ExprId>) -> Reg {
-    let recv = cx.reg_of(subject)
-    let regs = [cx.reg_of(a) for a in args]
+    let s = seated(cx, e, subject, args)
     let m? = cx.view.decls.method(decl, name) else { return cx.lower_defect(e, "a method with no symbol survived typing") }
     let dst = cx.result(e)
-    cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(subject)), [recv].concat(regs)))
+    cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(subject)), [s.recv].concat(s.args)))
     dst
 }
 

@@ -6,7 +6,7 @@
 //! is the fix: the same choice `file_workspace` already makes, for a
 //! directory taken as the root itself rather than a file under it.
 use @std.io.{make_dirs, write_text}
-use commands.{root_workspace}
+use commands.{checked_at}
 
 /// A package root of one bare manifest, no `src/` — the shape this repo's
 /// own root carries, and the shape that read clean before this fix.
@@ -22,13 +22,10 @@ fn direct_program(root: string, name: string, text: string) {
     let _ = write_text("${root}/${name}.av", text)
 }
 
-/// `check <root>`, routed and reported exactly as the CLI does it:
-/// `root_workspace` picks the workspace, `entry_of` picks the entry — the
-/// refusal, or what merely warned ("" reads as clean).
+/// `check <root>` through the command's own door — the refusal, or what
+/// merely warned ("" reads as clean).
 fn report_of(root: string) -> string {
-    mut ws = root_workspace(root)
-    let entry = ws.entry_of()
-    match ws.checked(entry) {
+    match checked_at(root) {
         .Err(report) -> report,
         .Ok(c) -> c.warnings,
     }

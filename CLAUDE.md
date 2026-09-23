@@ -322,6 +322,19 @@ engine's spec, written by dogfooding.
   revision one, every sig it will ask for is held, and an Analysis
   asked after is remade over the memoized parts, never kept. The
   language's answer is in the sugar backlog: weak captures.
+- A VALUE ITS OWN HOOKS CAPTURE IS AN IDENTITY, AND A COPY FORKS IT.
+  `mut q = p` is a copy (spec 11.5), hooks included: the copy's writes
+  land in the copy while its hooks answer for the original. The
+  workspace is one (its families and its table's hooks capture it), so
+  `check`'s `mut ws = o.ws` — a workspace read out of a record — lost
+  every std package admitted after the copy, and a compiler built by a
+  compiler that copies read `@std.meta`'s own `Kind` as undefined (522
+  errors). MINT AN IDENTITY IN THE BINDING THAT WRITES IT (`mut ws =
+  build_workspace(path)`), and read F2096 as naming exactly this.
+  features/tests/borrow_identity is the one-generation witness. AND
+  THE SWEEP THAT ACQUITTED THE TREE READ ONE PACKAGE: five lanes paid
+  "the 15 sites" of `check packages/std-avrac`, and the two that broke
+  were in `packages/cli`, warned about the whole time.
 - A PARAMETER IS BORROWED, AND WHAT A CALLEE KEEPS TAKES ITS OWN
   REFERENCE. The caller keeps every managed argument STANDING for
   the call — a param, a register a scope owns, a cell's load and the
@@ -1850,28 +1863,13 @@ Runtime facts, ours to ratify:
   was cloned" and never "how big". The first draft of this log
   read the header and every clone in a 5.2M-line run showed length
   40 or 32 — a tautology, not a finding.
-  RECORDED TRIGGER, avra-2y5c.5's gen-2 self-hosting break: three
-  prior sessions suspected a Workspace-sized struct (44 fields) was
-  being forked mid-compile (`Workspace.visible` reading
-  `packages.length` 1-2 against a live 9) and reached for this log
-  to catch it in the act. It never fires: over gen-1 (correct, 0
-  errors) and gen-2 (broken, 521 "Kind names no type") running the
-  identical `check packages/std-avrac`, the clone profiles are the
-  SAME functions at the SAME counts (`grammar.match_seq` 1.74M,
-  `grammar.bind_label` 1.5M, `query.Db.hit/miss/begin/settle`
-  tens of thousands, one genuine O(n²) growth in
-  `grammar/executor.av`'s `match_rule` climbing 104..694148 —
-  IDENTICAL in both generations, 551 events each) — no site ever
-  clones anything past ~54 elements, and nothing clones a constant
-  44-element box at all. A CLONE LOG THAT AGREES BETWEEN A CORRECT
-  RUN AND A BROKEN ONE IS A CLEAN ACQUITTAL: the fork is not a
-  `box_clone`, which rules out the receiver-copy mechanism's own
-  `unique_box` calls as the cause and leaves the query kernel's
-  re-entrant memoization (`Memo.start`'s `.Cycle` branch, traced by
-  `AVRA_QTRACE` into `namespace`/`module_files` over `@std.meta`) as
-  the standing suspect. Kept as a permanent tool, inert without the
-  flag; the next differential reaches for it BEFORE re-deriving
-  this acquittal by hand.
+  AND DIFF THE LOGS BY SITE, NEVER BY PROFILE. avra-2y5c.5's gen-2
+  break was read from this log as an acquittal — "the same functions
+  at the same counts" in the good run and the broken one — while the
+  broken run held ONE line the good one did not: a 44-field clone at
+  `CheckCmd.run` (`mut ws = o.ws`, a workspace copied out of a record;
+  see A VALUE ITS OWN HOOKS CAPTURE, under Rules). Five million lines
+  that agree hide the one that forks.
 - A `check` HIT ON `.avra-cache` EXAMINES NOTHING, AND A SECOND
   BINARY ON UNCHANGED SOURCE CAN SILENTLY HIT THE FIRST'S ENTRY.
   `Workspace.checked`/`build_program` key their store by the

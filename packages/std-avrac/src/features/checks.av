@@ -666,14 +666,19 @@ impl TypeCx {
     /// the moment it was bound, and a write through it — at any depth
     /// under it — never reaches back. `self`, a parameter, and every
     /// place rooted in either are excluded by construction:
-    /// `bare_mut_stmt` answers only a plain `mut q = …` local. Fires
-    /// once per declaring statement; `root` is the write's place root,
-    /// already known `mut` by every caller.
+    /// `bare_mut_stmt` answers only a plain `mut q = …` local.
+    ///
+    /// ONE PREDICATE, TWO CHANNELS: every qualifying call is marked
+    /// (`facts.wants_alias_copy` — lowering opens its receiver unique
+    /// there), and the warning speaks once per declaring statement.
+    /// `root` is the write's place root, already known `mut` by every
+    /// caller.
     mut fn alias_copy_law(e: ExprId, root: ExprId) {
         let s? = self.bare_mut_stmt(root) else { return }
-        if self.aliased_warned.contains(s.index) { return }
         let v? = self.view.store.stmt_value(s) else { return }
         let from? = self.place_binding_root(v) else { return }
+        self.facts.mark_alias_copy_call(e)
+        if self.aliased_warned.contains(s.index) { return }
         self.aliased_warned.push(s.index)
         let q = self.root_word(root)
         let p = self.root_word(from)
