@@ -770,7 +770,7 @@ impl TypeCx {
     /// S4).
     mut fn receiver_law(e: ExprId, subject: ExprId, name: string, writes: bool) {
         if !writes { return }
-        if self.mut_place(subject) { return self.alias_copy_law(e, self.place_binding_root(subject)!) }
+        if self.mut_place(subject) { return self.alias_copy_law(e, subject, self.place_binding_root(subject)!) }
         let root: ExprId? = self.place_binding_root(subject)
         if root == null { return self.emit(warning("type.receiver", self.loc_of(e), "`${name}` writes its receiver, and this is a value", "a value", "bind it `mut` first — the receiver becomes the caller's own place")) }
         let n = self.root_word(root!)
@@ -804,16 +804,17 @@ impl TypeCx {
     /// excluded by construction: `bare_mut_stmt` answers only a plain
     /// `mut q = …` local.
     ///
-    /// ONE PREDICATE, TWO CHANNELS: every qualifying call is marked
-    /// (`facts.wants_alias_copy` — lowering opens its receiver unique
-    /// there), and the warning speaks once per declaring statement.
-    /// `root` is the write's place root, already known `mut` by every
-    /// caller.
-    mut fn alias_copy_law(e: ExprId, root: ExprId) {
+    /// ONE PREDICATE, TWO CHANNELS: every qualifying place is marked
+    /// (`facts.wants_alias_copy` — lowering reads it unique), and the
+    /// warning speaks at the write `e`, once per declaring statement.
+    /// `place` is what the write reaches through — a receiver, a `mut`
+    /// seat's argument — and `root` its root, already known `mut` by
+    /// every caller.
+    mut fn alias_copy_law(e: ExprId, place: ExprId, root: ExprId) {
         let s? = self.bare_mut_stmt(root) else { return }
         let v? = self.view.store.stmt_value(s) else { return }
         let from? = self.copied_from(v) else { return }
-        self.facts.mark_alias_copy_call(e)
+        self.facts.mark_alias_copy(place)
         if self.aliased_warned.contains(s.index) { return }
         self.aliased_warned.push(s.index)
         let q = self.root_word(root)
@@ -1011,6 +1012,7 @@ impl TypeCx {
             return roots
         }
         if roots.any((x) -> self.same_root(x, r)) { self.shared_root(e, callee, n) }
+        self.alias_copy_law(a, a, r)
         roots.concat([r])
     }
 
