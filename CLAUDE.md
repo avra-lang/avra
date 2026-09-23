@@ -985,7 +985,9 @@ engine's spec, written by dogfooding.
   lint's noise AND before trusting a quiet tree: a lint that counts
   the wrong thing and a law nobody has paid look identical from the
   warning count alone, and only the true-positive rate tells them
-  apart.
+  apart. PAYING IT WAS THE PROOF: turning the compiler's identities
+  into Cells took std-avrac from 165 sites to 4 and the cli from 60 to
+  1 (deduped by file:line), and nothing that fired was a false alarm.
 - Map iteration order never reaches output — iterate an ordered
   source. AND A MAP CANNOT BE ITERATED AT ALL: `for k in m` is F2000
   "`for … in` walks a `List`, this is `Map<K, V>`" and `.keys()` is
@@ -1387,19 +1389,24 @@ engine's spec, written by dogfooding.
   prints as exit 1 — and says only what its phase does.
 - THE ROOT OF A PATH DECIDES WHERE A WRITE LANDS: "changes through
   `self` or a `mut` parameter reach the caller; changes to a local stay
-  local." A writing call on a path rooted at `self` or a `mut` seat
-  writes through (the seat law — Swift's `mutating`/`inout`, Rust's
-  `&mut`); rooted at a `mut` LOCAL, the path's boxes open unique first
-  (`path_copy_law`, the alias-copy fact `reg_of` already reads), and
-  F2106 says so once per local. A local READ FROM a place is a copy
-  already (spec 11.5). An IDENTITY held in a local (a workspace inside
-  a `Derived`) would fork, so its write goes through a verb rooted at
-  `self` (`Derived.linked`). THE GAP, pinned MEASURED in
-  features/impls/tests/alias_copy_adversarial_test.av: a writing METHOD
-  or seat through `self` does not open the path, so an element inside
-  it that another value also holds sees the write — while a
-  vocabulary write (`push`, `set`) through `self` opens every box
-  below the root and does not. Witness: features/tests/borrow_root_path,
+  local." A writing call on a PATH opens every box BELOW the root
+  unique (`path_copy_law`, the alias-copy fact `reg_of` reads), so an
+  element another value also holds never sees the write, whatever the
+  root. The root decides only whether the ROOT itself is written
+  through: `self` and a `mut` seat are (the seat law — Swift's
+  `mutating`/`inout`, Rust's `&mut`); a `mut` LOCAL is opened with the
+  rest, and F2106 says so once per local. An unwrap is a step on the
+  path (`h.r!.add(1)`), never a target itself. A local READ FROM a
+  place is a copy already (spec 11.5). AN IDENTITY IS A `Cell`, NEVER A
+  PATH: the compiler's shared structures (TypeRegistry, NodeStore and
+  its arenas, Decls, Workspace) hold every table behind a Cell (core
+  names `Cell` like any file; `list_cell`/`map_cell` seed one), so
+  their writes are in-place Cell writes that no path opens — before
+  that, opening `self.store.alloc_stmt(…)`'s path forked the executor's
+  arena and the second generation trapped. A `mut fn` in a recursion
+  cycle is judged writing by its CONTRACT, so a stale `mut` keeps every
+  caller writing; F2050 names it. Witnesses: features/tests/
+  borrow_root_path and features/impls/tests/alias_copy_adversarial_test.av,
   eval == native.
 - THE CONDITION RUNS EVERY TURN: the memory pass settles what a
   `while` condition mints at each `LoopCond`, inside the loop. A

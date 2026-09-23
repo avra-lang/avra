@@ -5,7 +5,7 @@ use core.{Expr, Pat, Arm, StmtId, Scoped, BodyView}
 use features.{LangNode, Builder, arms_at, zip_defect_of}
 use grammar.{runs}
 
-fn build_quote(mut b: Builder) -> Result<LangNode, string> {
+fn build_quote(b: Builder) -> Result<LangNode, string> {
     let open = b.token(0)?
     let arms = arms_at(b.args, 1)
     let stmts = b.stmts(2)?
@@ -26,7 +26,7 @@ fn build_quote(mut b: Builder) -> Result<LangNode, string> {
 
 /// The same body shape, wrapped as a PATTERN instead of a value: its
 /// holes bind, they never splice.
-fn build_quote_pat(mut b: Builder) -> Result<LangNode, string> {
+fn build_quote_pat(b: Builder) -> Result<LangNode, string> {
     let built = build_quote(b)?
     match built {
         .NExpr(e) -> b.make_pat(Pat.Quote(e)),
@@ -36,7 +36,7 @@ fn build_quote_pat(mut b: Builder) -> Result<LangNode, string> {
 
 /// Arms and lone hole statements in source order — each hole
 /// statement an arm whose pattern and value are the one hole.
-fn merged(mut b: Builder, arms: List<Arm>, stmts: List<StmtId>) -> List<Arm> {
+fn merged(b: Builder, arms: List<Arm>, stmts: List<StmtId>) -> List<Arm> {
     mut out: List<Arm> = []
     mut i = 0
     mut j = 0
@@ -56,7 +56,7 @@ fn arm_start(b: Builder, a: Arm) -> int { b.store.pat_span(a.pats[0])?.lo ?? 0 }
 
 fn stmt_start(b: Builder, s: StmtId) -> int { b.store.stmt_span(s)?.lo ?? 0 }
 
-fn hole_arm(mut b: Builder, s: StmtId) -> Arm {
+fn hole_arm(b: Builder, s: StmtId) -> Arm {
     let value = b.store.answer_of(s)!
     let name = b.store.ident_name(value) ?? ""
     Arm { pats: [b.store.alloc_pat(Pat.Bind(Scoped(name)), b.store.stmt_span(s))], value: value }

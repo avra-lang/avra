@@ -56,8 +56,8 @@ impl Workspace {
         let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
         let seat: Entry? = if at == null { null } else { Entry { at: at! } }
         Program {
-            ws: self, files: files, entry: seat, phases: self.phases, cache: self.db.stats(), defects: self.defects.get(),
-            voices: self.packages_voiced(), manifests: [self.manifest_source(pkg) for pkg in self.packages if self.has_manifest(pkg)],
+            ws: self, files: files, entry: seat, phases: self.phases.get(), cache: self.db.stats(), defects: self.defects.get(),
+            voices: self.packages_voiced(), manifests: [self.manifest_source(pkg) for pkg in self.packages() if self.has_manifest(pkg)],
         }
     }
 
@@ -78,7 +78,7 @@ impl Workspace {
     /// self-check runs before one exists); either way, what
     /// admission leaves is `Decls.rule_decls`'s to read.
     fn rule_decls() -> List<Decl> {
-        let pkg? = self.packages.find(it.key == "@std/avrac") else { return [] }
+        let pkg? = self.packages().find(it.key == "@std/avrac") else { return [] }
         for path in self.all_files(pkg.src) {
             if !self.is_test_path(path) {
                 let f = self.file_id(path)
@@ -90,17 +90,17 @@ impl Workspace {
 
     /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
     /// question the analysis asks before it does anything at all.
-    fn is_held(f: FileId) -> bool { self.decls.held.get(self.decls.file(f).path) != null }
+    fn is_held(f: FileId) -> bool { self.decls.held.get().get(self.decls.file(f).path) != null }
 
     /// HOLD A FILE: from here it contributes its minted declarations and what the
     /// store keeps for it, and nothing reads it. Per FILE — a module with fifty
     /// files holds forty-nine.
-    mut fn hold_only(path: string) { self.decls.held.set(path, true) }
+    fn hold_only(path: string) { self.decls.held.put(path, true) }
 
     /// ADMIT EVERY FILE — parse and mint the whole closure, which GROWS as a file's `use`
     /// lines admit packages. Held sigs are rebuilt from records and may name a PARSED
     /// module's type, so every name must exist before any held shape is filled.
-    mut fn admit_all() {
+    fn admit_all() {
         mut i = 0
         while i < self.decls.files.get().length {
             // a held file's declarations are minted when something reads them
@@ -162,7 +162,7 @@ impl Workspace {
     /// Each word is ONE argv element, so nothing in any of them means
     /// anything to a shell.
     fn link_words() -> List<string> {
-        flatten([self.package_link(pkg) for pkg in self.packages])
+        flatten([self.package_link(pkg) for pkg in self.packages()])
     }
 
     fn package_link(pkg: Package) -> List<string> {
@@ -186,7 +186,7 @@ impl Workspace {
     /// on the build side, is LOUD: nothing opens and the refusal names
     /// the package.
     fn linked_packages() -> List<LinkedPackage> {
-        [self.linked_of(pkg) for pkg in self.packages if self.owns_native(pkg)]
+        [self.linked_of(pkg) for pkg in self.packages() if self.owns_native(pkg)]
     }
 
     fn owns_native(pkg: Package) -> bool {
@@ -201,7 +201,7 @@ impl Workspace {
     /// The root package's entry file: its `[bin]` path, else
     /// `src/main.av` when that exists, else absence.
     fn entry_of() -> string? {
-        let pkg = self.packages[0]
+        let pkg = self.packages()[0]
         let bin: string? = self.manifest(0).bin
         let path = joined_path(pkg.root, bin ?? "src/main.av")
         if bin == null && !self.host.exists(path) { return null }

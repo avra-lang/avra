@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, NodeStore, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, Annotation}
+use core.{Table, new_table, list_cell, NodeStore, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, Annotation}
 use @std.path.{dir_of, joined_path}
 use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockGrammar}
 use @std.meta.{Diagnostic}
@@ -142,7 +142,7 @@ export type Workspace = {
     /// THE ARTIFACT STORE, when a BUILD attached one. A unit's edges are persisted so a
     /// held unit can contribute them without a body; outside a build there is none and
     /// lowering runs whole, as before.
-    store: Store?,
+    store: Cell<Store?>,
     // ONE RUN'S VIEW of each file and each manifest: read,
     // fingerprinted and indexed once. A host that changes under a
     // running workspace (Era IV's live editing) invalidates these
@@ -190,15 +190,15 @@ export type Workspace = {
     /// phase two FILLS every shape. A mutual import (language <-> features <-> core) is a
     /// cycle, and one module's shapes cannot be filled until every other module's NAMES are
     defects: Cell<List<Diag>>,
-    packages: List<Package>,
-    package_voices: List<Diag>,
+    package_rows: Cell<List<Package>>,
+    package_voices: Cell<List<Diag>>,
     lone: bool,
     // a directory of programs: every file its own module
     per_file: bool,
     // one-shot, its captures ended: nothing it hands out is kept
-    closed: bool,
+    closed: Cell<bool>,
     clock: fn() -> int,
-    phases: List<Phase>,
+    phases: Cell<List<Phase>>,
 }
 
 /// One annotation query's stable inputs. Its dense list position is
@@ -381,7 +381,7 @@ impl Workspace {
     /// so a restart from a copy keeps every hold and a changed copy is asked through
     /// hooks that still answer for the original.
     fn anew() -> Workspace {
-        built(self.host, self.root, self.packages.find(it.origin is .Root)?.src ?? self.root, self.lang, self.clock, self.lone, self.per_file)
+        built(self.host, self.root, self.packages().find(it.origin is .Root)?.src ?? self.root, self.lang, self.clock, self.lone, self.per_file)
     }
 }
 
@@ -396,12 +396,12 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     let no_surfaces: Map<string, Map<string, DeclId>> = {}
     let no_import_lists: Map<string, List<string>> = {}
     let no_defects: List<Diag> = []
-    // NOT `mut`: the hook closures armed below (`ws.decls.arm(...)`,
-    // the family loop) capture this same workspace box, so every
-    // later writing call here — `load_packages` included — must
-    // write through it, never into a private copy the hooks cannot see.
+    let no_store: Store? = null
+    // ONE IDENTITY: every table is a Cell, so the hook closures armed
+    // below (`ws.decls.arm(...)`, the family loop) and every holder of
+    // this workspace write the same tables.
     let ws = Workspace {
-        host: host, root: root, lang: lang, db: db, decls: language_decls(lang), store: null,
+        host: host, root: root, lang: lang, db: db, decls: language_decls(lang), store: Cell.new(no_store),
         sources: new_memo<SourceFile>(db, ordinal(Family.Source)), manifests: new_memo<Manifest>(db, ordinal(Family.Manifest)), externs: new_table<ExternNames>(),
         programs: new_memo<Parsed>(db, ordinal(Family.Parsed)),
         plain: new_memo<Parsed>(db, ordinal(Family.Plain)),
@@ -415,8 +415,8 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
         lift_asks: Cell.new(no_lifts), lift_results: new_memo<LiftResult>(db, ordinal(Family.Lifted)),
         generated: new_memo<List<DeclId>>(db, ordinal(Family.Expanded)),
         settle_asks: Cell.new(no_settles), settlements: new_memo<Settlement>(db, ordinal(Family.Settled)), records: new_records(), keys: new_keys(), module_names_of: Cell.new(no_module_names_of), files_of: Cell.new(no_files_of), surfaces: Cell.new(no_surfaces), import_lists: Cell.new(no_import_lists), hold: new_hold(), defects: Cell.new(no_defects),
-        packages: [], package_voices: [], lone: lone, per_file: per_file, closed: false,
-        clock: clock, phases: [],
+        package_rows: list_cell(), package_voices: list_cell(), lone: lone, per_file: per_file, closed: Cell.new(false),
+        clock: clock, phases: list_cell(),
     }
     for f in families() {
         if ws.db.family((arg: int) -> ws.refetched(f, arg)) != ordinal(f) { ws.defect("defect: the families registered out of ordinal order") }
@@ -442,13 +442,13 @@ impl Workspace {
     /// for has run, nothing re-verifies (the revision never moves) and
     /// every sig it will ask for is held, so the captures go; the
     /// workspace then dies with its last holder.
-    mut fn disarmed() {
+    fn disarmed() {
         // An Analysis holds the program closure back to this workspace.
         // Evict its typed values and kernel cells as one operation.
         self.analyses.evict()
         self.db.disarm()
         self.decls.disarm()
-        self.closed = true
+        self.closed.set(true)
     }
 
     fn ensured(d: DeclId) {
@@ -460,13 +460,13 @@ impl Workspace {
     fn file_ensured(f: FileId) {
         if self.hold.file_ready.at(f.index) != null || !self.hold.holds_settled.get() { return }
         self.hold.file_ready.keep(f.index, true)
-        if self.is_held(f) && self.store != null { self.mint_module(self.store!, module_path(segments_of(self.module_of(self.decls.file(f).path)))) }
+        if self.is_held(f) && self.store.get() != null { self.mint_module(self.store.get()!, module_path(segments_of(self.module_of(self.decls.file(f).path)))) }
     }
 
     /// Every held module that declares an impl or a trait of this name, minted.
     fn named_minted(name: string) {
-        if self.store == null { return }
-        for m in self.hold.named_in.get().get(name) ?? [] { self.mint_module(self.store!, module_path(segments_of(m))) }
+        if self.store.get() == null { return }
+        for m in self.hold.named_in.get().get(name) ?? [] { self.mint_module(self.store.get()!, module_path(segments_of(m))) }
     }
 
     /// A held declaration may need syntax-only facts that were not part of
@@ -506,7 +506,7 @@ impl Workspace {
         let p = self.parsed(x.file)
         // A builtin or synthetic declaration has no statement record;
         // nothing annotates it, so there is nothing to keep.
-        if x.stmt.index >= p.store.annotations.length { return [] }
+        if x.stmt.index >= p.store.annotations.get().length { return [] }
         let vis = self.visible(x.file)
         let out = flatten([self.annotation_warnings(x, p, vis, a) for a in p.store.annotations_of(x.stmt)])
         self.decls.record_marks(d, out)
@@ -680,7 +680,7 @@ impl Workspace {
         let blocks = self.block_grammars(f, first)
         if blocks.is_empty() { return first }
         let p = parse_program(self.lang, self.source(f), blocks)
-        for r in p.store.foreign {
+        for r in p.store.foreign.get() {
             let origin = self.file_id(r.path)
             if !same_file(origin, f) { self.decls.note_origins(f, [ExprId { index: i } for i in r.lo..r.hi], [], [], origin) }
         }
@@ -693,7 +693,7 @@ impl Workspace {
     /// files.
     fn block_grammars(f: FileId, p: Parsed) -> List<BlockGrammar> {
         if self.lone { return [] }
-        let from = self.packages[self.holder_of_path(p.source.file)]
+        let from = self.packages()[self.holder_of_path(p.source.file)]
         let own = self.decls.module_name(self.decls.file(f).module_id)
         flatten([self.line_grammars(from, own, u) for u in use_lines(p)])
     }
@@ -789,7 +789,7 @@ impl Workspace {
     /// every file outside the prelude itself. Bound weakly — a file's
     /// own names and its `use` lines win.
     fn prelude_imports(f: FileId) -> List<Import> {
-        let from = self.packages[self.holder_of_path(self.decls.file(f).path)]
+        let from = self.packages()[self.holder_of_path(self.decls.file(f).path)]
         if from.key == prelude_key || !self.std_admitted(prelude_key) { return [] }
         [Import { decl: d.id, at: null, alias: "" } for d in self.exported_decls(prelude_module())]
     }

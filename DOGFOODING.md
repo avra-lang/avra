@@ -1026,6 +1026,15 @@ reintroducing I3's blind spot names the two spellings it lost.
       gap. LICENSED at the site when the names bind at DIFFERENT types
       (`.F(v)` a float beside `.B(v)` a bool). Single-line arms only —
       a block body is its own sentence. Ratcheted (`one_body_arms`).
+- I61 (unratcheted) A MUTABLE SLOT IS A `Cell`, NEVER A ONE-ELEMENT
+      LIST. `ensure: List<fn(DeclId)>` written `self.ensure.set(0, f)`
+      and read `self.ensure[0]` is a Cell spelled as a list: its writes
+      are list writes, so a copy of the holder forks them and the
+      receiver law counts every arming as a write through `self`.
+      `ensure: Cell<fn(DeclId)>`, `.set(f)`, `.get()(d)` says what it is,
+      and a copy shares it. Decls held nine; the tree holds none now.
+      Not ratcheted: no grep tells a one-slot list from a list whose
+      first element is written.
 
 - I60 (ratcheted) A REGISTER MINTED THEN DEFINED BY A RAW `emit` —
       `let dst = cx.mint_shape(sh); cx.emit(Ins.Bin(dst, op, a, b))` —

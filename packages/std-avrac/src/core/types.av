@@ -152,10 +152,12 @@ export type RepRow = { fields: List<TypeId>, sealed: bool, stands_for: TypeId? =
 /// form — deterministic structural content, children by interned id —
 /// which is exactly what content-addressing later hashes: the key
 /// derivation swaps, the map and its callers do not.
-export type TypeRegistry = { shapes: List<Type>, ids: Map<string, TypeId>, named: Map<string, TypeId>, indexed: bool, reps: List<RepRow> }
+/// ONE IDENTITY: every table is a `Cell`, so a copy of the registry
+/// shares its tables and an intern through any copy reaches them all.
+export type TypeRegistry = { shapes: Cell<List<Type>>, ids: Cell<Map<string, TypeId>>, named: Cell<Map<string, TypeId>>, indexed: Cell<bool>, reps: Cell<List<RepRow>> }
 
 export fn new_type_registry() -> TypeRegistry {
-    TypeRegistry { shapes: [], ids: {}, named: {}, indexed: false, reps: [] }
+    TypeRegistry { shapes: list_cell(), ids: map_cell(), named: map_cell(), indexed: Cell.new(false), reps: list_cell() }
 }
 
 /// A heap-shaped value: it rides POINTERS, and it waits on
@@ -214,20 +216,20 @@ impl TypeRegistry {
         let t = trimmed_marks(raw)
         self.keep_seats_boxed(t)
         let key = self.canon(t)
-        let hit: TypeId? = self.ids.get(key)
+        let hit: TypeId? = self.ids.get().get(key)
         if hit != null { return hit! }
         self.shapes.push(t)
         // the representation table runs PARALLEL to the shapes:
         // every type has a row, and only a declared record fills one
         let blank = RepRow { fields: [], sealed: false }
         self.reps.push(blank)
-        let id = TypeId { index: self.shapes.length - 1 }
-        self.ids.set(key, id)
+        let id = TypeId { index: self.shapes.get().length - 1 }
+        self.ids.put(key, id)
         // Interface loading may ask by spelling before later named types are
         // interned. Keep the lazy index current once it has been built.
-        if self.indexed {
+        if self.indexed.get() {
             let name = self.name_of(id)
-            if self.named.get(name) == null { self.named.set(name, id) }
+            if self.named.get().get(name) == null { self.named.put(name, id) }
         }
         id
     }
@@ -257,10 +259,10 @@ impl TypeRegistry {
     /// mint: absence means the shape was never asked for. A rule
     /// reads the registry; only a pass that TYPES a program grows it.
     fn known(raw: Type) -> TypeId? {
-        self.ids.get(self.canon(trimmed_marks(raw)))
+        self.ids.get().get(self.canon(trimmed_marks(raw)))
     }
 
-    fn shape_of(id: TypeId) -> Type { self.shapes[id.index] }
+    fn shape_of(id: TypeId) -> Type { self.shapes.get()[id.index] }
 
 
     /// A FLAT record's fields, in slot order — a value that IS its
@@ -269,15 +271,15 @@ impl TypeRegistry {
     /// whatever that shape rides. Empty for every other type; the
     /// flat ones are marked at declaration, where the fields are
     /// known.
-    fn flat_fields(id: TypeId) -> List<TypeId> { self.reps[id.index].fields }
+    fn flat_fields(id: TypeId) -> List<TypeId> { self.reps.get()[id.index].fields }
 
-    fn is_flat(id: TypeId) -> bool { !self.reps[id.index].fields.is_empty() }
+    fn is_flat(id: TypeId) -> bool { !self.reps.get()[id.index].fields.is_empty() }
 
     /// THE SHAPE A NAME STANDS FOR — `type Rows = List<int>` answers
     /// `List<int>`; every other type answers absence. A NAME IS
     /// OPAQUE AT A SEAT AND TRANSPARENT AT A READ, and this is the
     /// read's door: the seat law compares ids and never asks here.
-    fn stands_for(id: TypeId) -> TypeId? { self.reps[id.index].stands_for }
+    fn stands_for(id: TypeId) -> TypeId? { self.reps.get()[id.index].stands_for }
 
     /// `stands_for` all the way down — a name over a name over a
     /// shape is that shape. Itself when the type names nothing.
@@ -295,7 +297,7 @@ impl TypeRegistry {
     /// A NAME's shape, recorded once at declare. The name keeps its
     /// own identity — this says only what it travels as.
     fn mark_named(id: TypeId, of: TypeId) {
-        self.reps.set(id.index, self.reps[id.index] with { stands_for: of })
+        self.reps.set_at(id.index, self.reps.get()[id.index] with { stands_for: of })
     }
 
     /// Whether naming `id` over `of` would CLOSE A CIRCLE — a name
@@ -363,7 +365,7 @@ impl TypeRegistry {
     /// ALIASING), which the adversarial suite pins as a PARITY.
     fn unflatten(id: TypeId) {
         if self.stands_for(id) != null { return }
-        self.reps.set(id.index, RepRow { fields: [], sealed: true, boxed_flat: self.reps[id.index].boxed_flat || self.is_flat(id) })
+        self.reps.set_at(id.index, RepRow { fields: [], sealed: true, boxed_flat: self.reps.get()[id.index].boxed_flat || self.is_flat(id) })
     }
 
     /// Mark a type FLAT: the value IS its fields, with no box of its
@@ -371,13 +373,13 @@ impl TypeRegistry {
     /// holds exactly what its shape holds, and the memory pass asks
     /// the field. A SEALED record refuses.
     fn mark_flat(id: TypeId, fields: List<TypeId>) {
-        if self.reps[id.index].sealed { return self.reps.set(id.index, self.reps[id.index] with { boxed_flat: true }) }
-        self.reps.set(id.index, self.reps[id.index] with { fields: fields })
+        if self.reps.get()[id.index].sealed { return self.reps.set_at(id.index, self.reps.get()[id.index] with { boxed_flat: true }) }
+        self.reps.set_at(id.index, self.reps.get()[id.index] with { fields: fields })
     }
 
     /// Whether a seal boxed this record, which its declaration alone makes
     /// flat — the one layout fact a declaration's own text does not decide.
-    fn boxed_flat(id: TypeId) -> bool { self.reps[id.index].boxed_flat }
+    fn boxed_flat(id: TypeId) -> bool { self.reps.get()[id.index].boxed_flat }
 
     /// What a nullable carries, or absent when the id is not one —
     /// THE projection (values.av's `carried_type` is its cx-space
@@ -578,15 +580,15 @@ impl TypeRegistry {
     /// and refuse unless it equals the spelling it asked for. A collision then
     /// costs a REFUSAL rather than a wrong type, which is the only direction this
     /// may fail in.
-    mut fn by_name(name: string) -> TypeId? {
-        if !self.indexed {
-            for i in 0..self.shapes.length {
+    fn by_name(name: string) -> TypeId? {
+        if !self.indexed.get() {
+            for i in 0..self.shapes.get().length {
                 let id = TypeId { index: i }
-                self.named.set(self.name_of(id), id)
+                self.named.put(self.name_of(id), id)
             }
-            self.indexed = true
+            self.indexed.set(true)
         }
-        self.named.get(name)
+        self.named.get().get(name)
     }
 
     /// A type's arguments, positionally — what its declaration's

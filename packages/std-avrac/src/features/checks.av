@@ -15,7 +15,7 @@ type Copied = { root: ExprId, holder: ExprId? }
 fn place_subject(step: PlaceStep) -> ExprId? {
     match step {
         .Root(_) -> null,
-        .Field(subject, _) or .At(subject, _) -> subject,
+        .Field(subject, _) or .At(subject, _) or .Unwrap(subject) -> subject,
     }
 }
 
@@ -331,7 +331,7 @@ impl TypeCx {
     /// value beside an ABSENCE joins to the nullable covering both.
     /// PURE — `accepts` does the recording, so every branching
     /// construct joins the same way by asking this and then accepting.
-    mut fn join_of(a: TypeId, b: TypeId) -> TypeId? {
+    fn join_of(a: TypeId, b: TypeId) -> TypeId? {
         if !self.types_disagree(a, b) { return a }
         if self.empty_adopted(a, b) { return b }
         if self.empty_adopted(b, a) { return a }
@@ -365,7 +365,7 @@ impl TypeCx {
     /// `T` covered by an absence: `T?`. An already-nullable type
     /// stands — nothing is lifted twice, which is also why a chain
     /// FLATTENS: `a?.b` over a nullable member answers ONE absence.
-    mut fn nullable_over(ty: TypeId) -> TypeId {
+    fn nullable_over(ty: TypeId) -> TypeId {
         if self.view.types.carried(ty) != null { return ty }
         self.type(ty?)
     }
@@ -492,7 +492,7 @@ impl TypeCx {
 
     /// The type every arm can answer with: the anchor's, JOINED with
     /// each arm in turn. One absent arm makes the whole answer nullable.
-    mut fn arms_answer(anchor: ExprId, values: List<ExprId>) -> TypeId {
+    fn arms_answer(anchor: ExprId, values: List<ExprId>) -> TypeId {
         mut want = self.type_at(anchor)
         for v in values {
             let both: TypeId? = self.join_of(want, self.type_at(v))
@@ -607,7 +607,7 @@ impl TypeCx {
         match step {
             .Root(name) -> if self.shape_at(e) is .TypeName { self.type_not_place(e, name.of) } else { true },
             .Field(subject, name) -> self.place_lawful(subject) && self.field_slot_lawful(e, subject, name.of),
-            .At(subject, _) -> self.place_lawful(subject),
+            .At(subject, _) or .Unwrap(subject) -> self.place_lawful(subject),
         }
     }
 
@@ -837,14 +837,16 @@ impl TypeCx {
         self.path_copy_law(e, place, root)
     }
 
-    /// THE ROOT DECIDES: a write through a PATH rooted at a `mut` LOCAL
-    /// opens the path's boxes unique, so the write stays in the local;
-    /// rooted at `self` or a `mut` seat it reaches the caller.
+    /// THE ROOT DECIDES: a write through a PATH opens the path's boxes
+    /// below the root unique, so no other holder of what the path
+    /// reaches sees it. The root alone is written through when it is
+    /// `self` or a `mut` seat — the write reaches the caller — and
+    /// opened with the rest when it is a `mut` LOCAL, which F2106 says.
     mut fn path_copy_law(e: ExprId, place: ExprId, root: ExprId) {
-        let s? = self.bare_mut_stmt(root) else { return }
         if self.facts.wants_alias_copy(place) || !self.through_path(place) { return }
         if !self.view.types.rides_pointer(self.type_at(place)) { return }
         self.facts.mark_alias_copy(place)
+        let s? = self.bare_mut_stmt(root) else { return }
         if self.aliased_warned.contains(s.index) { return }
         self.aliased_warned.push(s.index)
         self.local_path(e, self.root_word(root), self.place_words(place) ?? "…")
@@ -856,6 +858,7 @@ impl TypeCx {
         match step {
             .Root(_) -> false,
             .Field(_, _) or .At(_, _) -> true,
+            .Unwrap(subject) -> self.through_path(subject),
         }
     }
 
@@ -903,6 +906,7 @@ impl TypeCx {
             .Root(_) -> self.root_word(e),
             .Field(subject, name) -> "${self.place_words(subject) ?? "…"}.${name.of}",
             .At(subject, _) -> "${self.place_words(subject) ?? "…"}[…]",
+            .Unwrap(subject) -> "${self.place_words(subject) ?? "…"}!",
         }
     }
 
