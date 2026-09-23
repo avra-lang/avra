@@ -1,12 +1,22 @@
 //! @std.cli — a command line is DATA the program declares, and a
 //! verdict it answers.
 //!
-//! An `App` names its commands. Each `Subcommand` pairs a
-//! `CommandSpec` — its name, flags, options and positionals, data
-//! read directly — with a `Runnable`, its behaviour: one method,
-//! given what the line said as a `CliResult`, answering the exit
-//! code. `parse` reads a word list against the app and answers a
-//! `CliResult` or a `CliError` that names the mistake; `App.run`
+//! A `cli` names its commands. Each `command` holds its name, flags,
+//! options and positionals — data read directly — and `run`, a
+//! `Runnable`: one method, given what the line said as a
+//! `CliResult`, answering the exit code. All five are components, so
+//! an app is written as the tree it is:
+//!
+//!     cli avra {
+//!         command fmt {
+//!             flag write { description: "rewrite the file" }
+//!             arg file { required: true }
+//!             run: Fmt {}
+//!         }
+//!     }
+//!
+//! `parse` reads a word list against the app and answers a
+//! `CliResult` or a `CliError` that names the mistake; `cli.run`
 //! renders help, speaks a refusal with the way to the help, and
 //! answers 0 clean, the command's code, or 2 for a line it could
 //! not read. A flag or option is declared as it is typed
@@ -21,26 +31,42 @@ extern fn avra_selfhost_get_arg_cstr(i: int) -> string
 
 /// A switch: present or not. `aliases` are whole tokens that mean
 /// the same (`--used-by` for `callers`, `--message-format=json`).
-export type FlagDef = { name: string, short: string, description: string, aliases: List<string> }
+export component flag {
+    name: string
+    short: string = ""
+    description: string = ""
+    aliases: List<string> = []
+}
 
-/// A named value: `--name v`, `--name=v` or `-s v`; `default_val`
-/// stands when the line omits it.
-export type OptionDef = { name: string, short: string, description: string, default_val: string }
+/// A named value: `--name v`, `--name=v` or `-s v`; `default` stands
+/// when the line omits it.
+export component option {
+    name: string
+    short: string = ""
+    description: string = ""
+    default: string = ""
+}
 
 /// A positional. A variadic one absorbs every remaining positional;
 /// declare it last.
-export type ArgDef = { name: string, description: string, required: bool, variadic: bool }
+export component arg {
+    name: string
+    description: string = ""
+    required: bool = false
+    variadic: bool = false
+}
 
-/// One command's identity and what it takes — the DATA half. A
-/// hidden command dispatches and has its own help, but stays out of
-/// the app's list.
-export type CommandSpec = {
-    name: string,
-    description: string,
-    hidden: bool,
-    flags: List<FlagDef>,
-    args: List<ArgDef>,
-    options: List<OptionDef>,
+/// One command: its identity and what it takes — the DATA — and `run`,
+/// its BEHAVIOUR. A hidden command dispatches and has its own help,
+/// but stays out of the app's list.
+export component command {
+    name: string
+    description: string = ""
+    hidden: bool = false
+    flags: List<flag> = []
+    options: List<option> = []
+    args: List<arg> = []
+    run: dyn Runnable
 }
 
 /// The BEHAVIOUR half: run with what the line said, answer the exit.
@@ -48,9 +74,13 @@ export trait Runnable {
     fn run(args: CliResult) -> int
 }
 
-export type Subcommand = { meta: CommandSpec, body: dyn Runnable }
-
-export type App = { name: string, description: string, version: string, commands: List<Subcommand> }
+/// An app: its name, what it is, its version, and its commands.
+export component cli {
+    name: string
+    description: string = ""
+    version: string = "0.0.1"
+    commands: List<command> = []
+}
 
 // ── What the line said ──────────────────────────────────────────
 
@@ -144,10 +174,10 @@ fn blamed(e: CliError) -> string? {
 
 /// A word list read against the app: the command is the first word,
 /// the rest are its flags, options and positionals.
-export fn parse(app: App, words: List<string>) -> Result<CliResult, CliError> {
+export fn parse(app: cli, words: List<string>) -> Result<CliResult, CliError> {
     let name = words.first() ?? ""
-    let sub? = app.commands.find(it.meta.name == name) else { fail CliError.UnknownCommand(name) }
-    read_line(sub.meta, words.slice(1, words.length))
+    let sub? = app.commands.find(it.name == name) else { fail CliError.UnknownCommand(name) }
+    read_line(sub, words.slice(1, words.length))
 }
 
 /// One token's meaning against a declaration.
@@ -160,7 +190,7 @@ enum Token {
 
 /// The words after the command name, read in order: options stop at
 /// `--`, everything else is a positional bound by declaration order.
-fn read_line(meta: CommandSpec, words: List<string>) -> Result<CliResult, CliError> {
+fn read_line(meta: command, words: List<string>) -> Result<CliResult, CliError> {
     mut flags: List<string> = []
     mut options: Map<string, string> = {}
     mut positional: List<string> = []
@@ -189,7 +219,7 @@ fn read_line(meta: CommandSpec, words: List<string>) -> Result<CliResult, CliErr
         i = i + 1
     }
     for o in meta.options {
-        if options.get(plain(o.name)) == null { options.set(plain(o.name), o.default_val) }
+        if options.get(plain(o.name)) == null { options.set(plain(o.name), o.default) }
     }
     let bound = bind_positionals(meta, positional)?
     CliResult { command: meta.name, flags: flags, options: options, args: bound.named, rest: bound.rest }
@@ -199,10 +229,10 @@ fn read_line(meta: CommandSpec, words: List<string>) -> Result<CliResult, CliErr
 /// option by name or short, its value inline after `=` or in the next
 /// word; a dash-led word nothing declares; or a plain word. After
 /// `--`, every word is plain.
-fn classified(meta: CommandSpec, w: string, options_over: bool) -> Token {
+fn classified(meta: command, w: string, options_over: bool) -> Token {
     if options_over || !w.starts_with("-") || w == "-" { return Token.Word(w) }
-    let flag: FlagDef? = meta.flags.find(names_flag(it, w))
-    if flag != null { return Token.Flag(plain(flag!.name)) }
+    let switch: flag? = meta.flags.find(names_flag(it, w))
+    if switch != null { return Token.Flag(plain(switch!.name)) }
     let eq = w.index_of("=")
     let head = if eq < 0 { w } else { w.substring(0, eq) }
     let option? = meta.options.find(names_option(it, head)) else { return Token.Unknown(w) }
@@ -210,11 +240,11 @@ fn classified(meta: CommandSpec, w: string, options_over: bool) -> Token {
     Token.Option(plain(option.name), w.substring(eq + 1, w.length))
 }
 
-fn names_flag(f: FlagDef, w: string) -> bool {
+fn names_flag(f: flag, w: string) -> bool {
     spelled(f.name) == w || f.short.length > 0 && spelled(f.short) == w || f.aliases.contains(w)
 }
 
-fn names_option(o: OptionDef, w: string) -> bool {
+fn names_option(o: option, w: string) -> bool {
     spelled(o.name) == w || o.short.length > 0 && spelled(o.short) == w
 }
 
@@ -224,7 +254,7 @@ type Bound = { named: Map<string, string>, rest: List<string> }
 /// Positionals by declaration order: a variadic takes the rest (at
 /// least one when required); a required one missing, or a word past
 /// the last declaration, refuses.
-fn bind_positionals(meta: CommandSpec, positional: List<string>) -> Result<Bound, CliError> {
+fn bind_positionals(meta: command, positional: List<string>) -> Result<Bound, CliError> {
     mut named: Map<string, string> = {}
     mut rest: List<string> = []
     for j, a in meta.args {
@@ -248,8 +278,8 @@ fn bind_positionals(meta: CommandSpec, positional: List<string>) -> Result<Bound
 
 /// The app's help: name, version, description, usage, and every
 /// command that is not hidden, aligned.
-export fn app_help(app: App) -> string {
-    let shown = [c.meta for c in app.commands if !c.meta.hidden]
+export fn app_help(app: cli) -> string {
+    let shown = [c for c in app.commands if !c.hidden]
     let width = widest([s.name for s in shown])
     let rows = [rendered_row(s.name, s.description, width) for s in shown]
     "${app.name} ${app.version} — ${app.description}\n\nusage: ${app.name} <command> [flags] [args]\n\ncommands:\n${rows.join("\n")}\n\n`${app.name} <command> --help` says what a command takes."
@@ -257,12 +287,12 @@ export fn app_help(app: App) -> string {
 
 /// One command's help: its usage line, its description, and each
 /// flag, option and positional with its words.
-export fn command_help(app: App, meta: CommandSpec) -> string {
+export fn command_help(app: cli, meta: command) -> string {
     let parts = [usage_of(app, meta), "", meta.description].concat(flags_help(meta)).concat(options_help(meta)).concat(args_help(meta))
     parts.join("\n")
 }
 
-fn usage_of(app: App, meta: CommandSpec) -> string {
+fn usage_of(app: cli, meta: command) -> string {
     let flags = [" [${spelled(f.name)}]" for f in meta.flags].join("")
     let options = [" [${spelled(o.name)} <value>]" for o in meta.options].join("")
     let args = [" ${arg_word(a)}" for a in meta.args].join("")
@@ -271,37 +301,37 @@ fn usage_of(app: App, meta: CommandSpec) -> string {
 
 /// A positional in a usage line: `<file>` required, `[file]` not,
 /// `<files...>` variadic.
-fn arg_word(a: ArgDef) -> string {
+fn arg_word(a: arg) -> string {
     let dots = if a.variadic { "..." } else { "" }
     if a.required { return "<${a.name}${dots}>" }
     "[${a.name}${dots}]"
 }
 
-fn flags_help(meta: CommandSpec) -> List<string> {
+fn flags_help(meta: command) -> List<string> {
     section("flags:", [flag_spelling(f) for f in meta.flags], [f.description for f in meta.flags])
 }
 
-fn flag_spelling(f: FlagDef) -> string {
+fn flag_spelling(f: flag) -> string {
     if f.short.length == 0 { return spelled(f.name) }
     "${spelled(f.short)}, ${spelled(f.name)}"
 }
 
-fn options_help(meta: CommandSpec) -> List<string> {
+fn options_help(meta: command) -> List<string> {
     section("options:", [option_spelling(o) for o in meta.options], [option_words(o) for o in meta.options])
 }
 
-fn option_spelling(o: OptionDef) -> string {
+fn option_spelling(o: option) -> string {
     let name = "${spelled(o.name)} <value>"
     if o.short.length == 0 { return name }
     "${spelled(o.short)}, ${name}"
 }
 
-fn option_words(o: OptionDef) -> string {
-    if o.default_val.length == 0 { return o.description }
-    "${o.description} (default: ${o.default_val})"
+fn option_words(o: option) -> string {
+    if o.default.length == 0 { return o.description }
+    "${o.description} (default: ${o.default})"
 }
 
-fn args_help(meta: CommandSpec) -> List<string> {
+fn args_help(meta: command) -> List<string> {
     section("args:", [a.name for a in meta.args], [a.description for a in meta.args])
 }
 
@@ -329,7 +359,7 @@ fn widest(names: List<string>) -> int {
 
 // ── Running ─────────────────────────────────────────────────────
 
-impl App {
+impl cli {
     /// The program's own arguments, read and run.
     fn run() -> int {
         self.run_argv(argv())
@@ -365,14 +395,14 @@ impl App {
             println(app_help(self))
             return 0
         }
-        let sub? = self.commands.find(it.meta.name == name!) else { return self.refused(CliError.UnknownCommand(name!)) }
-        println(command_help(self, sub.meta))
+        let sub? = self.commands.find(it.name == name!) else { return self.refused(CliError.UnknownCommand(name!)) }
+        println(command_help(self, sub))
         0
     }
 
     fn ran(r: CliResult) -> int {
-        let sub? = self.commands.find(it.meta.name == r.command) else { return self.refused(CliError.UnknownCommand(r.command)) }
-        sub.body.run(r)
+        let sub? = self.commands.find(it.name == r.command) else { return self.refused(CliError.UnknownCommand(r.command)) }
+        sub.run.run(r)
     }
 
     /// A refusal spoken: the message, then the help that would have
