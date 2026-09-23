@@ -424,7 +424,6 @@ fn reaches_out(rows: Map<string, RtSig>, i: Ins, permits_embed: bool) -> bool {
     }
 }
 
-
 /// The deepest call the machine runs before it refuses. Calls live on
 /// the machine's own stack, so the bound is a runaway's, never the
 /// host's: a recursion past it answers as a trap naming its case
@@ -469,24 +468,28 @@ impl Machine {
             self.budget = self.budget - 1
             if self.budget % memory_stride == 0 { self.held_within() }
             mut stepped = Stepped.On
-            if self.budget < 0 { self.spent_out(over_budget(self.asked)) }
-            else if pc >= body.ins.length { stepped = Stepped.Ended(null) }
-            // everything else DELEGATES to `step`, which is exhaustive
-            else { match body.ins[pc] {
-                .RetVal(r) or .FnExit(r) -> { stepped = Stepped.Ended(self.at(r)) }
-                .Ret(_) -> { stepped = Stepped.Ended(null) }
-                .Call(d, callee, args) -> {
-                    let next = self.call_into(body_named(self.l, callee), resumed_at(body, pc, d), args, "a call without a body survived lowering")
-                    body = next.body
-                    pc = next.pc
+            if self.budget < 0 {
+                self.spent_out(over_budget(self.asked))
+            } else if pc >= body.ins.length {
+                stepped = Stepped.Ended(null)
+            } else {
+                // everything else DELEGATES to `step`, which is exhaustive
+                match body.ins[pc] {
+                    .RetVal(r) or .FnExit(r) -> { stepped = Stepped.Ended(self.at(r)) },
+                    .Ret(_) -> { stepped = Stepped.Ended(null) },
+                    .Call(d, callee, args) -> {
+                        let next = self.call_into(body_named(self.l, callee), resumed_at(body, pc, d), args, "a call without a body survived lowering")
+                        body = next.body
+                        pc = next.pc
+                    },
+                    .CallPtr(d, f, args) -> {
+                        let next = self.call_into(self.addressed(f), resumed_at(body, pc, d), args, "an indirect call through a non-address")
+                        body = next.body
+                        pc = next.pc
+                    },
+                    rest -> { pc = self.step(body, pc) },
                 }
-                .CallPtr(d, f, args) -> {
-                    let next = self.call_into(self.addressed(f), resumed_at(body, pc, d), args, "an indirect call through a non-address")
-                    body = next.body
-                    pc = next.pc
-                }
-                rest -> { pc = self.step(body, pc) }
-            } }
+            }
             if self.parking {
                 self.parking = false
                 let next = self.switched(Place { body: body, pc: at })
@@ -647,9 +650,7 @@ impl Machine {
             .Bool(b) -> Val.B(b),
             .Absent -> Val.N,
             .Gone -> Val.Gone,
-            .Node(id) -> {
-                self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]])
-            },
+            .Node(id) -> { self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]]) },
             .Map(id) -> {
                 let row = heap.maps[id]
                 self.maps.push(MapVal { keys: row.keys, vals: [self.val_of(heap, x) for x in row.values] })
@@ -670,9 +671,7 @@ impl Machine {
             .Y(data) -> MetaVal.Text(self.decoded(data)),
             .N -> MetaVal.Absent,
             .Gone -> MetaVal.Gone,
-            .A(id) -> {
-                heap.node([self.meta_of(x, heap) for x in self.arrays[id]])
-            },
+            .A(id) -> { heap.node([self.meta_of(x, heap) for x in self.arrays[id]]) },
             .M(id) -> {
                 let row = self.maps[id]
                 heap.map(row.keys, [self.meta_of(x, heap) for x in row.vals])
@@ -965,7 +964,9 @@ impl Machine {
         let at? = match v {
             .I(j) -> j,
             rest -> null,
-        } else { return null }
+        } else {
+            return null
+        }
         if at < 0 || at >= self.l.fns.length { return null }
         self.l.fns[at]
     }
@@ -1518,7 +1519,7 @@ impl Machine {
             .M(id) -> {
                 self.maps.push(MapVal { keys: [k for k in self.maps[id].keys], vals: [x for x in self.maps[id].vals] })
                 Val.M(self.maps.length - 1)
-            }
+            },
             .I(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N or .Gone -> v,
         }
     }
