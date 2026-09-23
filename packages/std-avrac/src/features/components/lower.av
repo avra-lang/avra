@@ -29,7 +29,9 @@ fn known(cx: LowerCx, at: Span, x: ExprId) -> bool {
     match b {
         .Decl(_) -> true,
         .Def(s) or .Index(s) -> cx.view.store.const_value(s) != null || held_in(at, cx.view.store.stmt_span(s)),
-        .Pattern(arm, _) or .LambdaParam(arm, _) -> held_in(at, cx.view.store.expr_span(arm)),
+        // a pattern's binder stands BEFORE its arm, so an arm that IS the
+        // instance was bound outside it
+        .Pattern(arm, _) or .LambdaParam(arm, _) -> held_within(at, cx.view.store.expr_span(arm)),
         .Param(_) or .Receiver or .Capture(_, _) -> false,
     }
 }
@@ -37,6 +39,12 @@ fn known(cx: LowerCx, at: Span, x: ExprId) -> bool {
 fn held_in(at: Span, inner: Span?) -> bool {
     let sp? = inner else { return false }
     sp.lo >= at.lo && sp.hi <= at.hi
+}
+
+/// Held in the instance and smaller than it.
+fn held_within(at: Span, inner: Span?) -> bool {
+    let sp? = inner else { return false }
+    held_in(at, sp) && (sp.lo != at.lo || sp.hi != at.hi)
 }
 
 /// A check that could not run: it trapped or ran past its budget —
