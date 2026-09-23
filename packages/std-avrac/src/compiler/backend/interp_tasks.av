@@ -23,7 +23,8 @@ type Job = {
     answer: Val?,
     done: bool,
     waiters: List<int>,
-    // it parked at the instruction it resumes on: that row answers now
+    // it parked on the policy at the instruction it resumes on: that
+    // row reads its waking
     resumed: bool,
 }
 
@@ -33,6 +34,16 @@ impl Machine {
         if !self.tasks.is_empty() { return }
         self.tasks.push(Job { vt: avra_vtask_new(), frames: [], callers: [], at: null, answer: null, done: false, waiters: [], resumed: false })
         self.running = 0
+    }
+
+    /// Every task the run still holds leaves the policy — the root's,
+    /// and any a trap stopped — so the next run starts from none.
+    fn retired() {
+        for t in self.tasks {
+            if !t.done { avra_vtask_free(t.vt) }
+        }
+        self.tasks = []
+        self.running = -1
     }
 
     fn closureless() -> Val { self.defect_val("a task over a non-closure survived typing") }
@@ -105,7 +116,7 @@ impl Machine {
         self.rooted()
         if self.woke() { return Val.I(0) }
         avra_vtask_sleep(self.tasks[self.running].vt, self.whole(vals[0]))
-        self.parking = true
+        self.policy_parked()
         Val.I(0)
     }
 
@@ -114,12 +125,19 @@ impl Machine {
         let vt = self.tasks[self.running].vt
         if self.woke() { return Val.I(1 - avra_vtask_timed_out(vt)) }
         if avra_vtask_park_fd(vt, self.whole(vals[0]), self.whole(vals[1]), self.whole(vals[2])) == 0 { return Val.I(1) }
-        self.parking = true
+        self.policy_parked()
         Val.I(0)
     }
 
-    /// Whether the running task is resuming at the row that parked it —
-    /// consumed as it is read.
+    /// The running task parked on the POLICY — a sleep, a descriptor — so
+    /// the row that parked it re-runs as its waking, and reads it there.
+    fn policy_parked() {
+        self.tasks[self.running].resumed = true
+        self.parking = true
+    }
+
+    /// Whether the running task is resuming at the policy row that parked
+    /// it — consumed as it is read.
     fn woke() -> bool {
         if !self.tasks[self.running].resumed { return false }
         self.tasks[self.running].resumed = false
@@ -132,7 +150,6 @@ impl Machine {
         self.tasks[self.running].frames = self.frames
         self.tasks[self.running].callers = self.callers
         self.tasks[self.running].at = at
-        self.tasks[self.running].resumed = true
         self.resume_next()
     }
 

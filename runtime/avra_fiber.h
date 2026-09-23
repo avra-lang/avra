@@ -35,6 +35,11 @@ void avra_fiber_sleep(int64_t ms);
 // and 0 when the time ran out.
 int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms);
 
+// `fd` is about to close: every task parked on it is ready, and its
+// retry reports the closed descriptor. A close never strands a waiter,
+// and the number's next tenant inherits none.
+void avra_fiber_fd_closing(int64_t fd);
+
 // ── The evaluator's tasks: no stack; the policy above files them and
 // names the next, and the evaluator switches its own call stacks. ──
 

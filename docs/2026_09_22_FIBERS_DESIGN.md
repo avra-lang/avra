@@ -312,3 +312,18 @@ PROOF the compiler demands before work may go there.
 - An owner type (`server.spawn { }`) is the only planned door to a
   longer life; until it lands, a task's answer is what leaves:
   `t.await`.
+
+## 11. As built (parking I/O)
+
+- `@std/net`'s plain verbs PARK: `accept`, `read` (answers `Bytes?`,
+  null at EOF), `write` (all of it), and `connect` (its timeout spans
+  every resolved address). Their `try_` twins never wait and keep
+  `.Pending`/`0`/null for a poller loop. The wait is Avra's, through
+  `avra_fiber_park_fd`, never C's: the evaluator runs the same C
+  in-process and parks its tasks virtually.
+- A CLOSE NEVER STRANDS A WAITER: `avra_fiber_fd_closing` readies every
+  task parked on a descriptor before it closes, and each retry reports
+  the closed descriptor.
+- `@std/time.sleep(d)` parks the calling task on the scheduler's timer.
+- Per-call timeouts are not parameters: the `within d { }` scope (F4)
+  carries one deadline for every park inside it.

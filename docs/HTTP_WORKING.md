@@ -87,9 +87,12 @@ event or unwatch. The C was drafted by agent `net-substrate` (109
 loopback checks) and integrated by hand.
 
 The face, `@std.net`: `listen(host, port)`, `connect(host, port,
-timeout)`, `poller()`, `Listener.accept() -> Conn?`, `Conn.read(max)
--> Read` (`.Data(b)`, `.Eof`, `.Pending`), `Conn.write(b, from) ->
-int` (0 when it would block), `shutdown_write`, `close`, `peer`,
+timeout)`, `poller()`; the parking verbs `Listener.accept() -> Conn`,
+`Conn.read(max) -> Bytes?` (null at EOF), `Conn.write(b) -> int` (all
+of it), each parking the calling task until the socket is ready; their
+never-waiting twins `try_accept() -> Conn?`, `try_read(max) -> Read`
+(`.Data(b)`, `.Eof`, `.Pending`), `try_write(b, from) -> int` (0 when
+it would block); `shutdown_write`, `close`, `peer`,
 `Poller.watch(fd, readable, writable)`, `wait(timeout?) ->
 List<Event>`; every failure a `NetError { verb, subject, errno }`
 implementing `Error`. Loopback spec in `packages/std-net/src/tests`; the red team's survivors

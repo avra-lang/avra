@@ -114,12 +114,12 @@ fn run() -> Result<int, NetError> {
     let p = poller()?
     p.watch(l.fd, .Read)?
     p.wait(secs(2))?
-    let s = l.accept()?
+    let s = l.try_accept()?
     p.watch(s!.fd, .Read)?
-    c.write("a".bytes(), 0)?
+    c.try_write("a".bytes(), 0)?
     p.wait(secs(2))?
     let first = avra_fd_read(s!.fd, 10)
-    c.write("b".bytes(), 0)?
+    c.try_write("b".bytes(), 0)?
     p.wait(secs(2))?
     let second = avra_fd_read(s!.fd, 10)
     .Ok(avra_fd_taken(first).length + second)

@@ -12,13 +12,13 @@ type Pair = { s: Server<App>, c: Conn, p: Poller }
 fn exchanged(mut pr: Pair, sent: string, expected: int) -> Result<string, NetError> {
     let out = sent.bytes()
     mut from = 0
-    while from < out.length { from = from + pr.c.write(out, from)? }
+    while from < out.length { from = from + pr.c.try_write(out, from)? }
     mut got = "".bytes()
     mut turns = 0
     while got.length < expected && turns < 40 {
         pr.s.turn(ms(20))?
         pr.p.wait(ms(20))?
-        let chunk: Bytes? = match pr.c.read(65536)? {
+        let chunk: Bytes? = match pr.c.try_read(65536)? {
             .Data(b) -> b,
             .Eof or .Pending -> null,
         }

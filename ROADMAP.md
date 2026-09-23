@@ -3594,6 +3594,7 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
 
 Collected from FEEDBACK.md. Sorted by how often each appears across phases. See FEEDBACK.md for full context and phase origins.
 
+- [ ] `break` AND `continue` (asked by the owner). WANTING SITES: every read-until-EOF loop over @std/net's parking verbs (packages/std-net/src/tests/parked, parked_many, parked_close) spells a flag — `mut open = true`, `while open`, `null -> { open = false }` — where the thought is `null -> break`.
 - [ ] A BOUND METHOD AS A VALUE (filed 2026-09-09, the sugar 1 sweep).
 - [ ] A BOUND ON A GENERIC TYPE'S OR AN IMPL'S PARAMETER — `type T<K: Tr, V> = { … }` (not parseable today).
 - [ ] A FIELD ANNOTATION — `@excluded` (or any mark) above a record's field.

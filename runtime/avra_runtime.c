@@ -1979,6 +1979,9 @@ int64_t avra_errno_again(void) { return EAGAIN; }
 // The errno for an argument that names nothing — the platform's word.
 int64_t avra_errno_invalid(void) { return EINVAL; }
 
+// The errno for a wait whose budget ran out — the platform's word.
+int64_t avra_errno_timed_out(void) { return ETIMEDOUT; }
+
 // The bytes a token names, as a fresh box, once: a second take of the
 // same token answers the empty box, and a take of anything that is
 // not the current token traps.
