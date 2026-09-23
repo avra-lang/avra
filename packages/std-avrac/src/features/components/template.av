@@ -22,7 +22,7 @@ fn instancing(store: NodeStore, c: ComponentParts) -> Instancing {
     let body? = template_body(store, expand) else { return Instancing.Refused(computes(c.name)) }
     let reads = [self_field(store, h) ?? "" for h in body.holes]
     if !reads.all((r) -> head.contains(r) || r == block) { return Instancing.Refused(computes(c.name)) }
-    Instancing.Template(Template { head: head, block: block, reads: reads, stmts: verbatim(body.view) })
+    Instancing.Template(Template { head: head, block: block, reads: reads, stmts: verbatim(body.view), formats: formats_of(c) })
 }
 
 /// A component read as a record: its head in order, and the `List`
@@ -58,10 +58,16 @@ export fn template_body(store: NodeStore, expand: FnParts) -> BodyParts? {
     body
 }
 
-/// The first field of `self` a template reads more than once.
-export fn read_twice(store: NodeStore, body: BodyParts) -> string? {
-    let reads = flatten([some_list(self_field(store, h)) for h in body.holes])
+/// The first CODE field of `self` a template reads more than once —
+/// a pattern is a value, read as often as the template likes.
+export fn read_twice(store: NodeStore, body: BodyParts, values: List<string>) -> string? {
+    let reads = [r for r in flatten([some_list(self_field(store, h)) for h in body.holes]) if !values.contains(r)]
     reads.find([x for x in reads if x == it].length > 1)
+}
+
+/// The head fields a component declares as PATTERNS.
+export fn formats_of(c: ComponentParts) -> List<string> {
+    [p.name.of for p in c.head if p.ty?.name == "Format"]
 }
 
 /// A quote's body as written.

@@ -323,6 +323,12 @@ a component's `check` judged this instance
 
 No witness yet.
 
+## F2119 — type.component_format
+
+a `Format` head is `@std.meta`'s pattern type
+
+No witness yet.
+
 ## F2019 — type.applied
 
 a type applied to arguments it does not take
@@ -2176,3 +2182,4 @@ error[F2007]: an interpolation hole prints as a scalar or string, found `List<in
 ──╯
 help: interpolate an element or the `length` instead
 ```
+diagnostics: 170 code(s) registered, 79 witnessed and fired, 88 with no witness yet

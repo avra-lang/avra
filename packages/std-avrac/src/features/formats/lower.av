@@ -24,6 +24,7 @@
 //! an untaken arm mints no managed value at all.
 use core.{Reg, Ins, PatId, ExprId, Type, TypeId, BinOp, FormatPart, GrammarSpec, binds}
 use features.{LowerCx, MethodCall}
+use features.formats.{pattern_text}
 
 /// Whether the subject matches. The walk's octets and span cells are
 /// left in the pattern's slot for the binds — written once here,
@@ -63,8 +64,9 @@ type Walked = { ok: Reg, subject: Reg, spans: List<Reg> }
 fn walked(mut cx: LowerCx, head: string, parts: List<FormatPart>, v: Reg, vty: TypeId) -> Walked {
     let subject = octets(cx, v, vty)
     let len = measured(cx, subject)
+    let final? = parts.last() else { return Walked { ok: whole(cx, subject, len, head), subject: subject, spans: [] } }
     let int_ty = cx.type(int)
-    let last = parts.last()!.piece
+    let last = final.piece
     let stop = cx.seeded_cell(int_ty, minus(cx, len, cx.const_int(byte_length(last))))
     let cur = cx.seeded_cell(int_ty, cx.const_int(byte_length(head)))
     mut spans: List<Reg> = []
@@ -75,6 +77,17 @@ fn walked(mut cx: LowerCx, head: string, parts: List<FormatPart>, v: Reg, vty: T
     }
     let w = Walked { ok: anchored(cx, subject, len, head, last), subject: subject, spans: spans }
     w with { ok: spanned(cx, w, parts, cur, stop, 0) }
+}
+
+/// A format of no holes is its head, matched whole: exactly as long,
+/// and the same bytes.
+fn whole(mut cx: LowerCx, subject: Reg, len: Reg, head: string) -> Reg {
+    let need = cx.const_int(byte_length(head))
+    cx.open_region(cx.bin(Type.Bool, BinOp.Eq, len, need))
+    let zero = cx.const_int(0)
+    cx.arm_end(at_span(cx, subject, zero, need, head))
+    let short = cx.const_bool(false)
+    cx.close_region_as(cx.type(bool), short)
 }
 
 /// THE TWO ANCHORS, before any cursor moves: the value is long
@@ -344,6 +357,12 @@ export fn lower_print(mut cx: LowerCx, mc: MethodCall) -> Reg {
     cx.arm_end(cx.adopted(want, false, woven(cx, read, fields)))
     let none = cx.absent_of(want)
     cx.close_region(mc.e, none)
+}
+
+/// A grammar's format as text — a constant the declaration fixed.
+export fn lower_pattern(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let read? = grammar_at(cx, mc.subject) else { return doorless(cx, mc.e) }
+    cx.const_str_at(mc.e, pattern_text(read.head, read.parts))
 }
 
 /// Every hole's value, read from the record in hole order — the same
