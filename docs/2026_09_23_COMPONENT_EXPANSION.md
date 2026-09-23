@@ -488,4 +488,13 @@ Swift / Kotlin / JS (C only today).
 
 ## Status
 
-- 2026-09-23 — designed and decided with the owner. S2 next.
+- S1 data records, S2 templates, S3 `collect` + `check`, S4 `@std/cli`
+  over components and exported instances as declarations — landed.
+- The offer rule — a lambda takes an offered record's fields by name
+  (F2117) — landed.
+- S5 piece 1 — a `Format` head mints its pattern's record; an instance
+  body takes a `req ->` head; zero-hole patterns match whole (F2119) —
+  landed.
+- S5 next: `Request<P>` in `@std/http` (piece 2), then `server`, `get`,
+  `post`, `group`, `use`; then typed hole codecs (piece 3).
+- S6: the expand stage and declaring blocks.
