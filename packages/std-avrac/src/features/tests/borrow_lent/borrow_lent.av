@@ -1,6 +1,6 @@
 // proves: spec 11.5 — a `mut` local seeded with what a place HOLDS (a
-// cell's content, a list's element, a map's value, an unwrap) is a
-// COPY, so a writing method called through it leaves the holder as it
+// cell's content, a list's element, a map's value, an unwrap, a
+// branch over them, a `?.` read) is a COPY, so a writing method called through it leaves the holder as it
 // was.
 type R = { xs: List<int> }
 impl R { mut fn add(v: int) { self.xs.push(v) } }
@@ -24,6 +24,17 @@ fn from_force(p: R?) -> int {
     q.add(1)
     q.xs.length
 }
+type O = { r: R }
+fn from_branch(rs: List<R>, b: bool) -> int {
+    mut q = if b { rs.first() ?? R { xs: [] } } else { rs.last() ?? R { xs: [] } }
+    q.add(1)
+    q.xs.length
+}
+fn from_chain(o: O?) -> int {
+    mut q = o?.r ?? R { xs: [] }
+    q.add(1)
+    q.xs.length
+}
 let c = Cell.new(R { xs: [] })
 let rs = [R { xs: [] }]
 mut m: Map<string, R> = {}
@@ -34,4 +45,7 @@ let b = from_first(rs) + from_first(rs)
 let d = from_map(m) + from_map(m)
 let f = from_force(p) + from_force(p)
 let held = (m.get("k") ?? R { xs: [9] }).xs.length
-"${a} ${c.get().xs.length} ${b} ${rs[0].xs.length} ${d} ${held} ${f} ${(p ?? R { xs: [9] }).xs.length}"
+let g = from_branch(rs, true) + from_branch(rs, false)
+let o: O? = O { r: R { xs: [] } }
+let h = from_chain(o) + from_chain(o)
+"${a} ${c.get().xs.length} ${b} ${rs[0].xs.length} ${d} ${held} ${f} ${(p ?? R { xs: [9] }).xs.length} ${g} ${rs[0].xs.length} ${h} ${(o?.r ?? R { xs: [9] }).xs.length}"

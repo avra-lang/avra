@@ -3596,6 +3596,7 @@ Collected from FEEDBACK.md. Sorted by how often each appears across phases. See 
 
 - [ ] `break` AND `continue` (asked by the owner). WANTING SITES: every read-until-EOF loop over @std/net's parking verbs (packages/std-net/src/tests/parked, parked_many, parked_close) spells a flag — `mut open = true`, `while open`, `null -> { open = false }` — where the thought is `null -> break`.
 - [ ] A BOUND METHOD AS A VALUE (filed 2026-09-09, the sugar 1 sweep).
+- [ ] A REGISTRY'S REMAINDER, SPELLED BY THE COMPILER (filed 2026-09-22, the alias-gaps lane; asked by the owner — "do we seriously not have better syntax for this?!"). A two-answer projection over `Expr` spells all forty variants by hand (`place_step`, core/store.av: seven lines of `or .X(_, _)` to answer `null`), because `_ ->` over a registry forgets the next variant and `rest ->` is licensed for two shapes only. The ask: a remainder arm the compiler EXPANDS and PINS — it records the variants it covered and refuses (F2040's voice) when the enum grows, so the silence is honest without the ceremony. The lane dodged it by splitting one registry into one-arm projections (`forced`, `coalesced`, `chained`); that is not always available.
 - [ ] A BOUND ON A GENERIC TYPE'S OR AN IMPL'S PARAMETER — `type T<K: Tr, V> = { … }` (not parseable today).
 - [ ] A FIELD ANNOTATION — `@excluded` (or any mark) above a record's field.
 - [ ] A GENERIC NAMED TYPE (`type Box<T> = List<T>`): F2083 "`Box` is a generic type — a trait impl over a generic type is recorded, not landed".

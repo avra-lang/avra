@@ -33,7 +33,7 @@ fn method_call_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, tdecl: DeclId, name: string, args: List<ExprId>) -> Reg {
     let ordinal = cx.view.decls.trait_method_names(tdecl).index_of(name)
     if ordinal < 0 { return cx.lower_defect(e, "a dyn method outside its trait survived typing") }
-    let s = seated(cx, e, subject, args)
+    let s = seated(cx, subject, args)
     let data = boxed_value(cx, subject, s.recv)
     let fp = cx.slot_read(s.recv, 1 + ordinal, null)
     let dst = cx.result(e)
@@ -57,7 +57,7 @@ type Seated = { recv: Reg, args: List<Reg> }
 /// may re-point it (a copy opened unique), and a receiver read first
 /// would be the box left behind. Its path's index operands still run
 /// first, in order.
-fn seated(mut cx: LowerCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> Seated {
+fn seated(mut cx: LowerCx, subject: ExprId, args: List<ExprId>) -> Seated {
     if !in_cell(cx, subject) {
         let recv = cx.reg_of(subject)
         return Seated { recv: recv, args: [cx.reg_of(a) for a in args] }
@@ -94,7 +94,7 @@ fn fielded_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, slot: int, fty:
 /// The impl table's dispatch: a direct Call to the method's
 /// qualified symbol, the subject riding the self seat.
 fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, name: string, args: List<ExprId>) -> Reg {
-    let s = seated(cx, e, subject, args)
+    let s = seated(cx, subject, args)
     let m? = cx.view.decls.method(decl, name) else { return cx.lower_defect(e, "a method with no symbol survived typing") }
     let dst = cx.result(e)
     cx.emit(Ins.Call(dst, cx.method_symbol(m, e, cx.type_at(subject)), [s.recv].concat(s.args)))
