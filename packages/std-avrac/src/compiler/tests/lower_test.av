@@ -254,26 +254,26 @@ spec "compiler/lower" {
         }
     }
     given "the mut-cell protocol (ownership 11.5)" {
-        // TWO fields on purpose: a record of ONE scalar is FLAT — it
-        // rides a register and costs no box at all, so it cannot
-        // show the managed cell's protocol.
+        // A STRING field on purpose: a record of ints is a VALUE — it
+        // rides registers and costs no box at all, so it cannot show
+        // the managed cell's protocol.
         then "a dying value MOVES into the cell — no retain at the store, no release at the scope; the store releases old first, and the scope settles the cell" {
             let expected = """scope application {
   r0 = int 1
-  r1 = int 0
+  r1 = str "a"
   r2 = int 2
   r3 = call avra_array_sized(r2)
   call avra_array_push(r3, r0)
-  call avra_array_push(r3, r1)
+  call avra_array_push_owned(r3, r1)
   r4 = slot
   call avra_cell_release(r4)
   store r4 <- r3
   r5 = int 2
-  r6 = int 0
+  r6 = str "b"
   r7 = int 2
   r8 = call avra_array_sized(r7)
   call avra_array_push(r8, r5)
-  call avra_array_push(r8, r6)
+  call avra_array_push_owned(r8, r6)
   call avra_cell_release(r4)
   store r4 <- r8
   r9 = load r4
@@ -285,7 +285,7 @@ spec "compiler/lower" {
   release r12
 }
 ret 0"""
-            render_ir(ir_of("type P = { x: int, y: int }\nmut a = P { x: 1, y: 0 }\na = P { x: 2, y: 0 }\na.x")) == expected
+            render_ir(ir_of("type P = { x: int, tag: string }\nmut a = P { x: 1, tag: \"a\" }\na = P { x: 2, tag: \"b\" }\na.x")) == expected
         }
     }
     given "the fn value's box (rung 13)" {
@@ -529,10 +529,10 @@ spec "the pointer-constant law" {
 spec "a managed read is a borrow" {
     given "liveness in the memory pass (S3)" {
         then "a read whose uses stand before any change to its cell owns NOTHING" {
-            read_borrows(ir_of("type P = { x: int, y: int }\nmut a = P { x: 1, y: 0 }\na.x").entry.ins)
+            read_borrows(ir_of("type P = { x: int, tag: string }\nmut a = P { x: 1, tag: \"a\" }\na.x").entry.ins)
         }
         then "a read whose use stands PAST a write to its cell owns — the borrow must outlive it" {
-            read_owns(ir_of("type P = { x: int, y: int }\nmut a = P { x: 1, y: 0 }\nlet b = a\na = P { x: 2, y: 0 }\nb.x").entry.ins)
+            read_owns(ir_of("type P = { x: int, tag: string }\nmut a = P { x: 1, tag: \"a\" }\nlet b = a\na = P { x: 2, tag: \"b\" }\nb.x").entry.ins)
         }
     }
 }

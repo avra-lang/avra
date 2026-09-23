@@ -2777,6 +2777,15 @@ The ladder:
 1. **Value records** (R4, avra-8sb5.34.6): records of scalars — `Span`,
    `Field`, `Line` — live in registers, with no box and no count. The
    biggest single lever.
+   **Inline embedding** (R4b, avra-8sb5.34.10): R4 as first built makes a
+   record of ints a value, but every one-word seat — a record field, an
+   enum payload, a list cell — re-boxes it, so http's `Span` inside
+   `Field` inside `FieldLine` inside `List<Field>` stayed 40 boxes a
+   request. Embedding lays a value record field as N consecutive slots
+   of the box holding it, as C lays out a struct member: field offsets
+   become sums of widths, and `with`, payload reads, statics and both
+   engines follow. Nested flatten (a `Field` of two `Span`s is four ints)
+   comes with it. After R6; every program benefits.
 2. **Count elision** (R5, avra-8sb5.34.7): no retain or release on a
    value that never escapes the fn that made it. Consuming params (R3,
    avra-8sb5.34.4) fold in here.

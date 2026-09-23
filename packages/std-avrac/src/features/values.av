@@ -89,9 +89,10 @@ fn literal_record(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, f
         if x == null { return null }
         slots.push(x!)
     }
-    // A FLAT record travels as its one field — the crossing shape
-    // `materialized` rebuilds a Pack from.
-    if decls.types.is_flat(ty) { return slots[0] }
+    // A FLAT record of one field travels as that field — the crossing
+    // shape `materialized` rebuilds a Pack from; a value record as its
+    // fields.
+    if decls.types.is_flat(ty) && !decls.types.is_wide(ty) { return slots[0] }
     heap.node(slots)
 }
 
@@ -137,6 +138,7 @@ impl LowerCx {
     /// value codec for consts and settled seats.
     mut fn materialized(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
         if self.pair_shaped(ty) { return self.meta_pair(v, heap, ty, name) }
+        if self.view.types.travels_wide(ty) { return self.wide_crossed(v, heap, ty, name) }
         mut build = StaticBuild { decls: self.view.decls }
         let slot? = build.slot_of(v, heap, ty) else { return self.meta_defect(ty) }
         self.crossed_reg(slot, ty, name, build.boxes)
@@ -146,6 +148,16 @@ impl LowerCx {
     /// value — the one crossing shape that is not a slot.
     fn pair_shaped(ty: TypeId) -> bool {
         self.view.types.shape_of(ty) is .Opt && self.repr_of(ty) is .Pair
+    }
+
+    /// A value record lives in registers: each field crosses as its
+    /// own register, and the record is their pack.
+    mut fn wide_crossed(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
+        if !self.view.types.is_wide(ty) { return self.pack(ty, [self.materialized(v, heap, self.view.types.flat_fields(ty)[0], name)]) }
+        let slots = heap.slots(v)
+        let fields = self.view.types.flat_fields(ty)
+        if slots.length != fields.length { return self.meta_defect(ty) }
+        self.pack(ty, [self.materialized(slots[j], heap, f, name) for j, f in fields])
     }
 
     mut fn meta_pair(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
@@ -606,6 +618,9 @@ impl LowerCx {
     /// the type's zero. An absent pair's payload rides one, and so
     /// does the yield of an arm that already EXITED the fn.
     mut fn hollow_of(inner: TypeId) -> Reg {
+        // a value record's hollow is its fields' hollows, packed — and a
+        // name over one wears that pack
+        if self.view.types.travels_wide(inner) { return self.pack(inner, [self.hollow_of(f) for f in self.view.types.flat_fields(inner)]) }
         if self.view.types.seen_shape(inner) is .Bool {
             // LICENSED I60: `inner` may be a NAMED bool type — neither the fixed-shape nor the node-tied verb fits
             let z = self.mint_ty(inner)

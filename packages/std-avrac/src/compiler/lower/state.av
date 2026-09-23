@@ -4,7 +4,7 @@
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, FileId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, NodeStore, SeatMark, is_literal, settled_mark, Static, StaticBox}
 use diagnostics.{loc_at, refusal, Diag}
-use features.{LowerCx, capture_lane, Sub, SeatValue, viewed, def_type_of, Wanted, Lift, LiftKind, Wrap, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, new_meta_heap, literal_meta}
+use features.{LowerCx, capture_lane, Sub, SeatValue, viewed, def_type_of, Wanted, Lift, LiftKind, Wrap, FnSig, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, new_meta_heap, literal_meta}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -458,6 +458,27 @@ impl LowerCx {
         }
         let size = self.box_size(1)
         self.fn_box(self.view.types.shape_of(self.concrete(self.facts.type_at(e))), size, wname, [])
+    }
+
+    /// The symbol a `dyn` box calls for method `m`: the method itself,
+    /// or — for a VALUE RECORD receiver, which the box's slot holds
+    /// boxed — a shim that reads the receiver back first.
+    fn dyn_entry(m: DeclId, recv: TypeId) -> string {
+        let symbol = self.method_symbol(m, null, recv)
+        if !self.view.decls.types.travels_wide(recv) { return symbol }
+        let shim = "${symbol}\$v"
+        if self.unseen(shim) {
+            let sig: FnSig? = self.view.decls.sig(m)?.fn_sig()
+            let params = sig?.params ?? []
+            self.jobs.wraps.push(Wrap {
+                target: symbol,
+                seats: [self.view.decls.types.type(List<int>)].concat(params.slice(1, params.length)),
+                ret: sig?.ret ?? self.view.decls.types.intern(Type.Error),
+                name: shim,
+                unboxes: recv,
+            })
+        }
+        shim
     }
 
     /// A capture read: its LANE of the env box, worn at `ty` — the

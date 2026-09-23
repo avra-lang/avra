@@ -200,3 +200,55 @@ grows. Nothing else in the runtime owns a list buffer.
 Mac, four interleaved pairs over the R1 runtime: request 2.27 µs ->
 2.08 µs (−8.5%). `check packages/cli`, five interleaved pairs: user
 8.00 s -> 7.98 s — no regression.
+
+## §8 As built — R4, value records
+
+**D10. A record of `int` fields is a VALUE RECORD.** `flatten` marks
+any non-generic record whose fields are all `int` flat (it took ONE
+before); more than one field makes it WIDE (`is_wide`): an LLVM struct
+in registers, passed and answered by value. A record a writing impl or
+a `mut` seat seals stays boxed, as a one-field record always did.
+
+**D11. A value record crosses every runtime row BOXED — at ONE door.**
+Every slot write and read is a runtime call, and every runtime call
+goes through `call`/`call_at`/`call_void` (features/emit.av; I58 and
+I60 keep it so). There a wide seat is packed into a sized `List<int>`
+box (`crossing`) and a wide answer read back and packed (`unboxed`).
+`List<int>` is already managed, owned-twinned and released, so the
+box needed no new ownership rule. A list cell, an enum payload, a map
+value, a `Cell`, a capture, a task's answer: all one door.
+
+**D12. `machine_type` is the question "what does this travel as".**
+A name over a value record (`type Spanned = Span`) is a flat record of
+ONE field that travels as the wide one. Every seam asks
+`travels_wide`/`machine_type`, never `is_wide` of the type in hand:
+the LLVM type, `rides_pointer`, the door, the hollow, const crossing,
+and the `once` cache — which caches a value record in the one-cell
+list a nullable answer already rides.
+
+**D13. A `dyn` over a value record calls through a shim.** The dyn
+box's slot holds the record boxed, while the method takes the
+aggregate, and the dispatch site knows only the trait. The vtable
+entry is `<method>$v` (`dyn_entry`, a `Wrap` that `unboxes`): it reads
+the receiver back and calls the method.
+
+**Red team** (features/tests/value_records, eval == native == expected
+under AVRA_RC_GUARD=1; the answers equal main's). Three defects were
+found by attack and fixed, each witnessed failing:
+
+| defect | symptom without the fix |
+|---|---|
+| a departed arm's hollow was a word | LLVM: PHI operand types differ |
+| a name over a value record | LLVM: call parameter type mismatch |
+| `dyn` over a value record | native printed `3350411681624338536704` for `123` |
+
+A named type over a RECORD reading `.of` is F0900 on main already
+(avra-8sb5.34.11) — the attack reads the name without it.
+
+**Numbers.** Request bench: no change beyond noise (Mac, four pairs) —
+list boxes 39 -> 40 per request, list reads 138 -> 111, retains 52 ->
+46. http's `Span`s are STORED — in `Field`, in `FieldLine`, in
+`List<Field>` — and every one-word seat re-boxes them. `check
+packages/cli`: user 7.71 s -> 7.10 s (−8%, three pairs): the
+compiler's own int records stay in registers. Inline embedding
+(R4b, avra-8sb5.34.10) is what reaches the stored ones.

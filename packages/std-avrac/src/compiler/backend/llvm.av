@@ -424,6 +424,7 @@ enum SlotForm { Address, Widened, Reinterpreted, Word }
 /// `rides_pointer` and the rest split a word from a double from a
 /// bit.
 fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
+    if types.travels_wide(ty) { return wide_ll_type(lc, types, types.flat_fields(types.machine_type(ty))) }
     // THE MACHINE FORM decides, never the bare shape: a FLAT record
     // IS its one field, so a name over `string` is a pointer and a
     // name over `float` is a double.
@@ -436,6 +437,16 @@ fn ll_type_of(lc: ptr, types: TypeRegistry, ty: TypeId) -> ptr {
         .Opt(inner) -> opt_ll_type(lc, types, inner),
         .Struct(_, _) or .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Tasks or .Enum(_, _) or .Dyn(_, _) or .Fn(_, _, _) or .Res(_, _) or .App(_, _, _) or .Null or .EmptyList or .Map(_, _) or .EmptyMap -> avra_llvm_pointer_type(lc),
     }
+}
+
+/// A VALUE RECORD's machine type: its fields as one aggregate, in
+/// registers.
+fn wide_ll_type(lc: ptr, types: TypeRegistry, fields: List<TypeId>) -> ptr {
+    let arr = avra_llvm_type_array_new(fields.length)
+    for j, f in fields { avra_llvm_type_array_set(arr, j, ll_type_of(lc, types, f)) }
+    let st = avra_llvm_struct_type(lc, arr, fields.length)
+    avra_llvm_type_array_free(arr)
+    st
 }
 
 /// A nullable's machine type: the niche IS its value's pointer; a

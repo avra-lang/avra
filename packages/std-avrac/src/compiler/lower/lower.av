@@ -201,7 +201,7 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(F
             let wj = wraps.pop()
             if wrapped.get(wj.name) == null {
                 wrapped.set(wj.name, true)
-                bodies.push(wrapped_body(a, wj))
+                bodies.push(if wj.unboxes == null { wrapped_body(a, wj) } else { unboxing_body(a, wj, wj.unboxes!, externs, settle) })
             }
         } else {
             let lf = lower_lambda(a, lifts.pop(), externs, settle)
@@ -487,6 +487,20 @@ fn wrapped_body(a: Analysis, w: Wrap) -> Body {
         Ins.RetVal(dst),
     ]
     Body { name: w.name, params: [fnty].concat(w.seats), ret: w.ret, gives: dst, ins: ins, reg_types: tys, file: a.view.file, weak: true }
+}
+
+/// A `dyn` entry for a VALUE RECORD receiver: seat 0 is the box the
+/// `dyn` slot holds, read back into the receiver the method takes.
+fn unboxing_body(a: Analysis, w: Wrap, recv: TypeId, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> Body {
+    mut lo = new_lower_cx(a, w.ret, null, [], [], new_jobs(externs, settle))
+    for st in w.seats { let _ = lo.mint_ty(st) }
+    lo.seeded()
+    lo.seats_enter()
+    let receiver = lo.unboxed(Reg { index: 0 }, recv)
+    let r = lo.call_decl(w.ret, w.target, [receiver].concat([Reg { index: j } for j in 1..w.seats.length]))
+    lo.seats_exit(r)
+    lo.emit(Ins.RetVal(r))
+    Body { name: w.name, params: w.seats, ret: w.ret, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true }
 }
 
 /// Whether `d` is the one declaration `compiler/rules_table.av`
