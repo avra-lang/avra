@@ -37,7 +37,7 @@
 use @std.net.{Listener, Conn, NetError}
 use @std.time.{Duration, ms, secs, within}
 use frame.{Head, Chunker, Limits, framed, chunker, fed, status_of, limits}
-use http.{Request, Response, wire, status, read_size, as_sent}
+use http.{Request, Unrouted, Response, wire, status, read_size, as_sent}
 
 extern fn avra_cores_online() -> int
 extern fn avra_cores_group(n: int) -> int
@@ -83,7 +83,7 @@ type Link = {
 export type Server<A> = {
     listener: Listener,
     make: fn() -> A,
-    handle: fn(mut A, Request) -> Response,
+    handle: fn(mut A, Request<Unrouted>) -> Response,
     limits: Limits,
     timing: Timing,
     live: Cell<int>,
@@ -97,7 +97,7 @@ export type Server<A> = {
 /// of it handed to the handler — the last seat, so
 /// a call writes it as a trailing block:
 /// `served(l, () -> App { … }, limits(), timing()) { mut app, q -> … }`.
-export fn served<A>(l: Listener, isolated make: fn() -> A, limits: Limits, timing: Timing, handle: fn(mut A, Request) -> Response) -> Server<A> {
+export fn served<A>(l: Listener, isolated make: fn() -> A, limits: Limits, timing: Timing, handle: fn(mut A, Request<Unrouted>) -> Response) -> Server<A> {
     Server { listener: l, make: make, handle: handle, limits: limits, timing: timing, live: Cell.new(0), stopping: Cell.new(false), group: Cell.new(0), core: Cell.new(-1) }
 }
 
@@ -229,7 +229,7 @@ fn core_ended(g: int, core: int) -> int {
 /// application, and the handler, bounds and deadlines it answers by.
 type Serving<A> = {
     app: A,
-    handle: fn(mut A, Request) -> Response,
+    handle: fn(mut A, Request<Unrouted>) -> Response,
     limits: Limits,
     timing: Timing,
 }
@@ -320,7 +320,7 @@ impl Serving {
     /// the consumed bytes leave the buffer so a pipelined tail is
     /// framed next.
     mut fn answered(l: Link, head: Head, body: Bytes, end: int) -> Progress {
-        let q = Request { raw: l.buf, head: head, body: body, peer: l.peer }
+        let q = Request { raw: l.buf, head: head, body: body, peer: l.peer, params: Unrouted {} }
         let r = self.handle(self.app, q)
         let served = l.served + 1
         let keep = head.keep_alive && served < self.timing.requests

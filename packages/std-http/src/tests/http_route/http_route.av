@@ -4,20 +4,20 @@
 // `http://h/admin` from two different routes — the differential a
 // normalising front end turns into a bypass. Both engines, one law.
 use @std.http.frame.{framed, limits, Method}
-use @std.http.http.{Request, Response, text}
+use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Table, fixed, compiled, dispatch}
 
-fn serve_admin(q: Request) -> Response { text(200, "admin@${q.authority() ?? "-"}") }
-fn serve_root(q: Request) -> Response { text(200, "root") }
+fn serve_admin(q: Request<Unrouted>) -> Response { text(200, "admin@${q.authority() ?? "-"}") }
+fn serve_root(q: Request<Unrouted>) -> Response { text(200, "root") }
 
 once fn routes() -> Table {
     compiled([fixed(Method.Get, "/admin", serve_admin), fixed(Method.Get, "/", serve_root)])
 }
 
-fn asked(line: string) -> Request? {
+fn asked(line: string) -> Request<Unrouted>? {
     let raw = (line + "\r\nHost: h\r\n\r\n").bytes()
     match framed(raw, 0, 0, limits()) {
-        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "c" },
+        .Complete(head) -> Request { raw: raw, head: head, body: "".bytes(), peer: "c", params: Unrouted {} },
         .Partial or .Refused(_) -> null,
     }
 }

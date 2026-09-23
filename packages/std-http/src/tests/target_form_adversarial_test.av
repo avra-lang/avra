@@ -11,13 +11,13 @@
 // A test that asked `path()` alone would prove the reader and not the
 // property, and the property is that ONE HANDLER answers both.
 use @std.http.frame.{Method}
-use @std.http.http.{Request, Response, text}
+use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Route, fixed, tailed}
 
-fn tf_serve_admin(_q: Request) -> Response { text(200, "admin") }
-fn tf_serve_root(_q: Request) -> Response { text(200, "root") }
+fn tf_serve_admin(_q: Request<Unrouted>) -> Response { text(200, "admin") }
+fn tf_serve_root(_q: Request<Unrouted>) -> Response { text(200, "root") }
 
-fn tf_serve_static(_q: Request, s: TfStatic) -> Response { text(200, "static ${s.path}") }
+fn tf_serve_static(q: Request<TfStatic>) -> Response { text(200, "static ${q.params.path}") }
 
 grammar TfStatic = "/static/{path...}"
 
@@ -36,19 +36,19 @@ fn tf_answered(line: string) -> string { under(tf_routes(), line) }
 /// What one reader answers for a request line, with "unframed" when
 /// the framer refused the line first — the guard the three readers
 /// below share.
-fn tf_read(line: string, pick: fn(Request) -> string) -> string {
+fn tf_read(line: string, pick: fn(Request<Unrouted>) -> string) -> string {
     let q? = asked(line) else { return "unframed" }
     pick(q)
 }
 
 /// What `path()` reads, with absence spelled — the router's input.
-fn tf_path(line: string) -> string { tf_read(line, (q: Request) -> q.path()?.text() ?? "<none>") }
+fn tf_path(line: string) -> string { tf_read(line, (q: Request<Unrouted>) -> q.path()?.text() ?? "<none>") }
 
 /// What `authority()` reads, with absence spelled.
-fn tf_authority(line: string) -> string { tf_read(line, (q: Request) -> q.authority() ?? "<none>") }
+fn tf_authority(line: string) -> string { tf_read(line, (q: Request<Unrouted>) -> q.authority() ?? "<none>") }
 
 /// The whole target as sent — unchanged by any of this.
-fn tf_target(line: string) -> string { tf_read(line, (q: Request) -> q.target() ?? "<not text>") }
+fn tf_target(line: string) -> string { tf_read(line, (q: Request<Unrouted>) -> q.target() ?? "<not text>") }
 
 spec "@std.http target forms" {
     given "one resource, two forms, one handler" {
