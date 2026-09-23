@@ -168,8 +168,8 @@ fn real_after_bind(s: Stmt, v: float) -> string {
 fn a_nul_b() -> string { from_codepoints([97, 0, 98]) }
 
 spec "std/sqlite binding" {
-
     given "a value put into a statement and read back by SQL" {
+
         then "an integer arrives unchanged" { with_int("select ?", 42) == "42" }
         then "an integer past 32 bits arrives unchanged" { with_int("select ?", 4294967297) == "4294967297" }
         then "a negative integer arrives negative" { with_int("select ?", 0 - 7) == "-7" }
@@ -177,8 +177,8 @@ spec "std/sqlite binding" {
         then "empty text is text, and its length is zero" { with_text("select length(?)", "") == "0" }
         then "a bound NULL is SQL NULL rather than a missing value" { with_null("select ? is null") == "1" }
     }
-
     given "a real bound, compared where the driver cannot yet read one" {
+
         // The comparison happens INSIDE SQLite over the stored double,
         // so a value that lost bits crossing the wall fails it — where a
         // test that read the number back through the driver would be
@@ -205,8 +205,8 @@ spec "std/sqlite binding" {
         then "slot 1 of a one-slot statement takes it" { with_real_at(1, "select ?1", 3.5) == "bound" }
         then "and slot 2 of that statement is out of the slots" { with_real_at(2, "select ?1", 3.5) == "sqlite.out_of_slots" }
     }
-
     given "a bind names the storage class SQLite will store" {
+
         then "text binds as text" { with_text("select typeof(?) = 'text'", "hi") == "1" }
         then "an integer binds as an integer" { with_int("select typeof(?) = 'integer'", 1) == "1" }
         then "a blob binds as a blob" { with_blob("select typeof(?) = 'blob'", "hi") == "1" }
@@ -216,8 +216,8 @@ spec "std/sqlite binding" {
         then "empty text is text and not null" { with_text("select typeof(?) = 'text'", "") == "1" }
         then "an empty blob is a blob and not null" { with_blob("select typeof(?) = 'blob'", "") == "1" }
     }
-
     given "text holding a NUL, which C would cut short" {
+
         // `hex` compares the BYTES inside the database, so a value bound
         // with a `strlen` length fails this rather than passing a
         // length check. 610062 is 'a', NUL, 'b'.
@@ -226,13 +226,13 @@ spec "std/sqlite binding" {
         then "a NUL-bearing value is not equal to its own prefix" { with_text("select ? = 'a'", a_nul_b()) == "0" }
         then "a lone NUL is one byte, not an empty value" { with_text("select length(cast(? as blob))", from_codepoint(0)) == "1" }
     }
-
     given "bytes bound as a blob" {
+
         then "the bytes arrive exactly" { with_blob("select hex(?) = '610062'", a_nul_b()) == "1" }
         then "a blob keeps its length where text would end at a NUL" { with_blob("select length(?)", a_nul_b()) == "3" }
     }
-
     given "a parameter index outside the statement's slots" {
+
         // Parameters count from 1 and columns from 0, which is the
         // oldest off-by-one in this API — so the driver names it rather
         // than letting SQLITE_RANGE come back as a bare code.
@@ -250,8 +250,8 @@ spec "std/sqlite binding" {
         then "a statement with three slots reports three" { slots_of("select ? + ? + ?") == 3 }
         then "a statement with none reports none" { slots_of("select 1") == 0 }
     }
-
     given "the borrowing bind, which is the named hatch and not a default" {
+
         // `SQLITE_STATIC` asks SQLite not to copy, so the caller's bytes
         // must outlive the statement. The value here is alive across the
         // whole call, which is the only condition under which it is

@@ -50,11 +50,11 @@ impl Decls {
     fn file(f: FileId) -> FileInfo { self.files[f.index] }
 
     fn store_of(f: FileId) -> NodeStore {
-        if self.stores[f.index] == null { self.ensure_store[0](f) }
+        if self.stores[f.index] == null { (self.ensure_store[0])(f) }
         self.stores[f.index]!
     }
 
-    fn arm_store(ensure: fn(FileId)) { self.ensure_store.set(0, ensure) }
+    fn arm_store(ensure: fn(FileId) -> void) { self.ensure_store.set(0, ensure) }
 
     fn remember_store(f: FileId, store: NodeStore) { self.stores.set(f.index, store) }
 
@@ -185,17 +185,17 @@ impl Decls {
     /// each top-level one with its members, then Main, then the
     /// nested ones.
     fn decls_of_file(f: FileId) -> List<DeclId> {
-        self.ensure_file[0](f)
+        (self.ensure_file[0])(f)
         self.file_decls[f.index].get()
     }
 
     /// The same, as the table stands — the minter's own read.
     fn decls_so_far(f: FileId) -> List<DeclId> { self.file_decls[f.index].get() }
 
-    fn arm_file(ensure: fn(FileId)) { self.ensure_file.set(0, ensure) }
+    fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(0, ensure) }
 
     fn held_items_of_file(f: FileId) -> List<DeclId> {
-        self.ensure_file[0](f)
+        (self.ensure_file[0])(f)
         self.held_items.get(self.file(f).path) ?? []
     }
 
@@ -383,7 +383,7 @@ impl Decls {
     fn mint_generated_code(f: FileId, store: NodeStore, stmts: List<StmtId>, lo: int, tag: string, ann: string, at: Span?) -> List<DeclId> {
         // each statement keys under its place, so two impls of one
         // target in one generation mint two
-        let made = flatten([self.mint_code_stmt(f, store, s, "${tag}$${j}", ann, at, lo) for j, s in stmts])
+        let made = flatten([self.mint_code_stmt(f, store, s, "${tag}\$${j}", ann, at, lo) for j, s in stmts])
         self.record_generated(f, made)
         made
     }
@@ -403,7 +403,7 @@ impl Decls {
     /// wearing the range of its own value.
     fn mint_code_const(f: FileId, store: NodeStore, s: StmtId, tag: string, ann: string, at: Span?, lo: int) -> DeclId {
         let name = store.let_name(s) ?? ""
-        let d = self.mint(generated_key(f, "${tag}$${name}"), f, s, name, DeclKind.Const, false, "", null, false, null)
+        let d = self.mint(generated_key(f, "${tag}\$${name}"), f, s, name, DeclKind.Const, false, "", null, false, null)
         self.note_provenance(d, ann, name, at)
         self.decls.set(d.index, self.decl(d) with { lo: lo, hi: store.const_value(s)!.index + 1 })
         d
@@ -419,7 +419,7 @@ impl Decls {
     /// pattern without its enum.
     fn mint_code_decl(f: FileId, store: NodeStore, s: StmtId, kind: DeclKind, tag: string, ann: string, at: Span?, lo: int) -> List<DeclId> {
         let name = store.declared_name(s) ?? ""
-        let key = generated_key(f, "${tag}$${name}")
+        let key = generated_key(f, "${tag}\$${name}")
         let body: ExprId? = store.fn_parts(s)?.body
         let d = self.mint(key, f, s, name, kind, false, "", null, false, body)
         self.note_provenance(d, ann, name, at)
@@ -442,7 +442,7 @@ impl Decls {
     /// A generated impl block, with its methods under it, each wearing
     /// its own expression range (see `mint_code_decl`).
     fn mint_code_impl(f: FileId, store: NodeStore, s: StmtId, block: ImplParts, tag: string, ann: string, at: Span?, lo: int) -> List<DeclId> {
-        let key = generated_key(f, "${tag}$${block.target}$$impl")
+        let key = generated_key(f, "${tag}\$${block.target}\$\$impl")
         let block_decl = self.mint(key, f, s, block.target, DeclKind.Impl, false, "", null, false, null)
         self.note_provenance(block_decl, ann, block.target, at)
         mut cursor = lo
@@ -491,7 +491,7 @@ impl Decls {
         // original's call. The temp's name carries the twin's own
         // mark, which no WRITTEN binding can collide with. (The enter
         // / exit puts wrap is a later directive; v1 proves the seam.)
-        let v = "${name}$$v"
+        let v = "${name}\$\$v"
         let arg_ids = [store.alloc_expr(Expr.Ident(p.name), at) for p in params]
         let call = store.alloc_expr(Expr.Call(Scoped(original), [], arg_ids), at)
         let bound = store.alloc_expr(Expr.Ident(Scoped(v)), at)

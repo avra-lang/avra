@@ -182,8 +182,8 @@ fn word(c: Storage) -> string {
 }
 
 spec "std/sqlite statement" {
-
     given "a value read out of a database" {
+
         then "one is one" { scalar("select 1") == "1" }
         then "arithmetic arrives" { scalar("select 2 + 3") == "5" }
         then "a negative arrives as a negative" { scalar("select 0 - 7") == "-7" }
@@ -193,8 +193,8 @@ spec "std/sqlite statement" {
         then "the largest signed 64-bit integer survives" { scalar("select 9223372036854775807") == "9223372036854775807" }
         then "a count over the schema works" { scalar("select count(*) from sqlite_schema") == "0" }
     }
-
     given "a real cell read as a float" {
+
         then "a fraction arrives" { real_scalar("select 1.5") == "1.5" }
         then "a real that is a whole number keeps its class" { real_scalar("select 3.0") == "3.0" }
         then "arithmetic over reals arrives" { real_scalar("select 1.5 + 2.25") == "3.75" }
@@ -210,12 +210,12 @@ spec "std/sqlite statement" {
         then "text is refused" { real_scalar("select 'hi'") == "sqlite.mismatch" }
         then "null is refused" { real_scalar("select null") == "sqlite.mismatch" }
     }
-
     given "a query that answers no row" {
+
         then "an empty result steps straight to done" { scalar("select 1 where 0") == "NO ROW" }
     }
-
     given "the class is asked first, and a wrong read is refused" {
+
         then "an integer is an integer" { class_word_of("select 1") == "int" }
         then "a real is a real" { class_word_of("select 1.5") == "real" }
         then "text is text" { class_word_of("select 'hi'") == "text" }
@@ -230,8 +230,8 @@ spec "std/sqlite statement" {
         // A real IS a number, and it is still not an integer.
         then "reading a real as an integer is refused" { scalar("select 1.5") == "sqlite.mismatch" }
     }
-
     given "an empty value is an EMPTY BOX, and only SQL NULL is absence" {
+
         // THE FIRST CASES WRITTEN FOR THIS READ, and the reason the
         // class is asked before the pointer: `sqlite3_column_blob`
         // answers a NULL POINTER for SQL NULL and for a ZERO-LENGTH
@@ -243,21 +243,21 @@ spec "std/sqlite statement" {
         then "text that is there reads its own length" { cell("select 'abc'") == "text|text:3" }
         then "and octets that are there read theirs" { cell("select x'00ff41'") == "blob|blob:3" }
     }
-
     given "a column index outside the row" {
+
         then "column 7 of a row 1 wide is refused" { scalar_at("select 1", 7) == "sqlite.out_of_row" }
         then "a negative column is refused" { scalar_at("select 1", 0 - 1) == "sqlite.out_of_row" }
     }
-
     given "text that is not one statement" {
+
         then "two statements are refused" { scalar("select 1; select 2") == "sqlite.many_statements" }
         then "comment-only text is refused" { scalar("-- nothing") == "sqlite.no_statement" }
         then "empty text is refused" { scalar("") == "sqlite.no_statement" }
         // The parser, not a `;` scan: this is ONE statement.
         then "a semicolon inside a literal is one statement" { scalar("select length('a;b')") == "3" }
     }
-
     given "SQL the database refuses" {
+
         then "a syntax error names itself" { scalar("select from") == "sqlite.syntax" }
         // SQLITE_ERROR is SQLite's GENERIC code, so `syntax` is wider
         // than its name — a missing table lands here too. What tells

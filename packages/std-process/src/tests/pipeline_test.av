@@ -90,11 +90,7 @@ fn fake_git() -> Tool {
 }
 
 fn scripts() -> List<Script> {
-    table<Script> {
-        program | args              | exit         | stdout      | stderr
-        "git"   | "describe --tags" | Exit.Clean   | "v1.4.0\n"  | ""
-        "git"   | "status"          | Exit.Code(1) | ""          | "not a repo\n"
-    }
+    [Script { program: "git", args: "describe --tags", exit: Exit.Clean, stdout: "v1.4.0\n", stderr: "" }, Script { program: "git", args: "status", exit: Exit.Code(1), stdout: "", stderr: "not a repo\n" }]
 }
 
 fn through_script() -> Result<string, ProcessError> {
@@ -206,7 +202,7 @@ fn a_failing_finisher_wins_too() -> Result<string, ProcessError> {
 /// is whole" misses a word still arriving after it.
 fn pipeline_grandchild_word() -> Result<string, ProcessError> {
     let s = p_sh()?
-    let head = (cmd(s, ["-c", "echo out; echo p1 >&2; (sleep 0.1; echo said >&2) &"]) with { drain_grace: ms(500) })
+    let head = cmd(s, ["-c", "echo out; echo p1 >&2; (sleep 0.1; echo said >&2) &"]) with { drain_grace: ms(500) }
     let po = head.pipe(cmd(s, ["-c", "cat"])).outcome()?
     po.stages[0].out.stderr.replace("\n", "/").trim()
 }
@@ -229,8 +225,8 @@ spec "std/process pipelines" {
             p_shown(a_failing_finisher_wins_too()) == "with code 2"
         }
     }
-
     given "a sweep is paced by ONE wait, and a stagger of zero by none" {
+
         // Both cases read the LAUNCHER and the PACING without a
         // stopwatch: one turns a latency into a refusal, the other
         // turns a missed poll into missing bytes.

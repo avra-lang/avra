@@ -207,23 +207,23 @@ fn word_of(r: Result<bool, SqlError>) -> string {
 }
 
 spec "std/sqlite connection" {
-
     given "a handle is one slot, however many values hold it" {
+
         then "closing a copy nulls the original, and the second close frees nothing" { close_through_a_copy() == "first=0 second=0 original_nulled=true" }
         then "finalizing a copy nulls the original, and the second finalize frees nothing" { finalize_through_a_copy() == "first=0 second=0 original_nulled=true" }
         then "a copy sees the DONE mark the original set, and refuses to re-run" { step_past_done_through_a_copy() == "row=true done=false again=sqlite.done" }
         then "four closes across three bindings free once" { in_memory(closed_four_ways) == "0 0 0 0" }
     }
-
     given "every carrier a handle can travel in" {
+
         then "a list element, and the SIBLING element sees it too" { in_memory(through_a_list) == "first=0 other=true original=true" }
         then "a struct field" { in_memory(through_a_field) == "first=0 original=true" }
         then "an enum payload" { in_memory(through_a_payload) == "first=0 original=true" }
         then "a lambda capture" { in_memory(through_a_capture) == "first=0 original=true" }
         then "a deeper frame" { in_memory(through_a_frame) == "first=0 original=true" }
     }
-
     given "a database in memory" {
+
         // It dies with the connection, so it is a verb rather than a
         // path a caller could spell by accident.
         then "it opens" { opens(memory()) }
@@ -233,8 +233,8 @@ spec "std/sqlite connection" {
         // nulls its receiver, so the second call finds nothing to do.
         then "closing the same binding twice is safe" { opens_and_closes_twice(memory()) }
     }
-
     given "a database in a file" {
+
         then "the fixture starts absent" { gone(a_path()) || !exists(a_path()) }
         then "opening creates it" { opens(open(a_path())) }
         then "and the file is on disk afterwards" { exists(a_path()) }
@@ -243,8 +243,8 @@ spec "std/sqlite connection" {
         then "open-existing opens it too" { opens(open_with(config_at(a_path()) with { mode: Mode.OpenExisting })) }
         then "and it can be cleaned up" { gone(a_path()) }
     }
-
     given "a file that is not there" {
+
         // T129: the default flags carry CREATE, so "open it and see"
         // CREATES the file. Read-only is the existence check that does
         // not create what it asks about — measured, rc=14 CANTOPEN.
@@ -254,15 +254,15 @@ spec "std/sqlite connection" {
         then "open-existing fails the same way" { open_kind(open_with(config_at(absent()) with { mode: Mode.OpenExisting })) == "sqlite.cant_open" }
         then "and still creates nothing" { !exists(absent()) }
     }
-
     given "a path the door refuses before SQLite sees it" {
+
         then "an empty path" { open_kind(open("")) == "sqlite.empty_path" }
         then "`:memory:` spelled as a path" { open_kind(open(":memory:")) == "sqlite.empty_path" }
         then "a `file:` path" { open_kind(open("file:/tmp/x.db")) == "sqlite.uri_path" }
         then "and none of them reached the library" { !exists("file:/tmp/x.db") }
     }
-
     given "a file that is not a database — T127, now CLOSED" {
+
         // OPENING IS LAZY: SQLite records the filename and allocates,
         // and the header is not read until a statement needs the schema.
         // So this file used to OPEN CLEANLY and fail at the caller's
@@ -278,8 +278,8 @@ spec "std/sqlite connection" {
         then "the file is unharmed by the attempt" { exists(not_a_db()) }
         then "cleaned up" { gone(not_a_db()) }
     }
-
     given "the probe that closes T127 does not disturb a real database" {
+
         // It costs one page read and must leave nothing behind: no open
         // statement, and no file where there was none.
         then "a fresh file still opens" { opens(open(a_path())) }

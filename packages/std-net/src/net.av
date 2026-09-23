@@ -45,7 +45,7 @@ fn failed<T>(verb: string, subject: string, code: int) -> Result<T, NetError> {
     .Err(NetError { verb: verb, subject: subject, errno: 0 - code })
 }
 
-fn would_block(code: int) -> bool { code == -avra_errno_again() }
+fn would_block(code: int) -> bool { code == 0 - avra_errno_again() }
 
 /// A bound, listening port. `port` is the one the kernel gave, so a
 /// listener asked for port 0 knows where it is.
@@ -101,7 +101,7 @@ fn backlog() -> int { 511 }
 /// read as "forever", and a zero one looks once.
 export fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, NetError> {
     if !names_a_host(host) { return no_host("connect", host, port) }
-    if timeout.ms < 0 { return failed("connect", "${host}:${port} within ${timeout.ms} ms", -avra_errno_invalid()) }
+    if timeout.ms < 0 { return failed("connect", "${host}:${port} within ${timeout.ms} ms", 0 - avra_errno_invalid()) }
     streamed(avra_net_connect(host, port, timeout.ms), "connect", "${host}:${port}")
 }
 
@@ -126,10 +126,10 @@ fn no_host<T>(verb: string, host: string, port: int) -> Result<T, NetError> {
 /// A BUDGET ALREADY SPENT: present and negative. Absence is not spent
 /// — it is the wait that carries no budget at all, and forever is
 /// what it means.
-fn spent(ms: int?) -> bool { (ms ?? 0) < 0 }
+fn spent(ms: int?) -> bool { ms ?? 0 < 0 }
 
 fn no_budget(ms: int) -> Result<List<Event>, NetError> {
-    failed("wait", "poller within ${ms} ms", -avra_errno_invalid())
+    failed("wait", "poller within ${ms} ms", 0 - avra_errno_invalid())
 }
 
 /// A readiness queue.

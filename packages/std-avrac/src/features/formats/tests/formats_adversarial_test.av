@@ -45,8 +45,8 @@ spec "features/formats adversarial" {
             shown("match \"{}\" { \"{{}}\" -> \"braces\"\n    _ -> \"no\" }") == "braces"
         }
     }
-
     given "every wrong subject" {
+
         then "an int subject is refused, naming the type" {
             refused_with("match 5 { \"{a}b\" -> 1\n    _ -> 0 }", "a format pattern reads text, found `int`")
         }
@@ -57,8 +57,8 @@ spec "features/formats adversarial" {
             refused_with("match [1] { \"{a}b\" -> 1\n    _ -> 0 }", "a format pattern reads text, found `List<int>`")
         }
     }
-
     given "malformed formats" {
+
         then "two holes with nothing between them are refused, naming both" {
             refused_with("match \"x\" { \"{a}{b}\" -> 1\n    _ -> 0 }", "`{a}` and `{b}` have nothing between them")
         }
@@ -72,8 +72,8 @@ spec "features/formats adversarial" {
             refused_with("match \"x\" { \"{match}z\" -> 1\n    _ -> 0 }", "`match` is a keyword")
         }
     }
-
     given "crossing other features" {
+
         then "a format in a fn body binds through the return" {
             shown("fn f(s: string) -> string { match s { \"{a}!\" -> a\n        _ -> \"no\" } }\nf(\"hi!\")") == "hi"
         }
@@ -93,8 +93,8 @@ spec "features/formats adversarial" {
             shown("match \"GET /x\".bytes() { \"{m} {p}\" -> \"\${m.length}/\${p.length}\"\n    _ -> \"no\" }") == "3/2"
         }
     }
-
     given "names against names" {
+
         then "a hole shadows an outer binding for its arm alone" {
             shown("let a = \"outer\"\nmatch \"1x2\" { \"{a}x{b}\" -> \"\${a}\${b}\"\n    _ -> \"no\" }") == "12"
         }
@@ -102,8 +102,8 @@ spec "features/formats adversarial" {
             shown("match \"a-b\" { \"{v}-b\" -> v\n    \"{v}!b\" -> v\n    _ -> \"no\" }") == "a"
         }
     }
-
     given "ownership" {
+
         then "a capture outlives the match that made it" {
             shown("fn grab(s: string) -> string {\n    match s {\n        \"{a}|{b}\" -> a\n        _ -> \"\"\n    }\n}\nlet held = grab(\"keep|drop\")\n\"\${held}\${held.length}\"") == "keep4"
         }
@@ -117,8 +117,8 @@ spec "features/formats adversarial" {
             shown("fn f(s: string) -> string { match s { \"{a}.{b}\" -> a + b\n        _ -> \"-\" } }\nf(\"1.2\") + f(\"3.4\") + f(\"zz\")") == "1234-"
         }
     }
-
     given "the scan's own laws" {
+
         then "an interior hole stops at the FIRST next literal, never the last" {
             shown("match \"w.x.y\" { \"{a}.{b}\" -> \"\${a}|\${b}\"\n    _ -> \"no\" }") == "w|x.y"
         }
@@ -135,8 +135,8 @@ spec "features/formats adversarial" {
             shown("let s = \"a\" + \"0123456789012345678901234567890123456789\" + \"|z\"\nmatch s { \"{head}|{tail}\" -> \"\${head.length}\${tail}\"\n    _ -> \"no\" }") == "41z"
         }
     }
-
     given "a grammar and the door it declares" {
+
         then "a grammar of one hole parses the span between its literals" {
             shown("grammar One = \"x{a}y\"\nmatch One.parse(\"xQy\") { r? -> r.a\n    null -> \"no\" }") == "Q"
         }
@@ -192,8 +192,8 @@ spec "features/formats adversarial" {
             refused_with("type G = { n: int }\ngrammar G = \"{a}-{b}\"\n1", "`G` is declared more than once")
         }
     }
-
     given "print, and the domain it refuses outside" {
+
         then "the domain's edge: every value that would move its delimiter is refused" {
             shown("grammar L = \"{a}--{b}\"\nfn p(a: string) -> string { L.print(L { a: a, b: \"z\" }) ?? \"refused\" }\n[p(\"x\"), p(\"x-\"), p(\"-\"), p(\"--\"), p(\"x--\"), p(\"xy\")].join(\" \")") == "x--z refused refused refused refused xy--z"
         }
@@ -231,8 +231,8 @@ spec "features/formats adversarial" {
             refused_with("grammar L = \"{a}-{b}\"\nL.print()", "`print` takes 1 arguments, found 0")
         }
     }
-
     given "a format's fingerprint, at every boundary it splices" {
+
         then "a literal before a hole is not the same as one after it" {
             same_shape("x{a}y") != same_shape("xy{a}")
         }
@@ -255,8 +255,8 @@ spec "features/formats adversarial" {
             same_shape("{a}-{b}") == same_shape("{a}-{b}")
         }
     }
-
     given "the greedy mark, attacked position by position" {
+
         then "two dots are no hole" {
             shape("{a..}-{z}") == "malformed@0:a.."
         }
@@ -285,8 +285,8 @@ spec "features/formats adversarial" {
             refused_with("grammar G = \"{a..}-{z}\"", "`{name...}`")
         }
     }
-
     given "a greedy hole against a needle that overlaps itself" {
+
         then "the LAST overlapping occurrence is taken, not the last disjoint one" {
             shown("grammar G = \"{a...}aa{b}\"\nG.parse(\"aaaaXY\")?.a ?? \"no\"") == "aa"
         }
@@ -303,8 +303,8 @@ spec "features/formats adversarial" {
             shown("grammar G = \"{a...}::{b}\"\nG.parse(\"a:b\") == null") == "true"
         }
     }
-
     given "a greedy hole outside a grammar declaration" {
+
         then "IT WORKS IN A PATTERN, where the format is spelled inline" {
             shown("let s = \"1-2-3\"\nmatch s { \"{a...}-{b}\" -> a + \"|\" + b\n    _ -> \"no\" }") == "1-2|3"
         }
@@ -318,8 +318,8 @@ spec "features/formats adversarial" {
             shown("grammar G = \"/s/{p...}\"\nG.parse(\"/x/y\".bytes()) == null") == "true"
         }
     }
-
     given "a format over a NAMED text type — a pattern is a READ, so it sees the shape" {
+
         then "holes over a name over string bind the spans" {
             shown("type Id = string\nlet i: Id = \"k-1\"\nmatch i {\n    \"k-{n}\" -> n\n    _ -> \"none\"\n}") == "1"
         }

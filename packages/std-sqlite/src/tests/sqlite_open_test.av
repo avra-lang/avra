@@ -21,7 +21,7 @@ fn exrescode() -> int { 33554432 }
 
 /// Whether a bit is set in the word. The flag word is a sum of distinct
 /// powers of two, so integer division and a parity test read it.
-fn has(word: int, bit: int) -> bool { (word / bit) % 2 == 1 }
+fn has(word: int, bit: int) -> bool { word / bit % 2 == 1 }
 
 fn plain() -> int { flags_of(config_at("/tmp/a.db")) }
 fn read_only() -> int { flags_of(config_at("/tmp/a.db") with { mode: Mode.ReadOnly }) }
@@ -54,8 +54,8 @@ fn fault_message(path: string) -> string {
 }
 
 spec "std/sqlite open" {
-
     given "the flag word a default config becomes" {
+
         // `open(path)` is the line a first-generation LLM writes, and
         // it must be the correct one.
         then "it is read-write" { has(plain(), readwrite()) }
@@ -70,8 +70,8 @@ spec "std/sqlite open" {
         then "URI parsing is off" { !has(plain(), uri()) }
         then "and symlinks are followed, as a filesystem does" { !has(plain(), nofollow()) }
     }
-
     given "the header's law: exactly ONE of three access combinations" {
+
         then "the default sets one access bit family, never two" { access_bits(plain()) == 1 }
         then "read-only sets one" { access_bits(read_only()) == 1 }
         then "open-existing sets one" { access_bits(open_existing()) == 1 }
@@ -85,16 +85,16 @@ spec "std/sqlite open" {
         then "open-existing is READWRITE without CREATE" { has(open_existing(), readwrite()) && !has(open_existing(), create()) }
         then "and it is not read-only" { !has(open_existing(), readonly()) }
     }
-
     given "the fields that turn a bit on" {
+
         then "uri sets the URI bit" { has(with_uri(), uri()) }
         then "shared_cache swaps private for shared" { has(shared(), sharedcache()) && !has(shared(), privatecache()) }
         then "unshared threading swaps FULLMUTEX for NOMUTEX" { has(unshared(), nomutex()) && !has(unshared(), fullmutex()) }
         then "no_follow sets NOFOLLOW" { has(following(), nofollow()) }
         then "and each one leaves the access bits alone" { access_bits(with_uri()) == 1 && access_bits(shared()) == 1 }
     }
-
     given "the paths refused before a handle is asked for" {
+
         // SQLite SPENDS the empty string: it means "a private temporary
         // database on disk, deleted at close". A config with a missing
         // `path =` key would open, succeed at every write, and lose

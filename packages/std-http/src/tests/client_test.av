@@ -7,7 +7,6 @@ use @std.http.http.{Header, text}
 use @std.http.server.{Server, served, timing}
 use @std.http.client.{Client, Answer, ClientError, connected, request}
 
-
 type Duo = { s: Server<App>, c: Client }
 
 fn lifted<T>(r: Result<T, NetError>) -> Result<T, ClientError> {
@@ -44,13 +43,13 @@ fn answered_by(mut d: Duo, method: Method, req: Bytes) -> Result<Answer, ClientE
 fn get_answer() -> Result<bool, ClientError> {
     mut d = duo()?
     let a = answered_by(d, .Get, request("GET", "/g", "a", [Header { name: "x-tag", value: "t1" }], "".bytes())!)?
-    .Ok(a.status == 200 && (a.body.text() ?? "") == "/g||t1|1" && a.header("Content-Length") == "8" && a.header("nope") == null)
+    .Ok(a.status == 200 && a.body.text() ?? "" == "/g||t1|1" && a.header("Content-Length") == "8" && a.header("nope") == null)
 }
 
 fn post_answer() -> Result<bool, ClientError> {
     mut d = duo()?
     let a = answered_by(d, .Post, request("POST", "/p", "a", [], "hello".bytes())!)?
-    .Ok(a.status == 200 && (a.body.text() ?? "") == "/p|hello|-|1")
+    .Ok(a.status == 200 && a.body.text() ?? "" == "/p|hello|-|1")
 }
 
 fn two_on_one_connection() -> Result<bool, ClientError> {
@@ -64,7 +63,7 @@ fn head_answer() -> Result<bool, ClientError> {
     mut d = duo()?
     let a = answered_by(d, .Head, request("HEAD", "/h", "a", [], "".bytes())!)?
     let after = answered_by(d, .Get, request("GET", "/g", "a", [], "".bytes())!)?
-    .Ok(a.status == 200 && a.body.length == 0 && a.header("content-length") == "7" && (after.body.text() ?? "") == "/g||-|2")
+    .Ok(a.status == 200 && a.body.length == 0 && a.header("content-length") == "7" && after.body.text() ?? "" == "/g||-|2")
 }
 
 fn bad_reply_is_refused() -> Result<bool, ClientError> {
