@@ -8,9 +8,9 @@
 //! name types as the interned Error, which ABSORBS: the causing
 //! pass already spoke, so no diagnostic cascades from it.
 use core.{StmtId, ExprId, TypeId, Type, TypeRef, TypeRegistry, DeclId, Binding, same_expr, flatten, mut_mark, Annotation}
-use core.{SeatMark}
+use core.{SeatMark, FileId}
 use diagnostics.{refusal}
-use features.{TypeCx, NarrowFrame, Dispatch, semantics_of, stmt_semantics_of, post_order, FnSig, TypeRow, type_row, Decl, new_type_facts, type_named, TypeFacts, NameFacts, FileView, nothing, scalar_named}
+use features.{TypeCx, NarrowFrame, Dispatch, semantics_of, stmt_semantics_of, post_order, FnSig, TypeRow, type_row, Decl, new_type_facts, type_named, TypeFacts, NameFacts, FileView, nothing, scalar_named, Namespace}
 use features.structs.{fits_default}
 use features.fns.{fits_seat_default}
 use features.specs.{fits_case}
@@ -21,11 +21,13 @@ use features.rules.{example_marks}
 /// SHARED declaration table — a signature may name any file's
 /// types, and asking for one computes it. The table is born total:
 /// every slot pre-typed as the hole.
-export fn new_type_cx(dispatch: Dispatch, keywords: List<string>, view: FileView, names: NameFacts, lo: int, hi: int) -> TypeCx {
+export fn new_type_cx(dispatch: Dispatch, keywords: List<string>, view: FileView, names: NameFacts, written_in: fn(FileId) -> Namespace, lo: int, hi: int) -> TypeCx {
     let hole = view.types.intern(Type.Error)
     TypeCx {
         view: view,
         names: names,
+        written_in: written_in,
+        writer: null,
         facts: new_type_facts(lo, hi, view.store.stmts.count(), hole),
         error_type: hole,
         dispatch: dispatch,
@@ -528,15 +530,15 @@ impl TypeCx {
     /// so every later read of the name answers it, and returned for
     /// the value's acceptance check.
     mut fn bind_declared(s: StmtId, ann: TypeRef) -> TypeId {
-        let ty = self.full_type(self.stmt_loc(s), ann)
+        let ty = self.annotated(s, ann)
         self.record_binding(s, ty)
         ty
     }
 
     /// The type an annotation WRITES at an expression, resolved in
     /// the scope in force.
-    fn written(e: ExprId, tr: TypeRef) -> TypeId {
-        self.full_type(self.view.loc_of(e), tr)
+    mut fn written(e: ExprId, tr: TypeRef) -> TypeId {
+        self.written_by(self.view.origin_of(e), self.view.loc_of(e), tr)
     }
 
     /// A declared generic's arity by NAME, for the applied-type path —

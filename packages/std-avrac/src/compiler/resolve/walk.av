@@ -35,15 +35,23 @@ impl ResolveCx {
     /// hands off the name.
     /// THE BLOCK WORD IS THE FILE'S ALONE: `w {` is also a struct
     /// literal and a name before a block, so no binder or declaration
-    /// of the file may wear a sublanguage's word. A READ is not a
-    /// binder: `sql` alone is the unresolved name it always was.
+    /// of the file may wear an imported sublanguage's or component's
+    /// word. A READ is not a binder: `sql` alone is the unresolved name
+    /// it always was.
     fn refused_binder(name: string, at: Loc?) -> bool {
         if self.refused_name(name, at) { return true }
-        if self.facts.names.syntax_decl(name) != null {
-            self.emit(refusal("resolve.block_word", at, "`${name}` is a sublanguage's block word here, and nothing else in this file may wear it", "this name", "rename it, or import the sublanguage under another name"))
-            return true
-        }
-        false
+        if !self.opens_block(name) { return false }
+        self.emit(worn_block_word(at, name))
+        true
+    }
+
+    /// Whether a name is a block word in this file: a named grammar, or
+    /// a component another module declares.
+    fn opens_block(name: string) -> bool {
+        if self.facts.names.syntax_decl(name) != null { return true }
+        let d? = self.facts.names.type_decl(name) else { return false }
+        let own = self.view.decls.module_name(self.view.decls.file(self.view.file).module_id)
+        (self.view.decls.facts_of(d)?.is_component ?? false) && self.view.decls.module_of(d) != own
     }
 
     fn refused_name(name: string, at: Loc?) -> bool {
@@ -477,3 +485,6 @@ impl ResolveCx {
     }
 }
 
+fn worn_block_word(at: Loc?, name: string) -> Diag {
+    refusal("resolve.block_word", at, "`${name}` is a block word here, and nothing else in this file may wear it", "this name", "rename it, or import the word under another name")
+}

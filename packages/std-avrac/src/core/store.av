@@ -27,7 +27,6 @@ export type NodeStore = {
     // a `component` declaration or instantiation — the record it
     // desugars to carries every field the sugar would print, so the
     // mark alone is enough to read the spelling back
-    component_decls: Cell<List<bool>>,
     component_insts: Cell<List<bool>>,
     // `@name(args)` marks per statement, in written order
     annotations: Cell<List<List<Annotation>>>,
@@ -78,7 +77,6 @@ export fn new_node_store() -> NodeStore {
         stmt_fingerprints: list_cell(),
         marks: list_cell(),
         grammars: list_cell(),
-        component_decls: list_cell(),
         component_insts: list_cell(),
         annotations: list_cell(),
         docs: list_cell(),
@@ -237,7 +235,28 @@ impl NodeStore {
 
     fn speak_block(v: BlockVoice) { self.block_voices.push(v) }
 
-    fn note_foreign(lo: int, hi: int, path: string) { self.foreign.push(ForeignRange { lo: lo, hi: hi, path: path }) }
+    /// The arenas' counts now.
+    fn marks() -> ArenaMarks { ArenaMarks { exprs: self.exprs.count(), stmts: self.stmts.count(), pats: self.pat_count() } }
+
+    /// The run of another file's nodes an expression belongs to, when
+    /// it was minted from one.
+    fn foreign_of(e: ExprId) -> ForeignRange? { self.foreign.get().find(it.runs.exprs.holds(e.index)) }
+
+    /// Whether an expression's span is another file's — a node a
+    /// template was copied from.
+    fn spanned_elsewhere(e: ExprId) -> bool { self.foreign_of(e)?.spanned_home ?? false }
+
+    /// Every node minted since `since` was written in the file at
+    /// `path`, and spanned in this file's offsets.
+    fn note_foreign(since: ArenaMarks, path: string) { self.foreign.push(self.minted_since(since, path, false)) }
+
+    /// Every node minted since `since` was copied from the file at
+    /// `path`, and keeps that file's spans.
+    fn note_copied(since: ArenaMarks, path: string) { self.foreign.push(self.minted_since(since, path, true)) }
+
+    fn minted_since(since: ArenaMarks, path: string, spanned_home: bool) -> ForeignRange {
+        ForeignRange { runs: since.until(self.marks()), path: path, spanned_home: spanned_home }
+    }
 
     /// The block words the file's blocks wear.
     fn sublang_words() -> List<string> {
@@ -246,7 +265,7 @@ impl NodeStore {
 
     fn expansion_of(e: ExprId) -> ExprId? {
         match self.expr(e) {
-            .Body(_, _, _, .Expanded(x)) -> x,
+            .Body(_, _, _, .Expanded(x)) or .Component(_, _, _, .Expanded(x)) -> x,
             _ -> null,
         }
     }
@@ -300,7 +319,7 @@ impl NodeStore {
             .CallValue(subject, args) -> Expr.CallValue(subject, args.concat(blocks)),
             .Ident(name) -> Expr.Call(name, [], blocks),
             .Prop(subject, name) -> Expr.MethodCall(subject, name, blocks),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Within(_, _) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) or .Named(_, _) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _) or .If(_, _, _) or .Receiver or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .Index(_, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Force(_) or .Propagate(_) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 
@@ -324,7 +343,7 @@ impl NodeStore {
             .ExprStmt(v) -> v,
             .Discard(_) -> null,
             .IfStmt(c, t, e) -> self.chain_value(s, c, t, e),
-            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> null,
+            .Let(_, _, _) or .MutLet(_, _, _) or .ConstDecl(_, _, _) or .Assign(_, _) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> null,
         }
     }
 
@@ -461,7 +480,6 @@ impl NodeStore {
         self.stmt_fingerprints.push(self.fingerprint_stmt(s))
         self.marks.push(no_stmt_marks())
         self.grammars.push(null)
-        self.component_decls.push(false)
         self.component_insts.push(false)
         self.annotations.push([])
         self.docs.push(null)
@@ -503,8 +521,7 @@ impl NodeStore {
         // LICENSED I4: a min-by fold; the subset has no min_by
         mut best: StmtId? = null
         mut best_lo = 0
-        for i in 0..self.stmts.count() {
-            let s = StmtId { index: i }
+        for s in self.stmt_ids() {
             let span = self.stmt_span(s)
             if span != null {
                 let lo = span!.lo
@@ -605,17 +622,6 @@ impl NodeStore {
         if s.index < self.grammars.get().length { self.grammars.get()[s.index] } else { null }
     }
 
-    /// `component Name { config { … } }` declared this record — the
-    /// mark's code is 145.
-    fn mark_component_decl(s: StmtId) {
-        self.component_decls.set_at(s.index, true)
-        self.restamp(s, 145)
-    }
-
-    fn is_component_decl(s: StmtId) -> bool {
-        self.component_decls.get()[s.index]
-    }
-
     /// `component Name inst { … }` bound this `let` — the mark's
     /// code is 146.
     fn mark_component_inst(s: StmtId) {
@@ -653,6 +659,18 @@ impl NodeStore {
         self.marks_at(s).is_exported
     }
 
+    /// Every `use` statement the parse BUILT, in order — whether or not
+    /// the program around it parsed. The block-word pre-scan reads
+    /// these: a line its words would have parsed must not hide the
+    /// imports that name them.
+    fn built_uses() -> List<UseParts> {
+        flatten([some_list(self.use_parts(s)) for s in self.stmt_ids()])
+    }
+
+    /// Every statement the store holds, in the order it was built.
+    // LICENSED I62: the one index walk every other reader asks for
+    fn stmt_ids() -> List<StmtId> { [StmtId { index: i } for i in 0..self.stmts.count()] }
+
     /// A `use` statement's parts, when the statement is one.
     fn use_parts(s: StmtId) -> UseParts? {
         match self.stmt(s) {
@@ -688,7 +706,7 @@ impl NodeStore {
             .Prop(subject, name) -> PlaceStep.Field(subject, name),
             .Index(subject, index) -> PlaceStep.At(subject, index),
             .Force(subject) -> PlaceStep.Unwrap(subject),
-            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Within(_, _) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) or .Named(_, _) -> null,
+            .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .NullLit or .Error or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .MapLit(_, _) or .Body(_, _, _, _) or .Component(_, _, _, _) or .If(_, _, _) or .Call(_, _, _) or .CallValue(_, _) or .When(_, _, _) or .Block(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .Catch(_, _, _, _) or .MatchOpt(_, _, _, _) or .Chain(_, _) or .Coalesce(_, _) or .Propagate(_) or .MethodCall(_, _, _) or .Lambda(_, _) or .Spawn(_) or .Is(_, _) or .Comp(_, _, _, _, _, _) or .VariantLit(_, _) or .Named(_, _) -> null,
         }
     }
 

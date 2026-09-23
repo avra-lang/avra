@@ -1,6 +1,5 @@
 //! The typing rules: `spawn e` is a `Task` of what `e` answers, and
-//! `.await` answers it back; `.done` is a `bool`. A `within` answers
-//! what its block does, under a `Duration`.
+//! `.await` answers it back; `.done` is a `bool`.
 use core.{ExprId, TypeId, Type}
 use features.{TypeCx, MethodCall, this_is}
 use diagnostics.{refusal}
@@ -9,17 +8,8 @@ fn task_expr_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
         .Spawn(body) -> spawned(cx, body),
-        .Within(limit, body) -> within_type(cx, limit, body),
         rest -> cx.error_type,
     }
-}
-
-/// A `within`'s limit is a `Duration`; its block answers the whole.
-fn within_type(mut cx: TypeCx, limit: ExprId, body: ExprId) -> TypeId {
-    let answer = cx.walk_type(body)
-    if cx.errored(limit) { return cx.error_type }
-    if !cx.view.decls.declared_as(cx.type_at(limit), "@std.time", "Duration") { return no_duration(cx, limit) }
-    answer
 }
 
 /// The body is hidden from the walk — its lambda lowers only as the
@@ -58,11 +48,6 @@ fn check_push(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 }
 
 // ── The voices ──
-
-fn no_duration(mut cx: TypeCx, limit: ExprId) -> TypeId {
-    let n = cx.name_at(limit)
-    cx.spoken(refusal("type.within", cx.loc_of(limit), "`within` takes a `Duration`, this is `${n}`", this_is(n), "say how long — `within secs(5) { … }`, from `@std/time`"))
-}
 
 fn not_a_task(mut cx: TypeCx, t: ExprId) -> TypeId {
     let n = cx.name_at(t)

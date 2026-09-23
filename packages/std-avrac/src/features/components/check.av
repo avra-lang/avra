@@ -1,0 +1,43 @@
+//! A component's declaration: its record takes the record's laws — the
+//! naming law over its fields, each default a body of its own — and its
+//! methods walk as an impl's. Its own laws are its template's: `expand`
+//! answers the code an instance becomes, and a template reads each of
+//! its instance's fields once.
+use core.{StmtId, ComponentParts}
+use features.{ResolveCx, TypeCx}
+use diagnostics.{Diag, refusal}
+use @std.errors.{Loc}
+
+fn resolve_component(mut cx: ResolveCx, s: StmtId) {
+    if cx.refuses_nested(s, "resolve.nested_type", "type declarations") { return }
+    let c? = cx.view.store.component_parts(s) else { return }
+    cx.check_params(c.head.concat(c.fields), s)
+    for f in c.fields {
+        if f.default != null { cx.walk_under([], f.default!) }
+    }
+    cx.impl_stmts(c.fns)
+}
+
+fn check_component(mut cx: TypeCx, s: StmtId) {
+    let c? = cx.view.store.component_parts(s) else { return }
+    let expand? = c.fns.find((m: StmtId) -> cx.view.store.fn_parts(m)?.name == "expand") else { return }
+    let d? = cx.view.decls.decl_of(cx.view.file, expand) else { return }
+    let answer? = cx.view.decls.sig(d)?.fn_sig()?.ret else { return }
+    if !cx.view.decls.meta_type(answer, "Code") && !cx.view.decls.meta_type(answer, "Decls") {
+        return cx.emit(no_code(cx.stmt_loc(expand), cx.view.types.name_of(answer)))
+    }
+    let parts? = expand_of(cx.view.store, c) else { return }
+    let body? = template_body(cx.view.store, parts) else { return }
+    let twice? = read_twice(cx.view.store, body) else { return }
+    cx.emit(read_again(cx.stmt_loc(expand), c.name, twice))
+}
+
+// ── voices ──
+
+fn no_code(at: Loc?, found: string) -> Diag {
+    refusal("type.component_expand", at, "`expand` answers the code an instance becomes — `Code`, or `Decls` for declarations — and this answers `${found}`", "this `expand`", "answer a template: `fn expand() -> Code { quote { … } }`")
+}
+
+fn read_again(at: Loc?, name: string, field: string) -> Diag {
+    refusal("type.component_twice", at, "the template of `${name}` reads `self.${field}` twice — an instance's code runs where the template writes it, once", "this `expand`", "bind it once — `let v = \${self.${field}}` — and read `v` after")
+}

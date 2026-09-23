@@ -273,6 +273,12 @@ export enum Expr {
     /// projection; `holes` are the expressions that fill them and ARE
     /// the node's children; `view` is its parsed form or expansion.
     Body(word: string, parts: List<string>, holes: List<ExprId>, view: BodyView)
+    /// A COMPONENT INSTANCE — `within ms(500) { … }`: an imported
+    /// component's word, its head values and its block as the user
+    /// wrote them. `view` is the expansion that STANDS IN PLACE of the
+    /// instance, the head and block spliced into it; the written
+    /// pieces are the printing projection.
+    Component(word: string, heads: List<ExprId>, block: ExprId?, view: BodyView)
     If(cond: ExprId, on_true: ExprId, on_false: ExprId)
     /// Multi-way choice; `fallback` is the total `_` arm.
     When(conds: List<ExprId>, values: List<ExprId>, fallback: ExprId)
@@ -316,9 +322,6 @@ export enum Expr {
     /// `spawn e` — `e` runs as a task beside the spawner; the node is
     /// its task handle. `body` is the zero-seat lambda `e` became.
     Spawn(body: ExprId)
-    /// `within d { … }` — the block runs under a deadline `d` from now:
-    /// every park inside it, in this task or one it spawns, ends there.
-    Within(limit: ExprId, body: ExprId)
     /// `subject(args)` — a call on an EXPRESSION: the fn value the
     /// subject holds is applied. `f(x)` by NAME stays the direct
     /// Call; this node is the postfix `pick(m)(x)` / `(lambda)(x)`.
@@ -377,7 +380,7 @@ export fn literal_form(e: Expr) -> bool {
     match e {
         .Body(word, _, _, _) -> body_literal(word),
         .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _, _, _, _, _) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) -> true,
-        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or .Spawn(_) or .Within(_, _) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
+        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or .Spawn(_) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
     }
 }
 
@@ -446,9 +449,38 @@ export enum BodyView {
 /// What a block's grammar refused, in the file's offsets — spoken
 /// with the parse's own words.
 export type BlockVoice = { message: string, lo: int, hi: int, expected: List<string>, in_rule: string }
-/// A run of nodes minted from a sublanguage's actions, and the file
-/// whose fns they name — their origin.
-export type ForeignRange = { lo: int, hi: int, path: string }
+/// A half-open run of arena indexes.
+export type IndexRange = { lo: int, hi: int }
+
+impl IndexRange {
+    fn holds(i: int) -> bool { self.lo <= i && i < self.hi }
+}
+
+/// The arenas' counts at one moment — where a run of minted nodes
+/// begins, and where it ends.
+export type ArenaMarks = { exprs: int, stmts: int, pats: int }
+
+/// What each arena grew by between two moments.
+export type ArenaRuns = { exprs: IndexRange, stmts: IndexRange, pats: IndexRange }
+
+impl ArenaMarks {
+    fn until(after: ArenaMarks) -> ArenaRuns {
+        ArenaRuns {
+            exprs: IndexRange { lo: self.exprs, hi: after.exprs },
+            stmts: IndexRange { lo: self.stmts, hi: after.stmts },
+            pats: IndexRange { lo: self.pats, hi: after.pats },
+        }
+    }
+}
+
+/// Nodes minted into a file from another file's text — a
+/// sublanguage's actions, a component's template — and that file,
+/// their origin. Every arena's run, so a template's binders are
+/// its own as well as its reads. `spanned_home` says their spans are
+/// in the ORIGIN's offsets (a copied template's, so its errors point
+/// home) rather than this file's (a sublanguage's, shifted into the
+/// block).
+export type ForeignRange = { runs: ArenaRuns, path: string, spanned_home: bool }
 /// A WRITTEN type: its name, its arguments (`List<int>`), and
 /// whether it was written nullable (`int?`). An annotation is DATA,
 /// not a node — no pass walks one — so its span rides here rather
@@ -459,7 +491,9 @@ export type ForeignRange = { lo: int, hi: int, path: string }
 /// expression — no second name law.
 export type Annotation = { name: string, callee: ExprId, args: List<ExprId>, span: Span? }
 
-export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [] }
+/// `spliced` marks a type that came through a template's HOLE: it
+/// names a type where it lands, never where the template was written.
+export type TypeRef = { name: string, args: List<TypeRef>, optional: bool, dynamic: bool, arrow: bool, span: Span?, marks: List<SeatMark> = [], spliced: bool = false }
 
 /// The same written type with its `?` dropped — what a nullable
 /// CARRIES, which is the thing the declared-slot law judges. EVERY
@@ -653,6 +687,17 @@ export type MethodParts = { subject: ExprId, name: string, args: List<ExprId> }
 /// A `use` statement's projection: the path, the items, the site.
 export type UseParts = { path: List<string>, items: List<string>, aliases: List<string>, stmt: StmtId }
 
+impl UseParts {
+    /// The alias item `j` was imported under — empty when none.
+    fn alias_at(j: int) -> string { if j < self.aliases.length { self.aliases[j] } else { "" } }
+
+    /// The name item `j` binds in the importing file.
+    fn bound_as(j: int) -> string {
+        let alias = self.alias_at(j)
+        if alias.is_empty() { self.items[j] } else { alias }
+    }
+}
+
 @derive(Rebuild)
 @derive(Grammar)
 @derive(Children)
@@ -732,6 +777,11 @@ export enum Stmt {
     /// `spec "name" { given "…" { then "…" { … } } }` — a test
     /// suite; each case is a declaration of its own.
     Spec(name: string, cases: List<Case>)
+    /// `component name(head) { field: T … fn … }` — a record type
+    /// with defaults that a block instantiates. The head's fields
+    /// are filled positionally, the rest by name; the fns are its
+    /// methods, and `expand` among them is its effect.
+    @declares ComponentDecl(name: Scoped, head: List<Param>, fields: List<Param>, fns: List<StmtId>)
     /// `syntax sql { … }` — a sublanguage declared: the block word and
     /// the grammar notation, kept as text; the workspace readies it.
     SyntaxDecl(name: Scoped, text: string)
@@ -841,6 +891,7 @@ fn type_fp(t: TypeRef?) -> int {
         fp_str(written.name),
         flagged(written.dynamic),
         flagged(written.arrow),
+        flagged(written.spliced),
         fp_list([mark_fp(m) for m in written.marks]),
         fp_list([type_fp(a) for a in written.args]),
     ])
