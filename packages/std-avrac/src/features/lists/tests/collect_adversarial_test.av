@@ -58,4 +58,18 @@ spec "features/lists/collect — adversarial" {
             shown("mut k = 0\nlet xs = collect {\n    while k < 3 {\n        k = k + 1\n        k\n    }\n}\nxs[2] * 10 + xs.length") == "33"
         }
     }
+    given "a kept list spreads" {
+        then "a comprehension, a list and an empty list each join element by element" {
+            shown("let xs = [1, 2, 3]\nlet a = collect {\n    0\n    [x * 10 for x in xs if x != 2]\n    xs\n    []\n    99\n}\n\"\${a.length} \${a[1]} \${a[3]} \${a[6]}\"") == "7 10 1 99"
+        }
+        then "a collect declared to hold lists keeps each whole" {
+            shown("let b: List<List<int>> = collect {\n    [1]\n    [7, 8]\n}\nb[1].length") == "2"
+        }
+        then "a list kept each turn spreads each turn" {
+            shown("let c = collect {\n    for x in [1, 2, 3] { [x, x] }\n}\nc.length") == "6"
+        }
+        then "a spread element of the wrong type refuses where it stands" {
+            refused_with("let xs: List<string> = collect {\n    \"a\"\n    [1, 2]\n}\nxs.length", "this list holds `string`, this is `int`")
+        }
+    }
 }

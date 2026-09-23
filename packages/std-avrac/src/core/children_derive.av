@@ -21,10 +21,12 @@
 //! `NodeStore`, as `@derive(Grammar)` answers a free fn rather than a
 //! value method for the same reason.
 //!
-//! ONE MARK THE TYPES CANNOT SAY. `@declares` means the statement
+//! TWO MARKS THE TYPES CANNOT SAY. `@declares` means the statement
 //! declares a body OF ITS OWN, walked from that body and never
 //! through the statement, so it holds no children whatever its
-//! payloads say. A body's PARSED form and EXPANSION are a payload of
+//! payloads say. `@expands` means the node's view STANDS IN for its
+//! written payloads and holds the same nodes, so the walk reaches the
+//! view alone. A body's PARSED form and EXPANSION are a payload of
 //! their own type (`BodyView`), so the walk reads them through a row
 //! like any other.
 //!
@@ -57,7 +59,7 @@ export trait Children {
     /// derive that claims a mark it never reads makes the claim law
     /// say nothing: the word stops being refused without anything
     /// having started to read it.
-    static fn marks(t: MetaType) -> List<string> { ["declares"] }
+    static fn marks(t: MetaType) -> List<string> { ["declares", "expands"] }
 }
 
 /// One variant's arm: its payloads bound, the expression-bearing ones
@@ -74,7 +76,14 @@ fn child_arm(v: MetaVariant) -> Arms {
 /// its holes are not walked beside them.
 fn reach_of(v: MetaVariant) -> Code {
     if marked(v, "declares") != null { return quote { [] } }
+    if marked(v, "expands") != null { return concatenated(view_parts(v)) }
     concatenated(parts_of(v))
+}
+
+/// An EXPANDING node's written payloads are nodes its view already
+/// holds, so the view alone is walked — each node reached once.
+fn view_parts(v: MetaVariant) -> List<Code> {
+    [r! for r in [reach(f) for f in v.fields if f.ty == "BodyView"] if r != null]
 }
 
 /// The mark of this name the variant carries, or absence.

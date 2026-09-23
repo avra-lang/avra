@@ -507,8 +507,9 @@ impl SourceText {
     }
 
     /// `let inst = ...` UNLESS `store.mark_component_inst` marked
-    /// this `let` — then it is `component Name inst { field = value
-    /// … }`, the sugar `build_component_inst` desugared it from.
+    /// this `let` — then it is the named instance it was written as:
+    /// `table orders { … }`, or `component Name inst { field = value
+    /// … }`.
     mut fn let_or_component_inst(s: StmtId, name: string, ty: TypeRef?, value: ExprId, depth: int) -> string {
         if self.store.is_component_inst(s) { return self.component_inst(value, name, depth) }
         source_line(depth, "let ${source_name(name)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}")
@@ -525,6 +526,7 @@ impl SourceText {
                 let body = joined([source_line(depth + 1, "${source_name(f.of)} = ${self.expression(values[j], loosest_tier, depth + 1)}") for j, f in fields], "\n")
                 "${source_line(depth, "component ${source_name(name.of)} ${source_name(inst)} {")}\n${body}\n${source_line(depth, "}")}"
             },
+            .Component(word, _, block, _) -> source_line(depth, joined([source_name(word), source_name(inst)].concat([self.expression(b, loosest_tier, depth) for b in some_list(block)]), " ")),
             rest -> source_line(depth, "let ${source_name(inst)} = ${self.expression(value, loosest_tier, depth)}"),
         }
     }

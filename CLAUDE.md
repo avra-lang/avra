@@ -1795,12 +1795,6 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   answering `1 0 0`. Worth stating because the sentence above sends a
   reader at a defensive two-arm match for a shape that needs none —
   which is the trap-fear the probe discipline exists to shrink.
-- A struct-literal FIELD seat does not plant a want on its value
-  (the value is walked before the field's want exists): a
-  comprehension there types on its own, so `Pins { slots: [b ??
-  args[j] for j, b in xs] }` under `slots: List<TypeId?>` is F2010
-  "field `slots` is `List<TypeId?>`, this is `List<TypeId>`" — a
-  typed let plants it.
 
 Runtime facts, ours to ratify:
 - `Bytes` IS NOT A LIST AND `bytes()` HAS TWO ANSWERS. `b[0]` is

@@ -172,7 +172,18 @@ impl LowerCx {
         let v? = self.view.store.stmt_value(s) else { return }
         if !self.facts.keeps(v) { return }
         let into? = self.gathers.last() else { return self.defect("a kept value outside its `collect`") }
+        if self.facts.spreads_at(v) { return self.spread(into, v) }
         self.push_slot(into, self.reg_of(v))
+    }
+
+    /// A kept list's elements, each joining the `collect`'s list — the
+    /// comprehension's own walk. An empty list's joins nothing.
+    mut fn spread(into: Reg, v: ExprId) {
+        let elem? = self.view.types.element(self.type_at(v)) else { return }
+        let w = self.opened(v, elem)
+        self.turn_open(w)
+        self.push_slot(into, self.turn_elem(w, self.turn_index(w)))
+        self.turn_close(w)
     }
 
     /// A TASK IS JOINED WHERE ITS LAST OWNER ENDS: a statement holding a

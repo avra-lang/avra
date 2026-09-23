@@ -5,8 +5,9 @@
 //! it stands, the head and block in its holes, every copied node
 //! wearing the provider's origin — so the expansion's nodes stand
 //! right before the instance's, as a parsed child does.
-use core.{Expr, Stmt, StmtId, ExprId, Nominal, Plain, Scoped, NodeStore, BodyView, HoleKind, Filled, copier}
-use features.{LangNode, Builder, ComponentWord, Template, zip_defect}
+use core.{Expr, Stmt, StmtId, ExprId, Nominal, Plain, Scoped, NodeStore, BodyView, HoleKind, Filled, SettingParts, copier, flatten, some_list}
+use features.{LangNode, Builder, ComponentWord, Template, Record, zip_defect}
+use grammar.{Token}
 
 fn build_component_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
@@ -37,30 +38,142 @@ fn build_component_inst(b: Builder) -> Result<LangNode, string> {
     b.wrap_stmt(s)
 }
 
-/// `within ms(5) { … }` — the imported component's template, the head
-/// and the block spliced into it.
+/// `within ms(5) { … }` / `text "hi" { … }` — an instance with its
+/// head value.
 fn build_component_value(mut b: Builder) -> Result<LangNode, string> {
-    let w = b.token(0)?
-    let head = b.expr(1)?
-    let block = b.expr(2)?
-    let word? = b.words.components.find(it.word == w.text) else { return .Err(unimported(w.text)) }
-    let template = match word.form {
-        .Template(t) -> t,
-        .Refused(why) -> { return .Err(why) },
-    }
-    if template.head.length != 1 { return .Err(head_count(w.text, template.head.length)) }
-    let expansion = b.store.instantiated(template, word, [head], block)
-    b.make_expr(Expr.Component(w.text, [head], block, BodyView.Expanded(expansion)))
+    let word = b.word_at(0)?
+    b.wrap_expr(b.instance(word, [b.expr(1)?], b.expr(2)?, null)?)
 }
 
-/// `within { … }` — a block with no head value before it.
-fn build_component_headless(b: Builder) -> Result<LangNode, string> {
-    .Err(headless((b.token(0)?).text))
+/// `row { … }` — an instance with no head value.
+fn build_component_headless(mut b: Builder) -> Result<LangNode, string> {
+    let word = b.word_at(0)?
+    b.wrap_expr(b.instance(word, [], b.expr(1)?, null)?)
 }
 
 /// `within ms(5)` — a head with no block after it.
-fn build_component_blockless(b: Builder) -> Result<LangNode, string> {
-    .Err(blockless((b.token(0)?).text))
+fn build_component_blockless(mut b: Builder) -> Result<LangNode, string> {
+    let word = b.word_at(0)?
+    b.wrap_expr(b.instance(word, [b.expr(1)?], null, null)?)
+}
+
+/// `table orders { … }` at a statement: a record without a head BINDS
+/// the name, and fills its `name` field; any other component reads the
+/// name as its head value.
+fn build_component_named(mut b: Builder) -> Result<LangNode, string> {
+    b.named(b.word_at(0)?, b.token(1)?, b.expr(2)?)
+}
+
+/// `secret stripe_key` — a named instance with no block.
+fn build_component_named_bare(mut b: Builder) -> Result<LangNode, string> {
+    b.named(b.word_at(0)?, b.token(1)?, null)
+}
+
+/// An instance's body: its settings and statements as written — the
+/// block the printer spells.
+fn build_instance_body(b: Builder) -> Result<LangNode, string> {
+    b.make_expr(Expr.Block(b.stmts(0)?, null))
+}
+
+/// `key: value` in an instance's body.
+fn build_setting(b: Builder) -> Result<LangNode, string> {
+    b.make_stmt(Stmt.Setting(Plain((b.token(0)?).text), b.expr(1)?))
+}
+
+impl Builder {
+    /// The imported component the word at `args[i]` opens.
+    fn word_at(i: int) -> Result<ComponentWord, string> {
+        let w = self.token(i)?
+        let word? = self.words.components.find(it.word == w.text) else { return .Err(unimported(w.text)) }
+        .Ok(word)
+    }
+
+    fn named(word: ComponentWord, n: Token, body: ExprId?) -> Result<LangNode, string> {
+        match word.form {
+            .Record(r) -> if r.head.is_empty() { self.bound(word, n, body) } else { self.wrap_expr_stmt(self.instance(word, [self.name_value(n)], body, null)?) },
+            .Template(_) or .Refused(_) -> self.wrap_expr_stmt(self.instance(word, [self.name_value(n)], body, null)?),
+        }
+    }
+
+    /// A headless record's named instance: `let n =` the instance, which
+    /// the printer spells back as it was written.
+    fn bound(word: ComponentWord, n: Token, body: ExprId?) -> Result<LangNode, string> {
+        let s = self.store.alloc_stmt(Stmt.Let(Scoped(n.text), null, self.instance(word, [], body, n.text)?), self.span)
+        self.store.mark_component_inst(s)
+        self.wrap_stmt(s)
+    }
+
+    fn wrap_expr_stmt(e: ExprId) -> Result<LangNode, string> {
+        self.make_stmt(Stmt.ExprStmt(e))
+    }
+
+    /// A name standing where a head value goes — read as the value.
+    fn name_value(n: Token) -> ExprId {
+        self.store.alloc_expr(Expr.Ident(Scoped(n.text)), n.span)
+    }
+
+    /// An instance: its component's template copied in place, or a
+    /// literal of its record. `body` is absent when no block was written.
+    fn instance(word: ComponentWord, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<ExprId, string> {
+        match word.form {
+            .Template(t) -> self.templated(word, t, heads, body),
+            .Record(r) -> self.recorded(word.word, r, heads, body, name),
+            .Refused(why) -> .Err(why),
+        }
+    }
+
+    fn templated(word: ComponentWord, t: Template, heads: List<ExprId>, body: ExprId?) -> Result<ExprId, string> {
+        if heads.is_empty() { return .Err(headless(word.word)) }
+        if t.head.length != 1 { return .Err(head_count(word.word, t.head.length)) }
+        if body == null { return .Err(blockless(word.word)) }
+        let stmts = self.written(body)
+        if stmts.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word)) }
+        let block = self.block_of(stmts)
+        let expansion = self.store.instantiated(t, word, heads, block)
+        .Ok(self.store.alloc_expr(Expr.Component(word.word, heads, block, BodyView.Expanded(expansion)), self.span))
+    }
+
+    /// A record's instance: the head by position, each setting by name,
+    /// the `name` a statement gave it, and the body's other statements
+    /// `collect`ed into its one open `List` field.
+    fn recorded(word: string, r: Record, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<ExprId, string> {
+        if heads.length != r.head.length { return .Err(record_heads(word, r.head.length, heads.length)) }
+        let stmts = self.written(body)
+        let settings = flatten([some_list(self.store.setting_parts(s)) for s in stmts])
+        let children = [s for s in stmts if self.store.setting_parts(s) == null]
+        let slot = slot_for(word, r, settings, children)?
+        let named = if name != null && r.named { [Field { name: "name", value: self.store.alloc_expr(Expr.StrLit(name!), self.span) }] } else { [] }
+        let filled = [Field { name: f, value: heads[j] } for j, f in r.head].concat([Field { name: st.name, value: st.value } for st in settings]).concat(named).concat(some_list(self.collected(slot, children)))
+        let literal = self.store.alloc_expr(Expr.StructLit(Nominal(word), [Plain(f.name) for f in filled], [f.value for f in filled]), self.span)
+        .Ok(self.store.alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal)), self.span))
+    }
+
+    /// The statements a written body holds — none when no block was
+    /// written.
+    fn written(body: ExprId?) -> List<StmtId> {
+        let b? = body else { return [] }
+        self.store.block_stmts(b) ?? []
+    }
+
+    /// The open slot filled by `collect { … }` over the children.
+    fn collected(slot: string?, children: List<StmtId>) -> Field? {
+        let s? = slot else { return null }
+        Field { name: s, value: self.store.alloc_expr(Expr.Collect(self.store.alloc_expr(Expr.Block(children, null), self.span)), self.span) }
+    }
+}
+
+/// One field of a record literal an instance builds.
+type Field = { name: string, value: ExprId }
+
+/// The `List` field an instance's statements fill: the one no setting
+/// names. Children with no such field, or with several, refuse.
+fn slot_for(word: string, r: Record, settings: List<SettingParts>, children: List<StmtId>) -> Result<string?, string> {
+    let open = [s for s in r.slots if !settings.any(it.name == s)]
+    if children.is_empty() { return .Ok(if open.length == 1 { open[0] } else { null }) }
+    if r.slots.is_empty() { return .Err(no_slot(word)) }
+    if open.is_empty() { return .Err(slot_set(r.slots[0])) }
+    if open.length > 1 { return .Err(which_slot(word, open)) }
+    .Ok(open[0])
 }
 
 impl NodeStore {
@@ -121,4 +234,30 @@ fn blockless(word: string) -> string {
 
 fn headless(word: string) -> string {
     "`${word}` writes its head value before its block — `${word} value { … }`"
+}
+
+fn template_setting(word: string) -> string {
+    "`${word}`'s block is code it runs — a `key: value` setting fills a record's field"
+}
+
+fn record_heads(word: string, declared: int, written: int) -> string {
+    if declared == 0 { return "`${word}` takes no head value — name it at a statement (`${word} name { … }`), or write `${word} { … }`" }
+    "`${word}` takes ${counted(declared, "head value")} before its block, and this instance writes ${written}"
+}
+
+fn counted(n: int, noun: string) -> string {
+    if n == 1 { return "1 ${noun}" }
+    "${n} ${noun}s"
+}
+
+fn no_slot(word: string) -> string {
+    "`${word}` declares no `List` field, so its block holds settings only — `key: value`"
+}
+
+fn slot_set(slot: string) -> string {
+    "`${slot}` is set by name, and the block's statements would fill it too — keep one"
+}
+
+fn which_slot(word: string, open: List<string>) -> string {
+    "`${word}` has ${open.length} `List` fields its statements could fill — set each by name: `${open[0]}: […]`"
 }

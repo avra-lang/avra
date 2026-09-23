@@ -134,6 +134,10 @@ export type TypeFacts = {
     alias_copies: SideTable<bool>,
     // a value a `collect` keeps — checking's one answer, lowering's one read
     gathered: SideTable<bool>,
+    // each `collect`'s kept values, so a re-typed one never re-walks its body
+    collections: SideTable<List<ExprId>?>,
+    // a kept LIST a `collect` spreads, element by element
+    spreads: SideTable<bool>,
     voices: Voices,
 }
 
@@ -157,6 +161,8 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         warned: side_table("warned", lo, hi, false),
         alias_copies: side_table("alias_copies", lo, hi, false),
         gathered: side_table("gathered", lo, hi, false),
+        collections: side_table<List<ExprId>?>("collections", lo, hi, null),
+        spreads: side_table("spreads", lo, hi, false),
         starved: side_table<TypeId?>("starved", lo, hi, null),
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
@@ -276,6 +282,21 @@ impl TypeFacts {
         self.gathered.set(e.index, true)
     }
 
+    /// Whether a `collect` spreads this kept list — checking's one
+    /// answer, lowering's one read.
+    fn spreads_at(e: ExprId) -> bool { self.spreads.get(e.index) }
+
+    fn spread(e: ExprId, spreads: bool) {
+        self.spreads.set(e.index, spreads)
+    }
+
+    /// What a `collect` kept, once its body has been walked.
+    fn collection(e: ExprId) -> List<ExprId>? { self.collections.get(e.index) }
+
+    fn collected(e: ExprId, values: List<ExprId>) {
+        self.collections.set(e.index, values)
+    }
+
     /// Another body's facts laid into this table over its range,
     /// and every binding it declared — the per-file fold. The
     /// hunger columns (`hungry`, `starved`) are a body's own
@@ -285,7 +306,7 @@ impl TypeFacts {
         // EACH COLUMN THROUGH ITS FIELD: a fn handed the table could
         // only fill a copy, and the fold runs once per body. The
         // OFFSET is the tables' own — each window knows where it sits.
-        // LICENSED I3: thirteen named columns, one lay each
+        // LICENSED I3: fifteen named columns, one lay each
         self.of_expr.lay(other.of_expr)
         self.widens.lay(other.widens)
         self.narrows.lay(other.narrows)
@@ -298,6 +319,8 @@ impl TypeFacts {
         self.pattern_types.lay(other.pattern_types)
         self.alias_copies.lay(other.alias_copies)
         self.gathered.lay(other.gathered)
+        self.collections.lay(other.collections)
+        self.spreads.lay(other.spreads)
         self.binding_types.lay_named(other.binding_types, is_typed)
     }
 

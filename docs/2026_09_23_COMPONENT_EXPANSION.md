@@ -229,7 +229,21 @@ settings only — a child there refuses, its children are its base's.
 DEFERRED to APPS, with the reason: `on click { }` — a contextual word
 the grammar DSL cannot spell without reserving `on`; a data component
 needs no events.
-Sub-slices: S3a heads, settings, bodiless, the named binding · S3b
+S3a AS BUILT: a component with no `expand` is `Instancing.Record`; its
+instance is an `Expr.Component` whose view is the record literal (so
+the printer keeps the written form and `avra expand` shows the
+literal). Head by position; settings by name; the body's other
+statements `collect`ed into the one `List` field no setting names; a
+headless record named at a statement binds (`grid report { … }` is a
+marked `let`) and fills a `name` field when it declares one. Every
+field law is the record literal's own (unknown, twice, missing, wrong
+type). Two general fixes rode along: a list literal (`[…]`, a
+comprehension, `collect`) RE-HEARS its seat — one typed before its
+seat's type was known is typed again under it, so a stranger is
+refused where it stands and a `dyn` slot boxes each element; and
+`dyn` acceptance asks the trait DECLARATION, so a user need not
+import a provider's trait to fill its `List<dyn T>` field.
+Sub-slices: S3a heads, settings, bodiless, the named binding (DONE) · S3b
 children (typed, dynamic, calls, named placement) · S3c `check()`,
 `from` · S3d the `key: value` ladder over the 40 legacy sites, `config
 { }` retired · S3e `avra explain <component>` (the reference card).

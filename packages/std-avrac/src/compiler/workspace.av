@@ -784,9 +784,9 @@ impl Workspace {
         let t0 = self.clock()
         let words = self.block_words(f, first)
         self.timed("sublang", self.clock() - t0)
-        if words.is_empty() { return self.with_import_remedies(first) }
+        if words.is_empty() { return self.with_import_remedies(first, words) }
         let t1 = self.clock()
-        let p = self.with_import_remedies(parse_program(self.lang, self.source(f), words))
+        let p = self.with_import_remedies(parse_program(self.lang, self.source(f), words), words)
         self.timed("ast", self.clock() - t1)
         for r in p.store.foreign.get() {
             let origin = self.file_id(r.path)
@@ -798,17 +798,19 @@ impl Workspace {
     /// A parse that stops on a component nobody imported says where it
     /// lives: the name the failure stands on, or the one just before
     /// it, that a package in reach exports as a component.
-    fn with_import_remedies(p: Parsed) -> Parsed {
+    fn with_import_remedies(p: Parsed, words: BlockWords) -> Parsed {
         if p.voices.list.is_empty() { return p }
-        p with { voices: Voices { list: [self.import_remedy(p, d) for d in p.voices.list] } }
+        p with { voices: Voices { list: [self.import_remedy(p, d, words) for d in p.voices.list] } }
     }
 
-    fn import_remedy(p: Parsed, d: Diag) -> Diag {
+    /// A refusal near a component word this file does NOT import names
+    /// the `use` that would bring it; an imported word's refusal is its own.
+    fn import_remedy(p: Parsed, d: Diag, words: BlockWords) -> Diag {
         let at? = d.primary.loc else { return d }
         if d.help != null { return d }
         let near = names_near(p.source.text, at.lo)
         let own = self.module_at(p.source.file)
-        let homes = flatten([some_list(self.component_home(w, own)) for w in near if !w.is_empty()])
+        let homes = flatten([some_list(self.component_home(w, own)) for w in near if !w.is_empty() && !words.components.any(it.word == w)])
         let home? = homes.first() else { return d }
         d with { help: import_it(home) }
     }
