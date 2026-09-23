@@ -70,9 +70,7 @@ export enum Unsettled {
 /// cause already spoke and a second voice would cascade.
 export fn unsettled_label(ann: string, why: Unsettled) -> string {
     match why {
-        .Reach(words) -> "`${ann}` ${words}",
-        .Budget(words) -> "`${ann}` ${words}",
-        .Trap(words) -> "`${ann}` ${words}",
+        .Reach(words) or .Budget(words) or .Trap(words) -> "`${ann}` ${words}",
         .Param(words) -> "`${ann}` reads ${words}",
         .Spoken or .Recursive -> "",
     }
@@ -82,8 +80,7 @@ impl Unsettled {
     /// Why, in the words a refusal's label carries.
     fn words() -> string {
         match self {
-            .Reach(label) -> label,
-            .Budget(label) -> label,
+            .Reach(label) or .Budget(label) -> label,
             .Trap(words) -> words,
             .Param(runtime) -> "reads `${runtime}`",
             .Spoken or .Recursive -> "",
@@ -137,7 +134,9 @@ export fn expr_symbol(f: FileId, e: ExprId) -> string {
 /// text and absence by value; records and lists as NODEs; maps as
 /// ordered key/value rows. A record's slots and a list's elements
 /// share one shape because the evaluator represents both alike.
-export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, Node(int), Map(int) }
+/// `Absent` is the null value; `Gone` a slot under the runtime's absent
+/// mark — a nullable nullable's absence, apart from its present null.
+export enum MetaVal { Int(int), Float(int), Text(string), Bool(bool), Absent, Gone, Node(int), Map(int) }
 
 export type MetaMap = { keys: List<string>, values: List<MetaVal> }
 
@@ -179,14 +178,14 @@ impl MetaHeap {
                 let row = from.maps[id]
                 self.map(row.keys, [self.adopt(from, x) for x in row.values])
             },
-            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Absent -> v,
+            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Absent or .Gone -> v,
         }
     }
 
     fn slots(v: MetaVal) -> List<MetaVal> {
         match v {
             .Node(id) -> self.nodes[id],
-            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Absent or .Map(_) -> [],
+            .Int(_) or .Float(_) or .Text(_) or .Bool(_) or .Absent or .Gone or .Map(_) -> [],
         }
     }
 }
@@ -269,4 +268,12 @@ export type Wrap = { target: string, seats: List<TypeId>, ret: TypeId, name: str
 /// One lambda awaiting its LIFT: the body lowers as a top-level fn
 /// taking (env, params…) under the enclosing body's view — in the
 /// enclosing body's own file, like every job a unit mints.
-export type Lift = { lam: ExprId, name: string, sub: Sub? }
+/// What a lifted lambda's body answers: the lambda's own value, or —
+/// for a task's body — that value in a one-cell list, so every task
+/// hands the runtime one box whatever its answer's shape.
+export enum LiftKind {
+    Value
+    Task
+}
+
+export type Lift = { lam: ExprId, name: string, sub: Sub?, kind: LiftKind }

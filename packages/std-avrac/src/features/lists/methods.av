@@ -3,7 +3,7 @@
 //! scans, the growth words and the copies, each a row's rule; the
 //! receiver is always a list because the row's `takes` said so.
 use core.{ExprId, TypeId, Type, Arrow, LambdaParts, no_marks}
-use features.{TypeCx, MethodCall, this_is, slot_worthy, slice_promise, TypeArgs}
+use features.{TypeCx, MethodCall, this_is, slot_worthy, TypeArgs}
 use diagnostics.{refusal}
 
 /// The empty literal takes the rows too — each rule refuses it in
@@ -19,7 +19,7 @@ export fn on_list(t: Type) -> bool {
 export fn check_map(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let seat? = walk_seat(cx, mc, "map") else { return cx.error_type }
     let answer = seat.answer
-    if !slot_worthy(cx.view.types, cx.view.types.shape_of(answer)) { return uncollectable(cx, mc.e, answer) }
+    if !slot_worthy(cx.view.types.shape_of(answer)) { return uncollectable(cx, mc.e, answer) }
     cx.type(List<answer>)
 }
 
@@ -34,6 +34,13 @@ export fn check_filter(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 export fn check_find(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let seat? = predicate_seat(cx, mc, "find") else { return cx.error_type }
     cx.view.types.intern(Type.Opt(seat.elem))
+}
+
+/// `xs.find_index(p)` — where the first element `p` blesses stands, or
+/// absence: `find`'s question, answered with the place.
+export fn check_find_index(mut cx: TypeCx, mc: MethodCall) -> TypeId {
+    let _seat? = predicate_seat(cx, mc, "find_index") else { return cx.error_type }
+    cx.type(int?)
 }
 
 /// `xs.any(p)` / `xs.all(p)` — a verdict.
@@ -67,6 +74,7 @@ export fn check_pop(mut cx: TypeCx, mc: MethodCall) -> TypeId {
 export fn check_set(mut cx: TypeCx, mc: MethodCall) -> TypeId {
     let elem: TypeId? = elem_held(cx, mc, "set")
     if elem == null || !opened_place(cx, mc, "set") || !cx.seated(mc, "set", [int_type(cx), elem!]) { return cx.error_type }
+    if cx.drops_task(cx.loc_of(mc.e), elem!) { return cx.error_type }
     cx.type(void)
 }
 
@@ -149,13 +157,15 @@ fn elem_held(mut cx: TypeCx, mc: MethodCall, name: string) -> TypeId? {
 
 /// The mutation prelude: the receiver is a mut place.
 fn opened_place(mut cx: TypeCx, mc: MethodCall, name: string) -> bool {
-    let root: ExprId? = cx.view.store.place_root(mc.subject)
-    if root == null {
+    let root? = cx.view.store.place_root(mc.subject) else {
         let _ = cx.not_a_place_call(mc.e, name)
         return false
     }
-    if cx.is_mut(root!) { return true }
-    let _ = cx.not_mut_call(mc.e, name, cx.view.store.ident_name(root!) ?? "this name")
+    if cx.is_mut(root) {
+        cx.alias_copy_law(mc.e, mc.subject, root)
+        return true
+    }
+    let _ = cx.not_mut_call(mc.e, name, cx.view.store.ident_name(root) ?? "this name")
     false
 }
 
@@ -261,7 +271,7 @@ fn misseated_walk(mut cx: TypeCx, name: string, a: ExprId, seats: int) -> TypeId
 }
 
 fn uncollectable(mut cx: TypeCx, e: ExprId, answer: TypeId) -> TypeId {
-    cx.spoken(refusal("type.list_scalar", cx.loc_of(e), "`map` cannot collect `${cx.view.types.name_of(answer)}` yet", "this walk", slice_promise("elements")))
+    cx.spoken(refusal("type.list_scalar", cx.loc_of(e), "`map` collects what its fn answers, and `${cx.view.types.name_of(answer)}` is no value", "this walk", "answer a value from the fn, or walk with `for`"))
 }
 
 fn fnless_walk(mut cx: TypeCx, name: string, a: ExprId) -> TypeId {

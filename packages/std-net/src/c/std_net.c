@@ -47,6 +47,9 @@
 
 // The runtime's trap: a verdict, exit 2, the words on stderr.
 void avra_trap(const char* msg);
+// The scheduler's word that `fd` is closing: whoever is parked on it
+// wakes to find it gone.
+void avra_fiber_fd_closing(int64_t fd);
 
 __attribute__((noinline, cold, noreturn))
 static void net_trap_bounds(int64_t i, int64_t len) {
@@ -54,13 +57,6 @@ static void net_trap_bounds(int64_t i, int64_t len) {
     snprintf(msg, sizeof msg, "index %lld is out of bounds (length %lld)", (long long)i, (long long)len);
     avra_trap(msg);
     abort();
-}
-
-// A monotonic clock, milliseconds.
-static int64_t net_now_ms(void) {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 enum { NET_EVENTS = 256 };
@@ -229,61 +225,64 @@ int64_t avra_net_accept(int64_t lfd) {
     }
 }
 
-// An in-flight connect's outcome: 0 once the socket is writable with
-// no pending error, that error, or -ETIMEDOUT at the deadline (-1:
-// none). A zero budget looks once.
-static int64_t net_settled(int fd, int64_t deadline) {
-    struct pollfd p = { fd, POLLOUT, 0 };
-    for (;;) {
-        int64_t remain = deadline < 0 ? -1 : deadline - net_now_ms();
-        int r = poll(&p, 1, remain < 0 && deadline >= 0 ? 0 : net_int(remain));
-        if (r > 0) break;
-        if (r == 0) return -ETIMEDOUT;
-        if (errno != EINTR) return -errno;
-    }
-    int err = 0;
-    socklen_t len = sizeof err;
-    if (getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0) return -errno;
-    return -err;
-}
-
-// One candidate connected, nonblocking, or -errno.
-static int64_t net_connected(const struct addrinfo* ai, int64_t deadline) {
+// One candidate's connect started, nonblocking, or -errno.
+static int64_t net_dialed_to(const struct addrinfo* ai) {
     int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
     if (fd < 0) return -errno;
     int64_t err = net_prepared(fd);
     if (err == 0) {
         net_stream_options(fd);
-        err = connect(fd, ai->ai_addr, ai->ai_addrlen) == 0 ? 0
-            : errno == EINPROGRESS ? net_settled(fd, deadline) : -errno;
+        if (connect(fd, ai->ai_addr, ai->ai_addrlen) != 0 && errno != EINPROGRESS) err = -errno;
     }
     if (err < 0) { close(fd); return err; }
     return fd;
 }
 
-// A connection to host:port as a nonblocking, CLOEXEC, NODELAY
-// socket, made within timeout_ms (negative: no limit) or -ETIMEDOUT.
-// The budget spans the whole call: every resolved address is tried
-// in the resolver's order until one connects or the deadline
-// passes, and the last refusal is the answer when none does. An
-// empty host names no peer: -EINVAL.
-int64_t avra_net_connect(const char* host, int64_t port, int64_t timeout_ms) {
+// How many addresses host:port resolves to, or -errno. A caller
+// dials them by index, in the resolver's order.
+int64_t avra_net_addresses(const char* host, int64_t port) {
     net_armed();
     if (host[0] == 0) return -EINVAL;
     struct addrinfo* list;
     int64_t r = net_resolved(host, port, 0, &list);
     if (r < 0) return r;
-    int64_t deadline = timeout_ms < 0 ? -1 : net_now_ms() + timeout_ms;
-    r = -EINVAL;
-    for (const struct addrinfo* ai = list; ai && r < 0 && r != -ETIMEDOUT; ai = ai->ai_next) r = net_connected(ai, deadline);
+    int64_t n = 0;
+    for (const struct addrinfo* ai = list; ai; ai = ai->ai_next) n++;
+    freeaddrinfo(list);
+    return n;
+}
+
+// A nonblocking, CLOEXEC, NODELAY socket whose connect to the `i`th
+// address of host:port has STARTED — it may already be connected, and
+// is settled once writable (`avra_net_dialed`) — or -errno. Nothing
+// here waits: the caller parks on the descriptor.
+int64_t avra_net_dial(const char* host, int64_t port, int64_t i) {
+    net_armed();
+    if (host[0] == 0 || i < 0) return -EINVAL;
+    struct addrinfo* list;
+    int64_t r = net_resolved(host, port, 0, &list);
+    if (r < 0) return r;
+    const struct addrinfo* ai = list;
+    for (int64_t k = 0; ai && k < i; k++) ai = ai->ai_next;
+    r = ai ? net_dialed_to(ai) : -EINVAL;
     freeaddrinfo(list);
     return r;
+}
+
+// A dial's outcome once its descriptor is writable: 0 connected, or
+// the -errno the connect failed with.
+int64_t avra_net_dialed(int64_t fd) {
+    int err = 0;
+    socklen_t len = sizeof err;
+    if (getsockopt((int)fd, SOL_SOCKET, SO_ERROR, &err, &len) < 0) return -errno;
+    return -err;
 }
 
 // Closed: 0, or -errno for a descriptor that was not open. An
 // interrupted close is a close — the descriptor is gone on both
 // platforms, and a retry would close its next tenant.
 int64_t avra_net_close(int64_t fd) {
+    avra_fiber_fd_closing(fd);
     if (close((int)fd) == 0 || errno == EINTR) return 0;
     return -errno;
 }

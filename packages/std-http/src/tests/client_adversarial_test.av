@@ -20,7 +20,7 @@ fn wiring(lim: Limits) -> Result<Wire, ClientError> {
     let p = lifted(poller())?
     lifted(p.watch(l.fd, .Read))?
     lifted(p.wait(ms(500)))?
-    let peer: Conn? = lifted(l.accept())?
+    let peer: Conn? = lifted(l.try_accept())?
     if peer == null { return .Err(.Closed) }
     .Ok(Wire { c: c, peer: peer!, l: l, p: p })
 }
@@ -31,7 +31,7 @@ fn wired() -> Result<Wire, ClientError> {
     let w = wiring(limits())?
     lifted(w.p.watch(w.peer.fd, .Read))?
     lifted(w.p.wait(ms(500)))?
-    let _ = lifted(w.peer.read(4096))?
+    let _ = lifted(w.peer.try_read(4096))?
     .Ok(w)
 }
 
@@ -40,7 +40,7 @@ fn wired() -> Result<Wire, ClientError> {
 fn spoken(mut w: Wire, said: string, turns: int) -> Result<Answer?, ClientError> {
     let out = said.bytes()
     mut from = 0
-    while from < out.length { from = from + lifted(w.peer.write(out, from))? }
+    while from < out.length { from = from + lifted(w.peer.try_write(out, from))? }
     mut n = 0
     while n < turns {
         let a: Answer? = w.c.polled(ms(20))?

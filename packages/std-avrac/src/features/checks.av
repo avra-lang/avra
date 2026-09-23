@@ -3,9 +3,21 @@
 //! the call's seats, places and void — and the voices they speak.
 //! Unification lives in unify.av, variant construction in
 //! variants.av; every feature's rule calls in, none re-spells.
-use core.{ExprId, TypeId, Type, Expr, ResSides, Arrow, filled, DeclId, Binding, SeatMark, mut_mark, settled_mark, is_literal, literal_form, some_list}
+use core.{ExprId, StmtId, TypeId, Type, Expr, PlaceStep, ResSides, Arrow, filled, DeclId, Binding, SeatMark, mut_mark, settled_mark, is_literal, literal_form, some_list}
 use diagnostics.{Diag, refusal, warning}
 use @std.errors.{Confidence, Edit, Suggestion}
+
+/// The binding a copy is read from, and the place that HOLDS what was
+/// read, when the copy is not of the place itself.
+type Copied = { root: ExprId, holder: ExprId? }
+
+/// The subject a field or an index reads from; null for a bare name.
+fn place_subject(step: PlaceStep) -> ExprId? {
+    match step {
+        .Root(_) -> null,
+        .Field(subject, _) or .At(subject, _) -> subject,
+    }
+}
 
 impl TypeCx {
     /// Speak and ABSORB: the diagnostic lands and the answer is the
@@ -99,17 +111,39 @@ impl TypeCx {
         self.accepts(e, self.view.types.substituted(want, decl, self.bound_args(bound)))
     }
 
+    /// THE LITERAL'S ONE TYPE is named by its first item with a type of
+    /// its own — `[]`, `{}` and `null` are adopted by their siblings,
+    /// and a hungry item is fed by theirs.
+    fn led_by(items: List<ExprId>) -> ExprId {
+        items.find((k) -> self.self_typed(k)) ?? items[0]
+    }
+
+    fn self_typed(k: ExprId) -> bool {
+        match self.shape_at(k) {
+            .EmptyList or .EmptyMap or .Null or .Error -> false,
+            _ -> true,
+        }
+    }
+
+    /// The leader's type, nullable when any item is `null`: `[null, 7]`
+    /// is a `List<int?>`.
+    fn joined(items: List<ExprId>, head: TypeId) -> TypeId {
+        if self.view.types.carried(head) != null || !items.any((k) -> self.shape_at(k) is .Null) { return head }
+        self.type(head?)
+    }
+
     /// THE SLOT VOICES, shared by every aggregate seat: `what` names the
     /// seat ("a list element", "a map value").
     mut fn unslottable(head: ExprId, what: string) -> TypeId {
         if self.shape_at(head) is .Void {
             return self.spoken(refusal("type.list_scalar", self.loc_of(head), "${what} cannot hold nothing — this answers no value", "answers nothing", null))
         }
-        self.spoken(refusal("type.list_scalar", self.loc_of(head), "${what} cannot hold this yet", this_is(self.name_at(head)), slice_promise("elements")))
+        let n = self.name_at(head)
+        self.spoken(refusal("type.list_scalar", self.loc_of(head), "${what} takes its type from its value, and `${n}` has none of its own", this_is(n), "declare the type where it is bound — `let name: Type = …`"))
     }
 
     mut fn unslottable_want(e: ExprId, want: TypeId, what: string) -> TypeId {
-        self.spoken(refusal("type.list_scalar", self.loc_of(e), "${what} cannot hold `${self.view.types.name_of(want)}` yet", "this slot", slice_promise("elements")))
+        self.spoken(refusal("type.list_scalar", self.loc_of(e), "${what} cannot hold `${self.view.types.name_of(want)}` — it is no value", "this slot", null))
     }
 
     mut fn chain_writes(e: ExprId, name: string) {
@@ -122,9 +156,18 @@ impl TypeCx {
     /// or a miss never binds. The one door for a call argument, a struct
     /// field and an enum payload alike.
     mut fn agreed(e: ExprId, want: TypeId, decl: DeclId, mut bound: Pins) -> bool {
-        let matched = self.unify(want, self.type_at(e), decl, bound)
+        let got = self.type_at(e)
+        let matched = self.unify(want, got, decl, bound) || self.seat_widens(want, got, decl, bound)
         let took = self.unified_lift(e, want, decl, bound)
         matched || took
+    }
+
+    /// A `T?` SEAT takes a present value and pins `T` to it — here and
+    /// nowhere deeper, since only the seat records the widen: a
+    /// `List<int>` is no `List<int?>`, whose slots are laid out apart.
+    fn seat_widens(want: TypeId, got: TypeId, decl: DeclId, mut bound: Pins) -> bool {
+        let w? = self.view.types.carried(want) else { return false }
+        self.view.types.carried(got) == null && self.unify(w, got, decl, bound)
     }
 
     /// THE ASSIGNMENT LAW: what a slot of type `want` accepts from the
@@ -600,7 +643,8 @@ impl TypeCx {
     /// The by-value law over a TYPE: the scalars and text, and an enum
     /// whose variants carry nothing — it compares by variant.
     fn compares_by_value(ty: TypeId) -> bool {
-        comparable(self.view.types.shape_of(ty)) || self.unit_enum(ty)
+        let inner? = self.view.types.carried(ty) else { return comparable(self.view.types.shape_of(ty)) || self.unit_enum(ty) }
+        self.compares_by_value(inner)
     }
 
     /// An enum every variant of which carries nothing — a tag alone.
@@ -733,7 +777,8 @@ impl TypeCx {
     /// refusal `not_mut_call` speaks here (ROADMAP: the inout receiver,
     /// S4).
     mut fn receiver_law(e: ExprId, subject: ExprId, name: string, writes: bool) {
-        if !writes || self.mut_place(subject) { return }
+        if !writes { return }
+        if self.mut_place(subject) { return self.copy_laws(e, subject, self.place_binding_root(subject)!) }
         let root: ExprId? = self.place_binding_root(subject)
         if root == null { return self.emit(warning("type.receiver", self.loc_of(e), "`${name}` writes its receiver, and this is a value", "a value", "bind it `mut` first — the receiver becomes the caller's own place")) }
         let n = self.root_word(root!)
@@ -753,6 +798,134 @@ impl TypeCx {
     fn captured(root: ExprId) -> bool {
         let b: Binding? = self.names.binding(root)
         b != null && b! is .Capture
+    }
+
+    /// THE ALIAS-COPY LAW: a `mut` place already passes
+    /// the ordinary receiver and vocabulary laws (a writing method's
+    /// `receiver_law`, a list or map mutation's `is_mut` prelude) — but
+    /// a BARE `mut` LOCAL among those places may itself be a COPY, not
+    /// a window: initialized FROM a place (a name, a field path, an
+    /// index), or from what a place holds (`copied_from`), rather than
+    /// a fresh value, it holds what it read the moment it was bound,
+    /// and a write through it — at any depth under it — never reaches
+    /// back. `self`, a parameter, and every place rooted in either are
+    /// excluded by construction: `bare_mut_stmt` answers only a plain
+    /// `mut q = …` local.
+    ///
+    /// ONE PREDICATE, TWO CHANNELS: every qualifying place is marked
+    /// (`facts.wants_alias_copy` — lowering reads it unique), and the
+    /// warning speaks at the write `e`, once per declaring statement.
+    /// `place` is what the write reaches through — a receiver, a `mut`
+    /// seat's argument — and `root` its root, already known `mut` by
+    /// every caller.
+    mut fn alias_copy_law(e: ExprId, place: ExprId, root: ExprId) {
+        let s? = self.bare_mut_stmt(root) else { return }
+        let v? = self.view.store.stmt_value(s) else { return }
+        let from? = self.copied_from(v) else { return }
+        self.facts.mark_alias_copy(place)
+        if self.aliased_warned.contains(s.index) { return }
+        self.aliased_warned.push(s.index)
+        let q = self.root_word(root)
+        if from.holder != null { return self.lent_copy(e, q, self.place_words(from.holder!) ?? self.root_word(from.root)) }
+        self.place_copy(e, q, self.root_word(from.root))
+    }
+
+    /// A write through `place` (rooted at the `mut` `root`) judged by
+    /// both copy laws: the local that is a copy, then the path.
+    mut fn copy_laws(e: ExprId, place: ExprId, root: ExprId) {
+        self.alias_copy_law(e, place, root)
+        self.path_copy_law(e, place, root)
+    }
+
+    /// THE ROOT DECIDES: a write through a PATH rooted at a `mut` LOCAL
+    /// opens the path's boxes unique, so the write stays in the local;
+    /// rooted at `self` or a `mut` seat it reaches the caller.
+    mut fn path_copy_law(e: ExprId, place: ExprId, root: ExprId) {
+        let s? = self.bare_mut_stmt(root) else { return }
+        if self.facts.wants_alias_copy(place) || !self.through_path(place) { return }
+        if !self.view.types.rides_pointer(self.type_at(place)) { return }
+        self.facts.mark_alias_copy(place)
+        if self.aliased_warned.contains(s.index) { return }
+        self.aliased_warned.push(s.index)
+        self.local_path(e, self.root_word(root), self.place_words(place) ?? "…")
+    }
+
+    /// Whether a place is reached through a field or an index.
+    fn through_path(e: ExprId) -> bool {
+        let step? = self.view.store.place_step(e) else { return false }
+        match step {
+            .Root(_) -> false,
+            .Field(_, _) or .At(_, _) -> true,
+        }
+    }
+
+    /// Where a seed is READ from, when it is not fresh: a place's own
+    /// root; through a side whose value IS the seed's (`value_sides`),
+    /// that side's; read OUT of a holder (`lender`), the holder's, lent.
+    /// A construction and a fn's answer are fresh.
+    fn copied_from(v: ExprId) -> Copied? {
+        let root: ExprId? = self.place_binding_root(v)
+        if root != null { return Copied { root: root!, holder: null } }
+        let side: ExprId? = self.value_sides(v).find((x) -> self.copied_from(x) != null)
+        if side != null { return self.copied_from(side!) }
+        let holder? = self.lender(v) else { return null }
+        let held? = self.copied_from(holder) else { return null }
+        Copied { root: held.root, holder: held.holder ?? holder }
+    }
+
+    /// The sub-expressions whose value IS this one's: an unwrap's
+    /// subject, a `??`'s sides, and every branch heir wearing the
+    /// value's own type — a comprehension's element is no heir of that.
+    fn value_sides(v: ExprId) -> List<ExprId> {
+        let node = self.view.store.expr(v)
+        let heirs = [h for h in semantics_of(self.dispatch, node).heirs(node) if !self.types_disagree(self.type_at(h), self.type_at(v))]
+        some_list(self.view.store.forced(v)).concat(self.view.store.coalesced(v)).concat(heirs)
+    }
+
+    /// What a value is read OUT of: a field's or an index's subject (a
+    /// `?.` read's too), a lending read's receiver (`c.get()`,
+    /// `xs.first()`).
+    fn lender(v: ExprId) -> ExprId? {
+        let step: PlaceStep? = self.view.store.place_step(v)
+        if step != null { return place_subject(step!) }
+        let chained: ExprId? = self.view.store.chained(v)
+        if chained != null { return chained }
+        let mp? = self.view.store.method_parts(v) else { return null }
+        if !row_lends(self.view.lang.methods, mp.name, self.seen_at(mp.subject)) { return null }
+        mp.subject
+    }
+
+    /// A place's path as a reader names it, an index shown as `[…]`;
+    /// null for a value.
+    fn place_words(e: ExprId) -> string? {
+        let step? = self.view.store.place_step(e) else { return null }
+        match step {
+            .Root(_) -> self.root_word(e),
+            .Field(subject, name) -> "${self.place_words(subject) ?? "…"}.${name.of}",
+            .At(subject, _) -> "${self.place_words(subject) ?? "…"}[…]",
+        }
+    }
+
+    mut fn place_copy(e: ExprId, q: string, p: string) {
+        self.emit(warning("type.alias_copy", self.loc_of(e), "`${q}` is a copy of `${p}` — a write through it will not reach `${p}`", "a copy", "write through `${p}` directly if the write should reach it, or `Cell<T>` it if the copy must still share"))
+    }
+
+    mut fn local_path(e: ExprId, q: string, p: string) {
+        self.emit(warning("type.alias_copy", self.loc_of(e), "`${q}` is a local — a write through `${p}` stays in `${q}`, and every other holder of what it reaches keeps its own", "stays local", "write through `self` or a `mut` parameter if the write should reach the caller, or `Cell<T>` what must stay shared"))
+    }
+
+    mut fn lent_copy(e: ExprId, q: string, p: string) {
+        self.emit(warning("type.alias_copy", self.loc_of(e), "`${q}` is a copy of what `${p}` holds — a write through it will not reach `${p}`", "a copy", "store the copy back into `${p}` if the write should reach it"))
+    }
+
+    /// A bare `mut` local's own declaring statement — null for `self`,
+    /// a parameter, and every place that is not a plain `mut` name.
+    fn bare_mut_stmt(e: ExprId) -> StmtId? {
+        let b? = self.names.binding(e) else { return null }
+        match b {
+            .Def(s) -> if self.view.store.stmt(s) is .MutLet { s } else { null },
+            _ -> null,
+        }
     }
 
     /// THE SEAT LAW: every `mut` seat of a call is filled by a `mut`
@@ -844,8 +1017,7 @@ impl TypeCx {
             .NullLit or .ListLit(_) or .MapLit(_, _) or .StructLit(_, _, _) or .VariantLit(_, _) -> true,
             .Ident(_) -> self.settled_name(k),
             // a qualified variant — `K.B`, `K.B(1)` — reads its enum, never a value
-            .Prop(subject, _) -> self.names_enum(subject),
-            .MethodCall(subject, _, _) -> self.names_enum(subject),
+            .Prop(subject, _) or .MethodCall(subject, _, _) -> self.names_enum(subject),
             rest -> false,
         }
     }
@@ -900,6 +1072,7 @@ impl TypeCx {
             return roots
         }
         if roots.any((x) -> self.same_root(x, r)) { self.shared_root(e, callee, n) }
+        self.copy_laws(a, a, r)
         roots.concat([r])
     }
 
@@ -975,7 +1148,7 @@ export fn this_is(n: string) -> string {
 export fn comparable(sh: Type) -> bool {
     match sh {
         .Int or .Float or .Bool or .Str or .Bytes -> true,
-        .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Error -> false,
+        .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Error -> false,
     }
 }
 
@@ -987,12 +1160,6 @@ fn defaulted_seats(n: int) -> string {
 /// One block, or two: how the arity voice counts them.
 fn block_word(n: int) -> string {
     if n == 1 { "it" } else { "the ${n} blocks" }
-}
-
-/// THE PROMISE every nullable-in-a-slot refusal makes — one fn, so
-/// the day the slice lands there is one place to keep it.
-export fn slice_promise(what: string) -> string {
-    "nullable ${what} arrive with ownership's next slice"
 }
 
 /// A call's arguments in seat order, and the seats they fill.

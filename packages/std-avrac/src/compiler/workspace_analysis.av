@@ -21,10 +21,10 @@ impl Workspace {
         // `resolved` is a defect, not a smaller view). The provider's
         // real diagnostics come from the normal analyze pass.
         if self.db.family_active(ordinal(Family.Resolved)) { return [] }
-        let previous: MethodDiagIndex? = self.method_diags.first()
+        let previous: MethodDiagIndex? = self.method_diags.get().first()
         if previous != null {
             let held = previous!
-            if held.revision == self.db.revision() && held.decl_count == self.decls.decls.length && f.index < held.by_file.length {
+            if held.revision == self.db.revision() && held.decl_count == self.decls.decls.get().length && f.index < held.by_file.length {
                 return held.by_file[f.index]
             }
         }
@@ -32,8 +32,8 @@ impl Workspace {
         mut at = 0
         // Signing an impl may admit another declaration, so walk the
         // growing table until every type has had its method query.
-        while at < self.decls.decls.length {
-            let x = self.decls.decls[at]
+        while at < self.decls.decls.get().length {
+            let x = self.decls.decls.get()[at]
             at = at + 1
             if is_type_decl(x) {
                 touch(self.methods(x.id))
@@ -46,9 +46,9 @@ impl Workspace {
                 }
             }
         }
-        while by_file.length < self.decls.files.length { by_file.push([]) }
-        let current = MethodDiagIndex { revision: self.db.revision(), decl_count: self.decls.decls.length, by_file: by_file }
-        if self.method_diags.is_empty() { self.method_diags.push(current) } else { self.method_diags.set(0, current) }
+        while by_file.length < self.decls.files.get().length { by_file.push([]) }
+        let current = MethodDiagIndex { revision: self.db.revision(), decl_count: self.decls.decls.get().length, by_file: by_file }
+        if self.method_diags.get().is_empty() { self.method_diags.push(current) } else { self.method_diags.set_at(0, current) }
         by_file[f.index]
     }
 
@@ -96,13 +96,11 @@ impl Workspace {
     /// declaration table — which grows as `use` lines admit packages, and a
     /// compile-time run may lower a unit before the last has been.
     fn extern_symbols() -> List<string> {
-        let known = self.decls.decls.length
-        let held: ExternNames? = self.externs.get().at(0)
+        let known = self.decls.decls.get().length
+        let held: ExternNames? = self.externs.at(0)
         if held != null && held!.decls == known { return held!.names }
         let names = self.decls.extern_names()
-        mut kept = self.externs.get()
-        kept.keep(0, ExternNames { decls: known, names: names })
-        self.externs.set(kept)
+        self.externs.keep(0, ExternNames { decls: known, names: names })
         names
     }
 
@@ -127,7 +125,7 @@ impl Workspace {
         mut unread: List<string> = []
         for path in held_paths(self) {
             let wants = self.wanted_list_from_wire(s.get(Stored.Unit, self.asks_key(self.held_okey(s, path))) ?? "")
-            if wants == null { unread.push(path) } else { self.hold.held_wants = self.hold.held_wants.concat(wants!) }
+            if wants == null { unread.push(path) } else { self.hold.held_wants.set(self.hold.held_wants.get().concat(wants!)) }
         }
         unread
     }
@@ -173,9 +171,7 @@ impl Workspace {
 
     /// `paths` joined to what `reader`'s compile-time runs read.
     fn read_by(reader: string, paths: List<string>) {
-        mut runs = self.hold.runs.get()
-        runs.set(reader, distinct((runs.get(reader) ?? []).concat(paths)))
-        self.hold.runs.set(runs)
+        self.hold.runs.put(reader, distinct((self.hold.runs.get().get(reader) ?? []).concat(paths)))
     }
 
     /// A RUN'S PROGRAM, lowered for `f`: every body it reaches remains a shared

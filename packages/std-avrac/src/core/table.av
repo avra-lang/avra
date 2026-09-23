@@ -1,26 +1,27 @@
 //! A DENSE-BY-INDEX table: one value per id, grown as ids arrive.
 //! Every memo the workspace keeps is one of these — a query's answer
-//! filed under the id that asked. The table is a TYPE because a
-//! write reaches a place through its receiver.
+//! filed under the id that asked. A table is ONE SHARED SLOT: its
+//! copies share its rows, and `keep` writes them in place.
 
 /// One dense slot: absence is a variant rather than `T?`, so scalar
 /// and managed values use the same table representation.
 export enum TableEntry<T> { Missing, Present(T) }
 
 /// Values by index, absent until placed.
-export type Table<T> = { rows: List<TableEntry<T>> }
+export type Table<T> = { rows: Cell<List<TableEntry<T>>> }
 
 /// An empty table — its rows arrive with the ids that ask.
 export fn new_table<T>() -> Table<T> {
     let empty: List<TableEntry<T>> = []
-    Table { rows: empty }
+    Table { rows: Cell.new(empty) }
 }
 
 /// The value filed under `i`, absent past the table's end.
 impl Table {
     fn entry(i: int) -> TableEntry<T> {
-        if i >= self.rows.length { return TableEntry.Missing }
-        self.rows[i]
+        let rows = self.rows.get()
+        if i >= rows.length { return TableEntry.Missing }
+        rows[i]
     }
 
     fn at(i: int) -> T? {
@@ -32,11 +33,14 @@ impl Table {
 
     /// `v` filed under `i` — the table grows to hold it.
     fn keep(i: int, v: T) {
-        while self.rows.length <= i { self.rows.push(TableEntry.Missing) }
-        self.rows.set(i, TableEntry.Present(v))
+        while self.rows.get().length <= i { self.rows.push(TableEntry.Missing) }
+        self.rows.set_at(i, TableEntry.Present(v))
     }
+
+    /// Every value dropped, for every copy.
+    fn clear() { self.rows.set([]) }
 
     /// How many ids the table has room for — its last placement's,
     /// plus one.
-    fn span() -> int { self.rows.length }
+    fn span() -> int { self.rows.get().length }
 }

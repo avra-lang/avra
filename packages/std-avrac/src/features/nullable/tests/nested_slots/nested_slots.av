@@ -1,0 +1,51 @@
+// proves: a nullable over a nullable keeps PRESENT-NULL apart from
+// ABSENT in every slot — a generic `T?` over `T = string?` rides a
+// pair, and `??` unwraps one level at a time
+type Box<T> = { held: T? }
+fn boxed<T>(x: T) -> Box<T> { Box { held: x } }
+fn listed<T>(x: T) -> List<T?> { [x, null] }
+fn keyed<T>(x: T) -> Map<string, T?> {
+    mut m: Map<string, T?> = {}
+    m.set("k", x)
+    m.set("gone", null)
+    m
+}
+fn words(x: string?) -> string { x ?? "[null]" }
+fn held_word(b: Box<string?>) -> string {
+    match b.held {
+        v? -> words(v)
+        null -> "absent"
+    }
+}
+let none: string? = null
+let some: string? = "s"
+let l = listed(none)
+let m = keyed(none)
+let inner = match l[0] {
+    v? -> words(v)
+    null -> "absent"
+}
+let tail = match l[1] {
+    v? -> words(v)
+    null -> "absent"
+}
+let key = match m.get("k") {
+    v? -> match v {
+        w? -> words(w)
+        null -> "absent"
+    }
+    null -> "missing"
+}
+let gone = match m.get("gone") {
+    v? -> match v {
+        w? -> words(w)
+        null -> "absent"
+    }
+    null -> "missing"
+}
+let strs: List<string?> = [null]
+let edge = match strs.first() {
+    v? -> words(v)
+    null -> "empty"
+}
+"${held_word(boxed(none))} ${held_word(boxed(some))} | ${inner} ${tail} | ${key} ${gone} | ${edge} | ${words(strs.first() ?? null)}"

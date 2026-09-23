@@ -41,15 +41,20 @@ fn expanded(mut b: Builder, word: string, body: Token, holes: List<ExprId>) -> E
     for x in lexed.errors { b.store.speak_block(BlockVoice { message: x.message, lo: x.span.lo + at, hi: x.span.hi + at, expected: [], in_rule: "(lexing)" }) }
     if !lexed.errors.is_empty() { return null }
     let lo = b.store.exprs.count()
-    let sink = b.store
+    mut sink = b.store
     let g = block.ready.g
     let build = (name: string, args: List<Captured<ExprId>>, span: Span?) -> sink.minted_action(name, listed_seats(g, name, args.length), args, span, holes)
     let tokens = [t with { span: t.span.shifted(at) } for t in lexed.tokens if t.kind != TokenKind.Break]
     let o = run_from<ExprId>(block.ready, block.ready.g.start, tokens, build)
+    // sink is a copy of b.store, minted into across the closure above —
+    // write it back before b.store is read again, or every node the
+    // closure minted is invisible past this line (F2106's own alias-copy
+    // law, on a copy made to cross the closure boundary).
+    b.store = sink
     b.store.note_foreign(lo, b.store.exprs.count(), block.origin)
     for d in o.diagnostics { b.store.speak_block(BlockVoice { message: d.message, lo: d.span?.lo ?? at, hi: d.span?.hi ?? at, expected: d.expected, in_rule: d.in_rule }) }
     if !o.diagnostics.is_empty() || o.result == null { return null }
-    sink.captured_expr(o.result!, holes)
+    b.store.captured_expr(o.result!, holes)
 }
 
 /// Which of an action's seats take a LIST — the labels captured under

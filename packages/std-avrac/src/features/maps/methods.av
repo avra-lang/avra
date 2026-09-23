@@ -62,6 +62,7 @@ fn set_type(mut cx: TypeCx, e: ExprId, subject: ExprId, args: List<ExprId>, valu
     }
     let root? = cx.view.store.place_root(subject) else { return cx.not_a_place_call(e, "set") }
     if !cx.is_mut(root) { return cx.not_mut_call(e, "set", cx.view.store.ident_name(root) ?? "this name") }
+    cx.alias_copy_law(e, subject, root)
     let key = cx.type(string)
     if !cx.accepts(args[0], key) { cx.wrong_argument("set", 0, key, args[0]) }
     if !cx.accepts(args[1], value) { cx.wrong_argument("set", 1, value, args[1]) }
@@ -77,11 +78,9 @@ fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
     let cell = cx.mint_ty(opt)
     cx.emit(Ins.Alloca(cell))
     cx.emit(Ins.Store(cell, cx.absent_of(opt)))
-    let has = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.CallRt(has, "avra_map_has", [m, k]))
+    let has = cx.map_has(Type.Bool, m, k)
     cx.void_region(has) { cx ->
-        let raw = cx.mint_ty(cx.carried_type(opt))
-        cx.emit(Ins.CallRt(raw, "avra_map_get", [m, k]))
+        let raw = cx.map_value(m, k, cx.carried_type(opt))
         cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
     }
     let dst = cx.result(e)
@@ -93,7 +92,7 @@ fn got_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId) -> Reg {
 /// the answer is nothing.
 fn set_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, key: ExprId, value: ExprId) -> Reg {
     let box = cx.unique_box(subject)
-    cx.emit(Ins.CallRtVoid("avra_map_set", [box, cx.reg_of(key), cx.reg_of(value)]))
+    cx.map_write(box, cx.reg_of(key), cx.reg_of(value))
     cx.zero(e)
 }
 

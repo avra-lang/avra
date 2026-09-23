@@ -24,7 +24,7 @@ fn attacked() -> Result<Pair, NetError> {
     let p = poller()?
     p.watch(l.fd, .Read)?
     p.wait(secs(2))?
-    let server = l.accept()?
+    let server = l.try_accept()?
     .Ok(Pair { l: l, client: client, server: server!, p: p })
 }
 
@@ -32,8 +32,8 @@ fn gone_names_the_descriptor() -> Result<bool, NetError> {
     let pr = attacked()?
     pr.client.close()?
     let again = words(pr.client.close())
-    let read = words(pr.client.read(10))
-    let write = words(pr.client.write("x".bytes(), 0))
+    let read = words(pr.client.try_read(10))
+    let write = words(pr.client.try_write("x".bytes(), 0))
     .Ok(again.starts_with("close fd ") && read.starts_with("read fd ") && write.starts_with("write fd ") && pr.client.peer() == "")
 }
 
@@ -53,9 +53,9 @@ fn poller_edges() -> Result<bool, NetError> {
 
 fn empty_writes_and_reads() -> Result<bool, NetError> {
     let pr = attacked()?
-    let empty = pr.client.write("".bytes(), 0)?
-    let at_end = pr.client.write("abc".bytes(), 3)?
-    let huge = pr.server.read(100000000)?
+    let empty = pr.client.try_write("".bytes(), 0)?
+    let at_end = pr.client.try_write("abc".bytes(), 3)?
+    let huge = pr.server.try_read(100000000)?
     .Ok(empty == 0 && at_end == 0 && huge is .Pending)
 }
 
@@ -74,11 +74,11 @@ fn taken(r: Read) -> int {
 /// a present, empty landing, told apart from EOF and from a wait.
 fn a_read_of_zero_takes_nothing() -> Result<bool, NetError> {
     let pr = attacked()?
-    pr.client.write("abcdef".bytes(), 0)?
+    pr.client.try_write("abcdef".bytes(), 0)?
     pr.p.watch(pr.server.fd, .Read)?
     pr.p.wait(secs(2))?
-    let zero = taken(pr.server.read(0)?)
-    let rest = taken(pr.server.read(64)?)
+    let zero = taken(pr.server.try_read(0)?)
+    let rest = taken(pr.server.try_read(64)?)
     .Ok(zero == 0 && rest == 6)
 }
 
@@ -86,7 +86,7 @@ fn a_read_of_zero_takes_nothing() -> Result<bool, NetError> {
 /// than clamped into a read of one byte.
 fn a_negative_read_is_refused() -> Result<bool, NetError> {
     let pr = attacked()?
-    let said = words(pr.server.read(0 - 5))
+    let said = words(pr.server.try_read(0 - 5))
     .Ok(said.starts_with("read 127.0.0.1:") && said.ends_with(": Invalid argument"))
 }
 

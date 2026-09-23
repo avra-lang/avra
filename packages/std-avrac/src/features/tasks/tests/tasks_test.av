@@ -1,0 +1,37 @@
+// The vertical: `spawn` runs beside the spawner, `.await` answers what
+// the body did, `.done` asks without parking, and a task is joined where
+// the last thing holding it ends.
+use @std.avrac.testing.{shown}
+
+spec "features/tasks" {
+    given "spawn and await" {
+        then "a body's answer comes back through `.await`" {
+            shown("let t = spawn 20 + 1\n\"\${t.await}\"") == "21"
+        }
+        then "`.done` asks without parking — the spawner runs on first" {
+            shown("let t = spawn 1\nlet d = t.done\nlet v = t.await\n\"\${d} \${t.done} \${v}\"") == "false true 1"
+        }
+        then "a list of tasks awaits in order" {
+            shown("mut ts: List<Task<int>> = []\nfor i in 0..4 {\n    ts.push(spawn i * i)\n}\n[\"\${t.await}\" for t in ts].join(\",\")") == "0,1,4,9"
+        }
+    }
+    given "the owner joins where it ends" {
+        then "a bound task is joined at its block's end" {
+            shown("let c = Cell.new(0)\nif true {\n    let _t = spawn {\n        c.set(7)\n        0\n    }\n}\nc.get()") == "7"
+        }
+        then "a task nothing binds is owned by its block" {
+            shown("let c = Cell.new(0)\nif true {\n    spawn {\n        c.set(9)\n        0\n    }\n}\nc.get()") == "9"
+        }
+        then "a nullable task owns what it holds, and absence joins nothing" {
+            shown("let t: Task<int>? = null\nlet u: Task<int>? = spawn 3\n\"\${t == null} \${u?.await ?? 0}\"") == "true 3"
+        }
+        then "a task's body may await a sibling — both join here" {
+            shown("let a = spawn 4\nlet b = spawn { a.await + 100 }\nb.await") == "104"
+        }
+    }
+    given "one process, many runs" {
+        then "a run a trap stopped with tasks outstanding leaves none for the next" {
+            shown("let a = spawn 1\nlet b = spawn 2\n[1][5]") == "<refused>" && shown("let t = spawn 3\nt.await") == "3"
+        }
+    }
+}

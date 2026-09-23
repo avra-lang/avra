@@ -59,14 +59,16 @@ impl Analysis {
     /// Retain and Release included, shared to the last bracket. A
     /// lone file is a program of one; the Program owns the law.
     fn run() -> Result<string, string> {
-        self.program().run()
+        mut p = self.program()
+        p.run()
     }
 
     /// Everything wrong, rendered; "" means clean.
     /// Everything spoken, rendered — refusals or, failing those, the
     /// warnings; "" when nothing spoke.
     fn check() -> string {
-        match self.program().check() {
+        mut p = self.program()
+        match p.check() {
             .Ok(warned) -> warned,
             .Err(report) -> report,
         }
@@ -75,7 +77,8 @@ impl Analysis {
     /// The program as IR, memory strategy applied — what `avra
     /// build` compiles.
     fn lowered() -> Lowered {
-        self.program().lowered()
+        mut p = self.program()
+        p.lowered()
     }
 
     /// The program's printed answer, or null when it refused.
@@ -97,7 +100,10 @@ impl Language {
     /// declarations are its scope, and a `use` has no package to
     /// reach.
     fn analyze(src: SourceFile) -> Analysis {
-        mut ws = lone_workspace(src.file, src.text, self)
+        // NOT `mut`: the answer's `program` closure captures this same
+        // workspace box (workspace_analysis.av's `analyzed`), so
+        // `disarmed()` must write through it, not into a private copy.
+        let ws = lone_workspace(src.file, src.text, self)
         let a = ws.analysis(ws.file_id(src.file))
         ws.disarmed()
         a

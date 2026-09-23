@@ -48,10 +48,8 @@ impl LowerCx {
             .Root(_) -> {
                 let cell: Reg? = self.cell_of(s)
                 if cell != null {
-                    let dst = self.mint_ty(self.type_at(s))
                     // a cell opens unique — copy-on-write
-                    self.emit(Ins.CallRt(dst, "avra_cell_unique", [cell!]))
-                    return dst
+                    return self.cell_unique(self.shape_at(s), cell!)
                 }
                 // a method's receiver: `self` is the box itself — shared
                 // by design, so no uniqueness is asked of it
@@ -63,9 +61,7 @@ impl LowerCx {
     }
 
     mut fn slot_opened(s: ExprId, parent: Reg, at: Reg) -> Reg {
-        let dst = self.mint_ty(self.type_at(s))
-        self.emit(Ins.CallRt(dst, "avra_slot_unique", [parent, at]))
-        dst
+        self.slot_unique(self.shape_at(s), parent, at)
     }
 
     /// A field's declaration index as a register — the slot it lives in.

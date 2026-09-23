@@ -4,7 +4,7 @@
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, FileId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, NodeStore, SeatMark, is_literal, settled_mark, Static, StaticBox}
 use diagnostics.{loc_at, refusal, Diag}
-use features.{LowerCx, capture_lane, Sub, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, new_meta_heap, literal_meta}
+use features.{LowerCx, capture_lane, Sub, SeatValue, viewed, def_type_of, Wanted, Lift, LiftKind, Wrap, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, new_meta_heap, literal_meta}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -199,8 +199,7 @@ impl LowerCx {
     /// A call node's arguments in the SEAT order of `d`.
     fn call_args(d: DeclId, e: ExprId) -> List<ExprId> {
         let written: List<ExprId> = match self.view.store.expr(e) {
-            .Call(_, _, args) -> args,
-            .MethodCall(_, _, args) -> args,
+            .Call(_, _, args) or .MethodCall(_, _, args) -> args,
             rest -> [],
         }
         self.view.store.seated_args(written, self.view.decls.facts_of(d)?.seats ?? [])
@@ -460,9 +459,7 @@ impl LowerCx {
             })
         }
         let size = self.box_size(1)
-        let dst = self.mint(e)
-        self.fn_box(dst, size, wname, [])
-        dst
+        self.fn_box(self.view.types.shape_of(self.concrete(self.facts.type_at(e))), size, wname, [])
     }
 
     /// A capture read: its LANE of the env box, worn at `ty` — the
@@ -491,11 +488,18 @@ impl LowerCx {
     /// The lift: names the lambda's body (mangled under the view
     /// when the enclosing body is a specialization) and enqueues it
     /// once.
-    fn lift(e: ExprId) -> string {
-        let sym = self.view.decls.lifted_symbol(self.view.file, e)
+    fn lift(e: ExprId) -> string { self.lifted_as(e, LiftKind.Value) }
+
+    /// A task's body: the lambda lifted under its own name, answering
+    /// its value boxed in a one-cell list.
+    fn lift_task(e: ExprId) -> string { self.lifted_as(e, LiftKind.Task) }
+
+    fn lifted_as(e: ExprId, kind: LiftKind) -> string {
+        let base = self.view.decls.lifted_symbol(self.view.file, e)
+        let sym = if kind is .Task { "${base}\$task" } else { base }
         let name = if self.sub == null { sym } else { self.view.decls.mangle(sym, self.sub!) }
         if self.unseen(name) {
-            self.jobs.lifts.push(Lift { lam: e, name: name, sub: self.sub })
+            self.jobs.lifts.push(Lift { lam: e, name: name, sub: self.sub, kind: kind })
         }
         name
     }
@@ -524,8 +528,7 @@ impl LowerCx {
         let b? = self.names.binding(e) else { return null }
         let direct: bool = match b {
             .Decl(d) -> self.view.decls.fn_name(d) != null,
-            .Def(_) -> false,
-            .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
+            .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> false,
         }
         if direct { return null }
         self.callee_binding(e, b)

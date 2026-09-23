@@ -38,8 +38,30 @@ spec "features/enums (patterns)" {
         then "`or` joins arms that bind nothing" {
             shown("${shapes()}match Shape.Line(2) {\n    .Dot or .Line(_) -> 1\n    .Rect(_, _) -> 2\n}") == "1"
         }
-        then "an `or` arm may not bind" {
-            refused_with("${shapes()}match Shape.Line(2) {\n    .Dot or .Line(n) -> 1\n    _ -> 2\n}", "an `or` arm binds nothing")
+        then "an `or` arm binds what every alternative binds" {
+            shown("${shapes()}fn w(s: Shape) -> int {\n    match s {\n        .Line(n) or .Rect(n, _) -> n\n        .Dot -> 0\n    }\n}\nw(Shape.Line(2)) * 100 + w(Shape.Rect(5, 1)) * 10 + w(Shape.Dot)") == "250"
+        }
+        then "the alternatives bind by name, wherever the name stands" {
+            shown("enum P {\n    A(x: int, y: string)\n    B(y: string, x: int)\n    C\n}\nfn f(p: P) -> string {\n    match p {\n        .A(x, y) or .B(y, x) -> y + \"\${x}\"\n        .C -> \"c\"\n    }\n}\nf(P.A(1, \"a\")) + f(P.B(\"b\", 2)) + f(P.C)") == "a1b2c"
+        }
+        then "a nested pattern binds through an `or` too" {
+            shown("enum Leaf {\n    Num(int)\n    Word(string)\n}\nenum Node {\n    Empty\n    One(Leaf)\n    Two(Leaf, int)\n}\nfn g(n: Node) -> int {\n    match n {\n        .One(.Num(k)) or .Two(.Num(k), _) -> k\n        _ -> 0\n    }\n}\ng(Node.One(Leaf.Num(4))) + g(Node.Two(Leaf.Num(30), 9)) + g(Node.Empty)") == "34"
+        }
+        then "an alternative that binds a name the first does not is refused" {
+            refused_with("${shapes()}match Shape.Line(2) {\n    .Dot or .Line(n) -> 1\n    _ -> 2\n}", "every alternative of an `or` arm binds the same names — the first binds nothing, alternative 2 binds `n`")
+        }
+        then "a name bound at two types is refused" {
+            refused_with("enum Q {\n    A(v: int)\n    B(v: string)\n}\nmatch Q.A(1) {\n    .A(v) or .B(v) -> 1\n}", "`v` is `int` in the first alternative of this `or` arm and `string` in alternative 2 — a name binds at one type")
+        }
+        then "a pattern binding a name twice is refused — it answered the second value, silently" {
+            refused_with("enum E {\n    A(n: int, m: int)\n}\nmatch E.A(1, 2) {\n    .A(n, n) -> n\n}", "this pattern binds `n` twice — a name binds one value")
+        }
+        then "a name bound twice renders whole" {
+            analyze_source("enum E {\n    A(n: int, m: int)\n}\nmatch E.A(1, 2) {\n    .A(n, n) -> n\n}").report().starts_with("error[F2109]: this pattern binds `n` twice — a name binds one value")
+        }
+        then "an unknown variant inside an `or` arm refuses once and nothing else speaks" {
+            let src = "enum E {\n    A(n: int)\n    B(n: int)\n}\nmatch E.A(1) {\n    .A(n) or .Zed(n) -> n\n    _ -> 0\n}"
+            refusals(src) == 1 && analyze_source(src).report().contains("`E` has no variant `Zed`")
         }
         then "`_` covers the remainder, and the first arm wins" {
             shown("${shapes()}match Shape.Dot {\n    .Line(_) -> 1\n    _ -> 2\n}") == "2"

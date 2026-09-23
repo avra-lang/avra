@@ -1,0 +1,79 @@
+//! `avra explain repr <type>` — the runtime REPRESENTATION `repr_word`
+//! (features/values.av) names for a type expression: flat, boxed, niche,
+//! or a one-slot box.
+use @std.io.{make_dirs, write_text}
+use commands.{root_program}
+
+/// A package declaring one flat struct — enough to resolve a scalar, a
+/// `List`, and a declared name, bare and under `?`.
+fn pkg_with_id(name: string) -> string {
+    let root = "/tmp/avra-explain-repr-test/${name}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let _ = write_text("${root}/src/main.av", "type Id = { n: int }\n\nfn main() -> int { 0 }\n")
+    root
+}
+
+/// A wider package: a flat one-field record, a non-flat two-field one,
+/// an enum, and a named alias — every declared-kind the resolver could
+/// be asked about, not just the one it answers.
+fn pkg_wide(name: string) -> string {
+    let root = "/tmp/avra-explain-repr-test/${name}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    let src = "type Id = { n: int }\ntype Pair = { a: int, b: string }\nenum Color { Red Green Blue }\ntype Alias = int\n\nfn main() -> int { 0 }\n"
+    let _ = write_text("${root}/src/main.av", src)
+    root
+}
+
+spec "commands/explain repr" {
+    given "a package declaring a flat struct" {
+        then "a nullable scalar is a register pair" {
+            root_program(pkg_with_id("pair")).explain_repr("int?") == "pair"
+        }
+        then "a nullable string is a niche — the pointer's own null is absence" {
+            root_program(pkg_with_id("niche")).explain_repr("string?") == "niche"
+        }
+        then "a nullable flat record is a one-slot box — a word has no spare value" {
+            root_program(pkg_with_id("boxed-opt")).explain_repr("Id?") == "one-slot box"
+        }
+        then "a bare scalar is flat — it rides in registers, no pointer" {
+            root_program(pkg_with_id("bare-scalar")).explain_repr("int") == "flat"
+        }
+        then "a bare flat record is flat too — it rides as its one field" {
+            root_program(pkg_with_id("bare-record")).explain_repr("Id") == "flat"
+        }
+        then "a List is boxed — an ordinary managed pointer" {
+            root_program(pkg_with_id("list")).explain_repr("List<int>") == "boxed"
+        }
+        then "an undeclared name resolves nothing" {
+            root_program(pkg_with_id("miss-name")).explain_repr("NotDeclared") == null
+        }
+        then "malformed syntax resolves nothing, never a crash" {
+            root_program(pkg_with_id("miss-syntax")).explain_repr("int??") == null
+        }
+    }
+    given "a package declaring every other kind the resolver could be asked about" {
+        then "a non-flat multi-field struct is boxed — an ordinary managed pointer" {
+            root_program(pkg_wide("pair-struct")).explain_repr("Pair") == "boxed"
+        }
+        then "a non-flat struct's nullable is a niche — it already rode a pointer" {
+            root_program(pkg_wide("pair-struct-opt")).explain_repr("Pair?") == "niche"
+        }
+        then "an enum resolves nothing — this door only opens structs and scalars" {
+            root_program(pkg_wide("enum-miss")).explain_repr("Color") == null
+        }
+        then "a nullable enum resolves nothing either" {
+            root_program(pkg_wide("enum-opt-miss")).explain_repr("Color?") == null
+        }
+        then "a named alias over a scalar resolves nothing — the alias itself is not the scalar" {
+            root_program(pkg_wide("alias-miss")).explain_repr("Alias") == null
+        }
+        then "a declared name nested inside List/Map resolves nothing, never a wrong word" {
+            root_program(pkg_wide("nested-miss")).explain_repr("List<Map<string, Id>>") == null
+        }
+        then "a map keyed by anything but string resolves nothing" {
+            root_program(pkg_wide("map-key-miss")).explain_repr("Map<int, int>") == null
+        }
+    }
+}

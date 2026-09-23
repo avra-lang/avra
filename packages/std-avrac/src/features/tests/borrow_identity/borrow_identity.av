@@ -1,0 +1,30 @@
+// proves: spec 11.5 — a copy of a value whose hook captured it is a
+// copy, hook included: the copy's writes land in the copy while its
+// hook answers for the value it captured. A value asked through its
+// own hooks is an identity: minted in the binding that writes it,
+// never read out of another place.
+type W = { xs: List<int>, hook: Cell<List<fn() -> int>> }
+impl W {
+    mut fn add(v: int) { self.xs.push(v) }
+    fn count() -> int { self.xs.length }
+    fn arm() {
+        let seen: fn() -> int = () -> self.count()
+        self.hook.set([seen])
+    }
+    fn asked() -> int { (self.hook.get()[0])() }
+}
+type Held = { w: W }
+fn made() -> W {
+    let no: List<fn() -> int> = []
+    let w = W { xs: [], hook: Cell.new(no) }
+    w.arm()
+    w
+}
+let o = Held { w: made() }
+mut copied = o.w
+copied.add(1)
+copied.add(2)
+mut own = made()
+own.add(1)
+own.add(2)
+"${copied.count()} ${copied.asked()} ${own.count()} ${own.asked()}"

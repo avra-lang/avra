@@ -2,8 +2,8 @@
 //! rides the recorded expected-type channel), the body typed under
 //! the params behind the return barrier, the whole wearing
 //! `fn(params) -> body`.
-use core.{ExprId, Type, TypeId, Arrow, Param, SeatMark, mut_mark, settled_mark}
-use features.{TypeCx, this_is, slot_worthy, slice_promise, Cap}
+use core.{ExprId, Type, TypeId, Arrow, Param, SeatMark, mut_mark, settled_mark, same_expr}
+use features.{TypeCx, this_is, slot_worthy, Cap}
 use diagnostics.{refusal}
 
 fn lambda_type(mut cx: TypeCx, e: ExprId) -> TypeId {
@@ -36,6 +36,7 @@ fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> Typ
     let seats = cx.capture_seats(e)
     let unheld: int? = first_unslottable(cx, seats)
     if unheld != null { return uncapturable(cx, e, unheld!, seats[unheld!]) }
+    if captures_task(cx, e, seats) { return cx.error_type }
     // THE BODY HEARS THE ANSWER: a seat's arrow says what the body
     // answers, so a bare variant, a free Var or a boxable value in
     // the body reads it — and the lambda wears the declared answer,
@@ -45,6 +46,7 @@ fn lambdaed(mut cx: TypeCx, e: ExprId, params: List<Param>, body: ExprId) -> Typ
     let marks = heard_marks(cx, e, params)
     let ret = cx.lambda_body(e, ptys, marks, body)
     if cx.errored_ty(ret) { return cx.error_type }
+    if cx.escapes_with_task(cx.loc_of(body), "this body answers `${cx.view.types.name_of(ret)}`", ret) { return cx.error_type }
     match answer {
         a? -> answered(cx, body, ptys, marks, ret, a)
         null -> cx.view.types.intern(Type.Fn(ptys, marks, ret))
@@ -111,10 +113,21 @@ fn erred(cx: TypeCx, ty: TypeId) -> bool {
     cx.errored_ty(ty)
 }
 
+/// A lambda VALUE may outlive its block, so it captures no task —
+/// spoken for the first that does. A task's own body is joined where
+/// its task is, so it may.
+fn captures_task(mut cx: TypeCx, e: ExprId, seats: List<TypeId>) -> bool {
+    if cx.task_bodies.any(same_expr(it, e)) { return false }
+    let j? = seats.find_index((t) -> cx.view.types.holds_tasks(t)) else { return false }
+    let cap: Cap? = cx.names.capture(e)
+    let name = if cap == null { "a name" } else { "`${cap!.names[j]}`" }
+    cx.escapes_with_task(cx.loc_of(e), "${name} is captured here", seats[j])
+}
+
 /// The first lane no slot can hold, when one exists.
 fn first_unslottable(cx: TypeCx, seats: List<TypeId>) -> int? {
     for j, ty in seats {
-        if !slot_worthy(cx.view.types, cx.view.types.shape_of(ty)) { return j }
+        if !slot_worthy(cx.view.types.shape_of(ty)) { return j }
     }
     null
 }
@@ -189,7 +202,7 @@ fn uncapturable(mut cx: TypeCx, e: ExprId, j: int, seat: TypeId) -> TypeId {
     let cap: Cap? = cx.names.capture(e)
     let name = if cap == null { "this name" } else { cap!.names[j] }
     let ty = cx.view.types.name_of(seat)
-    cx.spoken(refusal("type.lambda", cx.loc_of(e), "a lambda cannot capture `${ty}` yet — `${name}` rides a register pair, and a capture lane holds one word", "captured here", "bind what it carries first — `let ${name}_v = ${name} ?? …` — and capture that; ${slice_promise("captures")}"))
+    cx.spoken(refusal("type.lambda", cx.loc_of(e), "a lambda cannot capture `${name}` — `${ty}` is no type of its own", "captured here", "declare its type where it is bound — `let ${name}: int? = null`"))
 }
 
 fn uncallable(mut cx: TypeCx, e: ExprId, subject: ExprId) -> TypeId {

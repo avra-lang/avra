@@ -16,12 +16,12 @@ fn map_type(mut cx: TypeCx, e: ExprId, keys: List<ExprId>, values: List<ExprId>)
     if cx.want_refused(e) { return cx.error_type }
     let want: TypeId? = wanted_value(cx, e)
     if want != null { return heard_map(cx, e, values, want!) }
-    let head = values[0]
-    let v = cx.type_at(head)
+    let head = cx.led_by(values)
     if cx.errored(head) { return cx.error_type }
-    if !slot_worthy(cx.view.types, cx.shape_at(head)) { return cx.unslottable(head, "a map value") }
+    if !slot_worthy(cx.shape_at(head)) { return cx.unslottable(head, "a map value") }
+    let v = cx.joined(values, cx.type_at(head))
     for x in values {
-        if cx.types_disagree(cx.type_at(x), v) { return disagreeing_value(cx, x, v) }
+        if !cx.accepts(x, v) { return disagreeing_value(cx, x, v) }
     }
     cx.type(Map<str, v>)
 }
@@ -37,7 +37,7 @@ fn wanted_value(cx: TypeCx, e: ExprId) -> TypeId? {
 
 /// Every value through `accepts` against the declared value type.
 fn heard_map(mut cx: TypeCx, e: ExprId, values: List<ExprId>, want: TypeId) -> TypeId {
-    if !slot_worthy(cx.view.types, cx.view.types.shape_of(want)) { return cx.unslottable_want(e, want, "a map value") }
+    if !slot_worthy(cx.view.types.shape_of(want)) { return cx.unslottable_want(e, want, "a map value") }
     for x in values {
         if !cx.accepts(x, want) { return unwanted_value(cx, x, want) }
     }

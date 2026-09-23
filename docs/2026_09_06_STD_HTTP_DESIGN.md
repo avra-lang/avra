@@ -110,7 +110,10 @@ values beneath the syntax. Its shipped-status claims describe the old tree.
 
 Likely general foundations: owned byte buffers and views, resource lifetimes,
 fallible streams, task scopes, a nonblocking I/O scheduler, typed codecs,
-and component expansion. Each needs a concrete HTTP witness before its scope
+and component expansion. Task scopes and the scheduler are designed in
+docs/2026_09_22_FIBERS_DESIGN.md: every block is a scope, so law 2's
+"a request owns its ordinary child work" holds by construction, and
+cancellation and deadlines (`within`) reach I/O at its pause points. Each needs a concrete HTTP witness before its scope
 is settled. SQLite, process, and other lanes may already own portions.
 
 The concurrency spec's channel section assigns capacity zero to both an

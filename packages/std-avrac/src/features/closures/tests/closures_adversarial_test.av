@@ -138,17 +138,17 @@ spec "features/closures/adversarial" {
         then "calling the element — `it(…)` rides too" {
             shown("let fs: List<fn(int) -> int> = [(x) -> x + 1]\nfs.map(it(3))[0]") == "4"
         }
-        then "a walk cannot collect a nullable scalar yet" {
-            refused_with("fn g(n: int) -> int? {\n    n\n}\n[1].map(g(it))\n2", "`map` cannot collect `int?` yet")
+        then "a walk collects a nullable scalar, absence and all" {
+            shown("fn g(n: int) -> int? {\n    if n > 1 { null } else { n }\n}\nlet ys = [1, 2].map(g(it))\n\"\${ys[0] ?? 0} \${ys[1] ?? 9}\"") == "1 9"
         }
-        then "the WRITTEN type is refused, and the literal beneath it says nothing more" {
-            refused_with("let xs: List<int?> = [3, null]\nxs.map(it ?? 0)[1]", "a `List` slot cannot hold this yet")
+        then "a written `List<int?>` walks, its absent slot read as absence" {
+            shown("let xs: List<int?> = [3, null]\nxs.map(it ?? 0)[1]") == "0"
         }
-        then "a fn's list tail is gated the same — one voice, not two" {
-            refusals("fn g(v: int?) -> List<int?> {\n    [v]\n}\ng(1).length") == 1
+        then "a fn's `List<int?>` tail answers the list" {
+            shown("fn g(v: int?) -> List<int?> {\n    [v]\n}\ng(1).length") == "1"
         }
-        then "an INFERRED list still hears it from the element" {
-            refused_with("fn g(v: int?) -> int {\n    [v].length\n}\ng(1)", "a list element cannot hold this yet")
+        then "an INFERRED list takes its type from the nullable element" {
+            shown("fn g(v: int?) -> int {\n    [v].length\n}\ng(1)") == "1"
         }
         then "`?` behind the lambda barrier names the lambda, not the top level" {
             refused_with("type U = { n: int }\nfn g(u: U) -> U? {\n    u\n}\nfn f(us: List<U>) -> U? {\n    us.map(g(it)?)[0]\n}\nf([U { n: 1 }])", "a lambda promises none")
@@ -303,8 +303,8 @@ spec "features/closures/adversarial" {
         then "every slot-worthy category captured and read" {
             shown("type Flat = { i: int }\ntype Box = { s: string, n: int }\nenum E {\n    A\n    B(v: int)\n}\nlet i = 7\nlet b = true\nlet s = \"str\"\nlet xs = [1, 2]\nlet fl = Flat { i: 3 }\nlet bx = Box { s: \"bs\", n: 9 }\nlet e = E.B(4)\nlet ns: string? = \"ns\"\nlet nf: Flat? = Flat { i: 8 }\nlet f = (x: int) -> x + 1\nlet all = () -> {\n    let ev = match e {\n        .A -> 0,\n        .B(v) -> v,\n    }\n    \"\${i} \${b} \${s} \${xs.length} \${fl.i} \${bx.s}\${bx.n} \${ev} \${ns ?? \"-\"} \${nf?.i ?? 0} \${f(1)}\"\n}\nall()") == "7 true str 2 3 bs9 4 ns 8 2"
         }
-        then "a scalar nullable is not slot-worthy — a capture lane is a slot" {
-            refused_with("let ni: int? = 5\nlet g = () -> ni ?? 0\ng()", "a lambda cannot capture `int?` yet")
+        then "a scalar nullable rides a capture lane, present and absent" {
+            shown("let ni: int? = 5\nlet na: int? = null\nlet g = () -> \"\${ni ?? 0} \${na ?? 7}\"\ng()") == "5 7"
         }
         then "a captured let is not a place" {
             refused_with("let n = 1\nlet g = () -> {\n    n = 2\n    n\n}\ng()", "`n` is captured by value — a lambda cannot assign to it")

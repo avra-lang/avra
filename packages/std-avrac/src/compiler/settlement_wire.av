@@ -12,6 +12,7 @@ fn wire_value(v: MetaVal) -> string {
         .Text(s) -> wire_field("t") + wire_field(s),
         .Bool(b) -> wire_field("b") + wire_field(if b { "1" } else { "0" }),
         .Absent -> wire_field("a"),
+        .Gone -> wire_field("g"),
         .Node(i) -> wire_field("n") + wire_field("${i}"),
         .Map(i) -> wire_field("m") + wire_field("${i}"),
     }
@@ -81,6 +82,7 @@ impl WireReader {
     mut fn value() -> MetaVal? {
         let tag? = self.field() else { return null }
         if tag == "a" { return MetaVal.Absent }
+        if tag == "g" { return MetaVal.Gone }
         let data? = self.field() else { return null }
         if tag == "t" { return MetaVal.Text(data) }
         if tag == "b" { return MetaVal.Bool(data == "1") }
@@ -168,7 +170,7 @@ impl Workspace {
         if raw == "" { return null }
         let parts = raw.split("~")
         if parts.length != 2 { return null }
-        let f? = self.decls.paths.get(parts[0]) else { return null }
+        let f? = self.decls.paths.get().get(parts[0]) else { return null }
         let at? = wire_number(parts[1]) else { return null }
         let ids = self.decls.decls_of_file(f)
         if at < 0 || at >= ids.length { return null }
@@ -217,7 +219,7 @@ impl Workspace {
             let file_path? = r.field() else { return null }
             let decl_raw? = r.field() else { return null }
             let sub_mark? = r.field() else { return null }
-            let f? = self.decls.paths.get(file_path) else { return null }
+            let f? = self.decls.paths.get().get(file_path) else { return null }
             let decl = self.decl_from_ref(decl_raw)
             let sub: Sub? = if sub_mark == "+" {
                 let target_raw? = r.field() else { return null }

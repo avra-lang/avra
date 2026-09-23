@@ -21,7 +21,7 @@
 //! in any of them.
 use @std.meta.{derive}
 use core.{Expr, ExprId, StmtId, PatId, FileId, Param, TypeId, TypeRef, TypeRegistry, Reg, joined, DeclId, found_at, Binding}
-use core.{SeatMark, SideTable, Fingerprint}
+use core.{SeatMark, SideTable, Fingerprint, nothing_bound}
 // LICENSED I24: the GENERATED impls call these; the keeper reads source, and generated code is not source
 use core.{fp, fp_list, fp_str}
 use diagnostics.{Diag, refusal}
@@ -219,7 +219,8 @@ export type TypeCx = {
     // def's stmt index, a param's position — two stacks keep the
     // keyspaces apart); the enclosing fns' promises; the lambda
     // barriers; the type parameters in scope; the paired `for`
-    // heads' subjects — the one place a pairing word may stand
+    // heads' subjects — the one place a pairing word may stand; the
+    // task bodies being typed — the one lambda a task may be captured by
     scope: List<TypeId>,
     narrow_defs: List<NarrowFrame>,
     narrow_params: List<NarrowFrame>,
@@ -227,7 +228,12 @@ export type TypeCx = {
     lam_bar: List<int>,
     tscope: List<TypeId>,
     pairs: List<ExprId>,
+    task_bodies: List<ExprId>,
     starving: bool,
+    // F2106's dedup: a bare `mut` local's declaring statement, once its
+    // alias-copy law has spoken for it — the first writing call through
+    // it is the tell, later ones on the same local repeat nothing new.
+    aliased_warned: List<int>,
 }
 
 /// One narrow in force: the proven binding's key, the INNER its
@@ -282,7 +288,14 @@ export type LowerCx = {
 
 /// One registered `defer`: the fn box to call, the depth of the
 /// frame that registered it, and whether only a failing exit runs it.
-export type Deferred = { box: Reg, depth: int, on_error: bool }
+/// What a closing frame runs: a deferred closure, called; or an owner's
+/// tasks, joined — the owner's register, or the cell it lives in.
+export enum Deferral {
+    Call(box: Reg)
+    Settle(owner: Reg, cell: bool)
+}
+
+export type Deferred = { work: Deferral, depth: int, on_error: bool }
 
 /// The per-pass behavior of one feature's expression nodes.
 /// `heirs` are the sub-expressions a planted WANT flows into
@@ -467,13 +480,13 @@ impl LowerCx {
 
 /// One optional bind as an arm's bind list — "" names nothing.
 export fn named_bind(b: string) -> List<string> {
-    if b == "" { return [] }
+    if b == "" || b == nothing_bound() { return [] }
     [b]
 }
 
 /// A declared sig with the declaration's Vars substituted — how an
 /// instantiation answers `variants_of`.
-export fn subbed_variants(types: TypeRegistry, sig: EnumSig?, decl: DeclId, args: List<TypeId>) -> EnumSig? {
+export fn subbed_variants(mut types: TypeRegistry, sig: EnumSig?, decl: DeclId, args: List<TypeId>) -> EnumSig? {
     if sig == null { return null }
     EnumSig {
         names: sig!.names,
@@ -481,12 +494,12 @@ export fn subbed_variants(types: TypeRegistry, sig: EnumSig?, decl: DeclId, args
     }
 }
 
-fn subbed_payloads(types: TypeRegistry, ps: List<TypeId>, decl: DeclId, args: List<TypeId>) -> List<TypeId> {
+fn subbed_payloads(mut types: TypeRegistry, ps: List<TypeId>, decl: DeclId, args: List<TypeId>) -> List<TypeId> {
     [types.substituted(p, decl, args) for p in ps]
 }
 
 /// The struct twin.
-export fn subbed_fields(types: TypeRegistry, sig: StructSig?, decl: DeclId, args: List<TypeId>) -> StructSig? {
+export fn subbed_fields(mut types: TypeRegistry, sig: StructSig?, decl: DeclId, args: List<TypeId>) -> StructSig? {
     if sig == null { return null }
     let held = sig!
     StructSig {

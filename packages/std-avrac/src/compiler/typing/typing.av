@@ -21,7 +21,7 @@ use features.rules.{example_marks}
 /// SHARED declaration table — a signature may name any file's
 /// types, and asking for one computes it. The table is born total:
 /// every slot pre-typed as the hole.
-export fn new_type_cx(dispatch: Dispatch, keywords: List<string>, view: FileView, names: NameFacts, lo: int, hi: int) -> TypeCx {
+export fn new_type_cx(dispatch: Dispatch, keywords: List<string>, mut view: FileView, names: NameFacts, lo: int, hi: int) -> TypeCx {
     let hole = view.types.intern(Type.Error)
     TypeCx {
         view: view,
@@ -37,7 +37,9 @@ export fn new_type_cx(dispatch: Dispatch, keywords: List<string>, view: FileView
         lam_bar: [],
         tscope: [],
         pairs: [],
+        task_bodies: [],
         starving: false,
+        aliased_warned: [],
     }
 }
 
@@ -66,9 +68,7 @@ impl TypeCx {
             .Default -> self.default_body(x),
             .Case -> self.case_body(x),
             .Rule -> self.rule_body(x),
-            .Record or .Named or .Enum -> self.type_stmts([x.stmt]),
-            .Const -> self.type_stmts([x.stmt]),
-            .Syntax -> self.type_stmts([x.stmt]),
+            .Record or .Named or .Enum or .Const or .Syntax -> self.type_stmts([x.stmt]),
             .Trait or .Impl or .Builtin -> nothing(),
         }
         self.speak_hungry()
@@ -138,6 +138,7 @@ impl TypeCx {
         self.starving = false
         for s in stmts {
             stmt_semantics_of(self.dispatch, self.view.store.stmt(s)).type_stmt(self, s)
+            self.unowned_tasks(s)
             self.type_annotations(s)
         }
         self.starving = was
@@ -450,14 +451,20 @@ impl TypeCx {
     /// as a value — the answers a local declaration gives. No read
     /// site is in hand here (a capture's source binding), so a
     /// refusal this reaches falls back to the declaration's own loc.
-    fn decl_type(d: DeclId) -> TypeId {
-        self.view.decls.decl_type_of(self.facts.voices, self.error_type, null, d)
+    mut fn decl_type(d: DeclId) -> TypeId {
+        mut voices = self.facts.voices
+        let out = self.view.decls.decl_type_of(voices, self.error_type, null, d)
+        self.facts.voices = voices
+        out
     }
 
     /// The same answer, AT THE EXPRESSION READING IT — any refusal
     /// points at the read, which is where the mistake is.
-    fn decl_type_read(e: ExprId, d: DeclId) -> TypeId {
-        self.view.decls.decl_type_of(self.facts.voices, self.error_type, self.loc_of(e), d)
+    mut fn decl_type_read(e: ExprId, d: DeclId) -> TypeId {
+        mut voices = self.facts.voices
+        let out = self.view.decls.decl_type_of(voices, self.error_type, self.loc_of(e), d)
+        self.facts.voices = voices
+        out
     }
 
     /// A declaring statement's identity in the shared table.
@@ -580,7 +587,6 @@ fn var_named(types: TypeRegistry, id: TypeId, name: string) -> bool {
 
 /// The slot-law help, worded once — every slot that must wait says
 /// exactly this.
-const slots_await_ownership: string = "nullable slots arrive with ownership's next slice"
 
 /// Two method sigs agree seat by seat past the receiver — the
 /// trait's wears `Self` there, the signatory's its own type.

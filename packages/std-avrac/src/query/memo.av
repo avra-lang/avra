@@ -1,7 +1,7 @@
 //! Typed values over the query kernel. A family owns one memo; copies
 //! share both its database and its value table, so higher-order query
 //! bodies may safely capture either handle.
-use core.{Table, new_table}
+use core.{Table, new_table, qtrace}
 
 export enum MemoAsk<T> {
     Reuse(T)
@@ -14,24 +14,26 @@ export enum MemoStart<T> { Reuse(T), Compute }
 /// One input read with the fingerprint of the bytes that produced it.
 export type Loaded<T> = { value: T, fingerprint: int }
 
-export type Memo<T> = { db: Db, family: int, values: Cell<Table<T>> }
+export type Memo<T> = { db: Db, family: int, values: Table<T> }
 
 export fn new_memo<T>(db: Db, family: int) -> Memo<T> {
-    Memo { db: db, family: family, values: Cell.new(new_table<T>()) }
+    Memo { db: db, family: family, values: new_table<T>() }
 }
 
 impl Memo {
     fn query_key(arg: int) -> Key { Key { family: self.family, arg: arg } }
 
     fn ask(arg: int) -> MemoAsk<T> {
-        match self.db.ask(self.query_key(arg)) {
-            .Reuse -> match self.values.get().entry(arg) {
+        let a = match self.db.ask(self.query_key(arg)) {
+            .Reuse -> match self.values.entry(arg) {
                 .Present(value) -> MemoAsk.Reuse(value),
                 .Missing -> missing_value(self.family, arg),
             },
             .Compute -> MemoAsk.Compute,
             .Cycle -> MemoAsk.Cycle,
         }
+        qtrace("Q\task\t${self.family}\t${arg}\t${ask_tag(a)}\n")
+        a
     }
 
     /// Open an acyclic query unless its typed value is reusable. The
@@ -77,22 +79,21 @@ impl Memo {
     /// Release this family's values and matching kernel cells
     /// together. Used to break retained closure cycles at shutdown.
     fn evict() {
-        self.values.set(new_table())
+        self.values.clear()
         self.db.evict_family(self.family)
     }
 
     fn settle(arg: int, value: T, fingerprint: int) -> T {
         self.db.settle(self.query_key(arg), fingerprint)
-        mut values = self.values.get()
-        values.keep(arg, value)
-        self.values.set(values)
+        self.values.keep(arg, value)
+        qtrace("Q\tsettle\t${self.family}\t${arg}\t${fingerprint}\n")
         value
     }
 
     /// A once-read input. Its loader runs on first sight; later reads
     /// record the dependency and return the shared typed value.
     fn input(arg: int, load: fn() -> T, fingerprint: fn(T) -> int) -> T {
-        match self.values.get().entry(arg) {
+        match self.values.entry(arg) {
             .Present(value) -> {
                 self.db.record_dep(self.query_key(arg))
                 return value
@@ -102,16 +103,14 @@ impl Memo {
         let value = load()
         self.db.set_input(self.query_key(arg), fingerprint(value))
         self.db.record_dep(self.query_key(arg))
-        mut values = self.values.get()
-        values.keep(arg, value)
-        self.values.set(values)
+        self.values.keep(arg, value)
         value
     }
 
     /// An input whose semantic value does not retain its source bytes.
     /// The loader reads once and returns both products of that read.
     fn input_loaded(arg: int, load: fn() -> Loaded<T>) -> T {
-        match self.values.get().entry(arg) {
+        match self.values.entry(arg) {
             .Present(value) -> {
                 self.db.record_dep(self.query_key(arg))
                 return value
@@ -121,9 +120,7 @@ impl Memo {
         let loaded = load()
         self.db.set_input(self.query_key(arg), loaded.fingerprint)
         self.db.record_dep(self.query_key(arg))
-        mut values = self.values.get()
-        values.keep(arg, loaded.value)
-        self.values.set(values)
+        self.values.keep(arg, loaded.value)
         loaded.value
     }
 
@@ -141,10 +138,20 @@ impl Memo {
     }
 
     fn cycle_value(arg: int) -> T {
-        match self.values.get().entry(arg) {
+        match self.values.entry(arg) {
             .Present(value) -> value,
             .Missing -> missing_value(self.family, arg),
         }
+    }
+}
+
+/// A query event's outcome, by name alone — never the payload, which
+/// rides an opaque `T` the trace cannot stringify.
+fn ask_tag<T>(a: MemoAsk<T>) -> string {
+    match a {
+        .Reuse(_) -> "reuse",
+        .Compute -> "compute",
+        .Cycle -> "cycle",
     }
 }
 

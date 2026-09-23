@@ -88,12 +88,12 @@ impl Decls {
     /// an unknown callee against. A whole-table walk: gathered once per
     /// lowering, never per body.
     fn extern_names() -> List<string> {
-        [self.symbol(d.id) for d in self.decls if self.is_extern(d.id)]
+        [self.symbol(d.id) for d in self.decls.get() if self.is_extern(d.id)]
     }
 
     /// The program's extern fns as registry rows.
     fn extern_rows() -> List<RtSig> {
-        [self.extern_row_of(d) for d in self.decls if self.is_extern(d.id)]
+        [self.extern_row_of(d) for d in self.decls.get() if self.is_extern(d.id)]
     }
 
     /// An extern's runtime row. The WIDTHS are read back from the
@@ -424,12 +424,12 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValu
     let seat_marks: List<SeatMark> = a.view.decls.marks_of(x.id, raw.length)
     mut lo = new_lower_cx(a, rt, sub, seats, seat_marks, new_jobs(externs, settle))
     // the params ARE registers 0..N-1, minted in order
-    for pt in ptypes { let _ = lo.out.mint_ty(pt) }
-    lo.out.seeded()
+    for pt in ptypes { let _ = lo.mint_ty(pt) }
+    lo.seeded()
     lo.seats_enter()
     let r = if a.view.store.is_once(x.stmt) { lo.once_body(fname, root, rt) } else { lo.reg_of(root) }
     lo.seats_exit(r)
-    lo.out.give(Ins.RetVal(r))
+    lo.emit(Ins.RetVal(r))
     LoweredBody {
         body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: sub != null },
         voices: lo.out.voices,
@@ -449,18 +449,20 @@ fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId,
     let body: ExprId? = a.view.store.lambda_parts(lj.lam)?.body
     mut lo = new_lower_cx(a, rt, lj.sub, [], [], new_jobs(externs, settle))
     // register 0 is the env box, 1..N the seats
-    let _ = lo.out.mint_ty(lam_ty)
-    for pt in seats { let _ = lo.out.mint_ty(pt) }
-    lo.out.seeded()
+    let _ = lo.mint_ty(lam_ty)
+    for pt in seats { let _ = lo.mint_ty(pt) }
+    lo.seeded()
     lo.seats_enter()
     if body == null {
-        lo.out.defect("a lift without a lambda survived typing")
+        lo.defect("a lift without a lambda survived typing")
     }
-    let r = lo.reg_of(body ?? lj.lam)
+    let value = lo.reg_of(body ?? lj.lam)
+    let r = if lj.kind is .Task { lo.one_cell(value, rt) } else { value }
+    let answers = lo.out.type_of_reg(r)
     lo.seats_exit(r)
-    lo.out.give(Ins.RetVal(r))
+    lo.emit(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true },
+        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: answers, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true },
         voices: lo.out.voices,
         jobs: lo.jobs,
     }
@@ -525,9 +527,7 @@ fn rules_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId) -> Reg {
     let entry_ty: TypeId = lo.view.types.element(rt) ?? rt
     let regs = [rule_entry_reg(lo, a, entry_ty, d) for d in ordered_rule_decls(a)]
     let size = lo.box_size(regs.length)
-    let dst = lo.mint_ty(rt)
-    lo.grown_box(dst, size, regs)
-    dst
+    lo.grown_box(lo.view.types.shape_of(rt), size, regs)
 }
 
 fn ordered_rule_decls(a: Analysis) -> List<Decl> {
@@ -569,9 +569,7 @@ fn rule_run_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
         lo.jobs.wraps.push(Wrap { target: symbol, seats: held?.seats ?? [], ret: held?.answer ?? lo.view.decls.types.intern(Type.Error), name: wname })
     }
     let size = lo.box_size(1)
-    let dst = lo.mint_ty(fnty)
-    lo.fn_box(dst, size, wname, [])
-    dst
+    lo.fn_box(lo.view.types.shape_of(fnty), size, wname, [])
 }
 
 /// The declaration's own doc comment, its first paragraph joined —
@@ -600,7 +598,7 @@ fn doc_first_paragraph(lines: List<string>) -> List<string> {
 fn lower_root(a: Analysis, root: ExprId, name: string, seats: List<SeatValue>, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
     let rt: TypeId = a.facts.type_at(root)
     mut lo = new_lower_cx(a, rt, null, seats, [], new_jobs(externs, settle))
-    lo.out.seeded()
+    lo.seeded()
     // THE SETTLED SEATS ARE CONSTANTS HERE: the initializer reads a
     // `const` seat as its called value, so the settlement computes on
     // the value the unit was made for.
@@ -610,7 +608,7 @@ fn lower_root(a: Analysis, root: ExprId, name: string, seats: List<SeatValue>, e
     // `once fn` is; a scalar or text is spelled at its uses
     let r = if a.view.decls.types.spells(rt) { lo.reg_of(root) } else { lo.once_body(name, root, rt) }
     lo.seats_exit(r)
-    lo.out.give(Ins.RetVal(r))
+    lo.emit(Ins.RetVal(r))
     LoweredBody {
         body: Body { name: name, params: [], ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types },
         voices: lo.out.voices,
@@ -630,9 +628,9 @@ fn lower_main(a: Analysis, name: string, externs: List<string>, settle: fn(FileI
     lo.lower_stmts(a.view.stmts)
     let shown: ExprId? = program_answer(a)
     let refusal: Diag? = if shown == null { null } else { lo.print_lowering(lo.reg_of(shown!)) }
-    if refusal != null { lo.out.voices.speak(refusal!) }
+    if refusal != null { lo.speak(refusal!) }
     lo.scope_exit(null)
-    lo.out.give(Ins.Ret(0))
+    lo.emit(Ins.Ret(0))
     LoweredBody {
         body: Body {
             name: name,

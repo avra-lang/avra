@@ -257,7 +257,7 @@ impl SourceText {
             .NamedType(name, tparams, of) -> [source_line(depth, "${exported}type ${source_name(name.of)}${self.named_type_params([t.of for t in tparams])} = ${spelled(of)}")],
             .EnumDecl(name, tparams, variants) -> [self.enum_decl(exported, name.of, [t.of for t in tparams], variants, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Spec(name, cases) -> [self.spec_decl(name, cases, self.stmt_end(s), self.stmt_flat(s), depth)],
-            .Defer(body, on_error) -> [source_line(depth, "${if on_error { "errdefer" } else { "defer" }} ${self.deferred(body, depth)}")],
+            .Defer(body, on_error) -> [source_line(depth, "${if on_error { "errdefer" } else { "defer" }} ${self.written_body(body, depth)}")],
             .Rule(name, arms, _) -> [self.rule_decl(exported, name.of, arms, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Error -> [source_line(depth, "__error")],
         }
@@ -576,7 +576,9 @@ impl SourceText {
         [source_line(depth, "given ${quoted_text(g.group)} {")].concat(thens).concat([source_line(depth, "}")])
     }
 
-    mut fn deferred(body: ExprId, depth: int) -> string {
+    /// The source a zero-seat lambda was written as — `defer e`'s and
+    /// `spawn e`'s `e`.
+    mut fn written_body(body: ExprId, depth: int) -> string {
         match self.store.expr(body) {
             .Lambda(params, value) if params.is_empty() -> self.expression(value, loosest_tier, depth),
             rest -> self.expression(body, loosest_tier, depth),
@@ -626,6 +628,7 @@ impl SourceText {
             // param carries no span because nothing minted one.
             .Lambda(params, body) if is_pronoun(params) -> self.expression(body, parent, depth),
             .Lambda(params, body) -> grouped("(${self.params(params, depth)}) -> ${self.expression(body, loosest_tier, depth)}", atom_tier, parent),
+            .Spawn(body) -> grouped("spawn ${self.written_body(body, depth)}", loosest_tier, parent),
             // Parentheses preserve VALUE application. Without the
             // witness, `(f)(x)` would print `f(x)` and read back as
             // the direct, declaration-resolved Call variant.

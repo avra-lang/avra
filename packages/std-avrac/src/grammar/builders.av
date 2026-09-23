@@ -206,23 +206,10 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
     for an in annots {
         match an {
             .AExpect(token, message) -> {
-                // LICENSED I4: first-match INDEX; no find_index upstream (TECH_DEBT)
-                mut idx: int? = null
-                for i, m in out {
-                    if idx == null && m.expect == null && m.prim.answers_to(token) { idx = i }
-                }
-                if idx == null {
+                let idx? = out.find_index(it.expect == null && it.prim.answers_to(token)) else {
                     return .Err("@expect names `${token}` but the branch has no matching item")
                 }
-                mut next: List<Item> = []
-                for i, m in out {
-                    if i == idx! {
-                        next.push(m with { expect: Expect { message: message } })
-                    } else {
-                        next.push(m)
-                    }
-                }
-                out = next
+                out = [if i == idx { m with { expect: Expect { message: message } } } else { m } for i, m in out]
             },
             .ARecover(sync_to) -> {
                 if rec != null { return .Err("duplicate @recover on one branch") }

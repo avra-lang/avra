@@ -12,16 +12,14 @@ fn req(more: string) -> Bytes { req_text(more).bytes() }
 fn head_of(b: Bytes) -> Head? {
     match framed(b, 0, 0, limits()) {
         .Complete(h) -> h,
-        .Partial -> null,
-        .Refused(_) -> null,
+        .Partial or .Refused(_) -> null,
     }
 }
 
 fn why(b: Bytes) -> Refusal? {
     match framed(b, 0, 0, limits()) {
         .Refused(r) -> r,
-        .Partial -> null,
-        .Complete(_) -> null,
+        .Partial or .Complete(_) -> null,
     }
 }
 
@@ -52,8 +50,7 @@ fn split_agrees(b: Bytes, at: int, whole: Head?) -> bool {
     if !partial(first) { return false }
     match framed(b, 0, first.length, limits()) {
         .Complete(h) -> whole != null && h.end == whole!.end && h.fields.length == whole!.fields.length,
-        .Partial -> false,
-        .Refused(_) -> false,
+        .Partial or .Refused(_) -> false,
     }
 }
 
@@ -74,8 +71,7 @@ spec "std.http frame" {
             let two = req("").concat(req("X: 1\r\n"))
             match framed(two, 27, 0, limits()) {
                 .Complete(h) -> h.end == two.length && h.fields.length == 2,
-                .Partial -> false,
-                .Refused(_) -> false,
+                .Partial or .Refused(_) -> false,
             }
         }
         then "a body's bytes are never read as the next request line" {
@@ -207,8 +203,7 @@ fn chunk_status(src: string) -> int {
 fn resumes(whole: string, i: int) -> bool {
     match fed(chunker(0), whole.bytes().slice(0, i), limits()) {
         .More(c) -> end_of_fed(c, whole) == whole.length,
-        .Done(_, _) -> false,
-        .Refused(_) -> false,
+        .Done(_, _) or .Refused(_) -> false,
     }
 }
 

@@ -24,22 +24,22 @@ fn exchange() -> Result<string, NetError> {
     let p = poller()?
     p.watch(l.fd, .Read)?
     let listener_ready = ready(p, l.fd)?
-    let server = l.accept()?
+    let server = l.try_accept()?
     p.watch(l.fd, .None)?
     p.watch(server!.fd, .Read)?
-    let quiet = shown(server!.read(64)?)
+    let quiet = shown(server!.try_read(64)?)
     let hello = "GET / HTTP/1.1\r\n".bytes()
-    let put = client.write(hello, 0)?
+    let put = client.try_write(hello, 0)?
     let server_ready = ready(p, server!.fd)?
-    let got = server!.read(64)?
-    let echoed = server!.write(hello, 0)?
+    let got = server!.try_read(64)?
+    let echoed = server!.try_write(hello, 0)?
     p.watch(client.fd, .Read)?
     let client_ready = ready(p, client.fd)?
-    let back = shown(client.read(64)?)
+    let back = shown(client.try_read(64)?)
     let peer = server!.peer().starts_with("127.0.0.1:")
     client.close()?
     let eof_ready = ready(p, server!.fd)?
-    let eof = shown(server!.read(64)?)
+    let eof = shown(server!.try_read(64)?)
     server!.close()?
     l.close()?
     p.close()?

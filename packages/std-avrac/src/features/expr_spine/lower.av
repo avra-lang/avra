@@ -53,9 +53,7 @@ fn presence_reg(mut cx: LowerCx, e: ExprId, op: BinOp, subject: ExprId) -> Reg {
 fn index_reg(mut cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
     let arr = cx.reg_of(s)
     let idx = cx.reg_of(i)
-    let dst = cx.result(e)
-    cx.emit(Ins.CallRt(dst, "avra_array_get", [arr, idx]))
-    dst
+    cx.elem_read(arr, idx, cx.type_at(e))
 }
 
 /// A property read, by the subject's shape: a TYPE NAME builds a
@@ -89,9 +87,7 @@ fn variant_reg(mut cx: LowerCx, e: ExprId, name: string) -> Reg {
         return cx.lower_defect(e, variant_defect)
     }
     let size = cx.box_size(1)
-    let dst = cx.result(e)
-    cx.tagged_value(dst, size, which!, [])
-    dst
+    cx.tagged_value(cx.shape_at(e), size, which!, [])
 }
 fn ident_reg(mut cx: LowerCx, e: ExprId) -> Reg {
     let def: Reg? = cx.def_reg(e)
@@ -117,12 +113,10 @@ fn binary_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Re
     // that needs its own lowering SHAPE (as `Str` does for `+`) falls
     // to the eager `Bin` in silence. Add its arm here when it lands.
     if (op == BinOp.Eq || op == BinOp.Ne) && (sh is .Opt || cx.seen_at(r) is .Opt) {
-        return negated_when(cx, e, op == BinOp.Ne, nullable_eq_reg(cx, e, l, r))
+        return negated_when(cx, e, op == BinOp.Ne, nullable_eq_reg(cx, l, r))
     }
     if op == BinOp.Add && sh is .Str {
-        let dst = cx.result(e)
-        cx.emit(Ins.CallRt(dst, "avra_str_concat", [a, b]))
-        return dst
+        return cx.str_concat(cx.shape_at(e), a, b)
     }
     // text and enums compare through the one value-equality verb;
     // scalars are the operator itself
@@ -138,39 +132,15 @@ fn binary_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Re
     dst
 }
 
-/// `a == b` with a nullable side: equal when both are present and
-/// their values are, or when both are absent — a value beside a
-/// nullable counts as present. Both sides lower in source order;
-/// the NULLABLE one leads the test, whichever side wrote it.
-fn nullable_eq_reg(mut cx: LowerCx, e: ExprId, l: ExprId, r: ExprId) -> Reg {
+/// `a == b` with a nullable side: the NULLABLE side leads the test,
+/// whichever side wrote it; both lower in source order.
+fn nullable_eq_reg(mut cx: LowerCx, l: ExprId, r: ExprId) -> Reg {
     let a = cx.reg_of(l)
     let b = cx.reg_of(r)
     let lt = cx.type_at(l)
     let rt = cx.type_at(r)
-    if cx.view.types.carried(lt) == null { return led_by(cx, e, b, rt, a, lt) }
-    led_by(cx, e, a, lt, b, rt)
-}
-
-/// The nullable side tested, the other beside it.
-fn led_by(mut cx: LowerCx, e: ExprId, v: Reg, vt: TypeId, w: Reg, wt: TypeId) -> Reg {
-    let inner: TypeId = cx.view.types.carried(vt) ?? vt
-    cx.presence(v, vt, e) { cx, carried -> present_beside(cx, e, carried, w, wt, inner) } else { cx -> absent_beside(cx, w, wt) }
-}
-
-/// The present side's value against the other: equal values when
-/// the other is present too, false when it is absent.
-fn present_beside(mut cx: LowerCx, e: ExprId, av: Reg, b: Reg, rt: TypeId, inner: TypeId) -> Reg {
-    if cx.view.types.carried(rt) == null { return cx.same_value(av, b, inner) }
-    cx.presence(b, rt, e) { cx, carried -> cx.same_value(av, carried, inner) } else { cx -> cx.const_bool(false) }
-}
-
-/// The absent side against the other: equal only to absence.
-fn absent_beside(mut cx: LowerCx, b: Reg, rt: TypeId) -> Reg {
-    if cx.view.types.carried(rt) == null { return cx.const_bool(false) }
-    let present = cx.presence_of(b, rt)
-    let dst = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Un(dst, UnOp.Not, present))
-    dst
+    if cx.view.types.carried(lt) == null { return cx.same_through(b, rt, a, lt) }
+    cx.same_through(a, lt, b, rt)
 }
 
 fn negated_when(mut cx: LowerCx, e: ExprId, negate: bool, v: Reg) -> Reg {

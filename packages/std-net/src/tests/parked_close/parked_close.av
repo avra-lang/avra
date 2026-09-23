@@ -1,0 +1,44 @@
+//! proves: a close never strands a parked task — a task parked in
+//! `accept` or `read` wakes to a failure when another task closes its
+//! socket; a write to a peer that has gone fails, and the program
+//! goes on
+use @std.net.{listen, connect, Listener, Conn, NetError}
+use @std.time.{secs, ms, sleep}
+
+fn outcome<T>(verb: string, r: Result<T, NetError>) -> string {
+    match r {
+        .Ok(_) -> "${verb} answered"
+        .Err(e) -> "${e.verb} failed"
+    }
+}
+
+fn accept_closed_under(l: Listener) -> string {
+    let waiter = spawn outcome("accept", l.accept())
+    sleep(ms(20))
+    let _ = l.close()
+    waiter.await
+}
+
+fn read_closed_under(c: Conn) -> string {
+    let waiter = spawn outcome("read", c.read(16))
+    sleep(ms(20))
+    let _ = c.close()
+    waiter.await
+}
+
+fn run() -> Result<string, NetError> {
+    let l = listen("127.0.0.1", 0)?
+    let quiet = connect("127.0.0.1", l.port, secs(2))?
+    let held = l.accept()?
+    let r = read_closed_under(held)
+    let gone = connect("127.0.0.1", l.port, secs(2))?
+    let s = l.accept()?
+    let _ = gone.close()?
+    sleep(ms(20))
+    let w = outcome("write", s.write([7 for i in 0..2000000].bytes()!))
+    let _ = s.close()
+    let _ = quiet.close()
+    .Ok("${accept_closed_under(l)} | ${r} | ${w}")
+}
+
+run() catch e -> "failed: ${e.verb} ${e.subject} ${e.errno}"

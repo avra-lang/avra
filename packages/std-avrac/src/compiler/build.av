@@ -129,10 +129,10 @@ export fn build_program(mut ws: Workspace, entry: string, tools: Toolchain) -> R
     let binary = binary_name(entry)
     let kept = ws.kept_binary(ws.program_key(entry, []), binary)
     if kept != null { return .Ok(kept!) }
-    let d = ws.derived(entry, Want.Binary)?
+    mut d = ws.derived(entry, Want.Binary)?
     let main? = d.program.entry_file() else { fail d.program.rendered([no_target(ws.root)]) }
     if main.view.stmts.is_empty() { fail "the program is empty" }
-    d.program.ws.linked(d, ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)) }, Keyed { named: entry, beside: [] }, binary, tools)
+    d.linked(ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)) }, Keyed { named: entry, beside: [] }, binary, tools)
 }
 
 impl Workspace {
@@ -186,7 +186,11 @@ impl Workspace {
 
     /// A file's bytes as one digest — walked once a build, whoever asks.
     fn text_digest(path: string) -> string {
-        memoized<string>(self.keys.text_digests, path, () -> self.kept_digest(path, self.host.stamp(path)))
+        let known: string? = self.keys.text_digests.get().get(path)
+        if known != null { return known! }
+        let made = self.kept_digest(path, self.host.stamp(path))
+        self.keys.text_digests.put(path, made)
+        made
     }
 
     /// A text's digest, kept beside its file's stamp: one path under one stamp is
@@ -198,24 +202,24 @@ impl Workspace {
         let kept = self.stamps().get(path) ?? ""
         if kept.starts_with(mark) { return kept.substring(mark.length, kept.length) }
         let made = digest_of_file(self.host.read(path))
-        self.keys.stamped.set(path, mark + made)
+        self.keys.stamped.put(path, mark + made)
         self.keys.stamps_at.set(stamps_moved)
         made
     }
 
     /// The tree's stamps, by path: `stamp<TAB>digest`.
     fn stamps() -> Map<string, string> {
-        if self.keys.stamps_at.get() != stamps_unread { return self.keys.stamped }
+        if self.keys.stamps_at.get() != stamps_unread { return self.keys.stamped.get() }
         self.keys.stamps_at.set(stamps_read)
         for line in (store_at(build_cache_root(self)).get(Stored.Fp, stamps_key()) ?? "").split("\n") {
             let at = line.index_of("\t")
-            if at > 0 { self.keys.stamped.set(line.substring(0, at), line.substring(at + 1, line.length)) }
+            if at > 0 { self.keys.stamped.put(line.substring(0, at), line.substring(at + 1, line.length)) }
         }
-        self.keys.stamped
+        self.keys.stamped.get()
     }
 
     fn stamp_line(path: string) -> string? {
-        let kept? = self.keys.stamped.get(path) else { return null }
+        let kept? = self.keys.stamped.get().get(path) else { return null }
         "${path}\t${kept}"
     }
 
@@ -271,8 +275,8 @@ impl Workspace {
         let asked = program_asked_key(d, main, tools)
         // instantiations nobody lowered are owed, unless a build of these very asks kept them
         if !d.unlowered.is_empty() && !d.store.has(Stored.Obj, asked) {
-            let whole = self.whole(d, [])?
-            return whole.program.ws.linked(whole, m, under, binary, tools)
+            mut whole = self.whole(d, [])?
+            return whole.linked(m, under, binary, tools)
         }
         mut clock = self.marking()
         let full = closed(self.homed(d.lowered, m, main, d.unlowered))?

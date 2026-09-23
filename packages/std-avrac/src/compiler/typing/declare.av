@@ -3,9 +3,9 @@
 //! annotations, and the laws of the types annotations WRITE — a
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
-use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, widthless, width_named, width_words}
+use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, widthless, width_named, width_words, qtrace}
 use diagnostics.{refusal}
-use features.{TypeCx, FnSig, StructSig, EnumSig, NamedSig, DeclSig, duplicate_names, slot_worthy, slice_promise, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats, declared_decl}
+use features.{TypeCx, FnSig, StructSig, EnumSig, NamedSig, DeclSig, duplicate_names, slot_worthy, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats, declared_decl}
 use @std.errors.{Loc}
 
 impl TypeCx {
@@ -26,7 +26,7 @@ impl TypeCx {
     fn declare_named(s: StmtId) {
         let parts? = self.view.store.named_parts(s) else { return }
         if !parts.tparams.is_empty() { return self.named_is_generic(s, parts.name) }
-        let of = self.slot_law(s, "type.named", "a named type cannot stand over this yet", "`${parts.name}` stands over `${spelled(parts.of)}`", parts.of)
+        let of = self.slot_law(s, "type.named", "a named type cannot stand over nothing", "`${parts.name}` stands over `${spelled(parts.of)}`", parts.of)
         // interned DIRECTLY, never through `declared_type`: that door
         // forces a named declaration, and this IS that declaration
         let named = self.view.types.intern(Type.Struct(self.decl_of(s), parts.name))
@@ -59,17 +59,15 @@ impl TypeCx {
     /// What a variant carries, in order — each payload judged by the
     /// slot law; a payload the law refuses lands as the Error type.
     fn payload_types(s: StmtId, v: Variant) -> List<TypeId> {
-        mut out: List<TypeId> = []
-        // LICENSED I3: an accumulator over a nullable answer
-        for p in v.payloads { out.push(self.carried_type(s, p) ?? self.error_type) }
-        out
+        [self.carried_type(s, v.name.of, p) ?? self.error_type for p in v.payloads]
     }
 
     /// One payload's type under the slot law — absent when it was
-    /// written without one.
-    fn carried_type(s: StmtId, p: Param) -> TypeId? {
+    /// written without one. An unnamed payload is named by its variant.
+    fn carried_type(s: StmtId, variant: string, p: Param) -> TypeId? {
         if p.ty == null { return null }
-        self.slot_law(s, "type.enum_payload", "an enum payload cannot hold this yet", "`${p.name}` carries `${spelled(p.ty!)}`", p.ty!)
+        let who = if p.name.is_empty() { "`.${variant}`" } else { "`${p.name}`" }
+        self.held_slot(s, "type.enum_payload", "an enum payload cannot hold nothing", "${who} carries `${spelled(p.ty!)}`", p.ty!)
     }
 
     /// One declaration's table lands in the ONE dense record.
@@ -136,27 +134,34 @@ impl TypeCx {
         self.view.decls.declare(x.id, DeclSig.Fn(FnSig { params: [self.error_type], ret: self.error_type }))
     }
 
-    /// A field's type — scalars only, until ownership analysis. The
-    /// grammar always writes one, so absence is unreachable.
+    /// A field's type. The grammar always writes one, so absence is
+    /// unreachable.
     fn field_type(s: StmtId, f: Param) -> TypeId {
         if f.ty == null { return self.error_type }
-        self.slot_law(s, "type.struct_scalar", "a struct field cannot hold this yet", "field `${f.name}` is `${spelled(f.ty!)}`", f.ty!)
+        self.held_slot(s, "type.struct_scalar", "a struct field cannot hold nothing", "field `${f.name}` is `${spelled(f.ty!)}`", f.ty!)
     }
 
-    /// THE declared-slot law: a slot inside an aggregate holds ONE
-    /// WORD — a scalar, a pointer, or a nullable pointer (its own
-    /// nullable: the null pointer is absence); a scalar nullable is
-    /// a register PAIR, not a word, and waits. A record's field and
-    /// an enum's payload are one law. An UNKNOWN name is not this law's business:
+    /// THE declared-slot law: a slot inside an aggregate holds a value
+    /// — one word and its cell's mark (a nullable scalar's absence);
+    /// `void` is no value. A record's field and an enum's payload are
+    /// one law. An UNKNOWN name is not this law's business:
     /// the NAME law speaks first, and a second refusal for one
     /// mistake is a cascade.
     fn slot_law(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
         let named = self.full_type(self.stmt_loc(s), ty)
         let sh: Type = self.view.types.shape_of(named)
         if sh is .Error { return named }
-        if slot_worthy(self.view.types, sh) { return named }
-        self.emit(refusal(kind, self.stmt_loc(s), message, label, slots_await_ownership))
+        if slot_worthy(sh) { return named }
+        self.emit(refusal(kind, self.stmt_loc(s), message, label, null))
         self.error_type
+    }
+
+    /// A slot inside a record or a payload — which outlives the block,
+    /// so a task never rides in one.
+    fn held_slot(s: StmtId, kind: string, message: string, label: string, ty: TypeRef) -> TypeId {
+        let held = self.slot_law(s, kind, message, label, ty)
+        if self.escapes_with_task(self.stmt_loc(s), label, held) { return self.error_type }
+        held
     }
 
     /// A fn's signature, from its annotations alone. A `mut fn` at
@@ -191,12 +196,19 @@ impl TypeCx {
         self.refuse_taken_tparams(s, owner)
         self.enter_tscope(s)
         let ptypes = [self.param_type(s, pp) for pp in seats]
-        let rt = self.annotated(s, fret)
+        let rt = self.answer_type(s, owner, fret)
         self.leave_tscope()
         let sig = FnSig { params: ptypes, ret: rt }
         self.view.decls.record_seats(self.decl_of(s), [pp.promises for pp in seats])
         self.keep_boxed(seats, ptypes)
         self.declare(s, DeclSig.Fn(sig))
+    }
+
+    /// A fn's declared answer — a task never among what it answers.
+    fn answer_type(s: StmtId, owner: string, ret: TypeRef) -> TypeId {
+        let rt = self.annotated(s, ret)
+        let _ = self.escapes_with_task(self.stmt_loc(s), "`${owner}` answers `${self.view.types.name_of(rt)}`", rt)
+        rt
     }
 
     /// A `mut` SEAT KEEPS ITS BOX — the receiver's law
@@ -393,7 +405,7 @@ impl TypeCx {
             // A constructor's SLOTS are judged by the slot law like
             // any payload. A Var passes here and every INSTANTIATION
             // re-judges.
-            if slots && !slot_worthy(self.view.types, self.view.types.shape_of(ty)) { return self.unslottable_slot(at, t.name, ty) }
+            if slots && !slot_worthy(self.view.types.shape_of(ty)) { return self.unslottable_slot(at, t.name, ty) }
             parts.push(ty)
         }
         if row == null { return self.applied_decl(at, t.name, parts) }
@@ -406,7 +418,7 @@ impl TypeCx {
     }
 
     fn unslottable_slot(at: Loc?, name: string, ty: TypeId) -> TypeId {
-        self.emit(refusal("type.applied", at, "a `${name}` slot cannot hold this yet", "this slot is `${self.view.types.name_of(ty)}`", slice_promise("slots")))
+        self.emit(refusal("type.applied", at, "a `${name}` slot cannot hold `${self.view.types.name_of(ty)}` — it is no value", "this slot", null))
         self.error_type
     }
 
@@ -433,10 +445,11 @@ impl TypeCx {
     fn refused_app(at: Loc?, name: string, decl: DeclId, parts: List<TypeId>) -> bool {
         for ty in self.declared_slots(decl) {
             let landed = self.view.types.substituted(ty, decl, parts)
-            if !slot_worthy(self.view.types, self.view.types.shape_of(landed)) {
-                self.emit(refusal("type.applied", at, "`${name}<...>` makes a slot `${self.view.types.name_of(landed)}`, which a slot cannot hold yet", "applied here", slots_await_ownership))
+            if !slot_worthy(self.view.types.shape_of(landed)) {
+                self.emit(refusal("type.applied", at, "`${name}<...>` makes a slot `${self.view.types.name_of(landed)}`, which is no value", "applied here", null))
                 return true
             }
+            if self.escapes_with_task(at, "`${name}<...>` makes a slot `${self.view.types.name_of(landed)}`", landed) { return true }
         }
         false
     }
@@ -460,6 +473,7 @@ impl TypeCx {
         let decl: DeclId? = self.type_decl_named(name)
         if decl != null { return self.declared_type(decl!, name) }
         if width_named(name) != null { return self.width_off_a_seat(at, name) }
+        qtrace("Q\tnamed_type_fail\t${name}\t${self.view.decls.file(self.view.file).path}\n")
         self.emit(refusal("type.unknown", at, "`${name}` names no type", "in this signature", "the types today are `int`, `string`, `bool`, and your declared types"))
         self.error_type
     }

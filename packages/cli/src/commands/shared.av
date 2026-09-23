@@ -1,7 +1,7 @@
 //! What every command shares: the host externs, the argued source
 //! file, the analyze-or-refuse step, and the three CommandSpec shapes.
 use @std.cli.{CommandSpec, CliResult, ArgDef, FlagDef}
-use @std.avrac.compiler.{Program, Workspace, lone_workspace, timed_workspace, programs_workspace, avra, stage_words, build_program, Toolchain}
+use @std.avrac.compiler.{Program, Workspace, lone_workspace, timed_workspace, programs_workspace, avra, stage_words, build_program, Toolchain, Checked}
 use @std.avrac.core.{joined, distinct}
 use @std.path.{dir_of, under_dir, joined_path, is_absolute, normalized, file_name, stem_of}
 use @std.process.{Tool, tool, cmd, Command, Exit, Env, Streams, ProcessError, tool_from_env, exit}
@@ -73,10 +73,10 @@ fn std_root() -> string? {
     toolchain_files(["../packages", "../lib/avra/std"]).find(is_dir(it))
 }
 
-/// The runtime's object, the same two ways: beside the binary in a
+/// The runtime's library, the same two ways: beside the binary in a
 /// checkout, under `lib/avra/` in an install.
-fn runtime_object() -> string {
-    toolchain_files(["avra_runtime.o", "../lib/avra/avra_runtime.o"]).find(exists(it)) ?? "build/avra_runtime.o"
+fn runtime_library() -> string {
+    toolchain_files(["libavra_runtime.a", "../lib/avra/libavra_runtime.a"]).find(exists(it)) ?? "build/libavra_runtime.a"
 }
 
 /// Paths under the binary's directory, normalized.
@@ -111,8 +111,12 @@ fn path_arg(args: CliResult) -> string {
     rooted(args.arg("file"))
 }
 
+/// AN ABSOLUTE PATH IS NORMALIZED TOO — every `.`/`..` folded here, once,
+/// so no downstream walk (a package root's ancestors, a directory's own
+/// listing) ever sees one survive: a `..` left in a name a string walk
+/// only cuts by segment can widen a path forever instead of shrinking it.
 fn rooted(path: string) -> string {
-    if is_absolute(path) { return path }
+    if is_absolute(path) { return normalized(path) }
     normalized(joined_path(here(), path))
 }
 
@@ -123,7 +127,8 @@ fn program_arg(args: CliResult) -> Program? {
         no_such_file(path)
         return null
     }
-    let entered: Program = file_workspace(path).program(path)
+    mut ws = file_workspace(path)
+    let entered: Program = ws.program(path)
     entered
 }
 
@@ -140,15 +145,28 @@ export fn file_workspace(path: string) -> Workspace {
     let src = joined_path(root, "src")
     if !exists(src) {
         if dir_of(path) != root { return lone(path) }
-        return programs_workspace(disk_host(), root, avra(), () -> now_ns())
+        return root_workspace(root)
     }
     if !under_dir(path, src) { return lone(path) }
-    timed_workspace(disk_host(), root, avra(), () -> now_ns())
+    root_workspace(root)
 }
 
 /// A file outside any package: a package of one holding just it.
 fn lone(path: string) -> Workspace {
     lone_workspace(path, read_or_die(path), avra())
+}
+
+/// A package ROOT'S workspace, the one choice every caller who already
+/// knows where the root stands makes: `src/` when it has one, else its own
+/// direct files as a directory of programs. `file_workspace` reaches here
+/// once it has settled a file's ancestor root; a directory argument IS its
+/// own root already, so `build_workspace` reaches here directly.
+export fn root_workspace(root: string) -> Workspace {
+    if exists(joined_path(root, "src")) {
+        timed_workspace(disk_host(), root, avra(), () -> now_ns())
+    } else {
+        programs_workspace(disk_host(), root, avra(), () -> now_ns())
+    }
 }
 
 /// The package the command stands in: the CALLER's directory, which
@@ -160,8 +178,8 @@ fn here() -> string {
 
 /// A package root as a program entered at its `[bin]` when it has
 /// one — every file analyzed either way.
-fn root_program(root: string) -> Program {
-    let ws = timed_workspace(disk_host(), root, avra(), () -> now_ns())
+export fn root_program(root: string) -> Program {
+    mut ws = timed_workspace(disk_host(), root, avra(), () -> now_ns())
     ws.program(ws.entry_of())
 }
 
@@ -292,7 +310,7 @@ export fn run_binary(binary: string) -> Result<Exit, ProcessError> {
 /// The workspace a build stands in — a directory is a package root, a file is a lone
 /// program — built WITHOUT analysis, so the key is taken before a line is typed.
 fn build_workspace(path: string) -> Workspace {
-    if is_dir(path) { timed_workspace(disk_host(), path, avra(), () -> now_ns()) } else { file_workspace(path) }
+    if is_dir(path) { root_workspace(path) } else { file_workspace(path) }
 }
 
 /// The entry a build of this workspace runs: a package's `[bin]`, or the file itself.
@@ -300,19 +318,25 @@ fn build_entry(ws: Workspace, path: string) -> string? {
     if is_dir(path) { ws.entry_of() } else { path }
 }
 
-/// A build-cache command's argued path and the workspace it builds through.
-export type Opened = { ws: Workspace, path: string }
-
 /// EVERY BUILD-CACHE COMMAND'S PROLOGUE — `build`, `check`, `test`: the
 /// argued path, checked to exist (`no_such_file` spoken and exit 2
-/// otherwise), and the workspace it opens.
-export fn opened(args: CliResult) -> Opened? {
+/// otherwise). The command mints its workspace from it IN ITS OWN
+/// BINDING: a workspace is an identity its hooks capture, so one read
+/// out of a record is a copy the hooks never see.
+export fn argued_path(args: CliResult) -> string? {
     let path = path_arg(args)
     if !exists(path) {
         no_such_file(path)
         return null
     }
-    Opened { ws: build_workspace(path), path: path }
+    path
+}
+
+/// `avra check`'s judgement of an argued path — the command and its tests
+/// ask this one door.
+export fn checked_at(path: string) -> Result<Checked, string> {
+    mut ws = build_workspace(path)
+    ws.checked(build_entry(ws, path))
 }
 
 fn hit_line(reused: bool) -> string {
@@ -323,15 +347,15 @@ fn hit_line(reused: bool) -> string {
 /// else analyzed, lowered and emitted. The cache is the library's; the link is the
 /// command's.
 fn cached_build(args: CliResult) -> int {
-    let o? = opened(args) else { return 2 }
-    mut ws = o.ws
-    let entry = build_entry(ws, o.path)
+    let path? = argued_path(args) else { return 2 }
+    mut ws = build_workspace(path)
+    let entry = build_entry(ws, path)
     if entry == null {
         eprintln("avra: ${ws.root} declares no entry point")
         return 1
     }
     let tool = match linker() { .Ok(t) -> t, .Err(e) -> { return refused_by_host(e) } }
-    match build_program(ws, entry!, Toolchain { opt: "-O1", runtime: runtime_object(), linker: tool.path }) {
+    match build_program(ws, entry!, Toolchain { opt: "-O1", runtime: runtime_library(), linker: tool.path }) {
         .Err(report) -> {
             println(report)
             1

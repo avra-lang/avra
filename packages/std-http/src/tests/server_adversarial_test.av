@@ -125,7 +125,7 @@ fn empty_write_then_request() -> Result<bool, NetError> {
 
 fn vanish_mid_head() -> Result<bool, NetError> {
     mut pr = attacked()?
-    let _ = pr.c.write("GET /v HTTP/1.1\r\nHo".bytes(), 0)?
+    let _ = pr.c.try_write("GET /v HTTP/1.1\r\nHo".bytes(), 0)?
     let _ = pr.c.close()?
     // accept, the fragment, then the end: one read per wake-up
     mut turns = 0
@@ -138,7 +138,7 @@ fn vanish_mid_head() -> Result<bool, NetError> {
 
 fn vanish_after_pipeline() -> Result<bool, NetError> {
     mut pr = attacked()?
-    let _ = pr.c.write("GET /1 HTTP/1.1\r\nHost: a\r\n\r\nGET /2 HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)?
+    let _ = pr.c.try_write("GET /1 HTTP/1.1\r\nHost: a\r\n\r\nGET /2 HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)?
     let _ = pr.c.shutdown_write()?
     let got = exchanged_bytes(pr, "".bytes(), 1000)?
     let t = got.text() ?? ""
@@ -155,13 +155,12 @@ fn head_then_silence_times_out() -> Result<bool, NetError> {
 fn two_clients() -> Result<bool, NetError> {
     mut pr = attacked()?
     let other = connect("127.0.0.1", pr.s.listener.port, secs(2))?
-    let _ = other.write("GET /o HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)?
+    let _ = other.try_write("GET /o HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)?
     let mine = reply(pr, "GET /m HTTP/1.1\r\nHost: a\r\n\r\n")?
     pr.s.turn(ms(20))?
-    let theirs: Bytes? = match other.read(65536)? {
+    let theirs: Bytes? = match other.try_read(65536)? {
         .Data(b) -> b,
-        .Eof -> null,
-        .Pending -> null,
+        .Eof or .Pending -> null,
     }
     .Ok(mine.contains("/m 0") && (theirs?.text() ?? "").contains("/o 0") && pr.s.connections() == 2)
 }
@@ -178,7 +177,7 @@ fn many_clients() -> Result<bool, NetError> {
         others = others.concat([connect("127.0.0.1", port, secs(2))? for i in 0..50])
         pr.s.turn(ms(20))?
     }
-    for o in others { let _ = o.write("GET /w HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)? }
+    for o in others { let _ = o.try_write("GET /w HTTP/1.1\r\nHost: a\r\n\r\n".bytes(), 0)? }
     mut turns = 0
     while pr.s.app.hits < 200 && turns < 400 {
         pr.s.turn(ms(20))?
@@ -197,11 +196,9 @@ fn many_clients() -> Result<bool, NetError> {
 }
 
 fn replied_to(o: Conn) -> bool {
-    match o.read(4096) {
+    match o.try_read(4096) {
         .Ok(.Data(b)) -> b.length > 0,
-        .Ok(.Eof) -> false,
-        .Ok(.Pending) -> false,
-        .Err(_) -> false,
+        .Ok(.Eof) or .Ok(.Pending) or .Err(_) -> false,
     }
 }
 
