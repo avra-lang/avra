@@ -196,9 +196,9 @@ impl Workspace {
     /// took and the annotation that asked.
     fn admit_code(f: FileId, code: Node, ann: string, at: Span?, vis: Namespace) -> List<DeclId> {
         let store = self.decls.store_of(f)
-        let before = arena_marks(store)
+        let before = store.marks()
         let stmts = self.spliced_stmts(f, code)
-        let took = before.until(arena_marks(store))
+        let took = before.until(store.marks())
         // A GENERATED NAME THE FILE ALREADY DECLARES would lose to the
         // written one in silence — the two-tier lookup asks the written
         // namespace first. It speaks at the asking annotation instead.
@@ -207,7 +207,7 @@ impl Workspace {
             self.decls.speak_expansion(f, [generated_taken(ann, n, loc_at(self.decls.file(f).path, at)) for n in taken])
             return []
         }
-        self.decls.note_generation(f, Generation { exprs: took[0], stmts: took[1], pats: took[2], at: at })
+        self.decls.note_generation(f, Generation { runs: took, at: at })
         // The tag is the declarations' fingerprint, so two derives that
         // answer different impls mint two, and a re-run of one mints
         // nothing new.

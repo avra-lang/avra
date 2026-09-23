@@ -209,6 +209,9 @@ export enum DeclSig {
 export type TypeCx = {
     view: FileView,
     names: NameFacts,
+    // the namespace of the file that WROTE a node — a template's
+    // written types resolve there, as its names do
+    written_in: fn(FileId) -> Namespace,
     facts: TypeFacts,
     error_type: TypeId,
     // the language's semantics and keywords: the walk dispatches
@@ -288,13 +291,20 @@ export type LowerCx = {
 
 /// One registered `defer`: the fn box to call, the depth of the
 /// frame that registered it, and whether only a failing exit runs it.
-/// What a closing frame runs: a deferred closure, called; or an owner's
-/// tasks, joined — the owner's register, or the cell it lives in.
+/// What a closing frame runs: a deferred closure, called; a deferred
+/// call, made; or an owner's tasks, joined — the owner's register, or
+/// the cell it lives in.
 export enum Deferral {
     Call(box: Reg)
     Settle(owner: Reg, cell: bool)
-    Deadline(outer: Reg)
+    /// a call whose arguments were fixed where the `defer` stands —
+    /// no box to build, the callee named directly at every exit
+    Direct(call: DirectCall)
 }
+
+/// A deferred call with its arguments in hand: a declared fn's symbol,
+/// or a host row's (`host`), answering nothing.
+export type DirectCall = { callee: string, host: bool, args: List<Reg> }
 
 export type Deferred = { work: Deferral, depth: int, on_error: bool }
 

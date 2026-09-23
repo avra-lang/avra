@@ -137,11 +137,12 @@ export component within(limit: Duration) {       // a VALUE head
 
 **S2 — `within` leaves the core.** Exercises: a value head, a code slot,
 an imported block word, substitution at the parse.
-1. The evaluator's door for runtime rows. PROBED at 0e8a63c: `extern fn
-   avra_fiber_within` + `avra run` traps "this image does not carry it" —
-   `build/avra` exports `avra_fiber_park_fd`, not `avra_fiber_within`. An
-   extern naming an `rt_sigs` row with an evaluator arm dispatches to the
-   arm. (CORES owns the fiber rows — coordinate.)
+1. ~~The evaluator's door for runtime rows~~ — RETRACTED. The trap
+   ("`avra_fiber_within` is extern and this image does not carry it")
+   came from main's `build/avra`, a binary OLDER than the F5 rows; the
+   lane's own compiler at 5a59a44 runs the same probe clean (`6 5 0`)
+   — `rt_dispatch` already routes a row to its arm. A probe names the
+   binary that answered it.
 2. `component` declarations grow params, code slots, methods, `export`.
 3. The block word for components; the value-head instance rule.
 4. Substitution at the parse.

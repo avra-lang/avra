@@ -1,12 +1,66 @@
 //! The lowering rule — the ONE meaning: the lambda's box is minted
 //! where the statement stands (its captures copied now) and joins
 //! the walk's frame, which calls it when the scope ends or the fn
-//! exits.
-use core.{StmtId, Reg}
-use features.{LowerCx}
+//! exits. A body that is ONE call answering nothing, every argument
+//! a scalar literal or capture, needs no box: its arguments are read
+//! now — exactly what the captures would copy — and the callee is
+//! called by name at every exit.
+use core.{StmtId, ExprId, Reg, Type, is_literal}
+use features.{LowerCx, DirectCall, bound_decl_of}
 
 fn lower_defer(mut cx: LowerCx, s: StmtId) -> Reg? {
+    let on_error = runs_on_error(cx.view.store, s)
+    let call: DirectCall? = direct_call(cx, s)
+    if call != null {
+        cx.call_at_exit(call!, on_error)
+        return null
+    }
     let box? = cx.lower_value(s) else { return null }
-    cx.at_exit(box, runs_on_error(cx.view.store, s))
+    cx.at_exit(box, on_error)
     null
+}
+
+/// The deferred body as a call with its arguments in hand — null when
+/// the body needs its box.
+fn direct_call(mut cx: LowerCx, s: StmtId) -> DirectCall? {
+    let lam? = cx.view.store.stmt_value(s) else { return null }
+    let body? = cx.view.store.lambda_parts(lam)?.body else { return null }
+    let call? = cx.view.store.call_parts(body) else { return null }
+    if !(cx.shape_at(body) is .Void) || !call.args.all((a) -> fixed_early(cx, a)) { return null }
+    let d? = bound_decl_of(cx.names, body) else { return null }
+    let seats? = cx.view.decls.sig(d)?.fn_sig()?.params else { return null }
+    if seats.length != call.args.length { return null }
+    let captured = cx.capture_regs(lam)
+    let host: string? = cx.extern_callee(body)
+    DirectCall { callee: host ?? cx.callee_of(body, call.callee), host: host != null, args: [fixed_now(cx, captured, a) for a in call.args] }
+}
+
+/// An argument read the same at the `defer` as at the exit: a scalar
+/// literal, or a scalar the lambda would capture — a copy either way.
+fn fixed_early(cx: LowerCx, a: ExprId) -> bool {
+    if !scalar(cx.shape_at(a)) { return false }
+    is_literal(cx.view.store.expr(a)) || captured_at(cx, a) != null
+}
+
+/// The capture an argument reads, by its place in the lambda's list.
+fn captured_at(cx: LowerCx, a: ExprId) -> int? {
+    let b? = cx.names.binding(a) else { return null }
+    match b {
+        .Capture(_, j) -> j,
+        _ -> null,
+    }
+}
+
+fn scalar(t: Type) -> bool {
+    match t {
+        .Int or .Bool or .Float -> true,
+        _ -> false,
+    }
+}
+
+/// An argument's register at the `defer`: the literal's, or the
+/// captured binding's.
+fn fixed_now(mut cx: LowerCx, captured: List<Reg>, a: ExprId) -> Reg {
+    let j? = captured_at(cx, a) else { return cx.reg_of(a) }
+    captured[j]
 }

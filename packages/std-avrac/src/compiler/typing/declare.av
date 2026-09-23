@@ -3,7 +3,7 @@
 //! annotations, and the laws of the types annotations WRITE — a
 //! name, a built-in constructor, a generic application, `dyn`.
 //! Bodies never walk here; a sig may name any file's declaration.
-use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, widthless, width_named, width_words, qtrace}
+use core.{Variant, flatten, StmtId, TypeId, Type, Param, TypeRef, spelled, plain, DeclId, FnParts, StructParts, EnumParts, widthless, width_named, width_words, qtrace, FileId}
 use diagnostics.{refusal}
 use features.{TypeCx, FnSig, StructSig, EnumSig, NamedSig, DeclSig, duplicate_names, slot_worthy, TypeRow, Refusal, type_row, TypeArgs, type_named, nothing, Decl, written_seats, declared_decl}
 use @std.errors.{Loc}
@@ -319,9 +319,21 @@ impl TypeCx {
     /// An annotation's TypeId: what its NAME stands for, wrapped
     /// once when `?` was written. An absent annotation cannot reach
     /// here from any grammar the language assembles.
-    fn annotated(s: StmtId, ann: TypeRef?) -> TypeId {
+    /// A statement's written type.
+    mut fn annotated(s: StmtId, ann: TypeRef?) -> TypeId {
         if ann == null { return self.error_type }
-        self.full_type(self.stmt_loc(s), ann!)
+        self.written_by(self.view.origin_of_stmt(s), self.stmt_loc(s), ann!)
+    }
+
+    /// A written type, read in the namespace of the file that WROTE it
+    /// — a template's types are its own, as its names are.
+    mut fn written_by(origin: FileId?, at: Loc?, t: TypeRef) -> TypeId {
+        if origin == null { return self.full_type(at, t) }
+        let home = self.names
+        self.names = home with { names: self.written_in(origin!) }
+        let ty = self.full_type(at, t)
+        self.names = home
+        ty
     }
 
     /// A written type in full — its arguments and its `?` both. The

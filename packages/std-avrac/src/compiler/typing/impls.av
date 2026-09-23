@@ -56,14 +56,16 @@ impl TypeCx {
 
     /// A member's sig under its parent: a trait's method declares
     /// its contract; an impl's method declares under the impl's
-    /// verdict — real when the block is lawful, wreckage otherwise.
+    /// verdict — real when the block is lawful, wreckage otherwise; a
+    /// record's own method (a component's) declares under the record.
     fn declare_member(x: Decl) {
         if x.parent == null { return self.declare_wreckage(x.stmt) }
         let parent = self.view.decls.decl(x.parent!)
         match parent.kind {
             .Trait -> self.declare_trait_sig(x.stmt),
             .Impl -> self.declare_under_impl(parent.stmt, x.stmt),
-            .Fn or .Record or .Named or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Builtin or .Const or .Rule -> self.declare_wreckage(x.stmt),
+            .Record -> self.declare_under(x.parent!, x.stmt),
+            .Fn or .Named or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Builtin or .Const or .Rule -> self.declare_wreckage(x.stmt),
         }
     }
 
@@ -71,6 +73,12 @@ impl TypeCx {
         let parts? = self.view.store.impl_parts(block) else { return self.seated_wreckage(f) }
         let d? = self.impl_target(block, parts, false) else { return self.seated_wreckage(f) }
         self.view.decls.record_target(self.decl_of(block), d)
+        self.declare_under(d, f)
+    }
+
+    /// A method declared under the type it belongs to: that type's
+    /// Vars in scope, `self` its instance.
+    fn declare_under(d: DeclId, f: StmtId) {
         self.enter_target_scope(d)
         self.declare_method(self.impl_self_type(d), f)
         self.leave_tscope()
