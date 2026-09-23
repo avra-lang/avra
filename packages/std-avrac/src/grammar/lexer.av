@@ -1019,10 +1019,13 @@ impl Lexing {
     mut fn push(t: Token) {
         if t.kind == TokenKind.Break {
             // A BLANK LINE IS THE AUTHOR'S PARAGRAPH BREAK, kept like a
-            // comment. `blank_run` collapses a run to one and is cleared
-            // by any real token, so blanks in two different places stay
-            // two blanks.
-            if !self.line_has_token && !self.line_comment && !self.blank_run {
+            // comment. `blank_run` collapses a run to one and is ended
+            // by any line that is not itself blank — a token or a
+            // comment both end it, so blanks on either side of a
+            // comment line stay two blanks.
+            if self.line_has_token || self.line_comment {
+                self.blank_run = false
+            } else if !self.blank_run {
                 self.remarks.push(Remark { trivia: Trivia.Blank, at: t.span.lo })
                 self.blank_run = true
             }

@@ -15,7 +15,16 @@
 //! and the order are compared), and DOC GROUPS (every `///` run's
 //! lines, in order). Absence names the first thing that moved;
 //! agreement on all three is what `--write` requires before it
-//! touches a file.
+//! touches a file BYTE-IDENTICALLY.
+//!
+//! A SECOND DOOR (compiler/workspace.av's `canon_defect`) answers a
+//! DIFFERENT question for the case this one refuses: not "did nothing
+//! move" but "did the MEANING move" — every top-line statement's
+//! `stmt_fingerprint` agrees, span-blind, and the remarks/doc groups
+//! above still hold whole. A trailing comma, a dropped redundant
+//! paren, the `void` arrow, a `MatchOpt` arm's order all move tokens
+//! without moving meaning, and the second door is where that is
+//! told apart from an actual loss.
 use grammar.{lex_source, Token, TokenKind, DocComment}
 use core.{Trivia, Remark}
 
@@ -24,9 +33,17 @@ use core.{Trivia, Remark}
 export fn lossless_defect(before: string, after: string) -> string? {
     let a = lex_source(before)
     let b = lex_source(after)
-    token_mismatch(significant(a.tokens), significant(b.tokens)) ??
-        remark_mismatch(a.remarks, b.remarks) ??
-        doc_mismatch(a.docs, b.docs)
+    token_mismatch(significant(a.tokens), significant(b.tokens)) ?? remark_mismatch(a.remarks, b.remarks) ?? doc_mismatch(a.docs, b.docs)
+}
+
+/// The receipt's non-token two thirds, alone: every comment and doc
+/// group preserved in order. A CANON rewrite — same meaning, moved
+/// tokens (compiler/workspace.av's `canon_defect`) — still owes this
+/// whole; only the TOKEN third is the part it may differ on.
+export fn remarks_and_docs_defect(before: string, after: string) -> string? {
+    let a = lex_source(before)
+    let b = lex_source(after)
+    remark_mismatch(a.remarks, b.remarks) ?? doc_mismatch(a.docs, b.docs)
 }
 
 /// Every token but BREAK and EOF — the layout the printer is free to

@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, Annotation}
+use core.{Table, new_table, NodeStore, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, some_list, same_file, touch, Annotation}
 use @std.path.{dir_of, joined_path}
 use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockGrammar}
 use @std.meta.{Diagnostic}
@@ -27,7 +27,7 @@ use compiler.host.{Host, Manifest, memory_host}
 use compiler.store.{Store}
 use compiler.lower.{Unit}
 use compiler.typing.{new_type_cx}
-use compiler.format.{render_source_of, lossless_defect}
+use compiler.format.{render_source_of, lossless_defect, remarks_and_docs_defect}
 use compiler.resolve.{resolve}
 
 /// No paths, typed — a Cell's first value says what it holds.
@@ -577,13 +577,42 @@ impl Workspace {
     /// `formatted_source`, gated for `--write`: the LOSSLESS RECEIPT
     /// must hold — the same significant tokens, remarks and doc
     /// groups the input carried, in order (compiler/format/
-    /// receipt.av) — before the answer is safe to put on disk. Errs
-    /// with the parse report OR with what the receipt found moved;
-    /// this fn writes nothing itself, it only answers the safe text.
+    /// receipt.av) — OR the CANON receipt must (`canon_defect`,
+    /// below): the same MEANING, remarks and doc groups, tokens free
+    /// to move. Errs with the parse report OR with what the strict
+    /// receipt found moved (the canon door only widens what a
+    /// byte-identical rewrite already proves, so its own refusal
+    /// never reads as the primary reason); this fn writes nothing
+    /// itself, it only answers the safe text.
     fn write_checked_source(f: FileId) -> Result<string, string> {
         let text = self.formatted_source(f)?
         let bad? = lossless_defect(self.source(f).text, text) else { return .Ok(text) }
-        .Err("avra fmt: refusing to write — ${bad}")
+        let canon? = self.canon_defect(f, text) else { return .Ok(text) }
+        .Err("avra fmt: refusing to write — ${bad} (canon: ${canon})")
+    }
+
+    /// `write_checked_source`'s SECOND door: a rewrite the strict
+    /// receipt refuses may still be safe when it is CANON, not
+    /// LOSSY — a trailing comma, a dropped redundant paren, the
+    /// `void` arrow, a `MatchOpt` arm's order all move tokens
+    /// without moving meaning. Safe here means every top-level
+    /// statement's `stmt_fingerprint` (core's, span-blind —
+    /// structural identity, never position) agrees in order and
+    /// count, AND the remarks and doc groups the strict receipt
+    /// already requires still hold whole — a parse error on either
+    /// side, or one mismatched fingerprint anywhere, refuses.
+    fn canon_defect(f: FileId, after: string) -> string? {
+        let rd = remarks_and_docs_defect(self.source(f).text, after)
+        if rd != null { return rd }
+        let before = self.parsed(f)
+        if has_errors(before.voices.list) { return "the source has parse errors" }
+        let reparsed = parse_program(self.lang, new_source_file(self.decls.file(f).path, after), [])
+        if has_errors(reparsed.voices.list) { return "the rewrite does not reparse" }
+        if before.stmts.length != reparsed.stmts.length { return "the statement count moved: ${before.stmts.length} -> ${reparsed.stmts.length}" }
+        for i, s in before.stmts {
+            if before.store.stmt_fingerprint(s) != reparsed.store.stmt_fingerprint(reparsed.stmts[i]) { return "statement ${i}'s meaning moved" }
+        }
+        null
     }
 
     /// An INPUT: the file's text, hashed; the revision moves only when
