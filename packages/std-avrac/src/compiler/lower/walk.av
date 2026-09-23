@@ -11,11 +11,12 @@ impl LowerCx {
     /// One subtree's register, lowered at first request and
     /// memoized. The recursion IS the walk: an impl asking for a
     /// child's register lands back here — so a region's branches
-    /// lower INSIDE it.
+    /// lower INSIDE it. A place the alias-copy law marked is read
+    /// unique — the copy opened where it is written through.
     mut fn reg_of(e: ExprId) -> Reg {
         let seen: Reg? = self.body.reg_at(e)
         if seen != null { return seen! }
-        let born = semantics_of(self.dispatch, self.view.store.expr(e)).lower(self, e)
+        let born = if self.facts.wants_alias_copy(e) { self.unique_box(e) } else { semantics_of(self.dispatch, self.view.store.expr(e)).lower(self, e) }
         let r = self.widened(e, self.narrowed(e, born))
         self.body.set_reg(e, r)
         r

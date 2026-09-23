@@ -124,12 +124,24 @@ spec "features/impls (alias copy, adversarial)" {
             shown("trait Grow { mut fn grow()\n    fn size() -> int }\ntype R = { xs: List<int> }\nimpl Grow for R {\n    mut fn grow() { self.xs.push(1) }\n    fn size() -> int { self.xs.length }\n}\nfn shadow(p: R) -> int {\n    mut d: dyn Grow = p\n    d.grow()\n    d.size()\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.xs.length}\"") == "1 1 0"
         }
     }
-    given "what the copy does not reach yet" {
-        // MEASURED, not asserted as right: spec 11.5 wants this a copy. A
-        // `mut` SEAT of a free fn writes through the copied local to its
-        // source. It flips when its copy lands.
-        then "a copy handed to a `mut` seat" {
-            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(p: R) -> int {\n    mut q = p\n    grow(q)\n    q.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"") == "1 1"
+    given "a copy handed to a `mut` seat" {
+        then "a free fn's seat writes the copy, never its source" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(p: R) -> int {\n    mut q = p\n    grow(q)\n    q.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${r.xs.length}\"") == "1 0"
+        }
+        then "a fn VALUE's seat" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(p: R) -> int {\n    let f: fn(mut R) -> void = grow\n    mut q = p\n    f(q)\n    q.xs.length\n}\nlet r = R { xs: [] }\n\"\${shadow(r)} \${shadow(r)} \${r.xs.length}\"") == "1 1 0"
+        }
+        then "an element of a copied list" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow(rs: List<R>) -> int {\n    mut q = rs\n    grow(q[0])\n    q[0].xs.length\n}\nlet rs = [R { xs: [] }]\n\"\${shadow(rs)} \${shadow(rs)} \${rs[0].xs.length}\"") == "1 1 0"
+        }
+        then "copied out, written by the seat, stored back" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\ntype H = { r: R }\nfn shadow(mut h: H) {\n    mut q = h.r\n    grow(q)\n    h.r = q\n}\nmut h = H { r: R { xs: [] } }\nshadow(h)\nshadow(h)\n\"\${h.r.xs.length}\"") == "2"
+        }
+        then "a fresh value's seat still writes the binding" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn shadow() -> int {\n    mut q = R { xs: [] }\n    grow(q)\n    grow(q)\n    q.xs.length\n}\nshadow()") == "2"
+        }
+        then "a seat handed on from a seat still reaches the first caller" {
+            shown("type R = { xs: List<int> }\nimpl R { mut fn add(v: int) { self.xs.push(v) } }\nfn grow(mut r: R) { r.add(5) }\nfn outer(mut r: R) { grow(r) }\nmut r = R { xs: [] }\nouter(r)\nouter(r)\n\"\${r.xs.length}\"") == "2"
         }
     }
 }
