@@ -1482,15 +1482,11 @@ Syntax the grammar lacks:
   and a trait's `fn m(a: int = 1)` are F0100 at the `=` ("expected
   `)`" / "expected `}`"), a lambda's `(a: int = 1) -> a` is "expected
   `)` to close the group", and none of them says a default is what
-  it refused. A call omits TRAILING seats only (no named arguments
-  yet, sugar 5), and a default reads no param beside it — `b: int =
+  it refused. A NAMED argument skips any defaulted seat (`f(1, c:
+  9)`), and a default reads no param beside it — `b: int =
   a` is F3000 "`a` is not defined". A fn VALUE of a defaulted fn
   wears every seat, so `let f = add` then `f(1)` is the ordinary
-  arity refusal. RECORDED TRIGGER: `arm_scope`'s `guard: ExprId?`
-  (compiler/resolve/resolve.av), the site that asked for this, keeps
-  its positional `null`s until `make seed` on main carries the
-  grammar — the committed seed cannot read a default in the
-  compiler's own source.
+  arity refusal — its seats carry no names either (F2105).
 - A GENERIC FN AS A VALUE: the PINNED spelling (`let f: fn(int) -> int
   = ident<int>`) is F0100 "expected BREAK while parsing `stmt`" — a
   pinned call is a CALL, so it wants arguments. The BARE spelling
