@@ -82,9 +82,7 @@ fn walked(mut cx: LowerCx, head: string, parts: List<FormatPart>, v: Reg, vty: T
 /// overlapping, the head is a prefix, and the last piece a suffix.
 fn anchored(mut cx: LowerCx, subject: Reg, len: Reg, head: string, last: string) -> Reg {
     let need = cx.const_int(byte_length(head) + byte_length(last))
-    let room = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(room, BinOp.Ge, len, need))
-    cx.open_region(room)
+    cx.open_region(cx.bin(Type.Bool, BinOp.Ge, len, need))
     let zero = cx.const_int(0)
     let hlen = cx.const_int(byte_length(head))
     cx.arm_end(at_span(cx, subject, zero, hlen, head))
@@ -150,9 +148,7 @@ fn greedy_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, piece: string) -> R
     let width = cx.const_int(byte_length(piece))
     cx.emit(Ins.Store(cur, plus(cx, hi, width)))
     let zero = cx.const_int(0)
-    let hit = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(hit, BinOp.Ge, hi, zero))
-    hit
+    cx.bin(Type.Bool, BinOp.Ge, hi, zero)
 }
 
 /// While the probe holds a hit, keep it and look one past it.
@@ -160,9 +156,7 @@ fn farthest(mut cx: LowerCx, w: Walked, best: Reg, probe: Reg, needle: Reg) {
     cx.loop_start()
     let seen = loaded_from(cx, probe)
     let zero = cx.const_int(0)
-    let more = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(more, BinOp.Ge, seen, zero))
-    cx.loop_cond(more)
+    cx.loop_cond(cx.bin(Type.Bool, BinOp.Ge, seen, zero))
     let here = loaded_from(cx, probe)
     cx.emit(Ins.Store(best, here))
     let one = cx.const_int(1)
@@ -184,9 +178,7 @@ fn next_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, piece: string) -> Reg
     let width = cx.const_int(byte_length(piece))
     cx.emit(Ins.Store(cur, plus(cx, found, width)))
     let zero = cx.const_int(0)
-    let hit = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(hit, BinOp.Ge, found, zero))
-    hit
+    cx.bin(Type.Bool, BinOp.Ge, found, zero)
 }
 
 /// The LAST hole's span runs from the cursor to the suffix's start,
@@ -196,9 +188,7 @@ fn last_span(mut cx: LowerCx, w: Walked, i: int, cur: Reg, stop: Reg) -> Reg {
     let upto = loaded_from(cx, stop)
     cx.emit(Ins.Store(w.spans[2 * i], from))
     cx.emit(Ins.Store(w.spans[2 * i + 1], upto))
-    let room = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(room, BinOp.Le, from, upto))
-    room
+    cx.bin(Type.Bool, BinOp.Le, from, upto)
 }
 
 /// One hole's value: the span, as octets when the subject is octets
@@ -240,7 +230,7 @@ fn tail_span(mut cx: LowerCx, subject: Reg, len: Reg, last: string) -> Reg {
 /// A literal as octets. The conversion runs per attempt: the IR
 /// carries no constant of this shape to hoist it into.
 fn literal(mut cx: LowerCx, text: string) -> Reg {
-    cx.bytes_of_str(Type.Bytes, text_const(cx, text))
+    cx.bytes_of_str(Type.Bytes, cx.const_str(text))
 }
 
 /// A literal's length in OCTETS, which is what the scan counts.
@@ -249,21 +239,15 @@ fn byte_length(text: string) -> int {
 }
 
 fn loaded_from(mut cx: LowerCx, cell: Reg) -> Reg {
-    let v = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Load(v, cell))
-    v
+    cx.loaded_as(cx.type(int), cell)
 }
 
 fn plus(mut cx: LowerCx, a: Reg, b: Reg) -> Reg {
-    let r = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Bin(r, BinOp.Add, a, b))
-    r
+    cx.bin(Type.Int, BinOp.Add, a, b)
 }
 
 fn minus(mut cx: LowerCx, a: Reg, b: Reg) -> Reg {
-    let r = cx.mint_shape(Type.Int)
-    cx.emit(Ins.Bin(r, BinOp.Sub, a, b))
-    r
+    cx.bin(Type.Int, BinOp.Sub, a, b)
 }
 
 // ── The doors a grammar declares ────────────────────────────────
@@ -415,21 +399,19 @@ fn unpassed(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int)
     let one = cx.const_int(1)
     let at = cx.bytes_index_of(Type.Int, octets, needle, one)
     let zero = cx.const_int(0)
-    let alone = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(alone, BinOp.Lt, at, zero))
-    alone
+    cx.bin(Type.Bool, BinOp.Lt, at, zero)
 }
 
 /// This hole's literal, then every later hole's value and literal —
 /// the text the scan will still have in front of it when it takes
 /// this hole's delimiter.
 fn trailing(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int) -> Reg {
-    mut pieces = [text_const(cx, parts[i].piece)]
+    mut pieces = [cx.const_str(parts[i].piece)]
     // LICENSED I3: the pieces must be EMITTED in order, each minting its own register
     for j, part in parts {
         if j > i {
             pieces.push(fields[j])
-            pieces.push(text_const(cx, part.piece))
+            pieces.push(cx.const_str(part.piece))
         }
     }
     glued(cx, pieces)
@@ -439,25 +421,23 @@ fn trailing(mut cx: LowerCx, parts: List<FormatPart>, fields: List<Reg>, i: int)
 /// the literal must first appear exactly where the value ends. Asked
 /// in OCTETS, because that is what the scan will ask.
 fn unmoved(mut cx: LowerCx, value: Reg, piece: string) -> Reg {
-    let joined = cx.str_concat(Type.Str, value, text_const(cx, piece))
+    let joined = cx.str_concat(Type.Str, value, cx.const_str(piece))
     let octets = cx.bytes_of_str(Type.Bytes, joined)
     let needle = literal(cx, piece)
     let zero = cx.const_int(0)
     let at = cx.bytes_index_of(Type.Int, octets, needle, zero)
     let width = cx.str_len(Type.Int, value)
-    let same = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(same, BinOp.Eq, at, width))
-    same
+    cx.bin(Type.Bool, BinOp.Eq, at, width)
 }
 
 /// The literals and the values, alternating, joined once — the head,
 /// then each hole's text and the literal that follows it.
 fn woven(mut cx: LowerCx, read: GrammarSpec, fields: List<Reg>) -> Reg {
-    mut pieces = [text_const(cx, read.head)]
+    mut pieces = [cx.const_str(read.head)]
     // LICENSED I3: the pieces must be EMITTED in order, each minting its own register
     for i, part in read.parts {
         pieces.push(fields[i])
-        pieces.push(text_const(cx, part.piece))
+        pieces.push(cx.const_str(part.piece))
     }
     glued(cx, pieces)
 }
@@ -466,12 +446,7 @@ fn woven(mut cx: LowerCx, read: GrammarSpec, fields: List<Reg>) -> Reg {
 fn glued(mut cx: LowerCx, pieces: List<Reg>) -> Reg {
     let size = cx.box_size(pieces.length)
     let arr = cx.grown_box(cx.view.types.shape_of(cx.type(List<string>)), size, pieces)
-    let sep = text_const(cx, "")
+    let sep = cx.const_str("")
     cx.str_join(Type.Str, arr, sep)
 }
 
-fn text_const(mut cx: LowerCx, text: string) -> Reg {
-    let r = cx.mint_shape(Type.Str)
-    cx.emit(Ins.ConstStr(r, text))
-    r
-}

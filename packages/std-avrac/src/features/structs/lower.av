@@ -7,7 +7,7 @@
 //! the pack itself runs. Reads are the spine's property ladder (a
 //! slot read at the field's compile-time index) — zero new
 //! instructions anywhere.
-use core.{ExprId, Reg, Ins, TypeId, filled}
+use core.{ExprId, Reg, TypeId, filled}
 use features.{LowerCx, StructSig}
 
 fn structs_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -54,9 +54,7 @@ fn lit_reg(mut cx: LowerCx, e: ExprId, fields: List<string>, values: List<ExprId
 /// a call to the field's own body, as instantiated at this literal.
 fn defaulted_reg(mut cx: LowerCx, e: ExprId, sig: StructSig, slot: int) -> Reg {
     let d? = sig.defaults[slot] else { return cx.lower_defect(e, "a literal missing a field without a default survived typing") }
-    let dst = cx.mint_ty(cx.viewed(sig.types[slot]))
-    cx.emit(Ins.Call(dst, cx.symbol_at(d, e), []))
-    dst
+    cx.call_decl(cx.viewed(sig.types[slot]), cx.symbol_at(d, e), [])
 }
 
 /// `x.of` — the shape a name stands over. A named value IS its

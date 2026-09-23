@@ -4,17 +4,13 @@
 //! to the runtime's value comparison. The LAZY ops (`&&`/`||`)
 //! desugar onto the region brackets, so the right side's
 //! instructions live inside a branch and short-circuit natively.
-use core.{ExprId, BinOp, UnOp, Reg, Ins, Type, TypeId}
+use core.{ExprId, BinOp, Reg, Ins, Type, TypeId}
 use features.{LowerCx, EnumSig, variant_defect, PropertyRow, property_of}
 
 fn spine_lower(mut cx: LowerCx, e: ExprId) -> Reg {
     // a feature cannot enumerate OTHER features' variants
     match cx.view.store.expr(e) {
-        .IntLit(v) -> {
-            let dst = cx.result(e)
-            cx.emit(Ins.ConstInt(dst, v))
-            dst
-        },
+        .IntLit(v) -> cx.const_int_at(e, v),
         // A real has its OWN constant: the variant is the type, so an
         // instruction never means one thing here and another there.
         .FloatLit(bits) -> {
@@ -45,9 +41,7 @@ fn asked_subject(cx: LowerCx, op: BinOp, l: ExprId, r: ExprId) -> ExprId? {
 fn presence_reg(mut cx: LowerCx, e: ExprId, op: BinOp, subject: ExprId) -> Reg {
     let p = cx.presence_of(cx.reg_of(subject), cx.type_at(subject))
     if op == BinOp.Ne { return p }
-    let dst = cx.result(e)
-    cx.emit(Ins.Un(dst, UnOp.Not, p))
-    dst
+    cx.un_at(e, p)
 }
 
 fn index_reg(mut cx: LowerCx, e: ExprId, s: ExprId, i: ExprId) -> Reg {
@@ -123,13 +117,9 @@ fn binary_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Re
     if (op == BinOp.Eq || op == BinOp.Ne) && (sh is .Str || sh is .Bytes || sh is .Enum) {
         let same = cx.same_value(a, b, cx.type_at(l))
         if op == BinOp.Eq { return same }
-        let dst = cx.result(e)
-        cx.emit(Ins.Un(dst, UnOp.Not, same))
-        return dst
+        return cx.un_at(e, same)
     }
-    let dst = cx.result(e)
-    cx.emit(Ins.Bin(dst, op, a, b))
-    dst
+    cx.bin_at(e, op, a, b)
 }
 
 /// `a == b` with a nullable side: the NULLABLE side leads the test,
@@ -145,9 +135,7 @@ fn nullable_eq_reg(mut cx: LowerCx, l: ExprId, r: ExprId) -> Reg {
 
 fn negated_when(mut cx: LowerCx, e: ExprId, negate: bool, v: Reg) -> Reg {
     if !negate { return v }
-    let dst = cx.result(e)
-    cx.emit(Ins.Un(dst, UnOp.Not, v))
-    dst
+    cx.un_at(e, v)
 }
 
 /// `a && b` is `if a { b } else { false }`; `a || b` is
@@ -160,10 +148,7 @@ fn lazy_reg(mut cx: LowerCx, e: ExprId, op: BinOp, l: ExprId, r: ExprId) -> Reg 
 }
 
 fn not_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
-    let rv = cx.reg_of(v)
-    let dst = cx.result(e)
-    cx.emit(Ins.Un(dst, UnOp.Not, rv))
-    dst
+    cx.un_at(e, cx.reg_of(v))
 }
 
 /// A property the receiver's shape answers — its row's lowering.
