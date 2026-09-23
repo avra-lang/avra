@@ -1286,10 +1286,29 @@ engine's spec, written by dogfooding.
   one of the three — a bare `Ins.CallRt(dst, "avra_x", args)` outside
   them is I58's own refusal, and a misspelled or wrong-arity call
   through the generated method is the ordinary "no method"/method-
-  arity refusal (F2030) at typing, for free. Two
+  arity refusal (F2030) at typing, for free. EVERY OTHER VALUE-
+  PRODUCING SHAPE mints and emits in ONE call too, the same
+  `verb(sh, …)`/`verb_at(e, …)` split as `call`/`call_at` — a fixed
+  shape (or an explicit `TypeId`) beside a node's own answer type:
+  `bin`/`bin_at`, `un`/`un_at`, `pack` (a `TypeId` always, no site
+  needs the node's), `call_decl`/`call_decl_at` (a declared fn's own
+  symbol — never a runtime row, that is `call`), `call_ptr_at` (a
+  call THROUGH a register holding code), and the literal twins
+  `const_int_at`/`const_bool_at`/`const_str_at` beside the fixed-shape
+  three — a source LITERAL's own node may carry a NAMED seat's type
+  (a literal fills a named seat directly), never the raw scalar the
+  fixed forms mint at, so a literal's defining register needs the
+  node-tied verb. A raw `let dst = cx.mint_shape(sh); cx.emit(Ins.…
+  (dst, …))` outside `emit.av` is I60's refusal; a shape with only
+  ONE call site (`FnAddr`, `ConstFloat`, a bare uninitialized
+  `Alloca`) has no covering verb and stays a two-statement pair, and
+  a site whose one register answers several branches — a mint shared
+  across match arms, a mint at neither a fixed shape nor a node's own
+  type — is licensed at the site. Two
   engines read one instruction stream by construction; I33 ratchets
   the raw brackets, I39 the free verbs, I58 the raw runtime-call
-  string, and the vocabulary grows with the next shared shape.
+  string, I60 the raw mint-then-emit split, and the vocabulary grows
+  with the next shared shape.
 - A DERIVE'S FILE IS TYPED WHILE THE ANNOTATED FILE IS STILL
   REGISTERING, so it must name nothing that file declares. Running
   `@derive(X)` over a declaration in file A types the file that
