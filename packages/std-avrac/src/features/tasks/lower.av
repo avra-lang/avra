@@ -1,0 +1,37 @@
+//! The lowering rule — the ONE meaning: `spawn e` hands the runtime a
+//! closure over `e`'s TASK lift, which answers `e`'s value in a
+//! one-cell list — one box for every shape, so the runtime makes one
+//! call; `.await` joins and reads that cell.
+use core.{ExprId, Reg, Type, TypeId}
+use features.{LowerCx}
+
+fn spawn_reg(mut cx: LowerCx, e: ExprId) -> Reg {
+    // a feature cannot enumerate OTHER features' variants
+    match cx.view.store.expr(e) {
+        .Spawn(body) -> cx.task_spawn(cx.shape_at(e), task_box(cx, body)),
+        rest -> cx.lower_defect(e, "a non-spawn reached the task lowering"),
+    }
+}
+
+/// The closure the task runs: `body`'s captures, and its task lift.
+fn task_box(mut cx: LowerCx, body: ExprId) -> Reg {
+    let caps = cx.capture_regs(body)
+    cx.fn_box(cx.shape_at(body), cx.box_size(1 + caps.length), cx.lift_task(body), caps)
+}
+
+fn lower_await(mut cx: LowerCx, _e: ExprId, task: Reg, ty: TypeId) -> Reg {
+    let answer = cx.view.types.task_answer(ty) ?? ty
+    let cell = cx.task_join(Type.List(one_cell_elem(cx, answer)), task)
+    if cx.view.types.shape_of(answer) is .Void { return cx.hollow_of(answer) }
+    cx.slot_read(cell, 0, answer)
+}
+
+/// The element a task's one-cell list is typed at: its answer — an int
+/// for a task answering nothing, whose list stays empty.
+fn one_cell_elem(cx: LowerCx, answer: TypeId) -> TypeId {
+    if cx.view.types.shape_of(answer) is .Void { cx.type(int) } else { answer }
+}
+
+fn lower_done(mut cx: LowerCx, e: ExprId, task: Reg, _ty: TypeId) -> Reg {
+    cx.task_done(cx.shape_at(e), task)
+}

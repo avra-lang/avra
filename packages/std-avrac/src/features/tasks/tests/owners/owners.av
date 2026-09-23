@@ -1,0 +1,21 @@
+// proves: a nullable task owns what it holds and absence joins nothing;
+// a task's body awaits its siblings, and every owner joins at its end
+fn work(n: int) -> int {
+    mut s = 0
+    for i in 0..n { s = s + i }
+    s
+}
+fn maybe(c: bool) -> int {
+    let t: Task<int>? = if c { spawn work(10) } else { null }
+    match t {
+        null -> -1
+        v? -> v.await
+    }
+}
+fn chain() -> int {
+    let a = spawn work(4)
+    let b = spawn { a.await + 100 }
+    let c = spawn { b.await + a.await }
+    c.await
+}
+"${maybe(true)} ${maybe(false)} ${chain()}"

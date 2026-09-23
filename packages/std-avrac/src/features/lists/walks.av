@@ -29,6 +29,11 @@ export fn lower_find(mut cx: LowerCx, mc: MethodCall) -> Reg {
     found(cx, mc, seat)
 }
 
+export fn lower_find_index(mut cx: LowerCx, mc: MethodCall) -> Reg {
+    let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
+    found_at(cx, mc, seat)
+}
+
 export fn lower_any(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let seat? = seat_of(cx, mc) else { return seatless(cx, mc) }
     judged(cx, mc, seat, false)
@@ -52,7 +57,7 @@ export fn lower_index_of(mut cx: LowerCx, mc: MethodCall) -> Reg {
 export fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let first? = mc.args.first() else { return cx.lower_defect(mc.e, "a push without its value survived typing") }
     let box = cx.unique_box(mc.subject)
-    cx.array_push(box, cx.reg_of(first))
+    cx.push_slot(box, cx.reg_of(first))
     nothing_reg(cx, mc.e)
 }
 
@@ -60,14 +65,14 @@ export fn lower_push(mut cx: LowerCx, mc: MethodCall) -> Reg {
 /// last slot (the memory pass hands a managed one over as owned).
 export fn lower_pop(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let box = cx.unique_box(mc.subject)
-    cx.array_pop(cx.shape_at(mc.e), box)
+    cx.popped(box, cx.type_at(mc.e))
 }
 
 /// `xs.set(i, v)` — the place opens unique, the runtime rewrites
 /// the slot (retain-at-pack is the memory pass's).
 export fn lower_set(mut cx: LowerCx, mc: MethodCall) -> Reg {
     let box = cx.unique_box(mc.subject)
-    cx.slot_set(box, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1]))
+    cx.slot_write(box, cx.reg_of(mc.args[0]), cx.reg_of(mc.args[1]))
     nothing_reg(cx, mc.e)
 }
 
@@ -151,6 +156,24 @@ fn found(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
     cx.loaded(mc.e, cell)
 }
 
+/// `xs.find_index(p)` — an `int?` cell seeded absent; the first element
+/// `p` blesses writes its index there and ends the walk.
+fn found_at(mut cx: LowerCx, mc: MethodCall, s: Seat) -> Reg {
+    let opt = cx.type_at(mc.e)
+    let cell = absent_cell(cx, opt)
+    let f = boxed(cx, s.arg)
+    let w = cx.opened(mc.subject, s.elem)
+    cx.turn_open(w)
+    let here = cx.turn_index(w)
+    let v = cx.turn_elem(w, here)
+    cx.void_region(turn_call(cx, f, v, bool_ty(cx))) { cx ->
+        cx.emit(Ins.Store(cell, cx.adopted(opt, false, here)))
+        cx.early_exit(w)
+    }
+    cx.turn_close(w)
+    cx.loaded(mc.e, cell)
+}
+
 /// `xs.any(p)` / `xs.all(p)` — a bool cell seeded with the verdict
 /// an EMPTY walk gives; the first counterexample flips it and ends
 /// the walk.
@@ -214,7 +237,7 @@ fn edge(mut cx: LowerCx, mc: MethodCall, last: bool) -> Reg {
     cx.emit(Ins.Bin(some, BinOp.Lt, zero, len))
     cx.void_region(some) { cx ->
         let at = if last { decremented(cx, len) } else { zero }
-        let raw = cx.array_get(cx.view.types.shape_of(cx.carried_type(opt)), xs, at)
+        let raw = cx.elem_read(xs, at, cx.carried_type(opt))
         cx.emit(Ins.Store(cell, cx.adopted(opt, false, raw)))
     }
     cx.loaded(mc.e, cell)

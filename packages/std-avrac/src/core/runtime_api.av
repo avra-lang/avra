@@ -28,9 +28,20 @@ export once fn rt_sigs() -> List<RtSig> {
         RtSig { name: "avra_map_get_owned", ret: RtKind.Ptr, params: [RtKind.Ptr, RtKind.Ptr], owns_result: true, has_owned_twin: false, host: RtHost.MapGet , inert: true, boxes: [Box.Map, Box.Text] },
         RtSig { name: "avra_map_set", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.MapSet , inert: true, boxes: [Box.Map, Box.Text] },
         RtSig { name: "avra_map_set_owned", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.Ptr, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.MapSet, keeps: [false, false, true] , inert: true, boxes: [Box.Map, Box.Text] },
+        RtSig { name: "avra_map_set_maybe", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.Ptr, RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.MapSetMaybe, inert: true, boxes: [Box.Map, Box.Text] },
+        RtSig { name: "avra_map_set_maybe_owned", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.Ptr, RtKind.I64, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.MapSetMaybe, keeps: [false, false, false, true], inert: true, boxes: [Box.Map, Box.Text] },
+        RtSig { name: "avra_map_value_present", ret: RtKind.I64, params: [RtKind.Ptr, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.MapValuePresent, inert: true, boxes: [Box.Map, Box.Text] },
         RtSig { name: "avra_slot_unique", ret: RtKind.Ptr, params: [RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.SlotUnique , inert: true },
         RtSig { name: "avra_slot_set", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.SlotSet , inert: true },
         RtSig { name: "avra_slot_set_owned", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.SlotSet, keeps: [false, false, true] , inert: true },
+        // A NULLABLE SCALAR IN A SLOT: its word, and its absence in the
+        // cell's mark — written with presence, asked for presence
+        RtSig { name: "avra_array_push_maybe", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.ArrayPushMaybe, inert: true, boxes: [Box.List] },
+        RtSig { name: "avra_array_push_maybe_owned", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.ArrayPushMaybe, keeps: [false, false, true], inert: true, boxes: [Box.List] },
+        RtSig { name: "avra_slot_set_maybe", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: true, host: RtHost.SlotSetMaybe, inert: true },
+        RtSig { name: "avra_slot_set_maybe_owned", ret: RtKind.Void, params: [RtKind.Ptr, RtKind.I64, RtKind.I64, RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.SlotSetMaybe, keeps: [false, false, false, true], inert: true },
+        RtSig { name: "avra_slot_present", ret: RtKind.I64, params: [RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.SlotPresent, inert: true },
+        RtSig { name: "avra_array_last_present", ret: RtKind.I64, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.ArrayLastPresent, inert: true, boxes: [Box.List] },
         RtSig { name: "avra_array_len", ret: RtKind.I64, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.ArrayLen , inert: true, boxes: [Box.List] },
         // THE ONCE CACHE: a `once fn`'s answer, asked by the fn's own
         // symbol. The get ANSWERS OWNED (the cache keeps its own
@@ -114,12 +125,16 @@ export once fn rt_sigs() -> List<RtSig> {
         // only where a task waits. A task's body is a closure box that
         // answers one managed box. Process state, so World: no
         // compile-time evaluation runs a task.
-        RtSig { name: "avra_task_spawn", ret: RtKind.Ptr, params: [RtKind.Ptr], owns_result: true, has_owned_twin: false, host: RtHost.Unhosted, keeps: [true], reach: Reach.World, inert: true },
-        RtSig { name: "avra_task_join", ret: RtKind.Ptr, params: [RtKind.Ptr], owns_result: true, has_owned_twin: false, host: RtHost.Unhosted, reach: Reach.World, inert: true },
-        RtSig { name: "avra_task_done", ret: RtKind.I64, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.Unhosted, reach: Reach.World, inert: true },
-        RtSig { name: "avra_fiber_yield", ret: RtKind.Void, params: [], owns_result: false, has_owned_twin: false, host: RtHost.Unhosted, reach: Reach.World, inert: true },
-        RtSig { name: "avra_fiber_sleep", ret: RtKind.Void, params: [RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.Unhosted, reach: Reach.World, inert: true },
-        RtSig { name: "avra_fiber_park_fd", ret: RtKind.I64, params: [RtKind.I64, RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.Unhosted, reach: Reach.World, inert: true },
+        // the body answers its value in a one-cell list — one box, always
+        RtSig { name: "avra_task_spawn", ret: RtKind.Ptr, params: [RtKind.Ptr], owns_result: true, has_owned_twin: false, host: RtHost.TaskSpawn, keeps: [true], reach: Reach.World, inert: true },
+        // an owner's scope ends: its task, or each in its list, joined
+        RtSig { name: "avra_task_settle", ret: RtKind.Void, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.TaskSettle, reach: Reach.World, inert: true },
+        RtSig { name: "avra_task_settle_all", ret: RtKind.Void, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.TaskSettleAll, reach: Reach.World, inert: true, boxes: [Box.List] },
+        RtSig { name: "avra_task_join", ret: RtKind.Ptr, params: [RtKind.Ptr], owns_result: true, has_owned_twin: false, host: RtHost.TaskJoin, reach: Reach.World, inert: true },
+        RtSig { name: "avra_task_done", ret: RtKind.I64, params: [RtKind.Ptr], owns_result: false, has_owned_twin: false, host: RtHost.TaskDone, reach: Reach.World, inert: true },
+        RtSig { name: "avra_fiber_yield", ret: RtKind.Void, params: [], owns_result: false, has_owned_twin: false, host: RtHost.FiberYield, reach: Reach.World, inert: true },
+        RtSig { name: "avra_fiber_sleep", ret: RtKind.Void, params: [RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.FiberSleep, reach: Reach.World, inert: true },
+        RtSig { name: "avra_fiber_park_fd", ret: RtKind.I64, params: [RtKind.I64, RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.FiberParkFd, reach: Reach.World, inert: true },
         RtSig { name: "avra_fd_read", ret: RtKind.I64, params: [RtKind.I64, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.FdRead, reach: Reach.World , inert: true },
         RtSig { name: "avra_fd_taken", ret: RtKind.Ptr, params: [RtKind.I64], answer: Box.Text, owns_result: true, has_owned_twin: false, host: RtHost.FdTaken, reach: Reach.World , inert: true },
         RtSig { name: "avra_fd_write", ret: RtKind.I64, params: [RtKind.I64, RtKind.Ptr, RtKind.I64], owns_result: false, has_owned_twin: false, host: RtHost.FdWrite, reach: Reach.World , inert: true, boxes: [Box.Any, Box.Bytes] },

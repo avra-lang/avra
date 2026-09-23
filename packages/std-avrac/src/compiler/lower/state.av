@@ -4,7 +4,7 @@
 //! and the mono worklist's enqueue — the verbs the walk speaks.
 use core.{StmtId, ExprId, FileId, TypeId, Type, Expr, Reg, Ins, DeclId, Arrow, Binding, NodeStore, SeatMark, is_literal, settled_mark, Static, StaticBox}
 use diagnostics.{loc_at, refusal, Diag}
-use features.{LowerCx, capture_lane, Sub, SeatValue, viewed, def_type_of, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, new_meta_heap, literal_meta}
+use features.{LowerCx, capture_lane, Sub, SeatValue, viewed, def_type_of, Wanted, Lift, LiftKind, Wrap, Unsettled, Settled, SettleRoot, const_symbol, settled_symbol, seat_symbol, nothing, MetaVal, new_meta_heap, literal_meta}
 use @std.errors.{Loc}
 
 impl LowerCx {
@@ -463,11 +463,18 @@ impl LowerCx {
     /// The lift: names the lambda's body (mangled under the view
     /// when the enclosing body is a specialization) and enqueues it
     /// once.
-    fn lift(e: ExprId) -> string {
-        let sym = self.view.decls.lifted_symbol(self.view.file, e)
+    fn lift(e: ExprId) -> string { self.lifted_as(e, LiftKind.Value) }
+
+    /// A task's body: the lambda lifted under its own name, answering
+    /// its value boxed in a one-cell list.
+    fn lift_task(e: ExprId) -> string { self.lifted_as(e, LiftKind.Task) }
+
+    fn lifted_as(e: ExprId, kind: LiftKind) -> string {
+        let base = self.view.decls.lifted_symbol(self.view.file, e)
+        let sym = if kind is .Task { "${base}$task" } else { base }
         let name = if self.sub == null { sym } else { self.view.decls.mangle( sym, self.sub!) }
         if self.unseen(name) {
-            self.jobs.lifts.push(Lift { lam: e, name: name, sub: self.sub })
+            self.jobs.lifts.push(Lift { lam: e, name: name, sub: self.sub, kind: kind })
         }
         name
     }

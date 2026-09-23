@@ -55,6 +55,9 @@ export enum Type {
     /// Explicit shared interior mutability. Copies share one slot;
     /// `get` reads a value snapshot and `set` replaces the shared slot.
     Cell(inner: TypeId)
+    /// A running task's handle: its answer, once it has one (`.await`).
+    /// Joined when its last owner's scope ends; never outlives it.
+    Task(answer: TypeId)
     /// A string-keyed, insertion-ordered map — order is BY DESIGN,
     /// so iterating one never needs a rule. Other key types are
     /// recorded.
@@ -160,7 +163,7 @@ export fn new_type_registry() -> TypeRegistry {
 /// truth the machine projections ask.
 export fn ptr_shape(t: Type) -> bool {
     match t {
-        .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_)
+        .Bytes or .Str or .Ptr or .List(_) or .Cell(_) or .Task(_) or .Struct(_, _) or .Enum(_, _) or .Opt(_)
             or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList
             or .Map(_, _) or .EmptyMap -> true,
         .Int or .Float or .Bool or .Error or .TypeName(_, _) or .Var(_, _, _) or .Void -> false,
@@ -181,6 +184,7 @@ impl TypeRegistry {
             .Bool -> "3",
             .List(elem) -> "4:${elem.index}",
             .Cell(inner) -> "19:${inner.index}",
+            .Task(answer) -> "22:${answer.index}",
             .Struct(decl, _) -> "5:${decl.index}",
             .Enum(decl, _) -> "6:${decl.index}",
             .TypeName(decl, _) -> "7:${decl.index}",
@@ -315,6 +319,9 @@ impl TypeRegistry {
     /// YES though the bare record answers no: its nullable is a
     /// one-slot box, because a word has no spare value for absence.
     fn opt_rides_pointer(inner: TypeId) -> bool {
+        // a nullable over a nullable is a pair: the null pointer is
+        // already the inner one's absence
+        if self.seen_shape(inner) is .Opt { return false }
         self.rides_pointer(inner) || self.is_flat(inner)
     }
 
@@ -384,6 +391,40 @@ impl TypeRegistry {
         match self.shape_of(self.seen_through(id)) {
             .Cell(t) -> t,
             _ -> null,
+        }
+    }
+
+    /// What a task answers once it has an answer.
+    fn task_answer(id: TypeId) -> TypeId? {
+        match self.shape_of(self.seen_through(id)) {
+            .Task(t) -> t,
+            _ -> null,
+        }
+    }
+
+    /// Whether a value of this type holds a task ANYWHERE inside it —
+    /// what the escape laws ask of a seat a task may never reach.
+    fn holds_tasks(id: TypeId) -> bool {
+        match self.shape_of(self.seen_through(id)) {
+            .Task(_) -> true,
+            rest -> self.args_of(id).any((a) -> self.holds_tasks(a)),
+        }
+    }
+
+    /// Whether a value of this type OWNS tasks it can join where it
+    /// ends: one task (or its nullable), or a list of them. Every other
+    /// shape holding one is refused where it is written.
+    fn owns_tasks(id: TypeId) -> bool {
+        let elem? = self.element(id) else { return self.owns_one_task(id) }
+        self.shape_of(self.seen_through(elem)) is .Task
+    }
+
+    /// A task, or a nullable one — the niche, so absence joins nothing.
+    fn owns_one_task(id: TypeId) -> bool {
+        match self.shape_of(self.seen_through(id)) {
+            .Task(_) -> true,
+            .Opt(t) -> self.shape_of(self.seen_through(t)) is .Task,
+            rest -> false,
         }
     }
 
@@ -463,6 +504,7 @@ impl TypeRegistry {
                 if decl.index == target.index { args[j] } else { ty },
             .List(elem) -> self.intern(Type.List(self.substituted(elem, target, args))),
             .Cell(inner) -> self.intern(Type.Cell(self.substituted(inner, target, args))),
+            .Task(answer) -> self.intern(Type.Task(self.substituted(answer, target, args))),
             .Map(k, v) -> self.intern(Type.Map(self.substituted(k, target, args), self.substituted(v, target, args))),
             .Opt(inner) -> self.intern(Type.Opt(self.substituted(inner, target, args))),
             .Res(ok, err) -> self.intern(Type.Res(self.substituted(ok, target, args),
@@ -488,6 +530,7 @@ impl TypeRegistry {
             .Bool -> "bool",
             .List(elem) -> "List<${self.name_of(elem)}>",
             .Cell(inner) -> "Cell<${self.name_of(inner)}>",
+            .Task(answer) -> "Task<${self.name_of(answer)}>",
             .Struct(_, name) -> name,
             .Dyn(_, name) -> "dyn ${name}",
             .Fn(params, marks, ret) -> "fn(${joined(self.seat_words(params, marks), ", ")})${self.answer_word(ret)}",
@@ -539,7 +582,7 @@ impl TypeRegistry {
         match self.shape_of(id) {
             .App(_, _, args) -> args,
             .Res(ok, err) -> [ok, err],
-            .List(t) or .Cell(t) -> [t],
+            .List(t) or .Cell(t) or .Task(t) -> [t],
             .Map(k, v) -> [k, v],
             .Opt(t) -> [t],
             .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .Struct(_, _) or .Enum(_, _) or .TypeName(_, _) or .Var(_, _, _)

@@ -99,17 +99,39 @@ impl TypeCx {
         self.accepts(e, self.view.types.substituted(want, decl, self.bound_args(bound)))
     }
 
+    /// THE LITERAL'S ONE TYPE is named by its first item with a type of
+    /// its own — `[]`, `{}` and `null` are adopted by their siblings,
+    /// and a hungry item is fed by theirs.
+    fn led_by(items: List<ExprId>) -> ExprId {
+        items.find((k) -> self.self_typed(k)) ?? items[0]
+    }
+
+    fn self_typed(k: ExprId) -> bool {
+        match self.shape_at(k) {
+            .EmptyList or .EmptyMap or .Null or .Error -> false,
+            _ -> true,
+        }
+    }
+
+    /// The leader's type, nullable when any item is `null`: `[null, 7]`
+    /// is a `List<int?>`.
+    fn joined(items: List<ExprId>, head: TypeId) -> TypeId {
+        if self.view.types.carried(head) != null || !items.any((k) -> self.shape_at(k) is .Null) { return head }
+        self.type(head?)
+    }
+
     /// THE SLOT VOICES, shared by every aggregate seat: `what` names the
     /// seat ("a list element", "a map value").
     mut fn unslottable(head: ExprId, what: string) -> TypeId {
         if self.shape_at(head) is .Void {
             return self.spoken(refusal("type.list_scalar", self.loc_of(head), "${what} cannot hold nothing — this answers no value", "answers nothing", null))
         }
-        self.spoken(refusal("type.list_scalar", self.loc_of(head), "${what} cannot hold this yet", this_is(self.name_at(head)), slice_promise("elements")))
+        let n = self.name_at(head)
+        self.spoken(refusal("type.list_scalar", self.loc_of(head), "${what} takes its type from its value, and `${n}` has none of its own", this_is(n), "declare the type where it is bound — `let name: Type = …`"))
     }
 
     mut fn unslottable_want(e: ExprId, want: TypeId, what: string) -> TypeId {
-        self.spoken(refusal("type.list_scalar", self.loc_of(e), "${what} cannot hold `${self.view.types.name_of(want)}` yet", "this slot", slice_promise("elements")))
+        self.spoken(refusal("type.list_scalar", self.loc_of(e), "${what} cannot hold `${self.view.types.name_of(want)}` — it is no value", "this slot", null))
     }
 
     mut fn chain_writes(e: ExprId, name: string) {
@@ -122,9 +144,18 @@ impl TypeCx {
     /// or a miss never binds. The one door for a call argument, a struct
     /// field and an enum payload alike.
     mut fn agreed(e: ExprId, want: TypeId, decl: DeclId, mut bound: Pins) -> bool {
-        let matched = self.unify(want, self.type_at(e), decl, bound)
+        let got = self.type_at(e)
+        let matched = self.unify(want, got, decl, bound) || self.seat_widens(want, got, decl, bound)
         let took = self.unified_lift(e, want, decl, bound)
         matched || took
+    }
+
+    /// A `T?` SEAT takes a present value and pins `T` to it — here and
+    /// nowhere deeper, since only the seat records the widen: a
+    /// `List<int>` is no `List<int?>`, whose slots are laid out apart.
+    fn seat_widens(want: TypeId, got: TypeId, decl: DeclId, mut bound: Pins) -> bool {
+        let w? = self.view.types.carried(want) else { return false }
+        self.view.types.carried(got) == null && self.unify(w, got, decl, bound)
     }
 
     /// THE ASSIGNMENT LAW: what a slot of type `want` accepts from the
@@ -492,7 +523,8 @@ impl TypeCx {
 /// The by-value law over a TYPE: the scalars and text, and an enum
     /// whose variants carry nothing — it compares by variant.
     fn compares_by_value(ty: TypeId) -> bool {
-        comparable(self.view.types.shape_of(ty)) || self.unit_enum(ty)
+        let inner? = self.view.types.carried(ty) else { return comparable(self.view.types.shape_of(ty)) || self.unit_enum(ty) }
+        self.compares_by_value(inner)
     }
 
     /// An enum every variant of which carries nothing — a tag alone.
@@ -878,7 +910,7 @@ export fn comparable(sh: Type) -> bool {
     match sh {
         .Int or .Float or .Bool or .Str or .Bytes -> true,
         .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _)
-            or .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void
+            or .List(_) or .Cell(_) or .Task(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void
             or .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _)
             or .Var(_, _, _) or .Error -> false,
     }
@@ -887,10 +919,4 @@ export fn comparable(sh: Type) -> bool {
 /// One block, or two: how the arity voice counts them.
 fn block_word(n: int) -> string {
     if n == 1 { "it" } else { "the ${n} blocks" }
-}
-
-/// THE PROMISE every nullable-in-a-slot refusal makes — one fn, so
-/// the day the slice lands there is one place to keep it.
-export fn slice_promise(what: string) -> string {
-    "nullable ${what} arrive with ownership's next slice"
 }

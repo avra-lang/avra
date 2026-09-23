@@ -138,6 +138,29 @@ native == expected` for every task program.
   `Task<void, E>`? probe `Result<void,…>`'s F2019 first); a spawn
   body writing a capture (F3005 already speaks).
 
+## 4b. F2c as decided (supersedes §4 where they differ)
+
+- `spawn e` — any expression, a block included: `spawn db.user(id)`,
+  `spawn { … }`. `Task<T>`, ONE parameter: the body's answer. `.await`
+  answers `T`; a failing body answers `Result`, so `t.await?` reads as
+  every other propagation. Cancellation needs no channel in the value:
+  it reaches whoever awaits at their OWN pause point (§4).
+- A TASK IS JOINED WHEN ITS LAST OWNER ENDS. An owner is a binding or a
+  list holding the task; at the owner's scope exit its tasks are
+  joined (idempotent — a copy's second join is free). A spawn nobody
+  holds (`spawn log(x)` as a statement) is owned by its block. So
+  `tasks.push(spawn fetch(u))` in a loop runs concurrently and joins
+  where `tasks` ends — never once per turn.
+- NO OWNER OUTLIVES ITS BLOCK: a type containing `Task` is refused as a
+  fn's or lambda's answer, a record or enum field, a map value, and a
+  capture. Passing one to a fn is fine — the callee cannot keep it.
+- The joins are EXPLICIT at each owner's scope exit (the `defer` frames'
+  second entry kind), never a refcount side effect, so both engines run
+  them at the same instruction.
+- The evaluator runs every task on its one machine: a task is its own
+  call stack, the C policy (§2, `avra_vtask_*`) names the next, and a
+  parked instruction re-runs when its task resumes.
+
 ## 5. I/O parks
 
 - `@std/net`: a read/write that finds `EAGAIN` parks the calling fiber
@@ -267,3 +290,25 @@ PROOF the compiler demands before work may go there.
 - 18.3 `spawn cpu { }` -> placement is a scope property (`on .cores`).
 - NEW: deterministic test scheduler, `atomic`, hints, exact frames,
   pay-for-what-you-use, fixed reduction trees, `durable`.
+- The tour's `Task<T, E>` -> `Task<T>`: a failing body answers
+  `Result<T, E>`, so the error side rides the answer and `t.await?`
+  propagates like any `Result` (§4b).
+
+## 10. As built (F2)
+
+- A task's body is a TASK LIFT: the lambda `spawn` builds, lifted to
+  answer a one-cell list, so C calls ONE signature whatever the answer
+  (`void` leaves the list empty).
+- OWNERS: a `Task<T>`, a `Task<T>?` (the niche — absence joins
+  nothing) and a `List<Task<T>>`. The join is a `Deferral.Settle`
+  entry in the `defer` frames, so both engines run it at the same
+  instruction. Every other holder is F2101.
+- F2101 refuses a task in an answer (a fn's, a method's, a lambda's,
+  a task's own), a record field, an enum payload, a generic slot, a
+  lambda VALUE's capture (a task's own body may capture a sibling: it
+  is joined in the same block), a holder no block joins (`Map`,
+  `Cell`, a list of lists), and a WRITE over a task (reassignment, an
+  index write, `set`), which would orphan it.
+- An owner type (`server.spawn { }`) is the only planned door to a
+  longer life; until it lands, a task's answer is what leaves:
+  `t.await`.

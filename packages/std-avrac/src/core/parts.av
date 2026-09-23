@@ -104,6 +104,20 @@ impl NodeStore {
         }
     }
 
+    /// The value a statement HOLDS for the rest of its scope: a binding's,
+    /// or a value computed and dropped — which its statement list then
+    /// holds until it ends. Null where the value leaves (`return`,
+    /// `fail`), replaces (`=`), or runs later (`defer`).
+    fn owned_value(s: StmtId) -> ExprId? {
+        match self.stmt(s) {
+            .Let(_, _, v) or .MutLet(_, _, v) or .ExprStmt(v) or .Discard(v) -> v,
+            .ConstDecl(_, _, _) or .Assign(_, _) or .Fail(_) or .LetElse(_, _, _) or .Defer(_, _) or .Return(_)
+                or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _)
+                or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Use(_, _, _)
+                or .StructDecl(_, _, _) or .NamedType(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Spec(_, _) or .Error -> null,
+        }
+    }
+
     /// A declaration's type parameters — whichever kind declares;
     /// empty when plain. The ordinal IS the Var identity.
     fn decl_tparams(s: StmtId) -> List<string> {

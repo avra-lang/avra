@@ -1,0 +1,63 @@
+// THE TASK LAW under attack: every seat that could carry a task past
+// the block that spawned it refuses, once, in the law's words — and
+// every owner the block can join is left alone.
+use @std.avrac.testing.{shown, refused_with}
+
+spec "features/tasks (adversarial)" {
+    given "every seat past the block" {
+        then "a fn's answer" {
+            refused_with("fn f() -> Task<int> {\n    spawn 1\n}\n1", "a task cannot outlive the block that spawned it")
+        }
+        then "a record field" {
+            refused_with("type R = { t: Task<int> }\n1", "a task cannot outlive the block that spawned it")
+        }
+        then "an enum payload" {
+            refused_with("enum E {\n    a(Task<int>)\n    b\n}\n1", "a task cannot outlive the block that spawned it")
+        }
+        then "a generic record instantiated over a task" {
+            refused_with("type B<T> = { v: T }\nfn g(t: Task<int>) -> int {\n    let b: B<Task<int>> = B { v: t }\n    1\n}\n1", "`B<...>` makes a slot `Task<int>`")
+        }
+        then "a lambda's capture" {
+            refused_with("let t = spawn 1\nlet f = () -> t.await\nf()", "`t` is captured here")
+        }
+        then "a lambda's answer" {
+            refused_with("let f = () -> spawn 1\n1", "this body answers `Task<int>`")
+        }
+        then "a task's own answer" {
+            refused_with("let t = spawn { spawn 1 }\n1", "this body answers `Task<int>`")
+        }
+    }
+    given "holders the block cannot join" {
+        then "a map" {
+            refused_with("let t = spawn 1\nlet m = {\"a\": t}\n1", "a `Map<string, Task<int>>` cannot own a task")
+        }
+        then "a cell" {
+            refused_with("let t = spawn 1\nlet c = Cell.new(t)\n1", "a `Cell<Task<int>>` cannot own a task")
+        }
+        then "a list of lists" {
+            refused_with("let xs = [[spawn 1]]\n1", "a `List<List<Task<int>>>` cannot own a task")
+        }
+    }
+    given "a write over a task" {
+        then "whole reassignment" {
+            refused_with("mut t = spawn 1\nt = spawn 2\nt.await", "this write leaves the task it replaces unjoined")
+        }
+        then "an index write" {
+            refused_with("mut ts = [spawn 1]\nts[0] = spawn 2\n1", "this write leaves the task it replaces unjoined")
+        }
+        then "`set`" {
+            refused_with("mut ts = [spawn 1]\nts.set(0, spawn 2)\n1", "this write leaves the task it replaces unjoined")
+        }
+    }
+    given "what the law leaves alone" {
+        then "a list grows, and a copy out of it is no second owner" {
+            shown("mut ts = [spawn 1]\nts.push(spawn 2)\nlet f = ts.first()\n(f?.await ?? 0) + ts.length") == "3"
+        }
+        then "a task handed to a fn — the callee cannot keep it" {
+            shown("fn g(ts: List<Task<int>>) -> int { ts.length }\nlet ts = [spawn 1]\ng(ts)") == "1"
+        }
+        then "a named type over a task is only a name" {
+            shown("type J = Task<int>\n1") == "1"
+        }
+    }
+}

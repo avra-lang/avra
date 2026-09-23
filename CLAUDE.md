@@ -560,6 +560,16 @@ engine's spec, written by dogfooding.
   and never spliced. The tell is a `T?` whose absence has TWO causes;
   the fix is the enum that names them (`Generated.None` /
   `.Made` / `.Foreign`), never a flag beside the null.
+  AND A NULLABLE OVER A NULLABLE IS THAT TELL BY CONSTRUCTION. When
+  `T?` met `T = string?`, four layers each read one null as both
+  absences: the niche (a `string??` as one pointer — `[null].first()`
+  answered empty), the `once` cache (a cached `null` read as "not
+  yet", so a `once fn` answering null RAN EVERY CALL), the
+  evaluator's slot (`Val.N` for a present null and an absent mark
+  alike) and the const crossing (`MetaVal.Absent`). Each fix NAMES
+  the second absence: a pair, a one-cell box, `Val.Gone`,
+  `MetaVal.Gone`. A generic seat reaches this shape in any program,
+  so a layer that files absence is asked what it does under `T??`.
 - ITS SIBLING AT THE OTHER END: A FLAT CONCATENATION OF TWO
   SEQUENCES HAS A BOUNDARY THAT MOVES. Splice two variable-length
   runs into one list and the split between them is not recorded, so
@@ -1433,6 +1443,10 @@ Syntax the grammar lacks:
   by position ("expected `)`" in a parameter seat, "expected `=`"
   under a `let`, "expected BREAK" under a `type` alias) — the type
   grammar takes one `?` per name, so it has no spelling anywhere.
+  It is REACHED through a generic all the same — `T?` over `T =
+  string?` is a `string??`, a pair that keeps a PRESENT null apart
+  from absence in every slot, and `??` unwraps one level
+  (features/nullable/tests/nested_slots).
 - A `table` literal without its row type: a bare `table { id: 1 }`
   reads as a STRUCT LITERAL of a type named `table` — F3000 "no `type
   table` is declared", with no hint that the row type is missing. The
@@ -1568,9 +1582,10 @@ Syntax the grammar lacks:
 - `is` with a PAYLOAD pattern (`p is .Bind(_)`): "expected BREAK
   while parsing `stmt`" — `is` takes a BARE variant. A one-arm
   match is the projection (`.Bind(_) -> true, _ -> false`).
-- `Result<void, E>` as a fn's answer: F2019 "a `Result` slot cannot
-  hold this yet" (help: "nullable slots arrive with ownership's next
-  slice"). A writing verb answers what it wrote instead —
+- `Result<void, E>` as a fn's answer: F2019 "a `Result` side cannot
+  hold `void` yet" (help: "a verb that answers nothing but may fail
+  is recorded — answer what it wrote"). A writing verb answers what
+  it wrote instead —
   `@std/io`'s `write_text`/`make_dirs`/`remove` answer the path.
 - A `mut` SEAT CANNOT BE ASSIGNED WHOLE, BY DESIGN, NOT PENDING
   MACHINERY: `a = a + 1` on a `mut a: int` parameter is F3005 "`a`
@@ -1599,17 +1614,11 @@ Syntax the grammar lacks:
   arm's block is not read as diverging. Write the statement `match`
   (`.Err(e) -> { … fail e }, .Ok(v) -> …`), as @std/process's three
   drivers do.
-- A NULLABLE LIST ELEMENT, and the boundary moved — the old entries
-  (a `null` literal under `List<T?>`, and `List<T>` refusing a
-  `List<T?>` want) are RETIRED, both now compile. What refuses today,
-  probed at `8519ae9`: a declared want for a MANAGED element type is
-  HONOURED (`let out: List<C?> = [null for c in cs]`, `C` a struct,
-  and `let tys: List<T?> = [t for t in refs]` — both exit 0); a
-  nullable SCALAR element is F2019 "a `List` slot cannot hold this
-  yet" (`let tys: List<int?> = [n for n in ns]`); and with NO want
-  declared it is still F2006 "a list element cannot hold this yet"
-  (`let xs = [null, null]`). The code neither retired entry quoted is
-  the one that fires.
+- A LITERAL OF `null` ALONE names no type: `let xs = [null, null]`
+  is F2006 "a list element takes its type from its value, and `null`
+  has none of its own" — `{"a": null}` and `Cell.new(null)` alike.
+  Any sibling with a type names it (`[null, 7]` is a `List<int?>`),
+  and a declared want fills it (`let c: Cell<int?> = Cell.new(null)`).
 
 Wants the typer does not carry yet:
 - A DECLARES ANNOTATION'S ARGUMENT IS A LITERAL. `@traced([1, 2])`
@@ -1619,14 +1628,6 @@ Wants the typer does not carry yet:
   only what the parse tree holds. A computed argument is the ask
   that arrives with quotes (S4); `Records`/`Validates` annotations
   take aggregates today, because they run after resolve.
-- A NULLABLE SCALAR FIELD (`type P = { x: int?, y: int }`): F2008 "a
-  struct field cannot hold this yet" — a scalar pair lives in
-  registers and no slot holds one, so a record cannot carry `int?`
-  (a pointer-riding `string?`, `List<int>?` or a flat record's `Id?`
-  is fine: those are a niche or a one-slot box). Two sites wanted it
-  the same day (a manifest's optional `[lifted]` rows, an attack
-  fixture); the manifest resolves the rows to their defaults at read
-  time instead. Probed at comptime/static, both engines.
 - A GENERIC struct literal's field seat UNIFIES instead of planting a
   want, so a no-argument generic call written there still needs its
   pin (`MatchContext { absent: captured_absent<N>(), … }` inside a
@@ -1691,7 +1692,8 @@ Wants the typer does not carry yet:
   first.
 - `==` between lists, `contains`/`index_of` over structs or enums:
   F2000 "`==` compares scalars for now"; F2005 "`contains` scans by
-  value — scalars and text for now, this list holds `K`" — spell
+  value — scalars and text for now, this list holds `K`" (a nullable
+  of either scans through presence) — spell
   the scan (`xs.any(same(it))`). ENUMS SPLIT ON THE PAYLOAD, which
   nobody had written down: a payload-FREE enum compares fine
   (`.Timeout == .Refused` answers false), and one CARRYING a payload
@@ -1702,8 +1704,6 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
 `List<int>` has none" — the others read alike — or the map's F2000):
 - `List.reverse()` / `sort()` — core's `reversed` is the helper
   (and a copy: nothing here mutates in place).
-- `List.find_index(pred)` — builders.av's `attach` is LICENSED I4
-  for it.
 - `m["k"]` on a map: F2000 "`[...]` indexes a `List`, found
   `Map<string, int>`" — `.get(k)`, which answers `T?`.
 - An EMPTY LITERAL does not adopt a NULLABLE aggregate want: `let
@@ -1725,9 +1725,7 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   comprehension there types on its own, so `Pins { slots: [b ??
   args[j] for j, b in xs] }` under `slots: List<TypeId?>` is F2010
   "field `slots` is `List<TypeId?>`, this is `List<TypeId>`" — a
-  typed let plants it. (The companion clause — `List<T>` refusing a
-  `List<T?>` want — is retired; see the nullable-list-element entry
-  above.)
+  typed let plants it.
 
 Runtime facts, ours to ratify:
 - `Bytes` IS NOT A LIST AND `bytes()` HAS TWO ANSWERS. `b[0]` is

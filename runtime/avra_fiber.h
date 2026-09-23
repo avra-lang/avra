@@ -7,9 +7,15 @@
 #include <stdint.h>
 
 // A new task running the closure box `body` (`[code, captures…]`,
-// called with the box at seat 0 and answering one managed box).
-// Keeps `body`; answers the task, owned. The spawner runs on.
+// called with the box at seat 0, answering one managed box — the
+// compiler's task lift puts the value in a one-cell list). Keeps
+// `body`; answers the task, owned. The spawner runs on.
 void* avra_task_spawn(void* body);
+
+// An owner's scope ended: the task joined, its answer not kept.
+void avra_task_settle(void* task);
+// The same for every task in a list.
+void avra_task_settle_all(void* list);
 
 // The task's answer, owned — parking the caller until it is done.
 void* avra_task_join(void* task);
@@ -28,5 +34,21 @@ void avra_fiber_sleep(int64_t ms);
 // the descriptor may be ready — a caller retries its read or write —
 // and 0 when the time ran out.
 int64_t avra_fiber_park_fd(int64_t fd, int64_t writable, int64_t timeout_ms);
+
+// ── The evaluator's tasks: no stack; the policy above files them and
+// names the next, and the evaluator switches its own call stacks. ──
+
+// A new task, filed nowhere until readied or parked.
+int64_t avra_vtask_new(void);
+void avra_vtask_free(int64_t t);
+void avra_vtask_ready(int64_t t);
+void avra_vtask_sleep(int64_t t, int64_t ms);
+// 1 when parked; 0 when the descriptor cannot be watched, and the
+// task is ready at once so its read or write reports the error.
+int64_t avra_vtask_park_fd(int64_t t, int64_t fd, int64_t writable, int64_t timeout_ms);
+int64_t avra_vtask_timed_out(int64_t t);
+// The next task to run, waiting on the world as long as it takes; a
+// world with nothing to wait on and nothing ready traps, deadlocked.
+int64_t avra_vtask_next(void);
 
 #endif

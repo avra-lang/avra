@@ -204,17 +204,26 @@ spec "features/nullable (adversarial)" {
         }
     }
     given "the declared-slot law, which every slot shares" {
-        then "a struct field refuses a nullable, in ITS words" {
-            let a = analyze_source("type P = { x: int? }\nlet p = P { x: 1 }\np.x ?? 0")
-            a.diagnostics.length == 1 && a.report().contains("a struct field cannot hold this yet")
+        then "a struct field holds a nullable scalar" {
+            shown("type P = { x: int? }\nlet p = P { x: 1 }\nlet q = P { x: null }\n\"\${p.x ?? 0} \${q.x ?? 5}\"") == "1 5"
         }
-        then "an enum payload refuses a nullable, in ITS words" {
-            let a = analyze_source("enum E {\n    a(int?)\n    b\n}\nmatch E.a(1) { .a(n) -> 0, .b -> 0 }")
-            a.diagnostics.length == 1 && a.report().contains("an enum payload cannot hold this yet")
+        then "an enum payload holds one, absence intact" {
+            shown("enum E {\n    a(int?)\n    b\n}\nmatch E.a(null) { .a(n) -> n ?? 4, .b -> 0 }") == "4"
         }
-        then "a list element refuses a nullable, in ITS words" {
-            let a = analyze_source("${makers}[some(1), none()]")
-            a.diagnostics.length == 1 && a.report().contains("a list element cannot hold this yet")
+        then "a list element holds one" {
+            shown("${makers}let xs = [some(1), none()]\n\"\${xs.length} \${xs[0] ?? 0} \${xs[1] ?? 9}\"") == "2 1 9"
+        }
+        then "a struct field refuses `void`, in ITS words" {
+            let a = analyze_source("type P = { x: void }\n1")
+            a.diagnostics.length == 1 && a.report().contains("a struct field cannot hold nothing")
+        }
+        then "an enum payload refuses `void`, in ITS words" {
+            let a = analyze_source("enum E {\n    a(void)\n    b\n}\n1")
+            a.diagnostics.length == 1 && a.report().contains("an enum payload cannot hold nothing")
+        }
+        then "a list of `null` alone names no type, in ITS words" {
+            let a = analyze_source("let xs = [null, null]\n1")
+            a.diagnostics.length == 1 && a.report().contains("a list element takes its type from its value, and `null` has none of its own")
         }
     }
     given "`if let`, adversarially — the sugar meets every law" {

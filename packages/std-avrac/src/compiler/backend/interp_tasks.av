@@ -1,0 +1,163 @@
+//! The scheduler's rows, hosted: every interpreted task runs on this
+//! one machine, as its own call stack. The runtime's policy — the one a
+//! compiled program's fibers obey — files each task and names the next;
+//! the machine switches stacks. A row that must wait marks the machine
+//! PARKING and the run loop saves the task at that very instruction, so
+//! the row runs again when its task resumes and answers then.
+
+extern fn avra_vtask_new() -> int
+extern fn avra_vtask_free(t: int)
+extern fn avra_vtask_ready(t: int)
+extern fn avra_vtask_sleep(t: int, ms: int)
+extern fn avra_vtask_park_fd(t: int, fd: int, writable: int, timeout_ms: int) -> int
+extern fn avra_vtask_timed_out(t: int) -> int
+extern fn avra_vtask_next() -> int
+
+/// One interpreted task — a JOB: its own call stack while it waits, the place it
+/// resumes, and — once it has one — its answer and whoever waits for it.
+type Job = {
+    vt: int,
+    frames: List<List<Val?>>,
+    callers: List<Resume>,
+    at: Place?,
+    answer: Val?,
+    done: bool,
+    waiters: List<int>,
+    // it parked at the instruction it resumes on: that row answers now
+    resumed: bool,
+}
+
+impl Machine {
+    /// The program's own run, filed as a task the first time a row asks.
+    fn rooted() {
+        if !self.tasks.is_empty() { return }
+        self.tasks.push(Job { vt: avra_vtask_new(), frames: [], callers: [], at: null, answer: null, done: false, waiters: [], resumed: false })
+        self.running = 0
+    }
+
+    fn closureless() -> Val { self.defect_val("a task over a non-closure survived typing") }
+
+    fn task_spawn_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let box? = array_id(vals[0]) else { return self.closureless() }
+        let target? = self.addressed_val(self.arrays[box].first() ?? Val.N) else { return self.closureless() }
+        let vt = avra_vtask_new()
+        self.tasks.push(Job { vt: vt, frames: [self.frame_for(target, [vals[0]])], callers: [], at: Place { body: target, pc: 0 }, answer: null, done: false, waiters: [], resumed: false })
+        avra_vtask_ready(vt)
+        Val.I(self.tasks.length - 1)
+    }
+
+    /// The task's answer — the one-cell list its body answered. Parks
+    /// until done.
+    fn task_join_val(vals: List<Val>) -> Val {
+        let id = self.whole(vals[0])
+        if id == self.running { return self.trapped_val("a task joined itself — deadlock") }
+        if !self.tasks[id].done { return self.waited_on(id) }
+        self.tasks[id].answer ?? Val.N
+    }
+
+    /// The running task waits for `id`: filed among its waiters — never
+    /// with the policy, which only readies it when `id` finishes — and
+    /// the machine switches. A join that would close a ring traps first.
+    fn waited_on(id: int) -> Val {
+        mut t = id
+        while t >= 0 {
+            if t == self.running { return self.trapped_val("tasks join each other in a ring — deadlock") }
+            t = self.joining_of(t)
+        }
+        self.tasks[id].waiters.push(self.running)
+        self.parking = true
+        Val.N
+    }
+
+    /// The task `id` waits to join, or -1.
+    fn joining_of(id: int) -> int {
+        self.tasks.find_index(it.waiters.contains(id)) ?? -1
+    }
+
+    fn task_done_val(vals: List<Val>) -> Val {
+        Val.I(if self.tasks[self.whole(vals[0])].done { 1 } else { 0 })
+    }
+
+    /// An owner's scope ended: its task joined, or each in its list.
+    fn task_settle_val(vals: List<Val>) -> Val {
+        if vals[0] is .N { return Val.I(0) }
+        let id = self.whole(vals[0])
+        if !self.tasks[id].done { return self.waited_on(id) }
+        Val.I(0)
+    }
+
+    fn task_settle_all_val(vals: List<Val>) -> Val {
+        let list? = array_id(vals[0]) else { return self.defect_val("a list of tasks that is not a list survived typing") }
+        let open? = self.arrays[list].find((v) -> !self.tasks[self.whole(v)].done) else { return Val.I(0) }
+        self.waited_on(self.whole(open))
+    }
+
+    fn fiber_yield_val() -> Val {
+        self.rooted()
+        if self.woke() { return Val.I(0) }
+        avra_vtask_ready(self.tasks[self.running].vt)
+        self.parking = true
+        Val.I(0)
+    }
+
+    fn fiber_sleep_val(vals: List<Val>) -> Val {
+        self.rooted()
+        if self.woke() { return Val.I(0) }
+        avra_vtask_sleep(self.tasks[self.running].vt, self.whole(vals[0]))
+        self.parking = true
+        Val.I(0)
+    }
+
+    fn fiber_park_fd_val(vals: List<Val>) -> Val {
+        self.rooted()
+        let vt = self.tasks[self.running].vt
+        if self.woke() { return Val.I(1 - avra_vtask_timed_out(vt)) }
+        if avra_vtask_park_fd(vt, self.whole(vals[0]), self.whole(vals[1]), self.whole(vals[2])) == 0 { return Val.I(1) }
+        self.parking = true
+        Val.I(0)
+    }
+
+    /// Whether the running task is resuming at the row that parked it —
+    /// consumed as it is read.
+    fn woke() -> bool {
+        if !self.tasks[self.running].resumed { return false }
+        self.tasks[self.running].resumed = false
+        true
+    }
+
+    /// The running task parked at `at`: its stack saved, the next task
+    /// the policy names loaded — answered as the place to run on.
+    fn switched(at: Place) -> Place {
+        self.tasks[self.running].frames = self.frames
+        self.tasks[self.running].callers = self.callers
+        self.tasks[self.running].at = at
+        self.tasks[self.running].resumed = true
+        self.resume_next()
+    }
+
+    /// The running task answered: it is done, its waiters ready, and the
+    /// machine runs whoever is next.
+    fn finished(answer: Val?) -> Place {
+        let t = self.tasks[self.running]
+        self.tasks[self.running].answer = answer
+        self.tasks[self.running].done = true
+        self.tasks[self.running].frames = []
+        for w in t.waiters { avra_vtask_ready(self.tasks[w].vt) }
+        self.tasks[self.running].waiters = []
+        avra_vtask_free(t.vt)
+        self.resume_next()
+    }
+
+    fn resume_next() -> Place {
+        let vt = avra_vtask_next()
+        let next? = self.tasks.find_index(it.vt == vt && !it.done) else {
+            self.defect("the policy named a task the machine does not hold")
+            return self.tasks[self.running].at!
+        }
+        self.running = next
+        self.frames = self.tasks[next].frames
+        self.callers = self.tasks[next].callers
+        self.tasks[next].at!
+    }
+}

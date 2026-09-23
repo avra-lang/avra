@@ -48,6 +48,10 @@ LLVMTypeRef avra_llvm_int1_type(LLVMContextRef ctx) {
     return LLVMInt1TypeInContext(ctx);
 }
 
+LLVMTypeRef avra_llvm_int8_type(LLVMContextRef ctx) {
+    return LLVMInt8TypeInContext(ctx);
+}
+
 LLVMTypeRef avra_llvm_int32_type(LLVMContextRef ctx) {
     return LLVMInt32TypeInContext(ctx);
 }
@@ -535,7 +539,7 @@ LLVMValueRef avra_llvm_build_store(LLVMBuilderRef b, LLVMValueRef val, LLVMValue
 // what the runtime reads.
 _Static_assert(sizeof(Header) == 16, "the header is sixteen bytes before every payload");
 _Static_assert(offsetof(AvraArray, cap) == 0 && offsetof(AvraArray, len) == 8 && offsetof(AvraArray, data) == 16 &&
-               offsetof(AvraArray, owned) == 24 && offsetof(AvraArray, site) == 32 && sizeof(AvraArray) == 40,
+               offsetof(AvraArray, marks) == 24 && offsetof(AvraArray, site) == 32 && sizeof(AvraArray) == 40,
                "the static array layout mirrors AvraArray");
 _Static_assert(offsetof(AvraMap, keys) == 0 && offsetof(AvraMap, vals) == 8 && offsetof(AvraMap, index) == 16 &&
                offsetof(AvraMap, icap) == 24 && sizeof(AvraMap) == 32,
@@ -583,23 +587,26 @@ LLVMValueRef avra_llvm_build_text(LLVMBuilderRef b, const char* s, int64_t len, 
 }
 
 // A slot array laid out whole: the header, the AvraArray, then its
-// cells and their owned marks in one buffer, the way the runtime
+// cells and their marks in one buffer, the way the runtime
 // allocates one. A cell arrives as an i64 or as a POINTER constant
-// (a string, another static box): a pointer is stored as its word
-// and marked owned, exactly what a pack at run time would do. The
+// (a string, another static box) — a pointer stored as its word —
+// with the mark the compiler gives it, exactly what a pack at run
+// time would write. The
 // buffer is addressed from the global itself, so one global is the
 // whole box.
-LLVMValueRef avra_llvm_static_array(LLVMModuleRef m, const char* name, LLVMValueRef* cells, int n) {
+LLVMValueRef avra_llvm_static_array(LLVMModuleRef m, const char* name, LLVMValueRef* cells, LLVMValueRef* given_marks, int n) {
     LLVMContextRef ctx = LLVMGetModuleContext(m);
     LLVMTypeRef i8 = LLVMInt8TypeInContext(ctx);
     LLVMTypeRef i64 = LLVMInt64TypeInContext(ctx);
     LLVMTypeRef ptr = LLVMPointerTypeInContext(ctx, 0);
     LLVMValueRef* words = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * (size_t)(n > 0 ? n : 1));
     LLVMValueRef* marks = (LLVMValueRef*)malloc(sizeof(LLVMValueRef) * (size_t)(n > 0 ? n : 1));
+    // each cell's mark is the compiler's (`slot_mark`), never guessed
+    // from the constant's type: an absent nullable int is a plain zero
     for (int i = 0; i < n; i++) {
-        int owned = LLVMGetTypeKind(LLVMTypeOf(cells[i])) == LLVMPointerTypeKind;
-        words[i] = owned ? LLVMConstPtrToInt(cells[i], i64) : cells[i];
-        marks[i] = LLVMConstInt(i8, (unsigned long long)owned, 0);
+        int pointer = LLVMGetTypeKind(LLVMTypeOf(cells[i])) == LLVMPointerTypeKind;
+        words[i] = pointer ? LLVMConstPtrToInt(cells[i], i64) : cells[i];
+        marks[i] = given_marks[i];
     }
     LLVMTypeRef cells_ty = LLVMArrayType2(i64, (uint64_t)n);
     LLVMTypeRef marks_ty = LLVMArrayType2(i8, (uint64_t)n);

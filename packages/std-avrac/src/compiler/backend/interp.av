@@ -42,6 +42,10 @@ enum Val {
     M(id: int)
     /// The null pointer — a niche nullable's absence.
     N
+    /// A slot under the runtime's absent mark: a nullable scalar's (or
+    /// a nullable nullable's) absence, apart from a present null. Read
+    /// out of its slot it is the null pointer, as the runtime's word is.
+    Gone
 }
 
 /// The machine: the program, its heaps, the register frame stack
@@ -57,6 +61,11 @@ type Machine = {
     // entry per frame below the innermost. Calls never recurse on the
     // host's stack, so depth is the machine's to bound.
     callers: List<Resume>,
+    // every interpreted task, the program's own first once any spawns;
+    // the one running; and whether a row just parked it
+    tasks: List<Job>,
+    running: int,
+    parking: bool,
     arrays: List<List<Val>>,
     maps: List<MapVal>,
     cells: List<Val>,
@@ -147,7 +156,7 @@ fn opened(stem: string) -> int {
 
 /// A machine at rest over a program: no frames, no heap, nothing said.
 fn fresh_machine(l: Lowered) -> Machine {
-    Machine { l: l, rt: rt_index(), frames: [], callers: [], arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], live: false, failures: [], budget: unbudgeted, asked: unbudgeted, bytes: unbudgeted, mem_base: avra_mem_live(), mem_peak: 0, exhausted: null, base: null, embeds: [], staged: [], libs: opened_libraries(l), symbols: {} }
+    Machine { l: l, rt: rt_index(), frames: [], callers: [], tasks: [], running: -1, parking: false, arrays: [], maps: [], cells: [], onces: {}, statics: {}, out: [], live: false, failures: [], budget: unbudgeted, asked: unbudgeted, bytes: unbudgeted, mem_base: avra_mem_live(), mem_peak: 0, exhausted: null, base: null, embeds: [], staged: [], libs: opened_libraries(l), symbols: {} }
 }
 
 /// Run a lowered program: its printed output, or the refusal.
@@ -257,6 +266,7 @@ fn slot_val(c: Slot, built: List<Val>) -> Val {
         .Text(s) -> Val.S(s),
         .Box(at) -> built[at],
         .Null -> Val.N,
+        .Absent -> Val.Gone,
     }
 }
 
@@ -436,6 +446,7 @@ impl Machine {
             .C(id) -> fp(7, [self.value_hash(self.cells[id])]),
             .M(id) -> fp(8, [fp_list([fp_str(k) for k in self.maps[id].keys]), fp_list([self.value_hash(x) for x in self.maps[id].vals])]),
             .N -> fp(9, []),
+            .Gone -> fp(11, []),
         }
     }
 
@@ -453,6 +464,8 @@ impl Machine {
         mut answer: Val? = null
         mut going = true
         while going && self.failures.is_empty() {
+            // where this step began: a row that parks re-runs here
+            let at = pc
             self.budget = self.budget - 1
             if self.budget % memory_stride == 0 { self.held_within() }
             mut stepped = Stepped.On
@@ -474,11 +487,22 @@ impl Machine {
                 }
                 rest -> { pc = self.step(body, pc) }
             } }
+            if self.parking {
+                self.parking = false
+                let next = self.switched(Place { body: body, pc: at })
+                body = next.body
+                pc = next.pc
+            }
             match stepped {
                 .On -> nothing(),
                 .Ended(gave) -> {
                     let _ = self.frames.pop()
-                    if self.callers.length == floor {
+                    if self.callers.length == floor && self.running > 0 {
+                        // a spawned task answered: the machine runs the next
+                        let next = self.finished(gave)
+                        body = next.body
+                        pc = next.pc
+                    } else if self.callers.length == floor {
                         answer = gave
                         going = false
                     } else {
@@ -621,6 +645,7 @@ impl Machine {
             .Text(s) -> Val.S(s),
             .Bool(b) -> Val.B(b),
             .Absent -> Val.N,
+            .Gone -> Val.Gone,
             .Node(id) -> {
                 self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]])
             },
@@ -643,6 +668,7 @@ impl Machine {
             .S(s) -> MetaVal.Text(s),
             .Y(data) -> MetaVal.Text(self.decoded(data)),
             .N -> MetaVal.Absent,
+            .Gone -> MetaVal.Gone,
             .A(id) -> {
                 heap.node([self.meta_of(x, heap) for x in self.arrays[id]])
             },
@@ -672,6 +698,11 @@ impl Machine {
 
     fn trapped(msg: string) {
         self.failures.push(msg)
+    }
+
+    fn trapped_val(msg: string) -> Val {
+        self.trapped(msg)
+        Val.N
     }
 
     /// A register's value, which a clean program guarantees present.
@@ -709,7 +740,7 @@ impl Machine {
         match v {
             .S(s) -> s,
             .Y(data) -> self.decoded(data),
-            .I(_) or .F(_) or .B(_) or .A(_) or .M(_) or .C(_) or .N -> {
+            .I(_) or .F(_) or .B(_) or .A(_) or .M(_) or .C(_) or .N or .Gone -> {
                 self.defect("a non-string reached text")
                 ""
             }
@@ -933,8 +964,11 @@ impl Machine {
     }
 
     /// The body a fn value's address names, or null.
-    fn addressed(f: Reg) -> Body? {
-        let at? = match self.value(f) {
+    fn addressed(f: Reg) -> Body? { self.addressed_val(self.value(f)) }
+
+    /// The body a code address names.
+    fn addressed_val(v: Val) -> Body? {
+        let at? = match v {
             .I(j) -> j,
             rest -> null,
         } else { return null }
@@ -976,7 +1010,7 @@ impl Machine {
             .Y(_) -> "<Bytes>",
             .C(_) -> "<cell>",
             .M(_) -> "<map>",
-            .N -> "null",
+            .N or .Gone -> "null",
         }
     }
 
@@ -1093,6 +1127,20 @@ impl Machine {
             .Embed -> self.embedded(self.text_val(vals[0])),
             .StrFromCodepoint -> Val.S(avra_str_from_codepoint(self.whole(vals[0]))),
             .ExecSelf -> self.exec_self_val(vals),
+            .ArrayPushMaybe -> self.push_maybe_val(vals),
+            .MapSetMaybe -> self.map_set_maybe_val(vals),
+            .MapValuePresent -> self.map_value_present_val(vals),
+            .SlotSetMaybe -> self.set_maybe_val(vals),
+            .SlotPresent -> self.present_val(vals),
+            .ArrayLastPresent -> self.last_present_val(vals),
+            .TaskSpawn -> self.task_spawn_val(vals),
+            .TaskJoin -> self.task_join_val(vals),
+            .TaskDone -> self.task_done_val(vals),
+            .TaskSettle -> self.task_settle_val(vals),
+            .TaskSettleAll -> self.task_settle_all_val(vals),
+            .FiberYield -> self.fiber_yield_val(),
+            .FiberSleep -> self.fiber_sleep_val(vals),
+            .FiberParkFd -> self.fiber_park_fd_val(vals),
             .SpawnStatus -> self.spawn_status_val(vals),
             .SpawnIn -> self.spawn_in_val(vals),
             // no arm of its own: the row's C body, called by name through
@@ -1196,7 +1244,7 @@ impl Machine {
         match v {
             .S(t) -> self.staged_text(at, t),
             .Y(_) -> self.stage_bytes(at, v),
-            .N -> self.staged_at(at, 0),
+            .N or .Gone -> self.staged_at(at, 0),
             .I(a) -> self.staged_at(at, a),
             .F(_) or .B(_) or .A(_) or .M(_) or .C(_) -> false,
         }
@@ -1211,7 +1259,7 @@ impl Machine {
     fn staged_cell(at: int, v: Val) -> bool {
         match v {
             .C(id) -> self.seeded(at, id),
-            .S(_) or .Y(_) or .N or .I(_) or .F(_) or .B(_) or .A(_) or .M(_) -> false,
+            .S(_) or .Y(_) or .N or .Gone or .I(_) or .F(_) or .B(_) or .A(_) or .M(_) -> false,
         }
     }
 
@@ -1259,7 +1307,7 @@ impl Machine {
     fn word_of(v: Val) -> int {
         match v {
             .B(b) -> if b { 1 } else { 0 }
-            .N -> 0,
+            .N or .Gone -> 0,
             rest -> self.whole(v),
         }
     }
@@ -1414,7 +1462,7 @@ impl Machine {
             self.trapped("pop on an empty list")
             return Val.I(0)
         }
-        self.arrays[id].pop()
+        read_out(self.arrays[id].pop())
     }
 
     fn array_concat_val(vals: List<Val>) -> Val {
@@ -1483,7 +1531,7 @@ impl Machine {
                 self.maps.push(MapVal { keys: [k for k in self.maps[id].keys], vals: [x for x in self.maps[id].vals] })
                 Val.M(self.maps.length - 1)
             }
-            .I(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N -> v,
+            .I(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N or .Gone -> v,
         }
     }
 
@@ -1502,7 +1550,7 @@ impl Machine {
     }
 
     fn map_has_val(vals: List<Val>) -> Val {
-        let id? = map_id(vals[0]) else { return self.defect_val("a lookup in a non-map") }
+        let id? = map_id(vals[0]) else { return self.unlooked() }
         Val.B(self.map_slot(id, self.text_val(vals[1])) >= 0)
     }
 
@@ -1514,7 +1562,7 @@ impl Machine {
     fn map_read(id: int, key: string) -> Val {
         let s = self.map_slot(id, key)
         if s < 0 { return Val.N }
-        self.maps[id].vals[s]
+        read_out(self.maps[id].vals[s])
     }
 
     fn map_set_val(vals: List<Val>) -> Val {
@@ -1578,6 +1626,63 @@ impl Machine {
         Val.I(0)
     }
 
+    // A NULLABLE IN A SLOT is its value, or `Gone` where the runtime
+    // sets its absent mark — each row the plain row over that value.
+    fn push_maybe_val(vals: List<Val>) -> Val {
+        self.array_push_val([vals[0], self.maybe(vals[1], vals[2])])
+    }
+
+    fn set_maybe_val(vals: List<Val>) -> Val {
+        self.slot_set_val([vals[0], vals[1], self.maybe(vals[2], vals[3])])
+    }
+
+    fn present_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return self.unread_presence() }
+        let at = self.whole(vals[1])
+        let n = self.arrays[id].length
+        if at < 0 || at >= n { return self.out_of_bounds(at, n) }
+        Val.I(if self.arrays[id][at] is .Gone { 0 } else { 1 })
+    }
+
+    fn last_present_val(vals: List<Val>) -> Val {
+        let id? = array_id(vals[0]) else { return self.unread_presence() }
+        let last? = self.arrays[id].last() else {
+            self.trapped("pop on an empty list")
+            return Val.I(0)
+        }
+        Val.I(if last is .Gone { 0 } else { 1 })
+    }
+
+    fn map_set_maybe_val(vals: List<Val>) -> Val {
+        self.map_set_val([vals[0], vals[1], self.maybe(vals[2], vals[3])])
+    }
+
+    fn map_value_present_val(vals: List<Val>) -> Val {
+        let id? = map_id(vals[0]) else { return self.unlooked() }
+        let s = self.map_slot(id, self.text_val(vals[1]))
+        Val.I(if s >= 0 && !(self.maps[id].vals[s] is .Gone) { 1 } else { 0 })
+    }
+
+    fn unread_presence() -> Val { self.defect_val("a presence read of a non-array") }
+
+    fn unlooked() -> Val { self.defect_val("a lookup in a non-map") }
+
+    fn maybe(present: Val, v: Val) -> Val {
+        if self.flag_of(present) { v } else { Val.Gone }
+    }
+
+    /// A row's flag seat, filled by a bool or by the word a bool widens to.
+    fn flag_of(v: Val) -> bool {
+        match v {
+            .B(b) -> b,
+            .I(n) -> n != 0,
+            .F(_) or .S(_) or .Y(_) or .A(_) or .C(_) or .M(_) or .N or .Gone -> {
+                self.defect("a flag seat held neither a bool nor a word")
+                false
+            },
+        }
+    }
+
     fn absent_refused() -> Val {
         self.trapped("unwrapped an absent value")
         Val.I(0)
@@ -1620,7 +1725,7 @@ impl Machine {
     fn slot_read_val(id: int, at: int) -> Val {
         let arr = self.arrays[id]
         if at < 0 || at >= arr.length { return self.out_of_bounds(at, arr.length) }
-        arr[at]
+        read_out(arr[at])
     }
 
     fn array_len_val(vals: List<Val>) -> Val {
@@ -1727,3 +1832,8 @@ impl Machine {
     }
 }
 
+/// A slot's value as a register holds it: the absent mark reads as the
+/// null pointer, the word the runtime's slot holds under it.
+fn read_out(v: Val) -> Val {
+    if v is .Gone { Val.N } else { v }
+}

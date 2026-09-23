@@ -443,11 +443,13 @@ fn lower_lambda(a: Analysis, lj: Lift, externs: List<string>, settle: fn(FileId,
     if body == null {
         lo.out.defect("a lift without a lambda survived typing")
     }
-    let r = lo.reg_of(body ?? lj.lam)
+    let value = lo.reg_of(body ?? lj.lam)
+    let r = if lj.kind is .Task { lo.one_cell(value, rt) } else { value }
+    let answers = lo.out.type_of_reg(r)
     lo.seats_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true },
+        body: Body { name: lj.name, params: [lam_ty].concat(seats), ret: answers, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true },
         voices: lo.out.voices, jobs: lo.jobs,
     }
 }
