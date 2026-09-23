@@ -419,3 +419,24 @@ spec "the unit table" {
         }
     }
 }
+
+spec "avra fmt --write's own receipt" {
+    given "a file already in canonical form" {
+        then "write_checked_source answers it byte-identical, the CLI's own trailing newline included" {
+            let ws = ws_of()
+            let f = ws.file_id("/w/src/helper.av")
+            match ws.write_checked_source(f) {
+                .Ok(text) -> "${text}\n" == "fn helper(n: int) -> int {\n    n\n}\n",
+                .Err(_) -> false,
+            }
+        }
+        then "a trailing blank line before EOF is not read as an empty tail — write_checked_source's own receipt over the exact hazard render_with's fix closed" {
+            let ws = with_main("let x = 1\n\n")
+            let f = ws.file_id("/w/src/main.av")
+            match ws.write_checked_source(f) {
+                .Ok(text) -> "${text}\n" == "let x = 1\n\n",
+                .Err(_) -> false,
+            }
+        }
+    }
+}
