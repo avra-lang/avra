@@ -43,19 +43,18 @@ export fn impls() -> LanguageFeature {
         "self"   | "`self` is implicit in a method — drop it from the parameter list"
         "static" | "`static fn` declares a method with no receiver — in an `impl`, or a trait's associated fn"
     }
-    component LanguageFeature f {
-        name = "impls"
-        docs = "`impl Target { … }`, `trait Show { fn sigs }`, `impl Show for Target { … }`, and `value.m(…)` — methods and behavior contracts, statically dispatched; `self` is the receiver, implicit; `mut fn` declares a method that writes it, and `static fn` declares one that has none — called `Type.name(…)`."
-        gram = grammar {
+    LanguageFeature impls {
+        docs: "`impl Target { … }`, `trait Show { fn sigs }`, `impl Show for Target { … }`, and `value.m(…)` — methods and behavior contracts, statically dispatched; `self` is the receiver, implicit; `mut fn` declares a method that writes it, and `static fn` declares one that has none — called `Type.name(…)`."
+        gram: grammar {
             stmt = "impl" it:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? ( "for" ib:NAME ( "<" tp2:NAME ( "," tp2:NAME )* ","? ">" )? )? "{" ( fs:stmt | BREAK )* "}" END @recover(sync_to: "END") -> impl_decl(it, tp, ib, tp2, fs)
             stmt = "trait" tn:NAME "{" ( BREAK | ( sk:"static" )? ( mk:"mut" )? "fn" mn:NAME "(" ( ( pc:"const" )? ( pm:"mut" )? tps:NAME ( ":" tpt:type )? ( "," ( pc:"const" )? ( pm:"mut" )? tps:NAME ( ":" tpt:type )? )* ","? )? ")" ( "->" mr:type )? ( mb:block )? )* "}" END @recover(sync_to: "END") -> trait_decl(tn, sk, mk, mn, pc, pm, tps, tpt, mr, mb)
             stmt = "static" "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ","? ">" )? "(" ( ( ck:"const" )? ( mk:"mut" )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? ( "," ( ck:"const" )? ( mk:"mut" )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? )* ","? )? ")" ( "->" r:type )? b:block END -> static_fn_decl(n, tp, ck, mk, ps, pt, pd, r, b, ik)
             stmt = "mut" "fn" n:NAME ( "<" tp:NAME ( ":" tb:NAME )? ( "," tp:NAME ( ":" tb:NAME )? )* ","? ">" )? "(" ( ( ck:"const" )? ( mk:"mut" )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? ( "," ( ck:"const" )? ( mk:"mut" )? ( ik:"isolated" )? ps:NAME ( ":" pt:type )? ( "=" pd:expression )? )* ","? )? ")" ( "->" r:type )? b:block END -> mut_fn_decl(n, tp, ck, mk, ps, pt, pd, r, b, ik)
             primary = "self" -> receiver()
         }
-        diags = codes
-        builders = rows
-        remedies = words
+        diags: codes
+        builders: rows
+        remedies: words
     }
-    f
+    impls
 }

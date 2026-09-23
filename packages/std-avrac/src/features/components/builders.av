@@ -1,12 +1,11 @@
 //! Parse-time lowering. A declaration is its own node — a record the
-//! structs semantics type, with methods. `component Name inst { … }`
-//! is a `let` of the struct literal built from its `field = value`
-//! lines. A value instance is its component's template COPIED where
-//! it stands, the head and block in its holes, every copied node
-//! wearing the provider's origin — so the expansion's nodes stand
-//! right before the instance's, as a parsed child does.
+//! structs semantics type, with methods. A template's instance is its
+//! component's template COPIED where it stands, the head and block in
+//! its holes, every copied node wearing the provider's origin; a
+//! record's instance is its literal, the body's settings by name and
+//! its other statements `collect`ed into its one `List` field.
 use core.{Expr, Stmt, StmtId, ExprId, Nominal, Plain, Scoped, NodeStore, BodyView, HoleKind, Filled, SettingParts, copier, flatten, some_list}
-use features.{LangNode, Builder, ComponentWord, Template, Record, zip_defect}
+use features.{LangNode, Builder, ComponentWord, Template, Record}
 use grammar.{Token}
 
 fn build_component_decl(b: Builder) -> Result<LangNode, string> {
@@ -22,20 +21,6 @@ fn build_component_decl(b: Builder) -> Result<LangNode, string> {
 /// recovery's hole.
 fn holds_a_member(store: NodeStore, s: StmtId) -> bool {
     store.fn_parts(s) != null || store.hole_stmt(s) != null
-}
-
-fn build_component_inst(b: Builder) -> Result<LangNode, string> {
-    let n = b.token(0)?
-    let inst = b.token(1)?
-    let ks = b.tokens(2)?
-    let vs = b.exprs(3)?
-    if ks.length != vs.length {
-        return .Err(zip_defect)
-    }
-    let lit = b.store.alloc_expr(Expr.StructLit(Nominal(n.text), [Plain(k.text) for k in ks], vs), b.span)
-    let s = b.store.alloc_stmt(Stmt.Let(Scoped(inst.text), null, lit), b.span)
-    b.store.mark_component_inst(s)
-    b.wrap_stmt(s)
 }
 
 /// `within ms(5) { … }` / `text "hi" { … }` — an instance with its
@@ -134,7 +119,8 @@ impl Builder {
     }
 
     /// A record's instance: the head by position, each setting by name,
-    /// the `name` a statement gave it, and the body's other statements
+    /// the `name` a statement gave it unless a setting writes one, and
+    /// the body's other statements
     /// `collect`ed into its one open `List` field.
     fn recorded(word: string, r: Record, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<ExprId, string> {
         if heads.length != r.head.length { return .Err(record_heads(word, r.head.length, heads.length)) }
@@ -142,7 +128,7 @@ impl Builder {
         let settings = flatten([some_list(self.store.setting_parts(s)) for s in stmts])
         let children = [s for s in stmts if self.store.setting_parts(s) == null]
         let slot = slot_for(word, r, settings, children)?
-        let named = if name != null && r.named { [Field { name: "name", value: self.store.alloc_expr(Expr.StrLit(name!), self.span) }] } else { [] }
+        let named = if name != null && r.named && !settings.any(it.name == "name") { [Field { name: "name", value: self.store.alloc_expr(Expr.StrLit(name!), self.span) }] } else { [] }
         let filled = [Field { name: f, value: heads[j] } for j, f in r.head].concat([Field { name: st.name, value: st.value } for st in settings]).concat(named).concat(some_list(self.collected(slot, children)))
         let literal = self.store.alloc_expr(Expr.StructLit(Nominal(word), [Plain(f.name) for f in filled], [f.value for f in filled]), self.span)
         let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }

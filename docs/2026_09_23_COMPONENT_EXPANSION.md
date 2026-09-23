@@ -263,6 +263,14 @@ that traps says it did not run. The hole it found: a component's own
 fns were signed and never REGISTERED as methods — callable nowhere,
 though the feature's doc said they were — fixed for parsed and held
 files alike.
+S3d AS BUILT: every `component LanguageFeature f { k = v }` in the
+compiler is `LanguageFeature lists { k: v }` now — the binding names
+the feature and fills its `name` field (an explicit `name:` setting
+wins, as `quote_lit` needs, `quote` being a keyword). The legacy
+instance statement, its builder and printer arm, and the `config { }`
+block are gone; `config` is a name again. Inside the component's own
+module an instance is its record literal (`Cfg { name: "one" }`), as
+`features/mod.av`'s `feature()` and the tests now write it.
 Sub-slices: S3a heads, settings, bodiless, the named binding (DONE) · S3b
 children (typed, dynamic, calls, named placement) · S3c `check()`,
 `from` · S3d the `key: value` ladder over the 40 legacy sites, `config
