@@ -184,8 +184,9 @@ impl TypeCx {
     /// `[]` is adopted by any list, `{}` by any map — the two identity
     /// widens.
     fn empty_adopted(got: TypeId, want: TypeId) -> bool {
-        (self.view.types.shape_of(got) is .EmptyList && self.view.types.shape_of(want) is .List) ||
-            (self.view.types.shape_of(got) is .EmptyMap && self.view.types.shape_of(want) is .Map)
+        let g = self.view.types.shape_of(got)
+        let w = self.view.types.shape_of(want)
+        g is .EmptyList && w is .List || g is .EmptyMap && w is .Map
     }
 
     /// The non-nullable lifts share one door: the auto-Ok wrap, and the
@@ -412,8 +413,7 @@ impl TypeCx {
     /// may WIDEN — against the declared answer directly, the same as
     /// any other seat; with no want planted the arms judge each other,
     /// exactly as before.
-    mut fn arms_agree(kind: string, subject: string, anchor_name: string,
-                         e: ExprId, anchor: ExprId, values: List<ExprId>) -> TypeId {
+    mut fn arms_agree(kind: string, subject: string, anchor_name: string, e: ExprId, anchor: ExprId, values: List<ExprId>) -> TypeId {
         // an arm that LEAVES answers nothing and joins with anything
         let answering = [v for v in values if self.stays(v)]
         let planted: TypeId? = self.want_at(e)
@@ -533,7 +533,7 @@ impl TypeCx {
         self.view.types.intern(answers)
     }
 
-/// The by-value law over a TYPE: the scalars and text, and an enum
+    /// The by-value law over a TYPE: the scalars and text, and an enum
     /// whose variants carry nothing — it compares by variant.
     fn compares_by_value(ty: TypeId) -> bool {
         comparable(self.view.types.shape_of(ty)) || self.unit_enum(ty)
@@ -888,10 +888,7 @@ export fn this_is(n: string) -> string {
 export fn comparable(sh: Type) -> bool {
     match sh {
         .Int or .Float or .Bool or .Str or .Bytes -> true,
-        .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or
-        .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or
-        .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or
-        .Var(_, _, _) or .Error -> false,
+        .Ptr or .Struct(_, _) or .Enum(_, _) or .App(_, _, _) or .Dyn(_, _) or .List(_) or .Cell(_) or .Map(_, _) or .Res(_, _) or .Fn(_, _, _) or .Void or .Opt(_) or .Null or .EmptyList or .EmptyMap or .TypeName(_, _) or .Var(_, _, _) or .Error -> false,
     }
 }
 

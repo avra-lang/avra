@@ -50,16 +50,16 @@ spec "core/nodes" {
             let a = s.alloc_expr(Expr.IntLit(0 - 42), null)
             let b = s.alloc_expr(Expr.IntLit(0 - 42), null)
             let c = s.alloc_expr(Expr.IntLit(42), null)
-            s.expr_fingerprint(a) == s.expr_fingerprint(b) &&
-                s.expr_fingerprint(a) != s.expr_fingerprint(c)
+            let fa = s.expr_fingerprint(a)
+            fa == s.expr_fingerprint(b) && fa != s.expr_fingerprint(c)
         }
         then "different content means different fingerprints" {
             mut s = new_node_store()
             let a = s.alloc_expr(Expr.IntLit(1), null)
             let b = s.alloc_expr(Expr.IntLit(2), null)
             let c = s.alloc_expr(Expr.Ident("1"), null)
-            s.expr_fingerprint(a) != s.expr_fingerprint(b) &&
-                s.expr_fingerprint(a) != s.expr_fingerprint(c)
+            let fa = s.expr_fingerprint(a)
+            fa != s.expr_fingerprint(b) && fa != s.expr_fingerprint(c)
         }
         then "a comprehension's ABSENT guard is not its element — two programs, two identities" {
             mut s = new_node_store()
@@ -124,17 +124,18 @@ spec "core/nodes" {
             let unit = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", null)]), null)
             let carrying = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int", false))]), null)
             let nullable = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int", true))]), null)
-            s.stmt_fingerprint(unit) != s.stmt_fingerprint(carrying) &&
-                s.stmt_fingerprint(unit) != s.stmt_fingerprint(nullable) &&
-                s.stmt_fingerprint(carrying) != s.stmt_fingerprint(nullable)
+            let fu = s.stmt_fingerprint(unit)
+            let fc = s.stmt_fingerprint(carrying)
+            let fnul = s.stmt_fingerprint(nullable)
+            fu != fc && fu != fnul && fc != fnul
         }
         then "a field's written type is part of the record's identity" {
             mut s = new_node_store()
             let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int", false))]), null)
             let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int", true))]), null)
             let c = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("bool", false))]), null)
-            s.stmt_fingerprint(a) != s.stmt_fingerprint(b) &&
-                s.stmt_fingerprint(a) != s.stmt_fingerprint(c)
+            let fa = s.stmt_fingerprint(a)
+            fa != s.stmt_fingerprint(b) && fa != s.stmt_fingerprint(c)
         }
         then "an APPLICATION is part of identity: `List<int>` vs `int`" {
             mut s = new_node_store()
@@ -187,8 +188,7 @@ spec "core/nodes" {
             let unguarded = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], value: tail }]), null)
             let guarded1 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g1, value: tail }]), null)
             let guarded2 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g2, value: tail }]), null)
-            s.expr_fingerprint(unguarded) != s.expr_fingerprint(guarded1) &&
-                s.expr_fingerprint(guarded1) != s.expr_fingerprint(guarded2)
+            s.expr_fingerprint(unguarded) != s.expr_fingerprint(guarded1) && s.expr_fingerprint(guarded1) != s.expr_fingerprint(guarded2)
         }
         then "dropping a `?` KEEPS every other field — a fn type's seat marks survive it" {
             let marked = TypeRef { name: "fn", args: [ty("int", false), ty("int", false)], optional: true, dynamic: false, arrow: true, span: null, marks: [SeatMark { mutable: true, settled: false }, plain_mark] }
@@ -216,8 +216,8 @@ spec "core/nodes" {
             let p = s.alloc_expr(Expr.Binary(BinOp.Add, one, two), null)
             let q = s.alloc_expr(Expr.Binary(BinOp.Add, one, x), null)
             let r = s.alloc_expr(Expr.Binary(BinOp.Sub, one, two), null)
-            s.expr_fingerprint(p) != s.expr_fingerprint(q) &&
-                s.expr_fingerprint(p) != s.expr_fingerprint(r)
+            let fp = s.expr_fingerprint(p)
+            fp != s.expr_fingerprint(q) && fp != s.expr_fingerprint(r)
         }
         then "statements fingerprint through their expressions" {
             mut s = new_node_store()
@@ -225,8 +225,8 @@ spec "core/nodes" {
             let a = s.alloc_stmt(Stmt.Let("x", null, one), at(0, 9))
             let b = s.alloc_stmt(Stmt.Let("x", null, one), null)
             let c = s.alloc_stmt(Stmt.Let("y", null, one), null)
-            s.stmt_fingerprint(a) == s.stmt_fingerprint(b) &&
-                s.stmt_fingerprint(a) != s.stmt_fingerprint(c)
+            let fa = s.stmt_fingerprint(a)
+            fa == s.stmt_fingerprint(b) && fa != s.stmt_fingerprint(c)
         }
     }
 }
