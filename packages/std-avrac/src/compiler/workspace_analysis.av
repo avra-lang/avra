@@ -56,7 +56,7 @@ impl Workspace {
     fn analysis(f: FileId) -> Analysis {
         // A closed one-shot workspace retains no Analysis because its
         // program closure points back here.
-        if self.closed { return self.analyzed(f) }
+        if self.closed.get() { return self.analyzed(f) }
         match self.analyses.start_recursive(f.index) { .Reuse(value) -> { return value }, .Compute -> nothing() }
         let out = self.analyzed(f)
         self.analyses.finish(f.index, out, self.db.revision())
@@ -109,7 +109,7 @@ impl Workspace {
     }
 
     /// The store, attached by a build; null outside one.
-    mut fn attach_store(s: Store) { self.store = s }
+    fn attach_store(s: Store) { self.store.set(s) }
 
     /// Where a file's asks live: beside its object, under the object's key.
     fn asks_key(okey: string) -> string { node_key(Stored.Unit, ["asks", okey]) }

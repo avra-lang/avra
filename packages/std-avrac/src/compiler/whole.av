@@ -56,8 +56,8 @@ impl Workspace {
         let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
         let seat: Entry? = if at == null { null } else { Entry { at: at! } }
         Program {
-            ws: self, files: files, entry: seat, phases: self.phases, cache: self.db.stats(), defects: self.defects.get(),
-            voices: self.packages_voiced(), manifests: [self.manifest_source(pkg) for pkg in self.packages if self.has_manifest(pkg)],
+            ws: self, files: files, entry: seat, phases: self.phases.get(), cache: self.db.stats(), defects: self.defects.get(),
+            voices: self.packages_voiced(), manifests: [self.manifest_source(pkg) for pkg in self.packages() if self.has_manifest(pkg)],
         }
     }
 
@@ -78,7 +78,7 @@ impl Workspace {
     /// self-check runs before one exists); either way, what
     /// admission leaves is `Decls.rule_decls`'s to read.
     fn rule_decls() -> List<Decl> {
-        let pkg? = self.packages.find(it.key == "@std/avrac") else { return [] }
+        let pkg? = self.packages().find(it.key == "@std/avrac") else { return [] }
         for path in self.all_files(pkg.src) {
             if !self.is_test_path(path) {
                 let f = self.file_id(path)
@@ -162,7 +162,7 @@ impl Workspace {
     /// Each word is ONE argv element, so nothing in any of them means
     /// anything to a shell.
     fn link_words() -> List<string> {
-        flatten([self.package_link(pkg) for pkg in self.packages])
+        flatten([self.package_link(pkg) for pkg in self.packages()])
     }
 
     fn package_link(pkg: Package) -> List<string> {
@@ -186,7 +186,7 @@ impl Workspace {
     /// on the build side, is LOUD: nothing opens and the refusal names
     /// the package.
     fn linked_packages() -> List<LinkedPackage> {
-        [self.linked_of(pkg) for pkg in self.packages if self.owns_native(pkg)]
+        [self.linked_of(pkg) for pkg in self.packages() if self.owns_native(pkg)]
     }
 
     fn owns_native(pkg: Package) -> bool {
@@ -201,7 +201,7 @@ impl Workspace {
     /// The root package's entry file: its `[bin]` path, else
     /// `src/main.av` when that exists, else absence.
     fn entry_of() -> string? {
-        let pkg = self.packages[0]
+        let pkg = self.packages()[0]
         let bin: string? = self.manifest(0).bin
         let path = joined_path(pkg.root, bin ?? "src/main.av")
         if bin == null && !self.host.exists(path) { return null }
