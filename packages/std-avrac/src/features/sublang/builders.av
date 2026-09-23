@@ -35,18 +35,18 @@ fn build_sublang(b: Builder) -> Result<LangNode, string> {
 /// The block's body run through its word's grammar: the root the
 /// actions minted, or null with the refusal spoken at the block.
 fn expanded(b: Builder, word: string, body: Token, holes: List<ExprId>) -> ExprId? {
-    let block? = b.blocks.find(it.word == word) else { return null }
+    let block? = b.words.grammars.find(it.word == word) else { return null }
     let at = body.span.lo
     let lexed = lex_body(body.text)
     for x in lexed.errors { b.store.speak_block(BlockVoice { message: x.message, lo: x.span.lo + at, hi: x.span.hi + at, expected: [], in_rule: "(lexing)" }) }
     if !lexed.errors.is_empty() { return null }
-    let lo = b.store.exprs.count()
+    let since = b.store.marks()
     let store = b.store
     let g = block.ready.g
     let build = (name: string, args: List<Captured<ExprId>>, span: Span?) -> store.minted_action(name, listed_seats(g, name, args.length), args, span, holes)
     let tokens = [t with { span: t.span.shifted(at) } for t in lexed.tokens if t.kind != TokenKind.Break]
     let o = run_from<ExprId>(block.ready, block.ready.g.start, tokens, build)
-    b.store.note_foreign(lo, b.store.exprs.count(), block.origin)
+    b.store.note_foreign(since, block.origin)
     for d in o.diagnostics { b.store.speak_block(BlockVoice { message: d.message, lo: d.span?.lo ?? at, hi: d.span?.hi ?? at, expected: d.expected, in_rule: d.in_rule }) }
     if !o.diagnostics.is_empty() || o.result == null { return null }
     b.store.captured_expr(o.result!, holes)
@@ -129,7 +129,7 @@ impl NodeStore {
             .Terminal(t) -> match t.kind {
                 .Hole -> hole_expr(t.text, holes),
                 .Num -> self.alloc_expr(Expr.IntLit(t.int_value() ?? 0), t.span),
-                .Name or .Str or .IStrBegin or .IStrMid or .IStrEnd or .Op or .Break or .Eof or .Pkg or .HoleBegin or .HoleEnd or .Block or .Body -> self.alloc_expr(Expr.StrLit(t.text), t.span),
+                .Name or .Str or .IStrBegin or .IStrMid or .IStrEnd or .Op or .Break or .Eof or .Pkg or .HoleBegin or .HoleEnd or .Block or .Body or .Component -> self.alloc_expr(Expr.StrLit(t.text), t.span),
             },
         }
     }

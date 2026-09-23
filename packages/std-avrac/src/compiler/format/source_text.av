@@ -3,7 +3,7 @@
 //! while node order, operator grouping, declaration marks and payloads
 //! are preserved. `avra expand` and the future formatter share this one
 //! renderer.
-use core.{NodeStore, Remark, Trivia, Span, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Plain, Variant, Case, Annotation, TypeRef, FormatPart, Hole, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed, marks_prefixed, body_behavior, same_expr}
+use core.{NodeStore, Remark, Trivia, Span, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Plain, Variant, Case, Annotation, TypeRef, FormatPart, Hole, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed, marks_prefixed, body_behavior, same_expr, some_list}
 use features.{chained_binder}
 use features.expr_spine.{words, applieds}
 use @std.text.{Text, builder}
@@ -249,6 +249,7 @@ impl SourceText {
             .ImplDecl(of, target, fns) -> [self.impl_decl(exported, of?.of, target.of, fns, self.stmt_end(s), self.stmt_flat(s), depth)],
             .TraitDecl(name, fns) -> [self.trait_decl(exported, name.of, fns, self.stmt_end(s), self.stmt_flat(s), depth)],
             .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name.of)} {${text}}")],
+            .ComponentDecl(name, head, fields, fns) -> [self.component_decl(exported, name.of, head, fields, fns, self.stmt_end(s), depth)],
             .LetElse(name, subject, stmts) -> [self.statement_block("let ${source_name(name.of)}? = ${self.expression(subject, loosest_tier, depth)} else", stmts, self.stmt_end(s), self.stmt_flat(s), depth)],
             .For(name, from, to, _, _, stmts) -> [self.statement_block("for ${source_name(name.of)} in ${self.expression(from, loosest_tier, depth)}..${self.expression(to, loosest_tier, depth)}", stmts, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Use(path, items, aliases) -> [source_line(depth, "use ${joined(path, ".")}.{${joined([import_item(items[j], aliases[j]) for j in 0..items.length], ", ")}}")],
@@ -477,20 +478,18 @@ impl SourceText {
     /// this prints the pattern the fields cannot spell; absent, the
     /// ordinary struct form.
     mut fn struct_or_grammar_decl(s: StmtId, exported: string, name: string, tparams: List<string>, fields: List<Param>, end: int, one_line: bool, depth: int) -> string {
-        let g? = self.store.grammar_of(s) else {
-            if self.store.is_component_decl(s) { return self.component_decl(exported, name, fields, depth) }
-            return self.struct_decl(exported, name, tparams, fields, end, one_line, depth)
-        }
+        let g? = self.store.grammar_of(s) else { return self.struct_decl(exported, name, tparams, fields, end, one_line, depth) }
         source_line(depth, "grammar ${source_name(name)} = ${format_source(g.head, g.parts)}")
     }
 
-    /// `component Name { config { field: T = default, … } }` — its
-    /// record's own fields, the sugar's `config` wrapper around them
-    /// (features/components — always multi-line; the grammar takes
-    /// no one-line form).
-    mut fn component_decl(exported: string, name: string, fields: List<Param>, depth: int) -> string {
-        let body = joined([source_line(depth + 2, "${self.param(f, depth + 2)},") for f in fields], "\n")
-        "${source_line(depth, "${exported}component ${source_name(name)} {")}\n${source_line(depth + 1, "config {")}\n${body}\n${source_line(depth + 1, "}")}\n${source_line(depth, "}")}"
+    /// `component Name(head) { field: T = d … fn … }` — its head in
+    /// parentheses, its fields one per line, then its methods.
+    mut fn component_decl(exported: string, name: string, head: List<Param>, fields: List<Param>, fns: List<StmtId>, end: int, depth: int) -> string {
+        let opened = "${exported}component ${source_name(name)}${if head.is_empty() { "" } else { "(${self.params(head, depth)})" }}"
+        let lines = flatten([self.trivia_before(start_of(f.span), depth + 1).concat([source_line(depth + 1, self.param(f, depth + 1))]) for f in fields])
+        let body = lines.concat(flatten([self.statement(s, depth + 1) for s in fns])).concat(self.trivia_before(end, depth + 1))
+        if body.is_empty() { return source_line(depth, "${opened} {}") }
+        "${source_line(depth, "${opened} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
     /// `let inst = ...` UNLESS `store.mark_component_inst` marked
@@ -611,6 +610,7 @@ impl SourceText {
             .Index(subject, index) -> grouped("${self.expression(subject, postfix_tier, depth)}[${self.expression(index, loosest_tier, depth)}]", postfix_tier, parent),
             .Prop(subject, name) -> grouped("${self.chain_subject(subject, depth)}.${source_name(name.of)}", postfix_tier, parent),
             .Body(word, parts, holes, _) -> grouped(self.body_text(word, parts, holes, depth), atom_tier, parent),
+            .Component(word, heads, block, _) -> grouped(self.instance(word, heads, block, depth), atom_tier, parent),
             .If(cond, yes, no) -> grouped(self.if_group(cond, yes, no, id, depth), atom_tier, parent),
             .When(conds, values, fallback) -> grouped(self.when_expr(conds, values, fallback, end_of(self.store.expr_span(id)), depth), atom_tier, parent),
             .Block(stmts, value) -> grouped(self.block_expr(stmts, value, id, depth), atom_tier, parent),
@@ -629,7 +629,6 @@ impl SourceText {
             .Lambda(params, body) if is_pronoun(params) -> self.expression(body, parent, depth),
             .Lambda(params, body) -> grouped("(${self.params(params, depth)}) -> ${self.expression(body, loosest_tier, depth)}", atom_tier, parent),
             .Spawn(body) -> grouped("spawn ${self.written_body(body, depth)}", loosest_tier, parent),
-            .Within(limit, body) -> grouped("within ${self.expression(limit, loosest_tier, depth)} ${self.expression(body, atom_tier, depth)}", atom_tier, parent),
             // Parentheses preserve VALUE application. Without the
             // witness, `(f)(x)` would print `f(x)` and read back as
             // the direct, declaration-resolved Call variant.
@@ -771,6 +770,12 @@ impl SourceText {
     /// names.
     /// A hole-bearing body in the surface its WORD names, from the one
     /// registry: a string, a `quote { … }`, or a word's own block.
+    /// A component instance as written: its word, its head values, its
+    /// block.
+    mut fn instance(word: string, heads: List<ExprId>, block: ExprId?, depth: int) -> string {
+        joined([source_name(word)].concat([self.expression(e, loosest_tier, depth) for e in heads.concat(some_list(block))]), " ")
+    }
+
     mut fn body_text(word: string, parts: List<string>, holes: List<ExprId>, depth: int) -> string {
         match body_behavior(word) {
             .Text -> self.interpolation(parts, holes, depth),

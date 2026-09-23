@@ -29,8 +29,9 @@ use core.{is_space, is_name_start, is_name_cont, is_digit, placeholder}
 /// `Hole` is a template's placeholder name; `HoleBegin`/`HoleEnd`
 /// bracket a deferred hole expression after the quote's brace.
 /// `Block` is a sublanguage's word before its brace and `Body` the
-/// text between the braces, holes as placeholders.
-export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body }
+/// text between the braces, holes as placeholders. `Component` is an
+/// imported component's word, which opens an instance.
+export enum TokenKind { Name, Num, Str, IStrBegin, IStrMid, IStrEnd, Op, Break, Eof, Pkg, Hole, HoleBegin, HoleEnd, Block, Body, Component }
 
 /// One DSL token. For Str and the IStr kinds, `text` is the
 /// unquoted, unescaped contents; the span covers the delimiters. A
@@ -45,15 +46,17 @@ impl Token {
     fn lit_matches(text: string) -> bool {
         match self.kind {
             .Name or .Num or .Op or .Break or .Pkg -> self.text == text,
-            .Str or .IStrBegin or .IStrMid or .IStrEnd or .Eof or .Hole or .HoleBegin or .HoleEnd or .Block or .Body -> false,
+            .Str or .IStrBegin or .IStrMid or .IStrEnd or .Eof or .Hole or .HoleBegin or .HoleEnd or .Block or .Body or .Component -> false,
         }
     }
 
     /// Whether this token is of a grammar's named kind. A template's
     /// `Hole` stands wherever a NAME may: every builder mints its
-    /// ordinary node with the placeholder name.
+    /// ordinary node with the placeholder name. So does a component's
+    /// word — it is a name that can also open an instance, so a `use`
+    /// line imports it and a property wears it.
     fn kind_is(k: TokenKind) -> bool {
-        self.kind == k || k == TokenKind.Name && self.kind == TokenKind.Hole
+        self.kind == k || k == TokenKind.Name && (self.kind == TokenKind.Hole || self.kind == TokenKind.Component)
     }
 
     /// The BITS of the real this number denotes. A fraction only —
@@ -1208,11 +1211,16 @@ export fn lex_source(src: string) -> LexResult {
     lex_with(src, line_boundary, true)
 }
 
-/// Language source under the file's sublanguage words: a word before
-/// `{` opens a raw block.
-export fn lex_blocks(src: string, words: List<string>) -> LexResult {
-    lex_words(src, line_boundary, true, words, false)
+/// Language source under the file's imported words: a sublanguage's
+/// word before `{` opens a raw block, and a component's word opens
+/// an instance.
+export fn lex_blocks(src: string, words: List<string>, components: List<string>) -> LexResult {
+    let lexed = lex_words(src, line_boundary, true, words, false)
+    if components.is_empty() { return lexed }
+    lexed with { tokens: [if t.kind == TokenKind.Name && components.contains(t.text) { t with { kind: TokenKind.Component } } else { t } for t in lexed.tokens] }
 }
+
+
 
 /// A block's body re-lexed for its sublanguage's grammar: every
 /// `${k}` is the Hole token it names, and a line break is nothing.

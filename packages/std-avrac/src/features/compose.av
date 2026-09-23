@@ -33,17 +33,17 @@ export fn builder_index(features: List<LanguageFeature>) -> Map<string, BuilderR
 
 /// The engine-facing dispatch: the builder registered under `name`
 /// builds, through a Builder holding this call's world.
-export fn build_named(builders: Map<string, BuilderRow>, store: NodeStore, name: string, args: List<Captured<LangNode>>, span: Span?, text: string, blocks: List<BlockGrammar>) -> Result<Captured<LangNode>, string> {
+export fn build_named(builders: Map<string, BuilderRow>, store: NodeStore, name: string, args: List<Captured<LangNode>>, span: Span?, text: string, words: BlockWords) -> Result<Captured<LangNode>, string> {
     let hit: BuilderRow? = builders.get(name)
     if hit == null { return .Err("no feature owns builder `${name}`") }
     // the builder is a `mut` seat — the world it writes through is
     // a place, never a temporary
-    mut world = Builder { store: store, args: args, span: span, text: text, blocks: blocks, payloads: hit!.payloads }
+    mut world = Builder { store: store, args: args, span: span, text: text, words: words, payloads: hit!.payloads }
     .Ok(Captured.Node(hit!.build(world)?))
 }
 
 /// The same dispatch from the features themselves — what a test of
 /// the registration asks.
 export fn dispatch(features: List<LanguageFeature>, store: NodeStore, name: string, args: List<Captured<LangNode>>, span: Span?) -> Result<Captured<LangNode>, string> {
-    build_named(builder_index(features), store, name, args, span, "", [])
+    build_named(builder_index(features), store, name, args, span, "", BlockWords {})
 }
