@@ -100,12 +100,10 @@ spec "features/structs (named types, adversarial)" {
             refused_with("type A = int\nlet a: A = 1\nA(a)", "argument 1 of `A` wants `int`, found `A`")
         }
         then "`with` does not reach through a name to a record" {
-            refused_with("type P = { x: int }\ntype W = P\nlet w: W = P { x: 1 }\nw with { x: 2 }",
-                         "`with` copies a struct, found `W`")
+            refused_with("type P = { x: int }\ntype W = P\nlet w: W = P { x: 1 }\nw with { x: 2 }", "`with` copies a struct, found `W`")
         }
         then "`is` does not reach through a name to an enum" {
-            refused_with("enum C { Red Green }\ntype K = C\nlet k: K = K(C.Red)\nk is .Red",
-                         "`is` asks an enum for its variant")
+            refused_with("enum C { Red Green }\ntype K = C\nlet k: K = K(C.Red)\nk is .Red", "`is` asks an enum for its variant")
         }
     }
     given "the mixed-operand refusal naming the RIGHT pair" {
@@ -116,15 +114,11 @@ spec "features/structs (named types, adversarial)" {
         // which refusal is true.
         then "a name meeting its own shape hears the conversion" {
             let a = analyze_source("type A = int\nlet a: A = 1\nlet n = 3\na + n")
-            a.diagnostics.length == 1 &&
-                a.report().contains("an operand of `A` meets `int` — a named type never mixes with its shape") &&
-                a.report().contains("`A` is its own type — write `A(n)`")
+            a.diagnostics.length == 1 && a.report().contains("an operand of `A` meets `int` — a named type never mixes with its shape") && a.report().contains("`A` is its own type — write `A(n)`")
         }
         then "a name meeting ANOTHER name hears no conversion, because there is none" {
             let a = analyze_source("type A = int\ntype B = int\nlet a: A = 1\nlet b: B = 2\na == b")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`A` and `B` are two types — a named type never mixes with another") &&
-                !a.report().contains("write `A(")
+            a.diagnostics.length == 1 && a.report().contains("`A` and `B` are two types — a named type never mixes with another") && !a.report().contains("write `A(")
         }
         then "a name meeting an unrelated type is the OPERATOR's refusal" {
             refused_with("type A = int\nlet a: A = 1\na + \"s\"", "`+` needs `int` operands, found `string`")

@@ -12,15 +12,14 @@ spec "docs — the declaration-leading `///` surface" {
             projected("/// lost\n\nfn a() -> int { 1 }") == "/// lost\n\nfn a() -> int {\n    1\n}"
         }
         then "an orphan before a closing brace becomes a remark there, and cannot drift to the next declaration" {
-            projected("fn a() -> int {\n    /// lost\n    1\n}\n\nfn b() -> int { 2 }") ==
-                "fn a() -> int {\n    /// lost\n    1\n}\n\nfn b() -> int {\n    2\n}"
+            projected("fn a() -> int {\n    /// lost\n    1\n}\n\nfn b() -> int { 2 }") == "fn a() -> int {\n    /// lost\n    1\n}\n\nfn b() -> int {\n    2\n}"
         }
         then "a trailing `///` is a same-line remark, not a doc" {
             projected("let x = 1 /// lost\nlet y = 2\nx + y") == "let x = 1 /// lost\nlet y = 2\nx + y"
         }
     }
-
     given "docs that no table holds" {
+
         // A variant's or a field's `///` has no table of its own — it
         // is not a declaration-leading doc, so it is not documentation
         // of the thing it precedes. Orphaned like any other `///` that
@@ -28,26 +27,20 @@ spec "docs — the declaration-leading `///` surface" {
         // and the printer replays it in place, same as a module's
         // `//!` always has. ROADMAP records the missing doc tables.
         then "a module's `//!`, a variant's and a field's `///` all survive as remarks" {
-            projected("//! module doc\nfn a() -> int { 1 }") == "//! module doc\nfn a() -> int {\n    1\n}" &&
-                projected("type S = {\n    /// lost\n    v: int,\n}") == "type S = {\n    /// lost\n    v: int,\n}" &&
-                projected("enum E {\n    /// lost\n    A,\n}") == "enum E {\n    /// lost\n    A\n}"
+            projected("//! module doc\nfn a() -> int { 1 }") == "//! module doc\nfn a() -> int {\n    1\n}" && projected("type S = {\n    /// lost\n    v: int,\n}") == "type S = {\n    /// lost\n    v: int,\n}" && projected("enum E {\n    /// lost\n    A,\n}") == "enum E {\n    /// lost\n    A\n}"
         }
     }
-
     given "where a group lands" {
+
         then "a doc lands on the nested declaration it precedes, not its owner" {
-            projected("fn outer() -> int {\n    /// inner\n    fn b() -> int { 2 }\n    b()\n}\nouter()") ==
-                "fn outer() -> int {\n    /// inner\n    fn b() -> int {\n        2\n    }\n    b()\n}\nouter()"
+            projected("fn outer() -> int {\n    /// inner\n    fn b() -> int { 2 }\n    b()\n}\nouter()") == "fn outer() -> int {\n    /// inner\n    fn b() -> int {\n        2\n    }\n    b()\n}\nouter()"
         }
         then "a doc on the first declaration cannot bleed onto the second" {
-            projected("/// one\nfn a() -> int { 1 }\nfn b() -> int { 2 }") ==
-                "/// one\nfn a() -> int {\n    1\n}\nfn b() -> int {\n    2\n}"
+            projected("/// one\nfn a() -> int { 1 }\nfn b() -> int { 2 }") == "/// one\nfn a() -> int {\n    1\n}\nfn b() -> int {\n    2\n}"
         }
         then "a doc survives each declaration prefix the lexer accepts" {
             let out = projected("/// k\nconst K: int = 3\n\n/// e\nextern fn puts(s: string) -> int\n\n/// o\nonce fn seed() -> string { \"x\" }")
-            out.contains("/// k\nconst K: int = 3") &&
-                out.contains("/// e\nextern fn puts(s: string) -> int") &&
-                out.contains("/// o\nonce fn seed() -> string")
+            out.contains("/// k\nconst K: int = 3") && out.contains("/// e\nextern fn puts(s: string) -> int") && out.contains("/// o\nonce fn seed() -> string")
         }
     }
 }

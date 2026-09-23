@@ -15,7 +15,7 @@ export fn check_fn(mut cx: TypeCx, s: StmtId) {
         .FnDecl(fname, _, fparams, fret, body) -> {
             defaults_law(cx, s, fname.of, fparams)
             checked_fn(cx, s, fname.of, fret, body)
-        }
+        },
         .ExternFn(hname, hparams, hret) -> checked_extern(cx, s, hname.of, hparams, hret),
         rest -> nothing(),
     }
@@ -270,7 +270,7 @@ fn call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
             cx.warn_use(e)
             let sig? = cx.sig_of(e) else { return cx.settled_call(args, valued_call(cx, e, callee.of, pins, args)) }
             cx.settled_call(args, dispatched_call(cx, e, callee.of, pins, args, sig))
-        }
+        },
         rest -> cx.error_type,
     }
 }
@@ -309,8 +309,7 @@ fn named_construction(mut cx: TypeCx, e: ExprId, callee: string, args: List<Expr
 /// A GENERIC callee unifies; a plain one type-checks directly. The
 /// tparams come from the declaration itself — the registry the
 /// resolver already found.
-fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
-                   args: List<ExprId>, s: FnSig) -> TypeId {
+fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, args: List<ExprId>, s: FnSig) -> TypeId {
     let placed? = cx.placed(e, callee, cx.bound_decl(e), args, s.params) else { return cx.error_type }
     let d? = cx.bound_decl(e) else { return cx.seats_judged(e, callee, placed.wants, [], s.ret, placed.args) }
     if !cx.seat_contracts(e, callee, d, 0, placed.args, null) { return cx.error_type }
@@ -326,8 +325,7 @@ fn dispatched_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef
 /// The instantiation: pins pre-fill by position, arguments unify
 /// the rest, every Var must land, and the answer is the return with
 /// the bindings applied. Recorded for mono.
-fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
-                args: List<ExprId>, s: FnSig, decl: DeclId, tp: List<string>) -> TypeId {
+fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, args: List<ExprId>, s: FnSig, decl: DeclId, tp: List<string>) -> TypeId {
     if tparams_refused(tp) { return cx.error_type }
     if args.length != s.params.length {
         cx.wrong_arity(e, callee, s.params.length, args.length)
@@ -382,8 +380,7 @@ fn refused_instantiation(mut cx: TypeCx, e: ExprId, raw: TypeId, decl: DeclId, c
 }
 
 /// Explicit pins fill the slots by position — all of them, or none.
-fn pinned_slots(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
-                decl: DeclId, tp: List<string>) -> Pins {
+fn pinned_slots(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, decl: DeclId, tp: List<string>) -> Pins {
     mut bound = no_pins(tp.length)
     if pins.is_empty() { return bound }
     if pins.length != tp.length {
@@ -400,8 +397,7 @@ fn pinned_slots(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>,
 /// are ALREADY all bound (pins, or earlier arguments), the param is
 /// effectively concrete and the ordinary assignment law judges it —
 /// which is what lets `null` and widening ride a pinned `T?`.
-fn generic_argument(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId,
-                    decl: DeclId, mut bound: Pins) -> bool {
+fn generic_argument(mut cx: TypeCx, callee: string, j: int, param: TypeId, a: ExprId, decl: DeclId, mut bound: Pins) -> bool {
     if cx.agreed(a, param, decl, bound) { return true }
     if cx.shape_at(a) is .Null {
         null_cannot_pin(cx, callee, j, param, a)

@@ -90,10 +90,18 @@ impl Decls {
         mut b = self.binder(shown)
         for d in ordered { b.declare(d) }
         let names = b.names
-        ModuleNames { bound: b.bound, clashes: b.clashes, base: BoundNames {
-            fns: names.fns, types: names.types, syntaxes: names.syntaxes,
-            fn_names: names.fn_names, type_names: names.type_names, syntax_names: names.syntax_names,
-        } }
+        ModuleNames {
+            bound: b.bound,
+            clashes: b.clashes,
+            base: BoundNames {
+                fns: names.fns,
+                types: names.types,
+                syntaxes: names.syntaxes,
+                fn_names: names.fn_names,
+                type_names: names.type_names,
+                syntax_names: names.syntax_names,
+            },
+        }
     }
 
     /// A file adds imports, prelude exports, and builtins over its
@@ -139,9 +147,7 @@ impl Decls {
                     },
                     .Method or .Default or .Impl or .Main or .Case -> not_bound(),
                 }
-            } else {
-                if !same_decl(prior!, i.decl) { spoken.push(import_clash(i.at, name, self.holder_of(prior!, file, shown))) }
-            }
+            } else if !same_decl(prior!, i.decl) { spoken.push(import_clash(i.at, name, self.holder_of(prior!, file, shown))) }
         }
         for i in prelude.concat([Import { decl: d, at: null, alias: "" } for d in self.builtin_decls()]) {
             let x = self.decl(i.decl)
@@ -293,8 +299,7 @@ impl Binder {
 }
 
 /// A member, an impl and a Main never enter a namespace.
-fn not_bound() {
-}
+fn not_bound() {}
 
 // ── voices ──
 
@@ -350,8 +355,7 @@ fn method_taken(at: Loc?, target: string, name: string) -> Diag {
 fn defined_twice(at: Loc?, kind: DeclKind, name: string) -> Diag {
     match kind {
         .Fn or .Const or .Rule -> refusal("resolve.duplicate_fn", at, "`${name}` is defined more than once", "redefined here", "rename one of them"),
-        .Record or .Named or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Builtin ->
-            refusal("resolve.duplicate_type", at, "`${name}` is declared more than once", "redeclared here", "rename one of them"),
+        .Record or .Named or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Builtin -> refusal("resolve.duplicate_type", at, "`${name}` is declared more than once", "redeclared here", "rename one of them"),
     }
 }
 

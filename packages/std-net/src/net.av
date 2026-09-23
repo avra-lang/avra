@@ -108,10 +108,10 @@ fn backlog() -> int { 511 }
 /// "forever", and a zero one looks once.
 export fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, NetError> {
     if !names_a_host(host) { return no_host("connect", host, port) }
-    if timeout.ms < 0 { return failed("connect", "${host}:${port} within ${timeout.ms} ms", -avra_errno_invalid()) }
+    if timeout.ms < 0 { return failed("connect", "${host}:${port} within ${timeout.ms} ms", 0 - avra_errno_invalid()) }
     let n = avra_net_addresses(host, port)
     if n < 0 { return failed("connect", "${host}:${port}", n) }
-    streamed(dialed_from(host, port, 0, n, now_ms() + timeout.ms, -avra_errno_invalid()), "connect", "${host}:${port}")
+    streamed(dialed_from(host, port, 0, n, now_ms() + timeout.ms, 0 - avra_errno_invalid()), "connect", "${host}:${port}")
 }
 
 /// The first of addresses `i..n` to connect by `deadline`, or the last
@@ -119,7 +119,7 @@ export fn connect(host: string, port: int, timeout: Duration) -> Result<Conn, Ne
 fn dialed_from(host: string, port: int, i: int, n: int, deadline: int, last: int) -> int {
     if i >= n { return last }
     let r = dialed(host, port, i, deadline)
-    if r >= 0 || r == -avra_errno_timed_out() { return r }
+    if r >= 0 || r == 0 - avra_errno_timed_out() { return r }
     dialed_from(host, port, i + 1, n, deadline, r)
 }
 
@@ -129,7 +129,7 @@ fn dialed(host: string, port: int, i: int, deadline: int) -> int {
     let fd = avra_net_dial(host, port, i)
     if fd < 0 { return fd }
     let left = deadline - now_ms()
-    let err = if avra_fiber_park_fd(fd, 1, if left < 0 { 0 } else { left }) == 0 { -avra_errno_timed_out() } else { avra_net_dialed(fd) }
+    let err = if avra_fiber_park_fd(fd, 1, if left < 0 { 0 } else { left }) == 0 { 0 - avra_errno_timed_out() } else { avra_net_dialed(fd) }
     if err == 0 { return fd }
     let _ = avra_net_close(fd)
     err

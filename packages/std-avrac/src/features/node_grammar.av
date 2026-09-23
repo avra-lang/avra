@@ -44,10 +44,7 @@ fn bound_alt(rname: string, a: Alt, rows: List<PayloadRow>) -> Alt {
 /// escapes its group into that branch, so a nested build reads the
 /// same names the engine will hand it.
 fn bound_seq(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Seq {
-    s with {
-        items: [m with { prim: bound_prim(rname, m.prim, outer, rows) } for m in s.items],
-        build: bound_build(s, outer, rows),
-    }
+    s with { items: [m with { prim: bound_prim(rname, m.prim, outer, rows) } for m in s.items], build: bound_build(s, outer, rows) }
 }
 
 fn bound_prim(rname: string, p: Prim, outer: Seq, rows: List<PayloadRow>) -> Prim {
@@ -104,8 +101,7 @@ fn seq_defects(rname: string, s: Seq, outer: Seq, rows: List<PayloadRow>) -> Lis
     }
 }
 
-fn node_defects(rname: string, outer: Seq, owner: string, variant: string,
-                fixed: List<Fixed>, rows: List<PayloadRow>) -> List<Diagnostic> {
+fn node_defects(rname: string, outer: Seq, owner: string, variant: string, fixed: List<Fixed>, rows: List<PayloadRow>) -> List<Diagnostic> {
     let row? = row_for(rows, owner, variant) else { return [node_refusal(rname, no_such_variant(owner, variant))] }
     judged(rname, outer, row, fixed)
 }
@@ -113,24 +109,20 @@ fn node_defects(rname: string, outer: Seq, owner: string, variant: string,
 /// The branch against a variant that EXISTS: what it names, what it
 /// leaves unfilled, and what it fills with the wrong shape.
 fn judged(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
-    stranger_defects(rname, s, row, fixed)
-        .concat(unfilled_defects(rname, s, row, fixed))
-        .concat(shape_defects(rname, s, row))
+    stranger_defects(rname, s, row, fixed).concat(unfilled_defects(rname, s, row, fixed)).concat(shape_defects(rname, s, row))
 }
 
 /// Names the rule uses — captured or stated — that the variant has no
 /// payload for.
 fn stranger_defects(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
     let names = [p.name for p in row.payloads]
-    [node_refusal(rname, no_such_payload(row, n, names))
-     for n in s.labels().concat([f.name for f in fixed]) if !names.contains(n)]
+    [node_refusal(rname, no_such_payload(row, n, names)) for n in s.labels().concat([f.name for f in fixed]) if !names.contains(n)]
 }
 
 /// Payloads nothing fills, and whose type does not answer absence.
 fn unfilled_defects(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) -> List<Diagnostic> {
     let labels = s.labels()
-    [node_refusal(rname, nothing_fills(row, p)) for p in row.payloads
-     if !labels.contains(p.name) && !fixed.any(it.name == p.name) && !absence_is_a_value(p.kind)]
+    [node_refusal(rname, nothing_fills(row, p)) for p in row.payloads if !labels.contains(p.name) && !fixed.any(it.name == p.name) && !absence_is_a_value(p.kind)]
 }
 
 /// A LIST holds nothing and a NULLABLE is absent; every other payload
@@ -140,8 +132,7 @@ fn unfilled_defects(rname: string, s: Seq, row: PayloadRow, fixed: List<Fixed>) 
 fn absence_is_a_value(k: Kind) -> bool {
     match k {
         .List(_) or .Opt(_) -> true,
-        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or
-        .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+        .Int or .Float or .Bool or .Str or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Named(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
 
@@ -178,8 +169,7 @@ fn texted(k: Kind) -> bool {
         .List(elem) -> texted(elem),
         .Opt(inner) -> texted(inner),
         .Named(name, _) -> flat_named(name),
-        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or
-        .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
+        .Float or .Ptr or .Void or .Cell(_) or .Map(_, _) or .Result(_, _) or .Fn(_, _) or .Dyn(_) or .Var(_) or .Unspelled(_) -> false,
     }
 }
 

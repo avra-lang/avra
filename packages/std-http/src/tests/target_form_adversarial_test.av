@@ -22,9 +22,11 @@ fn tf_serve_static(_q: Request, s: TfStatic) -> Response { text(200, "static ${s
 grammar TfStatic = "/static/{path...}"
 
 fn tf_routes() -> List<Route> {
-    [fixed(Method.Get, "/admin", tf_serve_admin),
-     fixed(Method.Get, "/", tf_serve_root),
-     tailed<TfStatic>(Method.Get, "/static/{path...}", (t: Bytes) -> TfStatic.parse(t), tf_serve_static)]
+    [
+        fixed(Method.Get, "/admin", tf_serve_admin),
+        fixed(Method.Get, "/", tf_serve_root),
+        tailed<TfStatic>(Method.Get, "/static/{path...}", (t: Bytes) -> TfStatic.parse(t), tf_serve_static),
+    ]
 }
 
 /// The status and body a request line earns FROM THE ROUTER, or
@@ -51,15 +53,13 @@ fn tf_target(line: string) -> string { tf_read(line, (q: Request) -> q.target() 
 spec "@std.http target forms" {
     given "one resource, two forms, one handler" {
         then "origin-form and absolute-form reach the SAME route" {
-            tf_answered("GET /admin HTTP/1.1") == "200 admin" &&
-                tf_answered("GET http://h/admin HTTP/1.1") == "200 admin"
+            tf_answered("GET /admin HTTP/1.1") == "200 admin" && tf_answered("GET http://h/admin HTTP/1.1") == "200 admin"
         }
         then "the differential is gone — the two agree on the body, not only the status" {
             tf_answered("GET /admin HTTP/1.1") == tf_answered("GET http://h/admin HTTP/1.1")
         }
         then "the scheme is not the axis — https and an unregistered one route alike" {
-            tf_answered("GET https://h/admin HTTP/1.1") == "200 admin" &&
-                tf_answered("GET zz://h/admin HTTP/1.1") == "200 admin"
+            tf_answered("GET https://h/admin HTTP/1.1") == "200 admin" && tf_answered("GET zz://h/admin HTTP/1.1") == "200 admin"
         }
         then "a port in the authority is stripped with it" {
             tf_answered("GET http://h:8080/admin HTTP/1.1") == "200 admin"
@@ -68,16 +68,14 @@ spec "@std.http target forms" {
             tf_answered("GET http://u:p@h/admin HTTP/1.1") == "200 admin"
         }
         then "a REST route reaches through absolute-form too" {
-            tf_answered("GET /static/css/app.css HTTP/1.1") == "200 static css/app.css" &&
-                tf_answered("GET http://h/static/css/app.css HTTP/1.1") == "200 static css/app.css"
+            tf_answered("GET /static/css/app.css HTTP/1.1") == "200 static css/app.css" && tf_answered("GET http://h/static/css/app.css HTTP/1.1") == "200 static css/app.css"
         }
         then "a query rides behind the path in either form" {
-            tf_answered("GET /admin?x=1 HTTP/1.1") == "200 admin" &&
-                tf_answered("GET http://h/admin?x=1 HTTP/1.1") == "200 admin"
+            tf_answered("GET /admin?x=1 HTTP/1.1") == "200 admin" && tf_answered("GET http://h/admin?x=1 HTTP/1.1") == "200 admin"
         }
     }
-
     given "the path component of each form" {
+
         then "origin-form IS its path" {
             tf_path("GET /admin HTTP/1.1") == "/admin"
         }
@@ -91,16 +89,13 @@ spec "@std.http target forms" {
             tf_path("GET http://h/a://b HTTP/1.1") == "/a://b"
         }
         then "the query is cut in both forms, as it always was" {
-            tf_path("GET /admin?x=/evil HTTP/1.1") == "/admin" &&
-                tf_path("GET http://h/admin?x=/evil HTTP/1.1") == "/admin"
+            tf_path("GET /admin?x=/evil HTTP/1.1") == "/admin" && tf_path("GET http://h/admin?x=/evil HTTP/1.1") == "/admin"
         }
         then "AN EMPTY PATH IS `/` — the root has a spelling with no slash in it" {
-            tf_path("GET http://h HTTP/1.1") == "/" &&
-                tf_path("GET http://h?x=1 HTTP/1.1") == "/"
+            tf_path("GET http://h HTTP/1.1") == "/" && tf_path("GET http://h?x=1 HTTP/1.1") == "/"
         }
         then "and it routes to the root, which is the whole reason it is minted" {
-            tf_answered("GET http://h HTTP/1.1") == "200 root" &&
-                tf_answered("GET / HTTP/1.1") == "200 root"
+            tf_answered("GET http://h HTTP/1.1") == "200 root" && tf_answered("GET / HTTP/1.1") == "200 root"
         }
         then "A QUERY THAT LOOKS LIKE A PATH IS STILL A QUERY" {
             // the authority ends where the PATH CLASS does, so the `/`
@@ -108,17 +103,13 @@ spec "@std.http target forms" {
             // the path nor extends the authority — the same law that
             // keeps `?redirect=/home` from adding a segment, reached
             // from the other side of the authority
-            tf_path("GET http://h?x=/admin HTTP/1.1") == "/" &&
-                tf_authority("GET http://h?x=/admin HTTP/1.1") == "h" &&
-                tf_answered("GET http://h?x=/admin HTTP/1.1") == "200 root"
+            tf_path("GET http://h?x=/admin HTTP/1.1") == "/" && tf_authority("GET http://h?x=/admin HTTP/1.1") == "h" && tf_answered("GET http://h?x=/admin HTTP/1.1") == "200 root"
         }
         then "a trailing slash after the authority IS the root path" {
-            tf_path("GET http://h/ HTTP/1.1") == "/" &&
-                tf_answered("GET http://h/ HTTP/1.1") == "200 root"
+            tf_path("GET http://h/ HTTP/1.1") == "/" && tf_answered("GET http://h/ HTTP/1.1") == "200 root"
         }
         then "an EMPTY authority is a present one, and its path still reads" {
-            tf_path("GET http:///admin HTTP/1.1") == "/admin" &&
-                tf_authority("GET http:///admin HTTP/1.1") == ""
+            tf_path("GET http:///admin HTTP/1.1") == "/admin" && tf_authority("GET http:///admin HTTP/1.1") == ""
         }
         then "a target that OPENS with `://` names no scheme and is refused" {
             tf_answered("GET ://h/admin HTTP/1.1") == "unframed"
@@ -130,8 +121,8 @@ spec "@std.http target forms" {
             tf_path("CONNECT h:443 HTTP/1.1") == "<none>"
         }
     }
-
     given "the authority, which `path()` strips" {
+
         then "absolute-form hands it over" {
             tf_authority("GET http://h/admin HTTP/1.1") == "h"
         }
@@ -139,19 +130,17 @@ spec "@std.http target forms" {
             tf_authority("GET http://h:8080/admin HTTP/1.1") == "h:8080"
         }
         then "and with no path after it" {
-            tf_authority("GET http://h HTTP/1.1") == "h" &&
-                tf_authority("GET http://h?x=1 HTTP/1.1") == "h"
+            tf_authority("GET http://h HTTP/1.1") == "h" && tf_authority("GET http://h?x=1 HTTP/1.1") == "h"
         }
         then "origin-form carries none — the `Host` field is where it lives" {
             tf_authority("GET /admin HTTP/1.1") == "<none>"
         }
         then "nor do the two forms that name no resource" {
-            tf_authority("OPTIONS * HTTP/1.1") == "<none>" &&
-                tf_authority("CONNECT h:443 HTTP/1.1") == "<none>"
+            tf_authority("OPTIONS * HTTP/1.1") == "<none>" && tf_authority("CONNECT h:443 HTTP/1.1") == "<none>"
         }
     }
-
     given "a target that names no resource is not routed" {
+
         then "asterisk-form earns a 404 — the table is never walked" {
             tf_answered("OPTIONS * HTTP/1.1") == "404 "
         }
@@ -161,21 +150,16 @@ spec "@std.http target forms" {
         then "and the framer's own laws still hold in front of all this" {
             // `*` is OPTIONS' alone and an authority is CONNECT's; a
             // path at a CONNECT is refused before the router exists
-            tf_answered("GET * HTTP/1.1") == "unframed" &&
-                tf_answered("GET h:443 HTTP/1.1") == "unframed" &&
-                tf_answered("CONNECT /admin HTTP/1.1") == "unframed"
+            tf_answered("GET * HTTP/1.1") == "unframed" && tf_answered("GET h:443 HTTP/1.1") == "unframed" && tf_answered("CONNECT /admin HTTP/1.1") == "unframed"
         }
     }
-
     given "what none of this moved" {
+
         then "`target()` still answers the form that was SENT" {
-            tf_target("GET http://h/admin?x=1 HTTP/1.1") == "http://h/admin?x=1" &&
-                tf_target("OPTIONS * HTTP/1.1") == "*" &&
-                tf_target("CONNECT h:443 HTTP/1.1") == "h:443"
+            tf_target("GET http://h/admin?x=1 HTTP/1.1") == "http://h/admin?x=1" && tf_target("OPTIONS * HTTP/1.1") == "*" && tf_target("CONNECT h:443 HTTP/1.1") == "h:443"
         }
         then "a fragment never travels, in either form" {
-            tf_answered("GET /admin#top HTTP/1.1") == "unframed" &&
-                tf_answered("GET http://h/admin#top HTTP/1.1") == "unframed"
+            tf_answered("GET /admin#top HTTP/1.1") == "unframed" && tf_answered("GET http://h/admin#top HTTP/1.1") == "unframed"
         }
         then "a protocol-relative target is origin-form and keeps both slashes" {
             tf_path("GET //h/admin HTTP/1.1") == "//h/admin"

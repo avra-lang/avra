@@ -210,13 +210,13 @@ fn attach(items: List<Item>, annots: List<PendingAnnot>) -> Result<Seq, string> 
                     return .Err("@expect names `${token}` but the branch has no matching item")
                 }
                 out = [if i == idx { m with { expect: Expect { message: message } } } else { m } for i, m in out]
-            }
+            },
             .ARecover(sync_to) -> {
                 if rec != null { return .Err("duplicate @recover on one branch") }
                 rec = Recover { sync_to: sync_to }
-            }
-            .AHead(label) -> { out = marked_by_label(out, label, "@head", true)? }
-            .ATrailer(label) -> { out = marked_by_label(out, label, "@trailer", false)? }
+            },
+            .AHead(label) -> { out = marked_by_label(out, label, "@head", true)? },
+            .ATrailer(label) -> { out = marked_by_label(out, label, "@trailer", false)? },
         }
     }
     .Ok(Seq { items: out, build: null, recover: rec })
@@ -254,23 +254,22 @@ export fn grammar_result(o: RunOutcome<GrammarNode>) -> Grammar? {
 
 /// The builder dispatch for the grammar DSL itself. Grammar values
 /// carry no spans, so the branch span goes unused here.
-export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
-                        span: Span?) -> Result<Captured<GrammarNode>, string> {
+export fn grammar_build(name: string, args: List<Captured<GrammarNode>>, span: Span?) -> Result<Captured<GrammarNode>, string> {
     match name {
         "build_grammar" -> {
             let rules = as_rules(args[0])?
             if rules.is_empty() { return .Err("a grammar needs at least one rule") }
             ok(GrammarNode.NGrammar(Grammar { name: "", start: rules[0].name, rules: rules }))
-        }
+        },
         "build_rule" -> {
             let rule_name = want(tok_of(args[0]), "a rule name")?
             let body = want(alt_of(args[1]), "an alternation")?
             ok(GrammarNode.NRule(Rule { name: rule_name.text, body: body }))
-        }
+        },
         "build_alt" -> {
             let branches = as_seqs(args[0])?
             ok(GrammarNode.NAlt(Alt { branches: branches }))
-        }
+        },
         "build_seq" -> {
             let items = as_items(args[0])?
             let annots = as_annots(args[2])?
@@ -280,10 +279,10 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
                 .Node(_) -> {
                     let b = want(build_of(args[1]), "a build directive")?
                     ok(GrammarNode.NSeq(sq with { build: b }))
-                }
+                },
                 .Terminal(_) or .Many(_) -> .Err("expected a build directive"),
             }
-        }
+        },
         "build_labeled" -> {
             let inner = want(item_of(args[1]), "an item")?
             match args[0] {
@@ -291,24 +290,27 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
                 .Terminal(t) -> ok(GrammarNode.NItem(inner with { label: t.text })),
                 .Node(_) or .Many(_) -> .Err("expected a label"),
             }
-        }
+        },
         "build_postfix" -> {
             let inner = want(prim_of(args[0]), "an atom")?
             ok(GrammarNode.NItem(item(inner) with { rep: as_rep(args[1])? }))
-        }
+        },
         "build_prim_name" -> {
             let t = want(tok_of(args[0]), "a name")?
-            if is_terminal_name(t.text) { ok(GrammarNode.NPrim(named(t.text))) }
-            else { ok(GrammarNode.NPrim(rule_ref(t.text))) }
-        }
+            if is_terminal_name(t.text) {
+                ok(GrammarNode.NPrim(named(t.text)))
+            } else {
+                ok(GrammarNode.NPrim(rule_ref(t.text)))
+            }
+        },
         "build_lit" -> {
             let t = want(tok_of(args[0]), "a quoted terminal")?
             ok(GrammarNode.NPrim(lit(t.text)))
-        }
+        },
         "build_group" -> {
             let inner = want(alt_of(args[0]), "an alternation")?
             ok(GrammarNode.NPrim(Prim.Group(inner)))
-        }
+        },
         "build_build" -> {
             let t = want(tok_of(args[0]), "a builder name")?
             let variant: Token? = tok_of(args[1])
@@ -319,28 +321,28 @@ export fn grammar_build(name: string, args: List<Captured<GrammarNode>>,
                 .Terminal(_) -> ok(GrammarNode.NBuild(Build.Call(t.text, [label_arg(a)? for a in written]))),
                 .Node(_) or .Many(_) -> .Err("expected `(`"),
             }
-        }
+        },
         "build_arg" -> {
             let n = want(tok_of(args[0]), "an argument name")?
             ok(GrammarNode.NArg(BuildArg { name: n.text, fixed: tok_of(args[1])?.text }))
-        }
+        },
         "build_expect" -> {
             let token = want(tok_of(args[0]), "the expected token")?
             let msg = want(tok_of(args[1]), "the message")?
             ok(GrammarNode.NAnnot(PendingAnnot.AExpect(token.text, msg.text)))
-        }
+        },
         "build_recover" -> {
             let target = want(tok_of(args[0]), "the sync target")?
             ok(GrammarNode.NAnnot(PendingAnnot.ARecover(target.text)))
-        }
+        },
         "build_head" -> {
             let label = want(tok_of(args[0]), "the head's label")?
             ok(GrammarNode.NAnnot(PendingAnnot.AHead(label.text)))
-        }
+        },
         "build_trailer" -> {
             let label = want(tok_of(args[0]), "the trailer's label")?
             ok(GrammarNode.NAnnot(PendingAnnot.ATrailer(label.text)))
-        }
-        _ -> .Err("unknown builder `${name}`")
+        },
+        _ -> .Err("unknown builder `${name}`"),
     }
 }

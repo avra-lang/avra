@@ -25,7 +25,6 @@ fn collect_use() -> string {
     "use @std.meta.{Fn, Directive, collect}\n"
 }
 
-
 /// The fixtures the REAL `@std/meta` deliberately has not: a `Decl`
 /// LOOKALIKE (the real package refuses that name — a collision would
 /// arm a counterfeit), a trait whose `derive` makes a twin, one that
@@ -122,14 +121,11 @@ spec "features/annotations — the compile-time call's laws" {
             refused(meta_use() + "fn mark(f: Fn) -> int { 1 }\n@mark\nfn answer() -> int { 1 }\nanswer()", "answers `int`")
         }
         then "a same-named user record cannot counterfeit diagnostics" {
-            let src = fn_use() + "type Diagnostic = { message: string }\n" +
-                      "fn mark(f: Fn) -> List<Diagnostic> { [] }\n" +
-                      "@mark\nfn answer() -> int { 1 }\nanswer()"
+            let src = fn_use() + "type Diagnostic = { message: string }\n" + "fn mark(f: Fn) -> List<Diagnostic> { [] }\n" + "@mark\nfn answer() -> int { 1 }\nanswer()"
             refused(src, "not `List<@std.meta.Diagnostic>`")
         }
         then "a lookalike answer does not declare — only `Directive` does" {
-            refused_n(packaged(meta_use() + "fn mark(f: Fn) -> List<Decl> { [] }\n@mark\nfn answer() -> int { 1 }\nanswer()"),
-                      "answers an effect", 2)
+            refused_n(packaged(meta_use() + "fn mark(f: Fn) -> List<Decl> { [] }\n@mark\nfn answer() -> int { 1 }\nanswer()"), "answers an effect", 2)
         }
     }
     given "declaration generation" {
@@ -152,80 +148,56 @@ spec "features/annotations — the compile-time call's laws" {
             parse_source(p.expanded_source(p.entry_file()!.view.file)).voices.list.is_empty()
         }
         then "a declaration-making annotation fn in the same file is refused, not ignored" {
-            refused_n(packaged(directive_use() +
-                      "fn gen(f: Fn) -> List<Directive> { [] }\n" +
-                      "@gen\nfn sum() -> int { 1 }\nsum()"),
-                      "generates declarations and stands in this file", 1)
+            refused_n(packaged(directive_use() + "fn gen(f: Fn) -> List<Directive> { [] }\n" + "@gen\nfn sum() -> int { 1 }\nsum()"), "generates declarations and stands in this file", 1)
         }
         then "an undeclared annotation name explains to nothing" {
             let p = packaged(directive_use() + "1")
             p.explain_annotation("ghost") == null
         }
         then "a declaration-making annotation reaches only literals" {
-            refused_n(packaged(collect_use() + "@collect([1, 2])\nfn answer() -> int { 1 }\nanswer()"),
-                      "generates declarations, so its arguments come from the source alone", 1)
+            refused_n(packaged(collect_use() + "@collect([1, 2])\nfn answer() -> int { 1 }\nanswer()"), "generates declarations, so its arguments come from the source alone", 1)
         }
     }
     given "validation" {
         then "a returned Diagnostic speaks once at the declaration" {
-            let src = meta_use() +
-                      "fn reject(f: Fn) -> List<Diagnostic> { [Diagnostic { message: \"`\${f.name}` is forbidden\", help: null, at: null }] }\n" +
-                      "@reject\nfn forbidden() -> int { 1 }\nforbidden()"
+            let src = meta_use() + "fn reject(f: Fn) -> List<Diagnostic> { [Diagnostic { message: \"`\${f.name}` is forbidden\", help: null, at: null }] }\n" + "@reject\nfn forbidden() -> int { 1 }\nforbidden()"
             refused(src, "`forbidden` is forbidden")
         }
         then "a diagnostic can point at the field that caused it" {
-            let src = meta_use() +
-                      "fn reject(t: Type) -> List<Diagnostic> { [Diagnostic { message: \"bad field\", help: null, at: t.fields[0].at }] }\n" +
-                      "@reject\ntype P = {\n    x: int\n}\n1"
+            let src = meta_use() + "fn reject(t: Type) -> List<Diagnostic> { [Diagnostic { message: \"bad field\", help: null, at: t.fields[0].at }] }\n" + "@reject\ntype P = {\n    x: int\n}\n1"
             refused_at(src, "bad field", 5)
         }
         then "a declaration's NAME in an argument list is its meta value" {
-            let src = "use @std.meta.{Type, Trait, Diagnostic}\n" +
-                      "trait Show {\n    fn show() -> int\n}\n" +
-                      "fn uses(t: Type, tr: Trait) -> List<Diagnostic> {\n    if t.name == \"P\" && tr.name == \"Show\" { [] } else { [Diagnostic { message: \"wrong pair\", help: null, at: null }] }\n}\n" +
-                      "@uses(Show)\ntype P = { x: int }\n1"
+            let src = "use @std.meta.{Type, Trait, Diagnostic}\n" + "trait Show {\n    fn show() -> int\n}\n" + "fn uses(t: Type, tr: Trait) -> List<Diagnostic> {\n    if t.name == \"P\" && tr.name == \"Show\" { [] } else { [Diagnostic { message: \"wrong pair\", help: null, at: null }] }\n}\n" + "@uses(Show)\ntype P = { x: int }\n1"
             packaged(src).clean()
         }
         then "a TYPE name in an argument seat crosses the same way" {
-            let src = "use @std.meta.{Type, Diagnostic}\n" +
-                      "fn pair(t: Type, u: Type) -> List<Diagnostic> {\n    if t.name == \"P\" && u.name == \"Q\" { [] } else { [Diagnostic { message: \"wrong pair\", help: null, at: null }] }\n}\n" +
-                      "@pair(Q)\ntype P = { x: int }\ntype Q = { y: int }\n1"
+            let src = "use @std.meta.{Type, Diagnostic}\n" + "fn pair(t: Type, u: Type) -> List<Diagnostic> {\n    if t.name == \"P\" && u.name == \"Q\" { [] } else { [Diagnostic { message: \"wrong pair\", help: null, at: null }] }\n}\n" + "@pair(Q)\ntype P = { x: int }\ntype Q = { y: int }\n1"
             packaged(src).clean()
         }
     }
     given "warnings" {
         then "a deprecation warns at the use, not the declaration" {
-            let p = packaged(deprecation_use() +
-                             "@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
+            let p = packaged(deprecation_use() + "@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\nsum(1, 2)")
             let out = checked(p)
-            p.clean() && out.contains("F2071") && out.contains("`sum` is deprecated — use add") &&
-                out.contains("main.av:4") && out.contains("used here")
+            p.clean() && out.contains("F2071") && out.contains("`sum` is deprecated — use add") && out.contains("main.av:4") && out.contains("used here")
         }
         then "a use before the declaration still warns — the marks are a query" {
-            let p = packaged(deprecation_use() +
-                             "fn call() -> int { sum(1, 2) }\n@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\ncall()")
+            let p = packaged(deprecation_use() + "fn call() -> int { sum(1, 2) }\n@deprecated(\"use add\")\nfn sum(a: int, b: int) -> int { a + b }\ncall()")
             checked(p).contains("main.av:2")
         }
         then "a type deprecation reaches its uses too" {
-            let p = packaged(deprecation_use() +
-                             "@deprecated(\"use Pt\")\ntype Old = { x: int }\nOld { x: 1 }.x")
+            let p = packaged(deprecation_use() + "@deprecated(\"use Pt\")\ntype Old = { x: int }\nOld { x: 1 }.x")
             checked(p).contains("`Old` is deprecated")
         }
     }
     given "argument evaluation" {
         then "an argument that reaches the world is refused before it runs" {
-            let src = meta_use() +
-                      "extern fn avra_puts(s: string)\n" +
-                      "fn noisy() -> int { avra_puts(\"x\")\n1 }\n" +
-                      "fn mark(f: Fn, n: int) { }\n" +
-                      "@mark(noisy())\nfn answer() -> int { 1 }\nanswer()"
+            let src = meta_use() + "extern fn avra_puts(s: string)\n" + "fn noisy() -> int { avra_puts(\"x\")\n1 }\n" + "fn mark(f: Fn, n: int) { }\n" + "@mark(noisy())\nfn answer() -> int { 1 }\nanswer()"
             refused(src, "reaches `avra_puts`")
         }
         then "an argument trap is reported once at its annotation" {
-            let src = meta_use() +
-                      "fn boom() -> int { 1 / 0 }\n" +
-                      "fn mark(f: Fn, n: int) { }\n" +
-                      "@mark(boom())\nfn answer() -> int { 1 }\nanswer()"
+            let src = meta_use() + "fn boom() -> int { 1 / 0 }\n" + "fn mark(f: Fn, n: int) { }\n" + "@mark(boom())\nfn answer() -> int { 1 }\nanswer()"
             refused(src, "division by zero")
         }
     }
@@ -269,12 +241,12 @@ spec "features/annotations — the compile-time call's laws" {
             refused_with("type R = { @m a: int }\n0", "`@m` — nothing on this declaration reads it")
         }
     }
-    // A MARK'S WORD LIST REFUSES IN THE DECLARATION'S WORDS, not in
-    // its own: the mark rule carries no `@expect`, so a non-word ends
-    // the member list and the enum's brace is what goes missing. The
-    // refusal is HONEST and unhelpful, and these cases pin the wording
-    // that stands so an improvement is visible when it lands.
     given "marks — every wrong type in the word slot" {
+        // A MARK'S WORD LIST REFUSES IN THE DECLARATION'S WORDS, not in
+        // its own: the mark rule carries no `@expect`, so a non-word ends
+        // the member list and the enum's brace is what goes missing. The
+        // refusal is HONEST and unhelpful, and these cases pin the wording
+        // that stands so an improvement is visible when it lands.
         then "a NUMBER is not a word" {
             refused_with("enum E { @m(1) A(x: int) }\n0", "expected `}` while parsing `stmt`")
         }
@@ -299,13 +271,13 @@ spec "features/annotations — the compile-time call's laws" {
             refused_with("enum E { A(x: int) @m }\n0", "expected `}`")
         }
     }
-    // A PAYLOAD IS A MEMBER TOO, and its marks are aligned by the same
-    // windows. These attack the seam where a payload's mark could be
-    // read as its SUCCESSOR's — the last payload of one variant
-    // against the next variant's name, a middle payload against the
-    // one after it — which is what a mark set short of the payload
-    // anchors would do.
     given "payload marks — alignment" {
+        // A PAYLOAD IS A MEMBER TOO, and its marks are aligned by the same
+        // windows. These attack the seam where a payload's mark could be
+        // read as its SUCCESSOR's — the last payload of one variant
+        // against the next variant's name, a middle payload against the
+        // one after it — which is what a mark set short of the payload
+        // anchors would do.
         then "the LAST payload's mark is not the NEXT variant's" {
             let src = formatted("enum E {\n    A(x: int, @m y: int)\n    B(z: int)\n}\n0")
             src.contains("A(x: int, @m y: int)") && !src.contains("@m B")
@@ -329,13 +301,13 @@ spec "features/annotations — the compile-time call's laws" {
             formatted("enum E {\n    A(@m x: Map<string, int>, @n y: List<int>)\n}\n0").contains("A(@m x: Map<string, int>, @n y: List<int>)")
         }
     }
-    // ONE LINE EACH, DELIBERATELY: spread over three lines every one
-    // of these refuses TWICE — the member list ends at the stray `@`
-    // and the enum's brace then goes missing, so "expected EOF"
-    // follows. That cascade is the variant-level surface's too
-    // (`@m(1) A(x: int)` says both), so it is pinned where the word
-    // slot's wording is and not re-litigated here.
     given "payload marks — malformed surface" {
+        // ONE LINE EACH, DELIBERATELY: spread over three lines every one
+        // of these refuses TWICE — the member list ends at the stray `@`
+        // and the enum's brace then goes missing, so "expected EOF"
+        // follows. That cascade is the variant-level surface's too
+        // (`@m(1) A(x: int)` says both), so it is pinned where the word
+        // slot's wording is and not re-litigated here.
         then "a mark AFTER the payload name is not a mark" {
             refused_with("enum E { A(x @m: int) }\n0", "expected `}`")
         }

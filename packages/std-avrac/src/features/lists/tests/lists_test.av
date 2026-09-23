@@ -32,32 +32,26 @@ spec "features/lists" {
         }
         then "elements share one type" {
             let a = analyze_source("[1, true]\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("a list's elements share one type")
+            a.diagnostics.length == 1 && a.report().contains("a list's elements share one type")
         }
         then "managed elements ride the slot — ownership landed" {
             analyze_source("[\"a\"]\n2").diagnostics.is_empty()
         }
         then "indexing a non-list points at the subject" {
             let a = analyze_source("1[0]\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`[...]` indexes a `List`, found `int`")
+            a.diagnostics.length == 1 && a.report().contains("`[...]` indexes a `List`, found `int`")
         }
         then "a non-int index points at the position" {
             let a = analyze_source("let xs = [1]\nxs[true]\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("an index is an `int`, found `bool`")
+            a.diagnostics.length == 1 && a.report().contains("an index is an `int`, found `bool`")
         }
         then "an unknown property is named" {
             let a = analyze_source("let xs = [1]\nxs.size\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("no property `size` on `List<int>`") &&
-                a.report().contains("a property is a record's field, or a measure like `length`")
+            a.diagnostics.length == 1 && a.report().contains("no property `size` on `List<int>`") && a.report().contains("a property is a record's field, or a measure like `length`")
         }
         then "`==` on lists offers the alternatives" {
             let a = analyze_source("let xs = [1]\nlet ys = [1]\nxs == ys\n2")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`==` compares scalars for now")
+            a.diagnostics.length == 1 && a.report().contains("`==` compares scalars for now")
         }
     }
     given "the run's own refusals" {
@@ -83,12 +77,10 @@ spec "features/lists" {
             shown("mut t = 0\nfor i in 1..4 {\n    t = t + i\n}\nt") == "6"
         }
         then "walking a non-list refuses and names the range spelling" {
-            refused_with("mut t = 0\nfor x in 5 {\n    t = t + x\n}\nt",
-                         "`for … in` walks a `List`, this is `int`")
+            refused_with("mut t = 0\nfor x in 5 {\n    t = t + x\n}\nt", "`for … in` walks a `List`, this is `int`")
         }
         then "walking `[]` refuses — the loop would never run" {
-            refused_with("mut t = 0\nfor x in [] {\n    t = t + x\n}\nt",
-                         "`for` walks an empty literal — nothing to bind")
+            refused_with("mut t = 0\nfor x in [] {\n    t = t + x\n}\nt", "`for` walks an empty literal — nothing to bind")
         }
         then "`[]` Ok-wraps raw — the identity compound lift" {
             shown("enum E {\n    boom\n}\nfn f() -> Result<List<int>, E> {\n    []\n}\nmatch f() {\n    .Ok(xs) -> xs.length\n    .Err(e) -> 0 - 1\n}") == "0"
@@ -138,16 +130,13 @@ spec "features/lists" {
             refused_with("let x = it + 1\n2", "`it` rides a METHOD call's arguments")
         }
         then "a walk's fn seat must BE the element" {
-            refused_with("[1, 2].filter((s: string) -> true)\n2",
-                         "`filter`'s fn takes the element `int`")
+            refused_with("[1, 2].filter((s: string) -> true)\n2", "`filter`'s fn takes the element `int`")
         }
         then "a predicate answers bool or refuses" {
-            refused_with("[1, 2].filter(it + 1)\n2",
-                         "`filter`'s fn must answer `bool`")
+            refused_with("[1, 2].filter(it + 1)\n2", "`filter`'s fn must answer `bool`")
         }
         then "the empty literal cannot be walked" {
-            refused_with("[].map(it)\n2",
-                         "`[].map` cannot know its elements")
+            refused_with("[].map(it)\n2", "`[].map` cannot know its elements")
         }
     }
     given "growth — `push` mutates a place" {

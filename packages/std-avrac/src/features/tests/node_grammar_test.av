@@ -12,14 +12,22 @@ use @std.avrac.core.{Span}
 fn rows() -> List<PayloadRow> {
     [
         PayloadRow { owner: "E", variant: "Lit", payloads: [Field { name: "value", ty: "string", at: null, kind: .Str }] },
-        PayloadRow { owner: "E", variant: "Pair", payloads: [
-            Field { name: "left", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
-            Field { name: "right", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
-        ] },
-        PayloadRow { owner: "E", variant: "Many", payloads: [
-            Field { name: "elems", ty: "List<ExprId>", at: null, kind: .List(.Named("ExprId", [])) },
-            Field { name: "tag", ty: "Scoped?", at: null, kind: .Opt(.Named("Scoped", [])) },
-        ] },
+        PayloadRow {
+            owner: "E",
+            variant: "Pair",
+            payloads: [
+                Field { name: "left", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+                Field { name: "right", ty: "ExprId", at: null, kind: .Named("ExprId", []) },
+            ],
+        },
+        PayloadRow {
+            owner: "E",
+            variant: "Many",
+            payloads: [
+                Field { name: "elems", ty: "List<ExprId>", at: null, kind: .List(.Named("ExprId", [])) },
+                Field { name: "tag", ty: "Scoped?", at: null, kind: .Opt(.Named("Scoped", [])) },
+            ],
+        },
     ]
 }
 
@@ -73,8 +81,8 @@ spec "features/node_grammar" {
             slots_of("r = a:NAME -> made(a)\n") == null
         }
     }
-
     given "the arity law" {
+
         then "a list payload nothing names is empty, and refuses nothing" {
             let src = "r = \"x\" -> E.Many\n"
             defects_of(src).is_empty() && label_at(src, 0) == "-"
@@ -89,8 +97,8 @@ spec "features/node_grammar" {
             refuses("r = \"x\" -> E.Pair\n", "only a list or a nullable payload may go unnamed")
         }
     }
-
     given "a rule that names what the model does not have" {
+
         then "an undeclared variant refuses" {
             refuses("r = value:STRING -> E.Nope\n", "no such variant is declared")
         }
@@ -101,8 +109,8 @@ spec "features/node_grammar" {
             refuses("r = \"x\" -> E.Lit(nope = 1)\n", "has no such payload")
         }
     }
-
     given "a label whose shape the payload cannot hold" {
+
         then "a rule reference cannot fill a text payload" {
             refuses("r = value:expr -> E.Lit\nexpr = NAME\n", "gives `E.Lit`'s `value: string` a built node, and it holds a token's text")
         }
@@ -113,8 +121,8 @@ spec "features/node_grammar" {
             !refuses("r = elems:\"x\" -> E.Many\n", "holds")
         }
     }
-
     given "the notation reads back" {
+
         then "a node build renders as it was written" {
             render_grammar(grammar_of("r = value:STRING -> E.Lit\n")).contains("-> E.Lit")
         }
@@ -122,8 +130,8 @@ spec "features/node_grammar" {
             render_grammar(grammar_of("r = \"t\" -> E.Lit(value = true)\n")).contains("-> E.Lit(value = true)")
         }
     }
-
     given "a node build nested in a group" {
+
         // The engine resolves an inner build's labels against the
         // ENCLOSING branch's bindings — a capture escapes its group.
         // Judged by the inner branch alone, a LIST payload captured
@@ -135,8 +143,8 @@ spec "features/node_grammar" {
             defects_of("r = elems:e ( \",\" -> E.Many )\ne = NAME\n").is_empty()
         }
     }
-
     given "a node build the engine reaches unbound" {
+
         // A grammar that never passed through binding — a package's
         // own sublanguage naming a node, which no model answers.
         then "the engine refuses it in words, and does not read its slots" {
@@ -146,8 +154,8 @@ spec "features/node_grammar" {
             unbound_run().diagnostics.any(it.message.contains("`E.Lit`"))
         }
     }
-
     given "what the notation itself refuses" {
+
         then "a bare name in a node build's arguments is no argument" {
             parse_grammar("r = a:NAME -> E.Lit(a)\n").diagnostics.any(it.message.contains("names no value here"))
         }
@@ -160,10 +168,15 @@ spec "features/node_grammar" {
 /// A grammar carrying a node build with NO slots — what binding would
 /// have filled. Run straight at the engine.
 fn unbound_run() -> RunOutcome<string> {
-    let g = Grammar { name: "r", start: "r", rules: [rule_def("r", [seq_to(
-        [cap("value", named("NAME")), item(named("BREAK"))],
-        Build.Node("E", "Lit", [], null),
-    )])] }
+    let g = Grammar {
+        name: "r",
+        start: "r",
+        rules: [
+            rule_def("r", [
+                seq_to([cap("value", named("NAME")), item(named("BREAK"))], Build.Node("E", "Lit", [], null)),
+            ]),
+        ],
+    }
     run_grammar<string>(ready(g), lex_grammar("x").tokens, never_built)
 }
 

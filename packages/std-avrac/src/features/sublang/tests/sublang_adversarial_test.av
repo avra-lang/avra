@@ -22,7 +22,6 @@ fn packaged_wide(main: string, prov: string, other: string, derives: string) -> 
     ws.program("/w/src/main.av")
 }
 
-
 /// A derive whose template holds a block of `@x/sql` — the block
 /// expands at the library's parse and is copied into the user's file.
 fn derives() -> string {
@@ -61,8 +60,8 @@ spec "features/sublang — adversarial" {
             clean(packaged(use_sql() + "let c = \"age\"\nlet q: Select = sql { SELECT name, \${c} FROM users }\nq.cols.length", provider()))
         }
     }
-
     given "the block among other features" {
+
         then "a block in a fn body, a list and an interpolation hole" {
             clean(packaged(use_sql() + "fn q() -> Select { sql { SELECT a FROM b } }\nlet qs: List<Select> = [sql { SELECT a FROM b }, q()]\n\"\${sql { SELECT a FROM b }.relation} \${qs.length}\"", provider()))
         }
@@ -70,29 +69,27 @@ spec "features/sublang — adversarial" {
             refused_n(packaged(use_sql() + "let n = sql\n1", provider()), "`sql` is not defined", 1)
         }
     }
-
     given "the body's lexing is Avra's" {
+
         then "a body character Avra's lexer refuses speaks at the block, in the lexer's words" {
             let p = packaged(use_sql() + "let q: Select = sql { SELECT name FROM users WHERE id = 'x' }\n1", provider())
             refused_n(p, "unexpected character", 2) && p.report().contains("main.av:2")
         }
     }
-
     given "two imports of one word" {
+
         then "the second import of a word another package already binds refuses at the use, naming the holder" {
             refused_n(packaged_wide("use @x.sql.{sql, Select}\nuse @y.sql.{sql}\n1", provider(), other(), derives()), "`sql` is imported, but `@x.sql` already has it", 1)
         }
     }
-
     given "two modules importing each other" {
+
         then "a module's block of a grammar whose module imports it back parses, each read through the other's words alone" {
-            clean(modules("use b.{made}\nuse a.{twice}\nmade().v + twice()",
-                          "use b.{size}\nexport type Pair = { k: string, v: int }\nexport fn pair(k: string, v: int) -> Pair { Pair { k: k, v: v } }\nexport fn twice() -> int { size() * 2 }\nexport grammar kv {\n    pair = k:NAME \"=\" v:NUMBER -> pair(k, v)\n}\n",
-                          "use a.{kv, Pair}\nexport fn size() -> int { 1 }\nexport fn made() -> Pair { kv { x = 2 } }\n"))
+            clean(modules("use b.{made}\nuse a.{twice}\nmade().v + twice()", "use b.{size}\nexport type Pair = { k: string, v: int }\nexport fn pair(k: string, v: int) -> Pair { Pair { k: k, v: v } }\nexport fn twice() -> int { size() * 2 }\nexport grammar kv {\n    pair = k:NAME \"=\" v:NUMBER -> pair(k, v)\n}\n", "use a.{kv, Pair}\nexport fn size() -> int { 1 }\nexport fn made() -> Pair { kv { x = 2 } }\n"))
         }
     }
-
     given "a block inside a template" {
+
         then "a template's block expands at the library and is copied into the user's file, its calls the library's" {
             let p = packaged_wide("use @std.meta.{derive}\nuse @x.derives.{Queried}\nuse @x.sql.{Select}\n@derive(Queried)\ntype P = { a: int }\nP { a: 1 }.queried().relation", provider(), other(), derives())
             clean(p)

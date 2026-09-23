@@ -52,8 +52,8 @@ spec "features/fns" {
             refused_with("extern fn c_open(mut out: ptr) -> int\nextern fn c_null() -> ptr\nc_open(c_null())", "seat 1 of `c_open` is `mut`, and this is a value")
         }
     }
-
     given "an extern seat's machine WIDTH" {
+
         then "a width word on a seat and on the answer reaches the extern's row" {
             extern_shape("extern fn c_int(v: i32) -> u32\nc_int(1)", "c_int") == "i32 -> u32"
         }
@@ -85,8 +85,8 @@ spec "features/fns" {
             refused_with("type P = {\n    n: u32,\n}\nP { n: 1 }.n", "`u32` is a machine WIDTH")
         }
     }
-
     given "extern fns — the host's, by their bare symbol" {
+
         then "an extern naming a runtime row must wear that row's shape" {
             // both engines call a row by the REGISTRY's seats, so a
             // declaration that disagrees is called on the row's shape
@@ -104,12 +104,10 @@ spec "features/fns" {
             // `avra_host_env(null)` checked CLEAN and the two engines
             // wrecked differently: `defect: a non-string reached text
             // in a clean program` evaluated, a `getenv(NULL)` natively.
-            refused_with("extern fn avra_host_env(name: string?) -> string\navra_host_env(null).length",
-                         "seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence")
+            refused_with("extern fn avra_host_env(name: string?) -> string\navra_host_env(null).length", "seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence")
         }
         then "octets are refused there in the same words — the box is not the axis" {
-            refused_with("extern fn avra_str_len(s: Bytes?) -> int\navra_str_len(null)",
-                         "seat 1 of `avra_str_len` wears `Bytes?`, and a runtime row's seat takes no absence")
+            refused_with("extern fn avra_str_len(s: Bytes?) -> int\navra_str_len(null)", "seat 1 of `avra_str_len` wears `Bytes?`, and a runtime row's seat takes no absence")
         }
         then "the row's absence law renders whole" {
             analyze_source("extern fn avra_host_env(name: string?) -> string\n1").report().starts_with("error[F2088]: seat 1 of `avra_host_env` wears `string?`, and a runtime row's seat takes no absence\n  ╭─[<source>:1:1]\n1 │ extern fn avra_host_env(name: string?) -> string\n  · ┬\n  · ╰── declared here\n──╯\nhelp: core's rows are the compiler's own C and every one of them READS the pointer it is handed")
@@ -161,8 +159,7 @@ spec "features/fns" {
             refused_with("extern fn zz(xs: List<string>)\nzz([\"a\"])", "seat 1 of `zz` wears `List<string>`, which cannot cross to C")
         }
         then "a map seat cannot cross, and a record seat cannot either" {
-            refused_with("extern fn zz(m: Map<string, int>) -> i64\nzz({ \"a\": 1 })", "wears `Map<string, int>`, which cannot cross to C") &&
-                refused_with("type P = {\n    s: string,\n}\nextern fn zz(p: P) -> i64\nzz(P { s: \"a\" })", "wears `P`, which cannot cross to C")
+            refused_with("extern fn zz(m: Map<string, int>) -> i64\nzz({ \"a\": 1 })", "wears `Map<string, int>`, which cannot cross to C") && refused_with("type P = {\n    s: string,\n}\nextern fn zz(p: P) -> i64\nzz(P { s: \"a\" })", "wears `P`, which cannot cross to C")
         }
         then "a ROW is the exemption — its arm materialises the box on both sides" {
             shown("extern fn avra_str_join(xs: List<string>, sep: string) -> string\navra_str_join([\"a\", \"b\"], \"-\")") == "a-b"
@@ -242,12 +239,10 @@ spec "features/fns" {
             refused_with("return 5\n1", "a `return` answers a fn, and there is none enclosing")
         }
         then "a return's value must be ACCEPTED by the declared answer" {
-            refused_with("fn f(n: int) -> int {\n    if n < 0 {\n        return \"no\"\n    }\n    n\n}\nf(1)",
-                         "`return` answers `int`, this is `string`")
+            refused_with("fn f(n: int) -> int {\n    if n < 0 {\n        return \"no\"\n    }\n    n\n}\nf(1)", "`return` answers `int`, this is `string`")
         }
         then "the TAIL value is still the law — return is for early exits" {
-            refused_with("fn f(n: int) -> int {\n    if n < 0 {\n        return 0\n    }\n    \"tail\"\n}\nf(1)",
-                         "the body answers `string` but `f` declares `int`")
+            refused_with("fn f(n: int) -> int {\n    if n < 0 {\n        return 0\n    }\n    \"tail\"\n}\nf(1)", "the body answers `string` but `f` declares `int`")
         }
     }
     given "declarations and calls" {
@@ -278,19 +273,15 @@ spec "features/fns" {
         }
         then "an argument matches its param" {
             let a = analyze_source("fn f(x: int) -> int { x }\nf(\"no\")")
-            a.diagnostics.length == 1 &&
-                a.report().contains("argument 1 of `f` wants `int`, found `string`")
+            a.diagnostics.length == 1 && a.report().contains("argument 1 of `f` wants `int`, found `string`")
         }
         then "the body must answer the declared return" {
             let a = analyze_source("fn f(x: int) -> string { x + 1 }\nf(1)")
-            a.diagnostics.length == 1 &&
-                a.report().contains("the body answers `int` but `f` declares `string`")
+            a.diagnostics.length == 1 && a.report().contains("the body answers `int` but `f` declares `string`")
         }
         then "an unknown type annotation names today's types — and ABSORBS at the call" {
             let a = analyze_source("fn f(x: decimal) -> int { 1 }\nf(1)")
-            a.diagnostics.length == 1 &&
-                a.report().contains("`decimal` names no type") &&
-                a.report().contains("the types today are `int`, `string`, `bool`, and your declared types")
+            a.diagnostics.length == 1 && a.report().contains("`decimal` names no type") && a.report().contains("the types today are `int`, `string`, `bool`, and your declared types")
         }
         then "two fns cannot share a name" {
             let a = analyze_source("fn f(x: int) -> int { x }\nfn f(y: int) -> int { y }\nf(1)")
@@ -416,12 +407,10 @@ ret r1"""
     }
     given "a `const` seat — settled at compile time" {
         then "a plain seat refuses a settled callee — the two fn types differ" {
-            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(int) -> int = takes\n0",
-                         "`bad` declares `fn(int) -> int`, this is `fn(const int) -> int`")
+            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(int) -> int = takes\n0", "`bad` declares `fn(int) -> int`, this is `fn(const int) -> int`")
         }
         then "a settled seat refuses a writing callee — `const` is not `mut`" {
-            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(mut int) -> int = takes\n0",
-                         "`bad` declares `fn(mut int) -> int`, this is `fn(const int) -> int`")
+            refused_with("fn takes(const x: int) -> int {\n    x\n}\nlet bad: fn(mut int) -> int = takes\n0", "`bad` declares `fn(mut int) -> int`, this is `fn(const int) -> int`")
         }
         then "a settled seat accepts a callee that settles nothing — the sound direction" {
             shown("fn plain(x: int) -> int {\n    x\n}\nlet good: fn(const int) -> int = plain\ngood(2)") == "2"
@@ -431,33 +420,31 @@ ret r1"""
         }
         then "two distinct settled values lower TWO units; a repeated one shares" {
             let src = "fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet a = pick(\"x\", \"1\")\nlet b = pick(\"y\", \"2\")\nlet c = pick(\"x\", \"3\")\na + b + c"
-            ir_of(src).fns.filter(it.name.starts_with("pick$@")).length == 2
+            ir_of(src).fns.filter(it.name.starts_with("pick\$@")).length == 2
         }
         then "a settled seat refuses a value computed at run time" {
-            refused_with("fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet p = \"x\"\npick(p, \"1\")",
-                         "`pattern` is a `const` seat")
+            refused_with("fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nlet p = \"x\"\npick(p, \"1\")", "`pattern` is a `const` seat")
         }
         then "a settled seat accepts a `const` — computed or written" {
             shown("fn pick(const pattern: string, s: string) -> string {\n    pattern + s\n}\nconst P: string = \"a\" + \"b\"\npick(P, \"1\")") == "ab1"
         }
         then "a METHOD's settled seat obeys the same law" {
-            refused_with("type C = { n: int }\nimpl C {\n    fn m(const x: int) -> int {\n        x + self.n\n    }\n}\nlet c = C { n: 1 }\nlet v = 5\nc.m(v)",
-                         "`x` is a `const` seat")
+            refused_with("type C = { n: int }\nimpl C {\n    fn m(const x: int) -> int {\n        x + self.n\n    }\n}\nlet c = C { n: 1 }\nlet v = 5\nc.m(v)", "`x` is a `const` seat")
         }
         then "a generic fn's settled seat specializes like a plain one" {
             let src = "fn first<T>(const x: T, y: T) -> T {\n    x\n}\nlet a = first(1, 2)\nlet b = first(1, 3)\nlet c = first(2, 4)\na + b + c"
-            ir_of(src).fns.filter(it.name.starts_with("first$")).length == 2
+            ir_of(src).fns.filter(it.name.starts_with("first\$")).length == 2
         }
         then "two settled seats keep their ORDER — (1,2) and (2,1) are distinct units" {
             let src = "fn pair(const a: int, const b: int) -> int {\n    a * 10 + b\n}\npair(1, 2) + pair(2, 1)"
-            ir_of(src).fns.filter(it.name.starts_with("pair$@")).length == 2
+            ir_of(src).fns.filter(it.name.starts_with("pair\$@")).length == 2
         }
         then "a settled seat FORWARDS — the inner unit keys on the outer's value" {
             shown("fn inner(const x: int) -> int {\n    x + 1\n}\nfn outer(const y: int) -> int {\n    inner(y)\n}\nouter(3) + outer(4)") == "9"
         }
         then "forwarded units split PER VALUE — inner is lowered once per outer value" {
             let src = "fn inner(const x: int) -> int {\n    x + 1\n}\nfn outer(const y: int) -> int {\n    inner(y)\n}\nouter(3) + outer(4)"
-            ir_of(src).fns.filter(it.name.starts_with("inner$@")).length == 2
+            ir_of(src).fns.filter(it.name.starts_with("inner\$@")).length == 2
         }
         then "a `const` in the body folds to the settled seat's value" {
             shown("fn compile(p: string) -> string {\n    p + \"!\"\n}\nfn matches(const pattern: string, s: string) -> string {\n    const prog = compile(pattern)\n    prog + s\n}\nmatches(\"x\", \"y\")") == "x!y"

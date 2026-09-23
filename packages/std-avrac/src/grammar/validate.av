@@ -40,12 +40,16 @@ impl Seq {
 
 fn prim_defects(rule_name: string, p: Prim, names: List<string>, labeled: bool) -> List<Diagnostic> {
     match p {
-        .Ref(target) ->
-            if names.contains(target) { [] }
-            else { [defect(rule_name, "references undefined rule `${target}`")] },
-        .Named(term) ->
-            if term_kind(term) != null { [] }
-            else { [defect(rule_name, "unknown terminal `${term}`")] },
+        .Ref(target) -> if names.contains(target) {
+            []
+        } else {
+            [defect(rule_name, "references undefined rule `${target}`")]
+        },
+        .Named(term) -> if term_kind(term) != null {
+            []
+        } else {
+            [defect(rule_name, "unknown terminal `${term}`")]
+        },
         .Lit(_) -> [],
         // A labeled group is consumed for its value; an unlabeled one
         // is structural (its value is Absent, its captures escape).
@@ -60,12 +64,12 @@ fn build_defects(rule_name: string, s: Seq, value_needed: bool) -> List<Diagnost
     }
     let labels = s.labels()
     match s.build! {
-        .Var(name) ->
-            if labels.contains(name) { [] }
-            else { [defect(rule_name, "build returns uncaptured label `${name}`")] },
-        .Call(_, args) ->
-            [defect(rule_name, "build argument `${a}` is not captured in its branch")
-                for a in args if !labels.contains(a)],
+        .Var(name) -> if labels.contains(name) {
+            []
+        } else {
+            [defect(rule_name, "build returns uncaptured label `${name}`")]
+        },
+        .Call(_, args) -> [defect(rule_name, "build argument `${a}` is not captured in its branch") for a in args if !labels.contains(a)],
         // A node build's labels are checked against the NODE's
         // payloads, by whoever holds the node model — never here.
         .Node(_, _, _, _) -> [],
@@ -78,8 +82,7 @@ fn alt_defects(rule_name: string, a: Alt, names: List<string>, value_needed: boo
 
 /// One branch's defects: its items', then its build's.
 fn seq_defects(rule_name: string, s: Seq, names: List<string>, value_needed: bool) -> List<Diagnostic> {
-    flatten([prim_defects(rule_name, m.prim, names, m.label != null) for m in s.items])
-        .concat(build_defects(rule_name, s, value_needed))
+    flatten([prim_defects(rule_name, m.prim, names, m.label != null) for m in s.items]).concat(build_defects(rule_name, s, value_needed))
 }
 
 impl Grammar {
@@ -102,7 +105,6 @@ impl Grammar {
                 seen.push(r.name)
             }
         }
-        out.concat(flatten([alt_defects(r.name, r.body, names, true) for r in self.rules]))
-            .concat(first_defects(self))
+        out.concat(flatten([alt_defects(r.name, r.body, names, true) for r in self.rules])).concat(first_defects(self))
     }
 }

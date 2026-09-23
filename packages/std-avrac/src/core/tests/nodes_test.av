@@ -50,16 +50,14 @@ spec "core/nodes" {
             let a = s.alloc_expr(Expr.IntLit(0 - 42))
             let b = s.alloc_expr(Expr.IntLit(0 - 42))
             let c = s.alloc_expr(Expr.IntLit(42))
-            s.expr_fingerprint(a) == s.expr_fingerprint(b) &&
-                s.expr_fingerprint(a) != s.expr_fingerprint(c)
+            s.expr_fingerprint(a) == s.expr_fingerprint(b) && s.expr_fingerprint(a) != s.expr_fingerprint(c)
         }
         then "different content means different fingerprints" {
             mut s = new_node_store()
             let a = s.alloc_expr(Expr.IntLit(1))
             let b = s.alloc_expr(Expr.IntLit(2))
             let c = s.alloc_expr(Expr.Ident("1"))
-            s.expr_fingerprint(a) != s.expr_fingerprint(b) &&
-                s.expr_fingerprint(a) != s.expr_fingerprint(c)
+            s.expr_fingerprint(a) != s.expr_fingerprint(b) && s.expr_fingerprint(a) != s.expr_fingerprint(c)
         }
         then "a comprehension's ABSENT guard is not its element — two programs, two identities" {
             mut s = new_node_store()
@@ -124,17 +122,14 @@ spec "core/nodes" {
             let unit = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", null)]))
             let carrying = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int"))]))
             let nullable = s.alloc_stmt(Stmt.EnumDecl("E", [], [variant("a", ty("int", true))]))
-            s.stmt_fingerprint(unit) != s.stmt_fingerprint(carrying) &&
-                s.stmt_fingerprint(unit) != s.stmt_fingerprint(nullable) &&
-                s.stmt_fingerprint(carrying) != s.stmt_fingerprint(nullable)
+            s.stmt_fingerprint(unit) != s.stmt_fingerprint(carrying) && s.stmt_fingerprint(unit) != s.stmt_fingerprint(nullable) && s.stmt_fingerprint(carrying) != s.stmt_fingerprint(nullable)
         }
         then "a field's written type is part of the record's identity" {
             mut s = new_node_store()
             let a = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int"))]))
             let b = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("int", true))]))
             let c = s.alloc_stmt(Stmt.StructDecl("P", [], [param("x", ty("bool"))]))
-            s.stmt_fingerprint(a) != s.stmt_fingerprint(b) &&
-                s.stmt_fingerprint(a) != s.stmt_fingerprint(c)
+            s.stmt_fingerprint(a) != s.stmt_fingerprint(b) && s.stmt_fingerprint(a) != s.stmt_fingerprint(c)
         }
         then "an APPLICATION is part of identity: `List<int>` vs `int`" {
             mut s = new_node_store()
@@ -187,8 +182,7 @@ spec "core/nodes" {
             let unguarded = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], value: tail }]))
             let guarded1 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g1, value: tail }]))
             let guarded2 = s.alloc_expr(Expr.Match(subject, [Arm { pats: [rest], guard: g2, value: tail }]))
-            s.expr_fingerprint(unguarded) != s.expr_fingerprint(guarded1) &&
-                s.expr_fingerprint(guarded1) != s.expr_fingerprint(guarded2)
+            s.expr_fingerprint(unguarded) != s.expr_fingerprint(guarded1) && s.expr_fingerprint(guarded1) != s.expr_fingerprint(guarded2)
         }
         then "dropping a `?` KEEPS every other field — a fn type's seat marks survive it" {
             let marked = TypeRef { name: "fn", args: [ty("int"), ty("int")], optional: true, dynamic: false, arrow: true, span: null, marks: [SeatMark { mutable: true, settled: false }, plain_mark] }
@@ -216,8 +210,7 @@ spec "core/nodes" {
             let p = s.alloc_expr(Expr.Binary(BinOp.Add, one, two))
             let q = s.alloc_expr(Expr.Binary(BinOp.Add, one, x))
             let r = s.alloc_expr(Expr.Binary(BinOp.Sub, one, two))
-            s.expr_fingerprint(p) != s.expr_fingerprint(q) &&
-                s.expr_fingerprint(p) != s.expr_fingerprint(r)
+            s.expr_fingerprint(p) != s.expr_fingerprint(q) && s.expr_fingerprint(p) != s.expr_fingerprint(r)
         }
         then "statements fingerprint through their expressions" {
             mut s = new_node_store()
@@ -225,8 +218,7 @@ spec "core/nodes" {
             let a = s.alloc_stmt(Stmt.Let("x", null, one), at(0, 9))
             let b = s.alloc_stmt(Stmt.Let("x", null, one))
             let c = s.alloc_stmt(Stmt.Let("y", null, one))
-            s.stmt_fingerprint(a) == s.stmt_fingerprint(b) &&
-                s.stmt_fingerprint(a) != s.stmt_fingerprint(c)
+            s.stmt_fingerprint(a) == s.stmt_fingerprint(b) && s.stmt_fingerprint(a) != s.stmt_fingerprint(c)
         }
     }
     given "a statement's marks" {
@@ -278,10 +270,7 @@ spec "core/nodes" {
             s.mark_mutating(b)
             s.mark_once(c)
             s.mark_static(d)
-            s.is_exported(a) && !s.is_mutating(a) && !s.is_once(a) && !s.is_static(a) &&
-                !s.is_exported(b) && s.is_mutating(b) && !s.is_once(b) && !s.is_static(b) &&
-                !s.is_exported(c) && !s.is_mutating(c) && s.is_once(c) && !s.is_static(c) &&
-                !s.is_exported(d) && !s.is_mutating(d) && !s.is_once(d) && s.is_static(d)
+            s.is_exported(a) && !s.is_mutating(a) && !s.is_once(a) && !s.is_static(a) && !s.is_exported(b) && s.is_mutating(b) && !s.is_once(b) && !s.is_static(b) && !s.is_exported(c) && !s.is_mutating(c) && s.is_once(c) && !s.is_static(c) && !s.is_exported(d) && !s.is_mutating(d) && !s.is_once(d) && s.is_static(d)
         }
     }
 }

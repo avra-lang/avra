@@ -23,22 +23,18 @@ fn same_tree(source: string, projected: string) -> bool {
 spec "source text" {
     given "a small program" {
         then "layout and precedence have one canonical spelling" {
-            projected("let x=1+2*3\nif x>2 {\nlet y=x\ny\n} else {\n0\n}") ==
-                "let x = 1 + 2 * 3\nif x > 2 {\n    let y = x\n    y\n} else {\n    0\n}"
+            projected("let x=1+2*3\nif x>2 {\nlet y=x\ny\n} else {\n0\n}") == "let x = 1 + 2 * 3\nif x > 2 {\n    let y = x\n    y\n} else {\n    0\n}"
         }
     }
-
     given "the statement surface" {
+
         then "a doc-only edit changes the statement fingerprint" {
             let before = parse_source("/// a\nfn f() -> int { 1 }")
             let after = parse_source("/// b\nfn f() -> int { 1 }")
             before.store.stmt_fingerprint(before.stmts[0]) != after.store.stmt_fingerprint(after.stmts[0])
         }
         then "an empty documentation line survives as `///`" {
-            projected("///\nfn a() -> int { 1 }") == "///\nfn a() -> int {\n    1\n}" &&
-                stable("///\nfn a() -> int { 1 }") &&
-                projected("/// a\n///\nfn a() -> int { 1 }") == "/// a\n///\nfn a() -> int {\n    1\n}" &&
-                stable("/// a\n///\nfn a() -> int { 1 }")
+            projected("///\nfn a() -> int { 1 }") == "///\nfn a() -> int {\n    1\n}" && stable("///\nfn a() -> int { 1 }") && projected("/// a\n///\nfn a() -> int { 1 }") == "/// a\n///\nfn a() -> int {\n    1\n}" && stable("/// a\n///\nfn a() -> int { 1 }")
         }
         then "documentation survives annotations, modifiers, and nested trait members" {
             let source = "/// Chooses a value.\n/// Preserves both lines.\n@memo(3)\nexport fn choose() -> int { 1 }\n\ntrait Measure {\n    /// Measures this value.\n    fn size(self) -> int\n}"
@@ -112,8 +108,8 @@ fail problem
 """)
         }
     }
-
     given "the expression surface" {
+
         then "literals, aggregates, branches and postfixes reach a fixed point" {
             stable("""
 let scalar = 12 + 3.5 * 2
@@ -198,8 +194,8 @@ let recovered = result catch 0
 """)
         }
     }
-
     given "degenerate shapes" {
+
         then "an empty program is already canonical" {
             stable("")
         }
@@ -225,18 +221,17 @@ let one_when = when { _ -> 1 }
 """)
         }
     }
-
     given "recovery nodes" {
+
         then "their projection is explicit and parseable" {
             mut store = new_node_store()
             let expr = store.alloc_expr(Expr.Error)
             let stmt = store.alloc_stmt(Stmt.Error)
-            render_expression(store, expr) == "__error" && render_statement(store, stmt) == "__error" &&
-                stable(render_statement(store, stmt))
+            render_expression(store, expr) == "__error" && render_statement(store, stmt) == "__error" && stable(render_statement(store, stmt))
         }
     }
-
     given "a value call whose subject is a name" {
+
         then "parentheses keep it distinct from a direct declaration call" {
             mut store = new_node_store()
             let callee = store.alloc_expr(Expr.Ident("f"))
@@ -245,8 +240,8 @@ let one_when = when { _ -> 1 }
             render_expression(store, call) == "(f)(1)"
         }
     }
-
     given "a folded negative literal under a postfix" {
+
         then "its group survives projection" {
             stable("let field = (-3).magnitude")
         }

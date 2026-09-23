@@ -11,8 +11,7 @@ use @std.sqlite.open.{Db, memory, close}
 use @std.sqlite.stmt.{Stmt, prepare, step, reset, finalize, run, bind_int, bind_text, slots, width, standing, class_at, int_at, text_at, blob_at}
 use @std.sqlite.error.{SqlError, Cause, Storage}
 use @std.sqlite.{memory_used}
-use @std.sqlite.c.{sqlite3_column_type, sqlite3_column_blob, sqlite3_column_bytes,
-                   sqlite3_hard_heap_limit64}
+use @std.sqlite.c.{sqlite3_column_type, sqlite3_column_blob, sqlite3_column_bytes, sqlite3_hard_heap_limit64}
 
 // ── The fixtures, so each case shows only its attack ─────────────
 
@@ -180,10 +179,7 @@ fn read_early(s: Stmt) -> string {
 
 fn used_after(s: Stmt) -> string {
     let rc = finalize(s)
-    "finalize=${rc} step=${sk(step(s))} reset=${reset(s)}" +
-    " width=${width(s)} standing=${standing(s)} slots=${slots(s)}" +
-    " class=${ck(class_at(s, 0))} int=${ik(int_at(s, 0))}" +
-    " bind_int=${ik(bind_int(s, 1, 1))} bind_text=${ik(bind_text(s, 1, "x"))}"
+    "finalize=${rc} step=${sk(step(s))} reset=${reset(s)}" + " width=${width(s)} standing=${standing(s)} slots=${slots(s)}" + " class=${ck(class_at(s, 0))} int=${ik(int_at(s, 0))}" + " bind_int=${ik(bind_int(s, 1, 1))} bind_text=${ik(bind_text(s, 1, "x"))}"
 }
 
 // ── The copy at the boundary ─────────────────────────────────────
@@ -442,8 +438,8 @@ fn blob_under_limit() -> string {
 }
 
 spec "std/sqlite statement adversarial" {
-
     given "a statement stepped PAST done — it runs AGAIN, silently" {
+
         // THE FINDING, and it stands as behaviour rather than a fix.
         // `sqlite3_step` auto-resets after DONE, so a second step
         // RE-EXECUTES. Every step answers DONE and nothing in the answer
@@ -463,15 +459,15 @@ spec "std/sqlite statement adversarial" {
         then "and one insert writes ONE row, however many times it is stepped" { insert_thrice().ends_with("rows=1") }
         then "a SELECT gives each row once and then stops" { select_past_done() == "ROW ROW DONE | sqlite.done sqlite.done" }
     }
-
     given "a bind after a step, with no reset" {
+
         // SQLite answers SQLITE_MISUSE (21). It is the CALLER's protocol
         // mistake, and the driver must not name it a driver defect.
         then "the first bind and step are fine" { rebound_late().starts_with("bind=0 step=DONE") }
         then "the rebind is refused" { rebound_late() == "bind=0 step=DONE rebind=sqlite.defect" }
     }
-
     given "every verb after finalize" {
+
         // EVERY VERB THAT CAN REFUSE NAMES THE LAW. `finalize` nulls the
         // handle, and each read and bind asks the statement before it
         // asks a count — otherwise a finalized statement is zero columns
@@ -491,8 +487,8 @@ spec "std/sqlite statement adversarial" {
         then "the counting verbs answer zero, from the driver" { after_finalize().contains("reset=0 width=0 standing=0 slots=0") }
         then "the whole sequence, exactly" { after_finalize() == "finalize=0 step=sqlite.finalized reset=0 width=0 standing=0 slots=0 class=sqlite.finalized int=sqlite.finalized bind_int=sqlite.finalized bind_text=sqlite.finalized" }
     }
-
     given "a LIVE statement, which the new door must not swallow" {
+
         // ZERO COLUMNS IS NOT NO STATEMENT. The finalized door stands in
         // front of the out-of-row and out-of-slots laws, so a statement
         // that is present but unstepped must still hear THEM — and the
@@ -502,8 +498,8 @@ spec "std/sqlite statement adversarial" {
         then "and the read names the ROW, not the statement" { live_before_step().contains("int=sqlite.out_of_row") }
         then "and the bind names the SLOTS" { live_before_step().ends_with("bind=sqlite.out_of_slots") }
     }
-
     given "the copy at the boundary" {
+
         // SQLite's buffer dies at the next step, reset or finalize.
         // Every one of these would pass with a BORROWED view until the
         // moment the buffer was reused, and then answer whatever was
@@ -515,8 +511,8 @@ spec "std/sqlite statement adversarial" {
         then "text holding a NUL comes back whole" { text_holds_a_nul() == "sent=5 back=5" }
         then "and a megabyte is a megabyte" { a_big_blob() == "1048576" }
     }
-
     given "reset rewinds and KEEPS the bindings" {
+
         then "the statement runs twice on one bind" { reset_keeps() == "step=DONE reset=0 again=DONE 77s=2" }
         // AND IT IS THE REMEDY THE REFUSAL NAMES. A step past DONE is
         // refused precisely so that running the statement again is a
@@ -526,31 +522,31 @@ spec "std/sqlite statement adversarial" {
         then "a reset makes the next step legal again" { reset_keeps().contains("again=DONE") }
         then "and the second run really wrote a second row" { reset_keeps().ends_with("77s=2") }
     }
-
     given "one column, a different class every row" {
+
         then "the class is asked per row, and a wrong read refused per row" {
             varying() == "int/1 text/sqlite.mismatch null/sqlite.mismatch"
         }
     }
-
     given "a NUL bound as text" {
+
         then "every byte arrives — the length is Avra's, never strlen's" { nul_trip() == "bind=0 step=DONE bytes=5" }
     }
-
     given "a statement outliving its connection" {
+
         // close_v2's zombie form is what makes this safe; `close` would
         // answer BUSY and leave the file locked.
         then "it keeps stepping after the connection is closed" {
             outlives() == "before=ROW/1 close=0 after=ROW/2 finalize=0"
         }
     }
-
     given "an expression deeper than the parser allows" {
+
         then "a shallow nest is fine" { nested(10) == "1" }
         then "and a very deep one is REFUSED, never a segfault" { nested(5000) == "sqlite.syntax" }
     }
-
     given "one NULL pointer, three meanings — what the CLASS can separate" {
+
         // `sqlite3_column_blob` answers a NULL pointer for SQL NULL, for
         // a ZERO-LENGTH BLOB, and on an ALLOCATION FAILURE. A read that
         // tested the POINTER would fold all three together; asking the
@@ -566,8 +562,8 @@ spec "std/sqlite statement adversarial" {
         // of the evidence, not a claim about the OOM path.
         then "a big blob succeeds, so no OOM case is covered by these" { blob_under_limit() == "class=4 blob=ptr bytes=8388608" }
     }
-
     given "a heap limit that is stored, reported, and never applied" {
+
         // `SQLITE_DEFAULT_MEMSTATUS=0` buys speed and costs enforcement:
         // the limit lands in `mem0.alarmThreshold` and the allocator
         // never consults it, because the counter it would compare

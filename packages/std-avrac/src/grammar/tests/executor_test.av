@@ -66,104 +66,119 @@ spec "grammar/executor" {
     }
     given "sequencing, captures, and repetition" {
         then "a starred capture accumulates into the build" {
-            let g = g1([rule_def("list", [seq_to(
-                [item(lit("(")), cap("xs", named("NAME")) with { rep: Rep.Star }, item(lit(")")), item(named("BREAK"))],
-                Build.Call("mk", ["xs"]),
-            )])])
+            let g = g1([
+                rule_def("list", [
+                    seq_to([item(lit("(")), cap("xs", named("NAME")) with { rep: Rep.Star }, item(lit(")")), item(named("BREAK"))], Build.Call("mk", ["xs"])),
+                ]),
+            ])
             let o = run_sx(g, "( a b c )")
             result_str(o) == "(mk [a b c])" && o.diagnostics.is_empty()
         }
         then "a build receives the span its branch consumed" {
-            let g = g1([rule_def("pair", [seq_to(
-                [cap("a", named("NAME")), cap("b", named("NAME"))],
-                Build.Call("sp", ["a", "b"]),
-            )])])
+            let g = g1([
+                rule_def("pair", [
+                    seq_to([cap("a", named("NAME")), cap("b", named("NAME"))], Build.Call("sp", ["a", "b"])),
+                ]),
+            ])
             let o = run_grammar<string>(ready(g), lex_grammar("ab cd").tokens, sp_build)
             result_str(o) == "0..5"
         }
         then "the same label in and out of a repeated group accumulates in order" {
-            let g = g1([rule_def("l", [seq_to(
-                [
-                    cap("x", named("NAME")),
-                    item(Prim.Group(Alt { branches: [seq([item(lit(",")), cap("x", named("NAME"))])] }))
-                        with { rep: Rep.Star },
-                    item(named("BREAK")),
-                ],
-                Build.Call("mk", ["x"]),
-            )])])
+            let g = g1([
+                rule_def("l", [
+                    seq_to([
+                        cap("x", named("NAME")),
+                        item(Prim.Group(Alt { branches: [seq([item(lit(",")), cap("x", named("NAME"))])] })) with { rep: Rep.Star },
+                        item(named("BREAK")),
+                    ], Build.Call("mk", ["x"])),
+                ]),
+            ])
             result_str(run_sx(g, "a , b , c")) == "(mk [a b c])"
         }
         then "a label on separate non-repeating items COLLECTS both" {
-            let g = g1([rule_def("d", [seq_to(
-                [cap("a", named("NAME")), cap("a", named("STRING")), item(named("BREAK"))],
-                Build.Call("mk", ["a"]),
-            )])])
+            let g = g1([
+                rule_def("d", [
+                    seq_to([cap("a", named("NAME")), cap("a", named("STRING")), item(named("BREAK"))], Build.Call("mk", ["a"])),
+                ]),
+            ])
             result_str(run_sx(g, "x \"y\"")) == "(mk [x y])"
         }
         then "a label bound once in each alternative of a group carries ONE value" {
-            let g = g1([rule_def("d", [seq_to(
-                [
-                    item(Prim.Group(Alt { branches: [
-                        seq([cap("a", named("NAME"))]),
-                        seq([cap("a", named("STRING"))]),
-                    ] })),
-                    item(named("BREAK")),
-                ],
-                Build.Call("mk", ["a"]),
-            )])])
+            let g = g1([
+                rule_def("d", [
+                    seq_to([
+                        item(Prim.Group(Alt {
+                            branches: [
+                                seq([cap("a", named("NAME"))]),
+                                seq([cap("a", named("STRING"))]),
+                            ],
+                        })),
+                        item(named("BREAK")),
+                    ], Build.Call("mk", ["a"])),
+                ]),
+            ])
             result_str(run_sx(g, "x")) == "(mk x)"
         }
         then "a label collected under a star survives a plain binding after it" {
-            let g = g1([rule_def("d", [seq_to(
-                [
-                    cap("a", named("NAME")),
-                    item(Prim.Group(Alt { branches: [seq([item(lit(",")), cap("a", named("NAME"))])] }))
-                        with { rep: Rep.Star },
-                    cap("a", named("STRING")), item(named("BREAK")),
-                ],
-                Build.Call("mk", ["a"]),
-            )])])
+            let g = g1([
+                rule_def("d", [
+                    seq_to([
+                        cap("a", named("NAME")),
+                        item(Prim.Group(Alt { branches: [seq([item(lit(",")), cap("a", named("NAME"))])] })) with { rep: Rep.Star },
+                        cap("a", named("STRING")),
+                        item(named("BREAK")),
+                    ], Build.Call("mk", ["a"])),
+                ]),
+            ])
             result_str(run_sx(g, "x , y \"z\"")) == "(mk [x y z])"
         }
         then "an untaken optional delivers Absent to the build" {
-            let g = g1([rule_def("p", [seq_to(
-                [
-                    item(Prim.Group(Alt { branches: [seq([cap("l", named("NAME")), item(lit(":"))])] }))
-                        with { rep: Rep.Opt },
-                    cap("v", named("NAME")), item(named("BREAK")),
-                ],
-                Build.Call("mk", ["l", "v"]),
-            )])])
+            let g = g1([
+                rule_def("p", [
+                    seq_to([
+                        item(Prim.Group(Alt { branches: [seq([cap("l", named("NAME")), item(lit(":"))])] })) with { rep: Rep.Opt },
+                        cap("v", named("NAME")),
+                        item(named("BREAK")),
+                    ], Build.Call("mk", ["l", "v"])),
+                ]),
+            ])
             result_str(run_sx(g, "x")) == "(mk _ x)" && result_str(run_sx(g, "k : v")) == "(mk k v)"
         }
         then "plus requires at least one" {
-            let g = g1([rule_def("pl", [seq_to(
-                [cap("xs", named("NAME")) with { rep: Rep.Plus }, item(named("BREAK"))],
-                Build.Call("mk", ["xs"]),
-            )])])
+            let g = g1([
+                rule_def("pl", [
+                    seq_to([cap("xs", named("NAME")) with { rep: Rep.Plus }, item(named("BREAK"))], Build.Call("mk", ["xs"])),
+                ]),
+            ])
             let o = run_sx(g, ",")
             o.result == null && o.diagnostics.length == 1
         }
     }
     given "alternation" {
         then "branches try in order and the first match wins" {
-            let g = g1([rule_def("x", [
-                seq_to([cap("a", named("NAME")), item(named("BREAK"))], Build.Call("as_name", ["a"])),
-                seq_to([cap("s", named("STRING")), item(named("BREAK"))], Build.Call("as_str", ["s"])),
-            ])])
+            let g = g1([
+                rule_def("x", [
+                    seq_to([cap("a", named("NAME")), item(named("BREAK"))], Build.Call("as_name", ["a"])),
+                    seq_to([cap("s", named("STRING")), item(named("BREAK"))], Build.Call("as_str", ["s"])),
+                ]),
+            ])
             result_str(run_sx(g, "\"hi\"")) == "(as_str hi)"
         }
         then "a broken branch defers: a sibling with the same anchor still hits" {
-            let g = g1([rule_def("c", [
-                seq_to([item(lit("(")), cap("a", named("NAME")), item(lit(")")), item(named("BREAK"))], Build.Call("mk", ["a"])),
-                seq_to([item(lit("(")), cap("s", named("STRING")), item(lit(")")), item(named("BREAK"))], Build.Call("mk2", ["s"])),
-            ])])
+            let g = g1([
+                rule_def("c", [
+                    seq_to([item(lit("(")), cap("a", named("NAME")), item(lit(")")), item(named("BREAK"))], Build.Call("mk", ["a"])),
+                    seq_to([item(lit("(")), cap("s", named("STRING")), item(lit(")")), item(named("BREAK"))], Build.Call("mk2", ["s"])),
+                ]),
+            ])
             result_str(run_sx(g, "( \"s\" )")) == "(mk2 s)"
         }
         then "when no sibling hits, the first break stands and reports from inside" {
-            let g = g1([rule_def("c", [
-                seq_to([item(lit("(")), cap("a", named("NAME")), item(lit(")")), item(named("BREAK"))], Build.Call("mk", ["a"])),
-            ])])
+            let g = g1([
+                rule_def("c", [
+                    seq_to([item(lit("(")), cap("a", named("NAME")), item(lit(")")), item(named("BREAK"))], Build.Call("mk", ["a"])),
+                ]),
+            ])
             let o = run_sx(g, "( \"s\" )")
             o.result == null && o.diagnostics.length == 1
         }
@@ -174,42 +189,41 @@ spec "grammar/executor" {
     }
     given "world-class failure reporting" {
         then "an uncommitted failure lists every expectation at the farthest point" {
-            let g = g1([rule_def("u", [
-                seq_to([item(lit("x")), item(named("BREAK"))], Build.Call("m1", [])),
-                seq_to([cap("s", named("STRING")), item(named("BREAK"))], Build.Call("m2", ["s"])),
-                seq_to([item(lit("(")), cap("v", named("NAME")), item(lit(")")), item(named("BREAK"))], Build.Call("m3", ["v"])),
-            ])])
+            let g = g1([
+                rule_def("u", [
+                    seq_to([item(lit("x")), item(named("BREAK"))], Build.Call("m1", [])),
+                    seq_to([cap("s", named("STRING")), item(named("BREAK"))], Build.Call("m2", ["s"])),
+                    seq_to([item(lit("(")), cap("v", named("NAME")), item(lit(")")), item(named("BREAK"))], Build.Call("m3", ["v"])),
+                ]),
+            ])
             let o = run_sx(g, "y")
             let d = o.diagnostics[0]
-            d.expected.length == 3 && d.in_rule == "u" &&
-                d.message == "expected `x`, STRING or `(` while parsing `u`"
+            d.expected.length == 3 && d.in_rule == "u" && d.message == "expected `x`, STRING or `(` while parsing `u`"
         }
         then "an authored Expect reports its message and the parse continues" {
-            let g = g1([rule_def("q", [seq_to(
-                [
-                    item(lit("(")), cap("v", named("NAME")),
-                    item(lit(")")) with { expect: Expect { message: "expected ')' to close the group" } },
-                    item(named("BREAK")),
-                ],
-                Build.Call("mk", ["v"]),
-            )])])
+            let g = g1([
+                rule_def("q", [
+                    seq_to([
+                        item(lit("(")),
+                        cap("v", named("NAME")),
+                        item(lit(")")) with { expect: Expect { message: "expected ')' to close the group" } },
+                        item(named("BREAK")),
+                    ], Build.Call("mk", ["v"])),
+                ]),
+            ])
             let o = run_sx(g, "( a")
-            result_str(o) == "(mk a)" && o.diagnostics.length == 1 &&
-                o.diagnostics[0].message == "expected ')' to close the group"
+            result_str(o) == "(mk a)" && o.diagnostics.length == 1 && o.diagnostics[0].message == "expected ')' to close the group"
         }
         then "recover syncs and the rest of the input still parses" {
-            let stmt = rule_def("stmt", [seq_to(
-                [cap("n", named("NAME")), item(lit("=")), cap("v", named("NAME")), item(named("BREAK"))],
-                Build.Call("st", ["n", "v"]),
-            ) with { recover: Recover { sync_to: "BREAK" } }])
-            let prog = rule_def("prog", [seq_to(
-                [cap("xs", rule_ref("stmt")) with { rep: Rep.Star }, item(named("EOF"))],
-                Build.Call("prog", ["xs"]),
-            )])
+            let stmt = rule_def("stmt", [
+                seq_to([cap("n", named("NAME")), item(lit("=")), cap("v", named("NAME")), item(named("BREAK"))], Build.Call("st", ["n", "v"])) with { recover: Recover { sync_to: "BREAK" } },
+            ])
+            let prog = rule_def("prog", [
+                seq_to([cap("xs", rule_ref("stmt")) with { rep: Rep.Star }, item(named("EOF"))], Build.Call("prog", ["xs"])),
+            ])
             let g = Grammar { name: "t", start: "prog", rules: [prog, stmt] }
             let o = run_sx(g, "a = b\nc = = d\ne = f")
-            result_str(o) == "(prog [(st a b) _ (st e f)])" && o.diagnostics.length == 1 &&
-                o.diagnostics[0].message == "expected NAME while parsing `stmt`"
+            result_str(o) == "(prog [(st a b) _ (st e f)])" && o.diagnostics.length == 1 && o.diagnostics[0].message == "expected NAME while parsing `stmt`"
         }
         then "trailing input reports but keeps the partial result" {
             let g = g1([rule_def("t1", [seq_to([cap("v", named("NAME")), item(named("BREAK"))], Build.Call("mk", ["v"]))])])

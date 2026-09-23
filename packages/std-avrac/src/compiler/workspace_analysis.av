@@ -70,7 +70,10 @@ impl Workspace {
         let facts = self.folded(f)
         let path = self.decls.file(f).path
         Analysis {
-            view: file_view(self.lang, p, self.decls, f), names: names, facts: facts, lang: self.lang,
+            view: file_view(self.lang, p, self.decls, f),
+            names: names,
+            facts: facts,
+            lang: self.lang,
             diagnostics: flatten([p.voices.list, names.voices.list, self.sig_diagnostics(f), self.method_diagnostics(f), facts.voices.list]),
             program: () -> self.program(path),
         }
@@ -273,7 +276,7 @@ impl Workspace {
         // const unit are different IR under different symbols. The
         // Lowered memo keys by symbol, so sharing one would make query
         // order choose which body survives.
-        let l = self.isolated(f, root, "settling$${name}", seats)
+        let l = self.isolated(f, root, "settling\$${name}", seats)
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
         run_settle(l, self.budgets(), dir_of(self.decls.file(f).path))
     }
@@ -302,7 +305,7 @@ impl Workspace {
     /// argument settled and crossed, and what the fn answered read
     /// back as what it SAID.
     fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
-        let name = "lift$${f.index}$${call.index}$${d.index}"
+        let name = "lift\$${f.index}\$${call.index}\$${d.index}"
         let held = self.lift_asks.get()
         let known = [i for i, a in held if a.name == name]
         if !known.is_empty() {
@@ -340,7 +343,7 @@ impl Workspace {
         // the annotation's own body is the first thing the run reads
         self.read_by(self.decls.file(f).path, [self.decls.file(x.file).path])
         if has_errors(l.diagnostics) { return .Err(Unsettled.Trap(l.diagnostics.first()!.message)) }
-        let sig = (self.decls.sig(d))?.fn_sig()
+        let sig = self.decls.sig(d)?.fn_sig()
         if sig == null { return .Err(Unsettled.Trap("`${x.name}` has no signature")) }
         let shape = sig!
         if shape.params.is_empty() { return .Err(Unsettled.Trap("`${x.name}` takes no declaration to lift")) }
@@ -367,13 +370,13 @@ impl Workspace {
         if named != null { return .Ok(self.crossed_decl_of(named!, want, heap)) }
         let p = self.parsed(f)
         let raw = p.store.expr(e)
-        let n: int? = (raw).int_of()
+        let n: int? = raw.int_of()
         if n != null { return .Ok(MetaVal.Int(n!)) }
-        let t: string? = (raw).text_of()
+        let t: string? = raw.text_of()
         if t != null { return .Ok(MetaVal.Text(t!)) }
-        let b: bool? = (raw).bool_of()
+        let b: bool? = raw.bool_of()
         if b != null { return .Ok(MetaVal.Bool(b!)) }
-        let bits: int? = (raw).bits_of()
+        let bits: int? = raw.bits_of()
         if bits != null { return .Ok(MetaVal.Float(bits!)) }
         let code: MetaVal? = quote_meta(p.store, self.decls, self.decls.file(f).path, e, heap)
         if code != null { return .Ok(code!) }
@@ -383,9 +386,6 @@ impl Workspace {
     /// A file's GENERATED declarations: every Declares-annotated
     /// WRITTEN fn's directives materialized as real twins in the file's
     /// store and decl table — the two-tier namespace's second tier.
-
-
-
 
 }
 

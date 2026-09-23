@@ -111,10 +111,10 @@ export type Decls = {
     module_files: Cell<List<Cell<List<FileId>>>>,
     mains: Cell<List<DeclId?>>,
     stores: Cell<List<NodeStore?>>,
-    ensure_store: List<fn(FileId)>,
+    ensure_store: List<fn(FileId) -> void>,
     /// A HELD FILE'S DECLARATIONS ARE MINTED WHEN ASKED FOR: the hook the
     /// workspace arms, called before a file's declarations are read.
-    ensure_file: List<fn(FileId)>,
+    ensure_file: List<fn(FileId) -> void>,
     /// TWO LAYERS SHARED — see `module_files`.
     decl_ids: Cell<List<Cell<SideTable<DeclId?>>>>,
     /// TWO LAYERS SHARED — see `module_files`.
@@ -152,7 +152,7 @@ export type Decls = {
     // a declaration's WARNINGS: the words it keeps for its users,
     // computed on first ask through `ensure_marks` (null = unasked)
     marks: Cell<List<List<Diagnostic>?>>,
-    ensure_marks: List<fn(DeclId)>,
+    ensure_marks: List<fn(DeclId) -> void>,
     // the ROOT package's manifest name — its modules carry no package
     // prefix, and a kind spoken there still wears the package
     root_name: List<string>,
@@ -173,14 +173,14 @@ export type Decls = {
     // OUTER-TABLE GROWTH, SHARED — see `files` above: `note_impl` runs
     // inside `mint`, behind the same captured hooks.
     impls_by_name: Cell<Map<string, List<DeclId>>>,
-    ensure: List<fn(DeclId)>,
+    ensure: List<fn(DeclId) -> void>,
     // the workspace's const-type hook: types the const, and answers
     // whether this ask closed a cycle
     ensure_const: List<fn(FileId, StmtId) -> bool>,
     // the workspace's lifting hook: an annotation fn run over a
     // declaration at compile time, what it said back
     lifter: List<fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>>,
-    ensure_methods: List<fn(DeclId)>,
+    ensure_methods: List<fn(DeclId) -> void>,
     // the language's own type declarations, one per row that is an
     // enum — and the rows they read their parts from
     builtins: List<DeclId>,
@@ -196,7 +196,7 @@ export type Decls = {
     declared_writes: Cell<List<bool>>,
     /// TWO LAYERS SHARED — see `children`.
     written_seats: Cell<List<Cell<List<bool>>>>,
-    ensure_writes: List<fn(DeclId)>,
+    ensure_writes: List<fn(DeclId) -> void>,
 }
 
 /// Where no workspace stands behind the table, nothing lifts.
@@ -206,12 +206,10 @@ fn no_lifter(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) 
 }
 
 // LICENSED I23: the hook's contract carries the declaration
-fn no_marks(d: DeclId) {
-}
+fn no_marks(d: DeclId) {}
 
 // LICENSED I23: the hook's contract carries the declaration
-fn no_store(f: FileId) {
-}
+fn no_store(f: FileId) {}
 
 // LICENSED I23: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
 fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
@@ -255,10 +253,48 @@ export fn new_decls() -> Decls {
     let no_written_seats: List<Cell<List<bool>>> = []
     let no_impls_by_name: Map<string, List<DeclId>> = {}
     Decls {
-        types: new_type_registry(), files: Cell.new(no_files), paths: Cell.new(no_paths), modules: Cell.new(no_modules), module_ids: Cell.new(no_module_ids), module_files: Cell.new(no_module_files), mains: Cell.new(no_mains),
-        stores: Cell.new(no_stores), ensure_store: [no_store], ensure_file: [no_store], decl_ids: Cell.new(no_decl_ids), file_decls: Cell.new(no_file_decls), generations: Cell.new(no_generations), origins: Cell.new(no_origins), expansion_voices: Cell.new(no_expansion_voices), meta_ids: {}, decls: Cell.new(no_decls), held: {}, held_items: {}, faces: Cell.new(no_faces), held_values: {}, keys: Cell.new(no_keys), sigs: Cell.new(no_sigs), provenance: Cell.new(no_provenance), marks: Cell.new(empty_marks), ensure_marks: [no_marks], root_name: [""], const_types: {}, children: Cell.new(no_children), methods: Cell.new(no_methods), impls: Cell.new(no_impls), impls_by_name: Cell.new(no_impls_by_name),
-        ensure: [no_ensure], ensure_const: [no_const_ensure], ensure_methods: [no_ensure], builtins: [], rows: [], targets: Cell.new(no_targets),
-        seat_marks: Cell.new(no_seat_marks), declared_writes: Cell.new(no_declared_writes), written_seats: Cell.new(no_written_seats), ensure_writes: [no_ensure],
+        types: new_type_registry(),
+        files: Cell.new(no_files),
+        paths: Cell.new(no_paths),
+        modules: Cell.new(no_modules),
+        module_ids: Cell.new(no_module_ids),
+        module_files: Cell.new(no_module_files),
+        mains: Cell.new(no_mains),
+        stores: Cell.new(no_stores),
+        ensure_store: [no_store],
+        ensure_file: [no_store],
+        decl_ids: Cell.new(no_decl_ids),
+        file_decls: Cell.new(no_file_decls),
+        generations: Cell.new(no_generations),
+        origins: Cell.new(no_origins),
+        expansion_voices: Cell.new(no_expansion_voices),
+        meta_ids: {},
+        decls: Cell.new(no_decls),
+        held: {},
+        held_items: {},
+        faces: Cell.new(no_faces),
+        held_values: {},
+        keys: Cell.new(no_keys),
+        sigs: Cell.new(no_sigs),
+        provenance: Cell.new(no_provenance),
+        marks: Cell.new(empty_marks),
+        ensure_marks: [no_marks],
+        root_name: [""],
+        const_types: {},
+        children: Cell.new(no_children),
+        methods: Cell.new(no_methods),
+        impls: Cell.new(no_impls),
+        impls_by_name: Cell.new(no_impls_by_name),
+        ensure: [no_ensure],
+        ensure_const: [no_const_ensure],
+        ensure_methods: [no_ensure],
+        builtins: [],
+        rows: [],
+        targets: Cell.new(no_targets),
+        seat_marks: Cell.new(no_seat_marks),
+        declared_writes: Cell.new(no_declared_writes),
+        written_seats: Cell.new(no_written_seats),
+        ensure_writes: [no_ensure],
         lifter: [no_lifter],
     }
 }
@@ -277,8 +313,7 @@ fn builtin_tparams(arity: int) -> List<string> {
 
 /// The table's own reads ask nothing more.
 // LICENSED I23: the hook's contract carries the declaration
-fn no_ensure(d: DeclId) {
-}
+fn no_ensure(d: DeclId) {}
 
 /// A kind's word — the key's middle, and prose.
 export fn kind_word(k: DeclKind) -> string {
@@ -554,7 +589,7 @@ impl Decls {
     }
 
     /// The workspace arms the sig hook once.
-    fn arm(ensure: fn(DeclId)) {
+    fn arm(ensure: fn(DeclId) -> void) {
         self.ensure.set(0, ensure)
     }
 
@@ -585,7 +620,7 @@ impl Decls {
     /// The workspace arms the marks hook once — a declaration's
     /// use-site warnings are a query of the program, never a table
     /// an earlier walk happened to fill.
-    fn arm_marks(ensure: fn(DeclId)) {
+    fn arm_marks(ensure: fn(DeclId) -> void) {
         self.ensure_marks.set(0, ensure)
     }
 
@@ -718,7 +753,7 @@ impl Decls {
     /// Whether seat `i` is written, declared or found: a method's
     /// receiver by its word, any seat by the pass.
     fn seat_writes_so_far(d: DeclId, i: int) -> bool {
-        (i == 0 && self.declared_writes.get()[d.index]) || self.seat_written_so_far(d, i)
+        i == 0 && self.declared_writes.get()[d.index] || self.seat_written_so_far(d, i)
     }
 
     /// The receiver's inferred bit — seat 0 of a method.
@@ -755,7 +790,7 @@ impl Decls {
     }
 
     /// The workspace arms the receivers hook once.
-    fn arm_writes(ensure: fn(DeclId)) {
+    fn arm_writes(ensure: fn(DeclId) -> void) {
         self.ensure_writes.set(0, ensure)
     }
 
@@ -839,7 +874,7 @@ impl Decls {
         self.store(d).grammar_of(x.stmt)
     }
 
-    fn is_extern(d: DeclId) -> bool { self.decl(d).kind is .Fn && (self.facts_of(d)?.external ?? false) }
+    fn is_extern(d: DeclId) -> bool { self.decl(d).kind is .Fn && self.facts_of(d)?.external ?? false }
 
     /// A type's name — records and enums.
     fn type_name(d: DeclId) -> string? {
@@ -933,7 +968,7 @@ impl Decls {
         if self.is_extern(d) { return x.name }
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
-            .Case -> "${stem_of(self.file(x.file).path)}$case${x.root?.index ?? x.stmt.index}",
+            .Case -> "${stem_of(self.file(x.file).path)}\$case${x.root?.index ?? x.stmt.index}",
             .Fn or .Const or .Record or .Named or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Rule -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
@@ -945,7 +980,7 @@ impl Decls {
     /// must be (a node id is unique in its file alone).
     fn lifted_symbol(f: FileId, e: ExprId) -> string {
         let info = self.file(f)
-        module_symbol(self.module_name(info.module_id), "${stem_of(info.path)}$l${e.index}")
+        module_symbol(self.module_name(info.module_id), "${stem_of(info.path)}\$l${e.index}")
     }
 
     // ── traits and methods ──
@@ -1018,7 +1053,7 @@ impl Decls {
     fn methods_of(target: DeclId) -> List<DeclId> { self.methods.get()[target.index].get() }
 
     /// The workspace arms the method-table hook once.
-    fn arm_methods(ensure: fn(DeclId)) {
+    fn arm_methods(ensure: fn(DeclId) -> void) {
         self.ensure_methods.set(0, ensure)
     }
 
@@ -1078,10 +1113,7 @@ fn declared_body(store: NodeStore, m: StmtId) -> ExprId? {
 /// template's refusal carries the template's own place and two walks
 /// of it mint two `Loc` values saying the same thing.
 fn same_voice(a: Diag, b: Diag) -> bool {
-    a.kind == b.kind && a.message == b.message &&
-        (a.help ?? "") == (b.help ?? "") &&
-        (a.primary.label ?? "") == (b.primary.label ?? "") &&
-        same_place(a.primary.loc, b.primary.loc)
+    a.kind == b.kind && a.message == b.message && a.help ?? "" == b.help ?? "" && a.primary.label ?? "" == b.primary.label ?? "" && same_place(a.primary.loc, b.primary.loc)
 }
 
 fn same_place(a: Loc?, b: Loc?) -> bool {

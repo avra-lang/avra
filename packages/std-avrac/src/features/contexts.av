@@ -11,11 +11,9 @@ impl Decls {
     /// A record's fields, the declaration's or the instantiation's.
     fn fields_of_type(ty: TypeId) -> StructSig? {
         match self.types.shape_of(ty) {
-            .Struct(decl, _) -> (self.sig(decl))?.record_sig(),
-            .App(decl, _, args) -> subbed_fields(self.types, (self.sig(decl))?.record_sig(), decl, args),
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Enum(_, _) or .Res(_, _)
-                or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList
-                or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+            .Struct(decl, _) -> self.sig(decl)?.record_sig(),
+            .App(decl, _, args) -> subbed_fields(self.types, self.sig(decl)?.record_sig(), decl, args),
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Enum(_, _) or .Res(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
     }
 
@@ -31,12 +29,10 @@ impl Decls {
     /// instantiation's.
     fn variants_of_type(ty: TypeId) -> EnumSig? {
         match self.types.shape_of(ty) {
-            .Enum(decl, _) -> (self.sig(decl))?.enum_sig(),
+            .Enum(decl, _) -> self.sig(decl)?.enum_sig(),
             .Res(ok, err) -> res_enum_sig(ok, err),
-            .App(decl, _, args) -> subbed_variants(self.types, (self.sig(decl))?.enum_sig(), decl, args),
-            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Struct(_, _)
-                or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList
-                or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+            .App(decl, _, args) -> subbed_variants(self.types, self.sig(decl)?.enum_sig(), decl, args),
+            .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Struct(_, _) or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Opt(_) or .Null or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
         }
     }
 
@@ -50,7 +46,7 @@ impl Decls {
     /// The impl table's answer — a sig whose params[0] is `self`.
     fn method_sig_of(target: DeclId, mname: string) -> FnSig? {
         let m? = self.method(target, mname) else { return null }
-        (self.sig(m))?.fn_sig()
+        self.sig(m)?.fn_sig()
     }
 
     /// A trait method's sig — `Self` at seat 0, like every method — or
@@ -64,7 +60,7 @@ impl Decls {
     /// `dyn` carries, so a contract dispatches wherever it travels.
     fn trait_sig_under(tdecl: DeclId, mname: string) -> FnSig? {
         let f? = self.trait_member(tdecl, mname) else { return null }
-        (self.sig(f))?.fn_sig()
+        self.sig(f)?.fn_sig()
     }
 
     /// A trait's member DECLARATION by name — the contract's own word
@@ -91,7 +87,7 @@ impl Decls {
             voices.speak(self.extern_not_a_value(read_at, d))
             return error_type
         }
-        let sig? = (self.sig(d))?.fn_sig() else { return error_type }
+        let sig? = self.sig(d)?.fn_sig() else { return error_type }
         // A NAMED FN AS A VALUE CARRIES ITS SEATS' CONTRACT: the marks
         // its declaration wrote travel with the type, so a writing fn
         // cannot be stored where nothing may write.
@@ -114,7 +110,7 @@ impl Decls {
         let tname: string? = self.type_name(d)
         if tname != null { return self.types.known(Type.TypeName(d, tname!)) }
         if !self.tparams(d).is_empty() { return null }
-        let sig? = (self.sig(d))?.fn_sig() else { return null }
+        let sig? = self.sig(d)?.fn_sig() else { return null }
         self.types.known(Type.Fn(sig.params, self.marks_of(d, sig.params.length), sig.ret))
     }
 }
@@ -124,15 +120,14 @@ export fn bound_decl_of(names: NameFacts, e: ExprId) -> DeclId? {
     let b? = names.binding(e) else { return null }
     match b {
         .Decl(d) -> d,
-        .Def(_)
-            or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
+        .Def(_) or .Param(_) or .Receiver or .Pattern(_, _) or .LambdaParam(_, _) or .Capture(_, _) or .Index(_) -> null,
     }
 }
 
 /// A call's declared signature, when its name is a declared fn.
 export fn sig_of_at(names: NameFacts, decls: Decls, e: ExprId) -> FnSig? {
     let d? = bound_decl_of(names, e) else { return null }
-    (decls.sig(d))?.fn_sig()
+    decls.sig(d)?.fn_sig()
 }
 
 /// The seats a fn declares: its written params minus a BARE
@@ -193,9 +188,7 @@ export fn dyn_contract(sh: Type) -> string? {
 export fn declared_decl(sh: Type) -> DeclId? {
     match sh {
         .Struct(d, _) or .Enum(d, _) -> d,
-        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Opt(_) or .Null
-            or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _)
-            or .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
+        .Ptr or .Int or .Float or .Bytes or .Str or .Bool or .List(_) or .Cell(_) or .Task(_) or .Opt(_) or .Null or .Res(_, _) or .Var(_, _, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .TypeName(_, _) or .EmptyList or .Error or .Void or .Map(_, _) or .EmptyMap -> null,
     }
 }
 
@@ -309,10 +302,10 @@ fn keyed_by_text(k: TypeRef) -> bool {
 
 /// The shape a literal wears.
 fn literal_shape(value: Expr) -> Type? {
-    if (value).int_of() != null { return Type.Int }
-    if (value).text_of() != null { return Type.Str }
-    if (value).bool_of() != null { return Type.Bool }
-    if (value).bits_of() != null { return Type.Float }
+    if value.int_of() != null { return Type.Int }
+    if value.text_of() != null { return Type.Str }
+    if value.bool_of() != null { return Type.Bool }
+    if value.bits_of() != null { return Type.Float }
     null
 }
 
@@ -356,7 +349,7 @@ impl TypeCx {
     fn emit(d: Diag) { self.facts.speak(d) }
     fn stmt_sig(s: StmtId) -> FnSig? {
         let d? = self.view.decls.decl_of(self.view.file, s) else { return null }
-        (self.view.decls.sig(d))?.fn_sig()
+        self.view.decls.sig(d)?.fn_sig()
     }
     fn bound_decl(e: ExprId) -> DeclId? { bound_decl_of(self.names, e) }
     fn tparams(d: DeclId) -> List<string> { self.view.decls.tparams(d) }
@@ -511,7 +504,7 @@ impl Decls {
     /// (a malformed declaration) falls back to a bare `()`.
     fn wrapper_hint(d: DeclId) -> string {
         let name = self.fn_name(d) ?? "f"
-        let params: List<TypeId> = (self.sig(d))?.fn_sig()?.params ?? []
+        let params: List<TypeId> = self.sig(d)?.fn_sig()?.params ?? []
         let marks = self.marks_of(d, params.length)
         let typed = joined([wrapper_typed_seat(i, self.types.name_of(p), marks[i].mutable) for i, p in params], ", ")
         let names = joined([wrapper_seat(i) for i, _p in params], ", ")
