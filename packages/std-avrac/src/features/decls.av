@@ -533,8 +533,7 @@ impl Decls {
     /// the workspace arms computes it on first ask and records the
     /// dependency; the table only holds.
     fn sig(d: DeclId) -> DeclSig? {
-        let ensure = self.ensure.get()
-        ensure(d)
+        self.ensure.get()(d)
         let held: DeclSig? = self.sigs.get()[d.index]
         held
     }
@@ -562,8 +561,7 @@ impl Decls {
     fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(ensure) }
 
     fn const_type(f: FileId, s: StmtId) -> ConstType {
-        let ensure = self.ensure_const.get()
-        if ensure(f, s) { return ConstType.Cyclic }
+        if self.ensure_const.get()(f, s) { return ConstType.Cyclic }
         let held? = self.held_const_type(f, s) else { return ConstType.Refused }
         ConstType.Known(held)
     }
@@ -593,8 +591,7 @@ impl Decls {
     /// A declaration's warnings, asked at a use. Asking IS the
     /// computation; the table only holds.
     fn marks(d: DeclId) -> List<Diagnostic> {
-        let ensure = self.ensure_marks.get()
-        ensure(d)
+        self.ensure_marks.get()(d)
         let held: List<Diagnostic>? = self.marks.get()[d.index]
         held ?? []
     }
@@ -606,8 +603,7 @@ impl Decls {
     /// An annotation fn `d` run over the declaration at `s` in file
     /// `f`, with these settled arguments — asking IS the run.
     fn lifted(d: DeclId, f: FileId, s: StmtId, call: ExprId, args: List<ExprId>) -> Result<Lifted, Unsettled> {
-        let lift = self.lifter.get()
-        lift(d, f, s, call, args)
+        self.lifter.get()(d, f, s, call, args)
     }
 
     /// A list type's element, or null for any other shape.
@@ -688,8 +684,7 @@ impl Decls {
     }
 
     fn seat_mark(d: DeclId, i: int) -> SeatMark {
-        let ensure = self.ensure.get()
-        ensure(d)
+        self.ensure.get()(d)
         mark_at(self.seat_marks.get()[d.index], i)
     }
 
@@ -700,8 +695,7 @@ impl Decls {
     }
 
     fn declares_writing(d: DeclId) -> bool {
-        let ensure = self.ensure.get()
-        ensure(d)
+        self.ensure.get()(d)
         self.declared_writes.get()[d.index]
     }
 
@@ -742,16 +736,14 @@ impl Decls {
     /// the receivers pass — asking IS the query; the hook runs the
     /// pass and records the dependency.
     fn writes_receiver(d: DeclId) -> bool {
-        let ensure = self.ensure_writes.get()
-        ensure(d)
+        self.ensure_writes.get()(d)
         self.seat_writes_so_far(d, 0)
     }
 
     /// Whether the body writes through seat `i` — asking runs the
     /// pass; the declared `mut` is what the caller's law reads.
     fn seat_written(d: DeclId, i: int) -> bool {
-        let ensure = self.ensure_writes.get()
-        ensure(d)
+        self.ensure_writes.get()(d)
         self.seat_written_so_far(d, i)
     }
 
@@ -981,8 +973,7 @@ impl Decls {
     /// the type's table from every impl that names it, and the ask
     /// records the dependency.
     fn method(target: DeclId, name: string) -> DeclId? {
-        let ensure = self.ensure_methods.get()
-        ensure(target)
+        self.ensure_methods.get()(target)
         self.held_method(target, name) ?? self.defaulted(target, name)
     }
 
@@ -1039,8 +1030,7 @@ impl Decls {
     /// Whether a type implements a trait — asked through the hook,
     /// like a method.
     fn implements(ty: DeclId, tr: DeclId) -> bool {
-        let ensure = self.ensure_methods.get()
-        ensure(ty)
+        self.ensure_methods.get()(ty)
         self.holds_impl(ty, tr)
     }
 

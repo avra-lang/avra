@@ -14,6 +14,8 @@ fn no_stmt_marks() -> StmtMarks {
     StmtMarks { is_exported: false, is_mutating: false, is_once: false, is_static: false }
 }
 
+/// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
+/// the store allocates into the same arenas as the original.
 export type NodeStore = {
     exprs: Arena<Expr>,
     expr_fingerprints: Cell<List<int>>,
@@ -449,9 +451,7 @@ impl NodeStore {
     /// callee an ident node, so every pass reads it as one. Appends —
     /// `annotations_of` reads in the order `annotate` was called.
     fn annotate(s: StmtId, a: Annotation) {
-        mut held = self.annotations.get()[s.index]
-        held.push(a)
-        self.annotations.set_at(s.index, held)
+        self.annotations.set_at(s.index, self.annotations_of(s).concat([a]))
         self.restamp_annotation(s, a)
     }
 
@@ -467,9 +467,7 @@ impl NodeStore {
     /// EARLIER, ahead of what is already there — so `annotations_of`
     /// still reads in the author's order.
     fn annotate_before(s: StmtId, a: Annotation) {
-        mut held = self.annotations.get()[s.index]
-        held = [a].concat(held)
-        self.annotations.set_at(s.index, held)
+        self.annotations.set_at(s.index, [a].concat(self.annotations_of(s)))
         self.restamp_annotation(s, a)
     }
 
@@ -485,8 +483,11 @@ impl NodeStore {
     /// already wears — the one seam every `mark_*` verb writes through,
     /// so a bit lands beside its siblings rather than overwriting them.
     fn update_marks(s: StmtId, upd: fn(StmtMarks) -> StmtMarks) {
-        self.marks.set_at(s.index, upd(self.marks.get()[s.index]))
+        self.marks.set_at(s.index, upd(self.marks_at(s)))
     }
+
+    /// The marks a statement wears.
+    fn marks_at(s: StmtId) -> StmtMarks { self.marks.get()[s.index] }
 
     /// `mut fn` crossed this declaration — it says its receiver is
     /// written; a trait sig's word is the contract.
@@ -496,7 +497,7 @@ impl NodeStore {
     }
 
     fn is_mutating(s: StmtId) -> bool {
-        self.marks.get()[s.index].is_mutating
+        self.marks_at(s).is_mutating
     }
 
     /// `once fn` crossed this declaration — its answer settles for
@@ -507,7 +508,7 @@ impl NodeStore {
     }
 
     fn is_once(s: StmtId) -> bool {
-        self.marks.get()[s.index].is_once
+        self.marks_at(s).is_once
     }
 
     /// `static fn` crossed this declaration — it lives under an impl
@@ -518,7 +519,7 @@ impl NodeStore {
         self.restamp(s, 110)
     }
 
-    fn is_static(s: StmtId) -> bool { if s.index < self.marks.get().length { self.marks.get()[s.index].is_static } else { true } }
+    fn is_static(s: StmtId) -> bool { if s.index < self.marks.get().length { self.marks_at(s).is_static } else { true } }
 
     /// `grammar Name = "…"` declared this record — the format it
     /// reads, which the record's fields cannot spell. The mark's code
@@ -556,7 +557,7 @@ impl NodeStore {
     }
 
     fn is_exported(s: StmtId) -> bool {
-        self.marks.get()[s.index].is_exported
+        self.marks_at(s).is_exported
     }
 
     /// A `use` statement's parts, when the statement is one.

@@ -50,7 +50,7 @@ impl Decls {
     fn file(f: FileId) -> FileInfo { self.files.get()[f.index] }
 
     fn store_of(f: FileId) -> NodeStore {
-        if self.stores.get()[f.index] == null { (self.ensure_store.get())(f) }
+        if self.stores.get()[f.index] == null { self.ensure_store.get()(f) }
         self.stores.get()[f.index]!
     }
 
@@ -187,7 +187,7 @@ impl Decls {
     /// each top-level one with its members, then Main, then the
     /// nested ones.
     fn decls_of_file(f: FileId) -> List<DeclId> {
-        (self.ensure_file.get())(f)
+        self.ensure_file.get()(f)
         self.file_decls.get()[f.index].get()
     }
 
@@ -197,7 +197,7 @@ impl Decls {
     fn arm_file(ensure: fn(FileId) -> void) { self.ensure_file.set(ensure) }
 
     fn held_items_of_file(f: FileId) -> List<DeclId> {
-        (self.ensure_file.get())(f)
+        self.ensure_file.get()(f)
         self.held_items.get().get(self.file(f).path) ?? []
     }
 
@@ -484,9 +484,6 @@ impl Decls {
         let key = generated_key(f, name)
         let known: DeclId? = self.known_id(key)
         if known != null { return known! }
-        // NOT `mut`: `store_of` answers the file's cached store, held
-        // also at `self.stores[f.index]` — every alloc below must land
-        // in that same box, not a private copy the cache cannot see.
         let store = self.store_of(f)
         // THE GENERATED RANGE's LO: the arena's edge BEFORE any of the
         // twin's nodes mint — its subtree is allocated first (children
