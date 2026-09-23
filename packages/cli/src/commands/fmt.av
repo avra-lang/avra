@@ -24,7 +24,7 @@
 //! remembered under this compiler's print in the tree's store, so a
 //! warm re-run skips its parse and its print both — only a file that
 //! moved, or one this compiler has never seen, pays for either.
-use @std.cli.{Subcommand, CliResult, Runnable, FlagDef, CommandSpec, ArgDef}
+use @std.cli.{CliResult, Runnable, command, flag, arg}
 use @std.io.{exists, write_text, is_dir, list_dir}
 use @std.avrac.compiler.{Workspace, Phase, build_cache_root, phase_total}
 use @std.avrac.compiler.store.{Store, Stored, store_at}
@@ -247,20 +247,15 @@ fn checked_one(store: Store, ws: Workspace, path: string) -> Checked1 {
     }
 }
 
-export fn fmt_command() -> Subcommand {
-    Subcommand {
-        meta: CommandSpec {
-            name: "fmt",
-            description: "Print a file as canonical Avra",
-            hidden: false,
-            flags: [
-                FlagDef { name: "--time", short: "", description: "print phase timings and memo hits", aliases: [] },
-                FlagDef { name: "--write", short: "", description: "rewrite the file, refusing unless the receipt is lossless", aliases: [] },
-                FlagDef { name: "--check", short: "", description: "one pass over every file under a directory, or the files given; reports what differs from canonical", aliases: [] },
-            ],
-            args: [ArgDef { name: "file", description: "the source file, or (--check) files/directories to examine", required: true, variadic: true }],
-            options: [],
-        },
-        body: FmtCmd {},
+export command fmt {
+    description: "Print a file as canonical Avra"
+    flags: [time]
+    flag write { description: "rewrite the file, refusing unless the receipt is lossless" }
+    flag check { description: "one pass over every file under a directory, or the files given; reports what differs from canonical" }
+    arg file {
+        description: "the source file, or (--check) files/directories to examine"
+        required: true
+        variadic: true
     }
+    run: FmtCmd {}
 }

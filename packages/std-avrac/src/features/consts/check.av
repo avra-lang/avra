@@ -2,7 +2,7 @@
 //! runs — a literal as written, or what the evaluator finishes; the
 //! lowering asks it and speaks its refusals. Its type is recorded as
 //! a workspace fact; an annotation still holds what it declares.
-use core.{StmtId, ExprId, TypeId, TypeRef, Expr}
+use core.{StmtId, ExprId, TypeId, TypeRef, Expr, same_type, flatten}
 use features.{TypeCx, declared_decl}
 use diagnostics.{refusal}
 
@@ -22,7 +22,8 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     if cx.errored(v) || refused_annotation(cx, declared) { return }
     if cx.refuses_void_value(v) { return }
     let held = declared ?? cx.type_at(v)
-    if !written(cx.view.store.expr(v)) && !materializable(cx, held) {
+    // a top-level instance is built once per run, so it holds anything
+    if !written(cx.view.store.expr(v)) && !materializable(cx, held) && !cx.view.store.is_component_inst(s) {
         unformed(cx, v, cx.view.store.let_name(s) ?? "this const", held)
         return
     }
@@ -43,15 +44,39 @@ fn refused_annotation(cx: TypeCx, declared: TypeId?) -> bool {
 /// A scalar is emitted at every read. A managed value is built by
 /// the const's guarded unit and kept for the process.
 fn materializable(cx: TypeCx, ty: TypeId) -> bool {
+    // a WHOLE nullable is static only where it rides a pointer; inside
+    // an aggregate every slot keeps its own presence
+    let inner: TypeId? = cx.view.types.carried(ty)
+    if inner != null { return cx.view.types.rides_pointer(ty) && formed(cx, inner!, []) }
+    formed(cx, ty, [])
+}
+
+/// Every part a settled value HOLDS has a compile-time form: a
+/// record's fields, an enum's payloads, a list's elements, a map's
+/// values, a result's sides, an option's carried value — each type
+/// judged once, so a recursive type ends. A fn or a `dyn` anywhere
+/// inside is behaviour, which only a run can build.
+fn formed(cx: TypeCx, ty: TypeId, seen: List<TypeId>) -> bool {
+    if seen.any(same_type(it, ty)) { return true }
     // Flatness is a declaration fact. Demand it before judging so
     // query order cannot turn the same record from kept into copied.
     let named = declared_decl(cx.view.types.shape_of(ty))
     if named != null { let _ = cx.view.decls.sig(named!) }
+    let deeper = seen.concat([ty])
     match cx.view.types.shape_of(ty) {
-        .Int or .Float or .Bool or .Str or .List(_) or .Map(_, _) or .Struct(_, _) or .Enum(_, _) or .Res(_, _) or .App(_, _, _) -> true,
-        .Opt(inner) -> cx.view.types.rides_pointer(ty) && materializable(cx, inner),
+        .Int or .Float or .Bool or .Str -> true,
+        .List(inner) or .Opt(inner) -> formed(cx, inner, deeper),
+        .Map(_, value) -> formed(cx, value, deeper),
+        .Res(ok, err) -> formed(cx, ok, deeper) && formed(cx, err, deeper),
+        .Struct(_, _) or .Enum(_, _) or .App(_, _, _) -> parts_of(cx, ty).all(formed(cx, it, deeper)),
         .Ptr or .Bytes or .Cell(_) or .Task(_) or .Tasks or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> false,
     }
+}
+
+/// The types a record's fields or an enum's payloads hold.
+fn parts_of(cx: TypeCx, ty: TypeId) -> List<TypeId> {
+    let fields: List<TypeId> = cx.fields_of(ty)?.types ?? []
+    fields.concat(flatten(cx.variants_of(ty)?.payloads ?? []))
 }
 
 // ── The voices ──
@@ -61,5 +86,5 @@ fn materializable(cx: TypeCx, ty: TypeId) -> bool {
 /// evaluator's crossed tree.
 fn unformed(mut cx: TypeCx, v: ExprId, name: string, held: TypeId) {
     let form = "`${cx.view.types.name_of(held)}`"
-    let _ = cx.spoken(refusal("const.form", cx.loc_of(v), "a computed const needs a compile-time value form", "`${name}` declares ${form}", "use a scalar, text, list, map, record, enum, result, or an optional over one of them"))
+    let _ = cx.spoken(refusal("const.form", cx.loc_of(v), "a computed const needs a compile-time value form", "`${name}` declares ${form}", "use a scalar, text, list, map, record, enum, result, or an optional over one of them — a value holding behaviour (a fn or `dyn`) is built at run time: answer it from a fn, or export it as a component instance"))
 }

@@ -236,7 +236,7 @@ impl SourceText {
         match self.store.stmt(s) {
             .Let(name, ty, value) -> [self.let_or_component_inst(s, name.of, ty, value, depth)],
             .MutLet(name, ty, value) -> [source_line(depth, "mut ${source_name(name.of)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}")],
-            .ConstDecl(name, ty, value) -> [source_line(depth, "${exported}const ${source_name(name.of)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}")],
+            .ConstDecl(name, ty, value) -> [if self.store.is_component_inst(s) { self.component_inst(exported, value, name.of, depth) } else { source_line(depth, "${exported}const ${source_name(name.of)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}") }],
             .Assign(target, value) -> [source_line(depth, "${self.expression(target, loosest_tier, depth)} = ${self.expression(value, loosest_tier, depth)}")],
             .ExprStmt(value) -> [source_line(depth, self.expression(value, loosest_tier, depth))],
             .Discard(value) -> [source_line(depth, "let _ = ${self.expression(value, loosest_tier, depth)}")],
@@ -510,17 +510,17 @@ impl SourceText {
     /// this `let` — then it is the named instance it was written as:
     /// `table orders { … }`.
     mut fn let_or_component_inst(s: StmtId, name: string, ty: TypeRef?, value: ExprId, depth: int) -> string {
-        if self.store.is_component_inst(s) { return self.component_inst(value, name, depth) }
+        if self.store.is_component_inst(s) { return self.component_inst("", value, name, depth) }
         source_line(depth, "let ${source_name(name)}${self.annotation_type(ty)} = ${self.expression(value, loosest_tier, depth)}")
     }
 
-    /// A named instance, re-spelled `word name { … }` — a marked `let`
-    /// always binds an instance, so any other value here would be a
-    /// builder defect; the fallback still answers something parseable
-    /// rather than trapping the printer.
-    mut fn component_inst(value: ExprId, inst: string, depth: int) -> string {
+    /// A named instance, re-spelled `word name { … }` — a marked
+    /// statement always binds an instance, so any other value here
+    /// would be a builder defect; the fallback still answers something
+    /// parseable rather than trapping the printer.
+    mut fn component_inst(exported: string, value: ExprId, inst: string, depth: int) -> string {
         match self.store.expr(value) {
-            .Component(word, _, block, _, _) -> source_line(depth, joined([source_name(word), source_name(inst)].concat([self.expression(b, loosest_tier, depth) for b in some_list(block)]), " ")),
+            .Component(word, _, block, _, _) -> source_line(depth, exported + joined([source_name(word), source_name(inst)].concat([self.expression(b, loosest_tier, depth) for b in some_list(block)]), " ")),
             rest -> source_line(depth, "let ${source_name(inst)} = ${self.expression(value, loosest_tier, depth)}"),
         }
     }
