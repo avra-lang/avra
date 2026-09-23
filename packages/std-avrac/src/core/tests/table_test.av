@@ -1,6 +1,6 @@
 // The dense-by-index table: what every memo keeps its answers in.
 // Attacked where a table breaks — past the end, over a hole, and
-// through a receiver the caller still holds.
+// through a receiver the caller still holds, and through a copy.
 use @std.avrac.core.{Table, new_table}
 
 type Held = { word: string }
@@ -21,22 +21,22 @@ fn file(mut o: Owner, i: int, w: string) {
 spec "core/table — answers by id" {
     given "placing past the end" {
         then "the table grows to hold it" {
-            mut t: Table<Held> = new_table<Held>()
+            let t: Table<Held> = new_table<Held>()
             t.keep(2, held("third"))
             t.span() == 3 && worded(t.at(2)) == "third"
         }
         then "the ids grown over are absent" {
-            mut t: Table<Held> = new_table<Held>()
+            let t: Table<Held> = new_table<Held>()
             t.keep(2, held("third"))
             t.at(0) == null && t.at(1) == null
         }
         then "past the end is absent, never a trap" {
-            mut t: Table<Held> = new_table<Held>()
+            let t: Table<Held> = new_table<Held>()
             t.keep(0, held("first"))
             t.at(5) == null
         }
         then "filing again overwrites without growing" {
-            mut t: Table<Held> = new_table<Held>()
+            let t: Table<Held> = new_table<Held>()
             t.keep(1, held("old"))
             t.keep(1, held("new"))
             t.span() == 2 && worded(t.at(1)) == "new"
@@ -50,14 +50,29 @@ spec "core/table — answers by id" {
     }
     given "a scalar answer" {
         then "absence does not require a nullable scalar slot" {
-            mut t: Table<int> = new_table<int>()
+            let t: Table<int> = new_table<int>()
             t.keep(2, 42)
             t.at(0) == null && t.at(2) == 42
         }
         then "the storage seam names presence explicitly" {
-            mut t: Table<int> = new_table<int>()
+            let t: Table<int> = new_table<int>()
             t.keep(1, 42)
             t.entry(0) is .Missing && t.entry(1) is .Present
+        }
+    }
+    given "one shared slot" {
+        then "a copy's keep is the original's" {
+            let t: Table<Held> = new_table<Held>()
+            let u = t
+            u.keep(1, held("shared"))
+            worded(t.at(1)) == "shared"
+        }
+        then "clear empties every copy" {
+            let t: Table<Held> = new_table<Held>()
+            t.keep(0, held("gone"))
+            let u = t
+            u.clear()
+            t.span() == 0 && t.at(0) == null
         }
     }
     given "the table as a field" {

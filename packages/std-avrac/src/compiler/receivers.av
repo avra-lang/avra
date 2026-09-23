@@ -9,7 +9,7 @@
 //! learn it. Asked through the declaration table's hook, remembered
 //! by the kernel (ROADMAP: the inout receiver).
 use core.{DeclId, ExprId, StmtId, TypeId, Type, Arrow, NodeStore, MethodParts, fp, fp_list, touch, filled, SeatMark, mut_mark, same_decl}
-use features.{NameFacts, Decls, Decl, bound_decl_of, row_writes, nothing, property_row}
+use features.{NameFacts, Decls, Decl, bound_decl_of, row_writes, nothing, property_row, declared_decl}
 
 /// One fn's own evidence: which of its seats the body writes
 /// directly, and the flows from its seats into other fns' seats —
@@ -284,10 +284,9 @@ impl Survey {
     }
 
     fn callee_of(ty: TypeId, name: string) -> Callee {
-        // A NAME IS TRANSPARENT AT A READ, and a writing row reached
-        // through one writes its receiver exactly as the shape's
-        // does — a survey blind to that infers "never writes".
-        let sh: Type = self.decls.types.seen_shape(ty)
+        let under: TypeId? = self.decls.types.stands_for(ty)
+        if under != null { return self.named_callee(ty, under!, name) }
+        let sh: Type = self.decls.types.shape_of(ty)
         match sh {
             .List(_) or .Cell(_) or .Task(_) or .Tasks or .Map(_, _) or .Bytes or .Str -> Callee.Row(row_writes(self.ws.lang.rows.methods, name, sh)),
             .Struct(d, _) -> self.field_or_method(ty, d, name),
@@ -299,6 +298,16 @@ impl Survey {
             .Ptr or .Int or .Float or .Bool or .Res(_, _) or .Fn(_, _, _) or .Opt(_) or .Null
                 or .EmptyList or .Error or .Void or .EmptyMap -> Callee.None,
         }
+    }
+
+    /// A NAME's callee, as typing finds it: a method its own impl
+    /// declares, else what its shape answers — a writing row reached
+    /// through a name writes its receiver exactly as the shape's does.
+    fn named_callee(ty: TypeId, under: TypeId, name: string) -> Callee {
+        let d: DeclId? = declared_decl(self.decls.types.shape_of(ty))
+        let m: DeclId? = if d == null { null } else { self.decls.method(d!, name) }
+        if m != null { return Callee.Method(m!) }
+        self.callee_of(under, name)
     }
 
     /// A FN-TYPED FIELD ANSWERS BEFORE THE IMPL TABLE, as it does at

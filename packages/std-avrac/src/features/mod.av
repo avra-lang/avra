@@ -49,6 +49,9 @@ export type MethodCall = { e: ExprId, subject: ExprId, args: List<ExprId> }
 /// a chain of forks.
 export enum ReceiverEffect {
     Read
+    /// a read answering a value the receiver HOLDS (`c.get()`,
+    /// `xs.first()`) — the holder's until copied
+    Lends
     Write
     Shared
 }
@@ -60,6 +63,14 @@ export type MethodRow = { name: string, takes: fn(Type) -> bool, check: fn(mut T
 export fn row_writes(rows: List<MethodRow>, name: string, sh: Type) -> bool {
     let row? = method_row(rows, name, sh) else { return false }
     row.effect is .Write
+}
+
+/// Whether the vocabulary's method of this name LENDS what its
+/// receiver holds on this shape — the registry fact the alias-copy
+/// law reads.
+export fn row_lends(rows: List<MethodRow>, name: string, sh: Type) -> bool {
+    let row? = method_row(rows, name, sh) else { return false }
+    row.effect is .Lends
 }
 
 /// The row a receiver shape and a name select; null when the

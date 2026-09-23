@@ -1279,6 +1279,15 @@ void* avra_slot_unique(void* arr, int64_t i) {
     return c;
 }
 
+// The same, for a slot whose word may be a scalar: only a slot that
+// OWNS a box is opened; any other word is answered as it stands.
+void* avra_owned_slot_unique(void* arr, int64_t i) {
+    AvraArray* a = (AvraArray*)arr;
+    int64_t w = avra_array_get(arr, i);
+    if (!(a->marks[i] & MARK_OWNED)) return (void*)(uintptr_t)w;
+    return avra_slot_unique(arr, i);
+}
+
 // A write into a slot: the old owned content is released.
 void avra_slot_set(void* arr, int64_t i, int64_t v) {
     AvraArray* a = (AvraArray*)arr;

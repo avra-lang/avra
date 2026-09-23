@@ -263,7 +263,7 @@ fn could_be_pure(of: Analysed, id: ExprId) -> bool {
     }
 }
 
-/// A method call is pure only through a Read-effect ROW — the
+/// A method call is pure only through a reading ROW (Read or Lends) — the
 /// built-in vocabulary (List/Map/Cell/Bytes/Str); a user-declared
 /// method carries no purity fact yet, so it stays impure like any
 /// other call.
@@ -271,5 +271,8 @@ fn method_could_be_pure(of: Analysed, id: ExprId) -> bool {
     let mp? = of.view.store.method_parts(id) else { return false }
     let sh = of.view.types.seen_shape(of.facts.type_at(mp.subject))
     let row? = method_row(of.view.lang.methods, mp.name, sh) else { return false }
-    row.effect is .Read
+    match row.effect {
+        .Read or .Lends -> true,
+        .Write or .Shared -> false,
+    }
 }

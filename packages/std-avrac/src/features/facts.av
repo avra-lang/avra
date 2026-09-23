@@ -124,14 +124,13 @@ export type TypeFacts = {
     scopes: SideTable<ParamScope?>,
     pattern_types: SideTable<List<TypeId>>,
     binding_types: SideTable<TypeId?>,
-    // a `mut` binding that BORROWS a parameter's field (bs2's
-    // aliasing, honored until self-host — ROADMAP: the bs2 debt ledger)
     // a use whose declaration's warnings were already spoken — one
     // voice per use, however often the node is typed
     warned: SideTable<bool>,
-    // a writing call whose receiver is a bare `mut` local copied from
-    // a place (F2106, `alias_copy_law`) — lowering opens its cell unique
-    alias_copy_calls: SideTable<bool>,
+    // a place written through a bare `mut` local — one copied from a
+    // place, or a path rooted at one — a writing call's receiver, a
+    // `mut` seat's argument (F2106, `copy_laws`); lowering reads it unique
+    alias_copies: SideTable<bool>,
     voices: Voices,
 }
 
@@ -153,7 +152,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         wants: side_table<TypeId?>("wants", lo, hi, null),
         hungry: side_table("hungry", lo, hi, false),
         warned: side_table("warned", lo, hi, false),
-        alias_copy_calls: side_table("alias_copy_calls", lo, hi, false),
+        alias_copies: side_table("alias_copies", lo, hi, false),
         starved: side_table<TypeId?>("starved", lo, hi, null),
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
@@ -257,13 +256,13 @@ impl TypeFacts {
         self.warned.set(e.index, true)
     }
 
-    /// Whether this writing call's receiver is a bare `mut` local
-    /// copied from a place — checking's one answer, lowering's one
-    /// read; the derivation lives at `alias_copy_law` alone.
-    fn wants_alias_copy(e: ExprId) -> bool { self.alias_copy_calls.get(e.index) }
+    /// Whether this place is written through a bare `mut` local that
+    /// must not share — checking's one answer, lowering's one read; the
+    /// derivation lives at `copy_laws` alone.
+    fn wants_alias_copy(e: ExprId) -> bool { self.alias_copies.get(e.index) }
 
-    fn mark_alias_copy_call(e: ExprId) {
-        self.alias_copy_calls.set(e.index, true)
+    fn mark_alias_copy(e: ExprId) {
+        self.alias_copies.set(e.index, true)
     }
 
     /// Another body's facts laid into this table over its range,
@@ -286,7 +285,7 @@ impl TypeFacts {
         self.captures.lay(other.captures)
         self.wants.lay(other.wants)
         self.pattern_types.lay(other.pattern_types)
-        self.alias_copy_calls.lay(other.alias_copy_calls)
+        self.alias_copies.lay(other.alias_copies)
         self.binding_types.lay_named(other.binding_types, is_typed)
     }
 

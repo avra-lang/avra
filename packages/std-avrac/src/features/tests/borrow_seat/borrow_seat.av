@@ -1,0 +1,39 @@
+// proves: spec 11.5 — a `mut` copy handed to a `mut` seat is still a
+// copy: the callee's write reaches the copy it was handed, and the
+// place the copy was read from stands as it was — through a free fn,
+// a method's seat, a field of the copy, and a copy of a cell's content.
+type R = { xs: List<int> }
+impl R { mut fn add(v: int) { self.xs.push(v) } }
+type O = { inner: R }
+type K = { n: int }
+impl K { fn fill(mut r: R) { r.add(self.n) } }
+fn grow(mut r: R) { r.add(5) }
+fn by_fn(p: R) -> int {
+    mut q = p
+    grow(q)
+    grow(q)
+    q.xs.length
+}
+fn by_method(p: R) -> int {
+    mut q = p
+    K { n: 3 }.fill(q)
+    q.xs.length
+}
+fn by_field(o: O) -> int {
+    mut q = o
+    grow(q.inner)
+    q.inner.xs.length
+}
+fn by_cell(c: Cell<R>) -> int {
+    mut q = c.get()
+    grow(q)
+    q.xs.length
+}
+let r = R { xs: [] }
+let o = O { inner: R { xs: [] } }
+let c = Cell.new(R { xs: [] })
+let a = by_fn(r) + by_fn(r)
+let b = by_method(r)
+let d = by_field(o) + by_field(o)
+let f = by_cell(c) + by_cell(c)
+"${a} ${b} ${r.xs.length} ${d} ${o.inner.xs.length} ${f} ${c.get().xs.length}"

@@ -33,12 +33,20 @@ fn method_call_reg(mut cx: LowerCx, e: ExprId) -> Reg {
 fn dyn_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, tdecl: DeclId, name: string, args: List<ExprId>) -> Reg {
     let ordinal = cx.view.decls.trait_method_names(tdecl).index_of(name)
     if ordinal < 0 { return cx.lower_defect(e, "a dyn method outside its trait survived typing") }
-    let s = seated(cx, e, subject, args)
-    let data = cx.slot_read(s.recv, 0, cx.type_at(subject))
+    let s = seated(cx, subject, args)
+    let data = boxed_value(cx, subject, s.recv)
     let fp = cx.slot_read(s.recv, 1 + ordinal, null)
     let dst = cx.result(e)
     cx.emit(Ins.CallPtr(dst, fp, [data].concat(s.args)))
     dst
+}
+
+/// A contract box's value, the method's `self`. A copied receiver's box
+/// was opened unique, and its value is opened with it — the box alone
+/// would still share the value it wraps.
+fn boxed_value(mut cx: LowerCx, subject: ExprId, box: Reg) -> Reg {
+    if !cx.facts.wants_alias_copy(subject) { return cx.slot_read(box, 0, cx.type_at(subject)) }
+    cx.owned_slot_unique(cx.shape_at(subject), box, cx.const_int(0))
 }
 
 /// A call's receiver register and its argument registers.
@@ -49,14 +57,14 @@ type Seated = { recv: Reg, args: List<Reg> }
 /// may re-point it (a copy opened unique), and a receiver read first
 /// would be the box left behind. Its path's index operands still run
 /// first, in order.
-fn seated(mut cx: LowerCx, e: ExprId, subject: ExprId, args: List<ExprId>) -> Seated {
+fn seated(mut cx: LowerCx, subject: ExprId, args: List<ExprId>) -> Seated {
     if !in_cell(cx, subject) {
         let recv = cx.reg_of(subject)
         return Seated { recv: recv, args: [cx.reg_of(a) for a in args] }
     }
     for i in path_indexes(cx, subject) { let _ = cx.reg_of(i) }
     let regs = [cx.reg_of(a) for a in args]
-    Seated { recv: receiver_reg_of(cx, e, subject), args: regs }
+    Seated { recv: cx.reg_of(subject), args: regs }
 }
 
 /// The index operands on a place's path, in written order.
@@ -75,18 +83,6 @@ fn in_cell(cx: LowerCx, subject: ExprId) -> bool {
     cx.cell_of(root) != null
 }
 
-/// A writing call's receiver register: the alias-copy law's predicate
-/// (features/checks.av's `alias_copy_law`), recorded as a fact at
-/// checking and read here — a bare `mut` local copied from a place opens
-/// its cell unique before the call, so the write lands in the copy; every
-/// other receiver (self, a parameter, a fresh value, a call's answer)
-/// stays shared, by design. Copy-on-write: a cell already unique is
-/// returned as-is.
-fn receiver_reg_of(mut cx: LowerCx, e: ExprId, subject: ExprId) -> Reg {
-    if cx.facts.wants_alias_copy(e) { return cx.unique_box(subject) }
-    cx.reg_of(subject)
-}
-
 /// The fn-FIELD call's lowering: read the field's box, then the
 /// box's slot 0 — the code address — and go through the pointer,
 /// the box riding seat 0.
@@ -98,7 +94,7 @@ fn fielded_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, slot: int, fty:
 /// The impl table's dispatch: a direct Call to the method's
 /// qualified symbol, the subject riding the self seat.
 fn declared_dispatch(mut cx: LowerCx, e: ExprId, subject: ExprId, decl: DeclId, name: string, args: List<ExprId>) -> Reg {
-    let s = seated(cx, e, subject, args)
+    let s = seated(cx, subject, args)
     let m? = cx.view.decls.method(decl, name) else { return cx.lower_defect(e, "a method with no symbol survived typing") }
     let seats = [s.recv].concat(cx.seated_regs(e, m, args, s.args))
     let dst = cx.result(e)
