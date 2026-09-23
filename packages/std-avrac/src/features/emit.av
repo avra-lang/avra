@@ -9,7 +9,7 @@
 //! -> … } else { cx -> … }`), so a site cannot open a bracket it
 //! does not close; the open/arm/close verbs remain for the folds and
 //! switches whose arms are not two.
-use core.{Reg, Ins, Type, TypeId, ExprId, BinOp, RtSig}
+use core.{Reg, Ins, Type, TypeId, ExprId, BinOp, UnOp, RtSig}
 use features.{MethodCall}
 
 // ── Constants ───────────────────────────────────────────────────
@@ -31,6 +31,95 @@ impl LowerCx {
         let r = self.mint_shape(Type.Str)
         self.emit(Ins.ConstStr(r, text))
         r
+    }
+
+    // A source literal's OWN node: its answer type may be a NAMED
+    // seat's type (a literal fills a named seat directly), never the
+    // raw scalar the three verbs above mint at — so a literal's
+    // defining register is minted at the node's own answer type.
+
+    mut fn const_int_at(e: ExprId, n: int) -> Reg {
+        let r = self.result(e)
+        self.emit(Ins.ConstInt(r, n))
+        r
+    }
+
+    mut fn const_bool_at(e: ExprId, b: bool) -> Reg {
+        let r = self.result(e)
+        self.emit(Ins.ConstBool(r, b))
+        r
+    }
+
+    mut fn const_str_at(e: ExprId, s: string) -> Reg {
+        let r = self.result(e)
+        self.emit(Ins.ConstStr(r, s))
+        r
+    }
+
+    // ── Arithmetic and packing ──────────────────────────────────
+
+    /// A binary op minted at `sh` — internal plumbing whose shape is
+    /// fixed (a comparison's `Type.Bool`, an offset's `Type.Int`),
+    /// never a source expression's own node.
+    mut fn bin(sh: Type, op: BinOp, a: Reg, b: Reg) -> Reg {
+        let dst = self.mint_shape(sh)
+        self.emit(Ins.Bin(dst, op, a, b))
+        dst
+    }
+
+    /// The same, minted at an expression's own answer type.
+    mut fn bin_at(e: ExprId, op: BinOp, a: Reg, b: Reg) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.Bin(dst, op, a, b))
+        dst
+    }
+
+    /// `!src`, minted `Type.Bool` — `UnOp` has one variant today, so
+    /// the op is never a seat here.
+    mut fn un(src: Reg) -> Reg {
+        let dst = self.mint_shape(Type.Bool)
+        self.emit(Ins.Un(dst, UnOp.Not, src))
+        dst
+    }
+
+    /// The same, minted at an expression's own answer type.
+    mut fn un_at(e: ExprId, src: Reg) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.Un(dst, UnOp.Not, src))
+        dst
+    }
+
+    /// The slots packed into one register of `ty` — a nullable
+    /// scalar's flag-and-word pair, a slot read back whole.
+    mut fn pack(ty: TypeId, elems: List<Reg>) -> Reg {
+        let dst = self.mint_ty(ty)
+        self.emit(Ins.Pack(dst, elems))
+        dst
+    }
+
+    // ── Direct calls ─────────────────────────────────────────────
+    // A declared fn's OWN symbol, called directly — never a runtime
+    // row (that is `call`, below).
+
+    mut fn call_decl(ret: TypeId, callee: string, args: List<Reg>) -> Reg {
+        let dst = self.mint_ty(ret)
+        self.emit(Ins.Call(dst, callee, args))
+        dst
+    }
+
+    /// The same, minted at an expression's own answer type.
+    mut fn call_decl_at(e: ExprId, callee: string, args: List<Reg>) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.Call(dst, callee, args))
+        dst
+    }
+
+    /// A call THROUGH a register holding code — a closure or a `dyn`
+    /// box's method — minted at an expression's own answer type.
+    mut fn call_ptr_at(e: ExprId, f: Reg, args: List<Reg>) -> Reg {
+        let dst = self.result(e)
+        self.emit(Ins.CallPtr(dst, f, args))
+        dst
     }
 
     // ── Runtime calls ───────────────────────────────────────────

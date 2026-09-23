@@ -2,7 +2,7 @@
 //! offset, its runs, and its fills — each fill coerced by its seat's
 //! kind through a `@std/meta` row — wrapped as the kind the body
 //! parsed as. No new instruction.
-use core.{ExprId, Reg, Ins, DeclId, PatId, TypeId, HoleKind, MetaKind, FillClass, At, Shape, QuoteHole, hole_kinds, quote_kind, holes_kind, holes_seat, quote_pat_holes, quote_pat_names, quote_pat_root, quote_pat_shape}
+use core.{ExprId, Reg, DeclId, PatId, TypeId, HoleKind, MetaKind, FillClass, At, Shape, QuoteHole, hole_kinds, quote_kind, holes_kind, holes_seat, quote_pat_holes, quote_pat_names, quote_pat_root, quote_pat_shape}
 use features.{LowerCx, EnumSig}
 
 fn quote_reg(mut cx: LowerCx, e: ExprId) -> Reg {
@@ -87,9 +87,7 @@ fn meta_self(mut cx: LowerCx, name: string) -> TypeId {
 fn meta_call(mut cx: LowerCx, e: ExprId, verb: string, args: List<Reg>, ret: TypeId) -> Reg {
     let d: DeclId? = cx.view.decls.meta_named(verb)
     if d == null { return cx.lower_defect(e, "`@std.meta.${verb}` is not declared") }
-    let dst = cx.mint_ty(ret)
-    cx.emit(Ins.Call(dst, cx.wanted(d!), args))
-    dst
+    cx.call_decl(ret, cx.wanted(d!), args)
 }
 
 // ── the quote AS A PATTERN — matches, never splices ──
@@ -195,9 +193,7 @@ fn avrac_type_missing(mut cx: LowerCx, name: string) -> TypeId {
 /// `meta_call`'s twin over the compiler's own library.
 fn avrac_call(mut cx: LowerCx, verb: string, args: List<Reg>, ret: TypeId) -> Reg {
     let d? = cx.view.decls.avrac_named(verb) else { return avrac_missing(cx, verb, ret) }
-    let dst = cx.mint_ty(ret)
-    cx.emit(Ins.Call(dst, cx.wanted(d), args))
-    dst
+    cx.call_decl(ret, cx.wanted(d), args)
 }
 
 fn avrac_missing(mut cx: LowerCx, verb: string, ret: TypeId) -> Reg {

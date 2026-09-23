@@ -1025,6 +1025,34 @@ reintroducing I3's blind spot names the two spellings it lost.
       (`.F(v)` a float beside `.B(v)` a bool). Single-line arms only —
       a block body is its own sentence. Ratcheted (`one_body_arms`).
 
+- I60 (ratcheted) A REGISTER MINTED THEN DEFINED BY A RAW `emit` —
+      `let dst = cx.mint_shape(sh); cx.emit(Ins.Bin(dst, op, a, b))` —
+      where a vocabulary verb mints and emits in ONE call
+      (`cx.bin(sh, op, a, b)`, features/emit.av): the mint law ("a
+      register is defined in the order it was minted") holds by
+      CONSTRUCTION once the two are one call, and split across two
+      statements a refactor can separate them with nothing to catch
+      it. Landed as sugar 4 (docs/2026_09_09_SUGAR_4_EMISSION_AS_EXPRESSION.md,
+      landing docs/2026_09_22_SUGAR_4_LANDING.md): the vocabulary grew
+      `bin`/`bin_at`, `un`/`un_at`, `pack`, `call_decl`/`call_decl_at`,
+      `call_ptr_at`, and the literal twins `const_int_at`/
+      `const_bool_at`/`const_str_at` — the last three because a source
+      literal's OWN node may carry a NAMED seat's type (the named-type
+      law), never the raw scalar `const_int`/`const_bool`/`const_str`
+      mint at, so a literal's own register needs the node-tied form.
+      A VARIANT no verb covers in ANY form (`FnAddr`, `ConstFloat`, a
+      bare `Alloca` with no seed) has nothing to ratchet — one call
+      site each, and `CallRt`/`CallRtVoid` stay I58's concern alone.
+      LICENSED where the variant IS covered but the SITE cannot use
+      either covering form — neither the fixed shape nor the node's
+      own answer type: a literal-kind match sharing one destination
+      across six arms (`crossed_reg`, values.av), a defect arm
+      answering the same register the success arm defines
+      (`field_slot`, places.av), a zero minted at a TypeId that may
+      itself be a NAMED bool type (`hollow_of`, values.av), a fn-box
+      call minted at the walk's own element type rather than a node's
+      (`turn_call`, lists/walks.av). Ratcheted (`raw_mint_emit`).
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is
@@ -1036,10 +1064,8 @@ time (it resolves by lookup, not by position). Found writing `??`:
 the payload register was minted before the constant it indexes with.
 
 ```avra
-let one = cx.mint_shape(Type.Int)      // mint, then emit
-cx.emit(Ins.ConstInt(one, 1))
-let carried = cx.mint(e)
-cx.emit(Ins.CallRt(carried, "avra_array_get", [v, one]))
+let one = cx.const_int(1)              // mint and emit, one call (I60)
+let carried = cx.array_get(sh, v, one) // the row's own typed method (I58)
 ```
 
 THE COMPOSITION COROLLARY (found collapsing the presence verbs,

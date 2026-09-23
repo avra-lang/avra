@@ -33,11 +33,7 @@ fn asked_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, variant: string) -> Re
         cx.defect("an `is` without an enum variant survived typing")
         return cx.result(e)
     }
-    let tag = cx.tag_of(cx.reg_of(subject))
-    let k = cx.const_int(which!)
-    let dst = cx.result(e)
-    cx.emit(Ins.Bin(dst, BinOp.Eq, tag, k))
-    dst
+    cx.bin_at(e, BinOp.Eq, cx.tag_of(cx.reg_of(subject)), cx.const_int(which!))
 }
 
 /// The subject is evaluated either way; its TAG is only read when
@@ -270,10 +266,7 @@ fn variant_reg(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: Ty
         cx.defect("a variant pattern without its enum survived typing")
         return cx.const_bool(false)
     }
-    let tag = cx.tag_of(v)
-    let k = cx.const_int(which!)
-    let tagged = cx.mint_shape(Type.Bool)
-    cx.emit(Ins.Bin(tagged, BinOp.Eq, tag, k))
+    let tagged = cx.bin(Type.Bool, BinOp.Eq, cx.tag_of(v), cx.const_int(which!))
     if all_irrefutable(cx.view.store, args) { return tagged }
     let carried = declared!.payloads_of(name)
     cx.region_as(tagged, cx.type(bool)) { cx -> payloads_reg(cx, carried, args, v) } else { cx -> cx.const_bool(false) }
