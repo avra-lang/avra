@@ -118,6 +118,8 @@ export enum DeclKind {
     Record
     /// `type Name = <type>` — a name over a shape, distinct from it.
     Named
+    /// `alias Name = <type>` — a second name for a shape, the SAME type.
+    Alias
     Enum
     Trait
     /// a sublanguage — a block word and its grammar
@@ -381,7 +383,7 @@ export fn hears_want(e: Expr) -> bool {
 }
 
 /// A FORM THE SOURCE SPELLS AS A VALUE — a scalar, text, a list, a
-/// map, a variant, `null`. The parts inside may be computed; the
+/// map, a variant, a lambda, `null`. The parts inside may be computed; the
 /// FORM is what this asks about.
 ///
 /// A NAMED TYPE'S SEAT TAKES ONE DIRECTLY (`let id: UserId = 5`):
@@ -393,8 +395,8 @@ export fn hears_want(e: Expr) -> bool {
 export fn literal_form(e: Expr) -> bool {
     match e {
         .Body(word, _, _, _) -> body_literal(word),
-        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _, _, _, _, _) or .Collect(_) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) -> true,
-        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .CallValue(_, _) or .Spawn(_) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
+        .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .ListLit(_) or .Comp(_, _, _, _, _, _) or .Collect(_) or .MapLit(_, _) or .NullLit or .VariantLit(_, _) or .StructLit(_, _, _) or .Lambda(_, _) -> true,
+        .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .Index(_, _) or .Prop(_, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Call(_, _, _) or .Named(_, _) or .With(_, _, _) or .Match(_, _) or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .CallValue(_, _) or .Spawn(_) or .Chain(_, _) or .Force(_) or .Is(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .MethodCall(_, _, _) or .Error -> false,
     }
 }
 
@@ -707,8 +709,8 @@ impl UseParts {
 
     /// The name item `j` binds in the importing file.
     fn bound_as(j: int) -> string {
-        let alias = self.alias_at(j)
-        if alias.is_empty() { self.items[j] } else { alias }
+        let renamed = self.alias_at(j)
+        if renamed.is_empty() { self.items[j] } else { renamed }
     }
 }
 
@@ -780,7 +782,7 @@ export enum Stmt {
     /// name lives in the TYPE namespace, program-wide like fns.
     StructDecl(name: Scoped, tparams: List<Plain>, fields: List<Param>)
     /// `type Name = <type>` — a DISTINCT type over a written shape,
-    /// never an alias: the name counts at every seat and the shape
+    /// never an `alias`: the name counts at every seat and the shape
     /// answers every read. It travels AS its shape (a flat record
     /// of one anonymous field), so the name is free at runtime.
     NamedType(name: Scoped, tparams: List<Plain>, of: TypeRef)
@@ -811,6 +813,10 @@ export enum Stmt {
     /// the record the instance builds. Consumed where the instance is
     /// built, so no pass meets one elsewhere.
     Setting(name: Plain, value: ExprId)
+    /// `alias Name<T> = <type>` — a SHORTHAND: the name stands for the
+    /// shape it is written over, which is the same type wherever it is
+    /// read. `type` makes a new type; `alias` names an existing one.
+    Alias(name: Scoped, tparams: List<Plain>, of: TypeRef)
 }
 
 /// The language AST's arenas plus their fingerprint side tables. A

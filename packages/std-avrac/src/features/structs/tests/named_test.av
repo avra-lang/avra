@@ -3,7 +3,7 @@
 // converts, every READ forwards to the shape, and every SEAT keeps
 // the name.
 use @std.avrac.compiler.{analyze_source}
-use @std.avrac.testing.{shown, refused_with}
+use @std.avrac.testing.{shown, refused_with, refusals}
 
 /// The smallest name there is, and a list one — shared with the
 /// adversarial file (one directory is one module).
@@ -17,6 +17,11 @@ export fn rows() -> string {
 
 export fn tag() -> string {
     "type Tag = string\n"
+}
+
+/// A name handed to the seat of a name over another shape.
+fn crossed() -> string {
+    "${uid()}${tag()}fn take(id: UserId) -> int { 1 }\nlet t: Tag = \"x\"\ntake(t)"
 }
 
 spec "features/structs (named types)" {
@@ -36,8 +41,11 @@ spec "features/structs (named types)" {
         then "a name over a record reads its fields" {
             shown("type P = { x: int, y: int }\ntype W = P\nlet w: W = P { x: 1, y: 2 }\nw.x + w.y") == "3"
         }
-        then "a name over a fn type holds a fn" {
-            shown("type F = fn(int) -> int\nfn twice(n: int) -> int { n * 2 }\nlet f: F = twice\nf(3)") == "6"
+        then "a name over a fn type takes a lambda literal" {
+            shown("type F = fn(int) -> int\nlet f: F = (n) -> n * 2\nf(3)") == "6"
+        }
+        then "a declared fn crosses into a name over a fn type by construction" {
+            shown("type F = fn(int) -> int\nfn twice(n: int) -> int { n * 2 }\nlet f = F(twice)\nf(3)") == "6"
         }
     }
     given "the construction" {
@@ -143,6 +151,18 @@ spec "features/structs (named types)" {
         }
         then "a bare list refuses at a named binding" {
             refused_with("${rows()}let xs: List<int> = [1]\nlet r: Rows = xs", "`r` declares `Rows`, this is `List<int>`")
+        }
+        then "a declared fn refuses at a name over a fn type" {
+            refused_with("type F = fn(int) -> int\nfn twice(n: int) -> int { n * 2 }\nlet f: F = twice\nf(3)", "`f` declares `F`, this is `fn(int) -> int`")
+        }
+        then "two names over one fn shape stay two types" {
+            refused_with("type F = fn(int) -> int\ntype G = fn(int) -> int\nfn take(f: F) -> int { f(1) }\nlet g: G = (n) -> n\ntake(g)", "argument 1 of `take` wants `F`, found `G`")
+        }
+        then "a name over the same shape crosses through its shape read" {
+            refused_with("${uid()}type OrderId = int\nfn take(id: UserId) -> int { 1 }\nlet o: OrderId = 5\ntake(o)", "write `UserId(o.of)`")
+        }
+        then "a name over another shape hears no wrap" {
+            refusals(crossed()) == 1 && !analyze_source(crossed()).report().contains("write `")
         }
         then "a named field refuses a bare value" {
             refused_with("${uid()}type P = { id: UserId }\nlet n = 1\nlet p = P { id: n }\n2", "field `id` is `UserId`, this is `int`")

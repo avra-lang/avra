@@ -1,11 +1,11 @@
 use @std.net.{Conn, NetError, connect}
 use @std.time.{ms, secs, within}
-use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.http.{Request, Unrouted, Response, Handler, text}
 use @std.http.route.{get, post, delete, group}
 use @std.http.server.{server, layer}
 
 /// Refuses the admin tree, and answers the order probe first.
-fn guarded(q: Request<Unrouted>, next: fn(Request<Unrouted>) -> Response) -> Response {
+fn guarded(q: Request<Unrouted>, next: Handler) -> Response {
     let target = q.target() ?? ""
     if target.starts_with("/admin") { return text(401, "no") }
     if target == "/order" { return text(200, "guarded") }
@@ -13,7 +13,7 @@ fn guarded(q: Request<Unrouted>, next: fn(Request<Unrouted>) -> Response) -> Res
 }
 
 /// Answers the order probe too — reached only when nothing outside it did.
-fn timed(q: Request<Unrouted>, next: fn(Request<Unrouted>) -> Response) -> Response {
+fn timed(q: Request<Unrouted>, next: Handler) -> Response {
     let target = q.target() ?? ""
     if target == "/order" { return text(200, "timed") }
     next(q)

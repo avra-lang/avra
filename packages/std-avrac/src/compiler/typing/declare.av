@@ -37,6 +37,17 @@ impl TypeCx {
         self.view.types.mark_flat(named, [of])
     }
 
+    /// An ALIAS's table: the type its name stands for, read under
+    /// its own type parameters so an application lands them.
+    fn declare_alias(s: StmtId) {
+        let parts? = self.view.store.alias_parts(s) else { return }
+        self.refuse_taken_tparams(s, parts.name)
+        self.enter_tscope(s)
+        let of = self.full_type(self.stmt_loc(s), parts.of)
+        self.leave_tscope()
+        self.declare(s, DeclSig.Alias(of))
+    }
+
     /// An enum's table, from its declaration alone.
     fn declare_enum(s: StmtId) {
         self.refuse_taken_tparams(s, self.view.store.type_decl_name(s) ?? "this type")
@@ -289,11 +300,16 @@ impl TypeCx {
         }
         for n in tp {
             if builtin_type_name(self.view.lang.types, n) { self.owned_name(s, n) }
+            if self.keywords.contains(n) { self.keyword_tparam(s, n) }
         }
     }
 
+    fn keyword_tparam(s: StmtId, n: string) {
+        self.emit(refusal("resolve.reserved", self.stmt_loc(s), "`${n}` is a keyword", "cannot be a name", fresh_tparam()))
+    }
+
     fn owned_name(s: StmtId, n: string) {
-        self.emit(refusal("type.tparam", self.stmt_loc(s), "a type parameter cannot take `${n}`'s name — the language owns it", "declared here", "pick another name — `T`, `E`, `Elem`"))
+        self.emit(refusal("type.tparam", self.stmt_loc(s), "a type parameter cannot take `${n}`'s name — the language owns it", "declared here", fresh_tparam()))
     }
 
     /// A declaration's type parameters as interned Vars — fns and
@@ -453,6 +469,7 @@ impl TypeCx {
     /// declared (source order — a construction judges again anyway).
     fn applied_decl(at: Loc?, name: string, parts: List<TypeId>) -> TypeId {
         let target? = self.type_decl_named(name) else { return self.error_type }
+        if self.view.decls.is_alias(target) { return self.aliased(at, target, name, parts) }
         if self.refused_app(at, name, target, parts) { return self.error_type }
         self.view.types.intern(Type.App(target, name, parts))
     }
@@ -520,6 +537,7 @@ impl TypeCx {
             return self.error_type
         }
         if self.view.decls.is_enum(d) { return self.view.types.intern(Type.Enum(d, name)) }
+        if self.view.decls.is_alias(d) { return self.aliased(at, d, name, []) }
         // A NAMED TYPE'S MARK IS MADE AT ITS DECLARATION, so the
         // declaration is ASKED before the id is handed out. Without
         // it the registry answers by declaration ORDER — right under
@@ -527,6 +545,25 @@ impl TypeCx {
         // types a body first, and only the first reader is wrong.
         if self.view.decls.is_named(d) { let _ = self.view.decls.sig(d) }
         self.view.types.intern(Type.Struct(d, name))
+    }
+
+    /// What an alias stands for, its type parameters landed. An alias
+    /// still being read when it is named again names itself.
+    fn aliased(at: Loc?, d: DeclId, name: string, args: List<TypeId>) -> TypeId {
+        let of? = self.view.decls.alias_of(d) else { return self.alias_names_itself(at, name) }
+        let empty = args.find((t) -> !slot_worthy(self.view.types.shape_of(t)))
+        if empty != null { return self.alias_takes_values(at, name, empty!) }
+        self.view.types.substituted(of, d, args)
+    }
+
+    fn alias_takes_values(at: Loc?, name: string, arg: TypeId) -> TypeId {
+        self.emit(refusal("type.alias", at, "`${name}<...>` is given `${self.view.types.name_of(arg)}`, which is no value", "applied here", "an alias's type arguments are the types of values"))
+        self.error_type
+    }
+
+    fn alias_names_itself(at: Loc?, name: string) -> TypeId {
+        self.emit(refusal("type.alias", at, "`${name}` is an alias that names itself", "named again here", "an alias is a shorthand for a type that already exists — a type that holds itself is a `type`"))
+        self.error_type
     }
 
     /// A declaration's signature — the ONE entry the `sig` query runs.
@@ -537,6 +574,7 @@ impl TypeCx {
         match x.kind {
             .Record -> self.declare_record(x.stmt),
             .Named -> self.declare_named(x.stmt),
+            .Alias -> self.declare_alias(x.stmt),
             .Enum -> self.declare_enum(x.stmt),
             .Fn -> self.declare_fn(x.stmt),
             .Method -> self.declare_member(x),
@@ -550,6 +588,9 @@ impl TypeCx {
         }
     }
 }
+
+/// The remedy for a type parameter whose name is taken.
+fn fresh_tparam() -> string { "pick another name — `T`, `E`, `Elem`" }
 
 /// An extern's seats, each width word read as the `int` it carries.
 fn widthless_seats(ps: List<Param>) -> List<Param> {

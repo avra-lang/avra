@@ -81,7 +81,7 @@ export type Clash = { file: FileId, diag: Diag }
 
 /// One imported declaration: what, where the `use` stands, and the
 /// module it came from.
-export type Import = { decl: DeclId, at: Loc?, alias: string }
+export type Import = { decl: DeclId, at: Loc?, renamed: string }
 
 impl Decls {
     /// A module's declarations bound, in the order given. `shown`
@@ -117,16 +117,16 @@ impl Decls {
         mut spoken: List<Diag> = []
         for i in imports {
             let x = self.decl(i.decl)
-            let name = if i.alias.is_empty() { x.name } else { i.alias }
+            let name = if i.renamed.is_empty() { x.name } else { i.renamed }
             let mine: DeclId? = match x.kind {
                 .Fn or .Const or .Rule -> fns.get(name),
-                .Record or .Named or .Enum or .Trait or .Builtin -> types.get(name),
+                .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> types.get(name),
                 .Syntax -> syntaxes.get(name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
             let shared: DeclId? = match x.kind {
                 .Fn or .Const or .Rule -> module.base.fns.get(name),
-                .Record or .Named or .Enum or .Trait or .Builtin -> module.base.types.get(name),
+                .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> module.base.types.get(name),
                 .Syntax -> module.base.syntaxes.get(name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
@@ -137,7 +137,7 @@ impl Decls {
                         fns.set(name, i.decl)
                         fn_names.push(name)
                     },
-                    .Record or .Named or .Enum or .Trait or .Builtin -> {
+                    .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> {
                         types.set(name, i.decl)
                         type_names.push(name)
                     },
@@ -149,11 +149,11 @@ impl Decls {
                 }
             } else if !same_decl(prior!, i.decl) { spoken.push(import_clash(i.at, name, self.holder_of(prior!, file, shown))) }
         }
-        for i in prelude.concat([Import { decl: d, at: null, alias: "" } for d in self.builtin_decls()]) {
+        for i in prelude.concat([Import { decl: d, at: null, renamed: "" } for d in self.builtin_decls()]) {
             let x = self.decl(i.decl)
             let prior: DeclId? = match x.kind {
                 .Fn or .Const or .Rule -> fns.get(x.name) ?? module.base.fns.get(x.name),
-                .Record or .Named or .Enum or .Trait or .Builtin -> types.get(x.name) ?? module.base.types.get(x.name),
+                .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> types.get(x.name) ?? module.base.types.get(x.name),
                 .Syntax -> syntaxes.get(x.name) ?? module.base.syntaxes.get(x.name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
@@ -163,7 +163,7 @@ impl Decls {
                         fns.set(x.name, i.decl)
                         fn_names.push(x.name)
                     },
-                    .Record or .Named or .Enum or .Trait or .Builtin -> {
+                    .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> {
                         types.set(x.name, i.decl)
                         type_names.push(x.name)
                     },
@@ -245,7 +245,7 @@ impl Binder {
         let x = self.decls.decl(i.decl)
         // A `use` item's ALIAS is the name it binds under; the empty
         // alias is the declaration's own name.
-        let name = if i.alias.is_empty() { x.name } else { i.alias }
+        let name = if i.renamed.is_empty() { x.name } else { i.renamed }
         let prior? = self.held(x.kind, name) else { return self.bind(x.kind, name, i.decl) }
         if same_decl(prior, i.decl) { return }
         self.speak(import_clash(i.at, name, self.holder(prior, file)))
@@ -265,7 +265,7 @@ impl Binder {
         let as_type: DeclId? = self.names.types.get(name)
         match kind {
             .Fn or .Const or .Rule -> as_fn,
-            .Record or .Named or .Enum or .Trait or .Builtin -> as_type,
+            .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> as_type,
             .Syntax -> self.names.syntaxes.get(name),
             .Method or .Default or .Impl or .Main or .Case -> null,
         }
@@ -274,7 +274,7 @@ impl Binder {
     fn bind(kind: DeclKind, name: string, d: DeclId) {
         match kind {
             .Fn or .Const or .Rule -> self.bind_fn(name, d),
-            .Record or .Named or .Enum or .Trait or .Builtin -> self.bind_type(name, d),
+            .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> self.bind_type(name, d),
             .Syntax -> self.bind_syntax(name, d),
             .Method or .Default or .Impl or .Main or .Case -> not_bound(),
         }
@@ -355,7 +355,7 @@ fn method_taken(at: Loc?, target: string, name: string) -> Diag {
 fn defined_twice(at: Loc?, kind: DeclKind, name: string) -> Diag {
     match kind {
         .Fn or .Const or .Rule -> refusal("resolve.duplicate_fn", at, "`${name}` is defined more than once", "redefined here", "rename one of them"),
-        .Record or .Named or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Builtin -> refusal("resolve.duplicate_type", at, "`${name}` is declared more than once", "redeclared here", "rename one of them"),
+        .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Builtin -> refusal("resolve.duplicate_type", at, "`${name}` is declared more than once", "redeclared here", "rename one of them"),
     }
 }
 

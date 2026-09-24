@@ -133,7 +133,9 @@ node — `nt` present ⇒ `NamedType`, else `StructDecl` — exactly as
 `expr_stmt`'s floor picks `Assign`. One keyword claim, one recovery,
 one `@recover`.
 
-The docs string says the law out loud: **there is no alias form.**
+The docs string says the law out loud: **`type` is never an alias.**
+A shorthand is its own statement, `alias Name<T> = <type>`, which
+names an existing type and makes none.
 
 ---
 
