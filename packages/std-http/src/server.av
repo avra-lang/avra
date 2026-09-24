@@ -105,12 +105,26 @@ export fn served<A>(l: Listener, isolated make: fn() -> A, limits: Limits, timin
 // ── A server as a declaration ───────────────────────────────────
 
 /// `server app { port: 8080  get "/" { … } }` — routes served at an
-/// address: the settings by name, and each route line collected in
-/// the order written, which is the order that answers first.
+/// address: the settings by name, each route line collected in the
+/// order written (the order that answers first), and each `layer`
+/// line wrapped around them all, the first outermost.
 export component server {
     host: string = "127.0.0.1"
     port: int = 8080
+    layers: List<layer> = []
     routes: List<Route> = []
+}
+
+/// `layer logged` — a fn every request passes through on its way to
+/// the routes: it answers itself, or hands the request on to `next`.
+export component layer(wraps: fn(Request<Unrouted>, fn(Request<Unrouted>) -> Response) -> Response) {}
+
+/// The way a request comes in: through each layer, the first
+/// outermost, to what `inner` answers.
+fn through(layers: List<layer>, inner: fn(Request<Unrouted>) -> Response) -> fn(Request<Unrouted>) -> Response {
+    let outer? = layers.first() else { return inner }
+    let next = through([l for j, l in layers if j > 0], inner)
+    (q: Request<Unrouted>) -> outer.wraps(q, next)
 }
 
 /// What a server of routes keeps between requests: nothing.
@@ -122,7 +136,8 @@ impl server {
     fn listening() -> Result<Server<Stateless>, NetError> {
         let l = listen(self.host, self.port)?
         let routed = compiled(self.routes)
-        .Ok(served(l, () -> Stateless {}, limits(), timing()) { _none, q -> dispatch(routed, q) })
+        let handled = through(self.layers, (q: Request<Unrouted>) -> dispatch(routed, q))
+        .Ok(served(l, () -> Stateless {}, limits(), timing()) { _none, q -> handled(q) })
     }
 
     /// Listens and serves on every core until stopped; answers how many

@@ -5,7 +5,7 @@
 //! record's instance is its literal, the body's settings by name and
 //! its other statements `collect`ed into its one `List` field.
 use core.{Expr, Stmt, StmtId, ExprId, Nominal, Plain, Scoped, NodeStore, BodyView, HoleKind, Filled, SettingParts, TypeRef, copier, flatten, some_list}
-use features.{LangNode, Builder, ComponentWord, Template, Record, marked_seats}
+use features.{LangNode, Builder, ComponentWord, Template, Record, ChildSlot, marked_seats}
 use grammar.{Token}
 use @std.path.{stem_of}
 
@@ -192,11 +192,18 @@ impl Builder {
         if children.is_empty() { return .Ok(if open.length == 1 { [Placed { slot: open[0].name, stmts: [] }] } else { [] }) }
         if r.slots.is_empty() { return .Err(no_slot(word)) }
         let routes = [self.routed(r, s) for s in children]
-        if routes.all(it != null) { return .Ok([Placed { slot: s.name, stmts: [c for j, c in children if routes[j] == s.name] } for s in r.slots if routes.any(it == s.name)]) }
-        let takers = if r.slots.length == 1 { r.slots } else { open }
+        let rest = if routes.all(it != null) { "" } else { self.taker(word, r, open)? }
+        let landed = [routes[j] ?? rest for j, c in children]
+        .Ok([Placed { slot: s.name, stmts: [c for j, c in children if landed[j] == s.name] } for s in r.slots if landed.contains(s.name)])
+    }
+
+    /// The slot a child naming no slot's component lands in: the only
+    /// slot, or the one open slot that gathers anything.
+    fn taker(word: string, r: Record, open: List<ChildSlot>) -> Result<string, string> {
+        let takers = if r.slots.length == 1 { r.slots } else { [s for s in open if s.gathers] }
         if takers.is_empty() { return .Err(which_slot(word, [s.name for s in r.slots])) }
         if takers.length > 1 { return .Err(which_slot(word, [s.name for s in takers])) }
-        .Ok([Placed { slot: takers[0].name, stmts: children }])
+        .Ok(takers[0].name)
     }
 
     /// The slot a child instance lands in: the ONE whose elements are

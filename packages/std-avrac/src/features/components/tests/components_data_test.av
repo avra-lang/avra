@@ -7,11 +7,11 @@ use @std.avrac.compiler.{Program}
 /// The provider: a row with a head, a grid of rows named at its
 /// statement, a nameable secret, and a card of mixed views.
 fn ui() -> string {
-    "export component row(id: int) {\n    label: string = \"?\"\n    fn doubled() -> int { self.id * 2 }\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component secret {\n    name: string\n}\n\nexport trait View {\n    fn text() -> string\n}\n\nexport component note(t: string) {}\n\nexport component badge(n: int) {}\n\nimpl View for note {\n    fn text() -> string { self.t }\n}\n\nimpl View for badge {\n    fn text() -> string { \"#\${self.n}\" }\n}\n\nexport component card {\n    items: List<dyn View> = []\n}\n\nexport component vault {\n    keys: List<secret> = []\n}\n\nexport component split {\n    left: List<row> = []\n    right: List<row> = []\n}\n\nexport component field(label: string) {}\n\nexport component button(label: string) {}\n\nexport component form {\n    fields: List<field> = []\n    buttons: List<button> = []\n}\n"
+    "export component row(id: int) {\n    label: string = \"?\"\n    fn doubled() -> int { self.id * 2 }\n}\n\nexport component grid {\n    name: string\n    title: string = \"\"\n    rows: List<row> = []\n}\n\nexport component secret {\n    name: string\n}\n\nexport trait View {\n    fn text() -> string\n}\n\nexport component note(t: string) {}\n\nexport component badge(n: int) {}\n\nimpl View for note {\n    fn text() -> string { self.t }\n}\n\nimpl View for badge {\n    fn text() -> string { \"#\${self.n}\" }\n}\n\nexport component card {\n    items: List<dyn View> = []\n}\n\nexport component vault {\n    keys: List<secret> = []\n}\n\nexport component split {\n    left: List<row> = []\n    right: List<row> = []\n}\n\nexport component field(label: string) {}\n\nexport component button(label: string) {}\n\nexport component form {\n    fields: List<field> = []\n    buttons: List<button> = []\n}\n\nexport component panel {\n    rows: List<row> = []\n    notes: List<string> = []\n}\n"
 }
 
 fn built(main: string) -> Program {
-    provided("use @x.c.{row, grid, secret, note, badge, card, vault, split, field, button, form}\n" + main, ui())
+    provided("use @x.c.{row, grid, secret, note, badge, card, vault, split, field, button, form, panel}\n" + main, ui())
 }
 
 spec "features/components — a record's instance" {
@@ -65,6 +65,9 @@ spec "features/components — a record's instance" {
         }
     }
     given "children routed by their component" {
+        then "a list of a component's records takes its instances, and the one other list takes the rest" {
+            answered(built("let p = panel {\n    row 1\n    \"a\"\n    row 2\n    \"b\"\n}\n\"\${p.rows.length} \${p.notes.join(\",\")}\"")) == "2 a,b"
+        }
         then "each child instance lands in the list its component is the element of, in order" {
             answered(built("let f = form {\n    field \"name\"\n    button \"save\"\n    field \"email\"\n    button \"cancel\"\n}\n\"\${[x.label for x in f.fields].join(\",\")} \${[b.label for b in f.buttons].join(\",\")}\"")) == "name,email save,cancel"
         }

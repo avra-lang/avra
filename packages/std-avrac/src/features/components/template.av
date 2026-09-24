@@ -28,7 +28,13 @@ fn instancing(store: NodeStore, c: ComponentParts) -> Instancing {
 /// A component read as a record: its head in order, and the `List`
 /// fields its instance's statements may fill.
 fn record_of(store: NodeStore, c: ComponentParts) -> Record {
-    Record { head: [p.name.of for p in c.head], slots: [ChildSlot { name: p.name.of, of: element_name(p) } for p in c.fields if lists(p)], named: c.fields.any(it.name.of == "name"), checks: member(store, c, "check") != null }
+    Record { head: [p.name.of for p in c.head], slots: [ChildSlot { name: p.name.of, of: element_name(p), gathers: !declares_component(store, element_name(p)) } for p in c.fields if lists(p)], named: c.fields.any(it.name.of == "name"), checks: member(store, c, "check") != null }
+}
+
+/// Whether the file declares a component by this name — a list of its
+/// records takes that component's instances alone.
+fn declares_component(store: NodeStore, name: string) -> bool {
+    store.stmt_ids().any((s) -> store.component_parts(s)?.name == name)
 }
 
 /// The name a `List` field's elements are written with.
