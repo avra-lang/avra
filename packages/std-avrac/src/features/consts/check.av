@@ -2,9 +2,10 @@
 //! runs — a literal as written, or what the evaluator finishes; the
 //! lowering asks it and speaks its refusals. Its type is recorded as
 //! a workspace fact; an annotation still holds what it declares.
-use core.{StmtId, ExprId, TypeId, TypeRef, Expr, same_type, flatten}
-use features.{TypeCx, declared_decl}
-use diagnostics.{refusal}
+use core.{StmtId, ExprId, TypeId, TypeRef, Expr, DeclId, same_type, flatten, some_list}
+use features.{TypeCx, declared_decl, bound_decl_of}
+use diagnostics.{refusal, Diag}
+use @std.errors.{Loc}
 
 /// The value walks under its declaration's want, then records the
 /// inferred or declared type where every body can ask for it.
@@ -20,6 +21,14 @@ export fn check_const(mut cx: TypeCx, s: StmtId) {
     cx.walk_value(s)
     // a value or an annotation the walk already refused is spoken for
     if cx.errored(v) || refused_annotation(cx, declared) { return }
+    // OPEN WORLD CLOSES AT LINK (docs/2026_09_22_COLLECTIONS.md §4.1):
+    // a value read straight by NAME, so a helper fn hiding the read is
+    // outside what this catches cheaply — the reachable, common case.
+    let folded: DeclId? = closure_collect_read(cx, v)
+    if folded != null && !cx.view.decls.is_program() {
+        let _ = cx.spoken(closure_fold_refused(cx, cx.loc_of(v), folded!))
+        return
+    }
     if cx.refuses_void_value(v) { return }
     let held = declared ?? cx.type_at(v)
     // a top-level instance is built once per run, so it holds anything
@@ -79,7 +88,27 @@ fn parts_of(cx: TypeCx, ty: TypeId) -> List<TypeId> {
     fields.concat(flatten(cx.variants_of(ty)?.payloads ?? []))
 }
 
+/// A closure-scoped collect this value reads BY NAME, directly.
+fn closure_collect_read(cx: TypeCx, root: ExprId) -> DeclId? {
+    decl_refs(cx, root).find(closure_collect(cx, it))
+}
+
+fn decl_refs(cx: TypeCx, root: ExprId) -> List<DeclId> {
+    flatten([some_list(bound_decl_of(cx.names, node)) for node in cx.view.store.every_expr(root)])
+}
+
+fn closure_collect(cx: TypeCx, d: DeclId) -> bool {
+    let x = cx.view.decls.decl(d)
+    if !(x.kind is .Collect) { return false }
+    let p? = cx.view.decls.store_of(x.file).collect_parts(x.stmt) else { return false }
+    p.scope is .Closure
+}
+
 // ── The voices ──
+
+fn closure_fold_refused(cx: TypeCx, at: Loc?, d: DeclId) -> Diag {
+    refusal("collect.closure_fold", at, "`${cx.view.decls.decl(d).name}` is closed only when a program links — read it at run time", "folded here", "read it from a fn's body, never from a const's compile-time value")
+}
 
 /// A computed const needs a compile-time value form: a literal the
 /// lowering spells, or a type the materializer can rebuild from the

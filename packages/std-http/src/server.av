@@ -248,7 +248,7 @@ impl Server {
     fn connection(c: Conn, app: A) -> int {
         self.opened(1)
         mut serving = Serving { app: app, handle: self.handle, limits: self.limits, timing: self.timing }
-        let fd = serving.conversed(Link { conn: c, peer: c.peer(), buf: "".bytes(), scanned: 0, head: null, decoder: null, out: "".bytes(), closing: false, served: 0 })
+        let fd = serving.conversed(c)
         self.opened(-1)
         fd
     }
@@ -289,15 +289,17 @@ impl Serving {
     /// Every request the buffer completes served, what is owed written,
     /// and the next bytes read under the deadline the link's state
     /// names — until the link parts, or its peer is silent too long.
-    mut fn conversed(first: Link) -> int {
-        mut l = first
+    /// The link is ONE record, written in place for the whole
+    /// conversation.
+    mut fn conversed(c: Conn) -> int {
+        mut l = Link { conn: c, peer: c.peer(), buf: "".bytes(), scanned: 0, head: null, decoder: null, out: "".bytes(), closing: false, served: 0 }
         while true {
-            l = self.advanced(l)
+            self.advanced(l)
             if !self.flushed(l) { return self.dropped(l) }
-            l = l with { out: "".bytes() }
+            l.out = "".bytes()
             if l.closing { return self.parted(l) }
             match within ms(self.deadline(l)) { l.conn.read(read_size()) } {
-                .Ok(b) -> { l = heard(l, b) },
+                .Ok(b) -> heard(l, b),
                 .Err(_) -> { return self.dropped(l) },
             }
         }
@@ -306,82 +308,82 @@ impl Serving {
 
     /// The buffer framed as far as it goes: every complete request in
     /// it served in order, a partial one left for the next read.
-    mut fn advanced(l: Link) -> Link {
-        mut cur = l
-        while true {
-            match self.stepped(cur) {
-                .Served(next) -> { cur = next },
-                .Waiting(next) -> { return next },
-            }
-        }
-        cur
+    mut fn advanced(mut l: Link) {
+        while self.stepped(l) { nothing_stepped() }
     }
 
-    /// One request's worth of progress over the buffer.
-    mut fn stepped(l: Link) -> Progress {
-        if l.closing { return .Waiting(l) }
+    /// One request's worth of progress over the buffer: whether a
+    /// request was served, so another may follow.
+    mut fn stepped(mut l: Link) -> bool {
+        if l.closing { return false }
         if l.head == null { return self.framing(l) }
         self.bodied(l, l.head!)
     }
 
     /// The head framed from the buffer's start, or waited for, or
     /// refused with its status and a close.
-    mut fn framing(l: Link) -> Progress {
+    mut fn framing(mut l: Link) -> bool {
         match framed(l.buf, 0, l.scanned, self.limits) {
-            .Partial -> .Waiting(l with { scanned: l.buf.length }),
-            .Refused(why) -> self.refused(l, status_of(why)),
-            .Complete(head) -> self.headed(l with { head: head, scanned: 0 }, head),
+            .Partial -> waited(l),
+            .Refused(why) -> refused(l, status_of(why)),
+            .Complete(head) -> {
+                l.head = head
+                l.scanned = 0
+                self.headed(l, head)
+            },
         }
     }
 
     /// A head in hand: a body-less request is served now; a body is
     /// awaited, with `100 Continue` written when it was asked for and
     /// none of it has arrived.
-    mut fn headed(l: Link, head: Head) -> Progress {
+    mut fn headed(mut l: Link, head: Head) -> bool {
         match head.body {
             .None -> self.answered(l, head, "".bytes(), head.end),
-            .Length(_) or .Chunked -> self.bodied(self.continued(l, head), head),
+            .Length(_) or .Chunked -> {
+                continued(l, head)
+                self.bodied(l, head)
+            },
         }
     }
 
-    fn continued(l: Link, head: Head) -> Link {
-        if !head.expects_continue || l.buf.length > head.end { return l }
-        l with { out: l.out.concat(continue_line()) }
-    }
-
     /// The body gathered when the buffer holds it whole.
-    mut fn bodied(l: Link, head: Head) -> Progress {
+    mut fn bodied(mut l: Link, head: Head) -> bool {
         match head.body {
             .None -> self.answered(l, head, "".bytes(), head.end),
-            .Length(n) -> if l.buf.length < head.end + n { .Waiting(l) } else { self.answered(l, head, l.buf.slice(head.end, head.end + n), head.end + n) },
+            .Length(n) -> if l.buf.length < head.end + n { false } else { self.answered(l, head, l.buf.slice(head.end, head.end + n), head.end + n) },
             .Chunked -> self.chunked(l, head),
         }
     }
 
-    mut fn chunked(l: Link, head: Head) -> Progress {
+    mut fn chunked(mut l: Link, head: Head) -> bool {
         match fed(l.decoder ?? chunker(head.end), l.buf, self.limits) {
-            .More(c) -> .Waiting(l with { decoder: c }),
-            .Refused(why) -> self.refused(l, status_of(why)),
-            .Done(body, end) -> self.answered(l with { decoder: null }, head, body, end),
+            .More(c) -> {
+                l.decoder = c
+                false
+            },
+            .Refused(why) -> refused(l, status_of(why)),
+            .Done(body, end) -> {
+                l.decoder = null
+                self.answered(l, head, body, end)
+            },
         }
     }
 
     /// The request answered by the handler and its response queued;
     /// the consumed bytes leave the buffer so a pipelined tail is
     /// framed next.
-    mut fn answered(l: Link, head: Head, body: Bytes, end: int) -> Progress {
+    mut fn answered(mut l: Link, head: Head, body: Bytes, end: int) -> bool {
         let q = Request { raw: l.buf, head: head, body: body, peer: l.peer, params: Unrouted {} }
         let r = self.handle(self.app, q)
-        let served = l.served + 1
-        let keep = head.keep_alive && served < self.timing.requests
-        let bytes = wired(r, keep, head)
-        .Served(l with { buf: l.buf.slice(end, l.buf.length), scanned: 0, head: null, out: l.out.concat(bytes), closing: !keep, served: served })
-    }
-
-    /// A refused head: its status, `connection: close`, and no more
-    /// requests read from this connection.
-    fn refused(l: Link, code: int) -> Progress {
-        .Served(l with { out: l.out.concat(wire(status(code), false, 1)), closing: true, head: null, buf: "".bytes() })
+        l.served = l.served + 1
+        let keep = head.keep_alive && l.served < self.timing.requests
+        l.out = l.out.concat(wired(r, keep, head))
+        l.buf = l.buf.slice(end, l.buf.length)
+        l.scanned = 0
+        l.head = null
+        l.closing = !keep
+        true
     }
 
     /// What the link owes written whole — false when the peer takes
@@ -418,18 +420,38 @@ impl Serving {
     }
 }
 
-/// The bytes a read brought, or — at the peer's end — a link that
-/// finishes what it owes and parts.
-fn heard(l: Link, b: Bytes?) -> Link {
-    let got? = b else { return l with { closing: true } }
-    l with { buf: l.buf.concat(got) }
+fn nothing_stepped() {}
+
+/// A partial head: what was scanned is not scanned again.
+fn waited(mut l: Link) -> bool {
+    l.scanned = l.buf.length
+    false
 }
 
-/// Where one step over the buffer left a link: a request served and
-/// its bytes consumed, or nothing more to serve until a read.
-enum Progress {
-    Served(l: Link)
-    Waiting(l: Link)
+/// A refused head: its status, `connection: close`, and no more
+/// requests read from this connection.
+fn refused(mut l: Link, code: int) -> bool {
+    l.out = l.out.concat(wire(status(code), false, 1))
+    l.closing = true
+    l.head = null
+    l.buf = "".bytes()
+    true
+}
+
+/// `100 Continue` owed, when the request asked for it and none of its
+/// body has arrived.
+fn continued(mut l: Link, head: Head) {
+    if head.expects_continue && l.buf.length <= head.end { l.out = l.out.concat(continue_line()) }
+}
+
+/// The bytes a read brought, or — at the peer's end — a link that
+/// finishes what it owes and parts.
+fn heard(mut l: Link, b: Bytes?) {
+    let got? = b else {
+        l.closing = true
+        return
+    }
+    l.buf = l.buf.concat(got)
 }
 
 /// The response on the wire for a request: a HEAD's answer carries

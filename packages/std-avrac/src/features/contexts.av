@@ -114,7 +114,7 @@ impl Decls {
     /// mistake lives at the read, not at the declaration.
     fn decl_type_of(mut voices: Voices, error_type: TypeId, read_at: Loc?, d: DeclId) -> TypeId {
         let x = self.decl(d)
-        if x.kind is .Const { return self.declared_const_type(voices, error_type, d) }
+        if x.kind is .Const || x.kind is .Collect { return self.declared_const_type(voices, error_type, d) }
         let shown = self.named_by(d) ?? d
         let tname: string? = self.type_name(shown)
         if tname != null { return self.types.intern(Type.TypeName(shown, tname!)) }
@@ -141,7 +141,7 @@ impl Decls {
     /// instead, same as any other seat it cannot answer.
     fn known_decl_type_of(d: DeclId) -> TypeId? {
         let x = self.decl(d)
-        if x.kind is .Const { return self.type_of_const(x.file, x.stmt) }
+        if x.kind is .Const || x.kind is .Collect { return self.type_of_const(x.file, x.stmt) }
         let shown = self.named_by(d) ?? d
         let tname: string? = self.type_name(shown)
         if tname != null { return self.types.known(Type.TypeName(shown, tname!)) }
@@ -285,7 +285,7 @@ export fn known_def_type_of(facts: TypeFacts, view: FileView, s: StmtId) -> Type
     // body's facts hold only its own range — so a const's type is
     // the program's answer or the HOLE. Falling through would index
     // the asker's table with another body's expression (-1).
-    if view.store.const_value(s) != null { return view.decls.type_of_const(view.file, s) }
+    if view.store.const_value(s) != null || view.store.collect_parts(s) != null { return view.decls.type_of_const(view.file, s) }
     let declared: TypeId? = facts.declared_binding(s)
     if declared != null { return declared }
     if view.store.stmt(s) is .For { return view.types.known(Type.Int) }

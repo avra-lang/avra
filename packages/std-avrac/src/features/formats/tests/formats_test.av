@@ -164,8 +164,8 @@ spec "features/formats" {
         then "a repeated name says which name" {
             analyze_source("match \"x\" { \"{a}z{a}\" -> 1\n    _ -> 0 }").report().starts_with("error[F2064]: `a` names two spans of this format\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{a}z{a}\" -> 1\n  ·             ┬\n  ·             ╰── written twice\n──╯\nhelp: rename one, or write `{_}` for a span you do not need")
         }
-        then "a typed hole names the type nothing reads yet" {
-            analyze_source("match \"x\" { \"{n: int}z\" -> 1\n    _ -> 0 }").report().starts_with("error[F2085]: `{n: int}` parses its span, and nothing reads text as `int` yet\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{n: int}z\" -> 1\n  ·             ┬\n  ·             ╰── here\n──╯\nhelp: take the span as text and convert it in the arm — a typed hole waits on a shared decimal reader")
+        then "a hole of a type no text reads as names the two it may take" {
+            analyze_source("match \"x\" { \"{n: float}z\" -> 1\n    _ -> 0 }").report().starts_with("error[F2085]: `{n: float}` reads its span as `float`, and a hole reads text as `string` or `int`\n  ╭─[<source>:1:13]\n1 │ match \"x\" { \"{n: float}z\" -> 1\n  ·             ┬\n  ·             ╰── here\n──╯\nhelp: take the span as text and convert it in the arm")
         }
     }
     given "a grammar declaration" {
@@ -182,8 +182,14 @@ spec "features/formats" {
         then "a hole that binds nothing cannot name a field" {
             refused_with("grammar Anon = \"{a} {_}\"\n1", "has a hole that binds nothing")
         }
-        then "a typed hole names the row it waits for" {
-            refused_with("grammar Typed = \"{n: int}z\"\n1", "nothing reads text as `int` yet")
+        then "an `int` hole is an `int` field, read and printed back" {
+            shown("grammar V = \"v{major: int}.{minor: int}\"\nlet v = V.parse(\"v3.14\")!\n\"\${v.major + v.minor} \${V.print(V { major: -1, minor: 0 }) ?? \"?\"}\"") == "17 v-1.0"
+        }
+        then "a span that is no int reads as nothing" {
+            shown("grammar V = \"v{major: int}\"\n\"\${V.parse(\"vx\") == null} \${V.parse(\"v+1\") == null} \${V.parse(\"v\") == null} \${V.parse(\"v99999999999999999999\") == null}\"") == "true true true true"
+        }
+        then "a hole of a type no text reads as is refused" {
+            refused_with("grammar Typed = \"{n: float}z\"\n1", "reads `{n}` as `float`, and a hole reads text as `string` or `int`")
         }
         then "two holes with nothing between them cannot be scanned, so cannot be declared" {
             refused_with("grammar Adj = \"{a}{b}\"\n1", "a scan needs a literal between them")

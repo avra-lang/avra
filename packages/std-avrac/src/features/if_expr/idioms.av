@@ -1,7 +1,5 @@
 //! The formatter's idioms for this feature — `rule`s, found by
 //! directory like everything else this feature owns.
-use features.{Code, Fix}
-use diagnostics.{warning}
 
 /// An if/else-if ladder of 3+ arms answering a value is `when`. The
 /// pattern's own three parts (`if`, `else if`, `else`) are the
@@ -17,12 +15,9 @@ use diagnostics.{warning}
 /// (avra-8sb5.25.21) — so it never reaches this pattern's `Expr.If`
 /// shape at all, and a bare two-arm `if … else …` (no `else if`)
 /// has no THIRD part to fill this pattern's own `else` seat.
+@fixes("if a { 1 } else if b { 2 } else { 3 }", "when { a -> 1, b -> 2, _ -> 3 }")
 @keeps("if a { x }")
 @keeps("if a { x } else { y }")
 export rule when_ladder {
-    quote { if ${c} { ${a} } else if ${c2} { ${b} } else { ${z} } } -> when_ladder_found(c),
-}
-
-fn when_ladder_found(c: Code) -> Fix {
-    Fix.Say(warning("style.when_ladder", c.loc(), "an if/else-if ladder of 3+ arms answering a value is `when`", "this ladder", null))
+    quote { if ${c} { ${a} } else if ${c2} { ${b} } else { ${z} } } -> quote { when { ${c} -> ${a}, ${c2} -> ${b}, _ -> ${z} } },
 }

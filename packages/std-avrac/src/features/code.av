@@ -8,7 +8,7 @@
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
 use core.{At, ExprId, DeclId, TypeId, TypeRegistry, NodeStore, Binding, Type, Span, Expr, TypeRef, own_name_at}
-use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row}
+use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row, AnnotationFact}
 use features.enums.{answering_arms}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
@@ -21,6 +21,10 @@ export type Analysed = { view: FileView, names: NameFacts, facts: TypeFacts }
 /// One bound hole: the code a rule holds. `of` carries what the
 /// compiler knows about the file it stands in; `at` says which node.
 export type Code = { of: Analysed, at: At }
+
+/// A range `for` loop's own head, `for_range`'s answer: the loop
+/// variable's own text, its bound and its body, each still Code.
+export type ForRange = { name: string, from: Code, to: Code, body: List<Code> }
 
 /// A RUN binder's whole match, wrapped: every `At` it captured
 /// carries this Code's own facts — `quote_pat_binds`' (features/
@@ -83,6 +87,32 @@ impl Code {
                 _ -> false,
             },
             _ -> false,
+        }
+    }
+
+    /// This node's own RANGE `for` head — `for NAME in FROM..TO {
+    /// STMTS }` — absent for every other shape, `ForEach` included. A
+    /// quote pattern cannot hold the loop variable open itself: the
+    /// range desugars to a `cond`/`step` that reads the variable
+    /// AGAIN (`features/loops/builders.av`'s `build_for`), and the
+    /// matcher's NAME-SEAT binder and an ordinary value `Hole` share
+    /// one accumulator slot under two incompatible comparisons — a
+    /// whole-statement `own_name_at` check, then a `subtree_fp` one —
+    /// so a pattern naming the loop variable twice can never hit
+    /// (avra-8sb5.25.45). Read structurally instead, off the
+    /// declaration's own fields.
+    fn for_range() -> ForRange? {
+        match self.at {
+            .Stmt(id) -> match self.of.view.store.stmt(id) {
+                .For(name, from, to, _, _, stmts) -> ForRange {
+                    name: name.of,
+                    from: Code { of: self.of, at: At.Expr(from) },
+                    to: Code { of: self.of, at: At.Expr(to) },
+                    body: [Code { of: self.of, at: At.Stmt(s) } for s in stmts],
+                },
+                _ -> null,
+            },
+            _ -> null,
         }
     }
 
@@ -181,6 +211,34 @@ impl Code {
         match self.answering() {
             n? -> n >= 2
             null -> false
+        }
+    }
+
+    /// This node's own declaration's `///` doc, its lines joined — null
+    /// where it wrote none, and for every node that is not a declaring
+    /// statement itself (a call inside a body answers null, not its
+    /// enclosing fn's doc).
+    fn doc() -> string? {
+        let d? = self.declaring() else { return null }
+        let lines? = self.of.view.decls.doc_of(d) else { return null }
+        lines.join("\n")
+    }
+
+    /// This node's own declaration's `@name(args)`, in written order —
+    /// empty for every node that is not a declaring statement.
+    fn annotations() -> List<AnnotationFact> {
+        let d? = self.declaring() else { return [] }
+        self.of.view.decls.annotations_of(d)
+    }
+
+    /// The declaration THIS node's own statement makes — the exact
+    /// statement, never merely the innermost one that encloses it
+    /// (`enclosing_decl`'s question, for a position anywhere inside a
+    /// body).
+    fn declaring() -> DeclId? {
+        match self.at {
+            .Stmt(id) -> self.of.view.decls.decl_of(self.of.view.file, id),
+            .Expr(_) or .Pat(_) or .Field(_, _) -> null,
         }
     }
 

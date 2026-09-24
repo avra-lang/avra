@@ -1,0 +1,49 @@
+//! `avra explain <name>` — a declared fn/type/enum/trait/const's own
+//! `///` doc and `@name(args)` annotations, `Program.explain_doc`'s
+//! one door (compiler/program.av).
+use @std.io.{make_dirs, write_text}
+use commands.{root_program}
+
+fn doc_pkg_named(name: string) -> string {
+    let root = "/tmp/avra-explain-doc-test/${name}"
+    let _ = make_dirs("${root}/src")
+    let _ = write_text("${root}/avra.toml", "[package]\nname = \"${name}\"\nversion = \"0.0.1\"\n")
+    root
+}
+
+fn doc_of(root: string, src: string, name: string) -> string? {
+    let _ = write_text("${root}/src/main.av", src)
+    mut p = root_program(root)
+    p.explain_doc(name)
+}
+
+spec "commands/explain — a declaration's doc and annotations" {
+    given "a fn with a doc and an annotation" {
+        then "both come back, doc first" {
+            let root = doc_pkg_named("fn-doc")
+            let src = "fn tag(n: int) { }\n\n/// adds one\n@tag(2)\nfn bump(n: int) -> int {\n    n + 1\n}\n\nfn main() -> int {\n    bump(1)\n}\n"
+            doc_of(root, src, "bump") == "adds one\n@tag(2)"
+        }
+    }
+    given "a fn with no doc and no annotation" {
+        then "a plain line names it, with neither" {
+            let root = doc_pkg_named("fn-bare")
+            let src = "fn bump(n: int) -> int {\n    n + 1\n}\n\nfn main() -> int {\n    bump(1)\n}\n"
+            doc_of(root, src, "bump") == "bump — no doc, no annotations"
+        }
+    }
+    given "a type" {
+        then "its own doc comes back" {
+            let root = doc_pkg_named("type-doc")
+            let src = "/// a labelled point\ntype Point = { x: int, y: int }\n\nfn main() -> int {\n    Point { x: 1, y: 2 }.x\n}\n"
+            doc_of(root, src, "Point") == "a labelled point"
+        }
+    }
+    given "a name nothing declares" {
+        then "nothing to explain" {
+            let root = doc_pkg_named("missing")
+            let src = "fn main() -> int {\n    0\n}\n"
+            doc_of(root, src, "NotHere") == null
+        }
+    }
+}

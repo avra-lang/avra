@@ -102,8 +102,18 @@ fn literal_record(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, f
 /// A field's crossing value as the slots a box lays it in: a value
 /// record's fields, or the value itself.
 fn inline_slots(ty: TypeId, v: MetaVal, types: TypeRegistry, heap: MetaHeap) -> List<MetaVal> {
-    if types.travels_wide(ty) { return heap.slots(v) }
+    if types.valued_carrier(ty) { return valued_slots(v, heap) }
+    if types.lays_inline(ty) { return heap.slots(v) }
     [v]
+}
+
+/// A value enum's two slots: its tag and its word — the absent tag for
+/// a nullable's absence, a zero word for a variant carrying nothing.
+fn valued_slots(v: MetaVal, heap: MetaHeap) -> List<MetaVal> {
+    if v is .Absent || v is .Gone { return [MetaVal.Int(absent_tag), MetaVal.Int(0)] }
+    let s = heap.slots(v)
+    if s.length >= 2 { return s.slice(0, 2) }
+    s.concat([MetaVal.Int(0)])
 }
 
 /// A variant literal: the tag first, the payloads after — the tagged
@@ -186,11 +196,26 @@ impl LowerCx {
     /// A value record lives in registers: each field crosses as its
     /// own register, and the record is their pack.
     mut fn wide_crossed(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
+        if self.valued(ty) { return self.named_over(ty, self.valued_crossed(v, heap, self.view.types.machine_type(ty), name)) }
         if !self.view.types.is_wide(ty) { return self.pack(ty, [self.materialized(v, heap, self.view.types.flat_fields(ty)[0], name)]) }
         let slots = heap.slots(v)
         let fields = self.view.types.flat_fields(ty)
         if slots.length != fields.length { return self.meta_defect(ty) }
         self.pack(ty, [self.materialized(slots[j], heap, f, name) for j, f in fields])
+    }
+
+    /// A value enum crossed as its tag and the word its variant carries.
+    mut fn valued_crossed(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
+        if v is .Absent || v is .Gone { return self.pack(ty, [self.const_int(absent_tag), self.const_int(0)]) }
+        let inner: TypeId? = self.view.types.carried(ty)
+        if inner != null { return self.valued_crossed(v, heap, self.view.types.machine_type(inner!), name) }
+        let slots = heap.slots(v)
+        let head? = slots.first() else { return self.meta_defect(ty) }
+        let tag? = match head { .Int(n) -> n, rest -> null } else { return self.meta_defect(ty) }
+        let sig? = self.variants_of(ty) else { return self.meta_defect(ty) }
+        let carried = sig.payloads[tag]
+        if carried.is_empty() || slots.length < 2 { return self.pack(ty, [self.const_int(tag), self.const_int(0)]) }
+        self.pack(ty, [self.const_int(tag), self.materialized(slots[1], heap, carried[0], name)])
     }
 
     mut fn meta_pair(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
@@ -260,6 +285,27 @@ impl LowerCx {
         let ty = self.out.type_of_reg(v)
         if !self.scalar_nullable(ty) { return self.array_push(box, v) }
         self.array_push_maybe(box, self.presence_of(v, ty), self.extracted(v, 1, self.mint_ty(self.carried_type(ty))))
+    }
+
+    /// A LEAF laid into a record's or a payload's box: a value enum as
+    /// its tag and its word, the word owned when its variant carries a
+    /// pointer; anything else one slot.
+    mut fn push_leaf(box: Reg, v: Reg) {
+        let ty = self.out.type_of_reg(v)
+        if !self.valued(ty) { return self.push_slot(box, v) }
+        let tag = self.extracted(v, 0, self.mint_shape(Type.Int))
+        self.array_push(box, tag)
+        self.array_push_tagged(box, self.extracted(v, 1, self.mint_shape(Type.Int)), tag, self.const_int(self.view.types.counted_mask(ty)))
+    }
+
+    /// A leaf written over a record's slots from `at` — `push_leaf`'s
+    /// write.
+    mut fn leaf_write(box: Reg, at: int, v: Reg) {
+        let ty = self.out.type_of_reg(v)
+        if !self.valued(ty) { return self.slot_write(box, self.const_int(at), v) }
+        let tag = self.extracted(v, 0, self.mint_shape(Type.Int))
+        self.slot_set(box, self.const_int(at), tag)
+        self.slot_set_tagged(box, self.const_int(at + 1), self.extracted(v, 1, self.mint_shape(Type.Int)), tag, self.const_int(self.view.types.counted_mask(ty)))
     }
 
     /// `v` written into the slot at `at` — a nullable scalar with its
@@ -370,16 +416,19 @@ impl LowerCx {
         // an enum whose variants carry nothing IS its tag
         let ty = self.view.types.intern(sh)
         if self.view.types.is_flat(ty) { return self.pack(ty, [self.const_int(tag)]) }
+        // a value enum is its tag and its one word, in registers
+        if self.view.types.is_valued(ty) { return self.pack(ty, [self.const_int(tag), payloads.first() ?? self.const_int(0)]) }
         let words = flatten([self.leaves(p) for p in payloads])
-        let dst = self.array_sized(sh, self.box_size(1 + words.length))
+        let dst = self.array_sized(sh, self.box_size(1 + self.width_of(words)))
         self.push_slot(dst, self.const_int(tag))
-        for w in words { self.push_slot(dst, w) }
+        for w in words { self.push_leaf(dst, w) }
         dst
     }
 
     /// The TAG a tagged value carries. Slot 0, always an int — asking
     /// here is how a consumer avoids knowing the number.
     mut fn tag_of(v: Reg) -> Reg {
+        if self.valued(self.out.type_of_reg(v)) { return self.extracted(self.opened_enum(v), 0, self.mint_shape(Type.Int)) }
         if self.view.types.is_flat(self.out.type_of_reg(v)) { return self.extracted(v, 0, self.mint_shape(Type.Int)) }
         self.slot_read(v, 0, null)
     }
@@ -393,8 +442,9 @@ impl LowerCx {
     /// The Kth of a variant's payloads (`carried`) — past the tag and
     /// the widths of the payloads before it.
     mut fn payload_at(v: Reg, k: int, carried: List<TypeId>) -> Reg {
+        if self.valued(self.out.type_of_reg(v)) { return self.extracted(self.opened_enum(v), 1, self.mint_ty(carried[k])) }
         let at = 1 + self.view.types.slot_offset(carried, k)
-        if self.view.types.travels_wide(carried[k]) { return self.unboxed_at(v, at, carried[k]) }
+        if self.view.types.lays_inline(carried[k]) { return self.unboxed_at(v, at, carried[k]) }
         self.slot_read(v, at, carried[k])
     }
 
@@ -420,7 +470,7 @@ impl LowerCx {
     /// read back from its slots.
     mut fn boxed_field(subject: Reg, subject_ty: TypeId, n: int, ty: TypeId?) -> Reg {
         let at = self.field_offset(subject_ty, n)
-        if ty != null && self.view.types.travels_wide(ty!) { return self.unboxed_at(subject, at, ty!) }
+        if ty != null && self.view.types.lays_inline(ty!) { return self.unboxed_at(subject, at, ty!) }
         self.slot_read(subject, at, ty)
     }
 
@@ -428,7 +478,12 @@ impl LowerCx {
     /// record's fields each into its own slot.
     mut fn field_written(box: Reg, record: TypeId, n: int, v: Reg) {
         let base = self.field_offset(record, n)
-        for j, r in self.leaves(v) { self.slot_write(box, self.const_int(base + j), r) }
+        mut at = base
+        // LICENSED I4: a running offset, each leaf past the width before it
+        for r in self.leaves(v) {
+            self.leaf_write(box, at, r)
+            at = at + self.view.types.slot_width(self.out.type_of_reg(r))
+        }
     }
 
     /// Where a boxed record's Nth field starts.
@@ -541,6 +596,7 @@ impl LowerCx {
         match self.repr_of(opt) {
             .Niche or .Boxed -> self.nonzero(v, self.zeroed(self.mint_ty(opt))),
             .Pair -> self.extracted(v, 0, self.mint_shape(Type.Bool)),
+            .Tagged -> self.bin(Type.Bool, BinOp.Ne, self.extracted(v, 0, self.mint_shape(Type.Int)), self.const_int(absent_tag)),
         }
     }
 
@@ -560,9 +616,18 @@ impl LowerCx {
         if self.view.types.is_flat(ty) { return self.pack(ty, parts) }
         // a value-record field is laid INLINE, its fields as slots
         let words = flatten([self.leaves(r) for r in parts])
-        let dst = self.array_sized(self.view.types.shape_of(ty), self.box_size(words.length))
-        for r in words { self.push_slot(dst, r) }
+        let dst = self.array_sized(self.view.types.shape_of(ty), self.box_size(self.width_of(words)))
+        for r in words { self.push_leaf(dst, r) }
         dst
+    }
+
+    /// The slots these leaves take in a box: a value enum's two, one
+    /// for every other.
+    fn width_of(words: List<Reg>) -> int {
+        mut n = 0
+        // LICENSED I4: a sum, not a scan
+        for w in words { n = n + self.view.types.slot_width(self.out.type_of_reg(w)) }
+        n
     }
 
     /// One element of a packed value, into a caller-typed register.
@@ -588,7 +653,7 @@ impl LowerCx {
     /// holds it beside the flag.
     mut fn carried_of(v: Reg, opt: TypeId) -> Reg {
         match self.repr_of(opt) {
-            .Niche -> v,
+            .Niche or .Tagged -> v,
             .Boxed -> self.boxed_carried(v, self.carried_type(opt)),
             .Pair -> self.extracted(v, 1, self.mint_ty(self.carried_type(opt))),
         }
@@ -608,6 +673,7 @@ impl LowerCx {
     mut fn adopted(into: TypeId, from_null: bool, r: Reg) -> Reg {
         match self.repr_of(into) {
             .Niche -> r,
+            .Tagged -> if from_null { self.absent_of(into) } else { r },
             .Boxed -> self.boxed_adoption(into, from_null, r),
             .Pair -> self.pair_adoption(into, from_null, r),
         }
@@ -655,6 +721,7 @@ impl LowerCx {
         match self.repr_of(opt) {
             .Niche or .Boxed -> self.zeroed(self.mint_ty(opt)),
             .Pair -> self.absent_pair(opt),
+            .Tagged -> self.pack(opt, [self.const_int(absent_tag), self.const_int(0)]),
         }
     }
 
@@ -683,6 +750,7 @@ impl LowerCx {
     mut fn hollow_of(inner: TypeId) -> Reg {
         // a value record's hollow is its fields' hollows, packed — and a
         // name over one wears that pack
+        if self.valued(inner) { return self.named_over(inner, self.pack(self.view.types.machine_type(inner), [self.const_int(absent_tag), self.const_int(0)])) }
         if self.view.types.travels_wide(inner) { return self.pack(inner, [self.hollow_of(f) for f in self.view.types.flat_fields(inner)]) }
         if self.view.types.seen_shape(inner) is .Bool {
             // LICENSED I60: `inner` may be a NAMED bool type — neither the fixed-shape nor the node-tied verb fits
@@ -706,7 +774,15 @@ impl LowerCx {
             // the BOX is what must be present; its slot is read after
             .Boxed -> self.insisted_boxed(v, opt),
             .Pair -> self.insisted_pair(v, opt),
+            .Tagged -> self.insisted_tagged(v, opt),
         }
+    }
+
+    /// A value enum's nullable insisted on: the tag is what must be
+    /// present, and the value is the same registers.
+    mut fn insisted_tagged(v: Reg, opt: TypeId) -> Reg {
+        let _ = self.insist_scalar(Type.Int, self.presence_of(v, opt), self.extracted(v, 0, self.mint_shape(Type.Int)))
+        v
     }
 
     /// A BOXED nullable insisted on: the BOX is what must be present,
@@ -764,6 +840,7 @@ enum Repr {
     Niche
     Pair
     Boxed
+    Tagged
 }
 
 /// A nullable's inner LAYOUT, decided from the type registry alone —
@@ -775,9 +852,14 @@ fn inner_repr_of(types: TypeRegistry, inner: TypeId) -> Repr {
     // absence already, and an encoding never spends one value twice
     if types.seen_shape(inner) is .Opt { return Repr.Pair }
     if types.rides_pointer(inner) { return Repr.Niche }
+    // a value enum's absence is its spare tag, so it stays in registers
+    if types.is_valued(types.machine_type(inner)) { return Repr.Tagged }
     if types.is_flat(inner) { return Repr.Boxed }
     Repr.Pair
 }
+
+/// A value enum's absence: a tag no variant has.
+export const absent_tag: int = -1
 
 /// A `Repr`'s own word — the answer's LAST mile, once the layout is decided.
 fn nullable_word(r: Repr) -> string {
@@ -785,6 +867,7 @@ fn nullable_word(r: Repr) -> string {
         .Niche -> "niche",
         .Boxed -> "one-slot box",
         .Pair -> "pair",
+        .Tagged -> "tag -1",
     }
 }
 

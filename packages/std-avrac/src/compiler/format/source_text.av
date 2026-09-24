@@ -3,7 +3,7 @@
 //! while node order, operator grouping, declaration marks and payloads
 //! are preserved. `avra expand` and the future formatter share this one
 //! renderer.
-use core.{NodeStore, Remark, Trivia, Span, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Plain, Variant, Case, Annotation, TypeRef, FormatPart, Hole, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed, marks_prefixed, body_behavior, same_expr, some_list, doc_line_text}
+use core.{NodeStore, Remark, Trivia, Span, StmtId, ExprId, PatId, Expr, Stmt, Arm, BinOp, Param, Plain, Variant, Case, Annotation, TypeRef, FormatPart, Hole, CollectKind, CollectScope, Projection, quoted_text, spelled, op_symbol, joined, flatten, filled, mark_prefixed, marks_prefixed, body_behavior, same_expr, some_list, doc_line_text}
 use features.{chained_binder}
 use features.expr_spine.{words, applieds}
 use @std.text.{Text, builder}
@@ -262,6 +262,7 @@ impl SourceText {
             .Spec(name, cases) -> [self.spec_decl(name, cases, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Defer(body, on_error) -> [source_line(depth, "${if on_error { "errdefer" } else { "defer" }} ${self.written_body(body, depth)}")],
             .Rule(name, arms, _) -> [self.rule_decl(exported, name.of, arms, self.stmt_end(s), self.stmt_flat(s), depth)],
+            .Collect(name, ty, kind, scope, proj, order) -> [source_line(depth, self.collect_decl(exported, name.of, ty, kind, scope, proj, order))],
             .Error -> [source_line(depth, "__error")],
         }
     }
@@ -303,6 +304,28 @@ impl SourceText {
 
     fn annotation_type(ty: TypeRef?) -> string {
         if ty == null { "" } else { ": ${spelled(ty!)}" }
+    }
+
+    /// One collect field: `name: it.path`, or `name: it` for the
+    /// bare declaration — `path` empty.
+    fn collect_field(name: string, path: List<Plain>) -> string {
+        "${name}: it${if path.is_empty() { "" } else { ".${joined([p.of for p in path], ".")}" }}"
+    }
+
+    fn collect_kind_word(k: CollectKind) -> string {
+        match k {
+            .Rule -> "rule",
+            .UnknownKind(w) -> w,
+        }
+    }
+
+    fn collect_scope_word(s: CollectScope) -> string {
+        match s {
+            .Self -> "self",
+            .Package -> "package",
+            .Closure -> "closure",
+            .UnknownScope(w) -> w,
+        }
     }
 
     fn fn_mark(s: StmtId) -> string {
@@ -562,6 +585,15 @@ impl SourceText {
         if one_line { return source_line(depth, "${head} { ${joined([self.arm_text(a, depth) for a in arms], ", ")} }") }
         let body = flatten([self.trivia_before(self.arm_start(a), depth + 1).concat([self.arm_line(a, depth + 1)]) for a in arms]).concat(self.trivia_before(end, depth + 1))
         "${source_line(depth, "${head} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    /// A collect's projection prints as a struct literal over `it`
+    /// paths — empty the bare declaration — and its order as the
+    /// `it.field` list `by` named.
+    fn collect_decl(exported: string, name: string, ty: TypeRef, kind: CollectKind, scope: CollectScope, proj: Projection, order: List<Plain>) -> string {
+        let fields = joined([self.collect_field(f.field.of, f.path) for f in proj.fields], ", ")
+        let by = if order.is_empty() { "" } else { " by ${joined(["it.${k.of}" for k in order], ", ")}" }
+        "${exported}collect ${source_name(name)}: ${spelled(ty)} = ${self.collect_kind_word(kind)} in ${self.collect_scope_word(scope)} as ${proj.ty.name} { ${fields} }${by}"
     }
 
     /// One case's `then` line, standing alone (its group is empty).
@@ -883,14 +915,21 @@ impl SourceText {
 
     mut fn match_expr(subject: ExprId, arms: List<Arm>, id: ExprId, depth: int) -> string {
         let head = self.expression(subject, loosest_tier, depth)
+        "match ${head} ${self.arms_braced(arms, id, depth)}"
+    }
+
+    /// An arm list's own braces, `match`'s and a trailing ARMS
+    /// BLOCK's shared spelling — the head ("match subject", or
+    /// nothing at all) is the one difference between them.
+    mut fn arms_braced(arms: List<Arm>, id: ExprId, depth: int) -> string {
         if self.span_flat(self.store.expr_span(id)) {
-            return "match ${head} { ${joined([self.arm_text(a, depth) for a in arms], ", ")} }"
+            return "{ ${joined([self.arm_text(a, depth) for a in arms], ", ")} }"
         }
         // AN ARM IS NOT A STATEMENT, so its remarks are drained at the
         // arm's first pattern — the printer emits lines in more places
         // than it has node kinds.
         let body = flatten([self.trivia_before(self.arm_start(a), depth + 1).concat([self.arm_line(a, depth + 1)]) for a in arms]).concat(self.trivia_before(end_of(self.store.expr_span(id)), depth + 1))
-        "match ${head} {\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+        "{\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
     /// An arm's patterns, then its guard when it has one.
@@ -1015,11 +1054,28 @@ impl SourceText {
     }
 
     mut fn trailing_lambda(params: List<Param>, body: ExprId, id: ExprId, depth: int) -> string {
-        let head = self.trailing_head(params, depth)
-        let one = self.span_flat(self.store.expr_span(id))
+        let arms? = self.arms_sugar_body(params, body) else {
+            let head = self.trailing_head(params, depth)
+            let one = self.span_flat(self.store.expr_span(id))
+            return match self.store.expr(body) {
+                .Block(stmts, value) -> self.braced(head, stmts, value, end_of(self.store.expr_span(body)), one, depth),
+                rest -> self.braced(head, [], body, end_of(self.store.expr_span(body)), one, depth),
+            }
+        }
+        self.arms_braced(arms, body, depth)
+    }
+
+    /// A trailing lambda's body, read back as ARMS-SUGAR: the
+    /// pronoun's one seat, its whole body one `match` over that same
+    /// seat and nothing else — absent for every other shape, which
+    /// is what makes this read-back safe: a hand-written `{ match it
+    /// { ... } }` and the sugar mint the SAME node, so canonicalizing
+    /// one form into the other is exactly what a formatter is for.
+    fn arms_sugar_body(params: List<Param>, body: ExprId) -> List<Arm>? {
+        if !is_pronoun(params) { return null }
         match self.store.expr(body) {
-            .Block(stmts, value) -> self.braced(head, stmts, value, end_of(self.store.expr_span(body)), one, depth),
-            rest -> self.braced(head, [], body, end_of(self.store.expr_span(body)), one, depth),
+            .Match(subject, arms) if self.store.ident_name(subject) == "it" -> arms,
+            rest -> null,
         }
     }
 

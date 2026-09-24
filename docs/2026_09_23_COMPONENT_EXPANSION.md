@@ -507,5 +507,7 @@ Swift / Kotlin / JS (C only today).
   written as a fn (`layer auth { req, next -> … }`) — landed. A
   computed value (`let a = …`) is not placed by its type: that waits
   for typed expansion (S6); `layers: [a]` sets it by name.
-- S5 next: `req.under(prefix)`, then typed hole codecs (piece 3).
+- `req.under(prefix)` (whole segments, the router's law) and typed
+  holes (`{id: int}` in patterns, grammars and routes; a span that is
+  no int fails the match) — landed. S5 is complete.
 - S6: the expand stage and declaring blocks.

@@ -1157,7 +1157,7 @@ impl Lexing {
     /// law only by an accident of where they land: attached, they
     /// print through `docs`; unattached, they were silently dropped.
     mut fn orphan_pending() {
-        for at in self.pending_ats { self.remarks.push(Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, at)), at: at }) }
+        self.remarks = self.remarks.concat([Remark { trivia: Trivia.Comment(comment_line(self.src, self.n, at)), at: at } for at in self.pending_ats])
         self.pending = []
         self.pending_ats = []
     }
@@ -1165,9 +1165,7 @@ impl Lexing {
     /// What the input ended inside: an open hole or an open quote.
     mut fn closed_at_end() {
         if self.in_hole() { self.errors.push(hole_error(self.n)) }
-        for fr in self.frames {
-            self.errors.push(LexError { message: if fr.raw { "a block is never closed" } else { "a `quote` block is never closed" }, span: span_of(fr.lo, self.n) })
-        }
+        self.errors = self.errors.concat([LexError { message: if fr.raw { "a block is never closed" } else { "a `quote` block is never closed" }, span: span_of(fr.lo, self.n) } for fr in self.frames])
     }
 }
 

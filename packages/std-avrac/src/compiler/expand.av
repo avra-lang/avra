@@ -4,8 +4,8 @@
 use core.{Expr, StmtId, Span, Param, Variant, Mark, same_stmt, DeclId, FileId, ExprId, fp, flatten, TypeId, Type, same_file, FnParts, TypeRef, source_spelled, named_ref, spelled, Scoped}
 use features.{Unsettled, unsettled_label, MetaVal, MetaHeap, Namespace, FnSig, StructSig, EnumSig, nothing, FileView, spelled_type, DeclareWork, Generation}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
-use @std.meta.{Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Kind}
-use core.{Stmt, StmtId, Arm, BodyView, HoleKind, Filled, copier, quote_kind, all_codes, is_name_cont}
+use @std.meta.{Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Kind, Annotation as MetaAnnotation}
+use core.{Stmt, StmtId, Arm, BodyView, HoleKind, Filled, copier, hole_runs, quote_kind, all_codes, is_name_cont}
 use diagnostics.{loc_at}
 use @std.testing.{words}
 
@@ -222,12 +222,12 @@ impl Workspace {
     // shapes are minted. ──
 
     /// A LIST OF TEMPLATES HAS NO EXPRESSION POSITION. Every other
-    /// seat joins a run — statements, arms and binders each flatten a
-    /// `Many` — but an expression seat holds ONE value and no
-    /// separator between two of them is the compiler's to choose. The
-    /// arm that answered an Error node here spliced that choice
-    /// silently and let the typer complain about the SEAT, which
-    /// names neither the mistake nor its exits.
+    /// seat joins a run — statements, arms, binders and a run seat
+    /// itself each flatten a `Many` — but an expression seat holds
+    /// ONE value and no separator between two of them is the
+    /// compiler's to choose. The arm that answered an Error node here
+    /// spliced that choice silently and let the typer complain about
+    /// the SEAT, which names neither the mistake nor its exits.
     fn spliced(f: FileId, node: Node, kind: HoleKind) -> Filled {
         if kind is .Expression && node is .Many { return Filled.Unplaceable(many_in_expression()) }
         match kind {
@@ -237,6 +237,7 @@ impl Workspace {
             .Type -> Filled.Type(self.spliced_type(node)),
             .Statement -> Filled.Stmts(self.spliced_stmts(f, node)),
             .Arm -> Filled.Arms(self.spliced_arms(f, node)),
+            .Run -> Filled.Exprs(self.spliced_exprs(f, node)),
         }
     }
 
@@ -266,6 +267,15 @@ impl Workspace {
                 store.alloc_expr(Expr.Body("text", parts, hs, BodyView.None))
             },
             .Many(_) -> store.alloc_expr(Expr.Error),
+        }
+    }
+
+    /// A run fill: every item its own expression, flattened — a
+    /// single value splices as the one-element run it stands for.
+    fn spliced_exprs(f: FileId, node: Node) -> List<ExprId> {
+        match node {
+            .Many(items) -> [self.spliced_expr(f, i) for i in items],
+            .Template(_, _, _, _) or .Name(_) or .Text(_) or .Int(_) or .Float(_) or .Bool(_) or .Interp(_, _) -> [self.spliced_expr(f, node)],
         }
     }
 
@@ -321,7 +331,7 @@ impl Workspace {
         if quote_kind(src, q) is .Holes { return self.holes_copied(f, fills, seat) }
         let ws = self
         let thunks = [(kind: HoleKind) -> ws.spliced(f, fill, kind) for fill in fills]
-        mut rb = copier(src, self.decls.store_of(f), thunks)
+        mut rb = copier(src, self.decls.store_of(f), thunks, hole_runs(src, q))
         let copied_stmts: List<StmtId> = match body.view { .Verbatim(ss, _) -> ss, .None -> [], .Expanded(_) -> [] }
         let copied_arms: List<Arm> = match body.view { .Verbatim(_, arms) -> arms, .None -> [], .Expanded(_) -> [] }
         let stmts = rb.stmts(copied_stmts)
@@ -404,12 +414,27 @@ impl Workspace {
         let v = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
         let at = placed(v, v.store.stmt_span(x.stmt))
         match self.decls.meta_seat(want) {
-            .Fn -> meta_of_fn(MetaFn { name: x.name, params: self.crossed_params(v, x.stmt, d), answer: self.crossed_answer(v, x.stmt), at: at, answers: self.answer_kind(d) }, heap),
-            .Type -> meta_of_type(MetaType { name: x.name, fields: self.crossed_fields(v, x.stmt, d), variants: self.crossed_variants(v, x.stmt, d), at: at }, heap),
+            .Fn -> meta_of_fn(MetaFn { name: x.name, params: self.crossed_params(v, x.stmt, d), answer: self.crossed_answer(v, x.stmt), at: at, answers: self.answer_kind(d), doc: self.decl_doc_text(d), annotations: self.decl_annotations(v, d) }, heap),
+            .Type -> meta_of_type(MetaType { name: x.name, fields: self.crossed_fields(v, x.stmt, d), variants: self.crossed_variants(v, x.stmt, d), at: at, doc: self.decl_doc_text(d), annotations: self.decl_annotations(v, d) }, heap),
             .Named -> meta_of_named(Named { name: x.name, at: at }, heap),
             .Trait -> meta_of_trait(MetaTrait { name: x.name, at: at }, heap),
             .Other -> MetaVal.Absent,
         }
+    }
+
+    /// A declaration's own `///` doc, its lines joined — the one
+    /// source `Fn.doc`/`Type.doc` cross with, off the door every
+    /// other reader of a declaration's doc now shares.
+    fn decl_doc_text(d: DeclId) -> string? {
+        let lines? = self.decls.doc_of(d) else { return null }
+        lines.join("\n")
+    }
+
+    /// A declaration's own `@name(args)`, crossed at its own place —
+    /// its facts' literal argument text, already re-read once at
+    /// admit, needs no second pass over the store.
+    fn decl_annotations(v: FileView, d: DeclId) -> List<MetaAnnotation> {
+        [MetaAnnotation { name: a.name, args: a.args, at: placed(v, a.span) } for a in self.decls.annotations_of(d)]
     }
 
     /// A fn's parameters as `Param` values: name, the type's spelling
@@ -451,6 +476,8 @@ impl Workspace {
             at: placed(v, va.span),
             fields: [crossed_field(v, p, kind_at(kinds, j)) for j, p in va.payloads],
             marks: crossed_marks(v, va.marks),
+            doc: null,
+            annotations: crossed_annotations(v, va.marks),
         }
     }
 

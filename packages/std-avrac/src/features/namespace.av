@@ -119,13 +119,13 @@ impl Decls {
             let x = self.decl(i.decl)
             let name = if i.renamed.is_empty() { x.name } else { i.renamed }
             let mine: DeclId? = match x.kind {
-                .Fn or .Const or .Rule -> fns.get(name),
+                .Fn or .Const or .Rule or .Collect -> fns.get(name),
                 .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> types.get(name),
                 .Syntax -> syntaxes.get(name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
             let shared: DeclId? = match x.kind {
-                .Fn or .Const or .Rule -> module.base.fns.get(name),
+                .Fn or .Const or .Rule or .Collect -> module.base.fns.get(name),
                 .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> module.base.types.get(name),
                 .Syntax -> module.base.syntaxes.get(name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
@@ -133,7 +133,7 @@ impl Decls {
             let prior: DeclId? = mine ?? shared
             if prior == null {
                 match x.kind {
-                    .Fn or .Const or .Rule -> {
+                    .Fn or .Const or .Rule or .Collect -> {
                         fns.set(name, i.decl)
                         fn_names.push(name)
                     },
@@ -152,14 +152,14 @@ impl Decls {
         for i in prelude.concat([Import { decl: d, at: null, renamed: "" } for d in self.builtin_decls()]) {
             let x = self.decl(i.decl)
             let prior: DeclId? = match x.kind {
-                .Fn or .Const or .Rule -> fns.get(x.name) ?? module.base.fns.get(x.name),
+                .Fn or .Const or .Rule or .Collect -> fns.get(x.name) ?? module.base.fns.get(x.name),
                 .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> types.get(x.name) ?? module.base.types.get(x.name),
                 .Syntax -> syntaxes.get(x.name) ?? module.base.syntaxes.get(x.name),
                 .Method or .Default or .Impl or .Main or .Case -> null,
             }
             if prior == null {
                 match x.kind {
-                    .Fn or .Const or .Rule -> {
+                    .Fn or .Const or .Rule or .Collect -> {
                         fns.set(x.name, i.decl)
                         fn_names.push(x.name)
                     },
@@ -264,7 +264,7 @@ impl Binder {
         let as_fn: DeclId? = self.names.fns.get(name)
         let as_type: DeclId? = self.names.types.get(name)
         match kind {
-            .Fn or .Const or .Rule -> as_fn,
+            .Fn or .Const or .Rule or .Collect -> as_fn,
             .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> as_type,
             .Syntax -> self.names.syntaxes.get(name),
             .Method or .Default or .Impl or .Main or .Case -> null,
@@ -273,7 +273,7 @@ impl Binder {
 
     fn bind(kind: DeclKind, name: string, d: DeclId) {
         match kind {
-            .Fn or .Const or .Rule -> self.bind_fn(name, d),
+            .Fn or .Const or .Rule or .Collect -> self.bind_fn(name, d),
             .Record or .Named or .Alias or .Enum or .Trait or .Builtin -> self.bind_type(name, d),
             .Syntax -> self.bind_syntax(name, d),
             .Method or .Default or .Impl or .Main or .Case -> not_bound(),
@@ -354,7 +354,7 @@ fn method_taken(at: Loc?, target: string, name: string) -> Diag {
 
 fn defined_twice(at: Loc?, kind: DeclKind, name: string) -> Diag {
     match kind {
-        .Fn or .Const or .Rule -> refusal("resolve.duplicate_fn", at, "`${name}` is defined more than once", "redefined here", "rename one of them"),
+        .Fn or .Const or .Rule or .Collect -> refusal("resolve.duplicate_fn", at, "`${name}` is defined more than once", "redefined here", "rename one of them"),
         .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Builtin -> refusal("resolve.duplicate_type", at, "`${name}` is declared more than once", "redeclared here", "rename one of them"),
     }
 }

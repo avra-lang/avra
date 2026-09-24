@@ -41,6 +41,8 @@ impl StaticBuild {
         // the NICHE first: a flat record that RIDES a pointer is its
         // own absence, and only a flat WORD needs the one-slot box
         if v is .Gone { return Slot.Absent }
+        // a value enum's absence crosses a slot as the null pointer
+        if self.decls.types.is_valued(self.decls.types.machine_type(inner)) { return if v is .Absent { Slot.Null } else { self.slot_of(v, heap, inner) } }
         if self.decls.types.rides_pointer(inner) { return if v is .Absent { Slot.Null } else { self.slot_of(v, heap, inner) } }
         if self.decls.types.is_flat(inner) { return if v is .Absent { Slot.Null } else { self.array_slot(heap.slots(v), heap, [inner]) } }
         if v is .Absent { return Slot.Absent }
@@ -80,7 +82,10 @@ impl StaticBuild {
 
     /// The slot types a field takes in a box: a value record's fields, or itself.
     fn slot_types(ty: TypeId) -> List<TypeId> {
-        if !self.decls.types.travels_wide(ty) { return [ty] }
+        if !self.decls.types.lays_inline(ty) { return [ty] }
+        // a value enum's tag, then its word — the word's own type named
+        // by the tag before it (`slots_of`)
+        if self.decls.types.valued_carrier(ty) { return [self.decls.types.type(int), ty] }
         self.decls.types.flat_fields(self.decls.types.machine_type(ty))
     }
 
@@ -118,10 +123,22 @@ impl StaticBuild {
         if slots.length != types.length { return null }
         mut cells: List<Slot> = []
         for j, x in slots {
-            let c? = self.slot_of(x, heap, types[j]) else { return null }
+            let c? = (if self.decls.types.valued_carrier(types[j]) { self.word_slot(x, heap, types[j], cells.last()) } else { self.slot_of(x, heap, types[j]) }) else { return null }
             cells.push(c)
         }
         cells
+    }
+
+    /// A value enum's WORD slot: what the variant its tag names carries,
+    /// or a zero word for one carrying nothing and for the absent tag.
+    mut fn word_slot(x: MetaVal, heap: MetaHeap, ty: TypeId, tag_cell: Slot?) -> Slot? {
+        let held? = tag_cell else { return null }
+        let tag? = match held { .Int(n) -> n, rest -> null } else { return null }
+        let m = self.decls.types.machine_type(ty)
+        let e = self.decls.types.carried(m) ?? m
+        let sig? = self.decls.variants_of_type(self.decls.types.machine_type(e)) else { return null }
+        if tag < 0 || tag >= sig.payloads.length || sig.payloads[tag].is_empty() { return Slot.Int(0) }
+        self.slot_of(x, heap, sig.payloads[tag][0])
     }
 
     /// One more box, child-first: its address is its index.

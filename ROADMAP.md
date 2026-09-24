@@ -2945,7 +2945,10 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
   brace; a pattern with braces used to compile as a literal that could
   never match and fell through silently.
   TRIGGERS, recorded with their firing conditions:
-  - [ ] TYPED HOLES: `{n: int}` refuses today (F2060, naming the
+  - [x] TYPED HOLES — FIRED AND PAID 2026-09-24 (COMPONENTS): `{n: int}`
+        reads its span through `parse_int` in a pattern, a `grammar` and a
+        route; a span that is no int fails the match. The entry as it stood:
+        `{n: int}` refused (F2060, naming the
         pending row). FIRES when a TEXT -> INT PARSE ROW lands — the
         framer's `decimal`, the hole and a user's `"42"` are one law.
         ROUTED TWICE WRONG AND SETTLED 2026-09-07 by the SQLITE lead: it
@@ -3359,7 +3362,10 @@ kqueue/epoll) → `@std.http` (an index-driven HTTP/1.1 framer over
   brace; a pattern with braces used to compile as a literal that could
   never match and fell through silently.
   TRIGGERS, recorded with their firing conditions:
-  - [ ] TYPED HOLES: `{n: int}` refuses today (F2060, naming the
+  - [x] TYPED HOLES — FIRED AND PAID 2026-09-24 (COMPONENTS): `{n: int}`
+        reads its span through `parse_int` in a pattern, a `grammar` and a
+        route; a span that is no int fails the match. The entry as it stood:
+        `{n: int}` refused (F2060, naming the
         pending row). FIRES when a TEXT -> INT PARSE ROW lands — the
         framer's `decimal`, the hole and a user's `"42"` are one law.
         ROUTED TWICE WRONG AND SETTLED 2026-09-07 by the SQLITE lead: it

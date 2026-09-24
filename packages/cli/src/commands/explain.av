@@ -22,14 +22,13 @@ impl Runnable for ExplainCmd {
         if q.contains(":") { return explained_kind(q) }
         if q.starts_with("@") { return explained_annotation(q.substring(1, q.length)) }
         let hit: DiagCode? = avra().rows.codes.find(it.id == q || it.kind == q)
-        if hit == null {
-            eprintln("avra: nothing registered under `${q}`")
-            return 1
+        if hit != null {
+            let c = hit!
+            println("${c.id} ${c.kind} — ${c.summary}")
+            shown_witness(c.id)
+            return 0
         }
-        let c = hit!
-        println("${c.id} ${c.kind} — ${c.summary}")
-        shown_witness(c.id)
-        0
+        explained_decl(q)
     }
 }
 
@@ -78,6 +77,25 @@ fn explained_annotation(name: string) -> int {
         return 1
     }
     println(sig!)
+    0
+}
+
+/// `avra explain <name>` — a declared fn/type/enum/trait/const's own
+/// `///` doc and `@name(args)` annotations, the fallback every other
+/// form of the command misses through. The package is the directory
+/// the command stands in, as every other form here reads it.
+fn explained_decl(name: string) -> int {
+    mut p = root_program(here())
+    if !p.clean() {
+        eprintln(p.report())
+        return 1
+    }
+    let text = p.explain_doc(name)
+    if text == null {
+        eprintln("avra: nothing registered under `${name}` — no diagnostic code, kind, or declared fn/type/enum/trait/const wears it")
+        return 1
+    }
+    println(text!)
     0
 }
 
