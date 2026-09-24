@@ -63,7 +63,7 @@ fn clean(p: Program) -> bool { p.check() is .Ok }
 /// helper unqualified, and an annotation that splices the user's code
 /// beside a template `tmp`.
 fn provider() -> string {
-    "use @std.meta.{Type, Fn, Directive, Code, literal, as_code, code_nodes}\nfn shout(s: string) -> string { \"\${s}!\" }\n/// A template naming this file's private helper.\nexport trait Loud {\n    static fn derive(t: Type) -> List<Directive> {\n        let name = literal(t.name)\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn loud() -> string { shout(\${name}) } } } }]\n    }\n}\nexport fn wrapped(f: Fn, body: Code) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_wrapped() -> int {\n            let tmp = 1\n            let picked = \${body}\n            picked() + tmp\n        }\n    } }]\n}\nexport fn runs(f: Fn) -> List<Directive> {\n    let parts: List<Code> = [quote { 1 }, quote { 2 }]\n    let sneaked: Code = as_code(code_nodes(parts))\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_runs() -> int { [\${sneaked}].length }\n    } }]\n}\nexport fn holed(f: Fn, x: string) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_holed() -> int {\n            let \${x} = 1\n            x + 1\n        }\n    } }]\n}\n"
+    "use @std.meta.{Type, Fn, Directive, Code, literal, as_code, code_nodes}\nfn shout(s: string) -> string { \"\${s}!\" }\n/// A template naming this file's private helper.\nexport trait Loud {\n    static fn derive(t: Type) -> List<Directive> {\n        let name = literal(t.name)\n        [Directive { twin: \"\", name: t.name, at: t.at, source: quote { impl \${t} { fn loud() -> string { shout(\${name}) } } } }]\n    }\n}\nexport fn wrapped(f: Fn, body: Code) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_wrapped() -> int {\n            let tmp = 1\n            let picked = \${body}\n            picked() + tmp\n        }\n    } }]\n}\nexport fn runs(f: Fn) -> List<Directive> {\n    let parts: List<Code> = [quote { 1 }, quote { 2 }]\n    let sneaked: Code = as_code(code_nodes(parts))\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_runs() -> int { [\${sneaked}].length }\n    } }]\n}\nexport fn spliced_args(f: Fn) -> List<Directive> {\n    let parts: List<Code> = [quote { 1 }, quote { 2 }, quote { 3 }]\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_spliced() -> int { [\${..parts}].length }\n    } }]\n}\nexport fn holed(f: Fn, x: string) -> List<Directive> {\n    [Directive { twin: \"\", name: f.name, at: f.at, source: quote {\n        fn \${f}_holed() -> int {\n            let \${x} = 1\n            x + 1\n        }\n    } }]\n}\n"
 }
 
 fn loud_program() -> string {
@@ -131,6 +131,14 @@ spec "features/quote — a quote is `Code`" {
             let p = packaged(loud_program(), provider().replace("shout(\${name})", "shout(1)"))
             let diagnostics = said(p)
             diagnostics.length == 1 && p.report().contains("argument 1 of `shout` wants `string`, found `int`") && p.report().contains("/w/vendor/prov/src/prov.av:7")
+        }
+    }
+    given "a run hole in an expression seat — `\${..xs}` splices a `List<Code>` into a list literal" {
+        then "three items land as three elements" {
+            match packaged("use @std.meta.{derive}\nuse @x.prov.{spliced_args}\n@spliced_args()\nfn go() -> int { 0 }\ngo_spliced()", provider()).run() {
+                .Ok(out) -> out == "3",
+                .Err(_) -> false,
+            }
         }
     }
 }
