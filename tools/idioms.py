@@ -38,7 +38,7 @@ a human's prior review is not re-litigated the day enforcement
 changes hands — but reads no license of its own: what is not already
 licensed under the retired code becomes baseline debt.
 """
-import bisect, collections, os, re, subprocess, sys, glob
+import collections, os, re, subprocess, sys, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # EVERY PACKAGE'S SOURCE, never a list: a listed root forgets the next
@@ -297,142 +297,7 @@ def opening_bracket(text, at):
                 return j
     return None
 
-# A ONE-PARAMETER LAMBDA HANDED TO A METHOD CALL. `it` binds at the NEAREST
-# enclosing method call, so a parameter that sits inside ANOTHER method call's
-# arguments cannot be the pronoun — that lambda is the language's own spelling
-# and is never a site. A block body, a nested lambda and a body that already
-# says `it` are left alone too: each is a second scope the pronoun cannot name.
-PRONOUN_LAMBDA = re.compile(r"\.[a-z_]+\(\(\s*([a-z_][a-z0-9_]*)\s*(?::[^()]*)?\)\s*->\s*")
 
-def lambda_body(line, start):
-    """The lambda's body: from `start` to the paren that closes the call."""
-    depth = 0
-    for k in range(start, len(line)):
-        c = line[k]
-        if c in "([{":
-            depth += 1
-        elif c in ")]}":
-            if depth == 0:
-                return line[start:k]
-            depth -= 1
-    return None
-
-def in_method_arguments(body, name):
-    """Whether any use of `name` sits inside the arguments of a METHOD call."""
-    for m in re.finditer(r"\b" + re.escape(name) + r"\b", body):
-        depth = 0
-        for k in range(m.start() - 1, -1, -1):
-            c = body[k]
-            if c in ")]}":
-                depth += 1
-            elif c in "([{":
-                if depth == 0:
-                    if c == "(" and re.search(r"\.[a-z_]+$", body[:k]):
-                        return True
-                else:
-                    depth -= 1
-    return False
-
-def pronoun_lambda(lines):
-    """A lambda `it` would say (I50)."""
-    for i, l in enumerate(lines):
-        if l.strip().startswith("//"):
-            continue
-        for m in PRONOUN_LAMBDA.finditer(l):
-            name, body = m.group(1), lambda_body(l, m.end())
-            if body is None or body.lstrip().startswith("{") or "->" in body:
-                continue
-            if not re.search(r"\b" + re.escape(name) + r"\b", body) or re.search(r"\bit\b", body):
-                continue
-            if not in_method_arguments(body, name):
-                yield i, l.strip()
-                break
-
-# A TWO-ARM MATCH ANSWERING ONLY true/false, WHERE ONE SIDE NAMES A
-# BARE VARIANT AND THE OTHER IS THE WILDCARD. The wildcard already
-# answers for every variant not yet written, exactly as `is`'s
-# complement does, so nothing a rewrite could forget — a PROJECTION
-# in CLAUDE.md's own terms (one arm answers, the catch-all is
-# honest). An `or`-run on the untested side spells a REGISTRY's
-# remaining variants by NAME instead (`rides_fp`, `answers_word`),
-# so growing that enum keeps breaking the build; this never accuses
-# one of those, nor a payload arm, nor more than two arms.
-BARE_VARIANT = re.compile(r"^\.[A-Za-z_][A-Za-z0-9_]*$")
-
-def is_wild_pat(p):
-    return p in ("_", "rest")
-
-def is_bare_variant_pat(p):
-    return bool(BARE_VARIANT.match(p))
-
-def match_arms_multiline(lines, i):
-    """The two arms of a `match … {` opened at `i`, each read at
-    depth+4, or None when the block does not hold exactly two."""
-    depth = len(lines[i]) - len(lines[i].lstrip())
-    end = block_end(lines, i)
-    if end < 0:
-        return None
-    arms = []
-    for j in range(i + 1, end):
-        s = lines[j]
-        if len(s) - len(s.lstrip()) != depth + 4 or "->" not in s:
-            continue
-        pat, body = s.strip().split("->", 1)
-        arms.append((pat.strip(), body.strip().rstrip(",").strip()))
-    return arms if len(arms) == 2 else None
-
-def match_arms_oneline(l):
-    """The two arms of a `match … { a -> x, b -> y }` written on one
-    line, or None when it does not hold exactly two."""
-    m = re.search(r"match [^{]+\{([^{}]+)\}\s*$", l.strip())
-    if not m:
-        return None
-    parts = [a.strip() for a in re.split(r",(?![^()]*\))", m.group(1)) if a.strip()]
-    if len(parts) != 2:
-        return None
-    arms = []
-    for a in parts:
-        if "->" not in a:
-            return None
-        pat, body = a.split("->", 1)
-        arms.append((pat.strip(), body.strip().rstrip(",").strip()))
-    return arms
-
-def closing_brace(text, at):
-    """Index of the `}` that closes the `{` at `text[at]`, quoted text
-    skipped, or None when the line does not close it."""
-    depth, in_str, k = 0, False, at
-    while k < len(text):
-        c = text[k]
-        if in_str:
-            if c == "\\":
-                k += 2
-                continue
-            if c == '"':
-                in_str = False
-        elif c == '"':
-            in_str = True
-        elif c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return k
-        k += 1
-    return None
-
-# A LITERAL THAT COPIES EVERY OTHER FIELD FROM ONE VALUE IS `with`.
-# Restricted to ONE LINE (so the literal's whole field list is in
-# hand at once) with at least two `f: v.f` copies FROM THE SAME `v`
-# and at least one other field. THIS SMELL CAN SILENTLY CHANGE
-# BEHAVIOUR — a literal built from a DIFFERENT type than `v` only
-# happens to share field NAMES (`Directive { twin: "", name: t.name,
-# at: t.at, source: … }` where `t: MetaType`) — so the matcher traces
-# `v`'s DECLARED type (an enclosing `impl`'s receiver, a parameter's
-# annotation, or a `let`'s annotation — one hop through a bare `x!`
-# unwrap) and accuses only when it can CONFIRM that type equals the
-# literal's own. An unknown or a mismatched type is never accused.
-WITH_LIT = re.compile(r"(?<![.\w])([A-Z][A-Za-z0-9_]*)\s*\{([^{}]*)\}")
 
 # A `let x = E` immediately guarded by `if x == null { return … }` (or
 # `fail …`) IS THE ABSENCE-EARLY-EXIT LAW — `let x? = E else { … }`
@@ -492,202 +357,6 @@ def let_else_guard(lines):
         if not occ or any(scope[o.end():o.end() + 1] != "!" for o in occ):
             continue
         yield i, lines[i].strip()
-
-def with_split_fields(body):
-    """`body` cut at its top-level commas — a field's own value may
-    hold one inside `(…)`, `[…]` or `<…>`."""
-    out, depth, start = [], 0, 0
-    for j, c in enumerate(body):
-        if c in "([<":
-            depth += 1
-        elif c in ")]>":
-            depth -= 1
-        elif c == "," and depth == 0:
-            out.append(body[start:j])
-            start = j + 1
-    return out + [body[start:]]
-
-def with_copy_fields(body):
-    """`k: v` pairs of a struct literal's top-level fields."""
-    out = []
-    for part in with_split_fields(body):
-        part = part.strip()
-        if not part or ":" not in part:
-            continue
-        k, v = part.split(":", 1)
-        k = k.strip()
-        if re.match(r"^[a-zA-Z_]\w*$", k):
-            out.append((k, v.strip()))
-    return out
-
-def with_base_type(t):
-    t = t.strip().rstrip("?").strip()
-    m = re.match(r"^[A-Za-z_]\w*", t)
-    return m.group(0) if m else None
-
-def with_enclosing_impl_type(lines, idx):
-    for j in range(idx, -1, -1):
-        m = re.match(r"^\s*(?:export\s+)?impl\s+([A-Za-z_]\w*)", lines[j])
-        if m:
-            return m.group(1)
-    return None
-
-def with_enclosing_fn_start(lines, idx):
-    for j in range(idx, -1, -1):
-        if re.match(r"^\s*(?:export\s+)?(?:static\s+)?(?:mut\s+)?fn\s+[A-Za-z_]\w*\(", lines[j]):
-            return j
-    return None
-
-def with_param_type(lines, fn_start, name):
-    """`name`'s annotation in the fn header opened at `fn_start`."""
-    text, depth, started = "", 0, False
-    for j in range(fn_start, min(len(lines), fn_start + 15)):
-        text += lines[j] + "\n"
-        for c in lines[j]:
-            if c == "(":
-                depth += 1
-                started = True
-            elif c == ")":
-                depth -= 1
-        if started and depth == 0:
-            break
-    seats = balanced(text, text.index("("))
-    if seats is None:
-        return None
-    for p in split_seats(seats):
-        pm = re.match(r"^\s*(?:mut\s+)?([a-zA-Z_]\w*)\s*:\s*(.+)$", p.strip())
-        if pm and pm.group(1) == name:
-            return pm.group(2).strip()
-    return None
-
-def with_declared_type(lines, idx, name, hops=0):
-    """`name`'s declared type at line `idx` — an `impl` receiver, a
-    parameter's annotation, a `let`'s annotation, or one hop through
-    a bare `x!` unwrap. None where it cannot be confirmed."""
-    if hops > 2:
-        return None
-    if name == "self":
-        t = with_enclosing_impl_type(lines, idx)
-        return with_base_type(t) if t else None
-    fn_start = with_enclosing_fn_start(lines, idx)
-    if fn_start is not None:
-        pt = with_param_type(lines, fn_start, name)
-        if pt:
-            return with_base_type(pt)
-    floor = fn_start if fn_start is not None else 0
-    for j in range(idx, floor - 1, -1):
-        lm = re.match(rf"^\s*(?:mut\s+)?let\s+{re.escape(name)}\s*:\s*([A-Za-z_]\w*)", lines[j])
-        if lm:
-            return lm.group(1)
-        lm2 = re.match(rf"^\s*(?:mut\s+)?let\s+{re.escape(name)}\s*=\s*([a-zA-Z_][\w.]*)!\s*$", lines[j])
-        if lm2:
-            return with_declared_type(lines, j - 1, lm2.group(1).split(".")[0], hops + 1)
-    return None
-
-def modified_copy_literal(lines):
-    """A struct literal copying every other field from one value —
-    `with` — where `v`'s declared type is confirmed to match (I53)."""
-    for i, l in enumerate(lines):
-        if l.strip().startswith("//"):
-            continue
-        for m in WITH_LIT.finditer(l):
-            typename, body = m.group(1), m.group(2)
-            fields = with_copy_fields(body)
-            if len(fields) < 3:
-                continue
-            copy_of = collections.Counter()
-            for k, val in fields:
-                vm = re.match(r"^([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)$", val)
-                if vm and vm.group(2) == k:
-                    copy_of[vm.group(1)] += 1
-            for v, n in copy_of.items():
-                if n >= 2 and n < len(fields) and with_declared_type(lines, i - 1, v) == typename:
-                    yield i, l.strip()
-                    break
-
-# AN if/else-if LADDER OF 3+ ARMS, USED AS AN EXPRESSION, IS `when`.
-# Restricted to a chain whose EVERY arm (the final `else` included) is
-# a single line with no embedded newline, and reads as a VALUE rather
-# than a statement — no `return`/`fail`/break`/`continue`, no
-# assignment, and no NESTED `if` (a nested arm needs its conditions
-# combined, which this never attempts). The chain must stand where an
-# expression stands: after `=`, `->`, `return`, or as a fn's tail (a
-# bare `if` immediately followed by the block's own closing `}`) — a
-# bare `if` mid-body that closes some OTHER block (a `while`, a `for`)
-# is never mistaken for a tail, because its arms still answer void
-# through mutation or an early exit, which the body check above
-# already refuses.
-WHEN_TRIGGER = re.compile(r"(?:[=]|->|\breturn)[ \t]+if\b|^[ \t]*if\b", re.MULTILINE)
-WHEN_BAD_BODY = re.compile(r"^(return\b|fail\b|break\b|continue\b|if\b|[a-zA-Z_][\w.\[\]]*(?:\[[^\]]*\])?\s*=(?!=))")
-
-def when_body_ok(body):
-    b = body.strip()
-    return bool(b) and "\n" not in b and not WHEN_BAD_BODY.match(b)
-
-def when_ladder(lines):
-    """A 3+ arm if/else-if ladder in expression position (I54)."""
-    text = "\n".join(lines)
-    starts = [0]
-    for l in lines:
-        starts.append(starts[-1] + len(l) + 1)
-    for m in WHEN_TRIGGER.finditer(text):
-        km = re.search(r"\bif\b", m.group(0))
-        if_pos = m.start() + km.start()
-        is_bare = m.group(0).lstrip().startswith("if")
-        pos, arms, ok, last_close = if_pos, 0, True, None
-        while True:
-            brace_m = re.search(r"\{", text[pos:pos + 400])
-            if not brace_m:
-                ok = False
-                break
-            brace_open = pos + brace_m.start()
-            close = closing_brace(text, brace_open)
-            if close is None or not when_body_ok(text[brace_open + 1:close]):
-                ok = False
-                break
-            arms += 1
-            last_close = close
-            rest = text[close + 1:close + 400]
-            em = re.match(r"[ \t\n]*else[ \t\n]+if\b", rest)
-            if em:
-                pos = close + 1 + em.end() - 2
-                continue
-            em2 = re.match(r"[ \t\n]*else[ \t\n]*\{", rest)
-            if not em2:
-                ok = False
-                break
-            else_open = close + 1 + rest.index("{", em2.end() - 1)
-            else_close = closing_brace(text, else_open)
-            if else_close is None or not when_body_ok(text[else_open + 1:else_close]):
-                ok = False
-                break
-            arms += 1
-            last_close = else_close
-            break
-        if not ok or arms < 3:
-            continue
-        if is_bare and not re.match(r"[ \t\n]*\}", text[last_close + 1:last_close + 40]):
-            continue
-        li = bisect.bisect_right(starts, if_pos) - 1
-        yield li, lines[li].strip()
-
-def bool_variant_match(lines):
-    """A `match` that only answers `is`'s question (I51)."""
-    for i, l in enumerate(lines):
-        if l.strip().startswith("//"):
-            continue
-        if re.search(r"match .+\{\s*$", l):
-            arms = match_arms_multiline(lines, i)
-        elif re.search(r"match .+\{.+\}", l):
-            arms = match_arms_oneline(l)
-        else:
-            continue
-        if not arms or {a[1] for a in arms} != {"true", "false"}:
-            continue
-        (p0, _), (p1, _) = arms
-        if ((is_bare_variant_pat(p0) and is_wild_pat(p1))
-                or (is_bare_variant_pat(p1) and is_wild_pat(p0))):
-            yield i, l.strip()
 
 def bool_comprehension(lines):
     """A comprehension over a LIST, built only to be folded to a
@@ -980,8 +649,6 @@ PRODUCT_ONLY = {
 TESTS_ONLY = {"I20": "it is a law about how a REFUSAL is asserted"}
 
 RULES = {
-    "I4":  (line_rx(r"mut [a-z_]+: *[A-Za-z][A-Za-z<>, ]*\? *= *null"),
-            "a nullable flag local — is this scan a find/index_of?"),
     "I11": (duplicated(r'"[a-z][^"]{20,}"'),
             "a long string duplicated in one file — shared messages are fns"),
     "I13": (line_rx(r"([a-z_]+\.[a-z_]+\(([a-z_]+)\)).*\1"),
@@ -1026,24 +693,6 @@ RULES = {
     "I39": (state_verb,
             "a vocabulary verb as a free fn taking a pass state first — the state's "
             "impl is its vocabulary: write `mut fn verb(…)` there and call `cx.verb(…)`"),
-    "I54": (when_ladder,
-            "an if/else-if ladder of 3+ arms answering a value — that is `when`. "
-            "Accused only where every arm is a one-line expression (no return/fail/"
-            "break/continue, no assignment, no nested if) standing after `=`, `->`, "
-            "`return`, or as a fn's tail"),
-    "I53": (modified_copy_literal,
-            "a struct literal copying every other field from one value — that is "
-            "`with`. Accused only when `v`'s declared type is confirmed to match "
-            "the literal's; an unconfirmed or a different type is never accused"),
-    "I51": (bool_variant_match,
-            "a match answering only true/false, one arm a bare variant and the "
-            "other the wildcard — that is `is`: `x is .Ready`, or `!(x is .Ready)` "
-            "with the arms swapped. An `or`-run on the untested side spells a "
-            "registry's remaining variants by name, and this never accuses one"),
-    "I50": (pronoun_lambda,
-            "a one-parameter lambda handed to a method call — that is `it`: "
-            "`xs.any(it.ready)`, `rows.find(it.word == w)`. A parameter handed on to "
-            "ANOTHER method call must stay a lambda, and this never accuses one"),
     "I43": (hand_sized_column,
             "a fact column sized from an arena's count — `SideTable<V>` states "
             "the window, the growth and the out-of-window defect once: "
@@ -1117,6 +766,53 @@ UNRATCHETED = {
            "           STATEMENT `for` loop, so a comprehension's own `for` clause\n"
            "           (`[… for j in 0..xs.length]`) never matches — a different shape,\n"
            "           not yet its own rule",
+    "I50": "PORTED NATIVELY: `pronoun_lambda` (features/closures/idioms.av) — a\n"
+           "           NAME hole on the lambda's OWN param (avra-8sb5.25.10's Lambda\n"
+           "           own-name-at case) plus a structural `call_args()` walk that\n"
+           "           refuses a param handed to a nested call's own arguments;\n"
+           "           ratcheted by the native-findings phase below",
+    "I63": "PORTED NATIVELY: `nullable_flag_local` (features/nullable/idioms.av)\n"
+           "           — no TYPE hole (a quote pattern has none in type position yet,\n"
+           "           avra-8sb5.25.10): a bare-hole root guarded\n"
+           "           `lit.is_nullable_flag_mut()` reads the `mut` declaration's own\n"
+           "           `ty`/value fields structurally instead of binding them; ratcheted\n"
+           "           by the native-findings phase below.\n"
+           "           RENUMBERED FROM \"I4\": the RULES dict's own regex was ALREADY\n"
+           "           filed as \"I4\" before this port, colliding with DOGFOODING.md's\n"
+           "           REAL \"I4\" (\"hand-rolled scans that ARE find/index_of/any\") — a\n"
+           "           DIFFERENT idiom, and the collision was live: `decls_mint.av`'s\n"
+           "           `// LICENSED I4: a min-scan keeps the SMALLEST holder, not a\n"
+           "           membership` was written for THAT idiom, and honouring it as this\n"
+           "           one's predecessor would have SILENTLY suppressed a genuine\n"
+           "           nullable-flag-local finding under someone else's review. No\n"
+           "           NATIVE_PREDECESSOR carries forward for the same reason — every\n"
+           "           `// LICENSED I4:` comment in the tree was written for the OTHER\n"
+           "           idiom, never this one.",
+    "I54": "PORTED NATIVELY: `when_ladder` (features/if_expr/idioms.av) — the\n"
+           "           pattern's own three parts (`if`, `else if`, `else`) are the\n"
+           "           floor a chain of any length recurses past, one nested match at a\n"
+           "           time, rather than one pattern spanning every depth; ratcheted by\n"
+           "           the native-findings phase below. Wider than the retired regex on\n"
+           "           purpose: no per-arm shape check (no return/fail/break/continue/\n"
+           "           assignment/one-line refusal) — `Expr.If` vs `Stmt.IfStmt` being\n"
+           "           different node kinds BY POSITION (avra-8sb5.25.21) already does\n"
+           "           the work the regex's body-text scan existed for, so a chain used\n"
+           "           for its value structurally cannot be the statement form; a 4+-arm\n"
+           "           chain is found once at each nesting level it appears at, a known\n"
+           "           duplicate the Fix.Say tier does not need suppressed",
+    "I51": "PORTED NATIVELY: `bool_variant_match`/`bool_variant_match_negated`\n"
+           "           (features/enums/idioms.av) — no guard needed: the pattern's own\n"
+           "           WILDCARD seat (a literal `_`, never an `or`-run) already refuses\n"
+           "           a registry's remaining variants structurally, before any is\n"
+           "           asked; ratcheted by the native-findings phase below",
+    "I53": "PORTED NATIVELY: `modified_copy_literal` (compiler/idioms.av) — a bare\n"
+           "           hole root (avra-8sb5.25.10's `At.Field`) matches ANY node, guarded\n"
+           "           `lit.is_struct_lit()`, then reads `lit.kids()` field by field;\n"
+           "           ratcheted by the native-findings phase below. Narrower than the\n"
+           "           retired regex on purpose: no DECLARED-TYPE trace, so a\n"
+           "           coincidental `x.field` name match is accused too, and the copy\n"
+           "           test is STRUCTURAL (a `Prop` whose own name agrees), never a text\n"
+           "           suffix guess",
     "I57": "telling \"this branch answers what a DIFFERENT arm already\n"
            "           answers\" needs reading every other arm's own answer and judging\n"
            "           whether they are the same computation — and, when the target is a\n"
@@ -1195,6 +891,11 @@ UNRATCHETED = {
            "           textually identical — every hit was the verb's own body or a\n"
            "           site needing the id afterward. The review round hunts it",
     "I5":  "the remaining folds are duplicate DETECTION (they emit on the dup)",
+    "I4":  "SWEPT — every hand-rolled scan that is a bare find/index_of was\n"
+           "           already converted; the number was found live as tools/idioms.py's\n"
+           "           OWN regex key for a DIFFERENT idiom (nullable_flag_local,\n"
+           "           renumbered to I63) rather than this one, which has had no matcher\n"
+           "           of its own since the sweep",
     "I37": "a matcher cannot see whether a predicate has EFFECTS — `all` would\n"
            "           short-circuit past a binding the fold must perform, and only a\n"
            "           human can tell that from a pure test",
@@ -1265,39 +966,6 @@ CLEAN = {
     "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
             ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
-    "I54": [["    let base = if a { x } else { y }"],
-            ["    if a { x = 1 } else if b { x = 2 } else { x = 3 }"],
-            ["    if a { if c { p } else { q } } else if b { y } else { z }"],
-            ["    if a { return x } else if b { y } else { z }"],
-            ["fn f() {",
-             "    if a { g() } else if b { h() } else { j() }",
-             "    k()",
-             "}"]],
-    "I53": [["    fn built(w: Other) -> Widget {",
-             "        Widget { name: w.name, tier: w.tier, extra: 5 }",
-             "    }"],
-            ["    fn one(w: Widget) -> Widget {",
-             "        Widget { name: w.name, tier: 1, extra: 2 }",
-             "    }"],
-            ["    fn mystery() -> Widget {",
-             "        Widget { name: q.name, tier: q.tier, extra: 6 }",
-             "    }"],
-            ["    let maybe: Other? = find()",
-             "    let held = maybe!",
-             "    Widget { name: held.name, tier: held.tier, extra: 7 }"],
-            ["    Widget {",
-             "        name: held.name, tier: held.tier, extra: 8,",
-             "    }"]],
-    "I51": [["    match v { .Bind(_) -> true, _ -> false }"],
-            ["    match s { .A -> true, .B -> false, .C -> false }"],
-            ["    match k { .Wide -> true, .Narrow or .Ptr or .Void -> false }"],
-            ["    match n { 1 -> true, _ -> false }"],
-            ["    match k { .A -> true, null -> false }"]],
-    "I50": [["    let gone = held.find((o: Made) -> !store.has(Stored.Obj, o.key))"],
-            ["    xs.any((k) -> self.rides(k))"],
-            ["    rows.all((s: Scope) -> s.managed.any(same_reg(it, r)))"],
-            ["    let f = xs.map((x) -> {"],
-            ["    built(host, (p: string) -> exists(p))"]],
     "I48": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
@@ -1315,40 +983,10 @@ SPECIMENS = {
     "I3":  [["for x in xs {", "    out.push(x)", "}"],
             ["    for x in xs { out.push(x) }"],
             ["    for (j, x) in xs.enumerate() { out.push(x) }"]],
-    "I4":  [["    mut best: Thing? = null"],
-            ["    mut hit: List<int>? = null"],
-            ["    mut seen: Map<string, int>? = null"]],
     "I11": [['    let a = "a message long enough to be shared"',
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
-    "I54": [["    let base = if a { x } else if b { y } else { z }"],
-            ["    .A -> if a { x } else if b { y } else { z },"],
-            ["fn f() -> string {",
-             "    if a { \"x\" } else if b { \"y\" } else { \"z\" }",
-             "}"],
-            ["    return if a { x } else if b { y } else { z }"]],
-    "I53": [["impl Widget {",
-             "    fn grown() -> Widget {",
-             "        Widget { name: self.name, tier: self.tier, extra: 1 }",
-             "    }",
-             "}"],
-            ["    fn bumped(w: Widget) -> Widget {",
-             "        Widget { name: w.name, tier: w.tier, extra: 2 }",
-             "    }"],
-            ["    let held: Widget = make()",
-             "    Widget { name: held.name, tier: held.tier, extra: 3 }"],
-            ["    let maybe: Widget? = find()",
-             "    let held = maybe!",
-             "    Widget { name: held.name, tier: held.tier, extra: 4 }"]],
-    "I51": [["    match x { .Ready -> true, _ -> false }"],
-            ["    match self {", "        .Other -> false,", "        _ -> true,", "    }"],
-            ["    match k { .A -> true, rest -> false }"],
-            ["    match r {", "        .Void -> false,", "        _ -> true,", "    }"]],
-    "I50": [["    if cases.any((c: CaseCall?) -> c == null) { return null }"],
-            ["    let found = declared.find((g: BlockGrammar) -> g.word == item)"],
-            ["    self.packages.find((p) -> p.origin is .Root)?.src ?? self.root"],
-            ["    seats.all((r: Reg) -> retains_of(ins, r) == 0)"]],
     "I48": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
             ["    [b.ieq_at(0, b.length, w) for w in written_by].any(it)"],
             ["    ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)"]],
@@ -1537,6 +1175,10 @@ NATIVE_PREDECESSOR = {
     "style.emit_then_error": "I14",
     "style.bracket_ritual": "I15",
     "style.index_walk": "I19",
+    "style.modified_copy_literal": "I53",
+    "style.pronoun_lambda": "I50",
+    "style.bool_variant_match": "I51",
+    "style.when_ladder": "I54",
 }
 
 def native_findings():

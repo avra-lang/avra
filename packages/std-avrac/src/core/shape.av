@@ -7,11 +7,17 @@
 
 /// One node of any kind — the currency a pattern's children and a
 /// match's bound answers share. An Arm is not a node: it is spelled
-/// through its parts (pats, guard, value), each already an `At`.
+/// through its parts (pats, guard, value), each already an `At`. A
+/// struct literal's FIELD is: two parallel lists (`fields`, `values`)
+/// have no node of their own, so `Field` names one by its owning
+/// literal and its position — `own_name_at` reads its NAME, `kids_at`
+/// reaches its VALUE, and it stands among a `Run` exactly as any
+/// other kid does.
 export enum At {
     Expr(id: ExprId)
     Stmt(id: StmtId)
     Pat(id: PatId)
+    Field(owner: ExprId, index: int)
 }
 
 /// A PATTERN over the store. `Node` pins a subject's ARITY (`shallow`,
@@ -43,16 +49,24 @@ impl NodeStore {
             .Expr(id) -> self.shallow_expr(self.expr(id)),
             .Stmt(id) -> self.shallow_stmt(self.stmt(id)),
             .Pat(id) -> self.shallow_pat(self.pat(id)),
+            .Field(owner, index) -> shallow_field(field_name_of(self, owner, index)),
         }
     }
 
     /// A node's children, dispatched by kind — read lazily; the
-    /// subject is never built into a value of its own.
+    /// subject is never built into a value of its own. A struct
+    /// literal's own kids are its FIELDS, never its values directly:
+    /// a value is reached one `At.Field` down, which is where its own
+    /// name lives too.
     fn kids_at(at: At) -> List<At> {
         match at {
-            .Expr(id) -> self.kids_expr(self.expr(id)),
+            .Expr(id) -> match self.expr(id) {
+                .StructLit(_, fields, _) -> [At.Field(id, i) for i in 0..fields.length],
+                _ -> self.kids_expr(self.expr(id)),
+            },
             .Stmt(id) -> self.kids_stmt(self.stmt(id)),
             .Pat(id) -> self.kids_pat(self.pat(id)),
+            .Field(owner, index) -> [At.Expr(field_value_of(self, owner, index))],
         }
     }
 
@@ -63,16 +77,19 @@ impl NodeStore {
             .Expr(id) -> self.expr_fingerprint(id),
             .Stmt(id) -> self.stmt_fingerprint(id),
             .Pat(id) -> self.pat_fingerprint(id),
+            .Field(owner, index) -> fp(305, [fp_str(field_name_of(self, owner, index)), self.expr_fingerprint(field_value_of(self, owner, index))]),
         }
     }
 
     /// Where a node sits in the source — absent for one no span
-    /// names (a generated node).
+    /// names (a generated node). A field's own span is its value's —
+    /// a field's NAME carries no span of its own in the node model.
     fn span_at(at: At) -> Span? {
         match at {
             .Expr(id) -> self.expr_span(id),
             .Stmt(id) -> self.stmt_span(id),
             .Pat(id) -> self.pat_span(id),
+            .Field(owner, index) -> self.expr_span(field_value_of(self, owner, index)),
         }
     }
 
@@ -84,9 +101,32 @@ impl NodeStore {
             .Expr(id) -> self.shallow_expr(bare_expr(self.expr(id))),
             .Stmt(id) -> self.shallow_stmt(bare_stmt(self.stmt(id))),
             .Pat(id) -> self.shallow_pat(bare_pat(self.pat(id))),
+            .Field(owner, index) -> shallow_field(""),
         }
     }
 }
+
+/// A struct literal's `index`-th field NAME — the invariant
+/// `At.Field` is minted under: `owner` is always a `StructLit`,
+/// exactly as `kids_at` builds it.
+fn field_name_of(store: NodeStore, owner: ExprId, index: int) -> string {
+    match store.expr(owner) {
+        .StructLit(_, fields, _) -> fields[index].of,
+        rest -> "",
+    }
+}
+
+/// A struct literal's `index`-th field VALUE — `field_name_of`'s twin.
+fn field_value_of(store: NodeStore, owner: ExprId, index: int) -> ExprId {
+    match store.expr(owner) {
+        .StructLit(_, _, values) -> values[index],
+        rest -> ExprId { index: 0 },
+    }
+}
+
+/// A `Field`'s own arity fold — its name alone, since its value is
+/// reached through `kids_at`, never folded here.
+fn shallow_field(name: string) -> int { fp(304, [fp_str(name)]) }
 
 /// The node's own name-bearing field — a let/for/const binder, a
 /// bind pattern, a variant test, a call's callee, a method or field
@@ -110,8 +150,16 @@ export fn own_name_at(store: NodeStore, at: At) -> string? {
             .MethodCall(_, name, _) or .Prop(_, name) -> name.of,
             // LICENSED I59: `name` is `Scoped` here, `Plain` above — an `or` arm cannot bind one name at two types
             .Comp(_, _, name, _, _, _) -> name.of,
+            .StructLit(name, _, _) -> name.of,
+            // a lambda's OWN name-bearing field is its ONE param's —
+            // absent for zero, and the shallow fold's own length
+            // still refuses more than one (the params list is
+            // otherwise folded whole, unblanked: a typed or
+            // defaulted param does not match a bare `${p}`)
+            .Lambda(params, _) -> first_param_name(params),
             rest -> null,
         },
+        .Field(owner, index) -> field_name_of(store, owner, index),
     }
 }
 
@@ -142,8 +190,24 @@ fn bare_expr(e: Expr) -> Expr {
         .MethodCall(subject, _, args) -> Expr.MethodCall(subject, Plain(""), args),
         .Prop(subject, _) -> Expr.Prop(subject, Plain("")),
         .Comp(elem, index, _, source, hi, cond) -> Expr.Comp(elem, index, Scoped(""), source, hi, cond),
+        .StructLit(_, fields, values) -> Expr.StructLit(Nominal(""), fields, values),
+        .Lambda(params, body) -> Expr.Lambda(blanked_param_name(params), body),
         rest -> e,
     }
+}
+
+/// A lambda's own name-bearing field: its first param's name, when it
+/// has one.
+fn first_param_name(params: List<Param>) -> string? {
+    let p? = params.first() else { return null }
+    p.name.of
+}
+
+/// `params` with its first entry's name blanked — `first_param_name`'s
+/// read is what this blanks.
+fn blanked_param_name(params: List<Param>) -> List<Param> {
+    let p? = params.first() else { return params }
+    [p with { name: Scoped("") }].concat(params.slice(1, params.length))
 }
 
 /// The node's own RUN-ELIGIBLE list field, blanked to `[]` — a call's
@@ -168,6 +232,13 @@ fn bare_run_expr(e: Expr) -> Expr {
         // against a subject block with no tail disagrees on a flag
         // neither field's run actually pins.
         .Block(_, _) -> Expr.Block([], null),
+        // BOTH lists blanked, never `fields` alone: a run among a
+        // struct literal's fields spans `At.Field` kids, and each
+        // one's own name rides `fields` — blind to its count, the
+        // owner's shallow fold must be blind to `values`' too, or an
+        // empty run compared against a subject with FEWER fields
+        // disagrees on a count neither field's run actually pins.
+        .StructLit(name, _, _) -> Expr.StructLit(name, [], []),
         rest -> e,
     }
 }
@@ -182,6 +253,8 @@ export fn node_shallow_at(store: NodeStore, at: At, kids: List<Shape>) -> int {
         .Expr(id) -> store.shallow_expr(bare_run_expr(store.expr(id))),
         .Stmt(id) -> store.shallow_stmt(store.stmt(id)),
         .Pat(id) -> store.shallow_pat(store.pat(id)),
+        // a Field's own kids are one element — never a Run's own owner
+        .Field(owner, index) -> shallow_field(field_name_of(store, owner, index)),
     }
 }
 
@@ -194,6 +267,8 @@ export fn named_node_shallow_at(store: NodeStore, at: At, kids: List<Shape>) -> 
         .Expr(id) -> store.shallow_expr(bare_run_expr(bare_expr(store.expr(id)))),
         .Stmt(id) -> store.shallow_stmt(bare_stmt(store.stmt(id))),
         .Pat(id) -> store.shallow_pat(bare_pat(store.pat(id))),
+        // a Field's own kids are one element — never a Run's own owner
+        .Field(owner, index) -> shallow_field(""),
     }
 }
 
@@ -249,6 +324,7 @@ fn same_at(a: At, b: At) -> bool {
         .Expr(x) -> match b { .Expr(y) -> same_expr(x, y), _ -> false },
         .Stmt(x) -> match b { .Stmt(y) -> same_stmt(x, y), _ -> false },
         .Pat(x) -> match b { .Pat(y) -> same_pat(x, y), _ -> false },
+        .Field(ox, ix) -> match b { .Field(oy, iy) -> same_expr(ox, oy) && ix == iy, _ -> false },
     }
 }
 
