@@ -424,3 +424,16 @@ sites in the binary: release 342 -> 36, array_get 492 -> 25, retain
 94 -> 26; the binary +29%. `check packages/cli`: instructions 160.4B
 -> 142.0B (−11.5%), cycles 40.9B -> 33.6B (−18%), wall 15.0 s ->
 11.2 s.
+
+## §15 Where the campaign stands (Linux Sprite, one core)
+
+| | campaign start | now |
+|---|---|---|
+| tools/bench/request | 5.40 µs | 1.95 µs |
+| wrk pipelined16 c=200 | 146k req/s, 6.85 µs CPU | 274k req/s, 3.65 µs CPU |
+| wrk keep-alive c=50 | 44.3k req/s | 56.3k req/s |
+| C floor (no parsing), pipelined | 1.14M req/s, 0.88 µs CPU | — |
+
+Open, in the ROADMAP's C-level ladder: inline embedding (R4b), a
+capture-free closure as static data (R9), count elision past moves
+(R5), one server per core (R7).
