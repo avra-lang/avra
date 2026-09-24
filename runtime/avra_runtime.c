@@ -801,11 +801,19 @@ int64_t avra_int_mod(int64_t a, int64_t b) {
 // Formatted first and boxed at its exact length: a box's header
 // length is what `box_free` files it by, so it must describe the
 // allocation — shrinking it afterwards misfiles the box.
+// Digits written backwards from the end of a scratch buffer — the
+// magnitude taken as unsigned, so the smallest int has one too.
 const char* avra_int_text(int64_t v) {
     char digits[24];
-    int n = snprintf(digits, sizeof digits, "%lld", (long long)v);
-    char* buf = sized_box((size_t)n, KIND_STR);
-    memcpy(buf, digits, (size_t)n + 1);
+    char* end = digits + sizeof digits;
+    char* p = end;
+    uint64_t m = v < 0 ? (uint64_t)0 - (uint64_t)v : (uint64_t)v;
+    do { *--p = (char)('0' + m % 10); m /= 10; } while (m != 0);
+    if (v < 0) *--p = '-';
+    size_t n = (size_t)(end - p);
+    char* buf = sized_box(n, KIND_STR);
+    memcpy(buf, p, n);
+    buf[n] = '\0';
     return buf;
 }
 
@@ -2345,12 +2353,7 @@ int64_t avra_str_codepoint_count(const char* s) {
 // every byte costs one load per byte.
 int64_t avra_str_char_code(const char* s, int64_t i) {
     int64_t n = (int64_t)str_len(s);
-    if (i < 0 || i >= n) {
-        char msg[80];
-        snprintf(msg, sizeof msg, "index %lld is out of bounds (length %lld)",
-                 (long long)i, (long long)n);
-        avra_trap(msg);
-    }
+    if (__builtin_expect(i < 0 || i >= n, 0)) trap_bounds(i, n);
     return (unsigned char)s[i];
 }
 
