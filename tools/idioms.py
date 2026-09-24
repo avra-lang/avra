@@ -38,7 +38,7 @@ a human's prior review is not re-litigated the day enforcement
 changes hands — but reads no license of its own: what is not already
 licensed under the retired code becomes baseline debt.
 """
-import bisect, collections, os, re, subprocess, sys, glob
+import collections, os, re, subprocess, sys, glob
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # EVERY PACKAGE'S SOURCE, never a list: a listed root forgets the next
@@ -299,29 +299,6 @@ def opening_bracket(text, at):
 
 
 
-def closing_brace(text, at):
-    """Index of the `}` that closes the `{` at `text[at]`, quoted text
-    skipped, or None when the line does not close it."""
-    depth, in_str, k = 0, False, at
-    while k < len(text):
-        c = text[k]
-        if in_str:
-            if c == "\\":
-                k += 2
-                continue
-            if c == '"':
-                in_str = False
-        elif c == '"':
-            in_str = True
-        elif c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                return k
-        k += 1
-    return None
-
 # A `let x = E` immediately guarded by `if x == null { return … }` (or
 # `fail …`) IS THE ABSENCE-EARLY-EXIT LAW — `let x? = E else { … }`
 # says the same thing once, and every later `x!` in the same block
@@ -380,72 +357,6 @@ def let_else_guard(lines):
         if not occ or any(scope[o.end():o.end() + 1] != "!" for o in occ):
             continue
         yield i, lines[i].strip()
-
-# AN if/else-if LADDER OF 3+ ARMS, USED AS AN EXPRESSION, IS `when`.
-# Restricted to a chain whose EVERY arm (the final `else` included) is
-# a single line with no embedded newline, and reads as a VALUE rather
-# than a statement — no `return`/`fail`/break`/`continue`, no
-# assignment, and no NESTED `if` (a nested arm needs its conditions
-# combined, which this never attempts). The chain must stand where an
-# expression stands: after `=`, `->`, `return`, or as a fn's tail (a
-# bare `if` immediately followed by the block's own closing `}`) — a
-# bare `if` mid-body that closes some OTHER block (a `while`, a `for`)
-# is never mistaken for a tail, because its arms still answer void
-# through mutation or an early exit, which the body check above
-# already refuses.
-WHEN_TRIGGER = re.compile(r"(?:[=]|->|\breturn)[ \t]+if\b|^[ \t]*if\b", re.MULTILINE)
-WHEN_BAD_BODY = re.compile(r"^(return\b|fail\b|break\b|continue\b|if\b|[a-zA-Z_][\w.\[\]]*(?:\[[^\]]*\])?\s*=(?!=))")
-
-def when_body_ok(body):
-    b = body.strip()
-    return bool(b) and "\n" not in b and not WHEN_BAD_BODY.match(b)
-
-def when_ladder(lines):
-    """A 3+ arm if/else-if ladder in expression position (I54)."""
-    text = "\n".join(lines)
-    starts = [0]
-    for l in lines:
-        starts.append(starts[-1] + len(l) + 1)
-    for m in WHEN_TRIGGER.finditer(text):
-        km = re.search(r"\bif\b", m.group(0))
-        if_pos = m.start() + km.start()
-        is_bare = m.group(0).lstrip().startswith("if")
-        pos, arms, ok, last_close = if_pos, 0, True, None
-        while True:
-            brace_m = re.search(r"\{", text[pos:pos + 400])
-            if not brace_m:
-                ok = False
-                break
-            brace_open = pos + brace_m.start()
-            close = closing_brace(text, brace_open)
-            if close is None or not when_body_ok(text[brace_open + 1:close]):
-                ok = False
-                break
-            arms += 1
-            last_close = close
-            rest = text[close + 1:close + 400]
-            em = re.match(r"[ \t\n]*else[ \t\n]+if\b", rest)
-            if em:
-                pos = close + 1 + em.end() - 2
-                continue
-            em2 = re.match(r"[ \t\n]*else[ \t\n]*\{", rest)
-            if not em2:
-                ok = False
-                break
-            else_open = close + 1 + rest.index("{", em2.end() - 1)
-            else_close = closing_brace(text, else_open)
-            if else_close is None or not when_body_ok(text[else_open + 1:else_close]):
-                ok = False
-                break
-            arms += 1
-            last_close = else_close
-            break
-        if not ok or arms < 3:
-            continue
-        if is_bare and not re.match(r"[ \t\n]*\}", text[last_close + 1:last_close + 40]):
-            continue
-        li = bisect.bisect_right(starts, if_pos) - 1
-        yield li, lines[li].strip()
 
 def bool_comprehension(lines):
     """A comprehension over a LIST, built only to be folded to a
@@ -784,11 +695,6 @@ RULES = {
     "I39": (state_verb,
             "a vocabulary verb as a free fn taking a pass state first — the state's "
             "impl is its vocabulary: write `mut fn verb(…)` there and call `cx.verb(…)`"),
-    "I54": (when_ladder,
-            "an if/else-if ladder of 3+ arms answering a value — that is `when`. "
-            "Accused only where every arm is a one-line expression (no return/fail/"
-            "break/continue, no assignment, no nested if) standing after `=`, `->`, "
-            "`return`, or as a fn's tail"),
     "I43": (hand_sized_column,
             "a fact column sized from an arena's count — `SideTable<V>` states "
             "the window, the growth and the out-of-window defect once: "
@@ -867,6 +773,18 @@ UNRATCHETED = {
            "           own-name-at case) plus a structural `call_args()` walk that\n"
            "           refuses a param handed to a nested call's own arguments;\n"
            "           ratcheted by the native-findings phase below",
+    "I54": "PORTED NATIVELY: `when_ladder` (features/if_expr/idioms.av) — the\n"
+           "           pattern's own three parts (`if`, `else if`, `else`) are the\n"
+           "           floor a chain of any length recurses past, one nested match at a\n"
+           "           time, rather than one pattern spanning every depth; ratcheted by\n"
+           "           the native-findings phase below. Wider than the retired regex on\n"
+           "           purpose: no per-arm shape check (no return/fail/break/continue/\n"
+           "           assignment/one-line refusal) — `Expr.If` vs `Stmt.IfStmt` being\n"
+           "           different node kinds BY POSITION (avra-8sb5.25.21) already does\n"
+           "           the work the regex's body-text scan existed for, so a chain used\n"
+           "           for its value structurally cannot be the statement form; a 4+-arm\n"
+           "           chain is found once at each nesting level it appears at, a known\n"
+           "           duplicate the Fix.Say tier does not need suppressed",
     "I51": "PORTED NATIVELY: `bool_variant_match`/`bool_variant_match_negated`\n"
            "           (features/enums/idioms.av) — no guard needed: the pattern's own\n"
            "           WILDCARD seat (a literal `_`, never an `or`-run) already refuses\n"
@@ -1028,14 +946,6 @@ CLEAN = {
     "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
             ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
-    "I54": [["    let base = if a { x } else { y }"],
-            ["    if a { x = 1 } else if b { x = 2 } else { x = 3 }"],
-            ["    if a { if c { p } else { q } } else if b { y } else { z }"],
-            ["    if a { return x } else if b { y } else { z }"],
-            ["fn f() {",
-             "    if a { g() } else if b { h() } else { j() }",
-             "    k()",
-             "}"]],
     "I48": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
@@ -1060,12 +970,6 @@ SPECIMENS = {
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
-    "I54": [["    let base = if a { x } else if b { y } else { z }"],
-            ["    .A -> if a { x } else if b { y } else { z },"],
-            ["fn f() -> string {",
-             "    if a { \"x\" } else if b { \"y\" } else { \"z\" }",
-             "}"],
-            ["    return if a { x } else if b { y } else { z }"]],
     "I48": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
             ["    [b.ieq_at(0, b.length, w) for w in written_by].any(it)"],
             ["    ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)"]],
@@ -1257,6 +1161,7 @@ NATIVE_PREDECESSOR = {
     "style.modified_copy_literal": "I53",
     "style.pronoun_lambda": "I50",
     "style.bool_variant_match": "I51",
+    "style.when_ladder": "I54",
 }
 
 def native_findings():
