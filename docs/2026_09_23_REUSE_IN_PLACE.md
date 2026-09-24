@@ -338,3 +338,25 @@ it per instruction is quadratic. `viewed_regs` is a SUPERSET (any
 register a managed view reads) and `views` keeps the exact filter;
 the pass is then at parity (158.1B vs 158.3B instructions). Request
 census: retains 20 -> 14, releases 36 -> 30 per request.
+
+## §12 As built — the three narrow leaves
+
+The R5a profile named three costs that were neither counts nor boxes:
+- **`avra_int_text` formatted through `snprintf`** (`__vfprintf`, ~2%
+  of the request): digits now written backwards into a scratch buffer,
+  the magnitude unsigned so `INT64_MIN` has one too — checked against
+  `snprintf` on thirteen edge cases.
+- **`avra_str_char_code` carried its trap inline** — an 80-byte buffer
+  and a `snprintf` in a hot leaf (A COLD PATH IN A HOT LEAF); it calls
+  the out-of-line `trap_bounds` now, same words.
+- **std-http's `byte(":")` read a literal at run time**, 41 sites. A
+  LITERAL's byte at a literal index folds in lowering
+  (`literal_code`, features/str_lit/lower.av) — the byte the runtime
+  would read, or the runtime call when the index is outside the text —
+  and the sites spell `":".char_code()`. The request path now calls
+  `char_code` zero times. Pinned by str_lit/tests/char_code_fold
+  (an escape, a later byte, a multi-byte lead and continuation, a
+  computed index beside a written one; eval == native).
+
+Still open from that profile: `avra_once_get` (~7%, 42 reads a request)
+wants a `Bytes` const to cross as static data (R9).

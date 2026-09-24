@@ -121,16 +121,13 @@ export fn status_of(why: Refusal) -> int {
 
 // ── The class tables, built once ────────────────────────────────
 
-/// A byte named by its character.
-fn byte(s: string) -> int { s.char_code(0) }
-
 /// A 256-entry class table: one byte per octet, 1 where the
 /// predicate admits it. `run` walks a span in one call against one of
 /// these, so a scan asks where a class ENDS and never what each byte
 /// is.
 export fn admits(pred: fn(int) -> bool) -> Bytes { [if pred(i) { 1 } else { 0 } for i in 0..256].bytes()! }
-fn is_digit(c: int) -> bool { c >= byte("0") && c <= byte("9") }
-fn is_alpha(c: int) -> bool { c >= byte("A") && c <= byte("Z") || c >= byte("a") && c <= byte("z") }
+fn is_digit(c: int) -> bool { c >= "0".char_code() && c <= "9".char_code() }
+fn is_alpha(c: int) -> bool { c >= "A".char_code() && c <= "Z".char_code() || c >= "a".char_code() && c <= "z".char_code() }
 fn is_mark(c: int) -> bool { marks().index_of([c].bytes()!, 0) >= 0 }
 /// What octet a TOKEN may carry (RFC 9110 §5.6.2) — a method, a field
 /// name. Exported for the reason `is_target` is: a WRITER that must
@@ -139,12 +136,12 @@ fn is_mark(c: int) -> bool { marks().index_of([c].bytes()!, 0) >= 0 }
 export fn is_tchar(c: int) -> bool { is_digit(c) || is_alpha(c) || is_mark(c) }
 /// What octet a FIELD VALUE may carry — visible ASCII and HTAB, and
 /// so neither a CR, an LF, nor a NUL.
-export fn is_vchar(c: int) -> bool { c == byte("\t") || c >= byte(" ") && c <= byte("~") }
+export fn is_vchar(c: int) -> bool { c == "\t".char_code() || c >= " ".char_code() && c <= "~".char_code() }
 /// What octet a request target may carry (RFC 9112 §3.2): visible
 /// ASCII, plus `obs-text`. The law lives here so a consumer that
 /// narrows it — the path, which is a target minus `?` — composes
 /// rather than copies.
-export fn is_target(c: int) -> bool { c >= byte("!") && c <= byte("~") || c >= 128 }
+export fn is_target(c: int) -> bool { c >= "!".char_code() && c <= "~".char_code() || c >= 128 }
 
 once fn marks() -> Bytes { "!#\$%&'*+-.^_`|~".bytes() }
 once fn tchar() -> Bytes { admits(is_tchar) }
@@ -167,7 +164,7 @@ once fn close() -> Bytes { "close".bytes() }
 once fn keep_alive() -> Bytes { "keep-alive".bytes() }
 once fn continue_100() -> Bytes { "100-continue".bytes() }
 
-fn is_ows(c: int) -> bool { c == byte(" ") || c == byte("\t") }
+fn is_ows(c: int) -> bool { c == " ".char_code() || c == "\t".char_code() }
 
 // ── The head ────────────────────────────────────────────────────
 
@@ -207,8 +204,8 @@ fn crlf_only(buf: Bytes, lo: int, hi: int) -> bool {
         let cr = bounded(buf.index_of(carriage, at), hi)
         let lf = bounded(buf.index_of(feed, at), hi)
         if cr < 0 && lf < 0 { return true }
-        if cr >= 0 && (cr + 1 >= buf.length || buf.at(cr + 1) != byte("\n")) { return false }
-        if lf >= 0 && (lf == 0 || buf.at(lf - 1) != byte("\r")) { return false }
+        if cr >= 0 && (cr + 1 >= buf.length || buf.at(cr + 1) != "\n".char_code()) { return false }
+        if lf >= 0 && (lf == 0 || buf.at(lf - 1) != "\r".char_code()) { return false }
         at = if cr >= 0 && (lf < 0 || cr < lf) { cr + 2 } else { lf + 1 }
     }
     true
@@ -231,29 +228,29 @@ fn past_one_empty_line(buf: Bytes, from: int) -> int {
 /// digit — then its fields, then the head settled.
 fn request_line(buf: Bytes, start: int, mark: int, limits: Limits) -> Framed {
     let verb_end = buf.run(start, tchar())
-    if verb_end == start || buf.at(verb_end) != byte(" ") { return .Refused(.RequestLine) }
+    if verb_end == start || buf.at(verb_end) != " ".char_code() { return .Refused(.RequestLine) }
     let t_lo = verb_end + 1
     let t_end = buf.run(t_lo, target_char())
     // the head's line ends were judged whole before this ran, so a
     // target stopping at a CR is a line of two words, not a torn end
-    if t_end == t_lo || buf.at(t_end) != byte(" ") { return .Refused(.RequestLine) }
+    if t_end == t_lo || buf.at(t_end) != " ".char_code() { return .Refused(.RequestLine) }
     let v_lo = t_end + 1
     let eol = buf.index_of(crlf(), v_lo)
     if eol - start > limits.line { return .Refused(.LineLength) }
     if !versioned(buf, v_lo, eol) { return .Refused(.Version) }
-    if buf.at(v_lo + 5) != byte("1") { return .Refused(.Major) }
+    if buf.at(v_lo + 5) != "1".char_code() { return .Refused(.Major) }
     let method = method_of(buf, start, verb_end)
     if !target_form_fits(buf, method, t_lo, t_end) { return .Refused(.Target) }
     mut fs: List<int> = []
     let why: Refusal? = field_lines(buf, eol + 2, mark, limits, fs)
     if why != null { return .Refused(why!) }
-    settled(buf, method, Span { lo: start, hi: verb_end }, Span { lo: t_lo, hi: t_end }, buf.at(v_lo + 7) - byte("0"), Fields(fs), mark + 4, limits)
+    settled(buf, method, Span { lo: start, hi: verb_end }, Span { lo: t_lo, hi: t_end }, buf.at(v_lo + 7) - "0".char_code(), Fields(fs), mark + 4, limits)
 }
 
 /// `HTTP/` then one digit, a point, one digit, and nothing else before
 /// the line ends (RFC 9112 §2.3).
 fn versioned(buf: Bytes, at: int, eol: int) -> bool {
-    eol - at == 8 && buf.eq_at(at, at + 5, http_slash()) && is_digit(buf.at(at + 5)) && buf.at(at + 6) == byte(".") && is_digit(buf.at(at + 7))
+    eol - at == 8 && buf.eq_at(at, at + 5, http_slash()) && is_digit(buf.at(at + 5)) && buf.at(at + 6) == ".".char_code() && is_digit(buf.at(at + 7))
 }
 
 /// The target's form belongs to its method (RFC 9112 §3.2): origin-form
@@ -279,7 +276,7 @@ fn target_form_fits(buf: Bytes, method: Method, lo: int, hi: int) -> bool {
 export fn target_form(buf: Bytes, method: Method, lo: int, hi: int) -> TargetForm {
     when {
         method == Method.Connect -> connect_form(buf, lo)
-        buf.at(lo) == byte("/") -> .Origin
+        buf.at(lo) == "/".char_code() -> .Origin
         buf.eq_at(lo, hi, star()) -> asterisk_form(method)
         schemed(buf, lo, hi) -> .Absolute
         _ -> .Other
@@ -288,7 +285,7 @@ export fn target_form(buf: Bytes, method: Method, lo: int, hi: int) -> TargetFor
 
 /// CONNECT's target is an AUTHORITY and never a path (RFC 9112 §3.2.3).
 fn connect_form(buf: Bytes, lo: int) -> TargetForm {
-    if buf.at(lo) == byte("/") { return .Other }
+    if buf.at(lo) == "/".char_code() { return .Other }
     .Authority
 }
 
@@ -350,7 +347,7 @@ fn field_lines(buf: Bytes, from: int, mark: int, limits: Limits, mut out: List<i
 /// `out`, or the law it broke.
 fn field_line(buf: Bytes, at: int, eol: int, limits: Limits, mut out: List<int>) -> Refusal? {
     let n_end = buf.run(at, tchar())
-    if n_end == at || buf.at(n_end) != byte(":") { return .FieldName }
+    if n_end == at || buf.at(n_end) != ":".char_code() { return .FieldName }
     let v_lo = past_ows(buf, n_end + 1)
     if buf.run(v_lo, vchar()) != eol { return .FieldValue }
     if eol - at > limits.field { return .FieldLength }
@@ -501,7 +498,7 @@ fn took_expectation(buf: Bytes, v: Span, mut fr: Framing) {
 fn decimal(buf: Bytes, v: Span) -> int? {
     if v.hi == v.lo || v.hi - v.lo > 18 || buf.run(v.lo, digit()) != v.hi { return null }
     mut n = 0
-    for i in v.lo..v.hi { n = n * 10 + buf.at(i) - byte("0") }
+    for i in v.lo..v.hi { n = n * 10 + buf.at(i) - "0".char_code() }
     n
 }
 
@@ -561,17 +558,17 @@ fn reply_unfinished(buf: Bytes, from: int, limits: Limits) -> FramedReply {
 fn status_line(buf: Bytes, from: int, mark: int, limits: Limits, asked: Method) -> FramedReply {
     let eol = buf.index_of(crlf(), from)
     if eol - from > limits.line { return .Refused(.LineLength) }
-    if eol - from < 12 || buf.at(from + 8) != byte(" ") || buf.at(from + 12) != byte(" ") && eol != from + 12 { return .Refused(.RequestLine) }
+    if eol - from < 12 || buf.at(from + 8) != " ".char_code() || buf.at(from + 12) != " ".char_code() && eol != from + 12 { return .Refused(.RequestLine) }
     if !versioned(buf, from, from + 8) { return .Refused(.Version) }
-    if buf.at(from + 5) != byte("1") { return .Refused(.Major) }
+    if buf.at(from + 5) != "1".char_code() { return .Refused(.Major) }
     if buf.run(from + 9, digit()) != from + 12 { return .Refused(.RequestLine) }
     let reason_lo = if eol == from + 12 { eol } else { from + 13 }
     if buf.run(reason_lo, vchar()) != eol { return .Refused(.RequestLine) }
-    let status = (buf.at(from + 9) - byte("0")) * 100 + (buf.at(from + 10) - byte("0")) * 10 + buf.at(from + 11) - byte("0")
+    let status = (buf.at(from + 9) - "0".char_code()) * 100 + (buf.at(from + 10) - "0".char_code()) * 10 + buf.at(from + 11) - "0".char_code()
     mut fs: List<int> = []
     let why: Refusal? = field_lines(buf, eol + 2, mark, limits, fs)
     if why != null { return .Refused(why!) }
-    settled_reply(buf, status, buf.at(from + 7) - byte("0"), Fields(fs), mark + 4, limits, asked)
+    settled_reply(buf, status, buf.at(from + 7) - "0".char_code(), Fields(fs), mark + 4, limits, asked)
 }
 
 /// A reply's body is delimited by its status and the request's method
@@ -690,12 +687,12 @@ fn trailer_step(c: Chunker, buf: Bytes, limits: Limits) -> Step {
 /// Where the size line's CRLF begins, past an extension: -1 when the
 /// line has not fully arrived, -2 when it is malformed or too long.
 fn size_line_end(buf: Bytes, at: int, limits: Limits) -> int {
-    let ext_end = if at < buf.length && buf.at(at) == byte(";") { buf.run(at, vchar()) } else { at }
+    let ext_end = if at < buf.length && buf.at(at) == ";".char_code() { buf.run(at, vchar()) } else { at }
     if ext_end - at > limits.ext { return -2 }
     if ext_end == buf.length { return -1 }
-    if buf.at(ext_end) != byte("\r") { return -2 }
+    if buf.at(ext_end) != "\r".char_code() { return -2 }
     if ext_end + 1 == buf.length { return -1 }
-    if buf.at(ext_end + 1) != byte("\n") { -2 } else { ext_end }
+    if buf.at(ext_end + 1) != "\n".char_code() { -2 } else { ext_end }
 }
 
 /// ONE HEX DIGIT'S VALUE, or absence when the octet is not one — the
@@ -703,9 +700,9 @@ fn size_line_end(buf: Bytes, at: int, limits: Limits) -> int {
 /// percent-escape; spelled twice, a lenient reader and a strict one
 /// would disagree about the same two octets.
 export fn hex_of(c: int) -> int? {
-    if is_digit(c) { return c - byte("0") }
-    if c >= byte("A") && c <= byte("F") { return c - byte("A") + 10 }
-    if c >= byte("a") && c <= byte("f") { return c - byte("a") + 10 }
+    if is_digit(c) { return c - "0".char_code() }
+    if c >= "A".char_code() && c <= "F".char_code() { return c - "A".char_code() + 10 }
+    if c >= "a".char_code() && c <= "f".char_code() { return c - "a".char_code() + 10 }
     null
 }
 
