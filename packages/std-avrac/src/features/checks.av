@@ -161,7 +161,11 @@ impl TypeCx {
     mut fn seated_early(e: ExprId, want: TypeId, decl: DeclId, bound: Pins) {
         let arrow? = self.view.types.arrow_parts(want) else { return }
         if !arrow.seats.all((s) -> self.fully_bound(s, decl, bound)) { return }
-        let _ = self.retype_seated(e, [self.view.types.substituted(s, decl, self.bound_args(bound)) for s in arrow.seats], arrow.marks)
+        let vars = self.view.decls.instance_vars(decl)
+        let seated = self.view.types.substituted(want, decl, [b ?? vars[j] for j, b in bound.slots])
+        let concrete? = self.view.types.arrow_parts(seated) else { return }
+        // a lambda taking an offered record by name hears the want itself
+        if self.retype_seated(e, concrete.seats, concrete.marks) == null { self.feed(e, seated) }
     }
 
     /// A `T?` SEAT takes a present value and pins `T` to it — here and

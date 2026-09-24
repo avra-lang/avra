@@ -201,22 +201,38 @@ export fn type_named(names: NameFacts, name: string) -> DeclId? {
 }
 
 /// Whether a type registered an impl for the trait this file names —
-/// and a `dyn` of the very trait implements it BY CONSTRUCTION.
+/// and a `dyn` of the very trait, or a type parameter bounded by it,
+/// implements it BY CONSTRUCTION — each instantiation re-proves the
+/// bound.
 export fn implements_of(types: TypeRegistry, decls: Decls, names: NameFacts, ty: TypeId, tname: string) -> bool {
+    implements_named(types, decls, ty, tname, decls.trait_named(names, tname))
+}
+
+/// The same answer, given the trait the name stands for WHERE IT WAS
+/// WRITTEN — absent when that file names no such trait.
+export fn implements_named(types: TypeRegistry, decls: Decls, ty: TypeId, tname: string, tr: DeclId?) -> bool {
     let worn: string? = dyn_contract(types.shape_of(ty))
     if worn != null { return worn! == tname }
-    let tr? = decls.trait_named(names, tname) else { return false }
-    implements_trait(types, decls, ty, tr)
+    if bound_of(types, decls, ty) == tname { return true }
+    let t? = tr else { return false }
+    implements_trait(types, decls, ty, t)
+}
+
+/// The bound a type parameter declares — "" for every other type.
+fn bound_of(types: TypeRegistry, decls: Decls, ty: TypeId) -> string {
+    match types.shape_of(ty) {
+        .Var(d, j, _) -> decls.bound_name(d, j),
+        _ -> "",
+    }
 }
 
 /// Whether a type registered an impl for the trait DECLARATION — asked
 /// of the trait itself, so the answer never depends on what the asking
 /// file imports.
 export fn implements_trait(types: TypeRegistry, decls: Decls, ty: TypeId, tr: DeclId) -> bool {
-    let sh = types.shape_of(ty)
-    let worn: DynContract? = dyn_decl(sh)
+    let worn: DynContract? = dyn_decl(types.shape_of(ty))
     if worn != null { return same_decl(worn!.decl, tr) }
-    let d? = declared_decl(sh) else { return false }
+    let d? = decls.implementor(ty) else { return false }
     decls.implements(d, tr)
 }
 
@@ -368,14 +384,29 @@ fn literal_shape(value: Expr) -> Type? {
 
 /// What a settlement SPELLS today: a scalar or text, by its word.
 export fn scalar_named(name: string) -> Type? {
-    match name {
-        "int" -> Type.Int,
-        "float" -> Type.Float,
-        "string" -> Type.Str,
-        "bool" -> Type.Bool,
-        _ -> null,
+    scalar_types().find(it.name == name)?.builds(TypeArgs { parts: [] })
+}
+
+/// The scalars as the language's own type declarations — the ONE
+/// spelling of each, and a declaration a trait's own package may
+/// implement its trait for (`impl Respond for string`).
+export once fn scalar_types() -> List<TypeRow> {
+    table<TypeRow> {
+        name     | arity | slots | judge  | builds      | variants
+        "int"    | 0     | false | no_law | int_shape   | no_variants
+        "float"  | 0     | false | no_law | float_shape | no_variants
+        "string" | 0     | false | no_law | str_shape   | no_variants
+        "bool"   | 0     | false | no_law | bool_shape  | no_variants
     }
 }
+
+fn int_shape(_args: TypeArgs) -> Type { Type.Int }
+
+fn float_shape(_args: TypeArgs) -> Type { Type.Float }
+
+fn str_shape(_args: TypeArgs) -> Type { Type.Str }
+
+fn bool_shape(_args: TypeArgs) -> Type { Type.Bool }
 
 /// A type under a body's instantiation — IDENTITY for a plain body.
 export fn viewed(types: TypeRegistry, sub: Sub?, ty: TypeId) -> TypeId {
@@ -417,6 +448,14 @@ impl TypeCx {
     fn method_sig(target: DeclId, mname: string) -> FnSig? { self.view.decls.method_sig_of(target, mname) }
     fn trait_sig(tname: string, mname: string) -> FnSig? { self.view.decls.trait_sig_of(self.names, tname, mname) }
     fn implements(ty: TypeId, tname: string) -> bool { implements_of(self.view.types, self.view.decls, self.names, ty, tname) }
+    /// Whether `ty` meets a declaration's bound — the trait read in the
+    /// file that WROTE the bound, never the caller's: a caller need not
+    /// import the trait a callee is bounded by.
+    fn meets_bound(decl: DeclId, tname: string, ty: TypeId) -> bool {
+        let written: DeclId? = self.written_in(self.view.decls.decl(decl).file).type_decl(tname)
+        let tr: DeclId? = if written != null && self.view.decls.is_trait(written!) { written } else { self.view.decls.trait_named(self.names, tname) }
+        implements_named(self.view.types, self.view.decls, ty, tname, tr)
+    }
     fn implements_decl(ty: TypeId, tr: DeclId) -> bool { implements_trait(self.view.types, self.view.decls, ty, tr) }
     /// A `mut` binding: a `mut` local, a receiver, a `mut` seat — or
     /// a lambda's seat that HEARD its mark from the slot, which only
@@ -576,6 +615,7 @@ impl Decls {
         let name = self.decl(d).name
         let vars = self.instance_vars(d)
         if self.is_trait(d) { return vars[0] }
+        if self.is_builtin(d) { return self.built_type(d, vars) }
         if !vars.is_empty() { return self.types.intern(Type.App(d, name, vars)) }
         if self.is_enum(d) { return self.types.intern(Type.Enum(d, name)) }
         self.types.intern(Type.Struct(d, name))
