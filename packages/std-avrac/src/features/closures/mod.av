@@ -9,9 +9,10 @@ use diagnostics.{DiagCode}
 
 export fn closures() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name      | build
-        "lambda"  | build_lambda
-        "fn_type" | build_fn_type
+        name            | build
+        "lambda"        | build_lambda
+        "fn_type"       | build_fn_type
+        "trailing_arms" | build_trailing_arms
     }
     let codes = table<DiagCode> {
         kind               | id      | summary
@@ -19,10 +20,12 @@ export fn closures() -> LanguageFeature {
         "type.not_offered" | "F2117" | "a lambda takes a record seat's fields by name, and only the fields it offers"
     }
     LanguageFeature closures {
-        docs: "`(x: int) -> x * 2` closures capturing outer names by value; `fn(int) -> bool` fn-value types (`fn(int)` answers nothing); calls dispatch through fn-typed bindings. A seat written `mut` is one the lambda writes through, and an unannotated seat HEARS its slot's mark as it hears its type — so a trailing block on `fn(mut Cx) -> R` writes through the context it is handed."
+        docs: "`(x: int) -> x * 2` closures capturing outer names by value; `fn(int) -> bool` fn-value types (`fn(int)` answers nothing); calls dispatch through fn-typed bindings. A seat written `mut` is one the lambda writes through, and an unannotated seat HEARS its slot's mark as it hears its type — so a trailing block on `fn(mut Cx) -> R` writes through the context it is handed. A trailing block of MATCH ARMS is a fn body too: `xs.filter { .Ok(v) -> v > 0, _ -> false }` is `xs.filter((it) -> match it { .Ok(v) -> v > 0, _ -> false })` — the first arm's pattern anchors the parse away from a lone bind (`{ x -> body }` stays the ordinary one-seat lambda, unchanged, both spellings one node)."
         gram: grammar {
             type = "fn" "(" ( ( fc:"const" )? ( fm:"mut" )? ft:type ( "," ( fc:"const" )? ( fm:"mut" )? ft:type )* ","? )? ")" ( "->" fr:type )? -> fn_type(fc, fm, ft, fr)
             primary = "(" ( ( lc:"const" )? ( lm:"mut" )? lp:NAME ( ":" lt:type )? ( "," ( lc:"const" )? ( lm:"mut" )? lp:NAME ( ":" lt:type )? )* ","? )? ")" "->" lb:expression -> lambda(lc, lm, lp, lt, lb)
+            trailing = "{" hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> trailing_arms(hp, hg, hv, a)
+            nonbind_pattern = "." vn:NAME ( "(" sub:pattern ( "," sub:pattern )* ")" )? -> variant_pat(vn, sub) | "_" -> wild_pat() | "true" -> true_pat() | "false" -> false_pat() | v:NUMBER -> num_pat(v)
         }
         diags: codes
         builders: rows
