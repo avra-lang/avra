@@ -638,3 +638,31 @@ Keep-alive is syscall-bound: a read and a write per request dominate
 the 17.8 µs, so the allocation levers show in the pipelined column.
 The next levers are the response written into the connection's own
 buffer (R14) and fewer syscalls per request (batched writes).
+
+## §23 As built — the profile, and three cuts from it
+
+**The first Linux profile was the instrument's.** callgrind under
+valgrind maps a PIE image and its heap below 4 GB, and `avra_hdr`
+refuses every address below 4 GB, so every box read as foreign:
+no count, no free, every constant copied — `malloc` at 30%. Real runs
+are unaffected (PIE at 0x56…, 0 boxes live at exit); the premise is a
+deadline all the same (avra-8sb5.34.24). The true profile came from a
+profiling-only copy with the floor at 0x10000: 12.5k instructions a
+request — memory work 31%, the framer's scans 23%, http logic 20%,
+the response's header checks 10%, building the response 11%.
+
+**Three cuts** (request bench, 5M requests, instructions retired):
+1. The live-byte count stays on every allocation (a settlement's
+   budget reads it); the report's category is computed only when
+   `AVRA_MEM_STATS` is set (`acc_box`, `acc_note` out of line):
+   64.57B -> 64.04B.
+2. The server judged every response twice (`as_sent`, then `wire`
+   again). It calls `wire` once; only a `HEAD` asks `as_sent` again to
+   measure the body it withholds. No unjudged writer is exported — a
+   response no peer could read stays refused at the one crossing.
+3. The reply is ONE gathered allocation (`List<Bytes>.bytes()`): the
+   status line read from `reply_lines`, a const of every three-digit
+   status laid out in the binary; header text shared, not copied.
+   Together: 64.0B -> 59.9B (-6.4%). A header's four pieces are
+   pushed, not concatenated as a literal: the literal is a box per
+   header, and measured 3.5% slower.
