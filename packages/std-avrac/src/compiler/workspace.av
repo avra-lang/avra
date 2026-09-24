@@ -17,7 +17,7 @@
 use core.{Table, new_table, list_cell, NodeStore, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, distinct, TypeId, Type, some_list, same_file, touch, Annotation}
 use @std.path.{dir_of, joined_path}
 use features.components.{word_of}
-use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockWords}
+use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, scalar_types, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockWords}
 use @std.meta.{Diagnostic}
 use core.{StmtId}
 use diagnostics.{SourceFile, new_source_file, Diag, Voices, error_at, render_among, refusal, by_position, has_errors, is_error}
@@ -417,7 +417,7 @@ export fn programs_workspace(host: Host, dir: string, lang: Language, clock: fn(
 
 /// The declaration table with the language's own declarations in it.
 fn language_decls(lang: Language) -> Decls {
-    mut decls = new_decls() with { rows: lang.rows.types }
+    mut decls = new_decls() with { rows: lang.rows.types.concat(scalar_types()) }
     decls.admit_builtins()
     decls
 }
@@ -755,10 +755,10 @@ impl Workspace {
         self.programs.demand(f.index, () -> self.parsed_under_blocks(f), (p: Parsed) -> fp(121, [program_hash(p), fp_str(joined(sorted_texts(p.store.sublang_words()), ","))]))
     }
 
-    /// A file parsed under NO block words — its own words alone. The
-    /// block pre-scan reads a provider through this, so a file's parse
-    /// never depends on a provider's parse depending back on it (two
-    /// files importing each other were a memo cycle otherwise).
+    /// A file parsed under NO block words — its own words alone: the
+    /// first read of every file, and a provider's read inside a cycle
+    /// (two files importing each other's words), where its full parse
+    /// is the one in flight.
     ///
     /// TIMED UNDER "ast" (lex plus build — there is no seam between
     /// them to split), wherever it is called from: a provider file's
@@ -819,8 +819,17 @@ impl Workspace {
     /// by this name — as `use` spells it with the word.
     fn component_home(word: string, own: string) -> string? {
         let paths = flatten([self.all_files(pkg.src) for pkg in self.packages()])
-        let path? = paths.find((path: string) -> self.module_at(path) != own && self.plain_words(path).components.any(it.word == word)) else { return null }
+        let path? = paths.find((path: string) -> self.module_at(path) != own && self.provided_words(path).components.any(it.word == word)) else { return null }
         "${self.module_at(path)}.{${word}}"
+    }
+
+    /// A provider read as it parses — under its OWN block words, since a
+    /// provider that uses one (`within` in a server) fails its plain parse
+    /// whole and would export nothing. Its plain parse answers only
+    /// inside a cycle: two files importing each other's words.
+    fn provider_parsed(f: FileId) -> Parsed {
+        if self.db.active(self.programs.query_key(f.index)) { return self.plain_parsed(f) }
+        self.parsed(f)
     }
 
     /// The module a source path belongs to, by name.
@@ -856,7 +865,7 @@ impl Workspace {
         // (`maybe_declares_block`), and only a file that survives THAT
         // reaches the parse below.
         if !module_names_block_word(self, m, self.module_files(m), u.items) { return BlockWords {} }
-        let declared = [self.plain_words(path) for path in self.module_files(m)]
+        let declared = [self.provided_words(path) for path in self.module_files(m)]
         let grammars = flatten([d.grammars for d in declared])
         let components = flatten([d.components for d in declared])
         BlockWords {
@@ -869,8 +878,8 @@ impl Workspace {
     /// its own name: its named grammars readied (one whose notation
     /// does not parse is left out — the library speaks) and its
     /// template components.
-    fn plain_words(path: string) -> BlockWords {
-        let p = self.plain_parsed(self.file_id(path))
+    fn provided_words(path: string) -> BlockWords {
+        let p = self.provider_parsed(self.file_id(path))
         let exported = [s for s in p.stmts if p.store.is_exported(s)]
         BlockWords {
             grammars: flatten([some_list(readied_grammar(p, s, path)) for s in exported]),

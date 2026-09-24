@@ -58,7 +58,7 @@
 //! takes a `Request<R>` — the request, its route's record at `params`.
 use @std.meta.{Code, Format}
 use frame.{Method}
-use http.{Request, Unrouted, Response, status}
+use http.{Request, Unrouted, Response, Respond, status}
 
 /// HOW FAR A ROUTE REACHES, and what its pattern's braces mean. A
 /// DECLARED thing in every case: the door a route came through says
@@ -103,7 +103,7 @@ fn takes_rest(reach: Reach) -> bool {
 /// handler chose is a Response like any other, and the two must not
 /// be the same value.
 export fn routed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> Response) -> Route {
-    Route { method: method, pattern: pattern, reach: .Width, serve: (q: Request<Unrouted>, t: Bytes) -> answered(read(t), q, serve) }
+    Route { method: method, pattern: pattern, reach: .Width, serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve) }
 }
 
 /// A route with NO HOLES — `/health`, `/metrics`, `/`. A grammar
@@ -129,15 +129,15 @@ export fn fixed(method: Method, path: string, serve: fn(Request<Unrouted>) -> Re
 /// EXACTLY as its grammar does, and the router is not reading a
 /// marker only it understands.
 export fn tailed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> Response) -> Route {
-    Route { method: method, pattern: pattern, reach: .Rest, serve: (q: Request<Unrouted>, t: Bytes) -> answered(read(t), q, serve) }
+    Route { method: method, pattern: pattern, reach: .Rest, serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve) }
 }
 
 /// A route whose PATTERN declares its reach: a last hole marked `...`
 /// takes the rest, any other reaches its own width. The door a route
 /// written as a declaration (`get "/static/{path...}" { … }`) comes
 /// through, where the pattern is the whole declaration.
-export fn declared<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> Response) -> Route {
-    Route { method: method, pattern: pattern, reach: if marks_rest(pattern) { .Rest } else { .Width }, serve: (q: Request<Unrouted>, t: Bytes) -> answered(read(t), q, serve) }
+export fn declared<R, T: Respond>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> T) -> Route {
+    Route { method: method, pattern: pattern, reach: if marks_rest(pattern) { .Rest } else { .Width }, serve: (q: Request<Unrouted>, t: Bytes) -> responded(read(t), q, serve) }
 }
 
 // ── Routes as declarations ──────────────────────────────────────
@@ -150,43 +150,43 @@ export fn declared<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, se
 export component get(path: Format) {
     body: Code
     fn expand() -> Code {
-        quote { declared<${self.path}>(Method.Get, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+        quote { declared(Method.Get, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
     }
 }
 
 export component post(path: Format) {
     body: Code
     fn expand() -> Code {
-        quote { declared<${self.path}>(Method.Post, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+        quote { declared(Method.Post, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
     }
 }
 
 export component put(path: Format) {
     body: Code
     fn expand() -> Code {
-        quote { declared<${self.path}>(Method.Put, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+        quote { declared(Method.Put, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
     }
 }
 
 export component patch(path: Format) {
     body: Code
     fn expand() -> Code {
-        quote { declared<${self.path}>(Method.Patch, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+        quote { declared(Method.Patch, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
     }
 }
 
 export component delete(path: Format) {
     body: Code
     fn expand() -> Code {
-        quote { declared<${self.path}>(Method.Delete, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+        quote { declared(Method.Delete, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
     }
 }
 
-/// The handler run on the request under its own record, or absence
-/// when the target is not this route's.
-fn answered<R>(found: R?, q: Request<Unrouted>, serve: fn(Request<R>) -> Response) -> Response? {
+/// The handler's answer as the reply it becomes, or absence when the
+/// target is not this route's.
+fn responded<R, T: Respond>(found: R?, q: Request<Unrouted>, serve: fn(Request<R>) -> T) -> Response? {
     let params? = found else { return null }
-    serve(Request { raw: q.raw, head: q.head, body: q.body, peer: q.peer, params: params })
+    serve(Request { raw: q.raw, head: q.head, body: q.body, peer: q.peer, params: params }).response()
 }
 
 // ── Segments ────────────────────────────────────────────────────

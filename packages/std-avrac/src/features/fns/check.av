@@ -357,6 +357,7 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, 
     if spoke { return cx.error_type }
     if unpinned_of(tp, bound) != null { pinned_by_answer(cx, e, s.ret, decl, bound) }
     let missing: string? = unpinned_of(tp, bound)
+    if missing != null && args.any(spoke_already(cx, it)) { return cx.error_type }
     if missing != null { return if cx.starving { unpinned_by_arguments(cx, e, callee, missing!) } else { cx.hungry(e) } }
     let concrete = cx.bound_closed(bound)
     if !bounds_hold(cx, e, decl, concrete) { return cx.error_type }
@@ -364,6 +365,15 @@ fn generic_call(mut cx: TypeCx, e: ExprId, callee: string, pins: List<TypeRef>, 
     let settled: List<string> = cx.subst_at(e)?.consts ?? []
     cx.record_subst(e, decl, concrete, settled)
     cx.view.types.substituted(s.ret, decl, concrete)
+}
+
+/// An argument that already refused — itself, or a fn whose answer
+/// did — pins nothing, and has said so in its own words.
+fn spoke_already(cx: TypeCx, a: ExprId) -> bool {
+    if cx.facts.hungry_at(a) { return false }
+    if cx.errored(a) { return true }
+    let arrow? = cx.view.types.arrow_parts(cx.type_at(a)) else { return false }
+    cx.errored_ty(arrow.answer)
 }
 
 /// A Var the arguments leave free is pinned by the ANSWER's seat: the
@@ -439,8 +449,8 @@ export fn check_return(mut cx: TypeCx, s: StmtId) {
 }
 
 /// One bound, one binding: implemented, or refused with the remedy.
-fn bound_held(mut cx: TypeCx, e: ExprId, tname: string, ty: TypeId) -> bool {
-    if cx.implements(ty, tname) { return true }
+fn bound_held(mut cx: TypeCx, e: ExprId, decl: DeclId, tname: string, ty: TypeId) -> bool {
+    if cx.meets_bound(decl, tname, ty) { return true }
     bound_unheld(cx, e, tname, ty)
     false
 }
@@ -451,7 +461,7 @@ fn bounds_hold(mut cx: TypeCx, e: ExprId, decl: DeclId, concrete: List<TypeId>) 
     for j in 0..cx.tbounds(decl).length {
         let name = cx.bound_name(decl, j)
         if name != "" {
-            if !bound_held(cx, e, name, concrete[j]) { return false }
+            if !bound_held(cx, e, decl, name, concrete[j]) { return false }
         }
     }
     true

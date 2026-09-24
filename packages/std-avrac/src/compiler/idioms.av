@@ -286,20 +286,53 @@ export rule seen_accumulator {
     } if calls(body, seen, "contains") && calls(body, seen, "push") -> seen_accumulator_found(seen, init),
 }
 
-/// Whether ANY of `body`'s statements calls `${seen}.${verb}(` — a
-/// plain fn (not a lambda) so `seen`, a NAME hole's bound `string`,
-/// is an ordinary parameter here rather than a closure's capture.
+/// Whether any of `body`'s statements calls `${seen}.${verb}(`.
 fn calls(body: List<Code>, seen: string, verb: string) -> bool {
     let want = seen + "." + verb + "("
-    mut i = 0
-    while i < body.length {
-        if body[i].text().contains(want) { return true }
-        i = i + 1
-    }
-    false
+    body.any(it.text().contains(want))
 }
 
 fn seen_accumulator_found(seen: string, init: Code) -> Fix {
     let message = "`mut " + seen + "` accumulates what has been seen so a later turn can ask `" + seen + ".contains(...)` — once the whole list it is scanning is already in hand, that is a POSITION law: `xs.index_of(x) < j`, over `enumerate`"
     Fix.Say(warning("style.seen_accumulator", init.loc(), message, "this accumulator", null))
+}
+
+/// `emit` immediately followed by `intern(Type.Error)` — the pair a
+/// typing law's refusal tail always ends with — is `spoken(d)`.
+@keeps("{\n    cx.emit(d)\n    other()\n}")
+export rule emit_then_error {
+    quote {
+        {
+            ${..head}
+            ${cx}.emit(${d})
+            ${r}.intern(Type.Error)
+            ${..rest}
+        }
+    } -> emit_then_error_found(cx, d),
+}
+
+fn emit_then_error_found(cx: Code, d: Code) -> Fix {
+    Fix.Say(warning("style.emit_then_error", cx.loc(), "`${cx.text()}.emit(${d.text()})` immediately followed by `.intern(Type.Error)` — the pair is `spoken(${d.text()})`", "this pair", null))
+}
+
+/// A `push` held open across a stretch of work until a later `pop`
+/// on the same name — a bracket fn taking a thunk owns the pop on
+/// every path out, not just the one written.
+@keeps("{\n    let f = go()\n}")
+export rule bracket_ritual {
+    quote {
+        {
+            ${..head}
+            ${v}.push(${x})
+            ${..rest}
+        }
+    } if popped(rest, v.text()) -> bracket_ritual_found(v, x),
+}
+
+fn popped(rest: List<Code>, name: string) -> bool {
+    rest.any(it.text().contains(name + ".pop()"))
+}
+
+fn bracket_ritual_found(v: Code, x: Code) -> Fix {
+    Fix.Say(warning("style.bracket_ritual", v.loc(), "`${v.text()}.push(${x.text()})` held open across a stretch of work until a later `${v.text()}.pop()` — a bracket fn taking a thunk owns the pop on every path out, not just the one written", "this push", null))
 }

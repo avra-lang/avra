@@ -1,23 +1,35 @@
 // Routes as declarations: `get "/ideas/{id}" { req -> … }` mints the
 // pattern's record and hands the handler the request under it — the
-// same `routed` door, spelled as the route reads.
+// same router, spelled as the route reads. A handler answers what
+// `Respond` turns into a reply: text, a status, or a `Response`.
 use @std.http.http.{Response, text}
 use @std.http.route.{Route, get, post, put, patch, delete, faults}
 
 fn rc_routes() -> List<Route> {
     [
-        get "/ideas/{id}" { req -> text(200, "idea " + req.params.id) },
-        get "/search/{term}/{page}" { params -> text(200, "search " + params.term + " " + params.page) },
+        get "/ideas/{id}" { req -> "idea " + req.params.id },
+        get "/search/{term}/{page}" { params -> "search " + params.term + " " + params.page },
         post "/ideas" { req -> text(201, "made " + req.body.text()!) },
         put "/ideas/{id}" { req -> text(200, "put " + req.params.id) },
         patch "/ideas/{id}" { req -> text(200, "patch " + req.params.id) },
-        delete "/ideas/{id}" { _req -> Response { status: 204 } },
-        get "/health" { _req -> text(200, "ok") },
+        delete "/ideas/{id}" { _req -> 204 },
+        get "/health" { _req -> "ok" },
         get "/static/{path...}" { req -> text(200, "static " + req.params.path) },
     ]
 }
 
 spec "@std.http.route — routes as declarations" {
+    given "what a handler answers" {
+        then "text is a 200 carrying it" {
+            under(rc_routes(), "GET /health HTTP/1.1") == "200 ok"
+        }
+        then "a number is that status with no body" {
+            under(rc_routes(), "DELETE /ideas/7 HTTP/1.1") == "204 "
+        }
+        then "a Response is sent as it is" {
+            under(rc_routes(), "POST /ideas HTTP/1.1") == "201 made "
+        }
+    }
     given "a method's route over a pattern" {
         then "the handler reads the pattern's params off the request" {
             under(rc_routes(), "GET /ideas/7 HTTP/1.1") == "200 idea 7"

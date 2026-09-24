@@ -10,7 +10,7 @@
 //! statements declare. The workspace mints; every pass reads.
 use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, Scoped, GrammarSpec}
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
-use core.{Fingerprint, fp, list_cell, map_cell}
+use core.{Fingerprint, fp, list_cell, map_cell, same_type}
 use @std.path.{stem_of}
 use diagnostics.{loc_at, Diag}
 use @std.errors.{Loc}
@@ -855,6 +855,15 @@ impl Decls {
 
     fn is_named(d: DeclId) -> bool { self.decl(d).kind is .Named }
 
+    fn is_builtin(d: DeclId) -> bool { self.decl(d).kind is .Builtin }
+
+    /// The type a builtin declaration stands for: the shape its row
+    /// builds over these arguments.
+    fn built_type(d: DeclId, args: List<TypeId>) -> TypeId {
+        let row? = type_row(self.rows, self.decl(d).name) else { return self.types.intern(Type.Error) }
+        self.types.intern(row.builds(TypeArgs { parts: args }))
+    }
+
     /// The language's own type declarations, minted once from the
     /// type rows. Enum rows also declare their variants; structural
     /// rows still need a value-level name for static vocabulary.
@@ -877,6 +886,22 @@ impl Decls {
     }
 
     fn builtin_decls() -> List<DeclId> { self.builtins.get() }
+
+    /// The declaration a type's impls are filed under: its own, or the
+    /// language's for a scalar — absent for every other shape.
+    fn implementor(ty: TypeId) -> DeclId? {
+        declared_decl(self.types.shape_of(ty)) ?? self.scalar_decl(ty)
+    }
+
+    /// A scalar's builtin declaration: the one that builds it bare.
+    fn scalar_decl(ty: TypeId) -> DeclId? {
+        self.builtins.get().find((b) -> self.builds_bare(b, ty))
+    }
+
+    fn builds_bare(b: DeclId, ty: TypeId) -> bool {
+        let row? = type_row(self.rows, self.decl(b).name) else { return false }
+        row.arity == 0 && same_type(self.built_type(b, []), ty)
+    }
 
     /// A builtin's row — the parts a store would hold for a
     /// statement; a declaration a program wrote has none.

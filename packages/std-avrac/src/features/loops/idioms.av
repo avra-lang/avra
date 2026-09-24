@@ -14,3 +14,20 @@ export rule push_loop {
 fn pushed_in_loop(out: Code) -> Fix {
     Fix.Say(warning("style.push_loop", out.loc(), "a `for` loop whose whole body is one `push` — that loop is a comprehension (or a `concat`)", "this loop", null))
 }
+
+/// `for j in 0..xs.length` that then reads `xs[j]` — that walk is
+/// `for (j, x) in xs.enumerate()`, which hands over both.
+@keeps("for j in 0..xs.length { log(j) }")
+export rule index_walk {
+    // LICENSED I19: the pattern's own text names the shape it detects
+    quote { for ${j} in 0..${xs}.length { ${..body} } } if indexes(body, xs, j) -> index_walk_found(xs, j),
+}
+
+/// Whether `body` reads `${xs}[${j}]` anywhere.
+fn indexes(body: List<Code>, xs: Code, j: Code) -> bool {
+    body.any(it.text().contains(xs.text() + "[" + j.text() + "]"))
+}
+
+fn index_walk_found(xs: Code, j: Code) -> Fix {
+    Fix.Say(warning("style.index_walk", xs.loc(), "`for ${j.text()} in 0..${xs.text()}.length` that then reads `${xs.text()}[${j.text()}]` — that walk is `for (${j.text()}, x) in ${xs.text()}.enumerate()`, which hands over both", "this loop", null))
+}
