@@ -1,15 +1,50 @@
 //! A rule's own proof: each `@fixes`/`@keeps` example, checked
 //! exactly as `avra check` would read it — the before-text analysed,
-//! the rule's nearest hit found (`features/rules/apply.av`'s
-//! `nearest_fix` — a rule fires at a node, an example names a
-//! program), a rewrite's rendered text re-parsed and compared by
-//! fingerprint (span-blind; text equality is too strict), a keep
-//! answered by absence alone. `avra test` (`suite.av`) runs one of
-//! these per example, for every rule the package under test declares.
-use core.{root_of, root_kind_of, flatten, DeclKind}
+//! the rule's nearest hit found (`rule_apply.av`'s `nearest_fix` — a
+//! rule fires at a node, an example names a program), a rewrite's
+//! rendered text re-parsed and compared by fingerprint (span-blind;
+//! text equality is too strict), a keep answered by absence alone.
+//! `avra test` (`suite.av`) runs one of these per example, for every
+//! rule the package under test declares.
+use core.{StmtId, Annotation, NodeStore, root_of, root_kind_of, flatten, DeclKind}
 use features.{Code, Fix, Decl}
-use features.rules.{nearest_fix, examples_of, Example}
 use compiler.{analyze_source, Analysis}
+use compiler.lower.{instance_run_arms}
+
+/// One example a rule's `@fixes`/`@keeps` annotations name — the
+/// annotations FEED the instance's own `fixes`/`keeps` fields
+/// (features/components), so this reads the SAME source they do,
+/// straight from the declaration's annotations — cheap to re-derive,
+/// never stored.
+export enum Example {
+    Fixes(before: string, after: string)
+    Keeps(before: string)
+}
+
+/// Whether an annotation's NAME is one a rule's `fixes`/`keeps`
+/// fields answer.
+export fn example_marks(name: string) -> bool {
+    name == "fixes" || name == "keeps"
+}
+
+/// Every example a rule's `@fixes`/`@keeps` annotations name, in
+/// written order — silently skipping one whose shape does not match
+/// (checked at the instance itself by the general component law:
+/// an annotation's argument count must match its field's).
+export fn examples_of(store: NodeStore, s: StmtId) -> List<Example> {
+    flatten([one_example(store, a) for a in store.annotations_of(s) if example_marks(a.name)])
+}
+
+fn one_example(store: NodeStore, a: Annotation) -> List<Example> {
+    let texts = [store.expr(e).text_of() for e in a.args]
+    if texts.any(it == null) { return [] }
+    let words = [t! for t in texts]
+    match a.name {
+        "fixes" if words.length == 2 -> [Example.Fixes(words[0], words[1])],
+        "keeps" if words.length == 1 -> [Example.Keeps(words[0])],
+        rest -> [],
+    }
+}
 
 /// The example's own root: an expression statement stands as its
 /// expression (the same reduction a rule's own pattern root takes,
@@ -66,16 +101,23 @@ impl Workspace {
     /// recomputed fresh — and every `@fixes`/`@keeps` the declaration
     /// itself carries.
     fn rules_checked() -> List<ExampleCheck> {
-        let found = self.collect_admit(DeclKind.Rule, self.packages()[0])
+        let found = self.rule_instances(self.packages()[0])
         flatten([self.entry_checked(found, r) for r in rules])
+    }
+
+    /// Every `rule` instance the package admits — `instance of rule`'s
+    /// own vocabulary (`DeclKind.Const` marked as an instance of
+    /// `rule`), read fresh off the live declarations.
+    fn rule_instances(pkg: Package) -> List<Decl> {
+        [d for d in self.collect_admit(DeclKind.Const, pkg) if (self.decls.store_of(d.file).instance_of(d.stmt) ?? "") == "rule"]
     }
 
     fn entry_checked(found: List<Decl>, r: RuleEntry) -> List<ExampleCheck> {
         let d? = found.find(named(r, it)) else { return [] }
         let store = self.decls.store_of(d.file)
-        let parts? = store.rule_parts(d.stmt) else { return [checked("${rule_id(r)}'s declaration carries no rule body", false)] }
+        let arms? = instance_run_arms(store, d.stmt) else { return [checked("${rule_id(r)}'s declaration carries no rule body", false)] }
         // LICENSED I18: any_root is root_kind_of's documented absence case, not a papered-over default
-        let root_check = checked("${rule_id(r)}'s synthesised root-kind index matches its declaration", root_kind_of(store, parts.arms) ?? any_root == r.root)
+        let root_check = checked("${rule_id(r)}'s synthesised root-kind index matches its declaration", root_kind_of(store, arms) ?? any_root == r.root)
         [root_check].concat([example_checked(rule_id(r), r.run, e) for e in examples_of(store, d.stmt)])
     }
 }

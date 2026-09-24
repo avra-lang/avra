@@ -261,7 +261,6 @@ impl SourceText {
             .EnumDecl(name, tparams, variants) -> [self.enum_decl(exported, name.of, [t.of for t in tparams], variants, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Spec(name, cases) -> [self.spec_decl(name, cases, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Defer(body, on_error) -> [source_line(depth, "${if on_error { "errdefer" } else { "defer" }} ${self.written_body(body, depth)}")],
-            .Rule(name, arms, _) -> [self.rule_decl(exported, name.of, arms, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Collect(name, ty, kind, scope, proj, order) -> [source_line(depth, self.collect_decl(exported, name.of, ty, kind, scope, proj, order))],
             .Error -> [source_line(depth, "__error")],
         }
@@ -314,7 +313,7 @@ impl SourceText {
 
     fn collect_kind_word(k: CollectKind) -> string {
         match k {
-            .Rule -> "rule",
+            .Instance(c) -> "instance of ${c}",
             .UnknownKind(w) -> w,
         }
     }
@@ -575,16 +574,6 @@ impl SourceText {
         if body.is_empty() { return source_line(depth, "spec ${quoted_text(name)} {}") }
         if one_line && body.length == 1 { return source_line(depth, "spec ${quoted_text(name)} { ${unpadded(body[0], depth + 1)} }") }
         "${source_line(depth, "spec ${quoted_text(name)} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
-    }
-
-    /// A rule's arms print exactly as a `match`'s do — no subject,
-    /// since a rule's is fixed and implicit.
-    mut fn rule_decl(exported: string, name: string, arms: List<Arm>, end: int, one_line: bool, depth: int) -> string {
-        let head = "${exported}rule ${source_name(name)}"
-        if arms.is_empty() { return source_line(depth, "${head} {}") }
-        if one_line { return source_line(depth, "${head} { ${joined([self.arm_text(a, depth) for a in arms], ", ")} }") }
-        let body = flatten([self.trivia_before(self.arm_start(a), depth + 1).concat([self.arm_line(a, depth + 1)]) for a in arms]).concat(self.trivia_before(end, depth + 1))
-        "${source_line(depth, "${head} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
     }
 
     /// A collect's projection prints as a struct literal over `it`

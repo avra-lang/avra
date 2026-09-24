@@ -136,9 +136,6 @@ export enum DeclKind {
     /// A `collect` — every declaration of a kind, closed at link,
     /// as one ordered value.
     Collect
-    /// A `rule` — a fn of one synthetic seat over `Code`, answering
-    /// `Fix?`. Its signature is synthesised, never written.
-    Rule
 }
 
 /// The declaration kinds a `collect` may gather — grown with the
@@ -146,7 +143,10 @@ export enum DeclKind {
 /// refused at the parse: `collect`'s own laws speak the refusal
 /// (features/collects/check.av), with the word in hand to name.
 export enum CollectKind {
-    Rule
+    /// Every named instance of a component, gathered by its
+    /// declared word (`instance of rule`) — a component's own
+    /// vocabulary, never a Stmt's.
+    Instance(component: string)
     UnknownKind(word: string)
 }
 
@@ -836,7 +836,6 @@ export enum Stmt {
     /// failure channel. The body is a lambda of no seats: captures
     /// are copied at the statement, the call happens at the exit.
     Defer(body: ExprId, on_error: bool)
-    @declares Rule(name: Scoped, arms: List<Arm>, body: ExprId)
     /// `collect name: List<T> = kind in scope as Ty { … } by …` —
     /// every declaration of `kind`, in `scope`, projected and
     /// ordered. `order` is the `by` list's `it.field` paths.
@@ -958,7 +957,7 @@ fn type_fp(t: TypeRef?) -> int {
 /// costs no tag; only the payload-carrying variant folds one.
 fn collectkind_fp(k: CollectKind) -> int {
     match k {
-        .Rule -> 1,
+        .Instance(c) -> fp(145, [fp_str(c)]),
         .UnknownKind(w) -> fp(132, [fp_str(w)]),
     }
 }

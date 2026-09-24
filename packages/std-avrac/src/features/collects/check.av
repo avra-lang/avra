@@ -33,7 +33,7 @@ export fn check_collect(mut cx: TypeCx, s: StmtId) {
 /// answers here, never a string compare.
 fn checked_kind(mut cx: TypeCx, s: StmtId, kind: CollectKind) {
     match kind {
-        .Rule -> nothing(),
+        .Instance(_) -> nothing(),
         .UnknownKind(w) -> cx.emit(unknown_kind(cx.stmt_loc(s), w)),
     }
 }
@@ -67,9 +67,15 @@ fn known_path(kind: CollectKind, path: List<Plain>) -> bool {
     generic_words.contains(word) || kind_word(kind, word)
 }
 
+/// An instance kind's own vocabulary is the named component's own
+/// fields — `collects` names no component's shape (features never
+/// import features), so any word is admitted here and a wrong one
+/// is caught downstream, where the field is read: `checked_projection`
+/// against the declared element type, and lowering's own field
+/// lookup for a path this kind does not carry.
 fn kind_word(kind: CollectKind, word: string) -> bool {
     match kind {
-        .Rule -> word == "root_kind",
+        .Instance(_) -> true,
         .UnknownKind(_) -> false,
     }
 }
@@ -82,7 +88,7 @@ fn path_word(path: List<Plain>) -> string {
 // ── voices ──
 
 fn unknown_kind(at: Loc?, kind: string) -> Diag {
-    refusal("collect.kind", at, "`${kind}` is not a declaration kind `collect` gathers yet", "in this collect", "the kinds today: rule")
+    refusal("collect.kind", at, "`${kind}` is not a declaration kind `collect` gathers yet", "in this collect", "gather a component's instances: `instance of <component>`")
 }
 
 fn unknown_scope(at: Loc?, scope: string) -> Diag {

@@ -8,7 +8,7 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
-use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, Plain, DeclKind}
+use core.{Fingerprint, StmtId, ExprId, Expr, Arm, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, doc_first_paragraph, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, Plain, DeclKind}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot}
 use compiler.{Analysis, any_root}
@@ -558,13 +558,14 @@ fn ordered_collect_members(a: Analysis, p: CollectParts, owner: FileId) -> List<
 
 /// The kind's own gathering door — A REGISTRY, exhaustive over
 /// `CollectKind`: the next kind (fn, case) answers here, never a
-/// string compare. `rule` reads every `DeclKind.Rule`, `owner`'s
+/// string compare. `instance of X` reads every `DeclKind.Const` that
+/// is an instance of `X` (`NodeStore.instance_of`), `owner`'s
 /// package force-admitted whole through the hook
 /// (`Decls.gathered_kind`, armed in workspace.av). `UnknownKind` was
 /// already refused at `check_collect` — it gathers nothing, honestly.
 fn collect_members(a: Analysis, kind: CollectKind, owner: FileId) -> List<Decl> {
     match kind {
-        .Rule -> a.view.decls.gathered_kind(DeclKind.Rule, owner),
+        .Instance(comp) -> [d for d in a.view.decls.gathered_kind(DeclKind.Const, owner) if (a.view.decls.store_of(d.file).instance_of(d.stmt) ?? "") == comp],
         .UnknownKind(_) -> [],
     }
 }
@@ -586,22 +587,28 @@ fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectP
 }
 
 /// One field's register: the declaration ITSELF (a fn value) for a
-/// bare `it`, a kind's own typed field next, else its GENERIC text
-/// projection, const.
+/// bare `it`, a kind's own typed field next, a GENERIC text
+/// projection, or — for an instance kind — the named field read off
+/// the instance's own built value.
 fn collect_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: List<Plain>, kind: CollectKind, d: Decl) -> Reg {
     if path.is_empty() {
         let fnty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo.view.types.intern(Type.Error)
         return collect_fn_reg(lo, d.id, fnty)
     }
     if is_root_kind_path(kind, path) { return lo.const_int(collect_root_kind(a, d)) }
-    lo.const_str(collect_field_text(a, kind, d, path))
+    if path.length == 1 && generic_field(path[0].of) { return lo.const_str(collect_field_text(a, kind, d, path)) }
+    instance_field_reg(lo, a, d, path[0].of)
 }
 
-/// `rule`'s own `root_kind` path — the one kind-typed (non-string)
-/// field this kind answers.
+fn generic_field(word: string) -> bool {
+    word == "name" || word == "module" || word == "file" || word == "doc"
+}
+
+/// `instance of rule`'s own `root_kind` path — the one kind-typed
+/// (non-string) field this kind answers.
 fn is_root_kind_path(kind: CollectKind, path: List<Plain>) -> bool {
     match kind {
-        .Rule -> path.length == 1 && path[0].of == "root_kind",
+        .Instance(c) -> c == "rule" && path.length == 1 && path[0].of == "root_kind",
         .UnknownKind(_) -> false,
     }
 }
@@ -621,11 +628,54 @@ fn collect_field_text(a: Analysis, kind: CollectKind, d: Decl, path: List<Plain>
 }
 
 /// `rule`'s own field: the ROOT-KIND INDEX (`core.root_kind_of`) its
-/// first arm's pattern folds to, `any_root` when it cannot narrow.
+/// `run` field's first written arm folds to, `any_root` when it
+/// cannot narrow — read off the arms-sugar match the instance's
+/// `run` field lowers from.
 fn collect_root_kind(a: Analysis, d: Decl) -> int {
     let store = a.view.decls.store_of(d.file)
-    let parts? = store.rule_parts(d.stmt) else { return any_root }
-    root_kind_of(store, parts.arms) ?? any_root
+    let arms? = instance_run_arms(store, d.stmt) else { return any_root }
+    root_kind_of(store, arms) ?? any_root
+}
+
+/// The written match arms behind an instance's `run` field — the
+/// arms-sugar lambda `features/components`'s arms body mints.
+export fn instance_run_arms(store: NodeStore, s: StmtId) -> List<Arm>? {
+    let val? = store.stmt_value(s) else { return null }
+    let lit? = store.expansion_of(val) else { return null }
+    let run? = struct_field_value(store, lit, "run") else { return null }
+    let parts? = store.lambda_parts(run) else { return null }
+    match store.expr(parts.body) {
+        .Match(_, arms) -> arms,
+        rest -> null,
+    }
+}
+
+/// One named field's WRITTEN value off a struct literal — the record
+/// an instance builds.
+fn struct_field_value(store: NodeStore, e: ExprId, name: string) -> ExprId? {
+    match store.expr(e) {
+        .StructLit(_, fields, values) -> field_named(fields, values, name),
+        rest -> null,
+    }
+}
+
+fn field_named(fields: List<Plain>, values: List<ExprId>, name: string) -> ExprId? {
+    let j? = [j for j, f in fields if f.of == name].first() else { return null }
+    values[j]
+}
+
+/// An instance kind's own field, read off the instance's built
+/// value: the declaration's build unit called once (`instance_unit`,
+/// the same door an ordinary read of the instance takes), the named
+/// field read back from the record it answers.
+fn instance_field_reg(mut lo: LowerCx, a: Analysis, d: Decl, field: string) -> Reg {
+    let ty: TypeId = a.view.decls.type_of_const(d.file, d.stmt) ?? lo.view.types.intern(Type.Error)
+    let sig? = lo.fields_of(ty) else { return lo.mint_ty(ty) }
+    let slot? = sig.slot_of(field) else { return lo.mint_ty(ty) }
+    let unit = a.view.decls.instance_unit(d.id)
+    if lo.unseen(unit.name) { lo.jobs.pending.push(unit) }
+    let whole = lo.call_decl(ty, unit.name, [])
+    lo.field_read(whole, ty, slot, sig.types[slot])
 }
 
 /// A NAMED fn as a value, at the reference's own site — `fn_value_reg`'s
@@ -640,15 +690,6 @@ fn collect_fn_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
     }
     let size = lo.box_size(1)
     lo.fn_box(lo.view.types.shape_of(fnty), size, wname, [])
-}
-
-fn doc_first_paragraph(lines: List<string>) -> List<string> {
-    mut out: List<string> = []
-    for l in lines {
-        if l == "" { return out }
-        out.push(l)
-    }
-    out
 }
 
 /// A file's run-time statements as a body under `name` — `main` for

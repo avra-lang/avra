@@ -22,6 +22,7 @@ export fn components() -> LanguageFeature {
         "component_named_bare" | build_component_named_bare
         "setting"              | build_setting
         "instance_body"        | build_instance_body
+        "instance_arms_body"   | build_instance_arms_body
     }
     let codes = table<DiagCode> {
         kind                      | id      | summary
@@ -32,12 +33,13 @@ export fn components() -> LanguageFeature {
         "type.component_format"   | "F2119" | "a `Format` head is `@std.meta`'s pattern type"
     }
     LanguageFeature components {
-        docs: "`component Name(h: T) { f: T = d … fn expand() -> Code { quote { … } } }` declares a component; an importing file writes `Name value { … }`, and a template's `expand` stands in its place; a component with no `expand` is a record its instance builds — `Name inst { f: v … }`."
+        docs: "`component Name(h: T) { f: T = d … fn expand() -> Code { quote { … } } }` declares a component; an importing file writes `Name value { … }`, and a template's `expand` stands in its place; a component with no `expand` is a record its instance builds — `Name inst { f: v … }`. A record's one one-seat fn field takes a body of ARMS too, exactly as a trailing block does — `Name inst { pattern -> value, ... }`, the pronoun's seat implicit."
         gram: grammar {
             stmt = "component" n:NAME ( "(" ( hs:NAME ":" ht:type ( "," hs:NAME ":" ht:type )* ","? )? ")" )? "{" ( fs:NAME ":" ft:type ( "=" fd:expression )? | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, hs, ht, fs, ft, fd, m)
             stmt = w:COMPONENT n:NAME b:instance_body END -> component_named(w, n, b) | w:COMPONENT n:NAME END -> component_named_bare(w, n)
             setting = k:NAME ":" v:expression END -> setting(k, v)
-            instance_body = "{" ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
+            instance_body = "{" hp:nonbind_pattern ( "if" hg:expression )? "->" hv:expression ( BREAK | "," | a:arm | a:hole_arm )* "}" @expect("}", "expected `}` to close the arms block") -> instance_arms_body(hp, hg, hv, a)
+                | "{" ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
             primary = w:COMPONENT b:instance_body -> component_headless(w, b) | w:COMPONENT h:expression b:instance_body -> component_value(w, h, b) @head(h) | w:COMPONENT h:expression -> component_blockless(w, h) @head(h)
         }
         builders: rows

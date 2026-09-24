@@ -4,8 +4,8 @@
 //! its holes, every copied node wearing the provider's origin; a
 //! record's instance is its literal, the body's settings by name and
 //! its other statements `collect`ed into its one `List` field.
-use core.{Expr, Stmt, StmtId, ExprId, Nominal, Plain, Scoped, NodeStore, BodyView, HoleKind, Filled, SettingParts, TypeRef, copier, flatten, some_list}
-use features.{LangNode, Builder, ComponentWord, Template, Record, ChildSlot, marked_seats}
+use core.{Expr, Stmt, StmtId, ExprId, Arm, Nominal, Plain, Scoped, NodeStore, BodyView, HoleKind, Filled, SettingParts, TypeRef, pronoun_param, copier, flatten, some_list}
+use features.{LangNode, Builder, ComponentWord, Template, Record, ChildSlot, marked_seats, pat_id_at, expr_id_at, arms_at}
 use grammar.{Token}
 use @std.path.{stem_of}
 
@@ -67,6 +67,25 @@ fn build_instance_body(b: Builder) -> Result<LangNode, string> {
     b.make_expr(Expr.Lambda(marked_seats(ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)))
 }
 
+/// A ONE-SEAT FN FIELD'S BODY WRITTEN AS ARMS: `Name inst { pattern
+/// if guard -> value, ... }` is `Name inst { it -> match it { ... }
+/// } }` — the pronoun's one seat, its body the match, exactly as a
+/// trailing block's own arms-sugar reads (features/closures's
+/// `build_trailing_arms`; the first arm's pattern anchors the parse
+/// away from a lone bind, so `{ x -> body }` still reads as the
+/// ordinary one-param form).
+fn build_instance_arms_body(b: Builder) -> Result<LangNode, string> {
+    let hp? = pat_id_at(b.args, 0) else { return .Err("defect: an arms instance body's first pattern is missing — the arena and the grammar disagree") }
+    let hg = expr_id_at(b.args, 1)
+    let hv = b.expr(2)?
+    let rest = arms_at(b.args, 3)
+    let arms = [Arm { pats: [hp], guard: hg, value: hv }].concat(rest)
+    let subject = b.expr_node(Expr.Ident(Scoped("it")))
+    let matched = b.expr_node(Expr.Match(subject, arms))
+    b.store.mark_sugar_match(matched)
+    b.make_expr(Expr.Lambda([pronoun_param], matched))
+}
+
 /// `key: value` in an instance's body.
 fn build_setting(b: Builder) -> Result<LangNode, string> {
     b.make_stmt(Stmt.Setting(Plain((b.token(0)?).text), b.expr(1)?))
@@ -90,13 +109,17 @@ impl Builder {
     /// A headless record's named instance: `let n =` the instance, which
     /// the printer spells back as it was written.
     fn bound(word: ComponentWord, n: Token, body: ExprId?) -> Result<LangNode, string> {
-        let s = self.store.alloc_stmt(Stmt.Let(Scoped(n.text), null, self.instance(word, [], body, n.text)?), self.span)
+        let value = self.instance(word, [], body, n.text)?
+        let s = self.store.alloc_stmt(Stmt.Let(Scoped(n.text), null, value), self.span)
         self.store.mark_component_inst(s, word.declared)
+        self.store.mark_instance_owner(value, s)
         self.wrap_stmt(s)
     }
 
     fn wrap_expr_stmt(e: ExprId) -> Result<LangNode, string> {
-        self.make_stmt(Stmt.ExprStmt(e))
+        let s = self.store.alloc_stmt(Stmt.ExprStmt(e), self.span)
+        self.store.mark_instance_owner(e, s)
+        self.wrap_stmt(s)
     }
 
     /// A name standing where a head value goes — read as the value.

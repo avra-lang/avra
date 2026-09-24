@@ -15,7 +15,6 @@ use features.structs.{fits_default}
 use features.fns.{fits_seat_default}
 use features.specs.{fits_case}
 use features.annotations.{check_annotation}
-use features.rules.{example_marks}
 use features.closures.{takes_by_name}
 
 /// A type context over one expression range of a file, reading the
@@ -70,7 +69,6 @@ impl TypeCx {
             .Method -> self.method_body(x),
             .Default -> self.default_body(x),
             .Case -> self.case_body(x),
-            .Rule -> self.rule_body(x),
             .Record or .Named or .Alias or .Enum or .Const or .Syntax or .Collect -> self.type_stmts([x.stmt]),
             .Trait or .Impl or .Builtin -> nothing(),
         }
@@ -83,14 +81,6 @@ impl TypeCx {
     mut fn fn_body(x: Decl) {
         self.type_stmts([x.stmt])
         self.seat_contract(x, 0)
-    }
-
-    /// A rule's body: its synthesized `Match(Ident(e), arms ++ [_ ->
-    /// null])` walks under its synthesized seat, exactly as a fn body
-    /// does — the arm law (coverage, agreement) is `match`'s own, and
-    /// the `_ -> null` tail is what makes a miss the honest answer.
-    mut fn rule_body(x: Decl) {
-        self.type_stmts([x.stmt])
     }
 
     /// A method's body, then its receiver's contract — the trait's word
@@ -112,7 +102,7 @@ impl TypeCx {
         match self.view.decls.decl(x.parent!).kind {
             .Record -> fits_default(self, root, x.name, want),
             .Fn or .Method -> fits_seat_default(self, root, x.name, want),
-            .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const or .Rule or .Collect -> nothing(),
+            .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const or .Collect -> nothing(),
         }
     }
 
@@ -179,13 +169,16 @@ impl TypeCx {
     /// the declaration's own span, so the enclosing body holds it and
     /// a declaration's own context passes it by.
     mut fn type_annotations(s: StmtId) {
+        // A component instance's annotations feed its record's
+        // fields by name (features/components) — they name no
+        // declared fn, so only their ARGUMENTS type, at their own
+        // shape (`avra check` and the instance's own build both read
+        // them written, never through the general call law).
+        let inst = self.view.store.is_component_inst(s)
         for a in self.view.store.annotations_of(s) {
-            // A rule's `@fixes`/`@keeps` are recognised by NAME, like
-            // `@derive` — but unlike it, neither resolves to a
-            // declared fn at all, so the general call law never
-            // reaches them; `features/rules/check.av` judges their
-            // own shape instead.
-            if !example_marks(a.name) && self.facts.owns(a.callee) {
+            if inst {
+                for e in a.args { self.walk(e) }
+            } else if self.facts.owns(a.callee) {
                 self.walk_annotation(a)
                 check_annotation(self, s, a)
             }

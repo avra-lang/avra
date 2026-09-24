@@ -15,23 +15,30 @@ fn build_collect_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
     let t = b.type_ref(1)?
     let k = b.token(2)?
-    let sc = b.token(3)?
-    let pt = b.token(4)?
+    let iks = b.tokens(3)?
+    let jks = b.tokens(4)?
+    let sc = b.token(5)?
+    let pt = b.token(6)?
     let ends? = b.span_end() else { return .Err("defect: a collect declaration without a span — the arena and the grammar disagree") }
-    let fns = b.tokens(5)?
-    let iws = b.tokens(6)?
-    let fps = b.tokens(7)?
-    let bws = b.tokens(8)?
-    let biws = b.tokens(9)?
-    let bks = b.tokens(10)?
-    let bad_it? = iws.concat(biws).find(not_word("it")) else { return bad_by(b, bws, n, t, k, sc, pt, fns, fps, bks, ends) }
+    let fns = b.tokens(7)?
+    let iws = b.tokens(8)?
+    let fps = b.tokens(9)?
+    let bws = b.tokens(10)?
+    let biws = b.tokens(11)?
+    let bks = b.tokens(12)?
+    let kind? = kind_of(k, iks, jks) else { return .Err("a collect's kind is a bare word, or `instance of` a component word — found `${k.text} ${joined_words(iks)}`") }
+    let bad_it? = iws.concat(biws).find(not_word("it")) else { return bad_by(b, bws, n, t, kind, sc, pt, fns, fps, bks, ends) }
     .Err("a collect's projection reads its declaration through `it` — found `${bad_it.text}`")
 }
 
-fn bad_by(b: Builder, bws: List<Token>, n: Token, t: TypeRef, k: Token, sc: Token, pt: Token, fns: List<Token>, fps: List<Token>, bks: List<Token>, ends: int) -> Result<LangNode, string> {
+fn joined_words(ts: List<Token>) -> string {
+    [t.text for t in ts].join(" ")
+}
+
+fn bad_by(b: Builder, bws: List<Token>, n: Token, t: TypeRef, k: CollectKind, sc: Token, pt: Token, fns: List<Token>, fps: List<Token>, bks: List<Token>, ends: int) -> Result<LangNode, string> {
     let bad? = bws.find(not_word("by")) else {
         let proj = Projection { ty: named_ref(pt.text), fields: proj_fields(fns, fps, ends) }
-        return b.make_stmt(Stmt.Collect(Scoped(n.text), t, kind_of(k), scope_of(sc), proj, [Plain(bk.text) for bk in bks]))
+        return b.make_stmt(Stmt.Collect(Scoped(n.text), t, k, scope_of(sc), proj, [Plain(bk.text) for bk in bks]))
     }
     .Err("a collect's order is declared with `by` — found `${bad.text}`")
 }
@@ -40,8 +47,15 @@ fn not_word(word: string) -> fn(Token) -> bool {
     (t: Token) -> t.text != word
 }
 
-fn kind_of(k: Token) -> CollectKind {
-    if k.text == "rule" { CollectKind.Rule } else { CollectKind.UnknownKind(k.text) }
+/// A collect's kind: a bare word (`fn`, `case` — not yet gathered,
+/// so always `UnknownKind`), or `instance of <component>` — the
+/// vocabulary `collect_members` (compiler/lower/lower.av) answers.
+/// Absent iff the written `of` is some other word.
+fn kind_of(k: Token, iks: List<Token>, jks: List<Token>) -> CollectKind? {
+    let of? = iks.first() else { return CollectKind.UnknownKind(k.text) }
+    let comp? = jks.first() else { return null }
+    if k.text != "instance" || of.text != "of" { return null }
+    CollectKind.Instance(comp.text)
 }
 
 fn scope_of(sc: Token) -> CollectScope {
