@@ -45,12 +45,29 @@ fn matched_reg(mut cx: LowerCx, e: ExprId, subject: ExprId, arms: List<Arm>) -> 
     }
     let v = cx.reg_of(subject)
     let vty = cx.type_at(subject)
+    if cx.facts.has_null_tail(e) { return matched_with_default(cx, e, subject, v, vty, arms) }
     if arms.length == 1 { return arm_reg(cx, v, vty, arms[0], cx.type_at(e)) }
     let declared: EnumSig? = cx.variants_at(subject)
     if declared != null && switchable(cx, arms, arms.length - 1) {
         return switched_reg(cx, e, v, vty, declared!, arms)
     }
     chained_reg(cx, e, v, vty, arms, 0)
+}
+
+/// A trailing-arms-sugar match's uncovered variants: no arm is the
+/// unconditional default (there may be none written for the tag that
+/// arrives), so every WRITTEN arm is its own case and the tail
+/// answers `want`'s own absence — `absent_of`, the NULLABLE type's
+/// own absent value (its repr's flag or niche), never `hollow_of`'s
+/// don't-care bits: this value is actually READ, unlike a leaving
+/// arm's.
+fn matched_with_default(mut cx: LowerCx, e: ExprId, subject: ExprId, v: Reg, vty: TypeId, arms: List<Arm>) -> Reg {
+    let want = cx.type_at(e)
+    let declared: EnumSig? = cx.variants_at(subject)
+    if declared != null && switchable(cx, arms, arms.length) {
+        return switched_reg_with_default(cx, e, v, vty, declared!, arms, want)
+    }
+    chained_reg_with_default(cx, v, vty, arms, 0, want)
 }
 
 /// Every arm but the last tests ONE variant whole: the jump table.
@@ -78,16 +95,33 @@ fn switched_reg(mut cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, sig: EnumSig, a
     let want = cx.type_at(e)
     let last_arm = arms.length - 1
     let cases = arm_cases(cx, sig, arms, last_arm)
-    if cases.length != last_arm {
-        cx.defect("an arm naming no variant survived typing")
-        return cx.result(e)
-    }
+    if cases.length != last_arm { return short_cases(cx, e) }
     cx.emit(Ins.SwitchStart(cx.tag_of(v), cases))
     for j, a in arms {
         if j < last_arm { cx.arm_end(arm_reg(cx, v, vty, a, want)) }
     }
     let last = arm_reg(cx, v, vty, arms[last_arm], want)
     cx.close_region(e, last)
+}
+
+/// The jump table's twin for an implicit tail: EVERY written arm is
+/// a case (none is exempted as "the last, taken unconditionally"),
+/// and the tag that matches none of them answers the tail's `want`
+/// absent.
+fn switched_reg_with_default(mut cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, sig: EnumSig, arms: List<Arm>, want: TypeId) -> Reg {
+    let cases = arm_cases(cx, sig, arms, arms.length)
+    if cases.length != arms.length { return short_cases(cx, e) }
+    cx.emit(Ins.SwitchStart(cx.tag_of(v), cases))
+    for a in arms { cx.arm_end(arm_reg(cx, v, vty, a, want)) }
+    cx.close_region(e, cx.absent_of(want))
+}
+
+/// `arm_cases` answering short of what it was asked for — an arm
+/// naming no variant, which typing refused — spoken once for both
+/// jump tables.
+fn short_cases(mut cx: LowerCx, e: ExprId) -> Reg {
+    cx.defect("an arm naming no variant survived typing")
+    cx.result(e)
 }
 
 /// The first `count` arms' selector values, in arm order. A SHORT
@@ -110,6 +144,16 @@ fn chained_reg(mut cx: LowerCx, e: ExprId, v: Reg, vty: TypeId, arms: List<Arm>,
     let want = cx.type_at(e)
     if k == arms.length - 1 { return arm_reg(cx, v, vty, a, want) }
     cx.region_as(accepts_reg(cx, v, vty, a), want) { cx -> arm_reg(cx, v, vty, a, want) } else { cx -> chained_reg(cx, e, v, vty, arms, k + 1) }
+}
+
+/// The chain's twin for an implicit tail: arm k tests, same as the
+/// chain, but NONE answers unconditionally — a subject none of the
+/// written arms accepted falls past the last one to `want`'s own
+/// absence.
+fn chained_reg_with_default(mut cx: LowerCx, v: Reg, vty: TypeId, arms: List<Arm>, k: int, want: TypeId) -> Reg {
+    if k == arms.length { return cx.absent_of(want) }
+    let a = arms[k]
+    cx.region_as(accepts_reg(cx, v, vty, a), want) { cx -> arm_reg(cx, v, vty, a, want) } else { cx -> chained_reg_with_default(cx, v, vty, arms, k + 1, want) }
 }
 
 /// One arm taken: its binds read from the subject (inside the arm's

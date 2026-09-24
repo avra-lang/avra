@@ -166,8 +166,11 @@ impl TypeCx {
         let vars = self.view.decls.instance_vars(decl)
         let seated = self.view.types.substituted(want, decl, [b ?? vars[j] for j, b in bound.slots])
         let concrete? = self.view.types.arrow_parts(seated) else { return }
+        // an answer left free (`T` in `fn(Req<P>) -> T`) is inferred
+        // FROM the body, never planted as its want
+        let answer: TypeId? = if self.fully_bound(concrete.answer, decl, bound) { concrete.answer } else { null }
         // a lambda taking an offered record by name hears the want itself
-        if self.retype_seated(e, concrete.seats, concrete.marks) == null { self.feed(e, seated) }
+        if self.retype_seated(e, concrete.seats, concrete.marks, answer) == null { self.feed(e, seated) }
     }
 
     /// A `T?` SEAT takes a present value and pins `T` to it — here and
@@ -332,8 +335,8 @@ impl TypeCx {
     /// other hungry expression is FED the want; the comparison then
     /// judges the real type.
     mut fn heard(e: ExprId, want: TypeId) {
-        let arrow: Arrow? = self.view.types.arrow_parts(want)
-        if arrow != null { let _ = self.retype_seated(e, arrow!.seats, arrow!.marks) }
+        let arrow? = self.view.types.arrow_parts(want) else { return self.feed(e, want) }
+        let _ = self.retype_seated(e, arrow.seats, arrow.marks, arrow.answer)
         self.feed(e, want)
     }
 

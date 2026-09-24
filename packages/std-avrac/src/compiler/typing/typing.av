@@ -275,12 +275,19 @@ impl TypeCx {
     /// THE RESCUE: a hungry lambda re-types under the seats it lands
     /// in — the judging boundary hands them over, the body walks
     /// once, and every fact (of_expr, lambda_params) converges as if
-    /// the annotations had been written.
-    mut fn retype_seated(a: ExprId, seats: List<TypeId>, marks: List<SeatMark>) -> TypeId? {
+    /// the annotations had been written. `answer`, when the boundary
+    /// knows one, is planted on the body first — the same "THE BODY
+    /// HEARS THE ANSWER" door `lambdaed` opens for an annotated
+    /// lambda's — so a bare variant, a `dyn` box, or an uncovered
+    /// arms-sugar variant under a nullable seat reads it here too. A
+    /// boundary with no declared answer (a list walk's predicate,
+    /// figured out from the body rather than declared) plants none.
+    mut fn retype_seated(a: ExprId, seats: List<TypeId>, marks: List<SeatMark>, answer: TypeId? = null) -> TypeId? {
         if !self.facts.hungry_at(a) { return null }
         let parts? = self.view.store.lambda_parts(a) else { return null }
         if parts.params.length != seats.length || takes_by_name(self, parts.params, seats) { return null }
         self.facts.absorb_hunger(a)
+        if answer != null { self.plant_want(parts.body, answer!) }
         let ret = self.lambda_body(a, seats, marks, parts.body)
         let ty = self.view.types.intern(Type.Fn(seats, marks, ret))
         self.facts.set_type(a, ty)

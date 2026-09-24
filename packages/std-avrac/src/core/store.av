@@ -59,6 +59,11 @@ export type NodeStore = {
     // a string written `"""raw"""`, never `"escaped"` — the printer's
     // only way to tell them apart once both are one StrLit
     raw_strings: Cell<List<bool>>,
+    // a Match a trailing-block ARM sugar synthesized — never one a
+    // program wrote — so a missing arm under a nullable seat answers
+    // `null` instead of refusing; the mark is the ONE way the checker
+    // tells the two apart
+    sugar_matches: Cell<List<bool>>,
     // the DSL text an expression-position `grammar { … }` literal
     // read, by the `Grammar` struct literal it fully expanded into —
     // the raw block's own words, never rebuilt from the expansion
@@ -101,6 +106,7 @@ export fn new_node_store(file: string = "") -> NodeStore {
         holes: list_cell(),
         run_holes: list_cell(),
         raw_strings: list_cell(),
+        sugar_matches: list_cell(),
         grammar_lits: list_cell(),
         tables: list_cell(),
         quotes_at: map_cell(),
@@ -149,6 +155,7 @@ impl NodeStore {
         self.holes.push(false)
         self.run_holes.push(false)
         self.raw_strings.push(false)
+        self.sugar_matches.push(false)
         self.grammar_lits.push(null)
         self.tables.push(null)
         ExprId { index: self.exprs.add(e, span) }
@@ -264,6 +271,19 @@ impl NodeStore {
 
     fn is_run_hole(e: ExprId) -> bool {
         self.run_holes.get()[e.index]
+    }
+
+    /// A `Match` a trailing block of arms sugar built (`{ .Ok(v) ->
+    /// … }`), never one a program wrote — the mark is part of the
+    /// node: an implicit tail changes what it means to leave a
+    /// variant unhandled.
+    fn mark_sugar_match(e: ExprId) {
+        self.sugar_matches.set_at(e.index, true)
+        self.expr_fingerprints.set_at(e.index, fp(150, [self.expr_fingerprints.get()[e.index]]))
+    }
+
+    fn is_sugar_match(e: ExprId) -> bool {
+        self.sugar_matches.get()[e.index]
     }
 
     /// Where a quote's runs of text start in the source, one per part.
