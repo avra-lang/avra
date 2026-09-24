@@ -120,7 +120,7 @@ fn read_fields(line: string) -> List<string> {
 
 /// THE SHAPE WORD — a declaration line's first column. A header line
 /// ("file"/"import"/"iface"/"bytes") is not a declaration and has none.
-enum Shape { Struct, Boxed, Enum, Named, Const, Aims, Opaque, Fn, Extern }
+enum Shape { Struct, Boxed, Enum, Named, Alias, Const, Aims, Opaque, Fn, Extern }
 
 fn shape_of(word: string) -> Shape? {
     match word {
@@ -128,6 +128,7 @@ fn shape_of(word: string) -> Shape? {
         "boxed" -> .Boxed,
         "enum" -> .Enum,
         "named" -> .Named,
+        "alias" -> .Alias,
         "const" -> .Const,
         "aims" -> .Aims,
         "opaque" -> .Opaque,
@@ -186,7 +187,7 @@ impl Row {
     /// shapes whose payload opens with a `;`-joined list.
     fn items() -> List<string> { self.list_at(0) }
 
-    /// `Named`'s underlying type, `Const`'s type — the shapes whose payload
+    /// `Named`'s underlying type, `Alias`'s, `Const`'s type — the shapes whose payload
     /// opens with one wire (a `Const`'s carries its settled value's
     /// fingerprint after a `;`, dropped here).
     fn of_wire() -> string { self.field(0).split(";").first() ?? "" }
@@ -268,6 +269,7 @@ fn shape_line(ws: Workspace, s: DeclSig, layout: string) -> string {
         .Record(r) -> "${layout}\t${joined([r.names[i] + ":" + ws.decls.type_wire(r.types[i]) for i in 0..r.names.length], ";")}",
         .Enum(e) -> "enum\t${joined([e.names[i] + ":" + joined([ws.decls.type_wire(t) for t in e.payloads[i]], "|") for i in 0..e.names.length], ";")}",
         .Named(n) -> "named\t${ws.decls.type_wire(n.of)}",
+        .Alias(of) -> "alias\t${ws.decls.type_wire(of)}",
         .Fn(f) -> "fn\t${joined([ws.decls.type_wire(t) for t in f.params], ";")}\t${ws.decls.type_wire(f.ret)}",
     }
 }
@@ -626,6 +628,7 @@ fn declared_kind(shape: Shape, word: string) -> DeclKind? {
         .Struct or .Boxed -> .Record,
         .Enum -> .Enum,
         .Named -> .Named,
+        .Alias -> .Alias,
         .Const -> .Const,
         .Aims -> .Impl,
         .Fn or .Extern or .Opaque -> kind_of_word(word),

@@ -65,7 +65,7 @@ impl TypeCx {
             .Trait -> self.declare_trait_sig(x.stmt),
             .Impl -> self.declare_under_impl(parent.stmt, x.stmt),
             .Record -> self.declare_record_method(x),
-            .Fn or .Named or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Builtin or .Const or .Rule -> self.declare_wreckage(x.stmt),
+            .Fn or .Named or .Alias or .Enum or .Syntax or .Method or .Default or .Main or .Case or .Builtin or .Const or .Rule -> self.declare_wreckage(x.stmt),
         }
     }
 
@@ -186,12 +186,15 @@ impl TypeCx {
     /// is lawful, else absence — spoken only when `loud`.
     fn impl_target(s: StmtId, parts: ImplParts, loud: bool) -> DeclId? {
         let target = parts.target
-        let decl: DeclId? = self.type_decl_named(target)
-        if decl == null {
+        let d? = self.type_decl_named(target) else {
             if loud { self.no_such_target(s, target) }
             return null
         }
-        let d = decl!
+        // impls are filed under the name they are written on
+        if self.view.decls.is_alias(d) {
+            if loud { self.alias_target(s, target, d) }
+            return null
+        }
         if self.view.decls.is_builtin(d) { return self.builtin_target(s, d, parts, loud) }
         // a generic target lands for an INHERENT impl; a trait impl
         // over one is recorded
@@ -333,6 +336,11 @@ impl TypeCx {
 
     fn no_such_target(s: StmtId, target: string) {
         self.emit(refusal("type.impl", self.stmt_loc(s), "`impl ${target}` serves no declared type", "this impl", "declare `${target}` first — `type` or `enum`"))
+    }
+
+    fn alias_target(s: StmtId, target: string, d: DeclId) {
+        let of = self.view.types.name_of(self.view.decls.alias_of(d) ?? self.error_type)
+        self.emit(refusal("type.impl", self.stmt_loc(s), "`impl ${target}` is written on an alias — `${target}` names `${of}`", "this impl", "write the impl on the type itself: `impl ${of}`"))
     }
 
     fn generic_target(s: StmtId, target: string) {

@@ -424,3 +424,75 @@ sites in the binary: release 342 -> 36, array_get 492 -> 25, retain
 94 -> 26; the binary +29%. `check packages/cli`: instructions 160.4B
 -> 142.0B (−11.5%), cycles 40.9B -> 33.6B (−18%), wall 15.0 s ->
 11.2 s.
+
+## §15 Where the campaign stands (Linux Sprite, one core)
+
+| | campaign start | now |
+|---|---|---|
+| tools/bench/request | 5.40 µs | 1.95 µs |
+| wrk pipelined16 c=200 | 146k req/s, 6.85 µs CPU | 274k req/s, 3.65 µs CPU |
+| wrk keep-alive c=50 | 44.3k req/s | 56.3k req/s |
+| C floor (no parsing), pipelined | 1.14M req/s, 0.88 µs CPU | — |
+
+Open, in the ROADMAP's C-level ladder: inline embedding (R4b), a
+capture-free closure as static data (R9), count elision past moves
+(R5), one server per core (R7).
+
+## §16 As built — R4b (records), a value record laid inline
+
+**D24. A value-record field is laid INLINE in the boxed record holding
+it**, as C lays a struct member: its fields are slots of the parent,
+and every field after it sits past its width (`TypeRegistry.slot_width`,
+`slot_offset`; `LowerCx.field_offset`). One verb per direction:
+`packed_struct` lays a record's parts as their `leaves` (a value
+record's fields, a name over one opened first); `boxed_field` reads at
+the offset (`unboxed_at` rebuilds a wide field from its slots);
+`field_written` writes at the offset — a place's field write and a
+`with`'s rewrite both go through it, and `with` slices the record's
+full width. The runtime door (`crossing`) shares `leaves`, so a value
+record in a list cell, a map, a Cell or a payload is still one box.
+
+**D25. A boxed record CROSSES AS ITS SLOTS.** The evaluator's array for
+a record holds exactly what `packed_struct` pushed, so a literal's
+crossing node splices a wide field's own node in (`inline_slots`) and
+the static layout expands a wide field's type into its fields'
+(`slot_types`) — one convention for the evaluator, the literal and the
+binary. No `@std/meta` shape holds a value-record field, so the meta
+crossing's slot readers are unmoved.
+
+**D26. A field of a value record is written by repacking it** (landed
+first, 0c12c7a): `s.lo = 5` stored the int over the whole cell — right
+natively by layout accident, a defect in the evaluator. The record is
+read, packed with the field replaced, and written back where it lives
+(`written_to`, one step up the path), which is how a nested
+`h.at.lo = 9` reaches the inline slots.
+
+Attacks: features/tests/inline_records — a wide field first, in the
+middle, several with fields after them; built, read, written, `with`,
+a const and a const list (static layout), a generic `Box<Span>`, a
+method through `self`, a `dyn`, a named field, a nested path — eval ==
+native == the pre-R4b answers under AVRA_RC_GUARD=1.
+
+Numbers: request boxes 11 -> 10 (the head's spans); Mac request bench
+1.28 -> 1.09 µs (three pairs); `check packages/cli` instructions at
+parity (150.8B vs 150.5B). Enum payloads are R4b's second half.
+
+**R4b's second half — payloads.** A value-record payload is laid inline
+after the tag the same way: `tagged_value` lays the payloads' `leaves`
+and sizes its own box (the six callers no longer precompute a size),
+and `payload_at` takes the variant's carried types and reads past the
+tag and the widths before it. A literal variant crosses as its slots,
+the static layout expands a wide payload's type — the record rule, one
+more place. An `.Err` box stays valid for every `Result<_, E>`: its
+layout depends on E alone. Attacks: features/enums/tests/
+inline_payloads (a wide payload alone, between others, two of them,
+`Result<Span, E>` with a value-record error through `?`, a const and a
+const list, inside a record and a list) — eval == native == pre-R4b.
+
+**The miss the suite caught (412167f):** the fn-field call read its
+field with a raw slot index — the one record read that bypassed
+`field_read` — so `Server`'s `self.make()` read the wrong slot once its
+listener and limits were laid inline, and the multi-core server
+segfaulted. A layout change is only as sound as the claim that every
+read goes through the one verb; the grep for raw slot reads is the
+check (`slot_read(` over a record subject).

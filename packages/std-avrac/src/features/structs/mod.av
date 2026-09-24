@@ -3,7 +3,8 @@
 //! builds one; reads ride the spine's postfix ladder (`p.x`).
 //! `type Name = <type>` declares a NAMED TYPE over a shape — always
 //! DISTINCT from it, never an alias; `Name(v)` wraps and `v.of`
-//! reads the shape back, free at runtime. ONE `stmt` rule carries both
+//! reads the shape back, free at runtime. `alias Name = <type>` is
+//! the other door: a SHORTHAND, the same type under a second name. ONE `stmt` rule carries both
 //! forms as an ordered choice, so one keyword claim and one
 //! recovery stand where two branches on `type` could not.
 //! Fields are scalars until ownership analysis covers managed
@@ -18,6 +19,7 @@ export fn structs() -> LanguageFeature {
     let rows = table<BuilderRow> {
         name         | build
         "type_decl"  | build_type_decl
+        "alias_decl" | build_alias_decl
         "struct_lit" | build_struct_lit
     }
     let codes = table<DiagCode> {
@@ -28,15 +30,18 @@ export fn structs() -> LanguageFeature {
         "type.struct_fields"     | "F2010" | "a literal provides each declared field exactly once"
         "type.with_struct"       | "F2011" | "`with` copies a struct value"
         "type.named"             | "F2083" | "a named type stands over one written shape"
+        "type.alias"             | "F2121" | "an alias names one type that is not itself"
+        "type.tparam"            | "F2122" | "a declaration's type parameters are fresh, distinct names"
     }
     let properties = table<PropertyRow> {
         name | takes      | check          | lower
         "of" | on_nominal | check_named_of | lower_named_of
     }
     LanguageFeature structs {
-        docs: "`type Name = { field: ty, ... }` declares a record; `Name { field: value, ... }` builds; `value.field` reads; `value with { field: v }` copies. `type Name = <type>` declares a NAMED TYPE — its own type over that shape, never an alias: a literal fills it, the shape answers its reads, `Name(value)` wraps, and `value.of` reads the shape back."
+        docs: "`type Name = { field: ty, ... }` declares a record; `Name { field: value, ... }` builds; `value.field` reads; `value with { field: v }` copies. `type Name = <type>` declares a NAMED TYPE — its own type over that shape, never an alias: a literal fills it, the shape answers its reads, `Name(value)` wraps, and `value.of` reads the shape back. `alias Name<T> = <type>` names an existing type instead: the same type, spelled shorter."
         gram: grammar {
             stmt = "type" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "=" ( "{" BREAK? ( ( fm:mark )* fs:NAME ":" ft:type ( "=" fd:expression )? ( "," BREAK? ( fm:mark )* fs:NAME ":" ft:type ( "=" fd:expression )? )* ","? BREAK? )? "}" | nt:type ) END @recover(sync_to: "END") -> type_decl(n, tp, fs, ft, fd, nt, fm)
+            stmt = "alias" n:NAME ( "<" tp:NAME ( "," tp:NAME )* ","? ">" )? "=" t:type END @recover(sync_to: "END") -> alias_decl(n, tp, t)
             primary = t:NAME "{" BREAK? ( vn:NAME ":" ve:expression ( "," BREAK? vn:NAME ":" ve:expression )* ","? BREAK? )? "}" -> struct_lit(t, vn, ve)
         }
         builders: rows

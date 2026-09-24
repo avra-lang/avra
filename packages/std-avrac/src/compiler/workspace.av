@@ -755,10 +755,10 @@ impl Workspace {
         self.programs.demand(f.index, () -> self.parsed_under_blocks(f), (p: Parsed) -> fp(121, [program_hash(p), fp_str(joined(sorted_texts(p.store.sublang_words()), ","))]))
     }
 
-    /// A file parsed under NO block words — its own words alone. The
-    /// block pre-scan reads a provider through this, so a file's parse
-    /// never depends on a provider's parse depending back on it (two
-    /// files importing each other were a memo cycle otherwise).
+    /// A file parsed under NO block words — its own words alone: the
+    /// first read of every file, and a provider's read inside a cycle
+    /// (two files importing each other's words), where its full parse
+    /// is the one in flight.
     ///
     /// TIMED UNDER "ast" (lex plus build — there is no seam between
     /// them to split), wherever it is called from: a provider file's
@@ -819,8 +819,17 @@ impl Workspace {
     /// by this name — as `use` spells it with the word.
     fn component_home(word: string, own: string) -> string? {
         let paths = flatten([self.all_files(pkg.src) for pkg in self.packages()])
-        let path? = paths.find((path: string) -> self.module_at(path) != own && self.plain_words(path).components.any(it.word == word)) else { return null }
+        let path? = paths.find((path: string) -> self.module_at(path) != own && self.provided_words(path).components.any(it.word == word)) else { return null }
         "${self.module_at(path)}.{${word}}"
+    }
+
+    /// A provider read as it parses — under its OWN block words, since a
+    /// provider that uses one (`within` in a server) fails its plain parse
+    /// whole and would export nothing. Its plain parse answers only
+    /// inside a cycle: two files importing each other's words.
+    fn provider_parsed(f: FileId) -> Parsed {
+        if self.db.active(self.programs.query_key(f.index)) { return self.plain_parsed(f) }
+        self.parsed(f)
     }
 
     /// The module a source path belongs to, by name.
@@ -856,7 +865,7 @@ impl Workspace {
         // (`maybe_declares_block`), and only a file that survives THAT
         // reaches the parse below.
         if !module_names_block_word(self, m, self.module_files(m), u.items) { return BlockWords {} }
-        let declared = [self.plain_words(path) for path in self.module_files(m)]
+        let declared = [self.provided_words(path) for path in self.module_files(m)]
         let grammars = flatten([d.grammars for d in declared])
         let components = flatten([d.components for d in declared])
         BlockWords {
@@ -869,8 +878,8 @@ impl Workspace {
     /// its own name: its named grammars readied (one whose notation
     /// does not parse is left out — the library speaks) and its
     /// template components.
-    fn plain_words(path: string) -> BlockWords {
-        let p = self.plain_parsed(self.file_id(path))
+    fn provided_words(path: string) -> BlockWords {
+        let p = self.provider_parsed(self.file_id(path))
         let exported = [s for s in p.stmts if p.store.is_exported(s)]
         BlockWords {
             grammars: flatten([some_list(readied_grammar(p, s, path)) for s in exported]),
@@ -936,7 +945,7 @@ impl Workspace {
     fn prelude_imports(f: FileId) -> List<Import> {
         let from = self.packages()[self.holder_of_path(self.decls.file(f).path)]
         if from.key == prelude_key || !self.std_admitted(prelude_key) { return [] }
-        [Import { decl: d.id, at: null, alias: "" } for d in self.exported_decls(prelude_module())]
+        [Import { decl: d.id, at: null, renamed: "" } for d in self.exported_decls(prelude_module())]
     }
 
     /// A file's names resolved. RECURSIVE: a whole-program pass asks
@@ -1210,7 +1219,7 @@ export fn sig_hash(s: DeclSig?) -> int {
 impl Decls {
     fn sig_rank(x: Decl) -> int {
         match x.kind {
-            .Record or .Named or .Enum or .Builtin -> 0,
+            .Record or .Named or .Alias or .Enum or .Builtin -> 0,
             .Method if x.parent != null && self.decl(x.parent!).kind is .Trait -> 1,
             .Fn or .Rule -> 2,
             .Method or .Impl -> 3,
