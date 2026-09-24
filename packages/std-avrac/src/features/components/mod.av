@@ -29,6 +29,7 @@ export fn components() -> LanguageFeature {
         "type.component_twice"    | "F2113" | "a template reads each of its instance's fields once"
         "type.component_check"    | "F2114" | "a component's `check` answers `List<Diagnostic>`"
         "lower.component_checked" | "F2115" | "a component's `check` judged this instance"
+        "type.component_format"   | "F2119" | "a `Format` head is `@std.meta`'s pattern type"
     }
     LanguageFeature components {
         docs: "`component Name(h: T) { f: T = d … fn expand() -> Code { quote { … } } }` declares a component; an importing file writes `Name value { … }`, and a template's `expand` stands in its place; a component with no `expand` is a record its instance builds — `Name inst { f: v … }`."
@@ -36,7 +37,7 @@ export fn components() -> LanguageFeature {
             stmt = "component" n:NAME ( "(" ( hs:NAME ":" ht:type ( "," hs:NAME ":" ht:type )* ","? )? ")" )? "{" ( fs:NAME ":" ft:type ( "=" fd:expression )? | m:stmt | BREAK )* "}" END @recover(sync_to: "END") -> component_decl(n, hs, ht, fs, ft, fd, m)
             stmt = w:COMPONENT n:NAME b:instance_body END -> component_named(w, n, b) | w:COMPONENT n:NAME END -> component_named_bare(w, n)
             setting = k:NAME ":" v:expression END -> setting(k, v)
-            instance_body = "{" ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(s)
+            instance_body = "{" ( ip:NAME ( "," ip:NAME )* ","? "->" )? ( s:setting | s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the instance") -> instance_body(ip, s)
             primary = w:COMPONENT b:instance_body -> component_headless(w, b) | w:COMPONENT h:expression b:instance_body -> component_value(w, h, b) @head(h) | w:COMPONENT h:expression -> component_blockless(w, h) @head(h)
         }
         builders: rows

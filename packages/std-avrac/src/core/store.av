@@ -28,6 +28,9 @@ export type NodeStore = {
     // desugars to carries every field the sugar would print, so the
     // mark alone is enough to read the spelling back
     component_insts: Cell<List<bool>>,
+    // declarations an instance MINTED while its file parsed — a
+    // route's pattern record — joining the file's top level
+    hoisted: Cell<List<StmtId>>,
     // `@name(args)` marks per statement, in written order
     annotations: Cell<List<List<Annotation>>>,
     // declaration-leading `///` lines; absent on synthesized nodes
@@ -82,6 +85,7 @@ export fn new_node_store() -> NodeStore {
         marks: list_cell(),
         grammars: list_cell(),
         component_insts: list_cell(),
+        hoisted: list_cell(),
         annotations: list_cell(),
         docs: list_cell(),
         doc_ats: list_cell(),
@@ -683,6 +687,22 @@ impl NodeStore {
     fn mark_component_inst(s: StmtId) {
         self.component_insts.set_at(s.index, true)
         self.restamp(s, 146)
+    }
+
+    /// A declaration an instance minted, joining its file's top level.
+    fn hoist(s: StmtId) {
+        self.hoisted.push(s)
+    }
+
+    /// The declarations instances minted, in the order they were.
+    fn hoisted_decls() -> List<StmtId> {
+        self.hoisted.get()
+    }
+
+    /// Whether an instance minted this declaration — the compiler's,
+    /// never the author's, so no printer writes it.
+    fn is_hoisted(s: StmtId) -> bool {
+        self.hoisted.get().any(same_stmt(it, s))
     }
 
     /// An EXPORTED named instance at a file's top level is a

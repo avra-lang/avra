@@ -26,6 +26,10 @@
 //! it, and the pattern reads exactly as its grammar does. `faults`
 //! names a door and a pattern that disagree.
 //!
+//! A ROUTE WRITTEN AS A DECLARATION — `get "/static/{path...}" { … }`
+//! — has no door but its pattern, so there the mark DECLARES: the
+//! components come through `declared`, which reads the reach off it.
+//!
 //! A CAPTURE HOLDS RAW OCTETS. Nothing is percent-decoded, so `%2F`
 //! is not a separator and `/ideas/{id}` binds `a%2Fb` whole. A
 //! handler that means to use a capture as a path decodes it itself,
@@ -51,9 +55,10 @@
 //! ONE RECORD TYPE PER ROUTE, AND ONE PLACE IT IS ERASED. `routed` is
 //! generic over the record; the table holds the erased handler, so
 //! routes whose records differ live in one list while every handler
-//! is written against its own type.
+//! takes a `Request<R>` — the request, its route's record at `params`.
+use @std.meta.{Code, Format}
 use frame.{Method}
-use http.{Request, Response, status}
+use http.{Request, Unrouted, Response, status}
 
 /// HOW FAR A ROUTE REACHES, and what its pattern's braces mean. A
 /// DECLARED thing in every case: the door a route came through says
@@ -75,7 +80,7 @@ export enum Reach {
 /// with — kept so a route an earlier one already answers can be
 /// named — how far it reaches, and its handler, with the record type
 /// already erased.
-export type Route = { method: Method, pattern: string, reach: Reach, serve: fn(Request, Bytes) -> Response? }
+export type Route = { method: Method, pattern: string, reach: Reach, serve: fn(Request<Unrouted>, Bytes) -> Response? }
 
 /// Whether a `{` in this pattern opens a hole or is an octet.
 fn holes_bind(reach: Reach) -> bool {
@@ -97,8 +102,8 @@ fn takes_rest(reach: Reach) -> bool {
 /// `serve` means THIS ROUTE DOES NOT ANSWER THAT TARGET; a 404 the
 /// handler chose is a Response like any other, and the two must not
 /// be the same value.
-export fn routed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request, R) -> Response) -> Route {
-    Route { method: method, pattern: pattern, reach: .Width, serve: (q: Request, t: Bytes) -> answered(read(t), q, serve) }
+export fn routed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> Response) -> Route {
+    Route { method: method, pattern: pattern, reach: .Width, serve: (q: Request<Unrouted>, t: Bytes) -> answered(read(t), q, serve) }
 }
 
 /// A route with NO HOLES — `/health`, `/metrics`, `/`. A grammar
@@ -106,9 +111,9 @@ export fn routed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serv
 /// static path has no grammar and needs none: its reader is an octet
 /// compare against the path it was declared with, and its handler
 /// takes no record because there is nothing to read.
-export fn fixed(method: Method, path: string, serve: fn(Request) -> Response) -> Route {
+export fn fixed(method: Method, path: string, serve: fn(Request<Unrouted>) -> Response) -> Route {
     let want = path.bytes()
-    Route { method: method, pattern: path, reach: .Literal, serve: (q: Request, t: Bytes) -> if t == want { serve(q) } else { null } }
+    Route { method: method, pattern: path, reach: .Literal, serve: (q: Request<Unrouted>, t: Bytes) -> if t == want { serve(q) } else { null } }
 }
 
 /// A ROUTE WHOSE LAST HOLE TAKES THE REST — `/static/{path...}`
@@ -123,15 +128,65 @@ export fn fixed(method: Method, path: string, serve: fn(Request) -> Response) ->
 /// what the hole does instead of changing it, the pattern reads
 /// EXACTLY as its grammar does, and the router is not reading a
 /// marker only it understands.
-export fn tailed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request, R) -> Response) -> Route {
-    Route { method: method, pattern: pattern, reach: .Rest, serve: (q: Request, t: Bytes) -> answered(read(t), q, serve) }
+export fn tailed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> Response) -> Route {
+    Route { method: method, pattern: pattern, reach: .Rest, serve: (q: Request<Unrouted>, t: Bytes) -> answered(read(t), q, serve) }
 }
 
-/// The handler run under its own record, or absence when the target
-/// is not this route's.
-fn answered<R>(found: R?, q: Request, serve: fn(Request, R) -> Response) -> Response? {
-    if found == null { return null }
-    serve(q, found!)
+/// A route whose PATTERN declares its reach: a last hole marked `...`
+/// takes the rest, any other reaches its own width. The door a route
+/// written as a declaration (`get "/static/{path...}" { … }`) comes
+/// through, where the pattern is the whole declaration.
+export fn declared<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> Response) -> Route {
+    Route { method: method, pattern: pattern, reach: if marks_rest(pattern) { .Rest } else { .Width }, serve: (q: Request<Unrouted>, t: Bytes) -> answered(read(t), q, serve) }
+}
+
+// ── Routes as declarations ──────────────────────────────────────
+
+// `get "/ideas/{id}" { req -> … }` — a route of one method at a
+// pattern: the pattern mints its record, and the handler takes the
+// request under it (`req.params.id`), or its fields by name
+// (`{ params -> params.id }`).
+
+export component get(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared<${self.path}>(Method.Get, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+    }
+}
+
+export component post(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared<${self.path}>(Method.Post, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+    }
+}
+
+export component put(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared<${self.path}>(Method.Put, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+    }
+}
+
+export component patch(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared<${self.path}>(Method.Patch, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+    }
+}
+
+export component delete(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared<${self.path}>(Method.Delete, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+    }
+}
+
+/// The handler run on the request under its own record, or absence
+/// when the target is not this route's.
+fn answered<R>(found: R?, q: Request<Unrouted>, serve: fn(Request<R>) -> Response) -> Response? {
+    let params? = found else { return null }
+    serve(Request { raw: q.raw, head: q.head, body: q.body, peer: q.peer, params: params })
 }
 
 // ── Segments ────────────────────────────────────────────────────
@@ -326,7 +381,7 @@ once fn open_brace() -> Bytes { "{".bytes() }
 /// A TARGET WITH NO PATH IS THE SAME 404, and the table is not walked
 /// at all: `OPTIONS *` and CONNECT's authority name no resource, so
 /// there is nothing to match them against.
-export fn dispatch(t: Table, q: Request) -> Response {
+export fn dispatch(t: Table, q: Request<Unrouted>) -> Response {
     let target? = q.path() else { return status(404) }
     let node = landed(t, target)
     if node < 0 { return status(404) }

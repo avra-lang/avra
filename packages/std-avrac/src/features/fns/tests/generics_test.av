@@ -60,14 +60,14 @@ spec "features/fns/generics" {
         }
     }
     given "instantiation, refused in its own words" {
-        then "arguments that disagree name the argument" {
-            refused_with("fn pick<T>(a: T, b: T) -> T {\n    a\n}\npick(1, \"s\")", "argument 2 of `pick` wants `T`, found `string`")
+        then "arguments that disagree name the argument, in the type the first one bound" {
+            refused_with("fn pick<T>(a: T, b: T) -> T {\n    a\n}\npick(1, \"s\")", "argument 2 of `pick` wants `int`, found `string`")
         }
         then "an unpinnable T says how to pin it" {
             refused_with("fn zero<T>(n: int) -> int {\n    n\n}\nzero(5)", "`T` is not pinned by the arguments")
         }
         then "a pin against a disagreeing argument refuses" {
-            refused_with("fn id<T>(x: T) -> T {\n    x\n}\nid<int>(\"s\")", "argument 1 of `id` wants `T`, found `string`")
+            refused_with("fn id<T>(x: T) -> T {\n    x\n}\nid<int>(\"s\")", "argument 1 of `id` wants `int`, found `string`")
         }
         then "pins on a plain fn refuse" {
             refused_with("fn plain(x: int) -> int {\n    x\n}\nplain<int>(5)", "`plain` takes no type arguments")
@@ -97,6 +97,20 @@ spec "features/fns/generics" {
         }
         then "a seat that disagrees with the pinned answer refuses as a binding does" {
             refused_with("fn wrap<T>(v: T) -> List<T> {\n    [v]\n}\nlet xs: List<int> = wrap(\"s\")\nxs.length", "`xs` declares `List<int>`, this is `List<string>`")
+        }
+    }
+    given "a lambda in a generic seat answers what the seat says" {
+        then "a seat its Vars make concrete refuses a lambda answering another type, in the bound type's words" {
+            refused_with("fn f<P>(p: P, g: fn(P) -> string) -> string {\n    g(p)\n}\nf(5, (x) -> 7)", "argument 2 of `f` wants `fn(int) -> string`, found `fn(int) -> int`")
+        }
+        then "a trailing block is judged the same" {
+            refused_with("type Box<P> = { held: P }\nfn f<P>(p: P, g: fn(Box<P>) -> string) -> string {\n    g(Box { held: p })\n}\nf(5) { b -> b }", "the trailing block fills seat 2 of `f`, which takes `fn(Box<int>) -> string`, and the block is `fn(Box<int>) -> Box<int>`")
+        }
+        then "once its seats are bound, a lambda's answer pins the Var they leave free" {
+            shown("type Box<P> = { p: P }\nfn f<P, T>(b: Box<P>, g: fn(Box<P>) -> T) -> T {\n    g(b)\n}\nf(Box { p: 2 }) { b -> b.p + 1 }") == "3"
+        }
+        then "a lambda answering the seat's type passes" {
+            shown("fn f<P>(p: P, g: fn(P) -> string) -> string {\n    g(p)\n}\nf(5) { x -> \"n\${x}\" }") == "n5"
         }
     }
 }

@@ -4,8 +4,8 @@
 //! its holes, every copied node wearing the provider's origin; a
 //! record's instance is its literal, the body's settings by name and
 //! its other statements `collect`ed into its one `List` field.
-use core.{Expr, Stmt, StmtId, ExprId, Nominal, Plain, Scoped, NodeStore, BodyView, HoleKind, Filled, SettingParts, copier, flatten, some_list}
-use features.{LangNode, Builder, ComponentWord, Template, Record}
+use core.{Expr, Stmt, StmtId, ExprId, Nominal, Plain, Scoped, NodeStore, BodyView, HoleKind, Filled, SettingParts, TypeRef, copier, flatten, some_list}
+use features.{LangNode, Builder, ComponentWord, Template, Record, marked_seats}
 use grammar.{Token}
 
 fn build_component_decl(b: Builder) -> Result<LangNode, string> {
@@ -25,19 +25,19 @@ fn holds_a_member(store: NodeStore, s: StmtId) -> bool {
 
 /// `within ms(5) { … }` / `text "hi" { … }` — an instance with its
 /// head value.
-fn build_component_value(mut b: Builder) -> Result<LangNode, string> {
+fn build_component_value(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
     b.wrap_expr(b.instance(word, [b.expr(1)?], b.expr(2)?, null)?)
 }
 
 /// `row { … }` — an instance with no head value.
-fn build_component_headless(mut b: Builder) -> Result<LangNode, string> {
+fn build_component_headless(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
     b.wrap_expr(b.instance(word, [], b.expr(1)?, null)?)
 }
 
 /// `within ms(5)` — a head with no block after it.
-fn build_component_blockless(mut b: Builder) -> Result<LangNode, string> {
+fn build_component_blockless(b: Builder) -> Result<LangNode, string> {
     let word = b.word_at(0)?
     b.wrap_expr(b.instance(word, [b.expr(1)?], null, null)?)
 }
@@ -45,19 +45,25 @@ fn build_component_blockless(mut b: Builder) -> Result<LangNode, string> {
 /// `table orders { … }` at a statement: a record without a head BINDS
 /// the name, and fills its `name` field; any other component reads the
 /// name as its head value.
-fn build_component_named(mut b: Builder) -> Result<LangNode, string> {
+fn build_component_named(b: Builder) -> Result<LangNode, string> {
     b.named(b.word_at(0)?, b.token(1)?, b.expr(2)?)
 }
 
 /// `secret stripe_key` — a named instance with no block.
-fn build_component_named_bare(mut b: Builder) -> Result<LangNode, string> {
+fn build_component_named_bare(b: Builder) -> Result<LangNode, string> {
     b.named(b.word_at(0)?, b.token(1)?, null)
 }
 
 /// An instance's body: its settings and statements as written — the
-/// block the printer spells.
+/// block the printer spells — or, under a `req ->` head, a fn over
+/// what the component offers.
 fn build_instance_body(b: Builder) -> Result<LangNode, string> {
-    b.make_expr(Expr.Block(b.stmts(0)?, null))
+    let ps = b.tokens(0)?
+    let stmts = b.stmts(1)?
+    if ps.is_empty() { return b.make_expr(Expr.Block(stmts, null)) }
+    if stmts.any((s) -> b.store.setting_parts(s) != null) { return .Err(fn_body_setting()) }
+    let unwritten: List<TypeRef?> = [null for p in ps]
+    b.make_expr(Expr.Lambda(marked_seats(ps, unwritten, [], [], b.span?.lo ?? 0), b.block_of(stmts)))
 }
 
 /// `key: value` in an instance's body.
@@ -113,8 +119,9 @@ impl Builder {
         if body == null { return .Err(blockless(word.word)) }
         let stmts = self.written(body)
         if stmts.any((s) -> self.store.setting_parts(s) != null) { return .Err(template_setting(word.word)) }
-        let block = self.block_of(stmts)
-        let expansion = self.store.instantiated(t, word, heads, block)
+        let block = self.filled_body(body!, stmts)
+        let minted = [self.minted_format(word, t, h, heads[j])? for j, h in t.head]
+        let expansion = self.store.instantiated(t, word, heads, block, minted)
         .Ok(self.store.alloc_expr(Expr.Component(word.word, heads, block, BodyView.Expanded(expansion), null), self.span))
     }
 
@@ -124,6 +131,7 @@ impl Builder {
     /// `collect`ed into its one open `List` field.
     fn recorded(word: string, r: Record, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<ExprId, string> {
         if heads.length != r.head.length { return .Err(record_heads(word, r.head.length, heads.length)) }
+        if body != null && self.store.lambda_parts(body!) != null { return .Err(record_fn_body(word)) }
         let stmts = self.written(body)
         let settings = flatten([some_list(self.store.setting_parts(s)) for s in stmts])
         let children = [s for s in stmts if self.store.setting_parts(s) == null]
@@ -135,6 +143,25 @@ impl Builder {
         let literal = self.store.alloc_expr(Expr.StructLit(Nominal(word), [Plain(f.name) for f in filled], [f.value for f in filled]), self.span)
         let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }
         .Ok(self.store.alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span))
+    }
+
+    /// A pattern head's record: its string literal's format minted as a
+    /// `grammar` declaration and hoisted to the file's top level, under a
+    /// name no writer can spell. Absent for a head that is code.
+    fn minted_format(word: ComponentWord, t: Template, field: string, head: ExprId) -> Result<Minted?, string> {
+        if !t.formats.contains(field) { return .Ok(null) }
+        let text? = self.store.expr(head).text_of() else { return .Err(pattern_literal(word.word, field)) }
+        let name = "${word.word}\$${field}\$${head.index}"
+        let at = self.store.expr_span(head)
+        self.store.hoist(self.store.declared_format(name, text, at, false)?)
+        // minted before the copy, so it resolves in the user's file
+        .Ok(Minted { name: name, named: self.store.alloc_expr(Expr.Ident(Scoped(name)), at) })
+    }
+
+    /// What a template's body hole takes: a written fn whole, or the
+    /// statements scoped to answer their tail.
+    fn filled_body(body: ExprId, stmts: List<StmtId>) -> ExprId {
+        if self.store.lambda_parts(body) != null { body } else { self.block_of(stmts) }
     }
 
     /// The statements a written body holds — none when no block was
@@ -193,10 +220,10 @@ impl NodeStore {
     /// A template copied in: each hole filled with the head value or
     /// the block its field names, every node it minted marked as the
     /// provider's.
-    fn instantiated(template: Template, word: ComponentWord, heads: List<ExprId>, block: ExprId) -> ExprId {
+    fn instantiated(template: Template, word: ComponentWord, heads: List<ExprId>, block: ExprId, minted: List<Minted?>) -> ExprId {
         let since = self.marks()
-        let fills = [field_value(template, read, heads, block) for read in template.reads]
-        mut rb = copier(word.store, self, [(kind: HoleKind) -> self.filled(kind, id) for id in fills])
+        let fills = [field_fill(template, read, heads, block, minted) for read in template.reads]
+        mut rb = copier(word.store, self, [(kind: HoleKind) -> self.filled(kind, f) for f in fills])
         let root = self.template_value(rb.stmts(template.stmts))
         self.note_copied(since, word.origin)
         root
@@ -211,20 +238,38 @@ impl NodeStore {
 
     /// A user's node in the seat a hole stands in — as the expression
     /// it is, or as the one statement it makes.
-    fn filled(kind: HoleKind, id: ExprId) -> Filled {
+    fn filled(kind: HoleKind, f: Fill) -> Filled {
         match kind {
-            .Expression -> Filled.Expr(id),
-            .Statement -> Filled.Stmts([self.alloc_stmt(Stmt.ExprStmt(id), self.expr_span(id))]),
-            .Name or .Binder or .Type or .Arm -> Filled.Unplaceable("a component's field is code — it fills an expression or a statement"),
+            .Expression -> Filled.Expr(f.record?.named ?? f.value),
+            .Statement -> Filled.Stmts([self.alloc_stmt(Stmt.ExprStmt(f.value), self.expr_span(f.value))]),
+            .Type -> self.pattern_type(f),
+            .Name or .Binder or .Arm -> Filled.Unplaceable(unplaceable_field()),
         }
+    }
+
+    /// A pattern field where a type stands: the record its pattern
+    /// minted, resolved in the user's file, where it was declared.
+    fn pattern_type(f: Fill) -> Filled {
+        let minted? = f.record else { return Filled.Unplaceable(unplaceable_field()) }
+        Filled.Type(TypeRef { name: minted.name, args: [], optional: false, dynamic: false, arrow: false, span: self.expr_span(f.value), spliced: true })
     }
 }
 
+/// What one hole of a template is filled with: the user's node, and —
+/// for a pattern field — the record its pattern minted.
+type Fill = { value: ExprId, record: Minted? }
+
+/// A pattern head's record: its declared name, and that name as an
+/// expression the user's file resolves — where a value stands, the
+/// field IS the record's name (`${self.path}.parse(t)`).
+type Minted = { name: string, named: ExprId }
+
 /// The user's node a template hole reads: a head value by its field's
 /// position, or the block.
-fn field_value(template: Template, read: string, heads: List<ExprId>, block: ExprId) -> ExprId {
+fn field_fill(template: Template, read: string, heads: List<ExprId>, block: ExprId, minted: List<Minted?>) -> Fill {
     let at = template.head.index_of(read)
-    if at < 0 { block } else { heads[at] }
+    if at < 0 { return Fill { value: block, record: null } }
+    Fill { value: heads[at], record: minted[at] }
 }
 
 // ── voices ──
@@ -269,4 +314,20 @@ fn no_slot(word: string) -> string {
 
 fn which_slot(word: string, open: List<string>) -> string {
     "`${word}` has ${open.length} `List` fields its statements could fill — set each by name: `${open[0]}: collect { … }`"
+}
+
+fn unplaceable_field() -> string {
+    "a component's field is code — it fills an expression or a statement, and a `Format` field a type as well"
+}
+
+fn pattern_literal(word: string, field: string) -> string {
+    "`${word}`'s `${field}` is a pattern — write it as a string literal"
+}
+
+fn fn_body_setting() -> string {
+    "a body with parameters is a fn, and a fn holds no settings — write them in a body without a `name ->` head"
+}
+
+fn record_fn_body(word: string) -> string {
+    "`${word}` builds a record, so its body lists settings and children — a `name ->` head makes a fn, which only a template takes"
 }

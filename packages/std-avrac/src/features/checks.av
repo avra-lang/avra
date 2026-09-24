@@ -103,15 +103,6 @@ impl TypeCx {
         fits
     }
 
-    /// THE ONE AGREEMENT DOOR for a UNIFIED seat. `unify` binds the
-    /// declaration's Vars; `accepts` is what RECORDS the lift lowering
-    /// mints, and a seat whose Vars are all bound is concrete NOW. A
-    /// seat still naming a free Var is re-judged at instantiation.
-    mut fn unified_lift(e: ExprId, want: TypeId, decl: DeclId, bound: Pins) -> bool {
-        if !self.fully_bound(want, decl, bound) { return false }
-        self.accepts(e, self.view.types.substituted(want, decl, self.bound_args(bound)))
-    }
-
     /// THE LITERAL'S ONE TYPE is named by its first item with a type of
     /// its own — `[]`, `{}` and `null` are adopted by their siblings,
     /// and a hungry item is fed by theirs.
@@ -151,16 +142,26 @@ impl TypeCx {
         self.emit(warning("type.receiver", self.loc_of(e), "a `?.` chain hands a COPY of what it carries — `${name}` writes through the copy, and the write is lost", "the copy", "bind the value first — `if let v? = … { v.${name}(…) }`"))
     }
 
-    /// A UNIFIED SEAT AGREES, or not — BOTH halves, always: `unify` binds
-    /// the declaration's Vars and `unified_lift` RECORDS the widen
-    /// lowering mints. Short-circuit either way and a hit drops its lift,
-    /// or a miss never binds. The one door for a call argument, a struct
-    /// field and an enum payload alike.
+    /// A UNIFIED SEAT AGREES, or not: `unify` binds the declaration's
+    /// Vars, and a seat they leave concrete is judged by `accepts` alone,
+    /// which RECORDS the widen lowering mints and re-hears a hungry value
+    /// — whose stand-in type unifies with anything. The one door for a
+    /// call argument, a struct field and an enum payload alike.
     mut fn agreed(e: ExprId, want: TypeId, decl: DeclId, mut bound: Pins) -> bool {
+        self.seated_early(e, want, decl, bound)
         let got = self.type_at(e)
         let matched = self.unify(want, got, decl, bound) || self.seat_widens(want, got, decl, bound)
-        let took = self.unified_lift(e, want, decl, bound)
-        matched || took
+        if !self.fully_bound(want, decl, bound) { return matched }
+        self.accepts(e, self.view.types.substituted(want, decl, self.bound_args(bound)))
+    }
+
+    /// A hungry lambda whose SEATS the bindings already make concrete
+    /// is typed under them now, so its answer can pin what they leave
+    /// free: `fn(Req<P>) -> T` after `P` is bound hears `T` from the body.
+    mut fn seated_early(e: ExprId, want: TypeId, decl: DeclId, bound: Pins) {
+        let arrow? = self.view.types.arrow_parts(want) else { return }
+        if !arrow.seats.all((s) -> self.fully_bound(s, decl, bound)) { return }
+        let _ = self.retype_seated(e, [self.view.types.substituted(s, decl, self.bound_args(bound)) for s in arrow.seats], arrow.marks)
     }
 
     /// A `T?` SEAT takes a present value and pins `T` to it — here and

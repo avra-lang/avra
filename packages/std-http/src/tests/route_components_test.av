@@ -1,0 +1,44 @@
+// Routes as declarations: `get "/ideas/{id}" { req -> … }` mints the
+// pattern's record and hands the handler the request under it — the
+// same `routed` door, spelled as the route reads.
+use @std.http.http.{Response, text}
+use @std.http.route.{Route, get, post, put, patch, delete, faults}
+
+fn rc_routes() -> List<Route> {
+    [
+        get "/ideas/{id}" { req -> text(200, "idea " + req.params.id) },
+        get "/search/{term}/{page}" { params -> text(200, "search " + params.term + " " + params.page) },
+        post "/ideas" { req -> text(201, "made " + req.body.text()!) },
+        put "/ideas/{id}" { req -> text(200, "put " + req.params.id) },
+        patch "/ideas/{id}" { req -> text(200, "patch " + req.params.id) },
+        delete "/ideas/{id}" { _req -> Response { status: 204 } },
+        get "/health" { _req -> text(200, "ok") },
+        get "/static/{path...}" { req -> text(200, "static " + req.params.path) },
+    ]
+}
+
+spec "@std.http.route — routes as declarations" {
+    given "a method's route over a pattern" {
+        then "the handler reads the pattern's params off the request" {
+            under(rc_routes(), "GET /ideas/7 HTTP/1.1") == "200 idea 7"
+        }
+        then "a handler may take the request's fields by name" {
+            under(rc_routes(), "GET /search/cats/2 HTTP/1.1") == "200 search cats 2"
+        }
+        then "each method answers its own requests" {
+            under(rc_routes(), "POST /ideas HTTP/1.1") == "201 made " && under(rc_routes(), "PUT /ideas/7 HTTP/1.1") == "200 put 7" && under(rc_routes(), "PATCH /ideas/7 HTTP/1.1") == "200 patch 7" && under(rc_routes(), "DELETE /ideas/7 HTTP/1.1") == "204 "
+        }
+        then "a pattern of no holes answers its path alone" {
+            under(rc_routes(), "GET /health HTTP/1.1") == "200 ok" && under(rc_routes(), "GET /health/x HTTP/1.1") == "404 "
+        }
+        then "a pattern whose last hole says `...` takes the rest of the path" {
+            under(rc_routes(), "GET /static/css/app.css HTTP/1.1") == "200 static css/app.css"
+        }
+        then "a method the pattern was not declared for is a 404" {
+            under(rc_routes(), "POST /ideas/7 HTTP/1.1") == "404 "
+        }
+        then "the table is lawful" {
+            faults(rc_routes()).is_empty()
+        }
+    }
+}

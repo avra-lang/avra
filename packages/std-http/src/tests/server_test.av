@@ -4,14 +4,14 @@
 use @std.net.{Conn, NetError, listen, connect}
 use @std.time.{Duration, ms, secs, sleep, within}
 use @std.http.frame.{limits, Limits, Method}
-use @std.http.http.{Request, Response, text}
+use @std.http.http.{Request, Unrouted, Response, text}
 use @std.http.route.{Table, routed, compiled, dispatch}
 use @std.http.server.{Server, Timing, served, timing}
 
 grammar Note = "/notes/{id}"
 
-fn serve_note(q: Request, n: Note) -> Response {
-    text(200, "note ${n.id} redirect:${q.query().has("redirect")}")
+fn serve_note(q: Request<Note>) -> Response {
+    text(200, "note ${q.params.id} redirect:${q.query().has("redirect")}")
 }
 
 once fn notes_table() -> Table {
@@ -20,7 +20,7 @@ once fn notes_table() -> Table {
 
 /// A handler that is the router: the loop hands it the request, the
 /// table answers.
-fn routed_app(app: App, q: Request) -> Response {
+fn routed_app(app: App, q: Request<Unrouted>) -> Response {
     let _ = bumped(app)
     dispatch(notes_table(), q)
 }
@@ -35,7 +35,7 @@ fn bumped(app: App) -> int {
     app.hits.get()
 }
 
-fn echo(app: App, q: Request) -> Response {
+fn echo(app: App, q: Request<Unrouted>) -> Response {
     let n = bumped(app)
     text(200, "${q.head.method is .Get} ${q.target() ?? "?"} ${q.body.text() ?? "?"} ${n}")
 }
@@ -48,7 +48,7 @@ type Bed = { s: Server<App>, c: Conn }
 /// A server running `handle` under `lim` and `t`, with a client
 /// attached — THE ONE BED BUILDER. A suite that spells its own is
 /// testing its own scaffolding beside the server.
-fn bed_with(handle: fn(mut App, Request) -> Response, lim: Limits, t: Timing) -> Result<Bed, NetError> {
+fn bed_with(handle: fn(mut App, Request<Unrouted>) -> Response, lim: Limits, t: Timing) -> Result<Bed, NetError> {
     let l = listen("127.0.0.1", 0)?
     let c = connect("127.0.0.1", l.port, secs(2))?
     .Ok(Bed { s: served(l, () -> App { hits: Cell.new(0) }, lim, t, handle), c: c })

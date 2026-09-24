@@ -78,6 +78,16 @@ fn extern_host(store: NodeStore, s: StmtId) -> List<string> {
     seats.concat([ext.ret.name])
 }
 
+/// The source a declaration occupies: a default's or a case's root, else
+/// its statement — and none for a hoisted one, whose nodes lie inside
+/// the statement that minted it.
+fn occupied(store: NodeStore, x: Decl) -> Span? {
+    if store.is_hoisted(x.stmt) { return null }
+    if !(x.kind is .Default || x.kind is .Case) { return store.stmt_span(x.stmt) }
+    let root? = x.root else { return null }
+    store.expr_span(root)
+}
+
 /// THE ONE CAPTURE — a parsed declaration's facts, read from its store exactly once.
 // LICENSED I39: a pure PROJECTION — a store and a declaration in, its facts out.
 fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
@@ -90,7 +100,7 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
         stat: store.is_static(x.stmt),
         is_grammar: readable && x.kind is .Record && store.grammar_of(x.stmt) != null,
         is_component: readable && x.kind is .Record && store.component_parts(x.stmt) != null,
-        span: if x.kind is .Default || x.kind is .Case { if x.root == null { null } else { store.expr_span(x.root!) } } else { store.stmt_span(x.stmt) },
+        span: occupied(store, x),
         tparams: if readable { store.decl_tparams(x.stmt) } else { [] },
         bounds: if readable { [p.ty?.name ?? "" for p in store.decl_tbounds(x.stmt)] } else { [] },
         seats: if readable && !(x.kind is .Default) { [p.name.of for p in store.fn_parts(x.stmt)?.params ?? []] } else { [] },

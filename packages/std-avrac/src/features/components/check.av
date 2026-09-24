@@ -22,6 +22,7 @@ fn check_component(mut cx: TypeCx, s: StmtId) {
     let c? = cx.view.store.component_parts(s) else { return }
     check_law(cx, c)
     expand_law(cx, c)
+    format_law(cx, s, c)
 }
 
 /// A `check` takes nothing and answers `List<Diagnostic>` — what the
@@ -44,8 +45,19 @@ fn expand_law(mut cx: TypeCx, c: ComponentParts) {
     }
     let parts? = expand_of(cx.view.store, c) else { return }
     let body? = template_body(cx.view.store, parts) else { return }
-    let twice? = read_twice(cx.view.store, body) else { return }
+    let twice? = read_twice(cx.view.store, body, formats_of(c)) else { return }
     cx.emit(read_again(cx.stmt_loc(expand), c.name, twice))
+}
+
+/// A head spelled `Format` is `@std.meta`'s pattern: the instance read
+/// the spelling, so the resolved type must agree.
+fn format_law(mut cx: TypeCx, s: StmtId, c: ComponentParts) {
+    let d? = cx.view.decls.decl_of(cx.view.file, s) else { return }
+    let sig? = cx.view.decls.sig(d)?.record_sig() else { return }
+    let formats = formats_of(c)
+    for j, n in sig.names {
+        if formats.contains(n) && !cx.view.decls.meta_type(sig.types[j], "Format") { cx.emit(foreign_format(cx.stmt_loc(s), n)) }
+    }
 }
 
 // ── voices ──
@@ -60,4 +72,8 @@ fn no_code(at: Loc?, found: string) -> Diag {
 
 fn read_again(at: Loc?, name: string, field: string) -> Diag {
     refusal("type.component_twice", at, "the template of `${name}` reads `self.${field}` twice — an instance's code runs where the template writes it, once", "this `expand`", "bind it once — `let v = \${self.${field}}` — and read `v` after")
+}
+
+fn foreign_format(at: Loc?, field: string) -> Diag {
+    refusal("type.component_format", at, "a `Format` head is `@std.meta`'s pattern type, and `${field}`'s `Format` names another", "this component", "`use @std.meta.{Format}`, or rename the other type")
 }

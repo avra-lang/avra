@@ -43,6 +43,23 @@ export fn read_format(text: string) -> Format {
     closed(r, "")
 }
 
+/// A format spelled back as it is written — `read_format`'s inverse:
+/// the head, then each hole (`{name...: Type}`) and the literal after
+/// it, a literal brace doubled.
+export fn pattern_text(head: string, parts: List<FormatPart>) -> string {
+    joined([escaped_braces(head)].concat([hole_text(p.hole) + escaped_braces(p.piece) for p in parts]), "")
+}
+
+fn hole_text(h: Hole) -> string {
+    let greed = if h.greedy { ellipsis() } else { "" }
+    let typed = if h.ty == null { "" } else { ": ${h.ty!.name}" }
+    "{" + h.name + greed + typed + "}"
+}
+
+fn escaped_braces(text: string) -> string {
+    text.replace("{", "{{").replace("}", "}}")
+}
+
 /// Whether a literal spells a format at all. A literal with no holes
 /// is a plain literal, and its pattern is the equality it always was.
 export fn has_holes(f: Format) -> bool {

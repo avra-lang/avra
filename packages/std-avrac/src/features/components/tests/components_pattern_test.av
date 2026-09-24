@@ -1,0 +1,63 @@
+// A `Format` head is a PATTERN: the instance mints its pattern's record
+// as a `grammar` declaration in the user's file, and the template reads
+// the field as that record's name — `${self.path}.parse(t)` where a
+// value stands, `Req<${self.path}>` where a type does.
+use @std.avrac.testing.{provided, answered, refused_n}
+use @std.avrac.compiler.{Program}
+
+/// A toy router: `route` answers one fixed target through a handler
+/// that takes the route's request by name.
+fn router() -> string {
+    "use @std.meta.{Format}\nexport type Req<P> = { path: string, params: P }\nexport type Offer<P> = { req: Req<P> }\n\nexport fn answered<P>(pattern: string, read: fn(string) -> P?, target: string, f: fn(Offer<P>) -> string) -> string {\n    let params? = read(target) else { return \"404 \" + pattern }\n    f(Offer { req: Req { path: target, params: params } })\n}\n\nexport component route(path: Format) {\n    body: Code\n    fn expand() -> Code {\n        quote { answered<\${self.path}>(\${self.path}.pattern(), (t: string) -> \${self.path}.parse(t), \"/robots/7/ada\", \${self.body}) }\n    }\n}\n\nexport component row(n: int) {\n    tags: List<string> = []\n}\n"
+}
+
+fn routed(main: string) -> Program {
+    provided("use @x.c.{route, row}\n" + main, router())
+}
+
+spec "features/components — a pattern head" {
+    given "the record a pattern mints" {
+        then "the handler reads the params the pattern named, by name off the request" {
+            answered(routed("route \"/robots/{id}/{name}\" { req -> req.params.id + \" \" + req.params.name }")) == "7 ada"
+        }
+        then "a lone name that is no field takes the whole offer" {
+            answered(routed("route \"/robots/{id}/{name}\" { o -> o.req.path }")) == "/robots/7/ada"
+        }
+        then "a target the pattern does not read misses, and the pattern prints as written" {
+            answered(routed("route \"/users/{id}\" { req -> req.params.id }")) == "404 /users/{id}"
+        }
+        then "a pattern of no holes matches its text whole, never a prefix of it" {
+            answered(routed("route \"/\" { req -> req.path }")) == "404 /"
+        }
+        then "a pattern of no holes matches its own text" {
+            answered(routed("route \"/robots/7/ada\" { req -> req.path }")) == "/robots/7/ada"
+        }
+        then "a handler's params may shadow the template's own binders" {
+            answered(routed("route \"/robots/{id}/{name}\" { t -> t.req.params.id }")) == "7"
+        }
+        then "two instances mint two records" {
+            answered(routed("let a = route \"/robots/{id}/{name}\" { req -> req.params.name }\nlet b = route \"/robots/{n}/{who}\" { req -> req.params.n }\na + b")) == "ada7"
+        }
+    }
+    given "the laws" {
+        then "a head that is code is refused where a pattern goes" {
+            refused_n(routed("let p = \"/x\"\nroute p { req -> req.path }"), "`route`'s `path` is a pattern — write it as a string literal", 1)
+        }
+        then "a fn body holds no settings" {
+            refused_n(routed("route \"/x\" { req ->\n    n: 1\n    req.req.path\n}"), "a body with parameters is a fn, and a fn holds no settings", 1)
+        }
+        then "a record's body takes no parameters" {
+            refused_n(routed("row 1 { t -> t }"), "`row` builds a record, so its body lists settings and children", 1)
+        }
+        then "a `Format` head names `@std.meta`'s pattern type, never another" {
+            let p = provided("use @x.c.{loose}\nloose \"/x\" { 1 }", "type Format = { n: int }\nexport component loose(path: Format) {\n    body: Code\n    fn expand() -> Code {\n        quote { \${self.body} }\n    }\n}\n")
+            refused_n(p, "a `Format` head is `@std.meta`'s pattern type, and `path`'s `Format` names another", 1)
+        }
+        then "a name the offer does not hold is refused by name" {
+            refused_n(routed("route \"/robots/{id}/{name}\" { req, res -> req.path }"), "`res` is not offered here — this seat offers `req`", 1)
+        }
+        then "a handler answering the wrong type is refused at its body" {
+            refused_n(routed("route \"/x/{id}\" { o -> o }"), "argument 4 of `answered` wants", 1)
+        }
+    }
+}
