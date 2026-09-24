@@ -66,21 +66,15 @@ the body exists, answer:
 
 DOGFOODING.md is the full rulebook; `make idioms` FAILS the gate on
 any NEW violation — the baseline lists sites, never counts, and no
-tool path can add to it. An idiom the LANGUAGE can now state is a
-`rule` declaration (the formatter), found by `avra check` itself;
-tools/idioms.py reads that finding rather than racing it with a
-second regex, and ratchets it on the SAME baseline. Two honest exits
-for a REGEX finding: write the idiomatic form, or annotate `//
-LICENSED I<n>: reason` AT the site — that debt is zero, keep it
-there. A NATIVE finding has no license window (a rule reads no
-comment of its own); accepted debt for one lives in the baseline
-only, reviewed at adoption and every time after. A new idiom lands
-in DOGFOODING's registry AT DISCOVERY **with its matcher** (or an
-UNRATCHETED reason — the tool refuses a registry entry that has
-neither), under the NEXT FREE NUMBER: two lanes numbered a new idiom
-the same day, both landed I33, and the duplicate key silently
-dropped the earlier rule while `make idioms` kept reporting success.
-The tool now reads its own source and refuses a repeated number.
+tool path can add to it. Two honest exits: write the idiomatic
+form, or annotate `// LICENSED I<n>: reason` AT the site. Debt is
+zero; keep it there. A new idiom lands in DOGFOODING's registry AT
+DISCOVERY **with its matcher** (or an UNRATCHETED reason — the tool
+refuses a registry entry that has neither), under the NEXT FREE
+NUMBER: two lanes numbered a new idiom the same day, both landed
+I33, and the duplicate key silently dropped the earlier rule while
+`make idioms` kept reporting success. The tool now reads its own
+source and refuses a repeated number.
 
 ## Style
 
@@ -276,13 +270,6 @@ engine's spec, written by dogfooding.
   a guard right beside it. There is one reader now (`seat_type`),
   and the refusal was already spoken before the body ran, which is
   what makes Error the honest answer rather than a defect voice.
-- A COPIED TEMPLATE'S SPANS ARE ITS ORIGIN FILE'S OFFSETS — so its
-  errors point home — and any pass that reads a span as THIS file's
-  offset must ask `store.spanned_elsewhere(e)` first. `range_bodies`
-  did not, and `within`'s copied nodes landed in whatever `client.av`
-  declared at `time.av`'s offsets (a write through `self` blamed on
-  `describe`). A sublanguage's nodes are foreign too but spanned HERE
-  (shifted into the block); `ForeignRange.spanned_home` tells them apart.
 - A READ WEARS THE TYPE OF WHAT IS READ, never the type of the node
   doing the reading. This bit THREE times in one slice: a captured
   callee took the CALL's type (a call's type is its answer, never its
@@ -510,11 +497,8 @@ engine's spec, written by dogfooding.
   freed memory, and the next reader segfaults (the once cache, first
   draft).
 - A NAME IS OPAQUE AT A SEAT AND TRANSPARENT AT A READ. `type Name =
-  Shape` is ALWAYS a DISTINCT type, and that is the point (P9) — over
-  a fn shape as over any other. `alias Name<T> = Shape` is the OTHER
-  spelling, never a mode of `type`: the same type under a shorter
-  name, so it fills and is filled by its shape. `type` makes a new
-  type; `alias` names an existing one. A seat (a parameter, a field, an annotation, an
+  Shape` is ALWAYS a DISTINCT type — there is no alias form, and that
+  is the point (P9). A seat (a parameter, a field, an annotation, an
   argument, an operand) judges the NAME; a read (a property, a
   method, an index, a `for` head, an interpolation hole, a LITERAL
   PATTERN, printing) judges the SHAPE — `match id { 5 -> … }` over a
@@ -995,9 +979,7 @@ engine's spec, written by dogfooding.
   lint's noise AND before trusting a quiet tree: a lint that counts
   the wrong thing and a law nobody has paid look identical from the
   warning count alone, and only the true-positive rate tells them
-  apart. PAYING IT WAS THE PROOF: turning the compiler's identities
-  into Cells took std-avrac from 165 sites to 4 and the cli from 60 to
-  1 (deduped by file:line), and nothing that fired was a false alarm.
+  apart.
 - Map iteration order never reaches output — iterate an ordered
   source. AND A MAP CANNOT BE ITERATED AT ALL: `for k in m` is F2000
   "`for … in` walks a `List`, this is `Map<K, V>`" and `.keys()` is
@@ -1086,16 +1068,6 @@ engine's spec, written by dogfooding.
   minted. One mechanism, one loud door and one mute one, and the
   mute one is the door every `@derive` takes. All three doors read
   one `unsettled_label` now.
-- A NODE VARIANT IS APPENDED, NEVER INSERTED. A `rule`'s pattern is
-  baked into the compiler as constants by the compiler that BUILDS it,
-  and its `shallow` fold names each node kind by its POSITION in
-  `Expr`/`Stmt`/`Pat` (`@derive(Matchable)`). Insert a variant mid-enum
-  and every later one moves: the product's baked shapes carry the old
-  positions while it computes the new ones, `match_node` trusts two
-  equal shallows to share an arity, and the product traps checking its
-  own tree ("index 0 is out of bounds (length 0)" in `match_kids`,
-  under `rule_candidates`) — the generation law with a derive as the
-  carrier. `Collect` hit it and moved to the end.
 - Grammar authoring: A RAW BODY'S CLOSING BRACE IS A TOKEN. `grammar {`
   and a block word's `{` hand their body over whole, so the lexer emits
   the `}` that ends it too, and the rule consumes it (`"grammar" "{"
@@ -1306,31 +1278,12 @@ engine's spec, written by dogfooding.
   method (`cx.<name>(sh, args)`, `features/rt.av`, from
   `core/rt_namespace.av`'s projection of `rt_sigs()`) calls through
   one of the three — a bare `Ins.CallRt(dst, "avra_x", args)` outside
-  them is I58's own refusal, and a misspelled or wrong-arity call
+  them is I56's own refusal, and a misspelled or wrong-arity call
   through the generated method is the ordinary "no method"/method-
-  arity refusal (F2030) at typing, for free. EVERY OTHER VALUE-
-  PRODUCING SHAPE mints and emits in ONE call too, the same
-  `verb(sh, …)`/`verb_at(e, …)` split as `call`/`call_at` — a fixed
-  shape (or an explicit `TypeId`) beside a node's own answer type:
-  `bin`/`bin_at`, `un`/`un_at`, `pack` (a `TypeId` always, no site
-  needs the node's), `call_decl`/`call_decl_at` (a declared fn's own
-  symbol — never a runtime row, that is `call`), `call_ptr_at` (a
-  call THROUGH a register holding code), and the literal twins
-  `const_int_at`/`const_bool_at`/`const_str_at` beside the fixed-shape
-  three — a source LITERAL's own node may carry a NAMED seat's type
-  (a literal fills a named seat directly), never the raw scalar the
-  fixed forms mint at, so a literal's defining register needs the
-  node-tied verb. A raw `let dst = cx.mint_shape(sh); cx.emit(Ins.…
-  (dst, …))` outside `emit.av` is I60's refusal; a shape with only
-  ONE call site (`FnAddr`, `ConstFloat`, a bare uninitialized
-  `Alloca`) has no covering verb and stays a two-statement pair, and
-  a site whose one register answers several branches — a mint shared
-  across match arms, a mint at neither a fixed shape nor a node's own
-  type — is licensed at the site. Two
+  arity refusal (F2030) at typing, for free. Two
   engines read one instruction stream by construction; I33 ratchets
-  the raw brackets, I39 the free verbs, I58 the raw runtime-call
-  string, I60 the raw mint-then-emit split, and the vocabulary grows
-  with the next shared shape.
+  the raw brackets, I39 the free verbs, I56 the raw runtime-call
+  string, and the vocabulary grows with the next shared shape.
 - A DERIVE'S FILE IS TYPED WHILE THE ANNOTATED FILE IS STILL
   REGISTERING, so it must name nothing that file declares. Running
   `@derive(X)` over a declaration in file A types the file that
@@ -1397,9 +1350,9 @@ engine's spec, written by dogfooding.
   is shown through `join`, an index or `length`.
 
 - The CLI: each subcommand is ONE file in
-  `packages/cli/src/commands/`, exporting `command <name> { … }` —
-  an `@std/cli` component instance, a declaration imported by name —
-  and `cli/src/main.av` only composes them in `cli avra { … }` — and hands a HAND-OFF's words (the stage word, then the
+  `packages/cli/src/commands/`, exporting
+  `<name>_command() -> Subcommand`; `cli/src/main.av` only composes
+  the list — and hands a HAND-OFF's words (the stage word, then the
   link plans) to `cli/src/stage.av` before the app reads them: the
   suite's light phase is a re-exec, never a command, so no name
   reaches it. A new command is a new file plus one line. A command
@@ -1578,16 +1531,6 @@ Syntax the grammar lacks:
   to a match — the block goes in the parentheses), and `(f(a)) { … }`
   widens `f(a)` (a paren group mints no node) where `f(a)() { … }`
   applies the answer.
-- A SEAT DEFAULT (`fn f(a: int, n: int = 1)`) lands on a `fn`, `mut
-  fn` and `static fn` seat and NOWHERE ELSE: `extern fn g(a: int = 1)`
-  and a trait's `fn m(a: int = 1)` are F0100 at the `=` ("expected
-  `)`" / "expected `}`"), a lambda's `(a: int = 1) -> a` is "expected
-  `)` to close the group", and none of them says a default is what
-  it refused. A NAMED argument skips any defaulted seat (`f(1, c:
-  9)`), and a default reads no param beside it — `b: int =
-  a` is F3000 "`a` is not defined". A fn VALUE of a defaulted fn
-  wears every seat, so `let f = add` then `f(1)` is the ordinary
-  arity refusal — its seats carry no names either (F2105).
 - A GENERIC FN AS A VALUE: the PINNED spelling (`let f: fn(int) -> int
   = ident<int>`) is F0100 "expected BREAK while parsing `stmt`" — a
   pinned call is a CALL, so it wants arguments. The BARE spelling
@@ -1801,6 +1744,12 @@ Methods the runtime lacks (F2030 "`.reverse(…)` calls a method, and
   answering `1 0 0`. Worth stating because the sentence above sends a
   reader at a defensive two-arm match for a shape that needs none —
   which is the trap-fear the probe discipline exists to shrink.
+- A struct-literal FIELD seat does not plant a want on its value
+  (the value is walked before the field's want exists): a
+  comprehension there types on its own, so `Pins { slots: [b ??
+  args[j] for j, b in xs] }` under `slots: List<TypeId?>` is F2010
+  "field `slots` is `List<TypeId?>`, this is `List<TypeId>`" — a
+  typed let plants it.
 
 Runtime facts, ours to ratify:
 - `Bytes` IS NOT A LIST AND `bytes()` HAS TWO ANSWERS. `b[0]` is
