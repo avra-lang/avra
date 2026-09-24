@@ -757,6 +757,7 @@ impl Decls {
         if e != null { return self.flatten_enum(d, e!) }
         let r? = sig.record_sig() else { return }
         self.flatten(d, r.types)
+        self.types.mark_settled(self.record_type(d))
     }
 
     /// AN ENUM WHOSE VARIANTS CARRY NOTHING IS ITS TAG — a word, as C
@@ -767,6 +768,12 @@ impl Decls {
     fn flatten_enum(d: DeclId, e: EnumSig) {
         if !self.tparams(d).is_empty() { return }
         let ty = self.types.intern(Type.Enum(d, self.decl(d).name))
+        self.laid_out(d, ty, e)
+        self.types.mark_settled(ty)
+    }
+
+    /// An enum's layout: its tag alone, its tag and one word, or its box.
+    fn laid_out(d: DeclId, ty: TypeId, e: EnumSig) {
         if e.payloads.all(it.is_empty()) { return self.types.mark_flat(ty, [self.types.type(int)]) }
         if e.payloads.length > max_valued_variants { return }
         let words = [self.variant_word(d, ps) for ps in e.payloads]
@@ -786,13 +793,15 @@ impl Decls {
     /// A payload's word, asked of its own declaration first so the
     /// answer never depends on which was declared first: 0 an int or
     /// a word enum, 1 a pointer that is counted, absent for anything
-    /// else — a float, a bool, a raw pointer, a pair, a value record,
-    /// and an enum that carries anything.
+    /// else — a float, a bool, a raw pointer, a pair, a flat record, and
+    /// an enum that carries anything.
     fn payload_word(d: DeclId, t: TypeId) -> int? {
         match self.types.shape_of(t) {
             .Struct(r, _) -> { let _ = self.sig(r) },
             rest -> nothing_asked(),
         }
+        // a FLAT record is a word a `mut` seat may still box — out
+        if self.types.shape_of(t) is .Struct && self.types.is_flat(t) { return null }
         let m = self.types.machine_type(t)
         match self.types.shape_of(m) {
             .Int -> 0,

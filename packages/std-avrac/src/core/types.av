@@ -151,7 +151,7 @@ export enum TypeLit {
 /// the sealed answer is STICKY. `stands_for` is kept BESIDE the
 /// fields, not read out of them: sealing empties the fields and a
 /// name must outlive that.
-export type RepRow = { fields: List<TypeId>, sealed: bool, stands_for: TypeId? = null, boxed_flat: bool = false, valued: bool = false, counted: int = 0 }
+export type RepRow = { fields: List<TypeId>, sealed: bool, stands_for: TypeId? = null, boxed_flat: bool = false, valued: bool = false, counted: int = 0, settled: bool = false }
 
 /// The interner: shapes in, ids out — assigned once, compared as
 /// ints forever. The index map is keyed by each shape's CANONICAL
@@ -229,6 +229,7 @@ impl TypeRegistry {
         self.reps.push(blank)
         let id = TypeId { index: self.shapes.get().length - 1 }
         self.ids.put(key, id)
+        self.judge_result(id, t)
         // Interface loading may ask by spelling before later named types are
         // interned. Keep the lazy index current once it has been built.
         if self.indexed.get() {
@@ -323,6 +324,42 @@ impl TypeRegistry {
         match self.shape_of(m) {
             .Opt(inner) -> self.reps.get()[self.machine_type(inner).index].counted,
             rest -> self.reps.get()[m.index].counted,
+        }
+    }
+
+    /// A declaration's LAYOUT IS FINAL: what it was marked — word, value,
+    /// box — no later mark moves.
+    fn mark_settled(id: TypeId) {
+        self.reps.set_at(id.index, self.reps.get()[id.index] with { settled: true })
+    }
+
+    /// A RESULT is a value enum when each side is ONE WORD by a layout
+    /// that can no longer move: judged once, where the type is first
+    /// interned, so every body that names it agrees. Ok is tag 0, Err 1.
+    fn judge_result(id: TypeId, t: Type) {
+        match t {
+            .Res(ok, err) -> {
+                let o? = self.side_word(ok) else { return }
+                let e? = self.side_word(err) else { return }
+                self.mark_valued(id, o + 2 * e)
+            },
+            rest -> nothing_judged(),
+        }
+    }
+
+    /// A Result side's word: 0 an int or a word enum, 1 a counted
+    /// pointer, absent when it is not one word or its declaration has
+    /// not settled what it is — a flat record stays out, since a `mut`
+    /// seat may still box it.
+    fn side_word(t: TypeId) -> int? {
+        match self.shape_of(t) {
+            .Int -> 0,
+            .Enum(_, _) -> if !self.reps.get()[t.index].settled || self.is_valued(t) { null } else if self.is_flat(t) { 0 } else { 1 },
+            .Struct(_, _) -> if self.reps.get()[t.index].settled && !self.is_flat(t) { 1 } else { null },
+            .Res(_, _) -> if self.is_valued(t) { null } else { 1 },
+            .Opt(inner) -> if self.valued_carrier(inner) || !self.opt_rides_pointer(inner) { null } else { 1 },
+            .Str or .Bytes or .List(_) or .Map(_, _) or .Cell(_) or .Task(_) or .Tasks or .Dyn(_, _) or .Fn(_, _, _) or .App(_, _, _) -> 1,
+            .Float or .Bool or .Ptr or .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> null,
         }
     }
 
@@ -439,6 +476,9 @@ impl TypeRegistry {
     /// ALIASING), which the adversarial suite pins as a PARITY.
     fn unflatten(id: TypeId) {
         if self.stands_for(id) != null { return }
+        // an enum has no path a `mut` seat writes through, so it keeps
+        // the layout its declaration made
+        if self.shape_of(id) is .Enum { return }
         self.reps.set_at(id.index, RepRow { fields: [], sealed: true, boxed_flat: self.reps.get()[id.index].boxed_flat || self.is_flat(id) })
     }
 
@@ -826,3 +866,5 @@ export fn no_marks(n: int) -> List<SeatMark> {
 
 /// A shape with no seats to seal.
 fn nothing_sealed() {}
+
+fn nothing_judged() {}

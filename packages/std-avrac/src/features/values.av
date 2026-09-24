@@ -531,6 +531,19 @@ impl LowerCx {
         self.tagged_value(self.view.types.shape_of(into), 1, [r])
     }
 
+    /// A FAILURE LEAVING under the enclosing fn's own Result: the value
+    /// itself when both Results are laid out alike — a box moves by its
+    /// pointer, a value's Err tag and word mean the same — else its
+    /// error wrapped again in the fn's layout.
+    mut fn propagated(r: Reg) -> Reg {
+        let ret? = self.enclosing_ret() else { return r }
+        let into = self.concrete(ret)
+        let from = self.out.type_of_reg(r)
+        if self.valued(from) == self.valued(into) { return r }
+        let sides? = self.view.types.res_parts(from) else { return r }
+        self.failed(into, self.payload_of(r, sides.err))
+    }
+
     /// Is the result an ANSWER — its tag read against Ok's, as an i1.
     mut fn okness_of(v: Reg) -> Reg {
         self.bin(Type.Bool, BinOp.Eq, self.tag_of(v), self.const_int(0))

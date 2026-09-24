@@ -83,13 +83,14 @@ fn propagate_reg(mut cx: LowerCx, e: ExprId, v: ExprId) -> Reg {
 }
 
 /// `v?` on a RESULT: one region on OKNESS. The ok arm unwraps the
-/// payload; the failure arm exits with THE SUBJECT'S OWN BOX — an
-/// `.Err` of `Result<_, E>` is a valid `.Err` of every `Result<_,
-/// E>`, so propagation moves the pointer and repacks nothing.
+/// payload; the failure arm exits with the subject itself wherever the
+/// fn's Result is laid out alike (`propagated`) — an `.Err` of
+/// `Result<_, E>` is then a valid `.Err` of every such `Result<_, E>`.
 fn propagate_res_reg(mut cx: LowerCx, e: ExprId, r: Reg) -> Reg {
     cx.region(cx.okness_of(r), e) { cx -> cx.payload_of(r, cx.type_at(e)) } else { cx ->
+        let leaving = cx.propagated(r)
         cx.failing()
-        cx.emit(Ins.FnExit(r))
+        cx.emit(Ins.FnExit(leaving))
         cx.hollow_of(cx.type_at(e))
     }
 }

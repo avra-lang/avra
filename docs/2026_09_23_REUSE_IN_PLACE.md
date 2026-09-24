@@ -597,3 +597,31 @@ declarations, and a `Result` is interned wherever it is spelled, so
 marking it at intern would judge a record before it is signed — two
 bodies could disagree on the calling convention. It needs the sides'
 declarations asked first, at a door every spelling passes.
+
+## §21 As built — R11b, a Result is a value enum
+
+**D32. A `Result<T, E>` of two one-word sides rides registers**, Ok tag
+0, Err tag 1. It is judged ONCE, where the type is first interned
+(`TypeRegistry.judge_result`), from layouts that can no longer move: a
+side's declaration must have SETTLED (`mark_settled`, made at every
+record's and enum's declaration), a flat record stays out (a `mut` seat
+may still box it), and an enum is never sealed at all — it has no path a
+`mut` seat writes through. `applied` asks a spelled Result's record
+sides first, so `Result<int, NetError>` is judged with `NetError` known.
+
+**D33. A failure leaves in the fn's own layout** (`propagated`): `?` and
+a selective `catch` pass the subject on as it stands when both Results
+are laid alike — a box by its pointer, a value's Err tag and word — and
+wrap its error again when one is a value and the other a box.
+
+Pinned by features/results/tests/value_results (both repack directions,
+a selective catch, list/field/map/nullable/Cell seats; eval == native
+under AVRA_RC_GUARD, 0 of 46 boxes live at exit). A static list of
+value Results lays each as its tagged box; only fields and payloads
+split into tag and word (`fields_of`).
+
+**Numbers.** Server under ab -k: 13 -> 10 boxes a request (6 under a
+load that sends no `Connection` field); @std/net's `write`/`try_write`
+no longer box. `try_read` answers `Result<Read, NetError>` and `Read`
+is itself two words, so it stays boxed. `check packages/cli` -0.4%
+instructions; the compiler binary +3.4% (8.29 -> 8.57 MB).
