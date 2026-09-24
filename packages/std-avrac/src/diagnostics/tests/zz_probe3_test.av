@@ -1,0 +1,30 @@
+use @std.errors.{Error, ErrorInfo, info}
+
+type ZzDeep = { n: int, next: dyn Error? }
+
+impl Error for ZzDeep {
+    fn describe() -> ErrorInfo { info("deep", "level ${self.n}") }
+    fn cause() -> dyn Error? { self.next }
+}
+
+fn zz_mk(n: int) -> ZzDeep {
+    if n <= 0 {
+        ZzDeep { n: 0, next: null }
+    } else {
+        ZzDeep { n: n, next: zz_mk(n - 1) }
+    }
+}
+
+spec "probe struct-field widen" {
+    given "a struct field typed dyn Error? filled by a concrete Error value" {
+        then "widens" {
+            let d = zz_mk(3)
+            d.next != null && d.next!.describe().message == "level 2"
+        }
+    }
+    given "a struct field typed dyn Error? filled by null" {
+        then "widens" {
+            zz_mk(0).next == null
+        }
+    }
+}

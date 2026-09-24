@@ -1,0 +1,67 @@
+use @std.errors.{Loc, Frame, Error, ErrorInfo, info}
+use @std.avrac.diagnostics.{Diag, DiagCode, error_at, render, SourceFile, new_source_file}
+
+fn zz_registry() -> List<DiagCode> {
+    []
+}
+
+fn zz_source() -> SourceFile {
+    new_source_file("<source>", "let = 3\nlet y = 4\n")
+}
+
+type Deep = { n: int, next: dyn Error? }
+
+impl Error for Deep {
+    fn describe() -> ErrorInfo { info("deep", "level ${self.n}") }
+    fn cause() -> dyn Error? { self.next }
+}
+
+fn mk(n: int) -> Deep {
+    if n <= 0 {
+        Deep { n: 0, next: null }
+    } else {
+        Deep { n: n, next: mk(n - 1) }
+    }
+}
+
+enum SelfRef { S }
+
+impl Error for SelfRef {
+    fn describe() -> ErrorInfo { info("selfref", "loop") }
+    fn cause() -> dyn Error? { self }
+}
+
+spec "probe cause chain depth" {
+    given "a chain of exactly 16 distinct causes (d.cause is hop 1, chain runs to hop 16)" {
+        then "all 16 render" {
+            let d = error_at("x", null, "top") with { cause: mk(15) }
+            let out = render(d, zz_registry(), zz_source())
+            let n = out.split("caused by:").length - 1
+            n == 16
+        }
+    }
+    given "a chain of exactly 17 distinct causes, one past the cap" {
+        then "exactly 16 render, never 17" {
+            let d = error_at("x", null, "top") with { cause: mk(16) }
+            let out = render(d, zz_registry(), zz_source())
+            let n = out.split("caused by:").length - 1
+            n == 16
+        }
+    }
+    given "a chain of 20 distinct causes, deeper than the cap" {
+        then "exactly 16 render, never 17+" {
+            let d = error_at("x", null, "top") with { cause: mk(19) }
+            let out = render(d, zz_registry(), zz_source())
+            let n = out.split("caused by:").length - 1
+            n == 16
+        }
+    }
+    given "a self-referencing cause" {
+        then "exactly 16 lines, all identical" {
+            let d = error_at("x", null, "top") with { cause: SelfRef.S }
+            let out = render(d, zz_registry(), zz_source())
+            let n = out.split("caused by: loop").length - 1
+            n == 16
+        }
+    }
+}
