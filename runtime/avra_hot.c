@@ -29,6 +29,17 @@ void avra_rc_release(void* p) {
     avra_release_dead(p, h->kind);
 }
 
+// A value enum's word counted only when bit `tag` of `counted` says
+// that variant carries a pointer — an int payload is never a header,
+// and the absent tag (-1) carries nothing.
+void avra_rc_retain_tagged(int64_t word, int64_t tag, int64_t counted) {
+    if (tag >= 0 && ((counted >> tag) & 1)) avra_rc_retain((void*)(uintptr_t)word);
+}
+
+void avra_rc_release_tagged(int64_t word, int64_t tag, int64_t counted) {
+    if (tag >= 0 && ((counted >> tag) & 1)) avra_rc_release((void*)(uintptr_t)word);
+}
+
 int64_t avra_array_get(void* arr, int64_t i) {
     CENSUS(g_list_gets++);
     if (__builtin_expect(avra_rc_guard_on, 0)) return avra_get_guarded(arr, i);

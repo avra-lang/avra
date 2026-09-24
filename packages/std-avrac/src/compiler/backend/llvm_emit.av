@@ -1,7 +1,7 @@
 //! The instruction emitter: `impl Emit`, one arm per IR instruction.
 //! The module/declaration/entry machinery lives in llvm.av.
 use core.{Ins, Reg, BinOp, UnOp, TypeId, RtKind, RtSig}
-use features.{nothing}
+use features.{nothing, absent_tag}
 
 impl Emit {
     /// A register's LLVM type.
@@ -46,7 +46,7 @@ impl Emit {
             .CallRtVoid(callee, args) -> self.void_rt_call(callee, args),
             .CallRt(dst, callee, args) -> self.define(self.call_rt_value(dst, callee, args)),
             .Pack(dst, elems) -> self.define(self.pack_value(dst, elems)),
-            .Extract(_, src, at) -> self.define(self.extract_value(src, at)),
+            .Extract(dst, src, at) -> self.define(avra_llvm_cast_to_type(self.b, self.extract_value(src, at), self.reg_type(dst))),
             .Call(_, callee, args) -> self.define(self.call(mangled(callee), [self.vals[a.index] for a in args])),
             .FnAddr(_, sym) -> self.define(avra_llvm_cast_to_type(self.b, avra_llvm_get_named_function(self.m, mangled(sym)), avra_llvm_int64_type(self.lc))),
             .StaticAddr(_, sym) -> self.define(avra_llvm_global_payload(self.m, mangled(sym))),
@@ -101,8 +101,11 @@ impl Emit {
         if self.flat_value(dst) { return self.vals[elems[0].index] }
         mut agg = avra_llvm_get_undef(self.reg_type(dst))
         // LICENSED I4: the running aggregate, not a scan
+        // a value enum's word is an i64 whichever payload it carries
+        let valued = self.types.valued_carrier(self.tys[dst.index])
         for j, r in elems {
-            agg = avra_llvm_build_insert_value(self.b, agg, self.vals[r.index], j, "pack")
+            let part = if valued { avra_llvm_cast_to_type(self.b, self.vals[r.index], avra_llvm_int64_type(self.lc)) } else { self.vals[r.index] }
+            agg = avra_llvm_build_insert_value(self.b, agg, part, j, "pack")
         }
         agg
     }
@@ -260,8 +263,36 @@ impl Emit {
     }
 
     fn void_rt_call(callee: string, args: List<Reg>) {
+        if self.settled_valued(callee, args) { return }
         let _ = self.call(callee, self.rt_args(callee, args))
         self.normalized_cells(callee, args)
+    }
+
+    /// A VALUE ENUM'S CELL is its tag and word, never one pointer: its
+    /// release counts the word down by tag, and both a release and a
+    /// forget leave the cell holding the absent tag. Whether the row
+    /// did this, answered for the cell rows alone.
+    fn settled_valued(callee: string, args: List<Reg>) -> bool {
+        let sig? = self.callee_sig(callee) else { return false }
+        let slot? = args.first() else { return false }
+        if !self.types.valued_carrier(self.tys[slot.index]) { return false }
+        match sig.host {
+            .CellRelease -> {
+                let held = avra_llvm_build_load(self.b, self.reg_type(slot), self.vals[slot.index], "held")
+                self.counted_by_tag("avra_rc_release_tagged", held, self.tys[slot.index])
+            },
+            .CellForget -> nothing(),
+            rest -> { return false },
+        }
+        let _ = avra_llvm_build_store(self.b, self.absent_valued(slot), self.vals[slot.index])
+        true
+    }
+
+    /// The absent tag and no word, as a cell of `slot`'s type holds them.
+    fn absent_valued(slot: Reg) -> ptr {
+        let i64 = avra_llvm_int64_type(self.lc)
+        let tagged = avra_llvm_build_insert_value(self.b, avra_llvm_get_undef(self.reg_type(slot)), avra_llvm_const_int(i64, absent_tag, 1), 0, "absent")
+        avra_llvm_build_insert_value(self.b, tagged, avra_llvm_const_int(i64, 0, 0), 1, "absent")
     }
 
     /// A NARROW INOUT CELL IS NORMALISED AFTER THE CALL. An Avra cell
@@ -432,11 +463,27 @@ impl Emit {
     }
 
     fn released(r: Reg) {
+        if self.types.valued_carrier(self.tys[r.index]) { return self.tagged_count("avra_rc_release_tagged", r) }
         let _ = self.call("avra_rc_release", [self.counted(self.vals[r.index], self.tys[r.index])])
     }
 
     fn retained(r: Reg) {
+        if self.types.valued_carrier(self.tys[r.index]) { return self.tagged_count("avra_rc_retain_tagged", r) }
         let _ = self.call("avra_rc_retain", [self.counted(self.vals[r.index], self.tys[r.index])])
+    }
+
+    /// A value enum's count: its word, counted by the row only when its
+    /// tag's variant carries a pointer.
+    fn tagged_count(row: string, r: Reg) {
+        self.counted_by_tag(row, self.vals[r.index], self.tys[r.index])
+    }
+
+    /// A value enum's word counted by `row` when its tag's variant
+    /// carries a pointer.
+    fn counted_by_tag(row: string, v: ptr, ty: TypeId) {
+        let tag = avra_llvm_build_extract_value(self.b, v, 0, "tag")
+        let word = avra_llvm_build_extract_value(self.b, v, 1, "word")
+        let _ = self.call(row, [word, tag, avra_llvm_const_int(avra_llvm_int64_type(self.lc), self.types.counted_mask(ty), 0)])
     }
 
     /// The pointer a count lands on: the value itself, or — for a
@@ -558,4 +605,3 @@ impl Emit {
         self.define(phi)
     }
 }
-

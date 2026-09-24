@@ -1381,6 +1381,31 @@ void* avra_cell_thawed(void* slot) {
     return avra_cell_unique(slot);
 }
 
+// A value enum's TAGGED BOX: its tag, then its word — owned, and
+// counted, when bit `tag` of `counted` says the variant carries a
+// pointer. The shape a boxed enum has, so every reader reads it alike.
+// A nullable's absent tag (-1) is the null pointer.
+void* avra_enum_boxed(int64_t tag, int64_t word, int64_t counted) {
+    if (tag < 0) return NULL;
+    void* box = array_made(2, __builtin_return_address(0));
+    avra_array_push(box, tag);
+    if ((counted >> tag) & 1) avra_array_push_owned(box, (void*)(uintptr_t)word);
+    else avra_array_push(box, word);
+    return box;
+}
+
+// A tagged box's tag: -1, a nullable's absence, for the null pointer.
+int64_t avra_enum_tag(void* box) {
+    return box ? ((AvraArray*)box)->data[0] : -1;
+}
+
+// A tagged box's word, borrowed from it: 0 for a variant laid out with
+// no payload slot, and for the null pointer.
+int64_t avra_enum_word(void* box) {
+    AvraArray* a = (AvraArray*)box;
+    return a && a->len > 1 ? a->data[1] : 0;
+}
+
 // The same one level down: the box in a slot, made unique in place.
 void* avra_slot_unique(void* arr, int64_t i) {
     void* p = (void*)(uintptr_t)avra_array_get(arr, i);

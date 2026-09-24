@@ -1077,9 +1077,12 @@ impl Machine {
             .ArrayPush -> self.array_push_val(vals),
             .ArrayGet -> self.array_get_val(vals),
             .ArrayLen -> self.array_len_val(vals),
-            .CellRelease -> Val.I(0),
+            .CellRelease or .CellForget -> Val.I(0),
             .CellUnique -> self.cell_unique_val(vals),
             .CellThawed -> self.cell_thawed_val(vals),
+            .EnumBoxed -> if self.whole(vals[0]) < 0 { Val.N } else { self.fresh_array([vals[0], vals[1]]) },
+            .EnumTag -> self.enum_part_val(vals, 0, -1),
+            .EnumWord -> self.enum_part_val(vals, 1, 0),
             .SlotUnique -> self.slot_unique_val(vals),
             .SlotSet -> self.slot_set_val(vals),
             .MapNew -> self.map_new_val(),
@@ -1590,6 +1593,16 @@ impl Machine {
         self.maps.set(id, written)
         Val.I(0)
 
+    }
+
+    /// A tagged box's tag (slot 0) or word (slot 1): `none` for the null
+    /// pointer, a nullable's absence, and for a slot a payload-free
+    /// variant never laid.
+    fn enum_part_val(vals: List<Val>, at: int, none: int) -> Val {
+        if vals[0] is .N { return Val.I(none) }
+        let id? = array_id(vals[0]) else { return self.defect_val("a value enum read out of a non-array") }
+        if self.arrays[id].length <= at { return Val.I(none) }
+        self.arrays[id][at]
     }
 
     /// A static's box, noted as the binary's own.

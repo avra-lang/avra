@@ -41,6 +41,8 @@ impl StaticBuild {
         // the NICHE first: a flat record that RIDES a pointer is its
         // own absence, and only a flat WORD needs the one-slot box
         if v is .Gone { return Slot.Absent }
+        // a value enum's absence crosses a slot as the null pointer
+        if self.decls.types.is_valued(self.decls.types.machine_type(inner)) { return if v is .Absent { Slot.Null } else { self.slot_of(v, heap, inner) } }
         if self.decls.types.rides_pointer(inner) { return if v is .Absent { Slot.Null } else { self.slot_of(v, heap, inner) } }
         if self.decls.types.is_flat(inner) { return if v is .Absent { Slot.Null } else { self.array_slot(heap.slots(v), heap, [inner]) } }
         if v is .Absent { return Slot.Absent }
@@ -80,7 +82,7 @@ impl StaticBuild {
 
     /// The slot types a field takes in a box: a value record's fields, or itself.
     fn slot_types(ty: TypeId) -> List<TypeId> {
-        if !self.decls.types.travels_wide(ty) { return [ty] }
+        if !self.decls.types.lays_inline(ty) { return [ty] }
         self.decls.types.flat_fields(self.decls.types.machine_type(ty))
     }
 
