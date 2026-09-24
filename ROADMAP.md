@@ -2762,6 +2762,39 @@ lost message and a duplicated backlog entry.
   stopping it — write `cd X || exit 1` before it. Changing a shared
   layout is an ANNOUNCEMENT, not a cleanup.
 
+## THE C LEVEL (opened 2026-09-23) — @std/http per request at a hand-written C server's cost
+
+Epic avra-8sb5.34; design and numbers: docs/2026_09_23_REUSE_IN_PLACE.md.
+On the Linux Sprite the kernel floor (tools/bench/floor — no parsing) is
+0.88 µs CPU per request pipelined; a C server doing @std/http's work is
+~1.0 µs (estimate); Avra is ~6 µs. The gap is PER-REQUEST cost: tasks,
+fibers and cores raise throughput and never lower it.
+
+Landed: R1 reuse in place (a dying value lends its box), R2 records as
+one block (box and cells in one allocation).
+
+The ladder:
+1. **Value records** (R4, avra-8sb5.34.6): records of scalars — `Span`,
+   `Field`, `Line` — live in registers, with no box and no count. The
+   biggest single lever.
+   **Inline embedding** (R4b, avra-8sb5.34.10): R4 as first built makes a
+   record of ints a value, but every one-word seat — a record field, an
+   enum payload, a list cell — re-boxes it, so http's `Span` inside
+   `Field` inside `FieldLine` inside `List<Field>` stayed 40 boxes a
+   request. Embedding lays a value record field as N consecutive slots
+   of the box holding it, as C lays out a struct member: field offsets
+   become sums of widths, and `with`, payload reads, statics and both
+   engines follow. Nested flatten (a `Field` of two `Span`s is four ints)
+   comes with it. After R6; every program benefits.
+2. **Count elision** (R5, avra-8sb5.34.7): no retain or release on a
+   value that never escapes the fn that made it. Consuming params (R3,
+   avra-8sb5.34.4) fold in here.
+3. **Zero-alloc std-http** (R6, avra-8sb5.34.8): header spans in one
+   flat int buffer, once-tables as static addresses, the response
+   written straight into the connection's output buffer.
+4. **Multi-core** (R7, avra-8sb5.34.9): one share-nothing server per
+   core on SO_REUSEPORT — throughput times cores, on top.
+
 ## THE HTTP CAMPAIGN (opened 2026-09-06) — `@std.http`, and the foundations it forces
 
 Lane `lane/http` (worktree `../avra-lane-http`), taken over 2026-09-06 by
@@ -3596,7 +3629,11 @@ Collected from FEEDBACK.md. Sorted by how often each appears across phases. See 
 
 - [ ] `break` AND `continue` (asked by the owner). WANTING SITES: every read-until-EOF loop over @std/net's parking verbs (packages/std-net/src/tests/parked, parked_many, parked_close) spells a flag — `mut open = true`, `while open`, `null -> { open = false }` — where the thought is `null -> break`.
 - [ ] A BOUND METHOD AS A VALUE (filed 2026-09-09, the sugar 1 sweep).
+- [ ] NAMED ARGUMENTS, THE REST OF SUGAR 5 (filed 2026-09-22, the named-arguments slice). Landed: `f(1, n: 2)` on declared fns, methods and statics. Owed: the idiom rule the design promised — refuse a positional call where two adjacent seats share a type — and the block form (`other: { … }` retiring sugar 1's bare `else`), whose design section is still a draft outside main.
+- [ ] A DEFAULT ON EVERY SEAT KIND, AND IN A GENERIC FN (filed 2026-09-22, the fn-defaults slice). Plain `fn`/`mut fn`/`static fn` seats landed; an extern's, a trait member's and a lambda's seat do not parse one, and a generic fn's or a generic type's method's default is F2104 — a default is one body, lowered once.
 - [ ] A REGISTRY'S REMAINDER, SPELLED BY THE COMPILER (filed 2026-09-22, the alias-gaps lane; asked by the owner — "do we seriously not have better syntax for this?!"). A two-answer projection over `Expr` spells all forty variants by hand (`place_step`, core/store.av: seven lines of `or .X(_, _)` to answer `null`), because `_ ->` over a registry forgets the next variant and `rest ->` is licensed for two shapes only. The ask: a remainder arm the compiler EXPANDS and PINS — it records the variants it covered and refuses (F2040's voice) when the enum grows, so the silence is honest without the ceremony. The lane dodged it by splitting one registry into one-arm projections (`forced`, `coalesced`, `chained`); that is not always available.
+- [ ] AN IDENTITY TYPE, DECLARED ONCE (filed 2026-09-23, the core-cells lane). Making TypeRegistry, NodeStore, Decls and Workspace one identity each meant wrapping 40+ fields in `Cell` one by one, pinning an empty seed per field (`list_cell()`, since `Cell.new([])` is F2006), and rewriting every read as `x.get()[i]`, every write as `set_at`/`put`. The same change appeared twice before (Decls, Workspace/Hold/Records). WANTING SITES: core/types.av, core/store.av, core/arena.av, features/decls.av, compiler/workspace.av. The ask: a declared identity type (every field shared by construction, indexed and written in place with its ordinary vocabulary) — or, smaller, `c[i]` and `c.length` reading straight through a `Cell<List<T>>`.
+- [ ] `fail` WHERE A VALUE IS ABSENT — `s.parse_int() ?? fail "not a number"` (filed 2026-09-23, components S2). WANTING SITE: packages/std-time/src/tests/within/within.av's `number` spells a `let … else { fail … }` guard where the thought is one expression; `(x ?? fail "…")` is F0100 "expected `)` to close the group".
 - [ ] A BOUND ON A GENERIC TYPE'S OR AN IMPL'S PARAMETER — `type T<K: Tr, V> = { … }` (not parseable today).
 - [ ] A FIELD ANNOTATION — `@excluded` (or any mark) above a record's field.
 - [ ] A GENERIC NAMED TYPE (`type Box<T> = List<T>`): F2083 "`Box` is a generic type — a trait impl over a generic type is recorded, not landed".
@@ -3608,7 +3645,7 @@ Collected from FEEDBACK.md. Sorted by how often each appears across phases. See 
 - [ ] A NAME OVER AN ENUM OR A RECORD FORWARDING `match`/`is`/`with` — `match k: K { .A -> … }` refines the type.
 - [ ] A NAMED CONSTRUCTION AT A `const` SEAT: `seat(A(3))` is F2073 "the result is not a constant".
 - [ ] A PRE-COMMIT GATE RUNS THE CHEAP KEEPERS. The lane's own history and proof.
-- [ ] A PRELUDE, or QUALIFIED EXPRESSION PATHS. `grammar { … }` expands without `use`.
+- [ ] A PRELUDE, or QUALIFIED EXPRESSION PATHS. `grammar { … }` expands without `use`. SECOND WANTING SITE (2026-09-23, components S2): `avra expand` prints a template component's expansion as a COMMENT, because its names are the provider's (`@std/time`'s own `avra_fiber_within`) and the user's file cannot spell them — with qualified paths the printed expansion compiles, which is the design's P8 promise (docs/2026_09_23_COMPONENT_EXPANSION.md §7).
 - [ ] A PRIVATE TOP-LEVEL `const` IS MODULE-SCOPED. A private `fn` in a package reaches other files.
 - [ ] A PROJECTION PER VARIANT, generated. `fn_sig_of`, `record_sig_of`, etc. for every declared kind.
 - [ ] A REUSABLE `param` GRAMMAR RULE. Every param list spells `(p:T, mut q:U) -> ret` the same way.
