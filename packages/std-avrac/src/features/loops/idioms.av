@@ -35,17 +35,33 @@ export rule push_loop {
 /// never as editable structure. Changing the loop head alone and
 /// leaving `body`'s indexing untouched would not teach the idiom it
 /// names; it would just add an unused second binder.
+///
+/// A BARE-HOLE ROOT, structural GUARD: `${lit}.for_range()` reads the
+/// range head off the declaration (`Code.for_range`, features/
+/// code.av) — a quote pattern cannot hold the loop variable open AND
+/// match it again inside the desugared `cond`/`step`, which is what a
+/// literal `for ${j} in 0..${xs}.length { … }` pattern would need
+/// (avra-8sb5.25.45).
 @keeps("for j in 0..xs.length { log(j) }")
 export rule index_walk {
-    // LICENSED I19: the pattern's own text names the shape it detects
-    quote { for ${j} in 0..${xs}.length { ${..body} } } if indexes(body, xs, j) -> index_walk_found(xs, j),
+    quote { ${lit} } if index_walked(lit) -> index_walk_found(lit),
 }
 
-/// Whether `body` reads `${xs}[${j}]` anywhere.
-fn indexes(body: List<Code>, xs: Code, j: Code) -> bool {
-    body.any(it.text().contains(xs.text() + "[" + j.text() + "]"))
+/// Whether `lit` is `for NAME in 0..E.length { …E[NAME]… }`.
+fn index_walked(lit: Code) -> bool {
+    let r? = lit.for_range() else { return false }
+    if r.from.text() != "0" || r.to.prop_name() != "length" { return false }
+    let xs? = r.to.kids().first() else { return false }
+    indexes(r.body, xs, r.name)
 }
 
-fn index_walk_found(xs: Code, j: Code) -> Fix {
-    Fix.Say(warning("style.index_walk", xs.loc(), "`for ${j.text()} in 0..${xs.text()}.length` that then reads `${xs.text()}[${j.text()}]` — that walk is `for (${j.text()}, x) in ${xs.text()}.enumerate()`, which hands over both", "this loop", null))
+/// Whether `body` reads `${xs}[j]` anywhere, `j` the loop's own name.
+fn indexes(body: List<Code>, xs: Code, j: string) -> bool {
+    body.any(it.text().contains(xs.text() + "[" + j + "]"))
+}
+
+fn index_walk_found(lit: Code) -> Fix {
+    let r = lit.for_range()!
+    let xs = r.to.kids().first()!
+    Fix.Say(warning("style.index_walk", xs.loc(), "`for ${r.name} in 0..${xs.text()}.length` that then reads `${xs.text()}[${r.name}]` — that walk is `for (${r.name}, x) in ${xs.text()}.enumerate()`, which hands over both", "this loop", null))
 }
