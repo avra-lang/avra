@@ -248,6 +248,32 @@ spec "grammar/executor" {
             o.result == null && o.diagnostics.length == 1
         }
     }
+    given "REPRO scratch — DELETE before commit" {
+        then "one alt body" {
+            let g = parse_grammar("prog = ( s:stmt | BREAK )* EOF -> prog(s)\nstmt = w:\"cmp\" n:NAME b:body END -> mk(w, n, b)\nbody = \"{\" \"}\" -> eb()\n")
+            println("repro1 defects: ${g.diagnostics.length}")
+            for d in g.diagnostics { println("  defect: ${d.message}") }
+            let o = run_sx(g.built!, "cmp foo { }\n")
+            println("repro1 result: ${result_str(o)}")
+            println("repro1 diags: ${o.diagnostics.length}")
+            for d in o.diagnostics { println("  diag: ${d.message}") }
+            true
+        }
+        then "two alt body" {
+            let g = parse_grammar("prog = ( s:stmt | BREAK )* EOF -> prog(s)\nstmt = w:\"cmp\" n:NAME b:body END -> mk(w, n, b)\nbody = \"{\" \"}\" -> eb() | \"{\" x:NAME \"}\" -> nb(x)\n")
+            println("repro2 defects: ${g.diagnostics.length}")
+            for d in g.diagnostics { println("  defect: ${d.message}") }
+            let o = run_sx(g.built!, "cmp foo { }\n")
+            println("repro2 empty result: ${result_str(o)}")
+            println("repro2 empty diags: ${o.diagnostics.length}")
+            for d in o.diagnostics { println("  diag: ${d.message}") }
+            let o2 = run_sx(g.built!, "cmp foo { bar }\n")
+            println("repro2 named result: ${result_str(o2)}")
+            println("repro2 named diags: ${o2.diagnostics.length}")
+            for d in o2.diagnostics { println("  diag: ${d.message}") }
+            true
+        }
+    }
     given "the memo's edges — one table of rules by cursors" {
         then "an empty input: one cursor, the start rule answers at it — a star that never turned is ABSENT" {
             let g = g1([rule_def("e", [seq_to([cap("xs", named("NAME")) with { rep: Rep.Star }, item(named("BREAK")) with { rep: Rep.Opt }], Build.Call("mk", ["xs"]))])])
