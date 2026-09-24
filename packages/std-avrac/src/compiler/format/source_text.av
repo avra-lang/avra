@@ -257,6 +257,7 @@ impl SourceText {
             .ForEach(index, name, subject, stmts) -> [self.statement_block("for ${self.loop_binds(index?.of, name.of)} in ${self.expression(subject, loosest_tier, depth)}", stmts, self.stmt_end(s), self.stmt_flat(s), depth)],
             .StructDecl(name, tparams, fields) -> [self.struct_or_grammar_decl(s, exported, name.of, [t.of for t in tparams], fields, self.stmt_end(s), self.stmt_flat(s), depth)],
             .NamedType(name, tparams, of) -> [source_line(depth, "${exported}type ${source_name(name.of)}${self.named_type_params([t.of for t in tparams])} = ${spelled(of)}")],
+            .Alias(name, tparams, of) -> [source_line(depth, "${exported}alias ${source_name(name.of)}${self.named_type_params([t.of for t in tparams])} = ${spelled(of)}")],
             .EnumDecl(name, tparams, variants) -> [self.enum_decl(exported, name.of, [t.of for t in tparams], variants, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Spec(name, cases) -> [self.spec_decl(name, cases, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Defer(body, on_error) -> [source_line(depth, "${if on_error { "errdefer" } else { "defer" }} ${self.written_body(body, depth)}")],
@@ -1175,9 +1176,9 @@ fn binary_precedence(op: BinOp) -> int {
 }
 
 /// One `use` item: its name, or `name as alias`.
-fn import_item(name: string, alias: string) -> string {
-    if alias.is_empty() { return name }
-    "${name} as ${alias}"
+fn import_item(name: string, renamed: string) -> string {
+    if renamed.is_empty() { return name }
+    "${name} as ${renamed}"
 }
 
 /// A table column's width — its header's, widened by every row's

@@ -495,6 +495,13 @@ Swift / Kotlin / JS (C only today).
 - S5 piece 1 — a `Format` head mints its pattern's record; an instance
   body takes a `req ->` head; zero-hole patterns match whole (F2119) —
   landed.
-- S5 next: `Request<P>` in `@std/http` (piece 2), then `server`, `get`,
-  `post`, `group`, `use`; then typed hole codecs (piece 3).
+- S5 piece 2 — `Request<P>`, trait impls on scalars (`Respond`),
+  `get`/`post`/`put`/`patch`/`delete`/`group`, `server` and `layer` —
+  landed.
+- `alias Name<T> = <type>` — a shorthand, the same type (F2121);
+  `type` over a fn shape is opaque at seats like any name; `Handler`
+  in `@std/http` — landed.
+- S5 next: child lines placed by TYPE (`server web { auth  get … }`),
+  data components with a fn body (`layer auth { req, next -> … }`),
+  then typed hole codecs (piece 3).
 - S6: the expand stage and declaring blocks.

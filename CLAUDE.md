@@ -510,8 +510,11 @@ engine's spec, written by dogfooding.
   freed memory, and the next reader segfaults (the once cache, first
   draft).
 - A NAME IS OPAQUE AT A SEAT AND TRANSPARENT AT A READ. `type Name =
-  Shape` is ALWAYS a DISTINCT type — there is no alias form, and that
-  is the point (P9). A seat (a parameter, a field, an annotation, an
+  Shape` is ALWAYS a DISTINCT type, and that is the point (P9) — over
+  a fn shape as over any other. `alias Name<T> = Shape` is the OTHER
+  spelling, never a mode of `type`: the same type under a shorter
+  name, so it fills and is filled by its shape. `type` makes a new
+  type; `alias` names an existing one. A seat (a parameter, a field, an annotation, an
   argument, an operand) judges the NAME; a read (a property, a
   method, an index, a `for` head, an interpolation hole, a LITERAL
   PATTERN, printing) judges the SHAPE — `match id { 5 -> … }` over a

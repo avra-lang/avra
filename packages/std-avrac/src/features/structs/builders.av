@@ -1,5 +1,5 @@
 //! Parse-time lowering: captured tokens and expressions -> the
-//! StructDecl or NamedType statement and the StructLit node. Names
+//! StructDecl, NamedType or Alias statement and the StructLit node. Names
 //! and their types (or values) arrive as parallel capture lists and
 //! zip.
 use core.{Expr, Stmt, Nominal, Plain, Scoped}
@@ -19,6 +19,14 @@ fn build_type_decl(b: Builder) -> Result<LangNode, string> {
     if !nt.is_empty() { return b.make_stmt(Stmt.NamedType(Scoped(n.text), [Plain(t) for t in names], nt[0])) }
     let fields = b.fields_zipped(fs, ft, fds, marks_at(b.args, 6))?
     b.make_stmt(Stmt.StructDecl(Scoped(n.text), [Plain(t) for t in names], fields))
+}
+
+/// `alias Name<T> = <type>` — a shorthand for the shape it names.
+fn build_alias_decl(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let tp = b.tokens(1)?
+    let of = b.type_refs(2)?
+    b.make_stmt(Stmt.Alias(Scoped(n.text), [Plain(t.text) for t in tp], of[0]))
 }
 
 /// `T { a: x, b: y }` — every field written with its value: a punned

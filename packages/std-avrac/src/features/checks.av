@@ -81,8 +81,10 @@ impl TypeCx {
     /// asymmetry IS the law: a seat that permits writing (or promises
     /// settlement) accepts a callee that asks for less, and a seat
     /// that promised neither refuses one that asks for more. Nothing
-    /// else about a type widens.
+    /// else about a type widens, and a NAME over a fn shape is opaque
+    /// at a seat like any name.
     fn fn_fits(got: TypeId, want: TypeId) -> bool {
+        if self.view.types.stands_for(got) != null || self.view.types.stands_for(want) != null { return false }
         let seat: Arrow? = self.view.types.arrow_parts(want)
         let value: Arrow? = self.view.types.arrow_parts(got)
         if seat == null || value == null { return false }
@@ -734,12 +736,22 @@ impl TypeCx {
     /// where it is written. Every seat's refusal and the operand law
     /// pass a want through here; a want that is no name comes back
     /// untouched.
+    /// A value that is ANOTHER name crosses through its shape
+    /// (`A(b.of)`) when both stand over one, and hears no wrap when
+    /// they do not: neither stands over the other.
     fn named_fix(d: Diag, want: TypeId, at: ExprId) -> Diag {
-        if self.view.types.stands_for(want) == null { return d }
+        let of? = self.view.types.stands_for(want) else { return d }
         let name = self.view.types.name_of(want)
-        let shown = self.written_text(at)
-        if shown == null { return d with { help: "`${name}` is its own type — write `${name}(<value>)`" } }
-        let call = "${name}(${shown!})"
+        let from: TypeId? = self.view.types.stands_for(self.type_at(at))
+        // LICENSED I9: type identity — interned ids ARE the agreement
+        if from != null && from!.index != of.index { return d }
+        let shown? = self.written_text(at) else { return d with { help: "`${name}` is its own type — write `${name}(<value>)`" } }
+        let value = when {
+            from == null -> shown
+            postfix_ready(self.view.store.expr(at)) -> "${shown}.of"
+            _ -> "(${shown}).of"
+        }
+        let call = "${name}(${value})"
         let fix = Suggestion { confidence: Confidence.High, description: "write `${call}`", edits: [Edit { loc: l, replacement: call } for l in some_list(self.loc_of(at))] }
         d with { help: "`${name}` is its own type — write `${call}`", suggestions: [fix] }
     }
@@ -1252,4 +1264,12 @@ fn as_written(args: List<ExprId>, wants: List<TypeId>) -> Placed { Placed { args
 fn written_before(labels: List<string>, seats: List<string>, name: string, j: int) -> bool {
     let at = seats.index_of(name)
     labels.slice(0, j).contains(name) || at < labels.length && labels[at] == ""
+}
+
+/// Whether a postfix read lands on the whole of this form as written.
+fn postfix_ready(e: Expr) -> bool {
+    match e {
+        .Ident(_) or .Call(_, _, _) or .MethodCall(_, _, _) or .Prop(_, _) or .Index(_, _) -> true,
+        _ -> false,
+    }
 }

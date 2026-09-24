@@ -26,8 +26,9 @@ fn with_type(mut cx: TypeCx, e: ExprId, subject: ExprId, fields: List<string>, v
 
 fn lit_type(mut cx: TypeCx, e: ExprId, name: string, fields: List<string>, values: List<ExprId>) -> TypeId {
     cx.warn_use(e)
-    let target? = cx.bound_decl(e) else { return cx.error_type }
-    let ty = cx.view.types.intern(Type.Struct(target, name))
+    let bound? = cx.bound_decl(e) else { return cx.error_type }
+    let target? = cx.view.decls.named_by(bound) else { return fieldless_alias(cx, e, name, bound) }
+    let ty = cx.view.types.intern(Type.Struct(target, cx.view.decls.decl(target).name))
     let sig? = cx.fields_of(ty) else { return not_a_record(cx, e, name) }
     if !cx.tparams(target).is_empty() {
         return generic_lit(cx, e, name, fields, values, target, sig)
@@ -161,6 +162,12 @@ fn unpinned_by_fields(mut cx: TypeCx, e: ExprId, tparam: string) -> TypeId {
 /// A literal under a name that declares no fields — an enum's.
 fn not_a_record(mut cx: TypeCx, e: ExprId, name: string) -> TypeId {
     cx.spoken(refusal("type.struct_fields", cx.loc_of(e), "`${name}` is an enum, not a record — it has no fields to fill", "built here", "construct a variant instead — `${name}.<variant>`"))
+}
+
+/// A literal under an alias of a shape that declares no fields.
+fn fieldless_alias(mut cx: TypeCx, e: ExprId, name: string, d: DeclId) -> TypeId {
+    let of = cx.view.types.name_of(cx.view.decls.alias_of(d) ?? cx.error_type)
+    cx.spoken(refusal("type.struct_fields", cx.loc_of(e), "`${name}` names `${of}`, which has no fields to fill", "built here", "a literal `${name} { … }` builds the record an alias names"))
 }
 
 /// THE DEFAULT LAW, at the declaration: a field's default (walked

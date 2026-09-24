@@ -37,7 +37,7 @@
 use @std.net.{Listener, Conn, NetError, listen}
 use @std.time.{Duration, ms, secs, within}
 use frame.{Head, Chunker, Limits, framed, chunker, fed, status_of, limits}
-use http.{Request, Unrouted, Response, wire, status, read_size, as_sent}
+use http.{Request, Unrouted, Response, Handler, wire, status, read_size, as_sent}
 use route.{Route, compiled, dispatch}
 
 extern fn avra_cores_online() -> int
@@ -117,11 +117,11 @@ export component server {
 
 /// `layer logged` — a fn every request passes through on its way to
 /// the routes: it answers itself, or hands the request on to `next`.
-export component layer(wraps: fn(Request<Unrouted>, fn(Request<Unrouted>) -> Response) -> Response) {}
+export component layer(wraps: fn(Request<Unrouted>, Handler) -> Response) {}
 
 /// The way a request comes in: through each layer, the first
 /// outermost, to what `inner` answers.
-fn through(layers: List<layer>, inner: fn(Request<Unrouted>) -> Response) -> fn(Request<Unrouted>) -> Response {
+fn through(layers: List<layer>, inner: Handler) -> Handler {
     let outer? = layers.first() else { return inner }
     let next = through([l for j, l in layers if j > 0], inner)
     (q: Request<Unrouted>) -> outer.wraps(q, next)

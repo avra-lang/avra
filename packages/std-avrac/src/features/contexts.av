@@ -115,8 +115,9 @@ impl Decls {
     fn decl_type_of(mut voices: Voices, error_type: TypeId, read_at: Loc?, d: DeclId) -> TypeId {
         let x = self.decl(d)
         if x.kind is .Const { return self.declared_const_type(voices, error_type, d) }
-        let tname: string? = self.type_name(d)
-        if tname != null { return self.types.intern(Type.TypeName(d, tname!)) }
+        let shown = self.named_by(d) ?? d
+        let tname: string? = self.type_name(shown)
+        if tname != null { return self.types.intern(Type.TypeName(shown, tname!)) }
         if !self.tparams(d).is_empty() {
             voices.speak(self.not_a_value(d))
             return error_type
@@ -129,11 +130,7 @@ impl Decls {
         // A NAMED FN AS A VALUE CARRIES ITS SEATS' CONTRACT: the marks
         // its declaration wrote travel with the type, so a writing fn
         // cannot be stored where nothing may write.
-        // A NAMED FN AS A VALUE CARRIES ITS SEATS' CONTRACT: the marks
-        // its declaration wrote travel with the type, so a writing fn
-        // cannot be stored where nothing may write.
-        let held = sig
-        self.types.intern(Type.Fn(held.params, self.marks_of(d, held.params.length), held.ret))
+        self.types.intern(Type.Fn(sig.params, self.marks_of(d, sig.params.length), sig.ret))
     }
 
     /// `decl_type_of`'s read door for a rule: the same answer,
@@ -145,8 +142,9 @@ impl Decls {
     fn known_decl_type_of(d: DeclId) -> TypeId? {
         let x = self.decl(d)
         if x.kind is .Const { return self.type_of_const(x.file, x.stmt) }
-        let tname: string? = self.type_name(d)
-        if tname != null { return self.types.known(Type.TypeName(d, tname!)) }
+        let shown = self.named_by(d) ?? d
+        let tname: string? = self.type_name(shown)
+        if tname != null { return self.types.known(Type.TypeName(shown, tname!)) }
         if !self.tparams(d).is_empty() { return null }
         let sig? = self.sig(d)?.fn_sig() else { return null }
         self.types.known(Type.Fn(sig.params, self.marks_of(d, sig.params.length), sig.ret))
