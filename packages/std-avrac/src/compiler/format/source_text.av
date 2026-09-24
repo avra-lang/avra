@@ -315,6 +315,7 @@ impl SourceText {
     fn collect_kind_word(k: CollectKind) -> string {
         match k {
             .Rule -> "rule",
+            .Instance(c) -> "instance of ${c}",
             .UnknownKind(w) -> w,
         }
     }
@@ -653,11 +654,11 @@ impl SourceText {
             .Index(subject, index) -> grouped("${self.expression(subject, postfix_tier, depth)}[${self.expression(index, loosest_tier, depth)}]", postfix_tier, parent),
             .Prop(subject, name) -> grouped("${self.chain_subject(subject, depth)}.${source_name(name.of)}", postfix_tier, parent),
             .Body(word, parts, holes, _) -> grouped(self.body_text(word, parts, holes, depth), atom_tier, parent),
-            .Component(word, heads, block, _, _) -> grouped(self.instance(word, heads, block, depth), atom_tier, parent),
+            .Component(word, heads, block, _, _) -> grouped(self.instance_text(word, heads, block, depth), atom_tier, parent),
             .If(cond, yes, no) -> grouped(self.if_group(cond, yes, no, id, depth), atom_tier, parent),
             .When(conds, values, fallback) -> grouped(self.when_expr(conds, values, fallback, end_of(self.store.expr_span(id)), depth), atom_tier, parent),
             .Block(stmts, value) -> grouped(self.block_expr(stmts, value, id, depth), atom_tier, parent),
-            .Collect(body) -> grouped(self.instance("collect", [body], null, depth), atom_tier, parent),
+            .Collect(body) -> grouped(self.instance_text("collect", [body], null, depth), atom_tier, parent),
             .Call(callee, pins, args) -> grouped("${source_name(callee.of)}${self.pins(pins)}${self.call_tail(args, depth)}", atom_tier, parent),
             .Named(name, value) -> grouped("${source_name(name.of)}: ${self.expression(value, loosest_tier, depth)}", loosest_tier, parent),
             .StructLit(name, fields, values) -> grouped(self.struct_lit_text(id, name.of, fields, values, depth), atom_tier, parent),
@@ -842,7 +843,7 @@ impl SourceText {
     /// registry: a string, a `quote { … }`, or a word's own block.
     /// A component instance as written: its word, its head values, its
     /// block.
-    mut fn instance(word: string, heads: List<ExprId>, block: ExprId?, depth: int) -> string {
+    mut fn instance_text(word: string, heads: List<ExprId>, block: ExprId?, depth: int) -> string {
         joined([source_name(word)].concat([self.expression(e, loosest_tier, depth) for e in heads]).concat([self.instance_body(b, depth) for b in some_list(block)]), " ")
     }
 

@@ -10,8 +10,9 @@ use diagnostics.{DiagCode}
 
 export fn collects() -> LanguageFeature {
     let rows = table<BuilderRow> {
-        name           | build
-        "collect_decl" | build_collect_decl
+        name                    | build
+        "collect_decl"          | build_collect_decl
+        "collect_decl_instance" | build_collect_decl_instance
     }
     let codes = table<DiagCode> {
         kind                   | id      | summary
@@ -29,7 +30,11 @@ export fn collects() -> LanguageFeature {
     LanguageFeature collects {
         docs: "`collect name: List<T> = kind in self|package|closure as Ty { field: it.path, … } by it.field, …` — every declaration of `kind`, gathered, projected and ordered, as one value. See docs/2026_09_22_COLLECTIONS.md."
         gram: grammar {
-            stmt = "collect" n:NAME ":" t:type "=" k:NAME "in" sc:NAME "as" pt:NAME
+            stmt = "collect" n:NAME ":" t:type "=" "instance" iw:NAME jk:NAME "in" sc:NAME "as" pt:NAME
+                "{" BREAK? ( fn:NAME ":" ivw:NAME ( "." fp:NAME )? ( "," BREAK? fn:NAME ":" ivw:NAME ( "." fp:NAME )? )* ","? BREAK? )? "}"
+                ( bw:NAME BREAK? biw:NAME "." bk:NAME ( "," BREAK? biw:NAME "." bk:NAME )* )?
+                END -> collect_decl_instance(n, t, iw, jk, sc, pt, fn, ivw, fp, bw, biw, bk)
+              | "collect" n:NAME ":" t:type "=" k:NAME "in" sc:NAME "as" pt:NAME
                 "{" BREAK? ( fn:NAME ":" iw:NAME ( "." fp:NAME )? ( "," BREAK? fn:NAME ":" iw:NAME ( "." fp:NAME )? )* ","? BREAK? )? "}"
                 ( bw:NAME BREAK? biw:NAME "." bk:NAME ( "," BREAK? biw:NAME "." bk:NAME )* )?
                 END -> collect_decl(n, t, k, sc, pt, fn, iw, fp, bw, biw, bk)

@@ -17,21 +17,50 @@ fn build_collect_decl(b: Builder) -> Result<LangNode, string> {
     let k = b.token(2)?
     let sc = b.token(3)?
     let pt = b.token(4)?
-    let ends? = b.span_end() else { return .Err("defect: a collect declaration without a span — the arena and the grammar disagree") }
+    let ends? = b.span_end() else { return .Err(no_span()) }
     let fns = b.tokens(5)?
     let iws = b.tokens(6)?
     let fps = b.tokens(7)?
     let bws = b.tokens(8)?
     let biws = b.tokens(9)?
     let bks = b.tokens(10)?
-    let bad_it? = iws.concat(biws).find(not_word("it")) else { return bad_by(b, bws, n, t, k, sc, pt, fns, fps, bks, ends) }
-    .Err("a collect's projection reads its declaration through `it` — found `${bad_it.text}`")
+    let bad_it? = iws.concat(biws).find(not_word("it")) else { return bad_by(b, bws, n, t, kind_of(k), sc, pt, fns, fps, bks, ends) }
+    .Err(bad_it_text(bad_it))
 }
 
-fn bad_by(b: Builder, bws: List<Token>, n: Token, t: TypeRef, k: Token, sc: Token, pt: Token, fns: List<Token>, fps: List<Token>, bks: List<Token>, ends: int) -> Result<LangNode, string> {
+/// `instance of <component>` anchors on the LITERAL `instance` (the
+/// one word this grammar reserves for it — `of` and the component's
+/// own word stay ordinary NAMEs), so no lookahead ambiguity with the
+/// bare form's `"in"` tail exists: a NAME capture matches a keyword
+/// too (the greedy-star law), which is what made an optional
+/// `NAME NAME` here swallow `in` itself.
+fn build_collect_decl_instance(b: Builder) -> Result<LangNode, string> {
+    let n = b.token(0)?
+    let t = b.type_ref(1)?
+    let of = b.token(2)?
+    let comp = b.token(3)?
+    let sc = b.token(4)?
+    let pt = b.token(5)?
+    let ends? = b.span_end() else { return .Err(no_span()) }
+    let fns = b.tokens(6)?
+    let iws = b.tokens(7)?
+    let fps = b.tokens(8)?
+    let bws = b.tokens(9)?
+    let biws = b.tokens(10)?
+    let bks = b.tokens(11)?
+    if of.text != "of" { return .Err("`instance` takes `of <component>` — found `${of.text}`") }
+    let bad_it? = iws.concat(biws).find(not_word("it")) else { return bad_by(b, bws, n, t, CollectKind.Instance(comp.text), sc, pt, fns, fps, bks, ends) }
+    .Err(bad_it_text(bad_it))
+}
+
+fn no_span() -> string { "defect: a collect declaration without a span — the arena and the grammar disagree" }
+
+fn bad_it_text(bad: Token) -> string { "a collect's projection reads its declaration through `it` — found `${bad.text}`" }
+
+fn bad_by(b: Builder, bws: List<Token>, n: Token, t: TypeRef, k: CollectKind, sc: Token, pt: Token, fns: List<Token>, fps: List<Token>, bks: List<Token>, ends: int) -> Result<LangNode, string> {
     let bad? = bws.find(not_word("by")) else {
         let proj = Projection { ty: named_ref(pt.text), fields: proj_fields(fns, fps, ends) }
-        return b.make_stmt(Stmt.Collect(Scoped(n.text), t, kind_of(k), scope_of(sc), proj, [Plain(bk.text) for bk in bks]))
+        return b.make_stmt(Stmt.Collect(Scoped(n.text), t, k, scope_of(sc), proj, [Plain(bk.text) for bk in bks]))
     }
     .Err("a collect's order is declared with `by` — found `${bad.text}`")
 }
