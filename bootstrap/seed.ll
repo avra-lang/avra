@@ -57772,12 +57772,12 @@ lhead:                                            ; preds = %lbody, %endif
 
 lexit:                                            ; preds = %lhead
   %15 = call ptr @"av_$40std$2Eavrac$2Ecore$2Eflatten$24$5ES$7E$2FUsers$2Ftristan$2Fprojects$2FtristanMatthias$2Favra$2Dreuse$2Fpackages$2Fstd$2Davrac$2Fsrc$2Fcore$2Fir$2Eav$7E0"(ptr %13)
-  %16 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Econst_int"(ptr %0, i64 %2)
-  %17 = call i64 @avra_array_len(ptr %15)
-  %add6 = add i64 1, %17
-  %18 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Ebox_size"(ptr %0, i64 %add6)
-  %19 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Earray_sized"(ptr %0, ptr %1, i64 %18)
-  %20 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Epush_slot"(ptr %0, i64 %19, i64 %16)
+  %16 = call i64 @avra_array_len(ptr %15)
+  %add6 = add i64 1, %16
+  %17 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Ebox_size"(ptr %0, i64 %add6)
+  %18 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Earray_sized"(ptr %0, ptr %1, i64 %17)
+  %19 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Econst_int"(ptr %0, i64 %2)
+  %20 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Epush_slot"(ptr %0, i64 %18, i64 %19)
   %21 = call i64 @avra_array_len(ptr %15)
   store i64 0, ptr %slot7, align 8
   br label %lhead9
@@ -57800,14 +57800,14 @@ lhead9:                                           ; preds = %lbody13, %lexit
 lexit10:                                          ; preds = %lhead9
   call void @avra_rc_release(ptr %15)
   call void @avra_rc_release(ptr %13)
-  ret i64 %19
+  ret i64 %18
 
 lbody13:                                          ; preds = %lhead9
   %ld14 = load i64, ptr %slot7, align 8
   %24 = call i64 @avra_array_get(ptr %15, i64 %ld14)
   store i64 %24, ptr %slot8, align 8
   %ld15 = load i64, ptr %slot8, align 8
-  %25 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Epush_slot"(ptr %0, i64 %19, i64 %ld15)
+  %25 = call i64 @"av_$40std$2Eavrac$2Efeatures$2ELowerCx$2Epush_slot"(ptr %0, i64 %18, i64 %ld15)
   %ld16 = load i64, ptr %slot7, align 8
   %add17 = add i64 %ld16, 1
   store i64 %add17, ptr %slot7, align 8
