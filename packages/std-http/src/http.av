@@ -66,6 +66,17 @@ impl Request {
         }
     }
 
+    /// Whether this request is for `prefix` or anything beneath it, by
+    /// WHOLE SEGMENTS of its `path()`: `/admin` is under `/admin`, and
+    /// so is `/admin/users?tab=2`; `/administrator` is not. The router's
+    /// own segment law decides, so a layer and the routes it guards
+    /// read one path alike. A target with no path (`OPTIONS *`) is
+    /// under nothing.
+    fn under(prefix: string) -> bool {
+        let p? = self.path() else { return false }
+        falls_under(p, prefix.bytes())
+    }
+
     /// THE AUTHORITY AN ABSOLUTE-FORM TARGET CARRIED, which `path()`
     /// strips — absent for every other form. RFC 9112 §3.3 has an
     /// origin server IGNORE the `Host` field when the target is
@@ -157,6 +168,28 @@ export type Header = { name: string, value: string }
 export type Response = { status: int = 200, headers: List<Header> = [], body: Bytes = nothing() }
 
 fn nothing() -> Bytes { "".bytes() }
+
+// ── Segments ────────────────────────────────────────────────────
+
+/// Whether a segment ENDS at offset `i` — at a separator, or past
+/// the last octet. THIS IS THE ONE DEFINITION OF A SEGMENT: a
+/// pattern's shape and a target's descent both ask it, so the two can
+/// never disagree about where a segment is.
+///
+/// It asks about SEPARATORS, not pieces: `split` drops a trailing
+/// empty segment, so `/ideas/` would come up one short of
+/// `/ideas/{id}` and a route would refuse its own empty capture.
+export fn separates(b: Bytes, i: int) -> bool { i == b.length || b.at(i) == slash_octet() }
+
+fn slash_octet() -> int { 47 }
+
+/// Whether `path` is `prefix` or beneath it: it opens with the prefix,
+/// and the prefix stops where a segment does — or ends in `/` itself.
+export fn falls_under(path: Bytes, prefix: Bytes) -> bool {
+    let n = prefix.length
+    if path.length < n || path.slice(0, n) != prefix { return false }
+    separates(path, n) || n > 0 && prefix.at(n - 1) == slash_octet()
+}
 
 /// What answers a request: a route's handler, a layer's `next`.
 export alias Handler = fn(Request<Unrouted>) -> Response

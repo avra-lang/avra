@@ -1,0 +1,54 @@
+// `req.under(prefix)`: a request is under a prefix by WHOLE SEGMENTS
+// of its path — the router's own segment law, so a layer guarding
+// `/admin` and the routes it guards read one path alike. Every case
+// goes through the real framer.
+use @std.http.frame.{Method}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.route.{Route, fixed, prefixed}
+
+/// Whether the request a line frames is under `prefix`, or "unframed".
+fn under_of(line: string, prefix: string) -> string {
+    let q? = asked(line) else { return "unframed" }
+    if q.under(prefix) { "yes" } else { "no" }
+}
+
+fn get_under(target: string, prefix: string) -> string { under_of("GET ${target} HTTP/1.1", prefix) }
+
+fn un_serve(_q: Request<Unrouted>) -> Response { text(200, "x") }
+
+spec "std-http — req.under" {
+    given "a prefix by whole segments" {
+        then "the prefix itself, and every path beneath it, are under it" {
+            get_under("/admin", "/admin") == "yes" && get_under("/admin/", "/admin") == "yes" && get_under("/admin/users/7", "/admin") == "yes"
+        }
+        then "a segment that merely begins with the prefix is not" {
+            get_under("/administrator", "/admin") == "no" && get_under("/admin-tools", "/admin") == "no"
+        }
+        then "the query is no part of the path" {
+            get_under("/admin?tab=2", "/admin") == "yes" && get_under("/?next=/admin", "/admin") == "no"
+        }
+        then "a prefix deeper in the path is not a prefix" {
+            get_under("/api/admin", "/admin") == "no"
+        }
+        then "a prefix ending in `/` takes only what is beneath it" {
+            get_under("/admin/x", "/admin/") == "yes" && get_under("/admin", "/admin/") == "no"
+        }
+        then "`/` is over every path" {
+            get_under("/", "/") == "yes" && get_under("/a/b", "/") == "yes"
+        }
+    }
+    given "the target's forms" {
+        then "absolute-form is read by its path, as the router reads it" {
+            get_under("http://h/admin/x", "/admin") == "yes" && get_under("http://h/administrator", "/admin") == "no"
+        }
+        then "a target that names no resource is under nothing" {
+            under_of("OPTIONS * HTTP/1.1", "/") == "no"
+        }
+    }
+    given "a group's prefix, by the same law" {
+        then "a route under a prefix answers beneath it, and no sibling that merely begins with it" {
+            let rows = prefixed("/api", [fixed(Method.Get, "/x", un_serve)])
+            answer_of(rows, "GET /api/x HTTP/1.1") == "200 x" && answer_of(rows, "GET /apix HTTP/1.1") == "404 "
+        }
+    }
+}
