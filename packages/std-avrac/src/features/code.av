@@ -22,6 +22,10 @@ export type Analysed = { view: FileView, names: NameFacts, facts: TypeFacts }
 /// compiler knows about the file it stands in; `at` says which node.
 export type Code = { of: Analysed, at: At }
 
+/// A range `for` loop's own head, `for_range`'s answer: the loop
+/// variable's own text, its bound and its body, each still Code.
+export type ForRange = { name: string, from: Code, to: Code, body: List<Code> }
+
 /// A RUN binder's whole match, wrapped: every `At` it captured
 /// carries this Code's own facts — `quote_pat_binds`' (features/
 /// quote/lower.av) one door for a `${..xs}` bind.
@@ -83,6 +87,32 @@ impl Code {
                 _ -> false,
             },
             _ -> false,
+        }
+    }
+
+    /// This node's own RANGE `for` head — `for NAME in FROM..TO {
+    /// STMTS }` — absent for every other shape, `ForEach` included. A
+    /// quote pattern cannot hold the loop variable open itself: the
+    /// range desugars to a `cond`/`step` that reads the variable
+    /// AGAIN (`features/loops/builders.av`'s `build_for`), and the
+    /// matcher's NAME-SEAT binder and an ordinary value `Hole` share
+    /// one accumulator slot under two incompatible comparisons — a
+    /// whole-statement `own_name_at` check, then a `subtree_fp` one —
+    /// so a pattern naming the loop variable twice can never hit
+    /// (avra-8sb5.25.45). Read structurally instead, off the
+    /// declaration's own fields.
+    fn for_range() -> ForRange? {
+        match self.at {
+            .Stmt(id) -> match self.of.view.store.stmt(id) {
+                .For(name, from, to, _, _, stmts) -> ForRange {
+                    name: name.of,
+                    from: Code { of: self.of, at: At.Expr(from) },
+                    to: Code { of: self.of, at: At.Expr(to) },
+                    body: [Code { of: self.of, at: At.Stmt(s) } for s in stmts],
+                },
+                _ -> null,
+            },
+            _ -> null,
         }
     }
 
