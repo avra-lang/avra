@@ -1,5 +1,7 @@
 //! The formatter's idioms for this feature — `rule`s, found by
 //! directory like everything else this feature owns.
+use features.{Code, Fix}
+use diagnostics.{warning}
 
 /// A null test that picks the value or a default is `??`.
 ///
@@ -12,4 +14,37 @@
 @keeps("let v = if next() == null { 0 } else { next()! }")
 export rule if_null_ternary {
     quote { if ${x} == null { ${d} } else { ${x}! } } if x.pure() -> quote { ${x} ?? ${d} },
+}
+
+/// `let x = E` guarded by an immediate absence-exit — `let x? = E
+/// else { … }` — with every later `x!` in the block reading `x`
+/// bare. A `mut` never matches: the pattern's own `let` name-seat
+/// sees only a `let`'s binder, a different node kind entirely.
+@keeps("{\n    mut held = get()\n    if held == null { return null }\n    use(held!)\n}")
+@keeps("{\n    let held = get()\n    if held == null { return null }\n    take(held)\n}")
+export rule let_else_guard {
+    quote {
+        {
+            ${..head}
+            let ${x} = ${e}
+            if ${y} == null { ${..guard} }
+            ${..rest}
+        }
+    } if x == y.text() && absence_exit(guard) && forces(rest, x) -> let_else_guard_found(x, e),
+}
+
+/// The guard body is one bare early-exit — `return`/`fail` — nothing
+/// this rule's rewrite would need to preserve past the `else`.
+fn absence_exit(guard: List<Code>) -> bool {
+    guard.length == 1 && (guard[0].text().starts_with("return") || guard[0].text().starts_with("fail"))
+}
+
+/// Whether `name!` appears anywhere in `rest` — the force-unwrap a
+/// `let x? = E else { … }` would make bare.
+fn forces(rest: List<Code>, name: string) -> bool {
+    rest.any(it.text().contains(name + "!"))
+}
+
+fn let_else_guard_found(x: string, e: Code) -> Fix {
+    Fix.Say(warning("style.let_else_guard", e.loc(), "`let ${x} = ${e.text()}` guarded by an immediate absence-exit is `let ${x}? = ${e.text()} else { … }`, with every later `${x}!` reading `${x}` bare", "this binding", null))
 }

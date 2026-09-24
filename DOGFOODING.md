@@ -211,14 +211,27 @@ gate — there is no amnesty left to hide in.
 - I14 a GUARD PAIR repeated across sites is one law method
       answering bool (`refused_name` — the keyword+reserved
       refusal lived three times as when-pairs; sites now read
-      `if self.refused_name(n, at) { return }`).
+      `if self.refused_name(n, at) { return }`). THE MATCHER
+      RATCHETED UNDER THIS NUMBER CHECKS A DIFFERENT SHAPE —
+      `emit-then-intern(Error)`, I9's sibling law `spoken(cx, d)` —
+      a pre-existing mismatch between this paragraph's subject and
+      `tools/idioms.py`'s own `RULES["I14"]` comment, found while
+      porting (avra-8sb5.25.16) and left uncorrected: the paragraph
+      here is unchanged, since rewriting it to match the code would
+      erase the GUARD PAIR law's own record with nothing left
+      naming it. Ratcheted (`emit_then_error`, the `spoken` shape).
 - I15 a PUSH/RUN/POP ritual around varying bodies is ONE bracket
       fn taking a thunk (`under_overlay(r, () -> ...)` — the
       overlay push/pop lived three times in resolve; the bracket
       now guarantees the pop). A zero-arg closure closes over what
       the body reads; a capture is a COPY (F3005 refuses a write to
       it), so state the body changes travels as the thunk's answer
-      or through a receiver.
+      or through a receiver. Ratcheted (`bracket_ritual`) — narrower
+      than the retired regex on purpose: only a push and a pop that
+      are SIBLINGS in the same block match, so a stack held open
+      ACROSS match arms (this entry's own `under_overlay` sites,
+      `// LICENSED I15: this IS the bracket`) never reaches the
+      shape at all.
 - I16 dup detection is a POSITION law, not a seen-accumulator:
       inside `for (j, x) in xs.enumerate()`, a duplicate is
       `xs.index_of(x) < j` — first occurrence earlier than here.
@@ -259,6 +272,9 @@ gate — there is no amnesty left to hide in.
       for four milestones with no code, and was violated three times
       — including both zip builders, where the index is still needed
       for the PARALLEL list and enumerate serves that perfectly.
+      Ratcheted (`index_walk`) — rooted at a STATEMENT `for` loop, so
+      a comprehension's own `for` clause (`[… for j in 0..xs.length]`)
+      is a different shape this does not yet reach.
 - I20a a test asserting `A || B` asserts NEITHER: if the outcome is
       uncertain, run it and pin what happens. (Found writing the
       first adversarial suite — the disjunction was hiding that I

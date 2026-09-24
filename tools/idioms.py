@@ -986,10 +986,6 @@ RULES = {
             "a long string duplicated in one file — shared messages are fns"),
     "I13": (line_rx(r"([a-z_]+\.[a-z_]+\(([a-z_]+)\)).*\1"),
             "the same projection computed twice on one line — bind it"),
-    "I14": (emit_then_error,
-            "emit-then-intern(Error) — that pair is `spoken(cx, d)`"),
-    "I15": (bracket_ritual,
-            "a push/…/pop ritual — that is a bracket fn taking a thunk"),
     "I12": (duplicated(r"[A-Z][a-zA-Z]+ \{ [a-z_]+: [^{}]* \}"),
             "an identical struct literal written twice — name its constructor"),
     "I24": (unused_import,
@@ -1002,8 +998,6 @@ RULES = {
             "2+ variants answer, so this is a REGISTRY — a catch-all here forgets "
             "the NEXT variant; spell the arms (or-runs keep it affordable), or "
             "write `rest ->` to say the remainder is deliberate"),
-    "I19": (index_walk,
-            "an index walk over a list — `for (j, x) in xs.enumerate()` hands over both"),
     "I20": (uncounted_refusal,
             "a refusal test with no diagnostics COUNT — a cascade can hide behind it"),
     "I21": (unmutated_mut,
@@ -1032,11 +1026,6 @@ RULES = {
     "I39": (state_verb,
             "a vocabulary verb as a free fn taking a pass state first — the state's "
             "impl is its vocabulary: write `mut fn verb(…)` there and call `cx.verb(…)`"),
-    "I55": (let_else_guard,
-            "`let x = E` guarded by an immediate `if x == null { return/fail … }` — "
-            "that is `let x? = E else { … }`, and every later `x!` in the block "
-            "reads `x`. Never a `mut`, a parameter, a field/path, or a name a "
-            "later binding could shadow"),
     "I54": (when_ladder,
             "an if/else-if ladder of 3+ arms answering a value — that is `when`. "
             "Accused only where every arm is a one-line expression (no return/fail/"
@@ -1102,6 +1091,32 @@ UNRATCHETED = {
     "I52": "PORTED NATIVELY: `nullable.default`, named `if_null_ternary`\n"
            "           (features/nullable/idioms.av) — ratcheted by the native-findings\n"
            "           phase below",
+    "I55": "PORTED NATIVELY: `let_else_guard` (features/nullable/idioms.av) — a NAME\n"
+           "           hole (avra-8sb5.25.6) and two run holes (avra-8sb5.25.10) hold the\n"
+           "           `let`'s binder and the enclosing block's head/tail open; ratcheted\n"
+           "           by the native-findings phase below. Narrower than the retired\n"
+           "           regex: an annotated `let` never matches (no type-seat hole yet,\n"
+           "           avra-8sb5.25.10), and shadowing is approximated by a text scan for\n"
+           "           `name!` in the tail rather than a real binding check",
+    "I14": "PORTED NATIVELY: `emit_then_error` (compiler/idioms.av) — two run holes\n"
+           "           hold the enclosing block's head/tail open so the pair is found\n"
+           "           adjacent anywhere in it, not only within a fixed line window;\n"
+           "           ratcheted by the native-findings phase below",
+    "I15": "PORTED NATIVELY: `bracket_ritual` (compiler/idioms.av) — a run hole\n"
+           "           holds the rest of the enclosing block open and a guard scans it by\n"
+           "           TEXT for a matching `.pop()`, never the fixed 14-line window;\n"
+           "           ratcheted by the native-findings phase below. Narrower than the\n"
+           "           retired regex on purpose: the push and the pop must sit in the SAME\n"
+           "           block (siblings), so a stack held open ACROSS match arms (the\n"
+           "           `// LICENSED I15: this IS the bracket` sites) never even reaches\n"
+           "           the shape, let alone the license check",
+    "I19": "PORTED NATIVELY: `index_walk` (features/loops/idioms.av) — a run hole\n"
+           "           holds the loop body open and a guard scans it by TEXT for\n"
+           "           `xs[j]`; ratcheted by the native-findings phase below. Narrower\n"
+           "           than the retired regex on purpose: the pattern roots at a\n"
+           "           STATEMENT `for` loop, so a comprehension's own `for` clause\n"
+           "           (`[… for j in 0..xs.length]`) never matches — a different shape,\n"
+           "           not yet its own rule",
     "I57": "telling \"this branch answers what a DIFFERENT arm already\n"
            "           answers\" needs reading every other arm's own answer and judging\n"
            "           whether they are the same computation — and, when the target is a\n"
@@ -1250,21 +1265,6 @@ CLEAN = {
     "I23": [["fn tf_path(line: string) -> string { read(line, (q: Request) -> q.path()) }"],
             ["fn ro() -> int { flags_of(config_at(\"x\") with { mode: Mode.ReadOnly }) }"],
             ["fn f(a: int) -> int { g(a) with { b: 1 } }"]],
-    "I55": [["    mut held = get()",
-             "    if held == null { return null }",
-             "    use(held!)"],
-            ["    let held = get()",
-             "    if held == null { return null }",
-             "    take(held)"],
-            ["    let held = get()",
-             "    if held == null || flag { return null }",
-             "    use(held!)"],
-            ["    let held: Foo = get()",
-             "    if held == null { return null }",
-             "    use(held!)"],
-            ["    let x = get()",
-             "    if x == null { return null }",
-             "    xs.map((x) -> x!)"]],
     "I54": [["    let base = if a { x } else { y }"],
             ["    if a { x = 1 } else if b { x = 2 } else { x = 3 }"],
             ["    if a { if c { p } else { q } } else if b { y } else { z }"],
@@ -1322,15 +1322,6 @@ SPECIMENS = {
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],
     "I13": [["    let ok = cx.shape_at(e) && cx.shape_at(e)"]],
-    "I55": [["    let held: Foo? = get()",
-             "    if held == null { return null }",
-             "    use(held!)"],
-            ["    let held = get()",
-             "    if held == null { fail \"nope\" }",
-             "    use(held!)"],
-            ["    let x = f()",
-             "    if x == null { return 0 }",
-             "    x! + 1"]],
     "I54": [["    let base = if a { x } else if b { y } else { z }"],
             ["    .A -> if a { x } else if b { y } else { z },"],
             ["fn f() -> string {",
@@ -1361,10 +1352,7 @@ SPECIMENS = {
     "I48": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
             ["    [b.ieq_at(0, b.length, w) for w in written_by].any(it)"],
             ["    ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)"]],
-    "I14": [["    cx.emit(d)", "    cx.intern(Type.Error)"]],
-    "I15": [["    v.push(name)", "    let f = go()", "    let _ = v.pop()"]],
     "I16": [["    mut seen: List<string> = []", "    if seen.contains(x) { }", "    seen.push(x)"]],
-    "I19": [["    for j in 0..args.length {", "        let a = args[j]", "    }"]],
     "I20": [['        then "it refuses" {', '            let a = analyze_source("x")',
              '            a.report().contains("nope")', "        }"],
             ['        then "it refuses" {', '            let a = analyze_source("x")',
@@ -1545,6 +1533,10 @@ NATIVE_PREDECESSOR = {
     "style.push_loop": "I3",
     "style.bool_comprehension": "I48",
     "style.seen_accumulator": "I16",
+    "style.let_else_guard": "I55",
+    "style.emit_then_error": "I14",
+    "style.bracket_ritual": "I15",
+    "style.index_walk": "I19",
 }
 
 def native_findings():
