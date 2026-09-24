@@ -1,7 +1,5 @@
 //! The formatter's idioms for this feature — `rule`s, found by
 //! directory like everything else this feature owns.
-use features.{Code, Fix}
-use diagnostics.{warning}
 
 /// A `match` answering only true/false, one arm a bare variant and
 /// the other the wildcard, is `is` — `x is .Ready`. THE ONE MATCH
@@ -10,20 +8,17 @@ use diagnostics.{warning}
 /// it to a boolean forgets the next one exactly as a catch-all
 /// would — the pattern's own WILDCARD seat (`_`, never an `or`-run)
 /// refuses that shape structurally, before any guard is asked.
+@fixes("match k { .Ready -> true, _ -> false }", "k is .Ready")
 @keeps("match k { .Wide -> true, .Narrow or .Ptr -> false }")
 @keeps("match n { 1 -> true, _ -> false }")
 export rule bool_variant_match {
-    quote { match ${e} { .${v} -> true, _ -> false } } -> bool_variant_match_found(e, v, true),
+    quote { match ${e} { .${v} -> true, _ -> false } } -> quote { ${e} is .${v} },
 }
 
 /// The arms-swapped twin: the bare variant answers `false`, the
 /// wildcard `true` — `!(x is .Ready)`.
+@fixes("match k { .Ready -> false, _ -> true }", "!(k is .Ready)")
 @keeps("match k { .Wide -> false, .Narrow or .Ptr -> true }")
 export rule bool_variant_match_negated {
-    quote { match ${e} { .${v} -> false, _ -> true } } -> bool_variant_match_found(e, v, false),
-}
-
-fn bool_variant_match_found(e: Code, v: string, positive: bool) -> Fix {
-    let form = if positive { "${e.text()} is .${v}" } else { "!(${e.text()} is .${v})" }
-    Fix.Say(warning("style.bool_variant_match", e.loc(), "a `match` answering only true/false is `${form}`", "this match", null))
+    quote { match ${e} { .${v} -> false, _ -> true } } -> quote { !(${e} is .${v}) },
 }
