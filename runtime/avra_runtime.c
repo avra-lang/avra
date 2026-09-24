@@ -52,8 +52,8 @@
 // them out as static data.
 
 // The payload's header. NULL for a pointer that is not a box: the
-// null pointer, an unaligned or low address (a box is sixteen-
-// aligned and lives above the image base — a scalar mistaken for
+// null pointer, an unaligned address or one in the null page (a box
+// is sixteen-aligned and never there — a small scalar mistaken for
 // one is refused before anything is read), or a header without the
 // tag.
 static Header* hdr(void* p) { return avra_hdr(p); }

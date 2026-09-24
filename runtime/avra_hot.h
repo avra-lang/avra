@@ -19,14 +19,17 @@ void note_retain(void* site);
 #define CENSUS(x)
 #endif
 
+// The lowest address a box may have: the page no mapping ever gets.
+#define AVRA_NULL_PAGE 0x10000ull
+
 // The payload's header. NULL for a pointer that is not a box: the
-// null pointer, an unaligned or low address (a box is sixteen-
-// aligned and lives above the image base — a scalar mistaken for
+// null pointer, an unaligned address or one in the null page (a box
+// is sixteen-aligned and never there — a small scalar mistaken for
 // one is refused before anything is read), or a header without the
-// tag.
+// tag. Where the loader puts the image and the heap decides nothing.
 static inline Header* avra_hdr(void* p) {
     uintptr_t a = (uintptr_t)p;
-    if ((a & 15) != 0 || a < 0x100000000ull) return 0;
+    if ((a & 15) != 0 || a < AVRA_NULL_PAGE) return 0;
     Header* h = (Header*)p - 1;
     return h->tag == AVRA_TAG ? h : 0;
 }
