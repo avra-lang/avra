@@ -336,3 +336,52 @@ fn popped(rest: List<Code>, name: string) -> bool {
 fn bracket_ritual_found(v: Code, x: Code) -> Fix {
     Fix.Say(warning("style.bracket_ritual", v.loc(), "`${v.text()}.push(${x.text()})` held open across a stretch of work until a later `${v.text()}.pop()` — a bracket fn taking a thunk owns the pop on every path out, not just the one written", "this push", null))
 }
+
+/// A struct literal copying every other field from ONE subject — that
+/// is `with`. Guarded RULE-SIDE over `kids()` (`Expr.StructLit` has no
+/// fixed field count a quote pattern can spell): a field COPIES when
+/// its value is STRUCTURALLY `subject.<its own field name>` — a `Prop`
+/// node whose own name agrees, never a text guess (a compound value
+/// that merely ENDS in `.field`, `a.x + b.x`, is not a `Prop` and is
+/// refused before its "subject" is trusted). The rule fires only when
+/// AT LEAST TWO fields agree on ONE copied subject and at least one
+/// other field does not — a lone copy is too weak a signal, and
+/// fields copying TWO DIFFERENT subjects refuse outright rather than
+/// silently reading the second subject's fields as "modified".
+/// Narrower than the retired regex: no DECLARED-TYPE trace, so a
+/// coincidental `x.field` name match is accused too.
+@keeps("Widget { name: \"fixed\", value: 2 }")
+@keeps("Widget { name: other.name, value: another.value }")
+@keeps("Tally { a: x.a + y.a, b: x.b + y.b }")
+@keeps("Widget { name: w.name, value: 2, extra: 3 }")
+export rule modified_copy_literal {
+    quote { ${lit} } if lit.is_struct_lit() -> copy_literal_check(lit),
+}
+
+fn copy_literal_check(lit: Code) -> Fix? {
+    let fields = lit.kids()
+    let subjects = [s! for s in [field_copy_subject(f) for f in fields] if s != null]
+    let subj? = subjects.first() else { return null }
+    if subjects.any((it) -> it != subj) { return null }
+    if subjects.length < 2 { return null }
+    let modified = [f for f in fields if field_copy_subject(f) != subj]
+    if modified.is_empty() { return null }
+    Fix.Say(warning("style.modified_copy_literal", lit.loc(), "a struct literal copying its other fields from `${subj}` — `${subj} with { ${field_list(modified)} }`", "this literal", null))
+}
+
+/// The subject `f` copies, when its value is exactly `subject.<f's own
+/// name>` — a `Prop` whose own name agrees with the field's; absent
+/// for every other shape, structurally, never a text suffix guess.
+fn field_copy_subject(f: Code) -> string? {
+    let n? = f.name() else { return null }
+    let value? = f.kids().first() else { return null }
+    if value.prop_name() != n { return null }
+    let subj? = value.kids().first() else { return null }
+    subj.text()
+}
+
+fn field_list(fields: List<Code>) -> string {
+    [described_field(f) for f in fields].join(", ")
+}
+
+fn described_field(f: Code) -> string { "${f.name() ?? "?"}: ${f.text()}" }

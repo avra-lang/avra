@@ -421,19 +421,6 @@ def closing_brace(text, at):
         k += 1
     return None
 
-# A LITERAL THAT COPIES EVERY OTHER FIELD FROM ONE VALUE IS `with`.
-# Restricted to ONE LINE (so the literal's whole field list is in
-# hand at once) with at least two `f: v.f` copies FROM THE SAME `v`
-# and at least one other field. THIS SMELL CAN SILENTLY CHANGE
-# BEHAVIOUR — a literal built from a DIFFERENT type than `v` only
-# happens to share field NAMES (`Directive { twin: "", name: t.name,
-# at: t.at, source: … }` where `t: MetaType`) — so the matcher traces
-# `v`'s DECLARED type (an enclosing `impl`'s receiver, a parameter's
-# annotation, or a `let`'s annotation — one hop through a bare `x!`
-# unwrap) and accuses only when it can CONFIRM that type equals the
-# literal's own. An unknown or a mismatched type is never accused.
-WITH_LIT = re.compile(r"(?<![.\w])([A-Z][A-Za-z0-9_]*)\s*\{([^{}]*)\}")
-
 # A `let x = E` immediately guarded by `if x == null { return … }` (or
 # `fail …`) IS THE ABSENCE-EARLY-EXIT LAW — `let x? = E else { … }`
 # says the same thing once, and every later `x!` in the same block
@@ -492,118 +479,6 @@ def let_else_guard(lines):
         if not occ or any(scope[o.end():o.end() + 1] != "!" for o in occ):
             continue
         yield i, lines[i].strip()
-
-def with_split_fields(body):
-    """`body` cut at its top-level commas — a field's own value may
-    hold one inside `(…)`, `[…]` or `<…>`."""
-    out, depth, start = [], 0, 0
-    for j, c in enumerate(body):
-        if c in "([<":
-            depth += 1
-        elif c in ")]>":
-            depth -= 1
-        elif c == "," and depth == 0:
-            out.append(body[start:j])
-            start = j + 1
-    return out + [body[start:]]
-
-def with_copy_fields(body):
-    """`k: v` pairs of a struct literal's top-level fields."""
-    out = []
-    for part in with_split_fields(body):
-        part = part.strip()
-        if not part or ":" not in part:
-            continue
-        k, v = part.split(":", 1)
-        k = k.strip()
-        if re.match(r"^[a-zA-Z_]\w*$", k):
-            out.append((k, v.strip()))
-    return out
-
-def with_base_type(t):
-    t = t.strip().rstrip("?").strip()
-    m = re.match(r"^[A-Za-z_]\w*", t)
-    return m.group(0) if m else None
-
-def with_enclosing_impl_type(lines, idx):
-    for j in range(idx, -1, -1):
-        m = re.match(r"^\s*(?:export\s+)?impl\s+([A-Za-z_]\w*)", lines[j])
-        if m:
-            return m.group(1)
-    return None
-
-def with_enclosing_fn_start(lines, idx):
-    for j in range(idx, -1, -1):
-        if re.match(r"^\s*(?:export\s+)?(?:static\s+)?(?:mut\s+)?fn\s+[A-Za-z_]\w*\(", lines[j]):
-            return j
-    return None
-
-def with_param_type(lines, fn_start, name):
-    """`name`'s annotation in the fn header opened at `fn_start`."""
-    text, depth, started = "", 0, False
-    for j in range(fn_start, min(len(lines), fn_start + 15)):
-        text += lines[j] + "\n"
-        for c in lines[j]:
-            if c == "(":
-                depth += 1
-                started = True
-            elif c == ")":
-                depth -= 1
-        if started and depth == 0:
-            break
-    seats = balanced(text, text.index("("))
-    if seats is None:
-        return None
-    for p in split_seats(seats):
-        pm = re.match(r"^\s*(?:mut\s+)?([a-zA-Z_]\w*)\s*:\s*(.+)$", p.strip())
-        if pm and pm.group(1) == name:
-            return pm.group(2).strip()
-    return None
-
-def with_declared_type(lines, idx, name, hops=0):
-    """`name`'s declared type at line `idx` — an `impl` receiver, a
-    parameter's annotation, a `let`'s annotation, or one hop through
-    a bare `x!` unwrap. None where it cannot be confirmed."""
-    if hops > 2:
-        return None
-    if name == "self":
-        t = with_enclosing_impl_type(lines, idx)
-        return with_base_type(t) if t else None
-    fn_start = with_enclosing_fn_start(lines, idx)
-    if fn_start is not None:
-        pt = with_param_type(lines, fn_start, name)
-        if pt:
-            return with_base_type(pt)
-    floor = fn_start if fn_start is not None else 0
-    for j in range(idx, floor - 1, -1):
-        lm = re.match(rf"^\s*(?:mut\s+)?let\s+{re.escape(name)}\s*:\s*([A-Za-z_]\w*)", lines[j])
-        if lm:
-            return lm.group(1)
-        lm2 = re.match(rf"^\s*(?:mut\s+)?let\s+{re.escape(name)}\s*=\s*([a-zA-Z_][\w.]*)!\s*$", lines[j])
-        if lm2:
-            return with_declared_type(lines, j - 1, lm2.group(1).split(".")[0], hops + 1)
-    return None
-
-def modified_copy_literal(lines):
-    """A struct literal copying every other field from one value —
-    `with` — where `v`'s declared type is confirmed to match (I53)."""
-    for i, l in enumerate(lines):
-        if l.strip().startswith("//"):
-            continue
-        for m in WITH_LIT.finditer(l):
-            typename, body = m.group(1), m.group(2)
-            fields = with_copy_fields(body)
-            if len(fields) < 3:
-                continue
-            copy_of = collections.Counter()
-            for k, val in fields:
-                vm = re.match(r"^([a-zA-Z_]\w*)\.([a-zA-Z_]\w*)$", val)
-                if vm and vm.group(2) == k:
-                    copy_of[vm.group(1)] += 1
-            for v, n in copy_of.items():
-                if n >= 2 and n < len(fields) and with_declared_type(lines, i - 1, v) == typename:
-                    yield i, l.strip()
-                    break
 
 # AN if/else-if LADDER OF 3+ ARMS, USED AS AN EXPRESSION, IS `when`.
 # Restricted to a chain whose EVERY arm (the final `else` included) is
@@ -1031,10 +906,6 @@ RULES = {
             "Accused only where every arm is a one-line expression (no return/fail/"
             "break/continue, no assignment, no nested if) standing after `=`, `->`, "
             "`return`, or as a fn's tail"),
-    "I53": (modified_copy_literal,
-            "a struct literal copying every other field from one value — that is "
-            "`with`. Accused only when `v`'s declared type is confirmed to match "
-            "the literal's; an unconfirmed or a different type is never accused"),
     "I51": (bool_variant_match,
             "a match answering only true/false, one arm a bare variant and the "
             "other the wildcard — that is `is`: `x is .Ready`, or `!(x is .Ready)` "
@@ -1117,6 +988,14 @@ UNRATCHETED = {
            "           STATEMENT `for` loop, so a comprehension's own `for` clause\n"
            "           (`[… for j in 0..xs.length]`) never matches — a different shape,\n"
            "           not yet its own rule",
+    "I53": "PORTED NATIVELY: `modified_copy_literal` (compiler/idioms.av) — a bare\n"
+           "           hole root (avra-8sb5.25.10's `At.Field`) matches ANY node, guarded\n"
+           "           `lit.is_struct_lit()`, then reads `lit.kids()` field by field;\n"
+           "           ratcheted by the native-findings phase below. Narrower than the\n"
+           "           retired regex on purpose: no DECLARED-TYPE trace, so a\n"
+           "           coincidental `x.field` name match is accused too, and the copy\n"
+           "           test is STRUCTURAL (a `Prop` whose own name agrees), never a text\n"
+           "           suffix guess",
     "I57": "telling \"this branch answers what a DIFFERENT arm already\n"
            "           answers\" needs reading every other arm's own answer and judging\n"
            "           whether they are the same computation — and, when the target is a\n"
@@ -1273,21 +1152,6 @@ CLEAN = {
              "    if a { g() } else if b { h() } else { j() }",
              "    k()",
              "}"]],
-    "I53": [["    fn built(w: Other) -> Widget {",
-             "        Widget { name: w.name, tier: w.tier, extra: 5 }",
-             "    }"],
-            ["    fn one(w: Widget) -> Widget {",
-             "        Widget { name: w.name, tier: 1, extra: 2 }",
-             "    }"],
-            ["    fn mystery() -> Widget {",
-             "        Widget { name: q.name, tier: q.tier, extra: 6 }",
-             "    }"],
-            ["    let maybe: Other? = find()",
-             "    let held = maybe!",
-             "    Widget { name: held.name, tier: held.tier, extra: 7 }"],
-            ["    Widget {",
-             "        name: held.name, tier: held.tier, extra: 8,",
-             "    }"]],
     "I51": [["    match v { .Bind(_) -> true, _ -> false }"],
             ["    match s { .A -> true, .B -> false, .C -> false }"],
             ["    match k { .Wide -> true, .Narrow or .Ptr or .Void -> false }"],
@@ -1328,19 +1192,6 @@ SPECIMENS = {
              "    if a { \"x\" } else if b { \"y\" } else { \"z\" }",
              "}"],
             ["    return if a { x } else if b { y } else { z }"]],
-    "I53": [["impl Widget {",
-             "    fn grown() -> Widget {",
-             "        Widget { name: self.name, tier: self.tier, extra: 1 }",
-             "    }",
-             "}"],
-            ["    fn bumped(w: Widget) -> Widget {",
-             "        Widget { name: w.name, tier: w.tier, extra: 2 }",
-             "    }"],
-            ["    let held: Widget = make()",
-             "    Widget { name: held.name, tier: held.tier, extra: 3 }"],
-            ["    let maybe: Widget? = find()",
-             "    let held = maybe!",
-             "    Widget { name: held.name, tier: held.tier, extra: 4 }"]],
     "I51": [["    match x { .Ready -> true, _ -> false }"],
             ["    match self {", "        .Other -> false,", "        _ -> true,", "    }"],
             ["    match k { .A -> true, rest -> false }"],
@@ -1537,6 +1388,7 @@ NATIVE_PREDECESSOR = {
     "style.emit_then_error": "I14",
     "style.bracket_ritual": "I15",
     "style.index_walk": "I19",
+    "style.modified_copy_literal": "I53",
 }
 
 def native_findings():

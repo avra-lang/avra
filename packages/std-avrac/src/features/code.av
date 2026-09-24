@@ -7,7 +7,7 @@
 //! PATTERN matches against and a rule reads FACTS off, as methods.
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
-use core.{At, ExprId, DeclId, TypeId, TypeRegistry, NodeStore, Binding, Type, Span, Expr}
+use core.{At, ExprId, DeclId, TypeId, TypeRegistry, NodeStore, Binding, Type, Span, Expr, own_name_at}
 use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row}
 use features.enums.{answering_arms}
 use diagnostics.{loc_at}
@@ -43,11 +43,33 @@ impl Code {
         [Code { of: self.of, at: k } for k in self.of.view.store.kids_at(self.at)]
     }
 
-    /// An ident's own text — null for every other seat.
+    /// An ident's own text; a struct literal FIELD's own name — null
+    /// for every other seat.
     fn name() -> string? {
         match self.at {
             .Expr(id) -> self.of.view.store.ident_name(id),
+            .Field(_, _) -> own_name_at(self.of.view.store, self.at),
             .Stmt(_) or .Pat(_) -> null,
+        }
+    }
+
+    /// Whether this node is a struct literal — false for every other
+    /// seat, `.Field` included: a rule guards `lit.is_struct_lit()`
+    /// before reading `lit.kids()` as its fields.
+    fn is_struct_lit() -> bool {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .StructLit(_, _, _) -> true, _ -> false },
+            .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
+        }
+    }
+
+    /// A property read's own NAME — `x.name` answers `"name"` — null
+    /// for every other seat, so a field's VALUE is confirmed a `Prop`
+    /// before its subject is trusted, never guessed from text alone.
+    fn prop_name() -> string? {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .Prop(_, name) -> name.of, _ -> null },
+            .Stmt(_) or .Pat(_) or .Field(_, _) -> null,
         }
     }
 
@@ -56,7 +78,7 @@ impl Code {
     fn binding() -> Binding? {
         match self.at {
             .Expr(id) -> self.of.names.binding(id),
-            .Stmt(_) or .Pat(_) -> null,
+            .Stmt(_) or .Pat(_) or .Field(_, _) -> null,
         }
     }
 
@@ -65,7 +87,7 @@ impl Code {
     fn type() -> Ty? {
         match self.at {
             .Expr(id) -> Ty { types: self.of.view.types, id: self.of.facts.type_at(id) },
-            .Stmt(_) or .Pat(_) -> null,
+            .Stmt(_) or .Pat(_) or .Field(_, _) -> null,
         }
     }
 
@@ -96,7 +118,7 @@ impl Code {
     fn pure() -> bool {
         match self.at {
             .Expr(id) -> pure_at(self.of, id),
-            .Stmt(_) or .Pat(_) -> false,
+            .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
         }
     }
 
@@ -109,7 +131,7 @@ impl Code {
                 .Match(_, arms) -> answering_arms(self.of.view.store, arms),
                 _ -> null,
             },
-            .Stmt(_) or .Pat(_) -> null,
+            .Stmt(_) or .Pat(_) or .Field(_, _) -> null,
         }
     }
 
@@ -138,7 +160,7 @@ impl Code {
     fn atomic() -> bool {
         match self.at {
             .Expr(id) -> atomic_at(self.of.view.store.expr(id)),
-            .Stmt(_) or .Pat(_) -> false,
+            .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
         }
     }
 }
@@ -243,7 +265,7 @@ fn pure_at(of: Analysed, id: ExprId) -> bool {
 fn pure_of(of: Analysed, at: At) -> bool {
     match at {
         .Expr(id) -> pure_at(of, id),
-        .Stmt(_) or .Pat(_) -> false,
+        .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
     }
 }
 

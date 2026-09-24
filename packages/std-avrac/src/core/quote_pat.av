@@ -132,6 +132,10 @@ export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> int? {
     let p0? = a.pats.first() else { return null }
     let body? = match store.pat(p0) { .Quote(b) -> b, rest -> null } else { return null }
     let at? = quote_pat_root(store, body) else { return null }
+    // a root that IS the whole hole binds any subject, so its index
+    // is the placeholder's own fold — meaningless, and never a real
+    // subject's; "any node" is what a bare-hole root means
+    if quote_hole_at(store, at) != null { return null }
     let holes = quote_pat_holes(store, body)
     if store.kids_at(at).any(is_run_kid(store, it, holes)) { return null }
     store.shallow_at(at)
@@ -200,7 +204,7 @@ fn quote_hole_at(store: NodeStore, at: At) -> int? {
     match at {
         .Expr(e) -> lone_hole_of(store.ident_name(e)),
         .Stmt(s) -> store.hole_stmt(s),
-        .Pat(_) -> null,
+        .Pat(_) or .Field(_, _) -> null,
     }
 }
 
