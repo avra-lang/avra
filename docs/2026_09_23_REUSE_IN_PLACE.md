@@ -387,3 +387,40 @@ Pinned by consts/tests/bytes_consts (literal, empty, non-UTF-8, list,
 record field, a fn-computed class table, a thousand reads of an
 immortal). The request bench on the Mac: 1.30 µs -> 0.99 µs, with the
 literal-byte fold of §12.
+
+## §14 As built — R10, the hot runtime leaves inline
+
+**D22. The hottest runtime fns are ONE C source, compiled twice.**
+`runtime/avra_hot.c` holds the count, the release, the slot read, the
+owned read and the length; it builds into `libavra_runtime.a` like
+every runtime file AND to bitcode (`build/avra_hot.bc`, by the clang of
+the LLVM the compiler links) that `backend/llvm_wrapper.c` carries as
+bytes (`build/avra_hot.inc`). Before a module's passes the worker links
+that bitcode in with every definition AVAILABLE EXTERNALLY and the
+module's own target, so `-O1` inlines the leaves and emits no copy; a
+call it keeps resolves to the library's. The contract is
+`runtime/avra_hot.h`: the header test inline, the guard flag and the
+cold paths exported by `avra_runtime.c`. **The hot file owns no state**
+— a static free list copied into a module would be a second one.
+
+**D23. The compiler carries the bitcode, so its digest covers it.**
+Every store is keyed by the compiler's own bytes; a changed leaf is a
+changed compiler and retires every cached object that inlined the old
+one. A path to a file beside the library would have left objects keyed
+only by the library's PATH (avra-8sb5.34.2's hole) holding stale code.
+
+**The guard survives inlining** — the flag is read in the inlined body
+and the guarded path is the runtime's. Witnessed: moves without the
+dies-here test, built by the inlining compiler, trap `array_get read a
+RELEASED box` under AVRA_RC_GUARD=1. (`moved_into` tests the last read
+itself before asking `moves` — a witness removes both copies.) What
+inlining costs a guarded run is precision: a leaf's return address
+names its caller's caller. `AVRA_INLINE_RUNTIME=0` keeps the leaves
+calls, and the census build sets it — its leaves count, the carried
+bitcode's do not.
+
+**Numbers.** Request bench (Mac, four pairs): 958 -> 898 ns; leaf call
+sites in the binary: release 342 -> 36, array_get 492 -> 25, retain
+94 -> 26; the binary +29%. `check packages/cli`: instructions 160.4B
+-> 142.0B (−11.5%), cycles 40.9B -> 33.6B (−18%), wall 15.0 s ->
+11.2 s.

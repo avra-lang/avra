@@ -17,7 +17,7 @@ cd "$(dirname "$0")/.."
 saved=build/avra.census-saved
 stores=.avra-cache.census-saved
 restore() {
-    rm -f build/avra_runtime.o build/libavra_runtime.a
+    rm -f build/avra_runtime.o build/avra_hot.o build/libavra_runtime.a
     # the tree's stores come back as they stood: the census's own are its run's
     if [ -d "$stores" ]; then rm -rf .avra-cache; mv "$stores" .avra-cache; fi
     if [ -f "$saved" ]; then
@@ -33,8 +33,11 @@ trap restore EXIT INT TERM
 [ -f build/avra ] || { echo "census: no build/avra to put back — run \`make avra\` first"; exit 1; }
 cp build/avra "$saved"
 cc -O2 -Wall -Werror -DAVRA_CENSUS -c runtime/avra_runtime.c -o build/avra_runtime.o
+cc -O2 -Wall -Werror -DAVRA_CENSUS -c runtime/avra_hot.c -o build/avra_hot.o
 rm -f build/avra
-make --no-print-directory avra > /dev/null
+# THE COUNTED LEAVES STAY CALLS: the bitcode the compiler inlines was
+# built without the census, so an inlined retain would count nothing.
+AVRA_INLINE_RUNTIME=0 make --no-print-directory avra > /dev/null
 # THE FILTER DROPS `mem:`, IT DOES NOT SELECT LABELS. An allowlist of
 # census labels is a second registry of them, and it goes stale
 # silently: a new counter prints and this grep eats it, so the tool

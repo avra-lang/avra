@@ -11,6 +11,8 @@
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
 #include <llvm-c/Error.h>
+#include <llvm-c/BitReader.h>
+#include <llvm-c/Linker.h>
 #include <stdlib.h>
 #include <string.h>
 void avra_trap(const char* msg);
@@ -19,6 +21,7 @@ void avra_trap(const char* msg);
 #include <pthread.h>
 #include <stddef.h>
 #include "../runtime/avra_box.h"
+#include "../build/avra_hot.inc"
 
 // ── Context / Module / Builder ──
 
@@ -786,6 +789,40 @@ static int native_target_ready(void) {
     return ready ? 0 : 1;
 }
 
+// THE HOT LEAVES, INLINABLE (runtime/avra_hot.h): the bitcode this
+// compiler carries is linked into a module before its passes, every
+// definition AVAILABLE EXTERNALLY — the optimizer may inline it and emits
+// none, so a call it keeps resolves to the runtime library's own. The
+// leaves take the module's target, never the one clang compiled them for,
+// so the inliner finds them compatible. AVRA_INLINE_RUNTIME=0 keeps them
+// calls — a leaf's return address then names its caller exactly.
+static int hot_off = 0;
+
+__attribute__((constructor))
+static void hot_settled(void) {
+    const char* v = getenv("AVRA_INLINE_RUNTIME");
+    hot_off = v != NULL && strcmp(v, "0") == 0;
+}
+
+static void hot_linked(LLVMModuleRef m) {
+    if (hot_off || avra_hot_bc_len == 0) return;
+    LLVMContextRef ctx = LLVMGetModuleContext(m);
+    LLVMMemoryBufferRef buf = LLVMCreateMemoryBufferWithMemoryRange((const char*)avra_hot_bc, (size_t)avra_hot_bc_len, "avra_hot", 0);
+    LLVMModuleRef hot;
+    int bad = LLVMParseBitcodeInContext2(ctx, buf, &hot);
+    LLVMDisposeMemoryBuffer(buf);
+    if (bad) return;
+    for (LLVMValueRef f = LLVMGetFirstFunction(hot); f; f = LLVMGetNextFunction(f)) {
+        if (LLVMIsDeclaration(f)) continue;
+        LLVMRemoveStringAttributeAtIndex(f, LLVMAttributeFunctionIndex, "target-cpu", 10);
+        LLVMRemoveStringAttributeAtIndex(f, LLVMAttributeFunctionIndex, "target-features", 15);
+        if (LLVMGetLinkage(f) == LLVMExternalLinkage) LLVMSetLinkage(f, LLVMAvailableExternallyLinkage);
+    }
+    LLVMSetTarget(hot, LLVMGetTarget(m));
+    LLVMSetDataLayout(hot, LLVMGetDataLayoutStr(m));
+    LLVMLinkModules2(m, hot);
+}
+
 // A MODULE AS AN OBJECT: the `default<O1>`-style pipeline clang runs on
 // bitcode, then the native target's code generator, at clang's level 0..3.
 // Atomic as the writers above — a temp, then rename. Answers 0, or 1 with the
@@ -811,6 +848,7 @@ static int object_written(LLVMModuleRef m, const char* path, int64_t level) {
     LLVMSetModuleDataLayout(m, layout);
     int failed = 0;
     if (level > 0) {
+        hot_linked(m);
         char passes[32];
         snprintf(passes, sizeof(passes), "default<O%d>", level > 3 ? 3 : (int)level);
         LLVMPassBuilderOptionsRef opts = LLVMCreatePassBuilderOptions();

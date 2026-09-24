@@ -45,6 +45,7 @@
 #endif
 #include "avra_box.h"
 #include "avra_runtime.h"
+#include "avra_hot.h"
 
 // ── The box header ──────────────────────────────────────────────
 // The layouts are avra_box.h's — shared with the backend, which lays
@@ -55,12 +56,7 @@
 // aligned and lives above the image base — a scalar mistaken for
 // one is refused before anything is read), or a header without the
 // tag.
-static Header* hdr(void* p) {
-    uintptr_t a = (uintptr_t)p;
-    if ((a & 15) != 0 || a < 0x100000000ull) return NULL;
-    Header* h = (Header*)p - 1;
-    return h->tag == AVRA_TAG ? h : NULL;
-}
+static Header* hdr(void* p) { return avra_hdr(p); }
 
 // SIZE CLASSES: a box of up to CLASS_MAX payload bytes is recycled
 // through a per-class free list instead of handed back to malloc —
@@ -145,9 +141,9 @@ static Site* site_of(void* site) { return site_in(g_sites, &g_site_slots, site);
 // happened to be on the stack. Counting costs 8% of a run, so it is
 // a SEPARATE BUILD and the shipping runtime carries none of it.
 #ifdef AVRA_CENSUS
-#define CENSUS(x) x
 
-static int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets, g_list_pushes;
+int64_t g_rc_retains, g_rc_releases, g_rc_frees, g_list_gets;
+static int64_t g_list_pushes;
 static int64_t g_once_reads, g_once_steps;
 static int64_t g_boxes_made, g_bufs_made;
 static int64_t g_made_by_kind[8];
@@ -186,7 +182,7 @@ static void note_copy(void* site) {
 static Site g_retain_sites[SITES];
 static int64_t g_retain_slots = 0;
 
-static void note_retain(void* site) {
+void note_retain(void* site) {
     if (!g_sites_census) return;
     Site* s = site_in(g_retain_sites, &g_retain_slots, site);
     if (s) s->made++;
@@ -207,8 +203,6 @@ static void report_made(const char* label, Site* tbl, int limit, intptr_t slide)
         top->made = -top->made;
     }
 }
-#else
-#define CENSUS(x)
 #endif
 
 // a clone's site is the Avra fn that wrote to a shared value, not
@@ -498,7 +492,7 @@ static void* box_clone(void* p);
 // DEBUG GUARD (AVRA_RC_GUARD=1): a box that reaches rc 0 is KEPT,
 // marked dead, so the next read of it traps at the site that used
 // it rather than somewhere later.
-static int g_guard = 0;
+int avra_rc_guard_on = 0;
 
 // THE GUARD IS READ ONCE, AT LOAD. Retain and release are the two
 // hottest functions in the compiler, and a lazy `if (g_guard < 0)`
@@ -507,7 +501,7 @@ static int g_guard = 0;
 // Settling it here keeps that path a load, an add and a store.
 __attribute__((constructor))
 static void rc_guard_init(void) {
-    g_guard = getenv("AVRA_RC_GUARD") != NULL;
+    avra_rc_guard_on = getenv("AVRA_RC_GUARD") != NULL;
     const char* budget = getenv("AVRA_RC_LOG_BUDGET");
     if (budget) g_log_budget = (size_t)strtoull(budget, NULL, 10);
 }
@@ -518,7 +512,7 @@ static int g_chain_len = 0;
 // pointer is not an array this runtime owns.
 static int64_t guard_len(void* p);
 
-static inline int rc_guarded(void) { return g_guard; }
+static inline int rc_guarded(void) { return avra_rc_guard_on; }
 
 void avra_rc_dead_check(void* p, const char* what) {
     if (!rc_guarded()) return;
@@ -530,21 +524,13 @@ void avra_rc_dead_check(void* p, const char* what) {
 }
 
 __attribute__((noinline, cold))
-static void retain_noted(void* p, int32_t rc, void* ra) { rc_note(p, 1, ra, rc); }
+void avra_retain_noted(void* p, int32_t rc, void* ra) { rc_note(p, 1, ra, rc); }
 
-void avra_rc_retain(void* p) {
-    Header* h = hdr(p);
-    if (h == NULL || h->kind < 0) return;
-    CENSUS(g_rc_retains++);
-    CENSUS(note_retain(__builtin_return_address(0)));
-    h->rc++;
-    if (__builtin_expect(rc_guarded(), 0)) retain_noted(p, h->rc, __builtin_return_address(0));
-}
 
 // The guard's release: the box is kept and marked dead, its cells
 // poisoned; a second release of a dead box reports its history.
 __attribute__((noinline, cold))
-static void release_guarded(void* p, Header* h) {
+void avra_release_guarded(void* p, Header* h) {
     if (h->kind == KIND_DEAD) {
         fprintf(stderr, "avra: released an already-dead box %p (len %lld)\n", p, (long long)guard_len(p));
         fprintf(stderr, "  this one from %p\n", __builtin_return_address(0));
@@ -570,7 +556,7 @@ static void release_guarded(void* p, Header* h) {
 }
 
 __attribute__((noinline))
-static void release_dead(void* p, int32_t kind) {
+void avra_release_dead(void* p, int32_t kind) {
     if (kind == KIND_ARRAY) {
         array_reclaim(p);
     } else if (kind == KIND_MAP) {
@@ -580,22 +566,6 @@ static void release_dead(void* p, int32_t kind) {
     }
 }
 
-void avra_rc_release(void* p) {
-    Header* h = hdr(p);
-    if (h == NULL) return;
-    if (__builtin_expect(rc_guarded(), 0)) { release_guarded(p, h); return; }
-    if (h->kind < 0) return;
-    CENSUS(g_rc_releases++);
-    h->rc--;
-    if (__builtin_expect(h->rc > 0, 1)) return;
-    CENSUS(g_rc_frees++);
-    // The kind is read FIRST — a slot's release below may reclaim
-    // this box's neighbours, and the header goes with the box — so
-    // it is READ HERE and HANDED to the reclaim, which is out of
-    // line and tail-called: a release that does not free keeps no
-    // frame, and most releases do not free.
-    release_dead(p, h->kind);
-}
 
 // ── Reuse in place ──────────────────────────────────────────────
 // A `_reusing` twin CONSUMES its first seat: the compiler hands it a
@@ -1101,9 +1071,6 @@ void avra_array_push_moved(void* arr, void* v) {
     a->marks[a->len - 1] = MARK_OWNED;
 }
 
-int64_t avra_array_len(void* arr) {
-    return ((AvraArray*)arr)->len;
-}
 
 // Worded exactly like the evaluator's refusal — the divergence
 // registry pins both.
@@ -1273,7 +1240,7 @@ const char* avra_str_crossing(const char* s) {
 }
 
 __attribute__((noinline, cold, noreturn))
-static void trap_bounds(int64_t i, int64_t len) {
+void avra_trap_bounds(int64_t i, int64_t len) {
     char msg[80];
     snprintf(msg, sizeof msg, "index %lld is out of bounds (length %lld)",
              (long long)i, (long long)len);
@@ -1294,28 +1261,14 @@ static void trap_slice(int64_t lo, int64_t hi, int64_t len) {
 // the read's path, never a call — a call there would cost the read a
 // frame it does not otherwise need.
 __attribute__((noinline, cold))
-static int64_t get_guarded(void* arr, int64_t i) {
+int64_t avra_get_guarded(void* arr, int64_t i) {
     avra_rc_dead_check(arr, "array_get");
     AvraArray* a = (AvraArray*)arr;
-    if (i < 0 || i >= a->len) trap_bounds(i, a->len);
+    if (i < 0 || i >= a->len) avra_trap_bounds(i, a->len);
     return a->data[i];
 }
 
-int64_t avra_array_get(void* arr, int64_t i) {
-    CENSUS(g_list_gets++);
-    if (__builtin_expect(rc_guarded(), 0)) return get_guarded(arr, i);
-    AvraArray* a = (AvraArray*)arr;
-    if (__builtin_expect(i < 0 || i >= a->len, 0)) trap_bounds(i, a->len);
-    return a->data[i];
-}
 
-// A managed read is an owned +1: the reader's scope releases it,
-// the pointer stays shared. The bounds trap is avra_array_get's.
-void* avra_array_get_owned(void* arr, int64_t i) {
-    void* v = (void*)(uintptr_t)avra_array_get(arr, i);
-    avra_rc_retain(v);
-    return v;
-}
 
 // A mut CELL's own reference dies: releases whatever the cell
 // currently holds. What is not a counted box no-ops by construction.
@@ -1974,7 +1927,7 @@ int64_t avra_bytes_eq(const char* a, const char* b) {
 // One octet, 0..255. A bad index traps: -1 is not a byte.
 int64_t avra_bytes_at(const char* b, int64_t i) {
     int64_t n = (int64_t)bytes_len(b);
-    if (__builtin_expect(i < 0 || i >= n, 0)) trap_bounds(i, n);
+    if (__builtin_expect(i < 0 || i >= n, 0)) avra_trap_bounds(i, n);
     return (unsigned char)b[i];
 }
 
@@ -2028,7 +1981,7 @@ const char* avra_bytes_slice_reusing(const char* b, int64_t lo, int64_t hi) {
 // equal the length, and an empty needle is found there.
 int64_t avra_bytes_index_of(const char* b, const char* needle, int64_t from) {
     int64_t n = (int64_t)bytes_len(b), m = (int64_t)bytes_len(needle);
-    if (__builtin_expect(from < 0 || from > n, 0)) trap_bounds(from, n);
+    if (__builtin_expect(from < 0 || from > n, 0)) avra_trap_bounds(from, n);
     if (m == 0) return from;
     if (m > n - from) return -1;
     const char* end = b + n - m + 1;
@@ -2139,7 +2092,7 @@ static void trap_table(int64_t len) {
 // in C is what makes a byte-at-a-time parser fast.
 int64_t avra_bytes_run(const char* b, int64_t from, const char* table) {
     int64_t n = (int64_t)bytes_len(b);
-    if (__builtin_expect(from < 0 || from > n, 0)) trap_bounds(from, n);
+    if (__builtin_expect(from < 0 || from > n, 0)) avra_trap_bounds(from, n);
     if (__builtin_expect(bytes_len(table) != 256, 0)) trap_table((int64_t)bytes_len(table));
     const unsigned char* t = (const unsigned char*)table;
     const unsigned char* p = (const unsigned char*)b;
@@ -2275,7 +2228,7 @@ const char* avra_fd_taken(int64_t token) {
 // `from` past the box traps; `from` at its end writes nothing.
 int64_t avra_fd_write(int64_t fd, const char* bytes, int64_t from) {
     int64_t n = (int64_t)bytes_len(bytes);
-    if (__builtin_expect(from < 0 || from > n, 0)) trap_bounds(from, n);
+    if (__builtin_expect(from < 0 || from > n, 0)) avra_trap_bounds(from, n);
     if (from == n) return 0;
     for (;;) {
         ssize_t put = write((int)fd, bytes + from, (size_t)(n - from));
@@ -2353,7 +2306,7 @@ int64_t avra_str_codepoint_count(const char* s) {
 // every byte costs one load per byte.
 int64_t avra_str_char_code(const char* s, int64_t i) {
     int64_t n = (int64_t)str_len(s);
-    if (__builtin_expect(i < 0 || i >= n, 0)) trap_bounds(i, n);
+    if (__builtin_expect(i < 0 || i >= n, 0)) avra_trap_bounds(i, n);
     return (unsigned char)s[i];
 }
 
