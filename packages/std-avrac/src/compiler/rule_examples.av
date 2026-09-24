@@ -13,39 +13,23 @@ use compiler.{analyze_source, Analysis}
 
 /// The example's own root: an expression statement stands as its
 /// expression (the same reduction a rule's own pattern root takes,
-/// `core.root_of` — never the language's OWN tail-if-chain
-/// promotion, which would root a both-branches-answering
-/// `if`/`else` example at a SYNTHESISED `Expr.If` while the
-/// pattern it is tested against stays `Stmt.IfStmt`; avra-8sb5.25.18),
-/// every other statement as itself; absent for text that parsed to
-/// no statement at all (an @fixes/@keeps whose text does not parse
-/// is the honest miss it looks like, never a crash).
+/// `core.root_of`), every other statement as itself; absent for text
+/// that parsed to no statement at all (an @fixes/@keeps whose text
+/// does not parse is the honest miss it looks like, never a crash).
+/// ONE TEXT, ONE TREE (avra-8sb5.25.21): a quote pattern's own body
+/// takes the same tail law a program's does (`features/quote/
+/// builders.av`'s `build_quote`), so a both-branches-answering
+/// `if`/`else` is `Expr.If` on both sides of a match — the pattern
+/// and a bare example alike — and no shielding is owed here for it.
 fn example_root(a: Analysis) -> Code? {
     let s? = a.view.stmts.first() else { return null }
     a.code_at(root_of(a.view.store, s))
 }
 
-/// AN EXAMPLE IS A FRAGMENT: it stands inside a body, never at its
-/// own tail, so the language's tail-if-chain law — which canonicalises
-/// a BOTH-BRANCHES-ANSWERING trailing `if`/`else` into the `Expr.If`
-/// it answers — never reshapes it. A rule fires at a NODE; an
-/// example names the node, not a whole standalone program that
-/// happens to end where it does. Parsed bare, an example's own
-/// `if`/`else` WOULD be that program's only (hence trailing)
-/// statement, so it would take the promotion regardless of what the
-/// rule's pattern names — a mismatch no rule author writes on
-/// purpose. The harmless trailing statement appended here is what
-/// makes the text a FRAGMENT rather than a program: the same law
-/// that already holds inside every real function body now holds
-/// here too (avra-8sb5.25.18).
-fn analyzed_example(text: string) -> Analysis {
-    analyze_source("${text}\n0\n")
-}
-
 /// Whether `rule`, applied to `before`, answers a rewrite whose
 /// rendered text — re-parsed — is span-blind equal to `after`.
 export fn checks_fixes(applied: fn(Code) -> Fix?, before: string, after: string) -> bool {
-    let root? = example_root(analyzed_example(before)) else { return false }
+    let root? = example_root(analyze_source(before)) else { return false }
     let hit? = nearest_fix(applied, root) else { return false }
     let text? = hit.rendered() else { return false }
     same_fingerprint(text, after)
@@ -53,13 +37,13 @@ export fn checks_fixes(applied: fn(Code) -> Fix?, before: string, after: string)
 
 /// Whether the rule answers nothing anywhere in `before`.
 export fn checks_keeps(applied: fn(Code) -> Fix?, before: string) -> bool {
-    let root? = example_root(analyzed_example(before)) else { return true }
+    let root? = example_root(analyze_source(before)) else { return true }
     nearest_fix(applied, root) == null
 }
 
 fn same_fingerprint(rendered: string, after: string) -> bool {
-    let r? = example_root(analyzed_example(rendered)) else { return false }
-    let a? = example_root(analyzed_example(after)) else { return false }
+    let r? = example_root(analyze_source(rendered)) else { return false }
+    let a? = example_root(analyze_source(after)) else { return false }
     r.of.view.store.subtree_fp(r.at) == a.of.view.store.subtree_fp(a.at)
 }
 
