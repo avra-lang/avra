@@ -8,7 +8,7 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
-use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, Plain, DeclKind}
+use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, CollectScope, Plain, DeclKind}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot}
 use compiler.{Analysis, any_root}
@@ -520,10 +520,10 @@ fn is_collect_decl(a: Analysis, d: DeclId) -> bool {
 /// A collect's body: every declaration of `p.kind`, in `p.scope`,
 /// projected by `p.proj` and ordered by `p.order` — SYNTHESISED, no
 /// AST, `wrapped_body`'s shape, keyed on the one declaration
-/// `is_collect_decl` names. `Workspace.admit_closure_collect_packages`
-/// forces a closure collect's own package admitted before any body
-/// lowers; `Decls.gathered_kind` re-asks the same door lazily, from
-/// `x.file`, for any this misses.
+/// `is_collect_decl` names. `Workspace.admit_collect_scopes` forces
+/// every collect's own scope admitted before any body lowers;
+/// `Decls.gathered` re-asks the same door lazily, from `x.file`, for
+/// any this misses.
 fn lower_collect(a: Analysis, x: Decl, fname: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
     let p: CollectParts = a.view.decls.store_of(x.file).collect_parts(x.stmt)!
     let rt: TypeId = a.view.decls.type_of_const(x.file, x.stmt) ?? a.view.decls.types.intern(Type.Error)
@@ -551,20 +551,22 @@ fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts, 
 }
 
 fn ordered_collect_members(a: Analysis, p: CollectParts, owner: FileId) -> List<Decl> {
-    let found = collect_members(a, p.kind, owner)
+    let found = collect_members(a, p.kind, p.scope, owner)
     let keys = sorted_texts([collect_sort_key(a, p, d) for d in found])
     [found.find(collect_sort_key(a, p, it) == k)! for k in keys]
 }
 
 /// The kind's own gathering door — A REGISTRY, exhaustive over
 /// `CollectKind`: the next kind (fn, case) answers here, never a
-/// string compare. `rule` reads every `DeclKind.Rule`, `owner`'s
-/// package force-admitted whole through the hook
-/// (`Decls.gathered_kind`, armed in workspace.av). `UnknownKind` was
-/// already refused at `check_collect` — it gathers nothing, honestly.
-fn collect_members(a: Analysis, kind: CollectKind, owner: FileId) -> List<Decl> {
+/// string compare. `rule` and a component both read the SAME index,
+/// by the SAME word (`Decls.collect_word`) — `owner`'s scope
+/// force-admitted whole through the hook (`Decls.gathered`, armed in
+/// workspace.av). `UnknownKind` was already refused at
+/// `check_collect` — it gathers nothing, honestly.
+fn collect_members(a: Analysis, kind: CollectKind, scope: CollectScope, owner: FileId) -> List<Decl> {
     match kind {
-        .Rule -> a.view.decls.gathered_kind(DeclKind.Rule, owner),
+        .Rule -> a.view.decls.gathered("rule", scope, owner),
+        .Component(w) -> a.view.decls.gathered(w, scope, owner),
         .UnknownKind(_) -> [],
     }
 }
@@ -602,7 +604,7 @@ fn collect_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: strin
 fn is_root_kind_path(kind: CollectKind, path: List<Plain>) -> bool {
     match kind {
         .Rule -> path.length == 1 && path[0].of == "root_kind",
-        .UnknownKind(_) -> false,
+        .Component(_) or .UnknownKind(_) -> false,
     }
 }
 

@@ -8,7 +8,7 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, Scoped, GrammarSpec, Annotation}
+use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, CollectScope, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, same_file, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, Scoped, GrammarSpec, Annotation}
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
 use core.{Fingerprint, fp, list_cell, map_cell, same_type}
 use @std.path.{stem_of}
@@ -28,6 +28,19 @@ export type Decl = { id: DeclId, file: FileId, stmt: StmtId, name: string, kind:
 
 /// A range-owning declaration and the source span it holds.
 type OwnerSpan = { d: DeclId, lo: int, hi: int }
+
+/// One `collect` INDEX row: a declaration under the word it answers.
+type IndexedWord = { word: string, id: DeclId }
+
+/// THE COLLECT INDEX's own state: every word's rows so far, and how
+/// far into `decls` it has read — `through` is the index's OWN
+/// cursor, never `decls.get().length` read twice at different times.
+type CollectIndex = { by_word: Map<string, List<DeclId>>, through: int }
+
+fn no_collect_index() -> CollectIndex {
+    let empty: Map<string, List<DeclId>> = {}
+    CollectIndex { by_word: empty, through: 0 }
+}
 
 /// `decls`, `sigs`, `children`, `methods` and `impls` are dense by
 /// DeclId; `stores` and `decl_ids` dense by FileId. The two hooks
@@ -178,6 +191,8 @@ export type Decls = {
     /// TWO LAYERS SHARED — see `module_files`.
     file_decls: Cell<List<Cell<List<DeclId>>>>,
     decls: Cell<List<Decl>>,
+    /// THE COLLECT INDEX — see `indexed`/`collect_word`.
+    collect_index: Cell<CollectIndex>,
     /// THE FILES ANSWERED FROM A RECORD — never parsed, so their declarations were
     /// MINTED and their objects come from the store. Keyed by path.
     held: Cell<Map<string, bool>>,
@@ -236,9 +251,10 @@ export type Decls = {
     // whether this ask closed a cycle
     ensure_const: Cell<fn(FileId, StmtId) -> bool>,
     // the workspace's collect-gathering hook: force-admits a
-    // closure-scoped collect's own package whole (a member's file is
-    // never `use`-reached — it exists to be discovered)
-    ensure_collect: Cell<fn(FileId, DeclKind) -> void>,
+    // closure-scoped collect's own SCOPE whole, by the word it
+    // gathers (a member's file is never `use`-reached — it exists to
+    // be discovered)
+    ensure_collect: Cell<fn(FileId, string) -> void>,
     // whether THIS compilation is a program (has an entry) or a
     // library — the closure-fold law's door (features/consts/check.av)
     ensure_entry: Cell<fn() -> bool>,
@@ -280,7 +296,7 @@ fn no_store(f: FileId) {}
 fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
 
 // LICENSED I23: a fn VALUE filling the collect-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
-fn no_collect_ensure(f: FileId, k: DeclKind) {}
+fn no_collect_ensure(f: FileId, word: string) {}
 
 // LICENSED I23: a fn VALUE filling the entry-ensure seat — no program is known before the workspace arms it
 fn no_entry_ensure() -> bool { false }
@@ -342,6 +358,7 @@ export fn new_decls() -> Decls {
         expansion_voices: Cell.new(no_expansion_voices),
         meta_ids: map_cell(),
         decls: Cell.new(no_decls),
+        collect_index: Cell.new(no_collect_index()),
         held: map_cell(),
         held_items: map_cell(),
         faces: Cell.new(no_faces),
@@ -536,9 +553,62 @@ impl Decls {
     /// one (`/tests/`) is not the program's own, `is_test_path`'s law
     /// here too. Admission is the caller's: a closure-scoped
     /// `collect` forces its own package's files in first
-    /// (`Workspace.collect_admit`, `gathered_kind`'s hook).
+    /// (`Workspace.collect_admit`, `gathered`'s hook).
     fn decls_of_kind(k: DeclKind) -> List<Decl> {
         [d for d in self.decls.get() if d.kind == k && !self.file(d.file).path.contains("/tests/")]
+    }
+
+    /// THE COLLECT INDEX: every declaration `collect` can gather, by
+    /// the ONE WORD it answers to — `rule` for a declared `DeclKind`,
+    /// or a component's own name for a named instance. Extended past
+    /// everything minted since it was last read, O(new rows) never a
+    /// rescan — a row's word never changes once minted, so nothing
+    /// already indexed is revisited.
+    fn indexed(word: string) -> List<DeclId> {
+        self.grown_index()
+        self.collect_index.get().by_word.get(word) ?? []
+    }
+
+    fn grown_index() {
+        let idx = self.collect_index.get()
+        let all = self.decls.get()
+        if idx.through >= all.length { return }
+        mut by_word = idx.by_word
+        for row in self.collect_rows(idx.through, all) {
+            by_word.set(row.word, (by_word.get(row.word) ?? []).concat([row.id]))
+        }
+        self.collect_index.set(CollectIndex { by_word: by_word, through: all.length })
+    }
+
+    /// The new rows' own words, `all[from..]` — a row with none (most
+    /// declarations: `collect` gathers by invitation, never by
+    /// default) contributes nothing.
+    fn collect_rows(from: int, all: List<Decl>) -> List<IndexedWord> {
+        flatten([some_list(self.indexed_word(all[i])) for i in from..all.length])
+    }
+
+    fn indexed_word(d: Decl) -> IndexedWord? {
+        let w? = self.collect_word(d) else { return null }
+        IndexedWord { word: w, id: d.id }
+    }
+
+    /// The word a declaration answers `collect` under: `rule` for a
+    /// `DeclKind.Rule`; for a `Const` (the ONLY kind a named instance
+    /// promotes to, `NodeStore.declared_instance`) the component its
+    /// own statement instances (`NodeStore.instance_of`) — absent for
+    /// everything else, a `Builtin`'s sentinel file and stmt among
+    /// them, which no store carries.
+    fn collect_word(d: Decl) -> string? {
+        if d.kind is .Rule { return "rule" }
+        if !(d.kind is .Const) { return null }
+        self.store_of(d.file).instance_of(d.stmt)
+    }
+
+    /// Every indexed declaration of `word`, admitted so far —
+    /// `decls_of_kind`'s law here too: a fixture (`/tests/`) is not
+    /// the program's own.
+    fn decls_of_word(word: string) -> List<Decl> {
+        [d for d in [self.decl(id) for id in self.indexed(word)] if !self.file(d.file).path.contains("/tests/")]
     }
 
     /// The root package's manifest name, kept in the dotted spelling.
@@ -677,7 +747,7 @@ impl Decls {
     fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(ensure) }
 
     /// The workspace arms the collect-gathering hook once.
-    fn arm_collect(ensure: fn(FileId, DeclKind) -> void) { self.ensure_collect.set(ensure) }
+    fn arm_collect(ensure: fn(FileId, string) -> void) { self.ensure_collect.set(ensure) }
 
     /// The workspace arms the entry hook once.
     fn arm_entry(ensure: fn() -> bool) { self.ensure_entry.set(ensure) }
@@ -686,12 +756,33 @@ impl Decls {
     /// workspace will run — or a library, read at run time only.
     fn is_program() -> bool { (self.ensure_entry.get())() }
 
-    /// Every declaration of `k`, `owner`'s package force-admitted
-    /// whole first (the hook) — the closure law for a collect whose
-    /// members are never `use`-reached.
-    fn gathered_kind(k: DeclKind, owner: FileId) -> List<Decl> {
-        (self.ensure_collect.get())(owner, k)
-        self.decls_of_kind(k)
+    /// Every declaration `word` names WITHIN `scope`, `owner`'s SCOPE
+    /// force-admitted whole first (the hook) — the closure law for a
+    /// collect whose members are never `use`-reached. Read through
+    /// the collect index, so a second ask over the same word rescans
+    /// nothing new; the SCOPE still filters every ask, since
+    /// admission and membership answer different questions — the
+    /// index may already hold more than `self`/`package` claims.
+    fn gathered(word: string, scope: CollectScope, owner: FileId) -> List<Decl> {
+        (self.ensure_collect.get())(owner, word)
+        [d for d in self.decls_of_word(word) if self.in_scope(d, scope, owner)]
+    }
+
+    /// A REGISTRY match over `CollectScope`: `self` is the owner's own
+    /// file, `package` the owner's own package, `closure` everything
+    /// admitted. An unknown scope was already refused at
+    /// `check_collect` — it gathers nothing, honestly.
+    fn in_scope(d: Decl, scope: CollectScope, owner: FileId) -> bool {
+        match scope {
+            .Self -> same_file(d.file, owner),
+            .Package -> self.package_of_file(d.file) == self.package_of_file(owner),
+            .Closure -> true,
+            .UnknownScope(_) -> false,
+        }
+    }
+
+    fn package_of_file(f: FileId) -> string {
+        self.package_named(self.module_name(self.file(f).module_id))
     }
 
     fn const_type(f: FileId, s: StmtId) -> ConstType {
