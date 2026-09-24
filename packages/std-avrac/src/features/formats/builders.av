@@ -5,9 +5,9 @@
 //! head and parts has no node to carry; the two LAWS over the holes
 //! are re-derived from the node and spoken by typing, where they
 //! carry a span and a code.
-use core.{Expr, Pat, Stmt, StmtId, Param, Scoped, Span, NodeStore, GrammarSpec, named_ref, binds, bound_names, plain_mark}
+use core.{Expr, Pat, Stmt, StmtId, Param, Scoped, Span, NodeStore, GrammarSpec, Hole, named_ref, binds, plain_mark}
 use features.{LangNode, Builder}
-use features.formats.{read_format, has_holes, Format, Fault}
+use features.formats.{read_format, has_holes, Format, Fault, reads_of, read_type_name}
 
 fn build_format_pat(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
@@ -50,7 +50,7 @@ impl NodeStore {
         let f = read_format(text)
         let broken: string? = undeclarable(f, name, written)
         if broken != null { return .Err(broken!) }
-        let s = self.alloc_stmt(Stmt.StructDecl(Scoped(name), [], [field_of(bound) for bound in bound_names(f.parts)]), span)
+        let s = self.alloc_stmt(Stmt.StructDecl(Scoped(name), [], [field_of(p.hole) for p in f.parts if binds(p.hole)]), span)
         self.mark_grammar(s, GrammarSpec { head: f.head, parts: f.parts })
         .Ok(s)
     }
@@ -67,8 +67,8 @@ fn undeclarable(f: Format, name: string, written: bool) -> string? {
     if written && !has_holes(f) { return "`grammar ${name}` has no holes — a grammar names the fields its holes bind, and this format binds none" }
     let anonymous = f.parts.find(!binds(it.hole))
     if anonymous != null { return "`grammar ${name}` has a hole that binds nothing — every hole of a grammar names a field" }
-    let typed = f.parts.find(it.hole.ty != null)
-    if typed != null { return "`grammar ${name}` has a hole that parses its span, and nothing reads text as `${typed!.hole.ty!.name}` yet" }
+    let unread = f.parts.find(reads_of(it.hole) == null)
+    if unread != null { return "`grammar ${name}` reads `{${unread!.hole.name}}` as `${unread!.hole.ty!.name}`, and a hole reads text as `string` or `int`" }
     null
 }
 
@@ -81,8 +81,9 @@ fn adjacent_words(fault: Fault?, name: string) -> string? {
     }
 }
 
-/// One capture as a record field: its name, and the span it takes.
-fn field_of(name: string) -> Param {
-    Param { name: Scoped(name), ty: named_ref("string"), default: null, promises: plain_mark }
+/// One capture as a record field: its name, and the type it reads
+/// its span as.
+fn field_of(h: Hole) -> Param {
+    Param { name: Scoped(h.name), ty: named_ref(read_type_name(reads_of(h)!)), default: null, promises: plain_mark }
 }
 

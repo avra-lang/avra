@@ -18,7 +18,30 @@ fn rc_routes() -> List<Route> {
     ]
 }
 
+/// A typed route before an untyped one over the same segments.
+fn typed_routes() -> List<Route> {
+    [
+        get "/ideas/{id: int}" { req -> "idea #${req.params.id + 1}" },
+        get "/ideas/{slug}" { req -> "idea " + req.params.slug },
+        get "/pages/{n: int}" { req -> "page ${req.params.n}" },
+    ]
+}
+
 spec "@std.http.route — routes as declarations" {
+    given "a typed hole" {
+        then "the handler reads an `int` param" {
+            answer_of(typed_routes(), "GET /ideas/41 HTTP/1.1") == "200 idea #42"
+        }
+        then "a segment that is no int passes to the next route" {
+            answer_of(typed_routes(), "GET /ideas/abc HTTP/1.1") == "200 idea abc"
+        }
+        then "a segment that is no int, and no route after it, is a 404" {
+            answer_of(typed_routes(), "GET /pages/two HTTP/1.1") == "404 " && answer_of(typed_routes(), "GET /pages/99999999999999999999 HTTP/1.1") == "404 "
+        }
+        then "a typed route shadows no untyped one below it" {
+            faults(typed_routes()).is_empty()
+        }
+    }
     given "what a handler answers" {
         then "text is a 200 carrying it" {
             answer_of(rc_routes(), "GET /health HTTP/1.1") == "200 ok"

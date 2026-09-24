@@ -24,14 +24,14 @@
 //! an untaken arm mints no managed value at all.
 use core.{Reg, Ins, PatId, ExprId, Type, TypeId, BinOp, FormatPart, GrammarSpec, binds}
 use features.{LowerCx, MethodCall}
-use features.formats.{pattern_text}
+use features.formats.{pattern_text, Reads, reads_of}
 
 /// Whether the subject matches. The walk's octets and span cells are
 /// left in the pattern's slot for the binds — written once here,
 /// read once there.
 export fn format_accepts(mut cx: LowerCx, p: PatId, head: string, parts: List<FormatPart>, v: Reg, vty: TypeId) -> Reg {
     let w = walked(cx, head, parts, v, vty)
-    cx.bind_test(p, [w.subject].concat(w.spans))
+    cx.bind_test(p, [w.subject].concat(w.spans).concat(w.reads))
     w.ok
 }
 
@@ -41,13 +41,23 @@ export fn format_accepts(mut cx: LowerCx, p: PatId, head: string, parts: List<Fo
 /// keeps an untaken arm free of allocation.
 export fn format_binds(mut cx: LowerCx, p: PatId, parts: List<FormatPart>, v: Reg, vty: TypeId) -> List<Reg> {
     let regs = cx.test_regs_of(p)
-    if regs.length != 1 + 2 * parts.length { return untested(cx) }
+    if regs.length != 1 + 3 * parts.length { return untested(cx) }
+    let w = Walked { ok: regs[0], subject: regs[0], spans: regs.slice(1, 1 + 2 * parts.length), reads: regs.slice(1 + 2 * parts.length, regs.length) }
     mut out: List<Reg> = []
-    // LICENSED I3: the cuts must be EMITTED in hole order, each minting its own answer
+    // LICENSED I3: the values must be EMITTED in hole order, each minting its own answer
     for i, part in parts {
-        if binds(part.hole) { out.push(cut(cx, regs[0], regs[1 + 2 * i], regs[2 + 2 * i], v, vty)) }
+        if binds(part.hole) { out.push(held(cx, w, part, i, v, vty)) }
     }
     out
+}
+
+/// What one hole binds, the walk done: its span cut, or the value a
+/// typed hole already read.
+fn held(mut cx: LowerCx, w: Walked, part: FormatPart, i: int, v: Reg, vty: TypeId) -> Reg {
+    match reads_of(part.hole)! {
+        .Text -> cut(cx, w.subject, w.spans[2 * i], w.spans[2 * i + 1], v, vty),
+        .Int -> loaded_from(cx, w.reads[i]),
+    }
 }
 
 /// The test runs before the binds and leaves the spans behind, so an
@@ -57,14 +67,15 @@ fn untested(mut cx: LowerCx) -> List<Reg> {
     []
 }
 
-/// A walk's result: the verdict, the octets it read, and the span
-/// cells — a lo and a hi per hole, in hole order.
-type Walked = { ok: Reg, subject: Reg, spans: List<Reg> }
+/// A walk's result: the verdict, the octets it read, the span cells —
+/// a lo and a hi per hole, in hole order — and a cell per hole for
+/// the int a typed hole read.
+type Walked = { ok: Reg, subject: Reg, spans: List<Reg>, reads: List<Reg> }
 
 fn walked(mut cx: LowerCx, head: string, parts: List<FormatPart>, v: Reg, vty: TypeId) -> Walked {
     let subject = octets(cx, v, vty)
     let len = measured(cx, subject)
-    let final? = parts.last() else { return Walked { ok: whole(cx, subject, len, head), subject: subject, spans: [] } }
+    let final? = parts.last() else { return Walked { ok: whole(cx, subject, len, head), subject: subject, spans: [], reads: [] } }
     let int_ty = cx.type(int)
     let last = final.piece
     let stop = cx.seeded_cell(int_ty, minus(cx, len, cx.const_int(byte_length(last))))
@@ -75,8 +86,44 @@ fn walked(mut cx: LowerCx, head: string, parts: List<FormatPart>, v: Reg, vty: T
         spans.push(cx.seeded_cell(int_ty, cx.const_int(0)))
         spans.push(cx.seeded_cell(int_ty, cx.const_int(0)))
     }
-    let w = Walked { ok: anchored(cx, subject, len, head, last), subject: subject, spans: spans }
-    w with { ok: spanned(cx, w, parts, cur, stop, 0) }
+    let reads = [cx.seeded_cell(int_ty, cx.const_int(0)) for part in parts]
+    let w = Walked { ok: anchored(cx, subject, len, head, last), subject: subject, spans: spans, reads: reads }
+    let found = w with { ok: spanned(cx, w, parts, cur, stop, 0) }
+    found with { ok: read_through(cx, found, parts, v, vty, 0) }
+}
+
+/// EVERY TYPED HOLE READ, after every span is found, inside the
+/// verdict so far: a span that does not read as its type fails the
+/// match, as a missing literal does.
+fn read_through(mut cx: LowerCx, w: Walked, parts: List<FormatPart>, v: Reg, vty: TypeId, i: int) -> Reg {
+    if i == parts.length { return w.ok }
+    if reads_of(parts[i].hole) != Reads.Int { return read_through(cx, w, parts, v, vty, i + 1) }
+    cx.open_region(w.ok)
+    cx.arm_end(int_read(cx, w, i, v, vty))
+    let no = cx.const_bool(false)
+    read_through(cx, w with { ok: cx.close_region_as(cx.type(bool), no) }, parts, v, vty, i + 1)
+}
+
+/// Whether hole `i`'s span spells an int, which lands in its cell. A
+/// span of octets reads only when it is text.
+fn int_read(mut cx: LowerCx, w: Walked, i: int, v: Reg, vty: TypeId) -> Reg {
+    let span = cut(cx, w.subject, w.spans[2 * i], w.spans[2 * i + 1], v, vty)
+    if !(cx.view.types.seen_shape(vty) is .Bytes) { return parsed_into(cx, span, w.reads[i]) }
+    let str_opt = cx.type(string?)
+    let text = cx.str_of_bytes(cx.view.types.shape_of(str_opt), span)
+    cx.open_presence(text, str_opt)
+    cx.arm_end(parsed_into(cx, cx.carried_of(text, str_opt), w.reads[i]))
+    let no = cx.const_bool(false)
+    cx.close_region_as(cx.type(bool), no)
+}
+
+/// Whether `text` spells an int; when it does, the int lands in `cell`.
+fn parsed_into(mut cx: LowerCx, text: Reg, cell: Reg) -> Reg {
+    cx.open_region(cx.str_parses_int(Type.Bool, text))
+    cx.emit(Ins.Store(cell, cx.str_parsed_int(Type.Int, text)))
+    cx.arm_end(cx.const_bool(true))
+    let no = cx.const_bool(false)
+    cx.close_region_as(cx.type(bool), no)
 }
 
 /// A format of no holes is its head, matched whole: exactly as long,
@@ -317,14 +364,12 @@ fn read_into(mut cx: LowerCx, read: GrammarSpec, text: Reg, want: TypeId) -> Reg
 /// The record the holes fill, slot by slot in declaration order —
 /// which is hole order, because the fields ARE the holes.
 fn gathered(mut cx: LowerCx, w: Walked, parts: List<FormatPart>, text: Reg, want: TypeId) -> Reg {
-    let held = cx.carried_type(want)
     mut slots: List<Reg> = []
-    // LICENSED I3: the cuts must be EMITTED in hole order, each minting its own answer
+    // LICENSED I3: the values must be EMITTED in hole order, each minting its own answer
     for i, part in parts {
-        if binds(part.hole) { slots.push(cut(cx, w.subject, w.spans[2 * i], w.spans[2 * i + 1], text, cx.type(string))) }
+        if binds(part.hole) { slots.push(held(cx, w, part, i, text, cx.type(string))) }
     }
-    let size = cx.box_size(slots.length)
-    cx.grown_box(cx.view.types.shape_of(held), size, slots)
+    cx.packed_struct(cx.carried_type(want), slots)
 }
 
 /// A door's format lives on its DECLARATION, so a door reached
@@ -370,13 +415,20 @@ export fn lower_pattern(mut cx: LowerCx, mc: MethodCall) -> Reg {
 fn read_fields(mut cx: LowerCx, subject: ExprId, parts: List<FormatPart>) -> List<Reg> {
     let v = cx.reg_of(subject)
     let vty = cx.type_at(subject)
-    let str_ty = cx.type(string)
     mut out: List<Reg> = []
     // LICENSED I3: the reads must be EMITTED in slot order, each minting its own answer
     for i, part in parts {
-        out.push(cx.field_read(v, vty, i, str_ty))
+        out.push(printed(cx, v, vty, i, reads_of(part.hole)!))
     }
     out
+}
+
+/// One field as the text its hole prints: itself, or an int's digits.
+fn printed(mut cx: LowerCx, v: Reg, vty: TypeId, i: int, r: Reads) -> Reg {
+    match r {
+        .Text -> cx.field_read(v, vty, i, cx.type(string)),
+        .Int -> cx.int_text(Type.Str, cx.field_read(v, vty, i, cx.type(int))),
+    }
 }
 
 /// WHETHER THE VALUES SURVIVE, hole by hole, as a lazy chain: a later
