@@ -338,3 +338,52 @@ it per instruction is quadratic. `viewed_regs` is a SUPERSET (any
 register a managed view reads) and `views` keeps the exact filter;
 the pass is then at parity (158.1B vs 158.3B instructions). Request
 census: retains 20 -> 14, releases 36 -> 30 per request.
+
+## §12 As built — the three narrow leaves
+
+The R5a profile named three costs that were neither counts nor boxes:
+- **`avra_int_text` formatted through `snprintf`** (`__vfprintf`, ~2%
+  of the request): digits now written backwards into a scratch buffer,
+  the magnitude unsigned so `INT64_MIN` has one too — checked against
+  `snprintf` on thirteen edge cases.
+- **`avra_str_char_code` carried its trap inline** — an 80-byte buffer
+  and a `snprintf` in a hot leaf (A COLD PATH IN A HOT LEAF); it calls
+  the out-of-line `trap_bounds` now, same words.
+- **std-http's `byte(":")` read a literal at run time**, 41 sites. A
+  LITERAL's byte at a literal index folds in lowering
+  (`literal_code`, features/str_lit/lower.av) — the byte the runtime
+  would read, or the runtime call when the index is outside the text —
+  and the sites spell `":".char_code()`. The request path now calls
+  `char_code` zero times. Pinned by str_lit/tests/char_code_fold
+  (an escape, a later byte, a multi-byte lead and continuation, a
+  computed index beside a written one; eval == native).
+
+Still open from that profile: `avra_once_get` (~7%, 42 reads a request)
+wants a `Bytes` const to cross as static data (R9).
+
+## §13 As built — R9a, a `Bytes` const is static data
+
+**D21. `Bytes` has a compile-time value form.** The crossing carries
+octets as `MetaVal.Octets(List<int>)` (the evaluator's `Val.Y` crossed
+as it holds them — it used to become `Text`), the settlement wire as a
+number list (`o`, refused whole when a field is not a number, so the
+record is rebuilt), the fingerprint as one folded part (tag 125). The
+static layout gives a `Bytes` value a box of its own,
+`StaticBox.Octets(b)`, which the backend lays out with the text
+constant's writer — KIND_STATIC, immortal, the layout text and octets
+share (D1) — and the evaluator reads back as `Val.Y`. So a `Bytes`
+anywhere in a const — whole, in a list, in a record field — is an
+address in the binary: no evaluation, no count.
+
+**std-http's request-path tables are consts** (`frame.av`, `http.av`,
+`client.av`: 34 `once fn`s — class tables, header names, the verbs):
+`tchar` is an address where it was a cache lookup, a retain and a
+release per read, 42 reads a request. The cold modules (`query.av`,
+`route.av`, `server.av`) keep theirs: a `let amp = … amp()` there
+would have been shadowed by the rewrite. A const is a NAME a binding
+can shadow; a `once fn` call cannot be.
+
+Pinned by consts/tests/bytes_consts (literal, empty, non-UTF-8, list,
+record field, a fn-computed class table, a thousand reads of an
+immortal). The request bench on the Mac: 1.30 µs -> 0.99 µs, with the
+literal-byte fold of §12.

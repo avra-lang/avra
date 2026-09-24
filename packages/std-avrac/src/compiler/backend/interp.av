@@ -651,6 +651,7 @@ impl Machine {
             .Absent -> Val.N,
             .Gone -> Val.Gone,
             .Node(id) -> { self.fresh_array([self.val_of(heap, x) for x in heap.nodes[id]]) },
+            .Octets(xs) -> Val.Y(xs),
             .Map(id) -> {
                 let row = heap.maps[id]
                 self.maps.push(MapVal { keys: row.keys, vals: [self.val_of(heap, x) for x in row.values] })
@@ -668,7 +669,7 @@ impl Machine {
             .F(bits) -> MetaVal.Float(bits),
             .B(b) -> MetaVal.Bool(b),
             .S(s) -> MetaVal.Text(s),
-            .Y(data) -> MetaVal.Text(self.decoded(data)),
+            .Y(data) -> MetaVal.Octets(data),
             .N -> MetaVal.Absent,
             .Gone -> MetaVal.Gone,
             .A(id) -> { heap.node([self.meta_of(x, heap) for x in self.arrays[id]]) },
@@ -949,6 +950,7 @@ impl Machine {
     fn box_val(b: StaticBox, built: List<Val>) -> Val {
         match b {
             .Slots(cells) -> self.fresh_array([slot_val(c, built) for c in cells]),
+            .Octets(b) -> Val.Y([b.at(j) for j in 0..b.length]),
             .Table(keys, values) -> {
                 self.maps.push(MapVal { keys: keys, vals: [slot_val(c, built) for c in values] })
                 Val.M(self.maps.length - 1)

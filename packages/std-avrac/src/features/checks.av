@@ -148,10 +148,20 @@ impl TypeCx {
     /// — whose stand-in type unifies with anything. The one door for a
     /// call argument, a struct field and an enum payload alike.
     mut fn agreed(e: ExprId, want: TypeId, decl: DeclId, mut bound: Pins) -> bool {
+        self.seated_early(e, want, decl, bound)
         let got = self.type_at(e)
         let matched = self.unify(want, got, decl, bound) || self.seat_widens(want, got, decl, bound)
         if !self.fully_bound(want, decl, bound) { return matched }
         self.accepts(e, self.view.types.substituted(want, decl, self.bound_args(bound)))
+    }
+
+    /// A hungry lambda whose SEATS the bindings already make concrete
+    /// is typed under them now, so its answer can pin what they leave
+    /// free: `fn(Req<P>) -> T` after `P` is bound hears `T` from the body.
+    mut fn seated_early(e: ExprId, want: TypeId, decl: DeclId, bound: Pins) {
+        let arrow? = self.view.types.arrow_parts(want) else { return }
+        if !arrow.seats.all((s) -> self.fully_bound(s, decl, bound)) { return }
+        let _ = self.retype_seated(e, [self.view.types.substituted(s, decl, self.bound_args(bound)) for s in arrow.seats], arrow.marks)
     }
 
     /// A `T?` SEAT takes a present value and pins `T` to it — here and

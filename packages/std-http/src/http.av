@@ -95,18 +95,18 @@ impl Request {
     fn absolute_path() -> Bytes? {
         let stop = self.split_at()
         let from = self.authority_to()
-        if from == stop { return root() }
+        if from == stop { return root }
         self.raw.slice(from, stop)
     }
 
     /// Where an absolute-form target's authority begins: past `://`.
-    fn authority_from() -> int { self.raw.index_of(scheme_end(), self.head.target.lo) + 3 }
+    fn authority_from() -> int { self.raw.index_of(scheme_end, self.head.target.lo) + 3 }
 
     /// Where it ends: at the path's first `/`, else where the path
     /// class itself ends — a `?` or the target's own last octet.
     fn authority_to() -> int {
         let stop = self.split_at()
-        let at = self.raw.index_of(slash(), self.authority_from())
+        let at = self.raw.index_of(slash, self.authority_from())
         if at < 0 || at >= stop { return stop }
         at
     }
@@ -128,7 +128,7 @@ impl Request {
     /// but not `?` stops at the query OR at the target's own end,
     /// whichever comes first, in one call.
     fn split_at() -> int {
-        let stop = self.raw.run(self.head.target.lo, path_char())
+        let stop = self.raw.run(self.head.target.lo, path_char)
         if stop > self.head.target.hi { return self.head.target.hi }
         stop
     }
@@ -164,14 +164,14 @@ export fn read_size() -> int { 16384 }
 
 /// A target octet that is not `?` — composed from the framer's law
 /// rather than restated, so the two cannot drift apart.
-once fn path_char() -> Bytes { admits((c) -> is_target(c) && c != question_octet()) }
+const path_char: Bytes = admits((c) -> is_target(c) && c != question_octet())
 
 fn question_octet() -> int { 63 }
 
 /// The root path, for an absolute-form target that carried none.
-once fn root() -> Bytes { "/".bytes() }
+const root: Bytes = "/".bytes()
 
-once fn slash() -> Bytes { "/".bytes() }
+const slash: Bytes = "/".bytes()
 
 /// A plain-text response of this status.
 export fn text(status: int, body: string) -> Response {
@@ -231,7 +231,7 @@ fn fate(keep_alive: bool, minor: int) -> string {
 /// are not statuses — and every field a field the framer would frame.
 /// Public so a handler can ask before it answers.
 export fn sendable(r: Response) -> bool {
-    r.status >= 100 && r.status <= 999 && fields_writable(r.headers, reply_writes())
+    r.status >= 100 && r.status <= 999 && fields_writable(r.headers, reply_writes)
 }
 
 /// EVERY FIELD A WRITER MAY WRITE: each one a field the framer would
@@ -255,7 +255,7 @@ export fn fields_writable(headers: List<Header>, written_by: List<Bytes>) -> boo
 /// reader stays strict. An empty VALUE is a value and passes; an
 /// empty NAME is not a token.
 export fn writable(h: Header) -> bool {
-    !h.name.is_empty() && every_octet(h.name, token_char()) && every_octet(h.value, value_char())
+    !h.name.is_empty() && every_octet(h.name, token_char) && every_octet(h.value, value_char)
 }
 
 /// EVERY OCTET OF `s` IS IN `class` — the one place text is judged
@@ -277,13 +277,13 @@ export fn names_one_of(name: string, written_by: List<Bytes>) -> bool {
 }
 
 /// What octet a field NAME may carry, as a class table.
-export once fn token_char() -> Bytes { admits(is_tchar) }
+export const token_char: Bytes = admits(is_tchar)
 
 /// What octet a field VALUE may carry, as a class table.
-export once fn value_char() -> Bytes { admits(is_vchar) }
+export const value_char: Bytes = admits(is_vchar)
 
 /// The framing fields `wire` writes from what it is sending.
-once fn reply_writes() -> List<Bytes> { [w.bytes() for w in ["content-length", "connection", "transfer-encoding"]] }
+const reply_writes: List<Bytes> = [w.bytes() for w in ["content-length", "connection", "transfer-encoding"]]
 
 /// The reason phrase — the registered ones, and the class's word for
 /// the rest.

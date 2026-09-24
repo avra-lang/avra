@@ -10,6 +10,7 @@ fn wire_value(v: MetaVal) -> string {
         .Int(n) -> wire_field("i") + wire_field("${n}"),
         .Float(bits) -> wire_field("f") + wire_field("${bits}"),
         .Text(s) -> wire_field("t") + wire_field(s),
+        .Octets(xs) -> wire_field("o") + wire_field(["${x}" for x in xs].join(",")),
         .Bool(b) -> wire_field("b") + wire_field(if b { "1" } else { "0" }),
         .Absent -> wire_field("a"),
         .Gone -> wire_field("g"),
@@ -85,6 +86,7 @@ impl WireReader {
         if tag == "g" { return MetaVal.Gone }
         let data? = self.field() else { return null }
         if tag == "t" { return MetaVal.Text(data) }
+        if tag == "o" { return octets_of(data) }
         if tag == "b" { return MetaVal.Bool(data == "1") }
         let n? = wire_number(data) else { return null }
         match tag {
@@ -303,4 +305,17 @@ impl Workspace {
         for s in w.seats { out = out + self.seat_wire(s) }
         out
     }
+}
+
+/// A wired octet list — its numbers, comma-joined, the empty text none —
+/// or absence when a field is not a number, so the record is rebuilt.
+fn octets_of(data: string) -> MetaVal? {
+    if data == "" { return MetaVal.Octets([]) }
+    mut out: List<int> = []
+    // LICENSED I3: a parse that refuses at the first field that is not a number
+    for x in data.split(",") {
+        let n? = wire_number(x) else { return null }
+        out.push(n)
+    }
+    MetaVal.Octets(out)
 }
