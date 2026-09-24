@@ -142,6 +142,10 @@ export type TypeFacts = {
     offers: SideTable<bool>,
     // a kept LIST a `collect` spreads, element by element
     spreads: SideTable<bool>,
+    // a trailing-arms-sugar Match left with an uncovered variant
+    // under a nullable seat — checking's one answer, lowering's one
+    // read: the missing case answers `null`
+    null_tails: SideTable<bool>,
     voices: Voices,
 }
 
@@ -169,6 +173,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         collections: side_table<List<ExprId>?>("collections", lo, hi, null),
         offers: side_table("offers", lo, hi, false),
         spreads: side_table("spreads", lo, hi, false),
+        null_tails: side_table("null_tails", lo, hi, false),
         starved: side_table<TypeId?>("starved", lo, hi, null),
         scopes: side_table<ParamScope?>("scopes", lo, hi, null),
         pattern_types: side_table_of("pattern_types", lo, empty_lists_ty(hi - lo), no_types),
@@ -304,6 +309,14 @@ impl TypeFacts {
         self.spreads.set(e.index, spreads)
     }
 
+    /// Whether a sugar match's uncovered variants answer `null` —
+    /// checking's one answer, lowering's one read.
+    fn has_null_tail(e: ExprId) -> bool { self.null_tails.get(e.index) }
+
+    fn mark_null_tail(e: ExprId) {
+        self.null_tails.set(e.index, true)
+    }
+
     /// Whether a lambda takes its seat's record by field name.
     fn takes_by_name(lam: ExprId) -> bool { self.offers.get(lam.index) }
 
@@ -327,7 +340,7 @@ impl TypeFacts {
         // EACH COLUMN THROUGH ITS FIELD: a fn handed the table could
         // only fill a copy, and the fold runs once per body. The
         // OFFSET is the tables' own — each window knows where it sits.
-        // LICENSED I3: sixteen named columns, one lay each
+        // LICENSED I3: seventeen named columns, one lay each
         self.of_expr.lay(other.of_expr)
         self.widens.lay(other.widens)
         self.narrows.lay(other.narrows)
@@ -344,6 +357,7 @@ impl TypeFacts {
         self.collections.lay(other.collections)
         self.offers.lay(other.offers)
         self.spreads.lay(other.spreads)
+        self.null_tails.lay(other.null_tails)
         self.binding_types.lay_named(other.binding_types, is_typed)
     }
 

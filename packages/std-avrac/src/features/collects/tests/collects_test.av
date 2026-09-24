@@ -1,0 +1,67 @@
+//! `collect`'s own laws (docs/2026_09_22_COLLECTIONS.md §4), proved
+//! against source strings — each refusal fired ALONE, on an
+//! otherwise-honest declaration, so the count pins which law spoke.
+//! The self-read cycle law's own source ALSO earns F2098 (a bare
+//! `rule` outside `@std/avrac` reads no `Fix`) — no scratch source
+//! loads that package — so ITS count pins two, never one.
+use @std.avrac.testing.{refused_with, shown}
+use @std.avrac.compiler.{analyze_source}
+
+spec "collect's own laws" {
+    given "the order law" {
+        then "a collect with no `by` refuses" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name }\n1", "a collection declares its order")
+        }
+        then "a collect WITH `by` does not refuse for order" {
+            !refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\n1", "a collection declares its order")
+        }
+    }
+    given "the kind law" {
+        then "an unknown declaration kind refuses" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name\n1", "is not a declaration kind")
+        }
+    }
+    given "the scope law" {
+        then "an unknown scope word refuses" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in everywhere as Entry { name: it.name } by it.name\n1", "is not a collect scope")
+        }
+    }
+    given "the projection law" {
+        then "a projected type that disagrees with the declared element refuses" {
+            refused_with("type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = rule in closure as Other { name: it.name } by it.name\n1", "disagrees with the declared element")
+        }
+        then "a field the projection leaves unfilled refuses" {
+            refused_with("type Entry = { name: string, module: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\n1", "not each filled exactly once")
+        }
+        then "a field the declared type does not have refuses" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name, extra: it.module } by it.name\n1", "not each filled exactly once")
+        }
+    }
+    given "the field vocabulary law" {
+        then "an `it` path outside a kind's vocabulary refuses" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.frobnicate } by it.name\n1", "is not a field this kind's declarations answer")
+        }
+    }
+    given "the closure-fold law (§4.1)" {
+        then "a library folds a closure collection at compile time — refused" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\nconst n: int = xs.length\n1", "is closed only when a program links")
+        }
+        then "reading it at run time, from a fn, is fine" {
+            !refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\nfn count() -> int { xs.length }\n1", "is closed only when a program links")
+        }
+    }
+    given "the self-read cycle law (§4.2)" {
+        then "a rule reading its own collection while compiling — refused" {
+            let a = analyze_source("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\n@fixes(\"1\", \"2\")\nrule bad {\n    _ if xs.length > 0 -> quote { 2 },\n}\n1")
+            a.diagnostics.length == 2 && a.report().contains("cannot read `xs` while compiling")
+        }
+    }
+    given "the `it`/`by` words" {
+        then "an ordinary `it` still means the pronoun, unreserved by the new grammar" {
+            shown("[1, 2, 3].any(it > 1)") == "true"
+        }
+        then "an ordinary `by` still names an identifier, unreserved by the new grammar" {
+            shown("fn f(by: int) -> int { by + 1 }\nf(2)") == "3"
+        }
+    }
+}

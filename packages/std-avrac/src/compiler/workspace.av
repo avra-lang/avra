@@ -14,7 +14,7 @@
 //! and a `use @scope.name.a` reaches a dependency's module only when
 //! the asking package's manifest declares it. A lone file is a
 //! package of one rooted at its directory.
-use core.{Table, new_table, list_cell, NodeStore, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, distinct, TypeId, Type, some_list, same_file, touch, Annotation}
+use core.{Table, new_table, list_cell, NodeStore, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, distinct, TypeId, Type, some_list, same_file, touch, Annotation, DeclKind}
 use @std.path.{dir_of, joined_path}
 use features.components.{word_of, instanced, named_instances}
 use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, scalar_types, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockWords}
@@ -503,6 +503,8 @@ fn built(host: Host, root: string, src: string, lang: Language, clock: fn() -> i
     ws.decls.arm_store((f: FileId) -> ws.store_ensured(f))
     ws.decls.arm_file((f: FileId) -> ws.file_ensured(f))
     ws.decls.arm_const((f: FileId, s: StmtId) -> ws.const_type_ensured(f, s))
+    ws.decls.arm_collect((f: FileId, k: DeclKind) -> { let _ = ws.collect_admit_from(k, f) })
+    ws.decls.arm_entry(() -> ws.entry_of() != null)
     ws.decls.arm_methods((d: DeclId) -> ws.methods_ensured(d))
     ws.decls.arm_writes((d: DeclId) -> ws.writes_ensured())
     ws.decls.arm_marks((d: DeclId) -> ws.marks_ensured(d))
@@ -1228,7 +1230,7 @@ impl Decls {
             .Method if x.parent != null && self.decl(x.parent!).kind is .Trait -> 1,
             .Fn or .Rule -> 2,
             .Method or .Impl -> 3,
-            .Trait or .Syntax or .Default or .Main or .Case or .Const -> 4,
+            .Trait or .Syntax or .Default or .Main or .Case or .Const or .Collect -> 4,
         }
     }
 }

@@ -235,7 +235,23 @@ fn coverage_checks(mut cx: TypeCx, e: ExprId, subject: ExprId, subject_ty: TypeI
     }
     if declared == null { return needs_catch_all(cx, e, sname) }
     let sig = declared!
-    for n in uncovered(cx, before, sig) { unhandled_variant(cx, e, sname, n) }
+    let missing = uncovered(cx, before, sig)
+    if missing.is_empty() { return }
+    if implicit_null_tail(cx, e) { return cx.facts.mark_null_tail(e) }
+    for n in missing { unhandled_variant(cx, e, sname, n) }
+}
+
+/// A trailing-arms-sugar `match` under a NULLABLE seat leaves its
+/// uncovered variants to an implicit `_ -> null` — the sugar's own
+/// law, never a hand-written match's: `match`'s own exhaustiveness
+/// law speaks for those. The mark rides the Match a program never
+/// wrote (`is_sugar_match`); the want a boundary already planted on
+/// it (`plant_want`, before the arms walked) says whether the tail
+/// is spendable.
+fn implicit_null_tail(cx: TypeCx, e: ExprId) -> bool {
+    if !cx.view.store.is_sugar_match(e) { return false }
+    let want? = cx.want_at(e) else { return false }
+    cx.view.types.shape_of(want) is .Opt
 }
 
 /// The variants these patterns, as one row each, leave uncovered.

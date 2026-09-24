@@ -19,6 +19,16 @@ fn wire_value(v: MetaVal) -> string {
     }
 }
 
+/// One map's own wire form: its key count, then each key paired with
+/// its value — `keys`/`values` are parallel lists, so the walk
+/// enumerates the one it names and indexes the other by the same
+/// position.
+fn wire_map(row: MetaMap) -> string {
+    mut out = wire_field("${row.keys.length}")
+    for i, k in row.keys.enumerate() { out = out + wire_field(k) + wire_value(row.values[i]) }
+    out
+}
+
 /// A unit row contains the answer, its heap, embed dependencies, and the value
 /// fingerprint that specialization keys use. Heap handles remain indices into
 /// these serialized arrays; no process-local type or AST id crosses the disk.
@@ -31,10 +41,7 @@ fn settled_wire(s: Settled) -> string {
         for v in slots { out = out + wire_value(v) }
     }
     out = out + wire_field("${s.heap.maps.length}")
-    for row in s.heap.maps {
-        out = out + wire_field("${row.keys.length}")
-        for i in 0..row.keys.length { out = out + wire_field(row.keys[i]) + wire_value(row.values[i]) }
-    }
+    for row in s.heap.maps { out = out + wire_map(row) }
     out + wire_value(s.answer)
 }
 
@@ -159,10 +166,7 @@ fn heap_wire(h: MetaHeap) -> string {
         for v in slots { out = out + wire_value(v) }
     }
     out = out + wire_field("${h.maps.length}")
-    for row in h.maps {
-        out = out + wire_field("${row.keys.length}")
-        for i in 0..row.keys.length { out = out + wire_field(row.keys[i]) + wire_value(row.values[i]) }
-    }
+    for row in h.maps { out = out + wire_map(row) }
     out
 }
 
@@ -225,8 +229,7 @@ impl Workspace {
             let decl = self.decl_from_ref(decl_raw)
             let sub: Sub? = if sub_mark == "+" {
                 let target_raw? = r.field() else { return null }
-                let target = self.decl_from_ref(target_raw)
-                if target == null { return null }
+                let target? = self.decl_from_ref(target_raw) else { return null }
                 let arg_count? = r.number() else { return null }
                 if arg_count < 0 { return null }
                 mut args: List<TypeId> = []
@@ -242,7 +245,7 @@ impl Workspace {
                     let c? = r.field() else { return null }
                     consts.push(c)
                 }
-                Sub { target: target!, args: args, consts: consts }
+                Sub { target: target, args: args, consts: consts }
             } else {
                 null
             }

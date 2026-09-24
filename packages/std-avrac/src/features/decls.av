@@ -8,7 +8,7 @@
 //! the namespace law can refuse it. Per-file facts live once, by
 //! FileId: the path, the module, the store, and which of its
 //! statements declare. The workspace mints; every pass reads.
-use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, Scoped, GrammarSpec}
+use core.{SideTable, side_table, DeclId, FileId, ModuleId, DeclKind, StmtId, ExprId, PatId, Span, NodeStore, TypeRegistry, new_type_registry, Param, module_symbol, filled, flatten, some_list, same_decl, SpecParts, ImplParts, TypeId, no_stmt, Type, package_of_module, TypeRef, named_ref, Stmt, Expr, Scoped, GrammarSpec, Annotation}
 use core.{SeatMark, mark_at, plain_mark, ArenaRuns}
 use core.{Fingerprint, fp, list_cell, map_cell, same_type}
 use @std.path.{stem_of}
@@ -37,6 +37,35 @@ type OwnerSpan = { d: DeclId, lo: int, hi: int }
 /// admitted, and kept beside the declaration. A pass that reads `store(d)` instead reads
 /// a file a HELD build never parsed; this is the ONE place that knowledge lives, so a held
 /// file is loaded by filling these rows and NOTHING reaches into a store after admission.
+/// `@name(args)` recorded as a declaration's own fact: its callee's name, each
+/// argument's literal text (a string/int/bool/identifier — anything else reads ""),
+/// and where it was written.
+@derive(Fingerprint)
+export type AnnotationFact = { name: string, args: List<string>, span: Span? }
+
+/// An argument's literal text, when it has one — a computed expression answers "".
+fn arg_text(store: NodeStore, e: ExprId) -> string {
+    let expr = store.expr(e)
+    let t? = expr.text_of() else { return int_text(expr) ?? bool_text(expr) ?? store.ident_name(e) ?? "" }
+    t
+}
+
+fn int_text(e: Expr) -> string? {
+    let n? = e.int_of() else { return null }
+    "${n}"
+}
+
+fn bool_text(e: Expr) -> string? {
+    let b? = e.bool_of() else { return null }
+    "${b}"
+}
+
+/// A parsed `Annotation` as the fact a declaration keeps: its callee's args
+/// re-read as literal text, since the fact outlives the store a held file has none of.
+fn annotation_fact(store: NodeStore, a: Annotation) -> AnnotationFact {
+    AnnotationFact { name: a.name, args: [arg_text(store, e) for e in a.args], span: a.span }
+}
+
 /// THE FINGERPRINT IS THE CODEC'S CHECKSUM: the derived fold covers EVERY field, so the
 /// record carries it and the decoder recomputes it — a field added and not encoded makes
 /// the two disagree and the module refuses to hold, instead of silently decoding a default.
@@ -69,6 +98,13 @@ export type DeclFacts = {
     /// by its file's object. A reader in another file must know it without a parse the
     /// hold skips.
     instance: bool = false,
+    /// THE DECLARATION'S OWN `///` LINES, absent where it wrote none — a fact every
+    /// tool (`avra explain`, the formatter, `@std/meta`'s crossing) reads the same
+    /// way, so a held file answers it without the parse the hold exists to skip.
+    doc: List<string>? = null,
+    /// EVERY `@name(args)` THE DECLARATION WEARS, in written order — the general
+    /// table `annotated` above only flags the presence of.
+    annotations: List<AnnotationFact> = [],
 }
 
 /// An extern's raw seat widths: one name per parameter, then the answer's.
@@ -108,6 +144,8 @@ fn capture_facts(store: NodeStore, x: Decl) -> DeclFacts {
         annotated: readable && !store.annotations_of(x.stmt).is_empty(),
         of: if readable && x.kind is .Impl { store.impl_parts(x.stmt)?.of ?? "" } else { "" },
         instance: readable && x.kind is .Const && store.is_component_inst(x.stmt),
+        doc: if readable { store.doc_comment(x.stmt) } else { null },
+        annotations: if readable { [annotation_fact(store, a) for a in store.annotations_of(x.stmt)] } else { [] },
     }
 }
 
@@ -197,6 +235,13 @@ export type Decls = {
     // the workspace's const-type hook: types the const, and answers
     // whether this ask closed a cycle
     ensure_const: Cell<fn(FileId, StmtId) -> bool>,
+    // the workspace's collect-gathering hook: force-admits a
+    // closure-scoped collect's own package whole (a member's file is
+    // never `use`-reached — it exists to be discovered)
+    ensure_collect: Cell<fn(FileId, DeclKind) -> void>,
+    // whether THIS compilation is a program (has an entry) or a
+    // library — the closure-fold law's door (features/consts/check.av)
+    ensure_entry: Cell<fn() -> bool>,
     // the workspace's lifting hook: an annotation fn run over a
     // declaration at compile time, what it said back
     lifter: Cell<fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>>,
@@ -233,6 +278,12 @@ fn no_store(f: FileId) {}
 
 // LICENSED I23: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
 fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
+
+// LICENSED I23: a fn VALUE filling the collect-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
+fn no_collect_ensure(f: FileId, k: DeclKind) {}
+
+// LICENSED I23: a fn VALUE filling the entry-ensure seat — no program is known before the workspace arms it
+fn no_entry_ensure() -> bool { false }
 
 /// A const's type as the program answers it — or why it has none:
 /// the const REFUSED (spoken at its own value), or its value asks
@@ -308,6 +359,8 @@ export fn new_decls() -> Decls {
         impls_by_name: Cell.new(no_impls_by_name),
         ensure: Cell.new(no_ensure),
         ensure_const: Cell.new(no_const_ensure),
+        ensure_collect: Cell.new(no_collect_ensure),
+        ensure_entry: Cell.new(no_entry_ensure),
         ensure_methods: Cell.new(no_ensure),
         builtins: list_cell(),
         rows: [],
@@ -351,6 +404,7 @@ export fn kind_word(k: DeclKind) -> string {
         .Case -> "case",
         .Const -> "const",
         .Rule -> "rule",
+        .Collect -> "collect",
         .Builtin -> "builtin",
     }
 }
@@ -478,13 +532,13 @@ impl Decls {
     /// built or a dependency of the program that carries it.
     fn short_module_of(d: DeclId) -> string { self.module_of(d).split(".").last()! }
 
-    /// Every `rule` declaration admitted so far — the same predicate
-    /// `is_case` reads for `.Case`, over `.Rule`; a fixture proving
-    /// one (`/tests/`) is not the compiler's own rule, `is_test_path`'s
-    /// law here too. Admission is the caller's: `Workspace.rule_decls`
-    /// forces every one of `@std/avrac`'s own files in first.
-    fn rule_decls() -> List<Decl> {
-        [d for d in self.decls.get() if d.kind is .Rule && !self.file(d.file).path.contains("/tests/")]
+    /// Every declaration of `k` admitted so far — a fixture proving
+    /// one (`/tests/`) is not the program's own, `is_test_path`'s law
+    /// here too. Admission is the caller's: a closure-scoped
+    /// `collect` forces its own package's files in first
+    /// (`Workspace.collect_admit`, `gathered_kind`'s hook).
+    fn decls_of_kind(k: DeclKind) -> List<Decl> {
+        [d for d in self.decls.get() if d.kind == k && !self.file(d.file).path.contains("/tests/")]
     }
 
     /// The root package's manifest name, kept in the dotted spelling.
@@ -605,6 +659,8 @@ impl Decls {
     fn disarm() {
         self.ensure.set(no_ensure)
         self.ensure_const.set(no_const_ensure)
+        self.ensure_collect.set(no_collect_ensure)
+        self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
         self.ensure_writes.set(no_ensure)
         self.ensure_marks.set(no_marks)
@@ -619,6 +675,24 @@ impl Decls {
     }
 
     fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(ensure) }
+
+    /// The workspace arms the collect-gathering hook once.
+    fn arm_collect(ensure: fn(FileId, DeclKind) -> void) { self.ensure_collect.set(ensure) }
+
+    /// The workspace arms the entry hook once.
+    fn arm_entry(ensure: fn() -> bool) { self.ensure_entry.set(ensure) }
+
+    /// Whether THIS compilation is a program — has an entry the
+    /// workspace will run — or a library, read at run time only.
+    fn is_program() -> bool { (self.ensure_entry.get())() }
+
+    /// Every declaration of `k`, `owner`'s package force-admitted
+    /// whole first (the hook) — the closure law for a collect whose
+    /// members are never `use`-reached.
+    fn gathered_kind(k: DeclKind, owner: FileId) -> List<Decl> {
+        (self.ensure_collect.get())(owner, k)
+        self.decls_of_kind(k)
+    }
 
     fn const_type(f: FileId, s: StmtId) -> ConstType {
         if (self.ensure_const.get())(f, s) { return ConstType.Cyclic }
@@ -945,12 +1019,21 @@ impl Decls {
 
     fn is_extern(d: DeclId) -> bool { self.decl(d).kind is .Fn && self.facts_of(d)?.external ?? false }
 
+    /// THE ONE READING DOOR for a declaration's `///` doc — a held file answers
+    /// through the same fact `capture_facts` recorded at admit.
+    fn doc_of(d: DeclId) -> List<string>? { self.facts_of(d)?.doc }
+
+    /// THE ONE READING DOOR for a declaration's `@name(args)` annotations, in
+    /// written order — the fact `avra explain`, the formatter's `Code` and
+    /// `@std/meta`'s crossing all read, so no reader parses a store of its own.
+    fn annotations_of(d: DeclId) -> List<AnnotationFact> { self.facts_of(d)?.annotations ?? [] }
+
     /// A type's name — records and enums.
     fn type_name(d: DeclId) -> string? {
         let x = self.decl(d)
         match x.kind {
             .Record or .Named or .Alias or .Enum or .Builtin -> x.name,
-            .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Rule -> null,
+            .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Rule or .Collect -> null,
         }
     }
 
@@ -960,7 +1043,7 @@ impl Decls {
         let x = self.decl(d)
         match x.kind {
             .Fn or .Method or .Rule -> x.name,
-            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const -> null,
+            .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Default or .Impl or .Main or .Case or .Builtin or .Const or .Collect -> null,
         }
     }
 
@@ -1038,7 +1121,7 @@ impl Decls {
         let local_name = match x.kind {
             .Method or .Default -> "${x.owner}.${x.name}",
             .Case -> "${stem_of(self.file(x.file).path)}\$case${x.root?.index ?? x.stmt.index}",
-            .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Rule -> x.name,
+            .Fn or .Const or .Record or .Named or .Alias or .Enum or .Trait or .Syntax or .Impl or .Main or .Builtin or .Rule or .Collect -> x.name,
         }
         module_symbol(self.module_of(d), local_name)
     }

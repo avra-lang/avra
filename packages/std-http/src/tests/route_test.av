@@ -22,7 +22,7 @@ fn r_static() -> Route { tailed<Static>(Method.Get, "/static/{path...}", (t: Byt
 fn r_png() -> Route { tailed<Png>(Method.Get, "/img/{path...}.png", (t: Bytes) -> Png.parse(t), serve_png) }
 
 /// What a table of these routes answers for a target.
-fn under(rows: List<Route>, line: string) -> string {
+fn answer_of(rows: List<Route>, line: string) -> string {
     let q? = asked(line) else { return "unframed" }
     let r = dispatch(compiled(rows), q)
     "${r.status} ${r.body.text() ?? ""}"
@@ -37,7 +37,7 @@ fn routes() -> List<Route> {
 
 /// The status and body a target earns, or "unframed" when the framer
 /// refused the line before the router ever saw it.
-fn answered(line: string) -> string { under(routes(), line) }
+fn answered(line: string) -> string { answer_of(routes(), line) }
 
 spec "@std.http route" {
     given "a table of routes whose records differ" {
@@ -121,37 +121,37 @@ spec "@std.http route" {
     given "a route that takes the rest" {
 
         then "it matches at its own width, binding one segment" {
-            under([r_static()], "GET /static/app.css HTTP/1.1") == "200 static app.css"
+            answer_of([r_static()], "GET /static/app.css HTTP/1.1") == "200 static app.css"
         }
         then "IT MATCHES DEEPER, and the hole holds every segment past its own" {
-            under([r_static()], "GET /static/css/app.css HTTP/1.1") == "200 static css/app.css"
+            answer_of([r_static()], "GET /static/css/app.css HTTP/1.1") == "200 static css/app.css"
         }
         then "it keeps holding however deep the target goes" {
-            under([r_static()], "GET /static/a/b/c/d/e.css HTTP/1.1") == "200 static a/b/c/d/e.css"
+            answer_of([r_static()], "GET /static/a/b/c/d/e.css HTTP/1.1") == "200 static a/b/c/d/e.css"
         }
         then "it does not match a target narrower than itself" {
-            under([r_static()], "GET /static HTTP/1.1") == "404 "
+            answer_of([r_static()], "GET /static HTTP/1.1") == "404 "
         }
         then "an empty capture at its own width is still a capture" {
-            under([r_static()], "GET /static/ HTTP/1.1") == "200 static "
+            answer_of([r_static()], "GET /static/ HTTP/1.1") == "200 static "
         }
         then "a target under another prefix is not its own" {
-            under([r_static()], "GET /other/a/b HTTP/1.1") == "404 "
+            answer_of([r_static()], "GET /other/a/b HTTP/1.1") == "404 "
         }
         then "a rest-taking route may anchor its own end" {
-            under([r_png()], "GET /img/a/b/logo.png HTTP/1.1") == "200 png a/b/logo"
+            answer_of([r_png()], "GET /img/a/b/logo.png HTTP/1.1") == "200 png a/b/logo"
         }
         then "and the anchor still refuses what does not end that way" {
-            under([r_png()], "GET /img/a/b/logo.jpg HTTP/1.1") == "404 "
+            answer_of([r_png()], "GET /img/a/b/logo.jpg HTTP/1.1") == "404 "
         }
         then "A ROUTE OF FIXED WIDTH IS STILL REFUSED A DEEPER TARGET, tails in the table or not" {
-            under([r_static(), routes()[0]], "GET /ideas/7/extra HTTP/1.1") == "404 "
+            answer_of([r_static(), routes()[0]], "GET /ideas/7/extra HTTP/1.1") == "404 "
         }
         then "declaration order decides between a rest-taker and a path it covers" {
-            under([r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)], "GET /static/logo.svg HTTP/1.1") == "200 static logo.svg"
+            answer_of([r_static(), fixed(Method.Get, "/static/logo.svg", serve_word)], "GET /static/logo.svg HTTP/1.1") == "200 static logo.svg"
         }
         then "and reversing them reverses the answer" {
-            under([fixed(Method.Get, "/static/logo.svg", serve_word), r_static()], "GET /static/logo.svg HTTP/1.1") == "200 word"
+            answer_of([fixed(Method.Get, "/static/logo.svg", serve_word), r_static()], "GET /static/logo.svg HTTP/1.1") == "200 word"
         }
     }
     given "what the law says about a rest-taker" {

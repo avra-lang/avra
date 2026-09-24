@@ -40,6 +40,7 @@ use features.structs.{StructsSemantics, StructDeclSemantics, NamedTypeSemantics}
 use features.enums.{EnumsSemantics, EnumDeclSemantics, EnumPatSemantics}
 use features.formats.{FormatPatSemantics}
 use features.rules.{RuleStmtSemantics}
+use features.collects.{CollectStmtSemantics}
 use diagnostics.{SourceFile, Voices}
 use compiler.backend.{run_lowered, run_live, Ended}
 use compiler.lower.{Lowered}
@@ -105,6 +106,7 @@ export fn new_dispatch() -> Dispatch {
         specs: SpecSemantics {},
         defers: DeferSemantics {},
         rules: RuleStmtSemantics {},
+        collects: CollectStmtSemantics {},
         enumpats: enumpats,
         formatpats: formatpats,
         quotepats: quotepats,
@@ -257,8 +259,21 @@ impl Program {
         let sig? = decls.sig(decl.id)?.fn_sig() else { return null }
         let holes = [decls.types.name_of(pt) for pt in sig.params]
         let signature = "fn ${name}(${holes.join(", ")}) -> ${decls.types.name_of(sig.ret)}"
-        let doc = decls.store(decl.id).doc_comment(decl.stmt)
+        let doc = decls.doc_of(decl.id)
         if doc == null { signature } else { "${signature}\n\n${doc!.join("\n")}" }
+    }
+
+    /// A declaration's `///` doc and its own `@name(args)` annotations,
+    /// off the one door every declaration's parse facts answer through —
+    /// `avra explain <name>`'s general form. Null for a name no declared
+    /// fn, type, enum, trait or const of this package wears.
+    fn explain_doc(name: string) -> string? {
+        let decls = self.ws.decls
+        let decl? = decls.decls.get().find((d: Decl) -> d.name == name) else { return null }
+        let doc = decls.doc_of(decl.id) ?? []
+        let anns = ["@${a.name}(${a.args.join(", ")})" for a in decls.annotations_of(decl.id)]
+        let lines = doc.concat(anns)
+        if lines.is_empty() { "${name} — no doc, no annotations" } else { lines.join("\n") }
     }
 
     /// A TYPE EXPRESSION's runtime REPRESENTATION, in `repr_word`'s

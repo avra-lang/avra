@@ -33,12 +33,13 @@ export fn quote_pat_holes(store: NodeStore, body: ExprId) -> List<QuoteHole> {
 }
 
 /// Whether this occurrence names a binder the matcher can hold — an
-/// Expression or a Statement seat, read as a bare name; a Name or a
-/// Binder seat too, when it is LONE at its own field (`quote_pat_reached`
-/// is the precise, position-aware gate typing refuses against — this
-/// is the loose, kind-only test `quote_pat_names` dedupes with).
+/// Expression, a Statement or a Run seat, read as a bare name; a Name
+/// or a Binder seat too, when it is LONE at its own field
+/// (`quote_pat_reached` is the precise, position-aware gate typing
+/// refuses against — this is the loose, kind-only test
+/// `quote_pat_names` dedupes with).
 export fn quote_hole_ok(h: QuoteHole) -> bool {
-    h.name != null && (h.kind is .Expression || h.kind is .Statement || h.kind is .Name || h.kind is .Binder)
+    h.name != null && (h.kind is .Expression || h.kind is .Statement || h.kind is .Name || h.kind is .Binder || h.kind is .Run)
 }
 
 /// Whether a hole's kind binds TEXT (a name's own written text)
@@ -122,11 +123,12 @@ export fn quote_pat_root(store: NodeStore, body: ExprId) -> At? {
 /// `Pat.Quote`, rooted (`quote_pat_root`) and folded to its shallow
 /// kind (`shallow_at` — Expr vs Stmt AND which variant, one int) —
 /// absence for a rule the index cannot narrow (a first arm that is
-/// not a quote, a multi-statement body with no single root, or a
-/// ROOT whose own kids hold a run hole): a target's index is folded
-/// plain, over arbitrary code with no run of its own, so a root
-/// folded BLIND to one field's length could never agree with it —
-/// "any node" is the honest narrowing, not a closer miss.
+/// not a quote, a multi-statement body with no single root, a ROOT
+/// whose own kids hold a run hole, or a ROOT whose own NAME field is
+/// a lone hole): a target's index is folded plain, over arbitrary
+/// code with no run and no hole of its own, so a root folded BLIND
+/// to one field's length or text could never agree with it — "any
+/// node" is the honest narrowing, not a closer miss.
 export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> int? {
     let a? = arms.first() else { return null }
     let p0? = a.pats.first() else { return null }
@@ -136,6 +138,15 @@ export fn root_kind_of(store: NodeStore, arms: List<Arm>) -> int? {
     // is the placeholder's own fold — meaningless, and never a real
     // subject's; "any node" is what a bare-hole root means
     if quote_hole_at(store, at) != null { return null }
+    // a root whose own NAME field is a lone hole (a for loop's own
+    // variable, a method call's own name) folds that hole's spelling
+    // into `shallow_at` exactly as any written text would —
+    // `quote_pat_shape` reads this same seat as a NamedNode and folds
+    // it BLIND (`shallow_bare_at`) for this reason, but a real
+    // subject is indexed by its own RAW `shallow_at`, name included,
+    // so a bare fold here could never agree with one either; "any
+    // node" is the honest narrowing, not a closer miss
+    if name_hole_at(store, at) != null { return null }
     let holes = quote_pat_holes(store, body)
     if store.kids_at(at).any(is_run_kid(store, it, holes)) { return null }
     store.shallow_at(at)

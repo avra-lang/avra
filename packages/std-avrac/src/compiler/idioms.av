@@ -7,17 +7,15 @@
 //! rule, not silently dropped (avra-8sb5.25.16).
 use features.{Code, Fix}
 use diagnostics.{warning}
+use @std.meta.{name}
 
 /// A refusal assembled from `pointed`/`error_at` by hand — the one
 /// shape is `refusal(kind, at, message, label, help)`.
+@fixes("pointed(error_at(\"E1\", at, \"bad\"), \"here\")", "refusal(\"E1\", at, \"bad\", \"here\", null)")
 @keeps("refusal(\"k\", at, \"m\", \"l\", null)")
 // LICENSED I28: the pattern's own text names the shape it detects
 export rule refusal_assembled {
-    quote { pointed(error_at(${kind}, ${at}, ${msg}), ${label}) } -> hand_assembled_refusal(kind, at, msg, label),
-}
-
-fn hand_assembled_refusal(kind: Code, at: Code, msg: Code, label: Code) -> Fix {
-    Fix.Say(warning("style.refusal_assembled", at.loc(), "a refusal assembled by hand (kind `${kind.text()}`, label `${label.text()}`, message `${msg.text()}`) — the one shape is `refusal(kind, at, message, label, help)`", "this call", null))
+    quote { pointed(error_at(${kind}, ${at}, ${msg}), ${label}) } -> quote { refusal(${kind}, ${at}, ${msg}, ${label}, null) },
 }
 
 /// Text grown THROUGH A PLACE by `p = p + piece` — quadratic: a field
@@ -26,6 +24,16 @@ fn hand_assembled_refusal(kind: Code, at: Code, msg: Code, label: Code) -> Fix {
 /// (the memory pass hands the cell's text to the append), so a bare
 /// name is not this smell. Guarded to STRINGS ONLY — `n = n + 1` is an
 /// ordinary int accumulator.
+///
+/// NO REWRITE: the fix is a BUILDER (`builder()`, `push`, `built()`)
+/// seeded before the FIRST accumulating assignment and read at the
+/// LAST — two statements this pattern's one bound assignment never
+/// sees, since a place may be grown by several separate `p = p +
+/// piece` sites scattered through a body, each matching this rule on
+/// its own. Splicing a builder call in for one assignment while its
+/// siblings keep reading/writing the plain string would change the
+/// TYPE `p` wears out from under them — a site-local rewrite cannot
+/// be sound here; the fix is a whole-declaration refactor.
 @keeps("out = out2 + piece")
 @keeps("n = n + 1")
 export rule str_grown_quadratically {
@@ -41,6 +49,13 @@ fn quadratic_growth(s: Code, piece: Code) -> Fix {
 /// speak (`cx.lower_defect(e, ...)`), never a plausible fallback.
 /// All six of core/protocol.av's projections (`bool_of`, `text_of`,
 /// `int_of`, `bits_of`, `elems_of`, `pairs_of`) are the same shape.
+///
+/// NO REWRITE: dropping `?? d` changes what the ABSENCE path DOES
+/// (quietly answer `d` today, refuse tomorrow), so it is not
+/// meaning-preserving — and the sound replacement, `cx.lower_defect(e,
+/// "…")`, needs a MESSAGE this pattern's bound holes carry nothing of.
+/// Only the author who knows what dispatch was supposed to guarantee
+/// here can write that sentence.
 // LICENSED I18: a DIFFERENT protocol projection than this rule's own — still the family's shape
 @keeps("(raw).int_of() ?? 0")
 export rule bool_of_defaulted {
@@ -92,6 +107,12 @@ fn protocol_default_papered(e: Code, d: Code, verb: string) -> Fix {
 /// `== n`). Every receiver shape the tree has worn it in:
 /// `refusals(...)`, `.diagnostics`/`.diagnostics.length`, and
 /// `.voices.list.length`.
+///
+/// NO REWRITE: the RIGHT count is exactly what `>= 1` refused to say —
+/// mining it back out would mean running the very check this
+/// assertion exists to guard, which a static pattern cannot do. The
+/// author who wrote the test knows how many refusals it expects; this
+/// rule only sees the one comparison.
 @keeps("refusals(src) == 1")
 export rule uncounted_refusal {
     // LICENSED I30: the pattern's own text names the shape it detects
@@ -126,6 +147,15 @@ fn uncounted(src: Code) -> Fix {
 /// exempt. Every `Ins` variant `open_region`'s family covers:
 /// `IfStart`, `ArmEnd`, `RegionEnd`, `LoopStart`, `LoopCond`,
 /// `LoopEnd`.
+///
+/// NO REWRITE: the matched call is ONE instruction out of a BRACKET —
+/// `open_region`/`loop_start` wrap the region's OPEN *and* its whole
+/// body *and* its close as one verb, so replacing just this raw emit
+/// would leave its paired raw close (elsewhere in the same body,
+/// outside this pattern's own span) unconverted and the two halves
+/// mismatched. The fix is the enclosing region rewritten as a unit,
+/// which is a judgement call about where that region starts and ends,
+/// not a site-local substitution.
 // LICENSED I33: a DIFFERENT raw Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.ArmEnd(v))")
 export rule if_start_raw {
@@ -177,6 +207,9 @@ fn raw_region_ins(cx: Code, name: string) -> Fix {
 /// `arm_stmts`) are the spelling; a raw bracket is invisible to the
 /// `defer` frames. Their own implementation
 /// (compiler/lower/walk.av) is exempt.
+///
+/// NO REWRITE, the same reason as the region family above: this is
+/// half a bracket, its other half elsewhere in the body.
 // LICENSED I35: a DIFFERENT raw scope Ins than this rule's own — still the family's shape
 @keeps("cx.emit(Ins.ScopeExit(g))")
 export rule scope_enter_raw {
@@ -256,6 +289,12 @@ fn spelled_by_hand(r: Code, shape: string, literal: string) -> Fix {
 /// `SideTable<V>` states the window, the growth and the
 /// out-of-window defect once: `side_table(name, lo, hi, seed)`,
 /// `get(id)`, `grow_to(n)`.
+///
+/// NO REWRITE: adopting `SideTable<V>` means replacing the surrounding
+/// TABLE's own declaration and every other site that reads or grows
+/// it, all outside this one arithmetic expression's span — an
+/// architectural change this pattern's one bound subtraction cannot
+/// see, let alone perform.
 @keeps("k.length - base_id.length")
 export rule hand_sized_index {
     // LICENSED I43: the pattern's own text names the shape it detects
@@ -275,6 +314,13 @@ fn hand_sized(e: Code, k: Code) -> Fix {
 /// reads instead of accumulating. `${..head}`/`${..body}` — a run
 /// hole (avra-8sb5.25.10) — is what lets this rule sit ANYWHERE in
 /// the enclosing block rather than only as its first statement.
+///
+/// NO REWRITE: the replacement (`xs.index_of(x) < j`) names an `xs`
+/// and a `j` — the enclosing loop's own iterable and index — that
+/// this pattern never binds (it matches a bare accumulator
+/// declaration, not the loop around it), and the `contains`/`push`
+/// call SITES to rewrite live inside `body`'s own text, which a hole
+/// only ever splices whole, never edits.
 @keeps("{\n    mut seen: List<string> = []\n    log(x)\n}")
 export rule seen_accumulator {
     quote {
@@ -299,6 +345,15 @@ fn seen_accumulator_found(seen: string, init: Code) -> Fix {
 
 /// `emit` immediately followed by `intern(Type.Error)` — the pair a
 /// typing law's refusal tail always ends with — is `spoken(d)`.
+///
+/// NO REWRITE: `spoken` is `self.emit(d); self.error_type` — a METHOD
+/// on the SAME receiver both statements act through, which this
+/// pattern binds as two SEPARATE holes (`${cx}` and `${r}`) and never
+/// checks agree; when they do not (`r` is `cx.view.types`, say, not
+/// `cx` itself) `cx.spoken(d)` answers `cx`'s cached error type, not
+/// what `${r}.intern(Type.Error)` would have — a DIFFERENT value on a
+/// DIFFERENT receiver. Whether the pair even collapses depends on a
+/// fact this pattern does not hold; the voice differs by site.
 @keeps("{\n    cx.emit(d)\n    other()\n}")
 export rule emit_then_error {
     quote {
@@ -318,6 +373,13 @@ fn emit_then_error_found(cx: Code, d: Code) -> Fix {
 /// A `push` held open across a stretch of work until a later `pop`
 /// on the same name — a bracket fn taking a thunk owns the pop on
 /// every path out, not just the one written.
+///
+/// NO REWRITE: the fix wraps `rest` UP TO the matching `pop` in a
+/// thunk and hands it to a bracket fn that owns the pop on every exit
+/// — which needs every early-return/fail/break inside that stretch
+/// found and folded in, and (often) a bracket fn that does not exist
+/// yet to be written. `popped` only confirms a `pop` call's TEXT
+/// appears somewhere in `rest`; it locates none of that.
 @keeps("{\n    let f = go()\n}")
 export rule bracket_ritual {
     quote {
@@ -351,8 +413,15 @@ fn bracket_ritual_found(v: Code, x: Code) -> Fix {
 /// same as one copying nothing at all — `with` only ever names ONE
 /// subject, so every other field is what it says explicitly, whatever
 /// its own value happens to look like.
-/// Narrower than the retired regex: no DECLARED-TYPE trace, so a
-/// coincidental `x.field` name match is accused too.
+/// Narrower than the retired regex: no DECLARED-TYPE trace for the
+/// FIELDS (a coincidental `x.field` name match is accused too) — but
+/// the SUBJECT's own type IS asked (`same_type`), because `with`
+/// requires it: a subject typed differently from the literal being
+/// built merely SHARES some field names, and `subject with { … }`
+/// there is not a rewrite, it is a type error (`Parsed`'s `store`/
+/// `stmts`/`source` read exactly like a `FileView`'s until the two
+/// are checked against each other).
+@fixes("Widget { name: w.name, value: 2, extra: w.extra }", "w with { value: 2 }")
 @keeps("Widget { name: \"fixed\", value: 2 }")
 @keeps("Widget { name: other.name, value: another.value }")
 @keeps("Tally { a: x.a + y.a, b: x.b + y.b }")
@@ -361,13 +430,37 @@ export rule modified_copy_literal {
     quote { ${lit} } if lit.is_struct_lit() -> copy_literal_check(lit),
 }
 
+/// A struct literal has no FIXED field count a `quote` pattern OR a
+/// `quote` template can spell (avra-8sb5.25's run holes reach a
+/// statement/arm list, never a field list yet), so `with`'s own
+/// field run is built the same way the SAY voice already built its
+/// message: text, joined, and spliced whole through `@std.meta.name`
+/// — the one door a rule has for a shape templates cannot hold
+/// (`modified_copy_literal`'s own `///`, `features/fix.av`).
 fn copy_literal_check(lit: Code) -> Fix? {
     let fields = lit.kids()
-    let subjects = [s! for s in [field_copy_subject(f) for f in fields] if s != null]
+    let subject_codes = [s! for s in [field_copy_subject(f) for f in fields] if s != null]
+    let subjects = [s.text() for s in subject_codes]
     let subj? = most_copied(subjects) else { return null }
-    let modified = [f for f in fields if field_copy_subject(f) != subj]
-    if modified.is_empty() { return null }
-    Fix.Say(warning("style.modified_copy_literal", lit.loc(), "a struct literal copying its other fields from `${subj}` — `${subj} with { ${field_list(modified)} }`", "this literal", null))
+    let modified = [f for f in fields if subject_text(f) != subj]
+    if modified.is_empty() || !modified.all(it.name() != null) { return null }
+    let subj_code? = subject_codes.find(it.text() == subj) else { return null }
+    if !same_type(lit, subj_code) { return null }
+    Fix.Rewrite(name("${subj} with { ${field_list(modified)} }"))
+}
+
+/// Whether `lit` (the literal being built) and `subj` (the copied
+/// value) wear the SAME interned type — `with`'s own requirement,
+/// never assumed from the field-name agreement alone. Absent (never
+/// matched) when either side's type did not resolve.
+fn same_type(lit: Code, subj: Code) -> bool {
+    let lt? = lit.type() else { return false }
+    let st? = subj.type() else { return false }
+    lt.same(st)
+}
+
+fn subject_text(f: Code) -> string? {
+    field_copy_subject(f)?.text()
 }
 
 /// The subject copied by the MOST fields, when at least two agree —
@@ -390,12 +483,11 @@ fn most_copied(subjects: List<string>) -> string? {
 /// The subject `f` copies, when its value is exactly `subject.<f's own
 /// name>` — a `Prop` whose own name agrees with the field's; absent
 /// for every other shape, structurally, never a text suffix guess.
-fn field_copy_subject(f: Code) -> string? {
+fn field_copy_subject(f: Code) -> Code? {
     let n? = f.name() else { return null }
     let value? = f.kids().first() else { return null }
     if value.prop_name() != n { return null }
-    let subj? = value.kids().first() else { return null }
-    subj.text()
+    value.kids().first()
 }
 
 fn field_list(fields: List<Code>) -> string {

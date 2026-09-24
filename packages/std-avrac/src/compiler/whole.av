@@ -1,6 +1,6 @@
 //! The whole program: every file analyzed, the entries, the cases, the
 //! hold, and the link words. Moved out of the workspace god-object.
-use core.{NodeStore, DeclId, FileId, UseParts, ExprId, Case, flatten, SpecParts, spelled, user_kind, is_kind_word}
+use core.{NodeStore, DeclId, FileId, UseParts, ExprId, Case, flatten, SpecParts, spelled, user_kind, is_kind_word, DeclKind}
 use @std.path.{under_dir, joined_path, normalized}
 use features.{Decls, Decl, Import, NameFacts, nothing, bound_decl_of}
 use diagnostics.{SourceFile, Diag, refusal, DiagCode}
@@ -20,13 +20,7 @@ impl Workspace {
             if !self.is_held(f) { let _ = self.items(f) }
         }
         self.timed("parse", self.clock() - t0)
-        // `rules_table()`'s body is SYNTHESISED at lowering from every
-        // `rule` declaration `@std/avrac` carries (compiler/lower/lower.av)
-        // — forced admitted here, by the same door a target program's own
-        // `use` graph never reaches on its own, and BEFORE resolve/sigs so
-        // every one of them is analysed (and its own diagnostics rendered)
-        // like any other file, not skipped past those phases.
-        let _ = self.rule_decls()
+        self.admit_closure_collect_packages()
         // A HELD FILE IS NOT RESOLVED, NOT SIGNED AND NOT ANALYSED. Its declarations are
         // MINTED from its record, so every consumer sees the interface it had — and its
         // BODY is not wanted, because its object comes from the store. THIS IS WHERE THE
@@ -94,26 +88,57 @@ impl Workspace {
         flatten([self.file_cases(fi.id) for fi in self.decls.files.get()])
     }
 
-    /// Every `rule` declaration this compiler carries: `@std/avrac`'s
-    /// OWN files, forced admitted here whether it is the root being
-    /// built or a dependency of the program that carries it — a
-    /// target program's `use` graph never reaches these on its own.
-    /// `/tests/` is excluded — `is_test_path`'s law: a fixture is a
-    /// standalone PROGRAM, never a module of the build admitting it,
-    /// and the entry law (`outside_entry`) refuses one that runs
-    /// top-level statements outside the actual entry. May be asked
-    /// EARLIER than a program is derived at all (the suite's own
-    /// self-check runs before one exists); either way, what
-    /// admission leaves is `Decls.rule_decls`'s to read.
-    fn rule_decls() -> List<Decl> {
-        let pkg? = self.packages().find(it.key == "@std/avrac") else { return [] }
+    /// EVERY CLOSURE-SCOPED COLLECT'S OWN PACKAGE, ADMITTED WHOLE,
+    /// BEFORE resolve/sigs — a member force-admitted LATER renders
+    /// its diagnostics after method resolution already ran for
+    /// everything else (avra-8sb5.25.23's own bug, paid once). A
+    /// closure collect's members are never found by PARSING for them
+    /// first (that IS the chicken-and-egg this door exists to skip):
+    /// today's one row is named here, not guessed — a second
+    /// package or kind needs its own row, spelled, never a silent
+    /// walk. `Decls.gathered_kind`'s hook (armed in workspace.av)
+    /// re-asks this same door lazily, at lowering, for any collect
+    /// this row does not yet name.
+    fn admit_closure_collect_packages() {
+        let pkg? = self.packages().find(it.key == "@std/avrac") else { return }
+        let _ = self.collect_admit(DeclKind.Rule, pkg)
+    }
+
+    /// THE CLOSURE LAW FOR A COLLECT WHOSE MEMBERS ARE NEVER
+    /// `use`-REACHED: `pkg` is force-admitted WHOLE — a member (a
+    /// `rule`, in a feature dir nothing imports) exists to be
+    /// discovered, not read in through the ordinary import graph, so
+    /// import-reachability alone would find none. `/tests/` is
+    /// excluded — `is_test_path`'s law: a fixture is a standalone
+    /// PROGRAM, never a module of the build admitting it, and the
+    /// entry law (`outside_entry`) refuses one that runs top-level
+    /// statements outside the actual entry. May be asked EARLIER
+    /// than a program is derived at all (the suite's own self-check
+    /// runs before one exists); either way, what admission leaves is
+    /// `Decls.decls_of_kind`'s to read.
+    fn collect_admit(k: DeclKind, pkg: Package) -> List<Decl> {
         for path in self.all_files(pkg.src) {
             if !self.is_test_path(path) {
                 let f = self.file_id(path)
                 if !self.is_held(f) { let _ = self.items(f) }
             }
         }
-        self.decls.rule_decls()
+        self.decls.decls_of_kind(k)
+    }
+
+    /// `collect_admit`, from one of the package's own files — the
+    /// lowering hook's door (`Decls.gathered_kind`, armed in
+    /// workspace.av), which knows a `FileId` and not a `Package`.
+    fn collect_admit_from(k: DeclKind, owner: FileId) -> List<Decl> {
+        let pkg? = self.owning_package(owner) else { return [] }
+        self.collect_admit(k, pkg)
+    }
+
+    /// The package whose `src` holds `f` — a collect's own package,
+    /// found from one of its files.
+    fn owning_package(f: FileId) -> Package? {
+        let path = self.decls.file(f).path
+        self.packages().find(under_dir(path, it.src))
     }
 
     /// WHETHER A FILE IS HELD — answered from a record rather than read. The one
@@ -237,7 +262,7 @@ impl Workspace {
 fn is_type_decl(x: Decl) -> bool {
     match x.kind {
         .Record or .Named or .Alias or .Enum or .Builtin -> true,
-        .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Rule -> false,
+        .Fn or .Trait or .Syntax or .Method or .Default or .Impl or .Main or .Case or .Const or .Rule or .Collect -> false,
     }
 }
 

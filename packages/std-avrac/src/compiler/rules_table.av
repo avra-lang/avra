@@ -1,14 +1,12 @@
-//! THE RULE TABLE — every rule the compiler carries, NATIVE: a
-//! `rule` declares `DeclKind.Rule` (core/parts.av's `rule_parts`),
-//! exactly as a `then` declares `DeclKind.Case` — but a rule's
-//! `run` is a typed `fn(Code) -> Fix?` VALUE the pass calls
-//! in-process. `rules_table()`'s DECLARATION lives here, with no
-//! rows: its BODY is SYNTHESISED at lowering, the same place and
-//! manner `compiler/suite.av`'s entry is — one `RuleEntry` per
-//! `DeclKind.Rule` the workspace admits, `run` a fn value of the
-//! rule's own symbol (compiler/lower/lower.av's `lower_rules_table`,
-//! keyed on this one declaration). A rule written in any feature
-//! dir is found with no edit anywhere else — the keyword precedent.
+//! THE RULE TABLE — every rule the compiler carries, as a `collect`
+//! (docs/2026_09_22_COLLECTIONS.md): a `rule` declares `DeclKind.Rule`
+//! (core/parts.av's `rule_parts`), exactly as a `then` declares
+//! `DeclKind.Case`, and `rules`' body is SYNTHESISED at lowering from
+//! every one the workspace admits (compiler/lower/lower.av's
+//! `lower_collect`) — `run` a typed `fn(Code) -> Fix?` VALUE the pass
+//! calls in-process, `root` the ROOT-KIND INDEX `it.root_kind`
+//! answers. A rule written in any feature dir is found with no edit
+//! anywhere else — the keyword precedent.
 use features.{Code, Fix}
 
 /// A root-kind index with no root at all: "any node", tried
@@ -26,14 +24,10 @@ export type RuleEntry = { name: string, module: string, run: fn(Code) -> Fix?, r
 /// both read.
 export fn rule_id(r: RuleEntry) -> string { "${r.module}.${r.name}" }
 
-/// EVERY RULE. The signature is this declaration's to keep; the body
-/// is never read — `compiler/lower/lower.av`'s `lower_rules_table`
-/// replaces it at lowering, walking every `rule` the workspace
-/// admits. `[]` here is the empty case the typer checks this
-/// declaration's own signature against, never what runs.
-export fn rules_table() -> List<RuleEntry> {
-    []
-}
+/// EVERY RULE, in module then name order — gathered, never listed by
+/// hand: a rule declared in any feature dir joins this with no edit
+/// here.
+export collect rules: List<RuleEntry> = rule in closure as RuleEntry { name: it.name, module: it.module, run: it, root: it.root_kind, doc: it.doc } by it.module, it.name
 
 /// The rules whose root-kind index admits `kind` — the ones indexed
 /// at it, plus every `any_root` rule, tried everywhere.

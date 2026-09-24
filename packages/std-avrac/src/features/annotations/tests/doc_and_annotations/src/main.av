@@ -1,0 +1,58 @@
+// proves: `Fn` and `Type` cross their own `///` doc and their
+// `@name(args)` annotations (features/decls.av's DeclFacts, one door
+// for every declaration — avra-8sb5.25.43), and `Field`/`Variant`
+// cross the SAME `annotations` shape from the marks they already
+// carry (their own `doc` reads null — no grammar attaches one yet,
+// ROADMAP). A wrong crossing refuses here, which fails the build;
+// this file only runs at all once every check below passed.
+use @std.meta.{Fn, Type, Diagnostic, refuse, derive}
+use @test.factsclaimer.{FactsClaimer}
+
+fn labelled(f: Fn, s: string) -> List<Diagnostic> { [] }
+
+fn checked_fn(f: Fn) -> List<Diagnostic> {
+    let ok = f.doc == "adds two numbers" && f.annotations.length == 2 && f.annotations[0].name == "labelled" && f.annotations[0].args.join(",") == "sum" && f.annotations[1].name == "checked_fn"
+    if ok { [] } else { [refuse("fn crossing: doc=${f.doc ?? "(null)"} anns=${f.annotations.length}")] }
+}
+
+/// adds two numbers
+@labelled("sum")
+@checked_fn
+fn add(a: int, b: int) -> int {
+    a + b
+}
+
+fn tagged(t: Type) -> List<Diagnostic> { [] }
+
+fn checked_pair(t: Type) -> List<Diagnostic> {
+    let ok_type = t.doc == "a pair of numbers" && t.annotations.length == 3 && t.annotations[0].name == "tagged" && t.annotations[1].name == "checked_pair" && t.annotations[2].name == "derive"
+    let x = t.fields[0]
+    let y = t.fields[1]
+    let ok_fields = x.annotations.length == 1 && x.annotations[0].name == "important" && x.doc == null && y.annotations.is_empty()
+    if ok_type && ok_fields { [] } else { [refuse("type/field crossing did not match")] }
+}
+
+/// a pair of numbers
+@tagged
+@checked_pair
+@derive(FactsClaimer)
+type Pair = {
+    @important x: int,
+    y: int,
+}
+
+fn checked_choice(t: Type) -> List<Diagnostic> {
+    let a = t.variants[0]
+    let b = t.variants[1]
+    let ok = a.annotations.length == 1 && a.annotations[0].name == "frozen" && a.doc == null && b.annotations.is_empty()
+    if ok { [] } else { [refuse("variant crossing did not match")] }
+}
+
+@checked_choice
+@derive(FactsClaimer)
+enum Choice {
+    @frozen A
+    B
+}
+
+"${add(2, 3)} ${Pair { x: 1, y: 2 }.x} ${match Choice.A { .A -> "a", .B -> "b" }}"
