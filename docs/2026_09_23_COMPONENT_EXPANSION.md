@@ -315,7 +315,40 @@ instance is named by its `name:` setting (`command language { name:
 and a typed `self.target` per command need the EXPAND stage — the first
 user of S6's declaring blocks.
 
-**S6 — `model` and declaring blocks** (§10 item 1), after S5.
+**S6 — models are types, not components.** DECIDED WITH THE OWNER
+(2026-09-24). A component instance is always a VALUE (a server, a
+route, a layer, a command); a TYPE is always declared with `type`, and
+generated behaviour comes from `@derive` — one engine, one spelling:
+
+```avra
+@model
+type User = {
+    @unique email: string
+    name: string
+}
+```
+
+`@model` is a library ANNOTATION FN bundling derives (`Model.derive(t)
+.concat(Json.derive(t))`) — SwiftData's `@Model`. A trait's `derive`
+is `static fn derive(t: Type) -> List<Directive>` with an optional
+`marks`, held to that contract where the trait is declared (F2134) and
+at each `@derive` (F2072, F2066); an unclaimed mark is F2092. The
+generator sees the declaration's SHAPE — fields, spelled types, marks,
+`///`, annotations — and its output is typed with the program, so a
+model's generated code may name any other model (joins). Every model at
+once is `collect models = impl Model in closure` (avra-8sb5.28).
+CONSIDERED AND DEFERRED: `model User { … }` as a word — the same shape
+as a VALUE component with a TYPE after each colon, so a reader could
+not tell a declaration from a value without looking the word up; it
+can be added later as "the annotation, spelled as a word".
+
+Slices: **S6b** `@std/db` over @std/sqlite with `@model` (table,
+insert, find) — its first work: an annotation fn calling a trait's
+static `derive` (F2033 today: a trait's static fn is taken as generic
+over `Self`), and `@model` over a multi-line record with a field mark
+(a parse failure to diagnose). **S6c** a computed child placed by its
+TYPE — a typer rule, since a derive never sees types. Supertraits
+(`trait A: B`) are filed as avra-8sb5.43.
 
 **S5 — `server` / `api` over `@std/http`.** DECIDED WITH THE OWNER
 (2026-09-23): the user writes `get "/robots/{id: RobotId}" { req ->

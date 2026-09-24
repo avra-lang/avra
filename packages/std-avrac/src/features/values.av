@@ -259,7 +259,13 @@ impl LowerCx {
         self.const_int(n)
     }
 
+    /// A box of slots — a list, a cell, a one-slot adoption, a table.
+    /// NEVER A RECORD: a record's layout is its type's (a flat record
+    /// travels as its one field, a value field lies inline), which only
+    /// `packed_struct` knows — a record boxed here reads back as
+    /// something else, so asking is a defect said at the door.
     mut fn grown_box(sh: Type, size: Reg, slots: List<Reg>) -> Reg {
+        if self.is_record_shape(sh) { self.defect("a record is built by `packed_struct`, never slot by slot") }
         let dst = self.array_sized(sh, size)
         for r in slots { self.push_slot(dst, r) }
         dst
@@ -610,6 +616,15 @@ impl LowerCx {
             .Niche or .Boxed -> self.nonzero(v, self.zeroed(self.mint_ty(opt))),
             .Pair -> self.extracted(v, 0, self.mint_shape(Type.Bool)),
             .Tagged -> self.bin(Type.Bool, BinOp.Ne, self.extracted(v, 0, self.mint_shape(Type.Int)), self.const_int(absent_tag)),
+        }
+    }
+
+    /// Whether a shape is a RECORD's, declared or applied — never a
+    /// named type's, which travels as the shape it names.
+    fn is_record_shape(sh: Type) -> bool {
+        match sh {
+            .Struct(d, _) or .App(d, _, _) -> self.view.decls.decl(d).kind is .Record,
+            _ -> false,
         }
     }
 
