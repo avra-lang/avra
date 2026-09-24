@@ -24,8 +24,17 @@ impl LowerCx {
         let step? = self.view.store.place_step(target) else { return self.defect(non_place()) }
         match step {
             .Field(subject, name) if self.view.types.is_wide(self.type_at(subject)) -> self.repacked(subject, name.of, v),
+            .Field(subject, name) if !self.flat_at(subject) -> self.boxed_written(subject, name.of, v),
             rest -> self.opened_write(target, v),
         }
+    }
+
+    /// A boxed record's field written in place — laid inline when it is
+    /// a value record.
+    mut fn boxed_written(subject: ExprId, name: string, v: Reg) {
+        let sig? = self.fields_at(subject) else { return self.defect(non_place()) }
+        let n? = sig.slot_of(name) else { return self.defect(non_place()) }
+        self.field_written(self.unique_box(subject), self.type_at(subject), n, v)
     }
 
     /// The value record at `subject` with field `name` now `v`, written back.
@@ -135,7 +144,7 @@ impl LowerCx {
             let _ = self.lower_defect(subject, "a fieldless place survived typing")
             return idx
         }
-        self.emit(Ins.ConstInt(idx, slot!))
+        self.emit(Ins.ConstInt(idx, self.field_offset(self.type_at(subject), slot!)))
         idx
     }
 }

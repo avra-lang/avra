@@ -4,7 +4,7 @@
 //! field, a boxed nullable a one-slot box, an enum its tag before
 //! its payloads — so a register (`materialized`) and a `Static` are
 //! both made from it and never disagree on a layout.
-use core.{TypeId, Slot, StaticBox, Static, filled}
+use core.{TypeId, Slot, StaticBox, Static, filled, flatten}
 
 /// A static under construction: its boxes so far, child-first, so
 /// the box a slot names is always laid out before the slot.
@@ -68,13 +68,20 @@ impl StaticBuild {
         // a NAME stands over it — the registry answers for both
         if self.decls.types.is_flat(ty) && !self.decls.types.is_wide(ty) { return self.slot_of(v, heap, self.decls.types.flat_fields(ty)[0]) }
         let sig? = self.decls.fields_of_type(ty) else { return null }
-        self.array_slot(heap.slots(v), heap, sig.types)
+        // a value-record field is laid inline — one int slot per field
+        self.array_slot(heap.slots(v), heap, flatten([self.slot_types(t) for t in sig.types]))
     }
 
     /// A variant of an enum whose variants carry nothing: its tag, a
     /// word — the shape it crosses as.
     fn flat_variant_slot(v: MetaVal) -> Slot? {
         match v { .Int(n) -> Slot.Int(n), rest -> null }
+    }
+
+    /// The slot types a field takes in a box: a value record's fields, or itself.
+    fn slot_types(ty: TypeId) -> List<TypeId> {
+        if !self.decls.types.travels_wide(ty) { return [ty] }
+        self.decls.types.flat_fields(self.decls.types.machine_type(ty))
     }
 
     /// A variant: its tag at slot 0, its payloads after — the tagged

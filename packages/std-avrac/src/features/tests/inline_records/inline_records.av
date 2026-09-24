@@ -1,0 +1,83 @@
+// A VALUE RECORD FIELD IS LAID INLINE in the box holding it: its fields
+// are slots of the parent, and every field after it sits past its width.
+// Each attack reads fields on both sides of a wide one, across every
+// road a record takes: built, read, written, copied with `with`, laid
+// out as a const, generic, through `self` and a `dyn`, named, nested.
+type Span = { lo: int, hi: int }
+type Tri = { a: int, b: int, c: int }
+type Spanned = Span
+type First = { at: Span, tag: string, n: int }
+type Middle = { tag: string, at: Span, n: int }
+type Two = { x: Span, t: Tri, s: string, y: Span }
+type Named = { name: string, s: Spanned, k: int }
+type Outer = { label: string, inner: Middle, tail: Span }
+type Box<T> = { held: T, after: string }
+
+trait Shown {
+    fn shown() -> string
+}
+
+impl Shown for Middle {
+    fn shown() -> string { "${self.tag}${self.at.hi}${self.n}" }
+}
+
+impl Two {
+    fn total() -> int { self.x.lo + self.x.hi + self.t.a + self.t.b + self.t.c + self.y.lo + self.y.hi }
+}
+
+const C2: Two = Two { x: Span { lo: 1, hi: 2 }, t: Tri { a: 3, b: 4, c: 5 }, s: "s", y: Span { lo: 6, hi: 7 } }
+const CS: List<Middle> = [Middle { tag: "p", at: Span { lo: 8, hi: 9 }, n: 10 }, Middle { tag: "q", at: Span { lo: 11, hi: 12 }, n: 13 }]
+
+fn sp(n: int) -> Span { Span { lo: n, hi: n + 1 } }
+
+fn built() -> string {
+    let f = First { at: sp(1), tag: "f", n: 3 }
+    let m = Middle { tag: "m", at: sp(4), n: 6 }
+    let t = Two { x: sp(1), t: Tri { a: 1, b: 2, c: 3 }, s: "two", y: sp(9) }
+    "${f.at.hi}${f.tag}${f.n} ${m.tag}${m.at.lo}${m.n} ${t.x.lo}${t.t.b}${t.s}${t.y.hi} ${t.total()}"
+}
+
+fn written() -> string {
+    mut t = Two { x: sp(1), t: Tri { a: 1, b: 2, c: 3 }, s: "two", y: sp(9) }
+    let before = t
+    t.t.b = 20
+    t.y = sp(30)
+    t.s = "ss"
+    t.x.hi = 7
+    "${t.x.lo}${t.x.hi}/${t.t.a}${t.t.b}${t.t.c}/${t.s}/${t.y.lo}${t.y.hi} | ${before.t.b}${before.y.lo}${before.s}"
+}
+
+fn withed() -> string {
+    let m = Middle { tag: "m", at: sp(4), n: 6 }
+    let m2 = m with { at: sp(40) }
+    let m3 = m2 with { n: 60, tag: "z" }
+    "${m.at.lo}${m.n} ${m2.at.lo}${m2.n}${m2.tag} ${m3.at.hi}${m3.n}${m3.tag}"
+}
+
+fn consts() -> string {
+    "${C2.x.hi}${C2.t.c}${C2.s}${C2.y.lo} ${CS[1].tag}${CS[1].at.lo}${CS[1].n} ${CS.length}"
+}
+
+fn generic() -> string {
+    let b: Box<Span> = Box { held: sp(5), after: "a" }
+    let b2: Box<int> = Box { held: 3, after: "b" }
+    "${b.held.hi}${b.after} ${b2.held}${b2.after}"
+}
+
+fn dynamic() -> string {
+    let d: dyn Shown = Middle { tag: "d", at: sp(2), n: 9 }
+    d.shown()
+}
+
+fn named() -> string {
+    let n = Named { name: "n", s: Spanned(sp(3)), k: 8 }
+    "${n.name}${n.k}"
+}
+
+fn nested() -> string {
+    mut o = Outer { label: "o", inner: Middle { tag: "i", at: sp(1), n: 2 }, tail: sp(7) }
+    o.inner.at.lo = 50
+    "${o.label}${o.inner.tag}${o.inner.at.lo}${o.inner.at.hi}${o.inner.n}${o.tail.lo}${o.tail.hi}"
+}
+
+[built(), written(), withed(), consts(), generic(), dynamic(), named(), nested()].join(" | ")

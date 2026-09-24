@@ -11,7 +11,7 @@
 //! `repr_of`, and every consumer asks the verbs below instead of
 //! knowing. A new value CATEGORY joins here, beside the readers
 //! that make its layout nobody else's business.
-use core.{Reg, Ins, BinOp, Type, TypeId, TypeRegistry, ExprId, Expr, NodeStore, filled, BodyParts, Slot, StaticBox}
+use core.{Reg, Ins, BinOp, Type, TypeId, TypeRegistry, ExprId, Expr, NodeStore, filled, flatten, BodyParts, Slot, StaticBox}
 use features.{MetaVal, MetaHeap, TypeFacts, Decls, meta_of_template}
 use @std.meta.{Node}
 
@@ -93,7 +93,17 @@ fn literal_record(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, f
     // shape `materialized` rebuilds a Pack from; a value record as its
     // fields.
     if decls.types.is_flat(ty) && !decls.types.is_wide(ty) { return slots[0] }
-    heap.node(slots)
+    if decls.types.is_wide(ty) { return heap.node(slots) }
+    // a BOXED record crosses as its slots: a value-record field's own
+    // fields laid inline, as the box holds them
+    heap.node(flatten([inline_slots(s.types[j], x, decls.types, heap) for j, x in slots]))
+}
+
+/// A field's crossing value as the slots a box lays it in: a value
+/// record's fields, or the value itself.
+fn inline_slots(ty: TypeId, v: MetaVal, types: TypeRegistry, heap: MetaHeap) -> List<MetaVal> {
+    if types.travels_wide(ty) { return heap.slots(v) }
+    [v]
 }
 
 /// A variant literal: the tag first, the payloads after — the tagged
@@ -374,10 +384,32 @@ impl LowerCx {
     /// recorded type is the wrong witness under mono, where it may still
     /// name a type parameter.
     mut fn field_read(subject: Reg, subject_ty: TypeId, n: int, ty: TypeId?) -> Reg {
-        if !self.view.types.is_flat(subject_ty) { return self.slot_read(subject, n, ty) }
+        if !self.view.types.is_flat(subject_ty) { return self.boxed_field(subject, subject_ty, n, ty) }
         let dst = if ty == null { self.mint_shape(Type.Int) } else { self.mint_ty(ty!) }
         self.emit(Ins.Extract(dst, subject, n))
         dst
+    }
+
+    /// A boxed record's Nth field, from its slot OFFSET: a value-record
+    /// field before it takes its own width, and a value-record field is
+    /// read back from its slots.
+    mut fn boxed_field(subject: Reg, subject_ty: TypeId, n: int, ty: TypeId?) -> Reg {
+        let at = self.field_offset(subject_ty, n)
+        if ty != null && self.view.types.travels_wide(ty!) { return self.unboxed_at(subject, at, ty!) }
+        self.slot_read(subject, at, ty)
+    }
+
+    /// `v` written as a boxed record's Nth field: at its offset, a value
+    /// record's fields each into its own slot.
+    mut fn field_written(box: Reg, record: TypeId, n: int, v: Reg) {
+        let base = self.field_offset(record, n)
+        for j, r in self.leaves(v) { self.slot_write(box, self.const_int(base + j), r) }
+    }
+
+    /// Where a boxed record's Nth field starts.
+    fn field_offset(record: TypeId, n: int) -> int {
+        let sig? = self.view.decls.fields_of_type(record) else { return n }
+        self.view.types.slot_offset(sig.types, n)
     }
 
     /// A RECORD's field, by NAME — the slot asked once, never
@@ -503,8 +535,10 @@ impl LowerCx {
     /// (quote/lower.av's `Code`) shares.
     mut fn packed_struct(ty: TypeId, parts: List<Reg>) -> Reg {
         if self.view.types.is_flat(ty) { return self.pack(ty, parts) }
-        let dst = self.array_sized(self.view.types.shape_of(ty), self.box_size(parts.length))
-        for r in parts { self.push_slot(dst, r) }
+        // a value-record field is laid INLINE, its fields as slots
+        let words = flatten([self.leaves(r) for r in parts])
+        let dst = self.array_sized(self.view.types.shape_of(ty), self.box_size(words.length))
+        for r in words { self.push_slot(dst, r) }
         dst
     }
 

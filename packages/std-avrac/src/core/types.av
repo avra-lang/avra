@@ -293,6 +293,21 @@ impl TypeRegistry {
     /// Whether a value TRAVELS as a value record, seen through names.
     fn travels_wide(id: TypeId) -> bool { self.is_wide(self.machine_type(id)) }
 
+    /// THE SLOTS a value takes inside a box that holds it: one, or a
+    /// value record's fields laid inline, as C lays a struct member.
+    fn slot_width(id: TypeId) -> int {
+        if !self.travels_wide(id) { return 1 }
+        self.flat_fields(self.machine_type(id)).length
+    }
+
+    /// Where the Nth of these fields starts in the box holding them all.
+    fn slot_offset(fields: List<TypeId>, n: int) -> int {
+        mut at = 0
+        // LICENSED I4: a sum over a prefix, not a scan
+        for j, f in fields { if j < n { at = at + self.slot_width(f) } }
+        at
+    }
+
     /// THE SHAPE A NAME STANDS FOR — `type Rows = List<int>` answers
     /// `List<int>`; every other type answers absence. A NAME IS
     /// OPAQUE AT A SEAT AND TRANSPARENT AT A READ, and this is the

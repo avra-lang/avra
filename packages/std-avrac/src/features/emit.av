@@ -163,20 +163,30 @@ impl LowerCx {
     /// A seat's word: the register itself, or a value record's fields
     /// in a fresh box — a name over one opened to it first.
     mut fn crossing(a: Reg) -> Reg {
-        let ty = self.out.type_of_reg(a)
-        if !self.view.types.travels_wide(ty) { return a }
-        if !self.view.types.is_wide(ty) { return self.crossing(self.extracted(a, 0, self.mint_ty(self.view.types.flat_fields(ty)[0]))) }
-        let fields = self.view.types.flat_fields(ty)
-        let dst = self.array_sized(self.view.types.shape_of(self.type(List<int>)), self.box_size(fields.length))
-        for j, f in fields { self.push_slot(dst, self.extracted(a, j, self.mint_ty(f))) }
+        if !self.view.types.travels_wide(self.out.type_of_reg(a)) { return a }
+        let parts = self.leaves(a)
+        let dst = self.array_sized(self.view.types.shape_of(self.type(List<int>)), self.box_size(parts.length))
+        for r in parts { self.push_slot(dst, r) }
         dst
+    }
+
+    /// The words a value occupies in a box: itself, or a value record's
+    /// fields — a name over one opened to it first.
+    mut fn leaves(a: Reg) -> List<Reg> {
+        let ty = self.out.type_of_reg(a)
+        if !self.view.types.travels_wide(ty) { return [a] }
+        if !self.view.types.is_wide(ty) { return self.leaves(self.extracted(a, 0, self.mint_ty(self.view.types.flat_fields(ty)[0]))) }
+        [self.extracted(a, j, self.mint_ty(f)) for j, f in self.view.types.flat_fields(ty)]
     }
 
     /// A value record read back out of the box that carried it — worn
     /// by every name over it.
-    mut fn unboxed(held: Reg, ty: TypeId) -> Reg {
-        if !self.view.types.is_wide(ty) { return self.pack(ty, [self.unboxed(held, self.view.types.flat_fields(ty)[0])]) }
-        self.pack(ty, [self.slot_read(held, j, f) for j, f in self.view.types.flat_fields(ty)])
+    mut fn unboxed(held: Reg, ty: TypeId) -> Reg { self.unboxed_at(held, 0, ty) }
+
+    /// A value record read out of a box from slot `base` on.
+    mut fn unboxed_at(held: Reg, base: int, ty: TypeId) -> Reg {
+        if !self.view.types.is_wide(ty) { return self.pack(ty, [self.unboxed_at(held, base, self.view.types.flat_fields(ty)[0])]) }
+        self.pack(ty, [self.slot_read(held, base + j, f) for j, f in self.view.types.flat_fields(ty)])
     }
 
     /// The node's ANSWER register set to integer zero — a void word's
