@@ -529,3 +529,23 @@ Pinned by features/tests/static_literals (fifteen write shapes over
 three turns, then every literal read again; the `mut`-seat cases
 witnessed failing without the thaw). Request boxes 10 -> 6;
 `check packages/cli` 151.2B -> 150.0B instructions.
+
+## §18 Measured and not landed — a cell's last read hands its box over
+
+`written` ends `out.bytes().concat(r.body)`, and the cell still holds
+`out`, so the Bytes twin copies the head. Handing the cell's reference
+over at a read nothing follows (no later read, no loop around it) made
+the twin fire — and the census stayed at 14 boxes a request (Bytes
+2 -> 1, strings 6 -> 7): the head's box had no room for the body, so
+growing it allocated and copied what the copy did. `check
+packages/cli` at parity. Not landed; the patch is one predicate in
+`refilled_cell` plus a per-instruction loop table.
+
+## §19 Where the request stands (Mac, after R5 static literals)
+
+~14 boxes a request (6 strings, 2 Bytes, 6 records/lists), each ~2%
+of the request: time is ~30% boxes, ~26% the framer's own scans
+(`bytes_run`, `index_of`, `memchr`), ~12% the response's appends.
+No single lever above 5% remains in the compiler; the next are
+std-http's shape (the `Framed`/`Head`/`Response` chain) or
+per-core throughput.
