@@ -145,6 +145,21 @@ build/%.o: %.c build/%.sha
 
 -include $(patsubst %.o,%.d,$(filter %.o,$(sort $(COMPILER_OBJS) $(PACKAGE_OBJS))))
 
+# THE HOT LEAVES AS BYTES THE COMPILER CARRIES (runtime/avra_hot.h):
+# runtime/avra_hot.c compiled to bitcode by the LLVM the compiler links,
+# then written into backend/llvm_wrapper.c's include, so every module can
+# inline the leaves and the compiler's own digest covers them — a changed
+# leaf retires every cached object. An LLVM without clang carries none,
+# and the leaves stay calls.
+build/avra_hot.bc: runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
+	@mkdir -p build
+	@if [ -x $(LLVM_PREFIX)/bin/clang ]; then $(LLVM_PREFIX)/bin/clang -c -emit-llvm -O2 -fPIC -Iruntime -o $@ runtime/avra_hot.c; else rm -f $@; touch $@; fi
+
+build/avra_hot.inc: build/avra_hot.bc
+	@python3 -c "import sys; d=open(sys.argv[1],'rb').read(); print('static const unsigned char avra_hot_bc[] = {' + (','.join(str(b) for b in d) or '0') + '};'); print('static const unsigned long avra_hot_bc_len = %d;' % len(d))" $< > $@
+
+build/llvm_wrapper.o: build/avra_hot.inc
+
 # The library is REBUILT WHOLE from its objects, never updated in
 # place: a member dropped from runtime/ must not linger in it.
 $(RUNTIME_LIB): $(RUNTIME_OBJS)
@@ -300,9 +315,10 @@ FORCE:
 # it; an object whose behaviour changes with a HEADER names that
 # header too, so a stash-and-rebuild inside one second still rebuilds
 # it instead of trusting a mtime.
-build/avra_runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h
+build/avra_runtime.sha: SHA_SRC := runtime/avra_runtime.c runtime/avra_box.h runtime/avra_rt.h runtime/avra_runtime.h runtime/avra_fiber.h runtime/avra_hot.h
+build/avra_hot.sha: SHA_SRC := runtime/avra_hot.c runtime/avra_hot.h runtime/avra_box.h
 build/avra_fiber.sha: SHA_SRC := runtime/avra_fiber.c runtime/avra_box.h runtime/avra_fiber.h runtime/avra_runtime.h
-build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c runtime/avra_box.h
+build/llvm_wrapper.sha: SHA_SRC := backend/llvm_wrapper.c runtime/avra_box.h runtime/avra_hot.c runtime/avra_hot.h
 build/ffi.sha: SHA_SRC := packages/std-avrac/src/c/ffi.c runtime/avra_rt.h
 
 build/%.sha: %.c FORCE
