@@ -152,7 +152,7 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
     // LICENSED I3: each binder's bind is packed in binder order, its own mint
     for j, n in names {
         let span_j = cx.slot_read(carried, j, list_at_ty)
-        out.push(bind_of(cx, body, of, code_ty, subj_store, span_j, at_ty, quote_pat_is_text(holes, n), quote_pat_is_run(holes, n)))
+        out.push(bind_of(cx, of, code_ty, subj_store, span_j, at_ty, quote_pat_is_text(holes, n), quote_pat_is_run(holes, n)))
     }
     out
 }
@@ -162,19 +162,19 @@ export fn quote_pat_binds(mut cx: LowerCx, p: PatId, body: ExprId, v: Reg, vty: 
 /// `bound_name_hole`, shape.av, never bind more) and proceeds as
 /// before — a code seat packs `Code { of, at }`, a name seat reads
 /// the `At`'s own name text.
-fn bind_of(mut cx: LowerCx, body: ExprId, of: Reg, code_ty: TypeId, store: Reg, span_j: Reg, at_ty: TypeId, text: bool, run: bool) -> Reg {
+fn bind_of(mut cx: LowerCx, of: Reg, code_ty: TypeId, store: Reg, span_j: Reg, at_ty: TypeId, text: bool, run: bool) -> Reg {
     if run { return avrac_call(cx, "run_coded", [of, span_j], cx.type(List<code_ty>)) }
     let at_j = cx.slot_read(span_j, 0, at_ty)
-    if text { return text_bind(cx, body, store, at_j) }
+    if text { return text_bind(cx, store, at_j) }
     cx.packed_struct(code_ty, [of, at_j])
 }
 
 /// The `At`'s own name, insisted on — present by construction (see
 /// `quote_pat_binds`'s own note).
-fn text_bind(mut cx: LowerCx, body: ExprId, store: Reg, at_j: Reg) -> Reg {
+fn text_bind(mut cx: LowerCx, store: Reg, at_j: Reg) -> Reg {
     let opt_ty = cx.type(string?)
     let text = avrac_call(cx, "own_name_at", [store, at_j], opt_ty)
-    cx.insisted(body, text, opt_ty)
+    cx.insisted(text, opt_ty)
 }
 
 /// The pattern's own Shape, rebuilt: a hole names its dense binder

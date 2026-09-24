@@ -639,13 +639,16 @@ impl LowerCx {
     /// `v!` — the carried value, with the runtime insisting the value
     /// is PRESENT. Each repr asks its own runtime word; both refuse in
     /// the same words, and the check cannot be elided — absence is
-    /// exactly what the writer claimed would not happen.
-    mut fn insisted(e: ExprId, v: Reg, opt: TypeId) -> Reg {
+    /// exactly what the writer claimed would not happen. The mint
+    /// wears `opt`'s own carried type, never a caller-supplied node's
+    /// — a read wears the type of what is read, not of whatever
+    /// expression happened to be in hand.
+    mut fn insisted(v: Reg, opt: TypeId) -> Reg {
         match self.repr_of(opt) {
-            .Niche -> self.insisted_niche(e, v),
+            .Niche -> self.insisted_niche(v, opt),
             // the BOX is what must be present; its slot is read after
             .Boxed -> self.insisted_boxed(v, opt),
-            .Pair -> self.insisted_pair(e, v, opt),
+            .Pair -> self.insisted_pair(v, opt),
         }
     }
 
@@ -659,14 +662,14 @@ impl LowerCx {
         self.boxed_carried(box, self.carried_type(opt))
     }
 
-    mut fn insisted_niche(e: ExprId, v: Reg) -> Reg {
-        self.insist(self.shape_at(e), v)
+    mut fn insisted_niche(v: Reg, opt: TypeId) -> Reg {
+        self.insist(self.view.types.shape_of(self.carried_type(opt)), v)
     }
 
-    mut fn insisted_pair(e: ExprId, v: Reg, opt: TypeId) -> Reg {
+    mut fn insisted_pair(v: Reg, opt: TypeId) -> Reg {
         let flag = self.extracted(v, 0, self.mint_shape(Type.Bool))
         let payload = self.extracted(v, 1, self.mint_ty(self.carried_type(opt)))
-        self.insist_scalar(self.shape_at(e), flag, payload)
+        self.insist_scalar(self.view.types.shape_of(self.carried_type(opt)), flag, payload)
     }
 
     /// An effects-only ARM closes on a throwaway zero — shared with
