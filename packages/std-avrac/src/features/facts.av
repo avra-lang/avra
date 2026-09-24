@@ -132,6 +132,7 @@ export type TypeFacts = {
     // place, or a path rooted at one — a writing call's receiver, a
     // `mut` seat's argument (F2106, `copy_laws`); lowering reads it unique
     alias_copies: SideTable<bool>,
+    thaws: SideTable<bool>,
     // a value a `collect` keeps — checking's one answer, lowering's one read
     gathered: SideTable<bool>,
     // each `collect`'s kept values, so a re-typed one never re-walks its body
@@ -163,6 +164,7 @@ export fn new_type_facts(lo: int, hi: int, stmts: int, hole: TypeId) -> TypeFact
         hungry: side_table("hungry", lo, hi, false),
         warned: side_table("warned", lo, hi, false),
         alias_copies: side_table("alias_copies", lo, hi, false),
+        thaws: side_table("thaws", lo, hi, false),
         gathered: side_table("gathered", lo, hi, false),
         collections: side_table<List<ExprId>?>("collections", lo, hi, null),
         offers: side_table("offers", lo, hi, false),
@@ -279,6 +281,14 @@ impl TypeFacts {
         self.alias_copies.set(e.index, true)
     }
 
+    /// Whether this place is a bare `mut` local seeded fresh, written
+    /// whole: opened only when its box is the binary's own data.
+    fn wants_thaw(e: ExprId) -> bool { self.thaws.get(e.index) }
+
+    fn mark_thaw(e: ExprId) {
+        self.thaws.set(e.index, true)
+    }
+
     /// Whether a `collect` keeps this discarded value.
     fn keeps(e: ExprId) -> bool { self.gathered.get(e.index) }
 
@@ -329,6 +339,7 @@ impl TypeFacts {
         self.wants.lay(other.wants)
         self.pattern_types.lay(other.pattern_types)
         self.alias_copies.lay(other.alias_copies)
+        self.thaws.lay(other.thaws)
         self.gathered.lay(other.gathered)
         self.collections.lay(other.collections)
         self.offers.lay(other.offers)

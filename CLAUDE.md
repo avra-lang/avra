@@ -1415,9 +1415,10 @@ engine's spec, written by dogfooding.
   root. The root decides only whether the ROOT itself is written
   through: `self` and a `mut` seat are (the seat law — Swift's
   `mutating`/`inout`, Rust's `&mut`); a `mut` LOCAL is opened with the
-  rest, and F2106 says so once per local. A seed that LOOKS fresh opens
-  too — a constant literal is the binary's data and a fn's answer may be
-  a value its argument still holds — at the cost of a count check. An unwrap is a step on the
+  rest, and F2106 says so once per local. A FRESH seed is written in
+  place (an identity its hooks capture stays one) unless its box is the
+  binary's own data — a constant literal is — which `avra_cell_thawed`
+  copies first. An unwrap is a step on the
   path (`h.r!.add(1)`), never a target itself. A local READ FROM a
   place is a copy already (spec 11.5). AN IDENTITY IS A `Cell`, NEVER A
   PATH: the compiler's shared structures (TypeRegistry, NodeStore and

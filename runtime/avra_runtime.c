@@ -1370,6 +1370,17 @@ void* avra_cell_unique(void* slot) {
     return c;
 }
 
+// Opens a mut cell's box only when it is the binary's own data: a
+// clone stored into the cell. A counted box stands, whoever else holds
+// it — a fresh local is its own, and an identity its hooks capture
+// stays one. The answer is BORROWED from the cell.
+void* avra_cell_thawed(void* slot) {
+    void* p = *(void**)slot;
+    Header* h = hdr(p);
+    if (h == NULL || !IS_IMMORTAL(h->kind)) return p;
+    return avra_cell_unique(slot);
+}
+
 // The same one level down: the box in a slot, made unique in place.
 void* avra_slot_unique(void* arr, int64_t i) {
     void* p = (void*)(uintptr_t)avra_array_get(arr, i);

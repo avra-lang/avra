@@ -511,16 +511,21 @@ spine's one edge: a pointer-riding literal whose every part is spelled
 is closed becomes `StaticAddr` of an immortal box, named by its file
 and expression. Maps stay run-time; a scalar is already a constant.
 
-**D27. A `mut` local opens unique however fresh its seed looks.** The
-alias-copy law trusted a construction and a fn's answer as unshared,
-so a `mut`-seat call wrote through the local into whatever else held
-the box — a static literal (every later turn read `[1, 7, 7]`), and,
-before this slice, a value the fn's argument still held
-(`mut c = inner(s); add(c)` grew `s.xs`). Every write through a bare
-`mut` local is marked now; a fresh box pays one count check. The
-warning still speaks only for a seed read from a place.
+**D27. A write through a fresh `mut` local opens a STATIC box, and
+only a static one.** The alias-copy law writes a local seeded by a
+construction or a fn's answer in place — that is what keeps an identity
+whose hooks capture it one (features/tests/borrow_identity) — so a
+`mut`-seat call on `mut xs = [1]` wrote into the binary's `[1]`, and
+every later turn read `[1, 7, 7]`. `avra_cell_thawed` copies a cell's
+box when it is immortal and answers any counted box as it stands; the
+evaluator notes the handles a static was built as. Opening every such
+write unique instead (a count check) forked the identity the test pins.
+
+The same channel still lets `mut c = inner(s); add(c)` grow `s.xs` when
+`inner` answers a field of `s` — the identity mechanism, working as
+designed, and a question for the language rather than this slice.
 
 Pinned by features/tests/static_literals (fifteen write shapes over
-three turns, then every literal read again) and fresh_seeds (witnessed
-failing on the pre-slice compiler). Request boxes 10 -> 6;
+three turns, then every literal read again; the `mut`-seat cases
+witnessed failing without the thaw). Request boxes 10 -> 6;
 `check packages/cli` 151.2B -> 150.0B instructions.

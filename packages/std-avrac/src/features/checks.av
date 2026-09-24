@@ -846,32 +846,40 @@ impl TypeCx {
     /// THE ALIAS-COPY LAW: a `mut` place already passes
     /// the ordinary receiver and vocabulary laws (a writing method's
     /// `receiver_law`, a list or map mutation's `is_mut` prelude) — but
-    /// a BARE `mut` LOCAL among those places is a COPY, not a window:
-    /// a write through it — at any depth under it — never reaches
-    /// another holder. `self`, a parameter, and every place rooted in
-    /// either are excluded by construction: `bare_mut_stmt` answers
-    /// only a plain `mut q = …` local.
+    /// a BARE `mut` LOCAL among those places may itself be a COPY, not
+    /// a window: initialized FROM a place (a name, a field path, an
+    /// index), or from what a place holds (`copied_from`), rather than
+    /// a fresh value, it holds what it read the moment it was bound,
+    /// and a write through it — at any depth under it — never reaches
+    /// back. `self`, a parameter, and every place rooted in either are
+    /// excluded by construction: `bare_mut_stmt` answers only a plain
+    /// `mut q = …` local.
     ///
-    /// EVERY SUCH WRITE OPENS UNIQUE (`facts.wants_alias_copy` —
-    /// lowering reads it unique, a count check when nothing else holds
-    /// it): a seed that LOOKS fresh — a construction, a fn's answer —
-    /// may be the binary's own data or a value a holder still keeps.
-    /// The warning speaks only for a seed read FROM a place (a name, a
-    /// field path, an index) or from what a place holds
-    /// (`copied_from`), at the write `e`, once per declaring statement.
+    /// ONE PREDICATE, TWO CHANNELS: every qualifying place is marked
+    /// (`facts.wants_alias_copy` — lowering reads it unique), and the
+    /// warning speaks at the write `e`, once per declaring statement.
+    /// A FRESH seed is the local's own, written in place — an identity
+    /// its hooks capture stays one — unless its box is the binary's
+    /// data, which a constant literal is (`facts.wants_thaw`).
     /// `place` is what the write reaches through — a receiver, a `mut`
     /// seat's argument — and `root` its root, already known `mut` by
     /// every caller.
     mut fn alias_copy_law(e: ExprId, place: ExprId, root: ExprId) {
         let s? = self.bare_mut_stmt(root) else { return }
-        if self.view.types.rides_pointer(self.type_at(place)) { self.facts.mark_alias_copy(place) }
         let v? = self.view.store.stmt_value(s) else { return }
-        let from? = self.copied_from(v) else { return }
+        let from? = self.copied_from(v) else { return self.thaw_law(place) }
+        self.facts.mark_alias_copy(place)
         if self.aliased_warned.contains(s.index) { return }
         self.aliased_warned.push(s.index)
         let q = self.root_word(root)
         if from.holder != null { return self.lent_copy(e, q, self.place_words(from.holder!) ?? self.root_word(from.root)) }
         self.place_copy(e, q, self.root_word(from.root))
+    }
+
+    /// A fresh seed written whole through its local: opened when the
+    /// binary laid it out.
+    mut fn thaw_law(place: ExprId) {
+        if self.view.types.rides_pointer(self.type_at(place)) { self.facts.mark_thaw(place) }
     }
 
     /// A write through `place` (rooted at the `mut` `root`) judged by
