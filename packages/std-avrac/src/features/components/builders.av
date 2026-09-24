@@ -243,7 +243,9 @@ impl NodeStore {
     fn instantiated(template: Template, word: ComponentWord, heads: List<ExprId>, block: ExprId, minted: List<Minted?>) -> ExprId {
         let since = self.marks()
         let fills = [field_fill(template, read, heads, block, minted) for read in template.reads]
-        mut rb = copier(word.store, self, [(kind: HoleKind) -> self.filled(kind, f) for f in fills])
+        // a component's own hole grammar has no `..` spelling, so no
+        // fill here is ever a run
+        mut rb = copier(word.store, self, [(kind: HoleKind) -> self.filled(kind, f) for f in fills], [false for f in fills])
         let root = self.template_value(rb.stmts(template.stmts))
         self.note_copied(since, word.origin)
         root
@@ -263,7 +265,7 @@ impl NodeStore {
             .Expression -> Filled.Expr(f.record?.named ?? f.value),
             .Statement -> Filled.Stmts([self.alloc_stmt(Stmt.ExprStmt(f.value), self.expr_span(f.value))]),
             .Type -> self.pattern_type(f),
-            .Name or .Binder or .Arm -> Filled.Unplaceable(unplaceable_field()),
+            .Name or .Binder or .Arm or .Run -> Filled.Unplaceable(unplaceable_field()),
         }
     }
 
