@@ -1,6 +1,6 @@
 // The base contract: an error type joins with ONE match — a row per
 // variant pairing kind and message — and kinds namespace by prefix.
-use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion, Error, ErrorInfo, info}
+use @std.errors.{Loc, Frame, Confidence, Edit, Suggestion, Error, ErrorInfo, info, Traced, traced}
 
 enum ConfigError {
     Missing(path: string)
@@ -40,6 +40,22 @@ spec "std.errors" {
         then "a frame is an optionally-labeled, optionally-located step" {
             let f = Frame { label: "while reading config", loc: null }
             f.label != null && f.loc == null
+        }
+    }
+    given "the trait's defaulted methods" {
+        then "a leaf error has no cause and no attached frames" {
+            let e = ConfigError.Bad(3)
+            e.cause() == null && e.context().is_empty() && e.trace().is_empty()
+        }
+    }
+    given "a traced error" {
+        then "it carries the wrapped error and starts with no frames" {
+            let t = traced(ConfigError.Missing("/etc/app"))
+            t.cause().describe().kind == "config.missing" && t.trace().is_empty()
+        }
+        then "framing appends, and context is the labeled subset of the whole trace" {
+            let t = traced(ConfigError.Missing("/etc/app")).framed(Frame { label: "while starting up", loc: null }).framed(Frame { label: null, loc: Loc { file: "app.av", lo: 1, hi: 2 } })
+            t.trace().length == 2 && t.context().length == 1 && t.context()[0].label == "while starting up"
         }
     }
 }

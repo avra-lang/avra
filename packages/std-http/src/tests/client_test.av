@@ -98,4 +98,14 @@ spec "std.http client" {
         then "a HEAD's answer has a length and no body, and the connection goes on" { passes(head_answer()) }
         then "a well-formed reply is an answer, not an error" { passes(bad_reply_is_refused()) }
     }
+    given "ClientError.cause" {
+        then "a wrapped net error names itself as the cause" {
+            let e: ClientError = .Net(NetError { verb: "connect", subject: "1.2.3.4:80", errno: 61 })
+            let c = e.cause()
+            c != null && c!.describe().kind == "net.connect"
+        }
+        then "the client's own refusals have no cause" {
+            ClientError.Closed.cause() == null && ClientError.TimedOut.cause() == null
+        }
+    }
 }

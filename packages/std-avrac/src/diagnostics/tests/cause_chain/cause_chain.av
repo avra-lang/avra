@@ -1,0 +1,32 @@
+// proves: causes_of runs identically under both engines — the
+// self-referencing cap and a multi-hop chain both render the same
+// text whether the compiler's own diagnostics code is interpreted or
+// compiled natively.
+use @std.errors.{Error, ErrorInfo, info}
+use @std.avrac.diagnostics.{error_at, render, new_source_file, SourceFile}
+
+enum Loop { L }
+impl Error for Loop {
+    fn describe() -> ErrorInfo { info("loop", "loop") }
+    fn cause() -> dyn Error? { self }
+}
+
+type Hop = { n: int, next: dyn Error? }
+impl Error for Hop {
+    fn describe() -> ErrorInfo { info("hop", "hop ${self.n}") }
+    fn cause() -> dyn Error? { self.next }
+}
+
+fn chain(n: int) -> Hop {
+    if n <= 0 {
+        Hop { n: 0, next: null }
+    } else {
+        Hop { n: n, next: chain(n - 1) }
+    }
+}
+
+fn src() -> SourceFile { new_source_file("<source>", "x\n") }
+
+let a = error_at("x", null, "top") with { cause: Loop.L }
+let b = error_at("x", null, "top") with { cause: chain(3) }
+"${render(a, [], src()).split("caused by:").length - 1} ${render(b, [], src())}"

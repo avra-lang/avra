@@ -76,6 +76,13 @@ extern const char avra_rt_held_avra_array_get_owned __asm__(AVRA_RT_LABEL(avra_a
 extern const char avra_rt_held_avra_cell_release __asm__(AVRA_RT_LABEL(avra_cell_release));
 extern const char avra_rt_held_avra_cell_unique __asm__(AVRA_RT_LABEL(avra_cell_unique));
 extern const char avra_rt_held_avra_cell_thawed __asm__(AVRA_RT_LABEL(avra_cell_thawed));
+extern const char avra_rt_held_avra_enum_boxed __asm__(AVRA_RT_LABEL(avra_enum_boxed));
+extern const char avra_rt_held_avra_array_push_tagged __asm__(AVRA_RT_LABEL(avra_array_push_tagged));
+extern const char avra_rt_held_avra_slot_set_tagged __asm__(AVRA_RT_LABEL(avra_slot_set_tagged));
+extern const char avra_rt_held_avra_enum_tag __asm__(AVRA_RT_LABEL(avra_enum_tag));
+extern const char avra_rt_held_avra_enum_word __asm__(AVRA_RT_LABEL(avra_enum_word));
+extern const char avra_rt_held_avra_rc_retain_tagged __asm__(AVRA_RT_LABEL(avra_rc_retain_tagged));
+extern const char avra_rt_held_avra_rc_release_tagged __asm__(AVRA_RT_LABEL(avra_rc_release_tagged));
 extern const char avra_rt_held_avra_cell_forget __asm__(AVRA_RT_LABEL(avra_cell_forget));
 extern const char avra_rt_held_avra_map_new __asm__(AVRA_RT_LABEL(avra_map_new));
 extern const char avra_rt_held_avra_map_len __asm__(AVRA_RT_LABEL(avra_map_len));
@@ -213,6 +220,13 @@ __attribute__((used)) static const void* const avra_rt_held[] = {
     &avra_rt_held_avra_cell_release,
     &avra_rt_held_avra_cell_unique,
     &avra_rt_held_avra_cell_thawed,
+    &avra_rt_held_avra_enum_boxed,
+    &avra_rt_held_avra_array_push_tagged,
+    &avra_rt_held_avra_slot_set_tagged,
+    &avra_rt_held_avra_enum_tag,
+    &avra_rt_held_avra_enum_word,
+    &avra_rt_held_avra_rc_retain_tagged,
+    &avra_rt_held_avra_rc_release_tagged,
     &avra_rt_held_avra_cell_forget,
     &avra_rt_held_avra_map_new,
     &avra_rt_held_avra_map_len,
@@ -365,6 +379,20 @@ _Static_assert(__builtin_classify_type(avra_cell_unique(AVRA_RT_PTR)) == AVRA_RT
     "avra_cell_unique: its row answers ptr, so its C body answers a pointer");
 _Static_assert(__builtin_classify_type(avra_cell_thawed(AVRA_RT_PTR)) == AVRA_RT_POINTER,
     "avra_cell_thawed: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_classify_type(avra_enum_boxed(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)) == AVRA_RT_POINTER,
+    "avra_enum_boxed: its row answers ptr, so its C body answers a pointer");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_array_push_tagged(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_array_push_tagged: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_slot_set_tagged(AVRA_RT_PTR, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_slot_set_tagged: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_enum_tag(AVRA_RT_PTR)), int64_t),
+    "avra_enum_tag: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_enum_word(AVRA_RT_PTR)), int64_t),
+    "avra_enum_word: its row answers i64, so its C body answers int64_t");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_rc_retain_tagged(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_rc_retain_tagged: its row answers void, so its C body answers void");
+_Static_assert(__builtin_types_compatible_p(__typeof__(avra_rc_release_tagged(AVRA_RT_I64, AVRA_RT_I64, AVRA_RT_I64)), void),
+    "avra_rc_release_tagged: its row answers void, so its C body answers void");
 _Static_assert(__builtin_types_compatible_p(__typeof__(avra_cell_forget(AVRA_RT_PTR)), void),
     "avra_cell_forget: its row answers void, so its C body answers void");
 _Static_assert(__builtin_classify_type(avra_map_new()) == AVRA_RT_POINTER,

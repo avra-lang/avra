@@ -549,3 +549,79 @@ of the request: time is ~30% boxes, ~26% the framer's own scans
 No single lever above 5% remains in the compiler; the next are
 std-http's shape (the `Framed`/`Head`/`Response` chain) or
 per-core throughput.
+
+## §20 As built — R11, value enums
+
+**D28. An enum whose every variant carries at most one word is its tag
+and that word, in registers** (`TypeRegistry.is_valued`, marked at the
+enum's declaration by `Decls.flatten_enum`). A word is an int, a word
+enum, or a counted pointer; a payload's answer is asked of ITS OWN
+declaration first, and an enum payload counts only when it carries
+nothing — so the verdict never depends on which was declared first
+(`declared_type` asks an enum's declaration before handing out its id,
+as it does a name's). Bools, floats, raw pointers, pairs and value
+records disqualify.
+
+**D29. The word is counted by the tag.** A per-type mask names the
+variants whose word is a pointer; `Retain`/`Release` of a value enum
+become `avra_rc_retain/release_tagged` (hot leaves, inlined), and a
+cell holding one is settled by tag in the backend — a cell is two
+words, never one pointer (the red team's first finding: the pointer
+settle read the tag as an address and a later read met a freed box).
+
+**D30. In a box it is two slots; at a one-word seat, its tagged box.**
+A record field or an enum payload lays tag then word (`push_leaf`,
+`leaf_write`; the word's mark follows the tag through
+`avra_array_push_tagged`/`avra_slot_set_tagged`). A list cell, a map
+value or a Cell holds today's tagged box, made and read at the door
+(`avra_enum_boxed`/`_tag`/`_word`). A static record lays the same two
+slots.
+
+**D31. A nullable value enum spends the spare tag -1** (`Repr.Tagged`):
+still two registers, so every lift that assumed a nullable's widen is
+identity — `Code` into `Fix?` in every rule — stays true. A one-slot
+box was tried first and broke exactly those lifts.
+
+Pinned by features/enums/tests/value_enums (records inline, `with`,
+field writes, list/map/Cell/payload seats, a const, nullables, a
+return from inside a loop, recursive enums; eval == native under
+AVRA_RC_GUARD, 0 of 64 boxes live at exit).
+
+**Numbers.** Server under load: 15 -> 13 boxes a request (`Framed`,
+`Body`). `check packages/cli` at parity (162.4B instructions both).
+Stage 1 alone — boxed at every slot — measured +1% and 15 -> 15: the
+inline layout is what paid.
+
+**Not done: `Result<T, E>`.** Its sides are laid out by THEIR
+declarations, and a `Result` is interned wherever it is spelled, so
+marking it at intern would judge a record before it is signed — two
+bodies could disagree on the calling convention. It needs the sides'
+declarations asked first, at a door every spelling passes.
+
+## §21 As built — R11b, a Result is a value enum
+
+**D32. A `Result<T, E>` of two one-word sides rides registers**, Ok tag
+0, Err tag 1. It is judged ONCE, where the type is first interned
+(`TypeRegistry.judge_result`), from layouts that can no longer move: a
+side's declaration must have SETTLED (`mark_settled`, made at every
+record's and enum's declaration), a flat record stays out (a `mut` seat
+may still box it), and an enum is never sealed at all — it has no path a
+`mut` seat writes through. `applied` asks a spelled Result's record
+sides first, so `Result<int, NetError>` is judged with `NetError` known.
+
+**D33. A failure leaves in the fn's own layout** (`propagated`): `?` and
+a selective `catch` pass the subject on as it stands when both Results
+are laid alike — a box by its pointer, a value's Err tag and word — and
+wrap its error again when one is a value and the other a box.
+
+Pinned by features/results/tests/value_results (both repack directions,
+a selective catch, list/field/map/nullable/Cell seats; eval == native
+under AVRA_RC_GUARD, 0 of 46 boxes live at exit). A static list of
+value Results lays each as its tagged box; only fields and payloads
+split into tag and word (`fields_of`).
+
+**Numbers.** Server under ab -k: 13 -> 10 boxes a request (6 under a
+load that sends no `Connection` field); @std/net's `write`/`try_write`
+no longer box. `try_read` answers `Result<Read, NetError>` and `Read`
+is itself two words, so it stays boxed. `check packages/cli` -0.4%
+instructions; the compiler binary +3.4% (8.29 -> 8.57 MB).

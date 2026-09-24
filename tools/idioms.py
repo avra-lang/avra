@@ -842,6 +842,11 @@ UNRATCHETED = {
            "           per-decl walk asks its owner's question a second time",
     "I61": "no grep tells a one-element list used as a slot from a list whose\n"
            "           first element is written; the keeper is the review round",
+    "I64": "needs body equality against the trait's default — a native rule\n"
+           "           over the declaration's Code (the formatter's rule engine), not a\n"
+           "           text matcher. `nothing()` (or whatever no-op form applies) is\n"
+           "           transparent to the comparison: a body that wraps the default in\n"
+           "           one still answers exactly what the default answers",
     "I45": "no grep tells \"declares a derive and nothing else\" from an ordinary\n"
            "           file with a trait in it — the shape that breaks it is whatever\n"
            "           ELSE the file holds. The keeper is the law in CLAUDE.md and the\n"

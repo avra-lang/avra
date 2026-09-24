@@ -14,6 +14,12 @@ fn no_stmt_marks() -> StmtMarks {
     StmtMarks { is_exported: false, is_mutating: false, is_once: false, is_static: false }
 }
 
+/// An impl's OWN written type-parameter lists (`impl Traced<E>`,
+/// `impl Show<X> for Box<T>`) — typing reads the target's declared
+/// tparams instead of this copy; kept only so the printer can spell
+/// back what was written.
+export type ImplTypeParams = { of: List<Plain>, target: List<Plain> }
+
 /// ONE IDENTITY: every arena and side table is a `Cell`, so a copy of
 /// the store allocates into the same arenas as the original.
 export type NodeStore = {
@@ -28,6 +34,9 @@ export type NodeStore = {
     // desugars to carries every field the sugar would print, so the
     // mark alone is enough to read the spelling back
     component_insts: Cell<List<string?>>,
+    // an impl's own written type-parameter lists, by its statement —
+    // printing only, absent on a plain (non-generic) impl
+    impl_tparams: Cell<List<ImplTypeParams?>>,
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
     hoisted: Cell<List<StmtId>>,
@@ -93,6 +102,7 @@ export fn new_node_store(file: string = "") -> NodeStore {
         marks: list_cell(),
         grammars: list_cell(),
         component_insts: list_cell(),
+        impl_tparams: list_cell(),
         hoisted: list_cell(),
         annotations: list_cell(),
         docs: list_cell(),
@@ -554,6 +564,7 @@ impl NodeStore {
         self.marks.push(no_stmt_marks())
         self.grammars.push(null)
         self.component_insts.push(null)
+        self.impl_tparams.push(null)
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
@@ -710,6 +721,18 @@ impl NodeStore {
     fn mark_component_inst(s: StmtId, of: string) {
         self.component_insts.set_at(s.index, of)
         self.restamp(s, 146)
+    }
+
+    /// `impl Traced<E>`/`impl Show<X> for Box<T>` crossed this
+    /// declaration wearing type parameters of its own — the mark's
+    /// code is 151, carrying what was written.
+    fn mark_impl_tparams(s: StmtId, of: List<Plain>, target: List<Plain>) {
+        self.impl_tparams.set_at(s.index, ImplTypeParams { of: of, target: target })
+        self.restamp_carrying(s, 151, [fp_list(plain_fps(of)), fp_list(plain_fps(target))])
+    }
+
+    fn impl_tparams_of(s: StmtId) -> ImplTypeParams? {
+        self.impl_tparams.get()[s.index]
     }
 
     /// A declaration an instance minted, joining its file's top level.

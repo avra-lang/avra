@@ -848,13 +848,69 @@ impl Decls {
         if e != null { return self.flatten_enum(d, e!) }
         let r? = sig.record_sig() else { return }
         self.flatten(d, r.types)
+        self.types.mark_settled(self.record_type(d))
     }
 
     /// AN ENUM WHOSE VARIANTS CARRY NOTHING IS ITS TAG — a word, as C
     /// spells an enum: no box to build per variant, nothing to count.
+    /// ONE WHOSE VARIANTS EACH CARRY AT MOST ONE WORD is a VALUE ENUM:
+    /// its tag and that word ride registers, and a box is made only
+    /// where a slot holds it.
     fn flatten_enum(d: DeclId, e: EnumSig) {
-        if !self.tparams(d).is_empty() || e.payloads.any(!it.is_empty()) { return }
-        self.types.mark_flat(self.types.intern(Type.Enum(d, self.decl(d).name)), [self.types.type(int)])
+        if !self.tparams(d).is_empty() { return }
+        let ty = self.types.intern(Type.Enum(d, self.decl(d).name))
+        self.laid_out(d, ty, e)
+        self.types.mark_settled(ty)
+    }
+
+    /// An enum's layout: its tag alone, its tag and one word, or its box.
+    fn laid_out(d: DeclId, ty: TypeId, e: EnumSig) {
+        if e.payloads.all(it.is_empty()) { return self.types.mark_flat(ty, [self.types.type(int)]) }
+        if e.payloads.length > max_valued_variants { return }
+        let words = [self.variant_word(d, ps) for ps in e.payloads]
+        if words.any(it == null) { return }
+        self.types.mark_valued(ty, counted_bits([w! for w in words]))
+    }
+
+    /// What one variant's payloads make of its word: absent when it
+    /// carries more than one or a payload is not ONE word, 0 when the
+    /// word is uncounted (none, or an int), 1 when it is a pointer.
+    fn variant_word(d: DeclId, ps: List<TypeId>) -> int? {
+        if ps.length > 1 { return null }
+        let t? = ps.first() else { return 0 }
+        self.payload_word(d, t)
+    }
+
+    /// A payload's word, asked of its own declaration first so the
+    /// answer never depends on which was declared first: 0 an int or
+    /// a word enum, 1 a pointer that is counted, absent for anything
+    /// else — a float, a bool, a raw pointer, a pair, a flat record, and
+    /// an enum that carries anything.
+    fn payload_word(d: DeclId, t: TypeId) -> int? {
+        match self.types.shape_of(t) {
+            .Struct(r, _) -> { let _ = self.sig(r) },
+            rest -> nothing_asked(),
+        }
+        // a FLAT record is a word a `mut` seat may still box — out
+        if self.types.shape_of(t) is .Struct && self.types.is_flat(t) { return null }
+        let m = self.types.machine_type(t)
+        match self.types.shape_of(m) {
+            .Int -> 0,
+            .Enum(e, _) -> if e.index != d.index && self.carries_nothing(e) { 0 } else { null },
+            .Struct(_, _) -> if self.types.travels_wide(m) { null } else { 1 },
+            .Opt(inner) -> if self.types.opt_rides_pointer(inner) { 1 } else { null },
+            .Str or .Bytes or .List(_) or .Map(_, _) or .Cell(_) or .Task(_) or .Tasks or .Res(_, _) or .App(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) -> 1,
+            .Float or .Bool or .Ptr or .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> null,
+        }
+    }
+
+    /// Whether an enum's own declaration gives none of its variants a
+    /// payload — read from its signature, never its layout.
+    fn carries_nothing(e: DeclId) -> bool {
+        if !self.tparams(e).is_empty() { return false }
+        let s? = self.sig(e) else { return false }
+        let es? = enum_parts(s) else { return false }
+        es.payloads.all(it.is_empty())
     }
 
     /// THE FLAT LAW: a record of `int` fields and no type parameters IS
@@ -1365,6 +1421,22 @@ fn same_place(a: Loc?, b: Loc?) -> bool {
 fn placed(a: Loc, b: Loc) -> bool { a.file == b.file && a.lo == b.lo && a.hi == b.hi }
 
 /// An enum's signature, or absence for every other declaration.
+/// A value enum's tag must name a bit of its counted mask.
+const max_valued_variants: int = 62
+
+/// Each variant's word as a bit, set for a counted one: bit `t` for tag `t`.
+fn counted_bits(words: List<int>) -> int {
+    mut mask = 0
+    mut bit = 1
+    for w in words {
+        if w == 1 { mask = mask + bit }
+        bit = bit * 2
+    }
+    mask
+}
+
+fn nothing_asked() {}
+
 fn enum_parts(sig: DeclSig) -> EnumSig? {
     match sig {
         .Enum(e) -> e,

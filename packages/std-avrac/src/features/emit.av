@@ -9,7 +9,7 @@
 //! -> … } else { cx -> … }`), so a site cannot open a bracket it
 //! does not close; the open/arm/close verbs remain for the folds and
 //! switches whose arms are not two.
-use core.{Reg, Ins, Type, TypeId, ExprId, BinOp, UnOp, RtSig}
+use core.{Reg, Ins, Type, TypeId, ExprId, BinOp, UnOp, RtSig, same_type}
 use features.{MethodCall}
 
 // ── Constants ───────────────────────────────────────────────────
@@ -160,10 +160,16 @@ impl LowerCx {
         self.unboxed(held, ty)
     }
 
-    /// A seat's word: the register itself, or a value record's fields
-    /// in a fresh box — a name over one opened to it first.
+    /// A seat's word: the register itself, a value record's fields in a
+    /// fresh box — a name over one opened to it first — or a value
+    /// enum's tagged box.
     mut fn crossing(a: Reg) -> Reg {
-        if !self.view.types.travels_wide(self.out.type_of_reg(a)) { return a }
+        let ty = self.out.type_of_reg(a)
+        if !self.view.types.travels_wide(ty) { return a }
+        if self.valued(ty) {
+            let v = self.opened_enum(a)
+            return self.enum_boxed(self.view.types.shape_of(self.type(List<int>)), self.extracted(v, 0, self.mint_shape(Type.Int)), self.extracted(v, 1, self.mint_shape(Type.Int)), self.const_int(self.view.types.counted_mask(ty)))
+        }
         let parts = self.leaves(a)
         let dst = self.array_sized(self.view.types.shape_of(self.type(List<int>)), self.box_size(parts.length))
         for r in parts { self.push_slot(dst, r) }
@@ -174,19 +180,48 @@ impl LowerCx {
     /// fields — a name over one opened to it first.
     mut fn leaves(a: Reg) -> List<Reg> {
         let ty = self.out.type_of_reg(a)
-        if !self.view.types.travels_wide(ty) { return [a] }
+        if !self.view.types.lays_inline(ty) { return [a] }
+        // a value enum is ONE leaf; the slot verbs lay its tag and word
+        if self.valued(ty) { return [self.opened_enum(a)] }
         if !self.view.types.is_wide(ty) { return self.leaves(self.extracted(a, 0, self.mint_ty(self.view.types.flat_fields(ty)[0]))) }
         [self.extracted(a, j, self.mint_ty(f)) for j, f in self.view.types.flat_fields(ty)]
     }
 
     /// A value record read back out of the box that carried it — worn
     /// by every name over it.
-    mut fn unboxed(held: Reg, ty: TypeId) -> Reg { self.unboxed_at(held, 0, ty) }
+    mut fn unboxed(held: Reg, ty: TypeId) -> Reg {
+        // a value enum crossed a one-word seat as its tagged box
+        if self.valued(ty) { return self.named_over(ty, self.pack(self.view.types.machine_type(ty), [self.enum_tag(Type.Int, held), self.enum_word(Type.Int, held)])) }
+        self.unboxed_at(held, 0, ty)
+    }
 
-    /// A value record read out of a box from slot `base` on.
+    /// A value record read out of a box from slot `base` on; a value
+    /// enum out of its tagged box.
     mut fn unboxed_at(held: Reg, base: int, ty: TypeId) -> Reg {
+        if self.valued(ty) {
+            let word = self.type(int)
+            return self.named_over(ty, self.pack(self.view.types.machine_type(ty), [self.slot_read(held, base, word), self.slot_read(held, base + 1, word)]))
+        }
         if !self.view.types.is_wide(ty) { return self.pack(ty, [self.unboxed_at(held, base, self.view.types.flat_fields(ty)[0])]) }
         self.pack(ty, [self.slot_read(held, base + j, f) for j, f in self.view.types.flat_fields(ty)])
+    }
+
+    /// Whether a value is a VALUE ENUM, seen through names.
+    fn valued(ty: TypeId) -> bool { self.view.types.valued_carrier(ty) }
+
+    /// A value enum's own register: a name over one opened to it.
+    mut fn opened_enum(a: Reg) -> Reg {
+        let ty = self.out.type_of_reg(a)
+        let m = self.view.types.machine_type(ty)
+        if same_type(m, ty) { return a }
+        self.opened_enum(self.extracted(a, 0, self.mint_ty(self.view.types.flat_fields(ty)[0])))
+    }
+
+    /// A value worn by the name `ty` stands for: the value itself when
+    /// `ty` is no name, else the name's pack over it.
+    mut fn named_over(ty: TypeId, v: Reg) -> Reg {
+        if same_type(self.view.types.machine_type(ty), ty) { return v }
+        self.pack(ty, [self.named_over(self.view.types.flat_fields(ty)[0], v)])
     }
 
     /// The node's ANSWER register set to integer zero — a void word's

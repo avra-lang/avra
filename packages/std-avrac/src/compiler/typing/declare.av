@@ -450,7 +450,18 @@ impl TypeCx {
         let refused: List<Refusal> = r.judge(self.view.types, args)
         if !refused.is_empty() { return self.applied_refused(at, refused[0]) }
         let sh: Type = r.builds(args)
+        // A RESULT'S LAYOUT IS JUDGED WHERE IT IS FIRST INTERNED, from its
+        // sides' layouts — so each side's declaration is asked first
+        if sh is .Res { for p in parts { self.asked_layout(p) } }
         self.view.types.intern(sh)
+    }
+
+    /// A record's layout made by asking its declaration.
+    fn asked_layout(ty: TypeId) {
+        match self.view.types.shape_of(ty) {
+            .Struct(d, _) -> { let _ = self.view.decls.sig(d) },
+            rest -> nothing(),
+        }
     }
 
     fn unslottable_slot(at: Loc?, name: string, ty: TypeId) -> TypeId {
@@ -536,7 +547,12 @@ impl TypeCx {
             self.emit(refusal("type.applied", at, "`${name}` is generic — it takes ${counted(arity, "type argument")}", "written bare", "write `${name}<...>`"))
             return self.error_type
         }
-        if self.view.decls.is_enum(d) { return self.view.types.intern(Type.Enum(d, name)) }
+        // AN ENUM'S LAYOUT IS MADE AT ITS DECLARATION — a word, a value
+        // enum or a box — so it is asked before the id is handed out
+        if self.view.decls.is_enum(d) {
+            let _ = self.view.decls.sig(d)
+            return self.view.types.intern(Type.Enum(d, name))
+        }
         if self.view.decls.is_alias(d) { return self.aliased(at, d, name, []) }
         // A NAMED TYPE'S MARK IS MADE AT ITS DECLARATION, so the
         // declaration is ASKED before the id is handed out. Without
