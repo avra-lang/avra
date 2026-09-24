@@ -20,14 +20,28 @@ impl Program {
     fn ir_proved(path: string, a: Analysed, at: At, after_text: string) -> bool {
         let d? = enclosing_decl(a.view, at) else { return false }
         let symbol = self.ws.decls.symbol(d)
-        let before_lo = match self.every_body_checked() {
+        // NO entry: `self`'s own entry is whichever ONE file `avra
+        // fix` was asked about — every OTHER file in the same
+        // workspace (a compiler's own program-test fixtures, each
+        // its own tiny entry) would then be judged under "a module
+        // file runs nothing" and refused for running the statements
+        // it owns, so the proof could never even reach `same_ir` in
+        // a package that carries more than one program
+        // (avra-8sb5.25.46). `checked_from(null, true)` asks what
+        // the WHOLE WORKSPACE'S declared bodies lower to, which is
+        // what a symbol's IR means regardless of which file the
+        // caller happened to be asked about — `every_body_checked`
+        // keeps its own entry-bound meaning for its other caller
+        // (specs_test.av's case-refusal checks, which WANT that law
+        // enforced).
+        let before_lo = match self.checked_from(null, true) {
             .Ok(l) -> l,
             .Err(_) -> { return false },
         }
         let before_body? = before_lo.fns.find(it.name == symbol) else { return false }
         mut after_p = self.after_program(path, after_text)
         if !after_p.clean() { return false }
-        let after_lo = match after_p.every_body_checked() {
+        let after_lo = match after_p.checked_from(null, true) {
             .Ok(l) -> l,
             .Err(_) -> { return false },
         }
