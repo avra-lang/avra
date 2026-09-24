@@ -8,7 +8,7 @@
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
 use core.{At, ExprId, DeclId, TypeId, TypeRegistry, NodeStore, Binding, Type, Span, Expr, TypeRef, own_name_at}
-use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row}
+use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row, AnnotationFact}
 use features.enums.{answering_arms}
 use diagnostics.{loc_at}
 use @std.errors.{Loc}
@@ -211,6 +211,34 @@ impl Code {
         match self.answering() {
             n? -> n >= 2
             null -> false
+        }
+    }
+
+    /// This node's own declaration's `///` doc, its lines joined — null
+    /// where it wrote none, and for every node that is not a declaring
+    /// statement itself (a call inside a body answers null, not its
+    /// enclosing fn's doc).
+    fn doc() -> string? {
+        let d? = self.declaring() else { return null }
+        let lines? = self.of.view.decls.doc_of(d) else { return null }
+        lines.join("\n")
+    }
+
+    /// This node's own declaration's `@name(args)`, in written order —
+    /// empty for every node that is not a declaring statement.
+    fn annotations() -> List<AnnotationFact> {
+        let d? = self.declaring() else { return [] }
+        self.of.view.decls.annotations_of(d)
+    }
+
+    /// The declaration THIS node's own statement makes — the exact
+    /// statement, never merely the innermost one that encloses it
+    /// (`enclosing_decl`'s question, for a position anywhere inside a
+    /// body).
+    fn declaring() -> DeclId? {
+        match self.at {
+            .Stmt(id) -> self.of.view.decls.decl_of(self.of.view.file, id),
+            .Expr(_) or .Pat(_) or .Field(_, _) -> null,
         }
     }
 

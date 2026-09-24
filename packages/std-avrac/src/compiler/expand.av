@@ -4,7 +4,7 @@
 use core.{Expr, StmtId, Span, Param, Variant, Mark, same_stmt, DeclId, FileId, ExprId, fp, flatten, TypeId, Type, same_file, FnParts, TypeRef, source_spelled, named_ref, spelled, Scoped}
 use features.{Unsettled, unsettled_label, MetaVal, MetaHeap, Namespace, FnSig, StructSig, EnumSig, nothing, FileView, spelled_type, DeclareWork, Generation}
 use features.{meta_of_fn, meta_of_type, meta_of_named, meta_of_trait, kind_of, no_kind}
-use @std.meta.{Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Kind}
+use @std.meta.{Directive, Node, Fn as MetaFn, Type as MetaType, Named, Trait as MetaTrait, Param as MetaParam, Field as MetaField, Variant as MetaVariant, Kind, Annotation as MetaAnnotation}
 use core.{Stmt, StmtId, Arm, BodyView, HoleKind, Filled, copier, quote_kind, all_codes, is_name_cont}
 use diagnostics.{loc_at}
 use @std.testing.{words}
@@ -404,12 +404,27 @@ impl Workspace {
         let v = file_view(self.lang, self.parsed(x.file), self.decls, x.file)
         let at = placed(v, v.store.stmt_span(x.stmt))
         match self.decls.meta_seat(want) {
-            .Fn -> meta_of_fn(MetaFn { name: x.name, params: self.crossed_params(v, x.stmt, d), answer: self.crossed_answer(v, x.stmt), at: at, answers: self.answer_kind(d) }, heap),
-            .Type -> meta_of_type(MetaType { name: x.name, fields: self.crossed_fields(v, x.stmt, d), variants: self.crossed_variants(v, x.stmt, d), at: at }, heap),
+            .Fn -> meta_of_fn(MetaFn { name: x.name, params: self.crossed_params(v, x.stmt, d), answer: self.crossed_answer(v, x.stmt), at: at, answers: self.answer_kind(d), doc: self.decl_doc_text(d), annotations: self.decl_annotations(v, d) }, heap),
+            .Type -> meta_of_type(MetaType { name: x.name, fields: self.crossed_fields(v, x.stmt, d), variants: self.crossed_variants(v, x.stmt, d), at: at, doc: self.decl_doc_text(d), annotations: self.decl_annotations(v, d) }, heap),
             .Named -> meta_of_named(Named { name: x.name, at: at }, heap),
             .Trait -> meta_of_trait(MetaTrait { name: x.name, at: at }, heap),
             .Other -> MetaVal.Absent,
         }
+    }
+
+    /// A declaration's own `///` doc, its lines joined — the one
+    /// source `Fn.doc`/`Type.doc` cross with, off the door every
+    /// other reader of a declaration's doc now shares.
+    fn decl_doc_text(d: DeclId) -> string? {
+        let lines? = self.decls.doc_of(d) else { return null }
+        lines.join("\n")
+    }
+
+    /// A declaration's own `@name(args)`, crossed at its own place —
+    /// its facts' literal argument text, already re-read once at
+    /// admit, needs no second pass over the store.
+    fn decl_annotations(v: FileView, d: DeclId) -> List<MetaAnnotation> {
+        [MetaAnnotation { name: a.name, args: a.args, at: placed(v, a.span) } for a in self.decls.annotations_of(d)]
     }
 
     /// A fn's parameters as `Param` values: name, the type's spelling
@@ -451,6 +466,8 @@ impl Workspace {
             at: placed(v, va.span),
             fields: [crossed_field(v, p, kind_at(kinds, j)) for j, p in va.payloads],
             marks: crossed_marks(v, va.marks),
+            doc: null,
+            annotations: crossed_annotations(v, va.marks),
         }
     }
 

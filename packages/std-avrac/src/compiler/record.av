@@ -11,7 +11,7 @@
 //! the imports first — a field of another module's type interns only once that
 //! module's types exist.
 use core.{new_digest, digest_text, digest_key, digest_of, joined, sorted_texts, distinct, same_decl, module_path, ModulePath, TypeRegistry, TypeId, DeclId, DeclKind, SeatMark, Span}
-use features.{DeclSig, DeclFacts}
+use features.{DeclSig, DeclFacts, AnnotationFact}
 use compiler.lower.{Body, program_symbol}
 use compiler.store.{Store, Stored, node_key}
 
@@ -302,7 +302,8 @@ export fn iface_digest(items: List<string>) -> string {
 fn interface_form(line: string) -> string {
     let p = line.split("\t")
     if p.length < 13 { return "" }
-    let facts = p[12].split(";")
+    let top = unpacked(p[12])
+    let facts = if top.is_empty() { [] } else { top[0].split(";") }
     let seen = if facts.length >= 8 { facts.slice(0, 3).concat(facts.slice(5, 10)) } else { facts }
     [p[0], p[2], p[4], p[5], p[6], p[7], p[8], p[11], seen.join(";")].concat(p.slice(13, 16)).join("\t")
 }
@@ -326,21 +327,100 @@ fn named_file(line: string) -> string {
 }
 
 /// A DECLARATION'S FACTS, as the record's block — the encoder of `facts_unblocked`, and
-/// the pair is ONE unit. `split` DROPS a trailing empty field, so a list is encoded as
-/// `<count>~<items…>`: an empty list is `0`, never an empty field that would shift its
-/// neighbour. Neither `;` nor `~` is in a type spelling or an identifier.
+/// the pair is ONE unit. THE HEAD is every fact whose text is a type spelling, a name or
+/// a digit — none of which carry `;` — joined the old way; DOC AND ANNOTATIONS ARE FREE
+/// TEXT a `///` line or a literal argument can spell anything in, so they ride as two
+/// more `packed` segments alongside the head rather than inside its `;`-join.
 fn facts_block(f: DeclFacts) -> string {
     let slo = f.span?.lo ?? 0 - 1
     let shi = f.span?.hi ?? 0 - 1
-    "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.of};${if f.is_component { "1" } else { "0" }};${if f.instance { "1" } else { "0" }};${f.fingerprint()}"
+    let head = "${if f.external { "1" } else { "0" }};${if f.stat { "1" } else { "0" }};${if f.is_grammar { "1" } else { "0" }};${slo};${shi};${list_field(f.tparams)};${list_field(f.bounds)};${list_field(f.seats)};${list_field(f.host)};${if f.annotated { "1" } else { "0" }};${f.of};${if f.is_component { "1" } else { "0" }};${if f.instance { "1" } else { "0" }};${f.fingerprint()}"
+    packed([head, doc_wire(f.doc), annotations_wire(f.annotations)])
 }
 
 /// One string list as `<count>~<len>:<item>…`. EACH ELEMENT CARRIES ITS LENGTH, because
 /// a bare `~`-join LOSES a trailing EMPTY element — `split` drops it — and a facts list
 /// legitimately holds `""` (an unconstrained bound, an unwritten width). The old form
 /// decoded `[""]` as `[]`: benign where the only reader returns `""` either way, and a
-/// silent loss the moment a reader distinguishes them.
+/// silent loss the moment a reader distinguishes them. Reserved for text this build
+/// already knows carries no `~` — a type spelling, a parameter name; free text goes
+/// through `packed` instead, which never searches an element for one.
 fn list_field(xs: List<string>) -> string { "${xs.length}~${joined(["${x.length}:${x}" for x in xs], "~")}" }
+
+/// A LIST OF STRINGS, EACH SLICED BY ITS OWN RECORDED LENGTH — never searched for.
+/// `list_field`'s `~` join reads an element's own `~` as another boundary; a doc line
+/// or an annotation's literal argument is free text a program wrote, so it can hold
+/// any byte the record format itself uses as punctuation. Reading `packed` never
+/// inspects an element's bytes for a separator, only jumps by the length recorded
+/// beside it, so nothing an element contains can be mistaken for the list's own shape.
+fn packed(xs: List<string>) -> string { "${xs.length};${joined(["${x.length}:${x}" for x in xs], "")}" }
+
+fn unpacked(s: string) -> List<string> {
+    let semi = s.index_of(";")
+    if semi < 0 { return [] }
+    let n? = wire_number(s.substring(0, semi)) else { return [] }
+    mut out: List<string> = []
+    mut i = semi + 1
+    mut k = 0
+    while k < n {
+        let rest = s.substring(i, s.length)
+        let colon = rest.index_of(":")
+        if colon < 0 { return out }
+        let len? = wire_number(rest.substring(0, colon)) else { return out }
+        let start = i + colon + 1
+        let end = start + len
+        if end > s.length { return out }
+        out.push(s.substring(start, end))
+        i = end
+        k = k + 1
+    }
+    out
+}
+
+/// `List<string>?` as one packed item: absent is `packed(["0"])`, present carries a
+/// `"1"` flag then every line, EACH ESCAPED as `field_text` escapes a name — `packed`
+/// is safe against `;`/`~`/`:`, but the whole block still lands in one TAB COLUMN of
+/// one LINE of the record, and a `///` line or a literal argument can hold either.
+fn doc_wire(doc: List<string>?) -> string {
+    match doc {
+        null -> packed(["0"])
+        lines? -> packed(["1"].concat([field_text(l) for l in lines]))
+    }
+}
+
+fn doc_of_wire(wire: string) -> List<string>? {
+    let parts = unpacked(wire)
+    if parts.is_empty() || parts[0] == "0" { return null }
+    [text_of_field(x) for x in parts.slice(1, parts.length)]
+}
+
+/// One `AnnotationFact` as a 4-item `packed` record: its escaped name, its arguments
+/// (each escaped, then packed again — an argument's text is exactly as free), and its
+/// span's two wires.
+fn annotation_wire(a: AnnotationFact) -> string {
+    let slo = a.span?.lo ?? 0 - 1
+    let shi = a.span?.hi ?? 0 - 1
+    packed([field_text(a.name), packed([field_text(x) for x in a.args]), "${slo}", "${shi}"])
+}
+
+fn annotation_of_wire(wire: string) -> AnnotationFact {
+    let p = unpacked(wire)
+    let name = if p.length > 0 { text_of_field(p[0]) } else { "" }
+    let args = if p.length > 1 { [text_of_field(x) for x in unpacked(p[1])] } else { [] }
+    let slo = if p.length > 2 { wire_number(p[2]) ?? (0 - 1) } else { 0 - 1 }
+    let shi = if p.length > 3 { wire_number(p[3]) ?? (0 - 1) } else { 0 - 1 }
+    AnnotationFact { name: name, args: args, span: span_of(slo, shi) }
+}
+
+/// A span from its two wire ints — the decoder `facts_unblocked` and
+/// `annotation_of_wire` share, both writing `-1` for the same absence.
+fn span_of(lo: int, hi: int) -> Span? {
+    if lo < 0 { null } else { Span { lo: lo, hi: hi } }
+}
+
+fn annotations_wire(xs: List<AnnotationFact>) -> string { packed([annotation_wire(a) for a in xs]) }
+
+fn annotations_of_wire(wire: string) -> List<AnnotationFact> { [annotation_of_wire(x) for x in unpacked(wire)] }
 
 /// The inverse — `"0"` and `"0~"` both read as the empty list, and a length-prefixed
 /// element survives whether or not it is empty.
@@ -363,7 +443,9 @@ fn item_of_field(p: string) -> string {
 /// writer added but this reader does not know makes the two disagree and the record is
 /// REFUSED — drift is a rebuild, never a declaration wearing a default.
 fn facts_unblocked(block: string) -> DeclFacts? {
-    let p = block.split(";")
+    let top = unpacked(block)
+    if top.length < 3 { return null }
+    let p = top[0].split(";")
     if p.length < 14 { return null }
     let slo? = wire_number(p[3]) else { return null }
     let shi? = wire_number(p[4]) else { return null }
@@ -371,7 +453,7 @@ fn facts_unblocked(block: string) -> DeclFacts? {
         external: p[0] == "1",
         stat: p[1] == "1",
         is_grammar: p[2] == "1",
-        span: if slo < 0 { null } else { Span { lo: slo, hi: shi } },
+        span: span_of(slo, shi),
         tparams: read_list(p[5]),
         bounds: read_list(p[6]),
         seats: read_list(p[7]),
@@ -380,6 +462,8 @@ fn facts_unblocked(block: string) -> DeclFacts? {
         of: p[10],
         is_component: p[11] == "1",
         instance: p[12] == "1",
+        doc: doc_of_wire(top[1]),
+        annotations: annotations_of_wire(top[2]),
     }
     facts
 }
