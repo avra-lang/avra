@@ -324,7 +324,7 @@ string, which is why it is recorded rather than waved through.
 |---|---|---|---|
 | D1 | a string's `.length` is a LOAD; `str_len` distrusts a ZERO length | HOLDS | `runtime/avra_runtime.c:365` reads `return (h && h->len) ? h->len : strlen(s);` — verbatim as quoted |
 | D2 | `split` drops a trailing empty segment, keeps a leading one | HOLDS | `./avra run` answers `1 2 0` for `"a."`, `".a"`, `""` |
-| D3 | a string holds a NUL only half-way | **PARTIAL / NEEDS-PACKAGE** | the literal half HOLDS: the six-character `ab\0cd` spelling has `.length` **6**, so `\0` is not an escape. The five lossy primitives need `@std/text`'s `from_codepoint(0)` to mint a NUL, and `use @std/text` from a loose file is F3015 |
+| D3 | a string holds a NUL only half-way | **RETRACTED — the subject changed** | The literal half still HOLDS exactly as measured: the six-character `ab\0cd` spelling has `.length` **6**, so `\0` is not an escape. **But "the five lossy primitives" no longer names anything.** `f57372a` moved `==`, `contains`, `index_of`, `split` and `replace` onto the header's length; the CLAUDE.md entry this row tested is now titled *"A STRING HOLDS A NUL, ALL THE WAY"*. Re-probed at `56df4df` through `extern fn avra_str_from_codepoint`: `len=5 eq_ab=false has_cd=true idx=3`. The NEEDS-PACKAGE half also has a package now — `@std/text` exports `nul_at` and `has_nul` as of `2d49858` — so this is a case to pin GREEN, not a subset limitation |
 | D4 | `avra run` traps past 400 nested calls | **PARTIAL** | the interpreter half HOLDS: `recursion too deep — 400 nested calls`, exit 1. The native half ("`avra test`/`build` run 5000 deep") needs a package build, for which this lane does not hold the lock |
 
 ---

@@ -1369,6 +1369,71 @@ reversible in one direction only** — adding the shape later costs
 migrating 45 rows, which is precisely why it waits for evidence rather
 than a guess.
 
+
+### Two laws the boundary incident earned, from the other end
+
+**A DOC THAT DEMONSTRATES A HAZARD IS CODE THAT HAS NEVER BEEN RUN.**
+LANE B's, generalised from `boundary.av` and then found in their own
+file: their crossing law read `env("PATH\0/junk")`, and that name is
+**ordinary text** — no NUL, no hazard, nothing demonstrated. Two
+campaigns, two authors, the same defect **in the clause that names the
+failure**, because prose has no gate and an example in prose is never
+executed. Both now spell the hazard the way it is minted
+(`from_codepoint(0)`), with the dead form quoted so the trap is *named*
+rather than silently corrected.
+
+**A CONJUNCTION CANNOT TELL YOU WHICH HALF IS LOAD-BEARING.** Chasing it,
+they removed three guards to watch them fail — the untested-instrument
+law, applied inward. All four dependent cases failed and restoring gave a
+byte-identical tree, so the guards are real. **But two things fell out
+that reading could not have found:**
+
+- `env("A\0=B") == null` **passes with and without the guard.** A true
+  assertion proving nothing about the thing it sits under.
+- `Env.get` needed the guard for **one** variant, not two. Their doc
+  claimed `Only` used `strcmp` and would match `"AB"` against `"AB␀CD"`.
+  **False.** Splitting the conjunction named the variant in one run.
+
+**And the law survived its own mechanism:** one method still read one
+name two ways, and the guard is what makes the variants *agree* — not
+what makes either safe.
+
+**THIS IS THE FIFTH EARNING OF THE FORMAT'S OWN CONSTRAINT — ONE ROW
+ASSERTS ONE CLAIM.** The first four came from entries that rotted clause
+by clause while the surviving clause kept them green. This one comes from
+the opposite direction: a **passing** case whose conjunction hid *which
+fact was doing the work*, so it certified a sentence that was wrong. A
+multi-claim row fails silently in both directions — it stays green when
+one half dies, and it stays green when the other half was never true.
+
+That is the argument for `Expect` being a single value rather than a set
+of assertions, and it is why the format takes the cost of more rows.
+
+**AND THE RULE IS NARROWER THAN THE LAW — LANE B's qualification, which
+I had wrong in the strict direction.** *One row asserts one claim* would
+forbid a shape that is honest: `has_nul` true, false, and false-on-empty
+is **one claim over several inputs**, and a conjunction there is a
+TABLE, not laziness. The defect is narrower:
+
+> **A CONJUNCTION IS A DEFECT WHEN ITS HALVES TEST DIFFERENT
+> MECHANISMS** — because then the row's NAME cannot describe the
+> failure. Over several inputs to ONE mechanism it is a table, and
+> tables are fine.
+
+The format expresses that without a second shape: one program may
+exercise one mechanism over many inputs and answer them together
+(`"${has_nul(a)} ${has_nul(b)} ${has_nul(c)}"` → `"true false false"`) —
+still one `Expect`, still one claim. **So the constraint is ONE
+MECHANISM PER ROW, not one assertion.**
+
+**And the instance is that lane landing the law and violating it in the
+same breath:** five of seven cases they offered were cross-mechanism
+conjunctions, the worst asserting `.length`, `contains` and `==` under
+one name — the exact shape that had certified a false sentence an hour
+earlier. Caught by them, on their own work, minutes after committing the
+rule. **A law does not become a habit at the moment it is written down**,
+and the gap is where a keeper earns its place.
+
 ### The claim-width rule caught two of its author's own rows
 
 The verifier checks the program against `Expect`. It never checks that
@@ -1644,12 +1709,43 @@ reports success, and is wrong** — and `@std/sqlite`'s traps document is
 this tree's exemplar. Its sharpest entry, verified by the SQLITE lane on
 main at `bd5c024`:
 
-> The door refusing an empty database path was built from `==`, a C string
-> call that stops at the first NUL. The path `"\0x"` measures `.length` 2
-> in Avra and reaches SQLite as **the empty string** — which opens a
-> private temporary database deleted at close, so **every write succeeds
-> and the data is silently gone.** The guard was not weak. It was reading
-> a different string than the callee.
+> The door refusing an empty database path did not check what the callee
+> would read. A path whose first byte is a NUL reaches SQLite as **the
+> empty string** — which opens a private temporary database deleted at
+> close, so **every write succeeds and the data is silently gone.** The
+> guard was not weak. It was reading a different string than the callee.
+
+**RETRACTED MECHANISM, kept as the exemplar of why.** The original quote
+blamed `==` for being *"a C string call that stops at the first NUL"*.
+**That is no longer true and was only ever half the story.** `f57372a`
+moved `==`, `contains`, `index_of`, `split` and `replace` onto the
+header's length via `memcmp`/`memmem`. Probed here at `56df4df`: a string
+`ab␀cd` has `.length` 5, is UNEQUAL to `"ab"`, and `contains("cd")`
+answers true at index 3. **A NUL is an ordinary character on the Avra
+side.** The truncation lives at the **extern seat alone** — `getenv`,
+`execvp`, `fopen`, `sqlite3_open`.
+
+The incident is unchanged and the guard is still required; only the
+*reason* moved. Nothing on the Avra side was ever blind — there was
+simply no check before the boundary.
+
+**AND THE WAY THIS ROTTED IS THE LESSON — LANE B's, and it is a hole in
+this document's whole method.** The claim was quoted into **four
+documents across three campaigns**. `@std/sqlite` owned the original and
+swept ITSELF twice, correcting five sites — **and every citation
+survived**, including this one. Because:
+
+> **A CITATION IS A COPY THAT DOES NOT KNOW IT IS ONE.** It names the
+> FINDING rather than the MECHANISM, so it survives the mechanism
+> changing — and it reads as corroboration from an independent source
+> when it is the same fact copied. **Four documents agreeing looked like
+> four confirmations and was one claim four times.**
+
+So a sweep keyed to a FILE or a PACKAGE cannot reach it, and neither can
+the owner's own diligence. **Sweep by CLAIM** — grep the assertion and its
+distinctive example. Landed in CLAUDE.md at `56df4df`. This is the third
+time this campaign has met the keyed-to-the-wrong-thing shape, after the
+`ptr` sweep and the exclusion registry.
 
 **And the half that belongs in front of an LLM author is the near-miss.**
 `":memory:\0x"` was refused *before* the fix — **by accident**, because

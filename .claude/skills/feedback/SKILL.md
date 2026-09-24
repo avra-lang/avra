@@ -1,6 +1,6 @@
 ---
 name: feedback
-description: A structured survey for agents to collect EVERYTHING a work session ran into — friction, sugar asks, feature ideas, defects, doctrine gaps, performance, process — and record it in ROADMAP.md to feed the backlog. Run at the end of a session or lane, or when asked for feedback, a retro, or "what sucked". Use when asked for feedback, a survey, a retro, or "what sucked".
+description: A structured survey for agents to collect EVERYTHING a work session ran into — friction, sugar asks, feature ideas, defects, doctrine gaps, performance, process — and record it in FEEDBACK.md to feed the backlog. Run at the end of a session or lane, or when asked for feedback, a retro, or "what sucked". Use when asked for feedback, a survey, a retro, or "what sucked".
 ---
 
 # The feedback survey
@@ -91,7 +91,7 @@ Each finding is a ledger row under its axis:
 
 ## Where it lands
 
-ROADMAP.md, as a new section:
+**FEEDBACK.md**, as a new section — your **timestamped record** of what each phase wanted:
 
     ## Feedback survey — <date> (<lane>)
 
@@ -99,24 +99,25 @@ with one subsection per axis; a row per finding. **The survey is the
 breadth; the backlogs are the routing.** A finding that belongs in a
 specific ledger ALSO lands there, linked both ways:
 
-- A sugar the compiler's own source wanted -> the **sugar backlog**,
-  with its wanting site.
+- A sugar the compiler's own source wanted -> **ROADMAP.md's Sugar Backlog**,
+  with its wanting site. (Already deduplicated and cross-referenced.)
 - A deferred capability -> a **recorded trigger** with its firing
-  condition.
-- A doctrine settlement -> the relevant section, dated, with the
+  condition (also in ROADMAP.md or FEEDBACK.md).
+- A doctrine settlement -> **ROADMAP-STANDARDS.md** (the relevant section), dated, with the
   reasoning.
-- An idiom -> DOGFOODING.md's registry.
-- A subset refusal -> CLAUDE.md's "The subset today".
+- An idiom -> **DOGFOODING.md's registry**.
+- A subset refusal -> **CLAUDE.md's "The subset today"**.
 
 A finding that lives ONLY in the survey is a finding that gets lost
-when the survey scrolls away. File it home, and cite the survey row.
+when the survey scrolls away. File it home, and cite the survey row. FEEDBACK.md keeps it discoverable by phase and date.
 
 ## Verify
 
 Docs-only, so `make gate` is unaffected — confirm the tree still
 builds. If CLAUDE.md was touched, run its duplicate-prose check
 (`grep -n "^- [A-Z]" CLAUDE.md | sed 's/^[0-9]*://' | sort | uniq -d`
-must answer nothing). Re-read the section: every row has evidence, and
+must answer nothing). Check your prose in ROADMAP.md for duplicates:
+`grep -n "^- \[ \]" ROADMAP.md | sed 's/^[0-9]*://' | sort | uniq -d` must answer nothing. Re-read the section: every row has evidence, and
 no row duplicates another.
 
 ## Report
