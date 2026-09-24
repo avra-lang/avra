@@ -308,17 +308,24 @@ fn file_lexes_block(ws: Workspace, path: string) -> bool {
     let text = ws.host.read(path)
     // THE CHEAPEST GATE FIRST: no `grammar` substring anywhere, no
     // token stream worth building.
-    let found = (text.contains("grammar") || text.contains("component")) && opens_block(lex_source(text).tokens)
+    let found = (text.contains("grammar") || text.contains("component") || text.contains("export")) && opens_block(lex_source(text).tokens, ws.lang.keywords)
     ws.records.grammar_scanned.put(path, found)
     found
 }
 
 /// Whether the stream may declare a block word: a `grammar` token
-/// followed by `{` or by a NAME then `{`, or any `component` keyword
-/// (a component's word opens a block where it is imported). A
-/// `grammar` used as a plain identifier is followed by neither.
-fn opens_block(tokens: List<Token>) -> bool {
-    [i for i in 0..tokens.length].any(tokens[it].lit_matches("component") || tokens[it].lit_matches("grammar") && grammar_opens_at(tokens, it))
+/// followed by `{` or by a NAME then `{`, any `component` keyword (a
+/// component's word opens a block where it is imported), or an
+/// exported named instance (a body lists it by name). A `grammar`
+/// used as a plain identifier is followed by neither.
+fn opens_block(tokens: List<Token>, keywords: List<string>) -> bool {
+    [i for i in 0..tokens.length].any(tokens[it].lit_matches("component") || tokens[it].lit_matches("grammar") && grammar_opens_at(tokens, it) || exports_instance_at(tokens, it, keywords))
+}
+
+/// `export word name` where `word` is no keyword — a component's.
+fn exports_instance_at(tokens: List<Token>, i: int, keywords: List<string>) -> bool {
+    if i + 2 >= tokens.length || !tokens[i].lit_matches("export") { return false }
+    tokens[i + 1].kind == TokenKind.Name && !keywords.contains(tokens[i + 1].text) && tokens[i + 2].kind == TokenKind.Name
 }
 
 fn grammar_opens_at(tokens: List<Token>, i: int) -> bool {
@@ -328,9 +335,11 @@ fn grammar_opens_at(tokens: List<Token>, i: int) -> bool {
 }
 
 /// A row whose name opens a block where it is imported — a named
-/// grammar's, or a component's.
+/// grammar's, or a component's — or that a body lists by name: an
+/// exported named instance.
 fn names_block_word(row: Row) -> bool {
-    row.kind == "syntax" || facts_unblocked(row.facts)?.is_component ?? false
+    let facts = facts_unblocked(row.facts)
+    row.kind == "syntax" || facts?.is_component ?? false || facts?.instance ?? false
 }
 
 /// The name a parse failure stands on, and the one just before it.

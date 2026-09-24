@@ -501,7 +501,11 @@ Swift / Kotlin / JS (C only today).
 - `alias Name<T> = <type>` — a shorthand, the same type (F2121);
   `type` over a fn shape is opaque at seats like any name; `Handler`
   in `@std/http` — landed.
-- S5 next: child lines placed by TYPE (`server web { auth  get … }`),
-  data components with a fn body (`layer auth { req, next -> … }`),
-  then typed hole codecs (piece 3).
+- A named instance is listed by its name and lands in the slot its
+  component fills — declared anywhere in the file, or imported
+  (`server web { auth  get … }`); a record's one fn field takes a body
+  written as a fn (`layer auth { req, next -> … }`) — landed. A
+  computed value (`let a = …`) is not placed by its type: that waits
+  for typed expansion (S6); `layers: [a]` sets it by name.
+- S5 next: `req.under(prefix)`, then typed hole codecs (piece 3).
 - S6: the expand stage and declaring blocks.

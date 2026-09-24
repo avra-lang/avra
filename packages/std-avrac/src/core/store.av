@@ -24,10 +24,10 @@ export type NodeStore = {
     marks: Cell<List<StmtMarks>>,
     // the format a `grammar` declaration read, by its statement
     grammars: Cell<List<GrammarSpec?>>,
-    // a `component` declaration or instantiation — the record it
+    // a named instance's component, by its statement — the record it
     // desugars to carries every field the sugar would print, so the
     // mark alone is enough to read the spelling back
-    component_insts: Cell<List<bool>>,
+    component_insts: Cell<List<string?>>,
     // declarations an instance MINTED while its file parsed — a
     // route's pattern record — joining the file's top level
     hoisted: Cell<List<StmtId>>,
@@ -533,7 +533,7 @@ impl NodeStore {
         self.stmt_fingerprints.push(self.fingerprint_stmt(s))
         self.marks.push(no_stmt_marks())
         self.grammars.push(null)
-        self.component_insts.push(false)
+        self.component_insts.push(null)
         self.annotations.push([])
         self.docs.push(null)
         self.doc_ats.push(-1)
@@ -685,10 +685,10 @@ impl NodeStore {
         if s.index < self.grammars.get().length { self.grammars.get()[s.index] } else { null }
     }
 
-    /// A named instance (`grid report { … }`) bound this `let` — the
-    /// mark's code is 146.
-    fn mark_component_inst(s: StmtId) {
-        self.component_insts.set_at(s.index, true)
+    /// A named instance (`grid report { … }`) of the component
+    /// declared `of` bound this `let` — the mark's code is 146.
+    fn mark_component_inst(s: StmtId, of: string) {
+        self.component_insts.set_at(s.index, of)
         self.restamp(s, 146)
     }
 
@@ -717,7 +717,7 @@ impl NodeStore {
         let name? = self.let_name(s) else { return s }
         let value? = self.stmt_value(s) else { return s }
         let d = self.alloc_stmt(Stmt.ConstDecl(Scoped(name), null, value), self.stmt_span(s))
-        self.mark_component_inst(d)
+        self.mark_component_inst(d, self.instance_of(s)!)
         self.mark_exported(d)
         let docs: List<string>? = self.doc_comment(s)
         if docs != null { self.document(d, docs!, self.doc_at(s)) }
@@ -725,9 +725,10 @@ impl NodeStore {
         d
     }
 
-    fn is_component_inst(s: StmtId) -> bool {
-        self.component_insts.get()[s.index]
-    }
+    fn is_component_inst(s: StmtId) -> bool { self.instance_of(s) != null }
+
+    /// The component a named instance's statement instances.
+    fn instance_of(s: StmtId) -> string? { self.component_insts.get()[s.index] }
 
     /// A MARK IS PART OF THE STATEMENT: `fn f()`, `mut fn f()`,
     /// `once fn f()`, `static fn f()` and `export fn f()` declare

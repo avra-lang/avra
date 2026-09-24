@@ -4,15 +4,7 @@ use @std.http.http.{Request, Unrouted, Response, Handler, text}
 use @std.http.route.{get, post, delete, group}
 use @std.http.server.{server, layer}
 
-/// Refuses the admin tree, and answers the order probe first.
-fn guarded(q: Request<Unrouted>, next: Handler) -> Response {
-    let target = q.target() ?? ""
-    if target.starts_with("/admin") { return text(401, "no") }
-    if target == "/order" { return text(200, "guarded") }
-    next(q)
-}
-
-/// Answers the order probe too — reached only when nothing outside it did.
+/// Answers the order probe — reached only when nothing outside it did.
 fn timed(q: Request<Unrouted>, next: Handler) -> Response {
     let target = q.target() ?? ""
     if target == "/order" { return text(200, "timed") }
@@ -21,8 +13,8 @@ fn timed(q: Request<Unrouted>, next: Handler) -> Response {
 
 export server app {
     port: 0
-    layer guarded
-    layer timed
+    guarded
+    layer { wraps: timed }
 
     get "/health" { _req -> "ok" }
     get "/ideas/{id}" { req -> "idea " + req.params.id }
@@ -33,6 +25,16 @@ export server app {
         get "/files/{path...}" { req -> "file " + req.params.path }
     }
     get "/admin/panel" { _req -> "secret" }
+}
+
+/// Refuses the admin tree, and answers the order probe first.
+export layer guarded { q, next ->
+    let target = q.target() ?? ""
+    when {
+        target.starts_with("/admin") -> text(401, "no")
+        target == "/order" -> text(200, "guarded")
+        _ -> next(q)
+    }
 }
 
 /// `sent` written, then read until the server closes or goes quiet.
