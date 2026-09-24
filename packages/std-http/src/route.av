@@ -26,6 +26,10 @@
 //! it, and the pattern reads exactly as its grammar does. `faults`
 //! names a door and a pattern that disagree.
 //!
+//! A ROUTE WRITTEN AS A DECLARATION — `get "/static/{path...}" { … }`
+//! — has no door but its pattern, so there the mark DECLARES: the
+//! components come through `declared`, which reads the reach off it.
+//!
 //! A CAPTURE HOLDS RAW OCTETS. Nothing is percent-decoded, so `%2F`
 //! is not a separator and `/ideas/{id}` binds `a%2Fb` whole. A
 //! handler that means to use a capture as a path decodes it itself,
@@ -52,6 +56,7 @@
 //! generic over the record; the table holds the erased handler, so
 //! routes whose records differ live in one list while every handler
 //! takes a `Request<R>` — the request, its route's record at `params`.
+use @std.meta.{Code, Format}
 use frame.{Method}
 use http.{Request, Unrouted, Response, status}
 
@@ -125,6 +130,56 @@ export fn fixed(method: Method, path: string, serve: fn(Request<Unrouted>) -> Re
 /// marker only it understands.
 export fn tailed<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> Response) -> Route {
     Route { method: method, pattern: pattern, reach: .Rest, serve: (q: Request<Unrouted>, t: Bytes) -> answered(read(t), q, serve) }
+}
+
+/// A route whose PATTERN declares its reach: a last hole marked `...`
+/// takes the rest, any other reaches its own width. The door a route
+/// written as a declaration (`get "/static/{path...}" { … }`) comes
+/// through, where the pattern is the whole declaration.
+export fn declared<R>(method: Method, pattern: string, read: fn(Bytes) -> R?, serve: fn(Request<R>) -> Response) -> Route {
+    Route { method: method, pattern: pattern, reach: if marks_rest(pattern) { .Rest } else { .Width }, serve: (q: Request<Unrouted>, t: Bytes) -> answered(read(t), q, serve) }
+}
+
+// ── Routes as declarations ──────────────────────────────────────
+
+// `get "/ideas/{id}" { req -> … }` — a route of one method at a
+// pattern: the pattern mints its record, and the handler takes the
+// request under it (`req.params.id`), or its fields by name
+// (`{ params -> params.id }`).
+
+export component get(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared<${self.path}>(Method.Get, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+    }
+}
+
+export component post(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared<${self.path}>(Method.Post, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+    }
+}
+
+export component put(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared<${self.path}>(Method.Put, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+    }
+}
+
+export component patch(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared<${self.path}>(Method.Patch, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+    }
+}
+
+export component delete(path: Format) {
+    body: Code
+    fn expand() -> Code {
+        quote { declared<${self.path}>(Method.Delete, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
+    }
 }
 
 /// The handler run on the request under its own record, or absence
