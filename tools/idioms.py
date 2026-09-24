@@ -298,55 +298,6 @@ def opening_bracket(text, at):
     return None
 
 
-# A TWO-ARM MATCH ANSWERING ONLY true/false, WHERE ONE SIDE NAMES A
-# BARE VARIANT AND THE OTHER IS THE WILDCARD. The wildcard already
-# answers for every variant not yet written, exactly as `is`'s
-# complement does, so nothing a rewrite could forget — a PROJECTION
-# in CLAUDE.md's own terms (one arm answers, the catch-all is
-# honest). An `or`-run on the untested side spells a REGISTRY's
-# remaining variants by NAME instead (`rides_fp`, `answers_word`),
-# so growing that enum keeps breaking the build; this never accuses
-# one of those, nor a payload arm, nor more than two arms.
-BARE_VARIANT = re.compile(r"^\.[A-Za-z_][A-Za-z0-9_]*$")
-
-def is_wild_pat(p):
-    return p in ("_", "rest")
-
-def is_bare_variant_pat(p):
-    return bool(BARE_VARIANT.match(p))
-
-def match_arms_multiline(lines, i):
-    """The two arms of a `match … {` opened at `i`, each read at
-    depth+4, or None when the block does not hold exactly two."""
-    depth = len(lines[i]) - len(lines[i].lstrip())
-    end = block_end(lines, i)
-    if end < 0:
-        return None
-    arms = []
-    for j in range(i + 1, end):
-        s = lines[j]
-        if len(s) - len(s.lstrip()) != depth + 4 or "->" not in s:
-            continue
-        pat, body = s.strip().split("->", 1)
-        arms.append((pat.strip(), body.strip().rstrip(",").strip()))
-    return arms if len(arms) == 2 else None
-
-def match_arms_oneline(l):
-    """The two arms of a `match … { a -> x, b -> y }` written on one
-    line, or None when it does not hold exactly two."""
-    m = re.search(r"match [^{]+\{([^{}]+)\}\s*$", l.strip())
-    if not m:
-        return None
-    parts = [a.strip() for a in re.split(r",(?![^()]*\))", m.group(1)) if a.strip()]
-    if len(parts) != 2:
-        return None
-    arms = []
-    for a in parts:
-        if "->" not in a:
-            return None
-        pat, body = a.split("->", 1)
-        arms.append((pat.strip(), body.strip().rstrip(",").strip()))
-    return arms
 
 def closing_brace(text, at):
     """Index of the `}` that closes the `{` at `text[at]`, quoted text
@@ -495,24 +446,6 @@ def when_ladder(lines):
             continue
         li = bisect.bisect_right(starts, if_pos) - 1
         yield li, lines[li].strip()
-
-def bool_variant_match(lines):
-    """A `match` that only answers `is`'s question (I51)."""
-    for i, l in enumerate(lines):
-        if l.strip().startswith("//"):
-            continue
-        if re.search(r"match .+\{\s*$", l):
-            arms = match_arms_multiline(lines, i)
-        elif re.search(r"match .+\{.+\}", l):
-            arms = match_arms_oneline(l)
-        else:
-            continue
-        if not arms or {a[1] for a in arms} != {"true", "false"}:
-            continue
-        (p0, _), (p1, _) = arms
-        if ((is_bare_variant_pat(p0) and is_wild_pat(p1))
-                or (is_bare_variant_pat(p1) and is_wild_pat(p0))):
-            yield i, l.strip()
 
 def bool_comprehension(lines):
     """A comprehension over a LIST, built only to be folded to a
@@ -856,11 +789,6 @@ RULES = {
             "Accused only where every arm is a one-line expression (no return/fail/"
             "break/continue, no assignment, no nested if) standing after `=`, `->`, "
             "`return`, or as a fn's tail"),
-    "I51": (bool_variant_match,
-            "a match answering only true/false, one arm a bare variant and the "
-            "other the wildcard — that is `is`: `x is .Ready`, or `!(x is .Ready)` "
-            "with the arms swapped. An `or`-run on the untested side spells a "
-            "registry's remaining variants by name, and this never accuses one"),
     "I43": (hand_sized_column,
             "a fact column sized from an arena's count — `SideTable<V>` states "
             "the window, the growth and the out-of-window defect once: "
@@ -939,6 +867,11 @@ UNRATCHETED = {
            "           own-name-at case) plus a structural `call_args()` walk that\n"
            "           refuses a param handed to a nested call's own arguments;\n"
            "           ratcheted by the native-findings phase below",
+    "I51": "PORTED NATIVELY: `bool_variant_match`/`bool_variant_match_negated`\n"
+           "           (features/enums/idioms.av) — no guard needed: the pattern's own\n"
+           "           WILDCARD seat (a literal `_`, never an `or`-run) already refuses\n"
+           "           a registry's remaining variants structurally, before any is\n"
+           "           asked; ratcheted by the native-findings phase below",
     "I53": "PORTED NATIVELY: `modified_copy_literal` (compiler/idioms.av) — a bare\n"
            "           hole root (avra-8sb5.25.10's `At.Field`) matches ANY node, guarded\n"
            "           `lit.is_struct_lit()`, then reads `lit.kids()` field by field;\n"
@@ -1103,11 +1036,6 @@ CLEAN = {
              "    if a { g() } else if b { h() } else { j() }",
              "    k()",
              "}"]],
-    "I51": [["    match v { .Bind(_) -> true, _ -> false }"],
-            ["    match s { .A -> true, .B -> false, .C -> false }"],
-            ["    match k { .Wide -> true, .Narrow or .Ptr or .Void -> false }"],
-            ["    match n { 1 -> true, _ -> false }"],
-            ["    match k { .A -> true, null -> false }"]],
     "I48": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
@@ -1138,10 +1066,6 @@ SPECIMENS = {
              "    if a { \"x\" } else if b { \"y\" } else { \"z\" }",
              "}"],
             ["    return if a { x } else if b { y } else { z }"]],
-    "I51": [["    match x { .Ready -> true, _ -> false }"],
-            ["    match self {", "        .Other -> false,", "        _ -> true,", "    }"],
-            ["    match k { .A -> true, rest -> false }"],
-            ["    match r {", "        .Void -> false,", "        _ -> true,", "    }"]],
     "I48": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
             ["    [b.ieq_at(0, b.length, w) for w in written_by].any(it)"],
             ["    ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)"]],
@@ -1332,6 +1256,7 @@ NATIVE_PREDECESSOR = {
     "style.index_walk": "I19",
     "style.modified_copy_literal": "I53",
     "style.pronoun_lambda": "I50",
+    "style.bool_variant_match": "I51",
 }
 
 def native_findings():
