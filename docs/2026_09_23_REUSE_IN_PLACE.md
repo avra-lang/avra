@@ -625,3 +625,16 @@ load that sends no `Connection` field); @std/net's `write`/`try_write`
 no longer box. `try_read` answers `Result<Read, NetError>` and `Read`
 is itself two words, so it stays boxed. `check packages/cli` -0.4%
 instructions; the compiler binary +3.4% (8.29 -> 8.57 MB).
+
+## §22 Where the campaign stands (Linux Sprite, one core, e3d55d2)
+
+| | start | §15 | now | C floor |
+|---|---|---|---|---|
+| tools/bench/request | 5.40 µs | 1.95 µs | 1.70 µs | — |
+| wrk pipelined16 c=200 | 146k req/s, 6.85 µs CPU | 274k, 3.65 µs | 330k, 3.05 µs | 1.14M, 0.88 µs |
+| wrk keep-alive c=50 | 44.3k | 56.3k | 56.6k (17.8 µs CPU) | 72.7k |
+
+Keep-alive is syscall-bound: a read and a write per request dominate
+the 17.8 µs, so the allocation levers show in the pipelined column.
+The next levers are the response written into the connection's own
+buffer (R14) and fewer syscalls per request (batched writes).
