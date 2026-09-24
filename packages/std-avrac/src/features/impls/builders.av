@@ -3,7 +3,7 @@
 //! declarations; a trait's SIGS mint as BODYLESS FnDecls (the body
 //! is a hole no pass walks), so declare and totality reuse the fn
 //! machinery whole.
-use core.{Expr, Stmt, StmtId, Param, TypeRef, Span, ExprId, NodeStore, plain_mark, Nominal, Scoped}
+use core.{Expr, Stmt, StmtId, Param, TypeRef, Span, ExprId, NodeStore, plain_mark, Nominal, Scoped, Plain}
 use features.{LangNode, Builder, window_end, aligned_param_types, void_ref, marked_seats, isolating, between, ref_within}
 use grammar.{Token}
 
@@ -50,20 +50,35 @@ fn build_static_fn(b: Builder) -> Result<LangNode, string> {
     .Ok(LangNode.NStmt(s))
 }
 
-/// The target's type parameters (`impl Arena<N>`, `impl Show for
-/// Box<T>`) parse and are dropped here: an impl spells them as the
-/// type declared them, and typing reads the type's own.
+/// The target's type parameters (`impl Arena<N>`, `impl Show<X> for
+/// Box<T>`) typing reads from the type's OWN declaration, never this
+/// spelling — but the printer has no other way to spell them back, so
+/// they land in a side table (`mark_impl_tparams`), printing only.
 fn build_impl(b: Builder) -> Result<LangNode, string> {
     let t = b.token(0)?
+    let tp = b.tokens(1)?
     let ib = b.tokens(2)?
+    let tp2 = b.tokens(3)?
     let fns = b.stmts(4)?
     for s in fns {
         if !is_fn(b, s) && b.store.hole_stmt(s) == null { return .Err("an `impl` block holds `fn` declarations only") }
     }
     // with a `for`, the FIRST name is the trait and the for-name
     // is the target; without one, the first name IS the target.
-    let forred? = ib.first() else { return b.make_stmt(Stmt.ImplDecl(null, Nominal(t.text), fns)) }
-    b.make_stmt(Stmt.ImplDecl(Nominal(t.text), Nominal(forred.text), fns))
+    let forred? = ib.first() else {
+        let s = b.store.alloc_stmt(Stmt.ImplDecl(null, Nominal(t.text), fns), b.span)
+        mark_written_tparams(b, s, [], tp)
+        return .Ok(LangNode.NStmt(s))
+    }
+    let s = b.store.alloc_stmt(Stmt.ImplDecl(Nominal(t.text), Nominal(forred.text), fns), b.span)
+    mark_written_tparams(b, s, tp, tp2)
+    .Ok(LangNode.NStmt(s))
+}
+
+/// Skipped on a plain impl, so only a generic one carries the mark.
+fn mark_written_tparams(b: Builder, s: StmtId, of: List<Token>, target: List<Token>) {
+    if of.is_empty() && target.is_empty() { return }
+    b.store.mark_impl_tparams(s, [Plain(t.text) for t in of], [Plain(t.text) for t in target])
 }
 
 fn is_fn(b: Builder, s: StmtId) -> bool {
