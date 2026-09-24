@@ -9,12 +9,15 @@ export enum Severity { Error, Warning }
 
 /// One diagnostic. The primary frame is always present — absence
 /// lives in ONE place: a problem with no source anchor carries a
-/// loc-less frame. `secondary` frames hold the supporting positions.
+/// loc-less frame. `secondary` frames hold the supporting positions,
+/// and are this diagnostic's own `context()`/`trace()`. `cause` is
+/// the deeper failure this one wraps, when there is one.
 export type Diag = {
     kind: string,
     severity: Severity,
     primary: Frame,
     secondary: List<Frame>,
+    cause: dyn Error?,
     message: string,
     help: string?,
     suggestions: List<Suggestion>,
@@ -24,6 +27,12 @@ impl Error for Diag {
     fn describe() -> ErrorInfo {
         info(self.kind, self.message)
     }
+
+    fn cause() -> dyn Error? { self.cause }
+
+    fn context() -> List<Frame> { self.secondary }
+
+    fn trace() -> List<Frame> { self.secondary }
 }
 
 /// One registry row: a kind, its stable F-code, and its one-line
@@ -139,6 +148,7 @@ export fn error_at(kind: string, loc: Loc?, message: string) -> Diag {
         severity: Severity.Error,
         primary: Frame { label: null, loc: loc },
         secondary: [],
+        cause: null,
         message: message,
         help: null,
         suggestions: [],

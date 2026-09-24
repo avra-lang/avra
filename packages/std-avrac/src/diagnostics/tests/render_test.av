@@ -1,7 +1,20 @@
 // Golden renderings: the human text is a contract. Every code's
 // shape is asserted EXACTLY — a drifted gutter or caret fails here.
-use @std.errors.{Loc, Frame}
+use @std.errors.{Loc, Frame, Error, ErrorInfo, info}
 use @std.avrac.diagnostics.{Diag, DiagCode, error_at, render, SourceFile, new_source_file}
+
+enum Underlying { Bad }
+
+impl Error for Underlying {
+    fn describe() -> ErrorInfo { info("underlying.bad", "the underlying thing failed") }
+}
+
+type Wrapping = { inner: dyn Error? }
+
+impl Error for Wrapping {
+    fn describe() -> ErrorInfo { info("wrapping", "wrapped") }
+    fn cause() -> dyn Error? { self.inner }
+}
 
 fn rendered_registry() -> List<DiagCode> {
     let rows = table<DiagCode> {
@@ -81,6 +94,25 @@ help: merge same-name rules first"""
         then "an unregistered kind renders as itself" {
             let d = error_at("ghost.kind", null, "m")
             render(d, rendered_registry(), two_lines()) == "error[ghost.kind]: m"
+        }
+    }
+    given "a diagnostic's cause chain" {
+        then "no cause renders no chain line" {
+            let d = error_at("language.defect", null, "rule `s` is declared more than once") with { help: "merge same-name rules first" }
+            !render(d, rendered_registry(), two_lines()).contains("caused by:")
+        }
+        then "one hop: the cause's own message, on its own line" {
+            let d = error_at("language.defect", null, "the build failed") with { cause: Underlying.Bad }
+            let expected = """error[F0900]: the build failed
+caused by: the underlying thing failed"""
+            render(d, rendered_registry(), two_lines()) == expected
+        }
+        then "two hops: each cause on its own line, deepest last" {
+            let d = error_at("language.defect", null, "the build failed") with { cause: Wrapping { inner: Underlying.Bad } }
+            let expected = """error[F0900]: the build failed
+caused by: wrapped
+caused by: the underlying thing failed"""
+            render(d, rendered_registry(), two_lines()) == expected
         }
     }
 }
