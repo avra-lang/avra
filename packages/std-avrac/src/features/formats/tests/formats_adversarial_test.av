@@ -65,8 +65,14 @@ spec "features/formats adversarial" {
         then "one name over two spans is refused" {
             refused_with("match \"x\" { \"{a}z{a}\" -> 1\n    _ -> 0 }", "`a` names two spans of this format")
         }
-        then "a typed hole names the row it waits for" {
-            refused_with("match \"x\" { \"{n: int}z\" -> 1\n    _ -> 0 }", "nothing reads text as `int` yet")
+        then "a typed hole of no readable type is refused" {
+            refused_with("match \"x\" { \"{n: bool}z\" -> 1\n    _ -> 0 }", "`{n: bool}` reads its span as `bool`, and a hole reads text as `string` or `int`")
+        }
+        then "an `int` hole binds an int, and a span that is no int tries the next arm" {
+            shown("fn f(s: string) -> string {\n    match s {\n        \"/n/{n: int}\" -> \"int \${n * 2}\",\n        \"/n/{t}\" -> \"text \${t}\",\n        _ -> \"none\",\n    }\n}\n\"\${f(\"/n/21\")} \${f(\"/n/-4\")} \${f(\"/n/4a\")} \${f(\"/n/\")}\"") == "int 42 int -8 text 4a text "
+        }
+        then "an `int` hole over octets reads them as text first" {
+            shown("let b = \"id=7\".bytes()\nmatch b {\n    \"id={n: int}\" -> n + 1,\n    _ -> 0,\n}") == "8"
         }
         then "a hole named for a keyword is refused by the name law" {
             refused_with("match \"x\" { \"{match}z\" -> 1\n    _ -> 0 }", "`match` is a keyword")
