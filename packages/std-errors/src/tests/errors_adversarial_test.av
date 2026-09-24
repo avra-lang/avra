@@ -1,0 +1,144 @@
+// The red team's permanent record for the trait's cause/context/trace
+// defaults and `Traced<E>`. Every program here was written to BREAK
+// the feature, not to use it. Findings that are compile-time refusals
+// (Traced<E> does not implement Error, so it cannot nest, cannot
+// answer a `dyn Error?` seat, and cannot be boxed as `dyn Error`) are
+// not encoded here — this package carries no `analyze_source` harness
+// to assert a refusal from inside a spec case — and are reported in
+// prose instead, with exact repro commands, to the session that ran
+// this pass.
+use @std.errors.{Loc, Frame, Error, ErrorInfo, info, Traced, traced}
+
+enum A { X }
+impl Error for A { fn describe() -> ErrorInfo { info("a.x", "a") } }
+
+enum B { Y(n: int) }
+impl Error for B { fn describe() -> ErrorInfo { info("b.y", "b") } }
+
+/// A variant carrying no cause and one carrying a `B`, so the trait's
+/// default `cause()` and an overriding one live side by side on the
+/// same type — the way `ClientError` (std-http) actually uses it.
+enum Multi {
+    Bare
+    Wrapping(b: B)
+}
+
+impl Error for Multi {
+    fn describe() -> ErrorInfo { info("multi", "m") }
+    fn cause() -> dyn Error? {
+        match self {
+            .Bare -> null,
+            .Wrapping(b) -> b,
+        }
+    }
+}
+
+/// A cause() whose match arms answer TWO DIFFERENT concrete Error
+/// types (plus a null arm) under one `dyn Error?` want — the pattern
+/// every multi-variant error's cause() needs, and the one the
+/// compiler's own subset doctrine (CLAUDE.md, "the subset today")
+/// still says is refused (F2013, "a match's arms disagree"). It is
+/// not: probed independently at HEAD, both engines agree.
+enum Either {
+    FromA(a: A)
+    FromB(b: B)
+    Neither
+}
+
+impl Error for Either {
+    fn describe() -> ErrorInfo { info("either", "e") }
+    fn cause() -> dyn Error? {
+        match self {
+            .FromA(a) -> a,
+            .FromB(b) -> b,
+            .Neither -> null,
+        }
+    }
+}
+
+fn n_frames(n: int) -> Traced<A> {
+    mut t = traced(A.X)
+    for i in 0..n {
+        t = t.framed(Frame { label: "f${i}", loc: null })
+    }
+    t
+}
+
+fn recur(depth: int) -> Result<int, Traced<A>> {
+    if depth == 0 { return .Err(traced(A.X)) }
+    match recur(depth - 1) {
+        .Ok(v) -> .Ok(v),
+        .Err(t) -> .Err(t.framed(Frame { label: "d${depth}", loc: null })),
+    }
+}
+
+fn erased() -> dyn Error { A.X }
+
+spec "std.errors (adversarial)" {
+    given "degenerate shapes — N frames" {
+        then "zero frames: trace and context both empty" {
+            let t = traced(A.X)
+            t.trace().is_empty() && t.context().is_empty()
+        }
+        then "one frame, labeled: trace holds it and context holds it too" {
+            let t = traced(A.X).framed(Frame { label: "one", loc: null })
+            t.trace().length == 1 && t.context().length == 1
+        }
+        then "one frame, position-only: trace holds it, context does not" {
+            let t = traced(A.X).framed(Frame { label: null, loc: Loc { file: "a.av", lo: 0, hi: 1 } })
+            t.trace().length == 1 && t.context().is_empty()
+        }
+        then "many frames: trace keeps every one, in attachment order" {
+            let t = n_frames(64)
+            t.trace().length == 64 && t.trace()[0].label == "f0" && t.trace()[63].label == "f63"
+        }
+    }
+    given "defaults and overrides live on the same type" {
+        then "the un-overridden variant answers the trait's default: no cause" {
+            Multi.Bare.cause() == null
+        }
+        then "the overriding variant answers its own cause, by value" {
+            Multi.Wrapping(B.Y(3)).cause()!.describe().kind == "b.y"
+        }
+        then "an override of cause() alone leaves context and trace on the default" {
+            let m: Multi = .Wrapping(B.Y(3))
+            m.context().is_empty() && m.trace().is_empty()
+        }
+    }
+    given "a cause() whose arms answer different concrete Error types" {
+        then "each arm's own type describes itself" {
+            Either.FromA(A.X).cause()!.describe().kind == "a.x" && Either.FromB(B.Y(1)).cause()!.describe().kind == "b.y"
+        }
+        then "the null arm still answers no cause" {
+            Either.Neither.cause() == null
+        }
+    }
+    given "an already-erased error can still be traced" {
+        then "Traced<dyn Error> carries the box and dispatches through it" {
+            let t = traced(erased())
+            t.cause().describe().kind == "a.x"
+        }
+    }
+    given "cross other features" {
+        then "a Traced value survives a struct field round trip" {
+            let w = TracedHolder { t: traced(A.X).framed(Frame { label: "held", loc: null }) }
+            w.t.trace().length == 1
+        }
+        then "a Traced value survives a list element round trip" {
+            let xs = [traced(A.X), traced(A.X).framed(Frame { label: "x", loc: null })]
+            xs[0].trace().is_empty() && xs[1].trace().length == 1
+        }
+        then "`?` on a Result<T, Traced<A>> propagates the traced value whole" {
+            match recur(5) {
+                .Ok(_) -> false,
+                .Err(t) -> t.trace().length == 5 && t.trace()[0].label == "d1" && t.trace()[4].label == "d5",
+            }
+        }
+        then "catch over a Result<T, Traced<A>> reaches the wrapped cause" {
+            let v = recur(3) catch e -> e.cause().describe().kind.length
+            v == "a.x".length
+        }
+    }
+}
+
+type TracedHolder = { t: Traced<A> }

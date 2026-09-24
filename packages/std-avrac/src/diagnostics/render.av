@@ -9,7 +9,7 @@
 //!   ──╯
 //!   help: a `let` names its value
 use core.{joined}
-use @std.errors.{Loc}
+use @std.errors.{Loc, Error}
 use @std.text.{repeat}
 
 fn severity_word(s: Severity) -> string {
@@ -53,6 +53,21 @@ fn window(at_loc: Loc, frame_label: string?, src: SourceFile) -> string {
     ].concat(pointed).concat(["${repeat("─", num.length + 1)}╯"]), "\n")
 }
 
+const cause_chain_cap = 16
+
+/// Every deeper cause, one `caused by:` line per hop, until none
+/// remain or the cap — a `cause()` answering itself must not recurse
+/// the renderer forever, and a cut that stops silently would read as
+/// a complete chain: the last line says so instead.
+fn causes_of(e: dyn Error?, depth: int = cause_chain_cap) -> List<string> {
+    let cur? = e else { return [] }
+    let msg = cur.describe().message
+    if depth <= 1 && cur.cause() != null {
+        return ["caused by: ${msg} — the chain continues past ${cause_chain_cap}; an error answering itself as its own cause?"]
+    }
+    ["caused by: ${msg}"].concat(causes_of(cur.cause(), depth - 1))
+}
+
 /// The whole diagnostic as terminal text. The F-code is the
 /// registry's projection of the kind; an unregistered kind renders
 /// as itself.
@@ -91,6 +106,7 @@ fn render_with(d: Diag, codes: List<DiagCode>, pick: fn(Loc) -> SourceFile) -> s
         parts = parts.concat(unplaced(d.primary.label))
     }
     parts = parts.concat([window(f.loc!, f.label, pick(f.loc!)) for f in d.secondary if f.loc != null])
+    parts = parts.concat(causes_of(d.cause))
     if d.help != null { parts.push("help: ${d.help!}") }
     let sg? = d.suggestions.first() else { return joined(parts, "\n") }
     let ed? = sg.edits.first() else { return joined(parts, "\n") }

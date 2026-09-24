@@ -4138,6 +4138,14 @@ the gate did.
 
 ## Sugar backlog — dogfooding asks
 
+This heading marks phase G's journal (2026-09-15), which is measurement and
+consolidation narrative, not a clean list — the individual language/syntax
+asks scattered through it as "WANT (phase …)" paragraphs are now tracked in
+the tasks db under epic `avra-8sb5.10` (each carries its own `Example:` and
+`Callsite:`, extracted from the specific paragraph below that named it). The
+surrounding narrative stays here as the reasoning record; it is not
+duplicated by the tickets.
+
 ANSWERED, NOT COLLAPSED (phase G, 2026-09-15) — A REGISTRY SUMMARY AND
 A VOICE'S HEADLINE ARE DIFFERENT THINGS. Asked whether the two spell
 one law twice (avra-5m62, from phase C's side). MEASURED over the 72
@@ -13710,19 +13718,9 @@ copy of a shared intermediate. That belongs in the perf doctrine beside
 
 ### Sugar backlog
 
-- **IN-PLACE NESTED MUTATION.** `t[i].push(x)` should write through AND leave
-  `t` usable. Today it consumes `t`, which is what forces the write-back and so
-  the copy. This is the one change that REMOVES the trap rather than patching
-  it: the natural spelling becomes the fast spelling and the tension dissolves
-  (P6). Wanting sites: the eight `Cell` conversions in `features/decls.av` —
-  `children`, `module_files`, `file_decls`, `expansion_voices`, `methods`,
-  `impls`, `written_seats`, `decl_ids`; every one is a site that wanted this
-  sugar and did not have it.
-- **A SPELLED SHARED AGGREGATE.** `List<List<T>>` and `List<Cell<List<T>>>` are
-  two mutation models that look alike, so a reader cannot tell whether mutating
-  `t[i]` is cheap. Promote `Cell` to a first-class spelled type (`Ref<T>` /
-  `Shared<T>`) so the TYPE carries the cost (P11). Today `Cell` is folklore: a
-  wrapper you must already know exists.
+Both asks below are tracked in the tasks db under epic `avra-8sb5.10`: in-place
+nested mutation through an index/field chain (avra-8sb5.10.98) and a spelled
+first-class shared/aliased reference type (avra-8sb5.10.99).
 
 ### Features / doctrine
 
