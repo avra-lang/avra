@@ -16,7 +16,7 @@
 //! package of one rooted at its directory.
 use core.{Table, new_table, list_cell, NodeStore, StmtId, same_decl, module_path, DeclId, FileId, ModuleId, UseParts, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, distinct, TypeId, Type, some_list, same_file, touch, Annotation}
 use @std.path.{dir_of, joined_path}
-use features.components.{word_of}
+use features.components.{word_of, instanced, named_instances}
 use features.{Unsettled, Settled, Settlement, TypeCx, Decls, new_decls, scalar_types, kind_word, Decl, Namespace, Import, ModuleNames, Clash, NameFacts, new_name_facts, TypeFacts, new_type_facts, DeclSig, Wanted, nothing, Lifted, SeatValue, Elsewhere, SettleRoot, BlockWords}
 use @std.meta.{Diagnostic}
 use core.{StmtId}
@@ -844,7 +844,9 @@ impl Workspace {
         let from = self.packages()[self.holder_of_path(p.source.file)]
         let own = self.decls.module_name(self.decls.file(f).module_id)
         let lines = [self.line_words(from, own, u) for u in p.store.built_uses()]
-        BlockWords { grammars: flatten([l.grammars for l in lines]), components: flatten([l.components for l in lines]) }
+        let components = flatten([l.components for l in lines])
+        let local = if components.is_empty() { [] } else { named_instances(p.source.text, components) }
+        BlockWords { grammars: flatten([l.grammars for l in lines]), components: components, instances: local.concat(flatten([l.instances for l in lines])) }
     }
 
     /// One `use` line's block words — none from a module that is not
@@ -868,9 +870,11 @@ impl Workspace {
         let declared = [self.provided_words(path) for path in self.module_files(m)]
         let grammars = flatten([d.grammars for d in declared])
         let components = flatten([d.components for d in declared])
+        let instances = flatten([d.instances for d in declared])
         BlockWords {
             grammars: flatten([[g with { word: u.bound_as(j) } for g in grammars if g.word == item] for j, item in u.items]),
             components: flatten([[c with { word: u.bound_as(j) } for c in components if c.word == item] for j, item in u.items]),
+            instances: flatten([[x with { name: u.bound_as(j) } for x in instances if x.name == item] for j, item in u.items]),
         }
     }
 
@@ -884,6 +888,7 @@ impl Workspace {
         BlockWords {
             grammars: flatten([some_list(readied_grammar(p, s, path)) for s in exported]),
             components: flatten([some_list(word_of(p.store, s, path)) for s in exported]),
+            instances: flatten([some_list(instanced(p.store, s)) for s in exported]),
         }
     }
 

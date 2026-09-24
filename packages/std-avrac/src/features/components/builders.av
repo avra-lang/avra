@@ -91,7 +91,7 @@ impl Builder {
     /// the printer spells back as it was written.
     fn bound(word: ComponentWord, n: Token, body: ExprId?) -> Result<LangNode, string> {
         let s = self.store.alloc_stmt(Stmt.Let(Scoped(n.text), null, self.instance(word, [], body, n.text)?), self.span)
-        self.store.mark_component_inst(s)
+        self.store.mark_component_inst(s, word.declared)
         self.wrap_stmt(s)
     }
 
@@ -129,18 +129,21 @@ impl Builder {
     /// A record's instance: the head by position, each setting by name,
     /// the `name` a statement gave it unless a setting writes one, and
     /// the body's other statements
-    /// `collect`ed into its one open `List` field.
+    /// `collect`ed into its one open `List` field — or, for a body
+    /// written as a fn, that fn in the record's one fn field.
     fn recorded(word: string, r: Record, heads: List<ExprId>, body: ExprId?, name: string?) -> Result<ExprId, string> {
         if heads.length != r.head.length { return .Err(record_heads(word, r.head.length, heads.length)) }
-        if body != null && self.store.lambda_parts(body!) != null { return .Err(record_fn_body(word)) }
-        let stmts = self.written(body)
+        let written_fn: ExprId? = if body != null && self.store.lambda_parts(body!) != null { body } else { null }
+        let fn_filled = if written_fn == null { [] } else { [Field { name: r.fn_field ?? "", value: written_fn! }] }
+        if written_fn != null && r.fn_field == null { return .Err(record_fn_body(word)) }
+        let stmts = if written_fn == null { self.written(body) } else { [] }
         let settings = flatten([some_list(self.store.setting_parts(s)) for s in stmts])
         let children = [s for s in stmts if self.store.setting_parts(s) == null]
         let places = self.placed(word, r, settings, children)?
         let named = if name != null && r.named && !settings.any(it.name == "name") { [Field { name: "name", value: self.store.alloc_expr(Expr.StrLit(name!), self.span) }] } else { [] }
         let placed_in = [pl.slot for pl in places]
         let set = [Field { name: st.name, value: st.value } for st in settings if !placed_in.contains(st.name)]
-        let filled = [Field { name: f, value: heads[j] } for j, f in r.head].concat(set).concat(named).concat([self.collected(pl, settings) for pl in places])
+        let filled = [Field { name: f, value: heads[j] } for j, f in r.head].concat(fn_filled).concat(set).concat(named).concat([self.collected(pl, settings) for pl in places])
         let literal = self.store.alloc_expr(Expr.StructLit(Nominal(word), [Plain(f.name) for f in filled], [f.value for f in filled]), self.span)
         let check: ExprId? = if r.checks { self.store.alloc_expr(Expr.MethodCall(literal, Plain("check"), []), self.span) } else { null }
         .Ok(self.store.alloc_expr(Expr.Component(word, heads, body, BodyView.Expanded(literal), check), self.span))
@@ -210,12 +213,20 @@ impl Builder {
     /// its component — two such slots leave the child unrouted, and
     /// the record's refusal names them.
     fn routed(r: Record, s: StmtId) -> string? {
-        let v? = self.store.stmt_value(s) else { return null }
-        let w? = self.store.instance_word(v) else { return null }
-        let declared? = self.words.components.find(it.word == w)?.declared else { return null }
+        let declared? = self.child_component(s) else { return null }
         let fits = [slot.name for slot in r.slots if slot.of == declared]
         if fits.length != 1 { return null }
         fits[0]
+    }
+
+    /// The component a child is an instance of: one written in place,
+    /// or a named instance listed by its name.
+    fn child_component(s: StmtId) -> string? {
+        let v? = self.store.stmt_value(s) else { return null }
+        let w: string? = self.store.instance_word(v)
+        if w != null { return self.words.components.find(it.word == w!)?.declared }
+        let name? = self.store.ident_name(v) else { return null }
+        self.words.instances.find(it.name == name)?.declared
     }
 }
 
@@ -338,5 +349,5 @@ fn fn_body_setting() -> string {
 }
 
 fn record_fn_body(word: string) -> string {
-    "`${word}` builds a record, so its body lists settings and children — a `name ->` head makes a fn, which only a template takes"
+    "`${word}` builds a record with no one fn field, so its body lists settings and children — a `name ->` head makes a fn, which fills a record's only fn field or a template's block"
 }
