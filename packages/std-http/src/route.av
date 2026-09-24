@@ -175,11 +175,31 @@ export component patch(path: Format) {
     }
 }
 
+/// `group "/api" { get "/ideas" { … } }` — routes under a prefix.
+export component group(prefix: Code) {
+    body: Code
+    fn expand() -> Code {
+        quote { prefixed(${self.prefix}, collect { ${self.body} }) }
+    }
+}
+
 export component delete(path: Format) {
     body: Code
     fn expand() -> Code {
         quote { declared(Method.Delete, ${self.path}.pattern(), (t: Bytes) -> ${self.path}.parse(t), ${self.body}) }
     }
+}
+
+/// Routes under a prefix: each pattern begins with it, and each route
+/// reads what follows it in the target.
+export fn prefixed(prefix: string, routes: List<Route>) -> List<Route> {
+    [r with { pattern: prefix + r.pattern, serve: beneath(prefix.bytes(), r.serve) } for r in routes]
+}
+
+/// A route's reader past a prefix — absent for a target that does not
+/// begin with it.
+fn beneath(prefix: Bytes, serve: fn(Request<Unrouted>, Bytes) -> Response?) -> fn(Request<Unrouted>, Bytes) -> Response? {
+    (q: Request<Unrouted>, t: Bytes) -> if t.length >= prefix.length && t.slice(0, prefix.length) == prefix { serve(q, t.slice(prefix.length, t.length)) } else { null }
 }
 
 /// The handler's answer as the reply it becomes, or absence when the

@@ -1,16 +1,38 @@
 use @std.net.{Conn, NetError, connect}
 use @std.time.{ms, secs, within}
-use @std.http.http.{text}
-use @std.http.route.{get, post, delete}
-use @std.http.server.{server}
+use @std.http.http.{Request, Unrouted, Response, text}
+use @std.http.route.{get, post, delete, group}
+use @std.http.server.{server, layer}
+
+/// Refuses the admin tree, and answers the order probe first.
+fn guarded(q: Request<Unrouted>, next: fn(Request<Unrouted>) -> Response) -> Response {
+    let target = q.target() ?? ""
+    if target.starts_with("/admin") { return text(401, "no") }
+    if target == "/order" { return text(200, "guarded") }
+    next(q)
+}
+
+/// Answers the order probe too — reached only when nothing outside it did.
+fn timed(q: Request<Unrouted>, next: fn(Request<Unrouted>) -> Response) -> Response {
+    let target = q.target() ?? ""
+    if target == "/order" { return text(200, "timed") }
+    next(q)
+}
 
 export server app {
     port: 0
+    layer guarded
+    layer timed
 
     get "/health" { _req -> "ok" }
     get "/ideas/{id}" { req -> "idea " + req.params.id }
     post "/ideas" { req -> text(201, "made " + (req.body.text() ?? "?")) }
     delete "/ideas/{id}" { _req -> 204 }
+    group "/api" {
+        get "/ideas/{id}" { req -> "api idea " + req.params.id }
+        get "/files/{path...}" { req -> "file " + req.params.path }
+    }
+    get "/admin/panel" { _req -> "secret" }
 }
 
 /// `sent` written, then read until the server closes or goes quiet.
@@ -49,6 +71,10 @@ fn shown() -> Result<string, NetError> {
         asked(port, "POST /ideas HTTP/1.1")?,
         asked(port, "DELETE /ideas/7 HTTP/1.1")?,
         asked(port, "GET /nope HTTP/1.1")?,
+        asked(port, "GET /api/ideas/9 HTTP/1.1")?,
+        asked(port, "GET /api/files/css/app.css HTTP/1.1")?,
+        asked(port, "GET /admin/panel HTTP/1.1")?,
+        asked(port, "GET /order HTTP/1.1")?,
     ]
     .Ok(lines.join("\n"))
 }
