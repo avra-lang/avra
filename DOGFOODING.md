@@ -1102,6 +1102,22 @@ reintroducing I3's blind spot names the two spellings it lost.
       Ratcheted (`nullable_flag_local`), no predecessor code — every
       existing `// LICENSED I4:` in the tree answers the other law.
 
+- I64 (unratcheted) AN IMPL METHOD WHOSE BODY IS EQUIVALENT TO ITS
+      TRAIT'S DEFAULT BODY — INCLUDING THROUGH A NO-OP LIKE `nothing()`
+      — IS A COPY OF THE DEFAULT; DELETE IT. `nothing()` (or whatever
+      no-op form applies) is TRANSPARENT to the comparison: a body that
+      wraps the default in one still answers exactly what the default
+      answers. `StmtSemantics for ConstSemantics`'s `lower_stmt` wrote
+      `nothing(); null` where the trait's own default is `{ null }` —
+      a straggler from the sweep that shipped the defaults (f7fedb12,
+      2026-09-05, the day trait default bodies landed and 26 identical
+      sites went with it), surviving because it did not TEXTUALLY match
+      whatever removed the other 26. Its explaining comment restated
+      nothing beyond the file's own module doc. Not ratcheted: needs
+      body equality against the trait's default — a native rule over
+      the declaration's Code (the formatter's rule engine), not a text
+      matcher.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is
@@ -1683,13 +1699,16 @@ match self {
 
 A trait names a contract; types join by `impl Trait for` — across
 package boundaries too. Keep mandatory methods to the one thing every
-implementor must say (default bodies are not in the language yet —
-CLAUDE.md, "The subset today"):
+implementor must say; a method most implementors need not repeat
+takes a DEFAULT BODY instead, typed once against the trait's own
+`Self` and lowered per signatory — an override wins over its default
+(ROADMAP, "trait default method bodies", landed 2026-09-05):
 
 ```avra
 // @std.errors
 export trait Error {
     fn describe() -> ErrorInfo
+    fn cause() -> dyn Error? { null }
 }
 
 // any package

@@ -1720,17 +1720,34 @@ Wants the typer does not carry yet:
   says which". Under a TYPED LET the body hears the answer (bare
   variants, a free Var, a `dyn` box all read it); a NAMED fn in the
   seat works everywhere, `?` on the field's call included.
-- A `dyn` want does not reach into arms or branches: `match k { 0
-  -> P { … }, _ -> Q { … } }` under `-> dyn Show`: F2013 "a
-  `match`'s arms disagree: `Q` vs the first arm's `P`"; the `if`
-  twin: F2000 "an `if`'s branches disagree: `P` vs `Q`". Box each
-  under `let x: dyn Show = …` and select among the lets. A CALL's
-  seat DOES reach now — `refused(p)` with `fn refused(e: dyn Error)`
-  and a `ProcessError` in hand checks and dispatches (probed at
-  `8519ae9`, answering `proc 2`); that clause is retired.
+- A `dyn` want reaches into `match` ARMS now, not yet into `if`
+  BRANCHES — RETRACTED for match, re-probed 2026-09-24 (twice,
+  independently, both engines): `match k { 0 -> P { … }, _ -> Q { …
+  } }` under `-> dyn Show`, and a concrete arm beside a `null` arm
+  under `-> dyn Show?`, both compile and run, eval == native. The
+  `if` twin still refuses exactly as before: F2000 "an `if`'s
+  branches disagree: `P` vs `Q`" — box it under `let x: dyn Show =
+  …` and select among the lets. A CALL's seat DOES reach now too —
+  `refused(p)` with `fn refused(e: dyn Error)` and a `ProcessError`
+  in hand checks and dispatches (probed at `8519ae9`, answering
+  `proc 2`); that clause is retired. Found live (not by re-probing
+  this entry on a hunch) while writing `std-errors`' `Traced<E>`:
+  `cause() -> dyn Error? { match self { .A(x) -> x, .B(y) -> y } }`
+  over two different concrete Error types compiled clean.
 - A trait impl over a GENERIC type (`impl Show for Box<T>`): F2031
   "`Box` is generic — a trait impl over a generic type is recorded,
   not landed". Inherent generic impls (`impl Box<T>`) land.
+  NOT EVERY GENERIC TYPE WANTS THIS, though — `@std/errors`'
+  `Traced<E>` (the `? context` propagation carrier) LOOKS like an
+  instance and is not: its `cause()` deliberately answers the
+  concrete `E` it holds, and a trait member's answer is fixed by
+  its signature (`Error.cause() -> dyn Error?`), so no `impl Error`
+  could ever return the narrower type — lifting F2031 would not
+  change this. `cause`/`context`/`trace` stay `Traced<E>`'s own
+  inherent methods for that reason, permanently, not as a workaround
+  (found while writing avra-8sb5.40.1; the real want it surfaced is
+  a bound on the type's OWN parameter, `type Traced<E: Error>` —
+  ROADMAP's sugar backlog, not this entry).
 - A BOUND LANDS ON A FREE FN'S PARAMETERS AND NOWHERE ELSE, so a
   GENERIC TYPE CANNOT READ ITS KEY. `type T<K: Tr, V> = { … }` and
   `impl T<K: Tr, V> {` are both F0100 AT the `<` ("expected `=`" /
