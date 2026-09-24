@@ -28,7 +28,8 @@ impl StaticBuild {
             .Enum(_, _) -> if self.decls.types.is_flat(ty) { self.flat_variant_slot(v) } else { self.variant_slot(v, heap, ty) },
             .Res(_, _) -> self.variant_slot(v, heap, ty),
             .App(_, _, _) -> if self.decls.fields_of_type(ty) != null { self.record_slot(v, heap, ty) } else { self.variant_slot(v, heap, ty) },
-            .Ptr or .Bytes or .Cell(_) or .Task(_) or .Tasks or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> null,
+            .Bytes -> self.octets_slot(v),
+            .Ptr or .Cell(_) or .Task(_) or .Tasks or .TypeName(_, _) or .Var(_, _, _) or .Dyn(_, _) or .Fn(_, _, _) or .Null or .EmptyList or .Error or .Void or .EmptyMap -> null,
         }
     }
 
@@ -44,6 +45,13 @@ impl StaticBuild {
         if self.decls.types.is_flat(inner) { return if v is .Absent { Slot.Null } else { self.array_slot(heap.slots(v), heap, [inner]) } }
         if v is .Absent { return Slot.Absent }
         self.slot_of(v, heap, inner)
+    }
+
+    /// Octets: a box of their own, laid out as the binary's.
+    mut fn octets_slot(v: MetaVal) -> Slot? {
+        let xs? = match v { .Octets(xs) -> xs, rest -> null } else { return null }
+        let b? = xs.bytes() else { return null }
+        self.pushed(StaticBox.Octets(b))
     }
 
     /// A list: its elements, each under the one element type.

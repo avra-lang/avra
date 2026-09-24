@@ -360,3 +360,30 @@ The R5a profile named three costs that were neither counts nor boxes:
 
 Still open from that profile: `avra_once_get` (~7%, 42 reads a request)
 wants a `Bytes` const to cross as static data (R9).
+
+## §13 As built — R9a, a `Bytes` const is static data
+
+**D21. `Bytes` has a compile-time value form.** The crossing carries
+octets as `MetaVal.Octets(List<int>)` (the evaluator's `Val.Y` crossed
+as it holds them — it used to become `Text`), the settlement wire as a
+number list (`o`, refused whole when a field is not a number, so the
+record is rebuilt), the fingerprint as one folded part (tag 125). The
+static layout gives a `Bytes` value a box of its own,
+`StaticBox.Octets(b)`, which the backend lays out with the text
+constant's writer — KIND_STATIC, immortal, the layout text and octets
+share (D1) — and the evaluator reads back as `Val.Y`. So a `Bytes`
+anywhere in a const — whole, in a list, in a record field — is an
+address in the binary: no evaluation, no count.
+
+**std-http's request-path tables are consts** (`frame.av`, `http.av`,
+`client.av`: 34 `once fn`s — class tables, header names, the verbs):
+`tchar` is an address where it was a cache lookup, a retain and a
+release per read, 42 reads a request. The cold modules (`query.av`,
+`route.av`, `server.av`) keep theirs: a `let amp = … amp()` there
+would have been shadowed by the rewrite. A const is a NAME a binding
+can shadow; a `once fn` call cannot be.
+
+Pinned by consts/tests/bytes_consts (literal, empty, non-UTF-8, list,
+record field, a fn-computed class table, a thousand reads of an
+immortal). The request bench on the Mac: 1.30 µs -> 0.99 µs, with the
+literal-byte fold of §12.
