@@ -32,7 +32,9 @@ impl NodeStore {
     /// `mut` alike.
     fn binding_ty(s: StmtId) -> TypeRef? {
         match self.stmt(s) {
-            .Let(_, t, _) or .MutLet(_, t, _) or .ConstDecl(_, t, _) or .Collect(_, t, _, _, _, _) -> t,
+            .Let(_, t, _) or .MutLet(_, t, _) or .ConstDecl(_, t, _) -> t,
+            // LICENSED I59: cannot join with the arm above — Collect's `ty` is `TypeRef`, the others' `TypeRef?`; one name cannot bind both
+            .Collect(_, t, _, _, _, _) -> t,
             .Assign(_, _) or .ExprStmt(_) or .Discard(_) or .Use(_, _, _) or .FnDecl(_, _, _, _, _) or .ExternFn(_, _, _) or .While(_, _) or .For(_, _, _, _, _, _) or .ForEach(_, _, _, _) or .IfStmt(_, _, _) or .Return(_) or .Fail(_) or .LetElse(_, _, _) or .StructDecl(_, _, _) or .NamedType(_, _, _) or .Alias(_, _, _) or .EnumDecl(_, _, _) or .ImplDecl(_, _, _) or .TraitDecl(_, _) or .SyntaxDecl(_, _) or .Setting(_, _) or .ComponentDecl(_, _, _, _) or .Spec(_, _) or .Defer(_, _) or .Rule(_, _, _) or .Error -> null,
         }
     }
@@ -385,7 +387,7 @@ impl NodeStore {
     /// the fields a reader wants.
     fn collect_parts(s: StmtId) -> CollectParts? {
         match self.stmt(s) {
-            .Collect(name, elem, head, proj_names, proj_paths, by_keys) -> CollectParts { name: name.of, elem: elem, kind: head[0], scope: head[1], proj_type: head[2], proj_names: proj_names, proj_paths: proj_paths, by_keys: by_keys },
+            .Collect(name, ty, kind, scope, proj, order) -> CollectParts { name: name.of, ty: ty, kind: kind, scope: scope, proj: proj, order: order },
             _ -> null,
         }
     }
@@ -438,7 +440,7 @@ export type RuleParts = { name: string, arms: List<Arm>, body: ExprId }
 /// What a collect declaration carries, projected once. `proj_names[j]`
 /// and `proj_paths[j]` zip: the field it fills, and the `it` path it
 /// reads (`""` for the bare declaration — a fn value).
-export type CollectParts = { name: string, elem: TypeRef?, kind: string, scope: string, proj_type: string, proj_names: List<string>, proj_paths: List<string>, by_keys: List<string> }
+export type CollectParts = { name: string, ty: TypeRef, kind: CollectKind, scope: CollectScope, proj: Projection, order: List<Plain> }
 
 /// What an enum declaration carries, projected once.
 export type EnumParts = { name: string, tparams: List<string>, variants: List<Variant> }

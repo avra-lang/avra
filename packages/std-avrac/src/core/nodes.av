@@ -141,6 +141,32 @@ export enum DeclKind {
     Rule
 }
 
+/// The declaration kinds a `collect` may gather — grown with the
+/// build order (fn, case next). An unknown word is KEPT, never
+/// refused at the parse: `collect`'s own laws speak the refusal
+/// (features/collects/check.av), with the word in hand to name.
+export enum CollectKind {
+    Rule
+    UnknownKind(word: string)
+}
+
+/// Where a `collect` gathers from.
+export enum CollectScope {
+    Self
+    Package
+    Closure
+    UnknownScope(word: string)
+}
+
+/// One projected field: the name it fills, and the `it` path that
+/// answers it — `[]` for the bare declaration itself, a fn value.
+/// `path` is a NAME run because the grammar may grow multi-segment
+/// paths; today it holds zero or one.
+export type ProjField = { field: Plain, path: List<Plain> }
+
+/// A collect's projection: the type it builds, and each field's fill.
+export type Projection = { ty: TypeRef, fields: List<ProjField> }
+
 /// A MODULE's identity — a directory under the root, interned.
 export type ModuleId = { index: int }
 
@@ -813,10 +839,8 @@ export enum Stmt {
     @declares Rule(name: Scoped, arms: List<Arm>, body: ExprId)
     /// `collect name: List<T> = kind in scope as Ty { … } by …` —
     /// every declaration of `kind`, in `scope`, projected and
-    /// ordered. `head` is `[kind, scope, proj_type]`; `proj_names`
-    /// and `proj_paths` zip (a path of `""` is the bare declaration,
-    /// a fn value); `by_keys` are the order's `it.field` paths.
-    Collect(name: Scoped, elem: TypeRef?, head: List<string>, proj_names: List<string>, proj_paths: List<string>, by_keys: List<string>)
+    /// ordered. `order` is the `by` list's `it.field` paths.
+    Collect(name: Scoped, ty: TypeRef, kind: CollectKind, scope: CollectScope, proj: Projection, order: List<Plain>)
     Error
     /// `name: value` inside a component instance's body — a setting of
     /// the record the instance builds. Consumed where the instance is
@@ -928,6 +952,35 @@ fn type_fp(t: TypeRef?) -> int {
         fp_list([mark_fp(m) for m in written.marks]),
         fp_list([type_fp(a) for a in written.args]),
     ])
+}
+
+/// A collect's kind: the ordinal, `fp_binop`'s shape — a plain int
+/// costs no tag; only the payload-carrying variant folds one.
+fn collectkind_fp(k: CollectKind) -> int {
+    match k {
+        .Rule -> 1,
+        .UnknownKind(w) -> fp(132, [fp_str(w)]),
+    }
+}
+
+/// A collect's scope, the same shape.
+fn collectscope_fp(s: CollectScope) -> int {
+    match s {
+        .Self -> 1,
+        .Package -> 2,
+        .Closure -> 3,
+        .UnknownScope(w) -> fp(133, [fp_str(w)]),
+    }
+}
+
+/// One projected field: the name it fills, the path it reads.
+fn projfield_fp(f: ProjField) -> int {
+    fp(134, [fp_str(f.field.of), fp_list(plain_fps(f.path))])
+}
+
+/// A collect's whole projection: its built type, every field.
+fn projection_fp(p: Projection) -> int {
+    fp(135, [type_fp(p.ty), fp_list([projfield_fp(f) for f in p.fields])])
 }
 
 fn fp_binop(op: BinOp) -> int {

@@ -4,61 +4,85 @@
 //! path is in the kind's vocabulary. Nothing here walks a value —
 //! a collect carries none; its body is synthesised at lowering
 //! (compiler/lower/lower.av) from these same recorded parts.
-use core.{StmtId, TypeId, CollectParts}
-use features.{TypeCx}
+use core.{StmtId, TypeId, CollectKind, CollectScope, Projection, Plain, joined}
+use features.{TypeCx, nothing}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
 
-/// The declaration kinds a collect may gather — grown with the
-/// build order (fn, case next).
-const known_kinds: List<string> = ["rule"]
-
-const known_scopes: List<string> = ["self", "package", "closure"]
-
-/// The generic `it` vocabulary every kind answers, beside its own —
-/// `""` is the bare declaration, a fn value. `it.line` is in the
-/// design (docs/2026_09_22_COLLECTIONS.md) and not built: a Loc is a
-/// byte range (`@std/errors`'s `Loc`), and no line index is wired to
-/// this projection yet.
-const generic_paths: List<string> = ["", "name", "module", "file", "doc"]
+/// The generic `it` vocabulary every kind answers, beside its own.
+/// `it.line` is in the design (docs/2026_09_22_COLLECTIONS.md) and
+/// not built: a Loc is a byte range (`@std/errors`'s `Loc`), and no
+/// line index is wired to this projection yet.
+const generic_words: List<string> = ["name", "module", "file", "doc"]
 
 export fn check_collect(mut cx: TypeCx, s: StmtId) {
     let p? = cx.view.store.collect_parts(s) else { return }
-    let ann? = cx.view.store.binding_ty(s) else { return unannotated(cx, s, p.name) }
-    let declared: TypeId = cx.annotated(s, ann)
+    let declared: TypeId = cx.annotated(s, p.ty)
     cx.view.decls.record_const_type(cx.view.file, s, declared)
     if cx.view.types.shape_of(declared) is .Error { return }
-    if !known_kinds.contains(p.kind) { cx.emit(unknown_kind(cx.stmt_loc(s), p.kind)) }
-    if !known_scopes.contains(p.scope) { cx.emit(unknown_scope(cx.stmt_loc(s), p.scope)) }
-    if p.by_keys.is_empty() { cx.emit(order_required(cx.stmt_loc(s), p.name)) }
+    checked_kind(cx, s, p.kind)
+    checked_scope(cx, s, p.scope)
+    if p.order.is_empty() { cx.emit(order_required(cx.stmt_loc(s), p.name)) }
     let entry_ty: TypeId? = cx.view.types.element(declared)
     if entry_ty == null { return cx.emit(not_a_list(cx.stmt_loc(s), p.name)) }
-    checked_projection(cx, s, p, entry_ty!)
-    for k in p.by_keys { if !known_path(p.kind, k) { cx.emit(unknown_path(cx.stmt_loc(s), k)) } }
+    checked_projection(cx, s, p.proj, p.kind, entry_ty!)
+    for k in p.order { if !known_path(p.kind, [k]) { cx.emit(unknown_path(cx.stmt_loc(s), [k])) } }
 }
 
-fn checked_projection(mut cx: TypeCx, s: StmtId, p: CollectParts, entry_ty: TypeId) {
+/// A REGISTRY match over `CollectKind` — the next kind (fn, case)
+/// answers here, never a string compare.
+fn checked_kind(mut cx: TypeCx, s: StmtId, kind: CollectKind) {
+    match kind {
+        .Rule -> nothing(),
+        .UnknownKind(w) -> cx.emit(unknown_kind(cx.stmt_loc(s), w)),
+    }
+}
+
+fn checked_scope(mut cx: TypeCx, s: StmtId, scope: CollectScope) {
+    match scope {
+        .Self or .Package or .Closure -> nothing(),
+        .UnknownScope(w) -> cx.emit(unknown_scope(cx.stmt_loc(s), w)),
+    }
+}
+
+fn checked_projection(mut cx: TypeCx, s: StmtId, proj: Projection, kind: CollectKind, entry_ty: TypeId) {
     let elem_name = cx.view.types.name_of(entry_ty)
-    if elem_name != p.proj_type { cx.emit(proj_mismatch(cx.stmt_loc(s), p.proj_type, elem_name)) }
-    let fields? = cx.fields_of(entry_ty) else { return cx.emit(not_a_record(cx.stmt_loc(s), p.proj_type)) }
-    let missing = [n for n in fields.names if !p.proj_names.contains(n)]
-    let unknown = [n for n in p.proj_names if !fields.names.contains(n)]
-    if !missing.is_empty() || !unknown.is_empty() { cx.emit(field_mismatch(cx.stmt_loc(s), p.proj_type, missing, unknown)) }
-    for path in p.proj_paths { if !known_path(p.kind, path) { cx.emit(unknown_path(cx.stmt_loc(s), path)) } }
+    if proj.ty.name != elem_name { cx.emit(proj_mismatch(cx.stmt_loc(s), proj.ty.name, elem_name)) }
+    let fields? = cx.fields_of(entry_ty) else { return cx.emit(not_a_record(cx.stmt_loc(s), proj.ty.name)) }
+    let written = [f.field.of for f in proj.fields]
+    let missing = [n for n in fields.names if !written.contains(n)]
+    let unknown = [n for n in written if !fields.names.contains(n)]
+    if !missing.is_empty() || !unknown.is_empty() { cx.emit(field_mismatch(cx.stmt_loc(s), proj.ty.name, missing, unknown)) }
+    for f in proj.fields { if !known_path(kind, f.path) { cx.emit(unknown_path(cx.stmt_loc(s), f.path)) } }
 }
 
-fn known_path(kind: string, path: string) -> bool {
-    generic_paths.contains(path) || kind == "rule" && path == "root_kind"
+/// Whether `path` is in `kind`'s vocabulary — empty (the bare
+/// declaration) always is; one generic word always is; a kind's own
+/// word is this REGISTRY's, spelled per kind, never a string list
+/// grown ad hoc.
+fn known_path(kind: CollectKind, path: List<Plain>) -> bool {
+    if path.is_empty() { return true }
+    if path.length > 1 { return false }
+    let word = path[0].of
+    generic_words.contains(word) || kind_word(kind, word)
+}
+
+fn kind_word(kind: CollectKind, word: string) -> bool {
+    match kind {
+        .Rule -> word == "root_kind",
+        .UnknownKind(_) -> false,
+    }
+}
+
+fn path_word(path: List<Plain>) -> string {
+    if path.is_empty() { return "it" }
+    "it.${joined([p.of for p in path], ".")}"
 }
 
 // ── voices ──
 
-fn unannotated(mut cx: TypeCx, s: StmtId, name: string) {
-    cx.emit(refusal("collect.unannotated", cx.stmt_loc(s), "`collect ${name}` needs its declared type — `collect ${name}: List<T> = …`", "declared here", "write the collection's type: `List<T>`"))
-}
-
 fn unknown_kind(at: Loc?, kind: string) -> Diag {
-    refusal("collect.kind", at, "`${kind}` is not a declaration kind `collect` gathers yet", "in this collect", "the kinds today: ${known_kinds.join(", ")}")
+    refusal("collect.kind", at, "`${kind}` is not a declaration kind `collect` gathers yet", "in this collect", "the kinds today: rule")
 }
 
 fn unknown_scope(at: Loc?, scope: string) -> Diag {
@@ -94,7 +118,6 @@ fn some_word(label: string, names: List<string>) -> List<string> {
     if names.is_empty() { [] } else { ["${label} ${names.join(", ")}"] }
 }
 
-fn unknown_path(at: Loc?, path: string) -> Diag {
-    let named = if path == "" { "it" } else { "it.${path}" }
-    refusal("collect.path", at, "`${named}` is not a field this kind's declarations answer", "in this collect", "the generic fields are name, module, file, doc — a kind may add its own")
+fn unknown_path(at: Loc?, path: List<Plain>) -> Diag {
+    refusal("collect.path", at, "`${path_word(path)}` is not a field this kind's declarations answer", "in this collect", "the generic fields are name, module, file, doc — a kind may add its own")
 }

@@ -235,6 +235,13 @@ export type Decls = {
     // the workspace's const-type hook: types the const, and answers
     // whether this ask closed a cycle
     ensure_const: Cell<fn(FileId, StmtId) -> bool>,
+    // the workspace's collect-gathering hook: force-admits a
+    // closure-scoped collect's own package whole (a member's file is
+    // never `use`-reached — it exists to be discovered)
+    ensure_collect: Cell<fn(FileId, DeclKind) -> void>,
+    // whether THIS compilation is a program (has an entry) or a
+    // library — the closure-fold law's door (features/consts/check.av)
+    ensure_entry: Cell<fn() -> bool>,
     // the workspace's lifting hook: an annotation fn run over a
     // declaration at compile time, what it said back
     lifter: Cell<fn(DeclId, FileId, StmtId, ExprId, List<ExprId>) -> Result<Lifted, Unsettled>>,
@@ -271,6 +278,12 @@ fn no_store(f: FileId) {}
 
 // LICENSED I23: a fn VALUE filling the const-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
 fn no_const_ensure(f: FileId, s: StmtId) -> bool { false }
+
+// LICENSED I23: a fn VALUE filling the collect-ensure seat — its parameters are the seat's contract, and the no-op needs none of them
+fn no_collect_ensure(f: FileId, k: DeclKind) {}
+
+// LICENSED I23: a fn VALUE filling the entry-ensure seat — no program is known before the workspace arms it
+fn no_entry_ensure() -> bool { false }
 
 /// A const's type as the program answers it — or why it has none:
 /// the const REFUSED (spoken at its own value), or its value asks
@@ -346,6 +359,8 @@ export fn new_decls() -> Decls {
         impls_by_name: Cell.new(no_impls_by_name),
         ensure: Cell.new(no_ensure),
         ensure_const: Cell.new(no_const_ensure),
+        ensure_collect: Cell.new(no_collect_ensure),
+        ensure_entry: Cell.new(no_entry_ensure),
         ensure_methods: Cell.new(no_ensure),
         builtins: list_cell(),
         rows: [],
@@ -517,13 +532,13 @@ impl Decls {
     /// built or a dependency of the program that carries it.
     fn short_module_of(d: DeclId) -> string { self.module_of(d).split(".").last()! }
 
-    /// Every `rule` declaration admitted so far — the same predicate
-    /// `is_case` reads for `.Case`, over `.Rule`; a fixture proving
-    /// one (`/tests/`) is not the compiler's own rule, `is_test_path`'s
-    /// law here too. Admission is the caller's: `Workspace.rule_decls`
-    /// forces every one of `@std/avrac`'s own files in first.
-    fn rule_decls() -> List<Decl> {
-        [d for d in self.decls.get() if d.kind is .Rule && !self.file(d.file).path.contains("/tests/")]
+    /// Every declaration of `k` admitted so far — a fixture proving
+    /// one (`/tests/`) is not the program's own, `is_test_path`'s law
+    /// here too. Admission is the caller's: a closure-scoped
+    /// `collect` forces its own package's files in first
+    /// (`Workspace.collect_admit`, `gathered_kind`'s hook).
+    fn decls_of_kind(k: DeclKind) -> List<Decl> {
+        [d for d in self.decls.get() if d.kind == k && !self.file(d.file).path.contains("/tests/")]
     }
 
     /// The root package's manifest name, kept in the dotted spelling.
@@ -644,6 +659,8 @@ impl Decls {
     fn disarm() {
         self.ensure.set(no_ensure)
         self.ensure_const.set(no_const_ensure)
+        self.ensure_collect.set(no_collect_ensure)
+        self.ensure_entry.set(no_entry_ensure)
         self.ensure_methods.set(no_ensure)
         self.ensure_writes.set(no_ensure)
         self.ensure_marks.set(no_marks)
@@ -658,6 +675,24 @@ impl Decls {
     }
 
     fn arm_const(ensure: fn(FileId, StmtId) -> bool) { self.ensure_const.set(ensure) }
+
+    /// The workspace arms the collect-gathering hook once.
+    fn arm_collect(ensure: fn(FileId, DeclKind) -> void) { self.ensure_collect.set(ensure) }
+
+    /// The workspace arms the entry hook once.
+    fn arm_entry(ensure: fn() -> bool) { self.ensure_entry.set(ensure) }
+
+    /// Whether THIS compilation is a program — has an entry the
+    /// workspace will run — or a library, read at run time only.
+    fn is_program() -> bool { (self.ensure_entry.get())() }
+
+    /// Every declaration of `k`, `owner`'s package force-admitted
+    /// whole first (the hook) — the closure law for a collect whose
+    /// members are never `use`-reached.
+    fn gathered_kind(k: DeclKind, owner: FileId) -> List<Decl> {
+        (self.ensure_collect.get())(owner, k)
+        self.decls_of_kind(k)
+    }
 
     fn const_type(f: FileId, s: StmtId) -> ConstType {
         if (self.ensure_const.get())(f, s) { return ConstType.Cyclic }

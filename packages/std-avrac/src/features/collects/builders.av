@@ -7,7 +7,7 @@
 //! ANCHORED WINDOW read — the field name always arrives, so
 //! `aligned_binds` finds the `.NAME` written in its window, or "" for
 //! the bare `it`.
-use core.{Stmt, Scoped, TypeRef}
+use core.{Stmt, Scoped, Plain, TypeRef, CollectKind, CollectScope, Projection, ProjField, named_ref}
 use features.{LangNode, Builder, aligned_binds}
 use grammar.{Token}
 
@@ -30,12 +30,35 @@ fn build_collect_decl(b: Builder) -> Result<LangNode, string> {
 
 fn bad_by(b: Builder, bws: List<Token>, n: Token, t: TypeRef, k: Token, sc: Token, pt: Token, fns: List<Token>, fps: List<Token>, bks: List<Token>, ends: int) -> Result<LangNode, string> {
     let bad? = bws.find(not_word("by")) else {
-        let proj_paths = aligned_binds(fns, fps, ends)
-        return b.make_stmt(Stmt.Collect(Scoped(n.text), t, [k.text, sc.text, pt.text], [f.text for f in fns], proj_paths, [bk.text for bk in bks]))
+        let proj = Projection { ty: named_ref(pt.text), fields: proj_fields(fns, fps, ends) }
+        return b.make_stmt(Stmt.Collect(Scoped(n.text), t, kind_of(k), scope_of(sc), proj, [Plain(bk.text) for bk in bks]))
     }
     .Err("a collect's order is declared with `by` — found `${bad.text}`")
 }
 
 fn not_word(word: string) -> fn(Token) -> bool {
     (t: Token) -> t.text != word
+}
+
+fn kind_of(k: Token) -> CollectKind {
+    if k.text == "rule" { CollectKind.Rule } else { CollectKind.UnknownKind(k.text) }
+}
+
+fn scope_of(sc: Token) -> CollectScope {
+    if sc.text == "self" { return CollectScope.Self }
+    if sc.text == "package" { return CollectScope.Package }
+    if sc.text == "closure" { return CollectScope.Closure }
+    CollectScope.UnknownScope(sc.text)
+}
+
+/// Each field's fill: the name always arrives, so `aligned_binds`
+/// finds the `.NAME` written in its window, or "" for the bare `it`
+/// — folded here into the empty path that means the same thing.
+fn proj_fields(fns: List<Token>, fps: List<Token>, ends: int) -> List<ProjField> {
+    let paths = aligned_binds(fns, fps, ends)
+    [ProjField { field: Plain(f.text), path: path_of(paths[j]) } for j, f in fns]
+}
+
+fn path_of(word: string) -> List<Plain> {
+    if word == "" { [] } else { [Plain(word)] }
 }

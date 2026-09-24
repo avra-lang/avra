@@ -6,7 +6,7 @@
 //! fingerprint (span-blind; text equality is too strict), a keep
 //! answered by absence alone. `avra test` (`suite.av`) runs one of
 //! these per example, for every rule the package under test declares.
-use core.{root_of, root_kind_of, flatten}
+use core.{root_of, root_kind_of, flatten, DeclKind}
 use features.{Code, Fix, Decl}
 use features.rules.{nearest_fix, examples_of, Example}
 use compiler.{analyze_source, Analysis}
@@ -66,11 +66,12 @@ impl Workspace {
     /// recomputed fresh — and every `@fixes`/`@keeps` the declaration
     /// itself carries.
     fn rules_checked() -> List<ExampleCheck> {
-        flatten([self.entry_checked(r) for r in rules])
+        let found = self.collect_admit(DeclKind.Rule, self.packages()[0])
+        flatten([self.entry_checked(found, r) for r in rules])
     }
 
-    fn entry_checked(r: RuleEntry) -> List<ExampleCheck> {
-        let d? = self.rule_decls().find(named(r, it)) else { return [] }
+    fn entry_checked(found: List<Decl>, r: RuleEntry) -> List<ExampleCheck> {
+        let d? = found.find(named(r, it)) else { return [] }
         let store = self.decls.store_of(d.file)
         let parts? = store.rule_parts(d.stmt) else { return [checked("${rule_id(r)}'s declaration carries no rule body", false)] }
         // LICENSED I18: any_root is root_kind_of's documented absence case, not a papered-over default

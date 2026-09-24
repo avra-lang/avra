@@ -8,7 +8,7 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
-use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts}
+use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, Plain, DeclKind}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot}
 use compiler.{Analysis, any_root}
@@ -518,19 +518,19 @@ fn is_collect_decl(a: Analysis, d: DeclId) -> bool {
 }
 
 /// A collect's body: every declaration of `p.kind`, in `p.scope`,
-/// projected by `p.proj_names`/`p.proj_paths` and ordered by
-/// `p.by_keys` — SYNTHESISED, no AST, `wrapped_body`'s shape, keyed
-/// on the one declaration `is_collect_decl` names. `Workspace.
-/// analyze_all` forces every `rule` file admitted before any body
-/// lowers, so `a.view.decls` — shared across every file's `Analysis`
-/// — already carries every member here.
+/// projected by `p.proj` and ordered by `p.order` — SYNTHESISED, no
+/// AST, `wrapped_body`'s shape, keyed on the one declaration
+/// `is_collect_decl` names. `Workspace.admit_closure_collect_packages`
+/// forces a closure collect's own package admitted before any body
+/// lowers; `Decls.gathered_kind` re-asks the same door lazily, from
+/// `x.file`, for any this misses.
 fn lower_collect(a: Analysis, x: Decl, fname: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
     let p: CollectParts = a.view.decls.store_of(x.file).collect_parts(x.stmt)!
     let rt: TypeId = a.view.decls.type_of_const(x.file, x.stmt) ?? a.view.decls.types.intern(Type.Error)
     mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle))
     lo.out.seeded()
     lo.seats_enter()
-    let r = collect_table_reg(lo, a, rt, p)
+    let r = collect_table_reg(lo, a, rt, p, x.file)
     lo.seats_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
@@ -540,43 +540,47 @@ fn lower_collect(a: Analysis, x: Decl, fname: string, externs: List<string>, set
     }
 }
 
-/// The list itself: every member, in a FIXED order — `p.by_keys`
+/// The list itself: every member, in a FIXED order — `p.order`
 /// sorted, never the host's directory listing order, which a build
 /// must not depend on — each packed into the projected type's slots.
-fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts) -> Reg {
+fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts, owner: FileId) -> Reg {
     let entry_ty: TypeId = lo.view.types.element(rt) ?? rt
-    let regs = [collect_entry_reg(lo, a, entry_ty, p, d) for d in ordered_collect_members(a, p)]
+    let regs = [collect_entry_reg(lo, a, entry_ty, p, d) for d in ordered_collect_members(a, p, owner)]
     let size = lo.box_size(regs.length)
     lo.grown_box(lo.view.types.shape_of(rt), size, regs)
 }
 
-fn ordered_collect_members(a: Analysis, p: CollectParts) -> List<Decl> {
-    let found = collect_members(a, p.kind)
+fn ordered_collect_members(a: Analysis, p: CollectParts, owner: FileId) -> List<Decl> {
+    let found = collect_members(a, p.kind, owner)
     let keys = sorted_texts([collect_sort_key(a, p, d) for d in found])
     [found.find(collect_sort_key(a, p, it) == k)! for k in keys]
 }
 
-/// The kind's own gathering door — one arm per kind `check_collect`
-/// admits (`known_kinds`, features/collects/check.av). `rule` reads
-/// `Decls.rule_decls()`, force-admitted by `Workspace.analyze_all`
-/// before any body lowers; the next kind adds its own door here.
-fn collect_members(a: Analysis, kind: string) -> List<Decl> {
-    if kind == "rule" { return a.view.decls.rule_decls() }
-    []
+/// The kind's own gathering door — A REGISTRY, exhaustive over
+/// `CollectKind`: the next kind (fn, case) answers here, never a
+/// string compare. `rule` reads every `DeclKind.Rule`, `owner`'s
+/// package force-admitted whole through the hook
+/// (`Decls.gathered_kind`, armed in workspace.av). `UnknownKind` was
+/// already refused at `check_collect` — it gathers nothing, honestly.
+fn collect_members(a: Analysis, kind: CollectKind, owner: FileId) -> List<Decl> {
+    match kind {
+        .Rule -> a.view.decls.gathered_kind(DeclKind.Rule, owner),
+        .UnknownKind(_) -> [],
+    }
 }
 
 fn collect_sort_key(a: Analysis, p: CollectParts, d: Decl) -> string {
-    joined([collect_field_text(a, p.kind, d, k) for k in p.by_keys], ".")
+    joined([collect_field_text(a, p.kind, d, [k]) for k in p.order], ".")
 }
 
 /// One entry: its fields read by NAME off the projected type's own
-/// signature, filled from `p.proj_names`/`p.proj_paths` — so their
-/// declared order never has to match the order these mint in.
+/// signature, filled from `p.proj.fields` — so their declared order
+/// never has to match the order these mint in.
 fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectParts, d: Decl) -> Reg {
     let sig? = lo.fields_of(entry_ty) else { return lo.mint_ty(entry_ty) }
     mut byname: Map<string, Reg> = {}
-    for j, name in p.proj_names {
-        byname.set(name, collect_field_reg(lo, a, entry_ty, name, p.proj_paths[j], p.kind, d))
+    for f in p.proj.fields {
+        byname.set(f.field.of, collect_field_reg(lo, a, entry_ty, f.field.of, f.path, p.kind, d))
     }
     lo.packed_struct(entry_ty, [byname.get(n)! for n in sig.names])
 }
@@ -584,24 +588,35 @@ fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectP
 /// One field's register: the declaration ITSELF (a fn value) for a
 /// bare `it`, a kind's own typed field next, else its GENERIC text
 /// projection, const.
-fn collect_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: string, kind: string, d: Decl) -> Reg {
-    if path == "" {
+fn collect_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: List<Plain>, kind: CollectKind, d: Decl) -> Reg {
+    if path.is_empty() {
         let fnty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo.view.types.intern(Type.Error)
         return collect_fn_reg(lo, d.id, fnty)
     }
-    if kind == "rule" && path == "root_kind" { return lo.const_int(collect_root_kind(a, d)) }
+    if is_root_kind_path(kind, path) { return lo.const_int(collect_root_kind(a, d)) }
     lo.const_str(collect_field_text(a, kind, d, path))
 }
 
+/// `rule`'s own `root_kind` path — the one kind-typed (non-string)
+/// field this kind answers.
+fn is_root_kind_path(kind: CollectKind, path: List<Plain>) -> bool {
+    match kind {
+        .Rule -> path.length == 1 && path[0].of == "root_kind",
+        .UnknownKind(_) -> false,
+    }
+}
+
 /// A path's TEXT projection — the generic fields every kind answers:
-/// name, module, file, the `///` doc's first paragraph joined.
-fn collect_field_text(a: Analysis, kind: string, d: Decl, path: string) -> string {
-    if path == "name" { return d.name }
-    if path == "module" { return a.view.decls.short_module_of(d.id) }
-    if path == "file" { return a.view.decls.file(d.file).path }
-    if path == "doc" { return joined(doc_first_paragraph(a.view.decls.doc_of(d.id) ?? []), " ") }
-    // a kind-specific path used as a SORT KEY: its own text, whatever its real type
-    if kind == "rule" && path == "root_kind" { return "${collect_root_kind(a, d)}" }
+/// name, module, file, the `///` doc's first paragraph joined; a
+/// kind-typed path's own text, for the SORT KEY alone.
+fn collect_field_text(a: Analysis, kind: CollectKind, d: Decl, path: List<Plain>) -> string {
+    if path.length != 1 { return "" }
+    let word = path[0].of
+    if word == "name" { return d.name }
+    if word == "module" { return a.view.decls.short_module_of(d.id) }
+    if word == "file" { return a.view.decls.file(d.file).path }
+    if word == "doc" { return joined(doc_first_paragraph(a.view.decls.doc_of(d.id) ?? []), " ") }
+    if is_root_kind_path(kind, path) { return "${collect_root_kind(a, d)}" }
     ""
 }
 

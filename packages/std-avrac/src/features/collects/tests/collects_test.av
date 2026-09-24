@@ -1,10 +1,11 @@
 //! `collect`'s own laws (docs/2026_09_22_COLLECTIONS.md §4), proved
 //! against source strings — each refusal fired ALONE, on an
 //! otherwise-honest declaration, so the count pins which law spoke.
-//! What is NOT here: the closure/library-fold law and the
-//! self-reading-cycle law (§4.1-2) are not built this slice — only
-//! the kind, scope, order, projection and vocabulary laws are.
+//! The self-read cycle law's own source ALSO earns F2098 (a bare
+//! `rule` outside `@std/avrac` reads no `Fix`) — no scratch source
+//! loads that package — so ITS count pins two, never one.
 use @std.avrac.testing.{refused_with, shown}
+use @std.avrac.compiler.{analyze_source}
 
 spec "collect's own laws" {
     given "the order law" {
@@ -39,6 +40,20 @@ spec "collect's own laws" {
     given "the field vocabulary law" {
         then "an `it` path outside a kind's vocabulary refuses" {
             refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.frobnicate } by it.name\n1", "is not a field this kind's declarations answer")
+        }
+    }
+    given "the closure-fold law (§4.1)" {
+        then "a library folds a closure collection at compile time — refused" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\nconst n: int = xs.length\n1", "is closed only when a program links")
+        }
+        then "reading it at run time, from a fn, is fine" {
+            !refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\nfn count() -> int { xs.length }\n1", "is closed only when a program links")
+        }
+    }
+    given "the self-read cycle law (§4.2)" {
+        then "a rule reading its own collection while compiling — refused" {
+            let a = analyze_source("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\n@fixes(\"1\", \"2\")\nrule bad {\n    _ if xs.length > 0 -> quote { 2 },\n}\n1")
+            a.diagnostics.length == 2 && a.report().contains("cannot read `xs` while compiling")
         }
     }
     given "the `it`/`by` words" {

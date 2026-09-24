@@ -3,8 +3,8 @@
 //! (`checks.av`'s `other_accepts`) is where a `quote` answering
 //! `Code` lifts into `Fix.Rewrite`, exactly as auto-Ok lifts a bare
 //! value into its `Result`.
-use core.{ExprId, TypeId, StmtId, Arm, NodeStore, Annotation}
-use features.{TypeCx, nothing}
+use core.{ExprId, TypeId, StmtId, DeclId, Arm, NodeStore, Annotation, flatten, some_list}
+use features.{TypeCx, nothing, bound_decl_of}
 use diagnostics.{refusal, Diag}
 use @std.errors.{Loc}
 
@@ -27,6 +27,24 @@ fn checked_rule(mut cx: TypeCx, s: StmtId, rname: string, arms: List<Arm>, body:
     // joining the arms bottom-up and reconciling after.
     cx.plant_want(body, want)
     cx.walk_under(s, body)
+    // A MEMBER CANNOT READ ITS OWN COLLECTION WHILE COMPILING
+    // (docs/2026_09_22_COLLECTIONS.md §4.2) — a cycle: `rules`'
+    // value is this rule's OWN synthesis, not yet built while this
+    // rule's own body is what is being typed.
+    let cycled: DeclId? = self_collection_read(cx, body)
+    if cycled != null { cx.emit(self_read(cx.stmt_loc(s), rname, cx.view.decls.decl(cycled!).name)) }
+}
+
+/// A collect keyed to THIS declaration's own kind, read by name.
+fn self_collection_read(cx: TypeCx, root: ExprId) -> DeclId? {
+    flatten([some_list(bound_decl_of(cx.names, node)) for node in cx.view.store.every_expr(root)]).find(rule_collect(cx, it))
+}
+
+fn rule_collect(cx: TypeCx, d: DeclId) -> bool {
+    let x = cx.view.decls.decl(d)
+    if !(x.kind is .Collect) { return false }
+    let p? = cx.view.decls.store_of(x.file).collect_parts(x.stmt) else { return false }
+    p.kind is .Rule
 }
 
 /// A rule proves itself against at least one `@fixes`/`@keeps`, each
@@ -78,4 +96,8 @@ fn no_examples(at: Loc?, rname: string) -> Diag {
 
 fn bad_example_shape(at: Loc?, rname: string) -> Diag {
     refusal("type.rule_example_shape", at, "`rule ${rname}`'s example takes string literals, written — never computed", "this example", "`@fixes(\"before\", \"after\")` or `@keeps(\"still\")`, both literal")
+}
+
+fn self_read(at: Loc?, rname: string, coll: string) -> Diag {
+    refusal("collect.self_read", at, "`${rname}` is collected into `${coll}`, so it cannot read `${coll}` while compiling", "reads it here", "a rule's own body sees the code it is given, never the table it joins")
 }
