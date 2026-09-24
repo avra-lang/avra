@@ -7,6 +7,7 @@
 use core.{Expr, Stmt, StmtId, ExprId, Nominal, Plain, Scoped, NodeStore, BodyView, HoleKind, Filled, SettingParts, TypeRef, copier, flatten, some_list}
 use features.{LangNode, Builder, ComponentWord, Template, Record, marked_seats}
 use grammar.{Token}
+use @std.path.{stem_of}
 
 fn build_component_decl(b: Builder) -> Result<LangNode, string> {
     let n = b.token(0)?
@@ -147,11 +148,12 @@ impl Builder {
 
     /// A pattern head's record: its string literal's format minted as a
     /// `grammar` declaration and hoisted to the file's top level, under a
-    /// name no writer can spell. Absent for a head that is code.
+    /// name no writer can spell and no other file of the module mints.
+    /// Absent for a head that is code.
     fn minted_format(word: ComponentWord, t: Template, field: string, head: ExprId) -> Result<Minted?, string> {
         if !t.formats.contains(field) { return .Ok(null) }
         let text? = self.store.expr(head).text_of() else { return .Err(pattern_literal(word.word, field)) }
-        let name = "${word.word}\$${field}\$${head.index}"
+        let name = "${word.word}\$${field}\$${stem_of(self.store.file)}\$${head.index}"
         let at = self.store.expr_span(head)
         self.store.hoist(self.store.declared_format(name, text, at, false)?)
         // minted before the copy, so it resolves in the user's file
