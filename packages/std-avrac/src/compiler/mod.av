@@ -67,7 +67,8 @@ use features.modules.{modules}
 use features.specs.{specs}
 use features.str_lit.{str_lit}
 use features.bytes.{bytes}
-use features.rules.{rules}
+use features.rules.{rules as rule_feature}
+use features.collects.{collects}
 
 /// A feature set assembled once: composed, parsed, merged, and gated
 /// on grammar + builder coherence. `grammar` is null when assembly
@@ -172,10 +173,16 @@ export fn language_features() -> List<LanguageFeature> {
         // `use a.b.{x}` and the `export` prefix
         specs(),
         // `spec "…" { given "…" { then "…" { … } } }` — keyword-anchored
-        rules(),
+        rule_feature(),
         // `rule name { arms }` — keyword-anchored; shares
         // enums' `arm`/`hole_arm` rules, so guards and
         // quote patterns come free
+        collects(),
+        // `collect name: List<T> = kind in scope as Ty { … } by …` —
+        // keyword-anchored; shares the "collect" word with the
+        // list feature's `collect { … }` expression, disambiguated
+        // by the NAME that must follow (never recovers, so a miss
+        // falls through to that floor)
         let_stmt(),
         consts(),
         // `const NAME = v` — settled by the compiler,

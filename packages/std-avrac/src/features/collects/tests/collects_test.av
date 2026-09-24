@@ -1,0 +1,52 @@
+//! `collect`'s own laws (docs/2026_09_22_COLLECTIONS.md §4), proved
+//! against source strings — each refusal fired ALONE, on an
+//! otherwise-honest declaration, so the count pins which law spoke.
+//! What is NOT here: the closure/library-fold law and the
+//! self-reading-cycle law (§4.1-2) are not built this slice — only
+//! the kind, scope, order, projection and vocabulary laws are.
+use @std.avrac.testing.{refused_with, shown}
+
+spec "collect's own laws" {
+    given "the order law" {
+        then "a collect with no `by` refuses" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name }\n1", "a collection declares its order")
+        }
+        then "a collect WITH `by` does not refuse for order" {
+            !refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\n1", "a collection declares its order")
+        }
+    }
+    given "the kind law" {
+        then "an unknown declaration kind refuses" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = spell in closure as Entry { name: it.name } by it.name\n1", "is not a declaration kind")
+        }
+    }
+    given "the scope law" {
+        then "an unknown scope word refuses" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in everywhere as Entry { name: it.name } by it.name\n1", "is not a collect scope")
+        }
+    }
+    given "the projection law" {
+        then "a projected type that disagrees with the declared element refuses" {
+            refused_with("type Entry = { name: string }\ntype Other = { name: string }\ncollect xs: List<Entry> = rule in closure as Other { name: it.name } by it.name\n1", "disagrees with the declared element")
+        }
+        then "a field the projection leaves unfilled refuses" {
+            refused_with("type Entry = { name: string, module: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name } by it.name\n1", "not each filled exactly once")
+        }
+        then "a field the declared type does not have refuses" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.name, extra: it.module } by it.name\n1", "not each filled exactly once")
+        }
+    }
+    given "the field vocabulary law" {
+        then "an `it` path outside a kind's vocabulary refuses" {
+            refused_with("type Entry = { name: string }\ncollect xs: List<Entry> = rule in closure as Entry { name: it.frobnicate } by it.name\n1", "is not a field this kind's declarations answer")
+        }
+    }
+    given "the `it`/`by` words" {
+        then "an ordinary `it` still means the pronoun, unreserved by the new grammar" {
+            shown("[1, 2, 3].any(it > 1)") == "true"
+        }
+        then "an ordinary `by` still names an identifier, unreserved by the new grammar" {
+            shown("fn f(by: int) -> int { by + 1 }\nf(2)") == "3"
+        }
+    }
+}

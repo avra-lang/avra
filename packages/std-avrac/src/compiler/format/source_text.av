@@ -262,6 +262,7 @@ impl SourceText {
             .Spec(name, cases) -> [self.spec_decl(name, cases, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Defer(body, on_error) -> [source_line(depth, "${if on_error { "errdefer" } else { "defer" }} ${self.written_body(body, depth)}")],
             .Rule(name, arms, _) -> [self.rule_decl(exported, name.of, arms, self.stmt_end(s), self.stmt_flat(s), depth)],
+            .Collect(name, elem, head, proj_names, proj_paths, by_keys) -> [source_line(depth, self.collect_decl(exported, name.of, elem, head, proj_names, proj_paths, by_keys))],
             .Error -> [source_line(depth, "__error")],
         }
     }
@@ -303,6 +304,12 @@ impl SourceText {
 
     fn annotation_type(ty: TypeRef?) -> string {
         if ty == null { "" } else { ": ${spelled(ty!)}" }
+    }
+
+    /// One collect field: `name: it.path`, or `name: it` for the
+    /// bare declaration — `path == ""`.
+    fn collect_field(name: string, path: string) -> string {
+        "${name}: it${if path == "" { "" } else { ".${path}" }}"
     }
 
     fn fn_mark(s: StmtId) -> string {
@@ -562,6 +569,15 @@ impl SourceText {
         if one_line { return source_line(depth, "${head} { ${joined([self.arm_text(a, depth) for a in arms], ", ")} }") }
         let body = flatten([self.trivia_before(self.arm_start(a), depth + 1).concat([self.arm_line(a, depth + 1)]) for a in arms]).concat(self.trivia_before(end, depth + 1))
         "${source_line(depth, "${head} {")}\n${joined(body, "\n")}\n${source_line(depth, "}")}"
+    }
+
+    /// A collect's projection prints as a struct literal over `it`
+    /// paths — `""` the bare declaration — and its order as the
+    /// `it.field` list `by` named.
+    fn collect_decl(exported: string, name: string, elem: TypeRef?, head: List<string>, proj_names: List<string>, proj_paths: List<string>, by_keys: List<string>) -> string {
+        let fields = joined([self.collect_field(n, proj_paths[j]) for j, n in proj_names], ", ")
+        let by = if by_keys.is_empty() { "" } else { " by ${joined(["it.${k}" for k in by_keys], ", ")}" }
+        "${exported}collect ${source_name(name)}${self.annotation_type(elem)} = ${head[0]} in ${head[1]} as ${head[2]} { ${fields} }${by}"
     }
 
     /// One case's `then` line, standing alone (its group is empty).

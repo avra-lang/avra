@@ -254,6 +254,7 @@ impl LowerCx {
             .Decl(d) -> when {
                 self.view.decls.fn_name(d) != null -> self.fn_value_reg(e, self.wanted(d))
                 self.view.decls.decl(d).kind is .Const -> self.const_decl_reg(e, d, ty)
+                self.view.decls.decl(d).kind is .Collect -> self.collect_value_reg(e, d)
                 _ -> null
             },
         }
@@ -308,6 +309,16 @@ impl LowerCx {
         let unit = self.view.decls.instance_unit(d)
         if self.unseen(unit.name) { self.jobs.pending.push(unit) }
         self.call_decl_at(e, unit.name, [])
+    }
+
+    /// A `collect`'s read: its value is SYNTHESISED as its own unit
+    /// (`compiler/lower/lower.av`'s `lower_collect`, keyed on `d`
+    /// through `wanted` exactly as a lambda's wrap is), never a
+    /// literal to inline — so a read CALLS it, once per read site;
+    /// `once` binding it program-wide is the sugar backlog's, same as
+    /// any other computed const.
+    fn collect_value_reg(e: ExprId, d: DeclId) -> Reg {
+        self.call_decl_at(e, self.wanted(d), [])
     }
 
     /// The const at `s` in file `f`, read here: a literal as written,
