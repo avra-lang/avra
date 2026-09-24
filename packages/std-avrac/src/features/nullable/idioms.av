@@ -48,3 +48,19 @@ fn forces(rest: List<Code>, name: string) -> bool {
 fn let_else_guard_found(x: string, e: Code) -> Fix {
     Fix.Say(warning("style.let_else_guard", e.loc(), "`let ${x} = ${e.text()}` guarded by an immediate absence-exit is `let ${x}? = ${e.text()} else { … }`, with every later `${x}!` reading `${x}` bare", "this binding", null))
 }
+
+/// A `mut` local seeded `null` with an explicit nullable type — is
+/// this scan a `find`/`index_of`? No hole binds the TYPE (a quote
+/// pattern has none in type position yet, avra-8sb5.25.10): a
+/// bare-hole root guarded `lit.is_nullable_flag_mut()` reads it off
+/// the declaration structurally instead.
+@keeps("mut best: Thing = other()")
+@keeps("mut best: Thing? = other()")
+@keeps("mut n = 0")
+export rule nullable_flag_local {
+    quote { ${lit} } if lit.is_nullable_flag_mut() -> nullable_flag_found(lit),
+}
+
+fn nullable_flag_found(lit: Code) -> Fix {
+    Fix.Say(warning("style.nullable_flag_local", lit.loc(), "a nullable flag local — is this scan a find/index_of?", "this local", null))
+}

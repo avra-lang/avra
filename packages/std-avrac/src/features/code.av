@@ -7,7 +7,7 @@
 //! PATTERN matches against and a rule reads FACTS off, as methods.
 //! Every answer reads `Analysed`'s three tables alone — never a
 //! global, never another file's.
-use core.{At, ExprId, DeclId, TypeId, TypeRegistry, NodeStore, Binding, Type, Span, Expr, own_name_at}
+use core.{At, ExprId, DeclId, TypeId, TypeRegistry, NodeStore, Binding, Type, Span, Expr, TypeRef, own_name_at}
 use features.{FileView, NameFacts, TypeFacts, known_def_type_of, method_row}
 use features.enums.{answering_arms}
 use diagnostics.{loc_at}
@@ -68,6 +68,21 @@ impl Code {
         match self.at {
             .Expr(id) -> match self.of.view.store.expr(id) { .Block(_, _) -> true, _ -> false },
             .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
+        }
+    }
+
+    /// Whether this node is a `mut` LOCAL declared with an explicit
+    /// nullable type, seeded `null` — `mut best: T? = null`. No hole
+    /// binds the TYPE (a quote pattern has none in type position
+    /// yet, avra-8sb5.25.10) — read structurally instead, off the
+    /// declaration's own `ty` field.
+    fn is_nullable_flag_mut() -> bool {
+        match self.at {
+            .Stmt(id) -> match self.of.view.store.stmt(id) {
+                .MutLet(_, ty, value) -> mut_ty_optional(ty) && is_null_lit(self.of.view.store, value),
+                _ -> false,
+            },
+            _ -> false,
         }
     }
 
@@ -187,6 +202,20 @@ impl Code {
             .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
         }
     }
+}
+
+/// A `mut` local's own type annotation reads `T?` — absent when
+/// unannotated, `is_nullable_flag_mut`'s read of the declaration's
+/// `ty` field.
+fn mut_ty_optional(ty: TypeRef?) -> bool {
+    let t? = ty else { return false }
+    t.optional
+}
+
+/// Whether `id` names the `null` literal — `is_nullable_flag_mut`'s
+/// read of the declaration's own seed value.
+fn is_null_lit(store: NodeStore, id: ExprId) -> bool {
+    store.expr(id) is .NullLit
 }
 
 /// A HELD `Code`'s own text, spliced as an expression — parenthesised

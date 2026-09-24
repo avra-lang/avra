@@ -649,8 +649,6 @@ PRODUCT_ONLY = {
 TESTS_ONLY = {"I20": "it is a law about how a REFUSAL is asserted"}
 
 RULES = {
-    "I4":  (line_rx(r"mut [a-z_]+: *[A-Za-z][A-Za-z<>, ]*\? *= *null"),
-            "a nullable flag local — is this scan a find/index_of?"),
     "I11": (duplicated(r'"[a-z][^"]{20,}"'),
             "a long string duplicated in one file — shared messages are fns"),
     "I13": (line_rx(r"([a-z_]+\.[a-z_]+\(([a-z_]+)\)).*\1"),
@@ -773,6 +771,23 @@ UNRATCHETED = {
            "           own-name-at case) plus a structural `call_args()` walk that\n"
            "           refuses a param handed to a nested call's own arguments;\n"
            "           ratcheted by the native-findings phase below",
+    "I63": "PORTED NATIVELY: `nullable_flag_local` (features/nullable/idioms.av)\n"
+           "           — no TYPE hole (a quote pattern has none in type position yet,\n"
+           "           avra-8sb5.25.10): a bare-hole root guarded\n"
+           "           `lit.is_nullable_flag_mut()` reads the `mut` declaration's own\n"
+           "           `ty`/value fields structurally instead of binding them; ratcheted\n"
+           "           by the native-findings phase below.\n"
+           "           RENUMBERED FROM \"I4\": the RULES dict's own regex was ALREADY\n"
+           "           filed as \"I4\" before this port, colliding with DOGFOODING.md's\n"
+           "           REAL \"I4\" (\"hand-rolled scans that ARE find/index_of/any\") — a\n"
+           "           DIFFERENT idiom, and the collision was live: `decls_mint.av`'s\n"
+           "           `// LICENSED I4: a min-scan keeps the SMALLEST holder, not a\n"
+           "           membership` was written for THAT idiom, and honouring it as this\n"
+           "           one's predecessor would have SILENTLY suppressed a genuine\n"
+           "           nullable-flag-local finding under someone else's review. No\n"
+           "           NATIVE_PREDECESSOR carries forward for the same reason — every\n"
+           "           `// LICENSED I4:` comment in the tree was written for the OTHER\n"
+           "           idiom, never this one.",
     "I54": "PORTED NATIVELY: `when_ladder` (features/if_expr/idioms.av) — the\n"
            "           pattern's own three parts (`if`, `else if`, `else`) are the\n"
            "           floor a chain of any length recurses past, one nested match at a\n"
@@ -876,6 +891,11 @@ UNRATCHETED = {
            "           textually identical — every hit was the verb's own body or a\n"
            "           site needing the id afterward. The review round hunts it",
     "I5":  "the remaining folds are duplicate DETECTION (they emit on the dup)",
+    "I4":  "SWEPT — every hand-rolled scan that is a bare find/index_of was\n"
+           "           already converted; the number was found live as tools/idioms.py's\n"
+           "           OWN regex key for a DIFFERENT idiom (nullable_flag_local,\n"
+           "           renumbered to I63) rather than this one, which has had no matcher\n"
+           "           of its own since the sweep",
     "I37": "a matcher cannot see whether a predicate has EFFECTS — `all` would\n"
            "           short-circuit past a binding the fold must perform, and only a\n"
            "           human can tell that from a pure test",
@@ -963,9 +983,6 @@ SPECIMENS = {
     "I3":  [["for x in xs {", "    out.push(x)", "}"],
             ["    for x in xs { out.push(x) }"],
             ["    for (j, x) in xs.enumerate() { out.push(x) }"]],
-    "I4":  [["    mut best: Thing? = null"],
-            ["    mut hit: List<int>? = null"],
-            ["    mut seen: Map<string, int>? = null"]],
     "I11": [['    let a = "a message long enough to be shared"',
              '    let b = "a message long enough to be shared"']],
     "I12": [['    let a = Span { lo: lo, hi: hi }', '    let b = Span { lo: lo, hi: hi }']],

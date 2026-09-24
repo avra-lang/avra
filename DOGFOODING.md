@@ -1086,6 +1086,22 @@ reintroducing I3's blind spot names the two spellings it lost.
       call minted at the walk's own element type rather than a node's
       (`turn_call`, lists/walks.av). Ratcheted (`raw_mint_emit`).
 
+- I63 (ratcheted) A `mut` LOCAL SEEDED `null` WITH AN EXPLICIT
+      NULLABLE TYPE — `mut best: T? = null` — is a flag standing in
+      for a scan a named verb already answers: often `find`/
+      `index_of`, sometimes a real fold (a min/max-by search) that
+      stays written out, judged case by case. RENUMBERED FROM A
+      COLLIDING "I4": `tools/idioms.py`'s own regex had filed this
+      as "I4" before this idiom's own registry entry existed here,
+      colliding with the true I4 above ("hand-rolled scans that ARE
+      find/index_of/any") — a DIFFERENT idiom, live in the tree:
+      `decls_mint.av`'s `// LICENSED I4: a min-scan keeps the
+      SMALLEST holder, not a membership` was written for THAT one,
+      and would have silently suppressed a genuine finding of THIS
+      one had the port carried "I4" forward as its predecessor.
+      Ratcheted (`nullable_flag_local`), no predecessor code — every
+      existing `// LICENSED I4:` in the tree answers the other law.
+
 ## Lowering: MINT IN EMISSION ORDER
 
 A register must be minted in the order its defining instruction is
