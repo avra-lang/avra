@@ -2,9 +2,10 @@
 //! its name keys the impl table — and the found sig judges the
 //! arguments exactly as a fn call's does, `self` excluded (the
 //! subject rides that seat).
-use core.{ExprId, TypeId, DeclId, DeclKind}
+use core.{ExprId, StmtId, TypeId, DeclId, DeclKind}
 use features.{TypeCx, FnSig, this_is, MethodCall}
 use diagnostics.{refusal}
+use @std.errors.{Loc}
 
 fn method_call_type(mut cx: TypeCx, e: ExprId) -> TypeId {
     // a feature cannot enumerate OTHER features' variants
@@ -248,3 +249,46 @@ fn sig_judged(mut cx: TypeCx, e: ExprId, trait_name: string, name: string, args:
 /// The subject's tparam name and its bound ("" unbounded), when the
 /// subject is a Var.
 
+// ── The derive contract, where a trait declares it ──
+
+/// A TRAIT'S `derive` IS HELD TO ITS CONTRACT WHERE IT IS WRITTEN —
+/// `static fn derive(t: Type) -> List<Directive>`, and a `marks`
+/// beside it `static fn marks(t: Type) -> List<string>` — so the
+/// library's author hears it at their own build, never first at a
+/// user's `@derive`. `Fn` or `Named` may stand for `Type`.
+export fn derive_contract(mut cx: TypeCx, s: StmtId) {
+    let tr? = cx.view.decls.decl_of(cx.view.file, s) else { return }
+    if !(cx.view.decls.decl(tr).kind is .Trait) { return }
+    let derive? = cx.view.decls.trait_derive(tr) else { return }
+    if !member_fits(cx, derive, (ret: TypeId) -> directives(cx, ret)) { derive_shape(cx, derive) }
+    let marks? = cx.view.decls.trait_marks(tr) else { return }
+    if !member_fits(cx, marks, (ret: TypeId) -> ret.index == cx.type(List<string>).index) { marks_shape(cx, marks) }
+}
+
+/// Whether a trait member is static, takes one declaration, and
+/// answers what `answers` accepts.
+fn member_fits(cx: TypeCx, m: DeclId, answers: fn(TypeId) -> bool) -> bool {
+    let sig? = cx.view.decls.sig(m)?.fn_sig() else { return true }
+    let x = cx.view.decls.decl(m)
+    cx.view.decls.store_of(x.file).is_static(x.stmt) && sig.params.length == 1 && cx.view.decls.takes_a_decl(sig.params[0]) && answers(sig.ret)
+}
+
+/// Whether an answer is `@std.meta`'s `List<Directive>`.
+fn directives(cx: TypeCx, ret: TypeId) -> bool {
+    match cx.view.types.shape_of(ret) {
+        .List(e) -> cx.view.decls.meta_type(e, "Directive"),
+        _ -> false,
+    }
+}
+
+fn derive_shape(mut cx: TypeCx, m: DeclId) {
+    cx.emit(refusal("type.derive_contract", member_loc(cx, m), "a trait's `derive` is `static fn derive(t: Type) -> List<Directive>`", "declared here", "take the declaration (`t: Type`, `f: Fn` or `n: Named`) and answer `List<Directive>` from `@std.meta`, as a `static fn`"))
+}
+
+fn marks_shape(mut cx: TypeCx, m: DeclId) {
+    cx.emit(refusal("type.derive_contract", member_loc(cx, m), "a trait's `marks` is `static fn marks(t: Type) -> List<string>`", "declared here", "take the same declaration its `derive` takes, and answer the mark names it reads"))
+}
+
+fn member_loc(cx: TypeCx, m: DeclId) -> Loc? {
+    cx.view.stmt_loc(cx.view.decls.decl(m).stmt)
+}

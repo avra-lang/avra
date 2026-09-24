@@ -315,7 +315,49 @@ instance is named by its `name:` setting (`command language { name:
 and a typed `self.target` per command need the EXPAND stage — the first
 user of S6's declaring blocks.
 
-**S6 — `model` and declaring blocks** (§10 item 1), after S5.
+**S6 — declaring components on `@derive`'s engine** (§10 item 1).
+PROPOSED 2026-09-24, for the owner's review. ONE ENGINE: a component
+that declares `derive` is a DECLARING component, and its instance is
+sugar for a record run through that derive —
+
+```avra
+model User {                 //  ≡  @derive(model)
+    email: string @unique    //     type User = { email: string @unique,
+    name: string             //                   name: string }
+}
+```
+
+- THE AUTHOR WRITES WHAT A DERIVE TRAIT WRITES — `static fn derive(t:
+  Type) -> List<Directive>` and `static fn marks(t: Type) ->
+  List<string>` — so a derive and a declaring component are one
+  spelling over one engine (`compiler/expand.av`'s `trait_directives`
+  learns a component's `derive` beside a trait's). No second engine.
+- THE INSTANCE BODY IS FIELDS: `name: Type`, marks after (`@unique`);
+  the instance's NAME is the type's, `export model User` exports it.
+  Options ride annotations on the instance (`@table("people") model
+  Person { … }`), which cross into `Type.annotations` today.
+- WHAT THE GENERATOR SEES: the declaration's SHAPE — fields, spelled
+  types, marks, `///`, annotations — never typed values: a derive runs
+  inside the resolve it serves. Its output (`impl User { … }`, sibling
+  declarations) is typed afterwards with the program, so it may NAME
+  any other model: `Post`'s generated join calls `User.table()`.
+- EVERY MODEL AT ONCE (migrations, schema diff) is `collect models =
+  model in closure` (avra-8sb5.28, IDIOMS), `keyed` by table later.
+- LAWS CARRIED: the provider guard (a component's `derive` lives in
+  another module than its instances — already true of block words),
+  a derive's arguments are source-known, and `avra expand` shows what
+  each instance became (P7).
+
+NOT THIS ENGINE, named so it is never assumed: placing a COMPUTED
+child by its type (`let a = make_layer()` then `a` in a server) needs
+the value's TYPE, which a derive never sees. That is a TYPER rule — a
+record's children sorted into slots by type during typing — its own
+slice after S6a.
+
+Slices: **S6a** declaring components + `model` in a test provider
+(fields, marks, a two-model join); **S6b** a `model` over @std/sqlite
+(table, insert, find); **S6c** typed placement in the typer. A
+computing `expand` over quote patterns joins when a user needs it.
 
 **S5 — `server` / `api` over `@std/http`.** DECIDED WITH THE OWNER
 (2026-09-23): the user writes `get "/robots/{id: RobotId}" { req ->
