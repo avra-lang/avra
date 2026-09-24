@@ -496,3 +496,31 @@ listener and limits were laid inline, and the multi-core server
 segfaulted. A layout change is only as sound as the claim that every
 read goes through the one verb; the grep for raw slot reads is the
 check (`slot_read(` over a record subject).
+
+## §17 As built — R5a', a constant literal is static data
+
+**Measured first.** Of the request's 10 remaining list/record boxes,
+ONE never escaped its fn (the bench's own `Request`); four were
+constant literals — `Header { … }`, the `[…]` holding it,
+`Unrouted {}`, `Body.None`. Stack boxes would have bought one.
+
+**D26. A literal the source alone spells is laid out once, as a
+const is.** `spelled_static` (features/values.av) runs at the lowering
+spine's one edge: a pointer-riding literal whose every part is spelled
+(`literal_meta` — the fold `const` seats already use) and whose type
+is closed becomes `StaticAddr` of an immortal box, named by its file
+and expression. Maps stay run-time; a scalar is already a constant.
+
+**D27. A `mut` local opens unique however fresh its seed looks.** The
+alias-copy law trusted a construction and a fn's answer as unshared,
+so a `mut`-seat call wrote through the local into whatever else held
+the box — a static literal (every later turn read `[1, 7, 7]`), and,
+before this slice, a value the fn's argument still held
+(`mut c = inner(s); add(c)` grew `s.xs`). Every write through a bare
+`mut` local is marked now; a fresh box pays one count check. The
+warning still speaks only for a seed read from a place.
+
+Pinned by features/tests/static_literals (fifteen write shapes over
+three turns, then every literal read again) and fresh_seeds (witnessed
+failing on the pre-slice compiler). Request boxes 10 -> 6;
+`check packages/cli` 151.2B -> 150.0B instructions.
