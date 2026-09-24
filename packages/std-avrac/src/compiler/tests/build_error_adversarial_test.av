@@ -1,0 +1,30 @@
+// BuildError wired into a rendered Diag, under attack: a multi-line
+// report already rendered elsewhere, and a voice fn's words compared
+// byte-for-byte against its sibling voices.
+use @std.avrac.compiler.{BuildError}
+use @std.avrac.diagnostics.{error_at, render, new_source_file}
+
+/// A report `d.program.rendered(...)`/`report()` actually produce: several
+/// `render_among` calls joined by a blank line, each with its own header
+/// and source window — the real shape `BuildError.Diagnosed` carries.
+fn realistic_multi_diagnostic_report() -> string {
+    "error[F3000]: `foo` is not defined\n  ╭─[app.av:2:5]\n2 │ foo()\n  ·     ┬\n  ·     ╰── not defined anywhere in this program\n──╯\n\nerror[F2001]: `Bar` names no type\n  ╭─[app.av:5:1]\n5 │ let x: Bar = 1\n  ┬\n  ╰── in this signature\n──╯\nhelp: the types today are `int`, `string`, `bool`, and your declared types"
+}
+
+fn rendered_as_cause(report: string) -> string {
+    let d = error_at("build.failed", null, "the build failed") with { cause: BuildError.Diagnosed(report) }
+    render(d, [], new_source_file("<build>", ""))
+}
+
+spec "BuildError adversarial" {
+    given "a Diagnosed report carrying MULTIPLE already-rendered diagnostics" {
+        then "wrapping it as a Diag's cause never lets a second diagnostic's own header read as a detached, unrelated one" {
+            !rendered_as_cause(realistic_multi_diagnostic_report()).contains("\n\nerror[")
+        }
+    }
+    given "ModuleUnreadable" {
+        then "the message keeps the `avra: ` prefix every sibling voice (LinkFailed, ObjectGone) carries" {
+            BuildError.ModuleUnreadable("/tmp/x.bc").describe().message == "avra: the entry's module could not be read back — /tmp/x.bc"
+        }
+    }
+}
