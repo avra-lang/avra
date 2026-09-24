@@ -151,6 +151,12 @@ export fn own_name_at(store: NodeStore, at: At) -> string? {
             // LICENSED I59: `name` is `Scoped` here, `Plain` above — an `or` arm cannot bind one name at two types
             .Comp(_, _, name, _, _, _) -> name.of,
             .StructLit(name, _, _) -> name.of,
+            // a lambda's OWN name-bearing field is its ONE param's —
+            // absent for zero, and the shallow fold's own length
+            // still refuses more than one (the params list is
+            // otherwise folded whole, unblanked: a typed or
+            // defaulted param does not match a bare `${p}`)
+            .Lambda(params, _) -> first_param_name(params),
             rest -> null,
         },
         .Field(owner, index) -> field_name_of(store, owner, index),
@@ -185,8 +191,23 @@ fn bare_expr(e: Expr) -> Expr {
         .Prop(subject, _) -> Expr.Prop(subject, Plain("")),
         .Comp(elem, index, _, source, hi, cond) -> Expr.Comp(elem, index, Scoped(""), source, hi, cond),
         .StructLit(_, fields, values) -> Expr.StructLit(Nominal(""), fields, values),
+        .Lambda(params, body) -> Expr.Lambda(blanked_param_name(params), body),
         rest -> e,
     }
+}
+
+/// A lambda's own name-bearing field: its first param's name, when it
+/// has one.
+fn first_param_name(params: List<Param>) -> string? {
+    let p? = params.first() else { return null }
+    p.name.of
+}
+
+/// `params` with its first entry's name blanked — `first_param_name`'s
+/// read is what this blanks.
+fn blanked_param_name(params: List<Param>) -> List<Param> {
+    let p? = params.first() else { return params }
+    [p with { name: Scoped("") }].concat(params.slice(1, params.length))
 }
 
 /// The node's own RUN-ELIGIBLE list field, blanked to `[]` — a call's

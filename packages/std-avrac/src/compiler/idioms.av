@@ -344,10 +344,13 @@ fn bracket_ritual_found(v: Code, x: Code) -> Fix {
 /// node whose own name agrees, never a text guess (a compound value
 /// that merely ENDS in `.field`, `a.x + b.x`, is not a `Prop` and is
 /// refused before its "subject" is trusted). The rule fires only when
-/// AT LEAST TWO fields agree on ONE copied subject and at least one
-/// other field does not — a lone copy is too weak a signal, and
-/// fields copying TWO DIFFERENT subjects refuse outright rather than
-/// silently reading the second subject's fields as "modified".
+/// AT LEAST TWO fields agree on ONE copied subject (the MOST-COPIED
+/// one, when more than one candidate appears) and at least one other
+/// field does not — a lone copy is too weak a signal. A field copying
+/// a DIFFERENT subject than the winner is read as "modified" too,
+/// same as one copying nothing at all — `with` only ever names ONE
+/// subject, so every other field is what it says explicitly, whatever
+/// its own value happens to look like.
 /// Narrower than the retired regex: no DECLARED-TYPE trace, so a
 /// coincidental `x.field` name match is accused too.
 @keeps("Widget { name: \"fixed\", value: 2 }")
@@ -361,12 +364,27 @@ export rule modified_copy_literal {
 fn copy_literal_check(lit: Code) -> Fix? {
     let fields = lit.kids()
     let subjects = [s! for s in [field_copy_subject(f) for f in fields] if s != null]
-    let subj? = subjects.first() else { return null }
-    if subjects.any((it) -> it != subj) { return null }
-    if subjects.length < 2 { return null }
+    let subj? = most_copied(subjects) else { return null }
     let modified = [f for f in fields if field_copy_subject(f) != subj]
     if modified.is_empty() { return null }
     Fix.Say(warning("style.modified_copy_literal", lit.loc(), "a struct literal copying its other fields from `${subj}` — `${subj} with { ${field_list(modified)} }`", "this literal", null))
+}
+
+/// The subject copied by the MOST fields, when at least two agree —
+/// absent when every subject is a lone copy.
+fn most_copied(subjects: List<string>) -> string? {
+    let distinct = [s for i, s in subjects if subjects.index_of(s) == i]
+    // LICENSED I4: a max-by fold; the subset has no reduce/max_by
+    mut best: string? = null
+    mut best_n = 1
+    for s in distinct {
+        let n = [x for x in subjects if x == s].length
+        if n > best_n {
+            best = s
+            best_n = n
+        }
+    }
+    best
 }
 
 /// The subject `f` copies, when its value is exactly `subject.<f's own

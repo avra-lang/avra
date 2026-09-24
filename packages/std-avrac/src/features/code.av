@@ -63,6 +63,14 @@ impl Code {
         }
     }
 
+    /// Whether this node is a block — false for every other seat.
+    fn is_block() -> bool {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) { .Block(_, _) -> true, _ -> false },
+            .Stmt(_) or .Pat(_) or .Field(_, _) -> false,
+        }
+    }
+
     /// A property read's own NAME — `x.name` answers `"name"` — null
     /// for every other seat, so a field's VALUE is confirmed a `Prop`
     /// before its subject is trusted, never guessed from text alone.
@@ -70,6 +78,22 @@ impl Code {
         match self.at {
             .Expr(id) -> match self.of.view.store.expr(id) { .Prop(_, name) -> name.of, _ -> null },
             .Stmt(_) or .Pat(_) or .Field(_, _) -> null,
+        }
+    }
+
+    /// This node's own CALL ARGUMENTS: a `Call`'s kids whole, a
+    /// `MethodCall`'s or a `CallValue`'s kids past its subject (the
+    /// first) — empty for every other kind, spelled (a REGISTRY: three
+    /// answering arms). A name found here is HANDED to this call,
+    /// never a name merely read as a method's own RECEIVER.
+    fn call_args() -> List<Code> {
+        match self.at {
+            .Expr(id) -> match self.of.view.store.expr(id) {
+                .Call(_, _, _) -> self.kids(),
+                .MethodCall(_, _, _) or .CallValue(_, _) -> self.kids().slice(1, self.kids().length),
+                .IntLit(_) or .FloatLit(_) or .StrLit(_) or .BoolLit(_) or .Ident(_) or .Receiver or .Binary(_, _, _) or .Not(_) or .ListLit(_) or .Comp(_, _, _, _, _, _) or .MapLit(_, _) or .Index(_, _) or .Prop(_, _) or .Body(_, _, _, _) or .If(_, _, _) or .When(_, _, _) or .Block(_, _) or .Component(_, _, _, _, _) or .Named(_, _) or .StructLit(_, _, _) or .With(_, _, _) or .Match(_, _) or .NullLit or .Coalesce(_, _) or .MatchOpt(_, _, _, _) or .Lambda(_, _) or .Spawn(_) or .Chain(_, _) or .Force(_) or .Is(_, _) or .VariantLit(_, _) or .Propagate(_) or .Catch(_, _, _, _) or .Error or .Collect(_) -> [],
+            },
+            .Stmt(_) or .Pat(_) or .Field(_, _) -> [],
         }
     }
 

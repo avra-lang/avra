@@ -1,0 +1,37 @@
+//! The formatter's idioms for this feature — `rule`s, found by
+//! directory like everything else this feature owns.
+use features.{Code, Fix}
+use diagnostics.{warning}
+
+/// A one-parameter lambda handed to a method call is `it` — the
+/// pronoun says the predicate and nothing else: no binder, no
+/// annotation, no arrow. THE ONE LAMBDA THAT STAYS: `it` binds at
+/// the NEAREST enclosing method call, so a parameter handed on to
+/// ANOTHER call's own arguments cannot be the pronoun — that is the
+/// language's own spelling; nor a block body, a nested lambda (any
+/// `->` inside reaches this the same way), or a body that already
+/// says `it`.
+@keeps("held.find((o) -> !store.has(k, o.key))")
+@keeps("xs.any((k) -> self.rides(k))")
+@keeps("xs.any((k) -> { k > 2 })")
+@keeps("xs.any((k) -> it == k)")
+@keeps("xs.any((k) -> f((j) -> j == k))")
+export rule pronoun_lambda {
+    quote { ${xs}.${m}((${p}) -> ${body}) } if !body.is_block() && !mentions(body, "it") && mentions(body, p) && !handed_to_a_call(body, p) -> pronoun_lambda_found(m, p, body),
+}
+
+/// Whether `name` occurs anywhere under `c`, `c` itself included.
+fn mentions(c: Code, name: string) -> bool {
+    c.name() == name || c.kids().any((k) -> mentions(k, name))
+}
+
+/// Whether `name` sits inside some nested call's own ARGUMENTS,
+/// anywhere under `c` — the shape `it` cannot rename, since `it`
+/// would bind at that NEARER call instead.
+fn handed_to_a_call(c: Code, name: string) -> bool {
+    c.call_args().any((a) -> mentions(a, name)) || c.kids().any((k) -> handed_to_a_call(k, name))
+}
+
+fn pronoun_lambda_found(m: string, p: string, body: Code) -> Fix {
+    Fix.Say(warning("style.pronoun_lambda", body.loc(), "a one-parameter lambda handed to `.${m}` says the predicate alone — `it` reads `${p}`", "this lambda", null))
+}

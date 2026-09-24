@@ -297,56 +297,6 @@ def opening_bracket(text, at):
                 return j
     return None
 
-# A ONE-PARAMETER LAMBDA HANDED TO A METHOD CALL. `it` binds at the NEAREST
-# enclosing method call, so a parameter that sits inside ANOTHER method call's
-# arguments cannot be the pronoun — that lambda is the language's own spelling
-# and is never a site. A block body, a nested lambda and a body that already
-# says `it` are left alone too: each is a second scope the pronoun cannot name.
-PRONOUN_LAMBDA = re.compile(r"\.[a-z_]+\(\(\s*([a-z_][a-z0-9_]*)\s*(?::[^()]*)?\)\s*->\s*")
-
-def lambda_body(line, start):
-    """The lambda's body: from `start` to the paren that closes the call."""
-    depth = 0
-    for k in range(start, len(line)):
-        c = line[k]
-        if c in "([{":
-            depth += 1
-        elif c in ")]}":
-            if depth == 0:
-                return line[start:k]
-            depth -= 1
-    return None
-
-def in_method_arguments(body, name):
-    """Whether any use of `name` sits inside the arguments of a METHOD call."""
-    for m in re.finditer(r"\b" + re.escape(name) + r"\b", body):
-        depth = 0
-        for k in range(m.start() - 1, -1, -1):
-            c = body[k]
-            if c in ")]}":
-                depth += 1
-            elif c in "([{":
-                if depth == 0:
-                    if c == "(" and re.search(r"\.[a-z_]+$", body[:k]):
-                        return True
-                else:
-                    depth -= 1
-    return False
-
-def pronoun_lambda(lines):
-    """A lambda `it` would say (I50)."""
-    for i, l in enumerate(lines):
-        if l.strip().startswith("//"):
-            continue
-        for m in PRONOUN_LAMBDA.finditer(l):
-            name, body = m.group(1), lambda_body(l, m.end())
-            if body is None or body.lstrip().startswith("{") or "->" in body:
-                continue
-            if not re.search(r"\b" + re.escape(name) + r"\b", body) or re.search(r"\bit\b", body):
-                continue
-            if not in_method_arguments(body, name):
-                yield i, l.strip()
-                break
 
 # A TWO-ARM MATCH ANSWERING ONLY true/false, WHERE ONE SIDE NAMES A
 # BARE VARIANT AND THE OTHER IS THE WILDCARD. The wildcard already
@@ -911,10 +861,6 @@ RULES = {
             "other the wildcard — that is `is`: `x is .Ready`, or `!(x is .Ready)` "
             "with the arms swapped. An `or`-run on the untested side spells a "
             "registry's remaining variants by name, and this never accuses one"),
-    "I50": (pronoun_lambda,
-            "a one-parameter lambda handed to a method call — that is `it`: "
-            "`xs.any(it.ready)`, `rows.find(it.word == w)`. A parameter handed on to "
-            "ANOTHER method call must stay a lambda, and this never accuses one"),
     "I43": (hand_sized_column,
             "a fact column sized from an arena's count — `SideTable<V>` states "
             "the window, the growth and the out-of-window defect once: "
@@ -988,6 +934,11 @@ UNRATCHETED = {
            "           STATEMENT `for` loop, so a comprehension's own `for` clause\n"
            "           (`[… for j in 0..xs.length]`) never matches — a different shape,\n"
            "           not yet its own rule",
+    "I50": "PORTED NATIVELY: `pronoun_lambda` (features/closures/idioms.av) — a\n"
+           "           NAME hole on the lambda's OWN param (avra-8sb5.25.10's Lambda\n"
+           "           own-name-at case) plus a structural `call_args()` walk that\n"
+           "           refuses a param handed to a nested call's own arguments;\n"
+           "           ratcheted by the native-findings phase below",
     "I53": "PORTED NATIVELY: `modified_copy_literal` (compiler/idioms.av) — a bare\n"
            "           hole root (avra-8sb5.25.10's `At.Field`) matches ANY node, guarded\n"
            "           `lit.is_struct_lit()`, then reads `lit.kids()` field by field;\n"
@@ -1157,11 +1108,6 @@ CLEAN = {
             ["    match k { .Wide -> true, .Narrow or .Ptr or .Void -> false }"],
             ["    match n { 1 -> true, _ -> false }"],
             ["    match k { .A -> true, null -> false }"]],
-    "I50": [["    let gone = held.find((o: Made) -> !store.has(Stored.Obj, o.key))"],
-            ["    xs.any((k) -> self.rides(k))"],
-            ["    rows.all((s: Scope) -> s.managed.any(same_reg(it, r)))"],
-            ["    let f = xs.map((x) -> {"],
-            ["    built(host, (p: string) -> exists(p))"]],
     "I48": [["    [covers_seg(x[j], y[j]) for j in 0..n].all(it)"],
             ["    [self.stage_seat(k, slots[i]) for i, k in sig.params].all(it)"],
             ["    [f(x) for x in xs if p(x)].any(it)"]],
@@ -1196,10 +1142,6 @@ SPECIMENS = {
             ["    match self {", "        .Other -> false,", "        _ -> true,", "    }"],
             ["    match k { .A -> true, rest -> false }"],
             ["    match r {", "        .Void -> false,", "        _ -> true,", "    }"]],
-    "I50": [["    if cases.any((c: CaseCall?) -> c == null) { return null }"],
-            ["    let found = declared.find((g: BlockGrammar) -> g.word == item)"],
-            ["    self.packages.find((p) -> p.origin is .Root)?.src ?? self.root"],
-            ["    seats.all((r: Reg) -> retains_of(ins, r) == 0)"]],
     "I48": [["    r.status <= 999 && [writable(h) for h in r.headers].all(it)"],
             ["    [b.ieq_at(0, b.length, w) for w in written_by].any(it)"],
             ["    ![names_one_of(h.name, reply_writes()) for h in r.headers].any(it)"]],
@@ -1389,6 +1331,7 @@ NATIVE_PREDECESSOR = {
     "style.bracket_ritual": "I15",
     "style.index_walk": "I19",
     "style.modified_copy_literal": "I53",
+    "style.pronoun_lambda": "I50",
 }
 
 def native_findings():
