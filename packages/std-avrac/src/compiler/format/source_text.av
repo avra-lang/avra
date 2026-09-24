@@ -246,7 +246,10 @@ impl SourceText {
             .IfStmt(cond, yes, no) -> [self.if_statement(cond, yes, no, self.stmt_end(s), self.stmt_flat(s), depth)],
             .Return(value) -> [source_line(depth, if value == null { "return" } else { "return ${self.expression(value!, loosest_tier, depth)}" })],
             .Fail(value) -> [source_line(depth, "fail ${self.expression(value, loosest_tier, depth)}")],
-            .ImplDecl(of, target, fns) -> [self.impl_decl(exported, of?.of, target.of, fns, self.stmt_end(s), self.stmt_flat(s), depth)],
+            .ImplDecl(of, target, fns) -> {
+                let itp = self.store.impl_tparams_of(s)
+                [self.impl_decl(exported, of?.of, [p.of for p in itp?.of ?? []], target.of, [p.of for p in itp?.target ?? []], fns, self.stmt_end(s), self.stmt_flat(s), depth)]
+            },
             .TraitDecl(name, fns) -> [self.trait_decl(exported, name.of, fns, self.stmt_end(s), self.stmt_flat(s), depth)],
             .SyntaxDecl(name, text) -> [source_line(depth, "${exported}grammar ${source_name(name.of)} {${text}}")],
             .Setting(name, value) -> [source_line(depth, "${source_name(name.of)}: ${self.expression(value, loosest_tier, depth)}")],
@@ -315,7 +318,7 @@ impl SourceText {
     fn collect_kind_word(k: CollectKind) -> string {
         match k {
             .Rule -> "rule",
-            .UnknownKind(w) -> w,
+            .Component(w) or .UnknownKind(w) -> w,
         }
     }
 
@@ -478,8 +481,12 @@ impl SourceText {
         self.next < self.trivia.length && self.trivia[self.next].at < at
     }
 
-    mut fn impl_decl(exported: string, of: string?, target: string, fns: List<StmtId>, end: int, one_line: bool, depth: int) -> string {
-        let head = if of == null { "${exported}impl ${source_name(target)}" } else { "${exported}impl ${source_name(of!)} for ${source_name(target)}" }
+    mut fn impl_decl(exported: string, of: string?, of_tparams: List<string>, target: string, target_tparams: List<string>, fns: List<StmtId>, end: int, one_line: bool, depth: int) -> string {
+        let head = if of == null {
+            "${exported}impl ${source_name(target)}${self.named_type_params(target_tparams)}"
+        } else {
+            "${exported}impl ${source_name(of!)}${self.named_type_params(of_tparams)} for ${source_name(target)}${self.named_type_params(target_tparams)}"
+        }
         self.statement_block(head, fns, end, one_line, depth)
     }
 

@@ -17,6 +17,7 @@ use features.specs.{fits_case}
 use features.annotations.{check_annotation}
 use features.rules.{example_marks}
 use features.closures.{takes_by_name}
+use features.impls.{derive_contract}
 
 /// A type context over one expression range of a file, reading the
 /// SHARED declaration table — a signature may name any file's
@@ -51,7 +52,7 @@ impl TypeCx {
     /// under its signature (asked lazily), a default's under its field,
     /// Main's run-time statements in order, a type's statement-level
     /// law. A trait's and an impl's members are declarations of their
-    /// own.
+    /// own; a trait's `derive` answers to its contract here.
     mut fn type_decl(x: Decl) -> TypeFacts {
         match x.kind {
             .Main -> {
@@ -72,7 +73,10 @@ impl TypeCx {
             .Case -> self.case_body(x),
             .Rule -> self.rule_body(x),
             .Record or .Named or .Alias or .Enum or .Const or .Syntax or .Collect -> self.type_stmts([x.stmt]),
-            .Trait or .Impl or .Builtin -> nothing(),
+            // a trait's members type as methods; the trait holds its
+            // `derive` to the contract where it is written
+            .Trait -> derive_contract(self, x.stmt),
+            .Impl or .Builtin -> nothing(),
         }
         self.speak_hungry()
         self.facts

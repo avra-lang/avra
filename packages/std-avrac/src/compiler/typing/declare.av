@@ -450,7 +450,18 @@ impl TypeCx {
         let refused: List<Refusal> = r.judge(self.view.types, args)
         if !refused.is_empty() { return self.applied_refused(at, refused[0]) }
         let sh: Type = r.builds(args)
+        // A RESULT'S LAYOUT IS JUDGED WHERE IT IS FIRST INTERNED, from its
+        // sides' layouts — so each side's declaration is asked first
+        if sh is .Res { for p in parts { self.asked_layout(p) } }
         self.view.types.intern(sh)
+    }
+
+    /// A record's layout made by asking its declaration.
+    fn asked_layout(ty: TypeId) {
+        match self.view.types.shape_of(ty) {
+            .Struct(d, _) -> { let _ = self.view.decls.sig(d) },
+            rest -> nothing(),
+        }
     }
 
     fn unslottable_slot(at: Loc?, name: string, ty: TypeId) -> TypeId {

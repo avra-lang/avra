@@ -597,3 +597,72 @@ declarations, and a `Result` is interned wherever it is spelled, so
 marking it at intern would judge a record before it is signed — two
 bodies could disagree on the calling convention. It needs the sides'
 declarations asked first, at a door every spelling passes.
+
+## §21 As built — R11b, a Result is a value enum
+
+**D32. A `Result<T, E>` of two one-word sides rides registers**, Ok tag
+0, Err tag 1. It is judged ONCE, where the type is first interned
+(`TypeRegistry.judge_result`), from layouts that can no longer move: a
+side's declaration must have SETTLED (`mark_settled`, made at every
+record's and enum's declaration), a flat record stays out (a `mut` seat
+may still box it), and an enum is never sealed at all — it has no path a
+`mut` seat writes through. `applied` asks a spelled Result's record
+sides first, so `Result<int, NetError>` is judged with `NetError` known.
+
+**D33. A failure leaves in the fn's own layout** (`propagated`): `?` and
+a selective `catch` pass the subject on as it stands when both Results
+are laid alike — a box by its pointer, a value's Err tag and word — and
+wrap its error again when one is a value and the other a box.
+
+Pinned by features/results/tests/value_results (both repack directions,
+a selective catch, list/field/map/nullable/Cell seats; eval == native
+under AVRA_RC_GUARD, 0 of 46 boxes live at exit). A static list of
+value Results lays each as its tagged box; only fields and payloads
+split into tag and word (`fields_of`).
+
+**Numbers.** Server under ab -k: 13 -> 10 boxes a request (6 under a
+load that sends no `Connection` field); @std/net's `write`/`try_write`
+no longer box. `try_read` answers `Result<Read, NetError>` and `Read`
+is itself two words, so it stays boxed. `check packages/cli` -0.4%
+instructions; the compiler binary +3.4% (8.29 -> 8.57 MB).
+
+## §22 Where the campaign stands (Linux Sprite, one core, e3d55d2)
+
+| | start | §15 | now | C floor |
+|---|---|---|---|---|
+| tools/bench/request | 5.40 µs | 1.95 µs | 1.70 µs | — |
+| wrk pipelined16 c=200 | 146k req/s, 6.85 µs CPU | 274k, 3.65 µs | 330k, 3.05 µs | 1.14M, 0.88 µs |
+| wrk keep-alive c=50 | 44.3k | 56.3k | 56.6k (17.8 µs CPU) | 72.7k |
+
+Keep-alive is syscall-bound: a read and a write per request dominate
+the 17.8 µs, so the allocation levers show in the pipelined column.
+The next levers are the response written into the connection's own
+buffer (R14) and fewer syscalls per request (batched writes).
+
+## §23 As built — the profile, and three cuts from it
+
+**The first Linux profile was the instrument's.** callgrind under
+valgrind maps a PIE image and its heap below 4 GB, and `avra_hdr`
+refuses every address below 4 GB, so every box read as foreign:
+no count, no free, every constant copied — `malloc` at 30%. Real runs
+are unaffected (PIE at 0x56…, 0 boxes live at exit); the premise is a
+deadline all the same (avra-8sb5.34.24). The true profile came from a
+profiling-only copy with the floor at 0x10000: 12.5k instructions a
+request — memory work 31%, the framer's scans 23%, http logic 20%,
+the response's header checks 10%, building the response 11%.
+
+**Three cuts** (request bench, 5M requests, instructions retired):
+1. The live-byte count stays on every allocation (a settlement's
+   budget reads it); the report's category is computed only when
+   `AVRA_MEM_STATS` is set (`acc_box`, `acc_note` out of line):
+   64.57B -> 64.04B.
+2. The server judged every response twice (`as_sent`, then `wire`
+   again). It calls `wire` once; only a `HEAD` asks `as_sent` again to
+   measure the body it withholds. No unjudged writer is exported — a
+   response no peer could read stays refused at the one crossing.
+3. The reply is ONE gathered allocation (`List<Bytes>.bytes()`): the
+   status line read from `reply_lines`, a const of every three-digit
+   status laid out in the binary; header text shared, not copied.
+   Together: 64.0B -> 59.9B (-6.4%). A header's four pieces are
+   pushed, not concatenated as a literal: the literal is a box per
+   header, and measured 3.5% slower.

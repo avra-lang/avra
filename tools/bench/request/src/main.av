@@ -2,14 +2,14 @@
 //! brings, framed, the handler called, the response written as bytes —
 //! the user-space work a connection does per request, alone.
 use @std.http.frame.{framed, limits}
-use @std.http.http.{Request, Unrouted, text, wire, as_sent}
+use @std.http.http.{Request, Unrouted, text, wire}
 use @std.time.{now_ns}
 
 fn served(raw: Bytes) -> int {
     match framed(raw, 0, 0, limits()) {
         .Complete(head) -> {
             let q = Request { raw: raw, head: head, body: "".bytes(), peer: "127.0.0.1:1", params: Unrouted {} }
-            let r = as_sent(text(200, "hello"))
+            let r = text(200, "hello")
             let out = "".bytes().concat(wire(r, head.keep_alive, head.minor))
             let rest = raw.slice(head.end, raw.length)
             out.length + rest.length + q.body.length
