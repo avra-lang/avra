@@ -207,7 +207,7 @@ fn payload_binds(mut cx: LowerCx, name: string, args: List<PatId>, v: Reg, vty: 
     // LICENSED I3: the payload reads must be EMITTED in pattern order — a fold, not a map
     for k, a in args {
         if k < carried.length && looks_inside(cx, a) {
-            out = out.concat(pat_binds_of(cx, a, cx.payload_at(v, k, carried[k]), carried[k]))
+            out = out.concat(pat_binds_of(cx, a, cx.payload_at(v, k, carried), carried[k]))
         }
     }
     out
@@ -279,7 +279,7 @@ fn payloads_reg(mut cx: LowerCx, carried: List<TypeId>, args: List<PatId>, v: Re
     mut acc = cx.const_bool(true)
     for k, a in args {
         if k < carried.length {
-            acc = cx.region_as(acc, cx.type(bool)) { cx -> pat_accepts_of(cx, a, cx.payload_at(v, k, carried[k]), carried[k]) } else { cx -> cx.const_bool(false) }
+            acc = cx.region_as(acc, cx.type(bool)) { cx -> pat_accepts_of(cx, a, cx.payload_at(v, k, carried), carried[k]) } else { cx -> cx.const_bool(false) }
         }
     }
     acc
@@ -290,6 +290,5 @@ fn literal_reg(mut cx: LowerCx, e: ExprId, name: string, args: List<ExprId>) -> 
     let sig: EnumSig? = cx.variants_at(e)
     let which? = sig?.tag_of(name) else { return cx.lower_defect(e, "a variant literal without its enum survived typing") }
     let carried = [cx.reg_of(a) for a in args]
-    let size = cx.box_size(1 + carried.length)
-    cx.tagged_value(cx.shape_at(e), size, which, carried)
+    cx.tagged_value(cx.shape_at(e), which, carried)
 }

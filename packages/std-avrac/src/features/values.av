@@ -115,7 +115,9 @@ fn literal_variant(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, 
     let payloads? = spelled_all(store, decls, facts, args, heap) else { return null }
     // an enum whose variants carry nothing crosses as its tag, a word
     if decls.types.is_flat(facts.type_at(e)) { return MetaVal.Int(tag) }
-    heap.node([MetaVal.Int(tag)].concat(payloads))
+    // a value-record payload crosses as its slots, as the box holds it
+    let carried = sig.payloads[tag]
+    heap.node([MetaVal.Int(tag)].concat(flatten([inline_slots(carried[j], x, decls.types, heap) for j, x in payloads])))
 }
 
 /// A hole-less quote as the crossing tree — a `Template` naming this
@@ -343,15 +345,17 @@ impl LowerCx {
     }
 
     /// THE TAGGED VALUE: an enum's variant is a slot array holding its
-    /// TAG at slot 0 and its payloads, in order, at slots 1...
-    mut fn tagged_value(sh: Type, size: Reg, tag: int, payloads: List<Reg>) -> Reg {
+    /// TAG at slot 0 and its payloads, in order, at slots 1... — a
+    /// value-record payload laid inline, its fields as slots.
+    mut fn tagged_value(sh: Type, tag: int, payloads: List<Reg>) -> Reg {
         // an enum whose variants carry nothing IS its tag
         let ty = self.view.types.intern(sh)
         if self.view.types.is_flat(ty) { return self.pack(ty, [self.const_int(tag)]) }
-        let dst = self.array_sized(sh, size)
+        let words = flatten([self.leaves(p) for p in payloads])
         let slot = self.const_int(tag)
+        let dst = self.array_sized(sh, self.box_size(1 + words.length))
         self.push_slot(dst, slot)
-        for p in payloads { self.push_slot(dst, p) }
+        for w in words { self.push_slot(dst, w) }
         dst
     }
 
@@ -365,12 +369,15 @@ impl LowerCx {
     /// The PAYLOAD a tagged value carries, as the type it was written
     /// with. Slot 1 — the other half of `tagged_value`'s shape.
     mut fn payload_of(v: Reg, ty: TypeId) -> Reg {
-        self.payload_at(v, 0, ty)
+        self.payload_at(v, 0, [ty])
     }
 
-    /// The Kth payload a tagged value carries — slot K + 1.
-    mut fn payload_at(v: Reg, k: int, ty: TypeId) -> Reg {
-        self.slot_read(v, k + 1, ty)
+    /// The Kth of a variant's payloads (`carried`) — past the tag and
+    /// the widths of the payloads before it.
+    mut fn payload_at(v: Reg, k: int, carried: List<TypeId>) -> Reg {
+        let at = 1 + self.view.types.slot_offset(carried, k)
+        if self.view.types.travels_wide(carried[k]) { return self.unboxed_at(v, at, carried[k]) }
+        self.slot_read(v, at, carried[k])
     }
 
     /// Whether the value an expression names IS its one field.
@@ -443,14 +450,12 @@ impl LowerCx {
     // pointer and repacks nothing. (ROADMAP: the error spine.)
     /// A success, wrapped — the auto-Ok lift's mint.
     mut fn okayed(into: TypeId, r: Reg) -> Reg {
-        let size = self.box_size(2)
-        self.tagged_value(self.view.types.shape_of(into), size, 0, [r])
+        self.tagged_value(self.view.types.shape_of(into), 0, [r])
     }
 
     /// A failure, wrapped — what `fail` exits with.
     mut fn failed(into: TypeId, r: Reg) -> Reg {
-        let size = self.box_size(2)
-        self.tagged_value(self.view.types.shape_of(into), size, 1, [r])
+        self.tagged_value(self.view.types.shape_of(into), 1, [r])
     }
 
     /// Is the result an ANSWER — its tag read against Ok's, as an i1.

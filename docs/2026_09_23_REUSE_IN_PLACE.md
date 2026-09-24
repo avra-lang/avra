@@ -476,3 +476,23 @@ native == the pre-R4b answers under AVRA_RC_GUARD=1.
 Numbers: request boxes 11 -> 10 (the head's spans); Mac request bench
 1.28 -> 1.09 µs (three pairs); `check packages/cli` instructions at
 parity (150.8B vs 150.5B). Enum payloads are R4b's second half.
+
+**R4b's second half — payloads.** A value-record payload is laid inline
+after the tag the same way: `tagged_value` lays the payloads' `leaves`
+and sizes its own box (the six callers no longer precompute a size),
+and `payload_at` takes the variant's carried types and reads past the
+tag and the widths before it. A literal variant crosses as its slots,
+the static layout expands a wide payload's type — the record rule, one
+more place. An `.Err` box stays valid for every `Result<_, E>`: its
+layout depends on E alone. Attacks: features/enums/tests/
+inline_payloads (a wide payload alone, between others, two of them,
+`Result<Span, E>` with a value-record error through `?`, a const and a
+const list, inside a record and a list) — eval == native == pre-R4b.
+
+**The miss the suite caught (412167f):** the fn-field call read its
+field with a raw slot index — the one record read that bypassed
+`field_read` — so `Server`'s `self.make()` read the wrong slot once its
+listener and limits were laid inline, and the multi-core server
+segfaulted. A layout change is only as sound as the claim that every
+read goes through the one verb; the grep for raw slot reads is the
+check (`slot_read(` over a record subject).
