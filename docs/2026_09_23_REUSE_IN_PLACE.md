@@ -666,3 +666,20 @@ the response's header checks 10%, building the response 11%.
    Together: 64.0B -> 59.9B (-6.4%). A header's four pieces are
    pushed, not concatenated as a literal: the literal is a box per
    header, and measured 3.5% slower.
+
+## §24 Keep-alive: the gap is our CPU, not the kernel
+
+Counted with an LD_PRELOAD shim over libc's wrappers (the Sprite
+refuses ptrace and perf), one core, wrk -c50, 5 s:
+
+| per request | Avra | C floor |
+|---|---|---|
+| read | 1.00 | 1.00 |
+| write | 1.00 | 1.00 |
+| epoll_wait | 0.03 | 0.02 |
+| clock_gettime | 4.03 | 0 |
+
+The same syscalls as C. The four clock reads are the idle and write
+deadlines' (`within`), 27 ns each on this TSC clock — ~0.1 µs of the
+~2.9 µs gap (63k vs 77k req/s). The rest is the request's own work,
+so the pipelined profile's levers (§23) move keep-alive too.
