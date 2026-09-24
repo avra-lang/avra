@@ -8,7 +8,7 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
-use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static}
+use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot}
 use compiler.{Analysis, any_root}
@@ -186,7 +186,7 @@ export fn lower_unit(a: Analysis, externs: List<string>, w: Wanted, settle: fn(F
     let first = when {
         w.root != null -> lower_root(a, w.root!, w.name, w.seats, externs, settle)
         w.decl == null -> lower_main(a, w.name, externs, settle)
-        is_rules_table(a, w.decl!) -> lower_rules_table(a, a.view.decls.decl(w.decl!), w.name, externs, settle)
+        is_collect_decl(a, w.decl!) -> lower_collect(a, a.view.decls.decl(w.decl!), w.name, externs, settle)
         _ -> lower_fn(a, a.view.decls.decl(w.decl!), w.name, w.sub, w.seats, externs, settle)
     }
     mut bodies: List<Body> = [first.body]
@@ -506,27 +506,28 @@ fn unboxing_body(a: Analysis, w: Wrap, recv: TypeId, externs: List<string>, sett
     Body { name: w.name, params: w.seats, ret: w.ret, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: true }
 }
 
-/// Whether `d` is the one declaration `compiler/rules_table.av`
-/// names: its body is SYNTHESISED (`lower_rules_table`), never
-/// lowered from its own (trivial) source.
-fn is_rules_table(a: Analysis, d: DeclId) -> bool {
+/// Whether `d` declares a `collect` — its body is SYNTHESISED
+/// (`lower_collect`), never lowered from its own (empty) source. The
+/// real DeclKind, never a file-path guess: `features/collects`.
+fn is_collect_decl(a: Analysis, d: DeclId) -> bool {
     let x = a.view.decls.decl(d)
-    x.name == "rules_table" && a.view.decls.file(x.file).path.ends_with("compiler/rules_table.av")
+    a.view.decls.store_of(x.file).collect_parts(x.stmt) != null
 }
 
-/// `rules_table()`'s body: one `RuleEntry` per `DeclKind.Rule` this
-/// compiler declares — SYNTHESISED, no AST, `wrapped_body`'s shape,
-/// keyed on the one declaration above. `Workspace.analyze_all`
-/// forces every rule file admitted before any body lowers, so
-/// `a.view.decls` — shared across every file's `Analysis` — already
-/// carries every one of them here.
-fn lower_rules_table(a: Analysis, x: Decl, fname: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
-    let sig: FnSig? = a.view.decls.sig(x.id)?.fn_sig()
-    let rt: TypeId = sig?.ret ?? a.view.decls.types.intern(Type.Error)
+/// A collect's body: every declaration of `p.kind`, in `p.scope`,
+/// projected by `p.proj_names`/`p.proj_paths` and ordered by
+/// `p.by_keys` — SYNTHESISED, no AST, `wrapped_body`'s shape, keyed
+/// on the one declaration `is_collect_decl` names. `Workspace.
+/// analyze_all` forces every `rule` file admitted before any body
+/// lowers, so `a.view.decls` — shared across every file's `Analysis`
+/// — already carries every member here.
+fn lower_collect(a: Analysis, x: Decl, fname: string, externs: List<string>, settle: fn(FileId, SettleRoot, List<SeatValue>) -> Result<Settled, Unsettled>) -> LoweredBody {
+    let p: CollectParts = a.view.decls.store_of(x.file).collect_parts(x.stmt)!
+    let rt: TypeId = a.view.decls.type_of_const(x.file, x.stmt) ?? a.view.decls.types.intern(Type.Error)
     mut lo = new_lower_cx(a, rt, null, [], [], new_jobs(externs, settle))
     lo.out.seeded()
     lo.seats_enter()
-    let r = rules_table_reg(lo, a, rt)
+    let r = collect_table_reg(lo, a, rt, p)
     lo.seats_exit(r)
     lo.out.give(Ins.RetVal(r))
     LoweredBody {
@@ -536,49 +537,83 @@ fn lower_rules_table(a: Analysis, x: Decl, fname: string, externs: List<string>,
     }
 }
 
-/// The list itself: every rule declaration, in a FIXED order — its
-/// own identity (`module.name`) sorted, never the host's directory
-/// listing order, which a build must not depend on — each packed
-/// into `RuleEntry`'s own slots.
-fn rules_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId) -> Reg {
+/// The list itself: every member, in a FIXED order — `p.by_keys`
+/// sorted, never the host's directory listing order, which a build
+/// must not depend on — each packed into the projected type's slots.
+fn collect_table_reg(mut lo: LowerCx, a: Analysis, rt: TypeId, p: CollectParts) -> Reg {
     let entry_ty: TypeId = lo.view.types.element(rt) ?? rt
-    let regs = [rule_entry_reg(lo, a, entry_ty, d) for d in ordered_rule_decls(a)]
+    let regs = [collect_entry_reg(lo, a, entry_ty, p, d) for d in ordered_collect_members(a, p)]
     let size = lo.box_size(regs.length)
     lo.grown_box(lo.view.types.shape_of(rt), size, regs)
 }
 
-fn ordered_rule_decls(a: Analysis) -> List<Decl> {
-    let found = a.view.decls.rule_decls()
-    let keys = sorted_texts([rule_sort_key(a, d) for d in found])
-    [found.find(rule_sort_key(a, it) == k)! for k in keys]
+fn ordered_collect_members(a: Analysis, p: CollectParts) -> List<Decl> {
+    let found = collect_members(a, p.kind)
+    let keys = sorted_texts([collect_sort_key(a, p, d) for d in found])
+    [found.find(collect_sort_key(a, p, it) == k)! for k in keys]
 }
 
-fn rule_sort_key(a: Analysis, d: Decl) -> string { "${a.view.decls.short_module_of(d.id)}.${d.name}" }
+/// The kind's own gathering door — one arm per kind `check_collect`
+/// admits (`known_kinds`, features/collects/check.av). `rule` reads
+/// `Decls.rule_decls()`, force-admitted by `Workspace.analyze_all`
+/// before any body lowers; the next kind adds its own door here.
+fn collect_members(a: Analysis, kind: string) -> List<Decl> {
+    if kind == "rule" { return a.view.decls.rule_decls() }
+    []
+}
 
-/// One `RuleEntry`: its fields read by NAME off `RuleEntry`'s own
-/// signature, so their declared order never has to match the order
-/// these mint in.
-fn rule_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, d: Decl) -> Reg {
+fn collect_sort_key(a: Analysis, p: CollectParts, d: Decl) -> string {
+    joined([collect_field_text(a, p.kind, d, k) for k in p.by_keys], ".")
+}
+
+/// One entry: its fields read by NAME off the projected type's own
+/// signature, filled from `p.proj_names`/`p.proj_paths` — so their
+/// declared order never has to match the order these mint in.
+fn collect_entry_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, p: CollectParts, d: Decl) -> Reg {
     let sig? = lo.fields_of(entry_ty) else { return lo.mint_ty(entry_ty) }
-    let store = a.view.decls.store_of(d.file)
-    let parts? = store.rule_parts(d.stmt) else {
-        lo.defect("`${d.name}`'s declaration carries no rule body")
-        return lo.mint_ty(entry_ty)
-    }
-    let run_ty: TypeId = a.view.decls.field_type_named(entry_ty, "run") ?? lo.view.types.intern(Type.Error)
     mut byname: Map<string, Reg> = {}
-    byname.set("name", lo.const_str(d.name))
-    byname.set("module", lo.const_str(a.view.decls.short_module_of(d.id)))
-    byname.set("run", rule_run_reg(lo, d.id, run_ty))
-    byname.set("root", lo.const_int(root_kind_of(store, parts.arms) ?? any_root))
-    byname.set("doc", lo.const_str(rule_doc(a.view.decls, d.id)))
+    for j, name in p.proj_names {
+        byname.set(name, collect_field_reg(lo, a, entry_ty, name, p.proj_paths[j], p.kind, d))
+    }
     lo.packed_struct(entry_ty, [byname.get(n)! for n in sig.names])
 }
 
+/// One field's register: the declaration ITSELF (a fn value) for a
+/// bare `it`, a kind's own typed field next, else its GENERIC text
+/// projection, const.
+fn collect_field_reg(mut lo: LowerCx, a: Analysis, entry_ty: TypeId, name: string, path: string, kind: string, d: Decl) -> Reg {
+    if path == "" {
+        let fnty: TypeId = a.view.decls.field_type_named(entry_ty, name) ?? lo.view.types.intern(Type.Error)
+        return collect_fn_reg(lo, d.id, fnty)
+    }
+    if kind == "rule" && path == "root_kind" { return lo.const_int(collect_root_kind(a, d)) }
+    lo.const_str(collect_field_text(a, kind, d, path))
+}
+
+/// A path's TEXT projection — the generic fields every kind answers:
+/// name, module, file, the `///` doc's first paragraph joined.
+fn collect_field_text(a: Analysis, kind: string, d: Decl, path: string) -> string {
+    if path == "name" { return d.name }
+    if path == "module" { return a.view.decls.short_module_of(d.id) }
+    if path == "file" { return a.view.decls.file(d.file).path }
+    if path == "doc" { return joined(doc_first_paragraph(a.view.decls.doc_of(d.id) ?? []), " ") }
+    // a kind-specific path used as a SORT KEY: its own text, whatever its real type
+    if kind == "rule" && path == "root_kind" { return "${collect_root_kind(a, d)}" }
+    ""
+}
+
+/// `rule`'s own field: the ROOT-KIND INDEX (`core.root_kind_of`) its
+/// first arm's pattern folds to, `any_root` when it cannot narrow.
+fn collect_root_kind(a: Analysis, d: Decl) -> int {
+    let store = a.view.decls.store_of(d.file)
+    let parts? = store.rule_parts(d.stmt) else { return any_root }
+    root_kind_of(store, parts.arms) ?? any_root
+}
+
 /// A NAMED fn as a value, at the reference's own site — `fn_value_reg`'s
-/// twin (compiler/lower/state.av) with no `ExprId`: a rule fn is never
-/// CALLED by name here, only ever referenced, as `RuleEntry.run`.
-fn rule_run_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
+/// twin (compiler/lower/state.av) with no `ExprId`: a member is never
+/// CALLED by name here, only ever referenced, as a bare `it` field.
+fn collect_fn_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
     let symbol = lo.wanted(d)
     let wname = "${symbol}\$w"
     if lo.unseen(wname) {
@@ -587,13 +622,6 @@ fn rule_run_reg(mut lo: LowerCx, d: DeclId, fnty: TypeId) -> Reg {
     }
     let size = lo.box_size(1)
     lo.fn_box(lo.view.types.shape_of(fnty), size, wname, [])
-}
-
-/// The declaration's own doc comment, its first paragraph joined —
-/// what the hand-kept table's rows always carried by hand, read now
-/// off the one door every declaration's `///` answers through.
-fn rule_doc(decls: Decls, d: DeclId) -> string {
-    joined(doc_first_paragraph(decls.doc_of(d) ?? []), " ")
 }
 
 fn doc_first_paragraph(lines: List<string>) -> List<string> {
