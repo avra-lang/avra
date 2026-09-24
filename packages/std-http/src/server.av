@@ -34,10 +34,11 @@
 //! none of it has arrived; a HEAD carries the body's length and none of
 //! its bytes; a connection silent past the deadline its state names is
 //! dropped.
-use @std.net.{Listener, Conn, NetError}
+use @std.net.{Listener, Conn, NetError, listen}
 use @std.time.{Duration, ms, secs, within}
 use frame.{Head, Chunker, Limits, framed, chunker, fed, status_of, limits}
 use http.{Request, Unrouted, Response, wire, status, read_size, as_sent}
+use route.{Route, compiled, dispatch}
 
 extern fn avra_cores_online() -> int
 extern fn avra_cores_group(n: int) -> int
@@ -99,6 +100,36 @@ export type Server<A> = {
 /// `served(l, () -> App { … }, limits(), timing()) { mut app, q -> … }`.
 export fn served<A>(l: Listener, isolated make: fn() -> A, limits: Limits, timing: Timing, handle: fn(mut A, Request<Unrouted>) -> Response) -> Server<A> {
     Server { listener: l, make: make, handle: handle, limits: limits, timing: timing, live: Cell.new(0), stopping: Cell.new(false), group: Cell.new(0), core: Cell.new(-1) }
+}
+
+// ── A server as a declaration ───────────────────────────────────
+
+/// `server app { port: 8080  get "/" { … } }` — routes served at an
+/// address: the settings by name, and each route line collected in
+/// the order written, which is the order that answers first.
+export component server {
+    host: string = "127.0.0.1"
+    port: int = 8080
+    routes: List<Route> = []
+}
+
+/// What a server of routes keeps between requests: nothing.
+export type Stateless = {}
+
+impl server {
+    /// This server bound and ready: its routes compiled once into the
+    /// table every connection dispatches through.
+    fn listening() -> Result<Server<Stateless>, NetError> {
+        let l = listen(self.host, self.port)?
+        let routed = compiled(self.routes)
+        .Ok(served(l, () -> Stateless {}, limits(), timing()) { _none, q -> dispatch(routed, q) })
+    }
+
+    /// Listens and serves on every core until stopped; answers how many
+    /// connections it took.
+    fn run() -> Result<int, NetError> {
+        (self.listening()?).run()
+    }
 }
 
 /// Every core this process may run on: where `run` serves unless told.
