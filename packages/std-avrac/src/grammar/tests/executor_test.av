@@ -2,7 +2,7 @@
 // lexer's own token shapes. Builders render to S-expressions so every
 // outcome asserts as a plain string.
 use @std.avrac.core.{joined, Span}
-use @std.avrac.grammar.{Cause, Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover, rule_def, seq, seq_to, item, cap, rule_ref, lit, named, lex_grammar, Captured, RunOutcome, run_grammar, ready, parse_grammar}
+use @std.avrac.grammar.{Cause, Grammar, Rule, Alt, Seq, Item, Rep, Prim, Build, Expect, Recover, rule_def, seq, seq_to, item, cap, rule_ref, lit, named, lex_grammar, lex_source, Captured, RunOutcome, run_grammar, ready, parse_grammar}
 
 fn render(v: Captured<string>) -> string {
     match v {
@@ -24,6 +24,13 @@ fn sx_build(name: string, args: List<Captured<string>>, span: Span?) -> Result<C
 
 fn run_sx(g: Grammar, src: string) -> RunOutcome<string> {
     run_grammar<string>(ready(g), lex_grammar(src).tokens, sx_build)
+}
+
+/// `run_sx`'s twin over LANGUAGE line breaks: `lex_source`'s BREAK
+/// survives after every line, not only at a rule boundary — the
+/// shape a `{ … }` body actually sees.
+fn run_src(g: Grammar, src: string) -> RunOutcome<string> {
+    run_grammar<string>(ready(g), lex_source(src).tokens, sx_build)
 }
 
 /// Renders only the branch span, proving the engine attributes it.
@@ -246,6 +253,23 @@ spec "grammar/executor" {
             let g = g1([rule_def("bad", [seq([item(rule_ref("ghost"))])])])
             let o = run_sx(g, "a")
             o.result == null && o.diagnostics.length == 1
+        }
+    }
+    given "a brace opens no head, unlike ( and [ — a leading break is not dropped" {
+        // `(`/`[` auto-drop the break after them (the lexer's line
+        // law); `{` does not, so a rule's first REQUIRED item right
+        // after `{` still needs the token on the SAME line — the
+        // gap that broke both `closures`' trailing-arms sugar and
+        // components' attempted arms-body instance (2026-09-24),
+        // neither an engine defect: `nonbind_pattern` sat right
+        // after `{` with no `BREAK*` to skip a blank first line.
+        then "a required item right after { misses a blank first line" {
+            let g = parse_grammar("prog = s:stmt BREAK? EOF -> s\nstmt = \"{\" n:NAME \"->\" v:NAME ( BREAK | \",\" )* \"}\" -> arm(n, v)\n").built!
+            result_str(run_src(g, "{ x -> y }")) == "(arm x y)" && run_src(g, "{\nx -> y\n}").result == null
+        }
+        then "an explicit BREAK* before it tolerates the same blank line" {
+            let g = parse_grammar("prog = s:stmt BREAK? EOF -> s\nstmt = \"{\" BREAK* n:NAME \"->\" v:NAME ( BREAK | \",\" )* \"}\" -> arm(n, v)\n").built!
+            result_str(run_src(g, "{\nx -> y\n}")) == "(arm x y)"
         }
     }
     given "the memo's edges — one table of rules by cursors" {
