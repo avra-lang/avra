@@ -1448,6 +1448,19 @@ void avra_slot_set_owned(void* arr, int64_t i, void* v) {
     ((AvraArray*)arr)->marks[i] = MARK_OWNED;
 }
 
+// A value enum's word pushed: owned, and counted, when bit `tag` of
+// `counted` says the variant carries a pointer.
+void avra_array_push_tagged(void* arr, int64_t word, int64_t tag, int64_t counted) {
+    if (tag >= 0 && ((counted >> tag) & 1)) { avra_array_push_owned(arr, (void*)(uintptr_t)word); return; }
+    avra_array_push(arr, word);
+}
+
+// A value enum's word written into slot `i`, the same way.
+void avra_slot_set_tagged(void* arr, int64_t i, int64_t word, int64_t tag, int64_t counted) {
+    if (tag >= 0 && ((counted >> tag) & 1)) { avra_slot_set_owned(arr, i, (void*)(uintptr_t)word); return; }
+    avra_slot_set(arr, i, word);
+}
+
 // A MOVE into a slot: the caller hands over the reference it owns, so
 // the slot keeps it without a retain — the pack of a value that dies
 // there, which the caller then never releases.

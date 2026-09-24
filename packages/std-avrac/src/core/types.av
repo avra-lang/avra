@@ -308,9 +308,9 @@ impl TypeRegistry {
     }
 
     /// Whether a value is LAID INLINE in a box that holds it: a value
-    /// record's fields are the box's slots. A value enum is one slot,
-    /// its tagged box.
-    fn lays_inline(id: TypeId) -> bool { self.is_wide(self.machine_type(id)) }
+    /// record's fields are the box's slots, a value enum's tag and word
+    /// two of them.
+    fn lays_inline(id: TypeId) -> bool { self.is_wide(self.machine_type(id)) || self.valued_carrier(id) }
 
     /// A VALUE ENUM: every variant carries at most one word, so a value
     /// is its tag and that word in registers, boxed only in a slot.
@@ -337,6 +337,7 @@ impl TypeRegistry {
     /// value record's fields laid inline, as C lays a struct member.
     fn slot_width(id: TypeId) -> int {
         if !self.lays_inline(id) { return 1 }
+        if self.valued_carrier(id) { return 2 }
         self.flat_fields(self.machine_type(id)).length
     }
 

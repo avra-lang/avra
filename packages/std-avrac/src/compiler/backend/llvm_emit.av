@@ -279,7 +279,7 @@ impl Emit {
         match sig.host {
             .CellRelease -> {
                 let held = avra_llvm_build_load(self.b, self.reg_type(slot), self.vals[slot.index], "held")
-                self.counted_by_tag("avra_rc_release_tagged", held, self.tys[slot.index])
+                self.counted_by_tag(tagged_release, held, self.tys[slot.index])
             },
             .CellForget -> nothing(),
             rest -> { return false },
@@ -463,12 +463,12 @@ impl Emit {
     }
 
     fn released(r: Reg) {
-        if self.types.valued_carrier(self.tys[r.index]) { return self.tagged_count("avra_rc_release_tagged", r) }
+        if self.types.valued_carrier(self.tys[r.index]) { return self.tagged_count(tagged_release, r) }
         let _ = self.call("avra_rc_release", [self.counted(self.vals[r.index], self.tys[r.index])])
     }
 
     fn retained(r: Reg) {
-        if self.types.valued_carrier(self.tys[r.index]) { return self.tagged_count("avra_rc_retain_tagged", r) }
+        if self.types.valued_carrier(self.tys[r.index]) { return self.tagged_count(tagged_retain, r) }
         let _ = self.call("avra_rc_retain", [self.counted(self.vals[r.index], self.tys[r.index])])
     }
 
@@ -605,3 +605,7 @@ impl Emit {
         self.define(phi)
     }
 }
+
+/// The rows that count a value enum's word by its tag.
+const tagged_retain: string = "avra_rc_retain_tagged"
+const tagged_release: string = "avra_rc_release_tagged"

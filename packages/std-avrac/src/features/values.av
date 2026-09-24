@@ -102,8 +102,18 @@ fn literal_record(store: NodeStore, decls: Decls, facts: TypeFacts, e: ExprId, f
 /// A field's crossing value as the slots a box lays it in: a value
 /// record's fields, or the value itself.
 fn inline_slots(ty: TypeId, v: MetaVal, types: TypeRegistry, heap: MetaHeap) -> List<MetaVal> {
+    if types.valued_carrier(ty) { return valued_slots(v, heap) }
     if types.lays_inline(ty) { return heap.slots(v) }
     [v]
+}
+
+/// A value enum's two slots: its tag and its word — the absent tag for
+/// a nullable's absence, a zero word for a variant carrying nothing.
+fn valued_slots(v: MetaVal, heap: MetaHeap) -> List<MetaVal> {
+    if v is .Absent || v is .Gone { return [MetaVal.Int(absent_tag), MetaVal.Int(0)] }
+    let s = heap.slots(v)
+    if s.length >= 2 { return s.slice(0, 2) }
+    s.concat([MetaVal.Int(0)])
 }
 
 /// A variant literal: the tag first, the payloads after — the tagged
@@ -277,6 +287,27 @@ impl LowerCx {
         self.array_push_maybe(box, self.presence_of(v, ty), self.extracted(v, 1, self.mint_ty(self.carried_type(ty))))
     }
 
+    /// A LEAF laid into a record's or a payload's box: a value enum as
+    /// its tag and its word, the word owned when its variant carries a
+    /// pointer; anything else one slot.
+    mut fn push_leaf(box: Reg, v: Reg) {
+        let ty = self.out.type_of_reg(v)
+        if !self.valued(ty) { return self.push_slot(box, v) }
+        let tag = self.extracted(v, 0, self.mint_shape(Type.Int))
+        self.array_push(box, tag)
+        self.array_push_tagged(box, self.extracted(v, 1, self.mint_shape(Type.Int)), tag, self.const_int(self.view.types.counted_mask(ty)))
+    }
+
+    /// A leaf written over a record's slots from `at` — `push_leaf`'s
+    /// write.
+    mut fn leaf_write(box: Reg, at: int, v: Reg) {
+        let ty = self.out.type_of_reg(v)
+        if !self.valued(ty) { return self.slot_write(box, self.const_int(at), v) }
+        let tag = self.extracted(v, 0, self.mint_shape(Type.Int))
+        self.slot_set(box, self.const_int(at), tag)
+        self.slot_set_tagged(box, self.const_int(at + 1), self.extracted(v, 1, self.mint_shape(Type.Int)), tag, self.const_int(self.view.types.counted_mask(ty)))
+    }
+
     /// `v` written into the slot at `at` — a nullable scalar with its
     /// presence, like `push_slot`.
     mut fn slot_write(box: Reg, at: Reg, v: Reg) {
@@ -388,9 +419,9 @@ impl LowerCx {
         // a value enum is its tag and its one word, in registers
         if self.view.types.is_valued(ty) { return self.pack(ty, [self.const_int(tag), payloads.first() ?? self.const_int(0)]) }
         let words = flatten([self.leaves(p) for p in payloads])
-        let dst = self.array_sized(sh, self.box_size(1 + words.length))
+        let dst = self.array_sized(sh, self.box_size(1 + self.width_of(words)))
         self.push_slot(dst, self.const_int(tag))
-        for w in words { self.push_slot(dst, w) }
+        for w in words { self.push_leaf(dst, w) }
         dst
     }
 
@@ -447,7 +478,12 @@ impl LowerCx {
     /// record's fields each into its own slot.
     mut fn field_written(box: Reg, record: TypeId, n: int, v: Reg) {
         let base = self.field_offset(record, n)
-        for j, r in self.leaves(v) { self.slot_write(box, self.const_int(base + j), r) }
+        mut at = base
+        // LICENSED I4: a running offset, each leaf past the width before it
+        for r in self.leaves(v) {
+            self.leaf_write(box, at, r)
+            at = at + self.view.types.slot_width(self.out.type_of_reg(r))
+        }
     }
 
     /// Where a boxed record's Nth field starts.
@@ -580,9 +616,18 @@ impl LowerCx {
         if self.view.types.is_flat(ty) { return self.pack(ty, parts) }
         // a value-record field is laid INLINE, its fields as slots
         let words = flatten([self.leaves(r) for r in parts])
-        let dst = self.array_sized(self.view.types.shape_of(ty), self.box_size(words.length))
-        for r in words { self.push_slot(dst, r) }
+        let dst = self.array_sized(self.view.types.shape_of(ty), self.box_size(self.width_of(words)))
+        for r in words { self.push_leaf(dst, r) }
         dst
+    }
+
+    /// The slots these leaves take in a box: a value enum's two, one
+    /// for every other.
+    fn width_of(words: List<Reg>) -> int {
+        mut n = 0
+        // LICENSED I4: a sum, not a scan
+        for w in words { n = n + self.view.types.slot_width(self.out.type_of_reg(w)) }
+        n
     }
 
     /// One element of a packed value, into a caller-typed register.
