@@ -3,7 +3,7 @@
 use core.{StmtId, Span, Param, Mark, TypeRegistry, NodeStore, ModulePath, FileId, ExprId, fp, fp_list, fp_str, joined, flatten, sorted_texts, TypeId, Type, same_file, TypeRef, spelled}
 use features.{Unsettled, Settlement, MetaVal, MetaHeap, nothing, FileView, spelled_type, BlockGrammar}
 use features.{no_kind}
-use @std.meta.{Node, Field as MetaField, Mark as MetaMark, Kind}
+use @std.meta.{Node, Field as MetaField, Mark as MetaMark, Kind, Annotation as MetaAnnotation}
 use core.{StmtId, Arm, HoleKind, Unplaced, is_name_cont}
 use grammar.{parse_grammar, ready, lex_source, Token, TokenKind}
 use diagnostics.{defect_at}
@@ -114,13 +114,22 @@ fn kind_at(kinds: List<Kind>, j: int) -> Kind {
 /// places and disagree, which is the property the crossing suite
 /// asserts positionally.
 fn crossed_field(v: FileView, p: Param, kind: Kind) -> MetaField {
-    MetaField { name: p.name.of, ty: written_spelling(p.ty), at: placed(v, p.span), kind: kind, marks: crossed_marks(v, p.marks) }
+    MetaField { name: p.name.of, ty: written_spelling(p.ty), at: placed(v, p.span), kind: kind, marks: crossed_marks(v, p.marks), doc: null, annotations: crossed_annotations(v, p.marks) }
 }
 
 /// A member's marks as the derive reads them — the word, its words,
 /// and where it stands.
 fn crossed_marks(v: FileView, ms: List<Mark>) -> List<MetaMark> {
     [MetaMark { name: m.name, args: m.args, at: placed(v, m.span) } for m in ms]
+}
+
+/// A member's marks again, as its OWN `annotations` — `crossed_marks`'s
+/// twin: the same `@word`s, read through the general door every
+/// member shares with a declaration rather than the claimed-by-a-derive
+/// one. A field or a variant has no `///` of its own yet — no grammar
+/// attaches one — so its `doc` reads null until one does.
+fn crossed_annotations(v: FileView, ms: List<Mark>) -> List<MetaAnnotation> {
+    [MetaAnnotation { name: m.name, args: m.args, at: placed(v, m.span) } for m in ms]
 }
 
 /// A source span as the place a meta value names.
