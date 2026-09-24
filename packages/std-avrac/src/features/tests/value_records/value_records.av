@@ -114,10 +114,34 @@ fn onced() -> string {
     "${origin().hi}/${origin().lo}"
 }
 
+type Held = { name: string, at: Span }
+
+fn nudged(mut h: Held) { h.at.hi = 100 }
+
+/// A field of a value record written: the record is packed again with
+/// the field replaced and written back where it lives — a cell, a
+/// record's slot, a list element, a `mut` seat — and a copy taken
+/// before the write keeps the old value.
+fn field_written() -> string {
+    mut s = made(1)
+    s.lo = 5
+    s.hi = s.lo + 1
+    mut h = Held { name: "h", at: made(3) }
+    let before = h
+    h.at.lo = 9
+    mut xs = [made(1), made(2)]
+    let ys = xs
+    xs[1].hi = 20
+    mut acc = Span { lo: 0, hi: 0 }
+    for i in 0..4 { acc.hi = acc.hi + i }
+    nudged(h)
+    "${s.lo},${s.hi},${h.at.lo},${h.at.hi},${before.at.lo},${xs[1].hi},${ys[1].hi},${acc.hi}"
+}
+
 fn popped() -> string {
     mut xs = [made(1), made(2)]
     let last = xs.pop()
     "${last.hi}/${xs.length}"
 }
 
-[celled(), seated(), named(), generic_box(), nullable_list(), captured_then_changed(), resulted(), dynamic(), nested_lists(), static_list(), mapped(), onced(), popped()].join(" ")
+[celled(), seated(), named(), generic_box(), nullable_list(), captured_then_changed(), resulted(), dynamic(), nested_lists(), static_list(), mapped(), onced(), popped(), field_written()].join(" ")

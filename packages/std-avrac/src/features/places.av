@@ -16,6 +16,38 @@ export enum Place {
 }
 
 impl LowerCx {
+    /// `v` written where `target` names. A FIELD OF A VALUE RECORD has
+    /// no slot of its own — the record is registers — so the record is
+    /// read, packed again with that field replaced, and written whole to
+    /// wherever IT lives: the same verb, one step up the path.
+    mut fn written_to(target: ExprId, v: Reg) {
+        let step? = self.view.store.place_step(target) else { return self.defect(non_place()) }
+        match step {
+            .Field(subject, name) if self.view.types.is_wide(self.type_at(subject)) -> self.repacked(subject, name.of, v),
+            rest -> self.opened_write(target, v),
+        }
+    }
+
+    /// The value record at `subject` with field `name` now `v`, written back.
+    mut fn repacked(subject: ExprId, name: string, v: Reg) {
+        let sig? = self.fields_at(subject) else { return self.defect("a fieldless value record survived typing") }
+        let ty = self.type_at(subject)
+        let old = self.reg_of(subject)
+        let fresh = self.pack(ty, [if n == name { v } else { self.field_read(old, ty, slot, sig.types[slot]) } for slot, n in sig.names])
+        self.written_to(subject, fresh)
+    }
+
+    /// The write lands where the opened place says: a cell takes a
+    /// store (the mut-cell protocol owns the counts), a slot takes the
+    /// runtime's set (the memory pass marks a managed value owned).
+    mut fn opened_write(target: ExprId, v: Reg) {
+        let place? = self.opened_place(target) else { return self.defect(non_place()) }
+        match place {
+            .Cell(slot) -> self.emit(Ins.Store(slot, v)),
+            .Slot(box, at) -> self.slot_write(box, at, v),
+        }
+    }
+
     /// The place an expression names, opened for one write — null for
     /// a value (resolve refuses those before lowering).
     mut fn opened_place(e: ExprId) -> Place? {
@@ -107,3 +139,7 @@ impl LowerCx {
         idx
     }
 }
+
+// ── The voices ──
+
+fn non_place() -> string { "an assignment to a non-place survived a clean analysis" }
