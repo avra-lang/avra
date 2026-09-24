@@ -10,7 +10,47 @@ use compiler.backend.{emit_object, objects_made, Owned, emit_closed, home_of, no
 use compiler.lower.{Body, Lowered, program_symbol}
 use compiler.store.{Store, Stored, node_key, store_at}
 use compiler.host.{Host, no_target}
+use @std.errors.{Error, ErrorInfo, info}
 extern fn avra_spawn_status(prog: string, args: List<string>) -> int
+
+/// A BUILD'S OWN DEFECT: what the compiler itself could not do to turn an
+/// otherwise-analysed program into a binary. `Diagnosed` is the one variant
+/// with no shape of its own — a report already rendered elsewhere (the
+/// program's own diagnostics, or a workspace refusal with no line to point
+/// at) — carried through verbatim, since nothing here can improve on words
+/// already chosen.
+export enum BuildError {
+    /// The entry file has no statements to run.
+    Empty
+    /// A module `avra_llvm_*` wrote could not be written, or a worker never
+    /// wrote the object it was handed — LLVM's own words, passed through.
+    EmitFailed(message: string)
+    /// The entry's module was written but its bytes could not be read back.
+    ModuleUnreadable(path: string)
+    /// `clang` exited non-zero linking the objects into a binary.
+    LinkFailed(code: int)
+    /// A held object the store named is no longer where the store put it.
+    ObjectGone(path: string)
+    /// A body calls a symbol nothing in the program declares.
+    NotClosed(missing: string)
+    /// The program's own analysis, or a workspace-level refusal, already
+    /// rendered this.
+    Diagnosed(report: string)
+}
+
+impl Error for BuildError {
+    fn describe() -> ErrorInfo {
+        match self {
+            .Empty -> info("build.empty", "the program is empty"),
+            .EmitFailed(m) -> info("build.emit_failed", m),
+            .ModuleUnreadable(p) -> info("build.module_unreadable", "the entry's module could not be read back — ${p}"),
+            .LinkFailed(code) -> info("build.link_failed", clang_link_failed(code)),
+            .ObjectGone(p) -> info("build.object_gone", object_gone(p)),
+            .NotClosed(missing) -> info("build.not_closed", not_closed(missing)),
+            .Diagnosed(report) -> info("build.diagnosed", report),
+        }
+    }
+}
 
 /// A build's result: the words that linked it, the binary, the warnings to
 /// speak, whether the kept binary was reused, and where a fresh one's time went.
@@ -125,13 +165,16 @@ export type Keyed = { named: string, beside: List<string> }
 /// A program built: its kept binary when these exact inputs were built
 /// before, else derived, compiled and linked now. A refusal is never kept.
 // LICENSED I39: THE ENTRY POINT — the one standard signature.
-export fn build_program(ws: Workspace, entry: string, tools: Toolchain) -> Result<BuildOutcome, string> {
+export fn build_program(ws: Workspace, entry: string, tools: Toolchain) -> Result<BuildOutcome, BuildError> {
     let binary = binary_name(entry)
     let kept = ws.kept_binary(ws.program_key(entry, []), binary)
     if kept != null { return .Ok(kept!) }
-    mut d = ws.derived(entry, Want.Binary)?
-    let main? = d.program.entry_file() else { fail d.program.rendered([no_target(ws.root)]) }
-    if main.view.stmts.is_empty() { fail "the program is empty" }
+    mut d = match ws.derived(entry, Want.Binary) {
+        .Ok(v) -> v,
+        .Err(report) -> { fail BuildError.Diagnosed(report) },
+    }
+    let main? = d.program.entry_file() else { fail BuildError.Diagnosed(d.program.rendered([no_target(ws.root)])) }
+    if main.view.stmts.is_empty() { fail BuildError.Empty }
     d.linked(ProgramModule { main: (types: TypeRegistry) -> runner_entry(types, program_symbol(entry)) }, Keyed { named: entry, beside: [] }, binary, tools)
 }
 
@@ -258,24 +301,27 @@ impl Workspace {
     /// THE PROGRAM MODULE'S KEY BY ITS OWN BYTES — written as bitcode at `bc`, and
     /// what compiles them. A module that cannot be read back has no key: an empty
     /// read would key every program alike.
-    fn bytes_keyed(full: Lowered, bc: string, tools: Toolchain) -> Result<string, string> {
+    fn bytes_keyed(full: Lowered, bc: string, tools: Toolchain) -> Result<string, BuildError> {
         let broke = emit_closed(full, bc, Owned.Program)
-        if broke != null { fail broke! }
+        if broke != null { fail BuildError.EmitFailed(broke!) }
         match read_bytes(bc) {
             .Ok(bytes) -> .Ok(node_key(Stored.Obj, ["entry", digest_key(digest_bytes(new_digest(), bytes)), tools.opt, tools.runtime])),
-            .Err(_) -> .Err("avra: the entry's module could not be read back — ${bc}"),
+            .Err(_) -> .Err(BuildError.ModuleUnreadable(bc)),
         }
     }
 
     /// THE BUILD: every object the program links — the read files' and the program's
     /// module made or placed, the held ones standing in the store — linked in their
     /// SOURCES' order, and the binary kept under its key.
-    fn linked(d: Derived, m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<BuildOutcome, string> {
+    fn linked(d: Derived, m: ProgramModule, under: Keyed, binary: string, tools: Toolchain) -> Result<BuildOutcome, BuildError> {
         let main = m.main(d.lowered.types)
         let asked = program_asked_key(d, main, tools)
         // instantiations nobody lowered are owed, unless a build of these very asks kept them
         if !d.unlowered.is_empty() && !d.store.has(Stored.Obj, asked) {
-            mut whole = self.whole(d, [])?
+            mut whole = match self.whole(d, []) {
+                .Ok(w) -> w,
+                .Err(report) -> { fail BuildError.Diagnosed(report) },
+            }
             return whole.linked(m, under, binary, tools)
         }
         mut clock = self.marking()
@@ -289,7 +335,7 @@ impl Workspace {
         let held = self.held_objects(d.store)?
         clock.mark("place")
         let code = avra_spawn_status(tools.linker, link_objects([o.obj for o in by_source(read.concat(held))].concat([program.obj]), self, tools.runtime, binary))
-        if code != 0 { fail clang_link_failed(code) }
+        if code != 0 { fail BuildError.LinkFailed(code) }
         clock.mark("link")
         let key = self.kept_key(under)
         let _ = d.store.keep_file(Stored.Bin, key, binary, [key])
@@ -308,7 +354,7 @@ impl Workspace {
     /// here — written every build, compiled only when they moved, so a home's edit
     /// that moves no instantiation compiles nothing — and by what it is a function
     /// of when it was not.
-    fn program_object(d: Derived, full: Lowered, asked: string, binary: string, tools: Toolchain) -> Result<Made, string> {
+    fn program_object(d: Derived, full: Lowered, asked: string, binary: string, tools: Toolchain) -> Result<Made, BuildError> {
         let base = "${build_cache_root(self)}/${node_key(Stored.Obj, [digest_of(binary)])}"
         let key = if d.unlowered.is_empty() { self.bytes_keyed(full, "${base}.bc", tools)? } else { asked }
         Made { which: Owned.Program, key: key, obj: "${base}.o", source: "" }
@@ -318,22 +364,22 @@ impl Workspace {
     /// the rest are made ONE way — here, by the compiler that runs, a worker each —
     /// so a tree's objects are the same bytes however many a build had to make. The
     /// workers are waited for whatever broke: a module handed over is theirs.
-    fn objects_kept(d: Derived, full: Lowered, objects: List<Made>, tools: Toolchain) -> Result<int, string> {
+    fn objects_kept(d: Derived, full: Lowered, objects: List<Made>, tools: Toolchain) -> Result<int, BuildError> {
         let owed = [o for o in objects if !d.store.place(Stored.Obj, o.key, o.obj)]
         let gone = owed.find(it.which is .Program)
-        if gone != null && !d.unlowered.is_empty() { fail object_gone(gone!.obj) }
+        if gone != null && !d.unlowered.is_empty() { fail BuildError.ObjectGone(gone!.obj) }
         let broke = handed(full, owed, opt_level(tools.opt))
         let unwritten = objects_made()
-        if broke != null || unwritten != null { fail broke ?? unwritten! }
+        if broke != null || unwritten != null { fail BuildError.EmitFailed(broke ?? unwritten!) }
         for o in owed { let _ = d.store.keep_file(Stored.Obj, o.key, o.obj, []) }
         owed.length
     }
 
     /// Every held file's object, where the store keeps it: it links in place.
-    fn held_objects(store: Store) -> Result<List<Made>, string> {
+    fn held_objects(store: Store) -> Result<List<Made>, BuildError> {
         let held = [self.held_object(store, path) for path in held_paths(self)]
         let gone = held.find((o: Made) -> !store.has(Stored.Obj, o.key))
-        if gone != null { fail object_gone(gone!.source) }
+        if gone != null { fail BuildError.ObjectGone(gone!.source) }
         held
     }
 
@@ -362,9 +408,9 @@ fn undeclared(brought: List<Body>, stand: List<Body>) -> List<Body> {
 }
 
 /// The program lowered whole, or the symbol nothing declares.
-fn closed(full: Lowered) -> Result<Lowered, string> {
+fn closed(full: Lowered) -> Result<Lowered, BuildError> {
     let missing? = program_closed(full) else { return full }
-    fail not_closed(missing)
+    fail BuildError.NotClosed(missing)
 }
 
 /// Objects in their SOURCES' order: the link's order is never the hold's, so one
