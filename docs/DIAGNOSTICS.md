@@ -2182,4 +2182,3 @@ error[F2007]: an interpolation hole prints as a scalar or string, found `List<in
 ──╯
 help: interpolate an element or the `length` instead
 ```
-diagnostics: 171 code(s) registered, 79 witnessed and fired, 89 with no witness yet
