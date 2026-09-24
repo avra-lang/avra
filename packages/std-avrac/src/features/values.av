@@ -12,7 +12,7 @@
 //! knowing. A new value CATEGORY joins here, beside the readers
 //! that make its layout nobody else's business.
 use core.{Reg, Ins, BinOp, Type, TypeId, TypeRegistry, ExprId, Expr, NodeStore, filled, flatten, BodyParts, Slot, StaticBox}
-use features.{MetaVal, MetaHeap, TypeFacts, Decls, meta_of_template}
+use features.{MetaVal, MetaHeap, TypeFacts, Decls, meta_of_template, new_meta_heap}
 use @std.meta.{Node}
 
 // ── The source-spelled value ────────────────────────────────────
@@ -153,9 +153,28 @@ impl LowerCx {
     mut fn materialized(v: MetaVal, heap: MetaHeap, ty: TypeId, name: string) -> Reg {
         if self.pair_shaped(ty) { return self.meta_pair(v, heap, ty, name) }
         if self.view.types.travels_wide(ty) { return self.wide_crossed(v, heap, ty, name) }
-        mut build = StaticBuild { decls: self.view.decls }
+        mut build = self.static_build()
         let slot? = build.slot_of(v, heap, ty) else { return self.meta_defect(ty) }
         self.crossed_reg(slot, ty, name, build.boxes)
+    }
+
+    /// An empty static fold over this program's declarations.
+    fn static_build() -> StaticBuild { StaticBuild { decls: self.view.decls } }
+
+    /// A literal the source alone spells, as the binary's own data: an
+    /// address, no box made and no count owed. Null for a scalar, a
+    /// map, a type still open, or a part the run must compute.
+    mut fn spelled_static(e: ExprId) -> Reg? {
+        let ty = self.facts.type_at(e)
+        if !self.view.types.rides_pointer(ty) || self.view.types.shape_of(ty) is .Map || self.concrete(ty).index != ty.index { return null }
+        mut heap = new_meta_heap()
+        let v? = literal_meta(self.view.store, self.view.decls, self.facts, e, heap) else { return null }
+        mut build = self.static_build()
+        let slot? = build.slot_of(v, heap, ty) else { return null }
+        if !(slot is .Box) { return null }
+        let r = self.mint_ty(ty)
+        self.static_read(r, "lit\$${self.view.file.index}\$${e.index}", build.boxes)
+        r
     }
 
     /// A scalar nullable lives in registers as its flag beside its

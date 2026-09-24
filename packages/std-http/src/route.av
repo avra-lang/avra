@@ -58,7 +58,7 @@
 //! takes a `Request<R>` — the request, its route's record at `params`.
 use @std.meta.{Code, Format}
 use frame.{Method}
-use http.{Request, Unrouted, Response, Respond, Handler, status}
+use http.{Request, Unrouted, Response, Respond, Handler, status, separates, falls_under}
 
 /// HOW FAR A ROUTE REACHES, and what its pattern's braces mean. A
 /// DECLARED thing in every case: the door a route came through says
@@ -196,10 +196,10 @@ export fn prefixed(prefix: string, routes: List<Route>) -> List<Route> {
     [r with { pattern: prefix + r.pattern, serve: beneath(prefix.bytes(), r.serve) } for r in routes]
 }
 
-/// A route's reader past a prefix — absent for a target that does not
-/// begin with it.
+/// A route's reader past a prefix — absent for a target that is not
+/// beneath it, segment by segment.
 fn beneath(prefix: Bytes, serve: fn(Request<Unrouted>, Bytes) -> Response?) -> fn(Request<Unrouted>, Bytes) -> Response? {
-    (q: Request<Unrouted>, t: Bytes) -> if t.length >= prefix.length && t.slice(0, prefix.length) == prefix { serve(q, t.slice(prefix.length, t.length)) } else { null }
+    (q: Request<Unrouted>, t: Bytes) -> if falls_under(t, prefix) { serve(q, t.slice(prefix.length, t.length)) } else { null }
 }
 
 /// The handler's answer as the reply it becomes, or absence when the
@@ -210,18 +210,6 @@ fn responded<R, T: Respond>(found: R?, q: Request<Unrouted>, serve: fn(Request<R
 }
 
 // ── Segments ────────────────────────────────────────────────────
-
-/// Whether a segment ENDS at offset `i` — at a separator, or past
-/// the last octet. THIS IS THE ONE DEFINITION OF A SEGMENT: a
-/// pattern's shape and a target's descent both ask it, so the two can
-/// never disagree about where a segment is.
-///
-/// It asks about SEPARATORS, not pieces: `split` drops a trailing
-/// empty segment, so `/ideas/` would come up one short of
-/// `/ideas/{id}` and a route would refuse its own empty capture.
-fn separates(b: Bytes, i: int) -> bool { i == b.length || b.at(i) == slash_octet() }
-
-fn slash_octet() -> int { 47 }
 
 /// Where each segment of `b` ends — one entry per segment, always at
 /// least one, the last past the final octet.

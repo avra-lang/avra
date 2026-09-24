@@ -496,3 +496,36 @@ listener and limits were laid inline, and the multi-core server
 segfaulted. A layout change is only as sound as the claim that every
 read goes through the one verb; the grep for raw slot reads is the
 check (`slot_read(` over a record subject).
+
+## §17 As built — R5a', a constant literal is static data
+
+**Measured first.** Of the request's 10 remaining list/record boxes,
+ONE never escaped its fn (the bench's own `Request`); four were
+constant literals — `Header { … }`, the `[…]` holding it,
+`Unrouted {}`, `Body.None`. Stack boxes would have bought one.
+
+**D26. A literal the source alone spells is laid out once, as a
+const is.** `spelled_static` (features/values.av) runs at the lowering
+spine's one edge: a pointer-riding literal whose every part is spelled
+(`literal_meta` — the fold `const` seats already use) and whose type
+is closed becomes `StaticAddr` of an immortal box, named by its file
+and expression. Maps stay run-time; a scalar is already a constant.
+
+**D27. A write through a fresh `mut` local opens a STATIC box, and
+only a static one.** The alias-copy law writes a local seeded by a
+construction or a fn's answer in place — that is what keeps an identity
+whose hooks capture it one (features/tests/borrow_identity) — so a
+`mut`-seat call on `mut xs = [1]` wrote into the binary's `[1]`, and
+every later turn read `[1, 7, 7]`. `avra_cell_thawed` copies a cell's
+box when it is immortal and answers any counted box as it stands; the
+evaluator notes the handles a static was built as. Opening every such
+write unique instead (a count check) forked the identity the test pins.
+
+The same channel still lets `mut c = inner(s); add(c)` grow `s.xs` when
+`inner` answers a field of `s` — the identity mechanism, working as
+designed, and a question for the language rather than this slice.
+
+Pinned by features/tests/static_literals (fifteen write shapes over
+three turns, then every literal read again; the `mut`-seat cases
+witnessed failing without the thaw). Request boxes 10 -> 6;
+`check packages/cli` 151.2B -> 150.0B instructions.

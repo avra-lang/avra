@@ -172,9 +172,14 @@ spec "features/structs (named types, adversarial)" {
             shown("type R = List<int>\nmut a: R = [1]\nlet b = a\na.push(2)\n\"\${a.length} \${b.length}\"") == "2 1"
         }
         then "a `mut fn` receiver ALIASES through a name and through a record alike" {
+            let named = "type R = List<int>\nimpl R { mut fn add(v: int) { self.push(v) } }\nlet one = 1\nmut a: R = [one]\nlet b = a\na.add(2)\n\"\${a.length} \${b.length}\""
+            let record = "type H = { xs: List<int> }\nimpl H { mut fn add(v: int) { self.xs.push(v) } }\nlet one = 1\nmut h = H { xs: [one] }\nlet g = h\nh.add(2)\n\"\${h.xs.length} \${g.xs.length}\""
+            shown(named) == "2 2" && shown(named) == shown(record)
+        }
+        then "a receiver seeded by a literal the source spells writes a copy, through a name and a record alike" {
             let named = "type R = List<int>\nimpl R { mut fn add(v: int) { self.push(v) } }\nmut a: R = [1]\nlet b = a\na.add(2)\n\"\${a.length} \${b.length}\""
             let record = "type H = { xs: List<int> }\nimpl H { mut fn add(v: int) { self.xs.push(v) } }\nmut h = H { xs: [1] }\nlet g = h\nh.add(2)\n\"\${h.xs.length} \${g.xs.length}\""
-            shown(named) == "2 2" && shown(named) == shown(record)
+            shown(named) == "2 1" && shown(named) == shown(record)
         }
     }
     given "a writing method reached through the name" {

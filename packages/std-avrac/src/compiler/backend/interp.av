@@ -48,6 +48,18 @@ enum Val {
     Gone
 }
 
+impl Val {
+    /// The table entry a handle names, keyed by its table — "" for a
+    /// value that is its own copy.
+    fn handle() -> string {
+        match self {
+            .A(id) -> "a${id}",
+            .M(id) -> "m${id}",
+            .I(_) or .F(_) or .B(_) or .S(_) or .Y(_) or .C(_) or .N or .Gone -> "",
+        }
+    }
+}
+
 /// The machine: the program, its heaps, the register frame stack
 /// (innermost last — mutated through element aliases), its output,
 /// and its refusal.
@@ -73,6 +85,8 @@ type Machine = {
     onces: Map<string, Val>,
     // a static's value, built once per run under its name
     statics: Map<string, Val>,
+    // the array and map handles a static's boxes were built as
+    frozen: Map<string, bool> = {},
     out: List<string>,
     // LIVE: a printed line goes to stdout as it is printed, as a
     // native program's does; otherwise it is captured in `out`
@@ -941,7 +955,7 @@ impl Machine {
         let st? = self.l.statics.find(it.name == sym) else { return self.defect_val("a static read names no data") }
         mut built: List<Val> = []
         // LICENSED I3: a fold — each box reads the ones built before it
-        for b in st.boxes { built.push(self.box_val(b, built)) }
+        for b in st.boxes { built.push(self.frozen_val(self.box_val(b, built))) }
         let v = built.last() ?? Val.N
         self.statics.set(sym, v)
         v
@@ -1065,6 +1079,7 @@ impl Machine {
             .ArrayLen -> self.array_len_val(vals),
             .CellRelease -> Val.I(0),
             .CellUnique -> self.cell_unique_val(vals),
+            .CellThawed -> self.cell_thawed_val(vals),
             .SlotUnique -> self.slot_unique_val(vals),
             .SlotSet -> self.slot_set_val(vals),
             .MapNew -> self.map_new_val(),
@@ -1575,6 +1590,20 @@ impl Machine {
         self.maps.set(id, written)
         Val.I(0)
 
+    }
+
+    /// A static's box, noted as the binary's own.
+    fn frozen_val(v: Val) -> Val {
+        self.frozen.set(v.handle(), true)
+        v
+    }
+
+    /// A cell's box opened only when it is a static's: a copy stored
+    /// into the cell. Any other box stands, whoever else holds it.
+    fn cell_thawed_val(vals: List<Val>) -> Val {
+        let id? = match vals[0] { .C(id) -> id, rest -> null } else { return self.cell_unique_val(vals) }
+        if self.frozen.get(self.cells[id].handle()) == null { return self.cells[id] }
+        self.cell_unique_val(vals)
     }
 
     fn cell_unique_val(vals: List<Val>) -> Val {

@@ -1,0 +1,73 @@
+// A LITERAL THE SOURCE ALONE SPELLS IS THE BINARY'S DATA: one box laid
+// out once, shared by every turn that reads it. Each shape writes through
+// a local seeded by such a literal — a push, a field, an index, a method,
+// a `mut` seat, a reusing twin, a path into a nested literal — and the
+// next turn reads the literal unchanged.
+type H = { a: int, b: string }
+type R = { xs: List<int>, h: H }
+type Holder = { xs: List<int> }
+enum E { Nope, Some(int), Pair(int, string) }
+enum Carried { None, Some(List<int>) }
+
+impl H {
+    mut fn bump() { self.a = self.a + 1 }
+}
+
+fn add(mut xs: List<int>) { xs.push(7) }
+
+fn made() -> List<int> { [1, 2] }
+
+fn keep(xs: List<int>) -> Holder { Holder { xs: xs } }
+
+fn tag(e: E) -> int {
+    match e {
+        .Nope -> 0,
+        .Some(n) -> n,
+        .Pair(n, s) -> n + s.length,
+    }
+}
+
+fn size(c: Carried) -> int {
+    match c {
+        .None -> 0,
+        .Some(xs) -> xs.length,
+    }
+}
+
+/// One turn's writes, each read back as a word.
+fn turn(i: int) -> string {
+    mut xs = [1, 2]
+    xs.push(i)
+    mut h = H { a: 1, b: "x" }
+    h.a = h.a + i
+    mut m = H { a: 1, b: "x" }
+    m.bump()
+    mut r = R { xs: [5], h: H { a: 3, b: "y" } }
+    r.xs.push(i)
+    r.h.a = 9
+    mut seat = [1]
+    add(seat)
+    add(seat)
+    mut answered = made()
+    add(answered)
+    mut at = [1, 2]
+    at[0] = 9 + i
+    mut nest = [[1, 2]]
+    nest[0].push(3)
+    mut maps = [{"a": 1}]
+    maps[0].set("b", 2)
+    mut held = keep([4, 5])
+    held.xs.push(i)
+    mut grown = [1, 2]
+    grown = grown.concat([3])
+    let w = H { a: 4, b: "z" } with { a: 8 }
+    "${xs.length} ${h.a} ${m.a} ${r.xs.length}${r.h.a} ${seat.length} ${answered.length} ${at[0]} ${nest[0].length} ${maps[0].length} ${held.xs.length} ${grown.length} ${w.a} ${tag(.Nope)}${tag(.Some(4))}${tag(.Pair(1, "ab"))} ${size(.Some([1, 2]))}${size(.None)}"
+}
+
+/// The literals every turn wrote through, read once more.
+fn untouched() -> string {
+    let r = R { xs: [5], h: H { a: 3, b: "y" } }
+    "${[1, 2].length} ${[1].length} ${made().length} ${H { a: 1, b: "x" }.a} ${r.xs.length}${r.h.a} ${[[1, 2]][0].length} ${[{"a": 1}][0].length} ${keep([4, 5]).xs.length}"
+}
+
+"${[turn(0), turn(1), turn(2)].join(" | ")} | ${untouched()}"
