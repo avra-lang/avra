@@ -31,7 +31,7 @@ fn build_collect_decl(b: Builder) -> Result<LangNode, string> {
 fn bad_by(b: Builder, bws: List<Token>, n: Token, t: TypeRef, k: Token, sc: Token, pt: Token, fns: List<Token>, fps: List<Token>, bks: List<Token>, ends: int) -> Result<LangNode, string> {
     let bad? = bws.find(not_word("by")) else {
         let proj = Projection { ty: named_ref(pt.text), fields: proj_fields(fns, fps, ends) }
-        return b.make_stmt(Stmt.Collect(Scoped(n.text), t, kind_of(k), scope_of(sc), proj, [Plain(bk.text) for bk in bks]))
+        return b.make_stmt(Stmt.Collect(Scoped(n.text), t, kind_of(b, k), scope_of(sc), proj, [Plain(bk.text) for bk in bks]))
     }
     .Err("a collect's order is declared with `by` — found `${bad.text}`")
 }
@@ -40,8 +40,14 @@ fn not_word(word: string) -> fn(Token) -> bool {
     (t: Token) -> t.text != word
 }
 
-fn kind_of(k: Token) -> CollectKind {
-    if k.text == "rule" { CollectKind.Rule } else { CollectKind.UnknownKind(k.text) }
+/// A collect's bare kind word, resolved the owner's ruled way: a
+/// declared kind first (`rule`), then an imported component's own
+/// name (`model`) — never `instance of`. Neither is KNOWN, the word
+/// stands as written for `collect`'s own laws to refuse.
+fn kind_of(b: Builder, k: Token) -> CollectKind {
+    if k.text == "rule" { return CollectKind.Rule }
+    if b.words.components.any(it.word == k.text) { return CollectKind.Component(k.text) }
+    CollectKind.UnknownKind(k.text)
 }
 
 fn scope_of(sc: Token) -> CollectScope {
