@@ -1,0 +1,115 @@
+//! The formatter's idioms for this feature — `rule`s, reached by
+//! this feature's `mod.av`, the way any declaration is.
+use core.{StmtId, ExprId, NodeStore}
+use features.{Code, Fix, rule, Decl, Decls, NameFacts}
+use @std.meta.{name}
+
+/// An `impl Trait for T` method whose body is the trait's own
+/// DEFAULT body for that name, span-blind and with a written no-op
+/// (`nothing()`) elided on either side, is a copy: omitting it
+/// inherits the identical default (`Decls.defaulted`), so the
+/// override says nothing the trait does not already say.
+///
+/// A BARE-HOLE ROOT, structural GUARD: `trait_default` reads the
+/// trait member sharing this method's name off the DECLARATION
+/// table — a cross-declaration fact no quote pattern spells, the
+/// same door `for_range`/`is_nullable_flag_mut` already open for a
+/// structural read a pattern's own grammar cannot hold.
+///
+/// NO `@fixes` EXAMPLE: the rewrite answers NO CODE at all (a
+/// deletion), and the example harness's own proof
+/// (`compiler/rule_examples.av`'s `same_fingerprint`) reads a
+/// rewrite's rendered text as a PROGRAM to pull a root out of — an
+/// empty one parses to no statements and has none. `avra fix` still
+/// applies this rewrite, proved through `@law` alone
+/// (`compiler/rule_proof.av`'s `law_proved`: the after-text still
+/// type-checks, which it does — nothing calls a method by static
+/// symbol, so a caller reaches the identical default either way),
+/// never through this harness. The impl block matched stands FIRST
+/// in each example below: `example_root` reads only the file's FIRST
+/// statement, and a `keeps` whose trait sits ahead of its impl would
+/// never reach the impl's own method to test it at all.
+@keeps("impl Greeter for Loud {\n    fn greet() -> string {\n        \"hey\"\n    }\n}\ntrait Greeter {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
+@keeps("impl Loud {\n    fn greet() -> string {\n        \"hi\"\n    }\n}\ntype Loud = {}")
+@law("an impl method identical to its trait's default answers the same as the default")
+export rule default_override {
+    quote { ${m} } if overrides_default(m) -> Fix.Rewrite(name("")),
+}
+
+/// Whether `m` is a method statement standing in an `impl Trait for
+/// T` block, its trait naming a DEFAULT member of the same name, and
+/// the two bodies match once each side's own written no-ops are
+/// dropped.
+fn overrides_default(m: Code) -> bool {
+    let d? = m.declaring() else { return false }
+    let decls = m.of.view.decls
+    let x = decls.decl(d)
+    if !(x.kind is .Method) { return false }
+    let dflt? = trait_default(decls, m.of.names, x) else { return false }
+    bodies_equivalent(decls.store_of(x.file), x.root, decls.store_of(dflt.file), dflt.root)
+}
+
+/// The trait member `x` overrides, when it does: `x`'s own impl
+/// names a trait, and that trait declares a member of `x`'s name
+/// CARRYING A BODY (`Decls.default_member` — the compiler's own
+/// dispatch fallback for a type that never wrote one). Absent for an
+/// inherent method, a trait's own bodiless member, and a trait whose
+/// name this file's namespace does not resolve.
+fn trait_default(decls: Decls, names: NameFacts, x: Decl) -> Decl? {
+    let parent? = x.parent else { return null }
+    let pd = decls.decl(parent)
+    let ip? = decls.store_of(pd.file).impl_parts(pd.stmt) else { return null }
+    let trait_name? = ip.of else { return null }
+    let tdecl? = decls.trait_named(names, trait_name) else { return null }
+    let dm? = decls.default_member(tdecl, x.name) else { return null }
+    decls.decl(dm)
+}
+
+/// Whether two fn bodies answer the same program: the same statement
+/// count once a bare `nothing()` call is dropped from each, every
+/// kept statement's fingerprint equal in order (`core.NodeStore`'s
+/// own span-blind fold — a copy in a different file still matches),
+/// and the same tail.
+fn bodies_equivalent(os: NodeStore, ob: ExprId?, ds: NodeStore, db: ExprId?) -> bool {
+    let ome? = ob else { return false }
+    let dme? = db else { return false }
+    let ok? = kept_block(os, ome) else { return false }
+    let dk? = kept_block(ds, dme) else { return false }
+    ok.stmts.length == dk.stmts.length && same_tail(os, ok.tail, ds, dk.tail) && [i for i, s in ok.stmts if os.stmt_fingerprint(s) != ds.stmt_fingerprint(dk.stmts[i])].is_empty()
+}
+
+/// A block's own statements with every written no-op DROPPED, and
+/// its tail bare — absent for anything that is not a block (a fn's
+/// body always is one; the guard stays honest for a shape that
+/// somehow is not).
+type KeptBlock = { stmts: List<StmtId>, tail: ExprId? }
+
+fn kept_block(store: NodeStore, e: ExprId) -> KeptBlock? {
+    match store.expr(e) {
+        .Block(stmts, tail) -> KeptBlock { stmts: [s for s in stmts if !is_nothing_call(store, s)], tail: tail },
+        rest -> null,
+    }
+}
+
+fn same_tail(os: NodeStore, ot: ExprId?, ds: NodeStore, dt: ExprId?) -> bool {
+    if ot == null || dt == null { return ot == null && dt == null }
+    os.expr_fingerprint(ot!) == ds.expr_fingerprint(dt!)
+}
+
+/// Whether `s` is exactly `nothing()` — the written-out no-op a pass
+/// method calls to say it deliberately does no work
+/// (`features.nothing`), which two otherwise-identical bodies may
+/// carry on either side, or neither.
+fn is_nothing_call(store: NodeStore, s: StmtId) -> bool {
+    match store.stmt(s) {
+        .ExprStmt(e) -> is_nothing_call_expr(store, e),
+        rest -> false,
+    }
+}
+
+fn is_nothing_call_expr(store: NodeStore, e: ExprId) -> bool {
+    match store.expr(e) {
+        .Call(callee, _, args) -> callee.of == "nothing" && args.is_empty(),
+        rest -> false,
+    }
+}
