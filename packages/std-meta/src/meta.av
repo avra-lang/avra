@@ -18,9 +18,12 @@
 //! compile time: the fn's first seat says what it takes (`Fn`, `Type`,
 //! or `Named` for any declaration), and what it answers is its effect —
 //! `List<Diagnostic>` validates (a warning is the declaration's word
-//! for its USES), `void` records, `List<Directive>` generates
-//! declarations beside the annotated one, and `Derived` runs a named
-//! trait's associated `derive` (`@derive(Show)`). A `quote { … }` is
+//! for its USES), `void` records, `List<Directive>` OR `Declared`
+//! generates declarations beside the annotated one — `Declared` is the
+//! same effect with room to also speak problems about the shape it
+//! generated from, exactly where a Validates annotation's own answer
+//! is spoken — and `Derived` runs a named trait's associated `derive`
+//! (`@derive(Show)`). A `quote { … }` is
 //! a TEMPLATE, parsed where it is written: it answers `Code` (an
 //! expression), `Stmts`, `Arms` or `Decls` by what its body is, and
 //! `${e}` is a hole typed by the seat it stands in — a name, a type,
@@ -352,6 +355,18 @@ export fn decls_nodes(xs: List<Decls>) -> Node { Node.Many([x.node for x in xs])
 /// `Decl`: that name is the compiler's own declaration — a collision
 /// would arm a counterfeit.)
 export type Directive = { twin: string, name: string, at: Loc?, source: Decls? = null }
+
+/// The OTHER answer a Declares-effect fn may give, beside a bare
+/// `List<Directive>` — the same effect, a second shape, for an
+/// annotation that also wants to speak refusals about the shape it
+/// generates from. `problems` are spoken exactly where a Validates
+/// annotation's own answer is; a plain `List<Directive>` answer never
+/// had problems to speak and stays exactly as it was. This is NOT
+/// `Derived`: `Derived` is `@derive`'s own multi-trait mechanism, and
+/// a fn answering it is never called for its body at all — the
+/// compiler reads its ARGUMENTS as trait names instead. `Declared` is
+/// an ordinary value a Declares-effect fn builds and returns itself.
+export type Declared = { made: List<Directive>, problems: List<Diagnostic> = [] }
 
 /// The trace directive's decoder: `@traced("label")` on `fn sum`
 /// asks for a sibling named `sum_traced`.

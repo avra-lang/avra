@@ -465,4 +465,18 @@ spec "avra fmt --write's own receipt" {
             }
         }
     }
+    given "a file that imports a cross-module component word — a block word the CANON door's own reparse must be handed too" {
+        then "a hand-wrapped list literal with no trailing comma still writes — CANON-rescued, not refused for a reparse that forgot the file's own block words" {
+            let fs = {
+                "/w/src/lib.av": "export component Widget {\n    depth: int\n}\n",
+                "/w/src/main.av": "use lib.{Widget}\n\nWidget w {\n    depth: 8\n}\n\nfn names(t: string) -> bool {\n    [\n        \"a\",\n        \"b\",\n        \"c\"\n    ].any((p) -> t == p)\n}\n",
+            }
+            let ws = new_workspace(memory_host(fs, ["/w/src/lib.av", "/w/src/main.av"]), "/w", avra())
+            let f = ws.file_id("/w/src/main.av")
+            match ws.write_checked_source(f) {
+                .Ok(text) -> text.contains("\"c\",\n    ].any"),
+                .Err(_) -> false,
+            }
+        }
+    }
 }
