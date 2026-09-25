@@ -46,6 +46,13 @@ export type NodeStore = {
     annotations: Cell<List<List<Annotation>>>,
     // declaration-leading `///` lines; absent on synthesized nodes
     docs: Cell<List<List<string>?>>,
+    // the file's own `//!` header — a leading run before anything
+    // else, absent when the file opens with something other than
+    // one. Not folded into any statement's fingerprint yet: an
+    // edit to only this text is invisible to program_hash-keyed
+    // caches until a consumer needs that (today's one-shot `avra
+    // docs` never holds a stale cell across an edit).
+    file_doc: Cell<List<string>?>,
     // the offset each doc group's FIRST `///` was written at, and -1
     // for none, so the printer can put a remark between a doc and its
     // declaration back in the author's order
@@ -85,6 +92,11 @@ export type NodeStore = {
     // a `table<Row> { … }` literal's row type and header, by the
     // list it desugared to
     tables: Cell<List<TableSpec?>>,
+    // a written `{ … }`'s own closing-brace offset, by the Block whose
+    // span `tail_scoped` narrowed to its lone tail value for
+    // diagnostics — printing only, absent everywhere the node's own
+    // span already reaches the brace
+    written_close: Cell<List<int?>>,
     // each quote by the offset it starts at — how a template VALUE
     // names its node
     quotes_at: Cell<Map<string, int>>,
@@ -98,6 +110,7 @@ export type NodeStore = {
 }
 
 export fn new_node_store(file: string = "") -> NodeStore {
+    let no_file_doc: List<string>? = null
     NodeStore {
         file: file,
         exprs: new_arena(),
@@ -111,6 +124,7 @@ export fn new_node_store(file: string = "") -> NodeStore {
         hoisted: list_cell(),
         annotations: list_cell(),
         docs: list_cell(),
+        file_doc: Cell.new(no_file_doc),
         doc_ats: list_cell(),
         remarks: list_cell(),
         pats: list_cell(),
@@ -125,6 +139,7 @@ export fn new_node_store(file: string = "") -> NodeStore {
         instance_owners: list_cell(),
         grammar_lits: list_cell(),
         tables: list_cell(),
+        written_close: list_cell(),
         quotes_at: map_cell(),
         sublangs: list_cell(),
         body_starts: map_cell(),
@@ -175,6 +190,7 @@ impl NodeStore {
         self.instance_owners.push(null)
         self.grammar_lits.push(null)
         self.tables.push(null)
+        self.written_close.push(null)
         ExprId { index: self.exprs.add(e, span) }
     }
 
@@ -266,6 +282,18 @@ impl NodeStore {
 
     fn table_of(e: ExprId) -> TableSpec? {
         self.tables.get()[e.index]
+    }
+
+    /// `tail_scoped` narrowed this Block's own span to its lone tail
+    /// value's — printing keeps the written brace's real offset here,
+    /// never folded into the fingerprint: the value is unchanged, only
+    /// where a trailing comment stops belonging to this scope.
+    fn mark_written_close(e: ExprId, hi: int) {
+        self.written_close.set_at(e.index, hi)
+    }
+
+    fn written_close(e: ExprId) -> int? {
+        self.written_close.get()[e.index]
     }
 
     /// A name written inside a type literal — a HOLE, the id it
@@ -473,8 +501,18 @@ impl NodeStore {
     /// case — a Builder's matched branch, or the tail statement's own.
     fn tail_scoped(stmts: List<StmtId>, tail: StmtId, value: ExprId, span: Span?) -> ExprId {
         if !self.annotations_of(tail).is_empty() { return self.alloc_expr(Expr.Block(stmts, value), span) }
-        if stmts.length == 1 { return self.alloc_expr(Expr.Block([], value), self.expr_span(value)) }
+        if stmts.length == 1 { return self.lone_tail(value, span) }
         self.alloc_expr(Expr.Block(stmts.slice(0, stmts.length - 1), value), span)
+    }
+
+    /// A one-statement scope's Block, narrowed to its value's own span
+    /// (the law above) — `written_close` keeps the enclosing `{ }`'s
+    /// real offset ALONGSIDE the narrowed span, so the printer can
+    /// still find where a trailing comment before that brace belongs.
+    fn lone_tail(value: ExprId, span: Span?) -> ExprId {
+        let node = self.alloc_expr(Expr.Block([], value), self.expr_span(value))
+        if span != null { self.mark_written_close(node, span!.hi) }
+        node
     }
 
     /// A branch's statements as its answer: the one expression when
@@ -611,6 +649,17 @@ impl NodeStore {
 
     fn doc_comment(s: StmtId) -> List<string>? {
         self.docs.get()[s.index]
+    }
+
+    /// The file's own `//!` header — set once, at most, per file.
+    fn document_file(lines: List<string>) {
+        self.file_doc.set(lines)
+    }
+
+    /// The file's own `//!` header, absent when it opened with
+    /// anything else.
+    fn file_doc() -> List<string>? {
+        self.file_doc.get()
     }
 
     /// Where a declaration's doc group began, or -1 when it has none.

@@ -10,7 +10,7 @@ export type TypeId = { index: int }
 
 /// Type identity — two ids name one type when their indexes agree.
 export fn same_type(a: TypeId, b: TypeId) -> bool {
-    // LICENSED type.index_compared: type identity, not type agreement — ids compare by index
+    // LICENSED structs.index_compared: type identity, not type agreement — ids compare by index
     a.index == b.index
 }
 
@@ -347,19 +347,20 @@ impl TypeRegistry {
         }
     }
 
-    /// A Result side's word: 0 an int or a word enum, 1 a counted
-    /// pointer, absent when it is not one word or its declaration has
-    /// not settled what it is — a flat record stays out, since a `mut`
-    /// seat may still box it.
+    /// A Result side's word: 0 an int, a bool, a float, or a word
+    /// enum — none of them ride a pointer, so none is counted — 1 a
+    /// counted pointer, absent when it is not one word or its
+    /// declaration has not settled what it is — a flat record stays
+    /// out, since a `mut` seat may still box it.
     fn side_word(t: TypeId) -> int? {
         match self.shape_of(t) {
-            .Int -> 0,
+            .Int or .Float or .Bool -> 0,
             .Enum(_, _) -> if !self.reps.get()[t.index].settled || self.is_valued(t) { null } else if self.is_flat(t) { 0 } else { 1 },
             .Struct(_, _) -> if self.reps.get()[t.index].settled && !self.is_flat(t) { 1 } else { null },
             .Res(_, _) -> if self.is_valued(t) { null } else { 1 },
             .Opt(inner) -> if self.valued_carrier(inner) || !self.opt_rides_pointer(inner) { null } else { 1 },
             .Str or .Bytes or .List(_) or .Map(_, _) or .Cell(_) or .Task(_) or .Tasks or .Dyn(_, _) or .Fn(_, _, _) or .App(_, _, _) -> 1,
-            .Float or .Bool or .Ptr or .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> null,
+            .Ptr or .TypeName(_, _) or .Var(_, _, _) or .Null or .EmptyList or .EmptyMap or .Error or .Void -> null,
         }
     }
 
@@ -416,7 +417,7 @@ impl TypeRegistry {
     /// keeps `seen_through` finite; the declaration is its only
     /// caller, so the recorded graph is acyclic by construction.
     fn names_itself(id: TypeId, of: TypeId) -> bool {
-        // LICENSED type.index_compared: type IDENTITY, not agreement — the same interned type
+        // LICENSED structs.index_compared: type IDENTITY, not agreement — the same interned type
         if of.index == id.index { return true }
         let under? = self.stands_for(of) else { return false }
         self.names_itself(id, under)
@@ -662,7 +663,7 @@ impl TypeRegistry {
     /// composite. Another fn's Vars pass through untouched.
     fn substituted(ty: TypeId, target: DeclId, args: List<TypeId>) -> TypeId {
         match self.shape_of(ty) {
-            // LICENSED type.index_compared: DECLARATION identity, not type agreement — whose Var this is
+            // LICENSED structs.index_compared: DECLARATION identity, not type agreement — whose Var this is
             .Var(decl, j, _) -> if decl.index == target.index { args[j] } else { ty },
             .List(elem) -> self.intern(Type.List(self.substituted(elem, target, args))),
             .Cell(inner) -> self.intern(Type.Cell(self.substituted(inner, target, args))),
@@ -763,7 +764,7 @@ impl TypeRegistry {
     /// Each seat spelled, its marks in front when it carries any.
     fn seat_words(params: List<TypeId>, marks: List<SeatMark>) -> List<string> {
         mut out: List<string> = []
-        // LICENSED rule.loops.push_loop: a PAIRED comprehension is our own sugar backlog — `[f(j, p) for j, p in ps]` does not parse
+        // LICENSED loops.push_loop: a PAIRED comprehension is our own sugar backlog — `[f(j, p) for j, p in ps]` does not parse
         for j, p in params {
             out.push(mark_prefixed(mark_at(marks, j), self.name_of(p)))
         }

@@ -1,7 +1,11 @@
 //! Lists — the first aggregate. `[e, e, e]` builds one; access
 //! (`xs[i]`, `xs.length`) is the spine's postfix ladder; the walks,
 //! the scans, the growth words and the copies are this feature's
-//! method rows.
+//! method rows. A comprehension builds one by walking another:
+//! `[e for x in xs if p]`, naming the index too with `[e for i, x
+//! in xs]`, or by counting with `[e for i in lo..hi]` — the head is
+//! the `for` statement's. `collect { for o in xs { if o.ok { o.id
+//! } } }` gathers every value its statements would discard.
 use features.{LanguageFeature, BuilderRow, MethodRow, ReceiverEffect, TypeRow, PropertyRow, no_law, no_variants, measured_reg, lower_is_empty}
 use features.lists.{last_index, bool_comprehension_list, bool_comprehension_range}
 use grammar.{Grammar, Rule, Alt, Seq, Item, Prim, Rep, Build, Expect, Recover}
@@ -53,7 +57,6 @@ export fn lists() -> LanguageFeature {
         "length" | on_list | check_length | measured_reg
     }
     LanguageFeature lists {
-        docs: "`[e for x in xs if p]` builds a list by walking another, `[e for i, x in xs]` naming the index too, `[e for i in lo..hi]` by counting — the head is the `for` statement's; `[first, second, third]` — a homogeneous aggregate; `collect { for o in xs { if o.ok { o.id } } }` gathers every value its statements would discard; index with `xs[i]`, measure with `xs.length`."
         gram: grammar {
             primary = "[" v:expression "for" ( "(" ix:NAME "," en:NAME ")" | ix:NAME "," en:NAME | en:NAME ) "in" src:expression ( ".." hi:expression )? ( "if" c:expression )? "]" @expect("]", "expected `]` to close the comprehension") -> comp(v, ix, en, src, hi, c) | "[" BREAK? ( first:expression ( "," BREAK? rest:expression )* ","? BREAK? )? "]" @expect("]", "expected `]` to close the list") -> list_lit(first, rest) | "collect" "{" ( s:stmt | BREAK )* "}" @expect("}", "expected `}` to close the `collect`") -> collect(s) | "collect" v:expression -> collect_blockless(v)
         }

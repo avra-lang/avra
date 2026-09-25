@@ -1,0 +1,62 @@
+//! `@derive(Rows)` — one typed accessor pair per `DbRow` variant, generated
+//! onto `Db` (never onto `DbRow` itself): a caller reads and writes a
+//! named method for each kind and never sees `DbRow`, `DbKind`, or a
+//! `match` by hand. Every variant is `Variant(key: string, facts:
+//! SomeType)` — the two-field shape every `DbRow` kind holds to, so the
+//! generated pair is the same shape whatever the kind: `fn
+//! ${kind}(store, key) -> Facts?` reads, `fn insert_${kind}(store, key,
+//! facts)` writes. The store rides as a parameter, never a captured
+//! global: `compiler/db.av` sits below the layer that knows how to find
+//! one (the CLI's own host and root). The generated seats are named
+//! `key`/`facts` literally rather than from the variant's own field
+//! names — a caller fills them positionally, so the names are the
+//! method body's alone, and holding them static sidesteps a template
+//! seam (a name spliced at a declaration is not yet resolvable from a
+//! second hole referencing it in the same body).
+use @std.meta.{Type as MetaType, Variant as MetaVariant, Field, Directive}
+use @std.text.{codepoints, from_codepoints}
+
+/// The compiler's derive for `Db`'s row accessors.
+export trait Rows {
+    static fn derive(t: MetaType) -> List<Directive> {
+        [accessors(t, v) for v in t.variants]
+    }
+
+    /// The words this derive reads off a variant — none: every accessor
+    /// comes from the variant's own two fields.
+    static fn marks(t: MetaType) -> List<string> { [] }
+}
+
+/// One variant's read/write pair, as one `impl Db` block.
+fn accessors(_t: MetaType, v: MetaVariant) -> Directive {
+    let key_ty = v.fields[0].ty
+    let facts_ty = v.fields[1].ty
+    Directive {
+        twin: "",
+        name: v.name,
+        at: v.at,
+        source: quote {
+            impl Db {
+                fn ${reader(v)}(store: Store, key: ${key_ty}) -> ${facts_ty}? {
+                    let row? = self.get(store, DbKind.${v}, key) else { return null }
+                    match row { .${v}(_, facts) -> facts, rest -> null }
+                }
+                fn ${writer(v)}(store: Store, key: ${key_ty}, facts: ${facts_ty}) {
+                    self.insert(store, DbRow.${v}(key, facts))
+                }
+            }
+        },
+    }
+}
+
+/// A variant's name, lower-cased at its first letter: `Decl` -> `decl`.
+fn reader(v: MetaVariant) -> string { lower_first(v.name) }
+
+fn writer(v: MetaVariant) -> string { "insert_${lower_first(v.name)}" }
+
+fn lower_first(s: string) -> string {
+    let codes = codepoints(s)
+    let first? = codes.first() else { return s }
+    let lowered = if first >= 65 && first <= 90 { first + 32 } else { first }
+    from_codepoints([lowered].concat(codes.slice(1, codes.length)))
+}

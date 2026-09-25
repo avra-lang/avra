@@ -113,10 +113,14 @@ impl Emit {
         if self.bare_value(dst) { return avra_llvm_cast_to_type(self.b, self.vals[elems[0].index], self.reg_type(dst)) }
         mut agg = avra_llvm_get_undef(self.reg_type(dst))
         // LICENSED style.hand_rolled_scan: the running aggregate, not a scan
-        // a value enum's word is an i64 whichever payload it carries
+        // a value enum's word rides the I64 slot every category rides —
+        // `worded` is the one door, the same a runtime call's argument
+        // takes: a bool zero-extends where a bare cast would refuse the
+        // widen, a float bitcasts, an int or a pointer cross as they do
+        // there too.
         let valued = self.types.valued_carrier(self.tys[dst.index])
         for j, r in elems {
-            let part = if valued { avra_llvm_cast_to_type(self.b, self.vals[r.index], avra_llvm_int64_type(self.lc)) } else { self.vals[r.index] }
+            let part = if valued { self.worded(r, self.vals[r.index]) } else { self.vals[r.index] }
             agg = avra_llvm_build_insert_value(self.b, agg, part, j, "pack")
         }
         agg
@@ -270,7 +274,6 @@ impl Emit {
 
     /// A callee's row: the runtime's, or one of the program's externs.
     fn callee_sig(callee: string) -> RtSig? {
-        // LICENSED style.protocol_defaulted: two registries asked in turn — the second answers when the first has no row
         self.rt.get(callee) ?? self.externs.find(it.name == callee)
     }
 
@@ -370,7 +373,7 @@ impl Emit {
     /// slot casts down.
     fn rt_args(callee: string, args: List<Reg>) -> List<ptr> {
         mut out: List<ptr> = []
-        // LICENSED rule.loops.push_loop: the coercion needs the param INDEX; comprehensions
+        // LICENSED loops.push_loop: the coercion needs the param INDEX; comprehensions
         // cannot destructure enumerate
         for j, r in args { out.push(self.rt_arg(callee, j, r)) }
         out
@@ -587,7 +590,7 @@ impl Emit {
     /// The region stack's push — arm 0 is already being built.
     fn open_region(arms: List<ptr>, merge_bb: ptr) {
         let r = Region { arms: arms, next: 1, merge_bb: merge_bb, ended: [], gives: [] }
-        // LICENSED style.bracket_ritual: a region STACK across fns, not a bracket body
+        // LICENSED compiler.bracket_ritual: a region STACK across fns, not a bracket body
         self.frames.push(r)
     }
 
@@ -600,7 +603,7 @@ impl Emit {
         let _ = avra_llvm_build_br(self.b, f.merge_bb)
         avra_llvm_position_at_end(self.b, f.arms[f.next])
         let advanced = f with { ended: f.ended.concat([here]), gives: f.gives.concat([gives]), next: f.next + 1 }
-        // LICENSED style.bracket_ritual: a region STACK across fns, not a bracket body
+        // LICENSED compiler.bracket_ritual: a region STACK across fns, not a bracket body
         self.frames.push(advanced)
     }
 
