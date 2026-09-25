@@ -683,3 +683,130 @@ The same syscalls as C. The four clock reads are the idle and write
 deadlines' (`within`), 27 ns each on this TSC clock — ~0.1 µs of the
 ~2.9 µs gap (63k vs 77k req/s). The rest is the request's own work,
 so the pipelined profile's levers (§23) move keep-alive too.
+
+## §25 As built — R12, cold paths compiled for size
+
+**D34. A body reachable from a `once fn` alone is cold by
+construction.** `Body.memoized` names a `once fn`'s own (set at
+`lower_fn` from the store's `is_once` fact, the same one that already
+picks `once_body`'s guard); `cold_bodies` (compiler/lower/lower.av)
+closes it over the whole program's call graph — a body joins the cold
+set once EVERY caller into it is cold too, propagated by worklist from
+the `memoized` roots. `body_symbol` names a call's target and an
+address taken alike, so a hot reference either way keeps a body hot —
+the set is self-correcting, never a hand-kept list, and a body with no
+recorded caller (dead code, or reached only from the entry, which the
+graph excludes on purpose) simply never joins it. `Lowered.cold` carries
+the set once per program, computed in `union`/`settlement`, never
+per emitted module — a split build would otherwise redo the closure
+once per file.
+
+**D35. The mark is two LLVM function attributes, not a new IR
+shape.** `avra_llvm_set_cold` (backend/llvm_wrapper.c) adds `cold` and
+`minsize` at the function the emitter already has in hand
+(`llvm.av`'s `emit_mode`, beside the existing `weak_odr` mark) —
+`cold` tells the optimizer the function is rarely reached, `minsize`
+tells it to spend bytes for cycles inside it. Neither attribute
+changes what a function computes, only how LLVM lays it out: the risk
+of marking a hot body cold by mistake is a PERFORMANCE question, not a
+correctness one, and `cold_bodies`'s "every caller must be cold" rule
+means a wrong mark can only ever be a missed win, never a regression —
+confirmed by the request bench (below) reading identical instruction
+counts before and after, since that program's call graph has no
+`once fn` in it at all. Considered and refused: per-instruction branch
+weights on `?`/`catch`'s failure arm (the ticket's other candidate) —
+it would need a new fact threaded through `Ins.IfStart` down from
+lowering, which is IR-vocabulary growth (protocol: justify, pay every
+consumer) for a payload that gates a HINT, not a value; the measured
+growth was squarely in registration tables, not error branches, so the
+whole-fn attribute on the fact the backend already computes
+(`body_symbol`, `is_once`) was the cheaper, sufficient lever.
+
+**Size ledger** (`tools/symsize.py`, `nm -n --defined-only`, size =
+next symbol's address minus this one; Mac arm64, build/avra.pre =
+tree at 10f8a9b, build/avra = this change, two-generation build
+ladder, gen2 == gen3 byte-identical):
+
+| | before | after |
+|---|---|---|
+| whole binary | 8,573,056 B | 7,341,152 B (−14.4%) |
+| `__TEXT` sum (nm) | 6.60 MB | 5.14 MB (−22.2%) |
+
+Per-module `__TEXT` deltas: `avrac.features` 2,779,388 → 1,392,312 B
+(−1,387,076, roughly halved), `avrac.core` 792,480 → 712,552 B
+(−79,928), `avrac.compiler` 2,196,024 → 2,137,720 B (−58,304),
+`avrac.grammar` 306,604 → 302,624 B (−3,980). Biggest single-symbol
+shrinks: `impls.impls` −48,720 B, `expr_spine.expr_spine` −44,240 B,
+`fns.fns` −37,880 B, `core.rt_sigs` −23,108 B (a table-building fn
+R12's own closure caught that R10/R11's report never named),
+`enums.enums` −19,484 B, the grammar payload tables −18.6 KB/−18.1 KB,
+`closures.closures` −17,584 B, `structs.structs` −16,644 B,
+`components.components` −11,820 B. `minsize` also invites LLVM's
+machine outliner: ~186 new `_OUTLINED_FUNCTION_N` symbols share code
+the individual registration fns used to carry each on their own,
++44 KB — already netted into the totals above, not a separate cost.
+
+**Compiler cost, `check packages/cli`** (`/usr/bin/time -l`,
+interleaved old/new twice, `.avra-cache` moved aside each run):
+
+| | old (avg of 2) | new (avg of 2) | delta |
+|---|---|---|---|
+| instructions retired | 162.77 B | 165.03 B | **+1.39%** |
+| cycles elapsed | 43.64 B | 40.70 B | −6.7% |
+| wall (`real`) | 17.08 s / 20.25 s | 15.23 s / 13.88 s | lower both pairs |
+
+Diagnostics are BYTE-IDENTICAL between old and new
+(`diff` on stdout, four runs) — the mark changes layout, never
+meaning. Instructions retired sit above the ±0.7% floor this doc's
+own numbers treat as noise; `minsize` is the reason, read straight:
+the ~40 marked fns each run exactly once per process (grammar
+assembly, `once fn avra()`'s own memoized body), and a size-optimized
+body can cost a few more instructions to execute in exchange for fewer
+bytes and better locality for everything AROUND it — which is what the
+cycles and wall numbers show moving instead. Recorded rather than
+argued away: this is a real, small, one-time cost, not measurement
+noise, and it buys a materially smaller, not-slower-in-cycles binary.
+
+**Request bench** (`tools/bench/request`, built with each compiler,
+run interleaved 4× each, instructions retired — the stable figure; the
+program's own printed ns/request is noisier on a loaded Mac desktop):
+
+| | old (avg of 4) | new (avg of 4) |
+|---|---|---|
+| instructions retired | 59.839 B | 59.778 B |
+
+No measurable difference (~0.1%, inside noise) — expected: this
+program's own call graph has no `once fn` in it, so `cold_bodies`
+marks nothing and the compiled bench is untouched. This is the
+confirmation that R12 is scoped to the COMPILER's own binary and
+never reaches into an arbitrary compiled program's hot path.
+
+**Red team.** (1) A wrongly-cold-marked hot fn regressing a real
+program: unreachable by construction (the "every caller cold"
+closure), and the request bench's null result is the empirical check.
+(2) Behavior change under the mark: `cold`/`minsize` are LLVM
+optimizer hints with no semantic effect by design; confirmed by
+byte-identical `check packages/cli` diagnostics across old/new and by
+the full `eval == native == expected` suites below. (3) The closure
+itself wrong (marks something reachable from the entry): `entry`/
+`program_main` are included as nodes in the graph fed to
+`cold_bodies` specifically so anything they call keeps a permanent
+non-cold caller — verified by reading the marked-cold set is exactly
+the ~40 registration-table fns the size ledger names, nothing from the
+request bench's or cli's own runtime logic. (4) Fixed-point
+stability: gen2, gen3 and a gen4 built via `make libs` are
+byte-identical (`cmp` clean) — the mark doesn't oscillate as the
+compiler recompiles itself under its own new logic.
+
+**Tests.** `packages/std-avrac`: 6672/6672 tests passed, 156 programs
+proved (`eval == native == expected`), exit 0. `packages/std-http`:
+468/468 tests passed, 4 programs proved, exit 0. `python3
+tools/idioms.py`: no new violations. `python3 tools/externs.py`: clean
+(the one new extern, `avra_llvm_set_cold`, matches its C body's arity
+and width). `./build/avra fmt` unchanged on every touched file.
+
+**Deferred:** branch-level cold hints on `?`/`catch`/trap failure arms
+(the ticket's mechanism 2) — refused per D35's reasoning, not merely
+postponed; the ROADMAP's sugar/IR backlog is where it belongs if a
+future measurement finds the registration-table lever insufficient on
+its own.

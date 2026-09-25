@@ -8,7 +8,7 @@
 //! Each fn lowers to its OWN body with its own registers; `main` is
 //! the statement list.
 use @std.meta.{derive}
-use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, CollectScope, Plain, DeclKind}
+use core.{Fingerprint, StmtId, ExprId, Expr, TypeId, Type, Reg, Ins, Level, TypeRegistry, joined, flatten, sorted_texts, root_kind_of, NodeStore, DeclId, FileId, Arrow, RtSig, RtKind, extern_kind_name, inout_row, no_marks, Param, SeatMark, Static, CollectParts, CollectKind, CollectScope, Plain, DeclKind, body_symbol}
 use diagnostics.{Diag, defect_at, loc_at, refusal, Voices, no_voices}
 use features.{LowerCx, FnSig, Sub, SeatValue, new_emitter, new_body_regs, viewed, Decl, Decls, Jobs, new_jobs, Wanted, Lift, Wrap, Unsettled, Settled, SettleRoot}
 use compiler.{Analysis, any_root}
@@ -31,6 +31,10 @@ export type Body = {
     file: FileId? = null,
     /// Instantiations may be emitted by more than one cached object.
     weak: bool = false,
+    /// A `once fn`'s own — its runtime guard runs every call, its
+    /// computation at most one. A GROWTH: every other construction
+    /// site answers false.
+    memoized: bool = false,
 }
 
 /// An instantiation `want`, demanded by a body `by` declares.
@@ -82,6 +86,9 @@ export type Lowered = {
     libraries: List<LinkedPackage> = [],
     // the settled aggregates its bodies read by address, each once
     statics: List<Static>,
+    /// Bodies reachable from a `once fn` alone — the backend compiles
+    /// them for size, never speed. `cold_bodies` names the members.
+    cold: Map<string, bool> = {},
 }
 
 impl Decls {
@@ -254,8 +261,9 @@ impl Decls {
         let d = drained(wants.concat(held_asks), unit_of, is_held, (w: Wanted) -> self.instantiated(w))
         fns = fns.concat(d.fns)
         spoken = spoken.concat(d.spoken)
-        spoken = spoken.concat(minted_pointers(self.types, fns.concat([entry_body])))
-        Lowered { fns: fns, entry: entry_body, asks: d.asks, homes: d.homes, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(statics.concat(d.statics)), libraries: [] }
+        let every_body = fns.concat([entry_body])
+        spoken = spoken.concat(minted_pointers(self.types, every_body))
+        Lowered { fns: fns, entry: entry_body, asks: d.asks, homes: d.homes, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(statics.concat(d.statics)), libraries: [], cold: cold_bodies(every_body) }
     }
 
     /// AN INSTANTIATION NOBODY LOWERED, as the declaration a caller's module needs:
@@ -281,8 +289,9 @@ impl Decls {
         let d = drained(ru.wants, unit_of, (_f: FileId) -> false, (_w: Wanted) -> false)
         let entry = ru.bodies.first() ?? empty_main(self.types).body
         let fns = ru.bodies.slice(1, ru.bodies.length).concat(d.fns)
-        let spoken = ru.voices.list.concat(d.spoken).concat(minted_pointers(self.types, fns.concat([entry])))
-        Lowered { fns: fns, entry: entry, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(ru.statics.concat(d.statics)), libraries: [] }
+        let every_body = fns.concat([entry])
+        let spoken = ru.voices.list.concat(d.spoken).concat(minted_pointers(self.types, every_body))
+        Lowered { fns: fns, entry: entry, types: self.types, diagnostics: spoken, externs: self.extern_rows(), statics: distinct_statics(ru.statics.concat(d.statics)), libraries: [], cold: cold_bodies(every_body) }
     }
 }
 
@@ -371,6 +380,66 @@ fn pointer_constant(name: string) -> Diag {
     defect_at(null, "a non-zero constant reached a pointer register in `${name}` — a pointer's only constant is null")
 }
 
+/// A body reachable from a `once fn` alone: every caller into it is
+/// itself one, so nothing under a once-memoized root runs more than
+/// the root does. The backend compiles the set for size, not speed.
+/// `body_symbol` names a call's target and an address taken alike, so
+/// a hot reference either way keeps a body hot — the set is
+/// self-correcting, never a hand-kept list.
+export fn cold_bodies(bodies: List<Body>) -> Map<string, bool> {
+    let g = call_graph(bodies)
+    mut cold: Map<string, bool> = {}
+    mut queue: List<string> = []
+    for b in bodies {
+        if b.memoized {
+            cold.set(b.name, true)
+            queue.push(b.name)
+        }
+    }
+    mut at = 0
+    while at < queue.length {
+        let name = queue[at]
+        at = at + 1
+        for callee in edges_of(g.callees, name) {
+            if cold.get(callee) == null && edges_of(g.callers, callee).all((c: string) -> cold.get(c) != null) {
+                cold.set(callee, true)
+                queue.push(callee)
+            }
+        }
+    }
+    cold
+}
+
+/// The program's call edges, forward and reverse, by name. Each
+/// adjacency is a `Cell` so an edge grows in PLACE (`claim_seen`'s
+/// law, above) — a list read back out of a `Map` on every edge would
+/// copy the list whole.
+type CallGraph = { callees: Map<string, Cell<List<string>>>, callers: Map<string, Cell<List<string>>> }
+
+fn call_graph(bodies: List<Body>) -> CallGraph {
+    mut callees: Map<string, Cell<List<string>>> = {}
+    mut callers: Map<string, Cell<List<string>>> = {}
+    for b in bodies {
+        for i in b.ins {
+            let target = body_symbol(i)
+            if target != null {
+                grown(callees, b.name, target!)
+                grown(callers, target!, b.name)
+            }
+        }
+    }
+    CallGraph { callees: callees, callers: callers }
+}
+
+fn grown(mut adj: Map<string, Cell<List<string>>>, from: string, to: string) {
+    let cell = adj.get(from)
+    if cell != null { cell!.push(to) } else { adj.set(from, Cell.new([to])) }
+}
+
+fn edges_of(adj: Map<string, Cell<List<string>>>, name: string) -> List<string> {
+    adj.get(name)?.get() ?? []
+}
+
 /// The ceiling on DISTINCT bodies one program mints. A source
 /// bounds its own count; only polymorphic recursion — each turn a
 /// wider substitution, none ever repeated — climbs forever.
@@ -433,11 +502,12 @@ fn lower_fn(a: Analysis, x: Decl, fname: string, sub: Sub?, seats: List<SeatValu
     for pt in ptypes { let _ = lo.mint_ty(pt) }
     lo.seeded()
     lo.seats_enter()
-    let r = if a.view.store.is_once(x.stmt) { lo.once_body(fname, root, rt) } else { lo.reg_of(root) }
+    let memoized = a.view.store.is_once(x.stmt)
+    let r = if memoized { lo.once_body(fname, root, rt) } else { lo.reg_of(root) }
     lo.seats_exit(r)
     lo.emit(Ins.RetVal(r))
     LoweredBody {
-        body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: sub != null },
+        body: Body { name: fname, params: ptypes, ret: rt, gives: r, ins: lo.out.ins, reg_types: lo.out.reg_types, file: a.view.file, weak: sub != null, memoized: memoized },
         voices: lo.out.voices,
         jobs: lo.jobs,
     }

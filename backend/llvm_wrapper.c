@@ -269,6 +269,22 @@ void avra_llvm_set_weak_odr(LLVMValueRef fn) {
     LLVMSetLinkage(fn, LLVMWeakODRLinkage);
 }
 
+// A body the compiler proved runs at most once (R12, cold_bodies):
+// `cold` tells the optimizer it is rarely reached, `minsize` tells it
+// to favor fewer bytes over fewer cycles inside it — together, the
+// straight-line table-building this marks stops paying for the hot
+// leaves' inlined bodies it will only ever execute once.
+static LLVMAttributeRef enum_attr(LLVMContextRef ctx, const char* name) {
+    unsigned kind = LLVMGetEnumAttributeKindForName(name, strlen(name));
+    return LLVMCreateEnumAttribute(ctx, kind, 0);
+}
+
+void avra_llvm_set_cold(LLVMValueRef fn) {
+    LLVMContextRef ctx = LLVMGetModuleContext(LLVMGetGlobalParent(fn));
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "cold"));
+    LLVMAddAttributeAtIndex(fn, LLVMAttributeFunctionIndex, enum_attr(ctx, "minsize"));
+}
+
 LLVMValueRef avra_llvm_get_named_function(LLVMModuleRef m, const char* name) {
     char* sym = avra_mangle_symbol(name);
     LLVMValueRef fn = LLVMGetNamedFunction(m, sym ? sym : name);
