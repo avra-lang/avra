@@ -1,0 +1,47 @@
+//! `avra docs dump` — every exported declaration's own facts, one
+//! row per symbol (compiler/program.av's `Program.dumped_decls`).
+use @std.io.{make_dirs, write_text}
+use commands.{root_program, dump_listing}
+use @std.avrac.compiler.{DocRow}
+
+fn row(address: string, signature: string) -> DocRow {
+    DocRow { address: address, kind: "fn", signature: signature, prose_lines: [], package: "pkg" }
+}
+
+fn dump_pkg_named(name: string) -> string {
+    let root = "/tmp/avra-dump-test/${name}"
+    let _ = make_dirs("${root}/src")
+    root
+}
+
+spec "commands/docs dump" {
+    given "no rows" {
+        then "the header names zero and nothing follows" {
+            dump_listing([]) == "this package exports — 0"
+        }
+    }
+    given "a couple of rows" {
+        then "each line is its address, an em dash, and its signature, in order" {
+            let text = dump_listing([row("a.bump", "fn bump(int) -> int"), row("a.zero", "fn zero() -> int")])
+            text == "this package exports — 2\na.bump — fn bump(int) -> int\na.zero — fn zero() -> int"
+        }
+    }
+    given "a package with an exported fn, a private fn, and a doc" {
+        then "only the exported one is dumped, with its own doc and signature" {
+            let root = dump_pkg_named("basic")
+            let _ = write_text("${root}/src/main.av", "/// adds one\nexport fn bump(n: int) -> int {\n    n + 1\n}\n\nfn hidden(n: int) -> int {\n    n\n}\n\nfn main() -> int {\n    bump(1) + hidden(1)\n}\n")
+            mut p = root_program(root)
+            let rows = p.dumped_decls(root)
+            let found? = rows.find(it.address.contains("bump")) else { return false }
+            rows.length == 1 && found.signature == "fn bump(int) -> int" && found.prose_lines.join("\n") == "adds one"
+        }
+    }
+    given "a package exporting nothing"  {
+        then "the dump is empty, not a defect" {
+            let root = dump_pkg_named("nothing-exported")
+            let _ = write_text("${root}/src/main.av", "fn main() -> int {\n    0\n}\n")
+            mut p = root_program(root)
+            p.dumped_decls(root).is_empty()
+        }
+    }
+}
