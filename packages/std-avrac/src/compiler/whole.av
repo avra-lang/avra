@@ -65,9 +65,20 @@ impl Workspace {
         self.analysis(self.file_id(path))
     }
 
+    /// A layout fact moved under typing — the registry's own defect,
+    /// worded at the write site (R11c, avra-8sb5.34.21) — folded into
+    /// the workspace's defect log so `Program.clean()`/`report()` see
+    /// it without lowering ever having to run. `lowered()`'s own
+    /// callers check again, since mono can still mint a fresh
+    /// combination this pass never saw.
+    fn report_layout_defects() {
+        for msg in self.decls.types.drain_stale() { self.defect(msg) }
+    }
+
     /// The program rooted at `ws.root`, entered at one of its files.
     fn program(entry: string?) -> Program {
         let files = self.analyze_all()
+        self.report_layout_defects()
         let at: int? = if entry == null { null } else { index_of_file(files, entry!) }
         let seat: Entry? = if at == null { null } else { Entry { at: at! } }
         Program {
